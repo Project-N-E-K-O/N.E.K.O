@@ -700,6 +700,13 @@ def hook(
     condition: str | None = None,
     permissions: _Narrowing = None,
 ) -> Callable[[F], F]:
+    """Mark an entry hook.
+
+    ``permissions`` narrows the hook like a component; it is joined into
+    every entry ``target`` matches. Left out, the hook needs every declared
+    permission, so the entries it targets inherit everything as well: one
+    such hook on ``target="*"`` cancels the narrowing of every entry.
+    """
     if timing not in {"before", "after", "around", "replace"}:
         raise ValueError("timing must be one of: before, after, around, replace")
     narrowed = normalize_narrowing(permissions, where="@hook")

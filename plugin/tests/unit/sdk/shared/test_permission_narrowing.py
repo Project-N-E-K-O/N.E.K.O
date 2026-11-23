@@ -568,9 +568,9 @@ class _HostPlugin(NekoPluginBase):
     async def tick_bad(self, **_): ...
 
 
-def _host_scan(pid: str, conf: dict) -> dict[str, object]:
+def _host_scan(pid: str, conf: dict, manifest_path: Path) -> dict[str, object]:
     try:
-        registry.scan_static_metadata(pid, _HostPlugin, conf, conf.get("plugin", {}))
+        registry.scan_static_metadata(pid, _HostPlugin, conf, conf.get("plugin", {}), manifest_path=manifest_path)
         with state.acquire_event_handlers_read_lock():
             return {
                 key[len(pid) + 1:]: handler.meta
@@ -588,9 +588,12 @@ def _host_scan(pid: str, conf: dict) -> dict[str, object]:
 def test_host_scan_and_plugin_process_register_the_same_entries(tmp_path):
     import tomllib
 
-    conf = tomllib.loads(DECLARED_TOML)
-    host = _host_scan("narrow_host_demo", conf)
-    instance = _HostPlugin(_ctx(tmp_path))
+    ctx = _ctx(tmp_path)
+    # The effective configuration carries no [permissions] table: the host
+    # reads the declarations from the manifest file, as the plugin process does.
+    conf = {key: value for key, value in tomllib.loads(DECLARED_TOML).items() if key != "permissions"}
+    host = _host_scan("narrow_host_demo", conf, ctx.config_path)
+    instance = _HostPlugin(ctx)
     # As lifekit does: the __routers__ classes are included at runtime.
     instance.include_router(_HostRouter())
     process = instance.collect_entries()
@@ -603,7 +606,12 @@ def test_host_scan_and_plugin_process_register_the_same_entries(tmp_path):
     # The refused event handler is neither in the host table nor subscribed.
     assert "tick_bad" not in process
 
-    previews = {item["id"]: item for item in registry._extract_entries_preview("narrow_host_demo", _HostPlugin, conf, {})}
+    previews = {
+        item["id"]: item
+        for item in registry._extract_entries_preview(
+            "narrow_host_demo", _HostPlugin, conf, {}, manifest_path=ctx.config_path
+        )
+    }
     assert sorted(previews) == ["fits", "hooked", "r_inherit"]
     assert previews["fits"]["permissions"] == (NET,)
     assert "permissions" not in registry._extract_entries_preview(
@@ -712,17 +720,18 @@ def test_duplicate_ids_in_one_class_decide_on_the_winner_on_both_sides(tmp_path,
         @plugin_entry(id="x1", permissions=winner)
         async def z_last(self, **_): ...
 
+    ctx = _ctx(tmp_path)
     conf = tomllib.loads(DECLARED_TOML)
     pid = "narrow_dup_demo"
     try:
-        registry.scan_static_metadata(pid, P, conf, {})
+        registry.scan_static_metadata(pid, P, conf, {}, manifest_path=ctx.config_path)
         with state.acquire_event_handlers_read_lock():
             host = {key for key in state.event_handlers if key.startswith(f"{pid}.")}
     finally:
         with state.acquire_event_handlers_write_lock():
             for key in [key for key in state.event_handlers if key.startswith((f"{pid}.", f"{pid}:"))]:
                 del state.event_handlers[key]
-    process = P(_ctx(tmp_path)).collect_entries()
+    process = P(ctx).collect_entries()
     if refused_wins:
         assert host == set() and process == {}
     else:

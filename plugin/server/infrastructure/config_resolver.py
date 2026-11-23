@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import os
 from contextlib import nullcontext
 from datetime import datetime
@@ -115,15 +114,6 @@ def _resolve_plugin_config_core(
     if isinstance(manifest_plugin, Mapping):
         effective_config = dict(effective_config)
         effective_config["plugin"] = dict(manifest_plugin)
-    # Permission declarations come from the manifest only: a configuration
-    # profile cannot add or remove them. The host's static scan reads them
-    # from the effective configuration and the plugin process from the
-    # manifest, so the two must agree.
-    effective_config = dict(effective_config)
-    if "permissions" in manifest_config:
-        effective_config["permissions"] = copy.deepcopy(manifest_config["permissions"])
-    else:
-        effective_config.pop("permissions", None)
 
     semantic_warnings = collect_plugin_toml_semantic_warnings(
         effective_config, toml_path=manifest_path

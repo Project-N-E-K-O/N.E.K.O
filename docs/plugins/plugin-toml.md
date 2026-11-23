@@ -331,6 +331,7 @@ async def weather(self, **_): ...
 - Leaving it out is the default: the component inherits every declared permission. Narrowing is only used to show which features stop working when the user turns a permission off; it does not restrict what the component can do.
 - When the plugin registers its components, every narrowing must be a subset of `[permissions.require]` + `[permissions.ask]`. A component that lists anything else is not registered (an entry is not callable, an event handler is not subscribed) and the plugin log says which one and why. `neko-plugin check` reports the same thing before you publish.
 - An entry hook's permissions are added to every entry its `target` matches. A hook that lists an undeclared permission closes those entries.
+  - Careful: a hook without `permissions=` needs everything declared, so every entry it targets inherits everything too. One such hook on `target="*"` cancels the narrowing of every entry; give the hook its own `permissions=` if the entries narrow.
 - A `PluginRouter` can narrow all of its entries with a `permissions = [...]` class attribute (or `PluginRouter(permissions=[...])`); an entry or `add_entry(..., permissions=...)` that names its own overrides it. `add_entry` on an included router returns `Err(PermissionDeniedError)` for an undeclared permission.
 - `@neko_plugin`, `@lifecycle`, `@message` and other non-component decorators do not take `permissions=`.
 

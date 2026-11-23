@@ -48,10 +48,10 @@ from plugin._types.entry_metadata import (
 from plugin._types.version import SDK_VERSION
 from plugin.sdk.shared.core.events import EventMeta as SdkEventMeta
 from plugin.sdk.shared.core.router import router_entry_meta, router_entry_permissions, router_permissions
-from plugin.sdk.shared.permissions.declarations import declared_permission_ids
 from plugin.sdk.shared.permissions.narrowing import (
     Component,
     component_label,
+    read_declared_permission_ids,
     resolve_component_permissions,
     static_entry_hooks,
     with_permissions,
@@ -638,7 +638,7 @@ def _iter_router_plugin_entries(cls: type) -> Iterable[tuple[str, Any, Any]]:
 def _narrowed_components(
     pid: str,
     cls: type,
-    conf: dict,
+    manifest_path: Optional[Path],
     components: Dict[Any, tuple[str, str, Any]],
     *,
     report: bool,
@@ -651,6 +651,10 @@ def _narrowed_components(
     outside plugin.toml and is not registered. One decision for the static
     tables and the plugin process (``resolve_component_permissions``), so
     both list the same entries. ``report`` logs each refusal.
+
+    The declarations are read from the manifest file (``manifest_path``),
+    as the plugin process reads them, never from the effective
+    configuration. Without a path nothing is checked; hooks still merge.
     """
     hooks = static_entry_hooks(cls)
     if all(getattr(meta, "permissions", None) is None for _, _, meta in components.values()) and all(
@@ -668,8 +672,7 @@ def _narrowed_components(
             for key, (etype, eid, meta) in components.items()
         },
         hooks,
-        # [permissions] is kept from the manifest in the effective config.
-        declared_permission_ids(conf),
+        read_declared_permission_ids(manifest_path),
     )
     result: Dict[Any, Any] = {}
     for key, (_, _, meta) in components.items():
@@ -684,9 +687,14 @@ def _narrowed_components(
     return result
 
 
-def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
+def scan_static_metadata(
+    pid: str, cls: type, conf: dict, pdata: dict, *, manifest_path: Optional[Path] = None,
+) -> None:
     """
     Scan class attributes without instantiation, extracting @EventHandler metadata into global tables.
+
+    ``manifest_path`` is the plugin.toml the permission narrowing check reads
+    its declarations from (see ``_narrowed_components``).
     """
     # Use module-level logger.
     handlers_updated = False
@@ -715,7 +723,7 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
     narrowed = _narrowed_components(
         pid,
         cls,
-        conf,
+        manifest_path,
         {
             **{
                 ("class", name): (
@@ -1112,7 +1120,9 @@ def _overlay_entry_declaration(
     return results
 
 
-def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> List[Dict[str, Any]]:
+def _extract_entries_preview(
+    pid: str, cls: type, conf: dict, pdata: dict, *, manifest_path: Optional[Path] = None,
+) -> List[Dict[str, Any]]:
     """Extract entry metadata for UI visibility without registering event handlers.
 
     NOTE: This function must not touch state.event_handlers. It is intended for disabled
@@ -1166,7 +1176,11 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
     items = class_items + router_items
     try:
         narrowed = _narrowed_components(
-            pid, cls, conf, {index: ("plugin_entry", eid, meta) for index, (eid, meta) in enumerate(items)}, report=False,
+            pid,
+            cls,
+            manifest_path,
+            {index: ("plugin_entry", eid, meta) for index, (eid, meta) in enumerate(items)},
+            report=False,
         )
     except Exception:
         narrowed = {index: meta for index, (_eid, meta) in enumerate(items)}
@@ -1891,8 +1905,8 @@ def _load_adapter_plugin(
         mod = _import_plugin_entry_module(module_path, toml_path, logger)
         cls = getattr(mod, class_name)
         if isinstance(cls, type):
-            entries_preview = _extract_entries_preview(pid, cls, conf, pdata)
-            scan_static_metadata(pid, cls, conf, pdata)
+            entries_preview = _extract_entries_preview(pid, cls, conf, pdata, manifest_path=toml_path)
+            scan_static_metadata(pid, cls, conf, pdata, manifest_path=toml_path)
             scanned_metadata_registered = True
             scanned_class_name = cls.__name__
     except Exception:
@@ -2374,7 +2388,7 @@ def load_plugins_from_roots(
                 )
                 continue
 
-        scan_static_metadata(pid, cls, conf, pdata)
+        scan_static_metadata(pid, cls, conf, pdata, manifest_path=toml_path)
 
         plugin_meta = _build_plugin_meta(
             pid, pdata,
