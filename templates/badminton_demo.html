@@ -2633,8 +2633,10 @@
     badmintonCharacterLanguagePreferenceResolved = true;
   });
   function api(path) { return '/api/game/badminton' + path; }
+  var _BADMINTON_CSRF_BOOTSTRAP_TIMEOUT_MS = 4000;
   var _badmintonCsrfToken = '';
   var _badmintonCsrfInflight = null;
+  var _badmintonCsrfSeq = 0;
   function _getCachedBadmintonCsrfToken() {
     var token = '';
     try {
@@ -2662,14 +2664,22 @@
       return Promise.reject(_badmintonCreateAbortError());
     }
     return new Promise(function (resolve, reject) {
+      var settled = false;
       function onAbort() {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
         reject(_badmintonCreateAbortError());
       }
       signal.addEventListener('abort', onAbort, { once: true });
       Promise.resolve(promise).then(function (value) {
+        if (settled) return;
+        settled = true;
         signal.removeEventListener('abort', onAbort);
         resolve(value);
       }, function (error) {
+        if (settled) return;
+        settled = true;
         signal.removeEventListener('abort', onAbort);
         reject(error);
       });
@@ -2679,6 +2689,12 @@
     if (signal && signal.aborted) {
       return Promise.reject(_badmintonCreateAbortError());
     }
+    if (forceRefresh) {
+      _badmintonCsrfSeq += 1;
+      _badmintonCsrfToken = '';
+      _badmintonCsrfInflight = null;
+    }
+    var requestSeq = _badmintonCsrfSeq;
     try {
       var security = window.nekoLocalMutationSecurity;
       if (security && typeof security.getMutationHeaders === 'function') {
@@ -2688,6 +2704,9 @@
         return _badmintonAwaitWithSignal(refreshP.then(function () {
           return security.getMutationHeaders();
         }).then(function (headers) {
+          if (requestSeq !== _badmintonCsrfSeq) {
+            return {};
+          }
           var token = headers && (headers['X-CSRF-Token'] || headers['x-csrf-token']);
           if (token) _badmintonCsrfToken = token;
           return headers || {};
@@ -2699,31 +2718,55 @@
         });
       }
     } catch (_) {}
-    if (forceRefresh) {
-      _badmintonCsrfToken = '';
-      _badmintonCsrfInflight = null;
-    }
     if (_badmintonCsrfToken) {
       return Promise.resolve({ 'X-CSRF-Token': _badmintonCsrfToken });
     }
     if (_badmintonCsrfInflight) {
       return _badmintonAwaitWithSignal(_badmintonCsrfInflight, signal);
     }
-    var inflight = fetch('/api/config/page_config', { cache: 'no-store', credentials: 'same-origin' })
-      .then(function (r) { return r && r.ok ? r.json() : null; })
-      .then(function (cfg) {
-        var token = cfg && cfg.autostart_csrf_token;
-        if (typeof token === 'string' && token) {
-          _badmintonCsrfToken = token;
-          return { 'X-CSRF-Token': token };
-        }
-        return {};
-      })
-      .catch(function () { return {}; })
-      .then(function (headers) {
+    var bootstrapController = window.AbortController ? new AbortController() : null;
+    var fetchInit = bootstrapController
+      ? { cache: 'no-store', credentials: 'same-origin', signal: bootstrapController.signal }
+      : { cache: 'no-store', credentials: 'same-origin' };
+    var inflight = new Promise(function (resolve, reject) {
+      var settled = false;
+      var bootstrapTimer = setTimeout(function () {
+        if (settled) return;
+        settled = true;
+        bootstrapTimer = null;
         if (_badmintonCsrfInflight === inflight) _badmintonCsrfInflight = null;
-        return headers;
-      });
+        if (bootstrapController) {
+          try { bootstrapController.abort(); } catch (_) {}
+        }
+        var timeoutError = _badmintonCreateAbortError();
+        timeoutError.code = 'csrf_bootstrap_timeout';
+        reject(timeoutError);
+      }, _BADMINTON_CSRF_BOOTSTRAP_TIMEOUT_MS);
+      fetch('/api/config/page_config', fetchInit)
+        .then(function (r) { return r && r.ok ? r.json() : null; })
+        .then(function (cfg) {
+          if (requestSeq !== _badmintonCsrfSeq) {
+            return {};
+          }
+          var token = cfg && cfg.autostart_csrf_token;
+          if (typeof token === 'string' && token) {
+            _badmintonCsrfToken = token;
+            return { 'X-CSRF-Token': token };
+          }
+          return {};
+        })
+        .catch(function () { return {}; })
+        .then(function (headers) {
+          if (settled) return;
+          settled = true;
+          if (bootstrapTimer !== null) {
+            clearTimeout(bootstrapTimer);
+            bootstrapTimer = null;
+          }
+          if (_badmintonCsrfInflight === inflight) _badmintonCsrfInflight = null;
+          resolve(headers);
+        });
+    });
     _badmintonCsrfInflight = inflight;
     return _badmintonAwaitWithSignal(inflight, signal);
   }
