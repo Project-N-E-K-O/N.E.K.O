@@ -288,6 +288,10 @@ def build_console_router(
             changed = await host.permission_store.set_mode(category, mode, expected_version=expected)
         except PermissionFileError:
             raise _refuse(409, "permissions_unreadable") from None
+        except OSError as exc:
+            # The file could not be written; the setting is still what it was.
+            logger.warning("permission setting for %s could not be saved: %s", category, type(exc).__name__)
+            raise _refuse(409, "permissions_not_saved") from None
         if not changed:
             raise _refuse(409, "stale")
         return await permissions_view(host)
