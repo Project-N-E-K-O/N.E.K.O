@@ -399,7 +399,12 @@ class RoleModels:
                 config = await self._agent_config()
                 agent = True
             else:
-                config = await self.slots.tier(str(resolved.host_api))
+                try:
+                    config = await self.slots.tier(str(resolved.host_api))
+                except SlotUnavailable:
+                    raise
+                except Exception:  # noqa: BLE001 - the tier cannot be read just now
+                    raise SlotUnavailable(HOST_API_NOT_CONFIGURED) from None
                 agent = False
         else:
             config = {

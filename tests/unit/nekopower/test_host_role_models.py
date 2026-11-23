@@ -2107,3 +2107,87 @@ async def test_a_write_of_the_settings_that_fails_after_whoever_asked_gave_up_is
         await asyncio.sleep(0.02)
 
     assert "writing a preset model setting failed: OSError" in caplog.text
+
+
+class _TierUnreadableAfterResolving(Manager):
+    """The small tier reads as configured when a slot is resolved, and cannot be read when it is read again."""
+
+    def __init__(self, root: Path, tiers: dict[str, Any]) -> None:
+        super().__init__(root, tiers)
+        self.fail_second = False
+        self.reads = 0
+
+    def get_model_api_config(self, model_type: str) -> dict[str, Any]:
+        if model_type == "agent_small" and self.fail_second:
+            self.reads += 1
+            if self.reads % 2 == 0:
+                raise OSError("the configuration is being written")
+        return super().get_model_api_config(model_type)
+
+
+async def test_a_tier_that_cannot_be_read_does_not_stop_the_look_through_settled_sessions(hosts, tmp_path):
+    small = {"model": "small-model", "base_url": "http://small.test/v1", "api_key": "sk-small"}
+    manager = _TierUnreadableAfterResolving(tmp_path / "app", {"agent": dict(AGENT_TIER), "agent_small": small})
+    _write_slots(manager, _default_slots())
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+    tasks = host.task_agents
+    await host.set_role_model("general", OWN_SLOT)
+    own = await host.ledger.create_session(lanlan_name="Lan", name="own", kind="single")
+    await tasks.settle_model(own)
+    await host.set_role_model("general", SMALL_SLOT)
+    small_one = await host.ledger.create_session(lanlan_name="Lan", name="small", kind="single")
+    await tasks.settle_model(small_one)
+    await host.ledger.update_session(small_one.id, active=True)
+    await host.set_role_model("general", None)
+    manager.tiers["agent"] = {}
+    manager.fail_second = True
+
+    # The small one is looked at first and cannot be read; the own one is looked at all the same.
+    assert await tasks.available() == (True, "")
+
+
+async def test_a_commission_stopped_while_it_is_settled_for_the_queue_is_not_queued_when_its_record_cannot_be_read(
+    hosts, tmp_path, monkeypatch
+):
+    import asyncio
+
+    manager = _manager(tmp_path, _default_slots())
+    release_first, settling, release_settling = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def wait_first() -> None:
+        await release_first.wait()
+
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[wait_first, *_report()]]), manager, max_task_agents=1)
+    tasks = host.task_agents
+    first = (await _dispatch(host, "sort the photos")).commission_id
+    await wait_status(host, first, "working")
+    later, _created = await host.ledger.create(
+        lanlan_name="Lan", title="sort the music", dispatch_text="sort the music", source="dispatch", route="task_agent"
+    )
+    settle = tasks.settle_model
+
+    async def held_settling(session: Any) -> None:
+        settling.set()
+        await release_settling.wait()
+        await settle(session)
+
+    tasks.settle_model = held_settling
+    handing = asyncio.ensure_future(tasks.submit(later))
+    await asyncio.wait_for(settling.wait(), 10)
+    await tasks.abort(later.id)
+    get = host.ledger.get
+
+    async def unreadable(commission_id: str) -> Any:
+        if commission_id == later.id:
+            raise OSError("the disk is busy")
+        return await get(commission_id)
+
+    monkeypatch.setattr(host.ledger, "get", unreadable)
+    release_settling.set()
+
+    assert await asyncio.wait_for(handing, 10) is False
+    assert later.id not in tasks._queue
+    assert tasks._settling_for_queue == set() and tasks._stopped_while_settling == set()
+    monkeypatch.setattr(host.ledger, "get", get)
+    release_first.set()
+    await wait_status(host, first, "done")

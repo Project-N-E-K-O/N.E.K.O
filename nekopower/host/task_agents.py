@@ -1065,6 +1065,11 @@ class TaskAgentManager:
         # do not each write a model of their own.
         # With how many hold or wait for it: it goes once none does.
         self._settle_locks: dict[str, tuple[asyncio.Lock, int]] = {}
+        # Commissions being settled before they are queued (``submit``),
+        # which nothing that stops commissions finds anywhere else; and
+        # those of them that were stopped meanwhile (``abort``).
+        self._settling_for_queue: set[str] = set()
+        self._stopped_while_settling: set[str] = set()
         self.role_models = RoleModels(
             store=RoleModelStore(paths.role_models_json),
             slots=model_slots,
@@ -1750,8 +1755,14 @@ class TaskAgentManager:
             # Settled before it is queued (``_settle_for_the_queue``). That
             # waits: whether it is still wanted is asked again after it, and
             # a place that came free meanwhile is taken.
-            await self._settle_for_the_queue(commission.id)
-            if not await self._still_queueable(commission.id):
+            self._settling_for_queue.add(commission.id)
+            try:
+                await self._settle_for_the_queue(commission.id)
+            finally:
+                self._settling_for_queue.discard(commission.id)
+            stopped = commission.id in self._stopped_while_settling
+            self._stopped_while_settling.discard(commission.id)
+            if stopped or not await self._still_queueable(commission.id):
                 # Over meanwhile (cancelled with everything else, say), when
                 # nothing could find it to stop it: not queued.
                 self._candidates.pop(commission.id, None)
@@ -5960,6 +5971,9 @@ class TaskAgentManager:
             await self.abort(child.id)
         if commission_id in self._queue:
             self._queue.remove(commission_id)
+        if commission_id in self._settling_for_queue:
+            # On its way into the queue: it is not put there.
+            self._stopped_while_settling.add(commission_id)
         self._notes.pop(commission_id, None)
         self._carried.pop(commission_id, None)
         self._resume.pop(commission_id, None)
