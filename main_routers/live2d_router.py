@@ -1051,7 +1051,12 @@ async def update_emotion_mapping(model_name: str, request: Request):
                 if norm_file:
                     existing_by_group_file.setdefault((matched_group, norm_file), deque()).append(item)
 
-            new_expressions = []
+            used_expression_names: set[str] = {
+                item['Name']
+                for item in preserved_expressions
+                if isinstance(item, dict) and isinstance(item.get('Name'), str) and item['Name']
+            }
+            pending_expressions: list[tuple[str, str, dict | None]] = []
             for emotion, files in expressions_input.items():
                 files_iter = [files] if isinstance(files, str) else (files or [])
                 for file_path in files_iter:
@@ -1062,12 +1067,28 @@ async def update_emotion_mapping(model_name: str, request: Request):
                     if bucket:
                         reused = deepcopy(bucket.popleft())
                         reused['File'] = normalized
-                        new_expressions.append(reused)
+                        reused_name = reused.get('Name')
+                        if isinstance(reused_name, str) and reused_name:
+                            used_expression_names.add(reused_name)
+                        pending_expressions.append((emotion, normalized, reused))
                     else:
-                        base = os.path.basename(normalized)
-                        base_no_ext = base.replace('.exp3.json', '')
-                        name = f"{emotion}_{base_no_ext}"
-                        new_expressions.append({"Name": name, "File": normalized})
+                        pending_expressions.append((emotion, normalized, None))
+
+            new_expressions = []
+            for emotion, normalized, reused in pending_expressions:
+                if reused is not None:
+                    new_expressions.append(reused)
+                else:
+                    base = os.path.basename(normalized)
+                    base_no_ext = base.replace('.exp3.json', '')
+                    base_name = f"{emotion}_{base_no_ext}"
+                    candidate_name = base_name
+                    suffix = 2
+                    while candidate_name in used_expression_names:
+                        candidate_name = f"{base_name}_{suffix}"
+                        suffix += 1
+                    used_expression_names.add(candidate_name)
+                    new_expressions.append({"Name": candidate_name, "File": normalized})
 
             file_refs['Expressions'] = preserved_expressions + new_expressions
 

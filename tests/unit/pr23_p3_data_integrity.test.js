@@ -802,3 +802,103 @@ test('PR3976 U3: hanging cold-cache getMutationHeaders times out at 15s and unbl
     assert.equal(playtimePosts[0].body.seconds, 120);
     assert.equal(playtimePosts[0].headers['X-CSRF-Token'], 'warm-csrf-token');
 });
+
+test('PR3976 4661235259: character switch mid-restore aborts cleanly without writing flags or clearing original snapshot', async () => {
+    // Case A: owner switches from CatA to CatB while GET /api/agent/flags is in flight
+    let resolveFlagsGetA;
+    const storageA = createStorage();
+    const snapshotA = JSON.stringify({
+        version: 1,
+        token: 501,
+        createdAt: Date.now(),
+        lanlanName: 'CatA',
+        agentFlags: {
+            agent_enabled: true,
+            computer_use_enabled: true,
+            browser_use_enabled: false,
+            user_plugin_enabled: false,
+        },
+    });
+    storageA.setItem(HOME_TUTORIAL_KEY, snapshotA);
+
+    const rtA = loadHomeTutorialRuntime({
+        localStorage: storageA,
+        lanlanName: 'CatA',
+        fetchHandler: async (url, init) => {
+            if (url === '/api/agent/flags' && (init.method || 'GET') === 'GET') {
+                return await new Promise(resolve => { resolveFlagsGetA = resolve; });
+            }
+            return { ok: true, json: async () => ({ success: true }) };
+        },
+    });
+    await new Promise(r => setImmediate(r));
+    assert.equal(typeof resolveFlagsGetA, 'function');
+
+    rtA.win.lanlan_config.lanlan_name = 'CatB';
+    resolveFlagsGetA({
+        ok: true,
+        json: async () => ({
+            success: true,
+            analyzer_enabled: false,
+            agent_flags: { computer_use_enabled: false, browser_use_enabled: false, user_plugin_enabled: false },
+        }),
+    });
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
+
+    const postCallsA = rtA.fetchCalls.filter(c => c.method === 'POST');
+    assert.equal(postCallsA.length, 0, 'owner switch during GET must abort before any POST writes');
+    assert.equal(storageA.getItem(HOME_TUTORIAL_KEY), snapshotA, 'CatA snapshot must remain untouched in localStorage');
+
+    // Case B: owner switches from CatA to CatB while POST /api/agent/command is in flight
+    let resolveCommandPostB;
+    const storageB = createStorage();
+    const snapshotB = JSON.stringify({
+        version: 1,
+        token: 502,
+        createdAt: Date.now(),
+        lanlanName: 'CatA',
+        agentFlags: {
+            agent_enabled: true,
+            computer_use_enabled: true,
+            browser_use_enabled: false,
+            user_plugin_enabled: false,
+        },
+    });
+    storageB.setItem(HOME_TUTORIAL_KEY, snapshotB);
+
+    const rtB = loadHomeTutorialRuntime({
+        localStorage: storageB,
+        lanlanName: 'CatA',
+        fetchHandler: async (url, init) => {
+            if (url === '/api/agent/flags' && (init.method || 'GET') === 'GET') {
+                return {
+                    ok: true,
+                    json: async () => ({
+                        success: true,
+                        analyzer_enabled: false,
+                        agent_flags: { computer_use_enabled: false, browser_use_enabled: false, user_plugin_enabled: false },
+                    }),
+                };
+            }
+            if (url === '/api/agent/command' && init.method === 'POST') {
+                return await new Promise(resolve => { resolveCommandPostB = resolve; });
+            }
+            return { ok: true, json: async () => ({ success: true }) };
+        },
+    });
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
+    assert.equal(typeof resolveCommandPostB, 'function');
+
+    rtB.win.lanlan_config.lanlan_name = 'CatB';
+    resolveCommandPostB({ ok: true, json: async () => ({ success: true }) });
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
+
+    const flagsPostsB = rtB.fetchCalls.filter(c => c.url === '/api/agent/flags' && c.method === 'POST');
+    const commandPostsB = rtB.fetchCalls.filter(c => c.url === '/api/agent/command' && c.method === 'POST');
+    assert.equal(flagsPostsB.length, 0, 'owner switch during master command must abort before POST /api/agent/flags');
+    assert.equal(commandPostsB.length, 1, 'owner switch must NOT trigger re-disable POST /api/agent/command on new character');
+    assert.equal(storageB.getItem(HOME_TUTORIAL_KEY), snapshotB, 'CatA snapshot must remain untouched when aborted after command');
+});

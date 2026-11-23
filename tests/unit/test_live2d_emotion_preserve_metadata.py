@@ -342,6 +342,15 @@ def test_empty_known_group_prefix_protects_entries_from_shorter_managed_prefix(m
         {"Name": "custom_a", "File": "exp/a.exp3.json", "FadeInTime": 0.2},
     ]
 
+    res2 = asyncio.run(live2d_router.update_emotion_mapping("m", _FakeRequest(payload)))
+    assert res2["success"] is True
+
+    saved_second = json.loads(model_json.read_text(encoding="utf-8"))
+    assert saved_second["FileReferences"]["Expressions"] == [
+        {"Name": "custom_alt_keep", "File": "exp/keep.exp3.json", "FadeInTime": 0.4},
+        {"Name": "custom_a", "File": "exp/a.exp3.json", "FadeInTime": 0.2},
+    ]
+
 
 @pytest.mark.unit
 def test_newly_added_longer_prefix_does_not_hijack_existing_shorter_group_entry(model_dir: Path) -> None:
@@ -455,3 +464,58 @@ def test_unmatched_raw_entries_in_existing_group_survive_unrelated_save(model_di
         {"Name": "custom_a", "File": "exp/a.exp3.json", "FadeInTime": 0.2},
         {"Name": "happy_h", "File": "exp/h.exp3.json"},
     ]
+
+
+@pytest.mark.unit
+def test_newly_generated_expression_names_avoid_preserved_and_duplicate_collisions(model_dir: Path) -> None:
+    """Disambiguate newly generated expression names against preserved entries and duplicate basenames."""
+    model_json = model_dir / "m.model3.json"
+    _write(
+        model_json,
+        {
+            "Version": 3,
+            "EmotionMapping": {
+                "motions": {},
+                "expressions": {
+                    "custom": ["exp/a.exp3.json"],
+                },
+            },
+            "FileReferences": {
+                "Motions": {},
+                "Expressions": [
+                    {"Name": "custom_a", "File": "exp/a.exp3.json", "FadeInTime": 0.2},
+                    {"Name": "custom_smile", "File": "exp/legacy_smile.exp3.json", "FadeInTime": 0.6},
+                ],
+            },
+        },
+    )
+
+    payload = {
+        "motions": {},
+        "expressions": {
+            "custom": [
+                "exp/a.exp3.json",
+                "dir1/smile.exp3.json",
+                "dir2/smile.exp3.json",
+            ],
+        },
+    }
+    res1 = asyncio.run(live2d_router.update_emotion_mapping("m", _FakeRequest(payload)))
+    assert res1["success"] is True
+
+    expected = [
+        {"Name": "custom_smile", "File": "exp/legacy_smile.exp3.json", "FadeInTime": 0.6},
+        {"Name": "custom_a", "File": "exp/a.exp3.json", "FadeInTime": 0.2},
+        {"Name": "custom_smile_2", "File": "dir1/smile.exp3.json"},
+        {"Name": "custom_smile_3", "File": "dir2/smile.exp3.json"},
+    ]
+    saved1 = json.loads(model_json.read_text(encoding="utf-8"))
+    assert saved1["FileReferences"]["Expressions"] == expected
+    names1 = [entry["Name"] for entry in saved1["FileReferences"]["Expressions"]]
+    assert len(names1) == len(set(names1)) == 4
+
+    res2 = asyncio.run(live2d_router.update_emotion_mapping("m", _FakeRequest(payload)))
+    assert res2["success"] is True
+
+    saved2 = json.loads(model_json.read_text(encoding="utf-8"))
+    assert saved2["FileReferences"]["Expressions"] == expected

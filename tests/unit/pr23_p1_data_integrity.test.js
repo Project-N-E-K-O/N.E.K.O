@@ -1904,3 +1904,59 @@ test('PR3976 #13 follow-up: unresolved saved idle motion with empty motion_files
     assert.equal(l2dCalls.length, 1, 'explicit user clear under empty motion_files must send PUT /l2d');
     assert.deepEqual(l2dCalls[0], { live2d_idle_animation: '' });
 });
+
+test('PR3976 4661235250: personality clear isolates afterSave sync failure from clear failure alert', async () => {
+    const fetchImpl = async (url, init = {}) => {
+        const u = String(url);
+        if (u === '/api/characters/character/NekoA/persona-selection' && init.method === 'DELETE') {
+            return {
+                ok: true,
+                status: 200,
+                json: async () => ({ success: true, selection: { mode: 'default', preset_id: '', profile: {} } }),
+            };
+        }
+        if (u === '/api/characters/voices') {
+            return { ok: true, status: 200, json: async () => ({ voices: {}, free_voices: {}, native_voices: {} }) };
+        }
+        if (u === '/api/characters/custom_tts_voices?provider=gptsovits') {
+            return { ok: true, status: 200, json: async () => ({ success: true, voices: [] }) };
+        }
+        if (u === '/api/characters/character/NekoA/language-preference') {
+            return { ok: true, status: 200, json: async () => ({ success: true, language: 'auto' }) };
+        }
+        throw new Error('Unexpected fetch URL: ' + u);
+    };
+
+    const alerts = [];
+    const { ctx, win, doc, messages } = loadCardFormContext(fetchImpl);
+    ctx.showAlert = async (msg) => { alerts.push(msg); };
+    win.nekoCharacterProfileSync.afterSave = async () => {
+        throw new Error('sync_failed');
+    };
+
+    const overlay = doc.createElement('div');
+    overlay.className = 'catgirl-panel-overlay active';
+    const container = doc.createElement('div');
+    overlay.appendChild(container);
+    doc.body.appendChild(overlay);
+
+    ctx.buildCatgirlDetailForm('NekoA', {
+        '档案名': 'NekoA',
+        _reserved: { persona_override: { preset_id: 'initial_preset' } },
+    }, false, container);
+    const form = container.querySelector('form');
+    await form._voicesLoadPromise;
+    const clearBtn = form.querySelector('[data-testid="character-personality-clear"]');
+
+    clearBtn.click();
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
+    assert.equal(alerts.length, 0, 'post-commit afterSave failure must NOT trigger personalityClearFailed alert');
+    assert.equal(clearBtn.disabled, true, 'clear button must remain disabled after DELETE succeeded');
+    assert.equal(messages.some(m => m.type === 'success'), true, 'clear success toast must still appear');
+    assert.equal(
+        messages.some(m => m.type === 'warning' && String(m.msg).includes('人设同步未完成')),
+        true,
+        'sync failure after clear must show profile sync warning message'
+    );
+});

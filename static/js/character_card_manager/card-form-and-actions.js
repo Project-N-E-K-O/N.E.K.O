@@ -889,7 +889,17 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
                 void form._characterPersonalityUpdateHandler({ detail: { characterName: name } });
             }
             // Clearing a preset is a separate persisted persona change.
-            if (window.nekoCharacterProfileSync) await window.nekoCharacterProfileSync.afterSave(name);
+            if (window.nekoCharacterProfileSync) {
+                try {
+                    await window.nekoCharacterProfileSync.afterSave(name);
+                } catch (syncError) {
+                    console.warn('同步人格设定变更失败:', syncError);
+                    showMessage(
+                        window.t ? window.t('chatSync.profileSaveFailed') : '人设同步未完成，本机保存与两份版本均保留。',
+                        'warning'
+                    );
+                }
+            }
         } catch (e) {
             console.error('清除人格设定失败:', e);
             if (typeof showAlert === 'function') {

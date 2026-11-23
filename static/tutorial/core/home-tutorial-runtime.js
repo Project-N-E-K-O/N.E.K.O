@@ -307,9 +307,19 @@
         return flags;
     }
 
-    function canRestoreAgentSnapshot(restoreToken) {
+    function matchesSnapshotOwner(expectedOwner) {
+        const normalizedOwner = typeof expectedOwner === 'string' ? expectedOwner.trim() : '';
+        if (!normalizedOwner) {
+            return true;
+        }
+        const currentOwner = getCurrentLanlanName();
+        return !!currentOwner && currentOwner === normalizedOwner;
+    }
+
+    function canRestoreAgentSnapshot(restoreToken, expectedOwner) {
         return !state.featureSuppression.active
-            && state.featureSuppression.token === restoreToken;
+            && state.featureSuppression.token === restoreToken
+            && matchesSnapshotOwner(expectedOwner);
     }
 
     function isFeatureSuppressionTokenActive(token) {
@@ -317,11 +327,11 @@
             && state.featureSuppression.token === token;
     }
 
-    async function restoreAgentSnapshot(flags, restoreToken, attemptState) {
+    async function restoreAgentSnapshot(flags, restoreToken, attemptState, expectedOwner) {
         if (!flags) {
             return false;
         }
-        if (restoreToken !== undefined && !canRestoreAgentSnapshot(restoreToken)) {
+        if (restoreToken !== undefined && !canRestoreAgentSnapshot(restoreToken, expectedOwner)) {
             return false;
         }
         if (Object.prototype.hasOwnProperty.call(flags, 'agent_enabled')) {
@@ -335,7 +345,7 @@
                 attemptState.masterApplied = true;
             }
         }
-        if (restoreToken !== undefined && !canRestoreAgentSnapshot(restoreToken)) {
+        if (restoreToken !== undefined && !canRestoreAgentSnapshot(restoreToken, expectedOwner)) {
             if (state.featureSuppression.active && flags.agent_enabled) {
                 try {
                     await postAgentCommand('set_agent_enabled', { enabled: false });
@@ -349,7 +359,7 @@
         if (Object.keys(childFlags).length > 0) {
             await postAgentFlags(childFlags);
         }
-        if (restoreToken !== undefined && !canRestoreAgentSnapshot(restoreToken)) {
+        if (restoreToken !== undefined && !canRestoreAgentSnapshot(restoreToken, expectedOwner)) {
             if (state.featureSuppression.active && Object.keys(childFlags).length > 0) {
                 try {
                     await postAgentFlags(buildDisabledAgentChildFlags());
@@ -592,6 +602,7 @@
             return false;
         }
         const persisted = inspected.payload;
+        const expectedOwner = typeof persisted.lanlanName === 'string' ? persisted.lanlanName.trim() : '';
         if (!hasAnyEnabledAgentFlag(persisted.agentFlags)) {
             clearPersistedAgentRestoreSnapshot(persisted.token);
             return true;
@@ -621,7 +632,15 @@
                     throw new Error('agent_restore_owner_pending');
                 }
                 const currentFlags = await fetchAgentFlagSnapshot();
-                if (!canRestoreAgentSnapshot(restoreToken)) {
+                if (!canRestoreAgentSnapshot(restoreToken, expectedOwner)) {
+                    return false;
+                }
+                const postFetchInspected = inspectPersistedAgentRestoreSnapshot();
+                if (
+                    postFetchInspected.status !== 'valid'
+                    || !postFetchInspected.payload
+                    || postFetchInspected.payload.token !== persisted.token
+                ) {
                     return false;
                 }
                 const expectsMasterOn = persisted.agentFlags.agent_enabled === true;
@@ -656,9 +675,10 @@
                 const restored = await restoreAgentSnapshot(
                     persisted.agentFlags,
                     restoreToken,
-                    attemptState
+                    attemptState,
+                    expectedOwner
                 );
-                if (restored && canRestoreAgentSnapshot(restoreToken)) {
+                if (restored && canRestoreAgentSnapshot(restoreToken, expectedOwner)) {
                     clearPersistedAgentRestoreSnapshot(persisted.token);
                     syncAgentFlagsUi();
                     return true;
@@ -666,6 +686,9 @@
                 return false;
             } catch (error) {
                 if (!canRestoreAgentSnapshot(restoreToken)) {
+                    return false;
+                }
+                if (inspectPersistedAgentRestoreSnapshot().status === 'owner_mismatch') {
                     return false;
                 }
                 if (retryIndex < HOME_TUTORIAL_AGENT_RESTORE_RETRY_DELAYS_MS.length) {

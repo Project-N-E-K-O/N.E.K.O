@@ -1161,7 +1161,10 @@ test('PR3976 U8 + T12 + T13: rapid MMD model switch A -> B isolates session clea
     const lightingSnippet = controllerCode.slice(lightingStart, lightingEnd);
 
     let resolveCharsA;
+    let resolveVrmIdleOptions;
+    let waitForIdleOptions = false;
     let mmdGen = 1;
+    let idleStoppedCount = 0;
     const mmdSelectedHistory = [];
     const idleStarted = [];
     const lightingCtx = vm.createContext({
@@ -1175,11 +1178,15 @@ test('PR3976 U8 + T12 + T13: rapid MMD model switch A -> B isolates session clea
             },
         },
         applyLightingValues() {},
-        loadIdleAnimationOptions: async () => {},
+        loadIdleAnimationOptions: async () => {
+            if (waitForIdleOptions) {
+                return await new Promise(resolve => { resolveVrmIdleOptions = resolve; });
+            }
+        },
         loadMmdIdleAnimationOptions: async () => {},
         setSelectedIdleAnimations(id, list) { mmdSelectedHistory.push({ id, list }); },
         startIdleRotation(type, list) { idleStarted.push({ type, list }); },
-        stopIdleRotation() {},
+        stopIdleRotation() { idleStoppedCount += 1; },
         normalizeBundledVrmAnimationUrl: (u) => u,
         document: { getElementById: () => null },
         console,
@@ -1208,4 +1215,30 @@ test('PR3976 U8 + T12 + T13: rapid MMD model switch A -> B isolates session clea
     await staleLightingPromise;
     assert.equal(mmdSelectedHistory.length, 0, 'superseded loadCharacterLighting must NOT overwrite MMD idle checkboxes');
     assert.equal(idleStarted.length, 0, 'superseded loadCharacterLighting must NOT start stale MMD idle rotation');
+
+    // CodeRabbit 4661235254: superseded during await loadIdleAnimationOptions() must NOT restore VRM idle selections or rotation
+    waitForIdleOptions = true;
+    resolveCharsA = null;
+    const callGen2 = mmdGen;
+    const staleVrmIdlePromise = lightingCtx.loadCharacterLighting({
+        isMmdSuperseded: () => mmdGen !== callGen2,
+    });
+    await new Promise(r => setImmediate(r));
+    assert.equal(typeof resolveCharsA, 'function');
+    resolveCharsA({
+        '猫娘': {
+            CatA: {
+                model_type: 'vrm',
+                idle_animation: ['/vrm/old_idle.vrma'],
+            },
+        },
+    });
+    await new Promise(r => setImmediate(r));
+    assert.equal(typeof resolveVrmIdleOptions, 'function');
+    mmdGen += 1;
+    resolveVrmIdleOptions();
+    await staleVrmIdlePromise;
+    assert.equal(mmdSelectedHistory.length, 0, 'superseded loadCharacterLighting must NOT overwrite VRM idle checkboxes after loadIdleAnimationOptions');
+    assert.equal(idleStarted.length, 0, 'superseded loadCharacterLighting must NOT start VRM idle rotation after loadIdleAnimationOptions');
+    assert.equal(idleStoppedCount, 0, 'superseded loadCharacterLighting must NOT stop VRM idle rotation after loadIdleAnimationOptions');
 });

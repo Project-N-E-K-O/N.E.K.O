@@ -6940,6 +6940,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 再兼容历史的 `idleAnimations` / `idleAnimation`。与 restoreVrmIdleAnimation 保持一致，
             // 否则我的 loadModel bootstrap (wait03) 会在此后无法被用户保存的 idle 列表覆盖。
             await loadIdleAnimationOptions();
+            if (isMmdSuperseded && isMmdSuperseded()) return;
             let vrmIdleAnims = charData?.idle_animation ?? charData?.idleAnimations ?? charData?.idleAnimation;
             if (vrmIdleAnims != null) {
                 // 向前兼容: string -> array
