@@ -2271,6 +2271,94 @@ async function main() {
     abortWaitHost.dispose();
   }
 
+  // F0433: enableLoggerAfterRouteStart must POST /api/game/logs/enable even when a
+  // cached CSRF token is already present, respect { ok: false }, and inspect /api/game/logs
+  // rejections without entering an infinite log_queue_overflow loop.
+  {
+    const logEnableCalls = [];
+    const logPostCalls = [];
+    let enableResponseOk = true;
+    let logPostResponse = { ok: false, seq: null };
+    let logPostHttpStatus = 200;
+    const f0433Window = {
+      ...windowMock,
+      nekoLocalMutationSecurity: {
+        peekCachedToken: () => 'cached-token-f0433',
+        getMutationHeaders: async () => ({ 'X-CSRF-Token': 'cached-token-f0433' }),
+      },
+    };
+    const f0433Fetch = async (url, init = {}) => {
+      const pathName = String(url);
+      if (pathName === '/api/game/logs/enable') {
+        logEnableCalls.push(JSON.parse(init.body));
+        return jsonResponse({ ok: enableResponseOk, enabled: enableResponseOk });
+      }
+      if (pathName === '/api/game/logs') {
+        logPostCalls.push(JSON.parse(init.body));
+        return jsonResponse(logPostResponse, logPostHttpStatus);
+      }
+      return fetchImpl(url, init);
+    };
+    const f0433Host = createHost({
+      gameType: 'example-game',
+      sessionId: 'f0433-session',
+      fetchImpl: f0433Fetch,
+      windowImpl: f0433Window,
+      navigatorImpl: windowMock.navigator,
+    });
+    f0433Host.connectGame({
+      protocolVersions: ['1'],
+      manifest: {
+        id: 'example-game',
+        version: '1.0.0',
+        requiredCapabilities: ['runtime', 'logging'],
+        optionalCapabilities: [],
+      },
+    });
+
+    // 1) When /api/game/logs/enable returns { ok: false }, logger.enabled remains false
+    enableResponseOk = false;
+    const deniedResult = await f0433Host.enableLoggerAfterRouteStart();
+    assert(logEnableCalls.length === 1,
+      'enableLoggerAfterRouteStart did not POST /api/game/logs/enable with cached CSRF token');
+    assert(deniedResult?.ok === false && f0433Host._logger.enabled === false,
+      'enableLoggerAfterRouteStart flipped enabled=true when /api/game/logs/enable returned ok:false');
+
+    // 2) When /api/game/logs/enable returns { ok: true }, logger.enabled becomes true
+    enableResponseOk = true;
+    const okResult = await f0433Host.enableLoggerAfterRouteStart();
+    assert(logEnableCalls.length === 2,
+      'second enableLoggerAfterRouteStart did not retry /api/game/logs/enable');
+    assert(okResult?.ok === true && okResult.enableReason === 'route_start_send_gate'
+      && f0433Host._logger.enabled === true,
+    'enableLoggerAfterRouteStart did not enable logger after /api/game/logs/enable succeeded');
+
+    // 3) _startLogFetch resolves { ok: false } when /api/game/logs rejects with { ok: false }
+    // or non-2xx HTTP status, without triggering an infinite log_queue_overflow loop.
+    const rejectedLogResult = await f0433Host.postLog({
+      event: 'probe_rejected',
+      message: 'probe',
+      details: {},
+    });
+    assert(rejectedLogResult?.ok === false,
+      'postLog did not surface backend { ok: false } rejection');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert(logPostCalls.length === 1
+      && !logPostCalls.some((entry) => entry.event === 'log_queue_overflow'),
+    `rejected /api/game/logs triggered overflow loop: ${JSON.stringify(logPostCalls)}`);
+
+    logPostHttpStatus = 500;
+    logPostResponse = { error: 'boom' };
+    const httpErrorLogResult = await f0433Host.postLog({
+      event: 'probe_http_500',
+      message: 'probe 500',
+      details: {},
+    });
+    assert(httpErrorLogResult?.ok === false && httpErrorLogResult.status === 500,
+      'postLog did not surface non-2xx HTTP failure');
+    f0433Host.dispose();
+  }
+
   process.stdout.write('mini-game same-origin host runtime test passed\n');
 }
 

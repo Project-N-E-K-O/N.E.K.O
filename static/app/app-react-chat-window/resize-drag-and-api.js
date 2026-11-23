@@ -965,6 +965,8 @@
         removeMessage: I.removeMessage,
         clearGuideMessages: I.clearGuideMessages,
         clearMessages: I.clearMessages,
+        captureSwitchSnapshot: I.captureSwitchSnapshot,
+        restoreSwitchSnapshot: I.restoreSwitchSnapshot,
         getState: I.getStateSnapshot,
         setOnMessageAction: function (handler) {
             I.state.onMessageAction = typeof handler === 'function' ? handler : null;

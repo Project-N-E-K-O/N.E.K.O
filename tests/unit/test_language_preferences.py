@@ -1843,7 +1843,7 @@ def test_character_form_retranslates_locale_dependent_content():
     assert "window.removeEventListener('localechange', previousForm._localeChangeHandler)" in source
     assert "window.addEventListener('localechange', form._localeChangeHandler)" in source
     assert "form._voiceLocaleRefreshSequence !== refreshSequence" in source
-    assert "form._voicesLoadPromise = refreshVoiceCatalog(voiceSelect.value);" in source
+    assert "form._voicesLoadPromise = refreshVoiceCatalog(pendingVoiceId);" in source
     assert "data-i18n=\"character.personalitySelect\"" in source
     assert "data-i18n=\"character.personalityClear\"" in source
     assert "defaultOption.dataset.i18n = 'character.voiceNotSet'" in source

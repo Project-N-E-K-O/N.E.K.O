@@ -63,6 +63,9 @@ _EVIDENCE_SNAPSHOT_KEYS = (
 # preserves the backoff window / dead-letter logic.
 _REFLECTION_EVIDENCE_SNAPSHOT_KEYS = _EVIDENCE_SNAPSHOT_KEYS + (
     'last_promote_attempt_at', 'promote_attempt_count',
+    # Non-model cause of the latest failed attempt; becomes the dead-letter
+    # reason when retries run out.
+    'last_promote_failure',
     # Explicit user confirmations: lets a reflection resting only on the AI's
     # own words through the promotion gate (memory.evidence.awaits_user_signal),
     # so it must survive a crash between event append and view save.

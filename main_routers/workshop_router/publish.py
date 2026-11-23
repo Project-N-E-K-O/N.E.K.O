@@ -902,7 +902,9 @@ def _preflight_and_publish(
     with claim_content_folder(content_folder, purpose=PUBLISH_PURPOSE):
         try:
             voice_ref = resolve_voice_reference_serialized(content_folder)
-        except (ValueError, FileNotFoundError) as e:
+        # PermissionError: reference_audio resolves outside content_folder
+        # (escape or another drive); the pair is invalid just like a bad manifest.
+        except (ValueError, FileNotFoundError, PermissionError) as e:
             raise _VoicePreflightError(str(e)) from e
         if voice_ref:
             logger.info(
