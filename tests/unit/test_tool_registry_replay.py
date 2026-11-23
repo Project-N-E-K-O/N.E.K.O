@@ -574,3 +574,52 @@ async def test_concurrent_foreign_registration_cannot_replace_reserved_owner(mon
     fresh = _rebuilt("Beta")
     tr.replay_remote_tools(fresh, "Beta")
     assert fresh.tool_registry.get("owned").metadata["source"] == "plugin:a"
+
+
+@pytest.mark.asyncio
+async def test_replayed_tool_keeps_its_registration_id(monkeypatch):
+    """A rebuilt manager gets the tool back with the same registration_id,
+    so an unregister targeting that registration still matches it."""
+    _use_managers(monkeypatch, _Mgr("Alpha"))
+    result = await tr.register_tool(tr.ToolRegisterRequest(
+        name="minecraft_task", description="", callback_url="http://127.0.0.1:9001/cb",
+        source="plugin:mc", registration_id="reg-1",
+    ))
+    assert result["registration_id"] == "reg-1"
+
+    fresh = _rebuilt("Alpha")
+    assert tr.replay_remote_tools(fresh, "Alpha") == ["minecraft_task"]
+    assert fresh.tool_registry.get("minecraft_task").metadata["registration_id"] == "reg-1"
+
+    # The rebuilt manager is now the live one.
+    _use_managers(monkeypatch, fresh)
+    removed = await tr.unregister_tool(tr.ToolUnregisterRequest(
+        name="minecraft_task", expected_source="plugin:mc", expected_registration_id="reg-1",
+    ))
+    assert removed["removed"] is True and removed["refused_roles"] == []
+    assert fresh.tool_registry.get("minecraft_task") is None
+    assert tr.replay_remote_tools(_rebuilt("Alpha"), "Alpha") == []
+
+
+@pytest.mark.asyncio
+async def test_replay_after_a_newer_registration_keeps_refusing_the_old_id(monkeypatch):
+    _use_managers(monkeypatch, _Mgr("Alpha"))
+    for rid in ("reg-1", "reg-2"):
+        await tr.register_tool(tr.ToolRegisterRequest(
+            name="minecraft_task", description="", callback_url="http://127.0.0.1:9001/cb",
+            source="plugin:mc", registration_id=rid,
+        ))
+    fresh = _rebuilt("Alpha")
+    tr.replay_remote_tools(fresh, "Alpha")
+    assert fresh.tool_registry.get("minecraft_task").metadata["registration_id"] == "reg-2"
+    _use_managers(monkeypatch, fresh)
+
+    late = await tr.unregister_tool(tr.ToolUnregisterRequest(
+        name="minecraft_task", expected_source="plugin:mc", expected_registration_id="reg-1",
+    ))
+    assert late["removed"] is False
+    assert late["refused_roles"] == [
+        {"role": "Alpha", "owned_by": "plugin:mc", "reason": "different registration", "registration_id": "reg-2"},
+    ]
+    assert fresh.tool_registry.get("minecraft_task").metadata["registration_id"] == "reg-2"
+    assert tr.replay_remote_tools(_rebuilt("Alpha"), "Alpha") == ["minecraft_task"]

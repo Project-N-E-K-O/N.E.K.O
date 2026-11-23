@@ -230,7 +230,7 @@ async def test_a_switch_that_was_not_taken_is_told_as_such(app, agent, answer, c
     "path",
     [
         "/console/..%2Fagent%2Fcommand",
-        "/console/..%2Fnekoclaw%2Fdispatch",
+        "/console/..%2Fnekopower%2Fdispatch",
         "/console/space/..%2F..%2Fagent%2Fflags",
         "/console/space/%2E%2E/%2E%2E/agent/flags",
         "/console/.%2Fruntime",

@@ -834,7 +834,7 @@ class MemoryRecallReranker:
         # Non-native providers and native fallback rerank on the `emotion` (small) tier:
         # recall sits on the user's reply path with an 8 s budget, so latency beats depth
         # here; the rerank only orders candidates that coarse ranking already found.
-        api_config = await config_manager.aget_model_api_config('emotion')
+        api_config = await config_manager.aget_model_api_config('recognition')
         # timeout=8: recall runs in query_memory, whose upstream plugin/core/context.py
         # defaults to 5 s. Local 8 s allows connection/one failure; timeout raises
         # APITimeoutError, with outer handlers already falling back to coarse ranks.

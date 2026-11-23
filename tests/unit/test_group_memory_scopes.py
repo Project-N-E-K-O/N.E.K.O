@@ -827,7 +827,10 @@ async def test_scoped_synthesis_runs_when_legacy_synthesis_raises():
         if sleeps["n"] >= 2:
             raise asyncio.CancelledError()
 
-    with patch.object(refine_loops, "runtime", runtime, create=True),          patch.object(refine_loops.asyncio, "sleep", _sleep):
+    # The periodic-write gate re-reads the roster through review.runtime.
+    with patch.object(refine_loops, "runtime", runtime, create=True), \
+         patch.object(refine_loops.review, "runtime", runtime), \
+         patch.object(refine_loops.asyncio, "sleep", _sleep):
         with pytest.raises(asyncio.CancelledError):
             await refine_loops._periodic_reflection_synthesis_loop()
     scoped.assert_awaited_once()

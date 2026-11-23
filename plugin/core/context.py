@@ -295,6 +295,7 @@ class PluginContext:
     _effective_config: Optional[Dict[str, Any]] = None
     _effective_config_uncertain: bool = False
     _current_lanlan: Optional[str] = None
+    _permissions: Optional[Any] = field(default=None, init=False, repr=False)
 
     @property
     def bus(self) -> "BusHubProtocol":
@@ -319,6 +320,18 @@ class PluginContext:
             images = PluginImages(self)
             self._images = images
         return images
+
+    @property
+    def permissions(self) -> Any:
+        """This plugin's permission states as the host last sent them (``get`` / ``on_change``)."""
+        with self._runtime_lock:
+            permissions = self._permissions
+            if permissions is None:
+                from plugin.sdk.shared.permissions.runtime import PluginPermissions
+
+                permissions = PluginPermissions(self.logger)
+                self._permissions = permissions
+            return permissions
 
     @property
     def models(self) -> Any:

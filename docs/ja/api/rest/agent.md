@@ -118,7 +118,7 @@ revision、flags、capabilities、notification 状態、進行中のタスク（
 
 | 設定 | 意味 |
 |---|---|
-| `mode` | `own_profile`（既定）: ユーザーのブラウザーを、データルート配下の専用プロファイルディレクトリ（`nekoclaw/browser_profile`）で起動する。使うサイトには、そこで一度ログインすればよい。`attach`: ユーザーが今使っているブラウザーを操作する。Chrome 144 以降が必要で、ユーザー自身が `chrome://inspect/#remote-debugging` でリモートデバッグをオンにし、接続のたびにブラウザー側で許可する |
+| `mode` | `own_profile`（既定）: ユーザーのブラウザーを、データルート配下の専用プロファイルディレクトリ（`nekopower/browser_profile`）で起動する。使うサイトには、そこで一度ログインすればよい。`attach`: ユーザーが今使っているブラウザーを操作する。Chrome 144 以降が必要で、ユーザー自身が `chrome://inspect/#remote-debugging` でリモートデバッグをオンにし、接続のたびにブラウザー側で許可する |
 | `executable` | 自動で見つけたものの代わりに使うブラウザーのパス。`null` なら自動で探す |
 | `headless` | ウィンドウを出さずにブラウザーを起動する。`own_profile` のときだけ有効 |
 
@@ -132,4 +132,4 @@ revision、flags、capabilities、notification 状態、進行中のタスク（
 |---|---|---|
 | `GET` | `/api/agent/user_plugin/dashboard` | ローカルプラグイン dashboard へリダイレクト。検証済みの `v` とループバック `yui_opener_origin` を受理 |
 
-Dashboard はブラウザーヘルパーであり、タスク API ではありません。ブラウザーからタスクを送るルートはありません。タスクはメインの対話モデルが `dispatch_task` ツールで任せ、メインサーバーが Agent Server の内部ルート `/nekoclaw/dispatch` へ転送します。[Agent Server API](/ja/api/agent-server) を参照してください。
+Dashboard はブラウザーヘルパーであり、タスク API ではありません。ブラウザーからタスクを送るルートはありません。タスクはメインの対話モデルが `dispatch_task` ツールで任せ、メインサーバーが Agent Server の内部ルート `/nekopower/dispatch` へ転送します。[Agent Server API](/ja/api/agent-server) を参照してください。

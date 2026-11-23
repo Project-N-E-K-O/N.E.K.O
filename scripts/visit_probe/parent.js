@@ -5,8 +5,8 @@
  */
 (function () {
   'use strict';
-  if (window.__visitProbe && window.__visitProbe.version === 17) return;
-  const P = (window.__visitProbe = { version: 17 });
+  if (window.__visitProbe && window.__visitProbe.version === 18) return;
+  const P = (window.__visitProbe = { version: 18 });
   const BASE = '/static/_visit_probe/transport.html';
 
   P.env = function () {
@@ -148,16 +148,24 @@
     const r = app.renderer;
     const sink = P.frames[frameName].contentWindow.__nekoVisitFrameSink;
     const stat = (P.stat = { postrender: 0, guardedRT: 0, guardedStage: 0, captures: 0, asyncCaptures: 0, renderFpsLast: 0, accMax: 0, startedAt: performance.now(), captureTimes: [] });
-    const times = [];
+    const pacing = window.nekoFramePacing;
+    const timerFps = (lm._idleTickMode && lm._idleTickFps > 0) ? lm._idleTickFps : null;
+    const pacingHz = pacing && (
+      (typeof pacing.currentTimerTickFps === 'function' && pacing.currentTimerTickFps()) ||
+      (typeof pacing.activeTimerTickFps === 'function' && pacing.activeTimerTickFps()) ||
+      (typeof pacing.getDisplayRefreshHz === 'function' && pacing.getDisplayRefreshHz())
+    );
+    const initialHz = timerFps > 0 ? timerFps : (pacingHz > 0 ? pacingHz : 60);
     let acc = 0;
+    let last = null;
     const fn = function () {
       if (r.renderTexture && r.renderTexture.current) { stat.guardedRT++; return; }
       if (r.lastObjectRendered !== app.stage) { stat.guardedStage++; return; }
       const now = performance.now();
       stat.postrender++;
-      times.push(now);
-      while (times.length && times[0] < now - 1000) times.shift();
-      const renderFps = Math.max(1, times.length);
+      const renderFps = (last === null || !(now > last)) ? initialHz : (1000 / (now - last));
+      last = now;
+      if (!(renderFps > 0) || !Number.isFinite(renderFps)) return;
       stat.renderFpsLast = renderFps;
       acc += 30 / renderFps;
       if (acc >= 1) {

@@ -66,6 +66,7 @@ from plugin.server.application.plugins.source_switch import (
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.application.plugins.permission_service import (
     bind_current_permission_source,
+    bind_entry_permission_source,
     forget_installed_plugins,
 )
 from plugin.server.application.plugin_cli.source_resolver import (
@@ -592,11 +593,25 @@ class PluginCliService:
         # Before anything changes, on the paths that record a new source (a
         # requested install source, a manual takeover): a grant record without
         # a source yet is bound to the plugin's current source, so the new
-        # package's source is a source change rather than a first binding. A
-        # failed save stops the replacement here, unchanged. A replacement
-        # that records no source keeps the current one, so it needs no binding.
+        # package's source is a source change rather than a first binding. The
+        # source comes from the target directory's lock entry, loaded above,
+        # rather than from another registry lookup; only without an entry is
+        # it looked up. A failed save stops the replacement here, unchanged. A
+        # replacement that records no source keeps the current one, so it
+        # needs no binding.
         if install_source is not None or plan.reason == "manual_takeover":
-            await asyncio.to_thread(bind_current_permission_source, plan.plugin_id)
+            current_entry = await asyncio.to_thread(
+                _lock_entry_for_plugin,
+                install_source_manager,
+                target_dir,
+                plan.plugin_id,
+            )
+            if current_entry is not None:
+                await asyncio.to_thread(
+                    bind_entry_permission_source, plan.plugin_id, current_entry
+                )
+            else:
+                await asyncio.to_thread(bind_current_permission_source, plan.plugin_id)
 
         # If the target directory contains only config/data/cache and no plugin.toml, install_plan
         # chooses reinstall — but by definition that replacement path does not register pending approval. Yet no plugin code was previously installed there:
@@ -2763,6 +2778,28 @@ class PluginCliService:
             status_code=status_code,
             details={"action": action, "error_type": type(exc).__name__},
         )
+
+
+def _lock_entry_for_plugin(
+    manager: InstallSourceManager | None, target_dir: Path, plugin_id: str
+) -> LockEntry | None:
+    """The install-source lock entry of ``target_dir`` when it belongs to
+    ``plugin_id``; ``None`` when there is none, it cannot be read, or the
+    lock is degraded (not trusted, as in ``current_source``). An entry with
+    an empty plugin id only means the metadata was unreadable when it was
+    written."""
+    if manager is None or getattr(manager, "is_degraded", False):
+        return None
+    finder = getattr(manager, "entry_for_directory", None)
+    if not callable(finder):
+        return None
+    try:
+        entry = finder(target_dir)
+    except (InstallSourceError, ValueError):
+        return None
+    if entry is None or getattr(entry, "plugin_id", None) not in ("", plugin_id):
+        return None
+    return entry
 
 
 def _plugin_directory_exists(plugins_root: Path, plugin_id: str) -> bool:

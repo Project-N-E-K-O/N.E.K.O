@@ -16,18 +16,38 @@
       displayName: 'Soccer',
       ...options,
     });
+    const PASSIVE_GUARD_MAX_REQUEST_BYTES = 256 * 1024;
+    const PASSIVE_GUARD_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+    const clampPositiveLimit = (value, fallback, maximum) => {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric) || numeric <= 0) return fallback;
+      return Math.max(1, Math.min(Math.floor(numeric), maximum));
+    };
     Object.defineProperty(host, 'evaluatePassiveGuard', {
       configurable: false,
       enumerable: false,
       writable: false,
-      value(payload = {}, requestOptions = {}) {
+      async value(payload = {}, requestOptions = {}) {
+        const opts = requestOptions && typeof requestOptions === 'object' ? requestOptions : {};
+        const maxRequestBytes = clampPositiveLimit(
+          opts.maxRequestBytes,
+          PASSIVE_GUARD_MAX_REQUEST_BYTES,
+          PASSIVE_GUARD_MAX_REQUEST_BYTES,
+        );
+        const maxResponseBytes = clampPositiveLimit(
+          opts.maxResponseBytes,
+          PASSIVE_GUARD_MAX_RESPONSE_BYTES,
+          PASSIVE_GUARD_MAX_RESPONSE_BYTES,
+        );
         return host._postWithCsrf(
           host._gameEndpoint('passive-guard'),
-          host._trustedRuntimePayload(payload),
+          host._trustedRuntimePayload(payload, { maxContentBytes: maxRequestBytes }),
           {
-            operation: 'soccer_passive_guard',
             timeoutMs: 9000,
-            ...requestOptions,
+            ...opts,
+            operation: 'soccer_passive_guard',
+            maxRequestBytes,
+            maxResponseBytes,
           },
         );
       },

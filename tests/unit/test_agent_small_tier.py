@@ -30,10 +30,10 @@ def _write_core_config(cm, data: dict):
 BASE = {'coreApiKey': 'sk-core', 'coreApi': 'qwen', 'assistApi': 'qwen', 'assistApiKeyQwen': 'sk-qwen-test'}
 
 EMOTION_CUSTOM = {
-    'emotionModelProvider': 'custom',
-    'emotionModelUrl': 'https://emotion.custom.test/v1',
-    'emotionModelId': 'emotion-custom-model',
-    'emotionModelApiKey': 'sk-emotion-custom',
+    'recognitionModelProvider': 'custom',
+    'recognitionModelUrl': 'https://emotion.custom.test/v1',
+    'recognitionModelId': 'emotion-custom-model',
+    'recognitionModelApiKey': 'sk-emotion-custom',
 }
 
 AGENT_CUSTOM = {
@@ -60,11 +60,11 @@ def test_without_custom_api_it_is_the_recognition_model(config_manager):
     # exactly like the other per-feature slots.
     _write_core_config(config_manager, {**BASE, **SMALL_CUSTOM, 'agentSmallModelProvider': 'follow_agent'})
     small = config_manager.get_model_api_config('agent_small')
-    assert _endpoint(small) == _endpoint(config_manager.get_model_api_config('emotion'))
+    assert _endpoint(small) == _endpoint(config_manager.get_model_api_config('recognition'))
     assert small['model']
 
 
-@pytest.mark.parametrize('provider', [None, 'follow_emotion'])
+@pytest.mark.parametrize('provider', [None, 'follow_recognition'])
 def test_recognition_model_is_the_default_and_is_mirrored_when_custom(config_manager, provider):
     data = {**BASE, 'enableCustomApi': True, **EMOTION_CUSTOM, **AGENT_CUSTOM}
     if provider:
@@ -84,7 +84,7 @@ def test_follow_agent_makes_it_the_familiar_model(config_manager):
     )
 
 
-@pytest.mark.parametrize('provider', ['follow_emotion', 'follow_agent'])
+@pytest.mark.parametrize('provider', ['follow_recognition', 'follow_agent'])
 def test_following_ignores_stale_values_left_in_the_small_familiar_fields(config_manager, provider):
     # Fields typed before switching to a follow option stay on disk; following must win over them.
     _write_core_config(config_manager, {
@@ -93,7 +93,7 @@ def test_following_ignores_stale_values_left_in_the_small_familiar_fields(config
         'agentSmallModelUrl': 'https://stale.test/v1', 'agentSmallModelId': 'stale-model',
         'agentSmallModelApiKey': 'sk-stale',
     })
-    followed = 'emotion' if provider == 'follow_emotion' else 'agent'
+    followed = 'emotion' if provider == 'follow_recognition' else 'agent'
     assert _endpoint(config_manager.get_model_api_config('agent_small')) == _endpoint(
         config_manager.get_model_api_config(followed))
 
@@ -105,7 +105,7 @@ def test_explicit_custom_small_familiar_is_used(config_manager):
     assert _endpoint(small) == (
         'small-custom-model', 'https://small.custom.test/v1', 'sk-small-custom', 'openai_compatible',
     )
-    assert config_manager.get_model_api_config('emotion')['model'] == 'emotion-custom-model'
+    assert config_manager.get_model_api_config('recognition')['model'] == 'emotion-custom-model'
 
 
 def test_incomplete_custom_small_familiar_falls_back_to_the_recognition_model(config_manager):
@@ -114,7 +114,7 @@ def test_incomplete_custom_small_familiar_falls_back_to_the_recognition_model(co
         'agentSmallModelProvider': 'custom', 'agentSmallModelUrl': '', 'agentSmallModelId': '',
     })
     small = config_manager.get_model_api_config('agent_small')
-    assert _endpoint(small) == _endpoint(config_manager.get_model_api_config('emotion'))
+    assert _endpoint(small) == _endpoint(config_manager.get_model_api_config('recognition'))
 
 
 def test_partial_custom_small_familiar_is_the_whole_recognition_model(config_manager):
@@ -125,13 +125,13 @@ def test_partial_custom_small_familiar_is_the_whole_recognition_model(config_man
         'agentSmallModelProvider': 'custom', 'agentSmallModelUrl': 'https://my.test/v1', 'agentSmallModelId': '',
     })
     small = config_manager.get_model_api_config('agent_small')
-    assert _endpoint(small) == _endpoint(config_manager.get_model_api_config('emotion'))
+    assert _endpoint(small) == _endpoint(config_manager.get_model_api_config('recognition'))
 
 
 def test_follow_assist_takes_the_assist_recognition_model(config_manager):
     from utils.config_manager import get_assist_api_profiles
 
-    openai_small = get_assist_api_profiles()['openai']['EMOTION_MODEL']
+    openai_small = get_assist_api_profiles()['openai']['RECOGNITION_MODEL']
     _write_core_config(config_manager, {
         'coreApiKey': 'sk-core', 'coreApi': 'openai', 'assistApi': 'openai', 'assistApiKeyOpenai': 'sk-openai-test',
         'enableCustomApi': True, **EMOTION_CUSTOM,
@@ -151,7 +151,7 @@ def test_named_provider_small_familiar_uses_that_providers_small_model(config_ma
         'agentSmallModelProvider': 'qwen', 'agentSmallModelUrl': qwen['OPENROUTER_URL'], 'agentSmallModelId': '',
     })
     small = config_manager.get_model_api_config('agent_small')
-    assert small['model'] == qwen['EMOTION_MODEL']
+    assert small['model'] == qwen['RECOGNITION_MODEL']
     assert small['base_url'] == qwen['OPENROUTER_URL']
 
 
@@ -161,12 +161,12 @@ def test_named_provider_protocol_falls_back_to_the_recognition_tier_when_the_url
     claude_url = get_assist_api_profiles()['claude']['OPENROUTER_URL']
     _write_core_config(config_manager, {
         **BASE, 'enableCustomApi': True, 'assistApiKeyClaude': 'sk-claude-test',
-        'emotionModelProvider': 'claude', 'emotionModelUrl': claude_url,
+        'recognitionModelProvider': 'claude', 'recognitionModelUrl': claude_url,
         # A named slot whose URL is not that provider's takes the protocol of what it falls back to.
         'agentSmallModelProvider': 'kimi_code', 'agentSmallModelUrl': 'https://my.test/v1',
         'agentSmallModelId': 'x-model',
     })
-    assert config_manager.get_model_api_config('emotion')['provider_type'] == 'anthropic'
+    assert config_manager.get_model_api_config('recognition')['provider_type'] == 'anthropic'
     assert config_manager.get_model_api_config('agent_small')['provider_type'] == 'anthropic'
 
 
@@ -177,7 +177,7 @@ def test_overseas_free_route_uses_the_rewritten_recognition_endpoint(config_mana
     monkeypatch.setattr(ConfigManager, '_region_cache', True)
     monkeypatch.setattr(ConfigManager, '_ip_check_cache', True)
     small = config_manager.get_model_api_config('agent_small')
-    assert _endpoint(small) == _endpoint(config_manager.get_model_api_config('emotion'))
+    assert _endpoint(small) == _endpoint(config_manager.get_model_api_config('recognition'))
 
 
 def test_save_whitelist_knows_the_tier():
@@ -245,7 +245,7 @@ def test_inherited_recognition_endpoint_keeps_its_protocol(config_manager):
     claude_url = get_assist_api_profiles()['claude']['OPENROUTER_URL']
     _write_core_config(config_manager, {
         **BASE, 'enableCustomApi': True, 'assistApiKeyClaude': 'sk-claude-test',
-        'emotionModelProvider': 'claude', 'emotionModelUrl': claude_url,
+        'recognitionModelProvider': 'claude', 'recognitionModelUrl': claude_url,
         'agentSmallModelProvider': 'custom', 'agentSmallModelUrl': '', 'agentSmallModelId': '',
     })
     small = config_manager.get_model_api_config('agent_small')
@@ -259,13 +259,13 @@ def test_custom_small_familiar_with_its_own_endpoint_speaks_openai(config_manage
     claude_url = get_assist_api_profiles()['claude']['OPENROUTER_URL']
     _write_core_config(config_manager, {
         **BASE, 'enableCustomApi': True, 'assistApiKeyClaude': 'sk-claude-test',
-        'emotionModelProvider': 'claude', 'emotionModelUrl': claude_url,
+        'recognitionModelProvider': 'claude', 'recognitionModelUrl': claude_url,
         **SMALL_CUSTOM,
     })
     assert config_manager.get_model_api_config('agent_small')['provider_type'] == 'openai_compatible'
 
 
-@pytest.mark.parametrize('provider', ['follow_emotion', 'follow_agent', None])
+@pytest.mark.parametrize('provider', ['follow_recognition', 'follow_agent', None])
 def test_stale_fields_under_a_follow_choice_never_reach_the_region_scan(config_manager, provider):
     # A free-route URL left in the small-familiar fields from before switching to a follow
     # choice must not make a paid configuration probe the user's IP (invariant #2).
@@ -314,7 +314,7 @@ def test_complete_custom_settings_use_only_their_own_key(config_manager):
         assert (small['base_url'], small['model'], small['api_key']) == (url, 'my-model', '')
 
 
-@pytest.mark.parametrize('emotion', [{}, {'emotionModelProvider': 'custom', 'emotionModelUrl': '', 'emotionModelId': ''}])
+@pytest.mark.parametrize('emotion', [{}, {'recognitionModelProvider': 'custom', 'recognitionModelUrl': '', 'recognitionModelId': ''}])
 def test_incomplete_custom_follows_a_recognition_tier_that_falls_back_to_assist(config_manager, emotion):
     # Codex / review round 4: when the recognition tier itself falls back to the assist API,
     # its snapshot fields are blank; the small familiar slot must still get the working
@@ -326,7 +326,7 @@ def test_incomplete_custom_follows_a_recognition_tier_that_falls_back_to_assist(
         **BASE, 'enableCustomApi': True, **emotion, 'agentSmallModelProvider': 'custom',
         'agentSmallModelUrl': assist_url, 'agentSmallModelId': '', 'agentSmallModelApiKey': '',
     })
-    recognition = config_manager.get_model_api_config('emotion')
+    recognition = config_manager.get_model_api_config('recognition')
     small = config_manager.get_model_api_config('agent_small')
     assert recognition['api_key'] == 'sk-qwen-test'
     assert _endpoint(small) == _endpoint(recognition)

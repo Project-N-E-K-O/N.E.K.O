@@ -698,3 +698,408 @@ test('skips regex literals with braces and commas when scanning exports', () => 
     assert.match(result.stdout, /Hosted TSX check passed/)
   })
 })
+
+test('supports all exported hosted-ui types, aliased type imports, and render helper', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'all-hosted-ui-types')
+    writePluginToml(pluginDir, 'main.tsx')
+    writeFixtureFile(
+      join(pluginDir, 'main.tsx'),
+      `import { Page, render, type HostedI18n } from '@neko/plugin-ui'
+import type {
+  AsyncState,
+  CommonProps,
+  DataTableColumn,
+  FormState,
+  LocalStateSetter,
+  ParsedHostedDocument,
+  PluginDisplayApi,
+  PluginDisplayMode,
+  PluginDisplayResult,
+  PluginDisplayState,
+  PluginSurfaceProps,
+  RefObject,
+  StateSetter,
+  ToastPromiseMessages,
+  UiOption,
+  UploadedFileInfo,
+} from '@neko/plugin-ui'
+import type { AsyncState as AliasedAsync } from '@neko/plugin-ui'
+
+export default function Panel(props: PluginSurfaceProps) {
+  const i18n: HostedI18n = props.i18n
+  const common: CommonProps = { className: i18n.locale }
+  const col: DataTableColumn = { key: 'name', label: 'Name' }
+  const opt: UiOption = { value: 'a', label: 'A' }
+  const fileInfo: UploadedFileInfo = { name: 'a.txt', size: 1, type: 'text/plain' }
+  const mode: PluginDisplayMode = 'normal'
+  const state: PluginDisplayState = { mode, supportedModes: ['focus'] }
+  const result: PluginDisplayResult = { status: 'applied', state }
+  const displayApi: PluginDisplayApi = props.api.display
+  const parsed: ParsedHostedDocument | null = null
+  const asyncState: AsyncState<string> = { loading: false, error: null, data: 'ok', reload: () => {} }
+  const aliased: AliasedAsync<number> = { loading: false, error: null, data: 1, reload: () => {} }
+  const formState: FormState<{ name: string }> | null = null
+  const refObj: RefObject<number> = { current: 1 }
+  const setter: StateSetter<number> | null = null
+  const localSetter: LocalStateSetter<number> | null = null
+  const toastMsgs: ToastPromiseMessages<string> = { loading: 'loading' }
+  void [common, col, opt, fileInfo, result, displayApi, parsed, asyncState, aliased, formState, refObj, setter, localSetter, toastMsgs, render]
+  return <Page title={i18n.locale} />
+}
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /Hosted TSX check passed/)
+  })
+})
+
+test('normalizes case and whitespace for hosted-tsx mode and entry suffix', () => {
+  for (const [name, fields, entry] of [
+    ['mixed-case-mode', { mode: 'Hosted-TSX' }, 'main.tsx'],
+    ['padded-mode', { mode: '  hosted-tsx  ' }, 'main.tsx'],
+    ['uppercase-suffix', {}, 'Panel.TSX'],
+    ['padded-uppercase-suffix', { mode: '   ' }, '  Panel.JSX  '],
+  ]) {
+    withFixture((root) => {
+      const pluginDir = join(root, name)
+      writePluginToml(pluginDir, entry, fields)
+      writeFixtureFile(
+        join(pluginDir, entry.trim()),
+        `export function Panel() {
+  return <Page title="missing default" />
+}
+`,
+      )
+
+      const result = runCheck(pluginDir)
+
+      assert.equal(result.status, 1, `expected failure for ${name}, stdout=${result.stdout}`)
+      assert.match(result.stderr, /Hosted TSX must export a default function component/)
+    })
+  }
+})
+
+test('allows local type and value declarations that shadow SDK names', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'local-shadow-sdk')
+    writePluginToml(pluginDir, 'main.tsx')
+    writeFixtureFile(
+      join(pluginDir, 'main.tsx'),
+      `import type { Tone as SdkTone } from '@neko/plugin-ui'
+import { Page } from '@neko/plugin-ui'
+
+type Tone = 'quiet'
+type CommonProps = { title: string }
+
+function render(label: string) {
+  return label.toUpperCase()
+}
+
+export default function Panel(props: PluginSurfaceProps) {
+  const localTone: Tone = 'quiet'
+  const sdkTone: SdkTone = 'info'
+  const common: CommonProps = { title: render(localTone + '-' + sdkTone + '-' + props.locale) }
+  return <Page title={common.title} />
+}
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /Hosted TSX check passed \(1 file\)/)
+  })
+})
+
+test('supports aliased h/Fragment and value aliases reusing SDK global names', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'aliased-values-and-jsx')
+    writePluginToml(pluginDir, 'main.tsx')
+    writeFixtureFile(
+      join(pluginDir, 'main.tsx'),
+      `import {
+  Button as Card,
+  Button as MyButton,
+  Fragment as Frag,
+  Page,
+  h as createElement,
+} from '@neko/plugin-ui'
+
+export default function Panel() {
+  return createElement(
+    Page,
+    { title: 'Aliased' },
+    createElement(
+      Frag,
+      null,
+      <Card tone="primary">Reuse Card Name</Card>,
+      <MyButton tone="default">Alias Button</MyButton>,
+    ),
+  )
+}
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /Hosted TSX check passed \(1 file\)/)
+  })
+})
+
+test('type-checks valid uppercase .TSX/.JSX entries and maps diagnostics back to original path', () => {
+  for (const [name, entry] of [
+    ['valid-upper-tsx', 'Panel.TSX'],
+    ['valid-upper-jsx', 'Panel.JSX'],
+  ]) {
+    withFixture((root) => {
+      const pluginDir = join(root, name)
+      writePluginToml(pluginDir, entry)
+      writeFixtureFile(
+        join(pluginDir, entry),
+        `import { Page } from '@neko/plugin-ui'
+
+export default function Panel(props: PluginSurfaceProps) {
+  return <Page title={props.locale} />
+}
+`,
+      )
+
+      const result = runCheck(pluginDir)
+
+      assert.equal(result.status, 0, `expected success for ${entry}, stderr=${result.stderr}`)
+      assert.match(result.stdout, /Hosted TSX check passed \(1 file\)/)
+    })
+  }
+
+  withFixture((root) => {
+    const pluginDir = join(root, 'diag-upper-tsx')
+    writePluginToml(pluginDir, 'Panel.TSX')
+    writeFixtureFile(
+      join(pluginDir, 'Panel.TSX'),
+      `export default function Panel() {
+  const n: number = 'bad'
+  return <Page title={String(n)} />
+}
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /Panel\.TSX:2:/)
+  })
+})
+
+test('allows copied dependency files to call bare render without importing it', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'dep-bare-render')
+    writePluginToml(pluginDir, 'main.tsx')
+    writeFixtureFile(
+      join(pluginDir, 'helper.tsx'),
+      `export function mountHelper(el: Element) {
+  render(<Page title="Helper" />, el)
+}
+`,
+    )
+    writeFixtureFile(
+      join(pluginDir, 'main.tsx'),
+      `import { mountHelper } from './helper'
+
+export default function Panel() {
+  void mountHelper
+  return <Page title="Main" />
+}
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /Hosted TSX check passed \(1 file\)/)
+  })
+})
+
+test('does not overwrite a sibling helper when a .jsx entry shares its basename stem', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'entry-helper-same-stem')
+    writePluginToml(pluginDir, 'panel.jsx')
+    writeFixtureFile(
+      join(pluginDir, 'panel.tsx'),
+      `export function formatBadge(value: string) {
+  return '[' + value + ']'
+}
+`,
+    )
+    writeFixtureFile(
+      join(pluginDir, 'panel.jsx'),
+      `import { formatBadge } from './panel'
+
+export default function Panel(props: PluginSurfaceProps) {
+  return <Page title={formatBadge(props.locale)} />
+}
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /Hosted TSX check passed \(1 file\)/)
+  })
+})
+
+test('checks multiple same-stem entries with different extensions without overwriting each other', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'same-stem-two-entries-valid')
+    writeFixtureFile(
+      join(pluginDir, 'plugin.toml'),
+      `[[plugin.ui.panel]]
+id = "tsx_panel"
+entry = "panel.tsx"
+
+[[plugin.ui.panel]]
+id = "jsx_panel"
+entry = "panel.jsx"
+`,
+    )
+    writeFixtureFile(
+      join(pluginDir, 'panel.tsx'),
+      `export default function Panel(props: PluginSurfaceProps) {
+  return <Page title={props.locale} />
+}
+`,
+    )
+    writeFixtureFile(
+      join(pluginDir, 'panel.jsx'),
+      `export default function Panel(props: PluginSurfaceProps) {
+  return <Page title={props.locale} />
+}
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /Hosted TSX check passed \(2 files\)/)
+  })
+
+  withFixture((root) => {
+    const pluginDir = join(root, 'same-stem-two-entries-diag')
+    writeFixtureFile(
+      join(pluginDir, 'plugin.toml'),
+      `[[plugin.ui.panel]]
+id = "tsx_panel"
+entry = "panel.tsx"
+
+[[plugin.ui.panel]]
+id = "jsx_panel"
+entry = "panel.jsx"
+`,
+    )
+    writeFixtureFile(
+      join(pluginDir, 'panel.tsx'),
+      `export default function Panel() {
+  const bad: number = 'oops'
+  return <Page title={String(bad)} />
+}
+`,
+    )
+    writeFixtureFile(
+      join(pluginDir, 'panel.jsx'),
+      `export default function Panel(props: PluginSurfaceProps) {
+  return <Page title={props.locale} />
+}
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /panel\.tsx:2:.*\[panel:tsx_panel\]/)
+  })
+})
+
+test('isolates top-level declarations in side-effect-only helper files from ambient SDK globals', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'side-effect-helper-globals')
+    writePluginToml(pluginDir, 'ui/panel.tsx')
+    writeFixtureFile(
+      join(pluginDir, 'ui/helper.ts'),
+      `function render(x: string) {
+  return x
+}
+const Card = render('ok')
+void Card
+`,
+    )
+    writeFixtureFile(
+      join(pluginDir, 'ui/panel.tsx'),
+      `import './helper'
+
+export default function Panel() {
+  return <Page title="ok" />
+}
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /Hosted TSX check passed \(1 file\)/)
+  })
+})
+
+test('preserves type-only imports of SDK value exports for typeof queries', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'type-only-sdk-value-aliased')
+    writePluginToml(pluginDir, 'main.tsx')
+    writeFixtureFile(
+      join(pluginDir, 'main.tsx'),
+      `import type { render as DrawUi, Button as UiButton } from '@neko/plugin-ui'
+
+type Draw = typeof DrawUi
+type Btn = typeof UiButton
+
+export default function Panel() {
+  const fn: Draw = render
+  const comp: Btn | null = null
+  void fn
+  void comp
+  return <Page title="ok" />
+}
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /Hosted TSX check passed \(1 file\)/)
+  })
+
+  withFixture((root) => {
+    const pluginDir = join(root, 'type-only-sdk-value-unaliased')
+    writePluginToml(pluginDir, 'main.tsx')
+    writeFixtureFile(
+      join(pluginDir, 'main.tsx'),
+      `import type { render } from '@neko/plugin-ui'
+
+type Draw = typeof render
+
+export default function Panel() {
+  const check: Draw | null = null
+  void check
+  return <Page title="ok" />
+}
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /Hosted TSX check passed \(1 file\)/)
+  })
+})

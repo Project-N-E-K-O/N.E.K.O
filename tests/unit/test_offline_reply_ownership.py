@@ -522,6 +522,7 @@ async def test_the_offline_client_is_born_bound_to_its_closer_and_its_idle_settl
         "handle_response_complete", "handle_repetition_detected",
         "handle_response_discarded", "send_status", "handle_proactive_complete",
         "_close_displaced_offline_turn", "_on_offline_session_idle",
+        "request_tts_preconnect",
     ):
         setattr(manager, callback, MagicMock(name=callback))
     endpoint = {"base_url": "https://x.test/v1", "api_key": "k", "model": "m"}
@@ -535,6 +536,7 @@ async def test_the_offline_client_is_born_bound_to_its_closer_and_its_idle_settl
     )
     assert session.on_response_displaced is manager._close_displaced_offline_turn
     assert session.on_idle is manager._on_offline_session_idle
+    assert session.on_response_start is manager.request_tts_preconnect
 
 
 # ── Findings 2-5: the owed wrap-up and the busy flag ─────────────────────────

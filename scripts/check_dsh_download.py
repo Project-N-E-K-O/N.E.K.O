@@ -2,7 +2,7 @@
 """Fetch the dsh release file from every download host and check it, installing nothing.
 
 What the "download" button of the runtime page does goes through
-``nekoclaw.dsh.install``: the file of ``DSH_VERSION`` for this platform is
+``nekopower.dsh.install``: the file of ``DSH_VERSION`` for this platform is
 fetched from the hosts in ``DSH_DOWNLOAD_HOSTS``, in order, and its size and
 SHA-256 are compared with what is recorded. This script does the fetching and
 the comparing for each host on its own, so that one run on a network tells
@@ -11,7 +11,7 @@ system's temporary directory and is removed; nothing is unpacked, installed
 or written below the application's data.
 
 It reads the version, the files and the hosts out of
-``config/nekoclaw_settings.py`` as text, without importing the application
+``config/nekopower_settings.py`` as text, without importing the application
 (importing it writes to the user's data), and uses the standard library only:
 
     python scripts/check_dsh_download.py
@@ -40,7 +40,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-SETTINGS = Path(__file__).resolve().parents[1] / "config" / "nekoclaw_settings.py"
+SETTINGS = Path(__file__).resolve().parents[1] / "config" / "nekopower_settings.py"
 WANTED = ("DSH_VERSION", "DSH_WHEELS", "DSH_DOWNLOAD_HOSTS", "DSH_DOWNLOAD_CONNECT_SECONDS", "DSH_DOWNLOAD_READ_SECONDS")
 # The registries dsh installs its plugins from: only asked whether they answer.
 NPM_PINGS = ("https://registry.npmjs.org/-/ping", "https://registry.npmmirror.com/-/ping")
@@ -66,7 +66,7 @@ def read_settings() -> dict[str, Any]:
 
 
 def platform_tag() -> str | None:
-    """Return dsh's tag for this computer, as ``nekoclaw.dsh.install.platform_tag`` names them."""
+    """Return dsh's tag for this computer, as ``nekopower.dsh.install.platform_tag`` names them."""
     machine = platform.machine().lower()
     arch = "arm64" if machine in ("arm64", "aarch64") else "x64" if machine in ("amd64", "x86_64", "x64") else None
     system = {"Windows": "win", "Darwin": "macos", "Linux": "linux"}.get(platform.system())

@@ -24,10 +24,10 @@ datas = []
 binaries = []
 hiddenimports = []
 hiddenimports += collect_submodules('plugin.sdk', on_error='raise')
-# nekoclaw.runtime resolves its public names through importlib on first use, so
+# nekopower.runtime resolves its public names through importlib on first use, so
 # following imports from launcher.py does not reach every module of the package.
-# Collect the whole tree, as --include-package=nekoclaw does in the Nuitka build.
-hiddenimports += collect_submodules('nekoclaw', on_error='raise')
+# Collect the whole tree, as --include-package=nekopower does in the Nuitka build.
+hiddenimports += collect_submodules('nekopower', on_error='raise')
 
 # 收集关键包的所有内容（根据实际 import 检查）
 critical_packages = [
@@ -268,7 +268,7 @@ hiddenimports += [
     'dashscope',
     'httpx',
     
-    # Keyboard, mouse and screenshots (nekoclaw/builtin/desktop.py)
+    # Keyboard, mouse and screenshots (nekopower/builtin/desktop.py)
     'PIL',
     'PIL.Image',
     'pyautogui',

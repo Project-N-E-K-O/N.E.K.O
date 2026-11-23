@@ -65,9 +65,9 @@ from .api_runtime import (  # noqa: F401
     complete_deferred_task,
     get_task,
     health,
-    nekoclaw_brief,
-    nekoclaw_dispatch,
-    nekoclaw_query,
+    nekopower_brief,
+    nekopower_dispatch,
+    nekopower_query,
     shutdown,
     startup,
 )
@@ -936,7 +936,7 @@ async def browser_use_availability():
     if not dependency_ready:
         # No browser comes with the application; one the user has is used.
         _set_capability("browser_use", False, dependency_error)
-        return {"enabled": True, "ready": False, "reasons": [dependency_error], "provider": "nekoclaw"}
+        return {"enabled": True, "ready": False, "reasons": [dependency_error], "provider": "nekopower"}
     # LLM connectivity — reuse the shared agent-LLM check
     probe = Modules.model_probe
     if probe and not getattr(probe, "init_ok", False):
@@ -950,7 +950,7 @@ async def browser_use_availability():
     # takes nothing from that task: see ``_probe_lost_a_race``.
     if ready or not _probe_lost_a_race():
         _set_capability("browser_use", ready, reasons[0] if reasons else "")
-    return {"enabled": True, "ready": ready, "reasons": reasons, "provider": "nekoclaw"}
+    return {"enabled": True, "ready": ready, "reasons": reasons, "provider": "nekopower"}
 
 
 @app.get("/tasks")
@@ -977,7 +977,7 @@ async def _close_browser_at_end_all() -> None:
     steps add up to
     more than the page waits for the request.
     """
-    from config.nekoclaw_settings import BROWSER_CLOSE_AT_END_ALL_SECONDS
+    from config.nekopower_settings import BROWSER_CLOSE_AT_END_ALL_SECONDS
 
     # From before the closing begins until the kill, if it comes to one, is
     # on record: a browser call of a new task that waits its turn behind the
@@ -1052,7 +1052,7 @@ async def admin_control(payload: Dict[str, Any]):
         # the keys for the browser: the two go on side by side.
         async def _release_keys() -> None:
             try:
-                from nekoclaw.host.capabilities import BUILTIN_GROUP_KEYBOARD_MOUSE
+                from nekopower.host.capabilities import BUILTIN_GROUP_KEYBOARD_MOUSE
 
                 await builtin_provider.released(BUILTIN_GROUP_KEYBOARD_MOUSE, "")
             except Exception as e:

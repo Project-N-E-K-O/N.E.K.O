@@ -768,7 +768,7 @@ class TestSchemaValidation:
             "assistApi": "qwen",
             "assistApiKeyQwen": "sk-qwen",
             "assistApiKeyQwenIntl": "sk-qwen-intl",
-            "summaryModelProvider": "qwen_intl",
+            "memoryModelProvider": "qwen_intl",
             "enableCustomApi": raw_flag,
         }
 

@@ -14,6 +14,7 @@ declare global {
   type ToastApi = HostedUi.ToastApi
   const h: typeof HostedUi.h
   const Fragment: typeof HostedUi.Fragment
+  const render: typeof HostedUi.render
   const useState: typeof HostedUi.useState
   const useReducer: typeof HostedUi.useReducer
   const useEffect: typeof HostedUi.useEffect

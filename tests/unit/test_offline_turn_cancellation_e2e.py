@@ -1815,3 +1815,62 @@ async def test_a_live_round_whose_turn_left_history_adds_no_orphan_image():
     history = client._conversation_history
     assert not [m for m in history if isinstance(m, dict)]
     assert not any(isinstance(m, AIMessage) and "我看看" in m.content for m in history)
+
+
+# ── Reply start: the host opens its TTS socket while the model thinks ────────
+
+def _record_response_starts(client):
+    starts = []
+
+    def on_response_start():
+        # Recorded with the request count: the signal must precede the request.
+        starts.append(len(client.requests))
+
+    client.on_response_start = on_response_start
+    return starts
+
+
+@pytest.mark.parametrize("entry", ["stream_text", "prompt_ephemeral"])
+async def test_response_start_fires_once_before_the_llm_request(entry):
+    client = _client()
+    starts = _record_response_starts(client)
+    client.script = [[_text("好"), _text("", "stop")]]
+    if entry == "stream_text":
+        await client.stream_text("hi")
+    else:
+        assert await client.prompt_ephemeral("callback") is True
+    assert starts == [0]
+    assert len(client.requests) == 1
+
+
+async def test_a_declined_proactive_reply_does_not_signal_a_start():
+    """A prompt_ephemeral that will not run over a live reply must not make
+    the host open a TTS socket nobody is going to speak on."""
+    stalled, release = asyncio.Event(), asyncio.Event()
+    client = _client()
+    starts = _record_response_starts(client)
+
+    async def stall():
+        stalled.set()
+        await release.wait()
+
+    client.script = [[_text("先说"), stall, _text("", "stop")]]
+    user_reply = asyncio.create_task(client.stream_text("hi"))
+    await asyncio.wait_for(stalled.wait(), 1)
+    assert await client.prompt_ephemeral("callback") is False
+    release.set()
+    await user_reply
+    assert starts == [0], "only the user reply started"
+
+
+async def test_a_failing_response_start_callback_does_not_break_the_reply():
+    client = _client()
+
+    def broken():
+        raise RuntimeError("host hook failed")
+
+    client.on_response_start = broken
+    client.script = [[_text("好"), _text("", "stop")]]
+    await client.stream_text("hi")
+    assert len(client.requests) == 1
+    client.on_text_delta.assert_awaited()

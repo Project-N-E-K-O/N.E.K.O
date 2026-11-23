@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import asyncio
+import collections
+import contextlib
+import math
+import threading
+import time
+import uuid
+from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 from typing import Any
 try:
@@ -37,12 +44,112 @@ from plugin.sdk.shared.models.exceptions import EntryConflictError, ValidationEr
 
 from .llm_tool import (
     LlmToolMeta,
+    LlmToolRegisterResult,
+    LlmToolUnregisterResult,
+    build_register_result,
+    build_unregister_result,
     collect_llm_tool_methods,
     entry_id_for_tool,
     validate_tool_name,
 )
 
 DEFAULT_PLUGIN_VERSION = _DEFAULT_PLUGIN_VERSION
+
+
+def _grant_waiter(future: asyncio.Future) -> None:
+    if not future.done():
+        future.set_result(None)
+
+
+class _CrossLoopLock:
+    """FIFO async lock whose waiters may sit on different event loops.
+
+    ``asyncio.Lock`` binds to one loop and is not thread-safe, but plugin
+    code runs on several loops at once: entries on the command loop, each
+    interval timer on its own thread with its own ``asyncio.run``. State is
+    guarded by a ``threading.Lock``; ownership is handed directly to the
+    next waiter and its future is resolved on that waiter's own loop.
+    """
+
+    def __init__(self) -> None:
+        self._mutex = threading.Lock()
+        self._held = False
+        # [loop, future, granted]
+        self._waiters: collections.deque[list[Any]] = collections.deque()
+
+    async def acquire(self, timeout: float) -> None:
+        """Wait at most ``timeout`` seconds; raise ``TimeoutError`` if the
+        lock was not obtained in time (nothing is held then)."""
+        with self._mutex:
+            if not self._held:
+                self._held = True
+                return
+            loop = asyncio.get_running_loop()
+            waiter: list[Any] = [loop, loop.create_future(), False]
+            self._waiters.append(waiter)
+        try:
+            async with asyncio.timeout(timeout):
+                await waiter[1]
+        except BaseException:
+            with self._mutex:
+                granted = waiter[2]
+                if not granted:
+                    self._waiters.remove(waiter)
+            if granted:
+                # Ownership arrived while we were being cancelled or timed
+                # out: pass it on instead of keeping it.
+                self.release()
+            raise
+
+    def release(self) -> None:
+        with self._mutex:
+            while self._waiters:
+                waiter = self._waiters.popleft()
+                loop, future, _ = waiter
+                waiter[2] = True
+                try:
+                    loop.call_soon_threadsafe(_grant_waiter, future)
+                except RuntimeError:
+                    # The waiter's loop is closed; its task is gone.
+                    waiter[2] = False
+                    continue
+                return
+            self._held = False
+
+
+class _LlmToolLockTimeout(Exception):
+    """An async LLM tool call spent (nearly) its whole budget waiting behind
+    earlier calls for the same name; nothing was sent to the host and the
+    call reports ``error="busy"``."""
+
+# How long register_llm_tool_async / unregister_llm_tool_async wait for the
+# host by default. The host's main_server call can spend up to 10s waiting for
+# a pooled connection, 2s connecting, 10s writing and 10s reading (see
+# ``plugin/server/messaging/llm_tool_registry.py``); stay above that sum so a
+# slow but successful registration is not reported as a timeout.
+DEFAULT_LLM_TOOL_REQUEST_TIMEOUT = 40.0
+# The host's RPC dispatcher caps a request's deadline at 60s
+# (``MAX_HANDLER_TIMEOUT_SECONDS`` in ``plugin/core/rpc.py``); a longer
+# request_timeout would be cut silently, so it is refused.
+_LLM_TOOL_MAX_REQUEST_TIMEOUT = 60.0
+# A call that got the name lock with less than this left of its budget
+# (or less than half of it, for small budgets) is not sent: it reports
+# "busy" with nothing applied, instead of an almost certain "timeout"
+# whose outcome would be unknown.
+_LLM_TOOL_MIN_SEND_BUDGET = 5.0
+# How often one reported registration id is targeted when it keeps showing up.
+_LLM_TOOL_MAX_REMOVAL_ATTEMPTS = 2
+# Budget of the unregister a failed register sends to clean up after itself.
+_LLM_TOOL_CLEANUP_TIMEOUT = 15.0
+# Register errors after which main_server may hold the tool: every role's
+# sync failed after it was stored ("rejected"), or the outcome is unknown.
+# The other codes mean nothing was stored (bad request, unknown role,
+# main_server not reached), where a cleanup would only fail the same way.
+_LLM_TOOL_CLEANUP_ERRORS = frozenset({"rejected", "timeout", "host_unavailable"})
+# main_server's ToolRegisterRequest bound for a tool's own per-call timeout.
+_LLM_TOOL_MAX_TIMEOUT_SECONDS = 300.0
+# Host-reported RPC error codes that mean "no answer in time".
+_LLM_TOOL_TIMEOUT_CODES = frozenset({"DEADLINE_EXCEEDED", "OPERATION_TIMEOUT", "TRANSPORT_TIMEOUT"})
 
 
 def _entry_listing(entry_id: str, meta: object, *, enabled: bool, dynamic: bool) -> dict[str, Any]:
@@ -122,16 +229,29 @@ class NekoPluginBase(_SharedNekoPluginBase):
         self._static_ui_config: dict[str, Any] | None = None
         self._list_actions: list[dict[str, Any]] = []
         self._dynamic_entries: dict[str, dict[str, Any]] = {}
+        # Guards the duplicate check + insert of dynamic entries: plugin code
+        # runs on several threads (command loop, timer threads), and readers
+        # iterate over snapshots of the dict instead of the live view.
+        self._dynamic_entries_lock = threading.Lock()
         # plugin_id-scoped registry of LLM tools we've claimed locally.
         # Tracks (name -> LlmToolMeta) so we can re-emit IPC notifications
         # on demand and validate against duplicate registrations.
         # The actual handler lives in ``_dynamic_entries[__llm_tool__name]``.
         self._llm_tools: dict[str, LlmToolMeta] = {}
+        # Makes "is this still the current registration?" and its removal one
+        # step: sync calls may run on several threads and do not take the
+        # per-name lock of the async calls.
+        self._llm_tools_lock = threading.Lock()
         # Set to True after the first auto-registration pass so that
         # subsequent lifecycle reloads don't double-register decorator-
         # tagged methods. Manual calls to ``register_llm_tool`` are
         # tracked separately via ``self._llm_tools``.
         self._llm_tools_auto_registered: bool = False
+        # name -> [lock, users]: serialises register_llm_tool_async /
+        # unregister_llm_tool_async for one name from the local read to the
+        # local update after the host answered. Dropped when unused.
+        self._llm_tool_locks: dict[str, list[Any]] = {}
+        self._llm_tool_locks_mutex = threading.Lock()
         # Auto-register every method tagged with ``@llm_tool``. Doing
         # this at the end of ``super().__init__()`` means subclasses
         # don't need to remember to call anything — the decorator alone
@@ -467,7 +587,12 @@ class NekoPluginBase(_SharedNekoPluginBase):
         # Build the host message before touching local state: if building it
         # fails, nothing is half-registered and the same id can be retried.
         registration = _dynamic_entry_registration(self.plugin_id, entry_id, meta, enabled=True)
-        self._dynamic_entries[entry_id] = {"meta": meta, "handler": handler, "enabled": True}
+        with self._dynamic_entries_lock:
+            # Checked again under the lock: another thread may have taken the
+            # id since the check above.
+            if entry_id in self._dynamic_entries:
+                raise EntryConflictError(f"duplicate entry id: {entry_id!r}")
+            self._dynamic_entries[entry_id] = {"meta": meta, "handler": handler, "enabled": True}
         self._notify_host_comm(registration)
         return True
 
@@ -530,7 +655,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
             ))
             seen.add(entry_id)
         if include_disabled:
-            for entry_id, item in self._dynamic_entries.items():
+            for entry_id, item in list(self._dynamic_entries.items()):
                 if entry_id in seen:
                     continue
                 entries.append(_entry_listing(
@@ -543,7 +668,8 @@ class NekoPluginBase(_SharedNekoPluginBase):
 
     def collect_entries(self, wrap_with_hooks: bool = True) -> dict[str, EventHandler]:
         entries = super().collect_entries(wrap_with_hooks=wrap_with_hooks)
-        for entry_id, item in self._dynamic_entries.items():
+        # Snapshot: another thread may add or remove an entry meanwhile.
+        for entry_id, item in list(self._dynamic_entries.items()):
             if item.get("enabled", True):
                 meta = item.get("meta")
                 handler = item.get("handler")
@@ -587,18 +713,9 @@ class NekoPluginBase(_SharedNekoPluginBase):
             "role": role,
         })
 
-    def _register_llm_tool_internal(
-        self,
-        meta: "LlmToolMeta",
-        handler: Any,
-    ) -> None:
-        """Common path used by both the decorator collector and the
-        imperative ``register_llm_tool`` instance method.
-
-        Stores the handler as a dynamic plugin entry under the reserved
-        id, then notifies the host so main_server gets the
-        registration.
-        """
+    def _claim_llm_tool_locally(self, meta: "LlmToolMeta", handler: Any) -> None:
+        """Store the handler as a dynamic plugin entry under the reserved
+        id and record ``meta`` in ``_llm_tools``. No host notification."""
         if not callable(handler):
             raise TypeError("LLM tool handler must be callable")
         if meta.name in self._llm_tools:
@@ -617,8 +734,203 @@ class NekoPluginBase(_SharedNekoPluginBase):
             kind="action",
             timeout=meta.timeout_seconds,
         )
-        self._llm_tools[meta.name] = meta
+        with self._llm_tools_lock:
+            self._llm_tools[meta.name] = meta
+
+    def _release_llm_tool_locally(self, meta: "LlmToolMeta") -> bool:
+        """Drop ``meta`` from ``_llm_tools`` and remove its dynamic entry,
+        but only if that exact registration is still current (a
+        concurrent unregister + re-register may have replaced it while an
+        async request was in flight). No host notification."""
+        with self._llm_tools_lock:
+            # Check and removal in one step: of two concurrent releases only
+            # one wins (the other gets False, as with the former dict.pop),
+            # and a newer registration of the name is never removed.
+            if self._llm_tools.get(meta.name) is not meta:
+                return False
+            del self._llm_tools[meta.name]
+        self.unregister_dynamic_entry(entry_id_for_tool(meta.name))
+        return True
+
+    def _register_llm_tool_internal(
+        self,
+        meta: "LlmToolMeta",
+        handler: Any,
+    ) -> None:
+        """Common path used by both the decorator collector and the
+        imperative ``register_llm_tool`` instance method.
+
+        Stores the handler as a dynamic plugin entry under the reserved
+        id, then notifies the host so main_server gets the
+        registration.
+        """
+        self._claim_llm_tool_locally(meta, handler)
         self._notify_llm_tool_registered(meta)
+
+    @staticmethod
+    def _build_llm_tool_meta(
+        *,
+        name: str,
+        description: str,
+        parameters: dict[str, Any] | None,
+        timeout: float,
+        role: str | None,
+        reply_tail: bool,
+    ) -> "LlmToolMeta":
+        validate_tool_name(name)
+        return LlmToolMeta(
+            name=name,
+            description=description or "",
+            parameters=dict(parameters) if isinstance(parameters, dict) else {"type": "object", "properties": {}},
+            timeout_seconds=float(timeout),
+            role=role,
+            reply_tail=reply_tail,
+        )
+
+    @contextlib.asynccontextmanager
+    async def _llm_tool_name_lock(self, name: str, request_timeout: float) -> AsyncIterator[float]:
+        """Hold the per-name lock of the async register/unregister calls and
+        yield what is left of ``request_timeout`` once it is held.
+
+        Without it, two async calls for one name can interleave at the host
+        (both requests are in flight at once) and leave the plugin and
+        main_server disagreeing, e.g. ``gather(register, unregister)`` with
+        both answering ``ok=True`` while main_server keeps the tool and the
+        plugin has no handler. Calls may come from different event loops
+        (command loop, timer threads), hence ``_CrossLoopLock``. The wait
+        counts against ``request_timeout``; when the budget runs out first,
+        or too little of it is left to send the request (see
+        ``_LLM_TOOL_MIN_SEND_BUDGET``), ``_LlmToolLockTimeout`` is raised
+        and nothing has been sent. The
+        sync calls are not serialised by it.
+        """
+        started = time.monotonic()
+        with self._llm_tool_locks_mutex:
+            entry = self._llm_tool_locks.get(name)
+            if entry is None:
+                entry = [_CrossLoopLock(), 0]
+                self._llm_tool_locks[name] = entry
+            entry[1] += 1
+        try:
+            try:
+                await entry[0].acquire(request_timeout)
+            except TimeoutError:
+                raise _LlmToolLockTimeout() from None
+            try:
+                remaining = request_timeout - (time.monotonic() - started)
+                if remaining < min(_LLM_TOOL_MIN_SEND_BUDGET, request_timeout / 2):
+                    raise _LlmToolLockTimeout()
+                yield remaining
+            finally:
+                entry[0].release()
+        finally:
+            with self._llm_tool_locks_mutex:
+                entry[1] -= 1
+                if entry[1] == 0 and self._llm_tool_locks.get(name) is entry:
+                    del self._llm_tool_locks[name]
+
+    @staticmethod
+    def _llm_tool_lock_timeout_result(build_result: Any, name: str, request_timeout: float) -> Any:
+        return build_result(
+            {}, ok=False, error="busy",
+            message=(
+                f"earlier calls for {name!r} used up most of the {request_timeout}s "
+                "budget; nothing was sent to the host"
+            ),
+        )
+
+    @staticmethod
+    def _validate_async_llm_tool_name(name: str) -> None:
+        validate_tool_name(name)
+        # "." / ".." pass the shared rule but are normalised away in the
+        # callback URL path, so such a tool could never be called. Only the
+        # async calls refuse them; the sync calls keep their behaviour.
+        if set(name) == {"."}:
+            raise ValueError(f"LLM tool name {name!r} must not consist only of dots")
+
+    @staticmethod
+    def _validate_llm_tool_timeout(timeout: float) -> None:
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout)
+            or not 0 < timeout <= _LLM_TOOL_MAX_TIMEOUT_SECONDS
+        ):
+            raise ValueError(
+                f"timeout must be a finite number in (0, {_LLM_TOOL_MAX_TIMEOUT_SECONDS:g}] seconds"
+            )
+
+    @staticmethod
+    def _validate_llm_tool_request_timeout(request_timeout: float) -> float:
+        if (
+            isinstance(request_timeout, bool)
+            or not isinstance(request_timeout, (int, float))
+            or not (0 < float(request_timeout) <= _LLM_TOOL_MAX_REQUEST_TIMEOUT)
+        ):
+            raise ValueError(
+                f"request_timeout must be a number in (0, {_LLM_TOOL_MAX_REQUEST_TIMEOUT:g}] seconds"
+            )
+        return float(request_timeout)
+
+    async def _request_llm_tool_change(
+        self,
+        *,
+        request_type: str,
+        payload: dict[str, Any],
+        request_timeout: float,
+        build_result: Any,
+    ) -> Any:
+        """Send one LLM tool request to the host and normalise its reply
+        with ``build_result`` (``build_register_result`` or
+        ``build_unregister_result``). Never raises for transport
+        problems: they come back as ``ok=False`` with an ``error`` code."""
+        sender = getattr(self._host_ctx, "_send_request_and_wait_async", None)
+        if not callable(sender):
+            return build_result(
+                {}, ok=False, error="host_unavailable",
+                message="the host does not provide asynchronous control requests",
+            )
+        try:
+            reply = await sender(
+                method_name=request_type.lower(),
+                request_type=request_type,
+                request_data=payload,
+                timeout=request_timeout,
+                wrap_result=False,
+            )
+        except TimeoutError:
+            return build_result(
+                {}, ok=False, error="timeout",
+                message=(
+                    f"no answer from the host within {request_timeout}s "
+                    "(or the calling entry's remaining time, if shorter)"
+                ),
+            )
+        except Exception as exc:
+            code = getattr(exc, "code", None)
+            if code in _LLM_TOOL_TIMEOUT_CODES:
+                return build_result(
+                    {}, ok=False, error="timeout",
+                    message=(
+                        f"no answer from the host within {request_timeout}s "
+                        f"(or the calling entry's remaining time, if shorter) ({code})"
+                    ),
+                )
+            detail = str(exc)
+            return build_result(
+                {}, ok=False, error="host_unavailable",
+                message=f"{type(exc).__name__}"
+                + (f" ({code})" if isinstance(code, str) else "")
+                + (f": {detail}" if detail else ""),
+            )
+        if not isinstance(reply, Mapping):
+            return build_result({}, ok=False, error="host_unavailable", message="malformed host reply")
+        return build_result(
+            reply,
+            ok=reply.get("ok") is True,
+            error=reply.get("error"),
+            message=reply.get("message"),
+        )
 
     def register_llm_tool(
         self,
@@ -637,6 +949,10 @@ class NekoPluginBase(_SharedNekoPluginBase):
         at class-definition time (e.g. driven by user configuration).
         Otherwise prefer the ``@llm_tool`` decorator which is auto-
         registered during startup.
+
+        This is fire-and-forget: ``True`` means the tool was recorded
+        locally and the host was notified, not that main_server accepted
+        it. Use :meth:`register_llm_tool_async` to get the real outcome.
 
         Parameters
         ----------
@@ -659,14 +975,9 @@ class NekoPluginBase(_SharedNekoPluginBase):
         Returns ``True`` on success. Raises ``ValueError`` for invalid
         names and ``EntryConflictError`` for duplicates.
         """
-        validate_tool_name(name)
-        meta = LlmToolMeta(
-            name=name,
-            description=description or "",
-            parameters=dict(parameters) if isinstance(parameters, dict) else {"type": "object", "properties": {}},
-            timeout_seconds=float(timeout),
-            role=role,
-            reply_tail=reply_tail,
+        meta = self._build_llm_tool_meta(
+            name=name, description=description, parameters=parameters,
+            timeout=timeout, role=role, reply_tail=reply_tail,
         )
         self._register_llm_tool_internal(meta, handler)
         return True
@@ -677,13 +988,320 @@ class NekoPluginBase(_SharedNekoPluginBase):
         Removes the dynamic entry locally and notifies the host so the
         registration is also dropped from main_server. Returns ``True``
         if the tool existed and was removed, ``False`` otherwise.
+
+        Fire-and-forget like :meth:`register_llm_tool`; use
+        :meth:`unregister_llm_tool_async` to get the real outcome.
         """
-        meta = self._llm_tools.pop(name, None)
-        if meta is None:
+        meta = self._llm_tools.get(name)
+        if meta is None or not self._release_llm_tool_locally(meta):
             return False
-        self.unregister_dynamic_entry(entry_id_for_tool(name))
         self._notify_llm_tool_unregistered(name, role=meta.role)
         return True
+
+    async def register_llm_tool_async(
+        self,
+        *,
+        name: str,
+        description: str,
+        parameters: dict[str, Any] | None,
+        handler: Any,
+        timeout: float = 30.0,
+        role: str | None = None,
+        reply_tail: bool = False,
+        request_timeout: float = DEFAULT_LLM_TOOL_REQUEST_TIMEOUT,
+    ) -> LlmToolRegisterResult:
+        """Register an LLM tool and wait for main_server's real answer.
+
+        Same arguments as :meth:`register_llm_tool`, plus
+        ``request_timeout`` (seconds to wait for the host). The host
+        registers the tool with main_server and returns what it answered;
+        see :class:`LlmToolRegisterResult` for the fields and error codes.
+
+        The handler is installed locally before the request is sent (the
+        model may call the tool as soon as main_server has it). When the
+        result has ``ok=False`` the local registration is rolled back, so
+        ``list_llm_tools()`` and the host stay in step and the same name
+        can be registered again. When main_server may have stored the tool
+        anyway (``rejected``: every role's sync failed after it was stored;
+        ``timeout`` / ``host_unavailable``: outcome unknown), the SDK then
+        unregisters it once, still in order with this name's other async
+        calls, and reports that in ``cleanup`` (up to 15s more than
+        ``request_timeout``). If ``cleanup`` is not ``ok``, call
+        :meth:`unregister_llm_tool_async` later. After a ``timeout`` the
+        cleanup is best effort: main_server may still be processing the
+        register and store it after the cleanup ran, so ``removed=False``
+        does not prove nothing is left; call
+        :meth:`unregister_llm_tool_async` again a little later when that
+        matters. Each async registration carries its own registration id,
+        and the cleanup and :meth:`unregister_llm_tool_async` remove only
+        that registration: a cleanup that is still running on main_server
+        after it timed out cannot remove a newer registration of the name
+        (that role is reported in ``refused_roles`` with
+        ``reason="different registration"``). Stopping the plugin also
+        tries to clear the plugin's tools, but only best effort. A
+        cancelled call rolls back locally but sends no cleanup.
+
+        Async calls for the same name run one at a time, in call order
+        (each waits for the previous one's answer, also across event
+        loops such as timer threads; ``request_timeout`` covers that wait
+        plus this call's own request). For example, in
+        ``gather(register_llm_tool_async("t", ...),
+        unregister_llm_tool_async("t"))`` the unregister is sent only after
+        the register got its answer. The ordering is all this promises:
+        check each call's own result (an unregister with ``ok=False``
+        keeps the local handler; after a register ``timeout`` see
+        ``cleanup`` above). The sync calls do not take part in that
+        ordering: use one style per tool name.
+
+        Raises ``ValueError`` for invalid or dot-only names, a
+        ``request_timeout`` outside (0, 60] (the host's limit) or a
+        ``timeout`` outside (0, 300] (main_server's bound),
+        ``TypeError`` for a non-callable handler and
+        ``EntryConflictError`` when the name is already registered
+        locally -- like :meth:`register_llm_tool`. Host and main_server
+        failures never raise; they come back in the result.
+        """
+        request_timeout = self._validate_llm_tool_request_timeout(request_timeout)
+        self._validate_llm_tool_timeout(timeout)
+        self._validate_async_llm_tool_name(name)
+        meta = self._build_llm_tool_meta(
+            name=name, description=description, parameters=parameters,
+            timeout=timeout, role=role, reply_tail=reply_tail,
+        )
+        # Known before sending, so the cleanup below can target exactly this
+        # registration even when the register's answer never arrived.
+        meta.registration_id = uuid.uuid4().hex
+        try:
+            async with self._llm_tool_name_lock(meta.name, request_timeout) as remaining:
+                self._claim_llm_tool_locally(meta, handler)
+                try:
+                    result = await self._request_llm_tool_change(
+                        request_type="LLM_TOOL_REGISTER_REQUEST",
+                        payload=meta.to_ipc_payload(plugin_id=self.plugin_id),
+                        request_timeout=remaining,
+                        build_result=build_register_result,
+                    )
+                except BaseException:
+                    # Cancelled while waiting: the outcome is unknown, so do not
+                    # leave a local tool the caller never got a result for.
+                    self._release_llm_tool_locally(meta)
+                    raise
+                if not result["ok"]:
+                    self._release_llm_tool_locally(meta)
+                    if result["error"] in _LLM_TOOL_CLEANUP_ERRORS:
+                        result["cleanup"] = await self._clean_up_failed_llm_tool_register(meta)
+                return result
+        except _LlmToolLockTimeout:
+            return self._llm_tool_lock_timeout_result(build_register_result, meta.name, request_timeout)
+
+    async def _remove_reported_llm_tool_registrations(
+        self,
+        name: str,
+        role: str | None,
+        first: LlmToolUnregisterResult,
+        deadline: float,
+        budget: float,
+    ) -> LlmToolUnregisterResult:
+        """Unregister, by id, every other registration of this plugin that
+        ``first`` (or a follow-up) reported as holding the name, and merge
+        all outcomes with ``first``.
+
+        Each follow-up targets one reported id, so a late arrival can only
+        remove that registration; no unfiltered unregister is ever sent.
+        ``ok`` only when every reported registration was removed. The
+        follow-ups share what is left until ``deadline``.
+        """
+
+        def held(result: LlmToolUnregisterResult) -> list[dict[str, str]]:
+            return [r for r in result["refused_roles"] if r.get("reason") == "different registration"]
+
+        outcomes: list[LlmToolUnregisterResult] = []
+        queue = list(dict.fromkeys(r.get("registration_id") or "" for r in held(first)))
+        # A registration that is still being written to roles (a timed-out
+        # register main_server keeps executing) can show up again after its
+        # removal: it then gets one more targeted attempt, never more.
+        attempts: dict[str, int] = {}
+        removed_ids: set[str] = set()
+        error: str | None = None
+        message: str | None = None
+        while queue:
+            rid = queue.pop(0)
+            if rid in removed_ids or attempts.get(rid, 0) >= _LLM_TOOL_MAX_REMOVAL_ATTEMPTS:
+                continue
+            attempts[rid] = attempts.get(rid, 0) + 1
+            if not rid:
+                error, message = "partial_failure", (
+                    f"another registration of {name!r} holds the name but main_server did not "
+                    "report its id; not removed"
+                )
+                continue
+            left = deadline - time.monotonic()
+            if left < min(_LLM_TOOL_MIN_SEND_BUDGET, budget / 2):
+                error, message = "timeout", (
+                    f"another registration of {name!r} holds the name and too little of the "
+                    f"{budget}s budget is left to remove it"
+                )
+                break
+            outcome = await self._request_llm_tool_change(
+                request_type="LLM_TOOL_UNREGISTER_REQUEST",
+                payload={
+                    "plugin_id": self.plugin_id, "name": name, "role": role,
+                    "expected_registration_id": rid,
+                },
+                request_timeout=left,
+                build_result=build_unregister_result,
+            )
+            outcomes.append(outcome)
+            if not outcome["ok"]:
+                error, message = outcome["error"] or "partial_failure", outcome["message"]
+                break
+            reported = [r.get("registration_id") or "" for r in held(outcome)]
+            if rid not in reported:
+                removed_ids.add(rid)
+            # Holders this answer reports: new ones, other roles, or ones
+            # removed earlier that are back (no longer counted as removed).
+            removed_ids.difference_update(reported)
+            queue.extend(reported)
+
+        everything = [first, *outcomes]
+        unresolved = {
+            (r.get("role"), r.get("registration_id")): r
+            for result in everything for r in held(result)
+            if (r.get("registration_id") or "") not in removed_ids
+        }
+        if unresolved and error is None:
+            error, message = "partial_failure", (
+                f"other registrations of {name!r} still hold the name on some roles"
+            )
+        merged = {
+            "removed": any(r["removed"] for r in everything),
+            "affected_roles": list(dict.fromkeys(x for r in everything for x in r["affected_roles"])),
+            "failed_roles": [x for r in everything for x in r["failed_roles"]],
+            # Plain refusals (another source took the role) from every
+            # answer, deduplicated, plus holders that were not removed.
+            "refused_roles": list({
+                (r.get("role"), r.get("owned_by")): r
+                for result in everything for r in result["refused_roles"]
+                if r.get("reason") != "different registration"
+            }.values()) + list(unresolved.values()),
+        }
+        return build_unregister_result(merged, ok=error is None, error=error, message=message)
+
+    async def _clean_up_failed_llm_tool_register(self, meta: "LlmToolMeta") -> LlmToolUnregisterResult:
+        """Unregister a tool whose register reported failure, still under
+        the name lock.
+
+        A failed register is not always a no-op on main_server: it stores
+        the tool before syncing it to each role and keeps it when every
+        role's sync fails, and a timeout says nothing about what was
+        applied. The plugin has just dropped its handler, so a stored copy
+        would be a tool the model sees but cannot call. The unregister
+        carries ``expected_source=plugin:{id}`` on the host, so it never
+        touches another source's tool, and holding the lock means no later
+        same-name async call of this plugin can slip in between.
+        """
+        deadline = time.monotonic() + _LLM_TOOL_CLEANUP_TIMEOUT
+        result = await self._request_llm_tool_change(
+            request_type="LLM_TOOL_UNREGISTER_REQUEST",
+            payload={
+                "plugin_id": self.plugin_id, "name": meta.name, "role": meta.role,
+                # Only this registration: if main_server finishes this cleanup
+                # late, a newer registration of the name is refused, not removed.
+                "expected_registration_id": meta.registration_id,
+            },
+            request_timeout=_LLM_TOOL_CLEANUP_TIMEOUT,
+            build_result=build_unregister_result,
+        )
+        if result["ok"] and any(
+            r.get("reason") == "different registration" for r in result["refused_roles"]
+        ):
+            # Another registration of this plugin holds the name (a register
+            # that timed out earlier and landed late). The plugin holds no
+            # handler for the name now, so it is a leftover too: remove it by
+            # its reported id, within the cleanup budget.
+            result = await self._remove_reported_llm_tool_registrations(
+                meta.name, meta.role, result, deadline, _LLM_TOOL_CLEANUP_TIMEOUT,
+            )
+        return result
+
+    async def unregister_llm_tool_async(
+        self,
+        name: str,
+        *,
+        request_timeout: float = DEFAULT_LLM_TOOL_REQUEST_TIMEOUT,
+    ) -> LlmToolUnregisterResult:
+        """Unregister an LLM tool and wait for main_server's real answer.
+
+        The host removes the tool from main_server on behalf of this
+        plugin only (``expected_source=plugin:{plugin_id}``): a name
+        owned by another source is left alone and reported in
+        ``refused_roles``. See :class:`LlmToolUnregisterResult` for the
+        fields and error codes.
+
+        The local handler is removed only when the result has
+        ``ok=True``. On failure (some roles failed, timeout, host or
+        main_server unavailable) the tool stays registered locally, as it
+        does on the host, so the model's calls still reach a handler and
+        calling this again retries.
+
+        A name that is not registered locally is still sent to the host,
+        for every role: after a register ``timeout`` main_server may hold
+        the tool although the plugin rolled it back, and this is how the
+        plugin removes it. If main_server removed nothing of this
+        plugin's, the result is ``ok=False, error="not_registered"``.
+
+        Async calls for the same name run one at a time, in call order;
+        see :meth:`register_llm_tool_async`.
+
+        Raises ``ValueError`` for an invalid name or ``request_timeout``.
+        """
+        request_timeout = self._validate_llm_tool_request_timeout(request_timeout)
+        self._validate_async_llm_tool_name(name)
+        try:
+            async with self._llm_tool_name_lock(name, request_timeout) as remaining:
+                deadline = time.monotonic() + remaining
+                meta = self._llm_tools.get(name)
+                result = await self._request_llm_tool_change(
+                    request_type="LLM_TOOL_UNREGISTER_REQUEST",
+                    # Without a local record the role is unknown: all roles.
+                    payload={
+                        "plugin_id": self.plugin_id, "name": name, "role": meta.role if meta else None,
+                        # Registered through the async call: only that registration.
+                        # Sync / decorator tools and names not held locally: any
+                        # registration of this plugin (as before).
+                        **(
+                            {"expected_registration_id": meta.registration_id}
+                            if meta is not None and meta.registration_id else {}
+                        ),
+                    },
+                    request_timeout=remaining,
+                    build_result=build_unregister_result,
+                )
+                if meta is not None:
+                    if result["ok"] and meta.registration_id and any(
+                        r.get("reason") == "different registration" for r in result["refused_roles"]
+                    ):
+                        # Another registration of this plugin holds the name
+                        # (e.g. a timed-out register that landed late, after
+                        # the one we hold). The caller wants the name gone, so
+                        # remove exactly the registration(s) main_server
+                        # reported -- never an unfiltered unregister, which a
+                        # late arrival could turn against a later registration --
+                        # within what is left of this call's budget.
+                        result = await self._remove_reported_llm_tool_registrations(
+                            name, meta.role, result, deadline, request_timeout,
+                        )
+                    if result["ok"]:
+                        self._release_llm_tool_locally(meta)
+                    return result
+                if result["ok"] and not result["removed"]:
+                    return build_unregister_result(
+                        result, ok=False, error="not_registered",
+                        message=f"no LLM tool named {name!r} is registered by this plugin",
+                    )
+                return result
+        except _LlmToolLockTimeout:
+            return self._llm_tool_lock_timeout_result(build_unregister_result, name, request_timeout)
 
     def list_llm_tools(self) -> list[dict[str, Any]]:
         """Return the LLM tools this plugin currently has registered."""
@@ -696,7 +1314,8 @@ class NekoPluginBase(_SharedNekoPluginBase):
                 "role": meta.role,
                 **({"reply_tail": True} if meta.reply_tail else {}),
             }
-            for meta in self._llm_tools.values()
+            # Snapshot: async calls on other threads may add or remove tools.
+            for meta in list(self._llm_tools.values())
         ]
 
     def _register_decorated_llm_tools(self) -> int:

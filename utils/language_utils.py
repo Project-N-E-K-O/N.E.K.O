@@ -35,6 +35,7 @@ from collections import OrderedDict
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Optional, Tuple, List, Any, Callable, Dict, Iterator, NamedTuple
+from config import CHARACTER_NICKNAME_FIELD_KEYS
 from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm_async
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
@@ -1931,7 +1932,7 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
     try:
         config_manager = get_config_manager()
         # Reuse emotion-model configuration.
-        emotion_config = await config_manager.aget_model_api_config('emotion')
+        emotion_config = await config_manager.aget_model_api_config('recognition')
         
         from config.prompts.prompts_sys import (
             _loc, TRANSLATION_WATERMARK_START, TRANSLATION_WATERMARK_END,
@@ -2052,7 +2053,7 @@ class TranslationService:
         additionally keeps construction single-flight.
         """
         try:
-            config = await self.config_manager.aget_model_api_config('emotion')
+            config = await self.config_manager.aget_model_api_config('recognition')
 
             if not config.get('api_key') or not config.get('model') or not config.get('base_url'):
                 logger.warning("翻译服务：API配置不完整（缺少 api_key、model 或 base_url），无法进行翻译")
@@ -2238,19 +2239,20 @@ class TranslationService:
         
         if fields_to_translate is None:
             translate_all = True
-            fields_set = set()
+            fields_set_folded = set()
         elif len(fields_to_translate) == 0:
             translate_all = False
-            fields_set = set()
+            fields_set_folded = set()
         else:
             translate_all = False
-            fields_set = set(fields_to_translate)
+            fields_set_folded = {str(f).casefold() for f in fields_to_translate}
         
+        nickname_keys_folded = {k.casefold() for k in CHARACTER_NICKNAME_FIELD_KEYS}
         for key, value in result.items():
-            should_translate = translate_all or key in fields_set
+            should_translate = translate_all or str(key).casefold() in fields_set_folded
             
             if should_translate and isinstance(value, str) and value.strip():
-                if key in {'昵称', 'nickname'} and ', ' in value:
+                if str(key).casefold() in nickname_keys_folded and ', ' in value:
                     items = [item.strip() for item in value.split(', ')]
                     translated_items = await asyncio.gather(*[
                         self.translate_text_robust(item, target_lang) for item in items

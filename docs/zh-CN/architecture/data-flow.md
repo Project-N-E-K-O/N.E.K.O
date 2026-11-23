@@ -85,7 +85,7 @@
 主对话模型
         │ dispatch_task / query_tasks（工具调用）
         ▼
-tool_calling.py ── HTTP :48915 /nekoclaw/* ──> 喵能力宿主 ──> 回执交还给模型
+tool_calling.py ── HTTP :48915 /nekopower/* ──> 喵能力宿主 ──> 回执交还给模型
 
 cross_server 的 turn end（这一轮没有调用会动手的工具）
         │ 用户原话 + 她的回复

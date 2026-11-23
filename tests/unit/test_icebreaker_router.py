@@ -95,7 +95,7 @@ class _FakeConfigManager:
         return self.get_model_api_config(model_type)
 
     def get_model_api_config(self, model_type):
-        assert model_type == "emotion"
+        assert model_type == "recognition"
         return {
             "model": "fake-emotion-model",
             "base_url": "http://127.0.0.1:9/v1",

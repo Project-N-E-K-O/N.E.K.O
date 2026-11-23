@@ -274,8 +274,8 @@ test('switching core providers preserves key-book provenance in the save payload
 test('all secret-bearing form fields use masked loading and masked save accessors', () => {
     // No 'vision': the settings page has no vision card any more (#3957); see the next test.
     const modelTypes = [
-        'conversation', 'summary', 'gameMain', 'gameSummary',
-        'emotion', 'decision', 'agent', 'agentSmall', 'omni', 'tts',
+        'conversation', 'memory', 'gameMain', 'gameSummary',
+        'recognition', 'decision', 'agentAdvanced', 'agent', 'agentSmall', 'gameRecognition', 'omni', 'tts',
     ];
     for (const modelType of modelTypes) {
         assert.match(

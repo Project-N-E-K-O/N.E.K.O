@@ -161,7 +161,7 @@ class _ResponseMixin:
             )
             return
 
-        if not skipped and "qwen" not in self._model_lower:
+        if not skipped and self._resolved_realtime_dialect() != "qwen":
             # skipped=False: request active model response (task-result reporting).
             # Inject user message and trigger response through create_response.
             # Qwen lacks conversation.item.create; use update_session below.

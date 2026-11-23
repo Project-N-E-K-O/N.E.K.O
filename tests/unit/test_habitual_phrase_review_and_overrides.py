@@ -283,7 +283,7 @@ async def test_the_review_call_is_one_bounded_summary_call_and_always_closed():
             config_manager=cm, now=3.0,
         )
     assert asked == 1 and verdicts[_PHRASE]["verdict"] == "habit"
-    cm.aget_model_api_config.assert_awaited_once_with("summary")
+    cm.aget_model_api_config.assert_awaited_once_with("memory")
     assert create.await_args.kwargs["max_retries"] == 0
     llm.aclose.assert_awaited_once()
 

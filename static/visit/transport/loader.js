@@ -936,6 +936,7 @@
   P.onStop = function () {
     var self = this;
     this.stopped = true;
+    if (this.link && typeof this.link.markStopped === 'function') this.link.markStopped();
     this.stopAllMedia();
     var leaving = this.adapter ? this.adapter.leave() : Promise.resolve();
     // 离房最多等 STOP_LEAVE_WAIT_MS（失败也算完）：网络坏着时 leave 可能一直不落定，收线与拆适配器不能跟着挂住
