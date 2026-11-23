@@ -107,6 +107,12 @@ def _check(src: str) -> list[tuple[int, int, str]]:
         "def f(flag):\n    opts = {'temperature': 0.2}\n    try:\n        if flag:\n            raise ExceptionGroup('g', [ValueError(), KeyError()])\n        else:\n            raise ExceptionGroup('g', [KeyError()])\n    except* ValueError:\n        opts.clear()\n    except* KeyError:\n        create_chat_llm(**opts)\n",
         "def f(flag):\n    opts = {'temperature': 0.2}\n    try:\n        raise ExceptionGroup('g', [ValueError(), KeyError()])\n    except* ValueError:\n        if flag:\n            raise RuntimeError()\n        opts.clear()\n    except* KeyError:\n        create_chat_llm(**opts)\n",
         "def f():\n    opts = {}\n    try:\n        raise ExceptionGroup('g', [ValueError(), KeyError()])\n    except* ValueError:\n        opts = {'temperature': 0.2}\n        raise RuntimeError()\n    except* KeyError:\n        create_chat_llm(**opts)\n",
+        "RETRY = (ValueError,)\ndef f():\n    opts = {'temperature': 0.2}\n    try:\n        raise ExceptionGroup('g', [ValueError()])\n    except* RETRY:\n        create_chat_llm(**opts)\n",
+        "def f(eg):\n    opts = {'temperature': 0.2}\n    try:\n        raise eg\n    except* ValueError:\n        create_chat_llm(**opts)\n",
+        "def f():\n    opts = {'temperature': 0.2}\n    try:\n        raise make_group()\n    except* ValueError:\n        create_chat_llm(**opts)\n",
+        "def f():\n    opts = {'temperature': 0.2}\n    try:\n        raise ExceptionGroup('g', [MyValueError()])\n    except* ValueError:\n        create_chat_llm(**opts)\n",
+        "def f(s):\n    opts = {'temperature': 0.2}\n    try:\n        x = -s\n        raise ExceptionGroup('g', [ValueError()])\n    except* TypeError:\n        create_chat_llm(**opts)\n",
+        "def f():\n    opts = {'temperature': 0.2}\n    try:\n        x = {[1]: 2}\n        raise ExceptionGroup('g', [ValueError()])\n    except* TypeError:\n        create_chat_llm(**opts)\n",
     ],
 )
 def test_flags_direct_and_unpacked_temperature_kwargs(snippet: str):
@@ -199,6 +205,13 @@ def test_flags_unpacked_dict_kwarg_call():
         "def f():\n    opts = {'temperature': 0.2}\n    try:\n        raise ExceptionGroup('g', [ValueError(), KeyError()])\n    except* ValueError:\n        opts.clear()\n    except* KeyError:\n        pass\n    create_chat_llm(**opts)\n",
         "def f():\n    opts = {'temperature': 0.2}\n    try:\n        raise ExceptionGroup('g', [ValueError(), KeyError()])\n    except* ValueError:\n        opts.clear()\n        raise RuntimeError()\n    except* KeyError:\n        create_chat_llm(**opts)\n",
         "def f():\n    opts = {'temperature': 0.2}\n    try:\n        raise ExceptionGroup('outer', [ExceptionGroup('inner', [ValueError(), KeyError()])])\n    except* ValueError:\n        opts.clear()\n    except* KeyError:\n        create_chat_llm(**opts)\n",
+        "def f():\n    opts = {'temperature': 0.2}\n    try:\n        raise OSError()\n    except IOError:\n        opts.clear()\n    finally:\n        create_chat_llm(**opts)\n",
+        "def f():\n    opts = {'temperature': 0.2}\n    try:\n        raise FileNotFoundError()\n    except IOError:\n        opts.clear()\n    finally:\n        create_chat_llm(**opts)\n",
+        "import asyncio\n\ndef f():\n    opts = {'temperature': 0.2}\n    try:\n        raise TimeoutError()\n    except asyncio.TimeoutError:\n        opts.clear()\n    finally:\n        create_chat_llm(**opts)\n",
+        "import socket\n\ndef f():\n    opts = {'temperature': 0.2}\n    try:\n        raise socket.timeout()\n    except OSError:\n        opts.clear()\n    finally:\n        create_chat_llm(**opts)\n",
+        "import socket\n\ndef f():\n    opts = {'temperature': 0.2}\n    try:\n        raise socket.error()\n    except IOError:\n        opts.clear()\n    finally:\n        create_chat_llm(**opts)\n",
+        "import concurrent.futures\n\ndef f():\n    opts = {'temperature': 0.2}\n    try:\n        raise concurrent.futures.TimeoutError()\n    except TimeoutError:\n        opts.clear()\n    finally:\n        create_chat_llm(**opts)\n",
+        "def f():\n    opts = {}\n    try:\n        try:\n            opts = {'temperature': 0.2}\n            raise ExceptionGroup('g', [ValueError(), KeyError()])\n        finally:\n            pass\n    except* ValueError:\n        opts.clear()\n    finally:\n        create_chat_llm(**opts)\n",
     ],
 )
 def test_allows_legitimate_forwarding_and_cleared_dicts(snippet: str):

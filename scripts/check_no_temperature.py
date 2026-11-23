@@ -78,7 +78,13 @@ inside bare ``except:`` are treated as ``Exception`` subclasses when checked
 against ``except Exception`` / ``suppress(Exception)`` so third-party
 exceptions do not trigger false positives; dynamic ``ExceptionGroup``
 payloads whose member classes are not statically listed are handled
-conservatively.
+conservatively. Import-alias resolution is lexical per scope and does not
+track subsequent reassignments, parameter shadowing, or conditional imports;
+same-file class bases are indexed module-wide by bare class name, qualified
+exception names fall back to last-segment matching against unqualified
+handler names, normal-exit and mid-handler-raise paths in ``except*`` are
+merged conservatively, and exceptions raised by separate ``except*`` clauses
+are propagated individually rather than synthesized into a group.
 
 Output
 ------
@@ -198,6 +204,12 @@ _KNOWN_NON_EXCEPTION_BASE_EXCEPTIONS = frozenset(
 
 _EXC_CANONICAL_NAMES: dict[str, str] = {
     "asyncio.exceptions.CancelledError": "asyncio.CancelledError",
+    "asyncio.TimeoutError": "TimeoutError",
+    "asyncio.exceptions.TimeoutError": "TimeoutError",
+    "concurrent.futures.TimeoutError": "TimeoutError",
+    "concurrent.futures._base.TimeoutError": "TimeoutError",
+    "socket.timeout": "TimeoutError",
+    "socket.error": "OSError",
 }
 
 
@@ -308,8 +320,8 @@ def _resolve_exc_ancestors(
             continue
         cls = getattr(builtins, curr, None)
         if isinstance(cls, type) and issubclass(cls, BaseException):
-            for base_cls in cls.__mro__[1:]:
-                if issubclass(base_cls, BaseException):
+            for base_cls in cls.__mro__:
+                if issubclass(base_cls, BaseException) and base_cls.__name__ != curr:
                     ancestors.add(base_cls.__name__)
     return ancestors
 
@@ -317,6 +329,18 @@ def _resolve_exc_ancestors(
 def _is_builtin_base_exception(name: str) -> bool:
     cls = getattr(builtins, name, None)
     return isinstance(cls, type) and issubclass(cls, BaseException)
+
+
+def _builtin_exc_cls(
+    name: str,
+    class_bases: dict[str, set[str]],
+) -> type[BaseException] | None:
+    if name in class_bases:
+        return None
+    cls = getattr(builtins, name, None)
+    if isinstance(cls, type) and issubclass(cls, BaseException):
+        return cls
+    return None
 
 
 def _name_matches_handled(name: str, handled_names: set[str]) -> bool:
@@ -342,14 +366,30 @@ def _exc_matches_names(
     if _name_matches_handled(exc_name, handled_names):
         return True
     bases = class_bases or {}
+    handled_builtin_cls = [
+        cls
+        for h in handled_names
+        if (cls := _builtin_exc_cls(h, bases)) is not None
+    ]
+    exc_cls = _builtin_exc_cls(exc_name, bases)
+    if exc_cls is not None and any(
+        issubclass(exc_cls, h_cls) for h_cls in handled_builtin_cls
+    ):
+        return True
     ancestors = _resolve_exc_ancestors(exc_name, bases, resolve_alias)
     if any(_name_matches_handled(anc, handled_names) for anc in ancestors):
+        return True
+    if handled_builtin_cls and any(
+        (anc_cls := _builtin_exc_cls(anc, bases)) is not None
+        and any(issubclass(anc_cls, h_cls) for h_cls in handled_builtin_cls)
+        for anc in ancestors
+    ):
         return True
     if ((ancestors | {exc_name}) & _KNOWN_NON_EXCEPTION_BASE_EXCEPTIONS) and (
         "Exception" not in ancestors
     ):
         return False
-    if exc_name not in bases and _is_builtin_base_exception(exc_name):
+    if exc_cls is not None:
         return False
     return "Exception" in handled_names
 
@@ -396,65 +436,99 @@ def _suppress_exc_names(
     return names
 
 
+def _is_known_exc_name(
+    name: str,
+    class_bases: dict[str, set[str]],
+) -> bool:
+    return (
+        name in class_bases
+        or _is_builtin_base_exception(name)
+        or name in _KNOWN_NON_EXCEPTION_BASE_EXCEPTIONS
+    )
+
+
+def _all_handlers_known_exc_types(
+    handlers: list[ast.ExceptHandler],
+    class_bases: dict[str, set[str]],
+    resolve_alias: Callable[[str], str] | None = None,
+) -> bool:
+    for handler in handlers:
+        if handler.type is None:
+            return False
+        handled = _handler_exc_names(handler.type, resolve_alias)
+        if not handled or not all(
+            _is_known_exc_name(name, class_bases) for name in handled
+        ):
+            return False
+    return True
+
+
 def _is_simple_nonraising_expr(expr: ast.expr) -> bool:
-    if isinstance(expr, (ast.Constant, ast.Name)):
+    if isinstance(expr, ast.Constant):
         return True
     if isinstance(expr, ast.Dict):
         return all(
-            k is not None
-            and _is_simple_nonraising_expr(k)
-            and _is_simple_nonraising_expr(v)
+            isinstance(k, ast.Constant) and _is_simple_nonraising_expr(v)
             for k, v in zip(expr.keys, expr.values)
         )
-    if isinstance(expr, (ast.Tuple, ast.List, ast.Set)):
+    if isinstance(expr, ast.Set):
+        return all(isinstance(e, ast.Constant) for e in expr.elts)
+    if isinstance(expr, (ast.Tuple, ast.List)):
         return all(_is_simple_nonraising_expr(e) for e in expr.elts)
-    if isinstance(expr, ast.UnaryOp) and isinstance(
-        expr.op, (ast.Not, ast.UAdd, ast.USub)
-    ):
-        return _is_simple_nonraising_expr(expr.operand)
-    if isinstance(expr, ast.BoolOp):
-        return all(_is_simple_nonraising_expr(v) for v in expr.values)
     return False
 
 
-def _is_pure_exc_expr(expr: ast.expr) -> bool:
-    if _dotted_name(expr) is not None:
-        return True
+def _is_pure_exc_expr(
+    expr: ast.expr,
+    class_bases: dict[str, set[str]],
+    resolve_alias: Callable[[str], str] | None = None,
+) -> bool:
     if isinstance(expr, ast.Call):
-        func_name = _dotted_name(expr.func)
-        if func_name is None:
+        func_name = _raised_exc_name(expr.func, resolve_alias)
+        if func_name is None or not _is_known_exc_name(func_name, class_bases):
             return False
-        if all(_is_simple_nonraising_expr(a) for a in expr.args) and all(
+        if func_name in ("ExceptionGroup", "BaseExceptionGroup"):
+            return (
+                len(expr.args) == 2
+                and not expr.keywords
+                and _is_simple_nonraising_expr(expr.args[0])
+                and isinstance(expr.args[1], (ast.List, ast.Tuple))
+                and bool(expr.args[1].elts)
+                and all(
+                    _is_pure_exc_expr(elt, class_bases, resolve_alias)
+                    for elt in expr.args[1].elts
+                )
+            )
+        return all(_is_simple_nonraising_expr(a) for a in expr.args) and all(
             kw.arg is not None and _is_simple_nonraising_expr(kw.value)
             for kw in expr.keywords
-        ):
-            return True
-        if (
-            len(expr.args) == 2
-            and not expr.keywords
-            and _is_simple_nonraising_expr(expr.args[0])
-            and isinstance(expr.args[1], (ast.List, ast.Tuple))
-        ):
-            return all(_is_pure_exc_expr(elt) for elt in expr.args[1].elts)
-    return False
+        )
+    name = _raised_exc_name(expr, resolve_alias)
+    return (
+        name is not None
+        and name not in ("ExceptionGroup", "BaseExceptionGroup")
+        and _is_known_exc_name(name, class_bases)
+    )
 
 
-def _is_pure_static_raise(stmt: ast.Raise) -> bool:
-    if stmt.cause is not None and not _is_simple_nonraising_expr(stmt.cause):
+def _is_pure_static_raise(
+    stmt: ast.Raise,
+    class_bases: dict[str, set[str]],
+    resolve_alias: Callable[[str], str] | None = None,
+) -> bool:
+    if stmt.cause is not None or stmt.exc is None:
         return False
-    if stmt.exc is None:
-        return True
-    return _is_pure_exc_expr(stmt.exc)
+    return _is_pure_exc_expr(stmt.exc, class_bases, resolve_alias)
 
 
-def _stmts_only_explicit_raises(stmts: list[ast.stmt]) -> bool:
+def _stmts_only_explicit_raises(
+    stmts: list[ast.stmt],
+    class_bases: dict[str, set[str]],
+    resolve_alias: Callable[[str], str] | None = None,
+) -> bool:
     for stmt in stmts:
-        if isinstance(stmt, (ast.Pass, ast.Break, ast.Continue)):
+        if isinstance(stmt, ast.Pass):
             continue
-        if isinstance(stmt, ast.Return):
-            return stmt.value is None or _is_simple_nonraising_expr(stmt.value)
-        if isinstance(stmt, ast.Raise):
-            return _is_pure_static_raise(stmt)
         if isinstance(stmt, ast.Assign):
             if not (
                 all(isinstance(t, ast.Name) for t in stmt.targets)
@@ -462,24 +536,10 @@ def _stmts_only_explicit_raises(stmts: list[ast.stmt]) -> bool:
             ):
                 return False
             continue
-        if isinstance(stmt, ast.AnnAssign):
-            if not (
-                isinstance(stmt.target, ast.Name)
-                and _is_simple_nonraising_expr(stmt.annotation)
-                and (stmt.value is None or _is_simple_nonraising_expr(stmt.value))
-            ):
-                return False
-            continue
-        if isinstance(stmt, ast.If):
-            if not (
-                _is_simple_nonraising_expr(stmt.test)
-                and _stmts_only_explicit_raises(stmt.body)
-                and _stmts_only_explicit_raises(stmt.orelse)
-            ):
-                return False
-            continue
+        if isinstance(stmt, ast.Raise):
+            return _is_pure_static_raise(stmt, class_bases, resolve_alias)
         return False
-    return True
+    return False
 
 
 class _LoopFrame:
@@ -504,7 +564,7 @@ class _TryFinallyFrame:
         self.breaks: list[dict[str, bool]] = []
         self.continues: list[dict[str, bool]] = []
         self.returns: list[dict[str, bool]] = []
-        self.raises: list[tuple[str | None, dict[str, bool]]] = []
+        self.raises: list[tuple[str | None, tuple[str, ...] | None, dict[str, bool]]] = []
 
 
 class _WithSuppressFrame:
@@ -594,7 +654,7 @@ class TemperatureKwargChecker(ast.NodeVisitor):
                 elif kind == "return":
                     frame.returns.append(snapshot)
                 elif kind == "raise":
-                    frame.raises.append((exc_name, snapshot))
+                    frame.raises.append((exc_name, group_members, snapshot))
                 return
             if isinstance(frame, _LoopFrame):
                 if kind == "break":
@@ -1188,14 +1248,26 @@ class TemperatureKwargChecker(ast.NodeVisitor):
                 and not body_falls
                 and bool(body_frame.raises)
                 and all(
-                    members is not None
+                    (
+                        members is not None
+                        and all(
+                            _is_known_exc_name(m, self._class_bases) for m in members
+                        )
+                    )
                     or (
-                        exc_name is not None
+                        members is None
+                        and exc_name is not None
                         and exc_name not in ("ExceptionGroup", "BaseExceptionGroup")
+                        and _is_known_exc_name(exc_name, self._class_bases)
                     )
                     for exc_name, members, _ in body_frame.raises
                 )
-                and _stmts_only_explicit_raises(node.body)
+                and _all_handlers_known_exc_types(
+                    node.handlers, self._class_bases, self._resolve_alias
+                )
+                and _stmts_only_explicit_raises(
+                    node.body, self._class_bases, self._resolve_alias
+                )
             )
             if exact_star and body_frame is not None:
                 handler_entries: list[list[dict[str, bool]]] = [
@@ -1254,7 +1326,7 @@ class TemperatureKwargChecker(ast.NodeVisitor):
                     self.scopes[-1] = (
                         self._merge_scopes(handler_entries[idx])
                         if handler_entries[idx]
-                        else {k: False for k in handler_entry}
+                        else dict(handler_entry)
                     )
                     if handler.type is not None:
                         self.visit(handler.type)
@@ -1393,7 +1465,7 @@ class TemperatureKwargChecker(ast.NodeVisitor):
         all_finally_entries.extend(finally_frame.breaks)
         all_finally_entries.extend(finally_frame.continues)
         all_finally_entries.extend(finally_frame.returns)
-        all_finally_entries.extend(snap for _, snap in finally_frame.raises)
+        all_finally_entries.extend(snap for _, _, snap in finally_frame.raises)
         if not all_finally_entries:
             all_finally_entries = list(all_snapshots)
         finally_check_entry = self._merge_scopes(all_finally_entries)
@@ -1419,16 +1491,23 @@ class TemperatureKwargChecker(ast.NodeVisitor):
                     if kind_final_falls:
                         self._record_jump(kind, after_kind)
             if finally_frame.raises:
-                raises_by_exc: dict[str | None, list[dict[str, bool]]] = {}
-                for exc_name, snap in finally_frame.raises:
-                    raises_by_exc.setdefault(exc_name, []).append(snap)
-                for exc_name, snaps in raises_by_exc.items():
+                raises_by_exc: dict[
+                    tuple[str | None, tuple[str, ...] | None], list[dict[str, bool]]
+                ] = {}
+                for exc_name, group_members, snap in finally_frame.raises:
+                    raises_by_exc.setdefault((exc_name, group_members), []).append(snap)
+                for (exc_name, group_members), snaps in raises_by_exc.items():
                     kind_entry = self._merge_scopes(snaps)
                     after_kind, kind_final_falls = self._run_finalbody_silenced(
                         node.finalbody, kind_entry, cache
                     )
                     if kind_final_falls:
-                        self._record_jump("raise", after_kind, exc_name=exc_name)
+                        self._record_jump(
+                            "raise",
+                            after_kind,
+                            exc_name=exc_name,
+                            group_members=group_members,
+                        )
 
         if normal_falls:
             after_normal, normal_final_falls = self._run_finalbody_silenced(
