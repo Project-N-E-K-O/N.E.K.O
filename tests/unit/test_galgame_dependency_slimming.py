@@ -712,3 +712,228 @@ def test_every_fork_importing_test_carries_the_dependency_guard():
         "这些用例导入了 rapidocr_onnxruntime 却没挂 _HAS_PYCLIPPER 守卫，"
         f"干净环境下会抛 ModuleNotFoundError 而不是跳过: {unguarded}"
     )
+
+
+def test_real_corpus_manifest_matches_symlinked_and_relative_ocr_keys(tmp_path):
+    """F0338: relative/symlinked corpus paths match repo-relative OCR JSON keys without failing."""
+    verifier = _load_verifier()
+    real_corpus = tmp_path / "real_corpus" / "zh"
+    real_corpus.mkdir(parents=True)
+    img = real_corpus / "sample.png"
+    img.write_bytes(b"png")
+
+    link_root = tmp_path / "linked_corpus"
+    try:
+        link_root.symlink_to(tmp_path / "real_corpus", target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable in this environment")
+
+    manifest_path = link_root / "manifest.json"
+    manifest_path.write_text(
+        json.dumps([{"path": "zh/sample.png", "category": "zh"}]),
+        encoding="utf-8",
+    )
+
+    # Simulate run_ocr writing resolved repo-relative / POSIX key while manifest uses symlinked relative path
+    resolved_path = verifier._resolve_manifest_path("zh/sample.png", link_root)
+    assert resolved_path == link_root / "zh" / "sample.png"
+
+    ocr_json = tmp_path / "ocr.json"
+    ocr_json.write_text(
+        json.dumps({str(img.resolve()): "hello"}),
+        encoding="utf-8",
+    )
+
+    results = []
+    verifier.check_real_corpus_manifest(results, manifest_path, [ocr_json])
+    coverage = [r for r in results if r.name == "real_corpus_json_coverage_ocr"]
+    assert len(coverage) == 1
+    assert coverage[0].status == "PASS", coverage[0].detail
+
+
+def test_real_corpus_manifest_preserves_symlink_parent_traversal(tmp_path):
+    """Relative '..' after a symlinked manifest dir must follow the symlink target, not lexical normpath."""
+    verifier = _load_verifier()
+    data_root = tmp_path / "data"
+    sub_dir = data_root / "sub"
+    zh_dir = data_root / "zh"
+    sub_dir.mkdir(parents=True)
+    zh_dir.mkdir(parents=True)
+    target_img = zh_dir / "sample.png"
+    target_img.write_bytes(b"real-target")
+
+    # Place a decoy file at the lexical parent location to prove normpath is NOT used.
+    lexical_decoy_dir = tmp_path / "zh"
+    lexical_decoy_dir.mkdir(parents=True)
+    decoy_img = lexical_decoy_dir / "sample.png"
+    decoy_img.write_bytes(b"decoy")
+
+    link_dir = tmp_path / "corpus_link"
+    try:
+        link_dir.symlink_to(sub_dir, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable in this environment")
+
+    manifest_path = link_dir / "manifest.json"
+    manifest_path.write_text(
+        json.dumps([{"path": "../zh/sample.png", "category": "zh"}]),
+        encoding="utf-8",
+    )
+
+    resolved = verifier._resolve_manifest_path("../zh/sample.png", link_dir)
+    assert resolved == link_dir / "../zh/sample.png"
+    assert ".." in resolved.parts
+    if sys.platform != "win32":
+        # Windows GetFullPathNameW collapses ".." lexically before symlink resolution.
+        assert resolved.resolve() == target_img.resolve()
+        assert resolved.resolve() != decoy_img.resolve()
+
+        ocr_json = tmp_path / "ocr.json"
+        ocr_json.write_text(json.dumps({str(target_img.resolve()): "hello"}), encoding="utf-8")
+
+        results = []
+        verifier.check_real_corpus_manifest(results, manifest_path, [ocr_json])
+        files_check = [r for r in results if r.name == "real_corpus_manifest_files"]
+        coverage = [r for r in results if r.name == "real_corpus_json_coverage_ocr"]
+        assert len(files_check) == 1 and files_check[0].status == "PASS", files_check
+        assert len(coverage) == 1 and coverage[0].status == "PASS", coverage
+
+
+def test_real_corpus_manifest_matches_backslash_and_posix_ocr_keys(tmp_path):
+    """Unresolvable manifest entries must still match backslash/POSIX OCR JSON keys across platforms."""
+    verifier = _load_verifier()
+    win_abs = r"D:\corpus\missing.png"
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            [
+                {"path": r"zh\rel_back.png", "category": "zh"},
+                {"path": "zh/rel_posix.png", "category": "zh"},
+                {"path": win_abs, "category": "zh"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    ocr_json = tmp_path / "ocr.json"
+    ocr_json.write_text(
+        json.dumps(
+            {
+                "zh/rel_back.png": "a",
+                r"zh\rel_posix.png": "b",
+                win_abs: "c",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    results = []
+    verifier.check_real_corpus_manifest(results, manifest_path, [ocr_json])
+    coverage = [r for r in results if r.name == "real_corpus_json_coverage_ocr"]
+    assert len(coverage) == 1 and coverage[0].status == "PASS", coverage
+
+
+def test_real_corpus_manifest_handles_cyclic_symlink_without_crashing(tmp_path):
+    """Cyclic symlink entries must record FAIL for missing files without raising RuntimeError."""
+    verifier = _load_verifier()
+    loop_path = tmp_path / "loop.png"
+    try:
+        loop_path.symlink_to(loop_path)
+    except OSError:
+        pytest.skip("symlinks unavailable in this environment")
+
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps([{"path": str(loop_path), "category": "zh"}]),
+        encoding="utf-8",
+    )
+
+    ocr_json_matched = tmp_path / "ocr_matched.json"
+    ocr_json_matched.write_text(json.dumps({str(loop_path): "text"}), encoding="utf-8")
+    ocr_json_missing = tmp_path / "ocr_missing.json"
+    ocr_json_missing.write_text(json.dumps({}), encoding="utf-8")
+
+    results = []
+    verifier.check_real_corpus_manifest(results, manifest_path, [ocr_json_matched, ocr_json_missing])
+    files_check = [r for r in results if r.name == "real_corpus_manifest_files"]
+    matched_cov = [r for r in results if r.name == "real_corpus_json_coverage_ocr_matched"]
+    missing_cov = [r for r in results if r.name == "real_corpus_json_coverage_ocr_missing"]
+    assert len(files_check) == 1 and files_check[0].status == "FAIL"
+    assert len(matched_cov) == 1 and matched_cov[0].status == "PASS"
+    assert len(missing_cov) == 1 and missing_cov[0].status == "FAIL"
+
+
+def test_real_corpus_manifest_rejects_nul_byte_path_cleanly(tmp_path):
+    """Manifest paths containing NUL bytes must fail during loading rather than raising later in resolve()."""
+    verifier = _load_verifier()
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps([{"path": "bad\x00.png", "category": "zh"}]),
+        encoding="utf-8",
+    )
+    ocr_json = tmp_path / "ocr.json"
+    ocr_json.write_text(json.dumps({}), encoding="utf-8")
+
+    results = []
+    verifier.check_real_corpus_manifest(results, manifest_path, [ocr_json])
+    assert len(results) == 1
+    assert results[0].name == "real_corpus_manifest"
+    assert results[0].status == "FAIL"
+    assert "NUL" in results[0].detail
+
+
+def test_fork_isolation_restores_sys_path_and_installed_modules(tmp_path, monkeypatch):
+    """F0339: check_helper_parity and run_ocr('fork') must not leak FORK_ROOT or fork modules."""
+    import importlib
+
+    verifier = _load_verifier()
+    fork_dir = tmp_path / "fork"
+    installed_dir = tmp_path / "installed"
+
+    for root, origin in ((fork_dir, "fork"), (installed_dir, "installed")):
+        pkg = root / "rapidocr_onnxruntime"
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_text(
+            f"ORIGIN = {origin!r}\n"
+            "class RapidOCR:\n"
+            "    def __call__(self, path):\n"
+            f"        return [[None, {origin!r}]], None\n",
+            encoding="utf-8",
+        )
+        (pkg / "_pillow_cv.py").write_text("HELPER = True\n", encoding="utf-8")
+
+    # Purge any existing rapidocr modules and put installed_dir on sys.path
+    saved_path = list(sys.path)
+    saved_mods = {name: sys.modules.pop(name) for name in _rapidocr_modnames()}
+    try:
+        sys.path.insert(0, str(installed_dir))
+        monkeypatch.setattr(verifier, "FORK_ROOT", fork_dir)
+
+        # Force early SKIP inside check_helper_parity (cv2 missing)
+        real_find_spec = importlib.util.find_spec
+        monkeypatch.setattr(
+            verifier.importlib.util,
+            "find_spec",
+            lambda name: None if name in ("cv2", "shapely") else real_find_spec(name),
+        )
+
+        results = []
+        verifier.check_helper_parity(results)
+        assert any(r.name == "helper_parity" and r.status == "SKIP" for r in results)
+
+        # Fork path and modules must not leak after check_helper_parity
+        assert str(fork_dir) not in sys.path
+        assert importlib.import_module("rapidocr_onnxruntime").ORIGIN == "installed"
+
+        img = tmp_path / "img.png"
+        img.write_bytes(b"x")
+        fork_out = verifier.run_ocr([img], None, "fork")
+        assert list(fork_out.values()) == ["fork"]
+        assert str(fork_dir) not in sys.path
+
+        installed_out = verifier.run_ocr([img], None, "installed")
+        assert list(installed_out.values()) == ["installed"]
+    finally:
+        sys.path[:] = saved_path
+        for name in _rapidocr_modnames():
+            sys.modules.pop(name, None)
+        sys.modules.update(saved_mods)

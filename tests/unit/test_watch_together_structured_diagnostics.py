@@ -52,6 +52,20 @@ async def test_failed_attempts_preserve_structure_without_response_text(
         client.aclose.assert_awaited_once()
 
 
+def _stub_model(monkeypatch, instance):
+    """Give the engine a configured chat model without reading any real config.
+
+    Engine.llm resolves its model through ``vision_choice`` (#3941). Stubbing
+    only ``vision_config`` left the real resolver in place, so these tests
+    passed only when an earlier file in the same worker had left an API key
+    configured; run on their own they failed.
+    """
+    from utils.legacy_vision import ImageModelChoice
+
+    choice = ImageModelChoice(conversation={'model': 'test'}, legacy=None)
+    monkeypatch.setattr(instance, 'vision_choice', AsyncMock(return_value=choice))
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('count', [0, 1, 3])
 @pytest.mark.parametrize('shape', ['array', 'object', 'fenced_array'])
@@ -71,7 +85,7 @@ async def test_timeline_preserves_every_event_without_retry(tmp_path, monkeypatc
     factory = AsyncMock(return_value=client)
     monkeypatch.setattr('utils.llm_client.create_chat_llm_async', factory)
     instance = Engine(tmp_path, AsyncMock(), 'cat')
-    monkeypatch.setattr(instance, 'vision_config', AsyncMock(return_value={'model': 'test'}))
+    _stub_model(monkeypatch, instance)
     result = await instance.llm([], {})
     assert result == {'events': events}
     factory.assert_awaited_once()
@@ -104,7 +118,7 @@ async def test_timeline_wrappers_in_event_arrays_retry_instead_of_losing_events(
     factory = AsyncMock(side_effect=clients)
     monkeypatch.setattr('utils.llm_client.create_chat_llm_async', factory)
     instance = Engine(tmp_path, AsyncMock(), 'cat')
-    monkeypatch.setattr(instance, 'vision_config', AsyncMock(return_value={'model': 'test'}))
+    _stub_model(monkeypatch, instance)
     if recovers:
         assert await instance.llm([], {}) == {'events': events}
     else:
@@ -170,7 +184,7 @@ async def test_invalid_timeline_retries_with_a_fresh_client_and_keeps_the_answer
     factory = AsyncMock(side_effect=clients)
     monkeypatch.setattr('utils.llm_client.create_chat_llm_async', factory)
     instance = Engine(tmp_path, AsyncMock(), 'cat')
-    monkeypatch.setattr(instance, 'vision_config', AsyncMock(return_value={'model': 'test'}))
+    _stub_model(monkeypatch, instance)
     job = {}
 
     assert await instance.llm([], job) == {'events': events}

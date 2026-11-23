@@ -23,6 +23,7 @@ const PERMISSION_IDS = [
   'plugin_sdk.main_agent.conversations:read',
   'plugin_sdk.models:invoke',
   'system.network:connect',
+  'system.network:listen',
   'system.fs:read',
   'system.fs:write',
   'system.process:spawn',

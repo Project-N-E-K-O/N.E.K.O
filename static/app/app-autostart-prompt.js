@@ -45,6 +45,7 @@
         fastHeartbeatTimer: null,
         requestInFlight: false,
         pendingHeartbeatAfterFlight: false,
+        pendingHeartbeatBatch: null,
         promptOpen: false,
         lastPromptTokenSeen: null,
         pendingForegroundMs: 0,
@@ -450,10 +451,8 @@
         }
 
         state.requestInFlight = true;
-        let foregroundDelta = 0;
-        let homeInteractionsDelta = 0;
-        let chatTurnsDelta = 0;
-        let voiceSessionsDelta = 0;
+        let activeBatch = null;
+        let usingRetryBatch = false;
 
         try {
             const autostartStatus = await getAutostartStatusForHeartbeat();
@@ -465,16 +464,41 @@
                 return;
             }
 
-            foregroundDelta = consumeForegroundDelta();
-            homeInteractionsDelta = state.pendingWeakHomeInteractions;
-            chatTurnsDelta = state.pendingChatTurns;
-            voiceSessionsDelta = state.pendingVoiceSessions;
+            const retryBatch = state.pendingHeartbeatBatch;
+            if (retryBatch) {
+                activeBatch = retryBatch;
+                usingRetryBatch = true;
+            } else {
+                const foregroundDelta = consumeForegroundDelta();
+                const homeInteractionsDelta = state.pendingWeakHomeInteractions;
+                const chatTurnsDelta = state.pendingChatTurns;
+                const voiceSessionsDelta = state.pendingVoiceSessions;
+                const hasReplaySensitiveDelta = (
+                    foregroundDelta > 0
+                    || homeInteractionsDelta > 0
+                    || chatTurnsDelta > 0
+                    || voiceSessionsDelta > 0
+                );
+                activeBatch = {
+                    foregroundDelta: foregroundDelta,
+                    homeInteractionsDelta: homeInteractionsDelta,
+                    chatTurnsDelta: chatTurnsDelta,
+                    voiceSessionsDelta: voiceSessionsDelta,
+                    heartbeatToken: hasReplaySensitiveDelta ? createHeartbeatToken() : '',
+                };
+                if (hasReplaySensitiveDelta) {
+                    state.pendingWeakHomeInteractions = 0;
+                    state.pendingChatTurns = 0;
+                    state.pendingVoiceSessions = 0;
+                    state.pendingHeartbeatBatch = activeBatch;
+                }
+            }
 
             const payload = {
-                foreground_ms_delta: foregroundDelta,
-                home_interactions_delta: homeInteractionsDelta,
-                chat_turns_delta: chatTurnsDelta,
-                voice_sessions_delta: voiceSessionsDelta,
+                foreground_ms_delta: activeBatch.foregroundDelta,
+                home_interactions_delta: activeBatch.homeInteractionsDelta,
+                chat_turns_delta: activeBatch.chatTurnsDelta,
+                voice_sessions_delta: activeBatch.voiceSessionsDelta,
                 autostart_enabled: autostartStatus.enabled,
                 autostart_supported: autostartStatus.supported,
                 autostart_status_authoritative: autostartStatus.authoritative,
@@ -482,22 +506,12 @@
             };
 
             // 只在真有 replay-sensitive delta 时带 heartbeat_token：
-            // 断线/超时/响应解析失败时前端会把 delta 加回 pending（Lines 364-367），
-            // 后端按 token 幂等 dedupe，避免同一批 foreground_ms 被阈值重复计入
-            // 而误弹自启动提示。
-            const hasReplaySensitiveDelta = (
-                foregroundDelta > 0
-                || homeInteractionsDelta > 0
-                || chatTurnsDelta > 0
-                || voiceSessionsDelta > 0
-            );
-            if (hasReplaySensitiveDelta) {
-                payload.heartbeat_token = createHeartbeatToken();
+            // 断线/超时/响应解析失败时前端将未确认批次保留在 state.pendingHeartbeatBatch 中，
+            // 重试时发送完全相同的 delta 与 heartbeat_token（同时新产生的增量继续留在 pending*），
+            // 后端按 token 幂等 dedupe，避免同一批 foreground_ms 被阈值重复计入而误弹自启动提示。
+            if (activeBatch.heartbeatToken) {
+                payload.heartbeat_token = activeBatch.heartbeatToken;
             }
-
-            state.pendingWeakHomeInteractions = 0;
-            state.pendingChatTurns = 0;
-            state.pendingVoiceSessions = 0;
 
             if (state.pendingDecisionPayload) {
                 const pendingPayload = state.pendingDecisionPayload;
@@ -508,14 +522,28 @@
                 method: 'POST',
                 json: payload,
             });
+            if (state.pendingHeartbeatBatch === activeBatch) {
+                state.pendingHeartbeatBatch = null;
+            }
+            if (usingRetryBatch) {
+                syncForegroundWindow();
+                if (
+                    state.pendingForegroundMs > 0
+                    || state.pendingWeakHomeInteractions > 0
+                    || state.pendingChatTurns > 0
+                    || state.pendingVoiceSessions > 0
+                ) {
+                    state.pendingHeartbeatAfterFlight = true;
+                }
+            }
             if (data && data.state) {
                 applyServerState(data.state, 'heartbeat');
             }
             logFlow('heartbeat', {
-                foregroundMsDelta: foregroundDelta,
-                weakHomeInteractionsDelta: homeInteractionsDelta,
-                chatTurnsDelta: chatTurnsDelta,
-                voiceSessionsDelta: voiceSessionsDelta,
+                foregroundMsDelta: activeBatch.foregroundDelta,
+                weakHomeInteractionsDelta: activeBatch.homeInteractionsDelta,
+                chatTurnsDelta: activeBatch.chatTurnsDelta,
+                voiceSessionsDelta: activeBatch.voiceSessionsDelta,
                 shouldPrompt: !!(data && data.should_prompt),
                 reason: data && data.prompt_reason,
                 token: shortPromptToken(data && data.prompt_token),
@@ -534,10 +562,6 @@
                 }
             }
         } catch (error) {
-            state.pendingForegroundMs += foregroundDelta;
-            state.pendingWeakHomeInteractions += homeInteractionsDelta;
-            state.pendingChatTurns += chatTurnsDelta;
-            state.pendingVoiceSessions += voiceSessionsDelta;
             console.warn('[AutostartPrompt] heartbeat failed:', error);
         } finally {
             state.requestInFlight = false;

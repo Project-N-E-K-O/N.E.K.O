@@ -2113,7 +2113,8 @@ async def test_a_directory_is_not_an_executable(browser_settings, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-async def test_a_task_agents_request_is_counted_against_the_agent_models_daily_quota(wiring, monkeypatch):
+async def test_a_task_agents_request_is_counted_against_the_free_daily_quota(wiring, monkeypatch):
+    """The host asks only for a session that goes with the free key, so the meter counts unconditionally."""
     import utils.config_manager as config_manager
 
     counted: list[tuple[str, int]] = []
@@ -2122,7 +2123,7 @@ async def test_a_task_agents_request_is_counted_against_the_agent_models_daily_q
         def __init__(self, allowed: bool) -> None:
             self.allowed = allowed
 
-        async def aconsume_agent_daily_quota(self, source: str = "", units: int = 1) -> tuple[bool, dict[str, Any]]:
+        async def aconsume_free_daily_quota(self, source: str = "", units: int = 1) -> tuple[bool, dict[str, Any]]:
             counted.append((source, units))
             return self.allowed, {}
 

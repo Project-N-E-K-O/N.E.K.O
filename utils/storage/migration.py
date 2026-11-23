@@ -91,9 +91,10 @@ MIGRATED_RUNTIME_ENTRY_NAMES = (
     "knowledge",
     # NekoPower: what it keeps as plain files, each on its own (the ledger of
     # commissions with its write-ahead log, the permission settings, what
-    # was learned about plugins and models, the browser settings). Not the
-    # directory as a whole: below it are the task agents' working
-    # directories (virtual environments, ``node_modules``: full of links)
+    # was learned about plugins and models, the model each role is sent to,
+    # the browser settings). Not the directory as a whole: below it are the
+    # task agents' working directories (virtual environments,
+    # ``node_modules``: full of links)
     # and the profile of the browser the browser tools start (lock links on
     # macOS and Linux), and one link fails a whole migration. Those two stay
     # in the old root; see ``DELIBERATELY_UNMIGRATED`` in
@@ -106,6 +107,7 @@ MIGRATED_RUNTIME_ENTRY_NAMES = (
     "nekopower/permissions.json",
     "nekopower/plugin_short_descriptions.json",
     "nekopower/model_capabilities.json",
+    "nekopower/role_models.json",
     "nekopower/browser.json",
     # What task agents keep for later commissions: rules, indexes, entries,
     # reviews, archived projects. Plain text the host alone writes, kept in
@@ -130,6 +132,7 @@ MIGRATED_RUNTIME_ENTRY_NAMES = (
     "avatar_tools",
     "chat_avatars",
     "pngtuber",
+    "emote_templates",
     "watch_together",
     # Downloaded models (RapidOCR runtimes, memory embedding models): moved
     # so they keep working at the new root without downloading them again.

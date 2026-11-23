@@ -38,6 +38,7 @@ from tests.unit.nekopower.fakes import ScriptedLLM, call, finish, say, usage
 from tests.unit.nekopower.host_fakes import (
     FakeDecisionLLM,
     fake_model,
+    let_go,
     make_host,
     scripted_runtime,
     scripts_by_commission,
@@ -126,7 +127,8 @@ async def _events(host: Any, commission_id: str, kind: str | None = None) -> lis
 
 
 async def _let_go(host: Any) -> None:
-    await wait_until(lambda: host.task_agents._held_by == {}, what="every session being let go")
+    """Wait until no commission holds a session any more (``host_fakes.let_go``)."""
+    await let_go(host)
 
 
 def _said(request: list[dict[str, Any]]) -> list[str]:
@@ -4993,7 +4995,7 @@ async def test_a_request_counted_for_a_session_is_not_taken_by_the_commission_of
     mark = agents._session_mark("the-one-id")
     agents._prepaid_starts.add(mark)
 
-    assert await agents._pay_first_request(_Session("the-one-id")) is True
+    assert await agents._pay_first_request(_Session("the-one-id", free=True)) is True
 
     # It pays for its own first request, and the session's stays for the commission the note gets.
     assert counted == ["the-one-id"] and agents._prepaid_starts == {mark}

@@ -30,6 +30,7 @@ _SPECS = (
     PermissionSpec("plugin_sdk.main_agent.conversations:read", lock=True, legacy_name="conversations.read"),
     PermissionSpec("plugin_sdk.models:invoke"),
     PermissionSpec("system.network:connect"),
+    PermissionSpec("system.network:listen", enforced=False),
     PermissionSpec("system.fs:read"),
     PermissionSpec("system.fs:write"),
     PermissionSpec("system.process:spawn"),

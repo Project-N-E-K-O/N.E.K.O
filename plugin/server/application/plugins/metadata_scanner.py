@@ -380,8 +380,8 @@ def _scan_in_worker(request: Mapping[str, object]) -> dict[str, object]:
             f"Plugin '{plugin_id}' entry class '{class_name}' is invalid"
         )
 
-    scan_static_metadata(plugin_id, cls_obj, conf, pdata)
-    entries_preview = _extract_entries_preview(plugin_id, cls_obj, conf, pdata)
+    scan_static_metadata(plugin_id, cls_obj, conf, pdata, manifest_path=config_path)
+    entries_preview = _extract_entries_preview(plugin_id, cls_obj, conf, pdata, manifest_path=config_path)
 
     prefix_dot = f"{plugin_id}."
     prefix_colon = f"{plugin_id}:"

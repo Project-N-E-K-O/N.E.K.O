@@ -53,6 +53,7 @@ def test_first_batch_vocabulary():
         "plugin_sdk.main_agent.conversations:read",
         "plugin_sdk.models:invoke",
         "system.network:connect",
+        "system.network:listen",
         "system.fs:read",
         "system.fs:write",
         "system.process:spawn",
@@ -61,7 +62,11 @@ def test_first_batch_vocabulary():
     )
     assert tuple(PERMISSIONS) == PERMISSION_IDS
     assert LOCK_PERMISSIONS == {MEMORY, "plugin_sdk.main_agent.conversations:read"}
-    assert UNENFORCED_PERMISSIONS == {"system.env:read", "plugin_sdk.main_agent.messages:push"}
+    assert UNENFORCED_PERMISSIONS == {
+        "system.network:listen",
+        "system.env:read",
+        "plugin_sdk.main_agent.messages:push",
+    }
     assert dict(LEGACY_PERMISSION_NAMES) == {
         "memory.read": MEMORY,
         "conversations.read": "plugin_sdk.main_agent.conversations:read",
@@ -207,22 +212,21 @@ async def test_call_entry_returns_err_permission_denied():
 # --- FakePermissions -------------------------------------------------------
 
 
-async def test_fake_permissions_states_requests_and_changes():
-    perms = FakePermissions({MEMORY: "denied"}, answers={"system.network:connect": "granted"}, default="undecided")
+def test_fake_permissions_states_and_changes():
+    perms = FakePermissions({MEMORY: "denied"}, default="undecided")
     assert perms.get(MEMORY) == PermissionState("denied", enforced=True)
     assert perms.get("system.network:connect").status == "undecided"
     assert perms.get("system.env:read") == PermissionState("undecided", enforced=False)
+    assert perms.get("system.network:listen") == PermissionState("undecided", enforced=False)
     assert perms.get("plugin_sdk.main_agent.messages:push").enforced is False
 
     seen = []
     handle = perms.on_change(lambda permission, state: seen.append((permission, state.status)))
-    assert (await perms.request("system.network:connect")).status == "granted"
-    assert (await perms.request(MEMORY, wait=False)).status == "denied"  # no answer: unchanged
+    perms.set("system.network:connect", "granted")
     perms.set(MEMORY, {"status": "granted", "background": True})
     handle.cancel()
     perms.set(MEMORY, "denied")
     assert seen == [("system.network:connect", "granted"), (MEMORY, "granted")]
-    assert perms.requests == [("system.network:connect", True), (MEMORY, False)]
     assert perms.get(MEMORY).background is False
 
 

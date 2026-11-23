@@ -1182,10 +1182,12 @@ SOCCER_PASSIVE_GUARD_SYSTEM_PROMPT_ZH = """\
 - recommendedAction 只能是 observe_more、cancel_candidate、send_rescue_hint、prepare_exit_prompt。
 - exitPromptType 只能是 none、surrender、rest。
 - stage 小于 8 时不能输出 prepare_exit_prompt；如果证据像是该退出，也先输出 send_rescue_hint 或 observe_more。
-- ordinary/surrender 场景：如果更像 LLM 复读或可恢复的消极比赛，优先 send_rescue_hint；如果更像真实持续放弃/疲劳/服软，stage >= 8 时可以 prepare_exit_prompt + surrender。
+- ordinary/surrender 场景：看猫娘最近台词本身表达了什么；连续丢球数和分差只说明出现了候选，本身不是放弃的证据。台词里还在表态要防守、要反击（哪怕句子重复），算 LLM 复读或可恢复的消极比赛，输出 recoverable_passive + send_rescue_hint；台词本身持续表达放弃、疲劳或服软，stage >= 8 时输出 true_surrender + prepare_exit_prompt + surrender。
 - ordinary_user_speech 触发时，如果玩家主动沟通足以让猫娘重新投入比赛，应输出 cancel_candidate；证据不足则 observe_more。
 - rest 场景只用于开局 gameStance=withdrawn 的低落/退缩特殊情况。玩家温柔、哄哄、关怀的发言如果足以让状态转好，应输出 cancel_candidate。
+- rest 场景 stage >= 8 时：如果猫娘最近台词仍持续低落、疲惫、不想动，没有重新投入的迹象，输出 rest_needed + prepare_exit_prompt + rest；不要用 send_rescue_hint 拖延，休息提示本身就是在照顾她。
 - teaching 场景不走认输/休息窗口；如果输入里出现 teaching，应优先 cancel_candidate。
+- reasonForDebug 只写一句话，不超过 40 字；evidenceTags 最多 4 个短标签；counterAction 不超过 20 字。
 
 输出格式：
 {
@@ -1213,10 +1215,12 @@ SOCCER_PASSIVE_GUARD_SYSTEM_PROMPT_ZH_TW = """\
 - recommendedAction 只能是 observe_more、cancel_candidate、send_rescue_hint、prepare_exit_prompt。
 - exitPromptType 只能是 none、surrender、rest。
 - stage 小於 8 時不能輸出 prepare_exit_prompt；就算證據看起來該退出，也先輸出 send_rescue_hint 或 observe_more。
-- ordinary/surrender 場景：如果比較像 LLM 複讀或還救得回來的消極比賽，優先 send_rescue_hint；如果比較像真的持續放棄／疲勞／服軟，stage >= 8 時可以 prepare_exit_prompt + surrender。
+- ordinary/surrender 場景：看貓娘最近台詞本身表達了什麼；連續丟球數和比分差只說明出現了候選，本身不是放棄的證據。台詞裡還在表態要防守、要反擊（就算句子重複），算 LLM 複讀或還救得回來的消極比賽，輸出 recoverable_passive + send_rescue_hint；台詞本身持續表達放棄、疲勞或服軟，stage >= 8 時輸出 true_surrender + prepare_exit_prompt + surrender。
 - ordinary_user_speech 觸發時，如果玩家主動溝通足以讓貓娘重新投入比賽，就輸出 cancel_candidate；證據不足則 observe_more。
 - rest 場景只用在開局 gameStance=withdrawn 的低落／退縮特殊情況。玩家溫柔、哄哄、關心的發言如果足以讓狀態變好，就輸出 cancel_candidate。
+- rest 場景 stage >= 8 時：如果貓娘最近台詞仍持續低落、疲憊、不想動，沒有重新投入的跡象，輸出 rest_needed + prepare_exit_prompt + rest；不要用 send_rescue_hint 拖延，休息提示本身就是在照顧她。
 - teaching 場景不走認輸／休息視窗；如果輸入裡出現 teaching，應該優先 cancel_candidate。
+- reasonForDebug 只寫一句話，不超過 40 字；evidenceTags 最多 4 個短標籤；counterAction 不超過 20 字。
 
 輸出格式：
 {
@@ -1244,10 +1248,12 @@ Rules:
 - recommendedAction must be one of observe_more, cancel_candidate, send_rescue_hint, prepare_exit_prompt.
 - exitPromptType must be one of none, surrender, rest.
 - If stage is below 8, do not output prepare_exit_prompt. If the evidence is close, use send_rescue_hint or observe_more.
-- For ordinary/surrender: if it looks like repetition or recoverable passive play, prefer send_rescue_hint. If it looks like sustained genuine giving up, fatigue, or yielding, stage >= 8 may use prepare_exit_prompt + surrender.
+- For ordinary/surrender: judge what NEKO's recent lines actually say; the goal streak and score lead only mean a candidate exists and are not evidence of giving up by themselves. Lines that still vow to defend or fight back (even repeated ones) are repetition or recoverable passive play: output recoverable_passive + send_rescue_hint. Lines that themselves keep expressing giving up, fatigue, or yielding: at stage >= 8 output true_surrender + prepare_exit_prompt + surrender.
 - For ordinary_user_speech triggers, if the player's active communication is enough for NEKO to re-engage in the match, output cancel_candidate; otherwise observe_more.
 - rest is only for opening gameStance=withdrawn. If the player speaks gently or comfortingly enough to improve that state, output cancel_candidate.
+- For rest at stage >= 8: if NEKO's recent lines are still persistently low, tired, or unwilling to move, with no sign of re-engaging, output rest_needed + prepare_exit_prompt + rest. Do not stall with send_rescue_hint; offering rest is itself the way to look after her.
 - Teaching should not use surrender/rest prompts; if the input is teaching, prefer cancel_candidate.
+- reasonForDebug is one sentence of at most 25 words; evidenceTags has at most 4 short tags; counterAction is at most 70 characters.
 
 Output schema:
 {

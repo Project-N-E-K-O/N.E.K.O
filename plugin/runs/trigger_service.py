@@ -423,6 +423,17 @@ async def _execute_trigger(
                 },
                 trace_id=trace_id,
             )
+        if isinstance(cause, RpcRemoteError) and cause.code in ("CANCELLED", "CANCELED", "CANCELLED_BY_USER"):
+            return fail(
+                "CANCELLED",
+                str(exc),
+                details={
+                    "plugin_id": plugin_id,
+                    "entry_id": entry_id,
+                    "type": type(exc).__name__,
+                },
+                trace_id=trace_id,
+            )
         return fail(
             ErrorCode.INTERNAL,
             str(exc),

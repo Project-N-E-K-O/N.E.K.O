@@ -18,9 +18,10 @@ import threading
 import time
 import uuid
 import weakref
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Iterator
+from typing import TYPE_CHECKING, Any, Dict, Iterator, Optional
 
 from config import (
     MAIN_SERVER_PORT,
@@ -344,6 +345,102 @@ async def _await_within_budget(awaitable: Any, budget: float) -> tuple[bool, Any
     task.cancel()
     task.add_done_callback(_discard_abandoned_task_result)
     return False, None
+
+
+def _initial_entry_tables(instance: Any, logger: Any) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Dict[str, Any]]]:
+    """The plugin process's first entry tables: ``collect_entries()``, else a method scan.
+
+    Returns ``(entry_map, entry_meta_map, events_by_type)``.
+    """
+    entry_map: Dict[str, Any] = {}
+    entry_meta_map: Dict[str, Any] = {}
+    events_by_type: Dict[str, Dict[str, Any]] = {}
+    # Prefer collect_entries(), supporting Hook wrappers.
+    collected_ok = False
+    if hasattr(instance, "collect_entries") and callable(instance.collect_entries):
+        try:
+            collected = instance.collect_entries(wrap_with_hooks=True)
+            collected_ok = True
+            for eid, event_handler in collected.items():
+                entry_map[eid] = event_handler.handler
+                entry_meta_map[eid] = event_handler.meta
+                etype = getattr(event_handler.meta, "event_type", "plugin_entry")
+                events_by_type.setdefault(etype, {})
+                events_by_type[etype][eid] = event_handler.handler
+            logger.info("Plugin entries collected via collect_entries(): {}", list(entry_map.keys()))
+        except Exception as e:
+            logger.warning("Failed to collect entries via collect_entries(): {}, falling back to scan", e)
+            entry_map.clear()
+            entry_meta_map.clear()
+            events_by_type.clear()
+    
+    # Fall back to method scanning if collect_entries is missing or fails.
+    # A plugin whose components were all refused by the narrowing check
+    # collected nothing on purpose: scanning would bring them back, plus
+    # every public method as an entry.
+    refused_all = collected_ok and bool(getattr(instance, "_narrowing_refused", None))
+    if not entry_map and not refused_all:
+        # The same narrowing check collect_entries() runs, for the case
+        # collect_entries() failed.
+        narrow = getattr(instance, "_apply_permission_narrowing", None)
+        scanned: list[tuple[str, Any, Any]] = []
+        for name, member in inspect.getmembers(instance, predicate=callable):
+            if name.startswith("_") and not hasattr(member, EVENT_META_ATTR):
+                continue
+            event_meta = getattr(member, EVENT_META_ATTR, None)
+            if not event_meta:
+                wrapped = getattr(member, "__wrapped__", None)
+                if wrapped is not None:
+                    event_meta = getattr(wrapped, EVENT_META_ATTR, None)
+            scanned.append((name, member, event_meta))
+        # Keyed by (event_type, id): a timer and an entry may share an id.
+        kept: Dict[tuple[str, str], Any] | None = None
+        check_failed = False
+        if callable(narrow):
+            from plugin.sdk.shared.core.events import EventHandler as _SdkEventHandler
+
+            try:
+                kept = {}
+                by_type: Dict[str, Dict[str, Any]] = {}
+                for name, member, event_meta in scanned:
+                    if event_meta:
+                        by_type.setdefault(str(getattr(event_meta, "event_type", None) or "plugin_entry"), {})[
+                            str(getattr(event_meta, "id", name))
+                        ] = _SdkEventHandler(meta=event_meta, handler=member)
+                for etype_key, group in by_type.items():
+                    for eid_key, item in narrow(group).items():
+                        kept[(etype_key, eid_key)] = item
+            except Exception as e:
+                kept = None
+                check_failed = True
+                logger.warning("Permission narrowing check failed during fallback scan: {}", e)
+
+        for name, member, event_meta in scanned:
+            if event_meta:
+                eid = getattr(event_meta, "id", name)
+                if check_failed and getattr(event_meta, "permissions", None) is not None:
+                    # The check could not run: a component that narrows is not
+                    # registered unverified. Components without narrowing are
+                    # mapped as before.
+                    logger.error(
+                        "Component not registered: {} {!r} narrows permissions and the narrowing check failed",
+                        getattr(event_meta, "event_type", "plugin_entry"), eid,
+                    )
+                    continue
+                if kept is not None:
+                    key = (str(getattr(event_meta, "event_type", None) or "plugin_entry"), str(eid))
+                    if key not in kept:
+                        continue
+                    event_meta = kept[key].meta
+                entry_map[eid] = member
+                entry_meta_map[eid] = event_meta  # Store EventMeta for custom settings.
+                etype = getattr(event_meta, "event_type", "plugin_entry")
+                events_by_type.setdefault(etype, {})
+                events_by_type[etype][eid] = member
+            else:
+                entry_map[name] = member
+        logger.info("Plugin instance created. Mapped entries: {}", list(entry_map.keys()))
+    return entry_map, entry_meta_map, events_by_type
 
 
 def _find_project_root(config_path: Path) -> Path:
@@ -822,6 +919,31 @@ async def _handle_config_update_command(
         res_sender.put(ret_payload, timeout=10.0)
     except Exception:
         logger.exception("[Plugin Process] Failed to send CONFIG_UPDATE response")
+
+
+def _resolve_cancel_run_id(msg: Mapping[str, Any]) -> Optional[str]:
+    raw_run_id = msg.get("run_id")
+    if isinstance(raw_run_id, str):
+        stripped = raw_run_id.strip()
+        if stripped:
+            return stripped
+    return None
+
+
+def _resolve_trigger_task_key(msg: Mapping[str, Any]) -> str:
+    run_id: Optional[str] = None
+    args = msg.get("args")
+    if isinstance(args, Mapping):
+        ctx_obj = args.get("_ctx")
+        if isinstance(ctx_obj, Mapping):
+            raw_run_id = ctx_obj.get("run_id")
+            if isinstance(raw_run_id, str):
+                stripped = raw_run_id.strip()
+                if stripped:
+                    run_id = stripped
+    if run_id is not None:
+        return run_id
+    return f"trigger:{msg.get('req_id') or uuid.uuid4()}"
 
 
 def _deep_merge(base: dict, updates: dict) -> None:
@@ -1308,44 +1430,15 @@ def _plugin_process_runner(
                 events_by_type[etype][eid] = eh.handler
             ctx._entry_map = entry_map
 
-        # Prefer collect_entries(), supporting Hook wrappers.
-        if hasattr(instance, "collect_entries") and callable(instance.collect_entries):
-            try:
-                collected = instance.collect_entries(wrap_with_hooks=True)
-                for eid, event_handler in collected.items():
-                    entry_map[eid] = event_handler.handler
-                    entry_meta_map[eid] = event_handler.meta
-                    etype = getattr(event_handler.meta, "event_type", "plugin_entry")
-                    events_by_type.setdefault(etype, {})
-                    events_by_type[etype][eid] = event_handler.handler
-                logger.info("Plugin entries collected via collect_entries(): {}", list(entry_map.keys()))
-            except Exception as e:
-                logger.warning("Failed to collect entries via collect_entries(): {}, falling back to scan", e)
-                entry_map.clear()
-                entry_meta_map.clear()
-                events_by_type.clear()
-        
-        # Fall back to method scanning if collect_entries is missing or fails.
-        if not entry_map:
-            for name, member in inspect.getmembers(instance, predicate=callable):
-                if name.startswith("_") and not hasattr(member, EVENT_META_ATTR):
-                    continue
-                event_meta = getattr(member, EVENT_META_ATTR, None)
-                if not event_meta:
-                    wrapped = getattr(member, "__wrapped__", None)
-                    if wrapped is not None:
-                        event_meta = getattr(wrapped, EVENT_META_ATTR, None)
-
-                if event_meta:
-                    eid = getattr(event_meta, "id", name)
-                    entry_map[eid] = member
-                    entry_meta_map[eid] = event_meta  # Store EventMeta for custom settings.
-                    etype = getattr(event_meta, "event_type", "plugin_entry")
-                    events_by_type.setdefault(etype, {})
-                    events_by_type[etype][eid] = member
-                else:
-                    entry_map[name] = member
-            logger.info("Plugin instance created. Mapped entries: {}", list(entry_map.keys()))
+        # The components generation the maps reflect, read before the snapshot:
+        # a change made while it is taken leaves the recorded value behind, so
+        # the first call rebuilds (same order as EntryExecutor._resolve). The
+        # executor is built after on_startup, which may change components again.
+        initial_maps_generation = getattr(instance, "_components_generation", None)
+        initial_map, initial_meta_map, initial_events = _initial_entry_tables(instance, logger)
+        entry_map.update(initial_map)
+        entry_meta_map.update(initial_meta_map)
+        events_by_type.update(initial_events)
         
         ctx._entry_map = entry_map
         ctx._instance = instance
@@ -1562,6 +1655,7 @@ def _plugin_process_runner(
             plugin_id=plugin_id, context=ctx, instance=instance, entries=entry_map,
             metadata=entry_meta_map, events=events_by_type, default_timeout=PLUGIN_TRIGGER_TIMEOUT,
             refresh=_rebuild_entry_map, should_persist=_should_persist, persist=_save_plugin_state, logger=logger,
+            maps_generation=initial_maps_generation,
         )
 
         async def _execute_command(msg: dict):
@@ -1726,7 +1820,7 @@ def _plugin_process_runner(
 
                 # ── CANCEL_RUN ──
                 if msg_type == "CANCEL_RUN":
-                    run_id = msg.get("run_id")
+                    run_id = _resolve_cancel_run_id(msg)
                     task = _run_tasks.get(run_id) if run_id else None
                     if task and not task.done():
                         task.cancel()
@@ -1815,17 +1909,10 @@ def _plugin_process_runner(
 
                 # ── TRIGGER ──
                 if msg_type == "TRIGGER":
-                    run_id = None
-                    try:
-                        ctx_obj = msg.get("args", {}).get("_ctx")
-                        if isinstance(ctx_obj, dict):
-                            run_id = ctx_obj.get("run_id")
-                    except Exception:
-                        pass
                     task = asyncio.create_task(_handle_trigger(msg))
                     # Register every trigger so shutdown cancels it before the
                     # model clients close; only run_id keys are cancellable by CANCEL_RUN.
-                    task_key = run_id if run_id else f"trigger:{msg.get('req_id') or uuid.uuid4()}"
+                    task_key = _resolve_trigger_task_key(msg)
                     _run_tasks[task_key] = task
                     task.add_done_callback(
                         lambda _t, key=task_key: _run_tasks.pop(key, None) if _run_tasks.get(key) is _t else None

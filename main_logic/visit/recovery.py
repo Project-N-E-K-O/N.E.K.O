@@ -443,6 +443,54 @@ def _sealed_doc_unrecognized(doc: Any, visit_id: str) -> bool:
     return False
 
 
+def _lines_is_subsequence(expected_lines: list[dict], sealed_lines: list[dict]) -> bool:
+    """Return True when every expected line appears in sealed_lines in relative order."""
+    idx = 0
+    total = len(sealed_lines)
+    for line in expected_lines:
+        while idx < total and sealed_lines[idx] != line:
+            idx += 1
+        if idx >= total:
+            return False
+        idx += 1
+    return True
+
+
+def _sealed_matches_stream(sealed_doc: dict, expected: dict) -> bool:
+    """Return True when sealed_doc is at least as complete as the stream-rebuilt expected doc."""
+    for key in ("v", "own_visit_uid", "own_char_uid", "transport"):
+        if sealed_doc.get(key) != expected.get(key):
+            return False
+
+    s_req = sealed_doc.get("request")
+    e_req = expected.get("request")
+    if not isinstance(s_req, dict) or not isinstance(e_req, dict):
+        return False
+
+    for key in ("visit_id", "role", "started_at", "finalized_reason", "app_version"):
+        if s_req.get(key) != e_req.get(key):
+            return False
+
+    if s_req.get("ended_at", -1) < e_req.get("ended_at", 0):
+        return False
+    if s_req.get("anomalies", -1) < e_req.get("anomalies", 0):
+        return False
+
+    s_usage = s_req.get("usage")
+    e_usage = e_req.get("usage")
+    if not isinstance(s_usage, dict) or not isinstance(e_usage, dict):
+        return False
+    for key in ("duration_s", *_USAGE_KEYS):
+        if s_usage.get(key, -1) < e_usage.get(key, 0):
+            return False
+
+    s_lines = s_req.get("lines")
+    e_lines = e_req.get("lines")
+    if not isinstance(s_lines, list) or not isinstance(e_lines, list):
+        return False
+    return _lines_is_subsequence(e_lines, s_lines)
+
+
 def _stream_doc_sync(
     spool_dir: Path, visit_id: str, finalized_reason: str | None, owner: str | None,
     char_uid: str | None = None,
@@ -814,6 +862,10 @@ async def _upload_pending(
         owner = state["own_uid"] if state else None
         char_uid = _owner_or_none(state.get("own_char_uid")) if state else None
         reseal_reason = reason
+        # Identity used to rebuild / reseal the stream. Kept apart from ``owner`` (state.json's account),
+        # which the corrupt-stream branch below still uses to attribute the queued report.
+        seal_owner, seal_char = owner, char_uid
+        sealed_doc = None
         if visit_id in sealed:
             # Crash after writing .upload.json but before deleting log: upload file is the visit's actual sealed copy;
             # retaining log causes resealing and duplicate upload after success. Verify upload readability before deleting log;
@@ -822,13 +874,18 @@ async def _upload_pending(
                 sealed_doc = await asyncio.to_thread(
                     _load_json, visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX),
                 )
-            except (OSError, ValueError):
+            except OSError as exc:
+                # Defer to next startup recovery rather than retry_later: background retry uploads
+                # .upload.json directly without comparing it against the residual .upload.jsonl stream.
+                logger.warning("visit recovery: cannot inspect sealed upload %s: %s", visit_id, exc)
+                sealed.discard(visit_id)
+                pending.add(visit_id)
+                continue
+            except ValueError:
                 sealed_doc = None
-            belongs = _sealed_doc_belongs(sealed_doc, visit_id)
-            if belongs:
-                # Every resealable field must match file (envelope, transcript rows, usage, timestamps): missing-row / edited
-                # files must not replace complete logs, which cannot be recovered after deletion. Exclude chunk progress added by
-                # upload callbacks, or failed log deletion would trigger resealing and reset progress on every recovery pass.
+            sealed_valid = _sealed_doc_belongs(sealed_doc, visit_id)
+            belongs = sealed_valid
+            if sealed_valid:
                 # End reason must match a definite reason in state; if state unreadable or crash (normal finalization crashed after
                 # upload write but before state.finalized, and this recovery pass initially marked crash),
                 # retain file's reason instead of resealing normally ended visits as crash.
@@ -836,9 +893,22 @@ async def _upload_pending(
                 # Use the same reason when resealing mismatched files too: valid file format with other field mismatches
                 # must not change normally ended visits to crash either.
                 reseal_reason = sealed_reason if reason in (None, "crash") else reason
+                if seal_owner is None or seal_char is None:
+                    # Consult memory spool header before falling back to sealed_doc, so an intact
+                    # spool header still overrides a tampered sealed envelope; only take identity
+                    # from the verified sealed_doc when state.json and memory spool both lack it.
+                    # In that last case the envelope identity is no longer checked independently:
+                    # expected and sealed_doc share it, and sealed_doc is the only source left.
+                    seal_owner, seal_char = await asyncio.to_thread(
+                        _with_header_fallback, spool_dir, visit_id, seal_owner, seal_char,
+                    )
+                    if seal_owner is None:
+                        seal_owner = _owner_or_none(sealed_doc.get("own_visit_uid"))
+                    if seal_char is None:
+                        seal_char = _owner_or_none(sealed_doc.get("own_char_uid"))
                 try:
                     expected = await asyncio.to_thread(
-                        _stream_doc_sync, spool_dir, visit_id, reseal_reason, owner, char_uid,
+                        _stream_doc_sync, spool_dir, visit_id, reseal_reason, seal_owner, seal_char,
                     )
                 except (OSError, ValueError, TypeError, OverflowError) as exc:
                     # Log exists but temporarily unreadable (permissions / locked), or rebuilding fails (same exceptions as sealing below):
@@ -848,7 +918,7 @@ async def _upload_pending(
                     sealed.discard(visit_id)
                     pending.add(visit_id)
                     continue
-                belongs = expected is None or all(sealed_doc.get(name) == value for name, value in expected.items())
+                belongs = expected is None or _sealed_matches_stream(sealed_doc, expected)
                 if belongs and expected is not None:
                     stream_checked.add(visit_id)
             if belongs:
@@ -860,7 +930,6 @@ async def _upload_pending(
                     # prevent this visit's transcript and queued report from ever being submitted.
                     logger.warning("visit recovery: cannot delete stale stream %s: %s", stream.name, exc)
                 continue
-            # Remove from pending uploads first: failed resealing must not pass corrupt / wrong-visit files to upload callback.
             sealed.discard(visit_id)
             logger.warning("visit recovery: sealed upload of %s unreadable or not this visit's, resealing from its stream",
                            visit_id)
@@ -868,7 +937,9 @@ async def _upload_pending(
         try:
             # Failed sealing may delete corrupt logs; first capture room account from log header for reasons if state.json unreadable.
             stream_owner = await asyncio.to_thread(_upload_stream_owner_sync, spool_dir, visit_id)
-            doc = await asyncio.to_thread(_seal_stream_sync, spool_dir, visit_id, reseal_reason, owner, char_uid)
+            doc = await asyncio.to_thread(
+                _seal_stream_sync, spool_dir, visit_id, reseal_reason, seal_owner, seal_char,
+            )
         except (OSError, ValueError, TypeError, OverflowError) as exc:
             # Skip only an unreadable/unwritable log, without blocking other visits' uploads and reports.
             logger.warning("visit recovery: cannot seal %s: %s", stream.name, exc)
@@ -882,14 +953,19 @@ async def _upload_pending(
         if doc is not None:
             sealed.add(visit_id)
             stream_checked.add(visit_id)
-        elif not await _drop_corrupt_sealed(spool_dir, visit_id):
-            # Corrupt log and no valid upload file for this visit: block report if that file cannot be deleted yet.
-            pending.add(visit_id)
         else:
-            # Corrupt log with no valid sealed file: transcript can never upload; record reason on queued report.
-            # (Take ownership from state.json account; do not affect another account's report on shared computers.)
-            await _mark_report_transcript_unavailable(
-                config_dir, visit_id, "corrupt", report, owner=_owner_or_none(owner) or stream_owner)
+            sealed.discard(visit_id)
+            if _sealed_doc_unrecognized(sealed_doc, visit_id):
+                pending.add(visit_id)
+                continue
+            if not await _drop_corrupt_sealed(spool_dir, visit_id):
+                # Corrupt log and no valid upload file for this visit: block report if that file cannot be deleted yet.
+                pending.add(visit_id)
+            else:
+                # Corrupt log with no valid sealed file: transcript can never upload; record reason on queued report.
+                # (Take ownership from state.json account; do not affect another account's report on shared computers.)
+                await _mark_report_transcript_unavailable(
+                    config_dir, visit_id, "corrupt", report, owner=_owner_or_none(owner) or stream_owner)
     for visit_id in sorted(sealed):
         if live(visit_id):
             # In-flight visit's transcript not yet uploaded: its queued report must also wait.

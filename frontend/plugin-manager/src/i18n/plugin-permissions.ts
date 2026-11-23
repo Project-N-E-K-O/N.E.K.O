@@ -23,8 +23,8 @@ const en = {
     description: 'May connect to network services.',
   },
   system_network_listen: {
-    title: 'Accept network connections',
-    description: 'May open a port on this computer and accept connections from other devices.',
+    title: 'Open a network port',
+    description: 'May open a network port on this computer so other programs can connect to it.',
   },
   system_fs_read: {
     title: 'Read files',
@@ -56,8 +56,8 @@ const zhCN: PermissionLabels = {
     description: '可能连接网络服务。',
   },
   system_network_listen: {
-    title: '接受网络连接',
-    description: '可能在这台电脑上打开端口，接受其他设备的连接。',
+    title: '开放本机网络端口',
+    description: '可能在这台电脑上开放网络端口，让别的程序连进来。',
   },
   system_fs_read: {
     title: '读取文件',
@@ -87,8 +87,8 @@ const zhTW: PermissionLabels = {
     description: '可能連線到網路服務。',
   },
   system_network_listen: {
-    title: '接受網路連線',
-    description: '可能在這台電腦上開啟連接埠，接受其他裝置的連線。',
+    title: '開放本機網路連接埠',
+    description: '可能在這台電腦上開放網路連接埠，讓其他程式連進來。',
   },
   system_fs_read: {
     title: '讀取檔案',
@@ -118,8 +118,8 @@ const ja: PermissionLabels = {
     description: 'ネットワークサービスに接続することがあります。',
   },
   system_network_listen: {
-    title: 'ネットワーク接続を受け付ける',
-    description: 'このコンピューターでポートを開き、他のデバイスからの接続を受け付ける可能性があります。',
+    title: 'ネットワークポートを開く',
+    description: 'このコンピューターでネットワークポートを開き、他のプログラムから接続できるようにすることがあります。',
   },
   system_fs_read: {
     title: 'ファイルを読み取る',
@@ -149,8 +149,8 @@ const ko: PermissionLabels = {
     description: '네트워크 서비스에 연결할 수 있습니다.',
   },
   system_network_listen: {
-    title: '네트워크 연결 수락',
-    description: '이 컴퓨터에서 포트를 열고 다른 기기의 연결을 받을 수 있습니다.',
+    title: '네트워크 포트 열기',
+    description: '이 컴퓨터에서 네트워크 포트를 열어 다른 프로그램이 접속할 수 있게 할 수 있습니다.',
   },
   system_fs_read: {
     title: '파일 읽기',
@@ -180,8 +180,8 @@ const ru: PermissionLabels = {
     description: 'Может подключаться к сетевым сервисам.',
   },
   system_network_listen: {
-    title: 'Принимать сетевые подключения',
-    description: 'Может открыть порт на этом компьютере и принимать подключения с других устройств.',
+    title: 'Открытие сетевого порта',
+    description: 'Может открыть сетевой порт на этом компьютере, чтобы к нему могли подключаться другие программы.',
   },
   system_fs_read: {
     title: 'Чтение файлов',
@@ -211,8 +211,8 @@ const es: PermissionLabels = {
     description: 'Puede conectarse a servicios de red.',
   },
   system_network_listen: {
-    title: 'Aceptar conexiones de red',
-    description: 'Puede abrir un puerto en este equipo y aceptar conexiones de otros dispositivos.',
+    title: 'Abrir un puerto de red',
+    description: 'Puede abrir un puerto de red en este equipo para que otros programas se conecten a él.',
   },
   system_fs_read: {
     title: 'Leer archivos',
@@ -242,8 +242,8 @@ const pt: PermissionLabels = {
     description: 'Pode se conectar a serviços de rede.',
   },
   system_network_listen: {
-    title: 'Aceitar conexões de rede',
-    description: 'Pode abrir uma porta neste computador e aceitar conexões de outros dispositivos.',
+    title: 'Abrir uma porta de rede',
+    description: 'Pode abrir uma porta de rede neste computador para que outros programas se conectem a ele.',
   },
   system_fs_read: {
     title: 'Ler arquivos',

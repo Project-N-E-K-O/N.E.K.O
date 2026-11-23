@@ -175,7 +175,7 @@ DEFAULT_ASSIST_API_PROFILES = {
         'OPENROUTER_URL': "https://api.siliconflow.cn/v1",
         'CONVERSATION_MODEL': "deepseek-ai/DeepSeek-V4.1-Flash",
         'MEMORY_MODEL': "deepseek-ai/DeepSeek-V4-Flash",
-        'RECOGNITION_MODEL': "Qwen/Qwen3.5-35B-A3B",
+        'RECOGNITION_MODEL': "Qwen/Qwen3-VL-30B-A3B-Instruct",
         'DECISION_MODEL': "deepseek-ai/DeepSeek-V4-Flash",
         'DECISION_PROTOCOL': "chat_fallback",
         'VISION_MODEL': "deepseek-ai/DeepSeek-V4.1-Flash",

@@ -83,10 +83,15 @@ def _clean_text(value: Any, *, token_limit: int = _MAX_TEXT_TOKENS) -> str:
 
 
 def _clean_timestamp(value: Any) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
+    if isinstance(value, bool):
         return time.time()
+    try:
+        ts = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return time.time()
+    if not math.isfinite(ts):
+        return time.time()
+    return ts
 
 
 def _record_weight(record: Mapping[str, Any]) -> float:
@@ -98,9 +103,9 @@ def _record_weight(record: Mapping[str, Any]) -> float:
     """
     try:
         weight = float(record.get("weight", 1.0))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 1.0
-    if math.isnan(weight):
+    if not math.isfinite(weight):
         return 1.0
     return max(0.0, min(1.0, weight))
 
@@ -109,15 +114,25 @@ def _local_day(value: float) -> date:
     return datetime.fromtimestamp(value).date()
 
 
-def _coerce_used_at(record: Mapping[str, Any]) -> float | None:
-    raw = record.get("used_at")
+def _parse_valid_used_at(value: Any) -> float | None:
+    """Validate and parse a persisted used_at timestamp, returning None if invalid or non-finite."""
+    if isinstance(value, bool):
+        return None
     try:
-        value = float(0.0 if raw is None else raw)
-    except (OverflowError, TypeError, ValueError):
+        ts = float(value)
+    except (TypeError, ValueError, OverflowError):
         return None
-    if not math.isfinite(value):
+    if not math.isfinite(ts) or ts <= 0:
         return None
-    return value
+    try:
+        _local_day(ts)
+    except (ValueError, OverflowError, OSError):
+        return None
+    return ts
+
+
+def _coerce_used_at(record: Mapping[str, Any]) -> float | None:
+    return _parse_valid_used_at(record.get("used_at"))
 
 
 def _clean_material(material: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -1116,7 +1131,13 @@ class TopicHookPool:
         records = self._recent_used_topics(name, now=now)
         if not records:
             return 0.0
-        latest_used_at = max(_coerce_used_at(record) or 0.0 for record in records)
+        valid_timestamps = [
+            ts for ts in (_coerce_used_at(record) for record in records)
+            if ts is not None
+        ]
+        if not valid_timestamps:
+            return 0.0
+        latest_used_at = max(valid_timestamps)
         current_time = float(now if now is not None else time.time())
         elapsed = max(0.0, current_time - latest_used_at)
         return max(0.0, self._min_trigger_gap_seconds - elapsed)
@@ -1280,11 +1301,8 @@ class TopicHookPool:
             for entry in entries:
                 if not isinstance(entry, dict):
                     continue
-                try:
-                    used_at = float(entry.get("used_at"))
-                except (OverflowError, TypeError, ValueError):
-                    continue
-                if not math.isfinite(used_at):
+                used_at = _parse_valid_used_at(entry.get("used_at"))
+                if used_at is None:
                     continue
                 loaded.append(
                     {
@@ -1314,7 +1332,10 @@ class TopicHookPool:
         with self._used_topics_lock:
             names = list(self._used_topics)
         for name in names:
-            self._prune_used_topics(name)
+            try:
+                self._prune_used_topics(name)
+            except Exception as exc:
+                logger.warning("topic used_topics prune on load failed for %s: %s", name, exc, exc_info=True)
 
     def _persist_used_topics(self) -> None:
         path = self._used_topics_path

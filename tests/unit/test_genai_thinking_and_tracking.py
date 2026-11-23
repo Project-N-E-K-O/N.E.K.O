@@ -12,6 +12,22 @@ from main_logic.tool_calling import ToolDefinition, ToolResult
 from utils.token_tracker import TokenTracker, _current_call_type
 
 
+@pytest.fixture(autouse=True)
+def _default_call_type():
+    """Start every test here from the default ``unknown`` call type.
+
+    Several assertions below expect ``call_type == "unknown"``. The call type
+    is a context variable, so a synchronous code path that sets it without
+    putting it back (one did: the agent model probe) leaves it set for every
+    later test on the same pytest worker.
+    """
+    token = _current_call_type.set("unknown")
+    try:
+        yield
+    finally:
+        _current_call_type.reset(token)
+
+
 class _FakeThinkingConfig:
     def __init__(self, **kwargs):
         self.kwargs = kwargs
@@ -337,8 +353,19 @@ async def test_genai_records_token_tracker_usage_for_stream_trailing_chunk_final
         _current_call_type.reset(token)
 
 
+@pytest.fixture
+def tracking_call_type():
+    token = _current_call_type.set('unknown')
+    try:
+        yield
+    finally:
+        _current_call_type.reset(token)
+
+
 @pytest.mark.asyncio
-async def test_genai_preserves_known_usage_on_midstream_errors_and_defers_leading_empty_usage(monkeypatch):
+async def test_genai_preserves_known_usage_on_midstream_errors_and_defers_leading_empty_usage(
+    monkeypatch, tracking_call_type,
+):
     recorded: list[dict] = []
 
     class _StubTracker:
