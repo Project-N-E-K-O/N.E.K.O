@@ -752,8 +752,9 @@ def test_qwen_socket_closing_after_session_expiry_holds_the_spare(monkeypatch):
 # switch or an interrupt and the next speech's connect.
 _DASHSCOPE_CLOSE_ANSWER_SECONDS = 2.0
 # The next connect may still wait for the previous socket's close, bounded by
-# Qwen's close_timeout; well under the peer's answer.
-_CONNECT_WAIT_BOUND_SECONDS = 1.0
+# Qwen's close_timeout (0.3s). Kept well under the peer's 2s answer, which a
+# regression would wait out, with room for a busy CI machine's scheduling.
+_CONNECT_WAIT_BOUND_SECONDS = 1.5
 
 
 class _LingeringPeerSock(_Sock):
@@ -802,6 +803,10 @@ def _stamp(marks, key):
 
 
 def _assert_connect_not_held(connects, index, arrived_at):
+    # The structural cause first, independent of timing: the replaced socket
+    # gives up on the peer's answer within Qwen's short close bound.
+    previous = connects.sockets[index - 1]
+    assert 0 < previous.connect_kwargs.get("close_timeout", 10.0) <= 0.5, previous.name
     waited = connects.connected_at[index] - arrived_at
     assert waited < _CONNECT_WAIT_BOUND_SECONDS, (
         f"{connects.names()[index]} connected {waited:.2f}s after its speech arrived"

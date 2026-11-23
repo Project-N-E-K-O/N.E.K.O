@@ -134,8 +134,9 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         qwen_audio_jitter = make_audio_jitter_buffer(response_queue, legacy_env_prefix="NEKO_QWEN_TTS")
         # Upstream done closes this turn's audio stream. Both receive tasks share one emitter,
         # and bound_speech_id captures this turn's sid at task creation: sid switching advances
-        # current_speech_id before awaiting old-connection closure, so an old receive task observing a late
-        # done would otherwise misattribute the preceding turn's completion to the new turn.
+        # current_speech_id, then cancels and awaits the old receive task (the old socket closes
+        # in the background), so an old receive task observing a late done would otherwise
+        # misattribute the preceding turn's completion to the new turn.
         # Also require buffer_committed: only after this turn's buffer is committed can done
         # indicate whole-turn completion; sentence-level upstream done would otherwise emit prematurely.
         audio_done = AudioDoneEmitter(response_queue)
@@ -207,8 +208,8 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 receive_task = None
             if ws:
                 # Background close, tracked: the reconnect waits for it.
-                logger.debug("%s WebSocket 关闭", reason)
-                spare.close_tracked(ws)
+                logger.debug("%s WebSocket 关闭中（后台）", reason)
+                spare.close_tracked(ws, label=reason)
             ws = None
             session_ready.clear()
             session_configured = False

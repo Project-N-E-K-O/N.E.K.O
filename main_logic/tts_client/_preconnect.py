@@ -126,11 +126,11 @@ def ws_may_hold_connection(ws_conn) -> bool:
     return getattr(state, "name", "") != "CLOSED"
 
 
-async def _close_best_effort(ws_conn) -> None:
+async def _close_best_effort(ws_conn, label: str = "") -> None:
     try:
         await ws_conn.close()
     except Exception as close_exc:
-        logger.debug("后台关闭 TTS socket 失败: %s", close_exc)
+        logger.debug("后台关闭 TTS socket 失败%s: %s", f"（{label}）" if label else "", close_exc)
 
 
 class SpareSocket:
@@ -262,7 +262,7 @@ class SpareSocket:
         # checks again.
         self.start(blocked)
 
-    def close_tracked(self, ws_conn):
+    def close_tracked(self, ws_conn, label: str = ""):
         """Close a socket in its own tracked task.
 
         Never awaited by whoever retires the socket, so cancelling that caller
@@ -270,14 +270,15 @@ class SpareSocket:
         transport when the wait for the close is cancelled) and drop it from
         the tracking that keeps the next connect from overlapping it. A socket
         that is known to be closed has nothing left to wait for; one whose
-        state cannot be read is closed anyway. Returns the close task, or
-        None when there is nothing to close.
+        state cannot be read is closed anyway. ``label`` names the caller in
+        the log line a failed close leaves. Returns the close task, or None
+        when there is nothing to close.
         """
         if ws_conn is None:
             return None
         if getattr(getattr(ws_conn, "state", None), "name", None) == "CLOSED":
             return None
-        task = asyncio.create_task(_close_best_effort(ws_conn))
+        task = asyncio.create_task(_close_best_effort(ws_conn, label))
         self._keep_until_done(task)
         return task
 
