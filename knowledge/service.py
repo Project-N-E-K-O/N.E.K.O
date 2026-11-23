@@ -1158,6 +1158,11 @@ class KnowledgeService:
         if pack_sha256(raw) != record.pack_sha256:
             raise KnowledgePackError("pack_file_mismatch")
         pack = decode_pack_bytes(raw)
+        self._source_documents(pack, pack_id)
+        return pack
+
+    def _source_documents(self, pack: KnowledgePack, pack_id: str) -> list[dict]:
+        """Validate source authority before returning the exact frozen selection."""
         documents = self._sources.documents(pack, pack_id)
         projection = project_pack(pack_id, pack.source.name, documents)
         expected = parse_pack(json.loads(canonical_pack_bytes(projection)))
@@ -1168,7 +1173,7 @@ class KnowledgeService:
             legacy = project_pack(pack_id, pack.source.name, documents, legacy_windows=True)
             if pack.entries != parse_pack(json.loads(canonical_pack_bytes(legacy))).entries:
                 raise KnowledgePackError("invalid_request")
-        return pack
+        return documents
 
     async def preview_source(self, filename: str, raw: bytes | Path, *, pack_id: str = "", doc_id: str = "", name: str = "") -> dict[str, Any]:
         """Parse an original without installing it or requesting model loading."""
@@ -2393,6 +2398,17 @@ class KnowledgeService:
                     and (previous.enabled if previous else bool(job.initial_enabled))
                     and not job.frozen_input.get("enabled_confirmed")):
                 raise KnowledgePackError("source_confirmation_required")
+            if (job.kind == "import_commit" and previous is not None and previous.enabled
+                    and sha != previous.pack_sha256 and not job.frozen_input.get("source_confirmation_required")):
+                # Removal jobs, including persisted legacy retries, carry no
+                # disclosure acknowledgement. A frozen deletion may now restore
+                # sources removed since it was queued. Only pure reductions of
+                # the currently verified selection may retain an enabled state.
+                current = self._source_pack(job.pack_id)
+                selected = {(row["doc_id"], row["version"]) for row in self._source_documents(pack, job.pack_id)}
+                active = {(row["doc_id"], row["version"]) for row in self._sources.documents(current, job.pack_id)}
+                if not selected <= active:
+                    raise KnowledgePackError("source_confirmation_required")
             # Assets may become available between admission and commit. Use
             # this single fit for capacity, registry metadata and SQLite.
             fit = self._chunk_fit()
