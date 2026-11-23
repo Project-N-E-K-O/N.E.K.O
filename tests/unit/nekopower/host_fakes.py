@@ -261,5 +261,20 @@ async def wait_until(predicate: Callable[[], Any], timeout: float = 15.0, what: 
         await asyncio.sleep(0.02)
 
 
+async def let_go(host: Any) -> None:
+    """Wait until no commission holds a session any more, and what letting them go set off is through.
+
+    A session is let go in a task of its own (``_settle_hold``) that goes on
+    after the hold is gone: it reads the model the session is sent to, to
+    set its idle timer (``_schedule_idle_compact``). A test that swaps
+    ``_model_config`` right after this, to hold a start up while it reads
+    the model, would otherwise catch that read first on a slow machine,
+    before the start it waits for has taken its place.
+    """
+    tasks = host.task_agents
+    await wait_until(lambda: tasks._held_by == {}, what="every session being let go")
+    await wait_until(lambda: not tasks._starting, what="what letting the sessions go set off")
+
+
 async def outbox(host: Any, kind: str | None = None) -> list[Any]:
     return [item for item in await host.ledger.outbox_pending() if kind is None or item.kind == kind]
