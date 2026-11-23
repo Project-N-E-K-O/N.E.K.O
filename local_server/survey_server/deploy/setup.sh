@@ -72,9 +72,13 @@ sudo chmod 755 "$INSTALL_DIR" "$INSTALL_DIR/venvs"
 
 STAGING_VENV="$INSTALL_DIR/venvs/venv-$(date +%Y%m%d%H%M%S)-$$"
 TMP_LINK=""
+OLD_LEGACY_VENV=""
 cleanup_staging_venv() {
     if [ -n "${TMP_LINK:-}" ] && [ -L "$TMP_LINK" ]; then
         sudo rm -f "$TMP_LINK"
+    fi
+    if [ -n "${OLD_LEGACY_VENV:-}" ] && [ -e "$OLD_LEGACY_VENV" ] && [ ! -e "$INSTALL_DIR/venv" ] && [ ! -L "$INSTALL_DIR/venv" ]; then
+        sudo mv "$OLD_LEGACY_VENV" "$INSTALL_DIR/venv"
     fi
     if [ -n "${STAGING_VENV:-}" ] && [ -d "$STAGING_VENV" ]; then
         sudo rm -rf "$STAGING_VENV"
@@ -95,7 +99,6 @@ for f in server.py models.py security.py storage.py requirements.txt; do
     sudo install -o root -g root -m 644 "$SOURCE_DIR/$f" "$INSTALL_DIR/$f"
 done
 
-OLD_LEGACY_VENV=""
 if [ -e "$INSTALL_DIR/venv" ] && [ ! -L "$INSTALL_DIR/venv" ]; then
     OLD_LEGACY_VENV="$INSTALL_DIR/venv.legacy.$$"
     sudo mv "$INSTALL_DIR/venv" "$OLD_LEGACY_VENV"
@@ -107,6 +110,7 @@ sudo chown -h root:root "$INSTALL_DIR/venv"
 ACTIVE_VENV="$STAGING_VENV"
 TMP_LINK=""
 STAGING_VENV=""
+OLD_LEGACY_VENV=""
 
 PYTHON_BIN="$INSTALL_DIR/venv/bin/python3"
 

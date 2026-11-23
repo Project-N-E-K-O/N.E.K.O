@@ -597,3 +597,53 @@ def test_is_symlink_or_reparse_point_allows_onedrive_cloud_tags_and_blocks_symli
             lambda _p, tag=bad_tag: SimpleNamespace(st_file_attributes=0x0400, st_reparse_tag=tag),
         )
         assert logger_config._is_symlink_or_reparse_point(sample) is True
+
+
+@pytest.mark.unit
+def test_test_directory_writable_rejects_symlink_and_falls_back_to_next_candidate(tmp_path, monkeypatch):
+    """Symlinked primary logs/ candidate is skipped by _get_log_directory and RobustLoggerConfig."""
+    import logging
+
+    from utils import logger_config as backend
+
+    selected_root = tmp_path / "selected-root"
+    selected_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    symlinked_logs = selected_root / "logs"
+    try:
+        symlinked_logs.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable in this environment")
+
+    dangling_root = tmp_path / "dangling-root"
+    dangling_root.mkdir()
+    dangling_logs = dangling_root / "logs"
+    dangling_target = tmp_path / "nonexistent-target"
+    dangling_logs.symlink_to(dangling_target, target_is_directory=True)
+    assert backend.RobustLoggerConfig._test_directory_writable(None, dangling_logs) is False
+    assert not dangling_target.exists()
+
+    fallback_docs = tmp_path / "documents"
+    fallback_docs.mkdir()
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(selected_root))
+    monkeypatch.setattr(
+        backend.RobustLoggerConfig,
+        "_get_documents_directory",
+        lambda self: fallback_docs,
+    )
+
+    config = backend.RobustLoggerConfig(service_name="Main", log_level=logging.INFO)
+    expected_dir = fallback_docs / "N.E.K.O" / "logs"
+    assert config.log_dir == expected_dir
+    assert Path(config.get_log_directory_path()) == expected_dir
+    assert not any(outside.iterdir()), "must not write probe files or logs into symlinked target"
+
+    handlers = list(config.iter_handlers())
+    try:
+        file_handlers = [h for h in handlers if isinstance(h, logging.FileHandler)]
+        assert len(file_handlers) == 2
+        assert all(Path(h.baseFilename).parent == expected_dir for h in file_handlers)
+    finally:
+        for handler in handlers:
+            handler.close()

@@ -719,32 +719,37 @@ async def test_internal_service_proof_fails_closed_when_asgi_server_port_unavail
 
     app = _build_guarded_app()
     valid_proof = internal_service_proof(KEY, "GET", "/private", port=MAIN_SERVER_PORT)
-    scope = {
-        "type": "http",
-        "asgi": {"version": "3.0"},
-        "http_version": "1.1",
-        "method": "GET",
-        "scheme": "http",
-        "path": "/private",
-        "raw_path": b"/private",
-        "query_string": b"",
-        "headers": [
-            (b"host", f"127.0.0.1:{MAIN_SERVER_PORT}".encode()),
-            (INTERNAL_SERVICE_HEADER.lower().encode(), valid_proof.encode()),
-        ],
-        "client": ("127.0.0.1", 50000),
-    }
-    if bad_server is not None:
-        scope["server"] = bad_server
 
-    async def receive():
-        return {"type": "http.request", "body": b"", "more_body": False}
+    async def _send_with_server(server_value) -> int:
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": "/private",
+            "raw_path": b"/private",
+            "query_string": b"",
+            "headers": [
+                (b"host", f"127.0.0.1:{MAIN_SERVER_PORT}".encode()),
+                (INTERNAL_SERVICE_HEADER.lower().encode(), valid_proof.encode()),
+            ],
+            "client": ("127.0.0.1", 50000),
+        }
+        if server_value is not None:
+            scope["server"] = server_value
 
-    messages: list[dict] = []
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
 
-    async def send(msg: dict):
-        messages.append(msg)
+        messages: list[dict] = []
 
-    await app(scope, receive, send)
-    start_msg = next(m for m in messages if m["type"] == "http.response.start")
-    assert start_msg["status"] == 401
+        async def send(msg: dict):
+            messages.append(msg)
+
+        await app(scope, receive, send)
+        start_msg = next(m for m in messages if m["type"] == "http.response.start")
+        return start_msg["status"]
+
+    assert await _send_with_server(("127.0.0.1", MAIN_SERVER_PORT)) == 200
+    assert await _send_with_server(bad_server) == 401

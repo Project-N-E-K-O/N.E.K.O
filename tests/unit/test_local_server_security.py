@@ -311,6 +311,7 @@ def test_local_server_dependencies_are_hash_pinned_and_venv_is_root_owned(server
     assert 'LOCK_FILE="/run/${SERVICE_NAME}-setup.lock"' in setup_sh
     assert 'readlink -f "$INSTALL_DIR/venv"' in setup_sh
     assert '"$INSTALL_DIR"/venv.legacy.*' in setup_sh
+    assert 'mv "$OLD_LEGACY_VENV" "$INSTALL_DIR/venv"' in setup_sh
     assert 'STAGING_VENV="$INSTALL_DIR/venvs/venv-' in setup_sh
     assert "trap cleanup_staging_venv EXIT" in setup_sh
     lock_pos = setup_sh.find('flock -x "$LOCK_FILE"')

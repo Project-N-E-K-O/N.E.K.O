@@ -90,6 +90,8 @@ def mark_project_handler(handler):
 
 def _is_symlink_or_reparse_point(path: str | os.PathLike[str]) -> bool:
     """Return True if path is a symbolic link or Windows symlink/junction reparse point."""
+    if not isinstance(path, (str, bytes, os.PathLike)):
+        return False
     try:
         if os.path.islink(path):
             return True
@@ -473,7 +475,11 @@ class RobustLoggerConfig:
             bool: whether it is writable
         """
         try:
+            if _is_symlink_or_reparse_point(directory):
+                return False
             RobustLoggerConfig._create_directory_incrementally(directory)
+            if _is_symlink_or_reparse_point(directory):
+                return False
             
             # Try creating a test file. The name is per process and thread: plugin
             # processes start concurrently against one log directory, and with a
