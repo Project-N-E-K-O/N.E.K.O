@@ -46,7 +46,7 @@ from typing import Any, Iterator
 
 from filelock import FileLock, Timeout as FileLockTimeout
 
-from utils.file_utils import PublishedFileSyncError, atomic_write_json
+from utils.file_utils import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -773,16 +773,7 @@ def write_recent_payload_unlocked(path: Any, payload: Any, *, receipt: tuple[str
             strict_dir_sync=True,
         )
     retire_removed_keyed_entries(path, None, payload)
-    try:
-        atomic_write_json(
-            path,
-            payload,
-            indent=2,
-            ensure_ascii=False,
-            strict_dir_sync=True,
-        )
-    except PublishedFileSyncError as exc:
-        logger.warning("Recent history is visible but directory sync failed: %s", exc)
+    atomic_write_json(path, payload, indent=2, ensure_ascii=False)
     with _LOCKS_GUARD:
         key = _resolve_key_unlocked(_lock_key(path))
         _CONTENT_VERSIONS[key] = _CONTENT_VERSIONS.get(key, 0) + 1
@@ -813,12 +804,13 @@ def write_recent_sidecar_unlocked(
     recent.json critical section so a check-then-write against the history file
     sees a consistent sidecar. They do not bump the recent content version.
     """
+    extra = {"strict_dir_sync": True} if strict_dir_sync else {}
     atomic_write_json(
         recent_sidecar_path(path, filename),
         payload,
         indent=2,
         ensure_ascii=False,
-        strict_dir_sync=strict_dir_sync,
+        **extra,
     )
 
 

@@ -619,7 +619,7 @@ async def test_synth_backoff_survives_disk_write_failure(tmp_path):
 async def test_save_reflections_archive_post_publish_dir_sync_error_does_not_duplicate(
     tmp_path, monkeypatch, use_async
 ):
-    """PublishedFileSyncError after writing an archive shard must not merge archived items back."""
+    """Directory sync errors after writing an archive shard must not merge archived items back."""
     import errno
     import json
     from pathlib import Path

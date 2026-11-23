@@ -887,7 +887,7 @@ def test_a_nested_reference_is_not_treated_as_owned(tmp_path):
 
 
 def test_replace_voice_reference_keeps_audio_on_post_publish_dir_sync_error(tmp_path, monkeypatch):
-    """PublishedFileSyncError on voice_manifest.json must not delete the newly committed audio file."""
+    """Directory sync errors after replacing voice_manifest.json must not delete the newly committed audio file."""
     import errno
     from pathlib import Path
     from utils import file_utils

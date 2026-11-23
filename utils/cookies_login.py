@@ -154,6 +154,8 @@ def _publish_cookie_artifact(
         if sys.platform != 'win32':
             with suppress(OSError):
                 os.chmod(target_path, 0o600)
+        # Deliberately conservative: let callers avoid treating an unsynced
+        # credential write as durably saved.
         raise
     if track_payload_publish:
         _LAST_SAVE_PUBLISHED_PAYLOAD.value = True

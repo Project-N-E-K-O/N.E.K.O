@@ -636,7 +636,7 @@ async def test_an_active_fact_never_hides_another_subjects_archived_row_with_the
 async def test_arbitration_and_manual_merge_preserve_cold_and_archive_on_post_publish_dir_sync_error(
     tmp_path, monkeypatch
 ):
-    """PublishedFileSyncError on facts.json must not roll back already-written cold/archive entries."""
+    """Directory sync errors after replace on facts.json must not roll back already-written cold/archive entries."""
     import errno
     from pathlib import Path
     from utils import file_utils
