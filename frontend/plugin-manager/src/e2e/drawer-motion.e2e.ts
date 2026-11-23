@@ -785,23 +785,28 @@ appearanceTest.describe('filter bar layout and interaction', () => {
         await openDrawerFully(page, MARKET_TOGGLE, MARKET_PANEL)
         await page.setViewportSize({ width: 720, height: 1000 })
       } else {
-        await page.goto(`${PREVIEW_ORIGIN}/ui/market`)
+        // Narrowed before the page loads, so it is laid out at this width from the start.
         await page.setViewportSize({ width: 320, height: 1000 })
+        await page.goto(`${PREVIEW_ORIGIN}/ui/market`)
       }
       const market = page.locator('[data-yui-guide-id="market-panel-root"]')
       const bar = market.locator('.wb-filter-bar')
       const input = bar.getByRole('textbox')
       await expect(market.getByText('Fixture One', { exact: true })).toBeVisible()
       await expect(market.getByText('Fixture Two', { exact: true })).toBeVisible()
-      const layout = await bar.evaluate(element => {
-        const controls = element.querySelector('.wb-filter-bar__controls')!.getBoundingClientRect()
-        const rules = element.querySelector('.wb-filter-bar__rules-trigger')!.getBoundingClientRect()
-        const input = element.querySelector('.wb-filter-bar__input')!.getBoundingClientRect()
-        return { controls, rules, input }
-      })
-      expect(layout.input.top).toBeGreaterThanOrEqual(layout.rules.bottom)
-      expect(layout.input.width).toBeGreaterThanOrEqual(200)
-      expect(layout.input.right).toBeLessThanOrEqual(layout.controls.right + TOLERANCE)
+      // Measured until the bar has settled after the resize: one early read caught the
+      // input still at its pre-wrap width (right edge at the viewport, past the controls).
+      await expect(async () => {
+        const layout = await bar.evaluate(element => {
+          const controls = element.querySelector('.wb-filter-bar__controls')!.getBoundingClientRect()
+          const rules = element.querySelector('.wb-filter-bar__rules-trigger')!.getBoundingClientRect()
+          const input = element.querySelector('.wb-filter-bar__input')!.getBoundingClientRect()
+          return { controls, rules, input }
+        })
+        expect(layout.input.top).toBeGreaterThanOrEqual(layout.rules.bottom)
+        expect(layout.input.width).toBeGreaterThanOrEqual(200)
+        expect(layout.input.right).toBeLessThanOrEqual(layout.controls.right + TOLERANCE)
+      }).toPass({ timeout: 5_000 })
       await input.fill('Fixture One')
       await expect(market.getByText('Fixture Two', { exact: true })).toHaveCount(0)
       await input.hover()
