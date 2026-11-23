@@ -86,6 +86,7 @@ class _FakeManager:
         self.gate = gate
         self.result = result
         self.calls: list[str] = []
+        self.reached = asyncio.Event()
 
     def __getattr__(self, attr):
         if attr.startswith("_"):
@@ -93,6 +94,7 @@ class _FakeManager:
 
         async def _call(*_args, **_kwargs):
             self.calls.append(attr)
+            self.reached.set()
             if self.gate is None and self.result is None:
                 raise AssertionError(f"{attr} reached storage while fenced")
             if self.gate is not None:
@@ -198,11 +200,7 @@ async def test_release_waits_for_in_flight_body_addressed_writer(browser_env, pa
     async with _client(probe) as client:
         in_flight = asyncio.create_task(client.post(path, json=body))
         try:
-            for _ in range(500):
-                if manager.calls:
-                    break
-                await asyncio.sleep(0.001)
-            assert manager.calls, "write never reached the manager"
+            await asyncio.wait_for(manager.reached.wait(), timeout=5)
             assert runtime._active_character_requests.get(name, 0) == 1
 
             # Release begins: new writes bounce, the admitted one keeps its slot.

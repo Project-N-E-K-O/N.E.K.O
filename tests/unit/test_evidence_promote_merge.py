@@ -794,12 +794,23 @@ async def _seed_stale_merge_case(tmp_path, rid: str, attempt_count: int):
                     last_attempt_at=old if attempt_count else None,
                     attempt_count=attempt_count)
     await re.asave_reflections('小天', [R])
-    decision = {
-        'action': 'merge_into',
-        'target_id': 'persona.master.p_001',
-        'merged_text': '主人非常喜爱猫咪',
-    }
-    return pm, re, R, decision
+    return pm, re, R
+
+
+def _merge_llm_that_sees_target_edited(pm, edited_text: str = '主人改口说更喜欢狗'):
+    """Model decides merge_into while the user edits the target meanwhile.
+
+    The edit lands during the model await, so the real ``amerge_into`` sees a
+    different target text than the prompt showed and returns ``stale_target``.
+    """
+    async def _decide(*_args, **_kwargs):
+        await pm.aedit_persona_entry('小天', 'master', 'p_001', edited_text)
+        return {
+            'action': 'merge_into',
+            'target_id': 'persona.master.p_001',
+            'merged_text': '主人非常喜爱猫咪',
+        }
+    return AsyncMock(side_effect=_decide)
 
 
 async def _reflection_state(re, rid: str) -> dict:
@@ -808,43 +819,84 @@ async def _reflection_state(re, rid: str) -> dict:
     )
 
 
+def _past_backoff():
+    return patch(
+        'memory.reflection.promotion_merge.EVIDENCE_PROMOTE_RETRY_BACKOFF_MINUTES',
+        0,
+    )
+
+
 @pytest.mark.asyncio
-async def test_stale_target_with_retries_left_stays_confirmed(tmp_path):
-    pm, re, R, decision = await _seed_stale_merge_case(tmp_path, 'ref_stale', 0)
-    llm = AsyncMock(return_value=decision)
-    with patch.object(re, '_allm_call_promotion_merge', llm), \
-         patch.object(pm, 'amerge_into', AsyncMock(return_value='stale_target')):
+async def test_stale_target_records_cause_and_stays_confirmed(tmp_path):
+    pm, re, R = await _seed_stale_merge_case(tmp_path, 'ref_stale', 0)
+    with patch.object(re, '_allm_call_promotion_merge',
+                      _merge_llm_that_sees_target_edited(pm)):
         outcome = await re._apromote_with_merge('小天', R)
 
     assert outcome == 'skip_retry_pending'
     rstate = await _reflection_state(re, 'ref_stale')
     assert rstate['status'] == 'confirmed'
     assert rstate['promote_attempt_count'] == 1
+    assert rstate.get('last_promote_failure') == 'target_changed'
     assert rstate.get('promote_blocked_reason') is None
+    # The user's edit stands; the stale merge text was discarded.
+    entry = (await pm.aget_persona('小天'))['master']['facts'][0]
+    assert entry['text'] == '主人改口说更喜欢狗'
 
 
 @pytest.mark.asyncio
 async def test_stale_target_on_last_attempt_blocks_as_target_changed(tmp_path):
-    """Using up the retries on a changed target must not be blamed on the model."""
+    """Using up the retries on a changed target must not be blamed on the model.
+
+    Timing is unchanged: the last attempt still leaves the reflection
+    confirmed, and the next cycle dead-letters it without a model call.
+    """
     from config import EVIDENCE_PROMOTE_MAX_RETRIES
 
-    pm, re, R, decision = await _seed_stale_merge_case(
+    pm, re, R = await _seed_stale_merge_case(
         tmp_path, 'ref_stale_last', EVIDENCE_PROMOTE_MAX_RETRIES - 1,
     )
-    llm = AsyncMock(return_value=decision)
-    with patch.object(re, '_allm_call_promotion_merge', llm), \
-         patch.object(pm, 'amerge_into', AsyncMock(return_value='stale_target')):
-        outcome = await re._apromote_with_merge('小天', R)
+    llm = _merge_llm_that_sees_target_edited(pm)
+    with patch.object(re, '_allm_call_promotion_merge', llm):
+        assert await re._apromote_with_merge('小天', R) == 'skip_retry_pending'
+        rstate = await _reflection_state(re, 'ref_stale_last')
+        assert rstate['status'] == 'confirmed'
+        assert rstate['promote_attempt_count'] == EVIDENCE_PROMOTE_MAX_RETRIES
+        with _past_backoff():
+            assert await re._apromote_with_merge('小天', rstate) == 'blocked'
 
-    assert outcome == 'blocked'
     assert llm.await_count == 1
     rstate = await _reflection_state(re, 'ref_stale_last')
     assert rstate['status'] == 'promote_blocked'
-    assert rstate['promote_attempt_count'] == EVIDENCE_PROMOTE_MAX_RETRIES
     assert rstate.get('promote_blocked_reason') == 'target_changed'
-    # Persona untouched by the discarded merge.
-    entry = (await pm.aget_persona('小天'))['master']['facts'][0]
-    assert entry['text'] == '主人爱猫'
+
+
+@pytest.mark.asyncio
+async def test_later_model_failure_replaces_an_earlier_stale_cause(tmp_path):
+    """The reason follows the last attempt, not any earlier one."""
+    from config import EVIDENCE_PROMOTE_MAX_RETRIES
+
+    pm, re, R = await _seed_stale_merge_case(
+        tmp_path, 'ref_stale_then_llm', EVIDENCE_PROMOTE_MAX_RETRIES - 2,
+    )
+    with patch.object(re, '_allm_call_promotion_merge',
+                      _merge_llm_that_sees_target_edited(pm)):
+        assert await re._apromote_with_merge('小天', R) == 'skip_retry_pending'
+    rstate = await _reflection_state(re, 'ref_stale_then_llm')
+    assert rstate.get('last_promote_failure') == 'target_changed'
+
+    llm = AsyncMock(side_effect=RuntimeError('LLM timeout simulation'))
+    with patch.object(re, '_allm_call_promotion_merge', llm), _past_backoff():
+        assert await re._apromote_with_merge('小天', rstate) == 'skip_retry_pending'
+        rstate = await _reflection_state(re, 'ref_stale_then_llm')
+        assert rstate['promote_attempt_count'] == EVIDENCE_PROMOTE_MAX_RETRIES
+        assert rstate.get('last_promote_failure') is None
+        assert await re._apromote_with_merge('小天', rstate) == 'blocked'
+
+    assert llm.await_count == 1
+    rstate = await _reflection_state(re, 'ref_stale_then_llm')
+    assert rstate['status'] == 'promote_blocked'
+    assert rstate.get('promote_blocked_reason') == 'llm_unavailable'
 
 
 @pytest.mark.asyncio
@@ -852,7 +904,7 @@ async def test_llm_failure_on_last_attempt_still_blocks_as_llm_unavailable(tmp_p
     """The model-failure path keeps its timing and reason."""
     from config import EVIDENCE_PROMOTE_MAX_RETRIES
 
-    _pm, re, R, _decision = await _seed_stale_merge_case(
+    _pm, re, R = await _seed_stale_merge_case(
         tmp_path, 'ref_llm_last', EVIDENCE_PROMOTE_MAX_RETRIES - 1,
     )
     llm = AsyncMock(side_effect=RuntimeError('LLM timeout simulation'))
@@ -862,16 +914,29 @@ async def test_llm_failure_on_last_attempt_still_blocks_as_llm_unavailable(tmp_p
         rstate = await _reflection_state(re, 'ref_llm_last')
         assert rstate['status'] == 'confirmed'
         # Next cycle, past the backoff window: dead-letter without a model call.
-        with patch(
-            'memory.reflection.promotion_merge.EVIDENCE_PROMOTE_RETRY_BACKOFF_MINUTES',
-            0,
-        ):
+        with _past_backoff():
             assert await re._apromote_with_merge('小天', rstate) == 'blocked'
 
     assert llm.await_count == 1
     rstate = await _reflection_state(re, 'ref_llm_last')
     assert rstate['status'] == 'promote_blocked'
     assert rstate.get('promote_blocked_reason') == 'llm_unavailable'
+
+
+@pytest.mark.asyncio
+async def test_promote_failure_cause_survives_evidence_replay(tmp_path):
+    """Replay must restore the cause, or a crash relabels it llm_unavailable."""
+    from memory.evidence_handlers import make_reflection_evidence_handler
+
+    _pm, re, R = await _seed_stale_merge_case(tmp_path, 'ref_replay_cause', 4)
+    handler = make_reflection_evidence_handler(re)
+    assert handler('小天', {
+        'reflection_id': 'ref_replay_cause',
+        'last_promote_failure': 'target_changed',
+        'source': 'promote_failure',
+    }) is True
+    rstate = await _reflection_state(re, 'ref_replay_cause')
+    assert rstate.get('last_promote_failure') == 'target_changed'
 
 
 # ── replay safety ───────────────────────────────────────────────
