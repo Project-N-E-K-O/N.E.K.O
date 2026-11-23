@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import subprocess
 import tomllib
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -52,22 +53,23 @@ _EXPECTED = {
 }
 
 # Possible uses the scan reports that are deliberately not declared, pinned to
-# their call sites (file, function, method) so a new call is not let through:
+# their call sites (file, function, method), each listed once per call, so a
+# new call is not let through, not even a second one in the same function:
 # writes inside the plugin's data directory, and a DNS-only socket import.
 _ALLOWED_POSSIBLE = {
     "music_pusher": {
-        _FS_WRITE: {
+        _FS_WRITE: [
             ("__init__.py", "MusicPusherPlugin._copy_static_ui_assets", "shutil.copy2"),
             ("__init__.py", "MusicPusherPlugin._migrate_legacy_uploads", "shutil.copy2"),
-        },
-        _NET: {("__init__.py", "", "import")},
+        ],
+        _NET: [("__init__.py", "", "import")],
     },
     "netease_music": {
-        _FS_WRITE: {
+        _FS_WRITE: [
             ("credentials.py", "CredentialStore._save_sync", "pathlib.Path().mkdir"),
             ("credentials.py", "CredentialStore._atomic_write", "os.replace"),
             ("credentials.py", "CredentialStore._atomic_write", "pathlib.Path().unlink"),
-        },
+        ],
     },
 }
 
@@ -81,18 +83,26 @@ _ALLOWED_UNUSED = {
 pytestmark = pytest.mark.plugin_unit
 
 
-def _tracked_plugins() -> tuple[str, ...]:
-    """Plugins git tracks under plugin/plugins; local, ignored plugins are not built in."""
+def _tracked_plugins() -> tuple[str, ...] | None:
+    """Plugins git tracks under plugin/plugins; local, ignored plugins are not built in.
+
+    ``None`` only when there is no git checkout or no git binary; a git error
+    inside a checkout fails the test instead of skipping it.
+    """
+    if not (_REPO / ".git").exists():
+        return None
     try:
         completed = subprocess.run(
-            ["git", "ls-files", "plugin/plugins/*/plugin.toml"],
+            # :(glob) keeps "*" inside one directory level, so a nested
+            # fixtures/plugin.toml is not taken for a plugin.
+            ["git", "ls-files", ":(glob)plugin/plugins/*/plugin.toml"],
             cwd=_REPO,
             capture_output=True,
             text=True,
-            check=True,
         )
-    except (OSError, subprocess.SubprocessError):
-        return ()
+    except OSError:
+        return None
+    assert completed.returncode == 0, completed.stderr
     return tuple(sorted(Path(line).parent.name for line in completed.stdout.splitlines() if line))
 
 
@@ -107,8 +117,8 @@ def _manifest(plugin_id: str) -> dict:
 
 def test_every_builtin_plugin_has_a_reviewed_classification() -> None:
     tracked = _tracked_plugins()
-    if not tracked:
-        pytest.skip("git cannot list the tracked built-in plugins here")
+    if tracked is None:
+        pytest.skip("not a git checkout: cannot list the tracked built-in plugins")
     assert set(tracked) == set(_EXPECTED)
 
 
@@ -154,9 +164,9 @@ def test_declarations_match_permission_scan(plugin_id: str) -> None:
     possible = {i.params["permission"] for i in issues if i.code == "used_undeclared_possible"}
     assert possible == set(allowed)
     for permission, sites in allowed.items():
-        found = {
+        found = Counter(
             (row["file"], row["function"], row["method"])
             for row in report["permissions"][permission]["findings"]
-        }
-        assert found == sites, permission
+        )
+        assert found == Counter(sites), permission
     assert {i.code for i in issues} <= {"used_undeclared_possible", "declared_unused"}
