@@ -4471,16 +4471,33 @@ class TaskAgentManager:
 
     async def _start_next(self) -> None:
         """Give free places to queued commissions, in the order they were queued."""
+        # Those found, on a second look, to have to wait for another that changes files in their project.
+        waits: set[str] = set()
         while not self._closed and len(self._sessions) < self.limit:
             # One whose old session is still on its way out keeps its turn;
             # it is started when that session has gone. So does one whose
             # session another commission holds: it is next when that one is
             # over, and those behind it in other sessions go ahead meanwhile.
             commission_id = next(
-                (item for item in self._queue if item not in self._sessions and self._session_free_for(item)), None
+                (
+                    item
+                    for item in self._queue
+                    if item not in self._sessions and item not in waits and self._session_free_for(item)
+                ),
+                None,
             )
             if commission_id is None:
                 return
+            # Whether its session changes files in a project is looked at once more, as it is
+            # about to start: its preset may say otherwise than when it was queued (a template
+            # changed meanwhile), and it is opened by what the preset says now.
+            await self._note_writer(self._session_of.get(commission_id))
+            if commission_id not in self._queue or commission_id in self._sessions:
+                # Taken, or gone, while that was read.
+                continue
+            if not self._session_free_for(commission_id):
+                waits.add(commission_id)
+                continue
             self._queue.remove(commission_id)
             if self._take_place(commission_id):
                 with call_audit.commission_entry():

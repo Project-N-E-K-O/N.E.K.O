@@ -2908,3 +2908,60 @@ async def test_no_task_agent_that_changes_files_starts_in_a_project_while_its_ta
         agents._writes_in.clear()
         for item in ("its commission", "another commission", "a reader's"):
             agents._session_of.pop(item, None)
+
+
+async def test_a_queued_commission_whose_preset_changes_files_by_now_waits_for_the_projects_writer(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    await _project(host, "Budget app", tmp_path)
+    agents = host.task_agents
+    folder = tmp_path / "nekopower" / "task_agent_space" / "templates"
+    folder.mkdir(parents=True, exist_ok=True)
+
+    def template(more: str) -> None:
+        (folder / "looker.md").write_text(
+            f"---\nname: looker\ndescription: Looks at the budget app.\n{more}---\n", encoding="utf-8"
+        )
+
+    template("read_only: true\nwrites: none\n")
+    writer = await host.ledger.create_session(lanlan_name="Lan", name="Budget app", kind="line", project="Budget app")
+    reader = await host.ledger.create_session(
+        lanlan_name="Lan", name="Budget app/looker", kind="line", project="Budget app", preset="looker"
+    )
+    await agents._note_writer(writer.id)
+    await agents._note_writer(reader.id)
+    started: list[str] = []
+
+    async def start(commission_id: str, **_more: Any) -> None:
+        started.append(commission_id)
+
+    agents._start, agents._take_place = start, lambda commission_id: True
+    # The writer is at work; the reader's commission waits for a place, noted as one that reads.
+    agents._held_by[writer.id] = "the writer's commission"
+    agents._session_of["the reader's commission"] = reader.id
+    agents._queue.append("the reader's commission")
+    assert agents._writes_in == {writer.id: ("Budget app", writer.id)} and agents._session_free_for("the reader's commission")
+    try:
+        # Its preset is one that changes files by the time it would start: its template was changed meanwhile.
+        template("")
+
+        await agents._start_next()
+
+        # Looked at once more as it is about to start: it changes files now, and waits for the writer.
+        assert started == [] and list(agents._queue) == ["the reader's commission"]
+        assert agents._writes_in[reader.id] == ("Budget app", reader.id)
+        del agents._held_by[writer.id]
+        await agents._start_next()
+        assert started == ["the reader's commission"] and list(agents._queue) == []
+        # The other way about (it reads only by the time it would start) is found out when its turn
+        # comes: until then it waits as one that changes files, which holds nobody's work up but its own.
+        template("read_only: true\nwrites: none\nmax_requests: 9\n")
+        agents._held_by[writer.id] = "the writer's commission"
+        agents._queue.append("the reader's commission")
+        await agents._start_next()
+        assert started == ["the reader's commission"] and list(agents._queue) == ["the reader's commission"]
+        del agents._held_by[writer.id]
+        await agents._start_next()
+        assert started == ["the reader's commission"] * 2 and reader.id not in agents._writes_in
+    finally:
+        agents._held_by.clear()
+        agents._queue.clear()
