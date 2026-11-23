@@ -117,10 +117,12 @@ def _runtime(tmp_path: Path, *, manifest: list[str] | None = None, instance: Any
     entries, metadata, events = _initial_entry_tables(instance, ctx.logger)
 
     def refresh() -> None:
+        # Collected first, as host.py does: a failing collection leaves the maps as they are.
+        collected = instance.collect_entries(wrap_with_hooks=True)
         entries.clear()
         metadata.clear()
         events.clear()
-        for eid, item in instance.collect_entries(wrap_with_hooks=True).items():
+        for eid, item in collected.items():
             entries[eid] = item.handler
             metadata[eid] = item.meta
             events.setdefault(getattr(item.meta, "event_type", "plugin_entry"), {})[eid] = item.handler
@@ -322,6 +324,59 @@ def test_an_entry_hook_is_not_resolved_by_its_name(tmp_path, name):
 def test_a_ui_context_provider_is_not_resolved_by_its_name(tmp_path):
     executor, _instance, _logger = _runtime(tmp_path, instance=_Declared(_ctx(tmp_path)))
     assert _resolve(executor, "panel_state") is None
+
+
+@neko_plugin
+class _Shadowed(NekoPluginBase):
+    async def refresh(self, **kwargs: Any) -> dict:
+        return dict(kwargs)
+
+    @timer_interval(id="refresh", seconds=3600, auto_start=False)
+    async def ticker(self, **_: Any) -> str:
+        return "timer"
+
+
+async def test_a_manifest_method_sharing_a_timer_id_runs_without_the_timer_metadata(tmp_path):
+    instance = _Shadowed(_ctx(tmp_path))
+    executor, _instance, _logger = _runtime(tmp_path, instance=instance, manifest=["refresh"])
+    assert executor._metadata["refresh"].event_type == "timer"
+    assert executor._call_meta("plugin_entry", "refresh") is None
+    assert executor._call_meta("timer", "refresh") is executor._metadata["refresh"]
+    assert await executor.invoke("plugin_entry", "refresh", {"x": 1}) == {"x": 1}
+
+
+def test_a_property_is_not_evaluated_by_a_call_to_its_name(tmp_path):
+    evaluated: list[str] = []
+
+    async def target(**_: Any) -> str:
+        return "ran"
+
+    @neko_plugin
+    class WithProperty(NekoPluginBase):
+        @property
+        def exposed(self):
+            evaluated.append("exposed")
+            return target
+
+    executor, _instance, _logger = _runtime(tmp_path, instance=WithProperty(_ctx(tmp_path)), manifest=["exposed"])
+    # Only what the call does counts (building the tables scans members).
+    evaluated.clear()
+    assert _resolve(executor, "exposed") is None
+    assert evaluated == []
+
+
+async def test_a_failing_collection_reports_an_unknown_id_as_not_found(tmp_path, monkeypatch):
+    instance = _Plugin(_ctx(tmp_path))
+
+    def broken(**_kwargs: object):
+        raise RuntimeError("collect failed")
+
+    # Fallback-scan mode: every refresh raises the plugin's collection error.
+    monkeypatch.setattr(instance, "collect_entries", broken)
+    executor, _instance, _logger = _runtime(tmp_path, instance=instance)
+    with pytest.raises(PluginEntryNotFoundError):
+        await executor.invoke("plugin_entry", "no_such_entry", {})
+    assert await executor.invoke("plugin_entry", "registered", {}) == "registered"
 
 
 def test_a_non_callable_attribute_is_not_resolved(tmp_path):

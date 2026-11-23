@@ -55,6 +55,8 @@ _CURRENT = object()
 # collect_entries() registers nor the manifest's ``entries`` table declares.
 # While True such a call still runs and logs a rate-limited warning; set to
 # False (planned for the next release) to refuse it like any unknown id.
+# The manifest's entry ids reach the plugin process once, at launch: a
+# change to the ``entries`` declaration takes effect after a plugin restart.
 UNDECLARED_ENTRY_GRACE = True
 # Module prefix of the SDK: methods its base classes define are never entries.
 _SDK_MODULE_PREFIX = "plugin.sdk."
@@ -310,7 +312,12 @@ class EntryExecutor:
         if method is None:
             method = self._undeclared_method(event_id)
         if method is None:
-            self._refresh()
+            try:
+                self._refresh()
+            except Exception:
+                # The plugin's own collection is failing: the id stays
+                # unknown (entry not found), as with the rebuild above.
+                return None
             method = self._mapped_entry(event_id)
         return method
 
@@ -341,6 +348,14 @@ class EntryExecutor:
         """
         if event_id.startswith("_") or _defined_by_sdk(self._instance, event_id):
             return None
+        # Looked up statically first: a property (or any other non-callable
+        # descriptor) is not evaluated just because its name was called.
+        try:
+            static = inspect.getattr_static(self._instance, event_id)
+        except AttributeError:
+            return None
+        if not callable(static) and not isinstance(static, (staticmethod, classmethod)):
+            return None
         method = getattr(self._instance, event_id, None)
         if not method or not callable(method):
             return None
@@ -362,10 +377,22 @@ class EntryExecutor:
             )
         return method
 
-    def _timeout(self, event_id: str, requested: Any) -> float | None:
+    def _call_meta(self, event_type: str, event_id: str) -> Any:
+        """The metadata a call to ``event_id`` runs with.
+
+        A plugin_entry call never takes another event type's metadata: a
+        manifest-declared plain method sharing its id with, say, a timer
+        runs with no metadata rather than the timer's.
+        """
+        meta = self._metadata.get(event_id)
+        if event_type == "plugin_entry" and meta is not None and _event_type_of(meta) != "plugin_entry":
+            return None
+        return meta
+
+    def _timeout(self, meta: Any, requested: Any) -> float | None:
         # Keep existing direct-entry configuration semantics. The RPC deadline
         # remains a separate hard upper limit even for an unlimited entry.
-        configured = resolve_entry_timeout(self._metadata.get(event_id), UNSET_TIMEOUT)
+        configured = resolve_entry_timeout(meta, UNSET_TIMEOUT)
         has_configured = configured is not UNSET_TIMEOUT
         if requested is not UNSET_TIMEOUT:
             if requested is None:
@@ -400,7 +427,9 @@ class EntryExecutor:
                 self.plugin_id, event_id, "Entry must be 'async def'"
             )
         label = f"{event_type}.{event_id}"
-        budget = self._timeout(event_id, timeout)
+        # Resolved with the handler, not re-read after it returns.
+        entry_meta = self._call_meta(event_type, event_id)
+        budget = self._timeout(entry_meta, timeout)
         budget = remaining_budget(budget, deadline)
         if budget is not None and budget <= 0:
             raise RpcDeadlineExceededError(f"{label} deadline expired before execution")
@@ -408,15 +437,14 @@ class EntryExecutor:
             # The entry's own budget is also the deadline of everything it
             # calls: nested requests take the earlier of it and their own.
             narrow_scope_deadline(time.monotonic() + budget)
-        # The contract this call is checked against: resolved with the handler,
-        # not re-read after it returns.
-        call_meta = self._metadata.get(event_id) if event_type == "plugin_entry" else None
+        # The contract this call is checked against.
+        call_meta = entry_meta if event_type == "plugin_entry" else None
         call_args = (
             prepare_entry_kwargs(
                 plugin_id=self.plugin_id,
                 entry_id=event_id,
                 handler=method,
-                meta=self._metadata.get(event_id),
+                meta=entry_meta,
                 args=args,
             )
             if event_type == "plugin_entry"
