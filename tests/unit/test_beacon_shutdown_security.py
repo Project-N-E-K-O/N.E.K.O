@@ -480,3 +480,50 @@ async def test_beacon_shutdown_header_rejections_do_not_read_body(monkeypatch):
             await web_app._validate_beacon_shutdown_origin(req)
         assert exc.value.status_code == 403
         assert body_read_called is False
+
+
+@pytest.mark.asyncio
+async def test_beacon_shutdown_stops_reading_stream_once_cap_exceeded():
+    from fastapi import HTTPException
+    from starlette.requests import Request
+    from app.main_server import web_app
+
+    chunk_size = 1024
+    total_chunks = 10
+    chunks_read = 0
+
+    async def _counting_receive():
+        nonlocal chunks_read
+        if chunks_read >= total_chunks:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        chunk_idx = chunks_read
+        chunks_read += 1
+        prefix = b'{"_csrf_token":"' if chunk_idx == 0 else b""
+        payload = (prefix + b"a" * chunk_size)[:chunk_size]
+        return {
+            "type": "http.request",
+            "body": payload,
+            "more_body": chunks_read < total_chunks,
+        }
+
+    req = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/beacon/shutdown",
+            "scheme": "http",
+            "server": ("127.0.0.1", 48911),
+            "headers": [
+                (b"host", b"127.0.0.1:48911"),
+                (b"content-type", b"application/json"),
+            ],
+        },
+        receive=_counting_receive,
+    )
+    with pytest.raises(HTTPException) as exc:
+        await web_app._validate_beacon_shutdown_origin(req)
+    assert exc.value.status_code == 403
+    assert exc.value.detail["error_code"] == "csrf_validation_failed"
+    assert chunks_read == (web_app._BEACON_SHUTDOWN_MAX_JSON_BYTES // chunk_size) + 1
+    assert chunks_read < total_chunks
+

@@ -7,6 +7,7 @@
     const HOME_TUTORIAL_AGENT_RESTORE_RETRY_DELAYS_MS = Object.freeze([1000, 2000, 4000, 8000, 15000]);
     // 等后端启动时放回开关：约 45 秒，长于后端电脑/浏览器控制探测的最长用时（约 32 秒）。
     const HOME_TUTORIAL_AGENT_BACKEND_REPLAY_WAIT_DELAYS_MS = Object.freeze([1000, 2000, 4000, 8000, 15000, 15000]);
+    const HOME_TUTORIAL_CSRF_TIMEOUT_MS = 5000;
     const HOME_TUTORIAL_AGENT_FLAG_KEYS = Object.freeze([
         'agent_enabled',
         'computer_use_enabled',
@@ -131,32 +132,102 @@
 
     let _homeTutorialCsrfToken = '';
 
+    function createCsrfTimeoutError() {
+        const err = new Error('CSRF token fetch timed out');
+        err.code = 'csrf_token_timeout';
+        return err;
+    }
+
+    function awaitWithTutorialTimeout(promise, timeoutMs, onTimeout) {
+        return new Promise(function (resolve, reject) {
+            if (!(timeoutMs > 0)) {
+                if (typeof onTimeout === 'function') {
+                    try { onTimeout(); } catch (_) { /* ignore abort errors */ }
+                }
+                reject(createCsrfTimeoutError());
+                return;
+            }
+            let settled = false;
+            let timerId = setTimeout(function () {
+                if (settled) return;
+                settled = true;
+                timerId = null;
+                if (typeof onTimeout === 'function') {
+                    try { onTimeout(); } catch (_) { /* ignore abort errors */ }
+                }
+                reject(createCsrfTimeoutError());
+            }, timeoutMs);
+            Promise.resolve(promise).then(
+                function (value) {
+                    if (settled) return;
+                    settled = true;
+                    if (timerId !== null) {
+                        clearTimeout(timerId);
+                        timerId = null;
+                    }
+                    resolve(value);
+                },
+                function (err) {
+                    if (settled) return;
+                    settled = true;
+                    if (timerId !== null) {
+                        clearTimeout(timerId);
+                        timerId = null;
+                    }
+                    reject(err);
+                }
+            );
+        });
+    }
+
     async function getHomeTutorialMutationHeaders(forceRefresh) {
+        const deadlineMs = Date.now() + HOME_TUTORIAL_CSRF_TIMEOUT_MS;
         try {
             const security = window.nekoLocalMutationSecurity;
             if (security && typeof security.getMutationHeaders === 'function') {
                 if (forceRefresh && typeof security.refreshToken === 'function') {
-                    await security.refreshToken();
+                    await awaitWithTutorialTimeout(security.refreshToken(), deadlineMs - Date.now());
                 }
-                const headers = await security.getMutationHeaders();
+                const headers = await awaitWithTutorialTimeout(security.getMutationHeaders(), deadlineMs - Date.now());
                 if (headers && typeof headers === 'object' && (headers['X-CSRF-Token'] || headers['x-csrf-token'])) {
                     return headers;
                 }
             }
-        } catch (_) { /* fall back to page_config */ }
+        } catch (err) {
+            if (err && err.code === 'csrf_token_timeout') {
+                throw err;
+            }
+            /* fall back to page_config */
+        }
         if (forceRefresh) _homeTutorialCsrfToken = '';
         if (_homeTutorialCsrfToken) {
             return { 'X-CSRF-Token': _homeTutorialCsrfToken };
         }
         try {
-            const resp = await fetch('/api/config/page_config', { cache: 'no-store' });
-            const cfg = resp && resp.ok ? await resp.json() : null;
+            const controller = typeof AbortController === 'function' ? new AbortController() : null;
+            const onTimeout = controller ? function () { controller.abort(); } : null;
+            const fetchInit = controller
+                ? { cache: 'no-store', signal: controller.signal }
+                : { cache: 'no-store' };
+            const resp = await awaitWithTutorialTimeout(
+                fetch('/api/config/page_config', fetchInit),
+                deadlineMs - Date.now(),
+                onTimeout
+            );
+            const cfg = resp && resp.ok
+                ? await awaitWithTutorialTimeout(resp.json(), deadlineMs - Date.now(), onTimeout)
+                : null;
             const token = cfg && cfg.autostart_csrf_token;
             if (typeof token === 'string' && token) {
                 _homeTutorialCsrfToken = token;
                 return { 'X-CSRF-Token': token };
             }
-        } catch (_) { /* guarded POST will surface rejection */ }
+        } catch (err) {
+            if (err && err.code === 'csrf_token_timeout') {
+                throw err;
+            }
+            /* guarded POST will surface rejection */
+        }
         return {};
     }
 
@@ -391,7 +462,7 @@
     function resolveAgentRestoreTarget(currentFlags, intentFlags) {
         const inspected = inspectPersistedAgentRestoreSnapshot();
         if (inspected.status === 'owner_mismatch') {
-            return { flags: currentFlags, persist: hasAnyEnabledAgentFlag(currentFlags) };
+            return { flags: currentFlags, owner: getCurrentLanlanName(), persist: hasAnyEnabledAgentFlag(currentFlags) };
         }
         if (
             (inspected.status === 'valid' || inspected.status === 'owner_pending')
@@ -415,7 +486,7 @@
                 persist: true,
             };
         }
-        return { flags: currentFlags, persist: true };
+        return { flags: currentFlags, owner: getCurrentLanlanName(), persist: true };
     }
 
     function clearPersistedAgentRestoreSnapshot(token) {
@@ -499,6 +570,16 @@
         return !!currentOwner && currentOwner === normalizedOwner;
     }
 
+    function matchesPersistedSnapshotToken(expectedToken) {
+        if (expectedToken === undefined || expectedToken === null) {
+            return true;
+        }
+        const inspected = inspectPersistedAgentRestoreSnapshot();
+        return inspected.status === 'valid'
+            && !!inspected.payload
+            && inspected.payload.token === expectedToken;
+    }
+
     function canRestoreAgentSnapshot(restoreToken, expectedOwner) {
         return !state.featureSuppression.active
             && state.featureSuppression.token === restoreToken
@@ -510,12 +591,13 @@
             && state.featureSuppression.token === token;
     }
 
-    async function restoreAgentSnapshot(flags, restoreToken, attemptState, expectedOwner) {
+    async function restoreAgentSnapshot(flags, restoreToken, attemptState, expectedOwner, expectedPersistedToken) {
         if (!flags) {
             return false;
         }
         const isRestoreStillValid = function () {
-            return restoreToken === undefined || canRestoreAgentSnapshot(restoreToken, expectedOwner);
+            return (restoreToken === undefined || canRestoreAgentSnapshot(restoreToken, expectedOwner))
+                && matchesPersistedSnapshotToken(expectedPersistedToken);
         };
         if (!isRestoreStillValid()) {
             return false;
@@ -957,9 +1039,14 @@
                     flagsToRestore,
                     restoreToken,
                     attemptState,
-                    expectedOwner
+                    expectedOwner,
+                    persisted.token
                 );
-                if (restored && canRestoreAgentSnapshot(restoreToken, expectedOwner)) {
+                if (
+                    restored
+                    && canRestoreAgentSnapshot(restoreToken, expectedOwner)
+                    && matchesPersistedSnapshotToken(persisted.token)
+                ) {
                     clearPersistedAgentRestoreSnapshot(persisted.token);
                     syncAgentFlagsUi();
                     return true;

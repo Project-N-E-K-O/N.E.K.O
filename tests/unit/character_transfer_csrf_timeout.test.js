@@ -269,3 +269,81 @@ test('PR3981 #59: _charTransferMutationFetch keeps timeoutMs and external AbortS
         (err) => err && err.name === 'AbortError'
     );
 });
+
+test('PR3981 #63: saveAuthor resets saving flag when hung CSRF lookup hits MOLILI_CARD_META_TIMEOUT_MS', async () => {
+    const elements = [];
+    const makeEl = (tag) => {
+        const el = {
+            tagName: tag,
+            className: '',
+            dataset: {},
+            style: {},
+            textContent: '',
+            innerHTML: '',
+            value: '',
+            disabled: false,
+            readOnly: false,
+            children: [],
+            listeners: {},
+            classList: { add() {}, remove() {}, toggle() {} },
+            setAttribute() {},
+            appendChild(child) { this.children.push(child); return child; },
+            addEventListener(type, fn) { this.listeners[type] = fn; },
+            blur() {},
+            focus() {},
+        };
+        elements.push(el);
+        return el;
+    };
+
+    let hangPageConfig = true;
+    const putBodies = [];
+    let pageConfigCalls = 0;
+    const mod = loadCharacterTransferModule({
+        fastTimeoutMs: 25,
+        fetchImpl: async (url, init = {}) => {
+            const pathName = String(url);
+            if (pathName === '/api/config/page_config') {
+                pageConfigCalls += 1;
+                if (hangPageConfig) {
+                    return new Promise((_, reject) => {
+                        init.signal?.addEventListener('abort', () => {
+                            reject(Object.assign(new Error('Aborted'), { name: 'AbortError' }));
+                        }, { once: true });
+                    });
+                }
+                return { ok: true, status: 200, json: async () => ({ autostart_csrf_token: 'tok-author-ok' }) };
+            }
+            if (pathName === '/api/characters/catgirl/CatMeta/card-meta' && init.method === 'PUT') {
+                const parsed = JSON.parse(init.body);
+                putBodies.push(parsed);
+                return {
+                    ok: true,
+                    status: 200,
+                    json: async () => ({ success: true, meta: { origin: 'self', author: parsed.author } }),
+                };
+            }
+            throw new Error(`unexpected fetch: ${pathName}`);
+        },
+    });
+    mod.context.document.createElement = makeEl;
+    mod.windowObj._cardMetas.CatMeta = { origin: 'self', author: 'InitialAuthor', created_at: '' };
+    const container = makeEl('div');
+    mod.context.renderCardMetaBlock(container, 'CatMeta', false, {});
+
+    const authorInput = elements.find((el) => el.tagName === 'input');
+    assert.ok(authorInput && typeof authorInput.listeners.blur === 'function', 'expected editable author input');
+
+    authorInput.value = 'TimedOutAuthor';
+    const firstBlurPromise = authorInput.listeners.blur();
+    await authorInput.listeners.blur();
+    assert.equal(pageConfigCalls, 1, 'concurrent blur while saving must not fire duplicate CSRF fetch');
+    await firstBlurPromise;
+    assert.equal(putBodies.length, 0, 'timed-out saveAuthor must not send PUT');
+    assert.equal(authorInput.disabled, false, 'authorInput must be re-enabled after timeout');
+
+    hangPageConfig = false;
+    authorInput.value = 'RecoveredAuthor';
+    await authorInput.listeners.blur();
+    assert.deepEqual(putBodies, [{ author: 'RecoveredAuthor' }]);
+});

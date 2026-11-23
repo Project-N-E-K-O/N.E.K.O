@@ -815,12 +815,17 @@ def _write_preview_image(
             )
         except Exception:
             pass
-        os.makedirs(os.path.dirname(preview_image_path), exist_ok=True)
-        atomic_write_bytes(preview_image_path, image_bytes)
-        atomic_write_bytes(
-            os.path.join(os.path.dirname(preview_image_path), _PREVIEW_STAGING_MARKER_FILE),
-            os.path.basename(preview_image_path).encode("utf-8"),
-        )
+        staging_dir = os.path.dirname(preview_image_path)
+        os.makedirs(staging_dir, exist_ok=True)
+        try:
+            atomic_write_bytes(
+                os.path.join(staging_dir, _PREVIEW_STAGING_MARKER_FILE),
+                os.path.basename(preview_image_path).encode("utf-8"),
+            )
+            atomic_write_bytes(preview_image_path, image_bytes)
+        except Exception:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            raise
 
 
 @router.post('/upload-preview-image')

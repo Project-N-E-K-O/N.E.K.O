@@ -923,6 +923,7 @@ async def test_publish_explicit_preview_rejects_mismatched_jpeg_named_png(tmp_pa
     assert json.loads(resp.body)["success"] is False
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink-before-dotdot semantics")
 def test_assert_workshop_path_resolves_symlink_before_dotdot(tmp_path):
     from main_routers.workshop_router import preview_cards
 
@@ -1080,3 +1081,36 @@ async def test_publish_auto_discovery_existing_target_is_validated_not_skipped(t
     )
     assert bad_resp.status_code == 400
     assert json.loads(bad_resp.body)["success"] is False
+
+
+def test_write_preview_image_writes_marker_first_and_rolls_back_on_failure(tmp_path, monkeypatch):
+    """Staging writes marker before image bytes and removes staging_dir on failure."""
+    from main_routers.workshop_router import preview_cards
+
+    workshop_base = tmp_path / "workshop"
+    staging_dir = workshop_base / "_preview_staging" / "upload-rollback"
+    preview_path = staging_dir / "preview.png"
+    real_atomic_write_bytes = preview_cards.atomic_write_bytes
+    written_basenames: list[str] = []
+
+    def _failing_atomic_write_bytes(target_path: str, data: bytes) -> None:
+        basename = os.path.basename(target_path)
+        written_basenames.append(basename)
+        if basename == preview_cards._PREVIEW_STAGING_MARKER_FILE:
+            real_atomic_write_bytes(target_path, data)
+            return
+        raise OSError("simulated disk full")
+
+    monkeypatch.setattr(preview_cards, "atomic_write_bytes", _failing_atomic_write_bytes)
+
+    with pytest.raises(OSError, match="simulated disk full"):
+        preview_cards._write_preview_image(
+            None,
+            str(preview_path),
+            _png_bytes(),
+            workshop_base=str(workshop_base),
+        )
+
+    assert written_basenames == [preview_cards._PREVIEW_STAGING_MARKER_FILE, "preview.png"]
+    assert not staging_dir.exists()
+

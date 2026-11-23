@@ -1040,7 +1040,8 @@ function renderCardMetaBlock(container, name, isNew, rawData) {
                     const resp = await _charTransferMutationFetch('/api/characters/catgirl/' + encodeURIComponent(name) + '/card-meta', {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ author: newVal })
+                        body: JSON.stringify({ author: newVal }),
+                        timeoutMs: MOLILI_CARD_META_TIMEOUT_MS,
                     });
                     if (!resp.ok) throw new Error('HTTP ' + resp.status);
                     const data = await resp.json();

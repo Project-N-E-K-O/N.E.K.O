@@ -456,6 +456,7 @@
       this._cachedCsrfToken = '';
       this._csrfTokenStale = false;
       this._csrfFetchPromise = null;
+      this._csrfRefreshSeq = 0;
       this._activeCommandRouteIdentity = null;
       this._memoryConsentEnabled = false;
       this._controlBridge = {
@@ -2181,9 +2182,11 @@
     getMutationHeaders(options = {}) {
       const forceRefresh = options?.forceRefresh === true;
       if (forceRefresh) {
+        this._csrfRefreshSeq += 1;
         this._csrfTokenStale = true;
         this._csrfFetchPromise = null;
       }
+      const requestSeq = this._csrfRefreshSeq;
       const loadFromPageConfig = (useCached = !forceRefresh) => {
         if (useCached && this._cachedCsrfToken && !this._csrfTokenStale) {
           return Promise.resolve({
@@ -2199,6 +2202,9 @@
           .then((response) => (response.ok ? response.json() : null))
           .then((config) => {
             const headers = { 'Content-Type': 'application/json' };
+            if (requestSeq !== this._csrfRefreshSeq) {
+              return headers;
+            }
             if (config && typeof config.autostart_csrf_token === 'string' && config.autostart_csrf_token) {
               headers['X-CSRF-Token'] = config.autostart_csrf_token;
               this._cachedCsrfToken = config.autostart_csrf_token;
@@ -2220,6 +2226,9 @@
       if (security && typeof security.getMutationHeaders === 'function') {
         return Promise.resolve(security.getMutationHeaders())
           .then((mutationHeaders) => {
+            if (requestSeq !== this._csrfRefreshSeq) {
+              return { 'Content-Type': 'application/json' };
+            }
             const headers = { 'Content-Type': 'application/json', ...(mutationHeaders || {}) };
             const resolvedToken = csrfTokenFromHeaders(headers);
             if (resolvedToken) {
@@ -2229,7 +2238,11 @@
             }
             return loadFromPageConfig(false);
           })
-          .catch(() => loadFromPageConfig(false));
+          .catch(() => (
+            requestSeq !== this._csrfRefreshSeq
+              ? { 'Content-Type': 'application/json' }
+              : loadFromPageConfig(false)
+          ));
       }
       return loadFromPageConfig(!forceRefresh);
     }
@@ -2281,28 +2294,45 @@
         );
       }
       return new Promise((resolve, reject) => {
-        const onAbort = () => {
-          reject(this._hostError('cancelled', `${this.displayName} host request was cancelled`, { operation }));
-        };
-        const onHostCancel = (reason) => {
-          reject(this._hostError(reason || 'cancelled', `${this.displayName} host request was cancelled`, { operation }));
-        };
+        let settled = false;
         let timeoutId = null;
+        let onAbort;
+        let onHostCancel;
+        const cleanup = () => {
+          if (timeoutId != null) {
+            this._window.clearTimeout(timeoutId);
+            timeoutId = null;
+          }
+          signal?.removeEventListener('abort', onAbort);
+          csrfOpEntry?.waiters.delete(onHostCancel);
+        };
+        const finishResolve = (value) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve(value);
+        };
+        const finishReject = (err) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          reject(err);
+        };
+        onAbort = () => {
+          finishReject(this._hostError('cancelled', `${this.displayName} host request was cancelled`, { operation }));
+        };
+        onHostCancel = (reason) => {
+          finishReject(this._hostError(reason || 'cancelled', `${this.displayName} host request was cancelled`, { operation }));
+        };
         if (deadlineMs != null) {
           const remainingMs = Math.max(1, deadlineMs - Date.now());
           timeoutId = this._window.setTimeout(() => {
-            reject(this._hostError('timeout', `${this.displayName} host request timed out`, { operation }));
+            finishReject(this._hostError('timeout', `${this.displayName} host request timed out`, { operation }));
           }, remainingMs);
         }
         signal?.addEventListener('abort', onAbort, { once: true });
         csrfOpEntry?.waiters.add(onHostCancel);
-        Promise.resolve(promise)
-          .then(resolve, reject)
-          .finally(() => {
-            if (timeoutId != null) this._window.clearTimeout(timeoutId);
-            signal?.removeEventListener('abort', onAbort);
-            csrfOpEntry?.waiters.delete(onHostCancel);
-          });
+        Promise.resolve(promise).then(finishResolve, finishReject);
       });
     }
 

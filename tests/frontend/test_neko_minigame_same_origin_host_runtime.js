@@ -1691,22 +1691,28 @@ async function main() {
     host._session.lanlanName = previousMediaCharacter;
   }
   const realPost = host._post.bind(host);
+  const realDateNow = Date.now;
   host._post = (url, body, options) => {
     endOptionCalls.push({ url: String(url), timeoutMs: options?.timeoutMs });
     return realPost(url, body, options);
   };
-  await host.end({ session_id: 'server-session' }, { timeoutMs: 1234 });
-  assert(endOptionCalls.some((call) => /\/end$/.test(call.url) && call.timeoutMs === 1234),
-    'runtime end ignored the caller-supplied timeout');
-  endOptionCalls.length = 0;
-  await host.end({ session_id: 'server-session' }, { timeoutMs: 999999 });
-  assert(endOptionCalls.some((call) => /\/end$/.test(call.url) && call.timeoutMs === 30000),
-    'runtime end did not clamp an oversized caller timeout');
-  endOptionCalls.length = 0;
-  await host.end({ session_id: 'server-session' }, { timeoutMs: 'nonsense' });
-  assert(endOptionCalls.some((call) => /\/end$/.test(call.url) && call.timeoutMs === 8000),
-    'an invalid caller timeout did not degrade to the existing default');
-  host._post = realPost;
+  try {
+    Date.now = () => 1_700_000_000_000;
+    await host.end({ session_id: 'server-session' }, { timeoutMs: 1234 });
+    assert(endOptionCalls.some((call) => /\/end$/.test(call.url) && call.timeoutMs === 1234),
+      'runtime end ignored the caller-supplied timeout');
+    endOptionCalls.length = 0;
+    await host.end({ session_id: 'server-session' }, { timeoutMs: 999999 });
+    assert(endOptionCalls.some((call) => /\/end$/.test(call.url) && call.timeoutMs === 30000),
+      'runtime end did not clamp an oversized caller timeout');
+    endOptionCalls.length = 0;
+    await host.end({ session_id: 'server-session' }, { timeoutMs: 'nonsense' });
+    assert(endOptionCalls.some((call) => /\/end$/.test(call.url) && call.timeoutMs === 8000),
+      'an invalid caller timeout did not degrade to the existing default');
+  } finally {
+    Date.now = realDateNow;
+    host._post = realPost;
+  }
 
   const endResult = await host.end({ session_id: 'server-session' });
   for (const field of LEAKY_ARCHIVE_FIELDS) {
@@ -2740,6 +2746,87 @@ async function main() {
     } finally {
       Date.now = realDateNow;
     }
+  }
+
+  // 3) Overlapping forceRefresh calls resolving out of order never overwrite newer cached CSRF tokens.
+  {
+    let resolveFirstRefresh;
+    let resolveSecondRefresh;
+    const firstGate = new Promise((resolve) => { resolveFirstRefresh = resolve; });
+    const secondGate = new Promise((resolve) => { resolveSecondRefresh = resolve; });
+    let fetchCount = 0;
+    const seqHost = createHost({
+      gameType: 'example-game',
+      sessionId: 'csrf-refresh-seq',
+      fetchImpl: async (url) => {
+        if (String(url).startsWith('/api/config/page_config')) {
+          fetchCount += 1;
+          const idx = fetchCount;
+          if (idx === 1) {
+            await firstGate;
+            return jsonResponse({ autostart_csrf_token: 'tok-stale-1' });
+          }
+          await secondGate;
+          return jsonResponse({ autostart_csrf_token: 'tok-fresh-2' });
+        }
+        return jsonResponse({ ok: true });
+      },
+      windowImpl: windowMock,
+    });
+    const firstPromise = seqHost.getMutationHeaders({ forceRefresh: true });
+    const secondPromise = seqHost.getMutationHeaders({ forceRefresh: true });
+    resolveSecondRefresh();
+    const secondHeaders = await secondPromise;
+    assert(secondHeaders['X-CSRF-Token'] === 'tok-fresh-2',
+      `expected newer forceRefresh to return tok-fresh-2, got ${JSON.stringify(secondHeaders)}`);
+    resolveFirstRefresh();
+    const firstHeaders = await firstPromise;
+    assert(!firstHeaders['X-CSRF-Token'],
+      `expected superseded forceRefresh not to return stale token, got ${JSON.stringify(firstHeaders)}`);
+    const cachedHeaders = await seqHost.getMutationHeaders();
+    assert(cachedHeaders['X-CSRF-Token'] === 'tok-fresh-2' && fetchCount === 2,
+      `expected stale response not to overwrite newer token or trigger refetch, got ${JSON.stringify(cachedHeaders)}, fetchCount=${fetchCount}`);
+    seqHost.dispose();
+  }
+
+  // 4) _awaitWithAbortSignal detaches abort/waiter listeners immediately when timeout settles before promise.
+  {
+    const waiterHost = createHost({
+      gameType: 'example-game',
+      sessionId: 'waiter-cleanup-timeout',
+      fetchImpl: async () => jsonResponse({ ok: true }),
+      windowImpl: windowMock,
+    });
+    const attachedHandlers = new Set();
+    let removeCount = 0;
+    const spySignal = {
+      aborted: false,
+      addEventListener(type, fn) {
+        if (type === 'abort') attachedHandlers.add(fn);
+      },
+      removeEventListener(type, fn) {
+        if (type === 'abort' && attachedHandlers.delete(fn)) removeCount += 1;
+      },
+    };
+    const fakeOpEntry = { cancelReason: null, waiters: new Set() };
+    let timedErr = null;
+    try {
+      await waiterHost._awaitWithAbortSignal(
+        new Promise(() => {}),
+        spySignal,
+        'hung_waiter_cleanup',
+        fakeOpEntry,
+        Date.now() + 10,
+      );
+    } catch (err) {
+      timedErr = err;
+    }
+    assert(timedErr?.code === 'timeout', `expected timeout error, got ${timedErr?.code}`);
+    assert(attachedHandlers.size === 0 && removeCount === 1,
+      `expected abort listener detached immediately on timeout, active=${attachedHandlers.size}, removed=${removeCount}`);
+    assert(fakeOpEntry.waiters.size === 0,
+      `expected csrfOpEntry waiter removed immediately on timeout, remaining=${fakeOpEntry.waiters.size}`);
+    waiterHost.dispose();
   }
 
   process.stdout.write('mini-game same-origin host runtime test passed\n');
