@@ -986,6 +986,16 @@ async def update_emotion_mapping(model_name: str, request: Request):
                 )
             }
             managed_expression_groups = prev_nonempty_expr_groups | input_expr_groups
+            # A group the caller sends as an explicit empty list while the previous mapping had
+            # files in it is a user clear: untracked raw entries under its prefix go too, or the
+            # runtime prefix fallback (e.g. 常驻) would bring them back with an empty mapping.
+            explicitly_cleared_expr_groups = {
+                group_name
+                for group_name, files in expressions_input.items()
+                if isinstance(group_name, str)
+                and group_name in prev_nonempty_expr_groups
+                and not _has_nonempty_mapping_files(files)
+            }
 
             known_expression_groups = {
                 group_name
@@ -1089,7 +1099,8 @@ async def update_emotion_mapping(model_name: str, request: Request):
                 if previous_had_emotion_mapping and (
                     not norm_file
                     or (
-                        norm_file not in prev_group_file_counts.get(matched_group, ())
+                        matched_group not in explicitly_cleared_expr_groups
+                        and norm_file not in prev_group_file_counts.get(matched_group, ())
                         and norm_file not in input_group_file_counts.get(matched_group, ())
                     )
                 ):

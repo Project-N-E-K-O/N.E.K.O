@@ -617,3 +617,55 @@ def test_preexisting_ambiguous_expression_name_survives_adding_longer_group_and_
 
     saved2 = json.loads(model_json.read_text(encoding="utf-8"))
     assert saved2["FileReferences"]["Expressions"] == expected
+
+
+def _resident_model_with_untracked_entry() -> dict:
+    return {
+        "Version": 3,
+        "EmotionMapping": {
+            "motions": {},
+            "expressions": {"常驻": ["exp/a.exp3.json"]},
+        },
+        "FileReferences": {
+            "Motions": {},
+            "Expressions": [
+                {"Name": "常驻_a", "File": "exp/a.exp3.json", "FadeInTime": 0.5},
+                {"Name": "常驻_b", "File": "exp/b.exp3.json", "FadeInTime": 0.7},
+                {"Name": "custom_keep", "File": "exp/keep.exp3.json"},
+            ],
+        },
+    }
+
+
+@pytest.mark.unit
+def test_explicit_empty_group_also_removes_untracked_entries_under_its_prefix(model_dir: Path) -> None:
+    """常驻: [] after a non-empty mapping is a user clear; an untracked 常驻_b must go too,
+    otherwise the runtime prefix fallback would make it active with an empty mapping."""
+    model_json = model_dir / "m.model3.json"
+    _write(model_json, _resident_model_with_untracked_entry())
+
+    res = asyncio.run(
+        live2d_router.update_emotion_mapping("m", _FakeRequest({"motions": {}, "expressions": {"常驻": []}}))
+    )
+    assert res["success"] is True
+    saved = json.loads(model_json.read_text(encoding="utf-8"))
+    assert saved["FileReferences"]["Expressions"] == [
+        {"Name": "custom_keep", "File": "exp/keep.exp3.json"},
+    ]
+
+
+@pytest.mark.unit
+def test_omitted_group_keeps_untracked_entries_under_its_prefix(model_dir: Path) -> None:
+    """Control: a request without the 常驻 key removes only the tracked entry."""
+    model_json = model_dir / "m.model3.json"
+    _write(model_json, _resident_model_with_untracked_entry())
+
+    res = asyncio.run(
+        live2d_router.update_emotion_mapping("m", _FakeRequest({"motions": {}, "expressions": {}}))
+    )
+    assert res["success"] is True
+    saved = json.loads(model_json.read_text(encoding="utf-8"))
+    assert saved["FileReferences"]["Expressions"] == [
+        {"Name": "常驻_b", "File": "exp/b.exp3.json", "FadeInTime": 0.7},
+        {"Name": "custom_keep", "File": "exp/keep.exp3.json"},
+    ]
