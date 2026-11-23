@@ -1446,6 +1446,23 @@ def find_model_by_workshop_item_id(item_id: str) -> str:
         return None
 
 
+def model_url_dir(model_dir: str, url_prefix: str, model_name: str) -> str:
+    """
+    URL directory of a folder returned by ``find_model_directory(model_name)``,
+    i.e. the part between ``url_prefix`` and the file name.
+
+    Workshop and user mod models are served relative to the root they were found in
+    (/workshop/<item_id>/..., /user_mods/<mod folder>/...), not under the model name;
+    the other prefixes serve ``<model_name>`` directly under their root.
+    """
+    if url_prefix == '/workshop':
+        return _model_dir_relative_to_roots(model_dir, _resolve_workshop_search_dirs()) or model_name
+    if url_prefix == '/user_mods':
+        from utils.config_manager import get_workshop_path
+        return _model_dir_relative_to_roots(model_dir, [get_workshop_path()]) or model_name
+    return model_name
+
+
 def find_model_config_file(model_name: str) -> str:
     """
     Find a .model3.json configuration file in a model directory.
@@ -1457,15 +1474,8 @@ def find_model_config_file(model_name: str) -> str:
         # If no model directory is found, return None or an empty string rather than a default path.
         return None
     
-    # Workshop and user mod models are served relative to the root they were found in
-    # (/workshop/<item_id>/..., /user_mods/<mod folder>/...), not under the model name.
-    url_dir = model_name
-    if url_prefix == '/workshop':
-        url_dir = _model_dir_relative_to_roots(model_dir, _resolve_workshop_search_dirs()) or model_name
-    elif url_prefix == '/user_mods':
-        from utils.config_manager import get_workshop_path
-        url_dir = _model_dir_relative_to_roots(model_dir, [get_workshop_path()]) or model_name
-    
+    url_dir = model_url_dir(model_dir, url_prefix, model_name)
+
     # Find the .model3.json file
     for file in os.listdir(model_dir):
         if file.endswith('.model3.json'):

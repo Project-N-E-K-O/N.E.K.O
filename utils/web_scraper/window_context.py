@@ -108,7 +108,7 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
         config_manager = ConfigManager()
         
         # Short keyword extraction on a user-facing path: use the small (emotion) tier.
-        model_config = await config_manager.aget_model_api_config('emotion')
+        model_config = await config_manager.aget_model_api_config('recognition')
         
         from config import LLM_OUTPUT_GUARD_MAX_TOKENS
         llm = await create_chat_llm_async(

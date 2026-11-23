@@ -51,7 +51,7 @@ def _browser_dependency_status() -> tuple[bool, str]:
     """Return whether there is a browser the browser tools can drive, and if not, the reason code.
 
     No browser comes with the application: the tools use one the user has
-    (``nekoclaw/builtin/browser/launcher.py``). The answer is found the way
+    (``nekopower/builtin/browser/launcher.py``). The answer is found the way
     the tools themselves pick their browser, so a browser the user named in
     the browser settings counts although the search would not find it. It is
     a settings file read and a handful of file checks (blocking: call it in
@@ -61,7 +61,7 @@ def _browser_dependency_status() -> tuple[bool, str]:
     now = time.monotonic()
     if _browser_search is not None and now - _browser_search[0] < _BROWSER_SEARCH_TTL_SECONDS:
         return _browser_search[1], _browser_search[2]
-    from .nekoclaw_builtins import provider
+    from .nekopower_builtins import provider
 
     try:
         found = provider.browser_installed()
@@ -83,7 +83,7 @@ def _keyboard_mouse_availability() -> Dict[str, Any]:
 
     Blocking (the first call imports pyautogui): call it in a worker thread.
     """
-    from .nekoclaw_builtins import provider
+    from .nekopower_builtins import provider
 
     probe = _shared.Modules.model_probe
     status = probe.is_available() if probe is not None else {"ready": False, "reasons": ["AGENT_CU_MODULE_NOT_LOADED"], "model": ""}
@@ -95,7 +95,7 @@ def _keyboard_mouse_availability() -> Dict[str, Any]:
         "enabled": True,
         "ready": bool(status.get("ready")) and input_ready,
         "reasons": reasons,
-        "provider": "nekoclaw",
+        "provider": "nekopower",
         "model": status.get("model", ""),
     }
 
@@ -105,22 +105,22 @@ async def _model_images_status() -> Dict[str, Any]:
 
     The keyboard-and-mouse tool and the screenshot tools are only given to a
     task agent whose model sees pictures. A model is taken not to when its
-    provider said so (``nekoclaw/host/model_capabilities.py``); without this
+    provider said so (``nekopower/host/model_capabilities.py``); without this
     the tools would be missing with nothing to show for it.
     """
     probe = _shared.Modules.model_probe
     if probe is None:
         return {"sees": True}
     try:
-        from nekoclaw.host import mount
+        from nekopower.host import mount
 
         config = await asyncio.to_thread(probe.model_config)
         host = mount.peek_host()
         if host is not None:
             store = host.model_capabilities
         else:
-            from nekoclaw.host.model_capabilities import ModelCapabilityStore
-            from nekoclaw.host.paths import HostPaths
+            from nekopower.host.model_capabilities import ModelCapabilityStore
+            from nekopower.host.paths import HostPaths
 
             store = ModelCapabilityStore(HostPaths().model_capabilities_json)
         return await store.describe(config.get("base_url"), config.get("model"))
@@ -165,7 +165,7 @@ async def _close_browser(
     a window is closed all the same. Decided once a call that is under way
     is over.
     """
-    from .nekoclaw_builtins import provider
+    from .nekopower_builtins import provider
 
     def still_current() -> bool:
         return expected_lifecycle_seq is None or _shared.Modules.browser_use_lifecycle_seq == expected_lifecycle_seq
@@ -210,9 +210,9 @@ _llm_check_lock = asyncio.Lock()
 
 def _tool_group_in_use(kind: str) -> bool:
     """Whether a commission is using the tools of ``computer_use`` or ``browser_use`` right now."""
-    from nekoclaw.host.capabilities import BUILTIN_GROUP_BROWSER, BUILTIN_GROUP_KEYBOARD_MOUSE
+    from nekopower.host.capabilities import BUILTIN_GROUP_BROWSER, BUILTIN_GROUP_KEYBOARD_MOUSE
 
-    from .nekoclaw_builtins import group_in_use
+    from .nekopower_builtins import group_in_use
 
     return group_in_use(BUILTIN_GROUP_KEYBOARD_MOUSE if kind == "computer_use" else BUILTIN_GROUP_BROWSER)
 
@@ -269,7 +269,7 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
         # If a commission is using the keyboard and mouse or the browser right
         # now, the LLM is demonstrably reachable — the probe lost a race (rate
         # limit / transient timeout) and we must not flip flags off or post a
-        # bogus "猫爪预检失败 / 已自动关闭" toast on top of a working task.
+        # bogus "喵能力预检失败 / 已自动关闭" toast on top of a working task.
         _has_running = _tool_group_in_use
 
         try:
@@ -357,7 +357,7 @@ def _collect_agent_status_snapshot() -> Dict[str, Any]:
     # The commissions under way, so the frontend can restore its task HUD
     # after a page refresh. Read from this process's view of the ledger;
     # nothing is opened or fetched here.
-    from .nekoclaw_mount import hud
+    from .nekopower_mount import hud
     from app.agent_task_hud import get_visible as _task_hud_visible
 
     active_tasks = hud.active()

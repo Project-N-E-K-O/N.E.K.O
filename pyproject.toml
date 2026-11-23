@@ -26,7 +26,7 @@ dependencies = [
   "pillow>=13.0.0,<14",
   "regex",
   "pyautogui",
-  # Typing text beyond ASCII goes through the clipboard (nekoclaw/builtin/desktop.py).
+  # Typing text beyond ASCII goes through the clipboard (nekopower/builtin/desktop.py).
   # pyautogui pulls it in through mouseinfo; it is imported directly, so it is
   # declared.
   "pyperclip",
@@ -50,7 +50,7 @@ dependencies = [
   "aiotieba>=4.8.0",
   "beautifulsoup4>=4.12.0",
   # HTML to markdown for the task agent's web fetch tool
-  # (nekoclaw/runtime/tools/web.py) and the MCP adapter plugin, which imports
+  # (nekopower/runtime/tools/web.py) and the MCP adapter plugin, which imports
   # it at module load. Declared here because no other dependency pulls it in.
   "markdownify>=1.2.2",
   "bilibili-api-dev==18.0.0a2",
@@ -155,7 +155,7 @@ packages = [
   "main_routers",
   "knowledge",
   "memory",
-  "nekoclaw",
+  "nekopower",
   "plugin",
   "services",
   "steamworks",
@@ -189,7 +189,7 @@ include = [
   "main_routers",
   "knowledge",
   "memory",
-  "nekoclaw",
+  "nekopower",
   "plugin",
   "services",
   "steamworks",

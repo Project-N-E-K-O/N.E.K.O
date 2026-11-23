@@ -573,7 +573,7 @@ class CorrectionsMixin:
                 from utils.token_tracker import set_call_type
                 from memory.thinking_llm import ainvoke_thinking
                 set_call_type("memory_correction")
-                api_config = await self._config_manager.aget_model_api_config('summary')
+                api_config = await self._config_manager.aget_model_api_config('memory')
                 # timeout: see MEMORY_LLM_HARD_TIMEOUT_SECONDS (upstream forwarding
                 # hard cap is 120s, so this must be ≤110). Batch decisions (keep_old /
                 # keep_new / keep_both / merge + rewrite merged_text) deserve full

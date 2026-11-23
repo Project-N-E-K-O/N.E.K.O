@@ -1203,7 +1203,7 @@ async def areview_candidates(
     if not shown:
         return {}, 0
     set_call_type("memory_habitual_phrase_review")
-    api_config = await config_manager.aget_model_api_config('summary')
+    api_config = await config_manager.aget_model_api_config('memory')
     llm = await create_chat_llm_async(
         api_config['model'],
         api_config['base_url'], api_config['api_key'],

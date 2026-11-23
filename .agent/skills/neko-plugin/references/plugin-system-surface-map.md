@@ -103,6 +103,7 @@ Source: [base.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/sd
 - A `register_llm_tool(name, description, parameters, handler, timeout=30.0, role=None)`: Registers a model-callable tool dynamically. Prefer `@llm_tool` when the schema is known at authoring time.
 - B `unregister_llm_tool(name)`: Removes a model-callable tool and its backing dynamic entry. Use during config changes or shutdown.
 - A `list_llm_tools()`: Lists LLM tools registered by this plugin. Use for diagnostics and UI state.
+- A `await register_llm_tool_async(...)` / `await unregister_llm_tool_async(name)`: Same as the sync pair, but return main_server's real outcome (`ok`, per-role results, `error`) and only commit the local registration change when `ok` is true. Use when the plugin must know whether the model can actually see the tool.
 - S `logger_component(suffix=None)`: Builds a logger component name. Use when creating plugin-local logger variants.
 - S `get_logger(suffix=None)`: Returns a plugin logger. Prefer this over global logging setup.
 - A `setup_logger(level=None, force=False, suffix=None)`: Configures plugin logger level/component. Use for explicit plugin logging behavior.

@@ -2285,7 +2285,7 @@ def test_fix_lines_name_the_directory_behind_a_placeholder_on_their_own_line(
     assert lines[4] == '    fix: git -C "<plugin directory>" init'
     assert lines[5] == note
     # No placeholder, no note.
-    assert lines[7:] == ["    fix: git remote add origin <repo-url>"]
+    assert lines[7:] == ["    fix: git remote add origin \"<repository-url>\""]
 
     monkeypatch.setattr(release_cmd, "_WINDOWS_SHELL", False)
     release_cmd._print_issues(issues[:1], plugin_id="demo", plugin_dir=Path("/work/demo"), show_fixes=True)

@@ -230,7 +230,7 @@ Hosted TSX 使用导出的 `ui` namespace 和 manifest surface，详见 [Hosted 
 
 #### LLM 工具方法
 
-`register_llm_tool(...)`、`unregister_llm_tool(name)` 和 `list_llm_tools()` 是 `@llm_tool` 的命令式对应接口。它们注册对话期工具，不是用户插件 Agent 入口。详见 [LLM Tool Calling](./tool-calling)。
+`register_llm_tool(...)`、`unregister_llm_tool(name)` 和 `list_llm_tools()` 是 `@llm_tool` 的命令式对应接口。它们注册对话期工具，不是用户插件 Agent 入口。同步调用发出去就不管；`await register_llm_tool_async(...)` 和 `await unregister_llm_tool_async(name)` 返回 `main_server` 的真实答复（`ok`、各 role 的结果、`error`），并让插件本地登记与之保持一致。详见 [LLM Tool Calling](./tool-calling)。
 
 #### `run_update(**kwargs) -> object`（异步）
 

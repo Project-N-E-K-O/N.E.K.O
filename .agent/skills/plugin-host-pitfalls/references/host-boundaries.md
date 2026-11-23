@@ -2,18 +2,18 @@
 
 ## 1. 任务大脑只看正在运行的插件
 
-NekoClaw 的任务大脑挑插件时，候选集是这样筛出来的：
+NekoPower 的任务大脑挑插件时，候选集是这样筛出来的：
 
-1. `nekoclaw/host/plugin_runs.py` 的 `PluginCatalog.plugins()`：只留 `status == "running"` 的。`status` 由插件服务的 `query_service._resolve_plugin_status` 给出，只有进程真的在跑才是 `running`，其余是 `stopped` / `load_failed` / `source_missing`。
-2. `nekoclaw/host/selection.py` 的 `routable_plugins`：去掉 `passive` 的插件和没有可见入口的插件。
+1. `nekopower/host/plugin_runs.py` 的 `PluginCatalog.plugins()`：只留 `status == "running"` 的。`status` 由插件服务的 `query_service._resolve_plugin_status` 给出，只有进程真的在跑才是 `running`，其余是 `stopped` / `load_failed` / `source_missing`。
+2. `nekopower/host/selection.py` 的 `routable_plugins`：去掉 `passive` 的插件和没有可见入口的插件。
 3. 入口可见性（`is_entry_hidden`）：入口元数据里 `agent_auto` / `agent_exposed` / `llm_exposed` 任一为 `False`，或 `agent_hidden` 为 `True`，就不可见。`entries` 字段缺失时算有一个默认入口 `run`；是空列表则这个插件没有可见入口。
 4. id 以 `__llm_tool__` 开头的入口先被摘掉。那些是注册给主对话模型的工具，归另一条派发路径，留着会让两边抢着派发。
 
-这些规则是从旧分析器原样搬过来的，因为对插件作者承诺过「入口怎么被选中」不变。`tests/unit/nekoclaw/test_contract_plugin_selection.py` 守着这份契约，改筛选规则前先看它。
+这些规则是从旧分析器原样搬过来的，因为对插件作者承诺过「入口怎么被选中」不变。`tests/unit/nekopower/test_contract_plugin_selection.py` 守着这份契约，改筛选规则前先看它。
 
 对宿主这边的含义：
 
-- **一个插件只要在运行、不是 `passive`、带可见入口，它的入口描述（含参数提示）就会进每一次选择**，和它当下有没有活干无关。`nekoclaw/host/decision.py` 的做法是：全部候选的描述加起来不超过 `AGENT_PLUGIN_DESC_BM25_THRESHOLD` 个 token 时，整份直接进选择提示词；超过了才先做本地文本匹配加一次粗筛的模型调用来收窄。也就是说常驻入口越多，要么提示词越长，要么每次选择多一次模型调用。
+- **一个插件只要在运行、不是 `passive`、带可见入口，它的入口描述（含参数提示）就会进每一次选择**，和它当下有没有活干无关。`nekopower/host/decision.py` 的做法是：全部候选的描述加起来不超过 `AGENT_PLUGIN_DESC_BM25_THRESHOLD` 个 token 时，整份直接进选择提示词；超过了才先做本地文本匹配加一次粗筛的模型调用来收窄。也就是说常驻入口越多，要么提示词越长，要么每次选择多一次模型调用。
 - 所以内置插件的 `[plugin_runtime].auto_start` 默认值不只是「开机启不启动」，它还决定这个插件的入口描述会不会长期占着选择提示词。入口多的适配器类插件尤其明显：`mcp_adapter` 即使一个 MCP 服务器都没配，自带的静态管理入口也有好几个。它现在默认不自启；代价是真要用 MCP 得先手动启动它。
 - 给内置插件开自启动、或给一个常驻插件加一批对模型可见的入口之前，先想清楚这笔常驻开销。只给界面或别的插件用的入口，标成对模型不可见。
 

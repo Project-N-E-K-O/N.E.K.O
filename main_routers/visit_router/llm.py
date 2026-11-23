@@ -39,7 +39,7 @@ class VisitLLMUnavailable(RuntimeError):
     """No model is configured, the call failed, or it returned nothing."""
 
 
-async def one_shot(prompt: str, *, max_tokens: int, timeout: float, model_type: str = "summary") -> str:
+async def one_shot(prompt: str, *, max_tokens: int, timeout: float, model_type: str = "memory") -> str:
     """Send ``prompt`` as one user message to the ``model_type`` model and return the reply text."""
     from utils.config_manager import get_config_manager
     from utils.llm_client import HumanMessage, create_chat_llm_async
@@ -82,7 +82,7 @@ async def one_shot(prompt: str, *, max_tokens: int, timeout: float, model_type: 
     return text
 
 
-def one_shot_llm(*, max_tokens: int, timeout: float, model_type: str = "summary") -> OneShotLLM:
+def one_shot_llm(*, max_tokens: int, timeout: float, model_type: str = "memory") -> OneShotLLM:
     """A :data:`OneShotLLM` bound to one budget and timeout."""
 
     async def call(prompt: str) -> str:

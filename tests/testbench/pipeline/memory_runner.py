@@ -28,7 +28,7 @@ op                             what it does
 Why re-implement vs. call ``FactStore.extract_facts`` etc. directly?
 --------------------------------------------------------------------
 The upstream memory managers (``memory/*.py``) hardcode
-``self._config_manager.get_model_api_config('summary')`` (the former
+``self._config_manager.get_model_api_config('memory')`` (the former
 ``'correction'`` tier was merged into it). ``ConfigManager`` groups are set by the main app's
 config UI; testbench surfaces its own 4 groups (``chat / simuser /
 judge / memory``) in ``model_config.py`` and never writes them into

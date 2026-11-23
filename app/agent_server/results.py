@@ -17,8 +17,8 @@
 
 Everything here goes through ``Modules.agent_bridge`` (ZeroMQ); there is
 deliberately no HTTP fallback. How a task ended is not emitted from here any
-more: the NekoClaw host stores each report in its outbox first and
-``nekoclaw_mount`` sends it, so a report that could not be delivered is tried
+more: the NekoPower host stores each report in its outbox first and
+``nekopower_mount`` sends it, so a report that could not be delivered is tried
 again instead of being lost.
 """
 
