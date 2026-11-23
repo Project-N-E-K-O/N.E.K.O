@@ -863,6 +863,12 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     }))
                     if not audio_started:
                         appended_text.append(tts_text)
+                    # Text sent after the round's done (a late chunk on the same
+                    # socket) is synthesized too: that done no longer shows the
+                    # socket is finished, and no new commit follows to earn it
+                    # back, so this socket is closed the usual way, by the next
+                    # speech.
+                    round_done_ws = None
                     _record_tts_telemetry("qwen", len(tts_text))
                     reconnect_attempts = 0
                 except Exception as e:

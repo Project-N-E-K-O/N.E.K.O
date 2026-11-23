@@ -1175,3 +1175,36 @@ def test_grok_socket_left_open_by_a_failed_send_never_sits_beside_the_next(monke
 
     assert first.closed.is_set()
     connects.assert_one_connection_at_a_time()
+
+
+def test_qwen_late_chunk_on_the_same_socket_revokes_its_finished_round(monkeypatch):
+    # The round got its done and went quiet, then a late chunk of the same
+    # speech goes out on that very socket (server_commit synthesizes it too).
+    # The earlier done no longer shows the socket is finished.
+    monkeypatch.setattr(qwen_mod, "_resolve_qwen_realtime_tts_url", lambda: "wss://dashscope.test/realtime")
+    monkeypatch.setattr(qwen_mod, "_record_tts_telemetry", lambda *_a, **_k: None)
+    monkeypatch.setattr(qwen_mod, "FINISHED_ROUND_QUIET_SECONDS", 0.0)
+    first = _qwen_socket("first")
+    connects = _Connects(monkeypatch, [_qwen_socket("warmup"), first, _qwen_socket("spare")])
+    responses = queue.Queue()
+    observations = {}
+    late = "A late chunk of the same speech, sent on the same socket."
+
+    qwen_mod.qwen_realtime_tts_worker(
+        _Requests(
+            ("speech-1", _OPENING),
+            (None, None),
+            _wait(_audio_done(responses, "speech-1")),
+            ("speech-1", late),
+            _wait(lambda: late in _PROVIDERS[0].spoken(first)),
+            _PRECONNECT,
+            _pause(0.1),
+            _observe(observations, "first_still_open", lambda: first.state is State.OPEN, timeout=0),
+        ),
+        responses,
+        "sk-test",
+        "Momo",
+    )
+
+    assert observations == {"first_still_open": True}, "retired a socket still synthesizing late text"
+    connects.assert_one_connection_at_a_time()
