@@ -604,21 +604,22 @@ function collectLocalDeclarations(sourcePath, source) {
       if (!clause) continue
       if (clause.name) {
         localTypes.add(clause.name.text)
-        if (!clause.isTypeOnly) localValues.add(clause.name.text)
+        localValues.add(clause.name.text)
       }
       const bindings = clause.namedBindings
       if (!bindings) continue
       if (ts.isNamespaceImport(bindings)) {
         localTypes.add(bindings.name.text)
-        if (!clause.isTypeOnly) localValues.add(bindings.name.text)
+        localValues.add(bindings.name.text)
       } else if (ts.isNamedImports(bindings)) {
         for (const element of bindings.elements) {
           localTypes.add(element.name.text)
-          if (!clause.isTypeOnly && !element.isTypeOnly) {
-            localValues.add(element.name.text)
-          }
+          localValues.add(element.name.text)
         }
       }
+    } else if (ts.isImportEqualsDeclaration(statement)) {
+      localTypes.add(statement.name.text)
+      localValues.add(statement.name.text)
     }
   }
   return { localTypes, localValues }
@@ -649,9 +650,7 @@ function collectHostedUiImportAliases(sourcePath, source, exportedTypeSet) {
     if (ts.isNamespaceImport(bindings)) {
       const ns = bindings.name.text
       explicitTypeLocalNames.add(ns)
-      if (!clause.isTypeOnly) {
-        explicitValueLocalNames.add(ns)
-      }
+      explicitValueLocalNames.add(ns)
       if (ns !== 'NekoUi') {
         namespaceImports.push(
           clause.isTypeOnly
@@ -666,9 +665,14 @@ function collectHostedUiImportAliases(sourcePath, source, exportedTypeSet) {
         const isTypeOnly = Boolean(clause.isTypeOnly || element.isTypeOnly)
         if (exportedTypeSet.has(orig)) {
           explicitTypeLocalNames.add(local)
+          explicitValueLocalNames.add(local)
           explicitTypeImports.push(local === orig ? orig : `${orig} as ${local}`)
-        } else if (!isTypeOnly && (HOSTED_UI_GLOBAL_NAME_SET.has(orig) || HOSTED_UI_SPECIAL_VALUE_NAMES.has(orig))) {
-          if (local !== orig) {
+        } else if (HOSTED_UI_GLOBAL_NAME_SET.has(orig) || HOSTED_UI_SPECIAL_VALUE_NAMES.has(orig)) {
+          if (isTypeOnly) {
+            explicitTypeLocalNames.add(local)
+            explicitValueLocalNames.add(local)
+            explicitTypeImports.push(local === orig ? orig : `${orig} as ${local}`)
+          } else if (local !== orig) {
             explicitValueLocalNames.add(local)
             valueAliasDecls.push(`const ${local} = NekoUi.${orig};`)
           } else {
@@ -1086,6 +1090,7 @@ function main() {
         jsxFactory: 'h',
         jsxFragmentFactory: 'Fragment',
         module: ts.ModuleKind.ESNext,
+        moduleDetection: ts.ModuleDetectionKind.Force,
         target: ts.ScriptTarget.ES2020,
         moduleResolution: ts.ModuleResolutionKind.Bundler,
         baseUrl: repoRoot,

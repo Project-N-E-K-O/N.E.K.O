@@ -1022,3 +1022,84 @@ entry = "panel.jsx"
     assert.match(result.stderr, /panel\.tsx:2:.*\[panel:tsx_panel\]/)
   })
 })
+
+test('isolates top-level declarations in side-effect-only helper files from ambient SDK globals', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'side-effect-helper-globals')
+    writePluginToml(pluginDir, 'ui/panel.tsx')
+    writeFixtureFile(
+      join(pluginDir, 'ui/helper.ts'),
+      `function render(x: string) {
+  return x
+}
+const Card = render('ok')
+void Card
+`,
+    )
+    writeFixtureFile(
+      join(pluginDir, 'ui/panel.tsx'),
+      `import './helper'
+
+export default function Panel() {
+  return <Page title="ok" />
+}
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /Hosted TSX check passed \(1 file\)/)
+  })
+})
+
+test('preserves type-only imports of SDK value exports for typeof queries', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'type-only-sdk-value-aliased')
+    writePluginToml(pluginDir, 'main.tsx')
+    writeFixtureFile(
+      join(pluginDir, 'main.tsx'),
+      `import type { render as DrawUi, Button as UiButton } from '@neko/plugin-ui'
+
+type Draw = typeof DrawUi
+type Btn = typeof UiButton
+
+export default function Panel() {
+  const fn: Draw = render
+  const comp: Btn | null = null
+  void fn
+  void comp
+  return <Page title="ok" />
+}
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /Hosted TSX check passed \(1 file\)/)
+  })
+
+  withFixture((root) => {
+    const pluginDir = join(root, 'type-only-sdk-value-unaliased')
+    writePluginToml(pluginDir, 'main.tsx')
+    writeFixtureFile(
+      join(pluginDir, 'main.tsx'),
+      `import type { render } from '@neko/plugin-ui'
+
+type Draw = typeof render
+
+export default function Panel() {
+  const check: Draw | null = null
+  void check
+  return <Page title="ok" />
+}
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /Hosted TSX check passed \(1 file\)/)
+  })
+})
