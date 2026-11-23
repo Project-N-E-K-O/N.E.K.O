@@ -21,6 +21,7 @@ from plugin.core import entry_executor as entry_executor_module
 from plugin.core.entry_executor import EntryExecutor
 from plugin.core.host import PluginHost, _initial_entry_tables
 from plugin.sdk.plugin import NekoPluginBase, neko_plugin, on_event, plugin_entry, timer_interval
+from plugin.sdk.shared.core.router import PluginRouter
 
 pytestmark = pytest.mark.plugin_unit
 
@@ -67,6 +68,8 @@ class _Plugin(NekoPluginBase):
     @on_event(event_type="custom_x", id="ping")
     async def ping(self, **_: Any) -> str:
         return "ping"
+
+    label = "a truthy, non-callable attribute"
 
     async def run_update(self, **_: Any) -> str:
         # Overrides an SDK base-class method: still not an entry.
@@ -172,6 +175,55 @@ def test_a_handler_of_another_event_type_is_not_a_plugin_entry(tmp_path):
     assert executor._resolve("custom_x", "ping", registered_only=True) is not None
 
 
+def test_an_entry_and_a_timer_sharing_an_id_resolve_to_the_entry(tmp_path, monkeypatch):
+    @neko_plugin
+    class Dual(NekoPluginBase):
+        @plugin_entry(id="dual")
+        async def as_entry(self, **_: Any) -> str:
+            return "entry"
+
+        @timer_interval(id="dual", seconds=3600, auto_start=False)
+        async def as_timer(self, **_: Any) -> str:
+            return "timer"
+
+    ctx = _ctx(tmp_path)
+    instance = Dual(ctx)
+
+    def broken(**_kwargs: object):
+        raise RuntimeError("collect failed")
+
+    # The loader's fallback scan keeps both; the id map holds the timer.
+    monkeypatch.setattr(instance, "collect_entries", broken)
+    executor, _instance, _logger = _runtime(tmp_path, instance=instance)
+    assert executor._metadata["dual"].event_type == "timer"
+    assert _resolve(executor, "dual") == instance.as_entry
+
+
+def test_a_wrapped_handler_of_another_event_type_is_not_a_plugin_entry(tmp_path):
+    async def tick(self, **_: Any) -> str:
+        return "tick"
+
+    timer = timer_interval(id="wrapped_tick", seconds=3600, auto_start=False)(tick)
+
+    async def wrapper(self, **kwargs: Any) -> str:
+        return await timer(self, **kwargs)
+
+    # Only __wrapped__ carries the metadata.
+    wrapper.__wrapped__ = timer  # type: ignore[attr-defined]
+
+    @neko_plugin
+    class Wrapped(NekoPluginBase):
+        guarded = wrapper
+
+    executor, _instance, _logger = _runtime(tmp_path, instance=Wrapped(_ctx(tmp_path)), manifest=["guarded"])
+    assert _resolve(executor, "guarded") is None
+
+
+def test_a_non_callable_attribute_is_not_resolved(tmp_path):
+    executor, _instance, _logger = _runtime(tmp_path, manifest=["label"])
+    assert _resolve(executor, "label") is None
+
+
 async def test_an_unresolved_call_is_entry_not_found(tmp_path):
     executor, _instance, _logger = _runtime(tmp_path)
     for entry_id in ("_private", "export_push", "prefixed", "tick", "ticker"):
@@ -187,6 +239,32 @@ async def test_registered_and_manifest_entries_run_without_a_warning(tmp_path):
     assert await executor.invoke("plugin_entry", "registered", {}) == "registered"
     assert await executor.invoke("plugin_entry", "declared", {}) == "declared"
     assert logger.warnings == []
+
+
+async def test_router_and_dynamic_entries_run_including_reserved_ids(tmp_path):
+    class Router(PluginRouter):
+        @plugin_entry(id="routed")
+        async def routed(self, **_: Any) -> str:
+            return "routed"
+
+    instance = _Plugin(_ctx(tmp_path))
+    instance.include_router(Router(name="r"))
+
+    async def tool(**_: Any) -> str:
+        return "tool"
+
+    # LLM tools register under a reserved, underscore-prefixed id.
+    assert instance.register_dynamic_entry("__llm_tool__probe", tool)
+    executor, _instance, logger = _runtime(tmp_path, instance=instance)
+    assert await executor.invoke("plugin_entry", "routed", {}) == "routed"
+    assert await executor.invoke("plugin_entry", "__llm_tool__probe", {}) == "tool"
+    assert logger.warnings == []
+
+
+def test_without_manifest_ids_plain_methods_fall_under_the_grace(tmp_path):
+    executor, instance, logger = _runtime(tmp_path, manifest=None)
+    assert _resolve(executor, "declared") == instance.declared
+    assert len(logger.warnings) == 1
 
 
 def test_a_registered_entry_takes_the_fast_path(tmp_path):
