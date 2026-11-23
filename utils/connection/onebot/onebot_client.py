@@ -432,6 +432,14 @@ class OneBotClient(NapCatActionsMixin, ConnectionBase):
         )
         if self.logger:
             self.logger.info(f"Reverse WS server listening on {self._listen_host}:{self._listen_port}")
+        if not self.token:
+            hint = (
+                f"Reverse WS server is listening on loopback {self._listen_host}:{self._listen_port} without a token; "
+                "configure a token and non-loopback host to accept remote or cross-container OneBot connections."
+            )
+            if self.logger:
+                self.logger.warning(hint)
+            self._emit_log("WARN", hint)
 
     async def disconnect(self):
         """Tear down the connection and clean up resources."""

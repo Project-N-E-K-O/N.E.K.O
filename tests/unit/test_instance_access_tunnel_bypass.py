@@ -673,6 +673,14 @@ def _update_event_hooks_binding_state(
                 )
             return bound
         # Note: setdefault("event_hooks", ...) does not overwrite a caller-supplied event_hooks={}.
+    if isinstance(stmt, ast.AugAssign) and isinstance(stmt.target, ast.Name) and stmt.target.id == var_name:
+        if isinstance(stmt.op, ast.BitOr) and isinstance(stmt.value, ast.Dict):
+            if any(k is None for k in stmt.value.keys):
+                return False
+            if any(isinstance(k, ast.Constant) and k.value == "event_hooks" for k in stmt.value.keys):
+                return _dict_expr_binds_event_hooks(stmt.value, source, hook_helpers)
+            return bound
+        return False
     return bound
 
 
@@ -929,6 +937,21 @@ def test_internal_httpx_ast_guard_catches_aliased_and_discarded_hook_calls():
     )
     assert signed == 0
     assert unhooked == ["synthetic/setdefault_splat.py:6 (make)"]
+
+    augassign_splat_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(**kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    kwargs |= {'event_hooks': {}}\n"
+        "    return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        augassign_splat_src, "synthetic/augassign_splat.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/augassign_splat.py:7 (make)"]
 
 
 async def test_untrusted_loopback_ports_do_not_receive_proof_while_dynamic_plugin_port_is_trusted(

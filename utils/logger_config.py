@@ -178,7 +178,7 @@ class _SafeRotatingFileHandler(_StdlibRotatingFileHandler):
 
     def _bind_allowed_root(self, allowed_root: Path) -> None:
         """Bind and fail-closed verify allowed_root directory before opening or rotating logs."""
-        root = Path(allowed_root)
+        root = Path(os.path.abspath(os.fspath(allowed_root)))
         if _is_symlink_or_reparse_point(root):
             raise OSError(f"Refusing symlink/reparse allowed log root: {root}")
         st = os.lstat(os.fspath(root))

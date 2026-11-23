@@ -662,43 +662,6 @@ def test_test_directory_writable_rejects_symlink_and_falls_back_to_next_candidat
 
 
 @pytest.mark.unit
-def test_open_log_file_nofollow_always_uses_o_binary_and_single_linesep(tmp_path, monkeypatch):
-    """_open_log_file_nofollow must pass O_BINARY even for text modes and open with mode 0o666."""
-    import os
-    from utils import logger_config
-
-    logs_dir = tmp_path / "logs"
-    logs_dir.mkdir()
-    target = logs_dir / "newline_check.log"
-    with logger_config._open_log_file_nofollow(target, "a", "utf-8", None, logs_dir) as handle:
-        handle.write("x\n")
-    assert target.read_bytes() == ("x" + os.linesep).encode("utf-8")
-
-    orig_o_binary = getattr(logger_config.os, "O_BINARY", None)
-    o_binary_flag = orig_o_binary if orig_o_binary is not None else (1 << 30)
-    if orig_o_binary is None:
-        monkeypatch.setattr(logger_config.os, "O_BINARY", o_binary_flag, raising=False)
-
-    orig_open = os.open
-    seen_opens: list[tuple[int, int]] = []
-
-    def _spy_open(path, flags, mode=0o777, *args, **kwargs):
-        seen_opens.append((flags, mode))
-        real_flags = flags & ~o_binary_flag if orig_o_binary is None else flags
-        return orig_open(path, real_flags, mode, *args, **kwargs)
-
-    monkeypatch.setattr(logger_config.os, "open", _spy_open)
-    mode_target = logs_dir / "flags_check.log"
-    with logger_config._open_log_file_nofollow(mode_target, "a", "utf-8", None, logs_dir) as handle:
-        handle.write("y\n")
-
-    assert len(seen_opens) == 1
-    captured_flags, captured_mode = seen_opens[0]
-    assert bool(captured_flags & o_binary_flag) is True
-    assert captured_mode == 0o666
-
-
-@pytest.mark.unit
 def test_is_symlink_or_reparse_point_fails_closed_on_non_path_type():
     """Non-path objects must fail closed via TypeError instead of returning False."""
     from utils import logger_config, logging_layout
@@ -810,3 +773,50 @@ def test_open_log_file_nofollow_always_uses_o_binary_and_single_linesep(tmp_path
     captured_flags, captured_mode = seen_opens[0]
     assert bool(captured_flags & o_binary_flag) is True
     assert captured_mode == 0o666
+
+
+@pytest.mark.unit
+def test_safe_rotating_file_handler_binds_relative_allowed_root_as_absolute_across_chdir(tmp_path, monkeypatch):
+    """_SafeRotatingFileHandler must freeze relative allowed_root to an absolute path without resolving symlinks."""
+    import logging
+    from utils.logger_config import _SafeRotatingFileHandler
+
+    orig_dir = tmp_path / "orig"
+    (orig_dir / "logs").mkdir(parents=True)
+    other_dir = tmp_path / "other"
+    other_dir.mkdir()
+
+    monkeypatch.chdir(orig_dir)
+    expected_root = Path.cwd() / "logs"
+    handler = _SafeRotatingFileHandler(
+        Path("logs") / "app.log",
+        allowed_root=Path("logs"),
+        delay=True,
+        encoding="utf-8",
+    )
+    try:
+        assert handler._allowed_root.is_absolute()
+        assert handler._allowed_root == expected_root
+
+        monkeypatch.chdir(other_dir)
+        record = logging.LogRecord("t", logging.INFO, __file__, 1, "relative-root-ok", (), None)
+        handler.emit(record)
+    finally:
+        handler.close()
+
+    assert "relative-root-ok" in (orig_dir / "logs" / "app.log").read_text(encoding="utf-8")
+    assert not (other_dir / "logs").exists()
+
+    monkeypatch.chdir(orig_dir)
+    sym_logs = orig_dir / "sym_logs"
+    try:
+        sym_logs.symlink_to(other_dir, target_is_directory=True)
+    except OSError:
+        return
+    with pytest.raises(OSError):
+        _SafeRotatingFileHandler(
+            Path("sym_logs") / "app.log",
+            allowed_root=Path("sym_logs"),
+            delay=True,
+            encoding="utf-8",
+        )
