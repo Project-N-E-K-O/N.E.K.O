@@ -434,6 +434,7 @@ async def test_os_activity_snapshot_ticks_unstarted_collector_on_demand(
 
     stub = _StubCollector()
     monkeypatch.setattr(activity_mod, "get_system_signal_collector", lambda: stub)
+    monkeypatch.setattr(activity_api, "_privacy_mode_enabled", lambda: False)
     monkeypatch.setattr(
         activity_api,
         "_active_window_from_system_snapshot",
@@ -534,6 +535,7 @@ async def test_os_activity_snapshot_handles_on_demand_tick_failure(
 
     stub = _FailingTickCollector()
     monkeypatch.setattr(activity_mod, "get_system_signal_collector", lambda: stub)
+    monkeypatch.setattr(activity_api, "_privacy_mode_enabled", lambda: False)
     monkeypatch.setattr(
         activity_api,
         "_active_window_from_system_snapshot",
@@ -546,3 +548,85 @@ async def test_os_activity_snapshot_handles_on_demand_tick_failure(
     assert snap.foreground_category == "coding"
     assert snap.system_idle_seconds == 4.5
     assert snap.privacy_state == "visible"
+
+
+@pytest.mark.asyncio
+async def test_os_activity_snapshot_skips_on_demand_tick_in_privacy_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import main_logic.activity as activity_mod
+    import utils.preferences as prefs_mod
+
+    class _BlockedCollector:
+        os_signals_available = True
+        _task = None
+        _poll_interval = 5.0
+        _psutil = None
+        tick_calls = 0
+
+        def snapshot(self):
+            return SimpleNamespace(
+                timestamp=0.0,
+                idle_seconds=None,
+                window_title=None,
+                process_name=None,
+                os_signals_available=False,
+            )
+
+        async def _tick(self) -> None:
+            self.tick_calls += 1
+
+    collector = _BlockedCollector()
+    monkeypatch.setattr(activity_mod, "get_system_signal_collector", lambda: collector)
+
+    monkeypatch.setattr(prefs_mod, "is_privacy_mode_enabled", lambda: True)
+    snap_private = await activity_api.get_os_activity_snapshot("study_companion")
+    assert collector.tick_calls == 0
+    assert snap_private.os_signals_available is False
+    assert snap_private.privacy_state == "unavailable"
+
+    def _raise_read_error() -> bool:
+        raise OSError("preferences unavailable")
+
+    monkeypatch.setattr(prefs_mod, "is_privacy_mode_enabled", _raise_read_error)
+    snap_fail_closed = await activity_api.get_os_activity_snapshot("study_companion")
+    assert collector.tick_calls == 0
+    assert snap_fail_closed.os_signals_available is False
+    assert snap_fail_closed.privacy_state == "unavailable"
+
+
+def test_os_activity_snapshot_loop_lock_does_not_leak_closed_loop() -> None:
+    import asyncio
+    import gc
+    import weakref
+
+    async def exercise_contention() -> None:
+        observed_locks: list[asyncio.Lock] = []
+        order: list[tuple[str, int]] = []
+
+        async def worker(idx: int) -> None:
+            lock = activity_api._get_loop_lock()
+            observed_locks.append(lock)
+            async with lock:
+                order.append(("enter", idx))
+                await asyncio.sleep(0.01)
+                order.append(("exit", idx))
+
+        await asyncio.gather(worker(1), worker(2))
+        assert observed_locks[0] is observed_locks[1]
+        assert order in (
+            [("enter", 1), ("exit", 1), ("enter", 2), ("exit", 2)],
+            [("enter", 2), ("exit", 2), ("enter", 1), ("exit", 1)],
+        )
+
+    loop = asyncio.new_event_loop()
+    loop_ref = weakref.ref(loop)
+    try:
+        loop.run_until_complete(exercise_contention())
+    finally:
+        loop.close()
+    del loop
+    gc.collect()
+
+    assert loop_ref() is None
+    assert len(activity_api._loop_locks) == 0

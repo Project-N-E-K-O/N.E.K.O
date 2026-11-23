@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 from typing import Any, Literal
-from weakref import WeakKeyDictionary
+from weakref import WeakValueDictionary
 
 _logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ class OsActivitySnapshot:
 
 _import_lock = threading.Lock()
 _helpers_imported = False
-_loop_locks: WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = WeakKeyDictionary()
+_loop_locks: WeakValueDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = WeakValueDictionary()
 
 
 def _ensure_activity_helpers_imported() -> None:
@@ -51,6 +51,17 @@ def _get_loop_lock() -> asyncio.Lock:
         lock = asyncio.Lock()
         _loop_locks[loop] = lock
     return lock
+
+
+def _privacy_mode_enabled() -> bool:
+    """Return True when privacy mode is active or cannot be read (fail-closed)."""
+    try:
+        from utils.preferences import is_privacy_mode_enabled
+
+        return bool(is_privacy_mode_enabled())
+    except Exception as exc:
+        _logger.debug("Privacy mode check failed, defaulting to enabled: %s", exc)
+        return True
 
 
 def _read_system_signal_snapshot() -> Any:
@@ -83,6 +94,8 @@ async def _read_system_signal_snapshot_async() -> Any:
                 snap = collector.snapshot()
                 snap_ts = float(getattr(snap, "timestamp", 0.0) or 0.0)
                 if snap_ts <= 0.0 or (time.time() - snap_ts) >= poll_interval:
+                    if await asyncio.to_thread(_privacy_mode_enabled):
+                        return snap
                     psutil_mod = getattr(collector, "_psutil", None)
                     if psutil_mod is not None and not getattr(collector, "_sdk_psutil_primed", False):
                         with suppress(Exception):

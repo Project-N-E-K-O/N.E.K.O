@@ -686,7 +686,7 @@ let runSeq = 0;
 const runEntries = new Map();
 let releaseSlowNameSave = null;
 let releaseSlowCooldownSave = null;
-let releaseSlowGetStatus = null;
+const pendingGetStatuses = [];
 let holdNameSave = false;
 let holdCooldownSave = false;
 let holdGetStatus = false;
@@ -724,14 +724,14 @@ const sandbox = {{
         await new Promise((resolve) => {{ releaseSlowCooldownSave = resolve; }});
       }}
       if (entryId === 'get_status' && holdGetStatus) {{
-        await new Promise((resolve) => {{ releaseSlowGetStatus = resolve; }});
+        const heldData = await new Promise((resolve) => {{ pendingGetStatuses.push(resolve); }});
         return {{
           ok: true,
           status: 200,
           json: async () => ({{
             items: [{{
               label: 'trigger_response',
-              json: {{ success: true, data: {{ user_name: 'StalePoll', cooldown: 33, event_count: 1, port: 48916 }} }},
+              json: {{ success: true, data: heldData }},
             }}],
           }}),
         }};
@@ -823,12 +823,12 @@ async function run() {{
   await new Promise((r) => globalThis.setTimeout(r, 30));
 
   holdGetStatus = true;
-  releaseSlowGetStatus = null;
+  pendingGetStatuses.length = 0;
   const staleLoad = sandbox.loadStatus();
-  for (let i = 0; i < 20 && !releaseSlowGetStatus; i += 1) {{
+  for (let i = 0; i < 20 && pendingGetStatuses.length < 1; i += 1) {{
     await new Promise((r) => globalThis.setTimeout(r, 5));
   }}
-  assert.ok(releaseSlowGetStatus, 'stale get_status should be in flight');
+  assert.strictEqual(pendingGetStatuses.length, 1, 'stale get_status should be in flight');
   holdGetStatus = false;
   statusPayload = {{ user_name: 'LatestServerName', cooldown: 180, event_count: 5, port: 48916 }};
   await sandbox.loadStatus();
@@ -837,12 +837,58 @@ async function run() {{
   assert.strictEqual(nameInput.value, 'LatestServerName');
   assert.strictEqual(String(cooldownInput.value), '180');
 
-  releaseSlowGetStatus();
+  pendingGetStatuses.shift()({{ user_name: 'StalePoll', cooldown: 33, event_count: 1, port: 48916 }});
   await staleLoad;
   assert.strictEqual(elements.get('user-name').textContent, 'LatestServerName');
   assert.strictEqual(String(elements.get('cooldown-val').textContent), '180');
   assert.strictEqual(nameInput.value, 'LatestServerName');
   assert.strictEqual(String(cooldownInput.value), '180');
+
+  // 4) Slow polling non-starvation: slow poll #1 completes after poll #2 starts -> #1 still updates UI.
+  holdGetStatus = true;
+  pendingGetStatuses.length = 0;
+  const slowPoll1 = sandbox.loadStatus();
+  for (let i = 0; i < 20 && pendingGetStatuses.length < 1; i += 1) {{
+    await new Promise((r) => globalThis.setTimeout(r, 5));
+  }}
+  const slowPoll2 = sandbox.loadStatus();
+  for (let i = 0; i < 20 && pendingGetStatuses.length < 2; i += 1) {{
+    await new Promise((r) => globalThis.setTimeout(r, 5));
+  }}
+  assert.strictEqual(pendingGetStatuses.length, 2, 'two slow polls should overlap');
+  pendingGetStatuses[0]({{ user_name: 'SlowPollOne', cooldown: 210, event_count: 6, port: 48916 }});
+  await slowPoll1;
+  assert.strictEqual(elements.get('user-name').textContent, 'SlowPollOne');
+  assert.strictEqual(String(elements.get('cooldown-val').textContent), '210');
+  assert.strictEqual(nameInput.value, 'SlowPollOne');
+  assert.strictEqual(String(cooldownInput.value), '210');
+  pendingGetStatuses[1]({{ user_name: 'SlowPollTwo', cooldown: 220, event_count: 7, port: 48916 }});
+  await slowPoll2;
+  assert.strictEqual(elements.get('user-name').textContent, 'SlowPollTwo');
+  assert.strictEqual(String(elements.get('cooldown-val').textContent), '220');
+
+  // 5) Pre-save poll invalidation: poll started before saveUserName must not flash old value before post-save poll settles.
+  pendingGetStatuses.length = 0;
+  const preSavePoll = sandbox.loadStatus();
+  for (let i = 0; i < 20 && pendingGetStatuses.length < 1; i += 1) {{
+    await new Promise((r) => globalThis.setTimeout(r, 5));
+  }}
+  assert.strictEqual(pendingGetStatuses.length, 1, 'pre-save poll should be in flight');
+  nameInput.value = 'PostSaveName';
+  nameInput.dispatch('input');
+  statusPayload = {{ user_name: 'PostSaveName', cooldown: 220, event_count: 8, port: 48916 }};
+  await sandbox.saveUserName();
+  for (let i = 0; i < 20 && pendingGetStatuses.length < 2; i += 1) {{
+    await new Promise((r) => globalThis.setTimeout(r, 5));
+  }}
+  assert.strictEqual(pendingGetStatuses.length, 2, 'post-save poll should also be in flight');
+  pendingGetStatuses[0]({{ user_name: 'PreSaveStale', cooldown: 99, event_count: 1, port: 48916 }});
+  await preSavePoll;
+  assert.strictEqual(elements.get('user-name').textContent, 'SlowPollTwo');
+  pendingGetStatuses[1]({{ user_name: 'PostSaveName', cooldown: 220, event_count: 8, port: 48916 }});
+  await new Promise((r) => globalThis.setTimeout(r, 30));
+  assert.strictEqual(elements.get('user-name').textContent, 'PostSaveName');
+  assert.strictEqual(nameInput.value, 'PostSaveName');
 }}
 
 run().catch((err) => {{

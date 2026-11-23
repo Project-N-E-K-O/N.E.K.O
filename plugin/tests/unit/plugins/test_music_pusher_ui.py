@@ -217,7 +217,7 @@ run().catch((err) => {{
 }});
 """
     proc = run_node_script(node, harness, capture_output=True, text=True)
-    assert proc.returncode == 0, f"stdout={{proc.stdout}}\\nstderr={{proc.stderr}}"
+    assert proc.returncode == 0, f"stdout={proc.stdout}\nstderr={proc.stderr}"
 
 
 def test_music_pusher_refresh_reconciles_list_and_preserves_playing_audio() -> None:

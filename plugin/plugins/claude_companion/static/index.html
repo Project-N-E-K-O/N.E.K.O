@@ -753,6 +753,7 @@
         let pendingNameSaves = 0;
         let pendingCooldownSaves = 0;
         let loadStatusSeq = 0;
+        let appliedStatusSeq = 0;
         let lastSyncedName = '';
         let lastSyncedCooldown = '';
         let translations = {};
@@ -989,7 +990,8 @@
             var reqSeq = ++loadStatusSeq;
             console.log('[ClaudeCompanion] Loading status...');
             var result = await callPlugin('get_status');
-            if (reqSeq !== loadStatusSeq) return;
+            if (reqSeq <= appliedStatusSeq) return;
+            appliedStatusSeq = reqSeq;
             console.log('[ClaudeCompanion] Status result:', result);
             if (!result) {
                 document.getElementById('status-dot').classList.add('offline');
@@ -1101,6 +1103,7 @@
                 }
                 var nameMsg = t('ui.toast_username_updated', '用户名已更新为: ');
                 showToast(nameMsg.includes('{name}') ? nameMsg.replace('{name}', () => r.user_name) : nameMsg + r.user_name);
+                appliedStatusSeq = loadStatusSeq;
                 loadStatus();
             } else {
                 showToast(t('ui.toast_fail', '更新失败'));
@@ -1127,6 +1130,7 @@
                 }
                 var cdMsg = t('ui.toast_cooldown_updated', '冷却时间已设为 ');
                 showToast(cdMsg.includes('{sec}') ? cdMsg.replace('{sec}', () => r.cooldown_seconds) : cdMsg + r.cooldown_seconds + ' 秒');
+                appliedStatusSeq = loadStatusSeq;
                 loadStatus();
             } else {
                 showToast(t('ui.toast_fail', '更新失败'));
