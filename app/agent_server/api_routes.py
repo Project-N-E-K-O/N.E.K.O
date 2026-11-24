@@ -537,8 +537,10 @@ async def agent_command(payload: Dict[str, Any]):
                 # switched off) can be overtaken by this one's writes.
                 # Until then "not ready" with no reason: what was kept from
                 # before the master switch went off may no longer hold.
-                _set_capability("computer_use", False, "")
-                _set_capability("browser_use", False, "")
+                # Provisional: a switch-on already waiting for its own check
+                # is not held back by it.
+                _set_capability("computer_use", False, "", provisional=True)
+                _set_capability("browser_use", False, "", provisional=True)
                 refresh_tools = True
             else:
                 first_reason = (gate.get("reasons") or ["AGENT_ENDPOINT_NOT_CONFIGURED"])[0]

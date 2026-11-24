@@ -922,6 +922,52 @@ async def test_an_older_availability_check_switches_nothing_off_over_a_newer_ena
     assert (status["ready"], status["reasons"]) == (True, [])
 
 
+@pytest.mark.parametrize("group", ["keyboard_mouse", "browser"])
+async def test_a_switch_on_waiting_for_its_check_is_not_held_back_by_the_master_switch_coming_on(
+    modules, search, browser, checks, monkeypatch, scheduled, group
+):
+    import threading
+
+    asked = threading.Event()
+    release = threading.Event()
+    flag, capability = (
+        ("computer_use_enabled", "computer_use") if group == "keyboard_mouse" else ("browser_use_enabled", "browser_use")
+    )
+
+    def slow_keyboard() -> dict[str, Any]:
+        asked.set()
+        release.wait(5.0)
+        return {"enabled": True, "ready": True, "reasons": []}
+
+    def slow_search() -> tuple[bool, str]:
+        asked.set()
+        release.wait(5.0)
+        return True, ""
+
+    if group == "keyboard_mouse":
+        monkeypatch.setattr(api_routes, "_keyboard_mouse_availability", slow_keyboard)
+    else:
+        monkeypatch.setattr(api_routes, "_browser_dependency_status", slow_search)
+    # The background refresh the master switch starts is kept from running here.
+    monkeypatch.setattr(api_routes, "_create_tracked_task", lambda coro: coro.close())
+    modules.analyzer_enabled = False
+    switching_on = asyncio.ensure_future(api_routes.set_agent_flags({flag: True, "_persist_intent": False}))
+    try:
+        await asyncio.wait_for(asyncio.to_thread(asked.wait, 5.0), 6.0)
+        # The master switch comes on meanwhile: "not checked yet" for both.
+        await api_routes.agent_command({"command": "set_agent_enabled", "enabled": True, "_persist_intent": False})
+        assert modules.capability_cache[capability] == {"ready": False, "reason": ""}
+    finally:
+        release.set()
+    await asyncio.wait_for(switching_on, 5.0)
+
+    # Its own check answered "usable": that stands, and the switch is on.
+    assert modules.agent_flags[flag] is True
+    assert modules.capability_cache[capability] == {"ready": True, "reason": ""}
+    # Nothing says it could not be switched on (the plugins coming on with the master switch say their own).
+    assert (_notification(modules) or {}).get("code") not in ("AGENT_CU_UNAVAILABLE", "AGENT_BU_UNAVAILABLE")
+
+
 async def test_without_a_browser_only_the_browser_tools_are_not_ready(modules, search, browser, checks, monkeypatch):
     _keyboard(monkeypatch, ready=True)
     search.found = []

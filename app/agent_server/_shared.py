@@ -196,16 +196,22 @@ def _capability_ticket_now() -> int:
     return _capability_ticket
 
 
-def _set_capability(name: str, ready: bool, reason: str = "", *, started: Optional[int] = None) -> bool:
+def _set_capability(
+    name: str, ready: bool, reason: str = "", *, started: Optional[int] = None, provisional: bool = False
+) -> bool:
     """Write whether a capability can be used, and why not; False when the answer is older than the one written.
 
     ``started``: the ticket of the check the answer comes from, taken when
     that check started. Without it the write counts as of now.
+    ``provisional``: a stand-in until a check answers ("not checked yet"):
+    written, but any check's answer replaces it, however early that check
+    started; it holds back no answer.
     """
-    ticket = started if started is not None else _capability_ticket_now()
-    if ticket < _capability_ticket_written.get(name, 0):
-        return False
-    _capability_ticket_written[name] = ticket
+    if not provisional:
+        ticket = started if started is not None else _capability_ticket_now()
+        if ticket < _capability_ticket_written.get(name, 0):
+            return False
+        _capability_ticket_written[name] = ticket
     prev = Modules.capability_cache.get(name, {})
     normalized_reason = _capability_reason_code(reason)
     Modules.capability_cache[name] = {"ready": bool(ready), "reason": normalized_reason}
