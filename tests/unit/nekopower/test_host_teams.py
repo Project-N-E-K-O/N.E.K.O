@@ -1080,6 +1080,8 @@ async def test_what_is_said_to_a_task_agent_while_its_changes_are_checked_is_not
     # The inspector is gone, and the member's own run is no inspector that would not stop: nothing is given up.
     assert (await host.ledger.get(two.commission_id)).status == "working"
     assert await _events(host, two.commission_id, "not_landed") == []
+    # Nor is what it said of the changes as they were put on record, or acted on, under the run that began.
+    assert await _events(host, two.commission_id, "inspected") == []
     more.set()
     done = await wait_status(host, two.commission_id, "done")
     assert done.result_summary.startswith("the sitemap is there as well")
@@ -1131,3 +1133,30 @@ async def test_a_task_agent_started_for_what_was_added_while_its_changes_were_ch
     more.set()
     done = await wait_status(host, two.commission_id, "done")
     assert done.result_summary.startswith("the styles are being seen to as well") and (workdir / "links.txt").exists()
+
+
+async def test_an_inspector_that_cannot_be_stopped_keeps_the_changes_from_landing(hosts, tmp_path, monkeypatch):
+    from nekopower.host import tree_work
+    from tests.unit.nekopower.test_host_tree_work import _slow_to_stop
+
+    monkeypatch.setattr(tree_work, "_GONE_SECONDS", 0.3)
+    hold, gone = asyncio.Event(), asyncio.Event()
+    host, trees, workdir, two, members = await _inspected(
+        hosts, tmp_path,
+        member=[_write("links.txt", "repaired"), _report("links repaired")],
+        inspector=[[_slow_to_stop(hold, gone), *_report("it holds")]],
+    )
+    await wait_until(lambda: len(members[CHECK].requests) == 1, what="the inspector being at work")
+    (check,) = await host.ledger.select(parent_id=two.commission_id)
+    stopping = asyncio.ensure_future(host.abort(check.id))
+    try:
+        stuck = await wait_status(host, two.commission_id, "blocked")
+        # Stopped, and still at it in the worktree when the wait was over: nothing was merged under it.
+        (tree,) = await host.ledger.trees()
+        assert (tree.state, tree.reason) == ("unlanded", "failed") and trees.merged == [] and not (workdir / "links.txt").exists()
+        assert "an inspector could not be stopped in its worktree" in stuck.result_summary
+        assert await _events(host, two.commission_id, "inspected") == []
+    finally:
+        gone.set()
+    assert await stopping
+    hold.set()
