@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import inspect
 import re
 import time
@@ -29,6 +30,10 @@ from plugin.sdk.shared.core.entry_runtime import (
     resolve_entry_timeout,
 )
 from plugin.core.responses import is_envelope
+from plugin.sdk.plugin.llm_tool import LLM_TOOL_META_ATTR
+from plugin.sdk.plugin.ui import UI_CONTEXT_META_ATTR
+from plugin.sdk.shared.constants import EVENT_META_ATTR, HOOK_META_ATTR
+from plugin.sdk.shared.core.base import is_computed_attribute
 from plugin.sdk.shared.core.output_contract import (
     OutputCheck,
     build_output_check,
@@ -47,6 +52,78 @@ _ENVELOPE_KEYS = frozenset({"success", "code", "data", "message", "error", "time
 
 # Default of EntryExecutor(maps_generation=...): the maps reflect the instance's current generation.
 _CURRENT = object()
+
+# Deprecation grace for plugin_entry calls to a public method that neither
+# collect_entries() registers nor the manifest's ``entries`` table declares.
+# While True such a call still runs and logs a rate-limited warning; set to
+# False (planned for the next release) to refuse it like any unknown id.
+# The manifest's entry ids reach the plugin process once, at launch: a
+# change to the ``entries`` declaration takes effect after a plugin restart.
+UNDECLARED_ENTRY_GRACE = True
+# Module prefix of the SDK: methods its base classes define are never entries.
+_SDK_MODULE_PREFIX = "plugin.sdk."
+
+
+def _defined_by_sdk(instance: Any, name: str) -> bool:
+    """Whether ``name`` is an attribute some SDK base class (or ``object``) defines.
+
+    Checked on the whole MRO, so a plugin overriding a base method does not
+    turn it into an entry either.
+    """
+    for klass in type(instance).__mro__:
+        if klass is object or str(getattr(klass, "__module__", "")).startswith(_SDK_MODULE_PREFIX):
+            if name in vars(klass):
+                return True
+    return False
+
+
+def _event_type_of(meta: Any) -> str:
+    return str(getattr(meta, "event_type", None) or "plugin_entry")
+
+
+# What the SDK's decorators attach to a member: events (any type), entry
+# hooks, LLM tools, UI context providers. A member carrying one is reached
+# only under the id it was registered with, never by its method name.
+# (UI actions only annotate an entry and are not listed.)
+_SDK_DECLARATION_ATTRS = (
+    EVENT_META_ATTR,
+    HOOK_META_ATTR,
+    LLM_TOOL_META_ATTR,
+    UI_CONTEXT_META_ATTR,
+)
+
+
+def _unwrapped(member: Any):
+    """``member`` and every callable it wraps: ``__wrapped__`` chains and the
+    function inside a ``functools.partial`` / ``partialmethod``."""
+    current = member
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        inner = getattr(current, "__wrapped__", None)
+        if inner is None and isinstance(current, (functools.partial, functools.partialmethod)):
+            inner = current.func
+        current = inner
+
+
+def _own_event_meta(member: Any) -> Any:
+    """The event metadata ``member`` (or a function it wraps) carries, if any."""
+    for current in _unwrapped(member):
+        meta = getattr(current, EVENT_META_ATTR, None)
+        if meta is not None:
+            return meta
+    return None
+
+
+def _has_sdk_declaration(member: Any) -> bool:
+    """Whether ``member`` (or a function it wraps) carries an SDK declaration."""
+    # A bound method reads its function's attributes.
+    return any(
+        getattr(current, attr, None) is not None
+        for current in _unwrapped(member)
+        for attr in _SDK_DECLARATION_ATTRS
+    )
 
 
 class EntryExecutor:
@@ -67,6 +144,7 @@ class EntryExecutor:
         persist: Callable[[str], Awaitable[None]],
         logger: Any,
         maps_generation: Any = _CURRENT,
+        manifest_entry_ids: Any = None,
     ):
         self.plugin_id = plugin_id
         self._context, self._instance = context, instance
@@ -84,11 +162,24 @@ class EntryExecutor:
             persist,
         )
         self._logger = logger
+        # Entry ids the effective manifest's ``entries`` table declares, sent
+        # by the host at launch. Not sent (``None``): nothing counts as
+        # declared there, so plain methods fall under the deprecation grace.
+        self._manifest_entry_ids: frozenset[str] = (
+            frozenset(str(eid) for eid in manifest_entry_ids) if manifest_entry_ids is not None else frozenset()
+        )
         # entry id -> (the meta the check was built from, the check). Rebuilt
         # only when the entry's meta object changes (dynamic re-registration).
         self._output_checks: dict[str, tuple[object, OutputCheck | None]] = {}
         # (entry id, warning key) -> (last warning time, warnings suppressed since).
         self._warned: dict[tuple[str, str], tuple[float, int]] = {}
+        # Same records for deprecation warnings of undeclared entries. Kept
+        # apart: _prune_output_checks drops ids that are not registered,
+        # which these never are.
+        self._deprecation_warned: dict[tuple[str, str], tuple[float, int]] = {}
+        # Collection-failure warnings, per id: kept apart so many failing ids
+        # cannot reset the deprecation records above.
+        self._collection_warned: dict[tuple[str, str], tuple[float, int]] = {}
 
     def _output_check(self, event_id: str, meta: object) -> OutputCheck | None:
         if len(self._output_checks) > len(self._metadata):
@@ -121,21 +212,29 @@ class EntryExecutor:
         for gone in [key for key in self._warned if key[0] not in self._metadata]:
             del self._warned[gone]
 
-    def _warn_limited(self, event_id: str, key: str, message: str) -> None:
+    def _warn_limited(
+        self,
+        event_id: str,
+        key: str,
+        message: str,
+        *,
+        records: dict[tuple[str, str], tuple[float, int]] | None = None,
+    ) -> None:
         """Log ``message`` at most once per ``_WARN_INTERVAL`` for the same entry and ``key``."""
+        warned = self._warned if records is None else records
         now = time.monotonic()
-        last = self._warned.get((event_id, key))
+        last = warned.get((event_id, key))
         if last is not None and now - last[0] < _WARN_INTERVAL:
-            self._warned[(event_id, key)] = (last[0], last[1] + 1)
+            warned[(event_id, key)] = (last[0], last[1] + 1)
             return
-        if len(self._warned) >= _WARN_KEYS_MAX:
+        if len(warned) >= _WARN_KEYS_MAX:
             # Drop records whose window is over first; only if that is not
             # enough, start over rather than grow without bound.
-            for stale in [k for k, (at, _n) in self._warned.items() if now - at >= _WARN_INTERVAL]:
-                del self._warned[stale]
-            if len(self._warned) >= _WARN_KEYS_MAX:
-                self._warned.clear()
-        self._warned[(event_id, key)] = (now, 0)
+            for stale in [k for k, (at, _n) in warned.items() if now - at >= _WARN_INTERVAL]:
+                del warned[stale]
+            if len(warned) >= _WARN_KEYS_MAX:
+                warned.clear()
+        warned[(event_id, key)] = (now, 0)
         suffix = f", suppressed={last[1]}" if last is not None and last[1] else ""
         self._logger.warning(f"{message}{suffix}")
 
@@ -209,17 +308,16 @@ class EntryExecutor:
                 # call tries the rebuild again.
                 self._seen_generation = None
         # Custom-event calls (including cross-plugin ones) reach only handlers
-        # registered for that event type; the attribute fallback would expose
-        # any public or private instance method by name.
+        # registered for that event type; the attribute fallback below is for
+        # plugin_entry calls only.
         if registered_only or event_type != "plugin_entry":
             return self._events.get(event_type, {}).get(event_id)
         # Permission narrowing: an id the check closed (a refused component,
         # or an entry hook listing an undeclared permission, including for an
         # entry only the manifest declares) is not run, whether it sits in the
-        # map (the loader's fallback scan maps plain methods) or would come
-        # from the attribute fallback. An id registered again with a valid
+        # map or would come from the attribute fallback. An id registered again with a valid
         # narrowing is "registered" and is picked up by a refresh.
-        method = self._entries.get(event_id)
+        method = self._mapped_entry(event_id)
         if method is not None and event_id in self._metadata and self._seen_generation == generation:
             # Mapped from collect_entries() (it carries metadata), which
             # already ran the check: no per-call cost for registered entries.
@@ -234,19 +332,112 @@ class EntryExecutor:
         if state == "closed":
             return None
         if method is None and state == "registered":
-            self._refresh()
-            method = self._entries.get(event_id)
+            if not self._refresh_or_warn(event_id):
+                return None
+            method = self._mapped_entry(event_id)
         if method is None:
-            method = getattr(self._instance, event_id, None) or getattr(self._instance, f"entry_{event_id}", None)
+            method = self._undeclared_method(event_id)
         if method is None:
-            self._refresh()
-            method = self._entries.get(event_id)
+            if not self._refresh_or_warn(event_id):
+                return None
+            method = self._mapped_entry(event_id)
         return method
 
-    def _timeout(self, event_id: str, requested: Any) -> float | None:
+    def _refresh_or_warn(self, event_id: str) -> bool:
+        """Rebuild the maps; on failure log (rate-limited per id) and return False.
+
+        The plugin's own collection failing leaves the id unknown (entry not
+        found), as with the rebuild above. Logged so it is not mistaken for a
+        mistyped id; the entry id and the error type only.
+        """
+        try:
+            self._refresh()
+        except Exception as exc:
+            self._warn_limited(
+                event_id,
+                f"collection_failed:{type(exc).__name__}",
+                f"Plugin entry collection failed while resolving entry={event_id[:64]!r}: "
+                f"error_type={type(exc).__name__}",
+                records=self._collection_warned,
+            )
+            return False
+        return True
+
+    def _mapped_entry(self, event_id: str):
+        """The plugin_entry handler the maps hold for ``event_id``, if any.
+
+        A handler of another event type is not served as a plugin_entry. The
+        id-keyed maps keep a plugin_entry's handler and metadata together
+        when another event type shares its id, so the metadata ``invoke``
+        reads is the entry's own. (The maps hold only collected or decorated
+        handlers: the loader does not map members without event metadata.)
+        """
+        method = self._entries.get(event_id)
+        if method is None:
+            return None
+        meta = self._metadata.get(event_id)
+        if meta is None or _event_type_of(meta) == "plugin_entry":
+            return method
+        return None
+
+    def _undeclared_method(self, event_id: str):
+        """Resolve an id the maps do not hold to a public plugin method, or ``None``.
+
+        Reached for entries only the manifest declares (plain methods) and,
+        during the deprecation grace, for public methods nothing declares.
+        Never resolves private names, SDK base-class methods, or members an
+        SDK decorator declared (those are reached by their registered id).
+        """
+        if event_id.startswith("_") or _defined_by_sdk(self._instance, event_id):
+            return None
+        if is_computed_attribute(self._instance, event_id):
+            return None
+        try:
+            method = getattr(self._instance, event_id, None)
+        except Exception:
+            # A descriptor or __getattr__ failing on this name: an unknown id.
+            return None
+        if not method or not callable(method):
+            return None
+        if _has_sdk_declaration(method):
+            return None
+        if event_id in self._manifest_entry_ids:
+            return method
+        if not UNDECLARED_ENTRY_GRACE:
+            return None
+        if inspect.iscoroutinefunction(method):
+            # The id only, never the arguments; at most once per interval per id.
+            self._warn_limited(
+                event_id,
+                "undeclared",
+                "Deprecated plugin_entry call: entry="
+                f"{event_id[:64]!r} is neither registered nor declared in plugin.toml entries; "
+                "it still runs in this version and will be refused in the next one",
+                records=self._deprecation_warned,
+            )
+        return method
+
+    def _call_meta(self, event_type: str, event_id: str, method: Any) -> Any:
+        """The metadata a call of ``event_type`` to ``event_id`` runs with.
+
+        The id-keyed table holds one handler's metadata per id. When it
+        belongs to another event type (two handlers share the id), the
+        handler being called runs with the metadata its own decorator
+        attached, or with none (a manifest-declared plain method): never
+        with the other handler's timeout, params or output contract.
+        """
+        meta = self._metadata.get(event_id)
+        if meta is None or _event_type_of(meta) == event_type:
+            return meta
+        own = _own_event_meta(method)
+        if own is not None and _event_type_of(own) == event_type:
+            return own
+        return None
+
+    def _timeout(self, meta: Any, requested: Any) -> float | None:
         # Keep existing direct-entry configuration semantics. The RPC deadline
         # remains a separate hard upper limit even for an unlimited entry.
-        configured = resolve_entry_timeout(self._metadata.get(event_id), UNSET_TIMEOUT)
+        configured = resolve_entry_timeout(meta, UNSET_TIMEOUT)
         has_configured = configured is not UNSET_TIMEOUT
         if requested is not UNSET_TIMEOUT:
             if requested is None:
@@ -281,7 +472,9 @@ class EntryExecutor:
                 self.plugin_id, event_id, "Entry must be 'async def'"
             )
         label = f"{event_type}.{event_id}"
-        budget = self._timeout(event_id, timeout)
+        # Resolved with the handler, not re-read after it returns.
+        entry_meta = self._call_meta(event_type, event_id, method)
+        budget = self._timeout(entry_meta, timeout)
         budget = remaining_budget(budget, deadline)
         if budget is not None and budget <= 0:
             raise RpcDeadlineExceededError(f"{label} deadline expired before execution")
@@ -289,15 +482,14 @@ class EntryExecutor:
             # The entry's own budget is also the deadline of everything it
             # calls: nested requests take the earlier of it and their own.
             narrow_scope_deadline(time.monotonic() + budget)
-        # The contract this call is checked against: resolved with the handler,
-        # not re-read after it returns.
-        call_meta = self._metadata.get(event_id) if event_type == "plugin_entry" else None
+        # The contract this call is checked against.
+        call_meta = entry_meta if event_type == "plugin_entry" else None
         call_args = (
             prepare_entry_kwargs(
                 plugin_id=self.plugin_id,
                 entry_id=event_id,
                 handler=method,
-                meta=self._metadata.get(event_id),
+                meta=entry_meta,
                 args=args,
             )
             if event_type == "plugin_entry"

@@ -816,6 +816,12 @@ async def update_core_config(request: Request):
         _core_api_save_lock.release()
         save_lock_held = False
 
+        # A newly picked Claude/Gemini model needs an SDK startup warmup skipped. Start
+        # importing it now, in the background, while the page reloads and sessions restart,
+        # so the first call does not import it on the event loop.
+        from utils.module_warmup import request_config_rewarm
+        request_config_rewarm("core_api")
+
         await ensure_default_yui_voice_for_free_api(config_manager, core_cfg)
 
         # After API updates, notify every client first, then close sessions, then reload configuration

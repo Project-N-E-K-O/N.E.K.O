@@ -221,47 +221,6 @@
         const rev = Number(snapshot.revision ?? -1);
         if (Number.isFinite(rev) && rev <= state.revision) return;
 
-        // Detect precheck failure transitions: PENDING → specific failure reason.
-        // Only fire the toast when the user actually opted into that capability —
-        // otherwise background daemons (browser-use install / startup
-        // LLM probe) flipping their own seeded PENDING → *_UNREACHABLE produce
-        // bogus "喵能力预检失败" popups even when the agent is working fine.
-        const CAP_TO_FLAG = {
-            computer_use: 'computer_use_enabled',
-            browser_use: 'browser_use_enabled',
-            user_plugin: 'user_plugin_enabled',
-        };
-        const prevCaps = (state.snapshot && state.snapshot.capabilities) || {};
-        const prevFlags = (state.snapshot && state.snapshot.flags) || {};
-        const newCaps = snapshot.capabilities || {};
-        const analyzerOn = !!snapshot.analyzer_enabled;
-        const snapFlags = snapshot.flags || {};
-        for (const [capName, capInfo] of Object.entries(newCaps)) {
-            if (!capInfo || capInfo.ready) continue;
-            if (!analyzerOn) continue;
-            const flagKey = CAP_TO_FLAG[capName];
-            // 用户是否真的请求了这个能力：新快照、上一帧快照、pending 队列、乐观更新里有任一为真即算。
-            // 只看 snapFlags 会吞掉"用户刚开启 → 后端同帧检查失败立刻关掉"的失败提示。
-            const userRequested = !!(
-                flagKey && (
-                    snapFlags[flagKey] ||
-                    prevFlags[flagKey] ||
-                    state.pending.has(flagKey) ||
-                    state.optimistic[flagKey]
-                )
-            );
-            if (!userRequested) continue;
-            const prevInfo = prevCaps[capName];
-            const wasPending = prevInfo && !prevInfo.ready && prevInfo.reason && prevInfo.reason.includes('PENDING');
-            const nowFailed = capInfo.reason && !capInfo.reason.includes('PENDING');
-            if (wasPending && nowFailed && typeof window.showStatusToast === 'function' && window.t) {
-                const precheckKey = `agent.precheck.${capInfo.reason}`;
-                let reasonText = window.t(precheckKey);
-                if (reasonText === precheckKey) reasonText = capInfo.reason;
-                window.showStatusToast(window.t('agent.status.precheckFailed', { reason: reasonText }), 5000);
-            }
-        }
-
         state.snapshot = snapshot;
         if (Number.isFinite(rev)) state.revision = rev;
         window._agentStatusSnapshot = snapshot;
@@ -367,15 +326,8 @@
             sync(list);
         });
 
-        const anyPending = Object.values(snap.capabilities || {}).some(
-            c => c && typeof c.reason === 'string' && c.reason.includes('PENDING')
-        );
         if (state.globalBusy) {
             setStatus(window.t ? window.t('settings.toggles.checking') : '已接受操作，切换中...', {
-                stabilizeTutorialText: true
-            });
-        } else if (anyPending) {
-            setStatus(window.t ? window.t('agent.status.connectivityCheck') : 'Agent LLM 连接检查中...', {
                 stabilizeTutorialText: true
             });
         } else if (!analyzerEnabled) {

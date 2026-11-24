@@ -1,19 +1,19 @@
-import { pluginConsentMessages } from '../plugin-consent'
-import { modelApiMessages } from '../model-api'
-import { modelBindingsMessages } from '../model-bindings'
-import { marketFeedbackMessages } from '../market-feedback'
-import { authoringMessages } from '../authoring'
+import pluginConsentMessages from '../plugin-consent/ko'
+import modelApiMessages from '../model-api/ko'
+import modelBindingsMessages from '../model-bindings/ko'
+import marketFeedbackMessages from '../market-feedback/ko'
+import authoringMessages from '../authoring/ko'
 import powerMessages from '../power/ko'
 
 /**
  * 한국어 언어 팩
  */
 export default {
-  pluginConsent: pluginConsentMessages['ko'],
-  authoring: authoringMessages['ko'],
-  marketFeedback: marketFeedbackMessages['ko'],
-  modelApi: modelApiMessages['ko'],
-  modelBindings: modelBindingsMessages['ko'],
+  pluginConsent: pluginConsentMessages,
+  authoring: authoringMessages,
+  marketFeedback: marketFeedbackMessages,
+  modelApi: modelApiMessages,
+  modelBindings: modelBindingsMessages,
   power: powerMessages,
   common: {
     chooseLanguage: "언어 선택",
@@ -1060,6 +1060,8 @@ export default {
     pluginBuilt: '플러그인이 패키징되었습니다: {packageName}',
     pluginDeleted: '플러그인이 삭제되었습니다',
     pluginDeletedBuiltinRestartFailed: '플러그인 {plugin}은(는) 삭제되었지만 복원된 내장 버전을 시작하지 못했습니다: {error}',
+    pluginDeletedPermissionsNotCleared: '플러그인 {plugin}은(는) 삭제되었지만 권한 기록 파일이 손상되었거나 더 새로운 버전의 파일이라 남아 있을 수 있는 권한 허용을 지우지 못했습니다. 파일을 다시 읽을 수 있게 되면 해당 허용이 계속 적용될 수 있습니다.',
+    pluginsDeletedPermissionsNotCleared: '플러그인 {plugins}이(가) 삭제되었지만 권한 기록 파일이 손상되었거나 더 새로운 버전의 파일이라 남아 있을 수 있는 권한 허용을 지우지 못했습니다. 파일을 다시 읽을 수 있게 되면 해당 허용이 계속 적용될 수 있습니다.',
     startFailed: '시작에 실패했습니다',
     autoStartEnabled: '자동 시작을 켰습니다',
     autoStartDisabled: '자동 시작을 껐습니다',

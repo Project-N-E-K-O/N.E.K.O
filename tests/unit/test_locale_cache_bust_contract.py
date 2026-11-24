@@ -66,6 +66,12 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-11-24-agent-model-probe-removed",
+        "2026-11-24-emote-template-license-main-sync",
+        "2026-11-23-theater-market-recovery-main-merge",
+        "2026-11-23-emote-maker-frontend-sync",
+        "2026-11-24-emote-template-license",
+        "2026-11-19-theater-market-recovery",
         "2026-11-22-emote-maker-model-memory-sync",
         "2026-11-22-star-map-cooldown-after-key-cleanup",
         "2026-11-22-emote-maker-bailian-sync",
@@ -90,7 +96,6 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-11-21-bailian-workspace-id",
         "2026-11-21-decision-model-slot",
         "2026-11-21-emote-maker-review-main-sync",
-        "2026-11-21-bailian-workspace-id",
         "2026-11-19-eight-locale-gap-fill",
         "2026-11-21-emote-maker-upstream-sync",
         "2026-11-18-emote-maker-restore-confirmations",
@@ -141,7 +146,6 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-11-03-sync-capacity-feedback",
         "2026-11-03-sync-cache-main-merge",
         "2026-11-03-sync-recovery-memory-merge",
-        "2026-11-03-news-overseas-systray-labels-main-merge",
         "2026-11-03-sync-model-main-merge",
         "2026-10-30-sync-model-main-merge",
         "2026-10-29-sync-review-main-merge",
@@ -170,7 +174,6 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-27-theater-market-main-merge",
         "2026-10-26-theater-market-main-sync",
         "2026-10-26-theater-review-fixes",
-        "2026-11-03-news-overseas-chat-sync-main-merge",
         "2026-11-02-model-click-shake",
         "2026-10-30-news-overseas-trends-steam",
         "2026-10-30-edge-peek-first-notice",
@@ -362,7 +365,6 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-04-theater-storage-requesty-main-merge",
         "2026-10-04-external-route-registry-main-merge-round4",
         "2026-10-03-theater-air-basketball-main-merge",
-
         "2026-10-04-voice-readiness-review-main-merge",
         "2026-10-03-voice-readiness-model-picker-merge",
         "2026-10-04-storage-requesty-main-merge",
@@ -619,7 +621,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "fafeaeb9fbd5e3693d14aa98150e952632546ee4a565a029f8b88b2d5f2e0c20"
+LOCALE_KEY_SIGNATURE = "a1fab5bbe818c2092567194bb1bfd8ffeff49d299baa64ae33a331ca3039cf05"
 
 
 _BUMP_INSTRUCTIONS = (

@@ -917,10 +917,12 @@ def test_a_plain_entry_the_loader_scans_in_is_closed_by_its_hook(tmp_path, hook_
     ctx = _ctx(tmp_path, DECLARED_TOML + '[[plugin.entries]]\nid = "plain"\n')
     instance = P(ctx)
     # The real loader path: collect_entries() lists nothing, so the loader
-    # falls back to its method scan and maps "plain" by name.
+    # falls back to its method scan. It does not map the undecorated "plain";
+    # the executor reaches it as an entry the manifest declares.
     entry_map, _meta, _events = _initial_entry_tables(instance, ctx.logger)
-    assert "plain" in entry_map
+    assert "plain" not in entry_map
     executor = _executor_over(instance, ctx, dict(entry_map))
+    executor._manifest_entry_ids = frozenset({"plain"})
     resolved = executor._resolve("plugin_entry", "plain", registered_only=False)
     assert (resolved is None) is closed
 

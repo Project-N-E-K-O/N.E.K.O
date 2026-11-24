@@ -1752,10 +1752,10 @@ def test_agent_startup_settles_the_region_in_the_background():
     assert startup is not None, '未找到 agent_server startup，断言失效'
     assert settle is not None, '未找到 _settle_region，断言失效'
 
-    # Require the startup warmup primitive; session-level aensure is insufficient. The probe of the agent
-    # model that startup fires reads the agent model's configuration, which already starts probing the
-    # region; failed early networking enters 30s backoff. aensure neither kicks nor bypasses backoff,
-    # leaving this process on the mainland fallback.
+    # Require the startup warmup primitive; session-level aensure is insufficient. The first read of
+    # the agent model's configuration (the decision model, a task agent, or the probe the master
+    # switch starts) already starts probing the region; failed early networking enters 30s backoff.
+    # aensure neither kicks nor bypasses backoff, leaving this process on the mainland fallback.
     warmups = [c for c in ast.walk(settle)
                if isinstance(c, ast.Call)
                and getattr(c.func, 'attr', None) == 'awarmup_region_check']

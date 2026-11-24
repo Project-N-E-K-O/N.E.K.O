@@ -1182,16 +1182,14 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
             _runtime_startup_init_completed = True
             _disable_main_storage_limited_mode()
 
-            # Start heavyweight lazy-module background warmup after runtime init, preimporting genai/mcp,
-            # translatepy, and router dependencies before first use. Avoid early on_startup
-            # placement, which competes for GIL with critical runtime initialization.
+            # Start heavyweight lazy-module background warmup after runtime init, preimporting the
+            # SDKs the current config can reach (genai/mcp, router dependencies) before
+            # first use. Avoid early on_startup placement, which competes for GIL with critical
+            # runtime initialization.
             try:
-                from utils.module_warmup import (
-                    MAIN_SERVER_WARMUP,
-                    start_background_warmup,
-                )
+                from utils.module_warmup import start_main_server_warmup
 
-                start_background_warmup(MAIN_SERVER_WARMUP, label="main")
+                start_main_server_warmup()
             except Exception as _warmup_exc:
                 logger.debug(f"[warmup] main_server warmup not started: {_warmup_exc}")
 

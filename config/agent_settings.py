@@ -86,8 +86,3 @@ AGENT_PLUGIN_FULL_MAX_TOKENS = 500
 """max_completion_tokens for complete plugin assessment stage2 LLM.
 - Purpose: return plugin_id + plugin_args + reason.
 - Upstream: LLM output."""
-
-LLM_PING_MAX_TOKENS = 5
-"""max_completion_tokens for LLM health checks.
-- Purpose: connectivity pings need only return "ok".
-- Upstream: LLM output."""

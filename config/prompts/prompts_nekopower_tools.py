@@ -855,6 +855,48 @@ NEKOPOWER_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             'required': ['to', 'message'],
         },
     },
+    'hand_over': {
+        'name': 'hand_over',
+        'description': (
+            'Hand the commission you are at over to one task agent of this project, whole. It is '
+            'that task agent\'s from then on: it does the work and reports the outcome to the user '
+            'itself, and you are told later what came of it. After this returns, call no more tools '
+            'and end your turn. Use subagent instead for a part whose result you need back.'
+        ),
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'to': {
+                    'type': 'string',
+                    'description': (
+                        'Name of a member of this project to hand it to, as you were told them. '
+                        'Leave out to start a new task agent for it.'
+                    ),
+                },
+                'preset': {
+                    'type': 'string',
+                    'description': 'Preset of a new task agent; worker when left out. Not used with `to`.',
+                },
+                'description': {
+                    'type': 'string',
+                    'description': (
+                        'One line on the kind of work this task agent takes, for its card, in the '
+                        'language the current commission names for the user.'
+                    ),
+                },
+                'brief': {
+                    'type': 'string',
+                    'description': (
+                        'What whoever takes it needs and does not know: what is wanted and why, what '
+                        'it covers, what it must not touch, which files or places matter, what you '
+                        'already found, how to tell that it is done. The commission itself is handed '
+                        'along; do not repeat it.'
+                    ),
+                },
+            },
+            'required': ['description', 'brief'],
+        },
+    },
     'ask_session': {
         'name': 'ask_session',
         'description': (

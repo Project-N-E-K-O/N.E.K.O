@@ -8,6 +8,7 @@ const {
   beginCollisionDeformation,
   renderCollisionDeformation,
   clearCollisionDeformation,
+  isCollisionDeformationActive,
 } = require(
   '../../static/avatar/avatar-ui-buttons/collision-deformation.js'
 );
@@ -38,6 +39,16 @@ const sample = (overrides = {}) => computeCollisionDeformation({
   impactVelocityChange: 600,
   elapsedMs: 0,
   ...overrides,
+});
+
+test('admission can query a collision without rendering or extending its lifetime', () => {
+  const button = buttonFixture();
+  beginCollisionDeformation(button, { direction: 'down', impactVelocityChange: 600, startedAt: 1000 });
+  const scale = button.style.getPropertyValue('--neko-collision-scale-y');
+  for (let index = 0; index < 100; index++) assert.equal(isCollisionDeformationActive(button), true);
+  assert.equal(button.style.getPropertyValue('--neko-collision-scale-y'), scale);
+  assert.equal(renderCollisionDeformation(button, 1160), false);
+  assert.equal(isCollisionDeformationActive(button), false);
 });
 
 test('vertical collisions compress vertically around the contact side', () => {

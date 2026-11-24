@@ -949,14 +949,20 @@ class SpaceKeeper:
         return written
 
     async def _target_project(self, commission: Commission, data: dict[str, Any]) -> str:
-        """Return the project a review is kept under, making the project it names when that is new.
+        """Return the project a review is kept under: one that is there, when the review names it.
 
         A commission that was filed under a project when it started stays
         there. One of ``_daily`` goes where the review says, if it names a
-        project; a name that cannot be a directory name is ignored. So is
-        the name of an archived project: what a model answered does not
-        bring a project back from the archive, only naming it in a
-        commission does.
+        project that is there; a name that cannot be a directory name is
+        ignored. So is the name of an archived project: what a model
+        answered does not bring a project back from the archive, only
+        naming it in a commission does.
+
+        A project that is not there is not made of one commission: a
+        project comes of the same job coming up again (``families.py``).
+        What the review would have called it is put on record with the
+        commission (``project_suggested``), and is what the project is
+        called should its task agent become one later.
         """
         from config.nekopower_settings import SPACE_PROJECT_NAME_MAX_TOKENS
 
@@ -986,10 +992,25 @@ class SpaceKeeper:
             workdir=commission.workdir,
             at=commission.ended_at,
             unless_archived=True,
-            unless_new=commission.status == "cancelled",
+            unless_new=True,
             description_by="review",
         )
-        return project.name if project is not None else current
+        if project is not None:
+            return project.name
+        if commission.status != "cancelled":
+            # (One the user stopped was often stopped because it went wrong:
+            # what a model made of that names nothing.)
+            try:
+                await self._ledger.append_event(
+                    commission.id,
+                    "project_suggested",
+                    {"name": name, "description": " ".join(str(data.get("project_description") or "").split())},
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - a name for later, no more
+                logger.warning("noting what a review would call a project failed", exc_info=True)
+        return current
 
     async def _keep_review(
         self, commission: Commission, data: dict[str, Any], children: tuple[str, ...] = ()

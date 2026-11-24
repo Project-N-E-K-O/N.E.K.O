@@ -1495,3 +1495,69 @@ async def test_deny_stops_a_running_plugin_without_deadlock(
     assert details["decision"] == "denied"
     assert stopped == ["demo"]
     assert store.read("demo")["decision"] == "denied"
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [("pass", 0), ("import importlib\nimportlib.import_module(name)\n", 1)],
+)
+def test_summary_counts_blind_spots_of_the_cached_report(tmp_path, reports, monkeypatch, code, expected):
+    root = tmp_path / "demo"
+    manifest(root)
+    (root / "main.py").write_text(code)
+    meta = {"config_path": str(root / "plugin.toml"), "version": "1"}
+    reports.save(
+        "demo",
+        {
+            **analyze_capabilities(root),
+            "_analyzer_version": analysis.ANALYZER_VERSION,
+            "_source": analysis.source_revision(root, "1"),
+            "_source_root": str(root),
+            "version": "1",
+        },
+    )
+    runner = analysis.CapabilityAnalysisService(reports)
+    monkeypatch.setattr(analysis, "analysis_service", runner)
+
+    assert service.consent_summary("demo", meta)["blind_spots"] == expected
+
+
+@pytest.mark.parametrize(
+    ("status", "incomplete"),
+    [("completed", False), ("partial", True), ("failed", True)],
+)
+def test_summary_flags_an_incomplete_analysis(tmp_path, reports, monkeypatch, status, incomplete):
+    root = tmp_path / "demo"
+    manifest(root)
+    (root / "main.py").write_text("pass")
+    meta = {"config_path": str(root / "plugin.toml"), "version": "1"}
+    report = {
+        **analyze_capabilities(root),
+        "_analyzer_version": analysis.ANALYZER_VERSION,
+        "_source": analysis.source_revision(root, "1"),
+        "_source_root": str(root),
+        "version": "1",
+        "status": status,
+    }
+    if status == "failed":
+        # A failed report carries no permissions and no blind spots.
+        report.pop("permissions", None)
+        report.pop("blind_spots", None)
+    reports.save("demo", report)
+    runner = analysis.CapabilityAnalysisService(reports)
+    monkeypatch.setattr(analysis, "analysis_service", runner)
+
+    summary = service.consent_summary("demo", meta)
+    assert summary["blind_spots"] == 0
+    assert summary["analysis_incomplete"] is incomplete
+
+
+def test_summary_without_a_readable_store_reports_no_blind_spots(monkeypatch):
+    def broken(*_args, **_kwargs):
+        raise ServerDomainError("PLUGIN_NOT_FOUND", "Plugin not found", 404)
+
+    monkeypatch.setattr(service, "_consent_view", broken)
+
+    summary = service.consent_summary("demo", {})
+    assert summary["blind_spots"] == 0
+    assert summary["analysis_incomplete"] is False
