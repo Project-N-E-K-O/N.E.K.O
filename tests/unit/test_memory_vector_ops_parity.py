@@ -351,7 +351,6 @@ async def test_scoped_refine_pass_clusters_off_the_event_loop():
 
 @pytest.fixture
 def fresh_vec_cache():
-
     hr._invalidate_vec_cache()
     yield
     hr._invalidate_vec_cache()
@@ -372,7 +371,6 @@ def _mixed_pool(seed):
 @pytest.mark.parametrize("seed", range(5))
 @pytest.mark.parametrize("target_dim", [None, DIM])
 def test_decode_cached_vectors_matches_legacy_cold_and_warm(fresh_vec_cache, seed, target_dim):
-
     pool = _mixed_pool(seed)
     expected, expected_dim = _legacy_decode(pool, MODEL_ID, target_dim)
     for _round in ("cold", "warm"):
@@ -454,7 +452,6 @@ def _cosine_pool(seed):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("seed", range(6))
 async def test_cosine_rank_head_matches_legacy_full_sort(fresh_vec_cache, seed):
-
     pool, qarr = _cosine_pool(seed)
     expected = _legacy_cosine_full(pool, qarr)
     service = MagicMock()
@@ -477,7 +474,6 @@ async def test_cosine_rank_head_matches_legacy_full_sort(fresh_vec_cache, seed):
 
 @pytest.mark.asyncio
 async def test_cosine_rank_scores_off_the_event_loop(fresh_vec_cache):
-
     pool, qarr = _cosine_pool(0)
     service = MagicMock()
     service.is_available = MagicMock(return_value=True)
@@ -574,7 +570,6 @@ async def test_reflection_scoring_runs_off_the_event_loop(fresh_vec_cache):
 
 
 def test_vec_cache_byte_accounting_survives_concurrent_scans(fresh_vec_cache):
-
     rng = np.random.default_rng(11)
     pools = [
         [_stamped(f"t{t}_{i}", v) for i, v in enumerate(_unit_vectors(rng, 300))]
@@ -611,7 +606,6 @@ def test_vec_cache_byte_accounting_survives_concurrent_scans(fresh_vec_cache):
 async def test_hybrid_recall_results_unchanged_by_cosine_head_cut(fresh_vec_cache, tmp_path, seed):
     """The call site asks ``_cosine_rank`` for only the head it reads; the
     fused recall must equal what the full ranking produced."""
-
     pool, qarr = _cosine_pool(seed)
     facts = [
         {**doc, "score": 1.0} for doc in pool
@@ -684,7 +678,6 @@ def test_turn_context_pool_matrix_matches_per_row_normalization(fresh_vec_cache)
 def test_decode_cached_vectors_first_row_fixes_dim_without_parseable_model(fresh_vec_cache):
     """With a model id that carries no dimension, the first valid row fixes
     it and later rows of another size drop out — the old loop's rule."""
-
     model = "parity-custom-model"
     pool = []
     for i, size in enumerate([6, 6, 4, 6, 9]):

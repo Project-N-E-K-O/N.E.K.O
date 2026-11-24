@@ -733,7 +733,10 @@ async def _cosine_rank(
     before that cut (the log's "scored" count).
 
     The decode + matrix product runs in a worker thread: on a cold cache
-    it decodes the whole pool, which must not stall the event loop.
+    it decodes the whole pool, which must not stall the event loop. The
+    worker reads ``pool`` rows while the loop keeps running, so ``pool``
+    must hold rows private to this call (``hybrid_recall`` passes
+    ``_tag_tier``'s shallow copies), never live store entries.
 
     Skips docs with no / invalid cached embedding (no fallthrough — we
     don't have an LLM rerank to bail to). Returns ``[]`` when:
