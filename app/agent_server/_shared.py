@@ -176,7 +176,13 @@ def _capability_reason_code(raw_reason: str) -> str:
     return "AGENT_ENDPOINT_NOT_CONFIGURED"
 
 
+# How many times each capability was written: a background refresh that
+# waited for its check writes nothing over what was written meanwhile.
+capability_writes: Dict[str, int] = {}
+
+
 def _set_capability(name: str, ready: bool, reason: str = "") -> None:
+    capability_writes[name] = capability_writes.get(name, 0) + 1
     prev = Modules.capability_cache.get(name, {})
     normalized_reason = _capability_reason_code(reason)
     Modules.capability_cache[name] = {"ready": bool(ready), "reason": normalized_reason}

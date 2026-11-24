@@ -168,20 +168,27 @@ async def _refresh_tool_capabilities() -> None:
     global _tool_refresh_seq
     _tool_refresh_seq += 1
     mine = _tool_refresh_seq
+    # Written meanwhile by anything else (a switch, the browser settings, an
+    # availability route): that stands too.
+    written = dict(_shared.capability_writes)
+
+    def still_mine(name: str) -> bool:
+        return mine == _tool_refresh_seq and _shared.capability_writes.get(name, 0) == written.get(name, 0)
+
     try:
         keyboard = await asyncio.to_thread(_keyboard_mouse_availability)
     except Exception as exc:  # noqa: BLE001 - not usable then; the browser is still looked at
         logger.warning("[Agent] Checking the keyboard and mouse failed: %s", exc)
         keyboard = {"ready": False, "reasons": ["AGENT_INPUT_CHECK_FAILED"]}
     keyboard_reasons = keyboard.get("reasons") or []
-    if mine == _tool_refresh_seq:
+    if still_mine("computer_use"):
         _set_capability("computer_use", bool(keyboard.get("ready")), keyboard_reasons[0] if keyboard_reasons else "")
     try:
         browser_ready, browser_reason = await asyncio.to_thread(_browser_availability)
     except Exception as exc:  # noqa: BLE001 - not usable then
         logger.warning("[Agent] Checking for a browser failed: %s", exc)
         browser_ready, browser_reason = False, BROWSER_CHECK_FAILED
-    if mine == _tool_refresh_seq:
+    if still_mine("browser_use"):
         _set_capability("browser_use", browser_ready, browser_reason)
 
 
@@ -251,8 +258,8 @@ async def _close_browser(
     provider waits for a call under way before it closes anything.
 
     ``leave_window`` is for when the tools stop being used (the user
-    switched them off, or the agent model is no longer set up and the switch
-    was put off for them): a browser window they can see is left open and
+    switched them off, or the switch was put off for them because the agent
+    model was not set up when a switch was asked to come on): a browser window they can see is left open and
     connected to, as it is after a task that ended, and they may go on
     reading what is in it. It is closed when they close it, when they
     change the browser settings, or when the application quits. One without

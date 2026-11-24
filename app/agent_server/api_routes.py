@@ -319,7 +319,11 @@ async def set_agent_flags(payload: Dict[str, Any]):
     if isinstance(bf, bool):
         if bf:
             dependency_ready, dependency_error = await asyncio.to_thread(_browser_dependency_status)
-            if not dependency_ready:
+            if Modules.browser_use_lifecycle_seq != browser_use_lifecycle_seq:
+                # The switch was set anew while this one looked for a
+                # browser: that later setting stands.
+                logger.info("[Agent] Browser Use enable request overtaken by a later one; left as it is")
+            elif not dependency_ready:
                 _put_switch_off("browser_use_enabled")
                 _set_capability("browser_use", False, dependency_error)
                 Modules.notification = json.dumps({"code": "AGENT_BU_UNAVAILABLE", "details": {"reason_code": dependency_error}})
@@ -858,10 +862,10 @@ async def notify_config_changed():
     """
     if not Modules.analyzer_enabled:
         return {"success": True, "message": "agent idle; nothing to refresh"}
-    await _refresh_tool_capabilities()
-    _bump_state_revision()
-    await _emit_agent_status_update()
-    return {"success": True, "message": "tool readiness refreshed"}
+    # In the background: the main server waits a few seconds for the answer,
+    # and the first check of the keyboard and mouse imports pyautogui.
+    _create_tracked_task(_refresh_tool_capabilities_and_tell())
+    return {"success": True, "message": "tool readiness refresh started"}
 
 
 @app.get("/browser_use/availability")

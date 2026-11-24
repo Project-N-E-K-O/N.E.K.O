@@ -991,6 +991,14 @@ async def test_an_input_that_is_too_long_is_not_taken_for_a_refusal_of_its_pictu
         ("PermissionDeniedError: Error code: 403 - Quota exceeded for requests per minute", None),
         # A refusal for where the request came from is not about the key.
         ("PermissionDeniedError: Error code: 403 - {'error': {'code': 'unsupported_country_region_territory'}}", None),
+        ("PermissionDeniedError: Error code: 403 - {'error': {'message': 'This model is not available in your region.'}}", None),
+        # A 401 that only mentions a regional endpoint is the key all the same (Azure OpenAI).
+        ("AuthenticationError: Error code: 401 - {'error': {'code': '401', 'message': 'Access denied due to invalid subscription key or wrong API endpoint. Make sure to provide a valid key for an active subscription and use a correct regional API endpoint for your resource.'}}", "model_key"),
+        # Gemini's per-minute limit, worded as OpenAI words an empty account.
+        ("RateLimitError: Error code: 429 - [{'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 10 Please retry in 21.3s.', 'status': 'RESOURCE_EXHAUSTED'}}]", None),
+        # Nothing to do with the model.
+        ("PermissionError: unauthorized to write C:/data/out.txt", None),
+        ("RuntimeError: the session is busy", None),
         ("APIConnectionError: Connection error.", None),
         ("APITimeoutError: Request timed out.", None),
         ("InternalServerError: Error code: 500 - upstream failed", None),

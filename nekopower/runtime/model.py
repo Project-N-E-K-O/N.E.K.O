@@ -175,22 +175,28 @@ def says_context_overflow(said: str) -> bool:
 # or the provider's own words.
 _KEY_REFUSED_PATTERNS = re.compile(
     r"authenticationerror|permissiondeniederror|invalid[_ ]api[_ ]key|incorrect api key|"
-    r"api key (?:is )?(?:invalid|not valid|expired)|unauthorized|"
-    r"(?:error code|status code|status|http)[:= ]*(?:401|403)\b",
+    r"invalid subscription key|api key (?:is )?(?:invalid|not valid|expired)|\b401 unauthorized\b|"
+    r"(?:error code|status code)[:= ]*(?:401|403)\b|\bhttp (?:401|403)\b",
     re.IGNORECASE,
 )
+# A 403 (as opposed to a 401) may be a refusal of where the request came from
+# rather than of the key: told apart by the providers' own wording for that.
+_FORBIDDEN_PATTERNS = re.compile(r"\b403\b|permissiondeniederror", re.IGNORECASE)
 # What it says when the account behind the key has no quota or balance left:
 # words that only an account with nothing left is answered with.
 _ACCOUNT_EMPTY_PATTERNS = re.compile(
-    r"insufficient[_ ](?:quota|balance|credits?|funds)|exceeded[_ ](?:your[_ ])?current[_ ]quota|"
+    r"insufficient[_ ](?:quota|balance|credits?|funds)|exceeded_current_quota|"
     r"out of credits?|credit balance is too low|"
     r"\barrearage\b|\boverdue\b|余额不足|欠费",
     re.IGNORECASE,
 )
 # Wordings that may be either: a quota used up, or one of the short-term
 # limits below. Taken for an account with nothing left only without them.
+# ("You exceeded your current quota" among them: OpenAI says it with
+# ``insufficient_quota`` when the account is empty, Gemini with a wait when
+# a per-minute limit was reached.)
 _QUOTA_WORDS_PATTERNS = re.compile(
-    r"quota (?:has been )?exceeded|exceeded (?:the )?quota|out of quota|额度(?:已)?(?:用尽|用完|不足)",
+    r"quota (?:has been )?exceeded|exceeded (?:your |the )?(?:current )?quota|out of quota|额度(?:已)?(?:用尽|用完|不足)",
     re.IGNORECASE,
 )
 # A limit that waiting lifts: per second, minute or hour, a rate limit, a
@@ -201,8 +207,14 @@ _SHORT_TERM_LIMIT_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
-# A 403 for where the request came from is not about the key.
-_REGION_REFUSAL_PATTERNS = re.compile(r"country|region|territory", re.IGNORECASE)
+# A 403 for where the request came from is not about the key. Only the
+# wordings for that: "regional endpoint" and the like say nothing of it.
+_REGION_REFUSAL_PATTERNS = re.compile(
+    r"unsupported_country_region_territory|"
+    r"\b(?:unsupported|not supported|not available)\b.{0,40}\b(?:country|countries|region|regions|territory|territories|location)\b|"
+    r"\b(?:country|region|territory|location)\b.{0,40}\b(?:not supported|unsupported|is not available)\b",
+    re.IGNORECASE,
+)
 
 # The kinds ``model_failure_kind`` returns.
 MODEL_KEY_REFUSED = "model_key"
@@ -225,7 +237,9 @@ def model_failure_kind(said: str) -> str | None:
         # A quota that is used up, or one that waiting lifts: either way not
         # the key, whatever status it came with.
         return None if _SHORT_TERM_LIMIT_PATTERNS.search(text) else MODEL_QUOTA_USED_UP
-    if _KEY_REFUSED_PATTERNS.search(text) and not _REGION_REFUSAL_PATTERNS.search(text):
+    if _KEY_REFUSED_PATTERNS.search(text):
+        if _FORBIDDEN_PATTERNS.search(text) and _REGION_REFUSAL_PATTERNS.search(text):
+            return None
         return MODEL_KEY_REFUSED
     return None
 

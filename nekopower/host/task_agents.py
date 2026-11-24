@@ -4844,7 +4844,7 @@ class TaskAgentManager:
                 self._keep_unsent(session)
                 error = str(event.get("error") or "")
                 # Nothing of it was taken: it did not start, rather than stop.
-                await self._fail(commission_id, error or "the run failed", said="start", detail=error)
+                await self._fail(commission_id, error or "the run failed", said="start", detail=error, free=session.free)
                 self._keep_unsent(session)
             else:
                 # A run takes its prompt into the session's transcript before
@@ -4868,7 +4868,7 @@ class TaskAgentManager:
                 # the commission is, is then said again when it is taken up;
                 # twice in the transcript does less harm than not at all.)
                 error = str(event.get("error") or "")
-                await self._fail(commission_id, error or "the run failed", said="run", detail=error)
+                await self._fail(commission_id, error or "the run failed", said="run", detail=error, free=session.free)
         # It is over; what it started must not go on working for nobody.
         # (How it ended is written by now. Should what it started not be
         # readable, even asked again, its session is let go all the same:
@@ -5703,7 +5703,7 @@ class TaskAgentManager:
             session.closing = False
             raise
 
-    async def _fail(self, commission_id: str, reason: str, *, said: str, detail: str = "") -> None:
+    async def _fail(self, commission_id: str, reason: str, *, said: str, detail: str = "", free: bool = False) -> None:
         """End a commission as failed for a reason of the host's own.
 
         ``reason`` is what goes on record, in English. ``said`` says what
@@ -5717,7 +5717,9 @@ class TaskAgentManager:
         quota or balance left, is told as that (``model_key``,
         ``model_quota``): the user has to fix it, and is shown so in plain
         words; the keyboard-and-mouse and browser switches no longer ask the
-        model beforehand, so this is where a wrong key first shows. She is told that,
+        model beforehand, so this is where a wrong key first shows. Not with
+        the built-in free key (``free``): there is no key or account of the
+        user's to fix then, and the error is told as it came. She is told that,
         in English, as the host tells a model what happened
         (``TASK_AGENT_FAILED_NOTICE``), with ``detail``, the error as it
         came, when there is one; the HUD shows it in her dialogue's language
@@ -5731,7 +5733,7 @@ class TaskAgentManager:
         from nekopower.host.task_brain import _texts
         from nekopower.runtime.model import model_failure_kind
 
-        if said in ("start", "run") and detail:
+        if said in ("start", "run") and detail and not free:
             said = model_failure_kind(detail) or said
         told, shown = reason, None
         commission = await self._ledger.get(commission_id)

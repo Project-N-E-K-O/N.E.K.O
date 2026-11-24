@@ -726,6 +726,58 @@ async def test_a_browser_check_that_started_earlier_and_finishes_later_writes_no
     assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
 
 
+async def test_a_browser_switched_off_while_an_earlier_request_looked_for_a_browser_stays_off(
+    modules, search, browser, checks, monkeypatch, scheduled
+):
+    import threading
+
+    release = threading.Event()
+
+    def slow_search() -> tuple[bool, str]:
+        release.wait(5.0)
+        return True, ""
+
+    monkeypatch.setattr(api_routes, "_browser_dependency_status", slow_search)
+    switching_on = asyncio.ensure_future(
+        api_routes.set_agent_flags({"browser_use_enabled": True, "_persist_intent": False})
+    )
+    try:
+        await asyncio.sleep(0.05)
+        assert not switching_on.done()
+        await api_routes.set_agent_flags({"browser_use_enabled": False, "_persist_intent": False})
+    finally:
+        release.set()
+    await asyncio.wait_for(switching_on, 5.0)
+
+    assert modules.agent_flags["browser_use_enabled"] is False
+    # The earlier request, overtaken, wrote nothing: neither the switch nor a notice.
+    assert modules.notification is None
+
+
+async def test_what_is_written_while_a_refresh_checks_is_not_written_over(modules, search, browser, checks, monkeypatch):
+    import threading
+
+    asked = threading.Event()
+    release = threading.Event()
+
+    def slow_keyboard() -> dict[str, Any]:
+        asked.set()
+        release.wait(5.0)
+        return {"enabled": True, "ready": True, "reasons": []}
+
+    monkeypatch.setattr(capabilities, "_keyboard_mouse_availability", slow_keyboard)
+    refreshing = asyncio.ensure_future(capabilities._refresh_tool_capabilities())
+    try:
+        await asyncio.wait_for(asyncio.to_thread(asked.wait, 5.0), 6.0)
+        # Meanwhile a route finds input cannot be sent any more.
+        capabilities._set_capability("computer_use", False, "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE")
+    finally:
+        release.set()
+    await asyncio.wait_for(refreshing, 5.0)
+
+    assert modules.capability_cache["computer_use"] == {"ready": False, "reason": "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE"}
+
+
 async def test_without_a_browser_only_the_browser_tools_are_not_ready(modules, search, browser, checks, monkeypatch):
     _keyboard(monkeypatch, ready=True)
     search.found = []
@@ -852,6 +904,8 @@ async def test_a_saved_configuration_says_anew_whether_the_tools_can_be_used(mod
     )
 
     result = await api_routes.notify_config_changed()
+    # Worked out in the background: the main server does not wait for it.
+    await _background_done(modules)
 
     assert result["success"] is True
     # The key was filled in: the tools can be used, and the model was asked nothing.

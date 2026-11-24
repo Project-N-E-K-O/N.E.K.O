@@ -650,11 +650,11 @@ HOST_RESTART_FAILED_TEXT = {
 }
 
 # What she is told of a commission of hers that failed for a reason of the
-# host's own rather than the task agent's report: the familiar's model ran out
-# of quota before the familiar started on it (``quota``) or partway through
-# (``quota_run``), the familiar could not start on it (``start``), or its run
+# host's own rather than the task agent's report: the task agent's model ran out
+# of quota before the task agent started on it (``quota``) or partway through
+# (``quota_run``), the task agent could not start on it (``start``), or its run
 # stopped on an error (``run``); or, read from that error, the provider refused
-# the API key of the familiar's model (``model_key``) or says its account has
+# the API key of the task agent's model (``model_key``) or says its account has
 # no quota or balance left (``model_quota``). Those two are for the user to
 # fix: she can tell them what to do. In English, as the host tells a model what
 # happened; she tells the user in her own words. Rendered with str.format
@@ -668,36 +668,36 @@ HOST_RESTART_FAILED_TEXT = {
 # background; until then she reads them when she asks how the task went.
 # Nothing is shown for them (the frontend has its own notice of the
 # quota). They say the quota is short for now and the task can be dispatched
-# again once it is refreshed or the user switches the familiar to another API
+# again once it is refreshed or the user switches the task agent to another API
 # (the quota is only that of the free model), so that she goes on dispatching
 # tasks afterwards rather than take this as a reason not to, and can tell the
-# user what would help. Partway through, the familiar may have done part of it (moved
+# user what would help. Partway through, the task agent may have done part of it (moved
 # files, sent something): dispatched again, it is to go on from there, not do
 # that part twice.
 TASK_AGENT_FAILED_NOTICE = "This task was not finished: {why}"
 TASK_AGENT_FAILED_WHY = {
     "quota": (
-        "the familiar's model is out of quota for now, so it did not start on it. Nothing was wrong with "
+        "the task agent's model is out of quota for now, so it did not start on it. Nothing was wrong with "
         "the task itself or with how it was dispatched. This task can be dispatched again once the quota "
-        "is refreshed, or once the user switches the familiar to another API."
+        "is refreshed, or once the user switches the task agent to another API."
     ),
     "quota_run": (
-        "the familiar's model is out of quota for now; it ran out partway through, so part of it may "
+        "the task agent's model is out of quota for now; it ran out partway through, so part of it may "
         "already be done. Nothing was wrong with the task itself or with how it was dispatched. This task "
-        "can be dispatched again once the quota is refreshed, or once the user switches the familiar to "
+        "can be dispatched again once the quota is refreshed, or once the user switches the task agent to "
         "another API; it should then go on from where it stopped rather than start over."
     ),
-    "start": "the familiar could not start on it.",
-    "run": "the familiar stopped on an error partway through.",
+    "start": "the task agent could not start on it.",
+    "run": "the task agent stopped on an error partway through.",
     "model_key": (
-        "the provider of the familiar's model refused its API key (it may be wrong, expired, or not allowed to "
+        "the provider of the task agent's model refused its API key (it may be wrong, expired, or not allowed to "
         "use this model). Nothing was wrong with the task itself. It can be dispatched again once the user "
-        "fixes the key of the model the familiar used (the general one, or the one chosen for this work) in the API settings."
+        "fixes the key of the model the task agent used (the general one, or the one chosen for this work) in the API settings."
     ),
     "model_quota": (
-        "the provider of the familiar's model says the account has no quota or balance left; if this happened "
+        "the provider of the task agent's model says the account has no quota or balance left; if this happened "
         "partway through, part of it may already be done. Nothing was wrong with the task itself. It can be "
-        "dispatched again once the user tops that account up or switches the familiar to another API; it "
+        "dispatched again once the user tops that account up or switches the task agent to another API; it "
         "should then go on from where it stopped rather than start over."
     ),
 }
