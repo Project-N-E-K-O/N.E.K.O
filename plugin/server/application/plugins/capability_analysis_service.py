@@ -24,7 +24,10 @@ from plugin.core.capability_analysis import (
 )
 from plugin.core.state import state
 from plugin.logging_config import get_logger
-from plugin.server.application.plugins.operation_lock import hold_plugin_operation_file_lock
+from plugin.server.application.plugins.operation_lock import (
+    PluginOperationBusy,
+    hold_plugin_operation_file_lock,
+)
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.capability_reports import report_store
 
@@ -300,9 +303,21 @@ class CapabilityAnalysisService:
             if not verify_revision:
                 return report
             try:
-                fresh = is_fresh(report, source_revision(root, version))
+                # The revision walks the plugin tree, which update/uninstall
+                # rename (WinError 5 on Windows while a handle is open), so it
+                # only runs with the operation lock. Any plugin operation
+                # (start, stop, reload, install, ...) holds that lock, so do
+                # not wait: while it is busy, serve the cached report
+                # unverified, as before. approve_plugin re-reads details under
+                # the held lock (reused below), which verifies the revision
+                # and rejects a stale snapshot with PLUGIN_CONSENT_CHANGED.
+                with hold_plugin_operation_file_lock(None, timeout=0):
+                    revision = source_revision(root, version)
+            except PluginOperationBusy:
+                return {**report, **analysis_scope}
             except OSError:
-                fresh = False
+                revision = None
+            fresh = is_fresh(report, revision)
             if fresh:
                 # A queued revision check can coexist with a valid cached report.
                 return {**report, **analysis_scope}
