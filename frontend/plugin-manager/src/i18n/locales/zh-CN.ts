@@ -1,4 +1,4 @@
-import { pluginConsentMessages } from '../plugin-consent'
+import pluginConsentMessages from '../plugin-consent/zh-CN'
 import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
 import { marketFeedbackMessages } from '../market-feedback'
@@ -9,7 +9,7 @@ import powerMessages from '../power/zh-CN'
  * 中文语言包
  */
 export default {
-  pluginConsent: pluginConsentMessages['zh-CN'],
+  pluginConsent: pluginConsentMessages,
   authoring: authoringMessages['zh-CN'],
   marketFeedback: marketFeedbackMessages['zh-CN'],
   modelApi: modelApiMessages['zh-CN'],

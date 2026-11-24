@@ -1,4 +1,4 @@
-import { pluginConsentMessages } from '../plugin-consent'
+import pluginConsentMessages from '../plugin-consent/ko'
 import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
 import { marketFeedbackMessages } from '../market-feedback'
@@ -9,7 +9,7 @@ import powerMessages from '../power/ko'
  * 한국어 언어 팩
  */
 export default {
-  pluginConsent: pluginConsentMessages['ko'],
+  pluginConsent: pluginConsentMessages,
   authoring: authoringMessages['ko'],
   marketFeedback: marketFeedbackMessages['ko'],
   modelApi: modelApiMessages['ko'],
