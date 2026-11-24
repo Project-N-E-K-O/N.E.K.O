@@ -103,7 +103,9 @@ can never show any, and an inherited ``NODE_OPTIONS`` preload that prints before
 stalling shows some without the harness being reached at all.  The preload drops
 a marker file the moment node compiles the script, and that file is the whole
 signal: an attempt that never got that far is repeated, and one that did is
-reported as it stands, because a second run would stall in the same place.
+reported as it stands, because a second run would stall in the same place --
+unless the caller declares the script ``rerun_safe`` (it touches nothing
+outside node), in which case it gets one more run (``_STARTED_RERUNS``).
 """
 
 import atexit
@@ -179,9 +181,11 @@ class NodeHarnessSpawnTimeout(subprocess.TimeoutExpired):
         self.attempts = list(attempts)
         self.started = started
         self.rerun_safe = rerun_safe
+        # Without per-attempt flags only the last one is known; the retry loop
+        # never continues past a non-rerun_safe start, so earlier ones did not.
         self.attempts_started = (
             list(attempts_started) if attempts_started is not None
-            else [started] * len(self.attempts)
+            else [False] * max(len(self.attempts) - 1, 0) + [started] * bool(self.attempts)
         )
 
     def __str__(self) -> str:
@@ -202,8 +206,12 @@ class NodeHarnessSpawnTimeout(subprocess.TimeoutExpired):
                 "run; one that repeats points at the script itself (a "
                 "synchronous block), not at the runner."
             )
-        elif total == 1:
-            diagnosis = (
+        elif total == 1 or (self.started and not self.rerun_safe):
+            earlier = (
+                f"After {total - 1} attempt(s) that never reached it, "
+                if total > 1 else ""
+            )
+            diagnosis = earlier + (
                 "node reached the harness script and then stalled without "
                 "the watchdog firing. Either the script's top level blocked "
                 "the event loop or compiling it did -- a timer cannot "
@@ -516,7 +524,7 @@ def _run_retrying_spawn_stalls(next_attempt, cmd_for_error, *, rerun_safe=False)
     is reported as it stands, however many are left -- unless the caller passed
     ``rerun_safe``: its script only simulates in memory, so running it again
     repeats nothing outside the process. Then a stall after the script started
-    is retried too. On a Windows runner node has reached a pure in-memory
+    gets ``_STARTED_RERUNS`` more runs (one). On a Windows runner node has reached a pure in-memory
     settings harness and sat 60s without the watchdog firing, while the same
     script finishes in ~0.1s locally and passed 1216 runs under 16-way load:
     the runner stalled the synchronous file reads or compilation at the top.

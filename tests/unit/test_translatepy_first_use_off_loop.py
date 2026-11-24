@@ -48,27 +48,33 @@ async def test_first_china_translation_imports_translatepy_off_the_event_loop(mo
 def test_first_imports_from_two_threads_are_serialised(monkeypatch):
     """Two first translations can call _ensure_translatepy from worker threads at once.
 
-    Check, import and record must run as one: otherwise one thread's transient
-    import error can overwrite the other's success.
+    Check, import and record must run as one, so the import happens once and the
+    cached globals are never seen half written. The second caller is made to
+    arrive while the first is mid-import (events, not timing): without the lock
+    it would enter the import too.
     """
     import sys
     import time
     import types
 
-    inside = {"now": 0, "max": 0, "slept": False}
-    lock = threading.Lock()
+    inside = {"now": 0, "max": 0}
+    counter = threading.Lock()
+    first_inside = threading.Event()
+    second_calling = threading.Event()
 
     class _SlowModule(types.ModuleType):
         def __getattr__(self, name):
-            with lock:
+            with counter:
                 inside["now"] += 1
                 inside["max"] = max(inside["max"], inside["now"])
-                first = not inside["slept"]
-                inside["slept"] = True
-            if first:
-                # One pause is enough to let the other thread arrive meanwhile.
-                time.sleep(0.3)
-            with lock:
+                is_first = not first_inside.is_set()
+            if is_first:
+                first_inside.set()
+                # Hold the import until the second caller is on its way in, then
+                # give it a moment to reach the import if nothing stops it.
+                second_calling.wait(5)
+                time.sleep(0.2)
+            with counter:
                 inside["now"] -= 1
             return type(name, (), {})
 
@@ -89,13 +95,20 @@ def test_first_imports_from_two_threads_are_serialised(monkeypatch):
     monkeypatch.setattr(language_utils, "TRANSLATEPY_AVAILABLE", None)
 
     results: list[bool] = []
-    threads = [threading.Thread(target=lambda: results.append(language_utils._ensure_translatepy())) for _ in range(2)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
+
+    def _second():
+        second_calling.set()
+        results.append(language_utils._ensure_translatepy())
+
+    first = threading.Thread(target=lambda: results.append(language_utils._ensure_translatepy()))
+    first.start()
+    assert first_inside.wait(5), "the first import never started"
+    second = threading.Thread(target=_second)
+    second.start()
+    for thread in (first, second):
         thread.join(10)
 
-    assert not any(thread.is_alive() for thread in threads), "first import hung"
+    assert not first.is_alive() and not second.is_alive(), "first import hung"
     assert results == [True, True]
     assert inside["max"] == 1, "two threads imported translatepy at the same time"
 

@@ -376,6 +376,7 @@ def warmup_state(monkeypatch):
     monkeypatch.setattr(module_warmup, "_gated_pending_scope", None)
     monkeypatch.setattr(module_warmup, "_startup_pass_missing", False)
     monkeypatch.setattr(module_warmup, "_failed_entries", set())
+    monkeypatch.setattr(module_warmup, "_failure_counts", {})
     return spawned
 
 
@@ -882,3 +883,19 @@ def test_realtime_read_failure_falls_back_to_core_api_type():
 
     cfg.realtime_config = _Broken()
     assert cfg.core_api_type == "free"
+
+
+def test_an_import_that_keeps_failing_stops_being_retried(warmup_state):
+    # Installed but broken (a missing VC++ runtime, say): retried once, then given up.
+    def _fail(name):
+        raise ImportError("DLL load failed")
+
+    original = module_warmup._warm_one
+    module_warmup._warm_one = _fail
+    try:
+        module_warmup._warm_entries(("pyncm_async",), "config")
+        assert "pyncm_async" not in module_warmup._failed_entries
+        module_warmup._warm_entries(("pyncm_async",), "config")
+    finally:
+        module_warmup._warm_one = original
+    assert "pyncm_async" in module_warmup._failed_entries

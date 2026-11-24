@@ -1450,3 +1450,22 @@ def test_the_diagnosis_looks_at_every_attempt(flags, expected):
     assert expected in text, text
     if expected != "stalled again after it was re-run":
         assert "stalled again after it was re-run" not in text, text
+
+
+
+def test_a_non_rerun_safe_start_after_spawn_stalls_keeps_the_not_retried_explanation():
+    attempts = [subprocess.TimeoutExpired(["node"], 3, output="", stderr="") for _ in range(2)]
+    error = NodeHarnessSpawnTimeout(
+        ["node"], 3, attempts, started=True, rerun_safe=False, attempts_started=[False, True],
+    )
+    text = str(error)
+    assert "After 1 attempt(s) that never reached it" in text, text
+    assert "Not retried" in text, text
+    assert "point at the runner" not in text, text
+
+
+def test_default_flags_mark_only_the_last_attempt_as_started():
+    attempts = [subprocess.TimeoutExpired(["node"], 3, output="", stderr="") for _ in range(3)]
+    error = NodeHarnessSpawnTimeout(["node"], 3, attempts, started=True)
+    assert error.attempts_started == [False, False, True]
+    assert "3 of 3" not in str(error)

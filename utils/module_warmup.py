@@ -124,7 +124,8 @@ class WarmupConfig:
 
     Every read happens on first access, in the warmup thread. A read that raises
     makes each gate depending on it raise too, which ``evaluate_gates`` counts as
-    "needed".
+    "needed" -- with one exception: ``core_api_type`` falls back to
+    ``CORE_API_TYPE`` when the realtime slot cannot be read.
     """
 
     @cached_property
@@ -180,7 +181,9 @@ class WarmupConfig:
         """The session's core api type, as start_session resolves it.
 
         The realtime slot's ``api_type`` first; when that slot cannot be read,
-        ``CORE_API_TYPE`` alone, rather than failing every voice decision.
+        ``CORE_API_TYPE`` alone. Only this value falls back: other reads of the
+        realtime slot (its base_url, the Gemini check) still raise, so the gates
+        using them count as "needed".
         """
         try:
             realtime_type = self.realtime_config.get("api_type")
@@ -407,6 +410,9 @@ _gated_pending_scope: frozenset[str] | None = None
 _startup_pass_missing = False
 # Entries whose import failed; not retried on later config saves.
 _failed_entries: set[str] = set()
+# Failed imports per entry for errors other than "not installed".
+_failure_counts: dict[str, int] = {}
+_MAX_IMPORT_FAILURES = 2
 
 
 def _warm_one(name: str) -> None:
@@ -443,8 +449,12 @@ def _warm_entries(module_list: tuple[str, ...], label: str) -> None:
             _failed_entries.add(name)
         except Exception as exc:
             # Possibly transient (an antivirus briefly locking a DLL, say): leave
-            # it to a later pass.
+            # it to a later pass -- but not forever: one that keeps failing (a
+            # missing VC++ runtime, say) stops being retried after a couple of tries.
             logger.debug("[warmup:%s] skip %s: %s", label, name, exc)
+            _failure_counts[name] = _failure_counts.get(name, 0) + 1
+            if _failure_counts[name] >= _MAX_IMPORT_FAILURES:
+                _failed_entries.add(name)
         # Yield between modules, giving the running event loop a chance to reclaim the GIL.
         time.sleep(0)
     # Config re-checks run on every relevant settings save; keep them out of the
