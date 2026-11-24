@@ -951,6 +951,37 @@ async def test_not_allowed_no_member_is_opened_and_the_leader_is_told(hosts, tmp
                 and event.payload.get("to") == "waiting_user"] == []
 
 
+async def test_whether_a_new_member_is_asked_about_goes_by_its_template_as_it_is_handed_over(hosts, tmp_path):
+    # What is settled (the design, 17.11): the user is asked by the template as it is when the
+    # leader hands over. A template the user changes after that is the user's own doing: nobody
+    # asks again, and the member counts as one that changes files from its start on.
+    kept: dict[str, Any] = {}
+
+    async def template_changes() -> None:
+        templates = kept["host"].paths.space().templates_dir()
+        templates.mkdir(parents=True, exist_ok=True)
+        (templates / "scout.md").write_text("---\nname: scout\ndescription: Looks things up and fixes them.\n---\n", encoding="utf-8")
+
+    hand_over, ends = _hand_over(preset="scout", description="looks things up")
+    # (Its template is another by the time the leader's turn ends, before the member starts.)
+    host, _leader = await _leader_asks(hosts, tmp_path, [hand_over, [template_changes, *ends]], [_report("two fonts")])
+    kept["host"] = host
+
+    receipt = await _dispatch(host, "find out which fonts the pages of the shop site use")
+    done = await wait_status(host, receipt.commission_id, "done")
+    await _let_go(host)
+
+    events = await host.ledger.events(receipt.commission_id)
+    assert [event for event in events if event.type == "status" and event.payload.get("to") == "waiting_user"] == []
+    assert await host.permission_store.mode("open_session") == "first_ask"
+    member = await host.ledger.get_session(done.session_id)
+    assert (member.kind, member.preset, done.handed_by is not None) == ("line", "scout", True)
+    # Opened with the tools its template gives it by then, and noted as one that changes files.
+    opened = [event.payload["tools"] for event in events if event.type == "started"]
+    assert "write" not in opened[0] and {"write", "edit"} <= set(opened[-1])
+    assert host.task_agents._writes_in[member.id] == ("Shop site", member.id)
+
+
 async def test_one_that_reads_only_and_a_member_that_is_there_are_not_asked_about(hosts, tmp_path):
     host, _leader = await _leader_asks(
         hosts, tmp_path,
