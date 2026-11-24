@@ -134,9 +134,11 @@ main_server からの dispatch も同じ IPC trigger 配管（`@plugin_entry`
 
 すべてのエンドポイントは `MAIN_SERVER_PORT`（デフォルト `48911`）に
 マウントされ、`verify_local_access` がループバック（`127.0.0.1` / `::1` /
-`localhost`）のみを許可します（`NEKO_BEHIND_PROXY` 有効時に `X-Forwarded`、
-`X-Forwarded-*`、`X-Real-IP`、`Forwarded` などの転送ヘッダーが付いたリクエストは
-HTTP `403` で拒否されるため、転送ヘッダーなしの直接ループバック接続が必要です）。
+`localhost`）のみを許可します（`NEKO_BEHIND_PROXY` 有効時は `X-Forwarded`、
+`X-Forwarded-*`、`X-Real-IP`、`Forwarded` などの転送ヘッダーなしで直接ループバック
+接続する必要があります。有効なインスタンス認証情報がないリクエストはまずインスタンス認証
+ミドルウェアにより HTTP `401` で拒否され、認証通過後も転送ヘッダーが残っているリクエストは
+`verify_local_access` により HTTP `403` で拒否されます）。
 `NEKO_BEHIND_PROXY` または `NEKO_ACTIVITY_TRACKER_REMOTE` が有効な場合は、
 ループバック上の外部連携でも有効なインスタンス認証情報（`NEKO_INSTANCE_ACCESS_KEY`
 または `instance_access.key` 由来の `Authorization: Bearer <instance_key>` など）を
@@ -329,7 +331,7 @@ async def unregister_on_shutdown() -> bool:
             if failed_roles:
                 logging.error("Tool unregistration failed for roles: %s", failed_roles)
                 return False
-            return bool(data.get("ok", True))
+            return True
     except Exception:
         return False  # main_server も死んでいるなら諦める
 ```

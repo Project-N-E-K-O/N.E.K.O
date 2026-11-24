@@ -141,10 +141,12 @@ host-side and external integrations.
 
 All endpoints are mounted on `MAIN_SERVER_PORT` (default `48911`) and
 are guarded by `verify_local_access` (loopback only — `127.0.0.1`, `::1`,
-or `localhost`; when `NEKO_BEHIND_PROXY` is enabled, any request carrying
-forwarding headers such as `X-Forwarded`, `X-Forwarded-*`, `X-Real-IP`, or
-`Forwarded` is rejected with HTTP `403`, so callers must connect directly
-over loopback without forwarding metadata). When `NEKO_BEHIND_PROXY` or
+or `localhost`; when `NEKO_BEHIND_PROXY` is enabled, callers must connect
+directly over loopback without forwarding headers such as `X-Forwarded`,
+`X-Forwarded-*`, `X-Real-IP`, or `Forwarded` — unauthenticated requests
+are rejected first by `InstanceAccessMiddleware` with HTTP `401`, and
+authenticated requests still carrying forwarding headers are rejected by
+`verify_local_access` with HTTP `403`). When `NEKO_BEHIND_PROXY` or
 `NEKO_ACTIVITY_TRACKER_REMOTE` is enabled, external loopback callers must
 also include valid instance credentials (such as
 `Authorization: Bearer <instance_key>` from `NEKO_INSTANCE_ACCESS_KEY` or
@@ -348,7 +350,7 @@ async def unregister_on_shutdown() -> bool:
             if failed_roles:
                 logging.error("Tool unregistration failed for roles: %s", failed_roles)
                 return False
-            return bool(data.get("ok", True))
+            return True
     except Exception:
         return False  # main_server is down too — nothing we can do
 ```

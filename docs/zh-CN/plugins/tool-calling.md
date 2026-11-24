@@ -117,8 +117,10 @@ HTTP 调用；main_server 的 dispatch 也走同一套 IPC trigger 管线（与
 
 所有端点都挂在 `MAIN_SERVER_PORT`（默认 `48911`），并强制 `verify_local_access`
 （仅允许本机回环 `127.0.0.1` / `::1` / `localhost`；启用 `NEKO_BEHIND_PROXY` 时，
-任何携带 `X-Forwarded`、`X-Forwarded-*`、`X-Real-IP` 或 `Forwarded` 转发头的请求
-都会被 HTTP `403` 拒绝，调用方必须通过本机回环直连且不附加转发头）。启用
+调用方必须通过本机回环直连且不附加 `X-Forwarded`、`X-Forwarded-*`、`X-Real-IP`
+或 `Forwarded` 转发头——未携带有效实例凭据的请求会先被实例认证中间件以 HTTP `401`
+拒绝，通过实例认证后仍携带转发头的请求则会被 `verify_local_access` 以 HTTP `403`
+拒绝）。启用
 `NEKO_BEHIND_PROXY` 或 `NEKO_ACTIVITY_TRACKER_REMOTE` 时，本机回环外部调用方同样
 需要携带有效的实例凭据（例如来自 `NEKO_INSTANCE_ACCESS_KEY` 或 `instance_access.key`
 的 `Authorization: Bearer <instance_key>`），否则请求会返回 HTTP `401`。如果同时启用了
@@ -301,7 +303,7 @@ async def unregister_on_shutdown() -> bool:
             if failed_roles:
                 logging.error("Tool unregistration failed for roles: %s", failed_roles)
                 return False
-            return bool(data.get("ok", True))
+            return True
     except Exception:
         return False  # main_server 也死了就算了
 ```
