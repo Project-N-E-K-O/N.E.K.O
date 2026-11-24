@@ -26,6 +26,31 @@ finally:
 
 **怎么查**：冻结版里「返回值莫名其妙是 `None`」，而同一段代码源码模式没问题，先怀疑编译器，再怀疑业务逻辑。当时的现场是唤醒词冒烟拿 worker 结果做下标访问时报 `TypeError`。
 
+## Nuitka 4.2.2 编译期崩溃 `listcomp_1__.0_clone`（#4075）
+
+**症状**：Nuitka 在编译阶段就停下来，报内部断言 `AssertionError: listcomp_1__.0_clone`（推导式种类不同时，名字里的 `listcomp` 会变）。整个桌面构建三个平台一起红，源码模式和单测全绿。
+
+**触发形状**：`finally` 里有列表、集合或字典推导，并且它所在的 `try` 有两种及以上的出口。出口分四种：正常走完、`return`、`break`、`continue`。Nuitka 按出口种类各复制一份 `finally`，两份复制里的推导式临时变量重名。
+
+```python
+try:
+    with lock:
+        return value      # 出口一：return
+                          # 出口二：编译器静态地认为 with 之后能正常走完 try，
+                          # 因为上下文管理器的 __exit__ 可能吞掉异常；普通锁运行时
+                          # 走不到这里，这个形状照样触发
+finally:
+    stale = [k for k in handlers if k.startswith(prefix)]   # finally 里有推导式
+```
+
+不受影响的写法：同一种出口有多个（两个 `return`、两个 `break`）；只靠异常离开；`finally` 里用普通循环；生成器表达式（它的函数体是独立函数，但第一个可迭代对象在 `finally` 里求值，那里的推导式照样算）。
+
+**改法**：`finally` 里把推导式改成普通循环，比如 `for key in list(handlers): if ...: del handlers[key]`；或者让 `try` 只剩一种出口。
+
+**守卫**：`tests/unit/test_no_comprehension_in_multi_exit_finally.py` 扫描所有可能进包的 `.py`（包括 `plugin/tests`，因为打包用了 `--include-package=plugin`）。当时触发的是 `plugin/tests/unit/sdk/shared/test_permission_narrowing.py` 的 `_host_scan`。
+
+**怎么复现**：只编出问题的那一个文件，不跑整个打包：`python -m nuitka --module --nofollow-imports --generate-c-only <file>.py`。这个崩溃发生在 Python 层的优化阶段，不需要 C 编译。
+
 ## PyAV 的影子 `.py`（#3212）
 
 **症状**：冻结版 import `av` 的子模块时报 `No module named 'cython'`。实测观察：macOS 上如果包里恰好带了 Cython，报的是 `Shadow` 模块相关的另一种错误。
