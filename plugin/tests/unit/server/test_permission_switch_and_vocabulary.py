@@ -294,16 +294,26 @@ def test_rights_go_out_with_ids_and_earlier_names(gate):
 
 
 def test_plugin_manager_labels_every_permission_id():
-    label_dir = REPO / "frontend/plugin-manager/src/i18n/plugin-permissions"
-    locales = ("en-US", "zh-CN", "zh-TW", "ja", "ko", "ru", "es", "pt")
-    # Ids that reuse an earlier capability's label are aliased in shared.ts for every locale.
+    i18n = REPO / "frontend/plugin-manager/src/i18n"
+    label_dir = i18n / "plugin-permissions"
+    locales = sorted(p.stem for p in label_dir.glob("*.ts") if p.stem not in {"shared", "index"})
+    assert "en-US" in locales and len(locales) >= 8, locales
+    labels = {locale: (label_dir / f"{locale}.ts").read_text(encoding="utf-8") for locale in locales}
+    consent = {locale: (i18n / "plugin-consent" / f"{locale}.ts").read_text(encoding="utf-8") for locale in locales}
+    # Ids that reuse an earlier capability's label are aliased once in shared.ts;
+    # each locale then has to carry that earlier capability's label itself.
     shared = (label_dir / "shared.ts").read_text(encoding="utf-8")
-    labels = {locale: (label_dir / f"{locale}.ts").read_text(encoding="utf-8") + shared for locale in locales}
+    alias_block = shared[shared.index("PERMISSION_LEGACY_LABEL_KEYS = {"):]
+    aliases = dict(re.findall(r"(\w+): '(\w+)'", alias_block[: alias_block.index("} as const")]))
+    assert aliases
     spec = (REPO / "frontend/plugin-manager/src/utils/pluginCapabilities.test.ts").read_text(encoding="utf-8")
     block = spec[spec.index("const PERMISSION_IDS = ["):]
     listed = tuple(re.findall(r"'([^']+)'", block[: block.index("]")]))
     assert listed == PERMISSION_IDS  # the vitest checks every locale for these
     for permission in PERMISSION_IDS:
         key = re.sub(r"[.:]", "_", permission)
-        for locale, text in labels.items():
-            assert key in text, (locale, permission)
+        for locale in locales:
+            if key in aliases:
+                assert re.search(rf"^\s+{aliases[key]}: \{{", consent[locale], re.M), (locale, permission)
+            else:
+                assert re.search(rf"^\s+{key}: \{{", labels[locale], re.M), (locale, permission)
