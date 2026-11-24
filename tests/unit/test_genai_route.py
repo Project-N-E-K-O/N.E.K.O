@@ -13,7 +13,7 @@ from utils.genai_route import is_native_genai_route
 pytestmark = pytest.mark.unit
 
 
-@pytest.mark.parametrize(("model", "base_url", "native"), [
+@pytest.mark.parametrize(("model_name", "url", "native"), [
     ("anything", "https://generativelanguage.googleapis.com/v1beta", True),
     ("anything", "https://us-central1-aiplatform.googleapis.com/v1", True),
     ("x", "HTTPS://GENERATIVELANGUAGE.GOOGLEAPIS.COM", True),
@@ -25,5 +25,5 @@ pytestmark = pytest.mark.unit
     ("gpt-4.1-mini", "https://api.openai.com/v1", False),
     (None, None, False),
 ])
-def test_native_genai_route_truth_table(model, base_url, native):
-    assert is_native_genai_route(model, base_url) is native
+def test_native_genai_route_truth_table(model_name, url, native):
+    assert is_native_genai_route(model_name, url) is native
