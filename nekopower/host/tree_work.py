@@ -1152,6 +1152,10 @@ class TreeWork:
             await self._note_tree_event(
                 commission_id, "inspected", {"tree": row.id, "verdict": verdict, "round": row.checks + 1}
             )
+            if self._stale(commission_id, done):
+                # More was said to it while that was put on record: what was found is not acted on
+                # under the run that began (it is not put down as stuck, nor sent back).
+                return await self._at_work_again(row)
             if verdict == CHECK_FAILED:
                 if row.checks + 1 >= settings.INSPECTION_ROUNDS:
                     return await self._not_landed(

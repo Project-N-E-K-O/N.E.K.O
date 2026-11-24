@@ -1212,3 +1212,42 @@ async def test_a_leader_is_told_which_of_its_team_came_to_nothing_before_a_workt
     assert answered and f"Started: {member['name']}." in answered[0] and " Not started: " in answered[0]
     go.set()
     await wait_status(host, receipt.commission_id, "done")
+
+
+async def test_what_an_inspector_found_for_the_last_time_is_not_acted_on_under_what_the_user_said_as_it_was_put_on_record(
+    hosts, tmp_path, monkeypatch
+):
+    monkeypatch.setattr("config.nekopower_settings.INSPECTION_ROUNDS", 1)
+    more = asyncio.Event()
+
+    async def wait() -> None:
+        await more.wait()
+
+    host, trees, workdir, two, members = await _inspected(
+        hosts, tmp_path,
+        member=[_write("links.txt", "first try"), _report("links repaired"),
+                [wait, *_write("links.txt", "second try")], _report("fixed that as well")],
+        inspector=[_report("links.txt line 3 points nowhere", status="blocked"), _report("it holds")],
+    )
+    manager = host.task_agents
+    gave_way = _gave_way(manager)
+    append = host.ledger.append_event
+    told: list[bool] = []
+
+    async def as_more_is_said(commission_id: str, kind: str, payload: Any = None) -> int:
+        if commission_id == two.commission_id and kind == "inspected" and not told:
+            # What the inspector found is being put on record, for the last time it may be sent back:
+            # the user says more to the member at this very moment, and it is at work on that.
+            told.append(await manager.tell(two.commission_id, "line 3 is to point at the shop"))
+            await wait_until(lambda: len(members["broken links"].requests) == 3, what="it being at work again")
+        return await append(commission_id, kind, payload)
+
+    host.ledger.append_event = as_more_is_said
+    await wait_until(lambda: gave_way, what="the landing giving way")
+
+    # Not put down as stuck over what was found, with a run of it under way: at work, in its worktree.
+    assert told == [True] and (await host.ledger.get(two.commission_id)).status == "working"
+    assert await _events(host, two.commission_id, "not_landed") == [] and trees.merged == []
+    more.set()
+    done = await wait_status(host, two.commission_id, "done")
+    assert done.result_summary.startswith("fixed that as well") and (workdir / "links.txt").read_text() == "second try"
