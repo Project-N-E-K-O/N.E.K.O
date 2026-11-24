@@ -147,8 +147,13 @@ def _write(tmp_path: Path) -> Path:
     )
 
 
-def _run(directory: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
-    environment = {**os.environ, "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"}
+def _run(directory: Path, *arguments: str, extra: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    # Names on Windows are the same whatever their case: one given here replaces the inherited one.
+    replaced = {name.upper() for name in extra or {}} if WINDOWS else set(extra or {})
+    environment = {
+        name: value for name, value in os.environ.items() if (name.upper() if WINDOWS else name) not in replaced
+    }
+    environment.update({"NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost", **(extra or {})})
     if WINDOWS:
         command = [str(directory / f"{plugin_command.COMMAND}.cmd"), *arguments]
     else:
@@ -404,6 +409,34 @@ def test_powershell_that_runs_no_scripts_still_runs_the_command_and_keeps_its_va
 
     assert "code=0 home=" in done.stdout, done.stdout + done.stderr
     assert "home=\n" in done.stdout or done.stdout.rstrip().endswith("home=")  # nothing set in the caller's shell
+    assert _called(tmp_path)["argv"][-2:] == ["add", "x"]
+
+
+@pytest.mark.skipif(not (WINDOWS and shutil.which("powershell.exe")), reason="Windows PowerShell only")
+def test_windows_powershell_started_from_powershell_7_still_checks_what_it_fetched(tmp_path, registries):
+    registries(Registry(_files_of(_packages())))
+    directory = _write(tmp_path)
+    # Started from PowerShell 7 (a task agent's shell, a terminal, CI), Windows PowerShell inherits
+    # its PSModulePath, with 7's own Microsoft.PowerShell.Utility first. 5.1 loads that one: its
+    # cmdlets come from a library of the same name, which 5.1 finds among its own, but what 5.1's
+    # module adds as script functions (Get-FileHash, say) is not there at all.
+    modules = tmp_path / "ps7-modules"
+    utility = modules / "Microsoft.PowerShell.Utility"
+    utility.mkdir(parents=True)
+    (utility / "Microsoft.PowerShell.Utility.psd1").write_text(
+        '@{ GUID = "1DA87E53-152B-403E-98DC-74D7B4D63D59"; ModuleVersion = "7.0.0.0"; '
+        'CompatiblePSEditions = @("Core"); PowerShellVersion = "3.0"; '
+        # Named one by one, as 7's own list is: a "*" would send 5.1 on to its own module.
+        'NestedModules = "Microsoft.PowerShell.Commands.Utility.dll"; '
+        'CmdletsToExport = @("Get-FileHash", "Invoke-WebRequest", "Select-Object", "Out-Null", "Write-Output"); '
+        'FunctionsToExport = @() }\n',
+        encoding="utf-8",
+    )
+    inherited = os.pathsep.join([str(modules), os.environ.get("PSModulePath", "")])
+
+    done = _run(directory, "add", "x", extra={"PSModulePath": inherited})
+
+    assert done.returncode == 0, done.stderr
     assert _called(tmp_path)["argv"][-2:] == ["add", "x"]
 
 
