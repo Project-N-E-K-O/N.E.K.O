@@ -2759,33 +2759,41 @@ async def test_a_worktree_the_user_kept_is_not_landed_while_its_project_is_being
 
 
 async def test_a_commission_is_not_put_down_as_done_under_a_run_that_began_as_its_end_was_written(hosts, tmp_path):
-    host, trees, workdir, one, two, _members = await _two_members(
-        hosts, tmp_path, second=[_write("links.txt", "repaired"), _report("links repaired")]
+    more = asyncio.Event()
+
+    async def wait_for_more() -> None:
+        await more.wait()
+
+    host, trees, workdir, one, two, members = await _two_members(
+        hosts, tmp_path,
+        second=[_write("links.txt", "repaired"), _report("links repaired"), [wait_for_more, *_report("the footer too")]],
     )
     manager = host.task_agents
-    end, stale = manager._end, manager._stale
-    ending: list[str] = []
+    update_tree = host.ledger.update_tree
+    said: list[bool] = []
 
-    async def as_more_is_said(commission_id: str, status: str, *args: Any, **kwargs: Any) -> Any:
-        if commission_id == two.commission_id and status == "done":
-            # More is said to it at this very moment (as what tells a landing of that says).
-            ending.append(status)
-        return await end(commission_id, status, *args, **kwargs)
+    async def as_more_is_said(tree_id: str, **values: Any) -> Any:
+        if values.get("state") == "discarding" and not said:
+            # Landed, and about to be put down as done: the user says more to it at this very moment.
+            said.append(await manager.tell(two.commission_id, "and the footer too"))
+        return await update_tree(tree_id, **values)
 
-    manager._end = as_more_is_said
-    manager._stale = lambda commission_id, done: bool(ending) or stale(commission_id, done)
+    host.ledger.update_tree = as_more_is_said
     host.release.set()
-    await wait_until(lambda: ending, what="its end being written")
-    await asyncio.sleep(0.6)
+    await wait_until(lambda: len(members["broken links"].requests) >= 3, what="the run that began being at work")
+    deadline = asyncio.get_running_loop().time() + 15
+    while (await host.ledger.trees())[0].state != "active":
+        assert asyncio.get_running_loop().time() < deadline, "the landing did not give way"
+        await asyncio.sleep(0.02)
 
     # Landed, and neither done nor without its worktree: the run that began goes on in it.
     (tree,) = await host.ledger.trees()
-    assert (await host.ledger.get(two.commission_id)).status == "working"
-    assert tree.state == "active" and trees.removed == [] and two.commission_id in manager._tree_of
+    assert said == [True] and (await host.ledger.get(two.commission_id)).status == "working"
+    assert trees.removed == [] and two.commission_id in manager._tree_of and manager._landing_ends == {}
     assert (workdir / "links.txt").exists() and len(await _events(host, two.commission_id, "landed")) == 1
-    ending.clear()
-    manager._stale = stale
-    await wait_status(host, two.commission_id, "done")
+    more.set()
+    done = await wait_status(host, two.commission_id, "done")
+    assert "the footer too" in done.result_summary and "and the footer too" in _said_to(members["broken links"])
     assert await host.ledger.trees() == [] and trees.removed == [tree.id]
 
 
