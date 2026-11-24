@@ -2336,6 +2336,42 @@ def test_hidden_vision_slot_is_kept_on_save_and_cleared_only_on_clear(mock_page:
 
 
 @pytest.mark.frontend
+def test_a_late_settings_read_never_overwrites_a_newer_one(mock_page: Page, running_server: str):
+    """Only the latest loadCurrentApiKey() fills the form; an older response that arrives later is dropped."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    result = mock_page.evaluate("""async () => {
+        const realFetch = window.fetch;
+        const base = await (await realFetch('/api/config/core_api')).json();
+        const reply = data => new Response(JSON.stringify({...base, ...data}),
+            {status: 200, headers: {'Content-Type': 'application/json'}});
+        let releaseOlder;
+        let calls = 0;
+        window.fetch = (url, init) => {
+            if (!String(url).endsWith('/api/config/core_api')) return realFetch(url, init);
+            calls += 1;
+            if (calls === 1) return new Promise(resolve => {
+                releaseOlder = () => resolve(reply({enableCustomApi: false}));
+            });
+            return Promise.resolve(reply({enableCustomApi: true}));
+        };
+        let loadedEvents = 0;
+        window.addEventListener('neko:api-settings-loaded', () => { loadedEvents += 1; });
+        try {
+            const older = loadCurrentApiKey();
+            const newer = await loadCurrentApiKey();
+            releaseOlder();
+            return {older: await older, newer, loadedEvents,
+                customApi: document.getElementById('enableCustomApi').checked};
+        } finally {
+            window.fetch = realFetch;
+        }
+    }""")
+    assert result == {"older": False, "newer": True, "loadedEvents": 1, "customApi": True}, result
+
+
+@pytest.mark.frontend
 def test_chat_model_card_says_it_must_read_images(mock_page: Page, running_server: str):
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
     mock_page.goto(f"{running_server}/api_key?lang=zh-CN")

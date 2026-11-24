@@ -53,6 +53,9 @@ const MASKED_SECRET_DISPLAY = '••••••••••••';
 // 当前页面、当前次重载期间保存用户刚输入密钥的“局部遮罩值”（非明文），用于继续
 // 显示局部遮蔽；绝不写入 localStorage、不会发送到后端，也不会让后端 GET 回显明文。
 let _secretDisplayCache = null;
+// 每次 loadCurrentApiKey 递增；响应回来时已有更新的载入开始，旧响应就不再写表单，
+// 免得晚到的旧配置盖掉新的（订阅开关等待载入有期限，超时后可能再发起一次载入）。
+let _loadCurrentApiKeyGeneration = 0;
 const MIMO_TOKEN_PLAN_PROVIDER_KEY = 'mimo_token_plan';
 const MIMO_TOKEN_PLAN_OPENROUTER_URLS = [
     'https://token-plan-cn.xiaomimimo.com/v1',
@@ -2911,11 +2914,15 @@ async function loadCurrentApiKey() {
 
     syncProviderSelectDropdowns();
 
+    const loadGeneration = ++_loadCurrentApiKeyGeneration;
+    const superseded = () => loadGeneration !== _loadCurrentApiKeyGeneration;
     let loaded = false;
     try {
         const response = await fetch('/api/config/core_api');
+        if (superseded()) return false;
         if (response.ok) {
             const data = await response.json();
+            if (superseded()) return false;
             _resolvedProviderUrls = (data.resolvedProviderUrls && typeof data.resolvedProviderUrls === 'object')
                 ? { ...data.resolvedProviderUrls }
                 : {};
@@ -3220,12 +3227,16 @@ async function loadCurrentApiKey() {
             showCurrentApiKey(window.t ? window.t('api.getCurrentApiKeyFailed') : '获取当前API Key失败', '', false);
         }
     } catch (error) {
+        if (superseded()) return false;
         console.error('loadCurrentApiKey error:', error);
         showCurrentApiKey(window.t ? window.t('api.errorGettingCurrentApiKey') : '获取当前API Key时出错', '', false);
     } finally {
-        _isLoadingSavedConfig = false;
-        // 缓存仅覆盖保存成功后的这一次重载。页面刷新或后续普通加载仍绝不回显密钥。
-        _secretDisplayCache = null;
+        // 被更新的载入取代时不动这些状态：它们归最新那次载入。
+        if (!superseded()) {
+            _isLoadingSavedConfig = false;
+            // 缓存仅覆盖保存成功后的这一次重载。页面刷新或后续普通加载仍绝不回显密钥。
+            _secretDisplayCache = null;
+        }
     }
     // 订阅开关据此区分「已保存」和「表单已同步」；任何一次载入成功都通知它（普通保存也会重新载入）。
     if (loaded && typeof window.dispatchEvent === 'function') {
