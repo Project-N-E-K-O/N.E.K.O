@@ -406,16 +406,71 @@ def test_a_command_that_cannot_be_written_again_leaves_the_last_one_on_the_path(
     (runtime / executable_name(TAG)).write_bytes(b"dsh")
     (runtime / INSTALLED_FILE).write_text("{}", encoding="utf-8")
 
+    written = plugin_command.write_command
+    root = tmp_path / "dsh"
+
     def refuse(*args, **kwargs):
         raise PermissionError("in use")
 
     monkeypatch.setattr(plugin_command, "write_command", refuse)
     # Never written: nothing to put on the PATH.
     assert dsh.launch().path == ()
-    # Written at an earlier start: that one serves.
-    (tmp_path / "dsh" / "bin").mkdir()
-    (tmp_path / "dsh" / "bin" / plugin_command.COMMAND).write_text("echo", encoding="utf-8")
-    assert dsh.launch().path == (tmp_path / "dsh" / "bin",)
+    # Written at an earlier start for another dsh (a version since replaced): not used either.
+    written(root, executable=root / "runtime" / "0.1" / executable_name(TAG), leading=(), home=dsh.home(), tag=TAG)
+    assert dsh.launch().path == ()
+    # Written for this one: it serves.
+    written(root, executable=runtime / executable_name(TAG), leading=(), home=dsh.home(), tag=TAG)
+    assert dsh.launch().path == (root / "bin",)
+
+
+@needs_shell
+def test_a_dsh_that_is_not_there_is_no_success(tmp_path, registries):
+    registries(Registry(_files_of(_packages())))
+    directory = plugin_command.write_command(
+        tmp_path / "dsh", executable=tmp_path / "gone" / "dsh", leading=(), home=tmp_path / "dsh" / "home", tag=TAG,
+    )
+
+    assert _run(directory, "add", "x").returncode != 0
+
+
+@pytest.mark.skipif(WINDOWS or not shutil.which("tar"), reason="the sh script, with POSIX signals")
+def test_ending_the_script_ends_dsh_too(tmp_path, registries):
+    import signal
+    import time
+
+    registries(Registry(_files_of(_packages())))
+    started = tmp_path / "started.pid"
+    stand_in = tmp_path / "slow-dsh.py"
+    stand_in.write_text(
+        "import os, sys, time\n"
+        f"open({str(started)!r}, 'w').write(str(os.getpid()))\n"
+        "time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    directory = plugin_command.write_command(
+        tmp_path / "dsh", executable=Path(sys.executable), leading=(str(stand_in),), home=tmp_path / "dsh" / "home",
+        tag=TAG,
+    )
+    script = subprocess.Popen([str(directory / plugin_command.COMMAND), "add", "x"],
+                              env={**os.environ, "NO_PROXY": "127.0.0.1", "no_proxy": "127.0.0.1"})
+    deadline = time.monotonic() + 60
+    while not started.exists() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    child = int(started.read_text())
+
+    script.send_signal(signal.SIGTERM)
+    script.wait(timeout=10)
+
+    # dsh, waited for by the script, is ended with it instead of running on behind it.
+    for _ in range(50):
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.1)
+    else:
+        os.kill(child, signal.SIGKILL)
+        pytest.fail("dsh kept running after the script was ended")
 
 
 def test_a_file_that_cannot_be_replaced_leaves_no_temporary_file(tmp_path, monkeypatch):

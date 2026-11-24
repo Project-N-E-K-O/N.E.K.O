@@ -96,6 +96,15 @@ def adds_plugin(command: str) -> bool:
     return any((call.group(1) or "").lower() not in LOCAL_COMMANDS for call in _CALL.finditer(command or ""))
 
 
+def written_for(directory: Path, executable: Path) -> bool:
+    """Blocking: whether ``directory`` holds a ``neko-dsh-plugin`` that runs ``executable``."""
+    try:
+        texts = [path.read_text(encoding="utf-8-sig") for path in directory.rglob(f"{COMMAND}*") if path.is_file()]
+    except (OSError, ValueError):
+        return False
+    return any(_ps(executable) in text or _sh(executable) in text for text in texts)
+
+
 def _pnpm_environment(root: Path) -> dict[str, str]:
     base = pnpm_root(root)
     return {
@@ -255,12 +264,15 @@ def render_powershell(*, root: Path, executable: Path, leading: tuple[str, ...],
         "  Say $_.Exception.Message",
         "  exit 1",
         "}",
+        # A dsh that is not there sets no exit code, which would read as success.
+        "if (-not (Test-Path -LiteralPath $Dsh)) { Say \"dsh is not at $Dsh; it is written there again when dsh starts.\"; exit 1 }",
         "$ErrorActionPreference = 'Continue'",
         "$code = 1",
         "for ($i = 0; $i -lt $tries.Count; $i++) {",
         "  if ($tries[$i]) { $env:pnpm_config_registry = \"$($tries[$i])/\" }",
+        "  $LASTEXITCODE = 1",
         f"  & $Dsh @Leading plugin --profile {_ps(profile)} @args",
-        "  $code = $LASTEXITCODE",
+        "  $code = if ($null -eq $LASTEXITCODE) { 1 } else { $LASTEXITCODE }",
         "  if ($code -eq 0) {",
         "    if ($tries[$i] -and -not $offline) { Save-Registry $tries[$i] }",
         "    break",
@@ -379,7 +391,8 @@ def render_sh(*, root: Path, executable: Path, leading: tuple[str, ...], profile
         "  [ -f \"$PNPM_DIR/pnpm\" ]",
         "}",
         "",
-        f"case \"${{1:-}}\" in {'|'.join(LOCAL_COMMANDS)}) offline=1 ;; *) offline=0 ;; esac",
+        "first=$(printf '%s' \"${1:-}\" | tr '[:upper:]' '[:lower:]')",
+        f"case \"$first\" in {'|'.join(LOCAL_COMMANDS)}) offline=1 ;; *) offline=0 ;; esac",
         "registry=''",
         "if [ -f \"$PNPM_DIR/pnpm\" ] && [ \"$offline\" = 1 ]; then registry=$(read_registry) || registry=''",
         "else registry=$(find_registry) || registry=''; fi",
@@ -403,8 +416,13 @@ def render_sh(*, root: Path, executable: Path, leading: tuple[str, ...], profile
         "    if [ \"$candidate\" = \"$registry\" ]; then after=1; fi",
         "  done",
         "fi",
-        "run() { " + " ".join(["\"$DSH\"", *(_sh(item) for item in leading), "plugin --profile", _sh(profile), "\"$@\""])
-        + "; }",
+        # dsh runs as a child, waited for: a signal that ends this script is handed on to it, so
+        # that neither dsh nor its pnpm is left running when the command is given up.
+        "child=''",
+        "trap 'if [ -n \"$child\" ]; then kill \"$child\" 2>/dev/null; fi; exit 143' TERM INT HUP",
+        "run() { "
+        + " ".join(["\"$DSH\"", *(_sh(item) for item in leading), "plugin --profile", _sh(profile), "\"$@\""])
+        + " & child=$!; wait \"$child\"; }",
         "if [ -z \"$tries\" ]; then run \"$@\"; exit $?; fi",
         "code=1",
         "for source in $tries; do",
