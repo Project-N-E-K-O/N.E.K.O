@@ -144,6 +144,22 @@ describe('what a familiar changed in a worktree of its own', () => {
     expect(byTest('tree-discard-skipped')).toBeNull()
   })
 
+  it('that the user sees to keeps from being merged again what was not carried over, and is the user\'s to merge where it clashes', async () => {
+    await mount(TreeActions, { tree: tree({ state: 'kept', reason: 'skipped', conflicts: ['big.bin'] }) })
+    expect(byTest('tree-land')).toBeNull()
+    expect(byTest('tree-conflicts')?.textContent).toContain(words.trees.skippedFiles.replace('{files}', 'big.bin'))
+    cleanup?.()
+    api.landWorktree.mockResolvedValue({ status: 'conflict', files: [], more: 0, conflicts: ['a.py'], resolving: false, detail: '' })
+    await mount(TreeActions, { tree: tree({ state: 'kept', reason: 'conflict' }) })
+    await click(byTest('tree-land'))
+    expect(byTest('tree-note')?.textContent).toBe(words.trees.keptClashes)
+    cleanup?.()
+    // One not merged that clashes again and cannot go back: still the words for that.
+    await mount(TreeActions, { tree: tree() })
+    await click(byTest('tree-land'))
+    expect(byTest('tree-note')?.textContent).toBe(words.trees.stillClashes)
+  })
+
   it('that landed says what of it was outside the project folder and what was not carried over', async () => {
     api.landWorktree.mockResolvedValue({
       status: 'landed', files: [{ path: 'a.py' }], more: 0, conflicts: [], resolving: false, detail: '',

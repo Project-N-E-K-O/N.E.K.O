@@ -871,9 +871,11 @@ def build_console_router(
             return _refuse(404, "no_worktree")
         code = str(exc)
         # ``at_work``: its commission is under way; ``busy``: another decision on it is carried
-        # out; ``gone``: its directory is not there any more (it can be discarded); ``not_opened``:
-        # it is there and git could not open it just now (try again in a while).
-        return _refuse(409, code if code in ("at_work", "busy", "gone", "not_opened") else "worktree_refused")
+        # out; ``gone``: its directory, or the repository of its project, is not there any more (it
+        # can be discarded); ``not_opened``: it is there and git could not open it just now (try
+        # again in a while); ``moved``: one the user sees to was made from where the project worked
+        # before (it moved, or was put away), and is not merged there.
+        return _refuse(409, code if code in ("at_work", "busy", "gone", "not_opened", "moved") else "worktree_refused")
 
     @router.get("/worktrees")
     async def list_worktrees(project: str | None = None) -> dict[str, Any]:

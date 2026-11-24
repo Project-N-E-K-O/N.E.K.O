@@ -62,7 +62,8 @@ const CONFLICTS_SHOWN = 5
 // Merging once more is trying again, but for one an inspector did not pass: the host merges that
 // one without another inspection, which is merging it as the user says.
 // What was merged landed but for files that are never carried over, which stay in it (`conflicts` names them).
-const skipped = computed(() => props.tree.state === 'unlanded' && props.tree.reason === 'skipped')
+// One the user sees to keeps the reason of its last landing that did not take: the same holds then.
+const skipped = computed(() => ['unlanded', 'kept'].includes(props.tree.state) && props.tree.reason === 'skipped')
 const retries = computed(() => props.tree.state === 'unlanded' && props.tree.reason !== 'inspection')
 /** The states the user decides on; in the others it is at work. */
 const decides = computed(() => ['held', 'unlanded', 'kept'].includes(props.tree.state))
@@ -93,7 +94,11 @@ function landed(result: Landing): string {
     if (result.skipped?.length) told.push(t('power.trees.skippedNote', { files: result.skipped.join(', ') }))
     return told.join(' ')
   }
-  if (result.status === 'conflict') return result.resolving ? t('power.trees.resolving') : t('power.trees.stillClashes')
+  if (result.status === 'conflict') {
+    if (result.resolving) return t('power.trees.resolving')
+    // One the user sees to never goes back to its familiar: what clashed is the user's to merge.
+    return props.tree.state === 'kept' ? t('power.trees.keptClashes') : t('power.trees.stillClashes')
+  }
   const kept = result.kept_copies?.length ? ` ${t('power.trees.keptCopies', { paths: result.kept_copies.join(', ') })}` : ''
   return `${t('power.trees.failed', { detail: result.detail || '—' })}${kept}`
 }

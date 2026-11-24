@@ -258,10 +258,7 @@ async def test_a_worktree_whose_directory_is_gone_is_said_to_be_and_can_be_disca
     console = consoles(tmp_path)
     await _project(console)
     tree = await _tree(console, tmp_path, "t1", "unlanded", reason="conflict")
-    # Its directory is there, and git cannot open it as a worktree: not now, maybe later.
-    assert _code(await console.post(f"/worktrees/{tree}/land")) == (409, "not_opened")
-    (tmp_path / "trees" / "t1").rmdir()
-    # Not there any more.
+    # The repository it was made of is not there (no git worktree of it can be found again).
     assert _code(await console.post(f"/worktrees/{tree}/land")) == (409, "gone")
     assert (await console.host.ledger.get_tree(tree)).state == "unlanded"
     discarded = await console.post(f"/worktrees/{tree}/discard")
@@ -271,7 +268,9 @@ async def test_a_worktree_whose_directory_is_gone_is_said_to_be_and_can_be_disca
     assert _code(await console.post(f"/worktrees/{tree}/discard")) == (404, "no_worktree")
 
 
-@pytest.mark.parametrize(("raised", "wanted"), [("not_opened", "not_opened"), ("something_new", "worktree_refused")])
+@pytest.mark.parametrize(
+    ("raised", "wanted"), [("not_opened", "not_opened"), ("moved", "moved"), ("something_new", "worktree_refused")]
+)
 async def test_a_worktree_git_cannot_open_just_now_is_said_apart_from_one_that_is_gone(consoles, tmp_path, monkeypatch, raised, wanted):
     console = consoles(tmp_path)
     await _project(console)
