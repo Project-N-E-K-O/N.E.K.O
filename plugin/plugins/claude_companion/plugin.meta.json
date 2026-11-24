@@ -655,7 +655,7 @@
   },
   "schema_version": 5,
   "sdk_version": "0.1.0",
-  "source_bytes": 146491,
+  "source_bytes": 146621,
   "source_files": [
     "__init__.py",
     "config.json",
@@ -672,5 +672,5 @@
     "plugin.toml",
     "static/index.html"
   ],
-  "source_sha256": "a790f4e3da73e47954111cbf8684117a0c3e9041495f26e4f076927e9366d024"
+  "source_sha256": "fe15fe19db2e796be4ddfff958ed0bb547d653fee8fbaa4a3742d3b1e4b3b6c1"
 }

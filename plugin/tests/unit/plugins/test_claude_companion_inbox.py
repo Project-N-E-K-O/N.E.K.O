@@ -320,3 +320,36 @@ def test_interrupted_save_keeps_existing_inbox(tmp_path: Path, monkeypatch: pyte
     assert path.read_text(encoding="utf-8") == before
     assert not path.with_name("inbox.json.tmp").exists()
     assert [m["content"] for m in InboxQueue(str(path)).pending()] == ["kept"]
+
+
+class _Debuggable(_Logger):
+    def debug(self, msg: str, *args: object, **kwargs: object) -> None:
+        self._record("debug", msg, *args, **kwargs)
+
+
+def test_turn_start_log_omits_prompt(plugin: ClaudeCompanionPlugin) -> None:
+    plugin.logger = _Debuggable()
+
+    plugin._on_turn_start({"prompt": _SECRET})
+
+    assert plugin.logger.lines == [("debug", "Turn start: prompt of {} chars", (len(_SECRET),))]
+    assert _SECRET not in plugin.logger.text()
+
+
+class _Store:
+    def __init__(self) -> None:
+        self.data: dict[str, object] = {}
+
+    def _write_value(self, key: str, value: object) -> None:
+        self.data[key] = value
+
+
+async def test_set_user_name_log_omits_name(plugin: ClaudeCompanionPlugin) -> None:
+    plugin.store = _Store()
+    name = "Private Person"
+
+    await plugin.set_user_name(name)
+
+    assert plugin.store.data == {"user_name": name}
+    assert plugin.logger.lines == [("info", "User name updated ({} chars)", (len(name),))]
+    assert name not in plugin.logger.text()

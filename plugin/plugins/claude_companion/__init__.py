@@ -773,8 +773,8 @@ class ClaudeCompanionPlugin(NekoPluginBase):
             self.logger.warning("Failed to register static UI: {}", e)
 
         self.logger.info(
-            "ClaudeCompanion started: port={}, cooldown={}s, user={}",
-            self._port, self._cooldown, self._user_name,
+            "ClaudeCompanion started: port={}, cooldown={}s",
+            self._port, self._cooldown,
         )
         return Ok({
             "status": "running",
@@ -863,7 +863,8 @@ class ClaudeCompanionPlugin(NekoPluginBase):
         """Handle the UserPromptSubmit event (record user input)."""
         user_prompt = data.get("prompt", "")
         if user_prompt:
-            self.logger.debug("Turn start: {}", user_prompt[:100])
+            # The prompt is the user's own text: log its length only.
+            self.logger.debug("Turn start: prompt of {} chars", len(user_prompt))
 
     def _on_turn_end(self, data: dict):
         """Handle the Stop event — parse the conversation, generate a summary, and push it."""
@@ -915,7 +916,7 @@ class ClaudeCompanionPlugin(NekoPluginBase):
             "Pushed companion message: type={}, tools={}, files={}",
             activity_type,
             turn_info["tools_used"],
-            turn_info["files_touched"],
+            len(turn_info["files_touched"]),  # paths from the user's project stay out of the log
         )
 
     def _on_push_summary(self, data: dict):
@@ -1092,7 +1093,7 @@ class ClaudeCompanionPlugin(NekoPluginBase):
             self.store._write_value("user_name", name)
         except Exception as e:
             self.logger.warning("Failed to persist user name: {}", e)
-        self.logger.info("User name set to: {}", name)
+        self.logger.info("User name updated ({} chars)", len(name))
         return Ok({"user_name": name})
 
     @plugin_entry(
