@@ -49,7 +49,7 @@ import asyncio
 import contextlib
 import logging
 import os
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -66,13 +66,10 @@ from nekopower.host.task_agents import (
 )
 from nekopower.host.gateway import CapabilityGateway
 from nekopower.host.leases import ActivityListener, BuiltinLeases
-from nekopower.host.ledger import ENDED_STATUSES, Commission, Ledger, Listener
+from nekopower.host.ledger import ENDED_STATUSES, PRESET_OF_KIND, Commission, Ledger, Listener
 from nekopower.host.model_capabilities import ModelCapabilityStore
 from nekopower.host.outbox import OutboxSender, SendReport
 from nekopower.host.paths import DEFAULT_PROJECT, HostPaths
-
-# The preset of a project's leader: a task agent the user makes with it is one.
-LEADER_PRESET = "boss"
 from nekopower.host.runtimes import RUNTIME_DSH
 from nekopower.host.delivery import ManagedDelivery
 from nekopower.host.permissions import PermissionGate, PermissionStore
@@ -1458,7 +1455,8 @@ class NekoPowerHost:
                 "title": title, "title_by": "user" if title.strip() else None,
                 "duty": duty, "duty_by": "user" if duty.strip() else None,
             }
-            if preset == LEADER_PRESET:
+            # (The preset of a project's leader: a task agent the user makes with it is one.)
+            if preset == PRESET_OF_KIND["project"]:
                 # The project's leader: its commissions come to it, and it hands them out.
                 session, _made = await self.task_agents.families.make_leader(lanlan_name.strip(), name, **card)
             else:
@@ -1540,7 +1538,11 @@ class NekoPowerHost:
             # The project's own sessions of every character first, looked at once more and written in
             # one go: each starts from the directory it keeps, so a commission that begins from here
             # on begins in the new one, and one that began since the look above stops the change.
-            before = await self.ledger.move_project(project, str(wanted), moves=self._moves_with(project, kept.workdir))
+            # (Its leaders, of every character: a member one of them handed work to works where it did.)
+            leaders = [row.session.id for row in await self.ledger.find_sessions(project=project, kind="project")]
+            before = await self.ledger.move_project(
+                project, str(wanted), moves=self._moves_with(project, kept.workdir, leaders)
+            )
             if before is None:
                 raise ProjectBusy("at_work")
             # The record is written second: not written, the sessions go back, so that nothing is half changed.
@@ -1554,13 +1556,18 @@ class NekoPowerHost:
                 raise LookupError(project)
             return changed.to_json()
 
-    def _moves_with(self, project: str, was: str | None) -> Callable[[str, str | None], bool]:
+    def _moves_with(
+        self, project: str, was: str | None, leaders: Sequence[str] = ()
+    ) -> Callable[[str, str | None], bool]:
         """Return what says whether a member of a project moves when the project is given another directory.
 
         Given the member's id and where it works. It moves when it works
         where the project did (``was``), in no directory of its own yet,
         or in the one the host gave it as a session of this project,
-        having none to give it of the project's. It stays when it works
+        having none to give it of the project's: its own, or that of
+        one of the project's ``leaders``, which is where a member works
+        that a leader handed a commission to while the project had no
+        directory (and the leader moves). It stays when it works
         anywhere else: it was a session of its own before it became the
         project's (a family is made of such), and its files are there.
         """
@@ -1572,10 +1579,13 @@ class NekoPowerHost:
         def moves(session_id: str, workdir: str | None) -> bool:
             if not workdir or (was and same(workdir, was)):
                 return True
-            try:
-                return same(workdir, str(self.paths.work_dir(session_id, project)))
-            except ValueError:
-                return False
+            for given_to in (session_id, *leaders):
+                try:
+                    if same(workdir, str(self.paths.work_dir(given_to, project))):
+                        return True
+                except ValueError:
+                    continue
+            return False
 
         return moves
 

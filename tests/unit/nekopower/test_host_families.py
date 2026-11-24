@@ -1089,6 +1089,34 @@ async def _let_go_of(host: Any, session_id: str) -> None:
     await host.task_agents.settle()
 
 
+async def test_a_member_a_leader_handed_work_to_in_a_project_without_a_directory_moves_with_it(hosts, tmp_path):
+    leader_llm = ScriptedLLM([*_hand_over(description="Fixes the pages"), *_hand_over(to="Shop site/worker")])
+    member_llm = ScriptedLLM([_report("header fixed"), _report("footer fixed")])
+    host = _host(hosts, tmp_path, _by_role(leader_llm, member_llm))
+    await _allow_members(host)
+    # A project the user made with no directory of its own, and a leader for it.
+    led = await host.open_session("Lan", "Shop site", preset="boss", duty="runs the shop site")
+    assert (await host.space.get_project("Shop site")).workdir is None
+
+    first = await wait_status(host, (await _dispatch(host, "fix the header of the shop site")).commission_id, "done")
+    await _let_go(host)
+    leader = await host.ledger.get_session(led["session_id"])
+    member = await host.ledger.get_session(first.session_id)
+    # The member works where its leader does: the directory the host gave the leader, there being none of the project's.
+    assert (member.kind, first.handed_by) == ("line", leader.id)
+    assert Path(leader.workdir) == Path(str(host.paths.work_dir(leader.id, "Shop site"))) == Path(member.workdir)
+
+    wanted = tmp_path / "new-place"
+    wanted.mkdir()
+    await host.set_project_workdir("Shop site", str(wanted))
+
+    # Both are where the project works now: its files are not left in two places.
+    assert Path((await host.ledger.get_session(leader.id)).workdir) == wanted
+    assert Path((await host.ledger.get_session(member.id)).workdir) == wanted
+    second = await wait_status(host, (await _dispatch(host, "fix the footer of the shop site")).commission_id, "done")
+    assert second.session_id == member.id and Path(second.workdir) == wanted
+
+
 async def test_a_commission_taken_up_again_starts_where_its_project_works_by_then(hosts, tmp_path):
     """A commission that failed is not under way until it is at work again: the directory changed meanwhile is the one it starts in."""
     llm = ScriptedLLM([[call("report", {"status": "failed", "summary": "the file is missing"}), finish("tool_calls")],
