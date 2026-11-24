@@ -617,7 +617,60 @@ def test_removed_entry_with_unknown_id_not_provably_gone_skips_the_pass(
         _entry("", directory_name="unknown", root_id="user", removed_at=removed_after_grants),
         root=base,
     )
-    (base / "user" / "unknown").mkdir()
+    unknown = base / "user" / "unknown"
+    unknown.mkdir()
+    (unknown / "plugin.toml").write_text("not toml [", encoding="utf-8")
+
+    assert permission_service.prune_uninstalled_plugin_grants(lock) == []
+    assert _grants_on_disk(tmp_path) == {"demo"}
+
+
+def test_manifest_id_differing_from_the_recorded_id_protects_it(
+    tmp_path, plugin_roots, removed_after_grants
+):
+    # reconcile keeps a recorded id once set: the directory recorded as
+    # "old_id" now declares "demo", so "demo" is still installed.
+    _grant("demo")
+    directory = plugin_roots / "user" / "old_dir"
+    directory.mkdir()
+    (directory / "plugin.toml").write_text('[plugin]\nid = "demo"\n', encoding="utf-8")
+    lock = _Lock(
+        _entry("demo", removed_at=removed_after_grants),
+        _entry("old_id", directory_name="old_dir"),
+    )
+
+    assert permission_service.prune_uninstalled_plugin_grants(lock) == []
+    assert _grants_on_disk(tmp_path) == {"demo"}
+
+
+def test_unreadable_manifest_of_a_recorded_plugin_skips_the_pass(
+    tmp_path, plugin_roots, removed_after_grants
+):
+    _grant("demo")
+    directory = plugin_roots / "user" / "other"
+    directory.mkdir()
+    (directory / "plugin.toml").write_text("not toml [", encoding="utf-8")
+    lock = _Lock(
+        _entry("demo", removed_at=removed_after_grants),
+        _entry("other", directory_name="other"),
+    )
+
+    assert permission_service.prune_uninstalled_plugin_grants(lock) == []
+    assert _grants_on_disk(tmp_path) == {"demo"}
+
+
+def test_unavailable_root_hides_the_manifest_id_and_skips_the_pass(
+    tmp_path, plugin_roots, removed_after_grants
+):
+    # "demo" was really uninstalled from the user root. The builtin root is
+    # unavailable, so its directory recorded as "old_id" was tombstoned but
+    # may still be there declaring "demo": nothing is proven.
+    _grant("demo")
+    (plugin_roots / "builtin").rmdir()
+    lock = _Lock(
+        _entry("demo", removed_at=removed_after_grants),
+        _entry("old_id", root_id="builtin", directory_name="old_dir", removed_at=removed_after_grants),
+    )
 
     assert permission_service.prune_uninstalled_plugin_grants(lock) == []
     assert _grants_on_disk(tmp_path) == {"demo"}

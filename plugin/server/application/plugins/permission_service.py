@@ -385,6 +385,32 @@ def _directory_gone(root: object, directory_name: str) -> bool:
     return False
 
 
+_MANIFEST_UNKNOWN = object()
+
+
+def _manifest_plugin_id_state(root: object, directory_name: str):
+    """Id the directory's plugin.toml declares now.
+
+    ``""`` when there is no manifest entry (not a plugin), the id when it
+    reads, ``_MANIFEST_UNKNOWN`` when it cannot be read or checked.
+    """
+    from plugin.server.application.install_source.scanner import (
+        PluginDirectoryScanner,
+    )
+
+    if root is None or not Path(root).is_dir():
+        # An unavailable root hides whatever the directory declares.
+        return _MANIFEST_UNKNOWN
+    directory = Path(root) / directory_name
+    try:
+        (directory / "plugin.toml").lstat()
+    except FileNotFoundError:
+        return ""
+    except (OSError, ValueError):
+        return _MANIFEST_UNKNOWN
+    return PluginDirectoryScanner._load_plugin_id(directory) or _MANIFEST_UNKNOWN
+
+
 def _uninstalled_plugin_cutoffs(manager) -> dict[str, datetime] | None:
     """Plugins the install-source lock proves uninstalled, with their removal time.
 
@@ -394,10 +420,10 @@ def _uninstalled_plugin_cutoffs(manager) -> dict[str, datetime] | None:
     outside the managed roots are not in it), and neither is a builtin
     tombstone. Returns ``None`` when the lock cannot be trusted for this.
 
-    The ids come from the lock as recorded: reconcile does not refresh the
-    plugin_id of an entry whose directory stays in place, so a manifest id
-    edited in place is not picked up. That only leaves the old id's grants
-    to be judged by the old id, the same as before the edit.
+    Reconcile does not refresh the plugin_id of an entry whose directory
+    stays in place, so every directory that may still be installed protects
+    both its recorded id and the id its manifest declares now; a manifest
+    that cannot be read skips the pass.
     """
     if manager is None or manager.is_degraded:
         return None
@@ -405,49 +431,34 @@ def _uninstalled_plugin_cutoffs(manager) -> dict[str, datetime] | None:
     active: set[str] = set()
     removed_at: dict[str, datetime] = {}
     for entry in manager.list_entries(include_removed=True):
-        if not entry.removed:
-            if not entry.plugin_id:
-                # A directory without plugin.toml is not a plugin. One whose
-                # plugin.toml was unreadable may be any of the removed
-                # plugins, so nothing is pruned this time.
-                root = roots.get(entry.root_id)
-                if root is None:
-                    return None
-                try:
-                    (Path(root) / entry.directory_name / "plugin.toml").lstat()
-                except FileNotFoundError:
-                    continue
-                except (OSError, ValueError):
-                    # Cannot tell whether a manifest is there.
-                    return None
-                # A manifest entry exists (possibly a dangling link).
-                return None
-            active.add(entry.plugin_id)
-            continue
-        gone = _directory_gone(roots.get(entry.root_id), entry.directory_name)
-        if not entry.plugin_id:
-            if gone:
-                continue
-            # Unknown id that may still be installed, as for an active entry
-            # whose manifest is unreadable.
-            return None
-        if not gone:
-            # The reconcile also tombstones directories the scan could not
-            # see (root unmounted, listing failed, symlinked). Such a copy
-            # may still be installed, so it protects the id like an active
-            # entry; a removal in another root does not prove it gone.
-            active.add(entry.plugin_id)
-            continue
-        if entry.root_id == "builtin":
+        root = roots.get(entry.root_id)
+        if entry.removed and _directory_gone(root, entry.directory_name):
+            when = _parse_time(entry.removed_at)
             # Builtins cannot be uninstalled (mark_removed rejects them); a
             # builtin tombstone only means the directory vanished, e.g. on
             # a branch switch or an update, which is no uninstall.
+            if not entry.plugin_id or when is None or entry.root_id == "builtin":
+                continue
+            if entry.plugin_id not in removed_at or when > removed_at[entry.plugin_id]:
+                removed_at[entry.plugin_id] = when
             continue
-        when = _parse_time(entry.removed_at)
-        if when is None:
-            continue
-        if entry.plugin_id not in removed_at or when > removed_at[entry.plugin_id]:
-            removed_at[entry.plugin_id] = when
+        # An active entry, or a tombstone whose directory may still be there
+        # (root unmounted, listing failed, symlinked): the plugin may be
+        # installed under its recorded id or under the id its manifest
+        # declares now, since reconcile keeps a recorded id once set.
+        if entry.plugin_id:
+            active.add(entry.plugin_id)
+        manifest = _manifest_plugin_id_state(root, entry.directory_name)
+        if manifest is _MANIFEST_UNKNOWN:
+            # Could be any of the removed plugins: prune nothing this time.
+            logger.debug(
+                "uninstalled plugin grants not pruned: manifest unreadable root={} directory={}",
+                entry.root_id,
+                entry.directory_name,
+            )
+            return None
+        if manifest:
+            active.add(manifest)
     return {pid: when for pid, when in removed_at.items() if pid not in active}
 
 
