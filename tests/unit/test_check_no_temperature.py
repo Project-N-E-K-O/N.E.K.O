@@ -304,9 +304,12 @@ def test_repository_root_with_non_ascii_path_still_uses_git(tmp_path: Path, monk
     monkeypatch.setattr(MOD, "EXEMPTIONS", {})
     real_run = subprocess.run
 
-    # A Chinese Windows without UTF-8 mode, whatever this machine uses: the
-    # locale reports GBK, and text mode without an explicit encoding decodes
-    # with it. Reading bytes, or decoding explicitly as UTF-8, still works.
+    # A Chinese Windows without UTF-8 mode, whatever this machine uses. Two
+    # parts: (1) code asking the ``locale`` module for the encoding (e.g.
+    # ``encoding=locale.getpreferredencoding(False)``) gets GBK; (2) text mode
+    # without an explicit encoding picks the code page in C, which no
+    # monkeypatch reaches, so the ``subprocess.run`` wrapper below forces GBK
+    # for it. Reading bytes, or decoding explicitly as UTF-8, still works.
     monkeypatch.setattr(locale, "getpreferredencoding", lambda do_setlocale=True: "gbk")
     if hasattr(locale, "getencoding"):
         monkeypatch.setattr(locale, "getencoding", lambda: "gbk")
@@ -344,7 +347,8 @@ def test_listed_file_in_a_folder_without_permission_is_skipped(
     assert MOD.main([]) == 1
     captured = capsys.readouterr()
     assert "app/bad.py:1:" in captured.out
-    assert "locked" in captured.err
+    assert "locked/x.py" not in captured.out
+    assert "x.py: skipped" in captured.err and "Permission denied" in captured.err
 
 
 @pytest.mark.unit
