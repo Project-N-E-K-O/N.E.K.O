@@ -572,6 +572,29 @@ def test_a_wrapped_computed_descriptor_is_not_evaluated(tmp_path):
     assert _resolve(executor, "plain_classmethod") is not None
 
 
+async def test_a_method_decorated_by_a_callable_descriptor_still_resolves(tmp_path):
+    class cached_method:
+        """A method decorator implemented as a class, like async_lru's alru_cache."""
+
+        def __init__(self, func):
+            self.func = func
+
+        def __call__(self, *args: Any, **kwargs: Any):
+            return self.func(*args, **kwargs)
+
+        def __get__(self, obj, owner=None):
+            return self if obj is None else functools.partial(self.func, obj)
+
+    @neko_plugin
+    class Decorated(NekoPluginBase):
+        @cached_method
+        async def lookup(self, **_: Any) -> str:
+            return "looked up"
+
+    executor, _instance, _logger = _runtime(tmp_path, instance=Decorated(_ctx(tmp_path)), manifest=["lookup"])
+    assert await executor.invoke("plugin_entry", "lookup", {}) == "looked up"
+
+
 def test_a_singledispatchmethod_still_resolves(tmp_path):
     @neko_plugin
     class Dispatching(NekoPluginBase):

@@ -72,7 +72,9 @@ def is_computed_attribute(instance: object, name: str) -> bool:
             static = static.__func__
         else:
             break
-    if isinstance(static, _METHOD_LOOKUPS):
+    if isinstance(static, _METHOD_LOOKUPS) or callable(static):
+        # A callable descriptor is a method decorator implemented as a class
+        # (e.g. async_lru's alru_cache): a method lookup, not a computed value.
         return False
     return hasattr(type(static), "__get__")
 
