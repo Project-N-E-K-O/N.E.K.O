@@ -22,6 +22,8 @@ function surface(initial, respond = () => ({}), browser = false) {
     let connectivityInvalidations = 0;
     let opened = '';
     let timer;
+    // Deadlines (AbortSignal.timeout) are expired by the test, not by wall-clock time.
+    const deadlines = [];
     const calls = [];
     const window = {
         listeners: {}, addEventListener(name, fn) { this.listeners[name] = fn; },
@@ -38,6 +40,13 @@ function surface(initial, respond = () => ({}), browser = false) {
             createElement: () => ({value: '', textContent: ''})
         },
         invalidateModelLists: () => invalidations++,
+        AbortSignal: {timeout() {
+            const listeners = [];
+            const signal = {aborted: false, addEventListener: (name, fn) => listeners.push(fn),
+                expire() { signal.aborted = true; listeners.forEach(fn => fn()); }};
+            deadlines.push(signal);
+            return signal;
+        }},
         setTimeout: fn => { timer = fn; return 1; }, clearTimeout: () => { timer = undefined; },
         fetch: async (url, options) => {
             calls.push({url, options});
@@ -62,6 +71,7 @@ function surface(initial, respond = () => ({}), browser = false) {
         get activeElement() { return context.document.activeElement; },
         get connectivityInvalidations() { return connectivityInvalidations; },
         get opened() { return opened; }, get timer() { return timer; },
+        expireDeadlines: () => deadlines.splice(0).forEach(signal => signal.expire()),
         get invalidations() { return invalidations; }};
 }
 const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
@@ -412,6 +422,26 @@ test('a saved toggle whose settings reload fails says so instead of reporting a 
     ui.setReloadWork(async () => undefined);
     await toggle(ui, true);
     assert.doesNotMatch(ui.nodes.status.textContent, /could not reload the settings/);
+});
+
+test('a stalled settings reload after a toggle releases the controls and warns', async () => {
+    let ui;
+    ui = surface(signedIn, (url, body) => {
+        ui.setSubscription({enabled: body.enabled, model: 'available-model'});
+        return {success: true};
+    });
+    await flush();
+    ui.setReloadWork(() => new Promise(() => {})); // /core_api never answers
+    ui.nodes.enabled.checked = true;
+    const action = ui.nodes.enabled.listeners.change();
+    await flush();
+    ui.nodes['confirm-accept'].listeners.click();
+    await flush();
+    assert.equal(ui.window.isChatGPTSettingsBusy(), true);
+    ui.expireDeadlines();
+    await action;
+    assert.equal(ui.window.isChatGPTSettingsBusy(), false);
+    assert.match(ui.nodes.status.textContent, /could not reload the settings/);
 });
 
 test('switching accounts invalidates connectivity again after the switch, even if the refresh fails', async () => {

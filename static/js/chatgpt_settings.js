@@ -187,10 +187,20 @@
             confirmationFocus = undefined;
         }
     }
+    // A stalled settings read must not hold busy (and with it ordinary saves) forever.
+    // The read keeps going; if it finishes later it announces neko:api-settings-loaded.
+    const RELOAD_TIMEOUT_MS = 30000;
+    const withDeadline = promise => {
+        if (typeof AbortSignal === 'undefined' || typeof AbortSignal.timeout !== 'function') return promise;
+        const deadline = AbortSignal.timeout(RELOAD_TIMEOUT_MS);
+        return Promise.race([promise, new Promise(resolve => {
+            deadline.addEventListener('abort', () => resolve(false), { once: true });
+        })]);
+    };
     // Returns whether the settings form now shows the saved configuration.
     const reloadSettings = async () => {
         if (typeof loadCurrentApiKey !== 'function') return true;
-        const loaded = await loadCurrentApiKey();
+        const loaded = await withDeadline(loadCurrentApiKey());
         // Values were set without change events: point the lights at the new slot keys.
         if (typeof window.refreshCustomConnectivityLightBindings === 'function') {
             window.refreshCustomConnectivityLightBindings();
