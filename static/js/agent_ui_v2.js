@@ -165,6 +165,36 @@
         return snapshot;
     }
 
+    let _agentUiCsrfToken = '';
+    async function getAgentMutationHeaders(forceRefresh) {
+        try {
+            const security = window.nekoLocalMutationSecurity;
+            if (security && typeof security.getMutationHeaders === 'function') {
+                if (forceRefresh && typeof security.refreshToken === 'function') {
+                    await security.refreshToken();
+                }
+                const headers = await security.getMutationHeaders();
+                if (headers && typeof headers === 'object') {
+                    return headers;
+                }
+            }
+        } catch (_) { /* fall back to page_config */ }
+        if (forceRefresh) _agentUiCsrfToken = '';
+        if (_agentUiCsrfToken) {
+            return { 'X-CSRF-Token': _agentUiCsrfToken };
+        }
+        try {
+            const resp = await fetch('/api/config/page_config', { cache: 'no-store' });
+            const cfg = resp.ok ? await resp.json() : null;
+            const token = cfg && cfg.autostart_csrf_token;
+            if (typeof token === 'string' && token) {
+                _agentUiCsrfToken = token;
+                return { 'X-CSRF-Token': token };
+            }
+        } catch (_) { /* guarded POST will surface rejection */ }
+        return {};
+    }
+
     async function sendCommand(command, payload) {
         const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const t0 = performance.now();
@@ -173,11 +203,26 @@
             const lanlanName = currentLanlanName();
             if (lanlanName) body.lanlan_name = lanlanName;
         }
-        const r = await fetch('/api/agent/command', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-        });
+        const bodyJson = JSON.stringify(body);
+        async function postOnce(forceRefresh) {
+            const csrfHeaders = await getAgentMutationHeaders(forceRefresh);
+            return fetch('/api/agent/command', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...csrfHeaders },
+                body: bodyJson,
+            });
+        }
+        let r = await postOnce(false);
+        if (r.status === 403 && typeof r.clone === 'function') {
+            let shouldRetryCsrf = false;
+            try {
+                const errPayload = await r.clone().json();
+                shouldRetryCsrf = Boolean(errPayload && errPayload.error_code === 'csrf_validation_failed');
+            } catch (_) { /* keep original 403 */ }
+            if (shouldRetryCsrf) {
+                r = await postOnce(true);
+            }
+        }
         if (!r.ok) throw new Error(`command status ${r.status}`);
         const j = await r.json();
         if (!j || j.success !== true) throw new Error(j?.error || 'command failed');

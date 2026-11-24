@@ -37,9 +37,11 @@ from urllib.parse import quote, unquote
 
 from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 
 from .mmd_router import _file_check
 from .shared_state import get_config_manager
+from .system_router._shared import _validate_local_mutation_request
 from .workshop_router import get_subscribed_workshop_items
 from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.config_manager import get_steam_workshop_library_roots, get_steam_workshop_path
@@ -225,7 +227,29 @@ async def _handle_vrm_file_upload(
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 
-@router.post('/upload')
+class _VrmUploadGuardedRoute(APIRoute):
+    """Reject unauthenticated or cross-site VRM uploads before multipart parsing."""
+
+    def get_route_handler(self):
+        downstream = super().get_route_handler()
+
+        async def guarded(request: Request):
+            if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+                rejected = _validate_local_mutation_request(
+                    request,
+                    error_defaults={"success": False},
+                )
+                if rejected is not None:
+                    return rejected
+            return await downstream(request)
+
+        return guarded
+
+
+upload_router = APIRouter(route_class=_VrmUploadGuardedRoute)
+
+
+@upload_router.post('/upload')
 async def upload_vrm_model(file: UploadFile = File(...)):
     """Upload a VRM model to the user documents directory (streamed read + async write, prevents path traversal)."""
     # Get VRM directory under user Documents.
@@ -237,7 +261,7 @@ async def upload_vrm_model(file: UploadFile = File(...)):
     return await _handle_vrm_file_upload(file, user_vrm_dir, '.vrm', 'VRM模型')
 
 
-@router.post('/upload_animation')
+@upload_router.post('/upload_animation')
 async def upload_vrm_animation(file: UploadFile = File(...)):
     """Upload a VRM animation file to the user documents directory."""
     # Get VRM directory under user Documents (ensure_vrm_directory also creates animation).
@@ -1191,3 +1215,6 @@ async def get_model_expressions(model_name: str):
             status_code=500,
             content={"success": False, "error": str(e)}
         )
+
+
+router.include_router(upload_router)

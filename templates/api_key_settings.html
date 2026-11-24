@@ -280,6 +280,29 @@
                         </div>
                     </div>
 
+                    <section id="chatgpt-settings" class="section" aria-labelledby="chatgpt-toggle-btn">
+                        <button type="button" id="chatgpt-toggle-btn" aria-expanded="false" aria-controls="chatgpt-options">
+                            <img src="/static/icons/dropdown_arrow.png" alt="" class="dropdown-icon">
+                            <span data-i18n="api.chatgpt.title">ChatGPT 订阅</span>
+                        </button>
+                        <div id="chatgpt-options" hidden>
+                            <p data-i18n="api.chatgpt.description">使用 ChatGPT 订阅额度进行文字对话和图像理解。语音识别与语音合成继续使用各自的服务商。</p>
+                            <div class="field-row">
+                                <label for="chatgpt-account" data-i18n="api.chatgpt.account">ChatGPT 账号</label>
+                                <select id="chatgpt-account"></select>
+                            </div>
+                            <div class="chatgpt-actions">
+                                <button type="button" class="gsv-tutorial-link" id="chatgpt-login" data-oai-siwc-button data-i18n="api.chatgpt.login">Continue with ChatGPT</button>
+                                <button type="button" class="gsv-tutorial-link" id="chatgpt-add" data-i18n="api.chatgpt.add">添加账号</button>
+                                <button type="button" class="gsv-tutorial-link" id="chatgpt-logout" data-i18n="api.chatgpt.logout">退出所选账号</button>
+                            </div>
+                            <p id="chatgpt-status" role="status" aria-live="polite"></p>
+                            <a id="chatgpt-authorization" hidden target="_blank" rel="noopener noreferrer" data-i18n="api.chatgpt.login">Continue with ChatGPT</a>
+                            <p id="chatgpt-instructions" data-i18n="api.chatgpt.instructions">登录后，在下方开启「按功能单独指定模型」，把需要的档位服务商选为「ChatGPT (subscription)」并选好模型，再保存。核心 API、TTS 和 ASR 不受影响。</p>
+                            <a class="gsv-tutorial-link" href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener noreferrer" data-i18n="api.chatgpt.usage">查看 ChatGPT 用量与权限</a>
+                        </div>
+                    </section>
+
                     <!-- ============ Area 4: Custom API Section ============ -->
                     <div id="custom-api-section">
                         <button id="custom-api-toggle-btn" onclick="toggleCustomApiSection()">
@@ -1073,6 +1096,7 @@
             }
         });
     </script>
+    <script src="/static/js/chatgpt_settings.js?v={{ static_asset_version }}"></script>
 </body>
 
 </html>

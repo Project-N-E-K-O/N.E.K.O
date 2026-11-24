@@ -5,12 +5,28 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from starlette.datastructures import Headers
 
 from main_routers.game_router import author_prompt
 from main_routers.game_router import runtime
+from main_routers.system_router import _shared as system_shared
 from config.prompts.prompts_minigame_common import (
     get_author_managed_dialogue_host_prompt,
 )
+
+
+class _AuthorizedRequestBase:
+    method = "POST"
+    base_url = "http://testserver/"
+    url = SimpleNamespace(path="/api/game/test/chat")
+
+    @property
+    def headers(self):
+        return Headers({
+            "content-type": "application/json",
+            "origin": "http://testserver",
+            "x-csrf-token": system_shared.AUTOSTART_CSRF_TOKEN,
+        })
 
 
 def _prompt(messages=None):
@@ -279,7 +295,7 @@ async def test_game_chat_endpoint_forwards_normalized_author_prompt(monkeypatch)
         "_sdk_route_instance_id": "route-a",
     }
 
-    class FakeRequest:
+    class FakeRequest(_AuthorizedRequestBase):
         async def json(self):
             return {
                 "session_id": "round-1",
@@ -323,7 +339,7 @@ async def test_game_chat_endpoint_accepts_author_prompt_without_game_event(monke
     captured = {}
     state = {"game_route_active": True, "session_id": "round-1"}
 
-    class FakeRequest:
+    class FakeRequest(_AuthorizedRequestBase):
         async def json(self):
             return {
                 "session_id": "round-1",
@@ -370,7 +386,7 @@ async def test_game_chat_endpoint_accepts_author_prompt_without_game_event(monke
 async def test_legacy_game_specific_chat_still_requires_a_registered_event(monkeypatch):
     state = {"game_route_active": True, "session_id": "round-1"}
 
-    class FakeRequest:
+    class FakeRequest(_AuthorizedRequestBase):
         async def json(self):
             return {
                 "session_id": "round-1",
@@ -395,7 +411,7 @@ async def test_game_chat_endpoint_does_not_persist_skipped_result(monkeypatch):
     appended = []
     state = {"game_route_active": True, "session_id": "round-1"}
 
-    class FakeRequest:
+    class FakeRequest(_AuthorizedRequestBase):
         async def json(self):
             return {
                 "session_id": "round-1",
@@ -426,7 +442,7 @@ async def test_game_chat_endpoint_does_not_persist_skipped_result(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_game_chat_endpoint_rejects_invalid_author_prompt():
-    class FakeRequest:
+    class FakeRequest(_AuthorizedRequestBase):
         async def json(self):
             return {
                 "session_id": "round-1",

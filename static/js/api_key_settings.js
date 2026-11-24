@@ -1477,6 +1477,8 @@ function isKeyBookBackedTtsProvider(providerKey) {
 function isProviderCapableForModelType(providerKey, modelType) {
     const pk = String(providerKey || '').trim();
     if (!pk || pk === 'custom' || pk.startsWith('follow_')) return true;
+    const supportedTypes = getProviderInfo(pk).supported_model_types;
+    if (Array.isArray(supportedTypes) && !supportedTypes.includes(modelType)) return false;
 
     if (modelType === 'omni') {
         // 实时全模态槽不提供任何具名服务商，只留「跟随」与「自定义」。
@@ -1541,7 +1543,7 @@ function getProviderType(providerKey, fallback = 'openai_compatible') {
     const providerType = String(profile.provider_type || profile.providerType || fallback || 'openai_compatible')
         .trim()
         .toLowerCase();
-    return ['openai_compatible', 'anthropic', 'websocket', 'tts'].includes(providerType)
+    return ['openai_compatible', 'anthropic', 'websocket', 'tts', 'chatgpt'].includes(providerType)
         ? providerType
         : 'openai_compatible';
 }
@@ -1946,6 +1948,11 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
         }
         const bookKey = getEffectiveAssistKey(provider, null, { useTokenPlan: false });
         setKeyReadonly(keyInput, bookKey, provider);
+        if (pInfo.auth_type === 'oauth' && keyInput) {
+            setMaskedInput(keyInput, '');
+            keyInput.placeholder = window.t ? window.t('api.chatgpt.managed') : 'Managed by ChatGPT sign-in';
+            removeKeyBookLink(keyInput);
+        }
     }
     if (modelType === 'tts') {
         if (provider === 'custom' && _customTtsDraft && !_isLoadingSavedConfig) {
@@ -4345,13 +4352,28 @@ async function saveApiKey(params) {
         });
         body.enableCustomApi = params.enableCustomApi ?? false;
 
-        const response = await fetch('/api/config/core_api', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(body)
-        });
+        async function postCoreApiOnce(forceRefresh) {
+            const csrfHeaders = await getSettingsMutationHeaders(forceRefresh);
+            return fetch('/api/config/core_api', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...csrfHeaders,
+                },
+                body: JSON.stringify(body)
+            });
+        }
+        let response = await postCoreApiOnce(false);
+        if (response.status === 403 && typeof response.clone === 'function') {
+            let shouldRetryCsrf = false;
+            try {
+                const errPayload = await response.clone().json();
+                shouldRetryCsrf = Boolean(errPayload && errPayload.error_code === 'csrf_validation_failed');
+            } catch (_) { /* keep original 403 */ }
+            if (shouldRetryCsrf) {
+                response = await postCoreApiOnce(true);
+            }
+        }
 
         if (response.ok) {
             const result = await response.json();
@@ -4590,6 +4612,37 @@ function autoFillAssistApiKey(force) {
 }
 
 // Beacon功能 - 页面关闭时发送信号给服务器
+let _settingsCsrfToken = '';
+
+async function getSettingsMutationHeaders(forceRefresh) {
+    try {
+        const security = window.nekoLocalMutationSecurity;
+        if (security && typeof security.getMutationHeaders === 'function') {
+            if (forceRefresh && typeof security.refreshToken === 'function') {
+                await security.refreshToken();
+            }
+            const headers = await security.getMutationHeaders();
+            if (headers && typeof headers === 'object') {
+                return headers;
+            }
+        }
+    } catch (_) { /* fall back to page_config */ }
+    if (forceRefresh) _settingsCsrfToken = '';
+    if (_settingsCsrfToken) {
+        return { 'X-CSRF-Token': _settingsCsrfToken };
+    }
+    try {
+        const resp = await fetch('/api/config/page_config', { cache: 'no-store' });
+        const cfg = resp && resp.ok ? await resp.json() : null;
+        const token = cfg && cfg.autostart_csrf_token;
+        if (typeof token === 'string' && token) {
+            _settingsCsrfToken = token;
+            return { 'X-CSRF-Token': token };
+        }
+    } catch (_) { /* guarded POST will surface rejection */ }
+    return {};
+}
+
 let beaconSent = false;
 
 function sendBeacon() {
@@ -5165,6 +5218,33 @@ const ConnectivityManager = {
 
     /** 用于取消正在进行的测试请求 */
     _abortControllers: {},
+    _chatgptAccountGeneration: 0,
+
+    isCurrentTestAccount(params, generation) {
+        return (params.provider_key !== 'chatgpt' && params.provider_type !== 'chatgpt')
+            || generation === this._chatgptAccountGeneration;
+    },
+
+    invalidateChatGPTAccount() {
+        ++this._chatgptAccountGeneration;
+        const keys = new Set([
+            ...Object.keys(this.keyStatusMap), ...Object.keys(this.keyErrorMap),
+            ...Object.keys(this.keyLightsMap), ...Object.keys(this.keyErrorDisplayMap),
+            ...Object.keys(this._abortControllers),
+        ]);
+        for (const key of keys) {
+            if (!/^(core|assist)\|chatgpt\|/.test(key)) continue;
+            const request = this._abortControllers[key];
+            if (request) {
+                request.cancelledByNewerTest = true;
+                request.controller.abort();
+            }
+            this.keyStatusMap[key] = LightStatus.UNTESTED;
+            this.keyErrorMap[key] = null;
+            this.syncLightsForKey(key);
+            this.syncErrorDisplaysForKey(key);
+        }
+    },
 
     /**
      * 解析某个 API 配置的实际 Key。
@@ -5415,6 +5495,9 @@ const ConnectivityManager = {
                 }
             }
 
+            if (result.providerType === 'chatgpt') {
+                result.model = result.model || (modelIdInput ? modelIdInput.value.trim() : '');
+            }
             omitMaskedSecretFromConnectivity(result);
             if (result.key || result.url || result.secretMasked) {
                 if (result.providerKey && result.providerScope) {
@@ -5423,6 +5506,8 @@ const ConnectivityManager = {
                         : result.providerKey);
                     result.cacheProviderKey = cacheProviderKey;
                     result.cacheId = buildConnectivityCacheId(result.providerScope, cacheProviderKey, result.key, result.url, result.model || '');
+                    // 订阅账号的模型目录因账号而异，按模型分开记检测结果。
+                    if (result.providerType === 'chatgpt') result.cacheId += `|model:${result.model}`;
                 } else {
                     result.cacheId = buildCustomConnectivityCacheId(
                         result.providerType,
@@ -5497,6 +5582,9 @@ const ConnectivityManager = {
      */
     async testKey(params) {
         const { provider_key, provider_scope, url, api_key: apiKey, model, voice_id: voiceId, provider_type: providerType, sub_type: subType, is_free: isFree, cache_id: cacheId } = params;
+        const accountGeneration = this._chatgptAccountGeneration;
+        const accountChanged = () => (provider_key === 'chatgpt' || providerType === 'chatgpt')
+            && accountGeneration !== this._chatgptAccountGeneration;
         if (isMaskedSecretValue(apiKey)) {
             return {
                 success: false,
@@ -5545,6 +5633,7 @@ const ConnectivityManager = {
                     // Built-in provider mode
                     body.provider_key = provider_key;
                     body.provider_scope = provider_scope;
+                    if (provider_key === 'chatgpt') body.model = model || '';
                     if (provider_scope === 'decision' && model) {
                         body.model = model;
                     }
@@ -5639,6 +5728,7 @@ const ConnectivityManager = {
 
             const result = await sendRequest(url);
             cleanupRequest();
+            if (accountChanged()) return {success: false, cancelled: true};
             if (result.success && result.resolved_url && provider_key && (provider_scope === 'core' || provider_scope === 'assist')) {
                 rememberResolvedProviderUrl(provider_scope, provider_key, result.resolved_url);
             }
@@ -5648,6 +5738,8 @@ const ConnectivityManager = {
             if (cacheId && this._abortControllers[cacheId] === controllerState) {
                 delete this._abortControllers[cacheId];
             }
+
+            if (accountChanged()) return {success: false, cancelled: true};
 
             if (err.name === 'AbortError') {
                 if (controllerState.cancelledByNewerTest) {
@@ -5757,8 +5849,9 @@ const ConnectivityManager = {
         const isBailianDecision = (config) => config.provider_scope === 'decision'
             && !!BAILIAN_WORKSPACE_ID_FIELDS[config.provider_key];
         const runOne = async ([cacheId, config]) => {
+            const accountGeneration = this._chatgptAccountGeneration;
             const result = await this.testKey({ ...config, cache_id: cacheId });
-            if (result.cancelled) {
+            if (result.cancelled || !this.isCurrentTestAccount(config, accountGeneration)) {
                 return {
                     cacheId,
                     cancelled: true,
@@ -5935,8 +6028,9 @@ const ConnectivityManager = {
 
         // 并发测试
         const testPromises = Object.entries(keyConfigs).map(async ([cacheId, config]) => {
+            const accountGeneration = this._chatgptAccountGeneration;
             const result = await this.testKey({ ...config, cache_id: cacheId });
-            if (result.cancelled) {
+            if (result.cancelled || !this.isCurrentTestAccount(config, accountGeneration)) {
                 return;
             }
             if (result.success) {
@@ -6106,6 +6200,7 @@ function initConnectivityLights() {
                 ConnectivityManager.keyErrorMap[resolved.cacheId] = null;
                 ConnectivityManager.syncLightsForKey(resolved.cacheId);
                 ConnectivityManager.syncErrorDisplaysForKey(resolved.cacheId);
+                const accountGeneration = ConnectivityManager._chatgptAccountGeneration;
                 const result = await ConnectivityManager.testKey({
                     provider_key: resolved.providerKey, provider_scope: resolved.providerScope,
                     url: resolved.url, api_key: resolved.key,
@@ -6116,7 +6211,8 @@ function initConnectivityLights() {
                     is_free: isFree,
                     cache_id: resolved.cacheId
                 });
-                if (result.cancelled) {
+                if (result.cancelled || !ConnectivityManager.isCurrentTestAccount({provider_key: resolved.providerKey,
+                    provider_type: resolved.providerType}, accountGeneration)) {
                     coreTestBtn.classList.remove('testing');
                     coreTestBtn.disabled = false;
                     return;
@@ -6168,6 +6264,7 @@ function initConnectivityLights() {
                 ConnectivityManager.keyErrorMap[resolved.cacheId] = null;
                 ConnectivityManager.syncLightsForKey(resolved.cacheId);
                 ConnectivityManager.syncErrorDisplaysForKey(resolved.cacheId);
+                const accountGeneration = ConnectivityManager._chatgptAccountGeneration;
                 const result = await ConnectivityManager.testKey({
                     provider_key: resolved.providerKey, provider_scope: resolved.providerScope,
                     url: resolved.url, api_key: resolved.key,
@@ -6178,7 +6275,8 @@ function initConnectivityLights() {
                     is_free: isFree,
                     cache_id: resolved.cacheId
                 });
-                if (result.cancelled) {
+                if (result.cancelled || !ConnectivityManager.isCurrentTestAccount({provider_key: resolved.providerKey,
+                    provider_type: resolved.providerType}, accountGeneration)) {
                     assistTestBtn.classList.remove('testing');
                     assistTestBtn.disabled = false;
                     return;

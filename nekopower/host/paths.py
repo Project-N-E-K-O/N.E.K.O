@@ -251,6 +251,10 @@ class HostPaths:
         """Return where the usage limit the user set is kept (``usage_limit.py``)."""
         return self.root() / "usage_limit.json"
 
+    def landing_json(self) -> Path:
+        """Return where what the user set about landing is kept (``landing_settings.py``)."""
+        return self.root() / "landing.json"
+
     def dsh(self) -> Path:
         """Return where dsh is installed, for a user who downloaded it (``nekopower.dsh.install``).
 

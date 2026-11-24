@@ -310,6 +310,84 @@ MEMBER_EARLIER_WORK_MAX_TOKENS = 200
 """Cap on what a member of a project is told of the directories other
 members worked in (those of a family stay where they were)."""
 
+# -- task agents that change files side by side (``nekopower/host/tree_work.py``) --
+
+TREE_PROBE_SECONDS = 5.0
+"""How long it is remembered whether a git worktree can be made for a
+project's directory, where task agents are told apart that would wait for
+one another (``TaskAgentManager._note_writer``). Asked anew, and not from
+what is remembered, when one is made."""
+
+WORKTREES_PER_PROJECT = 8
+"""How many git worktrees one project has at a time, those waiting for the
+user counted. One more is not made: its task agent works in the project's
+directory, in its turn. A team's six and two more."""
+
+LANDING_CONFLICT_ROUNDS = 3
+"""How often a task agent is sent back to merge what clashed between its
+worktree and the project's directory before the host gives up and its
+changes stay in the worktree for the user to decide on. Counted anew when
+the user asks for another try."""
+
+LANDED_NOTE_MAX_TOKENS = 300
+"""Cap on what is said of the files a landing changed: in the result of the
+commission, and to the task agent at work in the project's directory."""
+
+TREE_FILES_LISTED = 40
+"""How many files a landing changed, or that clashed, are put on record and
+told by name; the rest are counted."""
+
+TREE_NOT_LANDED_MAX_TOKENS = 400
+"""Cap on what is told of a worktree that was not landed: where it is, why,
+and which files clashed."""
+
+MEMBER_TREE_NOTE_MAX_TOKENS = 400
+"""Cap on what a task agent is told of the worktree it works in as its
+commission opens, with what an earlier commission of its left unlanded."""
+
+INSPECTION_ROUNDS = 2
+"""How often an inspector checks what a task agent changed, at the most. The
+task agent is sent back with what was found after every check but the last;
+what does not pass the last one is left in the worktree for the user to
+decide on."""
+
+INSPECTION_BRIEF_MAX_TOKENS = 1500
+"""Cap on what an inspector the host starts is told was to be done: the
+commission as its task agent was handed it."""
+
+INSPECTION_FINDINGS_MAX_TOKENS = 1500
+"""Cap on what a task agent is sent back with of what an inspector found."""
+
+TEAM_MAX_WORKING = 6
+"""How many task agents a leader started for one commission work at a time
+(``start_team``, ``subagent``). Beside ``TASK_AGENT_MAX_CONCURRENT``, which
+stands."""
+
+TEAM_START_WAIT_SECONDS = 10.0
+"""How long ``start_team`` waits, at most, to learn whether the task agents it
+started got their git worktrees before it answers the leader. One still being
+started by then is told of as started."""
+
+TEAM_PART_BRIEF_MAX_TOKENS = 1500
+"""Cap on the brief of one part a leader hands to a team."""
+
+TEAM_ASK_MEMBERS_MAX_TOKENS = 60
+"""Cap on what the user is told of one member of a team that is asked about:
+its preset and what it takes."""
+
+TEAM_STALL_SECONDS = 120.0
+"""How long a leader's commission may stand with every task agent it started
+over, no run of its own under way and nothing asked of the user, before the
+host reminds the leader of it. Once for a commission."""
+
+TEAM_STALL_NOTE_MAX_TOKENS = 300
+"""Cap on that reminder."""
+
+PROJECT_MEMBERS_MAX = 12
+"""How many members that still take work a project has for one character
+before its leader is refused another and told to hand over to one that is
+there. As many as the leader is told of (``LEADER_ROSTER_MEMBERS``)."""
+
 # ---------------------------------------------------------------------------
 # Task agents
 # ---------------------------------------------------------------------------

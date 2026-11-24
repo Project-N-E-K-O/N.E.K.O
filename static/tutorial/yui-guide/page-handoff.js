@@ -750,6 +750,78 @@
         return null;
     }
 
+    var _handoffCsrfToken = '';
+    function createHandoffAbortError() {
+        var error = new Error('Aborted');
+        error.name = 'AbortError';
+        return error;
+    }
+    function awaitHandoffWithSignal(promise, signal) {
+        if (!signal) {
+            return promise;
+        }
+        if (signal.aborted) {
+            return Promise.reject(createHandoffAbortError());
+        }
+        return new Promise(function (resolve, reject) {
+            function onAbort() {
+                reject(createHandoffAbortError());
+            }
+            signal.addEventListener('abort', onAbort, { once: true });
+            Promise.resolve(promise).then(function (value) {
+                signal.removeEventListener('abort', onAbort);
+                resolve(value);
+            }, function (error) {
+                signal.removeEventListener('abort', onAbort);
+                reject(error);
+            });
+        });
+    }
+    function getHandoffMutationHeaders(forceRefresh, signal) {
+        if (signal && signal.aborted) {
+            return Promise.reject(createHandoffAbortError());
+        }
+        try {
+            var security = window.nekoLocalMutationSecurity;
+            if (security && typeof security.getMutationHeaders === 'function') {
+                var refreshPromise = (forceRefresh && typeof security.refreshToken === 'function')
+                    ? Promise.resolve(security.refreshToken())
+                    : Promise.resolve();
+                return awaitHandoffWithSignal(refreshPromise.then(function () {
+                    return security.getMutationHeaders();
+                }).then(function (headers) {
+                    return (headers && typeof headers === 'object') ? headers : {};
+                }), signal).catch(function (error) {
+                    if ((error && error.name === 'AbortError') || (signal && signal.aborted)) {
+                        throw (error && error.name === 'AbortError') ? error : createHandoffAbortError();
+                    }
+                    return {};
+                });
+            }
+        } catch (_) {}
+        if (forceRefresh) {
+            _handoffCsrfToken = '';
+        }
+        if (_handoffCsrfToken) {
+            return Promise.resolve({ 'X-CSRF-Token': _handoffCsrfToken });
+        }
+        return fetch('/api/config/page_config', { cache: 'no-store', signal: signal }).then(function (resp) {
+            return resp && resp.ok ? awaitHandoffWithSignal(resp.json(), signal) : null;
+        }).then(function (cfg) {
+            var token = cfg && cfg.autostart_csrf_token;
+            if (typeof token === 'string' && token) {
+                _handoffCsrfToken = token;
+                return { 'X-CSRF-Token': token };
+            }
+            return {};
+        }).catch(function (error) {
+            if ((error && error.name === 'AbortError') || (signal && signal.aborted)) {
+                throw (error && error.name === 'AbortError') ? error : createHandoffAbortError();
+            }
+            return {};
+        });
+    }
+
     function sendAgentCommand(command, payload) {
         var requestId = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
         var controller = typeof AbortController === 'function' ? new AbortController() : null;
@@ -758,16 +830,42 @@
                 controller.abort();
             }
         }, 4000);
-        return fetch('/api/agent/command', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            signal: controller ? controller.signal : undefined,
-            body: JSON.stringify(Object.assign({
-                request_id: requestId,
-                command: command
-            }, payload || {}))
+        var bodyJson = JSON.stringify(Object.assign({
+            request_id: requestId,
+            command: command
+        }, payload || {}));
+        function postOnce(forceRefresh) {
+            var signal = controller ? controller.signal : undefined;
+            return getHandoffMutationHeaders(forceRefresh, signal).then(function (csrfHeaders) {
+                return fetch('/api/agent/command', {
+                    method: 'POST',
+                    headers: Object.assign({
+                        'Content-Type': 'application/json'
+                    }, csrfHeaders || {}),
+                    signal: signal,
+                    body: bodyJson
+                });
+            });
+        }
+        return postOnce(false).then(function (response) {
+            if (response.status === 403 && typeof response.clone === 'function') {
+                return response.clone().json().then(function (errPayload) {
+                    return !!(errPayload && errPayload.error_code === 'csrf_validation_failed');
+                }).catch(function (parseErr) {
+                    if (controller && controller.signal && controller.signal.aborted) {
+                        var abortErr = new Error('Aborted');
+                        abortErr.name = 'AbortError';
+                        throw abortErr;
+                    }
+                    if (parseErr && parseErr.name === 'AbortError') {
+                        throw parseErr;
+                    }
+                    return false;
+                }).then(function (shouldRetryCsrf) {
+                    return shouldRetryCsrf ? postOnce(true) : response;
+                });
+            }
+            return response;
         }).then(function (response) {
             if (!response.ok) {
                 throw new Error('command status ' + response.status);

@@ -205,11 +205,21 @@ def test_each_role_says_what_it_is_for_what_it_hands_back_and_what_it_does_not_d
     boss = bodies["boss"]
     for word in (
         "you do none of the work yourself", "hand_over", "subagent", "scout", "planner", "inspector",
-        "what it covers", "what it must not touch", "how to tell that it is done", "one task agent that can change files",
+        "what it covers", "what it must not touch", "how to tell that it is done",
     ):
-        assert word in boss.replace("Only one", "one")
-    # Nothing of teams yet.
-    assert "team" not in boss
+        assert word in boss
+    # When work is split among several that change files (a team), and when it is not; what
+    # the lead does while the team works, and that it reports once.
+    for word in (
+        "start_team", "only when it is wide and comes apart cleanly", "parts that share no files",
+        "Do not split what is hard rather than wide", "what has to be done in order",
+        "only one changes files in the project at a time, and splitting saves nothing",
+        "wait for it with wait_agent", "neither do nor guess a part", "read the files where it matters",
+        "(inspect) when a mistake would be costly", "Report to the user once, for the whole",
+    ):
+        assert word in boss
+    # It no longer says that task agents which change files always take turns.
+    assert "a second one waits its turn" not in boss
 
 
 def test_a_model_reads_the_lead_and_a_copy_by_english_names():

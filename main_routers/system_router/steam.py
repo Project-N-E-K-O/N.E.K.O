@@ -18,7 +18,16 @@
 Split out of the former monolithic ``main_routers/system_router.py``.
 """
 
-from ._shared import _get_app_root, _is_path_within_base, _validate_local_mutation_request, logger, router
+from ._shared import (
+    _extract_unc_share,
+    _get_app_root,
+    _is_path_within_base,
+    _is_unsafe_windows_unc_or_device_path,
+    _validate_local_mutation_request,
+    logger,
+    router,
+)
+import ntpath
 import os
 import asyncio
 import re
@@ -29,7 +38,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 from ..shared_state import ensure_steamworks as get_steamworks
 from ..shared_state import get_steamworks as get_cached_steamworks
-from utils.workshop_utils import get_workshop_path_async
+from utils.workshop_utils import get_workshop_library_roots, get_workshop_path_async
 
 
 # Progress Stat for timed achievements. Steamworks Partner must bind
@@ -313,203 +322,143 @@ async def list_achievements():
 
 # Helper functions
 
-def _read_binary_file(path: str) -> bytes:
+def _read_binary_file(path: str, max_size: int | None = None) -> bytes | None:
     """Synchronous binary read, called via asyncio.to_thread."""
     with open(path, 'rb') as f:
-        return f.read()
+        if max_size is None:
+            return f.read()
+        data = f.read(max_size + 1)
+    return data if len(data) <= max_size else None
 
 
 @router.get('/steam/proxy-image')
 async def proxy_image(image_path: str):
-    """
-    Proxy access to local image files, supporting absolute and relative paths, notably the Steam Workshop directory.
-    """
-
+    """Proxy access to local image files within trusted static, assets, and Steam Workshop roots."""
     try:
-        logger.info(f"代理图片请求，原始路径: {image_path}")
-        
-        # Decode the URL-encoded path, handling double encoding
+        if not image_path:
+            return JSONResponse(content={"success": False, "error": "无效的图片路径"}, status_code=400)
+
         decoded_path = unquote(image_path)
-        # Decode again to handle possible double encoding
-        decoded_path = unquote(decoded_path)
-        
-        logger.info(f"解码后的路径: {decoded_path}")
-        
-        # Reject remote URLs; currently only local files are supported
+        if not decoded_path or "\x00" in decoded_path:
+            return JSONResponse(content={"success": False, "error": "无效的图片路径"}, status_code=400)
+
         if decoded_path.startswith(('http://', 'https://')):
             return JSONResponse(content={"success": False, "error": "暂不支持远程图片URL"}, status_code=400)
-        
-        # Get the base directory and allowed-directory list
+
+        if _is_unsafe_windows_unc_or_device_path(decoded_path, allow_unc=True):
+            return JSONResponse(content={"success": False, "error": "文件不存在或无访问权限"}, status_code=404)
+
         base_dir = _get_app_root()
-        allowed_dirs = [
-            os.path.realpath(os.path.join(base_dir, 'static')),
-            os.path.realpath(os.path.join(base_dir, 'assets'))
-        ]
-        
-        
-        # Allow the path returned by get_workshop_path(), supporting relative-path resolution
+        static_dir = os.path.realpath(os.path.join(base_dir, 'static'))
+        assets_dir = os.path.realpath(os.path.join(base_dir, 'assets'))
+        allowed_dirs = [static_dir, assets_dir]
+
+        real_workshop_dir: str | None = None
+        workshop_roots: list[str] = []
         try:
-            workshop_base_dir = os.path.abspath(
-                os.path.normpath(await get_workshop_path_async())
-            )
-            if os.path.exists(workshop_base_dir):
-                real_workshop_dir = os.path.realpath(workshop_base_dir)
-                if real_workshop_dir not in allowed_dirs:
-                    allowed_dirs.append(real_workshop_dir)
-                    logger.info(f"添加允许的默认创意工坊目录: {real_workshop_dir}")
+            workshop_raw = await get_workshop_path_async()
+            if workshop_raw:
+                workshop_candidate = os.path.abspath(os.path.normpath(workshop_raw))
+                if os.path.exists(workshop_candidate):
+                    real_workshop_dir = os.path.realpath(workshop_candidate)
+                    workshop_roots.append(real_workshop_dir)
+                    if real_workshop_dir not in allowed_dirs:
+                        allowed_dirs.append(real_workshop_dir)
         except Exception as e:
             logger.warning(f"无法添加默认创意工坊目录: {str(e)}")
-        
-        # Dynamically extend the allowlist: permit requested paths containing Workshop identifiers
-        try:
-            # Check decoded paths for Workshop-related path identifiers
-            if ('steamapps\\workshop' in decoded_path.lower() or 
-                'steamapps/workshop' in decoded_path.lower()):
-                
-                # Get the Workshop parent directory
-                workshop_related_dir = None
-                
-                # Method 1: if the path exists, get its containing directory or use the directory itself
-                if os.path.exists(decoded_path):
-                    if os.path.isfile(decoded_path):
-                        workshop_related_dir = os.path.dirname(decoded_path)
-                    else:
-                        workshop_related_dir = decoded_path
-                
-                # Method 2: extract the Workshop-related portion of the path
-                if not workshop_related_dir:
-                    match = re.search(r'(.*?steamapps[/\\]workshop)', decoded_path, re.IGNORECASE)
-                    if match:
-                        workshop_related_dir = match.group(1)
-                
-                # Method 3: for Steam Workshop content paths, get the content directory
-                if not workshop_related_dir:
-                    content_match = re.search(r'(.*?steamapps[/\\]workshop[/\\]content)', decoded_path, re.IGNORECASE)
-                    if content_match:
-                        workshop_related_dir = content_match.group(1)
-                
-                # Method 4: for Steam Workshop content paths, add the entire steamapps/workshop directory
-                if not workshop_related_dir:
-                    steamapps_match = re.search(r'(.*?steamapps)', decoded_path, re.IGNORECASE)
-                    if steamapps_match:
-                        workshop_related_dir = os.path.join(steamapps_match.group(1), 'workshop')
-                
-                # Add any relevant directory found to the allowlist
-                if workshop_related_dir:
-                    # Ensure the directory exists
-                    if os.path.exists(workshop_related_dir):
-                        real_workshop_dir = os.path.realpath(workshop_related_dir)
-                        if real_workshop_dir not in allowed_dirs:
-                            allowed_dirs.append(real_workshop_dir)
-                            logger.info(f"动态添加允许的创意工坊相关目录: {real_workshop_dir}")
-                    else:
-                        # If the directory is absent, try adding steamapps/workshop directly
-                        workshop_match = re.search(r'(.*?steamapps[/\\]workshop)', decoded_path, re.IGNORECASE)
-                        if workshop_match:
-                            potential_dir = workshop_match.group(0)
-                            if os.path.exists(potential_dir):
-                                real_workshop_dir = os.path.realpath(potential_dir)
-                                if real_workshop_dir not in allowed_dirs:
-                                    allowed_dirs.append(real_workshop_dir)
-                                    logger.info(f"动态添加允许的创意工坊目录: {real_workshop_dir}")
-        except Exception as e:
-            logger.warning(f"动态添加创意工坊路径失败: {str(e)}")
-        
-        logger.info(f"当前允许的目录列表: {allowed_dirs}")
 
-        # Windows path handling: ensure correct path separators
-        if os.name == 'nt':  # Windows systems
-            # Replace forward slashes with backslashes for valid Windows paths
-            decoded_path = decoded_path.replace('/', '\\')
-            # Handle possible double encoding
-            if decoded_path.startswith('\\\\'):
-                decoded_path = decoded_path[2:]  # Remove redundant leading backslashes
-        
-        # Try resolving the path
-        final_path = None
-        
-        # Special case: paths containing steamapps/workshop check file existence directly
-        if ('steamapps\\workshop' in decoded_path.lower() or 'steamapps/workshop' in decoded_path.lower()):
-            if os.path.exists(decoded_path) and os.path.isfile(decoded_path):
-                final_path = decoded_path
-                logger.info(f"直接允许访问创意工坊文件: {final_path}")
-        
-        # Try as an absolute path
-        if final_path is None:
-            if os.path.exists(decoded_path) and os.path.isfile(decoded_path):
-                # Normalize the path to prevent path-traversal attacks
-                real_path = os.path.realpath(decoded_path)
-                # Check containment in allowed directories using commonpath to prevent prefix attacks
-                if any(_is_path_within_base(allowed_dir, real_path) for allowed_dir in allowed_dirs):
-                    final_path = real_path
-        
-        # Try an alternative path format
-        if final_path is None:
-            alt_path = decoded_path.replace('\\', '/')
-            if os.path.exists(alt_path) and os.path.isfile(alt_path):
-                real_path = os.path.realpath(alt_path)
-                # Use commonpath to prevent prefix attacks
-                if any(_is_path_within_base(allowed_dir, real_path) for allowed_dir in allowed_dirs):
-                    final_path = real_path
-        
-        # Try resolving relative to the static directory
-        if final_path is None:
-            # For relative paths starting with ../static, try resolving directly from static
-            if decoded_path.startswith('..\\static') or decoded_path.startswith('../static'):
-                # Extract the portion after static
-                relative_part = decoded_path.split('static')[1]
-                if relative_part.startswith(('\\', '/')):
-                    relative_part = relative_part[1:]
-                # Build the full path
-                relative_path = os.path.join(allowed_dirs[0], relative_part)  # static directory
-                if os.path.exists(relative_path) and os.path.isfile(relative_path):
-                    real_path = os.path.realpath(relative_path)
-                    # Use commonpath to prevent prefix attacks
-                    if any(_is_path_within_base(allowed_dir, real_path) for allowed_dir in allowed_dirs):
+        try:
+            for ws_root in get_workshop_library_roots() or ():
+                if ws_root:
+                    ws_candidate = os.path.abspath(os.path.normpath(ws_root))
+                    if os.path.exists(ws_candidate):
+                        real_ws_root = os.path.realpath(ws_candidate)
+                        if real_ws_root not in workshop_roots:
+                            workshop_roots.append(real_ws_root)
+                        if real_ws_root not in allowed_dirs:
+                            allowed_dirs.append(real_ws_root)
+        except Exception as e:
+            logger.warning(f"无法添加额外创意工坊库目录: {str(e)}")
+
+        allowed_unc_shares = {
+            share for d in allowed_dirs if (share := _extract_unc_share(d)) is not None
+        }
+        if _is_unsafe_windows_unc_or_device_path(decoded_path, allowed_unc_shares=allowed_unc_shares):
+            return JSONResponse(content={"success": False, "error": "文件不存在或无访问权限"}, status_code=404)
+
+        final_path: str | None = None
+
+        if decoded_path.startswith('../static/') or decoded_path.startswith('..\\static\\'):
+            relative_part = decoded_path[len('../static/'):]
+            clean_rel = relative_part.replace('/', os.sep).replace('\\', os.sep)
+            if (
+                relative_part
+                and '..' not in re.split(r"[/\\]", relative_part)
+                and not relative_part.startswith(('/', '\\'))
+                and not ntpath.splitdrive(relative_part)[0]
+                and not _is_unsafe_windows_unc_or_device_path(relative_part)
+                and not os.path.isabs(clean_rel)
+            ):
+                candidate = os.path.realpath(os.path.join(static_dir, clean_rel))
+                if _is_path_within_base(static_dir, candidate) and os.path.exists(candidate) and os.path.isfile(candidate):
+                    final_path = candidate
+        else:
+            if '..' in re.split(r"[/\\]", decoded_path):
+                return JSONResponse(content={"success": False, "error": "文件不存在或无访问权限"}, status_code=404)
+
+            normalized_input = decoded_path.replace('/', '\\') if os.name == 'nt' else decoded_path
+            candidate_inputs = [normalized_input]
+            alt_input = decoded_path.replace('\\', '/')
+            if alt_input not in candidate_inputs:
+                candidate_inputs.append(alt_input)
+
+            for candidate_raw in candidate_inputs:
+                if os.path.isabs(candidate_raw):
+                    real_path = os.path.realpath(candidate_raw)
+                    if (
+                        any(_is_path_within_base(allowed_dir, real_path) for allowed_dir in allowed_dirs)
+                        and os.path.exists(real_path)
+                        and os.path.isfile(real_path)
+                    ):
                         final_path = real_path
-        
-        # Try resolving relative to the default Workshop directory
-        if final_path is None:
-            try:
-                workshop_base_dir = os.path.abspath(
-                    os.path.normpath(await get_workshop_path_async())
-                )
-                
-                # Try treating the decoded path as relative to the Workshop directory
-                rel_workshop_path = os.path.join(workshop_base_dir, decoded_path)
-                rel_workshop_path = os.path.normpath(rel_workshop_path)
-                
-                logger.info(f"尝试相对于创意工坊目录的路径: {rel_workshop_path}")
-                
-                if os.path.exists(rel_workshop_path) and os.path.isfile(rel_workshop_path):
-                    real_path = os.path.realpath(rel_workshop_path)
-                    # Ensure containment in allowed directories using commonpath to prevent prefix attacks
-                    if _is_path_within_base(workshop_base_dir, real_path):
+                        break
+
+            if (
+                final_path is None
+                and workshop_roots
+                and not os.path.isabs(normalized_input)
+                and not normalized_input.startswith(('/', '\\'))
+                and not ntpath.splitdrive(normalized_input)[0]
+            ):
+                for ws_root in workshop_roots:
+                    rel_workshop = os.path.join(ws_root, normalized_input)
+                    real_path = os.path.realpath(rel_workshop)
+                    if (
+                        _is_path_within_base(ws_root, real_path)
+                        and os.path.exists(real_path)
+                        and os.path.isfile(real_path)
+                    ):
                         final_path = real_path
-                        logger.info(f"找到相对于创意工坊目录的图片: {final_path}")
-            except Exception as e:
-                logger.warning(f"处理相对于创意工坊目录的路径失败: {str(e)}")
-        
-        # Return an error if no valid path was found
+                        break
+
         if final_path is None:
-            return JSONResponse(content={"success": False, "error": f"文件不存在或无访问权限: {decoded_path}"}, status_code=404)
-        
-        # Check whether the file extension denotes an image
+            return JSONResponse(content={"success": False, "error": "文件不存在或无访问权限"}, status_code=404)
+
         image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']
         if os.path.splitext(final_path)[1].lower() not in image_extensions:
             return JSONResponse(content={"success": False, "error": "不是有效的图片文件"}, status_code=400)
-        
-        # Check whether file size exceeds the 50MB limit
+
         MAX_IMAGE_SIZE = 50 * 1024 * 1024  # 50MB
         file_size = await asyncio.to_thread(os.path.getsize, final_path)
         if file_size > MAX_IMAGE_SIZE:
-            logger.warning(f"图片文件大小超过限制: {final_path} ({file_size / 1024 / 1024:.2f}MB > 50MB)")
+            logger.warning(f"图片文件大小超过限制: {file_size / 1024 / 1024:.2f}MB > 50MB")
             return JSONResponse(content={"success": False, "error": f"图片文件大小超过50MB限制 ({file_size / 1024 / 1024:.2f}MB)"}, status_code=413)
 
-        # Read the image file, up to 50MB; synchronous event-loop reads can block for tens of milliseconds
-        image_data = await asyncio.to_thread(_read_binary_file, final_path)
-        
-        # Set MIME type from the file extension
+        image_data = await asyncio.to_thread(_read_binary_file, final_path, MAX_IMAGE_SIZE)
+        if image_data is None:
+            logger.warning("图片文件读取大小超过限制 (>50MB)")
+            return JSONResponse(content={"success": False, "error": "图片文件大小超过50MB限制"}, status_code=413)
+
         ext = os.path.splitext(final_path)[1].lower()
         mime_type = {
             '.jpg': 'image/jpeg',
@@ -519,9 +468,8 @@ async def proxy_image(image_path: str):
             '.bmp': 'image/bmp',
             '.webp': 'image/webp'
         }.get(ext, 'application/octet-stream')
-        
-        # Return image data
+
         return Response(content=image_data, media_type=mime_type)
     except Exception as e:
         logger.error(f"代理图片访问失败: {str(e)}")
-        return JSONResponse(content={"success": False, "error": f"访问图片失败: {str(e)}"}, status_code=500)
+        return JSONResponse(content={"success": False, "error": "访问图片失败"}, status_code=500)

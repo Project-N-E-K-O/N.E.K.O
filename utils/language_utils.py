@@ -1235,8 +1235,9 @@ def _ensure_googletrans() -> bool:
 
 
 # translate_text runs the first import in a worker thread, so two first translations can
-# race. Check, import and record under one lock: otherwise a transient failure in one
-# thread could overwrite another thread's success and pin TRANSLATEPY_AVAILABLE to False.
+# race. Check, import and record under one lock so the import runs once and the cached
+# globals are never half written. (A failed import still pins TRANSLATEPY_AVAILABLE to
+# False for the process, as before; translation then falls back to the LLM.)
 _translatepy_init_lock = threading.Lock()
 
 
@@ -2079,7 +2080,8 @@ class TranslationService:
         try:
             config = await self.config_manager.aget_model_api_config('recognition')
 
-            if not config.get('api_key') or not config.get('model') or not config.get('base_url'):
+            if (not config.get('model') or not config.get('base_url')
+                    or (not config.get('api_key') and config.get('provider_type') != 'chatgpt')):
                 logger.warning("翻译服务：API配置不完整（缺少 api_key、model 或 base_url），无法进行翻译")
                 return None
 

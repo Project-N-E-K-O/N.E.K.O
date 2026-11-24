@@ -7,6 +7,7 @@
     const HOME_TUTORIAL_AGENT_RESTORE_RETRY_DELAYS_MS = Object.freeze([1000, 2000, 4000, 8000, 15000]);
     // 等后端启动时放回开关：约 45 秒，长于后端电脑/浏览器控制探测的最长用时（约 32 秒）。
     const HOME_TUTORIAL_AGENT_BACKEND_REPLAY_WAIT_DELAYS_MS = Object.freeze([1000, 2000, 4000, 8000, 15000, 15000]);
+    const HOME_TUTORIAL_CSRF_TIMEOUT_MS = 5000;
     const HOME_TUTORIAL_AGENT_FLAG_KEYS = Object.freeze([
         'agent_enabled',
         'computer_use_enabled',
@@ -129,12 +130,146 @@
         };
     }
 
-    async function postAgentFlags(flags) {
-        const response = await fetch('/api/agent/flags', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ flags: flags }),
+    let _homeTutorialCsrfToken = '';
+
+    function createCsrfTimeoutError() {
+        const err = new Error('CSRF token fetch timed out');
+        err.code = 'csrf_token_timeout';
+        return err;
+    }
+
+    function awaitWithTutorialTimeout(promise, timeoutMs, onTimeout) {
+        return new Promise(function (resolve, reject) {
+            if (!(timeoutMs > 0)) {
+                if (typeof onTimeout === 'function') {
+                    try { onTimeout(); } catch (_) { /* ignore abort errors */ }
+                }
+                reject(createCsrfTimeoutError());
+                return;
+            }
+            let settled = false;
+            let timerId = setTimeout(function () {
+                if (settled) return;
+                settled = true;
+                timerId = null;
+                if (typeof onTimeout === 'function') {
+                    try { onTimeout(); } catch (_) { /* ignore abort errors */ }
+                }
+                reject(createCsrfTimeoutError());
+            }, timeoutMs);
+            Promise.resolve(promise).then(
+                function (value) {
+                    if (settled) return;
+                    settled = true;
+                    if (timerId !== null) {
+                        clearTimeout(timerId);
+                        timerId = null;
+                    }
+                    resolve(value);
+                },
+                function (err) {
+                    if (settled) return;
+                    settled = true;
+                    if (timerId !== null) {
+                        clearTimeout(timerId);
+                        timerId = null;
+                    }
+                    reject(err);
+                }
+            );
         });
+    }
+
+    async function getHomeTutorialMutationHeaders(forceRefresh) {
+        const deadlineMs = Date.now() + HOME_TUTORIAL_CSRF_TIMEOUT_MS;
+        try {
+            const security = window.nekoLocalMutationSecurity;
+            if (security && typeof security.getMutationHeaders === 'function') {
+                if (forceRefresh && typeof security.refreshToken === 'function') {
+                    await awaitWithTutorialTimeout(security.refreshToken(), deadlineMs - Date.now());
+                }
+                const headers = await awaitWithTutorialTimeout(security.getMutationHeaders(), deadlineMs - Date.now());
+                if (headers && typeof headers === 'object' && (headers['X-CSRF-Token'] || headers['x-csrf-token'])) {
+                    return headers;
+                }
+            }
+        } catch (err) {
+            if (err && err.code === 'csrf_token_timeout') {
+                throw err;
+            }
+            /* fall back to page_config */
+        }
+        if (forceRefresh) _homeTutorialCsrfToken = '';
+        if (_homeTutorialCsrfToken) {
+            return { 'X-CSRF-Token': _homeTutorialCsrfToken };
+        }
+        try {
+            const controller = typeof AbortController === 'function' ? new AbortController() : null;
+            const onTimeout = controller ? function () { controller.abort(); } : null;
+            const fetchInit = controller
+                ? { cache: 'no-store', signal: controller.signal }
+                : { cache: 'no-store' };
+            const resp = await awaitWithTutorialTimeout(
+                fetch('/api/config/page_config', fetchInit),
+                deadlineMs - Date.now(),
+                onTimeout
+            );
+            const cfg = resp && resp.ok
+                ? await awaitWithTutorialTimeout(resp.json(), deadlineMs - Date.now(), onTimeout)
+                : null;
+            const token = cfg && cfg.autostart_csrf_token;
+            if (typeof token === 'string' && token) {
+                _homeTutorialCsrfToken = token;
+                return { 'X-CSRF-Token': token };
+            }
+        } catch (err) {
+            if (err && err.code === 'csrf_token_timeout') {
+                throw err;
+            }
+            /* guarded POST will surface rejection */
+        }
+        return {};
+    }
+
+    async function postJsonWithCsrf(url, bodyObj, options) {
+        const bodyJson = JSON.stringify(bodyObj);
+        const shouldSend = options && typeof options.shouldSend === 'function' ? options.shouldSend : null;
+        const onBeforeSend = options && typeof options.onBeforeSend === 'function' ? options.onBeforeSend : null;
+        async function sendOnce(forceRefresh) {
+            if (shouldSend && !shouldSend()) {
+                return { abortedByGuard: true };
+            }
+            const csrfHeaders = await getHomeTutorialMutationHeaders(forceRefresh);
+            if (shouldSend && !shouldSend()) {
+                return { abortedByGuard: true };
+            }
+            if (onBeforeSend) {
+                onBeforeSend();
+            }
+            return fetch(url, {
+                method: 'POST',
+                headers: Object.assign({ 'Content-Type': 'application/json' }, csrfHeaders),
+                body: bodyJson,
+            });
+        }
+        const response = await sendOnce(false);
+        if (!response || response.abortedByGuard || response.status !== 403 || typeof response.clone !== 'function') {
+            return response;
+        }
+        try {
+            const payload = await response.clone().json();
+            if (!payload || payload.error_code !== 'csrf_validation_failed') return response;
+        } catch (_) {
+            return response;
+        }
+        return sendOnce(true);
+    }
+
+    async function postAgentFlags(flags, options) {
+        const response = await postJsonWithCsrf('/api/agent/flags', { flags: flags }, options);
+        if (response && response.abortedByGuard) {
+            return false;
+        }
         if (!response || !response.ok) {
             throw new Error('agent_flags_post_failed');
         }
@@ -142,17 +277,17 @@
         if (payload && payload.success === false) {
             throw new Error(payload.error || 'agent_flags_post_rejected');
         }
+        return true;
     }
 
-    async function postAgentCommand(command, payload) {
-        const response = await fetch('/api/agent/command', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(Object.assign({
-                request_id: 'home-tutorial-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8),
-                command: command,
-            }, payload || {})),
-        });
+    async function postAgentCommand(command, payload, options) {
+        const response = await postJsonWithCsrf('/api/agent/command', Object.assign({
+            request_id: 'home-tutorial-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8),
+            command: command,
+        }, payload || {}), options);
+        if (response && response.abortedByGuard) {
+            return false;
+        }
         if (!response || !response.ok) {
             throw new Error('agent_command_post_failed');
         }
@@ -160,6 +295,7 @@
         if (result && result.success === false) {
             throw new Error(result.error || 'agent_command_rejected');
         }
+        return true;
     }
 
     function getCurrentLanlanName() {
@@ -326,7 +462,7 @@
     function resolveAgentRestoreTarget(currentFlags, intentFlags) {
         const inspected = inspectPersistedAgentRestoreSnapshot();
         if (inspected.status === 'owner_mismatch') {
-            return { flags: currentFlags, persist: hasAnyEnabledAgentFlag(currentFlags) };
+            return { flags: currentFlags, owner: getCurrentLanlanName(), persist: hasAnyEnabledAgentFlag(currentFlags) };
         }
         if (
             (inspected.status === 'valid' || inspected.status === 'owner_pending')
@@ -350,7 +486,7 @@
                 persist: true,
             };
         }
-        return { flags: currentFlags, persist: true };
+        return { flags: currentFlags, owner: getCurrentLanlanName(), persist: true };
     }
 
     function clearPersistedAgentRestoreSnapshot(token) {
@@ -434,6 +570,16 @@
         return !!currentOwner && currentOwner === normalizedOwner;
     }
 
+    function matchesPersistedSnapshotToken(expectedToken) {
+        if (expectedToken === undefined || expectedToken === null) {
+            return true;
+        }
+        const inspected = inspectPersistedAgentRestoreSnapshot();
+        return inspected.status === 'valid'
+            && !!inspected.payload
+            && inspected.payload.token === expectedToken;
+    }
+
     function canRestoreAgentSnapshot(restoreToken, expectedOwner) {
         return !state.featureSuppression.active
             && state.featureSuppression.token === restoreToken
@@ -445,31 +591,44 @@
             && state.featureSuppression.token === token;
     }
 
-    async function restoreAgentSnapshot(flags, restoreToken, attemptState, expectedOwner) {
+    async function restoreAgentSnapshot(flags, restoreToken, attemptState, expectedOwner, expectedPersistedToken) {
         if (!flags) {
             return false;
         }
-        if (restoreToken !== undefined && !canRestoreAgentSnapshot(restoreToken, expectedOwner)) {
+        const isRestoreStillValid = function () {
+            return (restoreToken === undefined || canRestoreAgentSnapshot(restoreToken, expectedOwner))
+                && matchesPersistedSnapshotToken(expectedPersistedToken);
+        };
+        if (!isRestoreStillValid()) {
             return false;
         }
         if (Object.prototype.hasOwnProperty.call(flags, 'agent_enabled')) {
-            if (attemptState && flags.agent_enabled) {
-                attemptState.masterAttempted = true;
-                markPersistedAgentRestoreProgress(attemptState.snapshotToken, 'masterAttempted');
-            }
-            await postAgentCommand('set_agent_enabled', {
+            const masterSent = await postAgentCommand('set_agent_enabled', {
                 enabled: !!flags.agent_enabled,
+            }, {
+                shouldSend: isRestoreStillValid,
+                onBeforeSend: function () {
+                    if (attemptState && flags.agent_enabled) {
+                        attemptState.masterAttempted = true;
+                        markPersistedAgentRestoreProgress(attemptState.snapshotToken, 'masterAttempted');
+                    }
+                },
             });
+            if (!masterSent) {
+                return false;
+            }
             if (attemptState && flags.agent_enabled) {
                 attemptState.masterApplied = true;
                 attemptState.masterAppliedThisPage = true;
                 markPersistedAgentRestoreProgress(attemptState.snapshotToken, 'masterApplied');
             }
         }
-        if (restoreToken !== undefined && !canRestoreAgentSnapshot(restoreToken, expectedOwner)) {
+        if (!isRestoreStillValid()) {
             if (state.featureSuppression.active && flags.agent_enabled) {
                 try {
-                    await postAgentCommand('set_agent_enabled', { enabled: false });
+                    await postAgentCommand('set_agent_enabled', { enabled: false }, {
+                        shouldSend: function () { return !!state.featureSuppression.active; },
+                    });
                 } catch (error) {
                     console.warn('[HomeTutorialRuntime] failed to re-suppress stale agent master restore:', error);
                 }
@@ -478,12 +637,19 @@
         }
         const childFlags = buildAgentChildFlags(flags);
         if (Object.keys(childFlags).length > 0) {
-            await postAgentFlags(childFlags);
+            const childSent = await postAgentFlags(childFlags, {
+                shouldSend: isRestoreStillValid,
+            });
+            if (!childSent) {
+                return false;
+            }
         }
-        if (restoreToken !== undefined && !canRestoreAgentSnapshot(restoreToken, expectedOwner)) {
+        if (!isRestoreStillValid()) {
             if (state.featureSuppression.active && Object.keys(childFlags).length > 0) {
                 try {
-                    await postAgentFlags(buildDisabledAgentChildFlags());
+                    await postAgentFlags(buildDisabledAgentChildFlags(), {
+                        shouldSend: function () { return !!state.featureSuppression.active; },
+                    });
                 } catch (error) {
                     console.warn('[HomeTutorialRuntime] failed to re-suppress stale agent child flag restore:', error);
                 }
@@ -521,25 +687,34 @@
             if (target.persist) {
                 persistAgentRestoreSnapshot(flags, token, 'tutorial-suppression', target.owner);
             }
-            await postAgentCommand('set_agent_enabled', { enabled: false });
-            if (!state.featureSuppression.active || state.featureSuppression.token !== token) {
+            const isSuppressionActive = function () {
+                return isFeatureSuppressionTokenActive(token);
+            };
+            const masterSuppressed = await postAgentCommand('set_agent_enabled', { enabled: false }, {
+                shouldSend: isSuppressionActive,
+            });
+            if (!masterSuppressed || !isSuppressionActive()) {
                 const restoreToken = state.featureSuppression.token;
                 if (state.featureSuppression.active || !canRestoreAgentSnapshot(restoreToken)) {
                     return;
                 }
-                try {
-                    const restored = await restoreAgentSnapshot(flags, restoreToken, createAgentRestoreAttemptState(token), target.owner);
-                    if (restored && canRestoreAgentSnapshot(restoreToken)) {
-                        clearPersistedAgentRestoreSnapshot(token);
-                        syncAgentFlagsUi();
+                if (masterSuppressed) {
+                    try {
+                        const restored = await restoreAgentSnapshot(flags, restoreToken, createAgentRestoreAttemptState(token), target.owner);
+                        if (restored && canRestoreAgentSnapshot(restoreToken)) {
+                            clearPersistedAgentRestoreSnapshot(token);
+                            syncAgentFlagsUi();
+                        }
+                    } catch (restoreError) {
+                        console.warn('[HomeTutorialRuntime] failed to restore agent flags after stale master suppress:', restoreError);
                     }
-                } catch (restoreError) {
-                    console.warn('[HomeTutorialRuntime] failed to restore agent flags after stale master suppress:', restoreError);
                 }
                 return;
             }
-            await postAgentFlags(buildDisabledAgentChildFlags());
-            if (!state.featureSuppression.active || state.featureSuppression.token !== token) {
+            const childSuppressed = await postAgentFlags(buildDisabledAgentChildFlags(), {
+                shouldSend: isSuppressionActive,
+            });
+            if (!childSuppressed || !isSuppressionActive()) {
                 const restoreToken = state.featureSuppression.token;
                 if (state.featureSuppression.active || !canRestoreAgentSnapshot(restoreToken)) {
                     return;
@@ -563,15 +738,22 @@
 
     async function reapplySuppressedAgentFlags(token, reason) {
         try {
-            if (!isFeatureSuppressionTokenActive(token)) {
+            const isSuppressionActive = function () {
+                return isFeatureSuppressionTokenActive(token);
+            };
+            if (!isSuppressionActive()) {
                 return false;
             }
-            await postAgentCommand('set_agent_enabled', { enabled: false });
-            if (!isFeatureSuppressionTokenActive(token)) {
+            const masterSent = await postAgentCommand('set_agent_enabled', { enabled: false }, {
+                shouldSend: isSuppressionActive,
+            });
+            if (!masterSent || !isSuppressionActive()) {
                 return false;
             }
-            await postAgentFlags(buildDisabledAgentChildFlags());
-            if (!isFeatureSuppressionTokenActive(token)) {
+            const flagsSent = await postAgentFlags(buildDisabledAgentChildFlags(), {
+                shouldSend: isSuppressionActive,
+            });
+            if (!flagsSent || !isSuppressionActive()) {
                 return false;
             }
             syncAgentFlagsUi();
@@ -857,9 +1039,14 @@
                     flagsToRestore,
                     restoreToken,
                     attemptState,
-                    expectedOwner
+                    expectedOwner,
+                    persisted.token
                 );
-                if (restored && canRestoreAgentSnapshot(restoreToken, expectedOwner)) {
+                if (
+                    restored
+                    && canRestoreAgentSnapshot(restoreToken, expectedOwner)
+                    && matchesPersistedSnapshotToken(persisted.token)
+                ) {
                     clearPersistedAgentRestoreSnapshot(persisted.token);
                     syncAgentFlagsUi();
                     return true;

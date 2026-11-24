@@ -37,7 +37,9 @@ automatic housekeeping, never asks for credentials and never fetches. The
 one command that changes a checkout (``checkout``, in ``prepare_conflicts``)
 runs in the host's own worktree.
 
-Nothing calls this module yet; a later change wires it to side sessions.
+``TaskAgentManager`` has one manager of these for the host
+(``tree_work.py``): it makes a worktree for each commission of a member that
+changes files beside others, and lands what the member did.
 """
 
 from __future__ import annotations

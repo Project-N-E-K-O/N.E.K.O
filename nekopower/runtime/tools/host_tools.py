@@ -324,4 +324,27 @@ def build_host_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> li
 
         tools.append(define_tool(schemas["hand_over"], hand_over))
 
+    if "start_team" in capabilities:
+
+        async def start_team(args: dict[str, Any], call: ToolCallInfo) -> str:
+            parts = args.get("parts")
+            if not isinstance(parts, list) or not parts:
+                raise ToolError("parts must be a non-empty list")
+            wanted = []
+            for part in parts:
+                if not isinstance(part, dict) or not str(part.get("brief") or "").strip():
+                    raise ToolError("every part needs a non-empty brief")
+                wanted.append(
+                    {
+                        "name": str(part["name"]).strip() if part.get("name") else None,
+                        "preset": str(part["preset"]).strip() if part.get("preset") else None,
+                        "description": str(part.get("description") or ""),
+                        "brief": str(part["brief"]),
+                    }
+                )
+            payload = {"parts": wanted, "inspect": args.get("inspect") is True}
+            return said(await ask_host("start_team", payload, call), "message")
+
+        tools.append(define_tool(schemas["start_team"], start_team))
+
     return tools

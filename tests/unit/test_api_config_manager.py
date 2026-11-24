@@ -439,6 +439,8 @@ _ASSIST_ONLY_PROVIDERS = sorted(
     set(_PROVIDER_CATALOG['assist_api_providers'])
     - set(_PROVIDER_CATALOG['core_api_providers'])
     - {'vllm_omni'}
+    - {key for key, profile in _PROVIDER_CATALOG['assist_api_providers'].items()
+       if profile.get('auth_type') == 'oauth'}
 )
 
 
@@ -1091,11 +1093,12 @@ class TestProviderExclusion:
 
     @pytest.mark.unit
     def test_api_key_registry_covers_all_assist_providers(self):
-        """api_key_registry should have an entry for every non-free assist provider."""
+        """API-key providers have registry entries; OAuth providers store tokens separately."""
         from utils.api_config_loader import get_config
         data = get_config()
 
-        assist_keys = set(data.get('assist_api_providers', {}).keys()) - {'free'}
+        assist_keys = {key for key, profile in data.get('assist_api_providers', {}).items()
+                       if key != 'free' and profile.get('auth_type') != 'oauth'}
         registry_keys = set(data.get('api_key_registry', {}).keys())
 
         missing = assist_keys - registry_keys
@@ -2188,7 +2191,19 @@ class TestGptsovitsEnabledSaveMigration:
 
     class _FakeRequest:
         def __init__(self, payload):
+            from types import SimpleNamespace
+            from starlette.datastructures import Headers
+            from main_routers.system_router._shared import AUTOSTART_CSRF_TOKEN
+
             self._payload = payload
+            self.method = 'POST'
+            self.base_url = 'http://testserver/'
+            self.url = SimpleNamespace(path='/api/config/core_api')
+            self.headers = Headers({
+                'content-type': 'application/json',
+                'origin': 'http://testserver',
+                'x-csrf-token': AUTOSTART_CSRF_TOKEN,
+            })
 
         async def json(self):
             return self._payload
@@ -2832,3 +2847,35 @@ class TestGptsovitsEnabledSaveMigration:
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+
+@pytest.mark.unit
+def test_chatgpt_slot_uses_oauth_without_borrowing_core_key(config_manager):
+    _write_core_config(config_manager, {
+        'coreApi': 'qwen', 'coreApiKey': 'sk-audio-only', 'assistApi': 'qwen',
+        'enableCustomApi': True, 'conversationModelProvider': 'chatgpt',
+        'conversationModelUrl': 'https://api.openai.com/v1',
+        'conversationModelId': 'account-selected-model', 'conversationModelApiKey': '',
+    })
+    resolved = config_manager.get_model_api_config('conversation')
+    assert resolved['provider_type'] == 'chatgpt'
+    assert resolved['api_key'] == ''
+    assert resolved['model'] == 'account-selected-model'
+    assert config_manager.get_core_config()['AUDIO_API_KEY'] == 'sk-audio-only'
+    from utils.api_config_loader import get_assist_api_providers_for_frontend
+    assert 'chatgpt' not in {p['key'] for p in get_assist_api_providers_for_frontend()}
+
+
+@pytest.mark.parametrize('provider_type,expected_ready', [
+    ('chatgpt', True), ('openai_compatible', False),
+])
+def test_agent_readiness_accepts_oauth_without_api_key(
+    config_manager, monkeypatch, provider_type, expected_ready,
+):
+    monkeypatch.setattr(config_manager, 'get_model_api_config', lambda _: {
+        'model': 'account-selected-model', 'base_url': 'https://api.openai.com/v1',
+        'api_key': '', 'provider_type': provider_type,
+    })
+    ready, reasons = config_manager.is_agent_api_ready()
+    assert ready is expected_ready
+    assert bool(reasons) is not expected_ready
