@@ -35,10 +35,16 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 @pytest.fixture(scope="module")
 def gate(request):
     root_conftest = (REPO_ROOT / "tests" / "conftest.py").resolve()
-    for plugin in request.config.pluginmanager.get_plugins():
-        if Path(getattr(plugin, "__file__", "") or ".").resolve() == root_conftest:
-            return plugin._run_may_need_playwright
-    pytest.fail("tests/conftest.py is not loaded as a plugin")
+    plugin = next(
+        (
+            p
+            for p in request.config.pluginmanager.get_plugins()
+            if Path(getattr(p, "__file__", "") or ".").resolve() == root_conftest
+        ),
+        None,
+    )
+    assert plugin is not None, "tests/conftest.py is not loaded as a plugin"
+    return plugin._run_may_need_playwright
 
 
 def _shard_selector():
