@@ -1024,6 +1024,71 @@ async def test_the_model_no_longer_set_up_during_an_availability_check_switches_
     assert modules.notification is None
 
 
+async def test_input_that_cannot_be_sent_puts_the_keyboard_off_even_with_the_model_not_set_up(
+    modules, search, browser, checks, monkeypatch
+):
+    async def no_pictures_asked() -> dict[str, Any]:
+        return {"sees": True}
+
+    monkeypatch.setattr(
+        api_routes,
+        "_keyboard_mouse_availability",
+        lambda: {"enabled": True, "ready": False, "reasons": ["AGENT_MODEL_NOT_CONFIGURED", "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE"]},
+    )
+    monkeypatch.setattr(api_routes, "_model_images_status", no_pictures_asked)
+    modules.agent_flags["computer_use_enabled"] = True
+
+    await api_routes.computer_use_availability()
+
+    # Input cannot be sent: that is lost whatever the configuration says.
+    assert modules.agent_flags["computer_use_enabled"] is False
+    assert _notification(modules)["code"] == "AGENT_CU_CAPABILITY_LOST"
+
+
+async def test_the_master_switch_turned_on_again_while_on_leaves_the_tools_as_they_are(
+    modules, search, browser, checks, monkeypatch
+):
+    import threading
+
+    release = threading.Event()
+
+    def slow_keyboard() -> dict[str, Any]:
+        release.wait(5.0)
+        return {"enabled": True, "ready": True, "reasons": []}
+
+    monkeypatch.setattr(capabilities, "_keyboard_mouse_availability", slow_keyboard)
+    ready = {"ready": True, "reason": ""}
+    modules.capability_cache.update(computer_use=dict(ready), browser_use=dict(ready))
+    modules.analyzer_enabled = True
+    try:
+        await api_routes.agent_command({"command": "set_agent_enabled", "enabled": True, "_persist_intent": False})
+        # A task at work keeps its tools while they are worked out again.
+        assert modules.capability_cache["computer_use"] == ready
+        assert modules.capability_cache["browser_use"] == ready
+    finally:
+        release.set()
+    await _background_done(modules)
+
+
+async def test_a_step_of_the_master_switch_that_fails_still_has_the_tools_worked_out(
+    modules, search, browser, checks, monkeypatch
+):
+    async def plugins_break(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("the plugin lifecycle broke")
+
+    _keyboard(monkeypatch, ready=True)
+    monkeypatch.setattr(api_routes, "set_agent_flags", plugins_break)
+    modules.analyzer_enabled = False
+
+    with pytest.raises(RuntimeError):
+        await api_routes.agent_command({"command": "set_agent_enabled", "enabled": True, "_persist_intent": True})
+    await _background_done(modules)
+
+    # Not left "not ready" for want of the check: it was started before the step that failed.
+    assert modules.capability_cache["computer_use"] == {"ready": True, "reason": ""}
+    assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
+
+
 async def test_without_a_browser_only_the_browser_tools_are_not_ready(modules, search, browser, checks, monkeypatch):
     _keyboard(monkeypatch, ready=True)
     search.found = []

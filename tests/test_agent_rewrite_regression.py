@@ -2381,6 +2381,7 @@ def test_agent_command_set_agent_enabled_reports_free_version_and_refreshes_capa
     # this computer, in the background after the request's own writes;
     # nothing is sent to the agent model to find it out.
     assert "_create_tracked_task(_refresh_tool_capabilities_and_tell(lanlan_name))" in func_src
+    assert "if not was_on:" in func_src
     assert "await _refresh_tool_capabilities()" not in func_src
     assert "model_probe" not in func_src and "connectivity_check" not in func_src
     assert 'first_reason = (gate.get("reasons") or ["AGENT_ENDPOINT_NOT_CONFIGURED"])[0]' in func_src

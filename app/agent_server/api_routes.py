@@ -527,23 +527,27 @@ async def agent_command(payload: Dict[str, Any]):
         # reading.
         persist_intent = bool((payload or {}).get("_persist_intent", True))
         gate = _check_agent_api_gate()
-        refresh_tools = False
         if enabled:
+            was_on = bool(Modules.analyzer_enabled)
             Modules.analyzer_enabled = True
             Modules.analyzer_profile = (payload or {}).get("profile", {}) or {}
             if gate.get("ready") is True:
+                if not was_on:
+                    # Until the check below answers, "not ready" with no
+                    # reason: what was kept from before the master switch
+                    # went off may no longer hold. Not when it was on
+                    # already: a task at work keeps its tools. Provisional:
+                    # a switch-on already waiting for its own check is not
+                    # held back by it.
+                    _set_capability("computer_use", False, "", provisional=True)
+                    _set_capability("browser_use", False, "", provisional=True)
                 # From the configuration and this computer alone: the agent
-                # model is not asked anything. In the background, as the
-                # last thing this request starts: nothing here waits on it,
-                # so no later request (the plugins switched off, the master
-                # switched off) can be overtaken by this one's writes.
-                # Until then "not ready" with no reason: what was kept from
-                # before the master switch went off may no longer hold.
-                # Provisional: a switch-on already waiting for its own check
-                # is not held back by it.
-                _set_capability("computer_use", False, "", provisional=True)
-                _set_capability("browser_use", False, "", provisional=True)
-                refresh_tools = True
+                # model is not asked anything. In the background: nothing
+                # here waits on it, so no later request (the plugins
+                # switched off, the master switched off) is overtaken by
+                # this one's writes; and started now, so that a step below
+                # that fails does not leave the tools unanswered.
+                _create_tracked_task(_refresh_tool_capabilities_and_tell(lanlan_name))
             else:
                 first_reason = (gate.get("reasons") or ["AGENT_ENDPOINT_NOT_CONFIGURED"])[0]
                 _set_capability("computer_use", False, first_reason)
@@ -597,8 +601,6 @@ async def agent_command(payload: Dict[str, Any]):
                 logger.warning("[Agent] Failed to persist analyzer_enabled intent: %s", exc)
         _bump_state_revision()
         await _emit_agent_status_update(lanlan_name=lanlan_name)
-        if refresh_tools:
-            _create_tracked_task(_refresh_tool_capabilities_and_tell(lanlan_name))
         total_ms = round((time.perf_counter() - t0) * 1000, 2)
         logger.info("[AgentTiming] request_id=%s command=%s total_ms=%s", request_id, command, total_ms)
         return {
@@ -872,7 +874,7 @@ async def computer_use_availability():
     elif (
         not status.get("ready")
         and Modules.agent_flags.get("computer_use_enabled")
-        and not (reasons and reasons[0] in MODEL_SETUP_REASONS)
+        and not (reasons and all(reason in MODEL_SETUP_REASONS for reason in reasons))
     ):
         logger.info("[Agent] Computer Use capability lost, disabling flag")
         _put_switch_off("computer_use_enabled")
