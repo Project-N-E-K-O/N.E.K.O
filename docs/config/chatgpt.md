@@ -5,16 +5,14 @@ N.E.K.O. can use eligible ChatGPT plan usage through **Continue with ChatGPT**, 
 ## Setup
 
 1. Open API settings on the machine running N.E.K.O., using `localhost` or `127.0.0.1`.
-2. Expand **ChatGPT subscription**, between **API Key Book** and **Custom API configuration**, and click **Continue with ChatGPT**. Complete sign-in and grant ChatGPT plan usage in the system browser. Use **Add account** for a separate registration; the account selector shows the active registration with a check mark.
-3. Turn on **Use ChatGPT subscription**. The confirmation lists existing slots that will be replaced. Confirm to enable custom API, configure every supported text/vision slot and save immediately.
-4. The default model is the lexicographically first nonempty model ID returned by the active account's catalog, sorted independently of upstream ordering. An empty or failed catalog leaves configuration unchanged. Model IDs can subsequently be adjusted in custom settings.
-5. Turn the switch off to restore the previous custom-API flag and all affected slot fields, including original credentials and absent fields. The snapshot is stored on the server and survives page refreshes and application restarts. Other saved settings remain unchanged. The confirmation also warns that reloading settings discards unsaved page edits.
+2. Expand **ChatGPT subscription**, between **API Key Book** and **Per-Feature Models (Advanced)**, and click **Continue with ChatGPT**. Complete sign-in and grant ChatGPT plan usage in the system browser. Use **Add account** for a separate registration; the account selector shows the active registration with a check mark.
+3. In **Per-Feature Models (Advanced)**, check **Turn on per-feature models**, choose **ChatGPT (subscription)** as the provider of the slots that should use it, fetch the account's models in the model ID field and pick one, then click **Save Settings**. A ChatGPT slot without a model cannot be saved.
 
-Signing out of the last connected account restores the snapshot before removing credentials. While enabled, settings checks authorization periodically; expired authorization expands the section with a warning to sign in again or turn the switch off to restore. Temporary connection failures do not silently switch providers. A stale settings tab cannot overwrite managed providers while the switch remains on.
+Supported slots: Chat Model, Memory Upkeep (Large Model), Recognition Model (small), Familiar Model (general), Familiar Model (small), Familiar Model (advanced), Mini-game Chat Model, Mini-game Memory Model and Mini-game Recognition Model; images go to the Chat Model. Function calls use Neko's existing tool execution. Speech recognition, Realtime Voice (local), Text-to-Speech, Image generation and the Decision Model (dedicated API) keep their own providers.
 
-The provider supports conversation, summary, correction, emotion, vision, agent and game text-model slots. Function calls use Neko's existing tool execution. Speech recognition, realtime audio, speech synthesis and image generation keep their own providers. Keep the existing core/assist configuration for these services.
+NekoPower task agents can use Familiar Model slots set to ChatGPT (dsh does not take these models, so such tasks run on the built-in runtime). A plugin model slot that follows a ChatGPT slot reports it as unsupported; plugins need an API of their own.
 
-Switching the active ChatGPT account changes subsequent ChatGPT requests. Fetch models again and choose a model available to that account. Signing out clears the selected registration's tokens. If remote revocation cannot be confirmed, disconnect the application in [ChatGPT Settings → Usage](https://chatgpt.com/settings/usage).
+Switching the active ChatGPT account changes subsequent ChatGPT requests. Fetch models again and choose a model available to that account. Signing out clears the selected registration's tokens; slots set to ChatGPT keep that setting and use an account that is still signed in, and ask to sign in again once none is. If remote revocation cannot be confirmed, disconnect the application in [ChatGPT Settings → Usage](https://chatgpt.com/settings/usage).
 
 ## Implementation
 
@@ -25,10 +23,10 @@ Switching the active ChatGPT account changes subsequent ChatGPT requests. Fetch 
 - Model discovery calls `GET https://api.openai.com/v1/models` with the selected account's access token. No account-independent model list is hardcoded.
 - Inference calls `POST https://api.openai.com/v1/responses` with `store: false`, `stream: true`, and `reasoning.encrypted_content`. The adapter converts text, images, function schemas and tool results. Encrypted reasoning accompanying function calls travels with their opaque metadata in Neko history.
 - Function calls are delivered for execution only after `response.completed`. For compatibility, an upstream `response.incomplete` with `incomplete_details.reason` set to `max_output_tokens` returns available text with `finish_reason="length"`, without tool calls. If no text was produced, ordinary calls raise an output-limit error; connection probes accept this valid response as evidence of connectivity. Other incomplete, failed or disconnected streams raise errors. Plan-limit errors do not rotate accounts or fall back to paid API keys.
-- Browser Agent tasks use the same OAuth/Responses client for screenshots and structured actions. Truncated action output is rejected; terminal authorization/plan failures stop the task rather than retrying another output mode.
+- NekoPower task agents use the same OAuth/Responses client. Truncated tool calls are rejected; terminal authorization/plan failures stop the task rather than retrying another output mode.
 - Neko's existing caller-side input budgeting and request timeouts remain in force. Under OpenAI's [preview limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations), the ChatGPT plan endpoint does not support the `max_output_tokens` request field. The adapter omits that field and does not enforce a caller-specified hard output-token limit. There is no model-name-based Codex context-window override. This provider is explicitly selected by protocol and pins the public OpenAI origin, independently of the existing API-key provider.
 
-OAuth controls require a local connection and same-origin requests. Remote/headless sign-in and importing credentials from another application are not included. The subscription request path is distinct from ChatGPT's legacy `backend-api/codex/responses` endpoint.
+OAuth controls require a local connection and same-origin requests, and are refused behind a reverse proxy or in a remote deployment. Remote/headless sign-in and importing credentials from another application are not included. The subscription request path is distinct from ChatGPT's legacy `backend-api/codex/responses` endpoint.
 
 ## Verification
 

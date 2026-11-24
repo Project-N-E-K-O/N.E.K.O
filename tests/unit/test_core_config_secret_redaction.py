@@ -869,7 +869,10 @@ def test_chatgpt_save_pins_origin_and_discards_api_key(config_manager, core_conf
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize('slot,model', [('conversation', ''), ('tts', 'model'), ('omni', 'model'), ('image', 'model')])
+@pytest.mark.parametrize('slot,model', [
+    ('conversation', ''), ('conversation', '   '), ('conversation', {'id': 'model-a'}), ('conversation', ['model-a']),
+    ('tts', 'model'), ('omni', 'model'), ('image', 'model'), ('decision', 'model'), ('vision', 'model'),
+])
 def test_chatgpt_save_rejects_missing_model_and_unsupported_slots(config_manager, core_config_router, slot, model):
     original = {'coreApi': 'qwen', 'coreApiKey': 'audio-key', 'assistApi': 'qwen'}
     _write_core_config(config_manager, original)

@@ -28,11 +28,6 @@ let _resolvedProviderUrls = {};
 let _coreApiKeyInputDirty = false;
 // 保存/检测期间锁住设置页，避免用户中途关闭或重复操作
 let _apiSaveInProgress = false;
-let _chatgptIndependentSlots = [];
-let _loadedChatGPTIndependentFields = {};
-// 被「切换被跟随的服务商」联动清空的模型 ID 输入框（clearFollowModelIdsOnApiChange），
-// 订阅期间保存时只有这些清空算继承，用户手动清空仍按改动处理。
-const _followClearedModelIds = new Set();
 // 本页已提醒过的阿里美国 API URL，避免同一轮检测重复弹窗。
 const _aliyunUsApiWarningShownKeys = new Set();
 
@@ -53,18 +48,6 @@ const MASKED_SECRET_DISPLAY = '••••••••••••';
 // 当前页面、当前次重载期间保存用户刚输入密钥的“局部遮罩值”（非明文），用于继续
 // 显示局部遮蔽；绝不写入 localStorage、不会发送到后端，也不会让后端 GET 回显明文。
 let _secretDisplayCache = null;
-// 每次 loadCurrentApiKey 递增；响应回来时已有更新的载入开始，旧响应就不再写表单，
-// 免得晚到的旧配置盖掉新的（订阅开关等待载入有期限，超时后可能再发起一次载入）。
-let _loadCurrentApiKeyGeneration = 0;
-// 订阅面板等待载入超时后调用：作废它发起的那次载入（按代次核对，已有更新的载入就什么都不做），
-// 晚到的响应不再覆盖解锁后用户的修改。
-window.apiSettingsLoadGeneration = () => _loadCurrentApiKeyGeneration;
-window.abandonApiSettingsLoad = generation => {
-    if (generation !== undefined && generation !== _loadCurrentApiKeyGeneration) return;
-    _loadCurrentApiKeyGeneration += 1;
-    _isLoadingSavedConfig = false;
-    _secretDisplayCache = null;
-};
 const MIMO_TOKEN_PLAN_PROVIDER_KEY = 'mimo_token_plan';
 const MIMO_TOKEN_PLAN_OPENROUTER_URLS = [
     'https://token-plan-cn.xiaomimimo.com/v1',
@@ -2168,10 +2151,7 @@ function clearFollowModelIdsOnApiChange(mode, previousProvider, provider) {
         if (modelType === 'omni' || modelType === 'tts') return;
         const select = document.getElementById(`${modelType}ModelProvider`);
         const input = document.getElementById(`${modelType}ModelId`);
-        if (select?.value === mode && input) {
-            input.value = '';
-            _followClearedModelIds.add(`${modelType}ModelId`);
-        }
+        if (select?.value === mode && input) input.value = '';
     });
 }
 
@@ -2734,8 +2714,6 @@ function initModelIdPickers() {
         ['ModelId', 'ModelUrl'].forEach(suffix => {
             const input = document.getElementById(`${modelType}${suffix}`);
             if (input) input.addEventListener('input', () => {
-                // Typed by the user (programmatic values fire no input event): no longer the cascade's clearing.
-                _followClearedModelIds.delete(`${modelType}${suffix}`);
                 const affected = [modelType];
                 [...new Set(Object.values(MODEL_FOLLOWERS_BY_SOURCE).flat())].forEach(followerType => {
                     if (effectiveFollowSource(followerType) === modelType) affected.push(followerType);
@@ -2923,17 +2901,10 @@ async function loadCurrentApiKey() {
 
     syncProviderSelectDropdowns();
 
-    const loadGeneration = ++_loadCurrentApiKeyGeneration;
-    const superseded = () => loadGeneration !== _loadCurrentApiKeyGeneration;
-    let loaded = false;
     try {
         const response = await fetch('/api/config/core_api');
-        if (superseded()) return false;
         if (response.ok) {
             const data = await response.json();
-            if (superseded()) return false;
-            // The route answers read failures with HTTP 200 {success: false}: not settings.
-            if (data && data.success === false) throw new Error(data.error || 'core_api read failed');
             _resolvedProviderUrls = (data.resolvedProviderUrls && typeof data.resolvedProviderUrls === 'object')
                 ? { ...data.resolvedProviderUrls }
                 : {};
@@ -3209,10 +3180,10 @@ async function loadCurrentApiKey() {
                     // treat as "custom" to avoid overwriting them with auto-fill.
                     const existingUrl = (data[`${mt}ModelUrl`] || '').trim();
                     const existingKey = (data[`${mt}ModelApiKey`] || '').trim();
-                    // Otherwise the slot default. Set it explicitly: on a reload the select
-                    // still holds what the previous load chose (e.g. a provider the
-                    // ChatGPT subscription restored away), not the page's initial default.
-                    sel.value = (existingUrl || existingKey) ? 'custom' : getDefaultProviderForModelType(mt);
+                    if (existingUrl || existingKey) {
+                        sel.value = 'custom';
+                    }
+                    // Otherwise keep the default (follow_core/follow_assist)
                 }
                 onCustomModelProviderChange(mt);
             });
@@ -3231,29 +3202,18 @@ async function loadCurrentApiKey() {
             if (typeof data.disableTts === 'boolean' && document.getElementById('disableTts')) {
                 document.getElementById('disableTts').checked = data.disableTts;
             }
-            rememberChatGPTIndependentSettings(data.chatgptIndependentSlots);
-            loaded = true;
 
         } else {
             showCurrentApiKey(window.t ? window.t('api.getCurrentApiKeyFailed') : '获取当前API Key失败', '', false);
         }
     } catch (error) {
-        if (superseded()) return false;
         console.error('loadCurrentApiKey error:', error);
         showCurrentApiKey(window.t ? window.t('api.errorGettingCurrentApiKey') : '获取当前API Key时出错', '', false);
     } finally {
-        // 被更新的载入取代时不动这些状态：它们归最新那次载入。
-        if (!superseded()) {
-            _isLoadingSavedConfig = false;
-            // 缓存仅覆盖保存成功后的这一次重载。页面刷新或后续普通加载仍绝不回显密钥。
-            _secretDisplayCache = null;
-        }
+        _isLoadingSavedConfig = false;
+        // 缓存仅覆盖保存成功后的这一次重载。页面刷新或后续普通加载仍绝不回显密钥。
+        _secretDisplayCache = null;
     }
-    // 订阅开关据此区分「已保存」和「表单已同步」；任何一次载入成功都通知它（普通保存也会重新载入）。
-    if (loaded && typeof window.dispatchEvent === 'function') {
-        window.dispatchEvent(new Event('neko:api-settings-loaded'));
-    }
-    return loaded;
 }
 
 // 全局变量存储待保存的API Key
@@ -3864,7 +3824,7 @@ function buildKeyBookSecretPayload(allBookKeys, registry) {
 async function save_button_down(e) {
 
     if (e && e.preventDefault) e.preventDefault();
-    if (_apiSaveInProgress || window.isChatGPTSettingsBusy?.()) return;
+    if (_apiSaveInProgress) return;
 
     const workspacePayload = bailianWorkspacePayload();
     if (!workspacePayload) {
@@ -4018,7 +3978,7 @@ async function save_button_down(e) {
     let ttsModelUrl = getVal('ttsModelUrl');
     const ttsModelId = getVal('ttsModelId');
     const ttsModelApiKey = getKeyVal('ttsModelApiKey');
-    const ttsVoiceId = getTtsVoiceIdForSave();
+    let ttsVoiceId = getVal('ttsVoiceId');
 
     // 检查 GPT-SoVITS v3 配置
     // GSV「是否启用」收口到 ttsModelProvider 下拉单一真相：选中 gptsovits 即启用。
@@ -4040,6 +4000,7 @@ async function save_button_down(e) {
 
     if (gptsovitsEnabled && gptsovitsConfigForSave) {
         ttsModelUrl = gptsovitsConfigForSave.url;
+        ttsVoiceId = gptsovitsConfigForSave.voiceId;
     }
     // 退役 __gptsovits_disabled__| 占位符：下拉切走 gptsovits 即「未选」，ttsModelUrl/
     // ttsVoiceId 直接用标准字段值，不再把旧 GSV 配置冻进 voice_id（旧前缀仍由
@@ -4297,89 +4258,8 @@ function refreshAutoResolvedModelUrlsForSave(params) {
 }
 
 
-function rememberChatGPTIndependentSettings(slots) {
-    _followClearedModelIds.clear();
-    _chatgptIndependentSlots = Array.isArray(slots)
-        ? slots.filter(slot => MODEL_TYPES.includes(slot) || slot === 'image') : [];
-    _loadedChatGPTIndependentFields = {};
-    for (const slot of _chatgptIndependentSlots) {
-        for (const suffix of ['Provider', 'Url', 'Id', 'ApiKey']) {
-            const field = `${slot}Model${suffix}`;
-            const input = document.getElementById(field);
-            _loadedChatGPTIndependentFields[field] = input
-                ? (suffix === 'ApiKey' ? getRealKey(input) : input.value.trim()) : '';
-        }
-    }
-    if (_chatgptIndependentSlots.includes('image')) {
-        Object.assign(_loadedChatGPTIndependentFields, imageSettingsPayload());
-    }
-    if (_chatgptIndependentSlots.includes('tts')) {
-        // Snapshot what the form will submit, not the stored value: the form
-        // derives the voice from the dropdown, so a stored legacy value would
-        // make an untouched form look edited and block every save.
-        _loadedChatGPTIndependentFields.ttsVoiceId = getTtsVoiceIdForSave();
-    }
-    if (_loadedChatGPTIndependentFields.ttsModelProvider === 'gptsovits') {
-        _loadedChatGPTIndependentFields.ttsModelUrl = getGptSovitsConfigForSave().url;
-    }
-    const note = document.getElementById('chatgpt-independent-settings-note');
-    if (note) note.hidden = !_chatgptIndependentSlots.length;
-}
-
-// 保存时提交的 ttsVoiceId：选中 GPT-SoVITS 时取它的音色，否则取标准字段。
-// 订阅期间的休眠语音档位按它快照，和整页保存发出的值同一套推导。
-function getTtsVoiceIdForSave() {
-    if ((document.getElementById('ttsModelProvider')?.value || '').trim() === 'gptsovits') {
-        return getGptSovitsConfigForSave().voiceId;
-    }
-    return (document.getElementById('ttsVoiceId')?.value || '').trim();
-}
-
-function prepareChatGPTIndependentSettingsForSave(params) {
-    const payload = {...params};
-    if (_chatgptIndependentSlots.includes('tts')) {
-        // ttsProvider is derived from the ttsModelProvider dropdown, whose real
-        // edits the slot comparison below rejects; dropping it keeps the stored value.
-        delete payload.ttsProvider;
-        if (Object.hasOwn(params, 'ttsVoiceId')
-            && params.ttsVoiceId !== _loadedChatGPTIndependentFields.ttsVoiceId) return null;
-        delete payload.ttsVoiceId;
-    }
-    for (const slot of _chatgptIndependentSlots) {
-        const providerField = `${slot}ModelProvider`;
-        const provider = params[providerField] ?? _loadedChatGPTIndependentFields[providerField];
-        const followsUnchanged = provider?.startsWith('follow_')
-            && provider === _loadedChatGPTIndependentFields[providerField];
-        for (const suffix of ['Provider', 'Url', 'Id', 'ApiKey']) {
-            const field = `${slot}Model${suffix}`;
-            // A slot that still follows another tier takes its URL and key from it,
-            // and switching that tier clears its model ID (clearFollowModelIdsOnApiChange):
-            // neither is an edit of this slot. A model ID typed in is one, and is refused
-            // with the explanation rather than dropped.
-            const inherited = followsUnchanged && (suffix === 'Url' || suffix === 'ApiKey'
-                || (suffix === 'Id' && ((params[field] === '' && _followClearedModelIds.has(field))
-                    || document.getElementById(field)?.dataset.fixedModelHidden === 'true')));
-            if (Object.hasOwn(params, field) && !inherited
-                && params[field] !== _loadedChatGPTIndependentFields[field]) return null;
-            // Ordinary full-form saves must not persist auto-filled dormant settings.
-            delete payload[field];
-        }
-    }
-    return payload;
-}
-
-function isApiSettingsSaveBusy() {
-    return _apiSaveInProgress || document.getElementById('warning-modal')?.style.display === 'flex';
-}
-
 async function saveApiKey(params) {
-    if (_apiSaveInProgress || window.isChatGPTSettingsBusy?.()) return;
-    params = prepareChatGPTIndependentSettingsForSave(params);
-    if (!params) {
-        showStatus(window.t ? window.t('api.chatgpt.independentSettings')
-            : 'Turn off ChatGPT subscription and enable custom API before changing independent image or voice model settings.', 'error');
-        return;
-    }
+    if (_apiSaveInProgress) return;
     const { apiKey, coreApi, assistApi, enableCustomApi } = params;
 
     // 统一处理免费版 API Key 的保存值。只看 core 自己：
@@ -4462,13 +4342,7 @@ async function saveApiKey(params) {
                     });
                 }
             } else {
-                const chatgptErrorKey = {
-                    chatgptManagedSettings: 'managedSettings',
-                    chatgptIndependentSettings: 'independentSettings',
-                }[result.error_code];
-                const errorMsg = chatgptErrorKey && window.t
-                    ? window.t(`api.chatgpt.${chatgptErrorKey}`)
-                    : result.error || (window.t ? window.t('common.unknownError') : '未知错误');
+                const errorMsg = result.error || (window.t ? window.t('common.unknownError') : '未知错误');
                 showStatus(window.t ? window.t('api.saveFailed', { error: errorMsg }) : '保存失败: ' + errorMsg, 'error');
             }
         } else {
@@ -5819,8 +5693,6 @@ const ConnectivityManager = {
         const enableCustomApi = document.getElementById('enableCustomApi');
         if (enableCustomApi && enableCustomApi.checked) {
             CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
-                // 订阅期间休眠的独立档位运行时不生效，不去打它们的服务商（与后端保存时的判断一致）。
-                if (_chatgptIndependentSlots.includes(mt)) return;
                 const customResult = this.resolveEffectiveKey({ type: 'custom', modelType: mt });
                 const customCacheId = customResult.cacheId;
                 if (!customResult.secretMasked && customCacheId && !keyConfigs[customCacheId]) {
@@ -6014,7 +5886,6 @@ const ConnectivityManager = {
 
         if (enableCustomApi && enableCustomApi.checked) {
             CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
-                if (_chatgptIndependentSlots.includes(mt)) return;
                 const customResult = this.resolveEffectiveKey({ type: 'custom', modelType: mt });
                 const cacheId = customResult.cacheId;
                 if (!customResult.secretMasked && cacheId && !keyConfigs[cacheId]) {
@@ -6394,10 +6265,6 @@ function initConnectivityLights() {
 
     // ===== Task 7.2: Custom model indicator lights =====
     const customCurrentKeys = {}; // { [modelType]: currentKey }
-    // 订阅开关整页重载配置时不触发 change 事件，由 chatgpt_settings.js 调这里重绑各档位的灯。
-    window.refreshCustomConnectivityLightBindings = () => {
-        CONNECTIVITY_TESTABLE_TYPES.forEach(reRegisterModelSlot);
-    };
     function reRegisterModelSlot(modelType) {
         if (!lightRefs.custom[modelType]) return;
         const oldKey = customCurrentKeys[modelType];

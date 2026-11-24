@@ -2194,6 +2194,3 @@ font-size: 0.8em;
 #chatgpt-options .gsv-tutorial-link { cursor: pointer; white-space: normal; }
 #chatgpt-options button:disabled { opacity: .5; cursor: default; }
 #chatgpt-status { overflow-wrap: anywhere; }
-#chatgpt-enabled:checked + .disable-tts-slider { background: var(--accent-blue); }
-#chatgpt-enabled:focus-visible + .disable-tts-slider { outline: 2px solid var(--text-blue); outline-offset: 3px; }
-#chatgpt-enabled:disabled ~ span { opacity: .55; }

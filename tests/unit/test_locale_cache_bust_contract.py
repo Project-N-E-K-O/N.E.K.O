@@ -69,23 +69,17 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-11-24-chatgpt-subscription-emote-license-merge",
         "2026-11-24-agent-model-probe-removed-main-merge",
         "2026-11-24-chatgpt-subscription-reload-failed",
-        "2026-11-24-emote-template-license-main-sync",
         "2026-11-24-chatgpt-subscription-main-merge",
-        "2026-11-23-theater-market-recovery-main-merge",
         "2026-11-19-chatgpt-review-feedback",
         "2026-11-17-chatgpt-independent-settings",
         "2026-11-16-chatgpt-subscription-toggle",
-        "2026-11-15-nekoclaw-browser-custom-tts-merge",
         "2026-11-13-chatgpt-review-main-merge",
         "2026-11-10-chatgpt-subscription",
         "2026-11-10-provider-cat-visit-merge",
-        "2026-11-11-atlascloud-assist-provider-main-merge",
-        "2026-11-10-cat-visit-sync-main-merge",
-        "2026-11-11-air-basketball-main-merge",
-        "2026-11-02-atlascloud-assist-provider-main-merge",
-        "2026-11-10-air-basketball-shared-court",
-        "2026-11-11-sync-evidence-notices",
+        "2026-11-24-chatgpt-subscription-agent-probe-merge",
         "2026-11-24-agent-model-probe-removed",
+        "2026-11-24-emote-template-license-main-sync",
+        "2026-11-23-theater-market-recovery-main-merge",
         "2026-11-23-emote-maker-frontend-sync",
         "2026-11-24-emote-template-license",
         "2026-11-19-theater-market-recovery",
@@ -126,6 +120,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-11-14-emote-wardrobe-dismissible-padding",
         "2026-10-20-emote-copy-trim",
         "2026-11-17-remote-pairing-key-help",
+        "2026-11-15-nekoclaw-browser-custom-tts-merge",
         "2026-11-15-nekoclaw-browser-deepseek-tts-merge",
         "2026-11-15-custom-tts-voice-fallback-hint",
         "2026-11-14-nekoclaw-browser-theater-market-merge",
@@ -150,7 +145,6 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-11-02-atlascloud-assist-provider-main-merge",
         "2026-11-10-air-basketball-shared-court",
         "2026-11-10-cat-visit-sync-main-merge",
-
         "2026-11-09-sync-recent-file-unreadable",
         "2026-11-05-cat-visit-exit-confirmation",
         "2026-11-05-cat-visit-opper-main-merge",
@@ -638,7 +632,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "732765a5a64f65bae3efe597735fce8622acb8f24d08cc80b9c948b1d0c35edf"
+LOCALE_KEY_SIGNATURE = "0259a645c26bc21b3a2cf0942f95eab83362fab39a965247db09a49b27b58c87"
 
 
 _BUMP_INSTRUCTIONS = (

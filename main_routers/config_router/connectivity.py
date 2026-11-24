@@ -777,8 +777,6 @@ def _get_save_provider_api_key(core_cfg: dict, api_config: dict, provider_key: s
 
 def _build_save_connectivity_targets(core_cfg: dict, api_config: dict) -> dict[str, dict[str, Any]]:
     """Collect the built-in providers that need auto-detection on save."""
-    from utils.chatgpt_subscription import runtime_custom_api
-
     targets: dict[str, dict[str, Any]] = {}
     core_providers = api_config.get("core_api_providers", {}) or {}
     assist_providers = api_config.get("assist_api_providers", {}) or {}
@@ -830,11 +828,12 @@ def _build_save_connectivity_targets(core_cfg: dict, api_config: dict) -> dict[s
     if not assist_provider:
         assist_provider = "free" if core_provider == "free" else "qwen"
 
+    from utils.config_manager import _as_bool
+
     _add("core", core_provider)
     _add("assist", assist_provider)
 
-    custom_api_enabled, subscription_slots = runtime_custom_api(core_cfg)
-    if custom_api_enabled or subscription_slots:
+    if _as_bool(core_cfg.get("enableCustomApi", False)):
         model_types = [
             "conversation", "memory", "gameMain", "gameSummary", "recognition",
             "decision", "vision", "agent", "agentAdvanced", "agentSmall", "gameRecognition", "omni", "tts",
@@ -860,8 +859,6 @@ def _build_save_connectivity_targets(core_cfg: dict, api_config: dict) -> dict[s
                 _add("core" if model_type == "omni" else "assist", provider)
 
         for model_type in model_types:
-            if not custom_api_enabled and model_type not in subscription_slots:
-                continue
             provider = str(core_cfg.get(f"{model_type}ModelProvider") or "").strip()
             _add_model_target(model_type, provider)
 

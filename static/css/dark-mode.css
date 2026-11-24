@@ -1035,10 +1035,6 @@ html[data-theme="dark"].subtitle-window-host body.subtitle-window-host {
   border-color: #3a5a6e;
 }
 
-[data-theme="dark"] #chatgpt-options .disable-tts-toggle {
-  color: inherit;
-}
-
 [data-theme="dark"] .key-book-row label {
   color: #5cb8f0;
 }

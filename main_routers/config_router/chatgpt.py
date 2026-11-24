@@ -8,7 +8,7 @@ import threading
 
 import httpx
 from fastapi import Depends, HTTPException, Request, Response
-from pydantic import BaseModel, StrictBool
+from pydantic import BaseModel
 
 from utils.chatgpt_auth import ChatGPTAuthError, get_store
 from utils.chatgpt_auth.login import LoginAttempt
@@ -16,9 +16,6 @@ from ._shared import router
 
 _attempt = None
 _lock = threading.Lock()
-# A restored configuration whose reload failed: the next account or
-# subscription change reapplies it even when nothing is left to restore.
-_reload_pending = False
 
 
 def local_settings(request: Request, response: Response):
@@ -59,16 +56,6 @@ def _status():
     return result
 
 
-async def _reload(config):
-    """Apply a persisted configuration, remembering a failure for the next change."""
-    global _reload_pending
-    from .core_config import reload_api_configuration
-
-    result = await reload_api_configuration(config)
-    _reload_pending = not result.get('success')
-    return result
-
-
 async def _safe_call(fn, *args):
     try:
         return await asyncio.to_thread(fn, *args)
@@ -95,9 +82,7 @@ async def chatgpt_login(body: AccountRequest):
             _attempt = LoginAttempt(get_store(), body.account_id)
             return {"url": _attempt.url}
 
-    from .core_config import _core_api_save_lock
-    async with _core_api_save_lock:
-        return await _safe_call(start)
+    return await _safe_call(start)
 
 
 def _change_account(action, account_id):
@@ -115,150 +100,13 @@ def _change_account(action, account_id):
 
 @router.post("/chatgpt/select", dependencies=[Depends(local_settings)])
 async def chatgpt_select(body: AccountRequest):
-    from .core_config import _core_api_save_lock
-    async with _core_api_save_lock:
-        await _safe_call(_change_account, "select", body.account_id)
+    await _safe_call(_change_account, "select", body.account_id)
     return {"success": True}
 
 
 @router.post("/chatgpt/logout", dependencies=[Depends(local_settings)])
 async def chatgpt_logout(body: AccountRequest):
-    from copy import deepcopy
-    from .core_config import _core_api_save_lock
-    from utils.config_manager import get_config_manager
-    from utils.chatgpt_subscription import disable
-    restored = False
-    config = None
-    sign_out_error = None
-    async with _core_api_save_lock:
-        if _attempt and not _attempt.done.is_set():
-            raise HTTPException(400, 'Complete the pending ChatGPT sign-in before changing accounts.')
-        accounts = await _safe_call(get_store().status)
-        if not any(a['id'] == body.account_id for a in accounts['accounts']):
-            raise HTTPException(400, 'signInRequired')
-        remaining = [a for a in accounts['accounts']
-                     if a['id'] != body.account_id and a.get('connected')]
-        if not remaining:
-            def restore(value):
-                nonlocal restored
-                restored = disable(value)
-                return deepcopy(value)
-            config = await get_config_manager().aupdate_json_config('core_config.json', restore)
-        elif _reload_pending:
-            from utils.config_manager.json_update import load_json_config_snapshot
-            config = await asyncio.to_thread(load_json_config_snapshot, get_config_manager(), 'core_config.json')
-        reload_needed = restored or _reload_pending
-        try:
-            confirmed = await _safe_call(_change_account, "sign_out", body.account_id)
-        except HTTPException as exc:
-            # The restored configuration is already committed. Reload it even
-            # when credential cleanup fails, after releasing the save lock.
-            sign_out_error = exc
-    result = await _reload(config) if reload_needed else {'success': True}
-    if sign_out_error is not None:
-        raise sign_out_error
-    return {**result, "revocation_confirmed": confirmed, "subscription_restored": restored}
-
-
-class SubscriptionRequest(BaseModel):
-    enabled: StrictBool
-    revision: str = ''
-
-
-@router.get('/chatgpt/subscription', dependencies=[Depends(local_settings)])
-async def chatgpt_subscription_preview(verify_authorization: bool = False):
-    from utils.config_manager import get_config_manager
-    from utils.config_manager.json_update import load_json_config_snapshot
-    from utils.chatgpt_subscription import preview, supported_slots
-    from utils.config_manager.tier_renames import migrate_renamed_tier_fields
-    manager = get_config_manager()
-    config, slots = await asyncio.gather(
-        asyncio.to_thread(load_json_config_snapshot, manager, 'core_config.json'),
-        asyncio.to_thread(supported_slots),
-    )
-    # Read with the current tier names, as enabling sees it (and as the revision is taken).
-    migrate_renamed_tier_fields(config)
-    result = preview(config, slots)
-    result['authorization_required'] = False
-    if result['enabled'] and verify_authorization:
-        try:
-            await asyncio.to_thread(get_store().access_token)
-        except (ChatGPTAuthError, httpx.HTTPError, OSError):
-            result['authorization_required'] = True
-    return result
-
-
-@router.post('/chatgpt/subscription', dependencies=[Depends(local_settings)])
-async def chatgpt_subscription_update(body: SubscriptionRequest):
-    from utils.config_manager import get_config_manager
-    from utils.chatgpt_subscription import enable, disable, preview, supported_slots
-    from .core_config import _core_api_save_lock
-    from utils.llm_client.chatgpt_client import ChatGPTResponseError, acreate_chatgpt_client
-    from copy import deepcopy
-
-    manager = get_config_manager()
-    async with _core_api_save_lock:
-        # Turning off restores from the saved snapshot alone, so it must not
-        # depend on the provider metadata that enabling reads.
-        slots = await asyncio.to_thread(supported_slots) if body.enabled else None
-        model = ''
-        if body.enabled:
-            if _attempt and not _attempt.done.is_set():
-                raise HTTPException(400, 'pending')
-            before = await _safe_call(get_store().status)
-            if not before['active']:
-                raise HTTPException(400, 'signInRequired')
-            try:
-                client = await acreate_chatgpt_client(timeout=20)  # noqa: LLM_OUTPUT_BUDGET # Model catalog only.
-            except ChatGPTAuthError:
-                raise HTTPException(400, 'signInRequired') from None
-            except (httpx.HTTPError, OSError):
-                raise HTTPException(503, 'failed') from None
-            try:
-                models = await client.alist_models()
-            except ChatGPTAuthError:
-                raise HTTPException(400, 'signInRequired') from None
-            except ChatGPTResponseError as exc:
-                detail = 'usageLimit' if exc.status_code == 429 else 'failed'
-                raise HTTPException(exc.status_code or 502, detail) from None
-            except httpx.HTTPError:
-                raise HTTPException(503, 'failed') from None
-            except Exception:
-                # e.g. a catalog body that is not the expected JSON
-                raise HTTPException(502, 'failed') from None
-            finally:
-                await client.aclose()
-            ids = sorted({item['id'] for item in models if isinstance(item.get('id'), str) and item['id']})
-            if not ids:
-                raise HTTPException(400, 'noModels')
-            # Stable selection independent of upstream catalog ordering; no guessed model IDs.
-            model = ids[0]
-            if (await _safe_call(get_store().status))['active'] != before['active']:
-                raise HTTPException(409, 'accountChanged')
-
-        def apply(config):
-            if body.enabled:
-                # Old tier fields (summaryModel*, emotionModel*) still in the file must be in
-                # the restore snapshot under their current names, or a later save's migration
-                # drops them and turning the subscription off cannot bring them back.
-                from utils.config_manager.tier_renames import migrate_renamed_tier_fields
-                migrate_renamed_tier_fields(config)
-                enable(config, slots, model, body.revision)
-            else:
-                disable(config)
-            return deepcopy(config)
-        try:
-            config = await manager.aupdate_json_config('core_config.json', apply)
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from None
-    result = await _reload(config)
-    if slots is None:
-        try:
-            slots = await asyncio.to_thread(supported_slots)
-        except Exception:
-            slots = []
-    # Same tier names as the GET preview, so the overwritten list and revision agree.
-    from utils.config_manager.tier_renames import migrate_renamed_tier_fields
-    shown = deepcopy(config)
-    migrate_renamed_tier_fields(shown)
-    return {**result, 'subscription': preview(shown, slots)}
+    """Sign one account out. Model slots set to ChatGPT keep their setting and
+    use the account that stays active; with none left they ask to sign in."""
+    confirmed = await _safe_call(_change_account, "sign_out", body.account_id)
+    return {"success": True, "revocation_confirmed": confirmed}

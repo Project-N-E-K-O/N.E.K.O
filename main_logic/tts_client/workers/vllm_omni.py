@@ -22,7 +22,6 @@ import asyncio
 
 from functools import partial
 from urllib.parse import urlparse, urlunparse
-from utils.chatgpt_subscription import runtime_custom_api
 from utils.config_manager import _as_bool
 from utils.gptsovits_config import redact_url_for_log
 
@@ -704,10 +703,8 @@ def _vllm_omni_clone_resolve(ctx):
     # With vLLM-Omni enabled, current config is the sole endpoint, preventing stale follow_assist
     # URLs in old clones from overriding later user-selected vLLM services. Only disabled config uses historical
     # snapshots for compatibility; local saving remains allowed, while unconfigured clones fail as before at runtime.
-    # A text-only subscription must not activate dormant speech settings.
-    effective_custom_api, _ = runtime_custom_api(raw)
     raw_vllm_omni_selected = (
-        _as_bool(effective_custom_api, False)
+        _as_bool(raw.get('enableCustomApi'), False)
         and str(raw.get('ttsModelProvider') or '').strip() == 'vllm_omni'
     )
     current_vllm_url = (
