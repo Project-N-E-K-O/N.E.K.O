@@ -29,6 +29,7 @@ from utils.llm_client import (  # noqa: F401
     AIMessage,
     LLMStreamChunk,
     ThinkingStreamStripper,
+    anthropic_retry_error_types,
     chat_retry_error_types,
     strip_thinking_segments,
     create_chat_llm,
@@ -59,14 +60,16 @@ _LLM_RETRY_ERROR_TYPES: tuple[type[BaseException], ...] | None = None
 
 def _llm_retry_error_types() -> tuple[type[BaseException], ...]:
     global _LLM_RETRY_ERROR_TYPES
-    if _LLM_RETRY_ERROR_TYPES is None:
-        from openai import AuthenticationError
+    if _LLM_RETRY_ERROR_TYPES is not None:
+        return _LLM_RETRY_ERROR_TYPES
+    from openai import AuthenticationError
 
-        _LLM_RETRY_ERROR_TYPES = (
-            AuthenticationError,
-            *chat_retry_error_types(),
-        )
-    return _LLM_RETRY_ERROR_TYPES
+    types = (AuthenticationError, *chat_retry_error_types())
+    # The Anthropic classes appear once an Anthropic client has loaded the SDK;
+    # caching before that would leave them out for good.
+    if anthropic_retry_error_types():
+        _LLM_RETRY_ERROR_TYPES = types
+    return types
 
 _GENAI_NATIVE_BASE_URL_HINTS = (
     "generativelanguage.googleapis.com",

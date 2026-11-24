@@ -1029,6 +1029,11 @@ def save_global_conversation_settings_versioned(
                 _save_user_preferences_unlocked(data)
 
             snapshot = _snapshot_from_preferences_data(data) if changed else current
+            if changed and any(key.startswith("proactive") for key in validated):
+                # A proactive source switched on may need an SDK startup warmup skipped
+                # (bilibili_api / pyncm_async / bs4). Non-blocking; a no-op outside main_server.
+                from utils.module_warmup import request_config_rewarm
+                request_config_rewarm("conversation_settings")
             return ConversationSettingsWriteResult(
                 success=True, conflict=False, snapshot=snapshot, previous=current
             )

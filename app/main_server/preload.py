@@ -23,7 +23,7 @@ logger = runtime.logger
 
 
 async def _background_preload():
-    """Preload translation libraries, dashscope, and httpx in the background.
+    """Preload the translation service and the httpx SSL context in the background.
 
     Note: no Event-based synchronization is needed, because Python's import lock
     automatically waits for the first import to finish. A concurrent first use
@@ -42,37 +42,22 @@ async def _background_preload():
 
 
 def _sync_preload_modules():
-    """Synchronously preload lazily imported modules (runs in a thread pool)
+    """Synchronously preload startup helpers (runs in a thread pool).
 
-    Note: the following modules are already loaded at startup via the import chain and need no preloading:
-    - numpy, soxr: via core.py / audio_processor.py
-    - websockets: via omni_realtime_client.py
-    - langchain_openai/langchain_core: via omni_offline_client.py
-    - httpx: via core.py
-    - aiohttp: via tts_client.py
+    What this covers:
+    - the TranslationService singleton in utils/language_utils.py
+    - the httpx SSL context (the first AsyncClient creation initializes it)
 
-    Lazily imported modules that genuinely need preloading:
-    - dashscope: imported only inside the cosyvoice_vc_tts_worker function in tts_client.py
-    - googletrans/translatepy: translation libraries lazily imported in language_utils.py
-    - translation_service: the translation service (TranslationService) in language_utils.py
+    Heavy SDKs are not imported here. utils/module_warmup.py warms them after the
+    server is ready, and only those the current config can reach: dashscope, for
+    instance, only when the current character uses a CosyVoice clone voice, and
+    googletrans/translatepy only for the region subtitle translation runs in.
     """
     import time
 
     start = time.time()
 
-    # 1. Translation-service modules (avoid first-conversation latency)
-    try:
-        # Preload translation libraries (googletrans, translatepy, etc.)
-        from utils import language_utils
-
-        # Trigger translation-library imports if available
-        _ = language_utils.GOOGLETRANS_AVAILABLE
-        _ = language_utils.TRANSLATEPY_AVAILABLE
-        logger.debug("✅ 翻译库预加载完成")
-    except Exception as e:
-        logger.debug(f"⚠️ 翻译库预加载失败（不影响使用）: {e}")
-
-    # 2. Translation-service instance (requires config_manager)
+    # 1. Translation-service instance (requires config_manager)
     try:
         # Initialize the translation service early if initialization needs translation data
         from utils.language_utils import get_translation_service
@@ -86,15 +71,7 @@ def _sync_preload_modules():
     except Exception as e:
         logger.debug(f"⚠️ 翻译服务预加载失败（不影响使用）: {e}")
 
-    # 3. dashscope (Alibaba Cloud CosyVoice TTS SDK, needed only for custom voices)
-    try:
-        import dashscope  # noqa: F401
-
-        logger.debug("  ✓ dashscope loaded")
-    except Exception as e:
-        logger.debug(f"  ✗ dashscope: {e}")
-
-    # 4. Warm the httpx SSL context (the first AsyncClient creation initializes SSL)
+    # 2. Warm the httpx SSL context (the first AsyncClient creation initializes SSL)
     try:
         import httpx
         import asyncio

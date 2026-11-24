@@ -14,6 +14,7 @@
 """Lazy OpenAI and Anthropic retry exception registries."""
 
 from __future__ import annotations
+import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -36,23 +37,36 @@ def chat_retry_error_types() -> tuple[type[BaseException], ...]:
     """Return the union of OpenAI + Anthropic transient error classes for shared retry loops."""
     return (*openai_retry_error_types(), *anthropic_retry_error_types())
 
+_ANTHROPIC_RETRY_EXCEPTION_NAMES = (
+    "APIConnectionError",
+    "APITimeoutError",
+    "AuthenticationError",
+    "InternalServerError",
+    "RateLimitError",
+)
+
+
 def anthropic_retry_error_types() -> tuple[type[BaseException], ...]:
-    """Return Anthropic SDK error classes that should follow the chat retry path."""
+    """Return Anthropic SDK error classes that should follow the chat retry path.
+
+    Never imports the SDK. Callers evaluate this in ``except`` clauses, on the
+    event loop, for every exception leaving an LLM call (a cancelled stream
+    included), while the SDK is only loaded when an Anthropic client is built.
+    Until then no Anthropic error can be in flight, so the answer is ``()``.
+    Only a complete set is cached, so a client built later is still covered.
+    """
     global _ANTHROPIC_RETRY_EXCEPTION_TYPES
-    if _ANTHROPIC_RETRY_EXCEPTION_TYPES is None:
-        try:
-            import anthropic as _anthropic
-        except Exception:  # pragma: no cover - anthropic may be absent in minimal installs
-            _anthropic = None
-        _ANTHROPIC_RETRY_EXCEPTION_TYPES = tuple(
-            exc_type
-            for exc_type in (
-                getattr(_anthropic, "APIConnectionError", None),
-                getattr(_anthropic, "APITimeoutError", None),
-                getattr(_anthropic, "AuthenticationError", None),
-                getattr(_anthropic, "InternalServerError", None),
-                getattr(_anthropic, "RateLimitError", None),
-            )
-            if isinstance(exc_type, type)
+    if _ANTHROPIC_RETRY_EXCEPTION_TYPES is not None:
+        return _ANTHROPIC_RETRY_EXCEPTION_TYPES
+    module = sys.modules.get("anthropic")
+    found = tuple(
+        exc_type
+        for exc_type in (
+            getattr(module, name, None) for name in _ANTHROPIC_RETRY_EXCEPTION_NAMES
         )
-    return _ANTHROPIC_RETRY_EXCEPTION_TYPES
+        if isinstance(exc_type, type)
+    )
+    # A module still being imported on another thread can be missing classes.
+    if len(found) == len(_ANTHROPIC_RETRY_EXCEPTION_NAMES):
+        _ANTHROPIC_RETRY_EXCEPTION_TYPES = found
+    return found
