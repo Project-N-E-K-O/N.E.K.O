@@ -134,6 +134,13 @@ _WATCHDOG_EXIT_CODE = 87
 # so a node that never starts on this machine still comes back red.
 _SPAWN_ATTEMPTS = 3
 
+# For a ``rerun_safe`` script, how many more runs a stall *after* reaching the
+# script gets.  One: a runner hiccup clears on the next run, while a script that
+# really blocks at its top level stalls every time, and each stall costs a full
+# ceiling (65s for the settings harnesses) -- spending all three on it would let
+# a genuine hang push a shard toward its own timeout.
+_STARTED_RERUNS = 1
+
 
 
 def _excerpt(blob, limit: int = 400) -> str:
@@ -151,12 +158,13 @@ class NodeHarnessSpawnTimeout(subprocess.TimeoutExpired):
     """The run hit the ceiling without node exiting.
 
     Subclasses ``TimeoutExpired`` so existing ``except`` clauses keep working,
-    and carries what each attempt managed to emit.  One attempt means node had
-    reached the script and the stall was not worth repeating; more than one
-    means every attempt stalled before getting that far.
+    and carries what each attempt managed to emit and whether it reached the
+    script (``attempts_started``, one flag per attempt).  ``started`` is the
+    last attempt's flag.
     """
 
-    def __init__(self, cmd, timeout, attempts, started=False, rerun_safe=False):
+    def __init__(self, cmd, timeout, attempts, started=False, rerun_safe=False,
+                 attempts_started=None):
         # Carry the last attempt's output on the exception the way
         # ``subprocess.run`` would have: a caller that catches
         # ``TimeoutExpired`` and reads ``.stdout``/``.stderr`` (or ``.output``)
@@ -171,15 +179,19 @@ class NodeHarnessSpawnTimeout(subprocess.TimeoutExpired):
         self.attempts = list(attempts)
         self.started = started
         self.rerun_safe = rerun_safe
+        self.attempts_started = (
+            list(attempts_started) if attempts_started is not None
+            else [started] * len(self.attempts)
+        )
 
     def __str__(self) -> str:
         if self.started and self.rerun_safe:
             diagnosis = (
-                "node reached the harness script and stalled on every attempt "
-                "without the watchdog firing. The caller marked the script safe "
-                "to re-run, so each stall was retried; one that repeats on "
-                "every run points at the script itself (a synchronous block), "
-                "not at the runner."
+                "node reached the harness script and stalled again after it was "
+                "re-run, without the watchdog firing. The caller marked the "
+                "script safe to re-run, so a stall after it started got one more "
+                "run; one that repeats points at the script itself (a "
+                "synchronous block), not at the runner."
             )
         elif self.started:
             diagnosis = (
@@ -197,9 +209,12 @@ class NodeHarnessSpawnTimeout(subprocess.TimeoutExpired):
                 "under test, so the attempt was repeated."
             )
         lines = [super().__str__(), "", diagnosis]
-        for index, attempt in enumerate(self.attempts, 1):
+        for index, (attempt, reached) in enumerate(
+            zip(self.attempts, self.attempts_started), 1
+        ):
+            where = "reached the script" if reached else "never reached the script"
             lines.append(
-                f"  attempt {index}: stdout={_excerpt(attempt.stdout)} "
+                f"  attempt {index} ({where}): stdout={_excerpt(attempt.stdout)} "
                 f"stderr={_excerpt(attempt.stderr)}"
             )
         return "\n".join(lines)
@@ -501,6 +516,7 @@ def _run_retrying_spawn_stalls(next_attempt, cmd_for_error, *, rerun_safe=False)
     the killed first attempt left behind.
     """
     attempts = []
+    attempts_started = []
     for attempt in range(1, _SPAWN_ATTEMPTS + 1):
         argv, run_kwargs, marker = next_attempt()
         try:
@@ -508,10 +524,16 @@ def _run_retrying_spawn_stalls(next_attempt, cmd_for_error, *, rerun_safe=False)
         except subprocess.TimeoutExpired as exc:
             attempts.append(exc)
             started = _script_started(marker)
-            if attempt == _SPAWN_ATTEMPTS or (started and not rerun_safe):
+            attempts_started.append(started)
+            started_stalls = sum(attempts_started)
+            give_up = attempt == _SPAWN_ATTEMPTS or (
+                started and (not rerun_safe or started_stalls > _STARTED_RERUNS)
+            )
+            if give_up:
                 raise NodeHarnessSpawnTimeout(
                     cmd_for_error, exc.timeout, attempts,
                     started=started, rerun_safe=rerun_safe,
+                    attempts_started=attempts_started,
                 ) from exc
         finally:
             try:

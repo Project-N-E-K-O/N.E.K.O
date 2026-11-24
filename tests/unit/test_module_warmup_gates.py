@@ -386,8 +386,15 @@ def test_rewarm_is_a_no_op_before_startup_warmup(warmup_state):
 
 
 def _something_left_to_warm(monkeypatch):
-    """Make the re-check see a module to import, whatever this process has loaded."""
-    monkeypatch.setattr(module_warmup, "_unloaded_gates", lambda scope=None: {"anthropic"})
+    """Make the re-check see a module to import, whatever this process has loaded.
+
+    Scope-aware like the real one: a voice-only save sees the voice gate missing.
+    """
+    missing = {"anthropic", "cosyvoice_clone", "proactive_bilibili"}
+    monkeypatch.setattr(
+        module_warmup, "_unloaded_gates",
+        lambda scope=None: set(missing) if scope is None else missing & set(scope),
+    )
 
 
 def test_rewarm_after_startup_warmup_finished_starts_a_worker(warmup_state, monkeypatch):
@@ -725,7 +732,7 @@ def test_failed_imports_are_not_retried_on_every_save(warmup_state, monkeypatch)
     monkeypatch.delitem(sys.modules, broken, raising=False)
 
     def _fail(name):
-        raise ImportError(name)
+        raise ModuleNotFoundError(name)  # not installed
 
     monkeypatch.setattr(module_warmup, "_warm_one", _fail)
     module_warmup._warm_entries((broken,), "config")
@@ -837,3 +844,41 @@ def test_a_kept_request_is_not_skipped_by_a_narrow_save_with_nothing_of_its_own(
     )
     assert module_warmup.request_config_rewarm("characters", only={"cosyvoice_clone"}) is True
     assert started == [None], "the kept full re-check must run, anthropic is still missing"
+
+
+def test_other_import_errors_are_retried_later(warmup_state):
+    # A DLL briefly locked by an antivirus, say: not final, unlike a missing module.
+    def _fail(name):
+        raise ImportError("DLL load failed")
+
+    original = module_warmup._warm_one
+    module_warmup._warm_one = _fail
+    try:
+        module_warmup._warm_entries(("pyncm_async",), "config")
+    finally:
+        module_warmup._warm_one = original
+    assert "pyncm_async" not in module_warmup._failed_entries
+
+
+def test_missing_startup_flag_survives_a_full_pass_that_failed(monkeypatch):
+    monkeypatch.setattr(module_warmup, "_startup_pass_missing", True)
+    monkeypatch.setattr(module_warmup, "_gated_running", True)
+    monkeypatch.setattr(module_warmup, "_gated_pending", False)
+
+    def _boom(*a, **k):
+        raise RuntimeError("config unreadable")
+
+    monkeypatch.setattr(module_warmup, "_pending_gated_entries", _boom)
+    module_warmup._run_gated_warmup("config", None)
+    assert module_warmup._startup_pass_missing is True
+
+
+def test_realtime_read_failure_falls_back_to_core_api_type():
+    cfg = _voice_cfg({"CORE_API_TYPE": "free"})
+
+    class _Broken(dict):
+        def get(self, *a, **k):
+            raise OSError("realtime slot unreadable")
+
+    cfg.realtime_config = _Broken()
+    assert cfg.core_api_type == "free"

@@ -55,7 +55,7 @@ def test_first_imports_from_two_threads_are_serialised(monkeypatch):
     import time
     import types
 
-    inside = {"now": 0, "max": 0}
+    inside = {"now": 0, "max": 0, "slept": False}
     lock = threading.Lock()
 
     class _SlowModule(types.ModuleType):
@@ -63,7 +63,11 @@ def test_first_imports_from_two_threads_are_serialised(monkeypatch):
             with lock:
                 inside["now"] += 1
                 inside["max"] = max(inside["max"], inside["now"])
-            time.sleep(0.05)
+                first = not inside["slept"]
+                inside["slept"] = True
+            if first:
+                # One pause is enough to let the other thread arrive meanwhile.
+                time.sleep(0.3)
             with lock:
                 inside["now"] -= 1
             return type(name, (), {})
@@ -91,6 +95,7 @@ def test_first_imports_from_two_threads_are_serialised(monkeypatch):
     for thread in threads:
         thread.join(10)
 
+    assert not any(thread.is_alive() for thread in threads), "first import hung"
     assert results == [True, True]
     assert inside["max"] == 1, "two threads imported translatepy at the same time"
 
