@@ -6,6 +6,7 @@ file over once, and a failed migration must not stop the plugin.
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
 from pathlib import Path
@@ -752,4 +753,70 @@ def test_save_survives_a_failed_directory_sync(tmp_path: Path, monkeypatch: pyte
     queue.add("hello")
 
     assert [m["content"] for m in json.loads(path.read_text(encoding="utf-8"))] == ["hello"]
+    assert not path.with_name("inbox.json.tmp").exists()
+
+
+def test_non_file_data_inbox_keeps_the_legacy_file(plugin: ClaudeCompanionPlugin) -> None:
+    legacy = companion._LEGACY_INBOX_PATH
+    _write_legacy(legacy)
+    plugin.data_path("inbox.json").mkdir(parents=True)  # not a regular file
+
+    plugin._init_inbox()
+
+    assert plugin._inbox is None
+    assert json.loads(legacy.read_text(encoding="utf-8")) == _legacy_payload()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="directory sync is skipped on Windows")
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [(errno.EINVAL, True), (errno.EOPNOTSUPP, True), (errno.EIO, False)],
+)
+def test_directory_sync_unsupported_counts_as_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: int, expected: bool
+) -> None:
+    def fsync(_fd: int) -> None:
+        raise OSError(code, os.strerror(code))
+
+    monkeypatch.setattr(companion.os, "fsync", fsync)
+
+    assert companion._sync_directory(tmp_path) is expected
+
+
+def test_save_retries_a_briefly_locked_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "inbox.json"
+    queue = InboxQueue(str(path))
+    queue.add("first")
+    failures = [PermissionError("in use"), PermissionError("in use")]
+
+    def replace(src: object, dst: object) -> None:
+        if Path(dst) == path and failures:
+            raise failures.pop()
+        _REAL_REPLACE(src, dst)
+
+    monkeypatch.setattr(companion.os, "replace", replace)
+    monkeypatch.setattr(companion, "_REPLACE_RETRY_DELAY", 0)
+
+    queue.add("second")
+
+    assert [m["content"] for m in json.loads(path.read_text(encoding="utf-8"))] == ["first", "second"]
+
+
+def test_save_gives_up_on_a_target_that_stays_locked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "inbox.json"
+    queue = InboxQueue(str(path))
+    queue.add("first")
+    before = path.read_text(encoding="utf-8")
+
+    def replace(src: object, dst: object) -> None:
+        if Path(dst) == path:
+            raise PermissionError("in use")
+        _REAL_REPLACE(src, dst)
+
+    monkeypatch.setattr(companion.os, "replace", replace)
+    monkeypatch.setattr(companion, "_REPLACE_RETRY_DELAY", 0)
+
+    queue.add("second")
+
+    assert path.read_text(encoding="utf-8") == before
     assert not path.with_name("inbox.json.tmp").exists()

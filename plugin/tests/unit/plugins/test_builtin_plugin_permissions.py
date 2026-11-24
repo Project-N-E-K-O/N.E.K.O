@@ -61,10 +61,10 @@ _EXPECTED = {
 _ALLOWED_POSSIBLE = {
     "claude_companion": {
         _FS_WRITE: [
-            ("__init__.py", "InboxQueue._save", "os.replace"),
             ("__init__.py", "_migrate_legacy_inbox", "os.replace"),
             ("__init__.py", "_migrate_legacy_inbox", "os.replace"),
             ("__init__.py", "_open_private", "os.open"),
+            ("__init__.py", "_replace_with_retry", "os.replace"),
             ("__init__.py", "_sync_directory", "os.open"),
         ],
     },

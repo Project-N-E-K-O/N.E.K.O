@@ -14,6 +14,7 @@ Dependencies:
 
 from __future__ import annotations
 
+import errno
 import json
 import threading
 import time
@@ -46,6 +47,11 @@ _INBOX_FILE_NAME = "inbox.json"
 # Older versions kept the inbox next to the plugin code. That directory is part
 # of the packaged source fingerprint and may be read-only once installed.
 _LEGACY_INBOX_PATH = Path(__file__).parent / _INBOX_FILE_NAME
+# Directory fsync errors meaning "not supported on this file system".
+_SYNC_UNSUPPORTED_ERRNOS = frozenset(
+    code for code in (getattr(errno, "EINVAL", None), getattr(errno, "ENOTSUP", None), getattr(errno, "EOPNOTSUPP", None))
+    if code is not None
+)
 # Outcomes of _migrate_legacy_inbox.
 _MIGRATION_DONE = "done"
 _MIGRATION_PENDING = "pending"
@@ -156,7 +162,7 @@ class InboxQueue:
                     shutil.copymode(self._path, tmp_path)
                 except FileNotFoundError:
                     pass  # first save: nothing to copy from
-            os.replace(tmp_path, self._path)
+            _replace_with_retry(tmp_path, self._path)
             _sync_directory(self._path.parent)  # best effort: make the rename durable
         except OSError:
             try:
@@ -257,8 +263,14 @@ def _migrate_legacy_inbox(legacy_path: Path, target_path: Path, logger: Any) -> 
         if not legacy_path.is_file():
             return _MIGRATION_DONE
         target_exists = target_path.exists()
+        target_is_file = target_exists and target_path.is_file()
     except OSError as e:
         logger.warning("Skipping legacy inbox migration, cannot inspect paths: {}", type(e).__name__)
+        return _MIGRATION_UNKNOWN
+    if target_exists and not target_is_file:
+        # Something else (e.g. a directory) sits where the inbox belongs: the
+        # legacy file may be the only copy of the messages, so leave it alone.
+        logger.warning("Skipping legacy inbox migration, the data inbox is not a regular file")
         return _MIGRATION_UNKNOWN
     if target_exists:
         # Only once the target's directory entry is known to be on disk.
@@ -328,6 +340,26 @@ def _open_private(path: Path, mode: str, **kwargs: Any):
         raise
 
 
+_REPLACE_RETRY_DELAY = 0.05  # seconds between attempts
+
+
+def _replace_with_retry(src: Path, dst: Path, attempts: int = 3) -> None:
+    """os.replace, retried briefly when the target is momentarily locked.
+
+    On Windows a virus scanner or the search indexer can hold the target
+    open for a moment, which makes the rename fail with PermissionError
+    where the old in-place write would have succeeded.
+    """
+    for attempt in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(_REPLACE_RETRY_DELAY)
+
+
 def _sync_directory(directory: Path) -> bool:
     """Flush a directory entry change (rename) to disk; best effort.
 
@@ -342,8 +374,10 @@ def _sync_directory(directory: Path) -> bool:
             os.fsync(fd)
         finally:
             os.close(fd)
-    except OSError:
-        return False
+    except OSError as e:
+        # Some network, FUSE and container mounts never support syncing a
+        # directory; failing forever there would keep the legacy file around.
+        return e.errno in _SYNC_UNSUPPORTED_ERRNOS
     return True
 
 
