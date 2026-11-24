@@ -24,7 +24,7 @@
             v-for="card in hive.members"
             :key="card.id"
             :card="card"
-            :class="{ sub: !hive.loose && !card.leader }"
+            :class="{ sub: hive.led && !card.leader }"
             @open="open(hive, $event)"
           />
         </div>
@@ -42,7 +42,8 @@ import type { Board, BoardCard } from '@/api/console'
 import { describeConsoleError } from '../powerFormat'
 import FamiliarCard from './FamiliarCard.vue'
 
-type Hive = { key: string; name: string; loose: boolean; workdir: string | null; doneToday: number; members: BoardCard[] }
+// `led`: the project has a leader, and the others of it are drawn as under it. In a project with none, none is.
+type Hive = { key: string; name: string; loose: boolean; led: boolean; workdir: string | null; doneToday: number; members: BoardCard[] }
 
 const { t, te } = useI18n()
 const router = useRouter()
@@ -63,11 +64,12 @@ const hives = computed<Hive[]>(() => {
   const made: Hive[] = (now.projects ?? [])
     .filter(project => !project.archived && project.members.length)
     .map(project => ({
-      key: `project:${project.name}`, name: project.name, loose: false, workdir: project.workdir,
+      key: `project:${project.name}`, name: project.name, loose: false, led: project.members.some(card => card.leader),
+      workdir: project.workdir,
       doneToday: project.done_today, members: project.members,
     }))
   if (now.loose?.length) {
-    made.push({ key: 'loose', name: t('power.home.loose'), loose: true, workdir: null, doneToday: 0, members: now.loose })
+    made.push({ key: 'loose', name: t('power.home.loose'), loose: true, led: false, workdir: null, doneToday: 0, members: now.loose })
   }
   return made
 })
