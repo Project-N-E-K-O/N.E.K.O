@@ -310,7 +310,9 @@ def test_current_voice_meta_ignores_other_characters():
         characters={"当前猫娘": "B", "猫娘": {"A": {"voice_id": "cosyvoice-v2-abc"}, "B": {}}},
         voices={"cosyvoice-v2-abc": {"provider": "cosyvoice"}},
     )
-    assert _warmup_config(cm).current_voice_meta is None
+    cfg = _warmup_config(cm)
+    cfg.core_config = {}  # no custom-API voice to fall back to
+    assert cfg.current_voice_meta is None
 
 
 def test_current_voice_meta_resolves_imported_voice_refs():
@@ -368,7 +370,10 @@ def warmup_state(monkeypatch):
     monkeypatch.setattr(module_warmup, "_gated_running", False)
     monkeypatch.setattr(module_warmup, "_gated_pending", False)
     spawned: list[str] = []
-    monkeypatch.setattr(module_warmup, "_spawn_gated_worker", spawned.append)
+    monkeypatch.setattr(
+        module_warmup, "_spawn_gated_worker", lambda label, scope=None: spawned.append(label),
+    )
+    monkeypatch.setattr(module_warmup, "_gated_pending_scope", None)
     return spawned
 
 
@@ -395,7 +400,7 @@ def test_rewarm_during_a_running_pass_is_coalesced(warmup_state, monkeypatch):
     passes: list[bool] = []
     monkeypatch.setattr(
         module_warmup, "_pending_gated_entries",
-        lambda skip_loaded, label: passes.append(skip_loaded) or (),
+        lambda skip_loaded, label, scope=None: passes.append(skip_loaded) or (),
     )
     module_warmup._run_gated_warmup("main")
     # Startup pass, then one more for the request that came in meanwhile.
@@ -407,7 +412,7 @@ def test_rewarm_during_a_running_pass_is_coalesced(warmup_state, monkeypatch):
 def test_rewarm_never_raises(warmup_state, monkeypatch):
     module_warmup._gated_started = True
 
-    def _boom(label):
+    def _boom(label, scope=None):
         raise RuntimeError("can't start new thread")
 
     monkeypatch.setattr(module_warmup, "_spawn_gated_worker", _boom)
@@ -426,8 +431,9 @@ def test_config_rewarm_pass_skips_loaded_modules(monkeypatch):
     monkeypatch.setitem(sys.modules, "anthropic", object())
     entries = module_warmup._pending_gated_entries(True, "config")
     assert "anthropic" not in entries
-    # Only gated modules not yet loaded; ungated ones were warmed at startup.
-    assert set(entries) <= set(_ENTRY_GATES)
+    # Gated modules not yet loaded, plus ungated ones the startup pass missed.
+    assert set(entries) <= set(_ENTRY_GATES) | set(module_warmup._unloaded_plain_entries())
+    assert not any(":" in entry for entry in entries)
     assert "dashscope" in entries or "dashscope" in sys.modules
     # The anthropic gate is not even evaluated once its module is loaded.
     assert "anthropic" not in asked[-1]
@@ -448,9 +454,18 @@ def test_evaluate_gates_only_reads_what_the_named_gates_need():
 
 def test_rewarm_is_skipped_once_every_gated_sdk_is_loaded(warmup_state, monkeypatch):
     module_warmup._gated_started = True
-    for entry in _ENTRY_GATES:
+    for entry in list(_ENTRY_GATES) + module_warmup._unloaded_plain_entries():
         monkeypatch.setitem(sys.modules, entry, object())
     assert module_warmup.request_config_rewarm("characters") is False
+    assert warmup_state == []
+
+
+def test_scoped_rewarm_is_skipped_once_its_gates_are_loaded(warmup_state, monkeypatch):
+    module_warmup._gated_started = True
+    for entry in ["dashscope", "dashscope.audio.tts_v2"] + module_warmup._unloaded_plain_entries():
+        monkeypatch.setitem(sys.modules, entry, object())
+    # anthropic etc. may still be missing; a character save cannot change them.
+    assert module_warmup.request_config_rewarm("characters", only={"cosyvoice_clone"}) is False
     assert warmup_state == []
 
 
@@ -459,8 +474,11 @@ def test_character_save_requests_a_recheck(tmp_path, monkeypatch):
 
     from utils.config_manager.characters import CharactersMixin
 
-    calls: list[str] = []
-    monkeypatch.setattr(module_warmup, "request_config_rewarm", calls.append)
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        module_warmup, "request_config_rewarm",
+        lambda reason, only=None: calls.append((reason, only)),
+    )
     fake = SimpleNamespace(
         _characters_reload_lock=threading.RLock(),
         _characters_cache_lock=threading.RLock(),
@@ -470,7 +488,8 @@ def test_character_save_requests_a_recheck(tmp_path, monkeypatch):
     path = tmp_path / "characters.json"
     CharactersMixin.save_characters(fake, {"猫娘": {}}, str(path), bypass_write_fence=True)
     assert path.exists()
-    assert calls == ["characters"]
+    # A character save can only change the voice: only that gate is re-checked.
+    assert calls == [("characters", {"cosyvoice_clone"})]
 
 
 class _CoreConfigManager:
@@ -512,13 +531,101 @@ def test_missing_or_valid_core_config_is_read_normally(tmp_path, content):
 
 
 def test_failed_startup_spawn_leaves_rechecks_usable(warmup_state, monkeypatch):
-    def _boom(label):
+    def _boom(label, scope=None):
         raise RuntimeError("can't start new thread")
 
     monkeypatch.setattr(module_warmup, "_spawn_gated_worker", _boom)
     assert module_warmup.start_main_server_warmup() is False
     assert module_warmup._gated_running is False
     spawned: list[str] = []
-    monkeypatch.setattr(module_warmup, "_spawn_gated_worker", spawned.append)
+    monkeypatch.setattr(
+        module_warmup, "_spawn_gated_worker", lambda label, scope=None: spawned.append(label),
+    )
     assert module_warmup.request_config_rewarm("core_api") is True
     assert spawned == ["config"]
+
+
+# --- review round 6 --------------------------------------------------------
+
+class _VoiceConfigManager(_FakeConfigManager):
+    def voice_id_exists_in_any_storage(self, voice_id):
+        return False
+
+
+def _voice_cfg(core, characters=None):
+    cm = _VoiceConfigManager(characters=characters or {"当前猫娘": "A", "猫娘": {"A": {}}})
+    cfg = _warmup_config(cm)
+    cfg.core_config = core
+    cfg.realtime_config = {"api_type": core.get("CORE_API_TYPE", ""), "base_url": ""}
+    return cfg
+
+
+def test_voice_falls_back_to_custom_api_voice_like_start_session():
+    cfg = _voice_cfg({"TTS_VOICE_ID": "cosyvoice-v2-x", "ENABLE_CUSTOM_API": True})
+    assert cfg.current_voice_id == "cosyvoice-v2-x"
+    cfg = _voice_cfg({"TTS_VOICE_ID": "cosyvoice-v2-x", "GPTSOVITS_ENABLED": True})
+    assert cfg.current_voice_id == "cosyvoice-v2-x"
+
+
+@pytest.mark.parametrize("core", [
+    {"TTS_VOICE_ID": "cosyvoice-v2-x", "ENABLE_CUSTOM_API": False},
+    {"TTS_VOICE_ID": "", "ENABLE_CUSTOM_API": True},
+    {"TTS_VOICE_ID": "__gptsovits_disabled__|x", "ENABLE_CUSTOM_API": True},
+])
+def test_no_custom_api_voice_fallback_when_start_session_would_not_use_it(core):
+    assert _voice_cfg(core).current_voice_id == ""
+
+
+def test_card_voice_wins_over_custom_api_voice():
+    cfg = _voice_cfg(
+        {"TTS_VOICE_ID": "cosyvoice-v2-x", "ENABLE_CUSTOM_API": True},
+        characters={"当前猫娘": "A", "猫娘": {"A": {"voice_id": "card-voice"}}},
+    )
+    assert cfg.current_voice_id == "card-voice"
+
+
+def test_custom_api_cosyvoice_voice_warms_dashscope():
+    cfg = _voice_cfg({"TTS_VOICE_ID": "cosyvoice-v2-x", "ENABLE_CUSTOM_API": True, "CORE_API_TYPE": "qwen"})
+    cfg._cm._voices = {"cosyvoice-v2-x": {"provider": "cosyvoice"}}
+    assert evaluate_gates(cfg, only={"cosyvoice_clone"}) == {"cosyvoice_clone": True}
+
+
+def test_real_stock_voice_check_never_imports_gated_sdks():
+    gated = {entry.partition(":")[0] for entry in _ENTRY_GATES}
+    before = set(sys.modules)
+    cfg = _voice_cfg(
+        {"CORE_API_TYPE": "qwen"},
+        characters={"当前猫娘": "A", "猫娘": {"A": {"voice_id": "custom-voice-without-record"}}},
+    )
+    evaluate_gates(cfg, only={"cosyvoice_clone"})
+    assert not ((set(sys.modules) - before) & gated)
+
+
+def test_scoped_recheck_evaluates_only_its_gates(monkeypatch):
+    asked = []
+
+    def _record(cfg=None, only=None):
+        asked.append(set(only))
+        return {name: True for name in only}
+
+    monkeypatch.setattr(module_warmup, "evaluate_gates", _record)
+    entries = module_warmup._pending_gated_entries(True, "config", frozenset({"cosyvoice_clone"}))
+    assert asked[-1] <= {"cosyvoice_clone"}
+    assert all(_ENTRY_GATES.get(e) in (None, "cosyvoice_clone") for e in entries)
+
+
+def test_recheck_retries_ungated_modules_the_startup_pass_missed(monkeypatch):
+    monkeypatch.setattr(module_warmup, "evaluate_gates", lambda cfg=None, only=None: {})
+    monkeypatch.delitem(sys.modules, "openai", raising=False)
+    assert "openai" in module_warmup._pending_gated_entries(True, "config")
+
+
+def test_pending_scopes_merge_and_widen_to_all(warmup_state):
+    module_warmup._gated_started = True
+    module_warmup._gated_running = True
+    module_warmup.request_config_rewarm("characters", only={"cosyvoice_clone"})
+    assert module_warmup._gated_pending_scope == frozenset({"cosyvoice_clone"})
+    module_warmup.request_config_rewarm("conversation_settings", only={"proactive_bilibili"})
+    assert module_warmup._gated_pending_scope == frozenset({"cosyvoice_clone", "proactive_bilibili"})
+    module_warmup.request_config_rewarm("core_api")
+    assert module_warmup._gated_pending_scope is None

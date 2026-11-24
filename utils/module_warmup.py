@@ -183,11 +183,27 @@ class WarmupConfig:
 
         characters = self._cm.load_characters() or {}
         profile = (characters.get("猫娘") or {}).get(characters.get("当前猫娘"))
-        if not isinstance(profile, dict):
-            return ""
-        return read_legacy_voice_id(
-            get_reserved(profile, "voice_id", default="", legacy_keys=("voice_id",))
-        )
+        voice_id = ""
+        if isinstance(profile, dict):
+            voice_id = read_legacy_voice_id(
+                get_reserved(profile, "voice_id", default="", legacy_keys=("voice_id",))
+            )
+        if voice_id:
+            return voice_id
+        # No voice on the card: start_session falls back to the custom-API voice
+        # (main_logic/core/lifecycle.py), and that voice goes through the same routing.
+        from utils.config_manager._shared import _as_bool
+        from utils.gptsovits_config import is_gsv_disabled_voice_id
+
+        core = self.core_config
+        fallback = str(core.get("TTS_VOICE_ID") or "")
+        if (
+            fallback
+            and not is_gsv_disabled_voice_id(fallback)
+            and (_as_bool(core.get("ENABLE_CUSTOM_API"), False) or core.get("GPTSOVITS_ENABLED"))
+        ):
+            return fallback
+        return ""
 
     @cached_property
     def current_voice_meta(self) -> Mapping[str, object] | None:
@@ -364,6 +380,8 @@ _warmup_lock = threading.Lock()
 _gated_started = False
 _gated_running = False
 _gated_pending = False
+# Gates the pending re-check covers (None: all), merged across the requests it absorbs.
+_gated_pending_scope: frozenset[str] | None = None
 
 
 def _warm_one(name: str) -> None:
@@ -407,12 +425,25 @@ def _warm_entries(module_list: tuple[str, ...], label: str) -> None:
     )
 
 
-def _unloaded_gates() -> set[str]:
-    """Gates that still have a module to import."""
-    return {gate for entry, gate in _ENTRY_GATES.items() if entry not in sys.modules}
+def _unloaded_gates(scope: Iterable[str] | None = None) -> set[str]:
+    """Gates (within ``scope``, all when None) that still have a module to import."""
+    gates = {gate for entry, gate in _ENTRY_GATES.items() if entry not in sys.modules}
+    return gates if scope is None else gates & set(scope)
 
 
-def _pending_gated_entries(skip_loaded: bool, label: str) -> tuple[str, ...]:
+def _unloaded_plain_entries() -> list[str]:
+    """Ungated module entries still missing: the startup pass never started, or an import failed."""
+    return [
+        entry for entry in MAIN_SERVER_WARMUP
+        if entry not in _ENTRY_GATES and ":" not in entry and entry not in sys.modules
+    ]
+
+
+def _pending_gated_entries(
+    skip_loaded: bool,
+    label: str,
+    scope: Iterable[str] | None = None,
+) -> tuple[str, ...]:
     if not skip_loaded:
         entries = select_warmup_entries(MAIN_SERVER_WARMUP, evaluate_gates())
         skipped = [entry for entry in MAIN_SERVER_WARMUP if entry not in entries]
@@ -423,28 +454,37 @@ def _pending_gated_entries(skip_loaded: bool, label: str) -> tuple[str, ...]:
         )
         return entries
     # A re-check only has to pick up what became reachable since the last pass:
-    # gated modules not loaded yet. Gates whose modules are all loaded are not
-    # evaluated, so they cost no config reads.
-    results = evaluate_gates(only=_unloaded_gates())
+    # gated modules not loaded yet, for the gates in ``scope``. Gates left out
+    # (out of scope, or all their modules loaded) are not evaluated, so they cost
+    # no config reads. Ungated modules still missing are retried too.
+    results = evaluate_gates(only=_unloaded_gates(scope))
+    plain = set(_unloaded_plain_entries())
     entries = tuple(
         entry for entry in MAIN_SERVER_WARMUP
-        if entry in _ENTRY_GATES
-        and entry not in sys.modules
-        and results.get(_ENTRY_GATES[entry], True)
+        if entry in plain
+        or (
+            entry in _ENTRY_GATES
+            and entry not in sys.modules
+            and results.get(_ENTRY_GATES[entry], False)
+        )
     )
     logger.debug("[warmup:%s] newly needed: %s", label, ", ".join(entries) or "(none)")
     return entries
 
 
-def _run_gated_warmup(label: str) -> None:
+def _merge_scope(a: frozenset[str] | None, b: frozenset[str] | None) -> frozenset[str] | None:
+    return None if a is None or b is None else a | b
+
+
+def _run_gated_warmup(label: str, scope: frozenset[str] | None = None) -> None:
     """Worker body: warm the gated selection, again while requests keep arriving."""
-    global _gated_running, _gated_pending
+    global _gated_running, _gated_pending, _gated_pending_scope
     # Only the startup pass walks the whole selection (the "module:attribute"
     # entries need it); a config re-check is about what is not loaded yet.
     skip_loaded = label != "main"
     while True:
         try:
-            _warm_entries(_pending_gated_entries(skip_loaded, label), label)
+            _warm_entries(_pending_gated_entries(skip_loaded, label, scope), label)
         except Exception as exc:  # best effort, like every other warmup failure
             logger.debug("[warmup:%s] gated warmup failed: %s", label, exc)
         skip_loaded = True
@@ -454,6 +494,7 @@ def _run_gated_warmup(label: str) -> None:
                 _gated_running = False
                 return
             _gated_pending = False
+            scope, _gated_pending_scope = _gated_pending_scope, None
 
 
 def _under_pytest() -> bool:
@@ -462,9 +503,9 @@ def _under_pytest() -> bool:
     return bool(os.environ.get("PYTEST_CURRENT_TEST"))
 
 
-def _spawn_gated_worker(label: str) -> None:
+def _spawn_gated_worker(label: str, scope: frozenset[str] | None = None) -> None:
     threading.Thread(
-        target=_run_gated_warmup, args=(label,),
+        target=_run_gated_warmup, args=(label, scope),
         name=f"module-warmup-{label}", daemon=True,
     ).start()
 
@@ -484,7 +525,8 @@ def start_main_server_warmup() -> bool:
         _spawn_gated_worker("main")
     except Exception as exc:
         # Leave the re-check usable: a stuck "running" flag would park every
-        # later request as pending with no worker to pick it up.
+        # later request as pending with no worker to pick it up. The next
+        # re-check also imports the ungated entries this pass never reached.
         with _warmup_lock:
             _gated_running = False
         logger.debug("[warmup] startup warmup not started: %s", exc)
@@ -492,33 +534,36 @@ def start_main_server_warmup() -> bool:
     return True
 
 
-def request_config_rewarm(reason: str = "config") -> bool:
+def request_config_rewarm(reason: str = "config", only: Iterable[str] | None = None) -> bool:
     """Re-run the gates after a config save; returns whether a worker was started.
 
-    A no-op until ``start_main_server_warmup`` has run in this process, so the
-    shared config writers can call it unconditionally: in a split deployment the
-    memory and agent servers never warm these SDKs. Never blocks and never
-    raises (callers sit right after a successful save); the gates read config in
-    the worker thread.
+    ``only`` limits the re-check to the gates a writer can affect (a character
+    save only touches the voice), so frequent writers do not re-read every
+    model slot. A no-op until ``start_main_server_warmup`` has run in this
+    process, so the shared config writers can call it unconditionally: in a split
+    deployment the memory and agent servers never warm these SDKs. Never blocks
+    and never raises (callers sit right after a successful save); the gates read
+    config in the worker thread.
     """
     if _under_pytest():
         return False
-    # Everything gated is loaded already: nothing a config change could add.
-    # Keeps frequent writers (character saves) from starting threads for nothing.
-    if not _unloaded_gates():
+    scope = None if only is None else frozenset(only)
+    # Nothing left that this change could add: no thread, no config reads.
+    if not _unloaded_gates(scope) and not _unloaded_plain_entries():
         return False
 
-    global _gated_running, _gated_pending
+    global _gated_running, _gated_pending, _gated_pending_scope
     with _warmup_lock:
         if not _gated_started:
             return False
         if _gated_running:
+            _gated_pending_scope = scope if not _gated_pending else _merge_scope(_gated_pending_scope, scope)
             _gated_pending = True
             return False
         _gated_running = True
     try:
         logger.debug("[warmup] re-checking warm targets after %s change", reason)
-        _spawn_gated_worker("config")
+        _spawn_gated_worker("config", scope)
     except Exception as exc:
         with _warmup_lock:
             _gated_running = False

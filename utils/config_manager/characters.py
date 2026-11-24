@@ -409,7 +409,7 @@ class CharactersMixin:
         # Never raises or blocks, and is a no-op outside main_server or once
         # every gated SDK is loaded.
         from utils.module_warmup import request_config_rewarm
-        request_config_rewarm("characters")
+        request_config_rewarm("characters", only={"cosyvoice_clone"})
 
     async def asave_characters(self, data, character_json_path=None, *, bypass_write_fence: bool = False):
         """Async wrapper: the sync version must not run directly on the event loop (atomic_write_json blocks)."""

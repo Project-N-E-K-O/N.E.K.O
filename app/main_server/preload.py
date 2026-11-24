@@ -49,9 +49,9 @@ def _sync_preload_modules():
     - the httpx SSL context (the first AsyncClient creation initializes it)
 
     Heavy SDKs are not imported here. utils/module_warmup.py warms them after the
-    server is ready, and only those the current config can reach: dashscope, for
-    instance, only when the current character uses a CosyVoice clone voice, and
-    googletrans/translatepy only for the region subtitle translation runs in.
+    server is ready, and only those the current config can reach (dashscope, for
+    instance, only when the current voice can reach the CosyVoice worker).
+    translatepy is not warmed at all; the first translation imports it.
     """
     import time
 
