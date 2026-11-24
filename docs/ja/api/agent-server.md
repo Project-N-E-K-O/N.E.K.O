@@ -63,8 +63,8 @@ task agent が呼び出すキーボード・マウスのツールと、ブラウ
 
 どちらも `{"enabled":true,"ready":true|false,"reasons":[...],"provider":"nekopower"}` を返し、キーボード・マウスの応答には `model` も入ります。agent モデルが未設定の間は、`{"ready":false,"reasons":[...]}` だけを返します。
 
-- キーボード・マウスは、agent モデルの接続確認が通っていて、このマシンで入力を送れるときに準備完了になります。入力を送れない場合、`reasons` には `AGENT_PYAUTOGUI_*` のいずれかのコードが入ります。たとえばディスプレイのないマシンでは `AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE` です。
-- ブラウザーは、使えるブラウザーがインストールされていて、agent モデルの接続確認が通っているときに準備完了になります。アプリケーションにブラウザーは同梱されません。Chrome、Edge、Brave、Chromium のどれも見つからない場合、`reasons` は `["AGENT_BROWSER_NOT_FOUND"]` です。探索は数回のファイル確認だけで、結果は 30 秒間保持されます。
+- キーボード・マウスは、agent モデルが設定されていて（アドレス、モデル名、キーが入力済み）、このマシンで入力を送れるときに準備完了になります。判定のためにモデルへリクエストは送りません。キーの誤りや利用枠の使い切りは、task agent が初めてモデルを使ったときに分かり、そのタスクが理由を示して失敗します。入力を送れない場合、`reasons` には `AGENT_PYAUTOGUI_*` のいずれかのコードが入ります。たとえばディスプレイのないマシンでは `AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE` です。
+- ブラウザーは、agent モデルが設定されていて、使えるブラウザーがインストールされているときに準備完了になります。こちらもモデルへリクエストは送りません。アプリケーションにブラウザーは同梱されません。Chrome、Edge、Brave、Chromium のどれも見つからない場合、`reasons` は `["AGENT_BROWSER_NOT_FOUND"]`、探索そのものが失敗した場合は `["AGENT_BROWSER_CHECK_FAILED"]` です。探索は数回のファイル確認だけで、結果は 30 秒間保持されます。
 
 ### `GET /builtin/activity`
 

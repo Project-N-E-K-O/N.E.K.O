@@ -24,6 +24,7 @@ through the facade at call time.
 """
 
 import asyncio
+import threading
 import time
 from typing import Callable, Dict, Any, Optional, Tuple
 
@@ -41,6 +42,11 @@ from .results import _emit_main_event
 # a handful of file checks, asked for from the status paths.
 _BROWSER_SEARCH_TTL_SECONDS = 30.0
 _browser_search: Optional[Tuple[float, bool, str]] = None
+# Generation of the kept answer: bumped when it is forgotten (the browser
+# settings changed). A search that started before that writes nothing back.
+# Searches run in worker threads, so reading and writing the two is locked.
+_browser_search_seq = 0
+_browser_search_lock = threading.Lock()
 
 BROWSER_NOT_FOUND = "AGENT_BROWSER_NOT_FOUND"
 # The search itself failed (the settings could not be read, a check broke):
@@ -60,8 +66,11 @@ def _browser_dependency_status() -> tuple[bool, str]:
     """
     global _browser_search
     now = time.monotonic()
-    if _browser_search is not None and now - _browser_search[0] < _BROWSER_SEARCH_TTL_SECONDS:
-        return _browser_search[1], _browser_search[2]
+    with _browser_search_lock:
+        kept = _browser_search
+        started_in = _browser_search_seq
+    if kept is not None and now - kept[0] < _BROWSER_SEARCH_TTL_SECONDS:
+        return kept[1], kept[2]
     from .nekopower_builtins import provider
 
     try:
@@ -70,14 +79,20 @@ def _browser_dependency_status() -> tuple[bool, str]:
     except Exception as exc:
         logger.warning("[Agent] Searching for a browser failed: %s", exc)
         found, reason = False, BROWSER_CHECK_FAILED
-    _browser_search = (now, found, reason)
-    return _browser_search[1], _browser_search[2]
+    with _browser_search_lock:
+        # Not kept when the settings changed while it was searched for: the
+        # next one looks afresh. Answered all the same.
+        if started_in == _browser_search_seq:
+            _browser_search = (now, found, reason)
+    return found, reason
 
 
 def _forget_browser_search() -> None:
     """Look for a browser afresh next time; for when the browser settings changed."""
-    global _browser_search
-    _browser_search = None
+    global _browser_search, _browser_search_seq
+    with _browser_search_lock:
+        _browser_search_seq += 1
+        _browser_search = None
 
 
 def _agent_model_set_up() -> Tuple[bool, str]:

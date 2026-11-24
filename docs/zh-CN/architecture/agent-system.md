@@ -127,7 +127,7 @@ task agent 的工具清单里只有网关的两个工具，办哪件委托都一
 
 浏览器用的是用户自己装的那个：Chrome、Edge、Brave、Chromium，按这个顺序找；在 Windows 上，系统默认浏览器是其中之一时排在最前。操控走浏览器的调试协议（Chrome DevTools Protocol，一条 WebSocket），不经任何浏览器自动化库。默认给它一份独立的资料目录 `<数据根>/nekopower/browser_profile`：在里面登录过的网站会一直保持登录，用户平时的登录状态不在里面。也可以改成直接操控用户正在用的浏览器，这要求 Chrome 144 以上，用户自己在 `chrome://inspect/#remote-debugging` 打开远程调试，每次连接浏览器都会弹窗要用户点允许。选择存在 `<数据根>/nekopower/browser.json`；浏览器装在不常见的位置时，在这个文件的 `executable` 里写明路径，或者用环境变量 `NEKO_BROWSER_PATH` 指定。
 
-浏览器工具自己启动的浏览器在任务之间不关：一件任务办完或被叫停，窗口和里面的页面都留着，下一件任务接着用同一个浏览器。应用只在两种时候关它：保存了有变化的浏览器设置，退出应用。叫停全部任务（`end_all`）、关掉浏览器工具的开关或 Agent 总开关，或者 agent 模型连不上、开关被自动关掉时，有窗口的浏览器留着，用户可以接着看里面的内容；开关关着的时候，浏览器工具的调用一律不执行。不开窗口（`headless`）启动的浏览器在这几种时候照旧关掉。应用和留着的浏览器保持连接，所以它照旧碰不到本应用自己的服务端口。直接操控用户正在用的浏览器时，应用任何时候都不关它，只断开连接。
+浏览器工具自己启动的浏览器在任务之间不关：一件任务办完或被叫停，窗口和里面的页面都留着，下一件任务接着用同一个浏览器。应用只在两种时候关它：保存了有变化的浏览器设置，退出应用。叫停全部任务（`end_all`）、关掉浏览器工具的开关或 Agent 总开关，或者 agent 模型的配置被删掉、开关被自动关掉时，有窗口的浏览器留着，用户可以接着看里面的内容；开关关着的时候，浏览器工具的调用一律不执行。不开窗口（`headless`）启动的浏览器在这几种时候照旧关掉。应用和留着的浏览器保持连接，所以它照旧碰不到本应用自己的服务端口。直接操控用户正在用的浏览器时，应用任何时候都不关它，只断开连接。
 
 用户自己把这个窗口关掉以后，应用不会自己再打开它。使魔下一次调用浏览器工具时，委托进入「等你回话」（和要权限时一样），问用户要不要重新打开浏览器：本次允许，或者拒绝。浏览器每被关一次就问一次，不看「浏览器」这一类权限的设置，回答没有时限。浏览器自己崩溃和被用户关掉分不开，同样会问。
 
@@ -192,7 +192,7 @@ HTTP 负责控制和查询，监听 `127.0.0.1:48915`；内嵌插件服务监听
 | `browser_use_enabled` | 给 task agent 用的浏览器工具 |
 | `user_plugin_enabled` | 插件入口，直达调用和经网关调用都受它控制 |
 
-Manager 和智能体服务器构造时这些开关均为关闭。首次真实 `greeting_check` 后会恢复持久化的运行时意图，因此“构造时关闭”不表示每次刷新页面都会重置用户选择。键鼠和浏览器还要求 agent 模型的连通性检查通过（`app/agent_server/model_probe.py`）。此外，键鼠要求本机能发出键鼠输入，浏览器要求本机装有可用的浏览器。
+Manager 和智能体服务器构造时这些开关均为关闭。首次真实 `greeting_check` 后会恢复持久化的运行时意图，因此“构造时关闭”不表示每次刷新页面都会重置用户选择。键鼠和浏览器还要求 agent 模型配好了（地址、模型名、Key），判断时不向模型发请求（`app/agent_server/capabilities.py`）。Key 填错、账户额度或余额用完，要等任务代理第一次用到模型时才暴露：那个任务会失败，并用明白的话说出原因（`nekopower/runtime/model.py` 的 `model_failure_kind`）。此外，键鼠要求本机能发出键鼠输入，浏览器要求本机装有可用的浏览器。
 
 ## 叫停、上限与重启
 
@@ -222,7 +222,7 @@ Manager 和智能体服务器构造时这些开关均为关闭。首次真实 `g
 | 键鼠和浏览器工具 | `nekopower/builtin/`、`config/prompts/prompts_nekopower_builtin.py` |
 | 桌面和浏览器的占用；哪些模型能看图 | `nekopower/host/leases.py`、`model_capabilities.py` |
 | 调用插件入口（`/runs`） | `nekopower/host/plugin_runs.py` |
-| 挂载宿主、HUD 视图、内置工具的开关和事件、agent 模型探测 | `app/agent_server/nekopower_mount.py`、`nekopower_builtins.py`、`model_probe.py` |
+| 挂载宿主、HUD 视图、内置工具的开关和事件、内置工具能不能用 | `app/agent_server/nekopower_mount.py`、`nekopower_builtins.py`、`capabilities.py` |
 | Agent 生命周期和 HTTP API | `app/agent_server/api_runtime.py`、`api_routes.py` |
 | 结果投递到聊天 | `main_logic/core/proactive.py` |
 

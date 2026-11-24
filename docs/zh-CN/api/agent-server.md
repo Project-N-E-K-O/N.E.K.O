@@ -63,8 +63,8 @@ Agent Server 还通过 ZeroMQ 与主服务器异步交换会话和任务事件�
 
 两者都返回 `{"enabled":true,"ready":true|false,"reasons":[...],"provider":"nekopower"}`，键鼠的响应另带 `model`。agent 模型还没配置好时，只返回 `{"ready":false,"reasons":[...]}`。
 
-- 键鼠就绪的条件：agent 模型的连通性探测通过，并且本机能发出键鼠输入。发不了输入时，`reasons` 里是某个 `AGENT_PYAUTOGUI_*` 原因码，例如没有显示环境的机器上是 `AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE`。
-- 浏览器就绪的条件：本机装有可用的浏览器，并且 agent 模型的连通性探测通过。应用不自带浏览器；找不到 Chrome、Edge、Brave、Chromium 中的任何一个时，`reasons` 是 `["AGENT_BROWSER_NOT_FOUND"]`。查找只是几次文件检查，结果缓存 30 秒。
+- 键鼠就绪的条件：agent 模型配好了（地址、模型名、Key 都填了），并且本机能发出键鼠输入。判断时不向模型发任何请求：Key 填错、账户额度用完，要等任务代理第一次用到模型时才会暴露，那个任务会失败并写明原因。发不了输入时，`reasons` 里是某个 `AGENT_PYAUTOGUI_*` 原因码，例如没有显示环境的机器上是 `AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE`。
+- 浏览器就绪的条件：agent 模型配好了，并且本机装有可用的浏览器；同样不向模型发请求。应用不自带浏览器；找不到 Chrome、Edge、Brave、Chromium 中的任何一个时，`reasons` 是 `["AGENT_BROWSER_NOT_FOUND"]`；查找过程本身出错时是 `["AGENT_BROWSER_CHECK_FAILED"]`。查找只是几次文件检查，结果缓存 30 秒。
 
 ### `GET /builtin/activity`
 

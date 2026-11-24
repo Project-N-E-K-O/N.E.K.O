@@ -212,6 +212,25 @@ def test_a_search_that_fails_is_not_usable_and_says_the_search_failed(search):
     assert capabilities._browser_dependency_status() == (False, "AGENT_BROWSER_CHECK_FAILED")
 
 
+def test_a_search_that_started_before_the_settings_changed_keeps_nothing(search, monkeypatch):
+    found = list(search.found)
+
+    def settings_saved_meanwhile(*_args: Any, **_kwargs: Any) -> Any:
+        search.searches += 1
+        if search.searches == 1:
+            # The browser settings are saved while this search is under way.
+            capabilities._forget_browser_search()
+        return found
+
+    monkeypatch.setattr("nekopower.builtin.browser.launcher.find_browsers", settings_saved_meanwhile)
+
+    # Answered all the same, but not kept: the next one looks afresh.
+    assert capabilities._browser_dependency_status() == (True, "")
+    assert capabilities._browser_search is None
+    assert capabilities._browser_dependency_status() == (True, "")
+    assert search.searches == 2 and capabilities._browser_search is not None
+
+
 def test_the_answer_of_the_browser_search_is_kept_for_a_moment(search, monkeypatch):
     now = [1000.0]
     monkeypatch.setattr(capabilities, "time", SimpleNamespace(monotonic=lambda: now[0]))
