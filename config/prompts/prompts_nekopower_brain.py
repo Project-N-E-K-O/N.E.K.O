@@ -1607,6 +1607,14 @@ LEADER_SUBAGENT_WRITES = (
     "commands. Hand that work over with hand_over; for a part whose result you need back, name "
     "a preset that only reads: {names}"
 )
+# What a task agent a leader started fails with when the preset it is opened
+# by can change files by the time it starts (it could not when the leader
+# asked for it, or the call would have been refused).
+LEADER_AGENT_CHANGES_FILES = (
+    "this task agent was not started: its preset can change files or run commands by now, and a "
+    "task agent the leader of a project starts with subagent only reads. Hand that work over "
+    "with hand_over, or name a preset that only reads"
+)
 # What hand_over is refused with while task agents the leader started for
 # the commission are still at work: what they hand back would come to
 # whoever has the commission by then.

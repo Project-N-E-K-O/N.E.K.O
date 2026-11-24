@@ -262,6 +262,7 @@ class Families:
                 bars,
                 reason="named",
                 sentence=orch.sentence_of(commission.dispatch_text, commission.user_text),
+                said=(commission.user_text or "").strip(),
             )
             if verdict.action == orch.SUMMON_STRAY:
                 # Not among what was read (its record cannot be read, say): the project's all the same.
@@ -330,7 +331,7 @@ class Families:
         def settled(key: str | None, relation: str, reason: str, calls: int) -> Verdict:
             return orch.settle(
                 key, relation, standing, bars, matches=matches, layer=orch.LAYER_MODEL, model_calls=calls, reason=reason,
-                sentence=sentence,
+                sentence=sentence, said=(commission.user_text or "").strip(),
             )
 
         keys = orch.shown_keys(matches, bars, sentence, standing)
@@ -341,7 +342,7 @@ class Families:
                 # there, and no project is made of it.
                 return orch.settle(
                     best.key, orch.FOLLOW_UP, standing, bars, matches=matches, layer=orch.LAYER_RETRIEVAL,
-                    reason="clear match", sentence=sentence,
+                    reason="clear match", sentence=sentence, said=(commission.user_text or "").strip(),
                 )
             return settled(None, orch.NEW, "not asked", 0)
         messages = orch.question(

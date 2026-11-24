@@ -3585,6 +3585,18 @@ class TaskAgentManager:
                 template=template,
             )
             session.changes_files = not _CHANGING_TOOLS <= set(spec.disabled_tools)
+            if session.changes_files and kept.kind == "child" and kept.parent_id:
+                # One a leader started was looked at when it asked for it
+                # (``_leader_starts_readers``); its preset was read anew for
+                # these tools, and a template may have changed in between.
+                # It is not opened with tools its leader is without: nothing
+                # would make it wait for the member that changes files in
+                # the project (``_note_writer`` counts it as no member's).
+                starter = await self._ledger.get_session(kept.parent_id)
+                if starter is not None and starter.kind == "project":
+                    from config.prompts.prompts_nekopower_brain import LEADER_AGENT_CHANGES_FILES
+
+                    raise RuntimeError(LEADER_AGENT_CHANGES_FILES)
             # Noted by the tools it is opened with: its preset was read anew for them, and may
             # say otherwise than when its session was looked at before (a template changed in
             # between). Others of its project wait for it from here on, or wait for it no more.

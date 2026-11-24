@@ -486,6 +486,23 @@ def test_what_plainly_goes_on_with_a_members_work_goes_to_it_beside_the_leader()
     assert goes("ask Colour finder in shop which colours the footer uses", standing=looked) == (orch.CONTINUE, "scout", True)
     by_title = orch.by_rules("ask Colour finder which colours the footer uses", "", looked, bars)
     assert (by_title.action, by_title.agent, by_title.direct) == (orch.CONTINUE, "scout", True)
+    # Named by her in what she dispatched, and not by the user: nobody chose the scout for a change.
+    hers = "Ask Colour finder to make the colours of the dark mode of the header warmer"
+    users = "make the colours of the dark mode of the header warmer"
+    assert goes(orch.sentence_of(hers, users), standing=looked, said=users) == (orch.TO_LEADER, None, False)
+    relayed = orch.by_rules(hers, users, looked, bars)
+    assert (relayed.action, relayed.agent, relayed.direct) == (orch.TO_LEADER, None, False)
+    assert orch.by_rules(hers, "ask Colour finder about the header", looked, bars).agent == "scout"
+    # (With no words of the user's beside hers, hers are all there is to go by.)
+    assert orch.by_rules(hers, "", looked, bars).agent == "scout"
+    # A member that can change files is sent what she names it for all the same.
+    assert goes("Ask Page painter in shop for an update\nhow is the shop coming along", standing=titled, said="how is the shop coming along") == (
+        orch.CONTINUE, "painter", True,
+    )
+    # A new one that is asked for is the leader's to start, whichever member the words fit.
+    anew = "in shop, start a new agent to swap the banner and the carousel on the home page for the new year layout"
+    assert goes(anew) == (orch.TO_LEADER, None, False)
+    assert goes("start a new agent, not Page painter, for the pictures in shop", standing=titled)[0] == orch.TO_LEADER
     # The words of the project's own name are no sign of a member's work: every sentence that
     # names the project shares them with every member that worked on it.
     budget = orch.ProjectView(name="记账小程序", leader="L")

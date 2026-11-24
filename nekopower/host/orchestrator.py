@@ -587,6 +587,7 @@ def settle(
     model_calls: int = 0,
     reason: str = "",
     sentence: str = "",
+    said: str = "",
 ) -> Verdict:
     """Turn the project or task agent a sentence belongs with into where the commission goes.
 
@@ -594,6 +595,9 @@ def settle(
     names a member (``named_member``) or plainly goes on with the work of
     a member that can change files (``clear_member``,
     ``Agent.changes_files``) is that member's, and the rest the leader's.
+    ``said`` is the user's own words in it, where there are any beside
+    hers: a member that cannot change files has it only when the user
+    named it, not when she did in what she dispatched.
     """
     shown = list(matches)
 
@@ -615,10 +619,16 @@ def settle(
             # A leader is not the only one a project's work comes to: what plainly goes on with a
             # member's own work (it was named, or the words say so) is that member's, with no
             # round through the leader. Whatever else is the project's, its leader says who does.
+            if sentence and _has("fresh_start", sentence):
+                # A new one was asked for: the leader's to start, whichever member the words fit.
+                return verdict(TO_LEADER, project=project.name, relation=relation)
             # A member the user names by its title is their choice, whatever it can do.
             at = target if target is not None and target in working and layer == LAYER_RULES else None
             if at is None:
                 at = named_member(sentence, working, bars, project.name)
+            if at is not None and not at.changes_files and named_member(said or sentence, [at], bars, project.name) is None:
+                # Named in what was dispatched and not by the user: nobody chose it for this.
+                at = None
             if at is None:
                 # By its words: the member they fit best, of all that take work. One that cannot
                 # change files (a scout the leader started to look something up) does not get it
@@ -679,11 +689,14 @@ def by_rules(dispatch_text: str, user_text: str, standing: Standing, bars: Bars)
     key = named(sentence, standing, bars)
     if key is not None and key.startswith(PROJECT_KEY):
         # A project that is named has it, whatever else the sentence says.
-        return settle(key, FOLLOW_UP, standing, bars, reason="named", sentence=sentence)
+        return settle(key, FOLLOW_UP, standing, bars, reason="named", sentence=sentence, said=user_text.strip())
     if _has("fresh_start", sentence):
         return settle(None, NEW, standing, bars, reason="asked for a new one")
     if key is not None:
-        return settle(key, relation_by_words(sentence, names_agent=True), standing, bars, reason="named", sentence=sentence)
+        return settle(
+            key, relation_by_words(sentence, names_agent=True), standing, bars, reason="named", sentence=sentence,
+            said=user_text.strip(),
+        )
     return None
 
 
@@ -706,7 +719,8 @@ def by_retrieval(
         return settle(None, NEW, standing, bars, matches=matches, layer=LAYER_RETRIEVAL, reason="nothing matches"), matches
     relation = relation_by_words(sentence) if best.key.startswith(AGENT_KEY) else FOLLOW_UP
     verdict = settle(
-        best.key, relation, standing, bars, matches=matches, layer=LAYER_RETRIEVAL, reason="clear match", sentence=sentence
+        best.key, relation, standing, bars, matches=matches, layer=LAYER_RETRIEVAL, reason="clear match", sentence=sentence,
+        said=user_text.strip(),
     )
     if verdict.action == FORM_FAMILY:
         # No project is made on words alone: whether this is the same job

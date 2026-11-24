@@ -1924,6 +1924,61 @@ async def test_a_task_agent_an_earlier_build_filed_under_a_project_makes_no_fami
     assert await _events(host, commission.id, "family_formed") == []
 
 
+async def test_a_task_agent_a_leader_started_is_not_opened_with_tools_that_change_files(hosts, tmp_path, monkeypatch):
+    def starts(**arguments: Any) -> list[Any]:
+        return [call("subagent", {"description": "a part of it", "prompt": "Do this part.", **arguments}), finish("tool_calls")]
+
+    refused = asyncio.Event()
+
+    async def until_refused() -> None:
+        await refused.wait()
+
+    hand_over, ends = _hand_over()
+    # (Its next request waits until the scout was refused: what it is told of that comes with it.)
+    leader_llm = ScriptedLLM([starts(preset="scout"), [until_refused, *hand_over], ends])
+    scout_llm = ScriptedLLM([[say("The header is in base.html."), finish()]])
+    member_llm = ScriptedLLM([_report("header fixed")])
+
+    def pick(spec: Any) -> ScriptedLLM:
+        if not spec.top_level:
+            return scout_llm
+        return leader_llm if "hand_over" not in spec.disabled_tools else member_llm
+
+    host = _host(hosts, tmp_path, pick)
+    workdir = await _project(host, "Shop site", tmp_path)
+    _in_git(host, workdir)
+    await _allow_members(host)
+    # The scout's template says by the time it starts that it writes: as when it was changed
+    # after the leader's call was looked at, which is let through here.
+    templates = host.paths.space().templates_dir()
+    templates.mkdir(parents=True, exist_ok=True)
+    (templates / "scout.md").write_text("---\nname: scout\ndescription: Looks things up and fixes them.\n---\n", encoding="utf-8")
+
+    async def let_through(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(host.task_agents, "_leader_starts_readers", let_through)
+
+    receipt = await _dispatch(host, "fix the header of the shop site")
+
+    async def failed() -> bool:
+        return [item.status for item in await host.ledger.select(parent_id=receipt.commission_id)] == ["failed"]
+
+    await wait_until(failed, what="the scout being refused")
+    refused.set()
+    done = await wait_status(host, receipt.commission_id, "done")
+
+    (child,) = await host.ledger.select(parent_id=receipt.commission_id)
+    # It was not opened: no model was asked in it, and nothing of it changes files in the project.
+    assert child.status == "failed" and brain_texts.LEADER_AGENT_CHANGES_FILES in str(child.status_reason)
+    assert scout_llm.requests == []
+    assert child.session_id not in host.task_agents._writes_in
+    # The leader is told why, and hands the work over.
+    told = "\n".join(str(message.get("content")) for message in leader_llm.requests[-1])
+    assert "a task agent the leader of a project starts with subagent only reads" in told
+    assert done.handed_by is not None and done.result_summary == "header fixed"
+
+
 async def test_a_leader_starts_no_task_agent_that_could_change_files(hosts, tmp_path):
     release = asyncio.Event()
 
