@@ -2287,6 +2287,25 @@ class Ledger:
 
         return await self.run(work)
 
+    async def note_project(self, session_id: str, project: str | None) -> None:
+        """Write the project a session works for, where it has none of its own on record.
+
+        For whoever read the session a while before it writes (a start):
+        a session of one commission may have been made a project's
+        member in between (``adopt``), and what was read before that is
+        not written over it. Looked at and written in one statement.
+        """
+        from nekopower.host.paths import DEFAULT_PROJECT
+
+        if not project:
+            return
+        await self.run(
+            lambda conn: conn.execute(
+                "UPDATE sessions SET project = ? WHERE id = ? AND (project IS NULL OR project = '' OR project = ?)",
+                (project, session_id, DEFAULT_PROJECT),
+            )
+        )
+
     async def write_card(self, session_id: str, *, by: str, **lines: Any) -> tuple[Session | None, tuple[str, ...]]:
         """Write lines of a session's card; returns the session and which lines were written.
 

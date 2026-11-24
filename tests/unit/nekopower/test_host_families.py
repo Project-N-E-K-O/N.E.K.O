@@ -1129,7 +1129,13 @@ async def test_a_commission_taken_up_again_starts_where_its_project_works_by_the
     """A commission that failed is not under way until it is at work again: the directory changed meanwhile is the one it starts in."""
     llm = ScriptedLLM([[call("report", {"status": "failed", "summary": "the file is missing"}), finish("tool_calls")],
                        _report("export added")])
-    host = _host(hosts, tmp_path, llm)
+    opened: list[Any] = []
+
+    def pick(spec: Any) -> ScriptedLLM:
+        opened.append(spec)
+        return llm
+
+    host = _host(hosts, tmp_path, pick)
     was = await _project(host, "Budget app", tmp_path)
     wanted = tmp_path / "new-place"
     wanted.mkdir()
@@ -1158,7 +1164,9 @@ async def test_a_commission_taken_up_again_starts_where_its_project_works_by_the
     assert await asyncio.wait_for(telling, 10) is True
     done = await wait_status(host, first.commission_id, "done")
 
-    # It worked in the new directory, and that is what is on record: of the commission, and of its session.
+    # It worked in the new directory (what its runtime was opened with), and that is what is on
+    # record: of the commission, and of its session.
+    assert [Path(spec.workdir) for spec in opened] == [was, wanted]
     assert Path(done.workdir) == wanted
     assert Path((await host.ledger.get_session(first.commission_id)).workdir) == wanted
     assert (await host.space.get_project("Budget app")).workdir == str(wanted)
@@ -1803,6 +1811,8 @@ async def test_what_the_ledger_finds_for_a_family_and_for_a_leader(tmp_path):
         assert (stuck.id, stuck.status) == (under_way.id, "blocked")
         await ledger.transition(under_way.id, "queued", reason="taken up again")
         await ledger.transition(under_way.id, "working", reason="t")
+        # At work again it is none that ended: its being stuck before is not told of once more.
+        assert await ledger.handed_work(leader.id, limit=5) == []
         await ledger.transition(under_way.id, "done", reason="t", result_summary="help page written")
         # Also where it ended anew before the leader's being told that it was stuck was put on record.
         await ledger.append_event(under_way.id, "told_to_leader", {"commission_id": stopped.id, "ending": stuck_at})
@@ -2005,9 +2015,11 @@ async def test_a_task_agent_a_leader_started_is_not_opened_with_tools_that_chang
     leader_llm = ScriptedLLM([starts(preset="scout"), [until_refused, *hand_over], ends])
     scout_llm = ScriptedLLM([[say("The header is in base.html."), finish()]])
     member_llm = ScriptedLLM([_report("header fixed")])
+    opened_below: list[Any] = []
 
     def pick(spec: Any) -> ScriptedLLM:
         if not spec.top_level:
+            opened_below.append(spec)
             return scout_llm
         return leader_llm if "hand_over" not in spec.disabled_tools else member_llm
 
@@ -2038,7 +2050,7 @@ async def test_a_task_agent_a_leader_started_is_not_opened_with_tools_that_chang
     (child,) = await host.ledger.select(parent_id=receipt.commission_id)
     # It was not opened: no model was asked in it, and nothing of it changes files in the project.
     assert child.status == "failed" and brain_texts.LEADER_AGENT_CHANGES_FILES in str(child.status_reason)
-    assert scout_llm.requests == []
+    assert scout_llm.requests == [] and opened_below == []
     assert child.session_id not in host.task_agents._writes_in
     # The leader is told why, and hands the work over.
     told = "\n".join(str(message.get("content")) for message in leader_llm.requests[-1])
@@ -2102,11 +2114,13 @@ async def test_a_leader_starts_no_task_agent_that_could_change_files(hosts, tmp_
 
 async def test_a_project_in_a_git_repository_has_no_leader_as_shipped(hosts, tmp_path, monkeypatch):
     import importlib
+    import runpy
 
-    # As the settings file has it, not as this file's fixture sets it.
-    shipped = importlib.util.find_spec("config.nekopower_settings").origin
-    assert "\nLEADER_IN_GIT_REPOSITORIES = False\n" in Path(shipped).read_text(encoding="utf-8")
-    monkeypatch.setattr(settings, "LEADER_IN_GIT_REPOSITORIES", False)
+    # As the settings file has it, not as this file's fixture sets it: the file run on its own,
+    # and this test goes by the value that gives.
+    shipped = runpy.run_path(importlib.util.find_spec("config.nekopower_settings").origin)["LEADER_IN_GIT_REPOSITORIES"]
+    assert shipped is False
+    monkeypatch.setattr(settings, "LEADER_IN_GIT_REPOSITORIES", shipped)
     scripts = {"the header": ScriptedLLM([_report("header fixed")]), "the footer": ScriptedLLM([_report("footer fixed")])}
     specs: dict[str, Any] = {}
     host = _host(hosts, tmp_path, _recording(scripts_by_commission(scripts), specs))
@@ -2689,6 +2703,46 @@ async def test_a_task_agent_that_became_a_project_s_since_is_gone_on_with_there_
     assert await _events(host, commission.id, "family_formed") == []
     (decided,) = await _events(host, commission.id, "orchestrated")
     assert (decided["action"], decided["placed"]) == ("form_family", {"action": "continue", "session": taker.id})
+
+
+@pytest.mark.parametrize("when", ["before the start reads it again", "after it"])
+async def test_a_task_agent_made_a_member_while_it_starts_stays_the_projects(hosts, tmp_path, when):
+    llm = ScriptedLLM([_report("report written"), _report("report written again")])
+    host = _host(hosts, tmp_path, llm)
+    await _project(host, "Reports", tmp_path)
+    agents = host.task_agents
+    first = await wait_status(host, (await _dispatch(host, "write the weekly sales report")).commission_id, "done")
+    await _let_go(host)
+    loose = await host.ledger.get_session(first.session_id)
+    assert (loose.kind, loose.project) == ("single", None)
+
+    # While its next commission starts in it, another that came for the same matter makes it a
+    # member of a project (as the third of a kind does): written between two steps of the start.
+    async def adopted() -> None:
+        assert [item.id for item in await host.ledger.adopt([loose.id], "Reports")] == [loose.id]
+
+    step = "_choose_runtime" if when == "before the start reads it again" else "_spec"
+    wrapped = getattr(agents, step)
+
+    async def meanwhile(*args: Any, **kwargs: Any) -> Any:
+        if (await host.ledger.get_session(loose.id)).kind == "single":
+            await adopted()
+        return await wrapped(*args, **kwargs)
+
+    setattr(agents, step, meanwhile)
+    second, _made = await host.ledger.create(
+        lanlan_name="Lan", title="the report again", dispatch_text="write the weekly sales report again", source="dispatch",
+        route="task_agent", session_id=loose.id,
+    )
+    await agents.submit(second)
+    await wait_status(host, second.id, "done")
+    assert len(llm.requests) == 2
+
+    # The start did not write what it read before over that: it is the project's member.
+    member = await host.ledger.get_session(loose.id)
+    assert (member.kind, member.project) == ("line", "Reports")
+    assert [item.id for item in await host.ledger.members("Lan", "Reports")] == [loose.id]
+    assert agents._writes_in[loose.id] == ("Reports", loose.id)
 
 
 async def test_what_a_task_agent_started_before_it_became_a_member_takes_the_projects_turn_with_it(hosts, tmp_path):

@@ -3585,6 +3585,11 @@ class TaskAgentManager:
                 )
                 session_path, workdir, begun_in = await asyncio.to_thread(prepare)
                 commission = await self._ledger.update(commission.id, workdir=workdir) or commission
+            elif again is not None and (again.kind, again.project) != (kept.kind, kept.project):
+                # Made a project's member since it was read (``Ledger.adopt``, by a commission
+                # that came for the same matter): it works where it did, and is the project's.
+                kept = again
+                place = dataclasses.replace(place, kind=kept.kind, project=kept.project or place.project)
             # A blocked or failed commission must be working again before its
             # opening brief can reserve a call against the new run.
             spec = await self._spec(
@@ -3616,8 +3621,10 @@ class TaskAgentManager:
                 runtime=runtime_name,
                 workdir=workdir,
                 session_dir=session_path,
-                project=place.project,
             )
+            # Its project where it has none on record yet, and not over one it was made a
+            # member of while this start was under way (what was read above is from before).
+            await self._ledger.note_project(session.session_id, place.project)
             if fallback is not None:
                 # It was to run in dsh and runs in the built-in runtime instead.
                 await self._ledger.append_event(
