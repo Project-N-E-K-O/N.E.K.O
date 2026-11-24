@@ -1431,3 +1431,22 @@ def test_the_in_memory_settings_harness_is_marked_rerun_safe(monkeypatch):
     monkeypatch.setattr(websocket_source_harness, "run_node_script", _record)
     websocket_source_harness._run_settings_node_harness("process.stdout.write('ok');")
     assert seen.get("rerun_safe") is True
+
+
+
+@pytest.mark.parametrize(("flags", "expected"), [
+    ([False, False, True], "1 of 3 attempts reached the harness script"),
+    ([True, False, False], "1 of 3 attempts reached the harness script"),
+    ([False, True], "1 of 2 attempts reached the harness script"),
+    ([True, True], "stalled again after it was re-run"),
+    ([False, False, False], "never reached the harness script"),
+])
+def test_the_diagnosis_looks_at_every_attempt(flags, expected):
+    attempts = [subprocess.TimeoutExpired(["node"], 3, output="", stderr="") for _ in flags]
+    error = NodeHarnessSpawnTimeout(
+        ["node"], 3, attempts, started=flags[-1], rerun_safe=True, attempts_started=flags,
+    )
+    text = str(error)
+    assert expected in text, text
+    if expected != "stalled again after it was re-run":
+        assert "stalled again after it was re-run" not in text, text

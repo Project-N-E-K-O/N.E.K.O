@@ -185,7 +185,16 @@ class NodeHarnessSpawnTimeout(subprocess.TimeoutExpired):
         )
 
     def __str__(self) -> str:
-        if self.started and self.rerun_safe:
+        # Judged on every attempt, not the last one: attempts can disagree.
+        reached = sum(self.attempts_started)
+        total = len(self.attempts_started)
+        if reached == 0:
+            diagnosis = (
+                "node never reached the harness script -- process creation, "
+                "reading it off disk, or V8 bootstrap stalled. Nothing was "
+                "under test, so the attempt was repeated."
+            )
+        elif self.rerun_safe and reached >= 2:
             diagnosis = (
                 "node reached the harness script and stalled again after it was "
                 "re-run, without the watchdog firing. The caller marked the "
@@ -193,7 +202,7 @@ class NodeHarnessSpawnTimeout(subprocess.TimeoutExpired):
                 "run; one that repeats points at the script itself (a "
                 "synchronous block), not at the runner."
             )
-        elif self.started:
+        elif total == 1:
             diagnosis = (
                 "node reached the harness script and then stalled without "
                 "the watchdog firing. Either the script's top level blocked "
@@ -204,9 +213,10 @@ class NodeHarnessSpawnTimeout(subprocess.TimeoutExpired):
             )
         else:
             diagnosis = (
-                "node never reached the harness script -- process creation, "
-                "reading it off disk, or V8 bootstrap stalled. Nothing was "
-                "under test, so the attempt was repeated."
+                f"{reached} of {total} attempts reached the harness script and "
+                "stalled there; the others stalled before reaching it. Stalls "
+                "that vary from run to run point at the runner rather than at "
+                "the script."
             )
         lines = [super().__str__(), "", diagnosis]
         for index, (attempt, reached) in enumerate(
