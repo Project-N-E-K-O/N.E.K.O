@@ -496,6 +496,9 @@ class _HeldPluginOperationLock:
             _PROCESS_LOCK.release()
             raise
         self._owner_token = _OPERATION_OWNER.set(current_task)
+        # Every context copied from here on (asyncio.to_thread, create_task)
+        # may reuse this file lock in hold_plugin_operation_file_lock, so work
+        # spawned inside the operation must finish before it ends.
         self._file_lock_token = _OPERATION_FILE_LOCK_HANDLE.set(self._file_lock_handle)
         self._depth_token = _OPERATION_DEPTH.set(1)
         return self

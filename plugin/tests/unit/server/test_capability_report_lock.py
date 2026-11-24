@@ -101,7 +101,9 @@ class _LockHolder:
 
     def __enter__(self) -> _LockHolder:
         self._thread.start()
-        assert self._acquired.wait(5)
+        if not self._acquired.wait(5):
+            self.__exit__()
+            raise AssertionError("lock holder did not acquire the lock")
         return self
 
     def __exit__(self, *_exc) -> None:
@@ -113,15 +115,15 @@ def test_report_does_not_walk_while_another_holder_has_the_lock(monkeypatch, tmp
     root = _plugin(tmp_path)
     runner = analysis.CapabilityAnalysisService(CapabilityReportStore(tmp_path / "reports"))
     cached = _seed_fresh_report(runner, root)
-    monkeypatch.setattr(analysis, "_REPORT_LOCK_WAIT_SECONDS", 0.05)
     walks = _count_walks(monkeypatch)
 
+    # Any plugin operation (start/stop/reload of another plugin) holds the lock.
     with _LockHolder():
         busy = runner.report("demo", root, "1")
 
-    assert busy["status"] == "unavailable"
+    # The cached report is served unverified rather than hidden as analyzing.
+    assert busy == cached
     assert walks == []
-    # Contention is transient: the cached report is kept for the next poll.
     assert runner._reports["demo"] is cached
 
     assert runner.report("demo", root, "1")["status"] == "completed"
@@ -135,7 +137,6 @@ async def test_report_inside_a_serialized_operation_reuses_the_held_lock(
     root = _plugin(tmp_path)
     runner = analysis.CapabilityAnalysisService(CapabilityReportStore(tmp_path / "reports"))
     _seed_fresh_report(runner, root)
-    monkeypatch.setattr(analysis, "_REPORT_LOCK_WAIT_SECONDS", 0.2)
     walks = _count_walks(monkeypatch)
 
     async with plugin_operation_lock.hold():
@@ -157,7 +158,6 @@ async def test_revoke_returns_verified_details_without_deadlock(monkeypatch, tmp
     runner = analysis.CapabilityAnalysisService(CapabilityReportStore(tmp_path / "reports"))
     _seed_fresh_report(runner, root)
     monkeypatch.setattr(analysis, "analysis_service", runner)
-    monkeypatch.setattr(analysis, "_REPORT_LOCK_WAIT_SECONDS", 0.2)
     monkeypatch.setattr(consent_service, "consent_store", store)
     monkeypatch.setattr(consent_service, "plugin_source", lambda _: (root, "1"))
     monkeypatch.setattr(
@@ -169,6 +169,56 @@ async def test_revoke_returns_verified_details_without_deadlock(monkeypatch, tmp
 
     assert details["analysis"]["status"] == "completed"
     assert details["decision"] is None
+    assert len(walks) == 1
+
+
+@pytest.mark.asyncio
+async def test_busy_details_keep_the_report_and_approval_still_verifies(
+    monkeypatch, tmp_path
+):
+    from plugin.server.domain.errors import ServerDomainError
+
+    root = _plugin(tmp_path)
+    store = PluginConsentStore(_ConfigManager(tmp_path / "consent"))
+    runner = analysis.CapabilityAnalysisService(CapabilityReportStore(tmp_path / "reports"))
+    _seed_fresh_report(runner, root)
+    monkeypatch.setattr(analysis, "analysis_service", runner)
+    monkeypatch.setattr(consent_service, "consent_store", store)
+    monkeypatch.setattr(consent_service, "plugin_source", lambda _: (root, "1"))
+    scheduled: list[str] = []
+    monkeypatch.setattr(
+        consent_service.capability_analysis_service,
+        "schedule_analysis",
+        lambda plugin_id, **_: scheduled.append(plugin_id),
+    )
+    walks = _count_walks(monkeypatch)
+
+    with _LockHolder():
+        details = consent_service.consent_details("demo", schedule_missing=True)
+    assert details["analysis"]["status"] == "completed"
+    assert details["state"] == "confirm"
+    assert details["unconfirmed"] == ["messages.push"]
+    # Not mistaken for a missing report: nothing queued, nothing walked.
+    assert scheduled == []
+    assert walks == []
+
+    # The source changes while the lock stays busy: details still show the
+    # cached report, but approving that snapshot re-verifies under the lock.
+    (root / "main.py").write_text(
+        "self.ctx.push_message()\nself.ctx.bus.memory.get()\n", encoding="utf-8"
+    )
+    with _LockHolder():
+        stale = consent_service.consent_details("demo", schedule_missing=True)
+    assert stale["analysis"]["status"] == "completed"
+    with pytest.raises(ServerDomainError) as rejected:
+        await asyncio.wait_for(
+            consent_service.approve_plugin(
+                "demo", version="1", unconfirmed=["messages.push"], analysis_status="completed"
+            ),
+            timeout=5,
+        )
+    assert rejected.value.code == "PLUGIN_CONSENT_CHANGED"
+    assert store.read("demo") == {}
     assert len(walks) == 1
 
 

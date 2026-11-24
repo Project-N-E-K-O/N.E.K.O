@@ -33,11 +33,6 @@ from plugin.server.infrastructure.capability_reports import report_store
 
 logger = get_logger("server.plugins.capability_analysis")
 
-# How long a details request waits for the plugin operation file lock before
-# answering "not verified yet" instead of walking a tree that may be moving.
-# Kept short: it occupies a to_thread worker, and the details poller retries.
-_REPORT_LOCK_WAIT_SECONDS = 0.5
-
 
 def plugin_source(plugin_id: str) -> tuple[Path, str]:
     with state.acquire_plugins_read_lock():
@@ -309,17 +304,17 @@ class CapabilityAnalysisService:
                 return report
             try:
                 # The revision walks the plugin tree, which update/uninstall
-                # rename (WinError 5 on Windows while a handle is open). Wait
-                # briefly; if an operation keeps the lock, report "not
-                # verified" for now without evicting the cache: the details
-                # poller asks again. Inside a serialized operation the held
-                # lock is reused rather than waited on.
-                with hold_plugin_operation_file_lock(
-                    None, timeout=_REPORT_LOCK_WAIT_SECONDS
-                ):
+                # rename (WinError 5 on Windows while a handle is open), so it
+                # only runs with the operation lock. Any plugin operation
+                # (start, stop, reload, install, ...) holds that lock, so do
+                # not wait: while it is busy, serve the cached report
+                # unverified, as before. approve_plugin re-reads details under
+                # the held lock (reused below), which verifies the revision
+                # and rejects a stale snapshot with PLUGIN_CONSENT_CHANGED.
+                with hold_plugin_operation_file_lock(None, timeout=0):
                     revision = source_revision(root, version)
             except PluginOperationBusy:
-                return _report("unavailable", **analysis_scope)
+                return {**report, **analysis_scope}
             except OSError:
                 revision = None
             fresh = is_fresh(report, revision)
