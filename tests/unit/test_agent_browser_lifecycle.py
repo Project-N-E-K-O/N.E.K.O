@@ -674,6 +674,38 @@ async def test_a_refresh_that_started_earlier_and_finishes_later_writes_nothing_
     assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
 
 
+async def test_a_browser_check_that_started_earlier_and_finishes_later_writes_nothing_over_the_later_one(
+    modules, search, browser, checks, monkeypatch
+):
+    import threading
+
+    first_asked = threading.Event()
+    release_first = threading.Event()
+    calls: list[int] = []
+
+    def browser_check() -> tuple[bool, str]:
+        calls.append(1)
+        if len(calls) == 1:
+            # Before a browser was named in the settings: none found.
+            first_asked.set()
+            release_first.wait(5.0)
+            return False, "AGENT_BROWSER_NOT_FOUND"
+        return True, ""
+
+    _keyboard(monkeypatch, ready=True)
+    monkeypatch.setattr(capabilities, "_browser_availability", browser_check)
+    earlier = asyncio.ensure_future(capabilities._refresh_tool_capabilities())
+    try:
+        await asyncio.wait_for(asyncio.to_thread(first_asked.wait, 5.0), 6.0)
+        await capabilities._refresh_tool_capabilities()
+        assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
+    finally:
+        release_first.set()
+    await asyncio.wait_for(earlier, 5.0)
+
+    assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
+
+
 async def test_without_a_browser_only_the_browser_tools_are_not_ready(modules, search, browser, checks, monkeypatch):
     _keyboard(monkeypatch, ready=True)
     search.found = []
