@@ -210,6 +210,35 @@ async def test_prepare_proactive_delivery_counts_recent_ui_engagement(
     assert prepared is False
 
 
+async def test_prepare_proactive_delivery_auto_start_does_not_self_block(
+    monkeypatch,
+):
+    """Background auto-start refreshes lifecycle activity but must not impersonate user input."""
+    mgr = _make_mgr()
+    mgr.is_goodbye_silent = MagicMock(return_value=False)
+    mgr.is_active = False
+    mgr.websocket = object()
+    mgr.last_user_activity_time = 10.0
+    mgr.last_user_engagement_time = None
+    patch_module_clock(monkeypatch, proactive_core, time=lambda: 100.0)
+
+    async def background_start(*_args, **_kwargs):
+        mgr.session = SimpleNamespace(_conversation_history=[])
+        # start_session intentionally refreshes this for idle-session lifecycle.
+        mgr.last_user_activity_time = 100.0
+
+    mgr.start_session = AsyncMock(side_effect=background_start)
+
+    prepared = await LLMSessionManager.prepare_proactive_delivery(
+        mgr,
+        min_idle_secs=10.0,
+    )
+
+    assert prepared is True
+    assert mgr.current_speech_id is not None
+    mgr.start_session.assert_awaited_once()
+
+
 async def test_prepare_proactive_delivery_rechecks_ui_engagement_before_claim(
     monkeypatch,
 ):

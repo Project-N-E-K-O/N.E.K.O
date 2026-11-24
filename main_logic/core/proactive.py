@@ -526,6 +526,14 @@ class ProactiveMixin:
                 for timestamp in activity_times
             )
 
+        def _user_engaged_recently() -> bool:
+            now = time.time()
+            timestamp = self.last_user_engagement_time
+            return (
+                timestamp is not None
+                and now - float(timestamp) < min_idle_secs
+            )
+
         def _round_owned() -> bool:
             return ProactiveMixin._proactive_round_owned(self, round_id)
 
@@ -557,9 +565,11 @@ class ProactiveMixin:
         except Exception:
             # ws state introspection failed — fall through to the remaining gates.
             pass
+        auto_started_session = False
         if not self.session or not hasattr(self.session, '_conversation_history'):
             try:
                 await self.start_session(self.websocket, new=False, input_mode='text')
+                auto_started_session = True
             except asyncio.CancelledError as exc:
                 if not self._consume_start_retirement_cancellation(exc):
                     raise
@@ -590,7 +600,12 @@ class ProactiveMixin:
                 return False
             # UI-only engagement does not rotate the proactive SID, so repeat
             # the shared idle check after session startup and lock waiting.
-            if _user_active_recently():
+            user_active_before_claim = (
+                _user_engaged_recently()
+                if auto_started_session
+                else _user_active_recently()
+            )
+            if user_active_before_claim:
                 logger.info(
                     "[%s] prepare_proactive_delivery: user active before claim",
                     self.lanlan_name,
