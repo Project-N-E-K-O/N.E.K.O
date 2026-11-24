@@ -294,7 +294,12 @@ def test_rights_go_out_with_ids_and_earlier_names(gate):
 
 
 def test_plugin_manager_labels_every_permission_id():
-    labels = (REPO / "frontend/plugin-manager/src/i18n/plugin-permissions.ts").read_text(encoding="utf-8")
+    # en-US defines the label keys (the other languages are typed against it);
+    # shared.ts maps ids that reuse an earlier capability's label.
+    labels = "".join(
+        (REPO / "frontend/plugin-manager/src/i18n/plugin-permissions" / name).read_text(encoding="utf-8")
+        for name in ("en-US.ts", "shared.ts")
+    )
     spec = (REPO / "frontend/plugin-manager/src/utils/pluginCapabilities.test.ts").read_text(encoding="utf-8")
     block = spec[spec.index("const PERMISSION_IDS = ["):]
     listed = tuple(re.findall(r"'([^']+)'", block[: block.index("]")]))
