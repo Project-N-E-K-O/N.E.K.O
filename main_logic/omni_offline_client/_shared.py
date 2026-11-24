@@ -38,7 +38,9 @@ from utils.llm_client import (  # noqa: F401
 
 from utils.frontend_utils import calculate_text_similarity  # noqa: F401
 
-# Defined in utils so the background warmup (utils layer) can share them.
+# Old names kept for compatibility only: routing reads utils.genai_route, so
+# rebinding these here changes nothing. Defined in utils so the background
+# warmup (utils layer) can share them.
 from utils.genai_route import (  # noqa: F401
     GENAI_NATIVE_BASE_URL_HINTS as _GENAI_NATIVE_BASE_URL_HINTS,
     GENAI_NATIVE_MODEL_HINTS as _GENAI_NATIVE_MODEL_HINTS,
