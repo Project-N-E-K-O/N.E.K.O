@@ -60,7 +60,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from config.native_runtime import env_for_user_programs
 from nekopower import TASK_CONTROL_TOOLS
 
 PROFILE = "acp"
@@ -744,6 +743,10 @@ def child_environment(base: Mapping[str, str], *, home: Path, token: str) -> dic
     would configure dsh or its vendor's services behind the host's back, and
     with dsh's directories set to ours.
     """
+    # Imported here, as this package does with ``config`` everywhere: reading
+    # the profile should not load the whole configuration.
+    from config.native_runtime import env_for_user_programs
+
     environment = {
         name: value
         for name, value in env_for_user_programs(base).items()

@@ -72,11 +72,10 @@ def _sets_a_thread_count(value: str | None) -> bool:
     sign, then digits; anything after the digits is ignored. Zero and negative
     results count as unset.
 
-    A count too large for a C ``int`` is treated as set. What OpenBLAS makes
-    of one differs by platform -- measured on Windows it is capped to the CPU
-    count, while glibc wraps it negative and OpenBLAS then sizes the pool from
-    the CPU count -- but either way the process ends up with every core, which
-    is what a huge number asks for.
+    A count too large for a C ``int`` is treated as set, and left alone. What
+    OpenBLAS makes of one is not predictable from here: measured on Windows
+    it is capped to the CPU count, while glibc's ``atoi`` wraps modulo 2**32,
+    so the result there can be anything from one thread to every core.
     """
     if not value:
         return False
