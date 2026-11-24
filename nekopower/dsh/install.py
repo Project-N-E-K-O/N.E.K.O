@@ -25,6 +25,9 @@ it lives below one directory in the data root::
     ├─ cache/, resources/     what the executable unpacks of itself, and what
     │                         dsh downloads for its plugins
     ├─ download/              a download under way
+    ├─ bin/                   ``neko-dsh-plugin``, the command a task agent
+    │                         adds plugins with (``plugin_command``)
+    ├─ pnpm/                  the pnpm that command fetched, and its store
     └─ settings.json          which runtime task agents use (``PREFERENCES``)
 
 One exact version is used (``DSH_VERSION``): dsh is a developer preview whose
@@ -179,7 +182,17 @@ class DshInstallation:
             raise DshUnavailable("dsh is not installed")
         home = self.home()
         home.mkdir(parents=True, exist_ok=True)
-        return DshLaunch(executable=executable, home=home)
+        launch = DshLaunch(executable=executable, home=home)
+        tag = platform_tag()
+        try:
+            from nekopower.dsh.plugin_command import write_command
+
+            directory = write_command(self.root(), executable=executable, leading=(), home=home, tag=str(tag))
+        except OSError:
+            # dsh works without it; only adding a plugin from a session does not.
+            logger.warning("could not write the command that adds dsh plugins", exc_info=True)
+            return launch
+        return DshLaunch(executable=executable, home=home, path=(directory,))
 
     def preference(self) -> str:
         """Blocking: return which runtime the user wants task agents to use."""
@@ -455,7 +468,7 @@ class DshInstallation:
         """
         async with self._lock:
             root = await asyncio.to_thread(self.root)
-            names = ["runtime", "cache", "resources", "download"] + (["home"] if purge else [])
+            names = ["runtime", "cache", "resources", "download", "bin", "pnpm"] + (["home"] if purge else [])
             try:
                 for name in names:
                     # Waited for also when this is cancelled: the lock (and the

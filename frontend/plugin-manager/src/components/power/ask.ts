@@ -48,6 +48,20 @@ export function askWhole(ask: BoardAsk): { kind: 'command' | 'path'; text: strin
   return null
 }
 
+// A command that adds a dsh plugin through `neko-dsh-plugin`, wherever in the command line it
+// stands; the same as `ADDS_PLUGIN` in `nekopower/dsh/plugin_command.py`.
+const ADDS_DSH_PLUGIN = /neko-dsh-plugin(?:\.cmd|\.ps1)?['"]?\s+add\b/i
+
+/**
+ * Return what has to be known before saying yes, when the request is to add a dsh plugin: it runs
+ * inside dsh with all that dsh may do, without a sandbox. Null for any other request.
+ */
+export function askWarning(ask: BoardAsk, t: Translate): string | null {
+  const command = ask.detail?.command
+  if (ask.category !== 'run_command' || typeof command !== 'string' || !ADDS_DSH_PLUGIN.test(command)) return null
+  return t('power.runtime.plugins.warning')
+}
+
 const SHOWN_APART = new Set(['command', 'path', 'tool'])
 
 /** Return what else a request for approval says, each with its name: where it would run, to whom something goes. */

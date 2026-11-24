@@ -100,7 +100,11 @@ def describe_permission(question: dict[str, Any], lang: str, *, max_tokens: int 
 
                 return _loc(MANAGED_DELIVERY_FULL_QUESTION, lang)
             return full
-        unquoted = _permission_subject({**question, "detail": {}, "key": None}, lang, 0)
+        # The words of the category the whole question is put in, which the
+        # command decides for one that adds a dsh plugin.
+        unquoted = _permission_subject(
+            {**question, "category": _wording(question), "detail": {}, "key": None}, lang, 0
+        )
         room = min(room, max(PERMISSION_SUBJECT_MIN_TOKENS, max_tokens - count_tokens(unquoted + answers)))
     return _permission_subject(question, lang, room) + answers
 
@@ -116,6 +120,22 @@ def _permission_subject(question: dict[str, Any], lang: str, max_tokens: int) ->
     return _permission_subject_cut(question, lang, max_tokens)[0]
 
 
+def _wording(question: dict[str, Any]) -> str:
+    """Return the key of ``PERMISSION_CATEGORY_TEXTS`` a permission question is worded by."""
+    detail = question.get("detail") if isinstance(question.get("detail"), dict) else {}
+    category = str(question.get("category") or "other")
+    if category == "managed_delivery" and detail.get("direction") in ("arguments", "result", "value", "content"):
+        return f"{category}_{detail['direction']}"
+    if category == "run_command":
+        from nekopower.dsh.plugin_command import adds_plugin
+
+        # Told when a plugin is added, never asked about when it is used: the
+        # question says what a plugin may do, around the whole command.
+        if adds_plugin(str(detail.get("command") or "")):
+            return "dsh_plugin_add"
+    return category
+
+
 def _permission_subject_cut(question: dict[str, Any], lang: str, max_tokens: int) -> tuple[str, bool]:
     """Return ``_permission_subject`` and whether a middle was left out of it."""
     from config.prompts.prompts_nekopower_brain import PERMISSION_CATEGORY_TEXTS, PERMISSION_DETAIL_CUT_MARK
@@ -124,9 +144,7 @@ def _permission_subject_cut(question: dict[str, Any], lang: str, max_tokens: int
 
     categories = _loc(PERMISSION_CATEGORY_TEXTS, lang)
     detail = question.get("detail") if isinstance(question.get("detail"), dict) else {}
-    category = str(question.get("category") or "other")
-    if category == "managed_delivery" and detail.get("direction") in ("arguments", "result", "value", "content"):
-        category += "_" + detail["direction"]
+    category = _wording(question)
     specific = str(
         detail.get("command")
         or detail.get("path")

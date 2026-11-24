@@ -103,6 +103,7 @@ dsh（DeepSeek Harness）是用户可以另外下载的第二个 agent runtime�
 - **权限**（`profile.py`）。dsh 自己的沙箱关闭；随配置带上的一个守卫让 dsh 在每次工具调用之前先问，问到的都交给宿主同一段权限代码判断。经能力网关的调用在发出之前判权限、问用户，调用到达网关时不再问。
 - **宿主的工具**（`host_tools.py`）。汇报、记经验、网页搜索和抓取、子 task agent 以一个 MCP 服务的形式提供给 dsh，定义和内置 runtime 用的是同一份；dsh 自带的网页搜索和抓取关掉了，所以抓网页和内置 runtime 一样只到公网地址。能力网关按 MCP 直接挂给 dsh。
 - **装在哪**（`install.py`）。`<数据根>/nekopower/dsh/`：程序、dsh 自己的配置和对话记录都在这里，不随存储位置迁移。下载的版本固定，文件按 sha256 和大小校验。
+- **装 dsh 插件**（`plugin_command.py`）。`dsh plugin add` 只是把参数转给电脑上的 `pnpm`，dsh 自己不带。宿主每次启动 dsh 时在 `<数据根>/nekopower/dsh/bin/` 写一条 `neko-dsh-plugin` 命令并放进 dsh 进程的 PATH，task agent 在 dsh 里跑 `neko-dsh-plugin add <包名>` 就能装：第一次用时下载不依赖 Node.js 的 pnpm（先 npm 官方源，不通换 npmmirror，按大小和 sha256 校验），pnpm 的仓库和缓存也放在 `nekopower/dsh/pnpm/` 下，卸载 dsh 时一起删。插件和 dsh 同进程、全权限、没有沙箱：装之前要说清并得到同意（提示词里的规矩，和这条命令的权限问话、界面上的回答框都会写明），装好以后插件带来的工具归「其它」这一类，用时不再问。插件在 dsh 进程启动时加载，下一个 dsh 进程起才有。macOS Intel 上没有对应的 pnpm，装不了。
 
 在 dsh 上有几处和内置 runtime 不同：途中插话要等当前一段结束才送达；回复整条到达，不是逐字；经能力网关的一次调用最长 60 秒；没有「提问并原地等回答」的工具，改用汇报里的等回话；dsh 自己压缩对话、不告诉宿主，所以压缩之后不会重新告诉会话开头说过的那些话，内置工具组也不会重新交一遍。
 

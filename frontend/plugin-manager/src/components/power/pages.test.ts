@@ -14,7 +14,7 @@ import McpTools from '@/views/McpTools.vue'
 import AskBox from './AskBox.vue'
 import RoleModelsTab from './RoleModelsTab.vue'
 import UsageLimitCard from './UsageLimitCard.vue'
-import { askFacts, askLines, askSummary, askWhole } from './ask'
+import { askFacts, askLines, askSummary, askWarning, askWhole } from './ask'
 import { formatDuration, formatTokens } from './powerFormat'
 import ActivityPane from './space/ActivityPane.vue'
 import TranscriptPane from './space/TranscriptPane.vue'
@@ -135,6 +135,25 @@ describe('what a familiar asks the user', () => {
     expect(answers).toEqual([{ choice: 'deny' }])
     // Nothing to type an answer into: it is answered by its choices.
     expect(byTest('familiar-reply')).toBeNull()
+  })
+
+  it('says what a dsh plugin may do when the command would add one, and only then', async () => {
+    const adding = permission({ detail: { tool: 'bash', command: 'cd D:/x && neko-dsh-plugin add dsh-free-search' } })
+    expect(askWarning(adding, t)).toBe(words.runtime.plugins.warning)
+    expect(askWarning(permission({ detail: { command: '& "C:/n/bin/neko-dsh-plugin.cmd" add a' } }), t)).toBe(words.runtime.plugins.warning)
+    for (const command of ['neko-dsh-plugin list', 'neko-dsh-plugin remove a', 'pnpm add a', LONG]) {
+      expect(askWarning(permission({ detail: { command } }), t)).toBeNull()
+    }
+    // Only a command asks to run it: a path that happens to read so is no plugin being added.
+    expect(askWarning(permission({ category: 'outside_read', detail: { command: 'neko-dsh-plugin add a' } }), t)).toBeNull()
+    await mount(AskBox, { ask: adding, busy: '' })
+    expect(byTest('ask-warning')?.textContent).toContain(words.runtime.plugins.warning)
+    expect(byTest('ask-whole')?.textContent).toBe('cd D:/x && neko-dsh-plugin add dsh-free-search')
+  })
+
+  it('shows no warning for any other request', async () => {
+    await mount(AskBox, { ask: permission(), busy: '' })
+    expect(byTest('ask-warning')).toBeNull()
   })
 
   it('takes an answer in words for a question put in words, and none that says nothing', async () => {
