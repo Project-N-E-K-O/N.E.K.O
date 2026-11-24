@@ -15,6 +15,7 @@ import AskBox from './AskBox.vue'
 import RoleModelsTab from './RoleModelsTab.vue'
 import UsageLimitCard from './UsageLimitCard.vue'
 import { askFacts, askLines, askSummary, askWarning, askWhole } from './ask'
+import dshPluginCommands from './dshPluginCommands.json'
 import { formatDuration, formatTokens } from './powerFormat'
 import ActivityPane from './space/ActivityPane.vue'
 import TranscriptPane from './space/TranscriptPane.vue'
@@ -140,15 +141,12 @@ describe('what a familiar asks the user', () => {
   it('says what a dsh plugin may do when the command would add one, and only then', async () => {
     const adding = permission({ detail: { tool: 'bash', command: 'cd D:/x && neko-dsh-plugin add dsh-free-search' } })
     expect(askWarning(adding, t)).toBe(words.runtime.plugins.warning)
-    // Whatever may bring a plugin in, as the backend's question says (`adds_plugin`).
-    for (const command of [
-      '& "C:/n/bin/neko-dsh-plugin.cmd" add a', 'neko-dsh-plugin --silent add a', 'neko-dsh-plugin "add" a',
-      'neko-dsh-plugin update a', 'neko-dsh-plugin', 'neko-dsh-plugin list && neko-dsh-plugin add a',
-    ]) {
-      expect(askWarning(permission({ detail: { command } }), t)).toBe(words.runtime.plugins.warning)
+    // The cases the backend's `adds_plugin` is tested with too, so the warning and her question agree.
+    for (const command of dshPluginCommands.adds) {
+      expect(askWarning(permission({ detail: { command } }), t), command).toBe(words.runtime.plugins.warning)
     }
-    for (const command of ['neko-dsh-plugin list', 'neko-dsh-plugin LS', 'neko-dsh-plugin remove a', 'neko-dsh-plugin.cmd why a', 'pnpm add a', LONG]) {
-      expect(askWarning(permission({ detail: { command } }), t)).toBeNull()
+    for (const command of [...dshPluginCommands.local, LONG]) {
+      expect(askWarning(permission({ detail: { command } }), t), command).toBeNull()
     }
     // Only a command asks to run it: a path that happens to read so is no plugin being added.
     expect(askWarning(permission({ category: 'outside_read', detail: { command: 'neko-dsh-plugin add a' } }), t)).toBeNull()

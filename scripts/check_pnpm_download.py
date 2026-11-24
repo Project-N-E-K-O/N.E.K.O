@@ -29,6 +29,7 @@ and the plugin.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import sys
 import time
@@ -68,7 +69,8 @@ def plugin_check(director: urllib.request.OpenerDirector, registry: str, timeout
             data = answer.read()
     except urllib.error.HTTPError as exc:
         return False, f"HTTP {exc.code}"
-    except (urllib.error.URLError, OSError, TimeoutError, ValueError, KeyError) as exc:
+    except (urllib.error.URLError, http.client.HTTPException, OSError, TimeoutError, ValueError, KeyError) as exc:
+        # ``HTTPException``: an answer cut off in the middle (``IncompleteRead``); the next registry is still tried.
         reason = getattr(exc, "reason", exc)
         return False, f"{type(reason).__name__}: {reason}"
     algorithm, _, expected = str(dist.get("integrity", "")).partition("-")

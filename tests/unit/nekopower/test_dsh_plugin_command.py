@@ -409,26 +409,16 @@ async def test_an_uninstall_removes_the_command_and_its_pnpm(tmp_path):
     assert sorted(item.name for item in root.iterdir()) == ["home"]
 
 
+# The same cases as the frontend's recognizer is tested with (``askWarning``).
+_COMMANDS = json.loads(
+    (Path(__file__).resolve().parents[3] / "frontend" / "plugin-manager" / "src" / "components" / "power"
+     / "dshPluginCommands.json").read_text(encoding="utf-8")
+)
+
+
 @pytest.mark.parametrize(
     ("command", "adds"),
-    [
-        ("neko-dsh-plugin add dsh-free-search", True),
-        ('& "C:\\N.E.K.O\\nekopower\\dsh\\bin\\neko-dsh-plugin.cmd" add dsh-free-search', True),
-        ("cd D:/blog && NEKO-DSH-PLUGIN  add a b", True),
-        # Whatever else may bring a plugin in: an option first, a quoted word, another command.
-        ("neko-dsh-plugin --silent add dsh-free-search", True),
-        ('neko-dsh-plugin "add" dsh-free-search', True),
-        ("neko-dsh-plugin update dsh-free-search", True),
-        ("neko-dsh-plugin install", True),
-        ("neko-dsh-plugin", True),
-        ("neko-dsh-plugin list && neko-dsh-plugin add x", True),
-        # Looking and removing bring nothing in.
-        ("neko-dsh-plugin list", False),
-        ("neko-dsh-plugin LS", False),
-        ("neko-dsh-plugin remove dsh-free-search", False),
-        ("neko-dsh-plugin.cmd why dsh-free-search", False),
-        ("pnpm add dsh-free-search", False),
-    ],
+    [(command, True) for command in _COMMANDS["adds"]] + [(command, False) for command in _COMMANDS["local"]],
 )
 def test_which_commands_add_a_plugin(command, adds):
     assert plugin_command.adds_plugin(command) is adds
