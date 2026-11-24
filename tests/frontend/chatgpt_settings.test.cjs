@@ -656,6 +656,12 @@ test('a dormant slot that follows another tier is not edited when that tier chan
     // Picking another provider for the dormant slot is still refused.
     await ui.context.saveApiKey({...fullForm, decisionModelProvider: 'custom'});
     assert.equal(ui.calls.length, 1);
+    // So is a model ID typed into it: refused with the explanation, never silently dropped.
+    const before = ui.messages.length;
+    await ui.context.saveApiKey({...fullForm, decisionModelId: 'typed-decision-model'});
+    assert.equal(ui.calls.length, 1);
+    assert.equal(ui.messages.length, before + 1);
+    assert.equal(ui.messages.at(-1).message, 'api.chatgpt.independentSettings');
 });
 
 test('ordinary saves use the same GSV defaults and unknown image serialization as the form', async () => {

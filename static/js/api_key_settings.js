@@ -4318,10 +4318,13 @@ function prepareChatGPTIndependentSettingsForSave(params) {
             && provider === _loadedChatGPTIndependentFields[providerField];
         for (const suffix of ['Provider', 'Url', 'Id', 'ApiKey']) {
             const field = `${slot}Model${suffix}`;
-            // A slot that still follows another tier takes its URL, key and model ID
-            // from it: they change when that tier changes (switching the assist
-            // provider clears follower model IDs), which is not an edit of this slot.
-            const inherited = followsUnchanged && suffix !== 'Provider';
+            // A slot that still follows another tier takes its URL and key from it,
+            // and switching that tier clears its model ID (clearFollowModelIdsOnApiChange):
+            // neither is an edit of this slot. A model ID typed in is one, and is refused
+            // with the explanation rather than dropped.
+            const inherited = followsUnchanged && (suffix === 'Url' || suffix === 'ApiKey'
+                || (suffix === 'Id' && (params[field] === ''
+                    || document.getElementById(field)?.dataset.fixedModelHidden === 'true')));
             if (Object.hasOwn(params, field) && !inherited
                 && params[field] !== _loadedChatGPTIndependentFields[field]) return null;
             // Ordinary full-form saves must not persist auto-filled dormant settings.
