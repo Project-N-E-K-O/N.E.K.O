@@ -45,6 +45,9 @@ contracts stay separate from runtime/subprocess tests to preserve their CI marke
     ```bash
     uv run playwright install
     ```
+    `tests/conftest.py` also tries to install Chromium when it is missing, except
+    when pytest is given only `tests/unit` files that never mention Playwright
+    (that install takes minutes on a fresh CI runner).
 
 3.  **Prepare API Keys**:
     -   Copy `tests/api_keys.json.template` to `tests/api_keys.json`.
