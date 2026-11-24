@@ -45,9 +45,6 @@ from main_logic.agent_event_bus import AgentServerEventBridge
 
 
 class Modules:
-    # ``model_probe.AgentModelProbe``: whether the agent model can be reached.
-    # The keyboard-and-mouse and browser switches only stay on while it can.
-    model_probe: Any = None
     user_plugin_app: FastAPI | None = None
     user_plugin_http_server: Any = None
     user_plugin_http_task: Any = None  # threading.Thread (imported after class def)
@@ -78,13 +75,14 @@ class Modules:
     throttled_logger: "ThrottledLogger" = None  # Lazy initialization.
     agent_bridge: AgentServerEventBridge | None = None
     state_revision: int = 0
-    # The two LLM-driven groups start "not ready" with no reason, as
-    # ``startup`` leaves them: nothing probes the agent model at start, and
-    # "pending" would read as a check under way.
+    # "Not ready" with no reason until worked out: for the keyboard-and-mouse
+    # and the browser tools when the master switch comes on
+    # (``capabilities._refresh_tool_capabilities``), for the plugins at start.
+    # Nothing here asks the agent model anything.
     capability_cache: Dict[str, Dict[str, Any]] = {
         "computer_use": {"ready": False, "reason": ""},
         "browser_use": {"ready": False, "reason": ""},
-        "user_plugin": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
+        "user_plugin": {"ready": False, "reason": ""},
     }
     _background_tasks: ClassVar[set] = set()
     _persistent_tasks: ClassVar[set] = set()
@@ -141,42 +139,42 @@ def _put_switch_off(key: str) -> None:
         )
 
 
+def _capability_reason_code(raw_reason: str) -> str:
+    """Return the stable i18n code (``agent.precheck.*``) for why a capability is not ready.
+
+    Codes are passed through; the free-text reasons of the configuration
+    check (``ConfigManager.is_agent_api_ready``) and of the plugin host are
+    mapped onto codes.
+    """
+    text = str(raw_reason or "").strip()
+    if not text:
+        return ""
+    if text.startswith("AGENT_"):
+        return text
+
+    lower = text.lower()
+    if "模型未配置" in text or "model not configured" in lower:
+        return "AGENT_MODEL_NOT_CONFIGURED"
+    if "api url 未配置" in lower or "url not configured" in lower:
+        return "AGENT_URL_NOT_CONFIGURED"
+    if "api key 未配置" in lower or "key not configured" in lower:
+        return "AGENT_KEY_NOT_CONFIGURED"
+    if "pyautogui" in lower and ("not installed" in lower or "未安装" in text):
+        return "AGENT_PYAUTOGUI_NOT_INSTALLED"
+    if "no" in lower and "browser" in lower and "found" in lower:
+        return "AGENT_BROWSER_NOT_FOUND"
+    if "未发现可用插件" in text or "no plugins" in lower:
+        return "AGENT_NO_PLUGINS_FOUND"
+    if "plugin server" in lower or "插件服务" in text or "user_plugin server responded" in lower:
+        return "AGENT_PLUGIN_SERVER_ERROR"
+    # Anything else came from the configuration check failing as such
+    # (``_check_agent_api_gate``): the model counts as not set up.
+    return "AGENT_ENDPOINT_NOT_CONFIGURED"
+
+
 def _set_capability(name: str, ready: bool, reason: str = "") -> None:
-    def _normalize_precheck_reason(raw_reason: str) -> str:
-        text = str(raw_reason or "").strip()
-        if not text:
-            return ""
-        if text.startswith("AGENT_"):
-            return text
-
-        lower = text.lower()
-        # Normalize legacy Chinese/English free-text reasons into stable i18n codes.
-        if "未检查" in text or "not checked" in lower or "pending" in lower:
-            return "AGENT_PRECHECK_PENDING"
-        if "模型未配置" in text or "model not configured" in lower:
-            return "AGENT_MODEL_NOT_CONFIGURED"
-        if "api url 未配置" in lower or "url not configured" in lower:
-            return "AGENT_URL_NOT_CONFIGURED"
-        if "api key 未配置" in lower or "key not configured" in lower:
-            return "AGENT_KEY_NOT_CONFIGURED"
-        if "endpoint not configured" in lower or "api 未配置" in lower:
-            return "AGENT_ENDPOINT_NOT_CONFIGURED"
-        if "pyautogui" in lower and ("not installed" in lower or "未安装" in text):
-            return "AGENT_PYAUTOGUI_NOT_INSTALLED"
-        if "no" in lower and "browser" in lower and "found" in lower:
-            return "AGENT_BROWSER_NOT_FOUND"
-        if "not initialized" in lower or "初始化失败" in text:
-            return "AGENT_NOT_INITIALIZED"
-        if "未发现可用插件" in text or "no plugins" in lower:
-            return "AGENT_NO_PLUGINS_FOUND"
-        if "plugin server" in lower or "插件服务" in text or "user_plugin server responded" in lower:
-            return "AGENT_PLUGIN_SERVER_ERROR"
-        if "unreachable" in lower or "连接失败" in text or "connectivity" in lower:
-            return "AGENT_LLM_UNREACHABLE"
-        return "AGENT_LLM_UNREACHABLE"
-
     prev = Modules.capability_cache.get(name, {})
-    normalized_reason = _normalize_precheck_reason(reason)
+    normalized_reason = _capability_reason_code(reason)
     Modules.capability_cache[name] = {"ready": bool(ready), "reason": normalized_reason}
     if prev.get("ready") != bool(ready) or prev.get("reason", "") != normalized_reason:
         _bump_state_revision()

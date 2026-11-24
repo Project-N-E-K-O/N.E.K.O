@@ -5712,7 +5712,12 @@ class TaskAgentManager:
         one was, now or before it was taken up again: part of the work may
         be done), ``start`` (the task agent
         could not start on it: nothing of it was taken) or ``run`` (its run
-        stopped on an error). She is told that,
+        stopped on an error). A ``start`` or ``run`` whose error says the
+        provider refused the model's API key, or that its account has no
+        quota or balance left, is told as that (``model_key``,
+        ``model_quota``): the user has to fix it, and is shown so in plain
+        words; the keyboard-and-mouse and browser switches no longer ask the
+        model beforehand, so this is where a wrong key first shows. She is told that,
         in English, as the host tells a model what happened
         (``TASK_AGENT_FAILED_NOTICE``), with ``detail``, the error as it
         came, when there is one; the HUD shows it in her dialogue's language
@@ -5724,7 +5729,10 @@ class TaskAgentManager:
         """
         from config.prompts import prompts_nekopower_brain as texts
         from nekopower.host.task_brain import _texts
+        from nekopower.runtime.model import model_failure_kind
 
+        if said in ("start", "run") and detail:
+            said = model_failure_kind(detail) or said
         told, shown = reason, None
         commission = await self._ledger.get(commission_id)
         if commission is not None and commission.parent_id is None:

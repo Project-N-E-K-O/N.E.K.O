@@ -958,3 +958,38 @@ async def test_an_input_that_is_too_long_is_not_taken_for_a_refusal_of_its_pictu
     events = await _events(provider, _with_screenshots("QUFB"))
     assert events[-1].message.text == "A desktop."
     assert [_pictures(request) for request in llm.requests] == [1, 1, 1]
+
+
+# ---------------------------------------------------------------------------
+# A failure the user has to fix: a refused key, an account with nothing left
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("said", "kind"),
+    [
+        # As ``LLMClientProvider`` writes a failed request: the SDK's
+        # error class, then what it says, the HTTP status folded into it.
+        ("AuthenticationError: Error code: 401 - {'error': {'message': 'Incorrect API key provided: sk-wro***'}}", "model_key"),
+        ("PermissionDeniedError: Error code: 403 - {'error': {'message': 'not allowed to use this model'}}", "model_key"),
+        ("APIStatusError: Error code: 401 - {'error': {'code': 'invalid_api_key'}}", "model_key"),
+        ("RateLimitError: Error code: 429 - {'error': {'message': 'You exceeded your current quota, please check your plan and billing details.', 'type': 'insufficient_quota'}}", "model_quota"),
+        ("APIStatusError: Error code: 402 - {'error': {'message': 'Insufficient Balance'}}", "model_quota"),
+        ("BadRequestError: Error code: 400 - {'error': {'message': 'Your credit balance is too low to access the Anthropic API.'}}", "model_quota"),
+        ("APIStatusError: Error code: 403 - {'code': 'Arrearage', 'message': 'Access denied, please make sure your account is in good standing.'}", "model_quota"),
+        ("RateLimitError: Error code: 429 - {'error': {'type': 'exceeded_current_quota_error'}}", "model_quota"),
+        ("APIStatusError: Error code: 429 - {'error': {'code': '1113', 'message': '余额不足或无可用资源包,请充值。'}}", "model_quota"),
+        # A rate limit is not a quota used up: trying again shortly helps.
+        ("RateLimitError: Error code: 429 - {'error': {'message': 'Rate limit reached for requests, try again in 20s'}}", None),
+        # A refusal for where the request came from is not about the key.
+        ("PermissionDeniedError: Error code: 403 - {'error': {'code': 'unsupported_country_region_territory'}}", None),
+        ("APIConnectionError: Connection error.", None),
+        ("APITimeoutError: Request timed out.", None),
+        ("InternalServerError: Error code: 500 - upstream failed", None),
+        ("", None),
+    ],
+)
+def test_a_failure_the_user_has_to_fix_is_told_apart_from_the_rest(said, kind):
+    from nekopower.runtime.model import model_failure_kind
+
+    assert model_failure_kind(said) == kind

@@ -364,6 +364,12 @@ async def _filed(host: Any, text: str, **values: Any) -> Any:
     return commission
 
 
+# What a failed model request of a task agent says (``LLMClientProvider``).
+KEY_REFUSED = "AuthenticationError: Error code: 401 - {'error': {'message': 'Incorrect API key provided'}}"
+QUOTA_USED_UP = "RateLimitError: Error code: 429 - {'error': {'type': 'insufficient_quota'}}"
+RATE_LIMITED = "RateLimitError: Error code: 429 - Rate limit reached, try again in 20s"
+
+
 def _failed(said: str, lang: str, detail: str = "") -> tuple[str, str]:
     """What she is told of a commission that failed for a reason of the host's own, and what the HUD shows."""
     told = TASK_AGENT_FAILED_NOTICE.format(why=TASK_AGENT_FAILED_WHY[said])
@@ -3156,6 +3162,16 @@ async def test_a_run_that_ends_lets_go_of_the_browser_and_of_what_was_allowed_on
          "start", "the session is busy", "the session is busy"),
         # Refused without a word: the host's own fallback is for the record only.
         ({"kind": "error", "command": "prompt"}, "start", "", "the runtime rejected the command"),
+        # The provider refused the key, or the account has nothing left: told as
+        # that, in plain words, for the user to fix; the error still follows.
+        ({"kind": "ended", "reason": "error", "inputs": 1, "error": KEY_REFUSED},
+         "model_key", KEY_REFUSED, KEY_REFUSED),
+        ({"kind": "ended", "reason": "error", "inputs": 1, "error": QUOTA_USED_UP},
+         "model_quota", QUOTA_USED_UP, QUOTA_USED_UP),
+        # Refused before any of it was taken: the same, not "could not start".
+        ({"kind": "error", "command": "prompt", "message": KEY_REFUSED}, "model_key", KEY_REFUSED, KEY_REFUSED),
+        # A rate limit is not one of them.
+        ({"kind": "ended", "reason": "error", "inputs": 1, "error": RATE_LIMITED}, "run", RATE_LIMITED, RATE_LIMITED),
     ],
 )
 async def test_how_a_run_failed_is_told_to_her_in_english_shown_in_her_language_and_kept_as_it_was(hosts, tmp_path, event, said, detail, reason):

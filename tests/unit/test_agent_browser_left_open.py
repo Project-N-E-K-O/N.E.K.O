@@ -56,21 +56,6 @@ OWN_PATTERNS = ["*://*:48911/*", "*://*:48915/*"]
 END_ALL = {"action": "end_all"}
 
 
-class Probe:
-    """Stands in for ``AgentModelProbe``: answers the probe as told."""
-
-    def __init__(self, result: Any = (True, "")) -> None:
-        self.init_ok = True
-        self.last_error: str | None = None
-        self.result = result
-
-    def check_connectivity(self, **_options: Any) -> Any:
-        if isinstance(self.result, BaseException):
-            raise self.result
-        self.init_ok = bool(self.result[0])
-        return self.result
-
-
 @pytest.fixture
 def world(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> BrowserWorld:
     made = BrowserWorld(monkeypatch, tmp_path)
@@ -91,17 +76,15 @@ async def stage(monkeypatch: pytest.MonkeyPatch, world: BrowserWorld, tmp_path: 
         state,
         "capability_cache",
         {
-            "computer_use": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
+            "computer_use": {"ready": False, "reason": ""},
             "browser_use": {"ready": True, "reason": ""},
             "user_plugin": {"ready": True, "reason": ""},
         },
     )
     monkeypatch.setattr(state, "notification", None)
-    monkeypatch.setattr(state, "model_probe", Probe())
     monkeypatch.setattr(state, "browser_use_lifecycle_seq", state.browser_use_lifecycle_seq)
     monkeypatch.setattr(state, "state_revision", state.state_revision)
     monkeypatch.setattr(state, "_background_tasks", set())
-    monkeypatch.setattr(capabilities, "_llm_check_lock", asyncio.Lock())
     monkeypatch.setattr(nekopower_builtins, "_in_use", {})
 
     async def ignore(*_args: Any, **_kwargs: Any) -> None:
@@ -112,6 +95,8 @@ async def stage(monkeypatch: pytest.MonkeyPatch, world: BrowserWorld, tmp_path: 
     monkeypatch.setattr(api_routes, "_check_agent_api_gate", lambda: {"ready": True, "reasons": [], "is_free_version": False})
     # (Saving the browser settings asks it of the configuration on the disk otherwise.)
     monkeypatch.setattr(api_runtime, "_check_agent_api_gate", lambda: {"ready": True, "reasons": [], "is_free_version": False})
+    # (And whether the tools can be used asks it through the package.)
+    monkeypatch.setattr("app.agent_server._check_agent_api_gate", lambda: {"ready": True, "reasons": [], "is_free_version": False})
     monkeypatch.setattr(api_routes, "_ensure_plugin_lifecycle_stopped", ignore)
     # Whether the keyboard and mouse can be used is asked of the real desktop otherwise.
     monkeypatch.setattr(
@@ -317,19 +302,6 @@ async def test_a_browser_whose_windows_the_user_closed_is_closed_when_every_task
     assert stage.session.connected and stage.provider.browser_window_stays() is False
 
     await api_routes.admin_control(dict(END_ALL))
-
-    assert len(world.closed) == 1 and not stage.session.holds_a_browser
-
-
-async def test_a_model_that_stops_answering_closes_a_browser_whose_windows_the_user_closed(
-    stage: Any, world: BrowserWorld
-) -> None:
-    await _on_the_order_form(stage)
-    for page in list(world.browser.pages.values()):
-        world.browser.remove_page(page)
-    stage.state.model_probe = Probe((False, "AGENT_LLM_UNREACHABLE"))
-
-    await capabilities._fire_agent_llm_connectivity_check()
 
     assert len(world.closed) == 1 and not stage.session.holds_a_browser
 
@@ -786,89 +758,6 @@ async def test_a_browser_that_is_driven_again_after_it_was_closed_is_left_open_l
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("result", "reason", "notification"),
-    [
-        (
-            (False, "AGENT_API_KEY_INVALID"),
-            "AGENT_API_KEY_INVALID",
-            {"code": "AGENT_AUTO_DISABLED_BROWSER", "details": {"reason_code": "AGENT_API_KEY_INVALID"}},
-        ),
-        (RuntimeError("the probe itself broke"), "AGENT_LLM_UNREACHABLE", {"code": "AGENT_LLM_CHECK_ERROR"}),
-    ],
-)
-async def test_a_model_that_stops_answering_switches_the_tools_off_and_leaves_the_browser_window_open(
-    stage: Any, world: BrowserWorld, result: Any, reason: str, notification: dict[str, Any]
-) -> None:
-    await _on_the_order_form(stage)
-    stage.state.model_probe = Probe(result)
-
-    await capabilities._fire_agent_llm_connectivity_check()
-
-    # Everything that tells the user and keeps the tools from being called is as it always was.
-    assert stage.state.agent_flags["browser_use_enabled"] is False
-    assert stage.state.capability_cache["browser_use"] == {"ready": False, "reason": reason}
-    assert _notification(stage) == notification
-    refused = await stage.browse(url=THANKS)
-    assert not refused.success and "browser control is" in refused.text
-    # The window is not taken from them: they did not say the browser is not wanted.
-    assert world.closed == [] and stage.session.connected and stage.killed == []
-    assert [page.url for page in stage.session.pages()] == [ORDER]
-
-
-async def test_a_model_that_stops_answering_closes_a_browser_without_a_window(stage: Any, world: BrowserWorld) -> None:
-    world.settings(headless=True)
-    await _on_the_order_form(stage)
-    stage.state.model_probe = Probe((False, "AGENT_LLM_UNREACHABLE"))
-
-    await capabilities._fire_agent_llm_connectivity_check()
-
-    assert len(world.closed) == 1 and not stage.session.holds_a_browser
-    assert stage.state.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_LLM_UNREACHABLE"}
-
-
-async def test_the_window_left_open_for_a_model_that_stopped_answering_survives_the_stopping_of_every_task(
-    stage: Any, world: BrowserWorld
-) -> None:
-    await _on_the_order_form(stage)
-    stage.state.model_probe = Probe((False, "AGENT_LLM_UNREACHABLE"))
-    await capabilities._fire_agent_llm_connectivity_check()
-    assert stage.state.agent_flags["browser_use_enabled"] is False
-
-    # The switch is off, and it was not the user who put it off.
-    await api_routes.admin_control(dict(END_ALL))
-
-    assert world.closed == [] and stage.session.connected
-
-
-async def test_the_window_left_open_for_a_model_that_stopped_answering_survives_the_master_switch(
-    stage: Any, world: BrowserWorld
-) -> None:
-    await _on_the_order_form(stage)
-    stage.state.model_probe = Probe((False, "AGENT_LLM_UNREACHABLE"))
-    await capabilities._fire_agent_llm_connectivity_check()
-
-    await api_routes.admin_control({"action": "disable_analyzer"})
-
-    assert world.closed == [] and stage.session.connected and stage.killed == []
-
-
-async def test_switching_the_tools_on_again_after_the_model_is_back_drives_the_window_that_was_left_open(
-    stage: Any, world: BrowserWorld
-) -> None:
-    await _on_the_order_form(stage)
-    stage.state.model_probe = Probe((False, "AGENT_LLM_UNREACHABLE"))
-    await capabilities._fire_agent_llm_connectivity_check()
-    stage.state.model_probe = Probe()
-
-    await api_routes.set_agent_flags({"browser_use_enabled": True, "_persist_intent": False})
-    await stage.settled()
-    outcome = await stage.browse(url=THANKS)
-
-    assert outcome.success, outcome.text
-    assert len(world.launched) == 1 and len(world.connected) == 1 and world.closed == []
-
-
 # ---------------------------------------------------------------------------
 # Closing it as such
 # ---------------------------------------------------------------------------
@@ -879,10 +768,10 @@ async def test_closing_with_the_window_to_be_left_closes_nothing_and_still_says_
 ) -> None:
     await _on_the_order_form(stage)
 
-    await capabilities._close_browser(capability_reason="AGENT_LLM_UNREACHABLE", leave_window=True)
+    await capabilities._close_browser(capability_reason="AGENT_ENDPOINT_NOT_CONFIGURED", leave_window=True)
 
     assert world.closed == [] and stage.session.connected
-    assert stage.state.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_LLM_UNREACHABLE"}
+    assert stage.state.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_ENDPOINT_NOT_CONFIGURED"}
 
 
 async def test_closing_without_saying_so_closes_the_window(stage: Any, world: BrowserWorld) -> None:
@@ -900,7 +789,7 @@ async def test_closing_with_the_window_to_be_left_closes_one_that_is_no_longer_w
     await _on_the_order_form(stage)
     stage.provider.browser_no_longer_wanted()
 
-    await capabilities._close_browser(capability_reason="AGENT_LLM_UNREACHABLE", leave_window=True)
+    await capabilities._close_browser(capability_reason="AGENT_ENDPOINT_NOT_CONFIGURED", leave_window=True)
 
     assert len(world.closed) == 1 and not stage.session.holds_a_browser
 
@@ -1043,44 +932,20 @@ async def test_switching_one_of_two_capability_switches_off_keeps_what_was_kept_
     assert [turn.text for turn in kept.recent("Lan")] == ["sort the photos please"]
 
 
-@pytest.mark.parametrize("result", [(False, "AGENT_API_KEY_INVALID"), RuntimeError("the probe itself broke")])
-async def test_a_model_that_stops_answering_drops_what_was_kept_when_it_puts_the_last_switch_off(
-    stage: Any, monkeypatch: pytest.MonkeyPatch, result: Any
-) -> None:
-    kept = _kept_for_task_agents(monkeypatch)
-    stage.state.model_probe = Probe(result)
-
-    await capabilities._fire_agent_llm_connectivity_check()
-
-    # Put off for the user, and the last one on: off is off.
-    assert stage.state.agent_flags["browser_use_enabled"] is False
-    assert kept.recent("Lan") == []
-
-
-@pytest.mark.parametrize("found", ["no probe", "not usable"])
 async def test_the_keyboard_and_mouse_found_unusable_drops_what_was_kept_when_theirs_was_the_last_switch_on(
-    stage: Any, monkeypatch: pytest.MonkeyPatch, found: str
+    stage: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from fastapi import HTTPException
-
     kept = _kept_for_task_agents(monkeypatch)
     stage.state.agent_flags.update({"computer_use_enabled": True, "browser_use_enabled": False})
 
     async def nothing(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         return {}
 
-    monkeypatch.setattr(api_routes, "_fire_agent_llm_connectivity_check", nothing)
     monkeypatch.setattr(api_routes, "_model_images_status", nothing)
-    monkeypatch.setattr(api_routes, "_try_refresh_model_probe", lambda **_options: False)
     monkeypatch.setattr(
         api_routes, "_keyboard_mouse_availability", lambda: {"enabled": True, "ready": False, "reasons": ["AGENT_NO_DISPLAY"]}
     )
-    if found == "no probe":
-        stage.state.model_probe = None
-        with pytest.raises(HTTPException):
-            await api_routes.computer_use_availability()
-    else:
-        await api_routes.computer_use_availability()
+    await api_routes.computer_use_availability()
     for _ in range(3):
         await asyncio.sleep(0)
 
@@ -1132,23 +997,6 @@ class _AsItWas:
     def asked(self, *_args: Any, **_kwargs: Any) -> Any:
         self.now()
         return self.answer
-
-
-@pytest.mark.parametrize("result", [(False, "AGENT_API_KEY_INVALID"), RuntimeError("the probe itself broke")])
-async def test_what_was_kept_is_gone_before_the_browser_of_a_model_that_stopped_answering_is_waited_for(
-    stage: Any, monkeypatch: pytest.MonkeyPatch, result: Any
-) -> None:
-    kept = _kept_for_task_agents(monkeypatch)
-    stage.state.model_probe = Probe(result)
-    as_it_was = _AsItWas(kept)
-    monkeypatch.setattr(capabilities, "_close_browser", as_it_was.waited_for)
-
-    await capabilities._fire_agent_llm_connectivity_check()
-
-    # Dropped with the switch, and not after the browser is seen to: the switch may be on again by
-    # then, and what was said before it went off would be kept.
-    assert as_it_was.seen == [[]]
-    assert kept.recent("Lan") == []
 
 
 async def test_what_was_kept_is_gone_before_the_plugins_that_were_not_found_are_stopped(

@@ -170,6 +170,49 @@ def says_context_overflow(said: str) -> bool:
     return bool(_OVERFLOW_PATTERNS.search(said))
 
 
+# What a failed model request says when the provider refused its API key: the
+# SDK's error class, the HTTP status as the SDKs write it into the message,
+# or the provider's own words.
+_KEY_REFUSED_PATTERNS = re.compile(
+    r"authenticationerror|permissiondeniederror|invalid[_ ]api[_ ]key|incorrect api key|"
+    r"api key (?:is )?(?:invalid|not valid|expired)|unauthorized|"
+    r"(?:error code|status code|status|http)[:= ]*(?:401|403)\b",
+    re.IGNORECASE,
+)
+# What it says when the account behind the key has no quota or balance left.
+# A plain rate limit (too many requests, try again shortly) is not this.
+_QUOTA_USED_UP_PATTERNS = re.compile(
+    r"insufficient[_ ](?:quota|balance|credits?|funds)|exceeded[_ ](?:your[_ ])?current[_ ]quota|quota (?:has been )?exceeded|"
+    r"out of (?:quota|credits?)|credit balance is too low|"
+    r"\barrearage\b|\boverdue\b|余额不足|欠费|额度(?:已)?(?:用尽|用完|不足)",
+    re.IGNORECASE,
+)
+
+# A 403 for where the request came from is not about the key.
+_REGION_REFUSAL_PATTERNS = re.compile(r"country|region|territory", re.IGNORECASE)
+
+# The kinds ``model_failure_kind`` returns.
+MODEL_KEY_REFUSED = "model_key"
+MODEL_QUOTA_USED_UP = "model_quota"
+
+
+def model_failure_kind(said: str) -> str | None:
+    """Return why a model request failed when it is one the user has to fix, from what the failure said.
+
+    ``MODEL_KEY_REFUSED``: the provider refused the API key (wrong, expired,
+    or not allowed to use the model). ``MODEL_QUOTA_USED_UP``: the account
+    has no quota or balance left. None for anything else, a rate limit among
+    them. Read from the text, as the SDKs fold the HTTP status into it and
+    the text is all that reaches the host.
+    """
+    text = str(said or "")
+    if _QUOTA_USED_UP_PATTERNS.search(text):
+        return MODEL_QUOTA_USED_UP
+    if _KEY_REFUSED_PATTERNS.search(text) and not _REGION_REFUSAL_PATTERNS.search(text):
+        return MODEL_KEY_REFUSED
+    return None
+
+
 def window_from_overflow(said: str) -> int | None:
     """Return the context window a provider stated when it refused a request as too long, if it stated one.
 

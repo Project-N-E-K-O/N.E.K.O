@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 合并 main 后重新 bump：剧本市场连接页文案（八语言）与主线表情包制作资源。
-    const LOCALE_VERSION = '2026-11-23-theater-market-recovery-main-merge';
+    const LOCALE_VERSION = '2026-11-24-agent-model-probe-removed';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

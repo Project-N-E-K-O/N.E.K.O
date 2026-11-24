@@ -2377,13 +2377,10 @@ def test_agent_command_set_agent_enabled_reports_free_version_and_refreshes_capa
 
     assert 'command == "set_agent_enabled"' in func_src
     assert "gate = _check_agent_api_gate()" in func_src
-    assert "adapter_refreshed = _try_refresh_model_probe(force=True)" in func_src
-    assert "if not adapter_refreshed and Modules.model_probe is not None:" in func_src
-    assert "falling back to the existing one" in func_src
-    assert "if Modules.model_probe is not None:" in func_src
-    assert '_fire_agent_llm_connectivity_check(queue=True)' in func_src
-    assert '_set_capability("computer_use", False, "AGENT_CU_MODULE_NOT_LOADED")' in func_src
-    assert '_set_capability("browser_use", False, "AGENT_CU_MODULE_NOT_LOADED")' in func_src
+    # Whether the tools can be used is worked out from the configuration and
+    # this computer; nothing is sent to the agent model to find it out.
+    assert "await _refresh_tool_capabilities()" in func_src
+    assert "model_probe" not in func_src and "connectivity_check" not in func_src
     assert 'first_reason = (gate.get("reasons") or ["AGENT_ENDPOINT_NOT_CONFIGURED"])[0]' in func_src
     assert '_set_capability("computer_use", False, first_reason)' in func_src
     assert '_set_capability("browser_use", False, first_reason)' in func_src
@@ -2391,26 +2388,18 @@ def test_agent_command_set_agent_enabled_reports_free_version_and_refreshes_capa
     assert '"agent_api_gate": gate' in func_src
 
 
-def test_agent_llm_check_settles_browser_use_instead_of_leaving_it_pending():
+def test_tool_readiness_settles_both_groups_without_asking_the_model():
     source, func = _find_agent_server_function(
-        "_fire_agent_llm_connectivity_check", ast.AsyncFunctionDef
+        "_refresh_tool_capabilities", ast.AsyncFunctionDef
     )
     func_src = ast.get_source_segment(source, func) or ""
 
-    # capabilities.py accesses the state bag as ``_shared.Modules.<attr>``
-    # (single-owner rule of the package split).
-    assert "probe = _shared.Modules.model_probe" in func_src
-    assert "if probe is None:" in func_src
-    assert '_set_capability("computer_use", False, "AGENT_CU_MODULE_NOT_LOADED")' in func_src
-    assert '_set_capability("browser_use", False, "AGENT_CU_MODULE_NOT_LOADED")' in func_src
-    # Once the model answers, the browser tools are as ready as a browser can
-    # be found on this computer; nothing has to be loaded for them.
-    assert "await asyncio.to_thread(_browser_dependency_status)" in func_src
-    assert (
-        '_set_capability("browser_use", dependency_ready, "" if dependency_ready else dependency_error)'
-        in func_src
-    )
-    assert "AGENT_BU_MODULE_NOT_LOADED" not in func_src
+    # Both groups are settled, neither is left "pending"; off the event loop.
+    assert "await asyncio.to_thread(_keyboard_mouse_availability)" in func_src
+    assert "await asyncio.to_thread(_browser_availability)" in func_src
+    assert '_set_capability("computer_use",' in func_src
+    assert '_set_capability("browser_use", browser_ready, browser_reason)' in func_src
+    assert "PENDING" not in func_src and "create_chat_llm" not in func_src
 
 
 def test_agent_ui_v2_free_warning_accepts_command_gate_shape():
