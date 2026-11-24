@@ -47,7 +47,6 @@ from .api_shared import (  # noqa: F401
     _emit_main_event,
     _ensure_plugin_lifecycle_started,
     _ensure_plugin_lifecycle_stopped,
-    _fire_agent_llm_connectivity_check,
     _set_capability,
     _start_embedded_user_plugin_server,
     _stop_embedded_user_plugin_server,
@@ -649,17 +648,19 @@ async def startup():
     # first calls a browser tool.
 
     # The keyboard-and-mouse and browser tools are driven by task agents on
-    # the agent LLM — default to "not connected" and probe in background.
-    # The single check updates both capability caches.
-    _set_capability("computer_use", False, "connectivity check pending")
-    _set_capability("browser_use", False, "connectivity check pending")
+    # the agent LLM. Nothing is sent to that model here: every way these
+    # tools can come on probes it first (the master switch, each tool's own
+    # switch, the restore of the switches the user left on), and the master
+    # switch rebuilds the probe and probes again anyway, so a probe at start
+    # was only ever read while the tools were off. Until one of those runs
+    # they are "not ready" with no reason given: not "pending", which reads
+    # as a check under way and would stay so with none coming.
+    _set_capability("computer_use", False, "")
+    _set_capability("browser_use", False, "")
     # Plugin capability = ready (embedded HTTP server is always up), but lifecycle
     # is NOT started here — it syncs with user_plugin_enabled (default OFF).
     # The lifecycle starts on-demand when the user toggles the plugin flag ON.
     _set_capability("user_plugin", True, "")
-    _llm_probe_task = asyncio.create_task(_fire_agent_llm_connectivity_check())
-    Modules._persistent_tasks.add(_llm_probe_task)
-    _llm_probe_task.add_done_callback(Modules._persistent_tasks.discard)
 
     # NekoPower host (task brain, task agents, capability gateway). This only tells
     # it how to read this process's switches and what to call back; it is built

@@ -667,7 +667,7 @@ class DshRuntime:
         )
         holder.append(process)
         base = self._environment if self._environment is not None else os.environ
-        environment = profile.child_environment(base, home=launch.home, token=process.token)
+        environment = profile.child_environment(base, home=launch.home, token=process.token, path=launch.path)
         try:
             await connection.open(
                 profile.launch_arguments(launch.executable, patch_path, launch.leading),

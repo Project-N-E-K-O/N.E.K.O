@@ -1731,6 +1731,55 @@ DSH_DOWNLOAD_HOSTS: tuple[str, ...] = (
 mirrors of it that are reachable where PyPI is slow. They serve the same
 file; the SHA-256 is checked whichever answered."""
 
+DSH_PNPM_VERSION = "11.29.0"
+DSH_PNPM_PACKAGES: dict[str, dict[str, str | int]] = {
+    "main": {
+        "name": "@pnpm/exe",
+        "file": "exe-11.29.0.tgz",
+        "sha256": "8adba3afca205162ef1104463a234731b069c44b79ea7f4fbff3c9ffc07b66a5",
+        "size": 4995345,
+    },
+    "win-x64": {
+        "name": "@pnpm/win-x64",
+        "file": "win-x64-11.29.0.tgz",
+        "sha256": "8f02527ca7092c11e03b49a3f1362b3a931dce64b7b2f68407c65fc766db0ddd",
+        "size": 39988414,
+    },
+    "macos-arm64": {
+        "name": "@pnpm/macos-arm64",
+        "file": "macos-arm64-11.29.0.tgz",
+        "sha256": "ba2067d77c0c0089e5b5f40eb2a601ea60d79bbb2fd32bf36773ea33e3f45ddc",
+        "size": 45237146,
+    },
+    "linux-x64": {
+        "name": "@pnpm/linux-x64",
+        "file": "linux-x64-11.29.0.tgz",
+        "sha256": "8e60d808c722593a234de2bbffff8ae27482921f011925f34bb1a7c8ae18a212",
+        "size": 48695456,
+    },
+    "linux-arm64": {
+        "name": "@pnpm/linux-arm64",
+        "file": "linux-arm64-11.29.0.tgz",
+        "sha256": "e72457099714a2b242e9e1dd1ab3a62684f79d93eb0953f67531f02e8abda762",
+        "size": 48683686,
+    },
+}
+"""The pnpm that adds plugins to dsh (``nekopower/dsh/plugin_command.py``):
+dsh hands ``dsh plugin`` to a ``pnpm`` it looks for on the PATH and brings
+none of its own. This one needs no Node.js: ``main`` is its program text, and
+each platform's file is the executable that runs it, placed next to it. By
+dsh's platform tag, with each file's name on the registry, its SHA-256 and
+its size in bytes; a file that differs is deleted and not used. Fetched the
+first time a plugin is added, not with dsh. pnpm 11 is not built for macOS on
+Intel, which is not supported for dsh plugins."""
+
+DSH_PNPM_REGISTRIES: tuple[str, ...] = (
+    "https://registry.npmjs.org",
+    "https://registry.npmmirror.com",
+)
+"""Where pnpm, and then the plugins, are fetched from: the npm registry, then
+a mirror of it reachable where it is slow. The first that answers is used."""
+
 DSH_DOWNLOAD_CONNECT_SECONDS = 15.0
 DSH_DOWNLOAD_READ_SECONDS = 60.0
 """How long one host gets to accept the connection, and to send the next

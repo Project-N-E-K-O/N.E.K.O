@@ -2,6 +2,7 @@
   <div class="ask" data-testid="familiar-ask">
     <strong>{{ t('power.space.familiars.asks') }}</strong>
     <p v-for="(line, index) in lines" :key="index" class="text" data-testid="familiar-asked">{{ line }}</p>
+    <el-alert v-if="warning" :title="warning" type="warning" :closable="false" show-icon class="warning" data-testid="ask-warning" />
 
     <!-- What it wants to be allowed to do, whole: a long command is never shown cut here. -->
     <template v-if="whole">
@@ -40,7 +41,7 @@
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { BoardAsk } from '@/api/console'
-import { askFacts, askLines, askWhole } from './ask'
+import { askFacts, askLines, askWarning, askWhole } from './ask'
 
 /**
  * What a familiar asks the user while it waits, with what it would do shown
@@ -56,6 +57,7 @@ const wholeText = ref<HTMLElement | null>(null)
 const lines = computed(() => askLines(props.ask, t, te))
 const whole = computed(() => askWhole(props.ask))
 const facts = computed(() => askFacts(props.ask, t, te))
+const warning = computed(() => askWarning(props.ask, t))
 
 function choiceLabel(option: string): string {
   const key = `power.space.familiars.choices.${option}`
@@ -94,6 +96,7 @@ defineExpose({ clear: () => { reply.value = '' } })
 .ask { margin-top: 10px; padding: 12px; border: 1px solid var(--el-color-warning); border-radius: 10px; background: var(--el-color-warning-light-9); }
 .text { margin: 6px 0; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .muted { color: var(--el-text-color-secondary); font-size: 12px; }
+.warning { margin: 6px 0; }
 .whole-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; }
 .copy { font: inherit; font-size: 12px; color: var(--el-color-primary); background: none; border: 0; padding: 0; cursor: pointer; }
 .whole { margin: 4px 0 8px; padding: 10px 12px; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-all; font: 12.5px/1.6 Consolas, Menlo, monospace; border-radius: 8px; background: var(--el-fill-color); }
