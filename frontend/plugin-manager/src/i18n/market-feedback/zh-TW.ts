@@ -1,0 +1,41 @@
+import type { MarketFeedbackMessages } from './en-US'
+
+const messages: MarketFeedbackMessages = {
+  issuesTab: '問題回報',
+  noIssues: '目前沒有問題回報。',
+  issueOpen: '開啟中',
+  issueClosed: '已關閉',
+  backToIssues: '返回問題清單',
+  closeIssue: '關閉 Issue',
+  reopenIssue: '重新開啟 Issue',
+  updateIssueFailed: '無法更新 Issue。',
+  reply: '回覆',
+  message: '留言',
+  send: '傳送',
+  verifyEmail: '請先驗證外掛市集帳號的電子郵件。',
+  sendFailed: '無法傳送留言。',
+  sentAccountChanged: '操作已完成，但期間外掛市集帳號已切換，現在顯示的是目前帳號。',
+  notSentSessionChanged: '未傳送：外掛市集登入狀態已變更。草稿已保留，確認帳號後再傳送。',
+  draftMaybePostedByOtherAccount:
+    '這段內容可能已經用先前的帳號送出，再次傳送前請先在上方對話中確認。',
+  title: '我的意見回饋',
+  loginRequired: '登入外掛市集後即可查看你的外掛收到的意見回饋。',
+  kind: '意見回饋類型',
+  allKinds: '所有類型',
+  comment: '留言',
+  issue: 'Issue',
+  status: '狀態',
+  allStatuses: '所有狀態',
+  unread: '未讀',
+  awaitingReply: '待回覆',
+  markAllRead: '全部標為已讀',
+  markRead: '標為已讀',
+  unlisted: '已下架 · 無法開啟原始討論串',
+  open: '在市集開啟',
+  empty: '沒有符合條件的意見回饋。',
+  loadFailed: '無法載入意見回饋，請重新整理後再試。',
+  markFailed: '無法將意見回饋標為已讀。',
+  loadMore: '載入更多',
+}
+
+export default messages

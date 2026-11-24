@@ -1,8 +1,8 @@
 import pluginConsentMessages from '../plugin-consent/ko'
-import { modelApiMessages } from '../model-api'
-import { modelBindingsMessages } from '../model-bindings'
-import { marketFeedbackMessages } from '../market-feedback'
-import { authoringMessages } from '../authoring'
+import modelApiMessages from '../model-api/ko'
+import modelBindingsMessages from '../model-bindings/ko'
+import marketFeedbackMessages from '../market-feedback/ko'
+import authoringMessages from '../authoring/ko'
 import powerMessages from '../power/ko'
 
 /**
@@ -10,10 +10,10 @@ import powerMessages from '../power/ko'
  */
 export default {
   pluginConsent: pluginConsentMessages,
-  authoring: authoringMessages['ko'],
-  marketFeedback: marketFeedbackMessages['ko'],
-  modelApi: modelApiMessages['ko'],
-  modelBindings: modelBindingsMessages['ko'],
+  authoring: authoringMessages,
+  marketFeedback: marketFeedbackMessages,
+  modelApi: modelApiMessages,
+  modelBindings: modelBindingsMessages,
   power: powerMessages,
   common: {
     chooseLanguage: "언어 선택",

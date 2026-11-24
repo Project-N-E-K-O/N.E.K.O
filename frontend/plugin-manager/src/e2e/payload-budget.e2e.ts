@@ -57,6 +57,8 @@ test('keeps the complete initial route script and stylesheet payload bounded', a
   const scriptBytes = scripts.reduce((total, body) => total + body.byteLength, 0)
   const stylesheetBytes = stylesheets.reduce((total, body) => total + body.byteLength, 0)
 
-  expect(scriptBytes).toBeLessThan(1_000_000)
+  // Lowered from 1_000_000 once the authoring, model API, model binding and
+  // Market feedback words were split per language (~763 KB measured, +7.5%).
+  expect(scriptBytes).toBeLessThan(820_000)
   expect(stylesheetBytes).toBeLessThan(120_000)
 })

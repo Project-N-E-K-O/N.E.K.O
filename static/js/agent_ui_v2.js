@@ -223,8 +223,8 @@
 
         // Detect precheck failure transitions: PENDING → specific failure reason.
         // Only fire the toast when the user actually opted into that capability —
-        // otherwise background daemons (browser-use install / startup
-        // LLM probe) flipping their own seeded PENDING → *_UNREACHABLE produce
+        // otherwise a background check (e.g. the one the master switch
+        // starts) flipping a seeded PENDING → *_UNREACHABLE would produce
         // bogus "喵能力预检失败" popups even when the agent is working fine.
         const CAP_TO_FLAG = {
             computer_use: 'computer_use_enabled',
