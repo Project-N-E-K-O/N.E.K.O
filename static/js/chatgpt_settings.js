@@ -301,10 +301,15 @@
             if (failure || result.subscription_restored) await reloadSettings();
         } finally { await refresh(); }
         if (failure) throw failure;
-        if (!result.revocation_confirmed) {
-            const revocation = t('revocationUnconfirmed', 'Signed out locally. Disconnect the app in ChatGPT Settings to confirm remote revocation.');
-            status.textContent = formStale ? `${revocation} ${staleFormText()}` : revocation;
+        const revocation = result.revocation_confirmed ? ''
+            : t('revocationUnconfirmed', 'Signed out locally. Disconnect the app in ChatGPT Settings to confirm remote revocation.');
+        // The restored configuration was saved but not applied (HTTP 200, success: false):
+        // say so, as the subscription switch does, instead of a plain "not connected".
+        if (result.success === false) {
+            const reason = result.error || t('failed', 'ChatGPT connection failed.');
+            throw new Error(revocation ? `${reason} ${revocation}` : reason);
         }
+        if (revocation) status.textContent = formStale ? `${revocation} ${staleFormText()}` : revocation;
     }));
     window.addEventListener('localechange', () => refresh().catch(report));
     // Any successful settings reload (an ordinary save included) brings the form back in sync.

@@ -634,6 +634,33 @@ async def test_oauth_routes_require_a_local_same_origin_connection(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("deployment", ["behind_proxy", "remote_backend"])
+async def test_oauth_routes_are_refused_behind_a_proxy_or_in_a_remote_deployment(
+    store, monkeypatch, deployment
+):
+    """A same-machine reverse proxy makes a remote visitor look like 127.0.0.1."""
+    from fastapi import FastAPI
+    from main_routers import local_access
+    from main_routers.config_router import chatgpt
+
+    monkeypatch.setattr(chatgpt, "get_store", lambda: store)
+    monkeypatch.setattr(chatgpt, "_attempt", None)
+    monkeypatch.setattr(local_access, "is_behind_proxy", lambda: deployment == "behind_proxy")
+    monkeypatch.setattr(local_access, "is_remote_backend_deployment", lambda: deployment == "remote_backend")
+    app = FastAPI()
+    app.include_router(chatgpt.router)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 123)),
+        base_url="http://127.0.0.1:48999",
+    ) as client:
+        response = await client.get("/api/config/chatgpt/status")
+        assert response.status_code == 403
+        assert "issued-1" not in response.text
+        response = await client.post("/api/config/chatgpt/logout", json={"account_id": "issued-1"})
+        assert response.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_consumer_cancellation_closes_response_stream(store):
     client = ChatChatGPT(model="test", credential_store=store)
     closed = []

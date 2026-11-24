@@ -3207,10 +3207,10 @@ async function loadCurrentApiKey() {
                     // treat as "custom" to avoid overwriting them with auto-fill.
                     const existingUrl = (data[`${mt}ModelUrl`] || '').trim();
                     const existingKey = (data[`${mt}ModelApiKey`] || '').trim();
-                    if (existingUrl || existingKey) {
-                        sel.value = 'custom';
-                    }
-                    // Otherwise keep the default (follow_core/follow_assist)
+                    // Otherwise the slot default. Set it explicitly: on a reload the select
+                    // still holds what the previous load chose (e.g. a provider the
+                    // ChatGPT subscription restored away), not the page's initial default.
+                    sel.value = (existingUrl || existingKey) ? 'custom' : getDefaultProviderForModelType(mt);
                 }
                 onCustomModelProviderChange(mt);
             });

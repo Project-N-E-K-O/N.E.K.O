@@ -2405,6 +2405,38 @@ def test_a_late_settings_read_never_overwrites_a_newer_one(mock_page: Page, runn
 
 
 @pytest.mark.frontend
+def test_a_reload_resets_a_provider_the_saved_config_no_longer_has(mock_page: Page, running_server: str):
+    """Turning the ChatGPT subscription off can restore a slot provider to absent; the reload must follow."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    result = mock_page.evaluate("""async () => {
+        const realFetch = window.fetch;
+        const base = await (await realFetch('/api/config/core_api')).json();
+        const named = Array.from(document.getElementById('memoryModelProvider').options)
+            .map(option => option.value).find(value => value && !value.startsWith('follow_') && value !== 'custom');
+        let reply = {...base, enableCustomApi: true, memoryModelProvider: named, memoryModelId: 'picked-model'};
+        window.fetch = (url, init) => String(url).endsWith('/api/config/core_api')
+            ? Promise.resolve(new Response(JSON.stringify(reply), {status: 200, headers: {'Content-Type': 'application/json'}}))
+            : realFetch(url, init);
+        try {
+            await loadCurrentApiKey();
+            const before = document.getElementById('memoryModelProvider').value;
+            reply = {...base, enableCustomApi: false, memoryModelProvider: '', memoryModelId: '',
+                     memoryModelUrl: '', memoryModelApiKey: ''};
+            await loadCurrentApiKey();
+            return {named, before, after: document.getElementById('memoryModelProvider').value,
+                    expected: getDefaultProviderForModelType('memory')};
+        } finally {
+            window.fetch = realFetch;
+        }
+    }""")
+    assert result["named"], result
+    assert result["before"] == result["named"], result
+    assert result["after"] == result["expected"], result
+
+
+@pytest.mark.frontend
 def test_chat_model_card_says_it_must_read_images(mock_page: Page, running_server: str):
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
     mock_page.goto(f"{running_server}/api_key?lang=zh-CN")

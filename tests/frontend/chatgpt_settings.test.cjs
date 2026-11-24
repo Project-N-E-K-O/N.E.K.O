@@ -166,6 +166,18 @@ test('an unconfirmed revocation and an out-of-date form are both reported on log
     assert.match(ui.nodes.status.textContent, /could not reload the settings/);
 });
 
+test('a logout whose restored configuration failed to apply says so', async () => {
+    const ui = surface(signedIn, () => ({success: false, error: 'Reload failed: worker busy',
+        revocation_confirmed: false, subscription_restored: true}));
+    await flush();
+    ui.setState({...signedIn, active: null});
+    await ui.nodes.logout.listeners.click();
+    assert.equal(ui.reloads, 1, 'the form is still reconciled');
+    assert.match(ui.nodes.status.textContent, /Reload failed: worker busy/);
+    assert.match(ui.nodes.status.textContent, /revocation/);
+    assert.equal(ui.nodes.login.disabled, false);
+});
+
 test('status failures retry and restore controls after login completes or expires', async () => {
     for (const terminal of ['connected', 'expired']) {
         const ui = surface({...signedIn, login_status: 'pending'});

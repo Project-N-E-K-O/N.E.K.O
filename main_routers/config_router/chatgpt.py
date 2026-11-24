@@ -26,8 +26,12 @@ def local_settings(request: Request, response: Response):
 
     Cross-site writes are already rejected by the config router's mutation
     guard (same origin, JSON body); this adds the loopback-only rule, which
-    also refuses remote instance sessions and DNS-rebound host names.
+    also refuses remote instance sessions and DNS-rebound host names. Behind
+    a proxy or in a remote deployment the peer address is the proxy's, so
+    these controls are refused there, as for the community account routes.
     """
+    from main_routers.local_access import is_local_oauth_status_request
+
     response.headers["Cache-Control"] = "no-store"
     try:
         local = request.client and ipaddress.ip_address(request.client.host).is_loopback
@@ -36,7 +40,7 @@ def local_settings(request: Request, response: Response):
     except ValueError:
         local_host = False
         local = False
-    if not local or not local_host:
+    if not local or not local_host or not is_local_oauth_status_request(request):
         raise HTTPException(403, "ChatGPT account settings require a local connection.")
 
 
