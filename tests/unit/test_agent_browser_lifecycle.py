@@ -502,9 +502,13 @@ async def _background_done(modules: Any, timeout: float = 10.0) -> None:
     """Let what a request left to the background run to its end; one that fails or hangs fails the test."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
+    # A task that is over takes itself off ``_background_tasks``: every one
+    # seen is kept here, so that how it ended is still looked at.
+    seen: set[asyncio.Task] = set(modules._background_tasks)
     while True:
         await asyncio.sleep(0)
-        pending = [task for task in list(modules._background_tasks) if not task.done()]
+        seen |= set(modules._background_tasks)
+        pending = [task for task in seen if not task.done()]
         if not pending:
             break
         left = deadline - loop.time()
@@ -514,9 +518,24 @@ async def _background_done(modules: Any, timeout: float = 10.0) -> None:
                 task.cancel()
             await asyncio.gather(*still, return_exceptions=True)
             pytest.fail(f"{len(still)} background task(s) did not finish within {timeout}s")
-    for task in list(modules._background_tasks):
-        if task.done() and not task.cancelled() and task.exception() is not None:
+    for task in seen:
+        if not task.cancelled() and task.exception() is not None:
             raise task.exception()
+
+
+async def test_a_background_task_that_fails_fails_the_wait_for_it(modules, monkeypatch):
+    monkeypatch.setattr(modules, "_background_tasks", set())
+
+    async def breaks() -> None:
+        await asyncio.sleep(0)
+        raise RuntimeError("the status could not be sent")
+
+    capabilities._shared._create_tracked_task(breaks())
+
+    with pytest.raises(RuntimeError, match="the status could not be sent"):
+        await _background_done(modules)
+    # It took itself off the set when it ended, and was looked at all the same.
+    assert modules._background_tasks == set()
 
 
 def _keyboard(monkeypatch: pytest.MonkeyPatch, *, ready: bool, reasons: list[str] | None = None) -> list[int]:
