@@ -582,3 +582,42 @@ async def test_cancelled_startup_holds_the_lock_until_pruning_finishes(monkeypat
         await task
     await asyncio.wait_for(other, 5)
     assert log == ["prune done", "other got lock"]
+
+
+def test_builtin_tombstone_is_no_uninstall(tmp_path, removed_after_grants):
+    # Builtins cannot be uninstalled; a vanished builtin directory (branch
+    # switch, update) must not cost its saved decisions.
+    _grant("core")
+    lock = _Lock(_entry("core", root_id="builtin", removed_at=removed_after_grants))
+
+    assert permission_service.prune_uninstalled_plugin_grants(lock) == []
+    assert _grants_on_disk(tmp_path) == {"core"}
+
+
+def test_builtin_tombstone_does_not_block_a_user_uninstall(
+    tmp_path, removed_after_grants
+):
+    _grant("demo")
+    lock = _Lock(
+        _entry("demo", root_id="builtin", removed_at=removed_after_grants),
+        _entry("demo", root_id="user", removed_at=removed_after_grants),
+    )
+
+    assert permission_service.prune_uninstalled_plugin_grants(lock) == ["demo"]
+
+
+def test_removed_entry_with_unknown_id_not_provably_gone_skips_the_pass(
+    tmp_path, removed_after_grants
+):
+    _grant("demo")
+    base = tmp_path / "roots"
+    lock = _Lock(
+        _entry("demo", root_id="builtin", removed_at=removed_after_grants),
+        _entry("demo", directory_name="gone_user_copy", root_id="user", removed_at=removed_after_grants),
+        _entry("", directory_name="unknown", root_id="user", removed_at=removed_after_grants),
+        root=base,
+    )
+    (base / "user" / "unknown").mkdir()
+
+    assert permission_service.prune_uninstalled_plugin_grants(lock) == []
+    assert _grants_on_disk(tmp_path) == {"demo"}

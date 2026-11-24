@@ -391,8 +391,13 @@ def _uninstalled_plugin_cutoffs(manager) -> dict[str, datetime] | None:
     A plugin counts only when it has a removed entry whose directory is gone
     and no entry in any root that is active or not provably gone. Absence
     from the lock is never evidence (workbench projects and other sources
-    outside the managed roots are not in it). Returns ``None`` when the lock
-    cannot be trusted for this.
+    outside the managed roots are not in it), and neither is a builtin
+    tombstone. Returns ``None`` when the lock cannot be trusted for this.
+
+    The ids come from the lock as recorded: reconcile does not refresh the
+    plugin_id of an entry whose directory stays in place, so a manifest id
+    edited in place is not picked up. That only leaves the old id's grants
+    to be judged by the old id, the same as before the edit.
     """
     if manager is None or manager.is_degraded:
         return None
@@ -419,14 +424,24 @@ def _uninstalled_plugin_cutoffs(manager) -> dict[str, datetime] | None:
                 return None
             active.add(entry.plugin_id)
             continue
+        gone = _directory_gone(roots.get(entry.root_id), entry.directory_name)
         if not entry.plugin_id:
-            continue
-        if not _directory_gone(roots.get(entry.root_id), entry.directory_name):
+            if gone:
+                continue
+            # Unknown id that may still be installed, as for an active entry
+            # whose manifest is unreadable.
+            return None
+        if not gone:
             # The reconcile also tombstones directories the scan could not
             # see (root unmounted, listing failed, symlinked). Such a copy
             # may still be installed, so it protects the id like an active
             # entry; a removal in another root does not prove it gone.
             active.add(entry.plugin_id)
+            continue
+        if entry.root_id == "builtin":
+            # Builtins cannot be uninstalled (mark_removed rejects them); a
+            # builtin tombstone only means the directory vanished, e.g. on
+            # a branch switch or an update, which is no uninstall.
             continue
         when = _parse_time(entry.removed_at)
         if when is None:

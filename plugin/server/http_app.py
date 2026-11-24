@@ -209,7 +209,10 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
         _install_source_mgr = build_install_source_manager()
         # With an owned lifecycle the layout migration already ran, so the
         # removed entries are final; otherwise the lifecycle's own replay
-        # after its migration prunes.
+        # after its migration prunes. A migration that failed or was blocked
+        # leaves its legacy sources where they were; the only directories it
+        # deletes are dot-prefixed staging ones, which the lock never tracks,
+        # so it cannot leave a tombstone behind here.
         await StartupReconciler(
             _install_source_mgr, prune_uninstalled_grants=manage_lifecycle
         ).run()
