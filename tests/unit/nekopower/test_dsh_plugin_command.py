@@ -520,8 +520,9 @@ def test_ending_the_script_while_it_fetches_pnpm_leaves_nothing_half_made(tmp_pa
     # At once, not when the download (held back for 30 s) would be over.
     assert script.wait(timeout=20) == 143
     assert time.monotonic() - started < 10
-    # The download it had started is over too, not left running behind it.
-    held = str(packages[TAG]["file"]).encode()
+    # The download it had started is over too, not left running behind it. Known by this
+    # registry's address (a port of its own), not by a file name another test may fetch too.
+    held = f"{registry.url}/{packages[TAG]['name']}/-/{packages[TAG]['file']}".encode()
     if Path("/proc").is_dir():
         running = []
         for entry in Path("/proc").iterdir():
