@@ -11,9 +11,12 @@ on:
 permissions:
   contents: read
 
-# A new push to a PR supersedes the old run; runs on main are never cancelled.
+# A new push to a PR supersedes the old run. Every other run gets a group of
+# its own (keyed by run id): GitHub keeps only one pending run per group, so a
+# shared main group would let a later merge replace a waiting run and leave
+# that commit without an Analyze result.
 concurrency:
-  group: analyze-${{ github.ref }}
+  group: analyze-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # ─────────────────────────────────────────────────────────────────────────────
