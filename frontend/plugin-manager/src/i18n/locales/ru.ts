@@ -1,4 +1,4 @@
-import { pluginConsentMessages } from '../plugin-consent'
+import pluginConsentMessages from '../plugin-consent/ru'
 import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
 import { marketFeedbackMessages } from '../market-feedback'
@@ -9,7 +9,7 @@ import powerMessages from '../power/ru'
  * Русский языковой пакет
  */
 export default {
-  pluginConsent: pluginConsentMessages['ru'],
+  pluginConsent: pluginConsentMessages,
   authoring: authoringMessages['ru'],
   marketFeedback: marketFeedbackMessages['ru'],
   modelApi: modelApiMessages['ru'],
@@ -1060,6 +1060,8 @@ export default {
     pluginBuilt: 'Плагин упакован: {packageName}',
     pluginDeleted: 'Плагин удален',
     pluginDeletedBuiltinRestartFailed: 'Плагин {plugin} удалён, но восстановленную встроенную версию не удалось запустить: {error}',
+    pluginDeletedPermissionsNotCleared: 'Плагин {plugin} удалён, но файл записей о разрешениях повреждён или создан более новой версией, поэтому выданные ему разрешения (если были) не удалось сбросить. Если файл снова станет читаемым, они могут продолжить действовать.',
+    pluginsDeletedPermissionsNotCleared: 'Плагины {plugins} удалены, но файл записей о разрешениях повреждён или создан более новой версией, поэтому выданные им разрешения (если были) не удалось сбросить. Если файл снова станет читаемым, они могут продолжить действовать.',
     startFailed: 'Ошибка запуска',
     autoStartEnabled: 'Автозапуск включён',
     autoStartDisabled: 'Автозапуск выключен',

@@ -1,4 +1,4 @@
-import { pluginConsentMessages } from '../plugin-consent'
+import pluginConsentMessages from '../plugin-consent/es'
 import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
 import { marketFeedbackMessages } from '../market-feedback'
@@ -9,7 +9,7 @@ import powerMessages from '../power/es'
  * Paquete de idioma español
  */
 export default {
-  pluginConsent: pluginConsentMessages['es'],
+  pluginConsent: pluginConsentMessages,
   authoring: authoringMessages['es'],
   marketFeedback: marketFeedbackMessages['es'],
   modelApi: modelApiMessages['es'],
@@ -1060,6 +1060,8 @@ export default {
     pluginBuilt: 'Plugin empaquetado: {packageName}',
     pluginDeleted: 'Plugin eliminado',
     pluginDeletedBuiltinRestartFailed: 'Se eliminó el plugin {plugin}, pero no se pudo iniciar la versión integrada restaurada: {error}',
+    pluginDeletedPermissionsNotCleared: 'Se eliminó el plugin {plugin}, pero el archivo de registros de permisos está dañado o pertenece a una versión más nueva, así que no se pudieron borrar los permisos que pudiera tener. Si el archivo vuelve a ser legible, esos permisos podrían seguir vigentes.',
+    pluginsDeletedPermissionsNotCleared: 'Se eliminaron los plugins {plugins}, pero el archivo de registros de permisos está dañado o pertenece a una versión más nueva, así que no se pudieron borrar los permisos que pudieran tener. Si el archivo vuelve a ser legible, esos permisos podrían seguir vigentes.',
     startFailed: 'Error al iniciar',
     autoStartEnabled: 'Inicio automático activado',
     autoStartDisabled: 'Inicio automático desactivado',

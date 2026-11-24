@@ -1,4 +1,4 @@
-import { pluginConsentMessages } from '../plugin-consent'
+import pluginConsentMessages from '../plugin-consent/zh-CN'
 import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
 import { marketFeedbackMessages } from '../market-feedback'
@@ -9,7 +9,7 @@ import powerMessages from '../power/zh-CN'
  * 中文语言包
  */
 export default {
-  pluginConsent: pluginConsentMessages['zh-CN'],
+  pluginConsent: pluginConsentMessages,
   authoring: authoringMessages['zh-CN'],
   marketFeedback: marketFeedbackMessages['zh-CN'],
   modelApi: modelApiMessages['zh-CN'],
@@ -1060,6 +1060,8 @@ export default {
     pluginBuilt: '插件已构建：{packageName}',
     pluginDeleted: '插件已删除',
     pluginDeletedBuiltinRestartFailed: '插件 {plugin} 已删除，但恢复的内置版本启动失败：{error}',
+    pluginDeletedPermissionsNotCleared: '插件 {plugin} 已删除，但权限记录文件已损坏或版本不兼容，未能清除它可能留有的授权；记录文件恢复可读后，这些授权可能仍然有效。',
+    pluginsDeletedPermissionsNotCleared: '插件 {plugins} 已删除，但权限记录文件已损坏或版本不兼容，未能清除它们可能留有的授权；记录文件恢复可读后，这些授权可能仍然有效。',
     startFailed: '启动失败',
     autoStartEnabled: '已开启自动启动',
     autoStartDisabled: '已关闭自动启动',

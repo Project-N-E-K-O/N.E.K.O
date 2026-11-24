@@ -18,7 +18,11 @@ from plugin.server.application.plugins.permission_service import (
 from plugin.server.application.plugins.operation_lock import (
     serialized_plugin_operation,
 )
-from plugin.server.domain.consent_policy import ANALYZING_STATUSES, derive_consent
+from plugin.server.domain.consent_policy import (
+    ANALYZING_STATUSES,
+    INCOMPLETE_STATUSES,
+    derive_consent,
+)
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.plugin_consent import consent_store
 
@@ -63,14 +67,27 @@ def consent_details(plugin_id: str, *, schedule_missing: bool = False) -> dict:
 
 def consent_summary(plugin_id: str, meta: dict | None = None) -> dict:
     try:
-        record, _, view, _ = _consent_view(plugin_id, meta, verify_revision=False)
+        record, report, view, _ = _consent_view(plugin_id, meta, verify_revision=False)
     except ServerDomainError:
         # A store or registry read failure must never force a confirmation.
-        return {"state": "analyzing", "decision": None, "upgraded": False}
+        return {
+            "state": "analyzing",
+            "decision": None,
+            "upgraded": False,
+            "blind_spots": 0,
+            "analysis_incomplete": False,
+        }
+    blind_spots = report.get("blind_spots")
     return {
         "state": view.state,
         "decision": record.get("decision"),
         "upgraded": view.upgraded,
+        # Places the static analysis could not see through; the list marks
+        # such plugins for review.
+        "blind_spots": len(blind_spots) if isinstance(blind_spots, list) else 0,
+        # A partial or failed analysis left code unchecked even when it lists
+        # no blind spot (a failed report has none); the list marks it the same way.
+        "analysis_incomplete": report.get("status") in INCOMPLETE_STATUSES,
     }
 
 
