@@ -35,18 +35,21 @@ _LOOPS = (ast.For, ast.AsyncFor, ast.While)
 _TERMINAL = (ast.Return, ast.Raise, ast.Break, ast.Continue)
 
 
-def _walk(statements, skip):
-    stack = [node for node in statements if not isinstance(node, skip)]
-    while stack:
-        node = stack.pop()
-        yield node
-        stack.extend(child for child in ast.iter_child_nodes(node) if not isinstance(child, skip))
-
-
 def _finally_has_comprehension(finalbody) -> bool:
     # A generator expression is a real function, so comprehensions nested in
-    # one are not copied with the finally (checked with Nuitka 4.2.2).
-    return any(isinstance(n, _COMPREHENSIONS) for n in _walk(finalbody, _NESTED_SCOPES + (ast.GeneratorExp,)))
+    # its body are not copied with the finally. Its first iterable is still
+    # evaluated in the finally, so that part is searched like the rest
+    # (both checked with Nuitka 4.2.2).
+    stack = [node for node in finalbody if not isinstance(node, _NESTED_SCOPES)]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, _COMPREHENSIONS):
+            return True
+        if isinstance(node, ast.GeneratorExp):
+            stack.append(node.generators[0].iter)
+            continue
+        stack.extend(child for child in ast.iter_child_nodes(node) if not isinstance(child, _NESTED_SCOPES))
+    return False
 
 
 def _escaping_loop_jumps(statements):
@@ -148,6 +151,15 @@ def test_detector_flags_other_ways_out():
             "        finally:\n"
             "            x = [k for k in d]\n"
         ) == [3], (first, then)
+    # The first iterable of a generator expression is evaluated in the finally.
+    assert _lines(
+        "def f(d, lock):\n"
+        "    try:\n"
+        "        with lock:\n"
+        "            return 1\n"
+        "    finally:\n"
+        "        x = sum(k for k in [c for c in d])\n"
+    ) == [2]
 
 
 def test_detector_accepts_shapes_nuitka_compiles():
