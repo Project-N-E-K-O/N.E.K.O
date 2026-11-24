@@ -1497,6 +1497,12 @@ def test_a_second_thread_waits_for_the_binary_to_finish_warming(monkeypatch, tmp
     first.start()
     try:
         assert reading.wait(10), "first thread never started warming"
+        # Deterministic half: while the first read is still in flight the
+        # guard must be held, or nothing makes a racing thread wait for it.
+        # A timed join alone cannot prove the second thread got that far.
+        grabbed = node_harness._prewarm_guard.acquire(blocking=False)
+        if grabbed:
+            node_harness._prewarm_guard.release()
         second.start()
         second.join(0.5)
         early = list(events)
@@ -1506,6 +1512,7 @@ def test_a_second_thread_waits_for_the_binary_to_finish_warming(monkeypatch, tmp
         if second.ident is not None:
             second.join(10)
 
+    assert not grabbed, "预读进行中锁却是空的，并发的第二条线程不会等它读完"
     assert "spawn" not in early, (
         f"第一条线程还在预读，第二条就启动了 node，冷盘开销又回到脚本预算里: {early}"
     )
