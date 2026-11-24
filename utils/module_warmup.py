@@ -551,6 +551,10 @@ def _run_gated_warmup(label: str, scope: frozenset[str] | None = None) -> None:
                 _startup_pass_missing = False
         except Exception as exc:  # best effort, like every other warmup failure
             logger.debug("[warmup:%s] gated warmup failed: %s", label, exc)
+            if full_pass:
+                # A full pass that failed as a whole (the startup one included)
+                # leaves the next re-check to cover everything, attribute entries too.
+                _startup_pass_missing = True
         skip_loaded = True
         label = "config"
         with _warmup_lock:

@@ -938,3 +938,17 @@ def test_a_successful_retry_closes_the_attribute_entry(warmup_state, monkeypatch
     assert _DIRECTIVES not in module_warmup._unloaded_plain_entries(), (
         "a succeeded attribute entry must not be re-evaluated on every save"
     )
+
+
+
+def test_a_startup_pass_that_fails_as_a_whole_leaves_a_full_recheck(monkeypatch):
+    monkeypatch.setattr(module_warmup, "_startup_pass_missing", False)
+    monkeypatch.setattr(module_warmup, "_gated_running", True)
+    monkeypatch.setattr(module_warmup, "_gated_pending", False)
+
+    def _boom(*a, **k):
+        raise RuntimeError("config unreadable")
+
+    monkeypatch.setattr(module_warmup, "_pending_gated_entries", _boom)
+    module_warmup._run_gated_warmup("main")
+    assert module_warmup._startup_pass_missing is True

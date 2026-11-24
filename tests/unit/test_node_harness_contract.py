@@ -1613,6 +1613,7 @@ def test_the_in_memory_settings_harness_is_marked_rerun_safe(monkeypatch):
     ([True, False, False], "1 of 3 attempts reached the harness script"),
     ([False, True], "1 of 2 attempts reached the harness script"),
     ([True, True], "stalled again after it was re-run"),
+    ([True, False, True], "2 of 3 attempts reached the harness script"),
     ([False, False, False], "never reached the harness script"),
 ])
 def test_the_diagnosis_looks_at_every_attempt(flags, expected):
@@ -1643,3 +1644,13 @@ def test_default_flags_mark_only_the_last_attempt_as_started():
     error = NodeHarnessSpawnTimeout(["node"], 3, attempts, started=True)
     assert error.attempts_started == [False, False, True]
     assert "3 of 3" not in str(error)
+
+
+
+def test_every_attempt_is_reported_even_with_short_flags():
+    attempts = [subprocess.TimeoutExpired(["node"], 3, output="", stderr="") for _ in range(3)]
+    error = NodeHarnessSpawnTimeout(["node"], 3, attempts, started=True, attempts_started=[True])
+    assert len(error.attempts_started) == 3
+    text = str(error)
+    for index in (1, 2, 3):
+        assert f"attempt {index} (" in text, text

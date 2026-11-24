@@ -237,12 +237,17 @@ class NodeHarnessSpawnTimeout(subprocess.TimeoutExpired):
         self.attempts = list(attempts)
         self.started = started
         self.rerun_safe = rerun_safe
-        # Without per-attempt flags only the last one is known; the retry loop
-        # never continues past a non-rerun_safe start, so earlier ones did not.
-        self.attempts_started = (
-            list(attempts_started) if attempts_started is not None
-            else [False] * max(len(self.attempts) - 1, 0) + [started] * bool(self.attempts)
-        )
+        # Without per-attempt flags only the last one is known, and earlier ones
+        # are assumed not to have reached the script (true without rerun_safe,
+        # where the loop never continues past a start). Flags are kept one per
+        # attempt so no attempt goes unreported.
+        count = len(self.attempts)
+        if attempts_started is None:
+            flags = [False] * max(count - 1, 0) + [started] * bool(count)
+        else:
+            flags = list(attempts_started)[:count]
+            flags += [False] * (count - len(flags))
+        self.attempts_started = flags
 
     def __str__(self) -> str:
         # Judged on every attempt, not the last one: attempts can disagree.
@@ -254,7 +259,7 @@ class NodeHarnessSpawnTimeout(subprocess.TimeoutExpired):
                 "reading it off disk, or V8 bootstrap stalled. Nothing was "
                 "under test, so the attempt was repeated."
             )
-        elif self.rerun_safe and reached >= 2:
+        elif self.rerun_safe and total >= 2 and all(self.attempts_started[-2:]):
             diagnosis = (
                 "node reached the harness script and stalled again after it was "
                 "re-run, without the watchdog firing. The caller marked the "
