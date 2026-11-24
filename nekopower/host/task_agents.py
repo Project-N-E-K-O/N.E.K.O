@@ -491,8 +491,9 @@ class _Session:
     # the leader's brief. What the leader's runs say as they end decides
     # nothing from then on; the session is closed once its run is over, and
     # the commission goes on in the other one (``_handed_over``).
-    # Then its preset, and whether it was made for this commission.
-    handing_over: tuple[str, str, str, str, bool] | None = None
+    # Then its preset, whether it was made for this commission, and whether
+    # it changes files.
+    handing_over: tuple[str, str, str, str, bool, bool] | None = None
     # Whether the session was opened, for this commission, with a tool that
     # changes files; None until it is opened. What its preset says by now
     # may differ (a template changed since): this is what the run has.
@@ -3610,6 +3611,9 @@ class TaskAgentManager(TreeWork):
                 self._discard(commission.id)
                 await self._tree_not_started(commission.id)
                 return False
+            # (A git worktree it goes on in is at work in from here on, and not before:
+            # a start that came to nothing left it as the user was to decide on it.)
+            await self._tree_at_work(commission.id, kept.id)
             # Where its session works was read above, and a commission that
             # was stuck or failed is not under way until the line before
             # this one: the user may have changed where the project works in
@@ -5327,6 +5331,11 @@ class TaskAgentManager(TreeWork):
         left open, it would keep its place for a commission that is over,
         and the senders of its notes would hear nothing.)
         """
+        # Not one whose work is done and waits in its git worktree for the user (held back, or
+        # not landed): it is stuck over that alone, and is done once the user has it landed.
+        # (Read before those it started are: one the user has landed this moment is still among
+        # these, or is over by the time those are read.)
+        waiting = await self._waits_in_tree()
         try:
             started = await self._looked(lambda: self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES))
         except asyncio.CancelledError:
@@ -5335,6 +5344,8 @@ class TaskAgentManager(TreeWork):
             logger.warning("ending what a commission that is over had started failed", exc_info=True)
             started = []
         for child in started:
+            if child.id in waiting:
+                continue
             # Each by itself, and each step of it: one that cannot be ended
             # this moment does not leave the others at work, and one whose
             # end is written is still stopped where that write failed.
@@ -7275,6 +7286,23 @@ class TaskAgentManager(TreeWork):
         return answer
 
     async def _cb_permission(
+        self, session_id: str, payload: dict[str, Any], *, audit=None, recipient="", label="", grants=None, before_check=None,
+    ) -> dict[str, Any]:
+        """Rule on what a session asks to do (``_rule_on_permission``), and hold the answer while a landing is under way where it writes.
+
+        What it is allowed may change a file of a directory that another
+        task agent's changes are being merged into this moment: the user
+        may have answered while that merge runs. It is told once the
+        merge is through (``_pause_for_landing``), as it is held before
+        its next model request.
+        """
+        ruled = await self._rule_on_permission(
+            session_id, payload, audit=audit, recipient=recipient, label=label, grants=grants, before_check=before_check
+        )
+        await self._pause_for_landing(session_id)
+        return ruled
+
+    async def _rule_on_permission(
         self, session_id: str, payload: dict[str, Any], *, audit=None, recipient="", label="", grants=None, before_check=None,
     ) -> dict[str, Any]:
         session_id = self._at_work_in(session_id)
@@ -9402,7 +9430,7 @@ class TaskAgentManager(TreeWork):
             # What another task agent changed in its git worktree is read as
             # what it left in any working directory. (Writes there are ruled
             # on before this: ``_rule_on_tree_write``.)
-            places.extend(await self._tree_places())
+            places.extend(await self._tree_places(but=own))
         if not places:
             return None
         kept_files = (TRANSCRIPT_NAME, SYSTEM_FILE, DSH_SESSION_NAME)

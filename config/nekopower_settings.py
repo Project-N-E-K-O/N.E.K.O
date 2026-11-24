@@ -346,8 +346,10 @@ MEMBER_TREE_NOTE_MAX_TOKENS = 400
 commission opens, with what an earlier commission of its left unlanded."""
 
 INSPECTION_ROUNDS = 2
-"""How often a task agent is sent back with what an inspector found before
-its changes are left in the worktree for the user to decide on."""
+"""How often an inspector checks what a task agent changed, at the most. The
+task agent is sent back with what was found after every check but the last;
+what does not pass the last one is left in the worktree for the user to
+decide on."""
 
 INSPECTION_BRIEF_MAX_TOKENS = 1500
 """Cap on what an inspector the host starts is told was to be done: the
@@ -360,6 +362,11 @@ TEAM_MAX_WORKING = 6
 """How many task agents a leader started for one commission work at a time
 (``start_team``, ``subagent``). Beside ``TASK_AGENT_MAX_CONCURRENT``, which
 stands."""
+
+TEAM_START_WAIT_SECONDS = 10.0
+"""How long ``start_team`` waits, at most, to learn whether the task agents it
+started got their git worktrees before it answers the leader. One still being
+started by then is told of as started."""
 
 TEAM_PART_BRIEF_MAX_TOKENS = 1500
 """Cap on the brief of one part a leader hands to a team."""

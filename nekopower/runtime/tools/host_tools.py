@@ -333,7 +333,7 @@ def build_host_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> li
             wanted = []
             for part in parts:
                 if not isinstance(part, dict) or not str(part.get("brief") or "").strip():
-                    raise ToolError("every part needs a description and a non-empty brief")
+                    raise ToolError("every part needs a non-empty brief")
                 wanted.append(
                     {
                         "name": str(part["name"]).strip() if part.get("name") else None,

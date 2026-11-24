@@ -1070,7 +1070,7 @@ PERMISSION_CATEGORY_TEXTS = {
            "managed_delivery_arguments": "传递任务输入 {detail}", "managed_delivery_result": "交付任务结果 {detail}",
            "managed_delivery_value": "交付给程序的结果 {detail}", "managed_delivery_content": "交付给模型看的内容 {detail}",
            "usage_limit": "再用约 {more} token 接着办，用到了会再问一次（这件事已经用了 {used} token，到了一件事的用量上限）",
-           "open_session": "另开一只能改文件的使魔来办这件事：{detail}", "open_session_tree": "另开一只能改文件的使魔来办这件事，它在一份独立的副本里改，做完合回项目目录：{detail}",
+           "open_session": "另开一只能改文件的使魔来办这件事：{detail}", "open_session_tree": "另开一只能改文件的使魔来办这件事，它在一份独立的副本里改，做完合回项目目录（副本建不成时排队在项目目录里改）：{detail}",
            "open_session_team": "为这件事组一支队伍：{count} 只使魔同时改文件，各在独立的副本里改，做完合回项目目录（{detail}）",
            "plugin_entry": "调用 {detail}", "other": "使用 {detail}"},
     'zh-TW': {"run_command": "執行命令 {detail}", "outside_write": "在工作目錄以外寫檔案 {detail}",
@@ -1079,7 +1079,7 @@ PERMISSION_CATEGORY_TEXTS = {
               "managed_delivery_arguments": "傳遞工作輸入 {detail}", "managed_delivery_result": "交付工作結果 {detail}",
               "managed_delivery_value": "交付給程式的結果 {detail}", "managed_delivery_content": "交付給模型看的內容 {detail}",
               "usage_limit": "再用約 {more} token 接著辦，用到了會再問一次（這件事已經用了 {used} token，到了一件事的用量上限）",
-              "open_session": "另開一隻能改檔案的使魔來辦這件事：{detail}", "open_session_tree": "另開一隻能改檔案的使魔來辦這件事，牠在一份獨立的副本裡改，做完合回專案目錄：{detail}",
+              "open_session": "另開一隻能改檔案的使魔來辦這件事：{detail}", "open_session_tree": "另開一隻能改檔案的使魔來辦這件事，牠在一份獨立的副本裡改，做完合回專案目錄（副本建不成時排隊在專案目錄裡改）：{detail}",
               "open_session_team": "為這件事組一支隊伍：{count} 隻使魔同時改檔案，各在獨立的副本裡改，做完合回專案目錄（{detail}）",
               "plugin_entry": "呼叫 {detail}", "other": "使用 {detail}"},
     'en': {"run_command": "run the command {detail}", "outside_write": "write the file {detail} outside the working directory",
@@ -1091,7 +1091,7 @@ PERMISSION_CATEGORY_TEXTS = {
            "managed_delivery_arguments": "send task input {detail}", "managed_delivery_result": "deliver a task result {detail}",
            "managed_delivery_value": "deliver a result to the program {detail}", "managed_delivery_content": "deliver content to the model {detail}",
            "usage_limit": "go on with about {more} more tokens, after which it asks again (it has used {used} tokens, the limit set for one task)",
-           "mcp_server": "use the MCP server {detail}", "open_session": "start another familiar that can change files for this task: {detail}", "open_session_tree": "start another familiar that can change files for this task; it works in a copy of its own, merged back into the project folder when it is done: {detail}",
+           "mcp_server": "use the MCP server {detail}", "open_session": "start another familiar that can change files for this task: {detail}", "open_session_tree": "start another familiar that can change files for this task; it works in a copy of its own, merged back into the project folder when it is done (in the project folder itself, in its turn, where no copy can be made): {detail}",
            "open_session_team": "form a team for this task: {count} familiars change files at the same time, each in a copy of its own, merged back into the project folder when done ({detail})",
            "plugin_entry": "call {detail}", "other": "use {detail}"},
     'ja': {"run_command": "コマンド {detail} の実行", "outside_write": "作業ディレクトリ外のファイル {detail} への書き込み",
@@ -1100,7 +1100,7 @@ PERMISSION_CATEGORY_TEXTS = {
            "managed_delivery_arguments": "作業の入力を渡す {detail}", "managed_delivery_result": "作業の結果を渡す {detail}",
            "managed_delivery_value": "プログラムに結果を渡す {detail}", "managed_delivery_content": "モデルに内容を渡す {detail}",
            "usage_limit": "さらに約 {more} token を使って続けること（使い切ったらもう一度確認します。この用件はすでに {used} token を使い、1 件あたりの使用量の上限に達しました）",
-           "open_session": "ファイルを変更できる使い魔をもう一体呼んでこの件を任せること：{detail}", "open_session_tree": "ファイルを変更できる使い魔をもう一体呼ぶこと（専用のコピーで作業し、終われば反映）：{detail}",
+           "open_session": "ファイルを変更できる使い魔をもう一体呼んでこの件を任せること：{detail}", "open_session_tree": "ファイルを変更できる使い魔をもう一体呼ぶこと（専用のコピーで作業し終われば反映。作れなければ順番待ち）：{detail}",
            "open_session_team": "チームを組むこと：使い魔 {count} 体が各自のコピーで同時にファイルを変更し、終われば反映（{detail}）",
            "plugin_entry": "{detail} の呼び出し", "other": "{detail} の利用"},
     'ko': {"run_command": "명령 {detail} 실행", "outside_write": "작업 디렉터리 밖의 파일 {detail} 쓰기",
@@ -1109,7 +1109,7 @@ PERMISSION_CATEGORY_TEXTS = {
            "managed_delivery_arguments": "작업 입력 전달 {detail}", "managed_delivery_result": "작업 결과 전달 {detail}",
            "managed_delivery_value": "프로그램에 결과 전달 {detail}", "managed_delivery_content": "모델에 내용 전달 {detail}",
            "usage_limit": "약 {more} token을 더 써서 계속하기(다 쓰면 다시 묻습니다. 이 일은 이미 {used} token을 써서 한 건의 사용량 한도에 이르렀습니다)",
-           "open_session": "파일을 바꿀 수 있는 사역마를 하나 더 불러 이 일을 맡기기: {detail}", "open_session_tree": "파일을 바꿀 수 있는 사역마를 하나 더 불러 이 일을 맡기기(자기만의 사본에서 작업하고, 끝나면 프로젝트 폴더에 반영합니다): {detail}",
+           "open_session": "파일을 바꿀 수 있는 사역마를 하나 더 불러 이 일을 맡기기: {detail}", "open_session_tree": "파일을 바꿀 수 있는 사역마를 하나 더 불러 이 일을 맡기기(자기만의 사본에서 작업하고 끝나면 프로젝트 폴더에 반영합니다. 사본을 만들 수 없으면 프로젝트 폴더에서 차례를 기다려 작업합니다): {detail}",
            "open_session_team": "이 일을 위해 팀 꾸리기: 사역마 {count}마리가 동시에 파일을 바꾸며, 각자 자기 사본에서 작업하고 끝나면 프로젝트 폴더에 반영합니다({detail})",
            "plugin_entry": "{detail} 호출", "other": "{detail} 사용"},
     'ru': {"run_command": "выполнить команду {detail}", "outside_write": "записать файл {detail} вне рабочего каталога",
@@ -1120,7 +1120,7 @@ PERMISSION_CATEGORY_TEXTS = {
            "managed_delivery_arguments": "передать входные данные задачи {detail}", "managed_delivery_result": "передать результат задачи {detail}",
            "managed_delivery_value": "передать результат программе {detail}", "managed_delivery_content": "передать данные модели {detail}",
            "usage_limit": "продолжить, израсходовав ещё около {more} токенов, после чего будет новый запрос (на задачу уже ушло {used} токенов, это предел для одной задачи)",
-           "mcp_server": "использовать MCP-сервер {detail}", "open_session": "вызвать ещё одного фамильяра, который может менять файлы, для этой задачи: {detail}", "open_session_tree": "вызвать ещё одного фамильяра, который может менять файлы, для этой задачи; он работает в собственной копии, а по окончании изменения вносятся в папку проекта: {detail}",
+           "mcp_server": "использовать MCP-сервер {detail}", "open_session": "вызвать ещё одного фамильяра, который может менять файлы, для этой задачи: {detail}", "open_session_tree": "вызвать ещё одного фамильяра, который может менять файлы, для этой задачи; он работает в собственной копии, а по окончании изменения вносятся в папку проекта (если копию создать нельзя, он работает в папке проекта в свою очередь): {detail}",
            "open_session_team": "собрать для этой задачи команду: {count} фамильяров одновременно меняют файлы, каждый в собственной копии, а по окончании изменения вносятся в папку проекта ({detail})",
            "plugin_entry": "вызвать {detail}", "other": "использовать {detail}"},
     'es': {"run_command": "ejecutar el comando {detail}", "outside_write": "escribir el archivo {detail} fuera del directorio de trabajo",
@@ -1132,7 +1132,7 @@ PERMISSION_CATEGORY_TEXTS = {
            "managed_delivery_arguments": "enviar los datos de entrada de la tarea {detail}", "managed_delivery_result": "entregar el resultado de la tarea {detail}",
            "managed_delivery_value": "entregar el resultado al programa {detail}", "managed_delivery_content": "entregar contenido al modelo {detail}",
            "usage_limit": "seguir gastando unos {more} tokens más, tras lo cual volverá a preguntar (ya ha gastado {used} tokens, el límite fijado para una tarea)",
-           "mcp_server": "usar el servidor MCP {detail}", "open_session": "iniciar otro familiar que puede cambiar archivos para esta tarea: {detail}", "open_session_tree": "iniciar otro familiar que puede cambiar archivos para esta tarea; trabaja en una copia propia que se fusiona en la carpeta del proyecto al terminar: {detail}",
+           "mcp_server": "usar el servidor MCP {detail}", "open_session": "iniciar otro familiar que puede cambiar archivos para esta tarea: {detail}", "open_session_tree": "iniciar otro familiar que puede cambiar archivos para esta tarea; trabaja en una copia propia que se fusiona en la carpeta del proyecto al terminar (si no se puede crear la copia, trabaja en la carpeta del proyecto cuando le toque): {detail}",
            "open_session_team": "formar un equipo para esta tarea: {count} familiares cambian archivos a la vez, cada uno en una copia propia que se fusiona en la carpeta del proyecto al terminar ({detail})",
            "plugin_entry": "llamar a {detail}", "other": "usar {detail}"},
     'pt': {"run_command": "executar o comando {detail}", "outside_write": "gravar o arquivo {detail} fora do diretório de trabalho",
@@ -1144,7 +1144,7 @@ PERMISSION_CATEGORY_TEXTS = {
            "managed_delivery_arguments": "enviar os dados de entrada da tarefa {detail}", "managed_delivery_result": "entregar o resultado da tarefa {detail}",
            "managed_delivery_value": "entregar o resultado ao programa {detail}", "managed_delivery_content": "entregar conteúdo ao modelo {detail}",
            "usage_limit": "continuar gastando cerca de mais {more} tokens, e depois perguntará de novo (já gastou {used} tokens, o limite definido para uma tarefa)",
-           "mcp_server": "usar o servidor MCP {detail}", "open_session": "iniciar outro familiar que pode alterar arquivos para esta tarefa: {detail}", "open_session_tree": "iniciar outro familiar que pode alterar arquivos para esta tarefa; ele trabalha em uma cópia própria, mesclada na pasta do projeto ao terminar: {detail}",
+           "mcp_server": "usar o servidor MCP {detail}", "open_session": "iniciar outro familiar que pode alterar arquivos para esta tarefa: {detail}", "open_session_tree": "iniciar outro familiar que pode alterar arquivos para esta tarefa; ele trabalha em uma cópia própria, mesclada na pasta do projeto ao terminar (se a cópia não puder ser criada, trabalha na pasta do projeto na sua vez): {detail}",
            "open_session_team": "formar uma equipe para esta tarefa: {count} familiares alteram arquivos ao mesmo tempo, cada um em uma cópia própria, mesclada na pasta do projeto ao terminar ({detail})",
            "plugin_entry": "chamar {detail}", "other": "usar {detail}"},
 }
@@ -1747,7 +1747,11 @@ TREE_MARKERS_LEFT = (
 # What follows the result of a commission whose changes were merged into the
 # project's directory. Rendered with str.format (project, files).
 TREE_LANDED = "Merged into the project's directory ({project}): {files}."
-TREE_LANDED_SKIPPED = " Not carried over (too large, or a repository of its own): {files}."
+# Rendered with str.format (files, path).
+TREE_LANDED_SKIPPED = (
+    "Not merged, being too large or a repository of their own: {files}. They are kept in {path}, "
+    "for the user to move or discard."
+)
 # Added when files were changed outside the project's directory, elsewhere in its repository.
 TREE_LANDED_OUTSIDE = " Of these, outside the project's directory, elsewhere in its repository: {files}."
 # How one file is told, and how those past the ones told by name.
@@ -1773,12 +1777,20 @@ TREE_NOT_LANDED = (
     "buttons on the task agent's card. Until then nothing of it is in the project."
 )
 TREE_NOT_LANDED_FILES = "; these files clash: {files}"
+# What is told instead where nothing went wrong: the user's settings say to ask before
+# anything is merged. Rendered with str.format (path).
+TREE_HELD = (
+    "The work is done, and nothing is wrong with it. What was changed waits in {path}: the user's "
+    "settings say that nothing is merged into the project's directory before the user says so (a "
+    "button on the task agent's card). Do not do this work again and start nobody anew for it; "
+    "say in your report that it waits for the user's word."
+)
 TREE_NOT_LANDED_COPIES = " Some files of the project could not be put back as they were; their copies from before are in {path}."
 # Why, by reason. Rendered with str.format (rounds, detail) where they name them.
 TREE_NOT_LANDED_WHY = {
     "conflict": "it clashes with what is in the project's directory by now, and {rounds} tries at merging did not settle it",
     "failed": "the merge could not be written ({detail})",
-    "inspection": "an inspector found problems that {rounds} rounds of fixing did not settle",
+    "inspection": "an inspector found problems in it, and it did not pass in {rounds} checks",
     "ask": "the settings say that the user is asked before anything is merged",
     "stopped": "the task agent ended before its commission was done",
     "restart": "the host was restarted before it was merged",
@@ -1790,6 +1802,36 @@ TREE_LANDED_LATER_NOTHING = "The user had the host merge the changes after all; 
 # What a commission is taken up again with when its changes clash at the
 # user's word to merge them: TREE_CONFLICT follows.
 TREE_TRY_AGAIN = "The user asked for the changes of this commission to be merged into the project's directory after all."
+
+# What the user is shown of a landing, after the result of its commission, in the language
+# of her dialogue: on the HUD, as the host wrote it. Rendered with str.format (files; more;
+# files; files, path).
+TREE_LANDED_TEXTS = {
+    'zh': {"landed": "已合回项目目录：{files}", "more": " 等另外 {more} 个",
+           "outside": "\n其中在项目目录以外（仓库里别处）：{files}",
+           "skipped": "\n有文件没合回（太大，或者本身是一个仓库）：{files}。它们留在：{path}"},
+    'zh-TW': {"landed": "已合回專案目錄：{files}", "more": " 等另外 {more} 個",
+              "outside": "\n其中在專案目錄以外（倉庫裡別處）：{files}",
+              "skipped": "\n有檔案沒合回（太大，或者本身是一個倉庫）：{files}。它們留在：{path}"},
+    'en': {"landed": "Merged into the project folder: {files}", "more": " and {more} more",
+           "outside": "\nOf these, outside the project folder (elsewhere in its repository): {files}",
+           "skipped": "\nNot merged (too large, or a repository of their own): {files}. They are kept in: {path}"},
+    'ja': {"landed": "プロジェクトフォルダーに反映しました：{files}", "more": " ほか {more} 件",
+           "outside": "\nこのうちプロジェクトフォルダーの外（リポジトリ内の別の場所）：{files}",
+           "skipped": "\n反映していないファイル（大きすぎるか、それ自体がリポジトリ）：{files}。ここに残してあります：{path}"},
+    'ko': {"landed": "프로젝트 폴더에 반영했습니다: {files}", "more": " 외 {more}개",
+           "outside": "\n이 중 프로젝트 폴더 밖(저장소의 다른 곳): {files}",
+           "skipped": "\n반영하지 않은 파일(너무 크거나 그 자체가 저장소): {files}. 여기에 남아 있습니다: {path}"},
+    'ru': {"landed": "Внесено в папку проекта: {files}", "more": " и ещё {more}",
+           "outside": "\nИз них вне папки проекта (в другом месте репозитория): {files}",
+           "skipped": "\nНе внесено (слишком большие или сами являются репозиторием): {files}. Они лежат здесь: {path}"},
+    'es': {"landed": "Aplicado en la carpeta del proyecto: {files}", "more": " y {more} más",
+           "outside": "\nDe ellos, fuera de la carpeta del proyecto (en otra parte del repositorio): {files}",
+           "skipped": "\nSin aplicar (demasiado grandes, o son un repositorio propio): {files}. Quedan en: {path}"},
+    'pt': {"landed": "Aplicado na pasta do projeto: {files}", "more": " e mais {more}",
+           "outside": "\nDestes, fora da pasta do projeto (em outra parte do repositório): {files}",
+           "skipped": "\nNão aplicados (grandes demais, ou são um repositório próprio): {files}. Ficam em: {path}"},
+}
 
 # What the user is shown of changes that were not merged, by reason, in the
 # language of her dialogue: on the HUD, as the host wrote it.
