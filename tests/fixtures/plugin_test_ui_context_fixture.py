@@ -63,7 +63,7 @@ class SlowToListenHangingUiContextFixturePlugin(HangingUiContextFixturePlugin):
         # Blocks the loop on purpose: the request waits unread, as it does while a loaded machine finishes startup.
         # Longer than the 0.75s reply headroom, so a budget counted from the read misses the caller's deadline
         # however fast the rest of startup is.
-        time.sleep(1.0)
+        time.sleep(1.0)  # noqa: ASYNC251 - blocking the loop is what this fixture simulates
 
 
 class UncancellableUiContextFixturePlugin(NekoPluginBase):
