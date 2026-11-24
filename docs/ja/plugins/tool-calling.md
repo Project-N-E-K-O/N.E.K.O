@@ -133,15 +133,20 @@ main_server からの dispatch も同じ IPC trigger 配管（`@plugin_entry`
 :::
 
 すべてのエンドポイントは `MAIN_SERVER_PORT`（デフォルト `48911`）に
-マウントされ、`verify_local_access` が `127.0.0.1` / `::1` /
-`localhost` のみ許可します。`NEKO_BEHIND_PROXY` または
-`NEKO_ACTIVITY_TRACKER_REMOTE` が有効な場合は、ループバック上の外部連携でも
-有効なインスタンス認証情報（`NEKO_INSTANCE_ACCESS_KEY` または
-`instance_access.key` 由来の `Authorization: Bearer <instance_key>` など）を
+マウントされ、`verify_local_access` がループバック（`127.0.0.1` / `::1` /
+`localhost`）のみを許可します（`NEKO_BEHIND_PROXY` 有効時に `X-Forwarded`、
+`X-Forwarded-*`、`X-Real-IP`、`Forwarded` などの転送ヘッダーが付いたリクエストは
+HTTP `403` で拒否されるため、転送ヘッダーなしの直接ループバック接続が必要です）。
+`NEKO_BEHIND_PROXY` または `NEKO_ACTIVITY_TRACKER_REMOTE` が有効な場合は、
+ループバック上の外部連携でも有効なインスタンス認証情報（`NEKO_INSTANCE_ACCESS_KEY`
+または `instance_access.key` 由来の `Authorization: Bearer <instance_key>` など）を
 送信する必要があり、未認証のリクエストには HTTP `401` が返ります。さらに
 `NEKO_REQUIRE_HTTPS` も有効な場合は、有効なキーがあっても平文の `http://`
-リクエストは HTTP `401` で拒否されるため、HTTPS で接続する（またはプロキシ配下で
-`Host` が `https://` の `NEKO_INSTANCE_PUBLIC_ORIGIN` に一致する）必要があります。
+リクエストは HTTP `401` で拒否されるため、HTTPS で接続する必要があります（平文
+`http://` が許可されるのは、`NEKO_BEHIND_PROXY` が有効で外層 TLS ゲートウェイが
+TLS を終端し、非公開の HTTP アップストリームが信頼できないクライアントに公開されていない
+構成で、`Host` が `https://` の `NEKO_INSTANCE_PUBLIC_ORIGIN` に一致し、かつ転送ヘッダーなしの
+直接ループバック接続である場合のみです）。
 
 ### `POST /api/tools/register`
 
@@ -267,7 +272,8 @@ import logging
 import os
 import httpx
 
-# 一致する https:// の NEKO_INSTANCE_PUBLIC_ORIGIN なしで NEKO_REQUIRE_HTTPS が有効な場合は https:// を使用
+# X-Forwarded-*/X-Real-IP/Forwarded なしの直接ループバック接続が必要。NEKO_REQUIRE_HTTPS 有効時は
+# HTTPS エントリを使用（平文 http:// は NEKO_BEHIND_PROXY 有効・外層 TLS 終端・非公開アップストリームかつ Host が https:// の NEKO_INSTANCE_PUBLIC_ORIGIN に一致する場合のみ許可）
 MAIN_SERVER = "http://127.0.0.1:48911"
 MY_PORT = 9876
 TOOL_NAME = "get_weather"
@@ -315,7 +321,15 @@ async def unregister_on_shutdown() -> bool:
             if r.status_code in (401, 403):
                 logging.error("Tool unregistration rejected with HTTP %s: %s", r.status_code, r.text)
                 return False
-            return r.is_success
+            if not r.is_success:
+                logging.error("Tool unregistration failed with HTTP %s: %s", r.status_code, r.text)
+                return False
+            data = r.json()
+            failed_roles = data.get("failed_roles") or []
+            if failed_roles:
+                logging.error("Tool unregistration failed for roles: %s", failed_roles)
+                return False
+            return bool(data.get("ok", True))
     except Exception:
         return False  # main_server も死んでいるなら諦める
 ```

@@ -140,15 +140,21 @@ host-side and external integrations.
 :::
 
 All endpoints are mounted on `MAIN_SERVER_PORT` (default `48911`) and
-are guarded by `verify_local_access` (only `127.0.0.1` / `::1` /
-`localhost` are allowed). When `NEKO_BEHIND_PROXY` or
+are guarded by `verify_local_access` (loopback only — `127.0.0.1`, `::1`,
+or `localhost`; when `NEKO_BEHIND_PROXY` is enabled, any request carrying
+forwarding headers such as `X-Forwarded`, `X-Forwarded-*`, `X-Real-IP`, or
+`Forwarded` is rejected with HTTP `403`, so callers must connect directly
+over loopback without forwarding metadata). When `NEKO_BEHIND_PROXY` or
 `NEKO_ACTIVITY_TRACKER_REMOTE` is enabled, external loopback callers must
 also include valid instance credentials (such as
 `Authorization: Bearer <instance_key>` from `NEKO_INSTANCE_ACCESS_KEY` or
 `instance_access.key`), otherwise requests fail with HTTP `401`. If
 `NEKO_REQUIRE_HTTPS` is also enabled, plaintext `http://` requests fail with
-HTTP `401` even with a valid key unless sent over HTTPS (or behind a proxy
-whose `Host` matches an `https://` `NEKO_INSTANCE_PUBLIC_ORIGIN`).
+HTTP `401` even with a valid key unless sent over HTTPS — or, only when
+`NEKO_BEHIND_PROXY` is enabled in a deployment with an outer TLS gateway
+and a private HTTP upstream unexposed to untrusted clients, when `Host`
+matches an `https://` `NEKO_INSTANCE_PUBLIC_ORIGIN` (still directly over
+loopback without forwarding headers).
 
 ### `POST /api/tools/register`
 
@@ -283,7 +289,9 @@ import logging
 import os
 import httpx
 
-# Use https:// when NEKO_REQUIRE_HTTPS is enabled without a matching https:// NEKO_INSTANCE_PUBLIC_ORIGIN
+# Direct loopback without X-Forwarded-*/X-Real-IP/Forwarded headers; when NEKO_REQUIRE_HTTPS
+# is enabled, connect over HTTPS (plain http:// is accepted only under NEKO_BEHIND_PROXY
+# with outer TLS, a private unexposed upstream, and Host matching https:// NEKO_INSTANCE_PUBLIC_ORIGIN)
 MAIN_SERVER = "http://127.0.0.1:48911"
 MY_PORT = 9876
 TOOL_NAME = "get_weather"
@@ -332,7 +340,15 @@ async def unregister_on_shutdown() -> bool:
             if r.status_code in (401, 403):
                 logging.error("Tool unregistration rejected with HTTP %s: %s", r.status_code, r.text)
                 return False
-            return r.is_success
+            if not r.is_success:
+                logging.error("Tool unregistration failed with HTTP %s: %s", r.status_code, r.text)
+                return False
+            data = r.json()
+            failed_roles = data.get("failed_roles") or []
+            if failed_roles:
+                logging.error("Tool unregistration failed for roles: %s", failed_roles)
+                return False
+            return bool(data.get("ok", True))
     except Exception:
         return False  # main_server is down too — nothing we can do
 ```

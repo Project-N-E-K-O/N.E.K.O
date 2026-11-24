@@ -116,13 +116,16 @@ HTTP 调用；main_server 的 dispatch 也走同一套 IPC trigger 管线（与
 :::
 
 所有端点都挂在 `MAIN_SERVER_PORT`（默认 `48911`），并强制 `verify_local_access`
-（仅允许 `127.0.0.1` / `::1` / `localhost`）。启用 `NEKO_BEHIND_PROXY` 或
-`NEKO_ACTIVITY_TRACKER_REMOTE` 时，本机回环外部调用方同样需要携带有效的实例凭据
-（例如来自 `NEKO_INSTANCE_ACCESS_KEY` 或 `instance_access.key` 的
-`Authorization: Bearer <instance_key>`），否则请求会返回 HTTP `401`。如果同时启用了
-`NEKO_REQUIRE_HTTPS`，即使密钥有效，明文 `http://` 请求也会被 HTTP `401`
-拒绝，必须通过 HTTPS 连接（或在反代后且 `Host` 匹配 `https://` 的
-`NEKO_INSTANCE_PUBLIC_ORIGIN`）。
+（仅允许本机回环 `127.0.0.1` / `::1` / `localhost`；启用 `NEKO_BEHIND_PROXY` 时，
+任何携带 `X-Forwarded`、`X-Forwarded-*`、`X-Real-IP` 或 `Forwarded` 转发头的请求
+都会被 HTTP `403` 拒绝，调用方必须通过本机回环直连且不附加转发头）。启用
+`NEKO_BEHIND_PROXY` 或 `NEKO_ACTIVITY_TRACKER_REMOTE` 时，本机回环外部调用方同样
+需要携带有效的实例凭据（例如来自 `NEKO_INSTANCE_ACCESS_KEY` 或 `instance_access.key`
+的 `Authorization: Bearer <instance_key>`），否则请求会返回 HTTP `401`。如果同时启用了
+`NEKO_REQUIRE_HTTPS`，即使密钥有效，明文 `http://` 请求也会被 HTTP `401` 拒绝，必须通过
+HTTPS 连接——仅当同时启用 `NEKO_BEHIND_PROXY`、外层网关终止 TLS 且私有 HTTP 上游不对
+不可信客户端暴露时，才允许 `Host` 匹配 `https://` 的 `NEKO_INSTANCE_PUBLIC_ORIGIN`
+（仍需本机回环直连且不携带转发头）。
 
 ### `POST /api/tools/register`
 
@@ -241,7 +244,8 @@ import logging
 import os
 import httpx
 
-# 若启用了 NEKO_REQUIRE_HTTPS 且没有匹配的 https:// NEKO_INSTANCE_PUBLIC_ORIGIN，请改用 https://
+# 须本机回环直连且不得携带 X-Forwarded-*/X-Real-IP/Forwarded 头；启用 NEKO_REQUIRE_HTTPS 时
+# 请改用 HTTPS 入口（明文 http:// 仅在启用 NEKO_BEHIND_PROXY、外层终止 TLS、私有上游不对外暴露且 Host 匹配 https:// NEKO_INSTANCE_PUBLIC_ORIGIN 时被接受）
 MAIN_SERVER = "http://127.0.0.1:48911"
 MY_PORT = 9876
 TOOL_NAME = "get_weather"
@@ -289,7 +293,15 @@ async def unregister_on_shutdown() -> bool:
             if r.status_code in (401, 403):
                 logging.error("Tool unregistration rejected with HTTP %s: %s", r.status_code, r.text)
                 return False
-            return r.is_success
+            if not r.is_success:
+                logging.error("Tool unregistration failed with HTTP %s: %s", r.status_code, r.text)
+                return False
+            data = r.json()
+            failed_roles = data.get("failed_roles") or []
+            if failed_roles:
+                logging.error("Tool unregistration failed for roles: %s", failed_roles)
+                return False
+            return bool(data.get("ok", True))
     except Exception:
         return False  # main_server 也死了就算了
 ```
