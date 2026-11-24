@@ -157,6 +157,7 @@
         'emoteMaker.spineSkin': "皮肤",
         'emoteMaker.partFollowAnimation': '跟随动作',
         'common.on': '开',
+        'common.close': '关闭',
         'common.off': '关',
         'emoteMaker.spineChooseResource': "发现多组资源，请选择要导入的模型或图集。",
         'emoteMaker.importingTemplate': '正在读取模板…',
@@ -177,6 +178,16 @@
         'emoteMaker.archiveSaveFailed': "模板没存进本地库，下次打开可能要重新选文件",
         'emoteMaker.archiveDeleteFailed': '本地模板副本删除失败，请重试',
         'emoteMaker.builtinTemplate': '内置',
+        'emoteMaker.builtinLicenseTitle': '内置模板使用许可',
+        'emoteMaker.builtinLicenseIntro': '使用内置模板前，请阅读版权声明与使用许可。',
+        'emoteMaker.builtinLicenseUse': '直播、视频和频道运营可以获得收益，无需额外授权或分成。',
+        'emoteMaker.builtinLicenseSharing': '可免费分享成品；日常分享无需逐次署名，商业内容可在频道简介等关联位置集中署名。',
+        'emoteMaker.builtinLicenseSales': '销售成品、付费定制成品或以销售为目的制作周边，需要另行书面授权。',
+        'emoteMaker.builtinLicenseAssets': '不得独立出售或公开分发工程、独立贴图、骨骼等模板资源。',
+        'emoteMaker.builtinLicenseFull': '阅读完整许可（中文及英文摘要）',
+        'emoteMaker.builtinLicenseHint': '点击“我已知晓”表示接受本许可；关闭后仍可导入自己的模板。',
+        'emoteMaker.builtinLicenseSkip': '暂不使用内置模板',
+        'emoteMaker.builtinLicenseAcknowledge': '我已知晓',
         'emoteMaker.wardrobeGenerate': '猫猫辅助生成',
         'emoteMaker.wardrobeModel': '生图模型',
         'emoteMaker.wardrobeUnconfigured': '请在自定义 API 中配置生图模型和密钥。',
@@ -1096,7 +1107,27 @@
             badge.textContent = t(isCurrent ? 'emoteMaker.templateInUse' : 'emoteMaker.builtinTemplate');
             card.append(badge);
         }
-        if (!entry.builtIn) card.append(removeButton);
+        if (entry.builtIn) {
+            const license = document.createElement('button');
+            license.type = 'button';
+            license.className = 'template-lib-license';
+            license.title = t('emoteMaker.builtinLicenseTitle');
+            license.setAttribute('aria-label', license.title);
+            license.setAttribute('aria-haspopup', 'dialog');
+            license.setAttribute('aria-controls', 'builtin-template-license');
+            const icon = document.createElement('span');
+            icon.setAttribute('aria-hidden', 'true');
+            icon.textContent = '!';
+            license.append(icon);
+            license.addEventListener('click', (event) => {
+                event.stopPropagation();
+                clearTimeout(openTimer);
+                void requestBuiltinTemplateLicense({ review: true });
+            });
+            card.append(license);
+        } else {
+            card.append(removeButton);
+        }
         return card;
     }
 
@@ -5926,6 +5957,7 @@
             lock.restore();
             exportEditingLock = null;
             renderAll();
+            showPendingBuiltinTemplateLicense();
         };
     }
 
@@ -6760,12 +6792,57 @@
     // 后端没有这套接口时一切照旧：存副本失败提示一句，重开退回"请重新定位"。
     const TEMPLATE_LIBRARY_API = '/api/emote-maker/library';
     const builtinTemplates = new Map();
+    // Acknowledgement lasts only for this editor page, including restored templates.
+    let builtinLicenseAcknowledged = false;
+    let builtinLicensePrompt = null;
+    let builtinLicenseStartupPending = false;
     const pendingTemplateWrites = new Map();
     const pendingTemplateRemovals = new Set();
     let templateArchiveBytes = new Map();
     let templateArchiveEntries = new Map();
     let templateArchiveTotalBytes = 0;
     let archiveSizeRequest = 0;
+
+    function isBuiltinTemplate(key, pkg) {
+        return String(key || '').startsWith('builtin:') || builtinTemplates.has(key) || pkg?.source?.builtIn === true;
+    }
+
+    function showPendingBuiltinTemplateLicense() {
+        if (!builtinLicenseStartupPending || exportEditingLock || $('#emote-confirm')?.hidden === false) return;
+        builtinLicenseStartupPending = false;
+        if (builtinTemplates.size && !builtinLicenseAcknowledged) void requestBuiltinTemplateLicense();
+    }
+
+    function requestBuiltinTemplateLicense({ review = false } = {}) {
+        if (builtinLicenseAcknowledged && !review) return Promise.resolve(true);
+        if (builtinLicensePrompt) return builtinLicensePrompt;
+        const dialog = $('#builtin-template-license');
+        const acknowledge = $('#builtin-license-acknowledge');
+        if (!dialog || !acknowledge) return Promise.resolve(false);
+        const dismiss = dialog.querySelector('form button');
+        if (dismiss) {
+            dismiss.dataset.i18n = builtinLicenseAcknowledged ? 'common.close' : 'emoteMaker.builtinLicenseSkip';
+            dismiss.textContent = t(dismiss.dataset.i18n);
+        }
+        try {
+            dialog.showModal();
+        } catch (_) {
+            return Promise.resolve(false);
+        }
+        builtinLicensePrompt = new Promise((resolve) => {
+            const accept = () => {
+                builtinLicenseAcknowledged = true;
+                dialog.close();
+            };
+            acknowledge.addEventListener('click', accept);
+            dialog.addEventListener('close', () => {
+                acknowledge.removeEventListener('click', accept);
+                builtinLicensePrompt = null;
+                resolve(builtinLicenseAcknowledged);
+            }, { once: true });
+        });
+        return builtinLicensePrompt;
+    }
 
     function findTemplateLibraryEntry(key) {
         const saved = templateLibraryModule?.find(templateLibraryState, key);
@@ -6788,6 +6865,8 @@
                 if (pkg?.source?.builtIn === true) builtinTemplates.set(pkg.id, pkg);
             }
             renderTemplateLibraryGrid();
+            builtinLicenseStartupPending = builtinTemplates.size > 0 && !builtinLicenseAcknowledged;
+            showPendingBuiltinTemplateLicense();
         } catch (_) {
             // A library request failure leaves ordinary local imports available.
         }
@@ -6883,6 +6962,7 @@
      */
     async function tryRestoreTemplateFromArchive(key) {
         if (!key || !templateLibraryModule) return false;
+        if (isBuiltinTemplate(key) && !builtinLicenseAcknowledged) return false;
         const entry = findTemplateLibraryEntry(key);
         const builtinPackage = builtinTemplates.get(key);
         try {
@@ -6926,6 +7006,9 @@
     }
 
     async function queueTemplateChange(task) {
+        // A native file picker can return after the startup notice opened.
+        // Finish the notice before disabling its controls for the transaction.
+        if (builtinLicensePrompt) await builtinLicensePrompt;
         // Block export requests before they snapshot the old template. Use the
         // export priority so already queued exports finish before activation.
         const unlock = lockExportEditing();
@@ -6940,6 +7023,7 @@
         const held = loadedTemplates.get(key);
         const entry = findTemplateLibraryEntry(key);
         if (!held || !entry) return false;
+        if (isBuiltinTemplate(key, held.pkg) && !builtinLicenseAcknowledged) return false;
         if (key === currentTemplateKey()) return true;
         persistTemplateToLibrary();
         groupPreview = null;
@@ -6993,6 +7077,7 @@
         if (!templateLibraryModule || !key || packBusy || pendingTemplateRemovals.has(key)) return;
         if (key === currentTemplateKey()) return;
         if (!findTemplateLibraryEntry(key)) return;
+        if (isBuiltinTemplate(key) && !await requestBuiltinTemplateLicense()) return;
         const needsArchive = await queueTemplateChange(async () => {
             if (key === currentTemplateKey() || packBusy || pendingTemplateRemovals.has(key)
                 || !findTemplateLibraryEntry(key)) return;
@@ -7036,6 +7121,7 @@
                 document.removeEventListener('keydown', onKey, true);
                 if (previousFocus?.isConnected) previousFocus.focus();
                 resolve(value);
+                showPendingBuiltinTemplateLicense();
             };
             const onOk = () => done(true);
             const onCancel = () => done(false);
@@ -8715,6 +8801,7 @@
         builtinPackage = null, statusBeforeImport = null,
     } = {}) {
         if (!file) return false;
+        if (isBuiltinTemplate(restoreKey, builtinPackage) && !builtinLicenseAcknowledged) return false;
         const previousStatus = statusBeforeImport || {
             message: templateImportStatus?.textContent || '', tone: templateImportStatus?.dataset.tone || 'muted',
         };
@@ -9173,6 +9260,12 @@
         });
         bindViewportNavigation();
         window.addEventListener('keydown', (event) => {
+            if ($('#builtin-template-license')?.open) {
+                if ((event.ctrlKey || event.metaKey) && ['s', 'z'].includes(event.key.toLowerCase())) {
+                    event.preventDefault();
+                }
+                return;
+            }
             if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
                 event.preventDefault();
                 if (event.shiftKey) redo(); else undo();
