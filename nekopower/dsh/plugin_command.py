@@ -429,7 +429,8 @@ def render_sh(*, root: Path, executable: Path, leading: tuple[str, ...], profile
         "child=''",
         "staging=''",
         "stop() {",
-        "  if [ -n \"$child\" ]; then kill \"$child\" 2>/dev/null; fi",
+        # Waited for, so that it is gone before what it was writing is removed and this exits.
+        "  if [ -n \"$child\" ]; then kill \"$child\" 2>/dev/null; wait \"$child\" 2>/dev/null; fi",
         "  if [ -n \"$staging\" ]; then rm -rf \"$staging\"; fi",
         "  exit \"$1\"",
         "}",

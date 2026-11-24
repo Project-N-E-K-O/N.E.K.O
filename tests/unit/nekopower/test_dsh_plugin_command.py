@@ -487,6 +487,17 @@ def test_ending_the_script_while_it_fetches_pnpm_leaves_nothing_half_made(tmp_pa
     # At once, not when the download (held back for 30 s) would be over.
     assert script.wait(timeout=20) == 143
     assert time.monotonic() - started < 10
+    # The download it had started is over too, not left running behind it.
+    held = str(packages[TAG]["file"]).encode()
+    if Path("/proc").is_dir():
+        running = []
+        for entry in Path("/proc").iterdir():
+            try:
+                if entry.name.isdigit() and held in (entry / "cmdline").read_bytes():
+                    running.append(entry.name)
+            except OSError:
+                continue
+        assert running == []
     left = tmp_path / "dsh" / "pnpm"
     assert not left.exists() or [path.name for path in left.iterdir()] == []
     assert _calls(tmp_path) == []
