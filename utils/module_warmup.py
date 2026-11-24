@@ -230,20 +230,13 @@ def _needs_gemini(cfg: WarmupConfig) -> bool:
         return True
     if str(cfg.realtime_config.get("api_type") or "").strip().lower() == "gemini":
         return True
-    # Same route-string test as _should_use_genai_sdk, minus its import probe.
-    from main_logic.omni_offline_client._shared import (
-        _GENAI_NATIVE_BASE_URL_HINTS,
-        _GENAI_NATIVE_MODEL_HINTS,
-    )
+    # The route-string test _should_use_genai_sdk runs before its import probe.
+    from utils.genai_route import is_native_genai_route
 
-    for slot in cfg.llm_slot_configs:
-        base_url = str(slot.get("base_url") or "").lower()
-        model = str(slot.get("model") or "").lower()
-        if any(hint in base_url for hint in _GENAI_NATIVE_BASE_URL_HINTS):
-            return True
-        if not base_url and any(hint in model for hint in _GENAI_NATIVE_MODEL_HINTS):
-            return True
-    return False
+    return any(
+        is_native_genai_route(str(slot.get("model") or ""), str(slot.get("base_url") or ""))
+        for slot in cfg.llm_slot_configs
+    )
 
 
 def _needs_translate_china(cfg: WarmupConfig) -> bool:

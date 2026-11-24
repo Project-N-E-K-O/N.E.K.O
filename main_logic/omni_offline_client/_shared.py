@@ -38,6 +38,12 @@ from utils.llm_client import (  # noqa: F401
 
 from utils.frontend_utils import calculate_text_similarity  # noqa: F401
 
+# Defined in utils so the background warmup (utils layer) can share them.
+from utils.genai_route import (  # noqa: F401
+    GENAI_NATIVE_BASE_URL_HINTS as _GENAI_NATIVE_BASE_URL_HINTS,
+    GENAI_NATIVE_MODEL_HINTS as _GENAI_NATIVE_MODEL_HINTS,
+)
+
 from utils.tokenize import count_tokens, truncate_to_tokens  # noqa: F401
 
 from config import (  # noqa: F401
@@ -72,12 +78,6 @@ def _llm_retry_error_types() -> tuple[type[BaseException], ...]:
         _LLM_RETRY_ERROR_TYPES = types
     return types
 
-_GENAI_NATIVE_BASE_URL_HINTS = (
-    "generativelanguage.googleapis.com",
-    "aiplatform.googleapis.com",
-)
-
-_GENAI_NATIVE_MODEL_HINTS = ("gemini",)
 
 _SENTENCE_END_CHARS = '.!?。！？…'
 
