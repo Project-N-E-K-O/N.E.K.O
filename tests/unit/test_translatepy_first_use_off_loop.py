@@ -43,3 +43,53 @@ async def test_first_china_translation_imports_translatepy_off_the_event_loop(mo
     assert translated == "你好"
     assert import_threads, "translatepy availability was never checked"
     assert loop_thread not in import_threads, "translatepy import ran on the event loop"
+
+
+def test_first_imports_from_two_threads_are_serialised(monkeypatch):
+    """Two first translations can call _ensure_translatepy from worker threads at once.
+
+    Check, import and record must run as one: otherwise one thread's transient
+    import error can overwrite the other's success.
+    """
+    import sys
+    import time
+    import types
+
+    inside = {"now": 0, "max": 0}
+    lock = threading.Lock()
+
+    class _SlowModule(types.ModuleType):
+        def __getattr__(self, name):
+            with lock:
+                inside["now"] += 1
+                inside["max"] = max(inside["max"], inside["now"])
+            time.sleep(0.05)
+            with lock:
+                inside["now"] -= 1
+            return type(name, (), {})
+
+    names = [
+        "translatepy",
+        "translatepy.translators",
+        "translatepy.translators.microsoft",
+        "translatepy.translators.bing",
+        "translatepy.translators.reverso",
+        "translatepy.translators.libre",
+        "translatepy.translators.mymemory",
+        "translatepy.translators.translatecom",
+    ]
+    for name in names:
+        monkeypatch.setitem(sys.modules, name, _SlowModule(name))
+    monkeypatch.setattr(language_utils, "TranslatepyTranslator", None)
+    monkeypatch.setattr(language_utils, "CHINA_ACCESSIBLE_SERVICES", None)
+    monkeypatch.setattr(language_utils, "TRANSLATEPY_AVAILABLE", None)
+
+    results: list[bool] = []
+    threads = [threading.Thread(target=lambda: results.append(language_utils._ensure_translatepy())) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(10)
+
+    assert results == [True, True]
+    assert inside["max"] == 1, "two threads imported translatepy at the same time"

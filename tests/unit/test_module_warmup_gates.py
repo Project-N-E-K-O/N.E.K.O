@@ -385,7 +385,13 @@ def test_rewarm_is_a_no_op_before_startup_warmup(warmup_state):
     assert warmup_state == []
 
 
-def test_rewarm_after_startup_warmup_finished_starts_a_worker(warmup_state):
+def _something_left_to_warm(monkeypatch):
+    """Make the re-check see a module to import, whatever this process has loaded."""
+    monkeypatch.setattr(module_warmup, "_unloaded_gates", lambda scope=None: {"anthropic"})
+
+
+def test_rewarm_after_startup_warmup_finished_starts_a_worker(warmup_state, monkeypatch):
+    _something_left_to_warm(monkeypatch)
     assert module_warmup.start_main_server_warmup() is True
     assert module_warmup.start_main_server_warmup() is False
     module_warmup._gated_running = False  # the startup pass finished
@@ -394,6 +400,7 @@ def test_rewarm_after_startup_warmup_finished_starts_a_worker(warmup_state):
 
 
 def test_rewarm_during_a_running_pass_is_coalesced(warmup_state, monkeypatch):
+    _something_left_to_warm(monkeypatch)
     assert module_warmup.start_main_server_warmup() is True
     assert module_warmup.request_config_rewarm("core_api") is False
     assert module_warmup._gated_pending is True
@@ -412,14 +419,53 @@ def test_rewarm_during_a_running_pass_is_coalesced(warmup_state, monkeypatch):
 
 
 def test_rewarm_never_raises(warmup_state, monkeypatch):
+    _something_left_to_warm(monkeypatch)
+    module_warmup._gated_started = True
+    tried: list[str] = []
+
+    def _boom(label, scope=None):
+        tried.append(label)
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(module_warmup, "_spawn_gated_worker", _boom)
+    assert module_warmup.request_config_rewarm("conversation_settings") is False
+    assert tried == ["config"], "the spawn must actually have been attempted"
+    assert module_warmup._gated_running is False
+
+
+def test_failed_recheck_spawn_keeps_its_request_for_the_next_save(warmup_state, monkeypatch):
+    _something_left_to_warm(monkeypatch)
     module_warmup._gated_started = True
 
     def _boom(label, scope=None):
         raise RuntimeError("can't start new thread")
 
     monkeypatch.setattr(module_warmup, "_spawn_gated_worker", _boom)
-    assert module_warmup.request_config_rewarm("conversation_settings") is False
-    assert module_warmup._gated_running is False
+    module_warmup.request_config_rewarm("core_api")  # all gates
+    assert module_warmup._gated_pending is True
+    assert module_warmup._gated_pending_scope is None
+
+    started: list = []
+    monkeypatch.setattr(
+        module_warmup, "_spawn_gated_worker", lambda label, scope=None: started.append(scope),
+    )
+    # A later, narrower save starts the worker; it carries the lost full request.
+    assert module_warmup.request_config_rewarm("characters", only={"cosyvoice_clone"}) is True
+    assert started == [None]
+    assert module_warmup._gated_pending is False
+
+
+def test_failed_recheck_spawn_merges_with_a_queued_request(warmup_state, monkeypatch):
+    _something_left_to_warm(monkeypatch)
+    module_warmup._gated_started = True
+
+    def _boom(label, scope=None):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(module_warmup, "_spawn_gated_worker", _boom)
+    module_warmup.request_config_rewarm("characters", only={"cosyvoice_clone"})
+    module_warmup.request_config_rewarm("conversation_settings", only={"proactive_bilibili"})
+    assert module_warmup._gated_pending_scope == frozenset({"cosyvoice_clone", "proactive_bilibili"})
 
 
 def test_config_rewarm_pass_skips_loaded_modules(monkeypatch):
@@ -754,3 +800,18 @@ def test_proactive_settings_save_rechecks_only_bilibili(monkeypatch, tmp_path):
     result = preferences.save_global_conversation_settings_versioned({"proactiveVideoChatEnabled": True})
     assert result.success is True
     assert calls == [("conversation_settings", {"proactive_bilibili"})]
+
+
+def test_failed_recheck_spawn_keeps_a_request_queued_while_it_was_starting(warmup_state, monkeypatch):
+    _something_left_to_warm(monkeypatch)
+    module_warmup._gated_started = True
+
+    def _boom_after_a_concurrent_save(label, scope=None):
+        # Another save arrives while this thread is being started: it is queued.
+        module_warmup.request_config_rewarm("conversation_settings", only={"proactive_bilibili"})
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(module_warmup, "_spawn_gated_worker", _boom_after_a_concurrent_save)
+    module_warmup.request_config_rewarm("characters", only={"cosyvoice_clone"})
+    assert module_warmup._gated_pending is True
+    assert module_warmup._gated_pending_scope == frozenset({"cosyvoice_clone", "proactive_bilibili"})

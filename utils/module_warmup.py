@@ -595,13 +595,21 @@ def request_config_rewarm(reason: str = "config", only: Iterable[str] | None = N
             _gated_pending_scope = scope if not _gated_pending else _merge_scope(_gated_pending_scope, scope)
             _gated_pending = True
             return False
+        if _gated_pending:
+            # Left over from a re-check whose thread failed to start: take it along.
+            scope = _merge_scope(_gated_pending_scope, scope)
+            _gated_pending, _gated_pending_scope = False, None
         _gated_running = True
     try:
         logger.debug("[warmup] re-checking warm targets after %s change", reason)
         _spawn_gated_worker("config", scope)
     except Exception as exc:
+        # No worker exists to consume this request (or one queued meanwhile):
+        # keep it pending, so the next config save starts a worker that covers it.
         with _warmup_lock:
             _gated_running = False
+            _gated_pending_scope = scope if not _gated_pending else _merge_scope(_gated_pending_scope, scope)
+            _gated_pending = True
         logger.debug("[warmup] re-check not started: %s", exc)
         return False
     return True

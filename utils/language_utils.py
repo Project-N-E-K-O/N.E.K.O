@@ -1234,8 +1234,19 @@ def _ensure_googletrans() -> bool:
     return GOOGLETRANS_AVAILABLE
 
 
+# translate_text runs the first import in a worker thread, so two first translations can
+# race. Check, import and record under one lock: otherwise a transient failure in one
+# thread could overwrite another thread's success and pin TRANSLATEPY_AVAILABLE to False.
+_translatepy_init_lock = threading.Lock()
+
+
 def _ensure_translatepy() -> bool:
     """Import translatepy and the translators reachable from mainland China on first call; cache the result."""
+    with _translatepy_init_lock:
+        return _ensure_translatepy_unlocked()
+
+
+def _ensure_translatepy_unlocked() -> bool:
     global TranslatepyTranslator, CHINA_ACCESSIBLE_SERVICES, TRANSLATEPY_AVAILABLE
     # Explicitly forced unavailability takes precedence → downgrade.
     if TRANSLATEPY_AVAILABLE is False:
