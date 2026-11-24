@@ -88,6 +88,17 @@ def test_split_dir_missing_one_language_fails(repo, capsys):
     assert f"{I18N}/widgets/ko.ts" in out
 
 
+def test_uncommitted_rename_does_not_hide_a_group(repo, capsys):
+    # Groups come from HEAD, the snapshot the diff is taken from: renaming the
+    # directory in the working tree afterwards must not skip the check.
+    rel = f"{I18N}/widgets/en-US.ts"
+    assert _commit(repo, {rel: _add_key(repo, rel, 2)}) == 1
+    capsys.readouterr()
+    (repo / I18N / "widgets").rename(repo / I18N / "widgets-next")
+    assert SYNC.main(["--base", "base"]) == 1
+    assert f"{I18N}/widgets/ko.ts" in capsys.readouterr().out
+
+
 def test_split_dir_all_languages_pass_without_line_alignment(repo):
     # Different insertion lines per file: hunk ranges differ, which is fine here.
     files = {

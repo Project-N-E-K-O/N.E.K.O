@@ -106,7 +106,11 @@ GROUPS: list[dict[str, object]] = [
 def _expand_groups(
     groups: list[dict[str, object]],
 ) -> list[dict[str, object]]:
-    """Replace each ``<dir>/*`` group with one per matching subdirectory."""
+    """Replace each ``<dir>/*`` group with one per matching subdirectory.
+
+    Subdirectories are read from the HEAD tree, the same snapshot the diff
+    is taken from, so uncommitted working-tree changes cannot hide a group.
+    """
     explicit = {
         str(g["dir"]).rstrip("/")
         for g in groups if not str(g["dir"]).endswith("/*")
@@ -118,18 +122,24 @@ def _expand_groups(
             expanded.append(group)
             continue
         parent = pattern[:-2]
-        parent_path = REPO_ROOT / parent
-        if not parent_path.is_dir():
-            continue
-        files = list(group["files"])  # type: ignore[arg-type]
-        for child in sorted(p for p in parent_path.iterdir() if p.is_dir()):
-            rel = f"{parent}/{child.name}"
+        prefix = f"{parent}/"
+        files = set(group["files"])  # type: ignore[arg-type]
+        listing = _git(
+            "ls-tree", "-r", "-z", "--name-only", "HEAD", "--", prefix,
+        )
+        children: set[str] = set()
+        for path in listing.split("\0"):
+            if not path.startswith(prefix):
+                continue
+            child, _, name = path[len(prefix):].partition("/")
+            if child and name in files:
+                children.add(child)
+        for child in sorted(children):
+            rel = f"{prefix}{child}"
             if rel in explicit:
                 continue
-            if not any((child / name).is_file() for name in files):
-                continue
             expanded.append(
-                {**group, "name": f"{group['name']} {child.name}/", "dir": rel}
+                {**group, "name": f"{group['name']} {child}/", "dir": rel}
             )
     return expanded
 
