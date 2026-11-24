@@ -326,6 +326,22 @@ test('delayed end-only terminal does not reuse rapid feedback from a stale gestu
   );
 });
 
+test('ordinary and Playground pending presses retain the same shared interaction feedback', () => {
+  const outcomes = ['ordinary-return', 'cat1-playground'].map(source => {
+    const runtime = createProbe();
+    const before = runtime.snapshot().fields;
+    runtime.dispatchReturnBallMove({ source, reason: 'return-ball-drag-start', activityId: 'pending-press' });
+    runtime.dispatchReturnBallMove({ source, reason: 'return-ball-drag-cancel', activityId: 'pending-press',
+      pathDistancePx: 0, displacementPx: 0, durationMs: 150, dragCancelled: true });
+    const after = runtime.snapshot().fields;
+    assert.notDeepEqual(after, before, 'pending contact retains the original interaction dose');
+    for (const field of ['appetite', 'energy', 'sleepiness']) assert.equal(after[field], before[field]);
+    assert.deepEqual(Array.from(runtime.getState().recentCatInteractionTimes), []);
+    return after;
+  });
+  assert.deepEqual(outcomes[0], outcomes[1]);
+});
+
 test('NEKO-PC return-ball phases enter the shared Cat Mind scoring path', () => {
   const runtime = createProbe();
   const before = runtime.snapshot();

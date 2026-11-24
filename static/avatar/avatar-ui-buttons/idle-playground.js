@@ -436,6 +436,14 @@ function _switchNekoIdleCat1PlaygroundToVisitMode() {
     _stopNekoIdleCat1PlaygroundPhysics(button);
     _cancelNekoIdleCat1PlaygroundYarnSync(state);
     state.yarnEnabled = false;
+    const token = state.token;
+    if ([...state.bodies.values()].some((body) => body.actionControl)) {
+        // Return persistent DOM styles while the old ball still belongs to this
+        // session. Disabling yarn first prevents a terminal callback reacquiring it.
+        _cancelNekoIdleCat1PlayAction(button, { reason: 'visit-cat-mode', animate: false });
+        if (button.__nekoIdleCat1PlaygroundDropState !== state || !state.active || state.released ||
+            state.token !== token) return false;
+    }
     state.bodies.forEach((body, bodyId) => {
         if (bodyId === 'cat') return;
         _disposeNekoIdleCat1PlaygroundBody(state, body);

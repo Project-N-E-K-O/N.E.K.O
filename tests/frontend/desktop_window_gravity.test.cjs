@@ -757,7 +757,8 @@ for (const owner of ['same-source', 'hover']) for (const delivery of ['timer', '
       __nekoIdleHoverSrc: current, __nekoIdleHoverTier: 'cat1', __nekoIdleHoverToken: 42,
       __nekoIdleHoverTimer: 91, __nekoIdleHoverStartedAt: 800,
     });
-    if (preload) {
+    if (delivery === 'preload') {
+      assert.ok(preload, 'restart-image delivery must create a preload before testing its cleanup');
       // The old timer is already waiting for a successfully loaded restart image.
       lateFinish();
       preload.onload();
@@ -773,7 +774,7 @@ for (const owner of ['same-source', 'hover']) for (const delivery of ['timer', '
     assert.equal(r.art.__nekoIdleTransitionTo, '');
     assert.equal(timers.has(timerId), false);
     assert.equal(nextArt.parentNode, null);
-    if (preload) {
+    if (delivery === 'preload') {
       assert.equal(preload.onload, null);
       assert.equal(preload.src, undefined);
     }

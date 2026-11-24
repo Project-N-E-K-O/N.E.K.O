@@ -35,7 +35,7 @@ function createGravityConsumer(hasOwner = true) {
     render: () => calls.push('render'),
     requestFrame: () => calls.push('frame'),
     publishMovementState: () => calls.push('publish'),
-    cancel: () => calls.push('cancel-owner'),
+    cancel: () => { calls.push('cancel-owner'); context.current = null; },
   });
   vm.runInContext(sourceBetween(
     'static/avatar/avatar-ui-buttons/idle-desktop-window-gravity.js',
@@ -44,6 +44,7 @@ function createGravityConsumer(hasOwner = true) {
   ), context);
   return {
     calls, owner, container, drags,
+    currentOwner: () => context.current,
     emit(reason, source) {
       context.handleManualMove({ detail: {
         container, reason: `return-ball-drag-${reason}`, source, dragSessionId: 7,
@@ -63,21 +64,33 @@ test('Playground manual facts do not pause, release or readmit the legacy gravit
   }
 });
 
-test('ordinary manual facts retain legacy gravity hold, release velocity and rendering', () => {
+test('ordinary stationary press retains legacy gravity hold and resumes rendering on release', () => {
   const runtime = createGravityConsumer();
   runtime.emit('start');
   assert.equal(runtime.owner.pointerHeld, true);
   assert.equal(runtime.owner.frame, 0);
+  runtime.emit('end');
+  assert.deepEqual(runtime.calls, [
+    'sample', 'cancel-frame:19', 'publish',
+    'reconcile', 'collide', 'render', 'frame',
+  ]);
+  assert.equal(runtime.currentOwner(), runtime.owner);
+  assert.equal(runtime.owner.pointerHeld, false);
+  assert.equal(runtime.drags.has(runtime.container), false);
+});
+
+test('ordinary active drag drops its old gravity owner and requests admission on release', () => {
+  const runtime = createGravityConsumer();
+  runtime.emit('start');
   runtime.emit('active');
+  assert.equal(runtime.currentOwner(), null);
   runtime.emit('motion');
   runtime.emit('end');
   assert.deepEqual(runtime.calls, [
-    'sample', 'cancel-frame:19', 'publish', 'cancel-owner', 'sample',
-    'reconcile', 'collide', 'render', 'frame',
+    'sample', 'cancel-frame:19', 'publish', 'cancel-owner', 'sample', 'admit',
   ]);
-  assert.equal(runtime.owner.pointerHeld, false);
-  assert.equal(runtime.owner.vx, 123);
-  assert.equal(runtime.owner.vy, -45);
+  assert.equal(runtime.owner.vx, undefined, 'the retired owner cannot receive release velocity');
+  assert.equal(runtime.owner.vy, undefined);
   assert.equal(runtime.drags.has(runtime.container), false);
 });
 

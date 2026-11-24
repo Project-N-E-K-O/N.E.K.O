@@ -906,6 +906,7 @@ def test_playground_keeps_held_pointer_and_released_motion_across_idle_tiers(
 
 @pytest.fixture
 def playground_lifecycle_page(page: Page):
+    _install_playground_manual_listener_capture(page)
     host = "http://neko.test/"
     page.route(host, lambda route: route.fulfill(content_type="text/html", body="<main></main>"))
 
@@ -1058,8 +1059,7 @@ def test_playground_container_cleanup_releases_session_and_pointer(
     assert page.evaluate("lifecycleEvents") == [True, False]
 
 
-@pytest.fixture
-def playground_manual_listener_capture(page: Page):
+def _install_playground_manual_listener_capture(page: Page):
     page.add_init_script("""(() => {
         const add = window.addEventListener.bind(window);
         window.gestureManualListeners = [];
@@ -1079,11 +1079,10 @@ def playground_manual_listener_capture(page: Page):
             ordered.forEach(binding => add('neko:return-ball-manual-move', binding.listener, binding.options));
         };
     })();""")
-    return page
 
 
 @pytest.fixture
-def ordered_playground_gesture_page(playground_manual_listener_capture: Page, playground_gesture_page: Page):
+def ordered_playground_gesture_page(playground_gesture_page: Page):
     return playground_gesture_page
 
 

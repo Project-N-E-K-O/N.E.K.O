@@ -11,6 +11,21 @@ function settleYarn(r, left = 600) {
   return yarn;
 }
 
+for (const replaced of [false, true]) {
+  test(`a stale Playground journey RAF retires only its own handle (replaced: ${replaced})`, () => {
+    const r = runtime();
+    r.context._scheduleNekoIdleCat1JourneySync(r.button);
+    const frame = r.journey.syncFrame;
+    assert.ok(frame);
+    const callback = r.frames.get(frame);
+    assert.equal(typeof callback, 'function');
+    r.state.token += 1;
+    if (replaced) r.journey.syncFrame = 9999;
+    callback(r.now());
+    assert.equal(r.journey.syncFrame, replaced ? 9999 : 0);
+  });
+}
+
 function walkFacts(r) {
   return r.events.filter(event => event.type === 'neko:cat-mind:observation' &&
     event.detail.type === 'cat1_walk_done_near_chat').map(event => event.detail.detail);

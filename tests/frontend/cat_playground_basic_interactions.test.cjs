@@ -269,8 +269,24 @@ for (const tier of ['cat1', 'cat2', 'cat3']) {
   });
 }
 
-test('pending press preserves an already playing response while refusing another request', async () => {
-  const r = runtime(); r.sync();
+for (const tier of ['cat1', 'cat2', 'cat3']) {
+  test(`${tier}: a pending cat press rejects the first unconfirmed audio start`, async () => {
+    const r = runtime(tier); r.sync(); r.controls.delayPlay = true;
+    let started = 0;
+    assert.equal(r.play({ onStarted: () => started++ }), true);
+    const audio = r.audios[0];
+    r.state.pointerBodyId = 'cat'; r.body.dragging = true;
+    audio.resolvePlay(); await r.flush();
+    assert.equal(started, 0);
+    assert.equal(r.button.classList.contains('is-thought-bubble-active'), false);
+    assert.equal(audio.paused, true);
+    assert.equal(r.results().length, 1);
+    assert.notEqual(r.results()[0].result, 'done');
+  });
+}
+
+for (const tier of ['cat1', 'cat2', 'cat3']) test(`${tier}: pending press preserves an already playing response while refusing another request`, async () => {
+  const r = runtime(tier); r.sync();
   assert.equal(r.play(), true); await r.flush();
   const audio = r.audios[0], token = r.soundState().token;
   r.state.pointerBodyId = 'cat'; r.body.dragging = true;

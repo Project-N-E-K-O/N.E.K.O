@@ -2467,9 +2467,9 @@ function _scheduleNekoIdleCat1JourneySync(button) {
         const playground = button.__nekoIdleCat1PlaygroundDropState;
         const token = playground.token;
         const frame = window.requestAnimationFrame(() => {
-            if (state.syncFrame !== frame || button.__nekoIdleCat1PlaygroundDropState !== playground ||
-                playground.token !== token) return;
+            if (state.syncFrame !== frame) return;
             state.syncFrame = 0;
+            if (button.__nekoIdleCat1PlaygroundDropState !== playground || playground.token !== token) return;
             _syncNekoIdleCat1PlaygroundJourney(button);
         });
         state.syncFrame = frame;

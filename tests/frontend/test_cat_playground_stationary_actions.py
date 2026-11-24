@@ -70,6 +70,7 @@ def test_stationary_visual_finishes_full_cycle_without_losing_playground(
 ):
     page = stationary_action_page
     _enter(page, mode, tier, audio=key == "oiia")
+    page.clock.pause_at(page.evaluate("Date.now() + 1"))
     assert page.evaluate("startVisual", key)
     _wait_started(page)
     duration = page.evaluate("""key => {
@@ -250,7 +251,7 @@ def test_eat_and_stretch_wait_for_image_then_keep_the_full_original_cycle(
     _enter(page, mode, audio=True)
     page.clock.pause_at(page.evaluate("Date.now() + 1"))
     page.evaluate("""() => {
-        window.stationaryImageHeld = new Promise(resolve => { window.resolveStationaryImageHeld = resolve; });
+        window.stationaryImageHeld = false;
     }""")
     held = []
     pattern = "**/cat-idle-cat1-eat*.webp*" if kind == "eat" else "**/cat-idle-cat4-2.gif*"
@@ -259,7 +260,7 @@ def test_eat_and_stretch_wait_for_image_then_keep_the_full_original_cycle(
         # Stretch also fetches the GIF for its duration; delay only decoding.
         if route.request.resource_type == "image":
             held.append(route)
-            page.evaluate("resolveStationaryImageHeld()")
+            page.evaluate("window.stationaryImageHeld = true")
         else:
             route.fallback()
 
@@ -268,7 +269,7 @@ def test_eat_and_stretch_wait_for_image_then_keep_the_full_original_cycle(
     call = "_playNekoIdleCat1EatAction(cat)" if kind == "eat" else "_requestNekoIdleCat1HissStretchPresentation()"
     with page.expect_request(pattern):
         assert page.evaluate(call)
-    page.evaluate("stationaryImageHeld")
+    page.wait_for_function("stationaryImageHeld", polling=10, timeout=5000)
     assert held
     page.clock.run_for(1500)
     assert page.evaluate(f"{state}.active && !art.complete && {state}.timer === 0 && {state}.entryTimer !== 0")
@@ -277,9 +278,8 @@ def test_eat_and_stretch_wait_for_image_then_keep_the_full_original_cycle(
     for route in held:
         asset = PROJECT_ROOT / route.request.url.split("http://neko.test/", 1)[1].split("?", 1)[0]
         route.fulfill(path=str(asset))
-    page.evaluate("""() => art.complete ? undefined : new Promise(resolve => {
-        art.addEventListener('load', resolve, {once: true});
-    })""")
+    page.wait_for_function("art.complete", polling=10, timeout=5000)
+    assert page.evaluate("art.naturalWidth > 0"), "The action image failed to load"
     duration = page.evaluate(
         "_getNekoIdleAnimationDurationMs(_getNekoIdleCat1EatActionAssetUrl(cat))" if kind == "eat"
         else "_getNekoIdleAnimationDurationMs(_getNekoIdleCat1StretchAssetUrl())"
@@ -323,13 +323,13 @@ def test_releasing_animated_entry_cannot_commit_its_late_preload(
     page.emulate_media(reduced_motion="no-preference")
     page.clock.pause_at(page.evaluate("Date.now() + 1"))
     page.evaluate("""() => {
-        window.stationaryEntryHeld = new Promise(resolve => { window.resolveStationaryEntryHeld = resolve; });
+        window.stationaryEntryHeld = false;
     }""")
     held = []
 
     def hold_preload(route):
         held.append(route)
-        page.evaluate("resolveStationaryEntryHeld()")
+        page.evaluate("window.stationaryEntryHeld = true")
 
     pattern = "**/cat-idle-cat4-2.gif?*entry=*" if kind == "stretch" else "**/cat-idle-cat1-banana.webp?*entry=*"
     page.route(pattern, hold_preload)
@@ -337,7 +337,7 @@ def test_releasing_animated_entry_cannot_commit_its_late_preload(
         "_requestNekoIdleCat1HissStretchPresentation()" if kind == "stretch"
         else "_playNekoIdleCat1VisualAction(cat, 'banana', {animateEntry: true})"
     )
-    page.evaluate("stationaryEntryHeld")
+    page.wait_for_function("stationaryEntryHeld", polling=10, timeout=5000)
     assert held
     assert page.evaluate("art.__nekoIdleTransitionTo && art.__nekoIdleTransitionTimer && art.__nekoIdleTransitionNext")
     original_src = page.evaluate("art.src")
@@ -350,9 +350,8 @@ def test_releasing_animated_entry_cannot_commit_its_late_preload(
     for route in held:
         asset = PROJECT_ROOT / route.request.url.split("http://neko.test/", 1)[1].split("?", 1)[0]
         route.fulfill(path=str(asset))
-    page.evaluate("""() => oldEntryPreload.complete ? undefined : new Promise(resolve => {
-        oldEntryPreload.addEventListener('load', resolve, {once: true});
-    })""")
+    page.wait_for_function("oldEntryPreload.complete", polling=10, timeout=5000)
+    assert page.evaluate("!oldEntryPreload.hasAttribute('src') && !oldEntryPreload.onload && !oldEntryPreload.onerror")
     page.clock.run_for(1000)
     assert page.evaluate("art.src") == original_src
     assert page.evaluate("audioPlays.length === 0 && !_isNekoIdleCat1StretchActionActive(cat) && !readVisual().active")
@@ -371,13 +370,13 @@ def test_visual_animated_entry_waits_for_image_before_starting_its_cycle(
     page.evaluate("""() => {
         window.entryStarts = [];
         window.entryTerminals = [];
-        window.entryRequestHeld = new Promise(resolve => { window.resolveEntryRequestHeld = resolve; });
+        window.entryRequestHeld = false;
     }""")
     held = []
 
     def hold_entry_image(route):
         held.append(route)
-        page.evaluate("resolveEntryRequestHeld()")
+        page.evaluate("window.entryRequestHeld = true")
 
     page.route("**/cat-idle-cat1-scared.webp?*entry=*", hold_entry_image)
     assert page.evaluate("""() => NekoCatIdlePresentation.requestCat1Scared({
@@ -385,7 +384,7 @@ def test_visual_animated_entry_waits_for_image_before_starting_its_cycle(
         onPlaybackStarted: () => entryStarts.push({complete: art.complete, width: art.naturalWidth}),
         onTerminal: result => entryTerminals.push(result)
     })""")
-    page.evaluate("entryRequestHeld")
+    page.wait_for_function("entryRequestHeld", polling=10, timeout=5000)
     assert held
     page.clock.run_for(2000)
     assert page.evaluate("entryStarts.length === 0 && entryTerminals.length === 0 && readVisual().active && readVisual().timer === 0")

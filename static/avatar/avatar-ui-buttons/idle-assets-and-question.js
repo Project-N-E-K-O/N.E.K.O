@@ -852,6 +852,7 @@ function _playNekoCatMindVisualAction(button, actionId, actionKey, defaultSource
             runId: run.runId,
             requestId: run.requestId,
             startedAt: run.startedAt,
+            durationMs: playgroundRun && !playbackStarted ? 0 : undefined,
             reason: detail.reason || result,
             detail: { actionKey }
         });
@@ -865,7 +866,9 @@ function _playNekoCatMindVisualAction(button, actionId, actionKey, defaultSource
             return;
         }
         startedReported = true;
-        _notifyNekoCatMindRunnerStarted(options, run);
+        if (_notifyNekoCatMindRunnerStarted(options, run) === false && !resultReported) {
+            _cancelNekoIdleCat1VisualAction(button, { reason: 'playground-visual-start-rejected', animate: false });
+        }
     };
     const accepted = _playNekoIdleCat1VisualAction(button, actionKey, {
         onPlaybackStarted: playgroundRun ? () => {

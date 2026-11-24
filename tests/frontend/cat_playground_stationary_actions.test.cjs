@@ -219,6 +219,46 @@ function assertPhysicsOwner(r, state = r.state, body = r.body) {
   assert.equal(Number.parseFloat(r.container.style.top), Math.round(body.y));
 }
 
+for (const kind of ['eat', 'visual']) {
+  test(`${kind}: a rejected Playground started acknowledgement cancels before audio or completion`, async () => {
+    const r = runtime();
+    const play = kind === 'eat' ? r.context._playNekoIdleCat1EatAction : r.context._playNekoCatMindIdleRandomVisualAction;
+    assert.equal(play(r.button, { source: 'cat_mind', requestId: 'rejected-start', onStarted: () => false }), true);
+    await r.enter();
+    assert.equal((kind === 'eat' ? r.eatState() : r.visualState()).active, false);
+    assert.equal(r.audios.length, 0);
+    assert.equal(r.results().length, 1);
+    assert.notEqual(r.results()[0].result, 'done');
+    await r.advance(30000);
+    assert.equal(r.results().length, 1);
+  });
+  test(`${kind}: rejecting an old Playground start cannot cancel a replacement run`, async () => {
+    const r = runtime();
+    const play = kind === 'eat' ? r.context._playNekoIdleCat1EatAction : r.context._playNekoCatMindIdleRandomVisualAction;
+    const cancel = kind === 'eat' ? r.context._cancelNekoIdleCat1EatAction : r.context._cancelNekoIdleCat1VisualAction;
+    assert.equal(play(r.button, { source: 'cat_mind', requestId: 'old-start', onStarted() {
+      cancel(r.button, { reason: 'replace-old-start', animate: false });
+      assert.equal(play(r.button, { source: 'cat_mind', requestId: 'replacement-start' }), true);
+      return false;
+    } }), true);
+    await r.enter();
+    assert.equal((kind === 'eat' ? r.eatState() : r.visualState()).active, true);
+    await r.enter();
+    r.audios.at(-1)?.end(); await r.advance(r.duration(r.art.src));
+    assert.deepEqual(r.results().map(result => [result.result, result.detail.requestId]),
+      [['cancelled', 'old-start'], ['done', 'replacement-start']]);
+  });
+}
+
+for (const kind of ['eat', 'visual']) test(`a Playground ${kind} image timeout reports no playback duration`, async () => {
+  const r = runtime();
+  r.request(kind === 'eat' ? 'cat1_eat_snack' : 'cat1_idle_random', 'image-timeout');
+  await r.advance(5000);
+  assert.equal((kind === 'eat' ? r.eatState() : r.visualState()).active, false);
+  assert.equal(r.results().length, 1);
+  assert.equal(r.results()[0].detail.durationMs, 0);
+});
+
 for (const playground of [false, true]) {
   for (const key of visualKeys) {
     test(`${playground ? 'Playground' : 'ordinary'}: ${key} runs its registered full cycle and restores current tier`, async () => {

@@ -216,7 +216,7 @@ async function harness(tier = 'cat1') {
       for (let pass = 0; pass < 20; pass++) {
         const ready = [...timers].filter(([, timer]) => timer.at <= now);
         if (!ready.length) return;
-        for (const [id, timer] of ready) { timers.delete(id); timer.fn(); }
+        for (const [id, timer] of ready) { if (timers.delete(id)) timer.fn(); }
       }
       throw new Error('timers must remain bounded');
     },
@@ -287,15 +287,15 @@ test('cat activity carries one identity and full logical path through its unique
   const initialMind = r.window.nekoCatMind.getState();
   r.down();
   r.advance(50); r.move(106, 108);
-  r.advance(50); r.move(112, 116);
+  r.advance(50); r.move(112, 108);
   r.advance(50); r.up(); r.up();
   const facts = r.facts(), end = facts.find(fact => fact.reason === 'return-ball-drag-end');
   assert.ok(end, 'a real release emits the common terminal');
   assert.ok(end.activityId);
   assert.ok(end.dragSessionId);
   assert.equal(new Set(facts.map(fact => fact.activityId)).size, 1);
-  assert.equal(end.pathDistancePx, 20);
-  assert.equal(end.displacementPx, 20);
+  assert.equal(end.pathDistancePx, 16);
+  assert.ok(Math.abs(end.displacementPx - Math.hypot(12, 8)) < 1e-9);
   assert.equal(end.durationMs, 150);
   assert.equal(end.dragCancelled, false);
   assert.equal(end.source, 'cat1-playground');
@@ -403,11 +403,14 @@ for (const tier of ['cat1', 'cat2', 'cat3']) {
       assert.equal(r.state.bodies.size, 0);
       assert.equal(r.context._isNekoIdleReturnDragActionActive(r.button), false);
       const afterRemoval = r.sounds.slice();
+      const eligibilityAfterRemoval = r.eligibilitySyncs.slice();
       r.up(); r.advance(6000);
       assert.deepEqual(r.sounds, afterRemoval);
       assert.equal(r.facts().filter(fact => fact.reason === 'return-ball-drag-cancel').length, 1);
       assert.equal(r.facts().filter(fact => fact.reason === 'return-ball-drag-end').length, 0);
-      assert.ok(!r.sounds.includes('ambient-sync'));
+      assert.deepEqual(r.eligibilitySyncs, eligibilityAfterRemoval);
+      assert.equal(r.context._nekoIdleCat1AmbientSoundState.active, false);
+      assert.equal(r.context._nekoIdleSleepSoundState.tier, 'none');
     });
   }
 }

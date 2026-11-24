@@ -201,8 +201,8 @@ CAT1 本地文字另有固定 `5%` 的哈气回复彩蛋。它不是 observation
 |---|---|---|---|
 | CAT1 | `cat1_social_ping` | 轻声/环境回应与气泡 | 可见、音频可播放、无表现锁 |
 | CAT1 | `cat1_eat_snack` | 吃零食 | eat runner 可用 |
-| CAT1 | `cat1_small_move` | 最小化聊天球可用时成对移动；展开/compact 时只移动猫 | journey settled、对应 surface 可用、有空间 |
-| CAT1 | `cat1_play_yarn` | 玩毛线球 | 已在聊天球附近、毛线球可隐藏/恢复 |
+| CAT1 | `cat1_small_move` | 普通模式按聊天窗形态单猫/成对移动；重力模式按物理支撑单猫/成对移动 | 普通：journey settled、对应 surface 可用、有空间；重力：[安全支撑与位移准入](/design/cat1-playground-drop-design#自主位移、走球与玩球) |
+| CAT1 | `cat1_play_yarn` | 玩毛线球 | 普通：已在聊天球附近、毛线球可隐藏/恢复；重力：[当前物理球与路径准入](/design/cat1-playground-drop-design#自主位移、走球与玩球) |
 | CAT1 | `cat1_idle_random` | 八个独立动作的统一随机入口 | CAT1 自主 tick、5 分钟硬 cooldown、八份动画和 OIIA 音频资源均可用 |
 | CAT1 | `cat1_inactive_sad` | 持续无交互后的伤心表现 | CAT1、标准 inactivity 达 13 分钟、本轮未 started |
 | CAT2 | `cat2_nap_feedback` | 小憩声音/气泡反馈 | 睡眠反馈 runner 可用 |
@@ -212,7 +212,7 @@ CAT1 本地文字另有固定 `5%` 的哈气回复彩蛋。它不是 observation
 
 以下不是主动候选：drag、hover、return、tier demotion、除 `happy / touch / laugh / love1 / wagging / banana / ninjutsu / oiia` 统一随机组和 `sad` 时序入口外的 8.3.1 至 8.3.5 CAT1 独立动作、walk-to-chat、compact top edge、mirror、chat idle-dock、屏幕边缘探头、四个桌面窗口互动，以及原 journey 到达聊天球后的局部尾动作。各形态的视觉随机成员不各自注册候选，只由本形态的单一随机动作占用一次调度机会；`sad` 也不以 `cat1_sad` presentation capability 入池，只由 `cat1_inactive_sad` 调度。
 
-Cat Mind 不主动 walk-to-chat。玩毛线要求已经 settled near-chat；小移动不借此接近聊天球，但会沿用既有两种 runner 形态：最小化聊天球 near-chat 时移动猫与球，聊天窗已展开或 compact surface 可用时只移动猫。没有对应 surface 或表现条件不满足时，provider 拒绝动作。
+普通模式下，Cat Mind 不主动 walk-to-chat。玩毛线要求已经 settled near-chat；小移动不借此接近聊天球，但会沿用既有两种 runner 形态：最小化聊天球 near-chat 时移动猫与球，聊天窗已展开或 compact surface 可用时只移动猫。没有对应 surface 或表现条件不满足时，provider 拒绝动作。重力模式的小移动不要求聊天窗 surface，走球与玩球使用当前物理对象和支撑条件，具体见 [8.4 自主小移动、吃零食与玩球](#_8-4-自主小移动、吃零食与玩球)。
 
 ## 八、现有表现功能
 

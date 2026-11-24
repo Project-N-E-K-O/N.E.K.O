@@ -150,6 +150,8 @@ def test_move_interruption_reports_actual_path_once_and_does_not_rewind(small_mo
     _start_move(page)
     page.clock.run_for(450)
     assert page.evaluate("playingMovePlan.activityPathDistancePx > 0")
+    moved_x = page.evaluate("catBody.x")
+    assert abs(moved_x - page.evaluate("playingMovePlan.catStartLeft")) > 1
     if interrupt == "tier":
         page.evaluate("changeTestTier", "cat2")
     elif interrupt == "support":
@@ -166,6 +168,9 @@ def test_move_interruption_reports_actual_path_once_and_does_not_rewind(small_mo
     page.wait_for_function("moveResults.length === 1", polling=10)
     assert page.evaluate("moveResults[0].result !== 'done'")
     assert page.evaluate("moveResults[0].detail.pathDistancePx > 0 && moveResults[0].detail.pathDistancePx < Math.abs(playingMovePlan.dx)")
+    assert page.evaluate("parseFloat(container.style.left)") == pytest.approx(moved_x, abs=0.51)
+    if interrupt in ("tier", "support"):
+        assert page.evaluate("catBody.x") == pytest.approx(moved_x, abs=0.51)
     page.evaluate("art.dispatchEvent(new Event('load'))")
     page.clock.run_for(10000)
     assert page.evaluate("moveResults.length === 1 && !moveState().pairMovePlan && !moveState().pairMoveFrame")
@@ -300,9 +305,8 @@ def _hold_small_move_image(page: Page):
 def _load_held_small_move_image(page: Page, held):
     for route in held:
         route.fulfill(path=str(PROJECT_ROOT / "static/assets/cat-resources/appearance/dev_neko/movement/cat-idle-cat4-1.gif"))
-    page.evaluate("""() => art.complete ? undefined : new Promise(resolve => {
-        art.addEventListener('load', resolve, {once: true});
-    })""")
+    page.wait_for_function("art.complete", polling=10, timeout=5000)
+    assert page.evaluate("art.naturalWidth > 0"), "The walking image failed to load"
 
 
 @pytest.mark.browser_context_args(has_touch=True)

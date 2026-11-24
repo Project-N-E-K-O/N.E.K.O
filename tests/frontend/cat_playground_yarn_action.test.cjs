@@ -66,6 +66,33 @@ test('real Playground physics frames preserve the active play art and held ball 
   assert.notEqual(yarn.element.style.visibility, 'hidden');
 });
 
+for (const loaded of [false, true]) {
+  test(`Visit cat-only returns the play ball styles before disposing its body (loaded: ${loaded})`, async () => {
+    const r = setup(), yarn = r.state.bodies.get('yarn');
+    r.context.document.removeEventListener = () => {};
+    yarn.element.style.visibility = 'visible'; yarn.element.style.pointerEvents = 'auto';
+    let replacementAccepted;
+    r.window.addEventListener('neko:cat-mind:action-result', event => {
+      if (event.detail.actionId === 'cat1_play_yarn') replacementAccepted = play(r);
+    });
+    assert.equal(play(r), true);
+    if (loaded) { r.load(); await r.flush(); }
+    assert.equal(yarn.element.style.visibility, 'hidden');
+    assert.equal(r.context._switchNekoIdleCat1PlaygroundToVisitMode(), true);
+    assert.equal(playState(r).active, false);
+    assert.equal(yarn.actionControl, null);
+    assert.equal(yarn.element.style.visibility, 'visible');
+    assert.equal(yarn.element.style.pointerEvents, 'auto');
+    assert.equal(r.state.bodies.has('yarn'), false);
+    assert.equal(r.state.active, true);
+    assert.equal(r.state.yarnEnabled, false);
+    assert.equal(replacementAccepted, false, 'Visit handoff cannot acquire another play lease');
+    r.load(); await r.advance(duration(r) + 100);
+    assert.equal(results(r).length, 1);
+    assert.notEqual(results(r)[0].result, 'done');
+  });
+}
+
 for (const failure of ['error', 'timeout', 'started rejected']) {
   test(`PG play ${failure} restores its physical ball without a successful terminal`, async () => {
     const r = setup(), yarn = r.state.bodies.get('yarn'), phases = [];

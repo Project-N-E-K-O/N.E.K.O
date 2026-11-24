@@ -86,6 +86,23 @@ def test_real_image_failure_returns_ball_without_started_or_done(yarn_action_pag
     _assert_ball_returned(page)
 
 
+def test_switching_playing_yarn_to_visit_restores_chat_shell_before_removing_body(yarn_action_page: Page):
+    page = yarn_action_page
+    original_style = page.evaluate("({visibility: playYarn.element.style.visibility, pointerEvents: playYarn.element.style.pointerEvents})")
+    assert page.evaluate("startYarnPlay()")
+    _wait_started(page)
+    assert page.evaluate("playYarn.element.style.visibility === 'hidden' && !!playYarn.actionControl")
+    assert page.evaluate("_switchNekoIdleCat1PlaygroundToVisitMode()")
+    assert page.evaluate("({visibility: playYarn.element.style.visibility, pointerEvents: playYarn.element.style.pointerEvents})") == original_style
+    assert page.evaluate("getComputedStyle(playYarn.element).visibility !== 'hidden'")
+    assert page.evaluate("session.active && !session.released && !session.yarnEnabled && session.bodies.size === 1 && session.bodies.get('cat') === catBody")
+    assert page.evaluate("!playState().active && !playState().playgroundYarnControl && !playYarn.actionControl")
+    assert page.evaluate("playResults.length === 1 && playResults[0].result !== 'done' && playVisibility.length === 0")
+    page.clock.run_for(10000)
+    assert page.evaluate("playResults.length === 1 && !playState().active && !session.yarnEnabled")
+    assert page.evaluate("({visibility: playYarn.element.style.visibility, pointerEvents: playYarn.element.style.pointerEvents})") == original_style
+
+
 @pytest.mark.browser_context_args(has_touch=True)
 def test_pending_touch_during_image_load_keeps_the_accepted_play(yarn_action_page: Page):
     page = yarn_action_page

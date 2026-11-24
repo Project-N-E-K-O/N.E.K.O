@@ -145,7 +145,9 @@ test('ordinary minimized dock retains position restoration and successful demoti
     r.emit('neko:auto-goodbye:state-change', { type: 'visual-tier', tier: 'cat2' });
     const docked = r.position();
     assert.equal(r.I.idleDockActive, true);
-    assert.notDeepEqual(docked, ['100px', '200px']);
+    assert.equal(r.I.MINIMIZED_SIZE, 51, 'the complete production controller initializes the ball size');
+    assert.ok(docked.every(value => Number.isFinite(parseFloat(value))));
+    assert.deepEqual(docked, ['437px', '447px']);
     r.I.exitIdleDock({ preserveCurrentPosition });
     assert.deepEqual(r.position(), preserveCurrentPosition ? docked : ['100px', '200px']);
     assert.deepEqual(r.requests, []);

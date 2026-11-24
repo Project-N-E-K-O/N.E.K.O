@@ -249,7 +249,8 @@ function _playNekoIdleCat1EatAction(button) {
     state.resumeJourney = shouldResumeJourney;
     const run = isCatMindRun
         ? _beginNekoCatMindStateAction(state, _NEKO_CAT_MIND_ACTION_IDS.CAT1_EAT_SNACK, _NEKO_IDLE_TIER_CAT1, {
-            source: catMindRunOptions.source, requestId: catMindRunOptions.requestId
+            source: catMindRunOptions.source, requestId: catMindRunOptions.requestId,
+            timestamp: playground ? 0 : undefined
         })
         : null;
     const token = state.token;
@@ -302,8 +303,12 @@ function _playNekoIdleCat1EatAction(button) {
             run.startedAt = startedAt;
             state.catMindStartedAt = startedAt;
         }
-        _notifyNekoCatMindRunnerStarted(catMindRunOptions, run);
+        const started = _notifyNekoCatMindRunnerStarted(catMindRunOptions, run);
         if (!canContinuePlayback()) return;
+        if (playground && started === false) {
+            _cancelNekoIdleCat1EatAction(button, { reason: 'playground-eat-start-rejected', animate: false });
+            return;
+        }
         if (!playground) {
             _setNekoIdleReturnArtSource(art, actionAssetUrl, _NEKO_IDLE_TIER_CAT1, { animate: false });
             _syncNekoIdleCat1CompactMirrorReaction(button, container, actionAssetUrl, 'cat1-eat-action');
@@ -2352,7 +2357,7 @@ function _playNekoIdleSleepSound(tier, token) {
     _runAfterNekoIdleSoundStarted(_nekoIdleSleepSoundState, audio, () => {
         if (!_isNekoCatMindStateActionRunCurrent(_nekoIdleSleepSoundState, run, audio)) return;
         if (token !== _nekoIdleSleepSoundState.token || _nekoIdleSleepSoundState.tier !== tier) return;
-        if (_isAnyNekoIdleCat1PlaygroundDropActive('idle-feedback', { allowPending: true })) {
+        if (_isAnyNekoIdleCat1PlaygroundDropActive('idle-feedback')) {
             _stopNekoIdleSleepSound({ reason: 'playground-unstable' });
             return;
         }
@@ -2456,7 +2461,7 @@ function _playNekoIdleCat1AmbientSound(token) {
     }, { once: true });
     _runAfterNekoIdleSoundStarted(_nekoIdleCat1AmbientSoundState, audio, () => {
         if (!_isNekoCatMindStateActionRunCurrent(_nekoIdleCat1AmbientSoundState, run, audio)) return;
-        if (_isAnyNekoIdleCat1PlaygroundDropActive('idle-feedback', { allowPending: true })) {
+        if (_isAnyNekoIdleCat1PlaygroundDropActive('idle-feedback')) {
             _stopNekoIdleCat1AmbientSound({ reason: 'playground-unstable' });
             return;
         }

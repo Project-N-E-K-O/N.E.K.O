@@ -231,6 +231,7 @@ jobs:
       - name: Run shared cat interactions on the actual page
         run: >-
           python -m pytest -c /dev/null --confcutdir=tests/frontend
+          tests/frontend/test_avatar_ui_buttons_split.py
           tests/frontend/test_cat_playground_basic_interactions.py
           tests/frontend/test_cat_playground_stationary_actions.py
           tests/frontend/test_cat_playground_small_move.py
