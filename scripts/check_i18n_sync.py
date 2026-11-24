@@ -15,7 +15,7 @@
 
 """PR-only check: frontend i18n locale files must be modified in lockstep.
 
-Two groups, one rule each. Diff is computed against the merge-base of HEAD
+Three kinds of group, one rule each. Diff is computed against the merge-base of HEAD
 and the base ref (default ``origin/main``). On a regular ``main`` push or
 when nothing in the watched folders changed, this script is a no-op.
 
@@ -32,6 +32,17 @@ Group 2 — frontend/plugin-manager/src/i18n/locales/*.ts
    every hunk header (``@@ -OLD,COUNT +NEW,COUNT @@``) must match.
    ``yuiGuide.ts`` is excluded from the group because it's a domain-scoped
    guide that intentionally ships single-language only.
+
+Group 3 — frontend/plugin-manager/src/i18n/<module>/*.ts
+   Message modules split into one file per language (``power/``,
+   ``authoring/`` ...). Every subdirectory of ``src/i18n/`` holding any of the
+   8 locale files is discovered automatically and checked as its own group:
+   when one of its locale files changes, all 8 must change. These files are
+   not line-aligned (the en-US file carries the shared type, translations
+   wrap differently), so hunk ranges are not compared; matching key sets are
+   enforced by the type annotations and ``src/i18n/localeSplit.test.ts``.
+   Other files there (``index.ts``, ``shared.ts``, ``testing.ts``, tests) are
+   not part of the group.
 
 Suppression
 -----------
@@ -58,6 +69,11 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+_PLUGIN_MANAGER_LOCALE_FILES = [
+    "en-US.ts", "es.ts", "ja.ts", "ko.ts",
+    "pt.ts", "ru.ts", "zh-CN.ts", "zh-TW.ts",
+]
+
 GROUPS: list[dict[str, object]] = [
     {
         "name": "static/locales",
@@ -71,13 +87,41 @@ GROUPS: list[dict[str, object]] = [
     {
         "name": "plugin-manager i18n locales",
         "dir": "frontend/plugin-manager/src/i18n/locales",
-        "files": [
-            "en-US.ts", "es.ts", "ja.ts", "ko.ts",
-            "pt.ts", "ru.ts", "zh-CN.ts", "zh-TW.ts",
-        ],
+        "files": _PLUGIN_MANAGER_LOCALE_FILES,
         # yuiGuide.ts intentionally excluded — domain-scoped single-language guide.
     },
+    {
+        # A trailing "/*" expands to one group per subdirectory holding any of
+        # the files (see _expand_groups); directories listed above are skipped.
+        "name": "plugin-manager i18n",
+        "dir": "frontend/plugin-manager/src/i18n/*",
+        "files": _PLUGIN_MANAGER_LOCALE_FILES,
+        # Split modules are not line-aligned; only require all 8 to change.
+        "align": False,
+    },
 ]
+
+
+def _expand_groups(groups: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Replace each ``<dir>/*`` group with one group per matching subdirectory."""
+    explicit = {str(g["dir"]).rstrip("/") for g in groups if not str(g["dir"]).endswith("/*")}
+    expanded: list[dict[str, object]] = []
+    for group in groups:
+        pattern = str(group["dir"])
+        if not pattern.endswith("/*"):
+            expanded.append(group)
+            continue
+        parent = pattern[:-2]
+        parent_path = REPO_ROOT / parent
+        if not parent_path.is_dir():
+            continue
+        files = list(group["files"])  # type: ignore[arg-type]
+        for child in sorted(p for p in parent_path.iterdir() if p.is_dir()):
+            rel = f"{parent}/{child.name}"
+            if rel in explicit or not any((child / name).is_file() for name in files):
+                continue
+            expanded.append({**group, "name": f"{group['name']} {child.name}/", "dir": rel})
+    return expanded
 
 
 def _git(*args: str, check: bool = True) -> str:
@@ -201,6 +245,9 @@ def _check_group(group: dict, base: str, changed: set[str]) -> list[str]:
         )
         return errors  # alignment check is meaningless when files are missing
 
+    if group.get("align") is False:
+        return errors
+
     if group.get("format") == "json":
         errors.extend(_compare_json_shapes(files_in_group))
         return errors
@@ -253,7 +300,7 @@ def main(argv: list[str] | None = None) -> int:
 
     changed = _changed_files(args.base)
     all_errors: list[str] = []
-    for group in GROUPS:
+    for group in _expand_groups(GROUPS):
         all_errors.extend(_check_group(group, args.base, changed))
 
     if all_errors:
