@@ -94,7 +94,7 @@ import { useI18n } from 'vue-i18n'
 import { usePluginStore } from '@/stores/plugin'
 import MotionTransition from '@/motion/MotionTransition.vue'
 import { useSidebarState } from '@/composables/useSidebarState'
-import { Odometer, Box, VideoPlay, Monitor, Link, Collection, Connection, Tools, Setting, FolderOpened, HomeFilled, DArrowLeft, DArrowRight, ArrowDown } from '@element-plus/icons-vue'
+import { Odometer, Box, VideoPlay, Monitor, Link, Collection, Connection, Tools, Setting, FolderOpened, HomeFilled, Tickets, DArrowLeft, DArrowRight, ArrowDown } from '@element-plus/icons-vue'
 
 const emit = defineEmits<{ 'collapse-change': [collapsed: boolean] }>()
 const sidebar = ref<HTMLElement | null>(null)
@@ -126,7 +126,9 @@ type NavItem = { path: string; icon: Component; label: string; guideId?: string;
 const navItems = computed<NavItem[]>(() => [
   { path: '/', icon: HomeFilled, label: t('power.nav.home') },
   { path: '/familiars/space', icon: FolderOpened, label: t('power.nav.space') },
+  { path: '/familiars/commissions', icon: Tickets, label: t('power.nav.commissions'), sub: true },
   { path: '/familiars/runtime', icon: Setting, label: t('power.nav.runtime') },
+  { path: '/familiars/mcp', icon: Link, label: t('power.nav.mcp'), sub: true },
   { path: '/plugins', icon: Box, label: t('nav.plugins'), guideId: 'sidebar-plugins' },
   { path: '/plugins/_overview', icon: Odometer, label: t('power.nav.overview'), guideId: 'sidebar-dashboard', sub: true },
   { path: '/plugins/_forge', icon: Tools, label: t('authoring.title'), sub: true },

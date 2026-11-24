@@ -3866,7 +3866,10 @@
     "moreStories": "更多劇本",
     "marketEnter": "進入",
     "marketPreparing": "正在連接劇本市場…",
-    "marketConnectError": "無法連接劇本市場，請保持 NEKO 開啟並重試。",
+    "marketConnectError": "暫時無法連接劇本市場，請重試。",
+    "marketTitle": "劇本市場",
+    "marketRetry": "重新連接",
+    "marketBackToSelector": "返回選擇劇本",
     "marketLocalOnly": "請在執行 NEKO 的電腦上開啟劇本市場；暫不支援透過區域網路或遠端位址匯入劇本。"
   },
     "voiceIdentity": {

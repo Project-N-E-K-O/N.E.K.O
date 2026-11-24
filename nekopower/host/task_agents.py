@@ -8658,7 +8658,8 @@ class TaskAgentManager:
         under way then, so nothing is cut off. What is looked at is what
         the commission no task agent started has used, the task agents it
         started counted in (``Ledger.usage_standing``), against what it
-        may: ``TASK_AGENT_USAGE_LIMIT_TOKENS``, or what the user allowed
+        may: the limit (``_usage_limit``: what the user set, else
+        ``TASK_AGENT_USAGE_LIMIT_TOKENS``), or what the user allowed
         since. Looked at once everything the session said before it asked
         is handled (``_caught_up``): what its last request used is written
         down by then, and a report that ended the commission has ended it.
@@ -8675,12 +8676,12 @@ class TaskAgentManager:
         (``stop``). Every task agent of the same commission is told the
         same, and none of them asks the user a second time.
         """
-        from config.nekopower_settings import TASK_AGENT_USAGE_LIMIT_TOKENS, TASK_AGENT_USAGE_WIND_UP_REQUESTS
+        from config.nekopower_settings import TASK_AGENT_USAGE_WIND_UP_REQUESTS
         from config.prompts.prompts_nekopower_brain import TASK_AGENT_USAGE_WIND_UP
         from nekopower.host.reports import tokens_text
 
         del payload
-        limit = int(TASK_AGENT_USAGE_LIMIT_TOKENS or 0)
+        limit = await self._usage_limit()
         commission_id = self._held_by.get(session_id)
         session = self._sessions.get(commission_id or "")
         if session is not None and session.carries_on_for is not None and not session.closing:
@@ -8840,6 +8841,34 @@ class TaskAgentManager:
         await self._close_session(session)
         return {"stop": True}
 
+    # Returns the limit the user set on the page about the runtime, in
+    # tokens, or None while the setting of the build holds
+    # (``usage_limit.UsageLimitStore.get``). Set by the host; a manager
+    # made without one goes by the setting.
+    usage_limit_of: Callable[[], Awaitable[int | None]] | None = None
+
+    async def _usage_limit(self) -> int:
+        """Return how many tokens the work on one commission may use before the user is asked; 0 for no limit.
+
+        What the user set where they set something, else
+        ``TASK_AGENT_USAGE_LIMIT_TOKENS``. Asked for each time it is looked
+        at: a change holds from the next request on. A setting that cannot
+        be read is none, and the default holds.
+        """
+        from config.nekopower_settings import TASK_AGENT_USAGE_LIMIT_TOKENS
+
+        if self.usage_limit_of is not None:
+            try:
+                chosen = await self.usage_limit_of()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - the default holds, as with nothing set
+                logger.warning("reading the usage limit the user set failed", exc_info=True)
+                chosen = None
+            if chosen is not None and chosen > 0:
+                return int(chosen)
+        return int(TASK_AGENT_USAGE_LIMIT_TOKENS or 0)
+
     async def usage_of(self, commission_id: str) -> dict[str, Any] | None:
         """Return what a commission has used and what it may, for a display; None for an unknown one.
 
@@ -8852,8 +8881,6 @@ class TaskAgentManager:
         model's window is and where a conversation is summed up is told
         by ``ModelCapabilityStore.describe_window``.
         """
-        from config.nekopower_settings import TASK_AGENT_USAGE_LIMIT_TOKENS
-
         commission = await self._ledger.get(commission_id)
         if commission is None:
             return None
@@ -8870,7 +8897,7 @@ class TaskAgentManager:
                 "tokens": row.tokens,
             }
 
-        limit = int(TASK_AGENT_USAGE_LIMIT_TOKENS or 0)
+        limit = await self._usage_limit()
         allowed = standing.allowed if standing is not None and standing.allowed is not None else limit
         return {
             "commission": counted(commission),
