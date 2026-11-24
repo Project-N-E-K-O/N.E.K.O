@@ -14,7 +14,10 @@ from typing import Any
 import pytest
 
 import plugin.plugins.claude_companion as companion
-from plugin.plugins.claude_companion import ClaudeCompanionPlugin, InboxQueue, _migrate_legacy_inbox
+
+ClaudeCompanionPlugin = companion.ClaudeCompanionPlugin
+InboxQueue = companion.InboxQueue
+_migrate_legacy_inbox = companion._migrate_legacy_inbox
 
 pytestmark = pytest.mark.plugin_unit
 
@@ -737,3 +740,16 @@ def test_leftover_legacy_is_kept_until_the_directory_sync_succeeds(
     plugin._init_inbox()
 
     assert not legacy.exists()
+
+
+def test_save_survives_a_failed_directory_sync(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The sync is best effort: the new content is already in place and there
+    # is nothing to roll back to, so the save keeps its result.
+    path = tmp_path / "inbox.json"
+    monkeypatch.setattr(companion, "_sync_directory", lambda _directory: False)
+
+    queue = InboxQueue(str(path))
+    queue.add("hello")
+
+    assert [m["content"] for m in json.loads(path.read_text(encoding="utf-8"))] == ["hello"]
+    assert not path.with_name("inbox.json.tmp").exists()

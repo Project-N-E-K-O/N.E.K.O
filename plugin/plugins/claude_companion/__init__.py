@@ -162,7 +162,7 @@ class InboxQueue:
             try:
                 tmp_path.unlink(missing_ok=True)
             except OSError:
-                pass
+                pass  # a stale temp file is overwritten by the next save
 
     def add(self, content: str, source: str = "neko", msg_type: str = "message") -> Dict[str, Any]:
         """Add a message to the queue. Return the complete message object."""
@@ -293,7 +293,7 @@ def _migrate_legacy_inbox(legacy_path: Path, target_path: Path, logger: Any) -> 
         try:
             tmp_path.unlink(missing_ok=True)
         except OSError:
-            pass
+            pass  # a stale copy is overwritten by the next attempt; the legacy file is kept
         return _MIGRATION_PENDING
     if not _sync_directory(target_path.parent):
         # The new name may not be on disk yet: keep the legacy file for now;
