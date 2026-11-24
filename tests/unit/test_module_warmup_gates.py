@@ -130,42 +130,21 @@ def test_cosyvoice_on_for_cosyvoice_clone(provider):
     assert _gate("cosyvoice_clone", _cfg(current_voice_meta={"provider": provider})) is True
 
 
-# --- proactive sources -----------------------------------------------------
+# --- proactive sources (bilibili_api) ---------------------------------------
 
-@pytest.mark.parametrize("gate", ["proactive_music", "proactive_web", "proactive_bilibili"])
-def test_proactive_gates_off_when_sources_are_off(gate):
-    assert _gate(gate, _cfg()) is False
+def test_proactive_bilibili_off_when_sources_are_off():
+    assert _gate("proactive_bilibili", _cfg()) is False
 
 
-@pytest.mark.parametrize("gate", ["proactive_music", "proactive_web", "proactive_bilibili"])
-def test_proactive_gates_off_when_proactive_chat_is_off(gate):
+def test_proactive_bilibili_off_when_proactive_chat_is_off():
     settings = {key: True for key in _PROACTIVE_ALL_OFF}
     settings["proactiveChatEnabled"] = False
-    assert _gate(gate, _cfg(conversation_settings=settings)) is False
+    assert _gate("proactive_bilibili", _cfg(conversation_settings=settings)) is False
 
 
-@pytest.mark.parametrize("gate", ["proactive_music", "proactive_web", "proactive_bilibili"])
-def test_proactive_gates_on_for_unsaved_settings(gate):
+def test_proactive_bilibili_on_for_unsaved_settings():
     # Keys never saved follow the frontend default, which the backend cannot see.
-    assert _gate(gate, _cfg(conversation_settings={})) is True
-
-
-def test_proactive_music_on_with_music_source():
-    settings = {**_PROACTIVE_ALL_OFF, "proactiveMusicEnabled": True}
-    assert _gate("proactive_music", _cfg(conversation_settings=settings)) is True
-
-
-@pytest.mark.parametrize("source", [
-    "proactiveNewsChatEnabled",
-    "proactiveVideoChatEnabled",
-    "proactivePersonalChatEnabled",
-    "proactiveMusicEnabled",
-    "proactiveMemeEnabled",
-    "proactiveVisionChatEnabled",
-])
-def test_proactive_web_on_with_any_scraping_source(source):
-    settings = {**_PROACTIVE_ALL_OFF, source: True}
-    assert _gate("proactive_web", _cfg(conversation_settings=settings)) is True
+    assert _gate("proactive_bilibili", _cfg(conversation_settings={})) is True
 
 
 @pytest.mark.parametrize("source", ["proactiveVideoChatEnabled", "proactivePersonalChatEnabled"])
@@ -198,8 +177,6 @@ def test_all_gates_off_for_minimal_config():
         "translate_china": True,
         "translate_global": False,
         "cosyvoice_clone": False,
-        "proactive_music": False,
-        "proactive_web": False,
         "proactive_bilibili": False,
     }
 
@@ -223,8 +200,6 @@ def test_one_failing_read_does_not_turn_other_gates_on():
     base = vars(_cfg()).copy()
     base.pop("conversation_settings")
     results = evaluate_gates(_NoSettings(**base))
-    assert results["proactive_music"] is True
-    assert results["proactive_web"] is True
     assert results["proactive_bilibili"] is True
     assert results["anthropic"] is False
     assert results["gemini"] is False
@@ -238,10 +213,24 @@ def test_every_gated_entry_is_in_the_table_and_has_a_gate():
 def test_selection_keeps_ungated_entries_and_drops_closed_gates():
     closed = {name: False for name in _GATES}
     selected = select_warmup_entries(MAIN_SERVER_WARMUP, closed)
-    assert selected == ("openai", "config.prompts.prompts_directives:DIRECTIVE_PATTERNS")
+    assert selected == (
+        "openai",
+        "pyncm_async",
+        "bs4",
+        "config.prompts.prompts_directives:DIRECTIVE_PATTERNS",
+    )
 
     opened = {name: True for name in _GATES}
     assert select_warmup_entries(MAIN_SERVER_WARMUP, opened) == MAIN_SERVER_WARMUP
+
+
+@pytest.mark.parametrize("entry", ["pyncm_async", "bs4"])
+def test_chat_song_request_libraries_are_always_warmed(entry):
+    # /api/music/search and /api/music/play/netease import these on the event
+    # loop for a song asked for in chat, whatever the proactive settings are.
+    assert entry in MAIN_SERVER_WARMUP
+    assert entry not in _ENTRY_GATES
+    assert entry in select_warmup_entries(MAIN_SERVER_WARMUP, {name: False for name in _GATES})
 
 
 def test_selection_without_a_result_keeps_the_entry():
@@ -424,3 +413,16 @@ def test_missing_or_valid_core_config_is_read_normally(tmp_path, content):
     results = evaluate_gates(cfg)
     assert results["anthropic"] is False
     assert results["gemini"] is False
+
+
+def test_failed_startup_spawn_leaves_rechecks_usable(warmup_state, monkeypatch):
+    def _boom(label):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(module_warmup, "_spawn_gated_worker", _boom)
+    assert module_warmup.start_main_server_warmup() is False
+    assert module_warmup._gated_running is False
+    spawned: list[str] = []
+    monkeypatch.setattr(module_warmup, "_spawn_gated_worker", spawned.append)
+    assert module_warmup.request_config_rewarm("core_api") is True
+    assert spawned == ["config"]

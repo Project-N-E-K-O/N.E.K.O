@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 import os
 import sys
 import threading
@@ -88,7 +89,10 @@ MAIN_SERVER_WARMUP: tuple[str, ...] = (
 )
 
 # Entry -> name of the gate deciding whether the current configuration needs it.
-# Entries absent here (openai, the directive patterns) are always warmed.
+# Entries absent here are always warmed: openai, the directive patterns, and
+# pyncm_async / bs4, which chat song requests (/api/music/search and
+# /api/music/play/netease) import on the event loop whatever the proactive
+# settings say, and no switch turns that off.
 _ENTRY_GATES: dict[str, str] = {
     "anthropic": "anthropic",
     "google.genai": "gemini",
@@ -103,8 +107,6 @@ _ENTRY_GATES: dict[str, str] = {
     "googletrans": "translate_global",
     "dashscope": "cosyvoice_clone",
     "dashscope.audio.tts_v2": "cosyvoice_clone",
-    "pyncm_async": "proactive_music",
-    "bs4": "proactive_web",
     "bilibili_api": "proactive_bilibili",
 }
 
@@ -274,24 +276,6 @@ def _proactive_flags(settings: Mapping[str, object], *names: str) -> bool:
     return on("proactiveChatEnabled") and any(on(name) for name in names)
 
 
-def _needs_proactive_music(cfg: WarmupConfig) -> bool:
-    return _proactive_flags(cfg.conversation_settings, "proactiveMusicEnabled")
-
-
-def _needs_proactive_web(cfg: WarmupConfig) -> bool:
-    # bs4 parses pages for news / video / personal updates / music search / memes
-    # and the window-context lookup that goes with screen chat.
-    return _proactive_flags(
-        cfg.conversation_settings,
-        "proactiveNewsChatEnabled",
-        "proactiveVideoChatEnabled",
-        "proactivePersonalChatEnabled",
-        "proactiveMusicEnabled",
-        "proactiveMemeEnabled",
-        "proactiveVisionChatEnabled",
-    )
-
-
 def _needs_proactive_bilibili(cfg: WarmupConfig) -> bool:
     # Bilibili feeds the video and personal-update sources, China region only.
     if not _proactive_flags(
@@ -309,8 +293,6 @@ _GATES: dict[str, Callable[[WarmupConfig], bool]] = {
     "translate_china": _needs_translate_china,
     "translate_global": _needs_translate_global,
     "cosyvoice_clone": _needs_cosyvoice_clone,
-    "proactive_music": _needs_proactive_music,
-    "proactive_web": _needs_proactive_web,
     "proactive_bilibili": _needs_proactive_bilibili,
 }
 
@@ -381,7 +363,11 @@ def _warm_entries(module_list: tuple[str, ...], label: str) -> None:
             logger.debug("[warmup:%s] skip %s: %s", label, name, exc)
         # Yield between modules, giving the running event loop a chance to reclaim the GIL.
         time.sleep(0)
-    logger.info(
+    # Config re-checks run on every relevant settings save; keep them out of the
+    # INFO log unless they actually imported something.
+    level = logging.INFO if label == "main" or module_list else logging.DEBUG
+    logger.log(
+        level,
         "[warmup:%s] done: %d/%d modules in %.0f ms",
         label, loaded, len(module_list), (time.monotonic() - t0) * 1000,
     )
@@ -390,7 +376,8 @@ def _warm_entries(module_list: tuple[str, ...], label: str) -> None:
 def _pending_gated_entries(skip_loaded: bool, label: str) -> tuple[str, ...]:
     entries = select_warmup_entries(MAIN_SERVER_WARMUP, evaluate_gates())
     skipped = [entry for entry in MAIN_SERVER_WARMUP if entry not in entries]
-    logger.info(
+    logger.log(
+        logging.INFO if label == "main" else logging.DEBUG,
         "[warmup:%s] not needed by current config: %s",
         label, ", ".join(skipped) or "(none)",
     )
@@ -447,7 +434,15 @@ def start_main_server_warmup() -> bool:
             return False
         _gated_started = True
         _gated_running = True
-    _spawn_gated_worker("main")
+    try:
+        _spawn_gated_worker("main")
+    except Exception as exc:
+        # Leave the re-check usable: a stuck "running" flag would park every
+        # later request as pending with no worker to pick it up.
+        with _warmup_lock:
+            _gated_running = False
+        logger.debug("[warmup] startup warmup not started: %s", exc)
+        return False
     return True
 
 
