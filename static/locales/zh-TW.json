@@ -311,7 +311,7 @@
         "contentFolderPlaceholder": "從本地物品中獲取的內容文件夾路徑",
         "previewImagePath": "預覽圖片路徑 *",
         "previewImagePlaceholder": "選擇預覽圖片或從本地物品自動獲取",
-        "previewImageSizeHint": "提示：Steam 預覽圖片大小必須小於1MB",
+        "previewImageSizeHint": "提示：Steam 預覽圖片大小必須小於1MB；選擇工坊目錄外的本地圖片請點擊「選擇文件」",
         "uploadInstructions": "請先在\"管理本地物品\"區域選擇一個未發布的物品，然後點擊\"上傳到創意工坊\"按鈕。內容文件夾路徑和預覽圖片路徑將自動填充。",
         "unnamedItem": "未命名物品",
         "unknownItem": "未知物品",

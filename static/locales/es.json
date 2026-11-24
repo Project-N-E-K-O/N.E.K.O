@@ -311,7 +311,7 @@
         "contentFolderPlaceholder": "Ruta de la carpeta de contenido obtenida de elementos locales",
         "previewImagePath": "Vista previa de la ruta de la imagen *",
         "previewImagePlaceholder": "Seleccione la imagen de vista previa u obtenga automáticamente desde elementos locales",
-        "previewImageSizeHint": "Nota: el tamaño de la imagen de vista previa de Steam debe ser inferior a 1 MB",
+        "previewImageSizeHint": "Nota: el tamaño de la imagen de vista previa de Steam debe ser inferior a 1 MB; usa \"Seleccionar archivo\" para imágenes locales fuera de la carpeta de Workshop",
         "uploadInstructions": "Primero seleccione un elemento no publicado en la sección \"Administrar elementos locales\" y luego haga clic en el botón \"Subir al taller\". La ruta de la carpeta de contenido y la ruta de la imagen de vista previa se completarán automáticamente.",
         "unnamedItem": "Artículo sin nombre",
         "unknownItem": "Artículo desconocido",

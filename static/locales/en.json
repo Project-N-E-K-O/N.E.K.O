@@ -311,7 +311,7 @@
         "contentFolderPlaceholder": "Content folder path obtained from local items",
         "previewImagePath": "Preview Image Path *",
         "previewImagePlaceholder": "Select preview image or auto-obtain from local items",
-        "previewImageSizeHint": "Note: Steam preview image size must be less than 1MB",
+        "previewImageSizeHint": "Note: Steam preview image size must be less than 1MB; use \"Select File\" for local images outside the Workshop folder",
         "uploadInstructions": "Please select an unpublished item in the 'Manage Local Items' section first, then click the 'Upload to Workshop' button. The content folder path and preview image path will be automatically populated.",
         "unnamedItem": "Unnamed Item",
         "unknownItem": "Unknown Item",

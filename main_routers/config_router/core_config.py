@@ -25,7 +25,9 @@ import asyncio
 import json
 from copy import deepcopy
 from fastapi import Request
+from fastapi.responses import JSONResponse
 from ..shared_state import get_session_manager, get_initialize_character_data
+from ..system_router._shared import _validate_local_mutation_request
 from utils.file_utils import read_json_async
 from utils.cloudsave_runtime import MaintenanceModeError
 from utils.config_manager import ensure_default_yui_voice_for_free_api
@@ -410,7 +412,33 @@ async def update_core_config(request: Request):
     """Update the core config (API keys); the snapshot-to-write section runs one save at a time."""
     save_lock_held = False
     try:
-        data = await request.json()
+        media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if media_type != "application/json":
+            return JSONResponse(
+                {"success": False, "error": "Content-Type must be application/json"},
+                status_code=415,
+            )
+        try:
+            data = await request.json()
+        except (ValueError, UnicodeDecodeError, RecursionError):
+            return JSONResponse({"success": False, "error": "无效的JSON数据"}, status_code=400)
+        if not isinstance(data, dict):
+            return JSONResponse({"success": False, "error": "无效的数据"}, status_code=400)
+        # Legacy desktop shell (N.E.K.O.-PC pet-preference-actions.js) posts
+        # {"disableTts": bool} via same-origin JSON fetch without X-CSRF-Token (#4019 P2).
+        is_legacy_disable_tts_toggle = (
+            len(data) == 1
+            and "disableTts" in data
+            and isinstance(data["disableTts"], bool)
+        )
+        validation_error = _validate_local_mutation_request(
+            request,
+            payload=data,
+            error_defaults={"success": False},
+            require_csrf=not is_legacy_disable_tts_toggle,
+        )
+        if validation_error is not None:
+            return validation_error
         if not data:
             return {"success": False, "error": "无效的数据"}
         # A settings page opened before the upgrade still posts the old tier names.
@@ -575,7 +603,7 @@ async def update_core_config(request: Request):
                 raise TypeError("API Key必须是字符串类型")
             return value.strip()
 
-        # Allow missing coreApiKey only when custom APIs are enabled
+        # Allow missing coreApiKey only when custom APIs are enabled or toggling disableTts alone
         if enable_custom_api:
             # coreApiKey is optional with custom APIs enabled
             if 'coreApiKey' in data:
@@ -585,6 +613,9 @@ async def update_core_config(request: Request):
                     return {"success": False, "error": str(exc)}
                 if api_key is not None:
                     core_cfg['coreApiKey'] = api_key
+        elif is_legacy_disable_tts_toggle:
+            # Single-field disableTts toggle never edits provider/key fields; preserve stored credentials.
+            pass
         else:
             # Require coreApiKey when custom APIs are disabled
             if 'coreApiKey' not in data and not core_uses_free_provider:
