@@ -988,3 +988,53 @@ async def test_pool_prep_reads_snapshots_not_the_stores_live_lists(tmp_path):
     assert passed["is_live_list"] is False
     assert len(facts) == 25  # the write did happen
     assert sorted(r["id"] for r in result["results"]) == sorted(original_ids)
+
+
+def test_prepare_recall_pools_hand_written_expectations():
+    """Fixed ids, so a regression inside the shared helpers (which the
+    verbatim reference calls too) cannot cancel out on both sides."""
+    from datetime import datetime
+
+    from memory.scopes import MemorySubject
+
+    group = MemorySubject.group_chat("qq", "7788")
+    g = group.as_entry_fields()
+
+    def row(rid, **extra):
+        return {"id": rid, "text": f"{rid} 的内容", "score": 1.0,
+                "event_start_at": "2026-11-10T10:00:00", **extra}
+
+    facts = [
+        row("f_ok"),
+        row("f_neg", score=-1.0),                     # hard filter: net-negative
+        row("f_group", **g),                          # scoped: only for the group
+        row("f_supp", suppressed=True),               # hard filter: suppressed
+        row("f_old", event_start_at="2026-10-01T10:00:00"),  # outside the window
+    ]
+    reflections = [row("r_ok", status="pending"), row("r_denied", status="denied")]
+    archive = [row("a_ok"), row("f_ok", text="archived copy of f_ok"), row("a_group", **g)]
+    persona = [row("p_ok"), row("p_prot", protected=True)]
+
+    def ids(pool):
+        return [r["id"] for r in pool]
+
+    common = dict(lanlan_name="parity", include_legacy_private=None)
+    bm25, emb_pool = hr._prepare_recall_pools(
+        facts, reflections, archive, persona, subjects=None, time_window=None, **common,
+    )
+    assert ids(bm25) == ["f_ok", "f_old", "r_ok", "a_ok", "p_ok"]
+    assert ids(emb_pool) == ["f_ok", "f_old", "r_ok", "p_ok"]
+    assert next(r for r in bm25 if r["id"] == "f_ok")["text"] == "f_ok 的内容"  # active wins
+
+    bm25, emb_pool = hr._prepare_recall_pools(
+        facts, reflections, archive, persona, subjects=[group], time_window=None, **common,
+    )
+    assert ids(bm25) == ["f_group", "a_group"]
+    assert ids(emb_pool) == ["f_group"]
+
+    window = (datetime(2026, 11, 1), datetime(2026, 11, 20))
+    bm25, emb_pool = hr._prepare_recall_pools(
+        facts, reflections, archive, persona, subjects=None, time_window=window, **common,
+    )
+    assert ids(bm25) == ["f_ok", "r_ok", "a_ok", "p_ok"]
+    assert ids(emb_pool) == ["f_ok", "r_ok", "p_ok"]
