@@ -57,11 +57,29 @@ from tests.unit.nekopower.host_fakes import (
     make_host,
     scripted_runtime,
     scripts_by_commission,
-    wait_status,
     wait_until,
 )
+from tests.unit.nekopower.host_fakes import wait_status as _wait_status
 
 pytestmark = pytest.mark.unit
+
+
+
+async def wait_status(host: Any, commission_id: str, *statuses: str, timeout: float = 15.0) -> Any:
+    """Wait until a commission has one of ``statuses``; for one that is done, until what landed it is through as well.
+
+    A commission worked on in a worktree is done a moment before the
+    worktree is removed: a test that looks at both waits for both.
+    """
+    commission = await _wait_status(host, commission_id, *statuses, timeout=timeout)
+    if commission.status == "done":
+        landings = host.task_agents._landings
+        await wait_until(
+            lambda: commission_id not in landings or landings[commission_id].done(), timeout=timeout,
+            what="what landed its changes being through",
+        )
+    return commission
+
 
 FIRST = "fix the header of the shop site"
 SECOND = "repair the broken links in the footer on every page of the shop site"
@@ -115,6 +133,8 @@ class FakeTrees:
         self.reconciled: list[str] = []
         # What removing a worktree fails with (a file of it is in use), while it is set.
         self.fail_remove: Exception | None = None
+        # What putting a clash into a worktree fails with, while it is set.
+        self.fail_prepare: Exception | None = None
         # Set once a worktree is looked at for changes, which waits for ``changes_gate`` when there is one.
         self.checking = asyncio.Event()
         self.changes_gate: asyncio.Event | None = None
@@ -178,6 +198,8 @@ class FakeTrees:
 
     async def prepare_conflicts(self, worktree: Worktree, conflict: MergeResult) -> Worktree:
         assert conflict.status == "conflict"
+        if self.fail_prepare is not None:
+            raise self.fail_prepare
         self.prepared.append(worktree.id)
         return dataclasses.replace(worktree, start="start-2")
 
@@ -1635,14 +1657,17 @@ async def test_a_landing_that_waits_for_a_run_goes_by_how_the_commission_said_it
     assert landed == [second]
 
 
-def _slow_to_stop(hold: asyncio.Event) -> Any:
-    """A step of a run that is over a while after it was told to stop."""
+def _slow_to_stop(hold: asyncio.Event, gone: asyncio.Event | None = None) -> Any:
+    """A step of a run that is over a while after it was told to stop: a second, or when ``gone`` is set."""
 
     async def stubborn() -> None:
         try:
             await hold.wait()
         except asyncio.CancelledError:
-            await asyncio.sleep(1.0)
+            if gone is None:
+                await asyncio.sleep(1.0)
+            else:
+                await asyncio.wait_for(gone.wait(), 30)
             raise
 
     return stubborn
@@ -1892,6 +1917,10 @@ async def test_a_worktree_the_user_sees_to_personally_is_not_taken_back_when_its
     # The run is at it in the one it works in, and not in the user's.
     await wait_until(lambda: len(members["broken links"].requests) == 6, what="it being at work again")
     assert await host.task_agents._still_at_it_in(other) and not await host.task_agents._still_at_it_in(mine)
+    # A decision on the user's own is no reason to keep the commission, at work in the other, from
+    # being ended with what started it.
+    async with host.task_agents._tree_in_hand(mine.id, ("kept",)):
+        assert two.commission_id not in await host.task_agents._waits_in_tree()
     hold.set()
     done = await wait_status(host, two.commission_id, "done")
     assert done.result_summary.startswith("all of them") and (workdir / "more.txt").read_text() == "more"
@@ -1928,10 +1957,13 @@ async def test_a_start_that_comes_to_nothing_leaves_a_worktree_as_the_user_was_t
     assert (await host.land_worktree(tree.id))["status"] == "landed"
 
 
-async def test_a_decision_that_fails_after_the_merge_does_not_leave_the_worktree_as_being_landed(hosts, tmp_path):
+@pytest.mark.parametrize("kept", [False, True], ids=["one that waits for the user", "one the user sees to personally"])
+async def test_a_decision_that_fails_after_the_merge_does_not_leave_the_worktree_as_being_landed(hosts, tmp_path, kept):
     clash = MergeResult("conflict", conflicts=("links.txt",))
     host, trees, workdir, two, _members, _stuck = await _not_landed(hosts, tmp_path, [clash] * 4, turns=4)
     (tree,) = await host.ledger.trees()
+    if kept:
+        await host.keep_worktree(tree.id)
     remove = host.task_agents._remove_tree
 
     async def failing(*_args: Any, **_kwargs: Any) -> bool:
@@ -1941,9 +1973,10 @@ async def test_a_decision_that_fails_after_the_merge_does_not_leave_the_worktree
     with pytest.raises(RuntimeError, match="cannot be written"):
         await host.land_worktree(tree.id)
 
-    # Merged, and not taken off the record: the user's to decide on again, at once.
+    # Merged, and not taken off the record: the user's to decide on again, at once (and still
+    # the user's to see to personally, where it was).
     left = await host.ledger.get_tree(tree.id)
-    assert (left.state, left.reason) == ("unlanded", "failed") and (workdir / "links.txt").exists()
+    assert (left.state, left.reason) == ("kept" if kept else "unlanded", "failed") and (workdir / "links.txt").exists()
     host.task_agents._remove_tree = remove
     assert await host.discard_worktree(tree.id) == {"removed": True}
 
@@ -2244,10 +2277,10 @@ async def test_a_worktree_in_which_a_run_cannot_be_stopped_in_time_is_kept_as_it
     from nekopower.host import tree_work
 
     monkeypatch.setattr(tree_work, "_GONE_SECONDS", 0.3)
-    hold = asyncio.Event()
+    hold, gone = asyncio.Event(), asyncio.Event()
     # (It changed nothing: looked at, the worktree would be removed.)
     host, trees, workdir, one, two, members = await _two_members(
-        hosts, tmp_path, second=[[_slow_to_stop(hold), *_report("links repaired")]]
+        hosts, tmp_path, second=[[_slow_to_stop(hold, gone), *_report("links repaired")]]
     )
     await wait_until(lambda: len(members["broken links"].requests) == 1, what="the second one at work")
     manager = host.task_agents
@@ -2264,9 +2297,13 @@ async def test_a_worktree_in_which_a_run_cannot_be_stopped_in_time_is_kept_as_it
     assert (tree.state, tree.reason) == ("unlanded", "stopped") and trees.removed == [] and not trees.checking.is_set()
     # Nor decided on while its run is still on its way out.
     assert manager._at_it(two.commission_id) and not stopping.done()
-    for decide in (host.land_worktree, host.discard_worktree, host.keep_worktree):
-        with pytest.raises(ValueError, match="at_work"):
-            await decide(tree.id)
+    try:
+        for decide in (host.land_worktree, host.discard_worktree, host.keep_worktree):
+            with pytest.raises(ValueError, match="at_work"):
+                await decide(tree.id)
+    finally:
+        # (Its run goes now, and not before: the three were refused while it was still there.)
+        gone.set()
     assert await stopping
     await wait_until(lambda: not manager._at_it(two.commission_id), what="its run being over")
     await wait_until(lambda: not manager._tree_tasks, what="what was under way being through")
@@ -2345,9 +2382,15 @@ async def test_a_worktree_the_user_discards_that_cannot_be_removed_then_does_not
     manager._tree_handles.clear()
     trees.fail_remove = None
     trees.fail_open = later != "git removes it"
-    assert await manager.reconcile_trees() == {"removed": [tree.id], "kept": []}
-    assert await host.ledger.trees() == [] and not Path(tree.path).exists()
-    assert trees.removed == ([tree.id] if later == "git removes it" else [])
+    if later == "git removes it":
+        assert await manager.reconcile_trees() == {"removed": [tree.id], "kept": []}
+        assert await host.ledger.trees() == [] and not Path(tree.path).exists() and trees.removed == [tree.id]
+    else:
+        # Not known to be what was discarded (another may have been put there since): left alone,
+        # still shown nowhere, and tried again the next time.
+        assert await manager.reconcile_trees() == {"removed": [], "kept": []}
+        assert (await host.ledger.get_tree(tree.id)).state == "discarding" and Path(tree.path).is_dir()
+        assert await host.worktrees() == [] and trees.removed == []
 
 
 async def test_a_worktree_the_user_kept_is_not_landed_where_its_project_no_longer_works(hosts, tmp_path):
@@ -2525,3 +2568,68 @@ async def test_what_clashes_and_cannot_be_said_to_the_task_agent_is_left_for_the
     # Not left at work for nobody: the user decides on it.
     (tree,) = await host.ledger.trees()
     assert (tree.state, tree.reason, tree.rounds, tree.conflicts) == ("unlanded", "conflict", 1, ("links.txt",))
+
+
+@pytest.mark.parametrize(
+    "why",
+    [
+        "the merge cannot be written", "what clashed cannot be put into it",
+        "where its project works cannot be read", "its project is put away",
+    ],
+)
+async def test_a_worktree_the_user_kept_stays_the_users_where_it_cannot_be_landed(hosts, tmp_path, monkeypatch, why):
+    clash = MergeResult("conflict", conflicts=("links.txt",))
+    host, trees, workdir, two, _members, _stuck = await _not_landed(hosts, tmp_path, [clash] * 4, turns=4)
+    (tree,) = await host.ledger.trees()
+    await host.keep_worktree(tree.id)
+    trees.merged.clear()
+    if why == "the merge cannot be written":
+        trees.results = [MergeResult("failed", detail="the project's files are in the middle of a rebase")]
+        answer = await host.land_worktree(tree.id)
+        assert (answer["status"], answer["detail"]) == ("failed", "the project's files are in the middle of a rebase")
+        reason = "failed"
+    elif why == "what clashed cannot be put into it":
+        trees.results = [clash]
+        trees.fail_prepare = WorktreeError("the worktree is in the middle of something")
+        answer = await host.land_worktree(tree.id)
+        assert (answer["status"], answer["resolving"]) == ("failed", False)
+        reason = "failed"
+    else:
+        read_project = host.space.read_project
+
+        async def unread(name: str) -> Any:
+            if why == "its project is put away":
+                return None, True
+            raise OSError("the record cannot be read just now") if name == "Shop site" else await read_project(name)
+
+        monkeypatch.setattr(host.space, "read_project", unread)
+        # Not merged on a guess of where the project works: asked again later, or told that it went.
+        with pytest.raises(ValueError, match="moved" if why == "its project is put away" else "busy"):
+            await host.land_worktree(tree.id)
+        assert trees.merged == []
+        reason = "conflict"
+    # Still the user's to see to personally, whatever came of it: its commission does not go back into it.
+    left = await host.ledger.get_tree(tree.id)
+    assert (left.state, left.reason) == ("kept", reason) and not (workdir / "links.txt").exists()
+
+
+async def test_a_commission_is_done_before_its_worktree_is_removed(hosts, tmp_path):
+    host, trees, workdir, one, two, _members = await _two_members(
+        hosts, tmp_path, second=[_write("links.txt", "repaired"), _report("links repaired")]
+    )
+    seen: list[tuple[str, bool]] = []
+    remove = trees.remove
+
+    async def removing(worktree: Any) -> None:
+        commission = await host.ledger.get(two.commission_id)
+        seen.append((commission.status, two.commission_id in host.task_agents._tree_of))
+        await remove(worktree)
+
+    trees.remove = removing
+    host.release.set()
+    await wait_status(host, two.commission_id, "done")
+    await wait_until(lambda: seen, what="its worktree being removed")
+    # Done by then, and its worktree no longer its own: what is said to it now begins no run in a directory that goes.
+    assert seen == [("done", False)]
+    await wait_until(lambda: not host.task_agents._tree_tasks, what="that being through")
+    assert await host.ledger.trees() == [] and (workdir / "links.txt").exists()

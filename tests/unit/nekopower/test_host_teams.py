@@ -38,7 +38,7 @@ import pytest
 from config import nekopower_settings as settings
 from nekopower.host.reports import describe_permission
 from tests.unit.nekopower.fakes import ScriptedLLM, call, finish, say
-from tests.unit.nekopower.host_fakes import FakeDecisionLLM, fake_model, make_host, scripted_runtime, wait_status, wait_until
+from tests.unit.nekopower.host_fakes import FakeDecisionLLM, fake_model, make_host, scripted_runtime, wait_until
 from tests.unit.nekopower.test_host_tree_work import (  # noqa: F401 - the fixtures are used by name
     CHECK,
     FIRST,
@@ -54,6 +54,7 @@ from tests.unit.nekopower.test_host_tree_work import (  # noqa: F401 - the fixtu
     _shop,
     _write,
     hosts,
+    wait_status,
 )
 
 pytestmark = pytest.mark.unit
