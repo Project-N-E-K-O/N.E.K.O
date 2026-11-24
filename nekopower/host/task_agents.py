@@ -6626,6 +6626,11 @@ class TaskAgentManager(TreeWork):
                 # nothing is awaited between the last look and the text being sent.
                 await self._landing_end_written(commission_id)
                 now = await self._ledger.get(commission_id)
+                if now is not None and now.status in ("blocked", "failed"):
+                    # What it changed was left for the user meanwhile, and it is stuck over that:
+                    # taken up again with this, as what is said to any that is stuck (and on
+                    # record once more as said).
+                    return await self.tell(commission_id, text, still_wanted=still_wanted)
                 if now is None or now.status != "working" or self._sessions.get(commission_id) is not session or session.closing:
                     return False
             if self._sessions.get(commission_id) is not session:
@@ -8451,9 +8456,11 @@ class TaskAgentManager(TreeWork):
             # Its runtime session is on its way out, the end of its run is
             # being looked at (it may be closed to rest this moment), or it
             # has come to wait for the user. What is sent now would be
-            # lost, or would set it to work with its question open.
+            # lost, or would set it to work with its question open. So it
+            # is while a landing writes how the commission ends, whether
+            # or not a session of it is open in a runtime just then.
             live = self._sessions.get(commission_id)
-            return live is not None and (
+            return commission_id in self._landing_ends or live is not None and (
                 live.closing
                 or live.settling
                 or live.awaiting_prompt

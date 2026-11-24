@@ -52,7 +52,7 @@ import os
 import shutil
 import time
 from pathlib import Path
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
 from nekopower.host.ledger import ENDED_STATUSES, TREE_STATES, TREE_STATES_LEFT, Commission, Session, Tree
@@ -145,27 +145,6 @@ class _Quiet:
     go: asyncio.Event = dataclasses.field(default_factory=asyncio.Event)
 
 
-def _repository_of(row: Tree) -> str | None:
-    """Return the root of the repository a worktree was made from, as its record tells; None where it does not.
-
-    The directory of its project, less the path the project has in the
-    repository (which is the path the directory worked in has in the
-    worktree).
-    """
-    try:
-        inside = Path(row.workdir).relative_to(row.path).parts
-    except ValueError:
-        return None
-    if not inside:
-        return row.project_dir
-    project = Path(row.project_dir).parts
-    if len(project) <= len(inside) or [os.path.normcase(part) for part in project[-len(inside) :]] != [
-        os.path.normcase(part) for part in inside
-    ]:
-        return None
-    return str(Path(*project[: -len(inside)]))
-
-
 def _says_it_is(path: Path, name: str, repository: str | None) -> bool:
     """Whether a directory holds the ``.git`` file of the git worktree called ``name`` of the repository at ``repository``.
 
@@ -173,10 +152,11 @@ def _says_it_is(path: Path, name: str, repository: str | None) -> bool:
     worktree. One of the same name of another repository is not it
     (be that one beside the repository, or one the repository lies
     in); nor is one whose repository that line does not tell (it keeps
-    its git directory elsewhere), or where the record does not tell
-    which the repository was: not known to be it, it is left alone.
+    its git directory elsewhere), or where the record does not say
+    which the repository was (``Tree.repo_root``): not known to be it,
+    it is left alone.
     """
-    if repository is None:
+    if not repository:
         return False
     try:
         said = (path / ".git").read_text(encoding="utf-8", errors="replace").strip()
@@ -184,10 +164,25 @@ def _says_it_is(path: Path, name: str, repository: str | None) -> bool:
         return False
     if not said.startswith("gitdir:"):
         return False
-    parts = Path(said[len("gitdir:") :].strip()).parts
+    pointed = Path(said[len("gitdir:") :].strip())
+    if not pointed.is_absolute():
+        # (Written so where git is set to: relative to where the ``.git`` file is.)
+        pointed = Path(os.path.normpath(path / pointed))
+    parts = pointed.parts
     if len(parts) < 4 or parts[-3:] != (".git", "worktrees", name):
         return False
     return os.path.normcase(os.path.realpath(Path(*parts[:-3]))) == os.path.normcase(os.path.realpath(repository))
+
+
+def _is_link(path: Path) -> bool:
+    """Whether a path is a link to somewhere else (a symbolic link, or a junction), and no directory of its own."""
+    if path.is_symlink():
+        return True
+    try:
+        there = os.path.join(os.path.realpath(path.parent), path.name)
+        return os.path.normcase(os.path.realpath(path)) != os.path.normcase(there)
+    except OSError:
+        return True
 
 
 def _is_empty(path: Path) -> bool:
@@ -322,7 +317,8 @@ class TreeWork:
         self._decided_for: dict[str, str] = {}
         # Commissions a landing is putting down as done this moment: an end that is the landing's
         # own, and not one that left its worktree behind.
-        # What is said to one of them meanwhile waits until that is written (``_landing_end_written``).
+        # What is said to one of them meanwhile waits until that is written (``_nothing_more_said``);
+        # so it is with one whose changes are being left for the user.
         self._landing_ends: dict[str, asyncio.Future[None]] = {}
         # Projects that are being given another directory this moment (``project_changing``).
         self._projects_changing: set[str] = set()
@@ -414,10 +410,12 @@ class TreeWork:
         """
         if member.seat != "tree":
             return False
+        if member.id in self._direct_now:
+            # (Whatever worktree another commission of its keeps, one that rests meanwhile: the
+            # one it is at writes in the project's directory.)
+            return False
         if member.id in self._tree_sessions:
             return True
-        if member.id in self._direct_now:
-            return False
         return await self.tree_possible(member.project, member.workdir)
 
     async def seat_of_new_member(self, project: str) -> str:
@@ -502,13 +500,17 @@ class TreeWork:
         def remove() -> bool:
             if not _same_dir(str(path.parent), str(base)):
                 return False
+            if _is_link(path):
+                # The worktree was moved elsewhere and a link to it left here: what the link leads
+                # to is read, and removed, through no such link.
+                return False
             if _is_empty(path):
                 # All of it went, and the directory itself did not (it was in use, or the host ended
                 # just then): nothing is lost with an empty directory, whoever made it. One that
                 # still cannot be removed stays on record as one to remove.
                 _remove_empty(path)
                 return True
-            if not _says_it_is(path, row.id, _repository_of(row)):
+            if not _says_it_is(path, row.id, row.repo_root):
                 return False
             # The file that says whose the directory is goes last, with the directory: where
             # something of it is in use and stays, what is left still says so when this is
@@ -632,7 +634,11 @@ class TreeWork:
         return gone
 
     async def _remove_discarded(self, row: Tree) -> bool:
-        """Remove a worktree the user discarded that could not be removed then; returns whether it is gone, and off the record."""
+        """Remove a worktree the user discarded that could not be removed then; returns whether it is gone, and off the record.
+
+        False as well where only its record went: the directory there
+        is not the worktree's any more, and was left as it is.
+        """
         handle = await self._handle_of(row)
         if handle is not None:
             return await self._remove_tree(row, handle, discarded=True)
@@ -645,7 +651,11 @@ class TreeWork:
             # not the host's, and only the record goes.
             if not await self._repository_gone(row):
                 return False
-            if await self._remove_what_is_left(row) is False:
+            went = await self._remove_what_is_left(row)
+            if went is not True:
+                if went is None:
+                    self._forget_tree(row)
+                    await self._ledger.drop_tree(row.id)
                 return False
         self._forget_tree(row)
         await self._ledger.drop_tree(row.id)
@@ -828,7 +838,7 @@ class TreeWork:
             raise
         self._tree_handles[row.id] = handle
         row = await self._ledger.update_tree(
-            row.id, state="active", token=handle.token, workdir=str(handle.workdir)
+            row.id, state="active", token=handle.token, workdir=str(handle.workdir), repo_root=str(handle.repo_root)
         ) or row
         self._tree_of[commission.id] = row.id
         self._tree_sessions[kept.id] = row.id
@@ -1053,9 +1063,34 @@ class TreeWork:
                 await self._wrap_up_in_tree(commission_id)
 
     async def _landing_end_written(self, commission_id: str) -> None:
-        """Wait until no landing is putting a commission down as done this moment (``_landing_ends``)."""
+        """Wait until no landing is writing how a commission ends this moment (``_nothing_more_said``)."""
         while (written := self._landing_ends.get(commission_id)) is not None:
             await asyncio.wait([written])
+
+    @contextlib.contextmanager
+    def _nothing_more_said(self, commission_id: str) -> Iterator[None]:
+        """Keep what is said to a commission back while a landing writes how it ends: done, or left for the user.
+
+        From here until that is written: what the user says waits
+        (``tell``), and so do what a task agent it started hands back
+        (``_tell_parent``), what is handed on to its session
+        (``settling``, as while the end of a run is looked at), and the
+        next request of a run its runtime began by itself
+        (``_pause_for_landing``). Each goes by how the commission
+        stands once it is written. Entered with nothing awaited since
+        it was last looked at whether more was said (``_stale``).
+        """
+        written = self._landing_ends[commission_id] = asyncio.get_running_loop().create_future()
+        live = self._sessions.get(commission_id)
+        if live is not None:
+            live.settling += 1
+        try:
+            yield
+        finally:
+            if live is not None:
+                live.settling -= 1
+            del self._landing_ends[commission_id]
+            written.set_result(None)
 
     def _stale(self, commission_id: str, done: _Done) -> bool:
         """Whether a commission went on working since it said it is done: what it changed is not landed under it."""
@@ -1231,6 +1266,10 @@ class TreeWork:
         Asked before every model request of a run (``_cb_budget``):
         between two steps, with no tool of the run at work.
         """
+        # A landing is writing how its commission ends this moment, and this is a run its runtime
+        # began by itself meanwhile (nothing else of the host's begins one then): asked on once
+        # that is written, so that it changes nothing in a worktree on record as one to remove.
+        await self._landing_end_written(self._at_work_in(session_id))
         where = self._writes_in.get(session_id)
         quiet = self._quiet.get(where[0]) if where is not None else None
         if quiet is None or quiet.go.is_set():
@@ -1361,36 +1400,27 @@ class TreeWork:
             # run that began while its end was being written (``unless``): that one goes on in
             # the worktree, which stays.
             # Nothing was said to it since it said it is done (looked at above, and nothing was
-            # awaited since). From here until its end is written nothing more is said to its
-            # session: what the user says waits (``tell``), and so does what is handed on to it,
-            # as while the end of a run is looked at (``settling``). Its worktree is put down as
-            # one to remove only with that in place: no run begins in one that a host that
-            # starts would remove.
-            written = self._landing_ends[commission_id] = asyncio.get_running_loop().create_future()
-            live = self._sessions.get(commission_id)
-            if live is not None:
-                live.settling += 1
+            # awaited since), and nothing more is from here until its end is written
+            # (``_nothing_more_said``). Its worktree is put down as one to remove only with that
+            # in place: no run begins, or goes on, in one that a host that starts would remove.
             try:
-                if not result.skipped:
-                    # On record as one to remove from here on (what it held is landed): shown nowhere,
-                    # in nobody's way, and removed as the host next starts should it end this moment.
-                    await self._ledger.update_tree(row.id, state="discarding")
-                # (``unless``: a run its runtime began by itself meanwhile, which nothing here holds back.)
-                ended = await self._end(
-                    commission_id, "done", reason=done.reason, text=text,
-                    shown="\n\n".join(part for part in (done.text, shown) if part) if shown else None,
-                    suggested_delivery=done.delivery, result_summary=self._summary(text),
-                    unless=lambda: self._stale(commission_id, done),
-                )
+                with self._nothing_more_said(commission_id):
+                    if not result.skipped:
+                        # On record as one to remove from here on (what it held is landed): shown nowhere,
+                        # in nobody's way, and removed as the host next starts should it end this moment.
+                        await self._ledger.update_tree(row.id, state="discarding")
+                    # (``unless``: a run its runtime began by itself meanwhile. It is held before its
+                    # first request until this is through, and goes on in the worktree, which stays.)
+                    ended = await self._end(
+                        commission_id, "done", reason=done.reason, text=text,
+                        shown="\n\n".join(part for part in (done.text, shown) if part) if shown else None,
+                        suggested_delivery=done.delivery, result_summary=self._summary(text),
+                        unless=lambda: self._stale(commission_id, done),
+                    )
             except BaseException:
                 self._dones.pop(commission_id, None)
                 await self._seen_to_once_landed(row, handle, result)
                 raise
-            finally:
-                if live is not None:
-                    live.settling -= 1
-                del self._landing_ends[commission_id]
-                written.set_result(None)
             if not ended and self._stale(commission_id, done):
                 await self._ledger.update_tree(row.id, state="active")
                 return "again"
@@ -1410,6 +1440,10 @@ class TreeWork:
             except asyncio.CancelledError:
                 raise
             except (WorktreeError, OSError) as exc:
+                if self._stale(commission_id, done):
+                    # More was said to it while that was tried (which may be why it could not be:
+                    # the worktree changed under it): tried anew when that run is over.
+                    return await self._at_work_again(row)
                 notes = "; ".join(getattr(exc, "__notes__", ()) or ())
                 return await self._not_landed(
                     row, commission, done, REASON_FAILED, detail=f"{exc}{'; ' + notes if notes else ''}",
@@ -1584,33 +1618,37 @@ class TreeWork:
         from config import nekopower_settings as settings
 
         state = "held" if reason == REASON_ASK else "unlanded"
-        # (The files that clashed last stay on record where none are named now: they are looked at
-        # for markers before anything of it lands, ``_merge_or_markers``.)
-        row = await self._ledger.update_tree(
-            row.id, state=state, reason=reason, conflicts=tuple(conflicts) or row.conflicts
-        ) or row
-        self._forget_tree(row)
-        self._dones.pop(commission.id, None)
-        payload: dict[str, Any] = {"tree": row.id, "path": row.workdir, "reason": reason}
-        if reason != REASON_ASK:
-            payload.update(
-                conflicts=list(conflicts)[: settings.TREE_FILES_LISTED], rounds=rounds, detail=detail,
-                left_changed=list(left_changed)[: settings.TREE_FILES_LISTED], kept_copies=kept_copies,
+        # Nothing more is said to it from here until it stands as stuck: steered in meanwhile, what
+        # the user says would start a run that the end of this closes. Said after, it takes the
+        # commission up again, as what is said to any that is stuck.
+        with self._nothing_more_said(commission.id):
+            # (The files that clashed last stay on record where none are named now: they are looked
+            # at for markers before anything of it lands, ``_merge_or_markers``.)
+            row = await self._ledger.update_tree(
+                row.id, state=state, reason=reason, conflicts=tuple(conflicts) or row.conflicts
+            ) or row
+            self._forget_tree(row)
+            self._dones.pop(commission.id, None)
+            payload: dict[str, Any] = {"tree": row.id, "path": row.workdir, "reason": reason}
+            if reason != REASON_ASK:
+                payload.update(
+                    conflicts=list(conflicts)[: settings.TREE_FILES_LISTED], rounds=rounds, detail=detail,
+                    left_changed=list(left_changed)[: settings.TREE_FILES_LISTED], kept_copies=kept_copies,
+                )
+            await self._note_tree_event(commission.id, "landing_held" if reason == REASON_ASK else "not_landed", payload)
+            told, shown = self._not_landed_texts(
+                row, commission.lang, reason, rounds=rounds, detail=detail, conflicts=conflicts, kept_copies=kept_copies
             )
-        await self._note_tree_event(commission.id, "landing_held" if reason == REASON_ASK else "not_landed", payload)
-        told, shown = self._not_landed_texts(
-            row, commission.lang, reason, rounds=rounds, detail=detail, conflicts=conflicts, kept_copies=kept_copies
-        )
-        said = "\n\n".join(part for part in (done.text, findings, told) if part)
-        await self._end(
-            commission.id,
-            "blocked",
-            reason="what it changed was not landed in its project's directory",
-            text=said,
-            shown="\n\n".join(part for part in (done.text, shown) if part),
-            suggested_delivery=done.delivery,
-            result_summary=self._summary(said),
-        )
+            said = "\n\n".join(part for part in (done.text, findings, told) if part)
+            await self._end(
+                commission.id,
+                "blocked",
+                reason="what it changed was not landed in its project's directory",
+                text=said,
+                shown="\n\n".join(part for part in (done.text, shown) if part),
+                suggested_delivery=done.delivery,
+                result_summary=self._summary(said),
+            )
         await self._wrap_up_in_tree(commission.id)
         return state
 
@@ -2166,8 +2204,9 @@ class TreeWork:
                 try:
                     handle = await self.worktrees.open(home, path)
                     row = await self._ledger.add_tree(
-                        id=handle.id, project=project, project_dir=home, path=str(handle.path),
-                        workdir=str(handle.workdir), token=handle.token, state="unlanded", reason=REASON_RESTART,
+                        id=handle.id, project=project, project_dir=home, repo_root=str(handle.repo_root),
+                        path=str(handle.path), workdir=str(handle.workdir), token=handle.token, state="unlanded",
+                        reason=REASON_RESTART,
                     )
                 except asyncio.CancelledError:
                     raise

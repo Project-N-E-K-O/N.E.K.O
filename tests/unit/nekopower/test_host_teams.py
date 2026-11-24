@@ -1105,8 +1105,13 @@ async def test_a_task_agent_started_for_what_was_added_while_its_changes_were_ch
     async def wait() -> None:
         await more.wait()
 
+    stopped: list[str] = []
+
     async def for_long() -> None:
-        await never.wait()
+        try:
+            await never.wait()
+        finally:
+            stopped.append("the task agent it started")
 
     helper = ScriptedLLM([[for_long, *_write("styles.css", "half")]])
     leader_llm = ScriptedLLM([*_hand_over(), *_hand_over(description="second writer")])
@@ -1132,7 +1137,11 @@ async def test_a_task_agent_started_for_what_was_added_while_its_changes_were_ch
     checking.set()
     # What the inspector said is dealt with while that task agent is still at work: the landing gave way.
     await wait_until(lambda: gave_way, what="the landing giving way")
-    assert len(helper.requests) == 1 and not never.is_set()
+    (started,) = [
+        child for child in await host.ledger.select(parent_id=two.commission_id) if "PART-STYLES" in child.dispatch_text
+    ]
+    assert started.status == "working" and host.task_agents._at_it(started.id) and len(helper.requests) == 1
+    assert stopped == []
     # The inspector is gone; what was started for the new work is nobody that would not stop.
     assert (await host.ledger.get(two.commission_id)).status == "working"
     assert await _events(host, two.commission_id, "not_landed") == []

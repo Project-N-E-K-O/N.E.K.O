@@ -385,6 +385,7 @@ CREATE TABLE IF NOT EXISTS worktrees (
     lanlan_name TEXT NOT NULL DEFAULT '',
     project TEXT,
     project_dir TEXT NOT NULL,
+    repo_root TEXT NOT NULL DEFAULT '',
     path TEXT NOT NULL,
     workdir TEXT NOT NULL,
     token TEXT NOT NULL DEFAULT '',
@@ -937,7 +938,11 @@ class Tree:
 
     ``id`` is the name of its directory (``paths.worktree_name``);
     ``project_dir`` the directory of the project it was made from, where
-    what it holds is landed; ``path`` the worktree and ``workdir`` the
+    what it holds is landed; ``repo_root`` the root of the repository
+    that directory is in, as git named it when the worktree was made
+    (empty where that is not on record: what is left of it once its
+    repository is gone cannot then be told to be it, and is left alone);
+    ``path`` the worktree and ``workdir`` the
     directory in it that stands for the project's; ``token`` what tells
     it from another made later at the same path (``worktrees.Worktree``).
     ``rounds`` counts how often the task agent was sent back to merge
@@ -952,6 +957,7 @@ class Tree:
     lanlan_name: str
     project: str | None
     project_dir: str
+    repo_root: str
     path: str
     workdir: str
     token: str
@@ -986,7 +992,10 @@ class Tree:
 
 _TREE_COLUMNS: tuple[str, ...] = tuple(item.name for item in fields(Tree))
 _TREE_UPDATABLE: frozenset[str] = frozenset(
-    {"session_id", "commission_id", "path", "workdir", "token", "state", "rounds", "checks", "conflicts", "reason"}
+    {
+        "session_id", "commission_id", "repo_root", "path", "workdir", "token", "state", "rounds", "checks",
+        "conflicts", "reason",
+    }
 )
 
 
@@ -1241,7 +1250,8 @@ class Ledger:
     def _add_columns(conn: sqlite3.Connection) -> None:
         """Give a ledger made by an earlier build the columns added since (``_ADDED_COLUMNS``, ``_ADDED_SESSION_COLUMNS``)."""
         for table, added in (("commissions", _ADDED_COLUMNS), ("sessions", _ADDED_SESSION_COLUMNS),
-                             ("host_calls", (("grant_id", "TEXT"), ("scope_ref", "TEXT")))):
+                             ("host_calls", (("grant_id", "TEXT"), ("scope_ref", "TEXT"))),
+                             ("worktrees", (("repo_root", "TEXT NOT NULL DEFAULT ''"),))):
             present = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
             for name, kind in added:
                 if name not in present:
@@ -2490,7 +2500,8 @@ class Ledger:
         def work(conn: sqlite3.Connection) -> Tree:
             now = self._clock()
             row: dict[str, Any] = {
-                "session_id": None, "commission_id": None, "lanlan_name": "", "project": None, "token": "",
+                "session_id": None, "commission_id": None, "lanlan_name": "", "project": None, "repo_root": "",
+                "token": "",
                 "state": "making", "rounds": 0, "checks": 0, "conflicts": (), "reason": "",
                 "created_at": now, "updated_at": now,
             }
