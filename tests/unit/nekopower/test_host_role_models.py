@@ -666,6 +666,11 @@ async def test_no_key_is_kept_on_record_shown_logged_or_told_in_an_exception(hos
     choice = await host.task_agents.session_model(await _session_of(host, done.id), record=False)
 
     shown = json.dumps([await host.board(), await host.role_models()], ensure_ascii=False)
+    # A commission is "done" on the board before its session has written its
+    # last entries. Shut the host down before reading what it stored: then all
+    # of it is on disk, and no session still holds a transcript lock (reading
+    # a locked file fails on Windows).
+    await host.shutdown()
     stored = b"".join(path.read_bytes() for path in (tmp_path / "nekopower").rglob("*") if path.is_file())
     for key in (OWN_KEY, AGENT_KEY):
         assert key not in shown
