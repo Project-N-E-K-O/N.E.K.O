@@ -36,7 +36,9 @@ finally:
 try:
     with lock:
         return value      # 出口一：return
-                          # 出口二：with 之后还能正常走完 try
+                          # 出口二：编译器静态地认为 with 之后能正常走完 try，
+                          # 因为上下文管理器的 __exit__ 可能吞掉异常；普通锁运行时
+                          # 走不到这里，这个形状照样触发
 finally:
     stale = [k for k in handlers if k.startswith(prefix)]   # finally 里有推导式
 ```
