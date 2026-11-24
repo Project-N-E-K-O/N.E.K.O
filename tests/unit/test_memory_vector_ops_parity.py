@@ -807,12 +807,19 @@ async def test_cancelling_recall_during_bm25_cancels_the_cosine_task(tmp_path):
             lanlan_name="parity", query="博士", fact_store=fact_store,
             reflection_engine=reflection_engine, config_manager=MagicMock(),
         ))
-        while not entered.is_set():
-            await asyncio.sleep(0.01)
-        task.cancel()
         try:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 5
+            while not entered.is_set():
+                if task.done():
+                    task.result()  # surfaces a failure before BM25 started
+                    pytest.fail("recall finished before BM25 started")
+                assert loop.time() < deadline, "BM25 never started"
+                await asyncio.sleep(0.01)
+            task.cancel()
             await asyncio.wait_for(cosine_cancelled.wait(), 5)
         finally:
             release.set()
+            task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
