@@ -265,16 +265,22 @@ def _pool_matrix(pool: list[dict], model_id: str, dim: int):
 
     rows: list[dict] = []
     vecs: list[np.ndarray] = []
+    norms: list[float] = []
     state = _ScanState()
     for doc in pool:
         cvec, cnorm = _cached_doc_vector(doc, doc.get('text', '') or '', model_id, state)
         if cvec is None or cvec.size != dim or cnorm <= 0:
             continue
         rows.append(doc)
-        vecs.append(np.asarray(cvec, dtype=np.float32) / cnorm)
+        vecs.append(cvec)
+        norms.append(cnorm)
     if not rows:
         return None, []
-    return np.vstack(vecs), rows
+    # One stack and one broadcast division instead of a normalized copy per
+    # row. A Python-float divisor on a float32 row is applied as float32, so
+    # dividing by a float32 norm column gives the same bits per element.
+    matrix = np.vstack(vecs).astype(np.float32, copy=False)
+    return matrix / np.asarray(norms, dtype=np.float32)[:, None], rows
 
 
 def _score(matrix: np.ndarray, query_vector: np.ndarray, probes: np.ndarray | None, cache_key):
