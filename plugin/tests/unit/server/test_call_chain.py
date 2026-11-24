@@ -16,7 +16,7 @@ from plugin.core.capability_policy import decide
 from plugin.core.communication import PluginCommunicationResourceManager
 from plugin.core.rpc import RpcDispatcher, owns_deadline
 from plugin.sdk.shared.core.call_chain_view import call_chain_scope, current_call_chain
-from plugin.server.application.plugins import call_audit, capability_gate
+from plugin.server.application.plugins import call_audit, capability_gate, permission_service
 from plugin.server.messaging.handlers import registry as handler_registry
 from plugin.server.routes.plugin_audit import router as audit_router
 
@@ -43,6 +43,8 @@ def gate(monkeypatch, tmp_path):
     monkeypatch.setattr(call_audit, "_ring", call_audit.deque(maxlen=1000))
     monkeypatch.setattr(call_audit, "_decision_ring", call_audit.deque(maxlen=500))
     monkeypatch.setattr(capability_gate, "_consent_failed_at", -60.0)
+    # A record cached by an earlier test must not answer a failed read here.
+    monkeypatch.setattr(permission_service, "_last_records", {})
     monkeypatch.setattr(call_audit, "_abandoned", None)
     call_audit.close()
     call_audit.reopen()

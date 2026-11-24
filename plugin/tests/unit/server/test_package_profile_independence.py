@@ -1438,7 +1438,11 @@ async def test_local_rollback_that_leaves_the_new_code_drops_the_grants_again(
     async def stop(_plugin_id):
         return None
 
-    async def start(_plugin_id):
+    starts = []
+
+    async def start(plugin_id):
+        # The rollback swallows start errors, so record the call as well.
+        starts.append(plugin_id)
         raise AssertionError("nothing may start")
 
     real_remove = replace.remove_directory
@@ -1461,6 +1465,7 @@ async def test_local_rollback_that_leaves_the_new_code_drops_the_grants_again(
             confirmation_token=plan["confirmation_token"],
         )
 
+    assert starts == []
     assert captured.value.details.get("rollback_status") == "incomplete"
     assert 'version="2.0.0"' in (target_dir / "plugin.toml").read_text(encoding="utf-8")
     assert drops == [PLUGIN_ID, PLUGIN_ID]
@@ -1490,7 +1495,11 @@ async def test_market_rollback_that_leaves_the_new_code_drops_the_grants(
     async def stop(_plugin_id):
         return None
 
-    async def start(_plugin_id):
+    starts = []
+
+    async def start(plugin_id):
+        # The rollback swallows start errors, so record the call as well.
+        starts.append(plugin_id)
         raise AssertionError("nothing may start")
 
     def cannot_write(_lock_path, _payload):
@@ -1534,6 +1543,7 @@ async def test_market_rollback_that_leaves_the_new_code_drops_the_grants(
             rollback_install_source=rollback_install_source,
         )
 
+    assert starts == []
     assert captured.value.rollback_status == "incomplete"
     assert permission_service.current_source(PLUGIN_ID) == first_source
     assert permission not in permission_service.permission_store.read(PLUGIN_ID).get("permissions", {})
