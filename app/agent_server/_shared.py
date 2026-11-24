@@ -63,6 +63,10 @@ class Modules:
     # may finish after a quick re-enable, but must not overwrite the newer
     # ready capability state.
     browser_use_lifecycle_seq: int = 0
+    # Generation of the keyboard-and-mouse switch: bumped by every request
+    # that sets it. A request that waited for the check of the keyboard and
+    # mouse writes its answer only while it is still the latest one.
+    computer_use_switch_seq: int = 0
     # Agent feature flags (controlled by UI)
     agent_flags: Dict[str, Any] = {
         "computer_use_enabled": False,

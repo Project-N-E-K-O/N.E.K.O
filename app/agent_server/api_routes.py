@@ -248,6 +248,9 @@ async def set_agent_flags(payload: Dict[str, Any]):
         Modules.browser_use_lifecycle_seq += 1
         browser_use_lifecycle_seq = Modules.browser_use_lifecycle_seq
     user_plugin_lifecycle_seq = Modules.user_plugin_lifecycle_seq
+    if isinstance(cf, bool):
+        Modules.computer_use_switch_seq += 1
+    computer_use_switch_seq = Modules.computer_use_switch_seq
     if isinstance(uf, bool):
         Modules.user_plugin_lifecycle_seq += 1
         user_plugin_lifecycle_seq = Modules.user_plugin_lifecycle_seq
@@ -264,6 +267,9 @@ async def set_agent_flags(payload: Dict[str, Any]):
         if not isinstance(bf, bool) and old_flags.get("browser_use_enabled", False):
             Modules.browser_use_lifecycle_seq += 1
             browser_use_lifecycle_seq = Modules.browser_use_lifecycle_seq
+        if not isinstance(cf, bool):
+            Modules.computer_use_switch_seq += 1
+            computer_use_switch_seq = Modules.computer_use_switch_seq
         _put_switch_off("computer_use_enabled")
         _put_switch_off("browser_use_enabled")
         first_reason = (gate.get('reasons') or ['AGENT_ENDPOINT_NOT_CONFIGURED'])[0]
@@ -285,6 +291,18 @@ async def set_agent_flags(payload: Dict[str, Any]):
         if cf: # Attempting to enable
             try:
                 avail = await asyncio.to_thread(_keyboard_mouse_availability)
+                failed: Optional[Exception] = None
+            except Exception as e:
+                avail, failed = None, e
+            if Modules.computer_use_switch_seq != computer_use_switch_seq:
+                # The switch was set anew while this one waited for the
+                # check: that later setting stands.
+                logger.info("[Agent] Computer Use enable request overtaken by a later one; left as it is")
+            elif failed is not None:
+                _put_switch_off("computer_use_enabled")
+                Modules.notification = json.dumps({"code": "AGENT_CU_ENABLE_FAILED", "details": {"error": str(failed)}})
+                logger.error(f"[Agent] Cannot enable Computer Use: Check failed {failed}")
+            else:
                 reasons = avail.get('reasons', []) if isinstance(avail, dict) else []
                 _set_capability("computer_use", bool(avail.get("ready")) if isinstance(avail, dict) else False, reasons[0] if reasons else "")
                 if avail.get("ready"):
@@ -294,10 +312,6 @@ async def set_agent_flags(payload: Dict[str, Any]):
                     reason = avail.get('reasons', [])[0] if avail.get('reasons') else 'unknown'
                     Modules.notification = json.dumps({"code": "AGENT_CU_UNAVAILABLE", "details": {"reason_code": reason}})
                     logger.warning(f"[Agent] Cannot enable Computer Use: {avail.get('reasons')}")
-            except Exception as e:
-                _put_switch_off("computer_use_enabled")
-                Modules.notification = json.dumps({"code": "AGENT_CU_ENABLE_FAILED", "details": {"error": str(e)}})
-                logger.error(f"[Agent] Cannot enable Computer Use: Check failed {e}")
         else: # Disabling
             _put_switch_off("computer_use_enabled")
 

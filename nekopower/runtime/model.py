@@ -197,7 +197,7 @@ _QUOTA_WORDS_PATTERNS = re.compile(
 # wait the provider names. Not a reason to pay or to change the API.
 _SHORT_TERM_LIMIT_PATTERNS = re.compile(
     r"per (?:second|minute|hour)|for this (?:second|minute|hour)|\b(?:rpm|tpm|rps)\b|"
-    r"rate[_ ]limit|try again in|retry after|每秒|每分钟|每小时|限流|频率",
+    r"rate[_ ]limit|try again|retry (?:after|later|in)|please retry|稍后(?:再试|重试)|每秒|每分钟|每小时|限流|频率",
     re.IGNORECASE,
 )
 
@@ -221,8 +221,10 @@ def model_failure_kind(said: str) -> str | None:
     text = str(said or "")
     if _ACCOUNT_EMPTY_PATTERNS.search(text):
         return MODEL_QUOTA_USED_UP
-    if _QUOTA_WORDS_PATTERNS.search(text) and not _SHORT_TERM_LIMIT_PATTERNS.search(text):
-        return MODEL_QUOTA_USED_UP
+    if _QUOTA_WORDS_PATTERNS.search(text):
+        # A quota that is used up, or one that waiting lifts: either way not
+        # the key, whatever status it came with.
+        return None if _SHORT_TERM_LIMIT_PATTERNS.search(text) else MODEL_QUOTA_USED_UP
     if _KEY_REFUSED_PATTERNS.search(text) and not _REGION_REFUSAL_PATTERNS.search(text):
         return MODEL_KEY_REFUSED
     return None

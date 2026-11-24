@@ -498,13 +498,25 @@ async def test_a_cancelled_close_settles_nothing_and_the_browser_can_be_closed_a
 # ---------------------------------------------------------------------------
 
 
-async def _background_done(modules: Any) -> None:
-    """Let what a request left to the background run to its end."""
-    for _ in range(3):
-        pending = [task for task in list(modules._background_tasks) if not task.done()]
-        if pending:
-            await asyncio.wait(pending, timeout=10.0)
+async def _background_done(modules: Any, timeout: float = 10.0) -> None:
+    """Let what a request left to the background run to its end; one that fails or hangs fails the test."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
         await asyncio.sleep(0)
+        pending = [task for task in list(modules._background_tasks) if not task.done()]
+        if not pending:
+            break
+        left = deadline - loop.time()
+        _done, still = await asyncio.wait(pending, timeout=max(left, 0.0))
+        if still and loop.time() >= deadline:
+            for task in still:
+                task.cancel()
+            await asyncio.gather(*still, return_exceptions=True)
+            pytest.fail(f"{len(still)} background task(s) did not finish within {timeout}s")
+    for task in list(modules._background_tasks):
+        if task.done() and not task.cancelled() and task.exception() is not None:
+            raise task.exception()
 
 
 def _keyboard(monkeypatch: pytest.MonkeyPatch, *, ready: bool, reasons: list[str] | None = None) -> list[int]:
@@ -530,6 +542,48 @@ async def test_both_groups_are_ready_when_the_model_is_set_up_and_their_means_ar
     assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
     # Nothing was sent to the model to find that out.
     assert checks == []
+
+
+async def test_a_keyboard_check_that_breaks_still_lets_the_browser_be_said(modules, search, browser, checks, monkeypatch):
+    def broken() -> dict[str, Any]:
+        raise RuntimeError("the display driver went away")
+
+    monkeypatch.setattr(capabilities, "_keyboard_mouse_availability", broken)
+    modules.capability_cache["computer_use"] = {"ready": True, "reason": ""}
+
+    await capabilities._refresh_tool_capabilities()
+
+    assert modules.capability_cache["computer_use"] == {"ready": False, "reason": ""}
+    assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
+
+
+async def test_a_keyboard_switched_off_while_an_earlier_request_waited_for_its_check_stays_off(
+    modules, search, browser, checks, monkeypatch
+):
+    import threading
+
+    release = threading.Event()
+
+    def slow_keyboard() -> dict[str, Any]:
+        release.wait(5.0)
+        return {"enabled": True, "ready": True, "reasons": [], "provider": "nekopower", "model": "m"}
+
+    monkeypatch.setattr(api_routes, "_keyboard_mouse_availability", slow_keyboard)
+    monkeypatch.setattr(modules, "computer_use_switch_seq", modules.computer_use_switch_seq)
+    switching_on = asyncio.ensure_future(
+        api_routes.set_agent_flags({"computer_use_enabled": True, "_persist_intent": False})
+    )
+    try:
+        await asyncio.sleep(0.05)
+        assert not switching_on.done()
+        # Switched off meanwhile.
+        await api_routes.set_agent_flags({"computer_use_enabled": False, "_persist_intent": False})
+    finally:
+        release.set()
+    await asyncio.wait_for(switching_on, 5.0)
+
+    assert modules.agent_flags["computer_use_enabled"] is False
+    assert modules.notification is None
 
 
 async def test_without_a_browser_only_the_browser_tools_are_not_ready(modules, search, browser, checks, monkeypatch):

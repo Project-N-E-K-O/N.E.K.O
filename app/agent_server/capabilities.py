@@ -139,10 +139,18 @@ async def _refresh_tool_capabilities() -> None:
     For when that may have changed: the master switch came on, the
     configuration was saved. Asks no model anything.
     """
-    keyboard = await asyncio.to_thread(_keyboard_mouse_availability)
+    try:
+        keyboard = await asyncio.to_thread(_keyboard_mouse_availability)
+    except Exception as exc:  # noqa: BLE001 - not usable then; the browser is still looked at
+        logger.warning("[Agent] Checking the keyboard and mouse failed: %s", exc)
+        keyboard = {"ready": False, "reasons": []}
     keyboard_reasons = keyboard.get("reasons") or []
     _set_capability("computer_use", bool(keyboard.get("ready")), keyboard_reasons[0] if keyboard_reasons else "")
-    browser_ready, browser_reason = await asyncio.to_thread(_browser_availability)
+    try:
+        browser_ready, browser_reason = await asyncio.to_thread(_browser_availability)
+    except Exception as exc:  # noqa: BLE001 - not usable then
+        logger.warning("[Agent] Checking for a browser failed: %s", exc)
+        browser_ready, browser_reason = False, ""
     _set_capability("browser_use", browser_ready, browser_reason)
 
 

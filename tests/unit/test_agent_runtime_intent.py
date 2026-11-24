@@ -1178,6 +1178,9 @@ async def test_restore_puts_the_switches_back_without_asking_the_model_and_keeps
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
     srv_mod.Modules.analyzer_enabled = True
     srv_mod.Modules.agent_flags.update(computer_use_enabled=False, browser_use_enabled=False)
+    # Whatever the restore writes of the intent is seen here: it is to write none.
+    written: list = []
+    monkeypatch.setattr(ari, "set_intent", lambda *args, **kwargs: written.append(args))
 
     with patch.object(srv_mod, "_check_agent_api_gate", return_value={"ready": True, "reasons": [], "is_free_version": False}):
         await srv_mod._restore_tool_flags({"computer_use_enabled": True, "browser_use_enabled": True})
@@ -1188,6 +1191,7 @@ async def test_restore_puts_the_switches_back_without_asking_the_model_and_keeps
     assert srv_mod.Modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
     assert ari.get_intent("computer_use_enabled") is True
     assert ari.get_intent("browser_use_enabled") is True
+    assert written == []
     assert model_clients == []
 
 
@@ -1204,6 +1208,8 @@ async def test_a_switch_that_cannot_come_back_at_start_says_why_and_keeps_the_in
     ari.set_intent("browser_use_enabled", True)
     monkeypatch.setattr(srv_mod, "_browser_dependency_status", lambda: (False, "AGENT_BROWSER_NOT_FOUND"))
     srv_mod.Modules.analyzer_enabled = True
+    written: list = []
+    monkeypatch.setattr(ari, "set_intent", lambda *args, **kwargs: written.append(args))
 
     with patch.object(srv_mod, "_check_agent_api_gate", return_value={"ready": True, "reasons": [], "is_free_version": False}):
         await srv_mod._restore_tool_flags({"browser_use_enabled": True})
@@ -1214,6 +1220,7 @@ async def test_a_switch_that_cannot_come_back_at_start_says_why_and_keeps_the_in
         "details": {"reason_code": "AGENT_BROWSER_NOT_FOUND"},
     }
     assert ari.get_intent("browser_use_enabled") is True
+    assert written == []
     assert model_clients == []
 
 

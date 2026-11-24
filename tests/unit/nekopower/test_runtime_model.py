@@ -986,6 +986,9 @@ async def test_an_input_that_is_too_long_is_not_taken_for_a_refusal_of_its_pictu
         ("RateLimitError: Error code: 429 - quota exceeded for this minute", None),
         ("RateLimitError: Error code: 429 - RESOURCE_EXHAUSTED: Quota exceeded for metric 'requests per minute'", None),
         ("RateLimitError: Error code: 429 - TPM quota exceeded, retry after 3s", None),
+        ("APIStatusError: Error code: 429 - Quota exceeded; please try again later.", None),
+        # Not the key either, though it came with a 403.
+        ("PermissionDeniedError: Error code: 403 - Quota exceeded for requests per minute", None),
         # A refusal for where the request came from is not about the key.
         ("PermissionDeniedError: Error code: 403 - {'error': {'code': 'unsupported_country_region_territory'}}", None),
         ("APIConnectionError: Connection error.", None),
