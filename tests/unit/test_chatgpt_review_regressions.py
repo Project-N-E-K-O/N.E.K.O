@@ -158,12 +158,12 @@ def test_agent_probe_does_not_retry_terminal_or_budget_response(error, expected,
 
 @pytest.mark.parametrize('outcome', ['complete', 'truncated', 'auth', 'quota', 'failed'])
 @pytest.mark.asyncio
-async def test_nekoclaw_responses_tools_and_terminal_errors(outcome, credential_store, monkeypatch):
+async def test_nekopower_responses_tools_and_terminal_errors(outcome, credential_store, monkeypatch):
     """Exercise the current task-agent path through the real Responses parser."""
-    from nekoclaw.runtime.loop.messages import UserMessage
-    from nekoclaw.runtime.loop.provider_events import AssistantDoneEvent, AssistantErrorEvent
-    from nekoclaw.runtime.model import LLMClientProvider
-    from nekoclaw.runtime.protocol import ModelConfig
+    from nekopower.runtime.loop.messages import UserMessage
+    from nekopower.runtime.loop.provider_events import AssistantDoneEvent, AssistantErrorEvent
+    from nekopower.runtime.model import LLMClientProvider
+    from nekopower.runtime.protocol import ModelConfig
 
     requests = []
     def handler(request):
