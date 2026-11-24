@@ -49,18 +49,35 @@ def test_first_imports_from_two_threads_are_serialised(monkeypatch):
     """Two first translations can call _ensure_translatepy from worker threads at once.
 
     Check, import and record must run as one, so the import happens once and the
-    cached globals are never seen half written. The second caller is made to
-    arrive while the first is mid-import (events, not timing): without the lock
-    it would enter the import too.
+    cached globals are never seen half written. The first import is held until
+    the second caller is actually trying to take the init lock -- a signal, not a
+    pause -- so the test fails outright if that lock is no longer taken.
     """
     import sys
-    import time
     import types
 
     inside = {"now": 0, "max": 0}
     counter = threading.Lock()
     first_inside = threading.Event()
-    second_calling = threading.Event()
+    second_at_lock = threading.Event()
+    held_for_second = {"ok": None}
+    second_thread = {}
+
+    class _ReportingLock:
+        """The init lock, reporting when the second caller tries to take it."""
+
+        def __init__(self):
+            self._inner = threading.Lock()
+
+        def __enter__(self):
+            if threading.current_thread() is second_thread.get("t"):
+                second_at_lock.set()
+            self._inner.acquire()
+            return self
+
+        def __exit__(self, *exc):
+            self._inner.release()
+            return False
 
     class _SlowModule(types.ModuleType):
         def __getattr__(self, name):
@@ -70,10 +87,7 @@ def test_first_imports_from_two_threads_are_serialised(monkeypatch):
                 is_first = not first_inside.is_set()
             if is_first:
                 first_inside.set()
-                # Hold the import until the second caller is on its way in, then
-                # give it a moment to reach the import if nothing stops it.
-                second_calling.wait(5)
-                time.sleep(0.2)
+                held_for_second["ok"] = second_at_lock.wait(5)
             with counter:
                 inside["now"] -= 1
             return type(name, (), {})
@@ -93,22 +107,22 @@ def test_first_imports_from_two_threads_are_serialised(monkeypatch):
     monkeypatch.setattr(language_utils, "TranslatepyTranslator", None)
     monkeypatch.setattr(language_utils, "CHINA_ACCESSIBLE_SERVICES", None)
     monkeypatch.setattr(language_utils, "TRANSLATEPY_AVAILABLE", None)
+    monkeypatch.setattr(language_utils, "_translatepy_init_lock", _ReportingLock())
 
     results: list[bool] = []
-
-    def _second():
-        second_calling.set()
-        results.append(language_utils._ensure_translatepy())
-
     first = threading.Thread(target=lambda: results.append(language_utils._ensure_translatepy()))
     first.start()
     assert first_inside.wait(5), "the first import never started"
-    second = threading.Thread(target=_second)
+    second = threading.Thread(target=lambda: results.append(language_utils._ensure_translatepy()))
+    second_thread["t"] = second
     second.start()
     for thread in (first, second):
         thread.join(10)
 
     assert not first.is_alive() and not second.is_alive(), "first import hung"
+    assert held_for_second["ok"] is True, (
+        "the second caller never tried the init lock while the first was importing"
+    )
     assert results == [True, True]
     assert inside["max"] == 1, "two threads imported translatepy at the same time"
 
