@@ -97,12 +97,21 @@ def _detect_activity_type(user_msg: str, tools_used: List[str]) -> str:
 class InboxQueue:
     """Thread-safe message queue with file persistence. Used for NEKO → Claude messaging."""
 
-    def __init__(self, storage_path: str, max_size: int = 100):
+    def __init__(
+        self,
+        storage_path: str,
+        max_size: int = 100,
+        initial_messages: Optional[List[Dict[str, Any]]] = None,
+    ):
         self._path = Path(storage_path)
         self._max_size = max_size
         self._lock = threading.Lock()
         self._messages: List[Dict[str, Any]] = []
-        self._load()
+        if initial_messages is not None:
+            # Seeded from elsewhere (a legacy inbox); the first save writes them here.
+            self._messages = list(initial_messages)
+        else:
+            self._load()
 
     def _load(self):
         """Load the queue from a file."""
@@ -200,8 +209,9 @@ def _migrate_legacy_inbox(legacy_path: Path, target_path: Path, logger: Any) -> 
     Runs only when the legacy file exists and the target does not. A plain move
     is tried first; if that fails (read-only install directory, another drive)
     the file is copied instead and the legacy copy removed when possible.
-    Never raises. Returns False when a legacy file is left unmigrated, so the
-    caller can avoid creating the target and the next start tries again.
+    Never raises. Returns False when a legacy file is left unmigrated; the
+    caller must then not write an empty inbox at the target, or later starts
+    would skip the migration.
     Log lines carry the error type only, never paths or the file content.
     """
     try:
@@ -227,7 +237,7 @@ def _migrate_legacy_inbox(legacy_path: Path, target_path: Path, logger: Any) -> 
         shutil.copyfile(legacy_path, tmp_path)
         os.replace(tmp_path, target_path)
     except OSError as e:
-        logger.warning("Legacy inbox migration failed, starting with an empty inbox: {}", type(e).__name__)
+        logger.warning("Legacy inbox migration failed: {}", type(e).__name__)
         try:
             tmp_path.unlink(missing_ok=True)
         except OSError:
@@ -242,6 +252,20 @@ def _migrate_legacy_inbox(legacy_path: Path, target_path: Path, logger: Any) -> 
             type(e).__name__,
         )
     return True
+
+
+def _read_legacy_inbox(legacy_path: Path) -> List[Dict[str, Any]]:
+    """Messages of a legacy inbox; raises OSError when it cannot be read.
+
+    Unparseable content counts as empty, as InboxQueue._load treats it.
+    """
+    with open(legacy_path, "r", encoding="utf-8") as f:
+        raw = f.read()
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return []
+    return data if isinstance(data, list) else []
 
 
 # ── Activity summary generator ─────────────────────────────────────────────
@@ -667,12 +691,21 @@ class ClaudeCompanionPlugin(NekoPluginBase):
         """Open the inbox in the plugin data directory, migrating a legacy file first."""
         try:
             inbox_path = self.data_path(_INBOX_FILE_NAME)
-            migrated = _migrate_legacy_inbox(_LEGACY_INBOX_PATH, inbox_path, self.logger)
-            self._inbox = InboxQueue(str(inbox_path))
-            if migrated:
-                # cleanup() saves the file; after a failed migration that would
-                # create an empty target and stop later starts from retrying.
-                self._inbox.cleanup()
+            initial: Optional[List[Dict[str, Any]]] = None
+            if not _migrate_legacy_inbox(_LEGACY_INBOX_PATH, inbox_path, self.logger):
+                # Any save at the new location stops later starts from retrying
+                # the migration, so the queue may only open with the legacy
+                # messages in it: its first save then completes the migration.
+                try:
+                    initial = _read_legacy_inbox(_LEGACY_INBOX_PATH)
+                except OSError as e:
+                    self.logger.warning(
+                        "Inbox disabled until the legacy inbox can be migrated: {}", type(e).__name__
+                    )
+                    self._inbox = None
+                    return
+            self._inbox = InboxQueue(str(inbox_path), initial_messages=initial)
+            self._inbox.cleanup()
             pending_count = len(self._inbox.pending())
             if pending_count:
                 self.logger.info("Inbox initialized with {} pending messages", pending_count)

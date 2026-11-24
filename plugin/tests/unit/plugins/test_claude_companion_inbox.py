@@ -142,37 +142,109 @@ def test_copy_fallback_when_move_fails(tmp_path: Path, monkeypatch: pytest.Monke
     assert _SECRET not in logger.text()
 
 
-def test_failed_migration_does_not_block_startup(
+def _fail(*_args: object, **_kwargs: object) -> None:
+    raise PermissionError("denied")
+
+
+def _migration_warnings(plugin: ClaudeCompanionPlugin) -> list[tuple[str, tuple]]:
+    return [(msg, args) for level, msg, args in plugin.logger.lines if level == "warning"]
+
+
+def test_failed_migration_keeps_legacy_messages(
     plugin: ClaudeCompanionPlugin, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     legacy = companion._LEGACY_INBOX_PATH
     _write_legacy(legacy)
 
-    def fail(*_args: object, **_kwargs: object) -> None:
-        raise PermissionError("denied")
-
     with monkeypatch.context() as patched:
-        patched.setattr(companion.os, "replace", fail)
-        patched.setattr(companion.shutil, "copyfile", fail)
+        patched.setattr(companion.os, "replace", _fail)
+        patched.setattr(companion.shutil, "copyfile", _fail)
         plugin._init_inbox()
 
+    # The legacy file could not be moved or copied but is readable: the queue
+    # opens with its messages, so writing the new file completes the migration.
     assert plugin._inbox is not None
-    assert plugin._inbox.pending() == []
+    assert [m["id"] for m in plugin._inbox.pending()] == ["abc12345"]
+    assert json.loads(plugin.data_path("inbox.json").read_text(encoding="utf-8")) == _legacy_payload()
     assert legacy.is_file()
-    warnings = [(msg, args) for level, msg, args in plugin.logger.lines if level == "warning"]
+    warnings = _migration_warnings(plugin)
     assert len(warnings) == 1
     assert "migration failed" in warnings[0][0]
     assert warnings[0][1] == ("PermissionError",)
     assert _SECRET not in plugin.logger.text()
     assert str(legacy) not in plugin.logger.text()
-    # Nothing was written at the new location, so the next start retries.
-    assert not plugin.data_path("inbox.json").exists()
+
+    # A message arriving before the next start must not hide the old ones.
+    assert plugin._on_inbox_send({"content": "new"})["status"] == "ok"
+    plugin._inbox = None
+    plugin._init_inbox()
+
+    assert [m["content"] for m in plugin._inbox.pending()] == [_SECRET, "new"]
+
+
+def test_failed_migration_survives_ack_before_restart(
+    plugin: ClaudeCompanionPlugin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    legacy = companion._LEGACY_INBOX_PATH
+    _write_legacy(legacy)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(companion.os, "replace", _fail)
+        patched.setattr(companion.shutil, "copyfile", _fail)
+        plugin._init_inbox()
+    assert plugin._on_inbox_ack({"message_ids": ["other"]}) == {"status": "ok", "acknowledged": 0}
 
     plugin._inbox = None
     plugin._init_inbox()
 
+    assert [m["id"] for m in plugin._inbox.pending()] == ["abc12345"]
+
+
+def test_unreadable_legacy_inbox_disables_inbox_until_migrated(
+    plugin: ClaudeCompanionPlugin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    legacy = companion._LEGACY_INBOX_PATH
+    _write_legacy(legacy)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(companion.os, "replace", _fail)
+        patched.setattr(companion.shutil, "copyfile", _fail)
+        patched.setattr(companion, "_read_legacy_inbox", _fail)
+        plugin._init_inbox()
+
+        # The plugin keeps running; the inbox endpoints report it unavailable
+        # and nothing is written at the new location.
+        assert plugin._inbox is None
+        assert plugin._on_inbox_send({"content": "new"}) == {"error": "inbox not initialized"}
+        assert plugin._on_inbox_ack({})["acknowledged"] == 0
+        assert not plugin.data_path("inbox.json").exists()
+
+    assert legacy.is_file()
+    assert [args for _msg, args in _migration_warnings(plugin)] == [("PermissionError",), ("PermissionError",)]
+    assert _SECRET not in plugin.logger.text()
+    assert str(legacy) not in plugin.logger.text()
+
+    # Once the file can be moved, the next start migrates it.
+    plugin._init_inbox()
+
     assert not legacy.exists()
     assert [m["id"] for m in plugin._inbox.pending()] == ["abc12345"]
+
+
+def test_corrupt_legacy_inbox_counts_as_empty(
+    plugin: ClaudeCompanionPlugin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    legacy = companion._LEGACY_INBOX_PATH
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("{not json", encoding="utf-8")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(companion.os, "replace", _fail)
+        patched.setattr(companion.shutil, "copyfile", _fail)
+        plugin._init_inbox()
+
+    assert plugin._inbox is not None
+    assert plugin._inbox.pending() == []
 
 
 def test_inbox_queue_creates_missing_data_directory(tmp_path: Path) -> None:
