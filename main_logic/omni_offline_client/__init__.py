@@ -34,8 +34,6 @@ from ._shared import (  # noqa: F401 - preserve the legacy module namespace
     ToolLeakFilter,
     ToolResult,
     _API_KEY_REJECTED_KEYWORDS,
-    _GENAI_NATIVE_BASE_URL_HINTS,
-    _GENAI_NATIVE_MODEL_HINTS,
     _GIBBERISH_MIN_LEN,
     _GIBBERISH_PS_RATIO_CEIL,
     _GIBBERISH_PS_RATIO_FLOOR,

@@ -1354,9 +1354,9 @@ def test_each_group_follows_its_own_switch(builtins, monkeypatch, flags, keyboar
     ("cache", "keyboard", "browser"),
     [
         (
-            {"computer_use": {"ready": True}, "browser_use": {"ready": False, "reason": "AGENT_LLM_UNREACHABLE"}},
+            {"computer_use": {"ready": True}, "browser_use": {"ready": False, "reason": "AGENT_KEY_NOT_CONFIGURED"}},
             (True, ""),
-            (False, "not ready (AGENT_LLM_UNREACHABLE)"),
+            (False, "not ready (AGENT_KEY_NOT_CONFIGURED)"),
         ),
         (
             {"computer_use": {"ready": False, "reason": "AGENT_PYAUTOGUI_NOT_INSTALLED"}, "browser_use": {"ready": True}},
@@ -1450,8 +1450,7 @@ async def test_beginning_to_use_a_group_records_who_counts_once_and_tells_the_ma
     builtins.module.on_builtin_activity(KEYBOARD, "started", "c1")
 
     assert builtins.module.occupant(KEYBOARD) == "c1"
-    assert builtins.module.group_in_use(KEYBOARD) is True and builtins.module.group_in_use() is True
-    assert builtins.module.occupant(BROWSER) is None and builtins.module.group_in_use(BROWSER) is False
+    assert builtins.module.occupant(BROWSER) is None
     assert builtins.counted == [("agent_invoked", {"agent_type": "cua"})]
     assert await builtins.sent() == [
         {
@@ -1468,7 +1467,7 @@ async def test_stopping_to_use_a_group_forgets_who_tells_the_main_server_and_cou
     builtins.module.on_builtin_activity(BROWSER, "ended", "c1")
 
     assert builtins.module.occupant(BROWSER) is None
-    assert builtins.module.group_in_use() is False
+    assert builtins.module._in_use == {}
     # One use, however many calls it made and although it has ended.
     assert builtins.counted == [("agent_invoked", {"agent_type": "browser"})]
     events = await builtins.sent()
@@ -1488,7 +1487,6 @@ async def test_an_end_that_arrives_late_does_not_forget_the_commission_that_has_
     builtins.module.on_builtin_activity(KEYBOARD, "ended", "c1")
 
     assert builtins.module.occupant(KEYBOARD) == "c2"
-    assert builtins.module.group_in_use(KEYBOARD) is True
     # The display is still told of every change.
     assert [event["activity"]["state"] for event in await builtins.sent()] == ["started", "started", "ended"]
 
@@ -1502,7 +1500,6 @@ async def test_the_two_groups_are_occupied_independently(builtins):
     builtins.module.on_builtin_activity(KEYBOARD, "ended", "c1")
 
     assert (builtins.module.occupant(KEYBOARD), builtins.module.occupant(BROWSER)) == (None, "c2")
-    assert builtins.module.group_in_use() is True
     assert [dims["agent_type"] for _name, dims in builtins.counted] == ["cua", "browser"]
     await builtins.sent()
 
@@ -2267,7 +2264,7 @@ async def test_the_console_reads_the_switches_without_using_up_the_notification_
     from app.agent_server.api_shared import app
 
     monkeypatch.setattr(config, "AUTOSTART_CSRF_TOKEN", "the-launch", raising=False)
-    monkeypatch.setattr(wiring.shared.Modules, "notification", "AGENT_BU_ENABLED_CHECKING")
+    monkeypatch.setattr(wiring.shared.Modules, "notification", "AGENT_BU_UNAVAILABLE")
     hud_setting: list[bool | None] = [None]
     monkeypatch.setattr("app.agent_task_hud.get_visible", lambda: hud_setting[0])
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1") as client:
@@ -2282,4 +2279,4 @@ async def test_the_console_reads_the_switches_without_using_up_the_notification_
     assert switches["task_hud_visible"] is True
     assert hidden["switches"]["task_hud_visible"] is False
     # ``/agent/state`` hands the notification out once; this does not take it from the main page.
-    assert wiring.shared.Modules.notification == "AGENT_BU_ENABLED_CHECKING"
+    assert wiring.shared.Modules.notification == "AGENT_BU_UNAVAILABLE"

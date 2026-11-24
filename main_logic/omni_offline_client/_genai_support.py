@@ -24,8 +24,6 @@ from ._shared import (
     SystemMessage,
     ToolCall,
     ToolResult,
-    _GENAI_NATIVE_BASE_URL_HINTS,
-    _GENAI_NATIVE_MODEL_HINTS,
     json,
     log_tool_leak_filtered,
     logger,
@@ -344,13 +342,9 @@ def _should_use_genai_sdk(model: str, base_url: str | None) -> bool:
     # Cheap route-string checks precede native Gemini SDK import,
     # keeping ordinary OpenAI-compatible/greeting client construction off heavyweight genai
     # imports; actual native users need it immediately afterward anyway.
-    bl = (base_url or "").lower()
-    ml = (model or "").lower()
-    native = (
-        any(h in bl for h in _GENAI_NATIVE_BASE_URL_HINTS)
-        or (not bl and any(h in ml for h in _GENAI_NATIVE_MODEL_HINTS))
-    )
-    if not native:
+    from utils.genai_route import is_native_genai_route
+
+    if not is_native_genai_route(model, base_url):
         return False
     # Route checks need only availability booleans; respect known/forced flags, including tests
     # forcing _GENAI_AVAILABLE without google-genai, and import lazily only when unknown.

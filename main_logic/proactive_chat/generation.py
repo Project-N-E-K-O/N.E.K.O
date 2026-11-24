@@ -61,6 +61,7 @@ from utils.llm_client import (
     SystemMessage,
     ThinkingStreamStripper,
     chat_retry_error_types,
+    chat_retry_error_types_snapshot,
     create_chat_llm_async,
 )
 from utils.logger_config import get_module_logger
@@ -409,12 +410,14 @@ class Phase2PromptContext:
 def _proactive_llm_retry_error_types() -> tuple[type[BaseException], ...]:
     """Lazily resolve optional provider exception types."""
     global _PROACTIVE_LLM_RETRY_ERROR_TYPES
-    if _PROACTIVE_LLM_RETRY_ERROR_TYPES is None:
-        _PROACTIVE_LLM_RETRY_ERROR_TYPES = (
-            asyncio.TimeoutError,
-            *chat_retry_error_types(),
-        )
-    return _PROACTIVE_LLM_RETRY_ERROR_TYPES
+    if _PROACTIVE_LLM_RETRY_ERROR_TYPES is not None:
+        return _PROACTIVE_LLM_RETRY_ERROR_TYPES
+    retry_types, final = chat_retry_error_types_snapshot()
+    types = (asyncio.TimeoutError, *retry_types)
+    # Cache only once every Anthropic class is known (see chat_retry_error_types_snapshot).
+    if final:
+        _PROACTIVE_LLM_RETRY_ERROR_TYPES = types
+    return types
 
 
 def _proactive_vision_consent_checker(

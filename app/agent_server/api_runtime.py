@@ -48,6 +48,7 @@ from .api_shared import (  # noqa: F401
     _ensure_plugin_lifecycle_started,
     _ensure_plugin_lifecycle_stopped,
     _set_capability,
+    _capability_ticket_now,
     _start_embedded_user_plugin_server,
     _stop_embedded_user_plugin_server,
     app,
@@ -546,8 +547,8 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         # First-real-client-session signal from main_server (sent on
         # ``greeting_check``). Restore persisted agent runtime intent now
         # — agent_server is fully ready (we're already receiving events),
-        # but we delayed restore to here so we don't trigger LLM probes
-        # and plugin lifecycle startup during the cold-start window
+        # but we delayed restore to here so we don't trigger the switch
+        # replay and plugin lifecycle startup during the cold-start window
         # before the user actually opens a session. The restore helper
         # has its own once-flag, so this is safe to spam.
         # Late import avoids the runtime -> routes initialization cycle while
@@ -623,9 +624,6 @@ async def startup():
     # so that site covers all lazy modules; do not start another warmup here and compete for the startup GIL.
 
     os.environ["NEKO_PLUGIN_HOSTED_BY_AGENT"] = "true"
-    from .model_probe import AgentModelProbe
-
-    Modules.model_probe = AgentModelProbe()
     Modules.throttled_logger = ThrottledLogger(logger, interval=30.0)
     _region_task = asyncio.create_task(_settle_region())
     Modules._persistent_tasks.add(_region_task)
@@ -647,14 +645,12 @@ async def startup():
     # No browser is found or started here: that happens when a task agent
     # first calls a browser tool.
 
-    # The keyboard-and-mouse and browser tools are driven by task agents on
-    # the agent LLM. Nothing is sent to that model here: every way these
-    # tools can come on probes it first (the master switch, each tool's own
-    # switch, the restore of the switches the user left on), and the master
-    # switch rebuilds the probe and probes again anyway, so a probe at start
-    # was only ever read while the tools were off. Until one of those runs
-    # they are "not ready" with no reason given: not "pending", which reads
-    # as a check under way and would stay so with none coming.
+    # The keyboard-and-mouse and browser tools: "not ready" with no reason
+    # until the master switch comes on, which works out whether they can be
+    # used (``_refresh_tool_capabilities``). That only reads the
+    # configuration and looks for input and a browser; the agent model is
+    # never sent anything to see whether it answers. A model that does not
+    # shows when a task agent first uses it, and is reported with its reason.
     _set_capability("computer_use", False, "")
     _set_capability("browser_use", False, "")
     # Plugin capability = ready (embedded HTTP server is always up), but lifecycle
@@ -1234,7 +1230,7 @@ async def set_browser_settings(payload: Dict[str, Any]):
         raise HTTPException(400, str(exc))
     # A browser named in the settings may be one the search does not find,
     # or the one it found may have been set aside: looked for afresh.
-    from .capabilities import _browser_dependency_status, _forget_browser_search
+    from .capabilities import _browser_availability, _forget_browser_search
 
     _forget_browser_search()
     if changed:
@@ -1246,22 +1242,15 @@ async def set_browser_settings(payload: Dict[str, Any]):
         # that one too, and must then close the browser itself.
         builtin_provider.browser_no_longer_wanted()
         _create_tracked_task(_close_browser(update_capability=False))
-    # With a model that answers, whether there is a browser to drive is all
-    # the browser tools depend on, and that may just have changed: said at
+    # Whether there is a browser to drive may just have changed: said at
     # once. Left as it was (no browser found, from before one was named
-    # here), the tools would stay refused until something asked again. With
-    # a model that has not answered, the check that follows its answer says;
-    # and with none configured any more (the probe of the one before may
-    # still say it answered) nothing is said for it, as in
-    # ``/browser_use/availability``.
-    probe = Modules.model_probe
+    # here), the tools would stay refused until something asked again.
     # In a worker thread: it reads the configuration from the disk.
-    configured = (await asyncio.to_thread(_check_agent_api_gate)).get("ready") is True
-    if configured and probe is not None and getattr(probe, "init_ok", False):
-        dependency_ready, dependency_error = await asyncio.to_thread(_browser_dependency_status)
-        _set_capability("browser_use", dependency_ready, "" if dependency_ready else dependency_error)
-        _bump_state_revision()
-        await _emit_agent_status_update()
+    started = _capability_ticket_now()
+    browser_ready, browser_reason = await asyncio.to_thread(_browser_availability)
+    _set_capability("browser_use", browser_ready, browser_reason, started=started)
+    _bump_state_revision()
+    await _emit_agent_status_update()
     return {"success": True, **view}
 
 
