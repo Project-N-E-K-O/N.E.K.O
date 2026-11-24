@@ -81,9 +81,11 @@ async def test_hanging_provider_budget_counts_from_the_callers_deadline(tmp_path
 
     Counting the budget from when the child reads the request lets a late read push the
     fallback past the caller's own timeout, which is how the test above failed on CI.
+    With 4s the provider gets 3.25s: counted from a read 1s+ late the reply lands after
+    4.25s, counted from the caller's deadline it lands at 3.25s whatever the startup time.
     """
     result = await _run_fixture(
-        tmp_path, "ui_ctx_slow_listen", "SlowToListenHangingUiContextFixturePlugin", timeout=2.0,
+        tmp_path, "ui_ctx_slow_listen", "SlowToListenHangingUiContextFixturePlugin", timeout=4.0,
     )
 
     assert _action_ids(result) == ["ping"]

@@ -61,7 +61,9 @@ class SlowToListenHangingUiContextFixturePlugin(HangingUiContextFixturePlugin):
 
     async def _on_command_loop_start(self) -> None:
         # Blocks the loop on purpose: the request waits unread, as it does while a loaded machine finishes startup.
-        time.sleep(0.6)
+        # Longer than the 0.75s reply headroom, so a budget counted from the read misses the caller's deadline
+        # however fast the rest of startup is.
+        time.sleep(1.0)
 
 
 class UncancellableUiContextFixturePlugin(NekoPluginBase):
