@@ -1343,3 +1343,115 @@ def test_the_exit_code_has_exactly_one_definition():
     assert "= 87;" not in node_harness._PRELOAD_SOURCE, (
         "预载不该再自带一个 87 的字面量，否则和 Python 常量会各改各的"
     )
+
+
+def _spawn_recorder(events):
+    def _fake_run(argv, **kwargs):
+        events.append(("spawn", argv[0]))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    return _fake_run
+
+
+@pytest.mark.parametrize("entry", [run_node_script, run_node_stdin])
+def test_the_node_binary_is_read_through_before_its_first_spawn(monkeypatch, tmp_path, entry):
+    """A fresh Windows runner pages node in from a disk nobody has read yet.
+
+    The frontend-contract shard's first test spent its whole 65s ceiling there:
+    node had reached the script, wrote nothing, and the watchdog never fired,
+    because a page fault blocks the thread the timer would run on.  Reading the
+    binary once, before the first spawn, is what keeps that cost out of every
+    attempt's budget -- so it must happen first, and from both entry points.
+    """
+    binary = tmp_path / "node.exe"
+    binary.write_bytes(b"\0" * 16)
+    events = []
+    monkeypatch.setattr(node_harness, "_prewarmed_binaries", set())
+    monkeypatch.setattr(
+        node_harness, "_read_through", lambda path: events.append(("read", path))
+    )
+    monkeypatch.setattr(node_harness.subprocess, "run", _spawn_recorder(events))
+
+    entry(str(binary), "0;", timeout=3)
+
+    assert events == [("read", str(binary)), ("spawn", str(binary))], (
+        "第一次 spawn 之前必须先把 node 本体读一遍，否则冷盘的缺页又算进脚本预算里"
+    )
+
+
+def test_the_node_binary_is_read_through_once_per_process(monkeypatch, tmp_path):
+    """Warming is a one-off; every later call goes straight to spawning.
+
+    Under ``pytest -n auto`` each worker is its own process and warms once; the
+    calls after that must not re-read 87 MB per harness.
+    """
+    binary = tmp_path / "node.exe"
+    binary.write_bytes(b"\0" * 16)
+    events = []
+    monkeypatch.setattr(node_harness, "_prewarmed_binaries", set())
+    monkeypatch.setattr(
+        node_harness, "_read_through", lambda path: events.append(("read", path))
+    )
+    monkeypatch.setattr(node_harness.subprocess, "run", _spawn_recorder(events))
+
+    run_node_script(str(binary), "0;", timeout=3)
+    run_node_stdin(str(binary), "0;", timeout=3)
+    run_node_script(str(binary), "0;", timeout=3)
+
+    assert [kind for kind, _ in events] == ["read", "spawn", "spawn", "spawn"]
+
+
+def test_warming_reads_the_whole_binary(monkeypatch, tmp_path):
+    """Only a full read puts the parts node faults on later into the cache.
+
+    One ``read`` call would warm the first chunk and leave the rest as cold as
+    before, which no test that merely checks warming "happened" would notice.
+    """
+    payload = bytes(range(256)) * 5
+    binary = tmp_path / "node.exe"
+    binary.write_bytes(payload)
+    seen = []
+    real_open = open
+
+    class _Counting:
+        def __init__(self, handle):
+            self._handle = handle
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._handle.close()
+
+        def read(self, size):
+            chunk = self._handle.read(size)
+            seen.append(len(chunk))
+            return chunk
+
+    monkeypatch.setattr(node_harness, "_PREWARM_CHUNK_BYTES", 100)
+    monkeypatch.setattr(
+        node_harness,
+        "open",
+        lambda path, *args, **kwargs: _Counting(real_open(path, *args, **kwargs)),
+        raising=False,
+    )
+
+    node_harness._read_through(str(binary))
+
+    assert sum(seen) == len(payload), "只读了一部分，剩下的页面照样冷着"
+    assert len(seen) > 2, "要分块读到文件尾，而不是一次 read 了事"
+
+
+def test_a_binary_that_cannot_be_read_still_gets_spawned(monkeypatch):
+    """Warming is an optimisation, never a new way to fail.
+
+    A bare ``"node"`` or a path that does not exist is for ``subprocess`` to
+    report, exactly as it did before warming existed.
+    """
+    events = []
+    monkeypatch.setattr(node_harness, "_prewarmed_binaries", set())
+    monkeypatch.setattr(node_harness.subprocess, "run", _spawn_recorder(events))
+
+    run_node_script("definitely-not-a-node-binary", "0;", timeout=3)
+
+    assert events == [("spawn", "definitely-not-a-node-binary")]
