@@ -39,7 +39,7 @@ such programs an environment without it.
 from __future__ import annotations
 
 import os
-from collections.abc import MutableMapping
+from collections.abc import Mapping, MutableMapping
 
 OPENBLAS_THREADS_ENV = "OPENBLAS_NUM_THREADS"
 DEFAULT_OPENBLAS_THREADS = "1"
@@ -71,6 +71,12 @@ def _sets_a_thread_count(value: str | None) -> bool:
     OpenBLAS reads the value with C ``atoi``: leading whitespace, an optional
     sign, then digits; anything after the digits is ignored. Zero and negative
     results count as unset.
+
+    A count too large for a C ``int`` is treated as set. What OpenBLAS makes
+    of one differs by platform -- measured on Windows it is capped to the CPU
+    count, while glibc wraps it negative and OpenBLAS then sizes the pool from
+    the CPU count -- but either way the process ends up with every core, which
+    is what a huge number asks for.
     """
     if not value:
         return False
@@ -104,7 +110,7 @@ def apply_native_runtime_defaults(environ: MutableMapping[str, str] | None = Non
     env[INJECTED_THREADS_MARKER_ENV] = DEFAULT_OPENBLAS_THREADS
 
 
-def env_for_user_programs(environ: MutableMapping[str, str] | None = None) -> dict[str, str]:
+def env_for_user_programs(environ: Mapping[str, str] | None = None) -> dict[str, str]:
     """Return a copy of the environment for a program run on the user's behalf.
 
     The injected default and its marker are left out, so the program gets the

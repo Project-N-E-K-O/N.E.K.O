@@ -60,6 +60,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from config.native_runtime import env_for_user_programs
 from nekopower import TASK_CONTROL_TOOLS
 
 PROFILE = "acp"
@@ -737,12 +738,16 @@ def launch_arguments(executable: Path, patch: Path, leading: tuple[str, ...] = (
 def child_environment(base: Mapping[str, str], *, home: Path, token: str) -> dict[str, str]:
     """Return the environment of a dsh process.
 
-    The host's environment, as the built-in runtime's commands get it,
-    without what would configure dsh or its vendor's services behind the
-    host's back, and with dsh's directories set to ours.
+    The host's environment, as the built-in runtime's commands get it
+    (so without the BLAS thread default the backend gave itself: dsh hands
+    this environment on to the commands it runs for the user), without what
+    would configure dsh or its vendor's services behind the host's back, and
+    with dsh's directories set to ours.
     """
     environment = {
-        name: value for name, value in base.items() if not name.upper().startswith(("DSH_", "DEEPSEEK_"))
+        name: value
+        for name, value in env_for_user_programs(base).items()
+        if not name.upper().startswith(("DSH_", "DEEPSEEK_"))
     }
     environment["DSH_HOME"] = str(home)
     # The user's own ``~/.agents`` (rules and skills for other tools) is not
