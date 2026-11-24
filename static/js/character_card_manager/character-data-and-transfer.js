@@ -719,6 +719,7 @@ const CHARACTER_PROFILE_RESERVED_ROUTE_NAMES = new Set([
     'drawing_guess_demo',
     'watch_together',
     'jukebox',
+    'theme_studio',
     'static',
     'user_live2d',
     'user_live2d_local',

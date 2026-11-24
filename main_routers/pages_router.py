@@ -193,6 +193,8 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
 )
 _STATIC_ASSET_CACHE_TTL = 30.0
 _static_asset_version_cache: tuple[float, str] = (0.0, "0")
+# (computed_at, static_asset_version it was built for, template ctx)
+_theme_loader_ctx_cache: tuple[float, str, dict] = (0.0, "", {})
 _REACT_CHAT_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/react/neko-chat/neko-chat-window.css",
     _PROJECT_ROOT / "static/react/neko-chat/neko-chat-window.iife.js",
@@ -238,9 +240,15 @@ def _static_assets_ctx() -> dict:
     ctx = {"static_asset_version": cached_version}
     # 主题工坊加载器两件套：URL 里要带磁盘指纹，否则浏览器侧加载器每 15 秒就得把
     # 158KB 的样式表整份下载回来，才判断得出「页面里的是不是旧的」（见 assets.py）。
-    from theme_studio.assets import loader_versions
+    # 与上面的版本号共用同一个 TTL，避免每次渲染页面都 stat 磁盘。
+    global _theme_loader_ctx_cache
+    loader_at, loader_base, loader_ctx = _theme_loader_ctx_cache
+    if loader_base != cached_version or now - loader_at >= _STATIC_ASSET_CACHE_TTL:
+        from theme_studio.assets import loader_versions
 
-    ctx.update(loader_versions(_THEME_STUDIO_LOADER_DIR, cached_version))
+        loader_ctx = loader_versions(_THEME_STUDIO_LOADER_DIR, cached_version)
+        _theme_loader_ctx_cache = (now, cached_version, loader_ctx)
+    ctx.update(loader_ctx)
     return ctx
 
 
@@ -650,10 +658,10 @@ async def get_toast_page(request: Request):
 
 @router.get("/theme_studio", response_class=HTMLResponse)
 async def get_theme_studio_page(request: Request):
-    """主题工坊面板（本体内置功能页）。
+    """Theme Studio panel (built-in feature page).
 
-    插件时代这一页跑在插件服务的 48916 端口、以跨源 iframe 形式嵌进插件管理页；
-    现在它是本体自己的一个普通页面：同源、无 iframe、无插件宿主。
+    In the plugin era this page ran on the plugin server port 48916 inside a
+    cross-origin iframe; it is now an ordinary same-origin host page.
     """
     templates = get_templates()
     return templates.TemplateResponse(request, "templates/theme_studio.html", {

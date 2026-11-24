@@ -107,7 +107,9 @@
   //        被吃掉、观感生硬 —— 改为逐帧向目标插值 22%（收敛 0.06% 后停帧）。
   //        pointermove/pointerdown/pointerover 全部用捕获阶段，组件 stopPropagation
   //        也不会把指针事件吞掉。
-  var SCRIPT_VERSION = '1.6.39';
+  //   1.6.40 调色板轮询连续失败时退避（上限 60s）；诊断上报遇 401/403 停止，
+  //          失败后 15s 再试，不再每拍重发。
+  var SCRIPT_VERSION = '1.6.40';
 
   // 允许的颜色值形态。刻意保守：只放行纯颜色，杜绝把任意 CSS 注进变量。
   var RE_HEX = /^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
@@ -2216,7 +2218,8 @@
     if (!map || typeof map !== 'object') return out;
     for (var k in map) {
       if (!Object.prototype.hasOwnProperty.call(map, k)) continue;
-      if (String(k).indexOf(MT_VAR_PREFIX) !== 0) continue;
+      // 变量名会被直接拼进 CSS 文本：只认完整的 --nts-mt-* 形状，不能只看前缀。
+      if (String(k).indexOf(MT_VAR_PREFIX) !== 0 || !/^--nts-mt-[a-z0-9-]{1,80}$/.test(k)) continue;
       var v = map[k];
       if (typeof v !== 'string') continue;
       v = v.trim();
@@ -2343,8 +2346,12 @@
    * static/diagnostics.json：规则数 / 门控属性 / 变量数 / 背板能力 / 指针绑定。
    * 一分钟最多一次、失败完全静默：诊断永远不能影响主题本身。 */
   var reportAt = 0;
+  // 写入口只对本机开放：远程 / 反代窗口拿到 401/403 后本会话不再上报，
+  // 否则每次重试都会在服务端刷一条越权告警。
+  var reportBlocked = false;
   function reportRuntime(force) {
     try {
+      if (reportBlocked) return;
       var now = Date.now();
       if (!force && reportAt && now - reportAt < 60000) return;
       // 节流窗口只在**成功写进磁盘后**才占用（见下方 then/catch）：初始化阶段
@@ -2648,9 +2655,16 @@
         body: JSON.stringify({ report: report }),
         cache: 'no-store', credentials: 'same-origin'
       }, FETCH_TIMEOUT_MS).then(function (res) {
+        if (res && (res.status === 401 || res.status === 403)) {
+          reportBlocked = true;
+          return;
+        }
         if (!res || !res.ok) throw new Error('report HTTP ' + (res ? res.status : '?'));
         reportAt = now;
-      }).catch(function () { reportAt = 0; });
+      }).catch(function () {
+        // 失败后 15s 再试（不是下一拍 1.5s）：服务没就绪时不要每拍打一次。
+        reportAt = now - 45000;
+      });
     } catch (e) { /* ignore */ }
   }
 
@@ -2911,8 +2925,25 @@
     } catch (e) { /* ignore */ }
   }
 
+  // 连续失败时的退避：主服务重启 / 启动受限模式 / 接口不可用时，不要每个窗口
+  // 每 1.5s 打一次请求。前 3 次照常重试（覆盖短暂抖动），之后按 2 倍退避，
+  // 上限 60s；任何一次成功立即恢复 1.5s 轮询。
+  var POLL_BACKOFF_AFTER = 3;
+  var POLL_BACKOFF_MAX_MS = 60000;
+  var pollFailStreak = 0;
+  var pollBackoffUntil = 0;
+
+  function notePollFailure() {
+    pollFailStreak += 1;
+    if (pollFailStreak < POLL_BACKOFF_AFTER) return;
+    var steps = Math.min(pollFailStreak - POLL_BACKOFF_AFTER + 1, 6);
+    var delay = Math.min(POLL_BACKOFF_MAX_MS, POLL_INTERVAL_MS * Math.pow(2, steps));
+    pollBackoffUntil = Date.now() + delay;
+  }
+
   function fetchPalette(force) {
     if (inflight) return;
+    if (!force && pollBackoffUntil && Date.now() < pollBackoffUntil) return;
     inflight = true;
     var url = themeUrl() + '?_=' + Date.now();
     var opts = { cache: 'no-store', credentials: 'omit', mode: 'cors' };
@@ -2931,6 +2962,8 @@
       return res.json();
     }).then(function (p) {
       lastFetchAt = Date.now();
+      pollFailStreak = 0;
+      pollBackoffUntil = 0;
       // 数据到达 = 服务活着：先按成功重置自愈预算（下次真挂了还能再救）。
       lastError = null;
       lastWarnedError = null;
@@ -2978,6 +3011,7 @@
       var msg = (err && err.message) || 'unknown';
       lastError = msg;
       lastErrorAt = Date.now();
+      notePollFailure();
       // 轮询每 1.5s 一次，同一个错误只大声报一次，之后走 debug 日志。
       if (msg !== lastWarnedError) {
         lastWarnedError = msg;

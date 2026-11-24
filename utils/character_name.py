@@ -76,6 +76,7 @@ RESERVED_ROUTE_NAMES = frozenset({
     "drawing_guess_demo",
     "watch_together",
     "jukebox",
+    "theme_studio",
     # Static resources / mount paths
     "static",
     "user_live2d",

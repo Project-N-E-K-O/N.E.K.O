@@ -114,12 +114,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # the source-only author host, separate from the theater runtime. ``launcher_core``
 # is launcher.py's bootstrap and imports app directly. ``nekopower`` is the
 # base that runs task agents (it took over from the former ``brain`` package)
-# and sits at the top of the stack.
+# and sits at the top of the stack. ``theme_studio`` is the built-in theme
+# editor service: it only reads ``utils`` and is used by main_routers / app.
 
 LAYERS: List[Tuple[int, Set[str]]] = [
     (0, {"config", "steamworks"}),
     (1, {"utils"}),
-    (2, {"knowledge", "memory", "main_logic", "services"}),
+    (2, {"knowledge", "memory", "main_logic", "services", "theme_studio"}),
     (3, {"main_routers"}),
     (4, {"plugin"}),
     (5, {"nekopower"}),

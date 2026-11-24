@@ -13,21 +13,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""主题工坊 —— 插件 SDK 的最小等价替身。
+"""Minimal stand-in for the plugin SDK used by Theme Studio.
 
-主题工坊原先是一个 N.E.K.O 插件：业务代码写成 ``NekoPluginBase`` 的子类，方法上挂
-``@plugin_entry``，由插件宿主（48916 端口）负责路由与结果封装。移植进本体以后不再
-有宿主，但业务代码（``theme_studio/service.py``，约 5000 行）本身与 SDK 的耦合极浅
-——只用到 ``Ok`` / ``Err`` / ``SdkError`` 这层返回值包装、几个装饰器，以及 ``logger``。
+Theme Studio used to be an N.E.K.O plugin: its business code is a
+``NekoPluginBase`` subclass with ``@plugin_entry`` methods, and the plugin host
+(port 48916) did routing and result wrapping. Inside the host there is no
+plugin host any more, but the business code (``theme_studio/service.py``) is
+only loosely coupled to the SDK: the ``Ok`` / ``Err`` / ``SdkError`` result
+wrappers, a few decorators and ``logger``.
 
-本模块提供**行为等价的最小子集**，让业务代码保持原样可读：
+This module provides a behaviour-equivalent subset so that code stays readable:
 
-* ``Ok`` / ``Err`` —— 结果容器，``theme_studio.api`` 负责拆包成 HTTP 响应。
-* ``SdkError`` —— 业务错误（消息会原样回给面板，是给用户看的中文提示）。
-* ``plugin_entry`` / ``lifecycle`` / ``ui`` / ``neko_plugin`` / ``tr`` —— 只做注册与
-  元数据收集的装饰器，不再参与运行时调度。
+* ``Ok`` / ``Err``: result containers, unwrapped into HTTP responses by the router.
+* ``SdkError``: business error; its message is shown to the user as is.
+* ``plugin_entry`` / ``lifecycle`` / ``ui`` / ``neko_plugin`` / ``tr``: decorators
+  that only register metadata; ``plugin_entry`` fills :data:`ENTRY_REGISTRY`,
+  which is the only allow-list ``/run/{entry_id}`` dispatches from.
 
-这里刻意不复刻宿主的进度上报 / 事件 / 权限体系：主题工坊从未使用它们。
+Progress reporting, events and the permission system of the plugin host are
+deliberately not reproduced; Theme Studio never used them.
 """
 
 from __future__ import annotations
@@ -50,19 +54,19 @@ __all__ = [
 
 
 class SdkError(Exception):
-    """业务错误。``str(err)`` 就是要展示给用户的中文原因。"""
+    """Business error; ``str(err)`` is the user-facing reason."""
 
     def __init__(self, message: str = "", *, code: str = "sdk_error") -> None:
         super().__init__(message)
         self.message = message
         self.code = code
 
-    def __str__(self) -> str:  # pragma: no cover - 直接继承也可以，仅为可读性
+    def __str__(self) -> str:  # pragma: no cover - readability only
         return self.message or self.code
 
 
 class _Result:
-    """``Ok`` / ``Err`` 的共同基类。"""
+    """Common base of ``Ok`` / ``Err``."""
 
     __slots__ = ("value", "error")
 
@@ -74,21 +78,21 @@ class _Result:
     def ok(self) -> bool:
         return self.error is None
 
-    def __repr__(self) -> str:  # pragma: no cover - 调试用
+    def __repr__(self) -> str:  # pragma: no cover - debugging
         if self.ok:
             return f"Ok({self.value!r})"
         return f"Err({self.error!r})"
 
 
 class Ok(_Result):
-    """成功结果。"""
+    """Successful result."""
 
     def __init__(self, value: Any = None) -> None:
         super().__init__(value=value, error=None)
 
 
 class Err(_Result):
-    """失败结果。参数既可以是 ``SdkError``，也可以是普通异常。"""
+    """Failed result; accepts an ``SdkError``, any exception or a message string."""
 
     def __init__(self, error: Exception | str | None = None) -> None:
         if isinstance(error, str):
@@ -98,7 +102,7 @@ class Err(_Result):
         super().__init__(value=None, error=error)
 
 
-#: entry_id -> 处理函数。``theme_studio.api`` 用它做通用调度。
+#: entry_id -> implementation (unbound function). The only dispatch allow-list.
 ENTRY_REGISTRY: dict[str, Callable[..., Any]] = {}
 
 
@@ -110,19 +114,19 @@ def _noop_decorator(*_args: Any, **_kwargs: Any) -> Callable[[Any], Any]:
 
 
 def tr(key: str, default: str | None = None, **_kwargs: Any) -> str:
-    """翻译占位。主题工坊只有中文文案，直接返回 ``default``（缺省回退 key）。"""
+    """Translation placeholder: returns ``default`` (or the key when absent)."""
     if default:
         return default
     return key
 
 
 def neko_plugin(cls: Any) -> Any:
-    """类装饰器占位。本体不再需要「把这个类交给宿主」。"""
+    """Class decorator placeholder (nothing to hand over to a plugin host)."""
     return cls
 
 
 def plugin_entry(*_args: Any, **kwargs: Any) -> Callable[[Any], Any]:
-    """方法装饰器：把 ``id=`` 与函数登记进 :data:`ENTRY_REGISTRY`。"""
+    """Method decorator: register ``id=`` and the function in :data:`ENTRY_REGISTRY`."""
 
     entry_id = str(kwargs.get("id") or "")
 
@@ -140,7 +144,7 @@ def lifecycle(*_args: Any, **_kwargs: Any) -> Callable[[Any], Any]:
 
 
 class _UiNamespace:
-    """``ui.context`` / ``ui.panel`` 等装饰器的占位命名空间。"""
+    """Placeholder namespace for ``ui.context`` / ``ui.panel`` decorators."""
 
     @staticmethod
     def context(*_args: Any, **_kwargs: Any) -> Callable[[Any], Any]:
@@ -155,7 +159,7 @@ ui = _UiNamespace()
 
 
 class NekoPluginBase:
-    """最小基类：提供 ``logger`` 与文件日志能力。"""
+    """Minimal base class providing ``logger`` and file logging."""
 
     plugin_id: str = "neko_theme_studio"
 
@@ -166,11 +170,11 @@ class NekoPluginBase:
         )
 
     def enable_file_logging(self, log_level: str = "INFO") -> logging.Logger:
-        """等价替身：返回标准库 logger，级别随参数调整。"""
+        """Equivalent stand-in: return the stdlib logger at the requested level."""
         logger = logging.getLogger("neko.theme_studio")
         level = getattr(logging, str(log_level).upper(), logging.INFO)
         try:
             logger.setLevel(level)
-        except Exception:  # noqa: BLE001 - 日志级别异常不该影响功能
+        except Exception:  # noqa: BLE001 - a bad log level must not break the feature
             pass
         return logger

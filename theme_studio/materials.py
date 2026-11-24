@@ -1,18 +1,22 @@
-"""高级材质设置系统 —— 版本化 schema、预设、校验与 CSS 变量编译。
+"""Advanced material settings -- versioned schema, presets, validation and CSS variable compilation.
 
-设计（与 ``THEME_CONTRACT.md`` 的变量层并列，不取代它）：
+Design (sits alongside the variable layer of ``THEME_CONTRACT.md``; does not replace it):
 
-* 材质是 ``theme.json`` 的 ``materials`` 子树：version / enabled / preset /
+* Materials are the ``materials`` subtree of ``theme.json``: version / enabled / preset /
   quality / global / lighting / refraction / surface / animation / dark /
-  components / custom_presets。
-* 后端只做三件事：**规整**（缺失字段补默认、未知字段丢弃）、**校验**
-  （类型/范围钳制并回传警告）、**编译**（把材质参数换算成 --nts-mt-* 变量，
-  亮/暗各一份，随 get_theme 返回给加载器）。
-* 加载器拿编译结果直接写 <style>，MATERIAL_CSS 常量消费这些变量。因此
-  enabled=false 时加载器既不写变量也不打 data-nts-mt 属性，材质 CSS 整段
-  惰性 —— 「关闭材质 = 零效果」是构造性保证，不靠回退值。
+  components / custom_presets.
+* The backend does only three things: **normalize** (fill missing fields with defaults,
+  drop unknown ones), **validate** (clamp types/ranges and return warnings), and
+  **compile** (turn material params into --nts-mt-* variables, one set each for
+  light and dark, returned to the loader with get_theme).
+* The loader writes the compiled result straight into a <style>; the MATERIAL_CSS
+  constant consumes those variables. So with enabled=false the loader writes no
+  variables and sets no data-nts-mt attribute, and the whole material CSS stays
+  inert -- "materials off = zero effect" is guaranteed by construction, not by
+  fallback values.
 
-参数分五节（面板的 10 个导航按这五节 + 总览/组件/性能/预设/高级拆分）。
+Params are split into five sections (the panel's 10 nav entries are these five plus
+overview / components / performance / presets / advanced).
 """
 
 from __future__ import annotations
@@ -91,7 +95,7 @@ BLUR_LEVELS = {"low": 1, "medium": 2, "high": 3, "ultra": 4}
 
 @dataclass(frozen=True)
 class Param:
-    """一个材质参数的完整定义（后端校验、编译器与面板表单共用同一口径）。"""
+    """Full definition of one material param (shared by backend validation, the compiler and the panel form)."""
 
     key: str
     section: str
@@ -229,7 +233,7 @@ def _kebab(name: str) -> str:
 
 
 def var_name(param: Param) -> str:
-    """材质参数 → CSS 变量名（opacity → --nts-mt-opacity）。"""
+    """Material param -> CSS variable name (opacity -> --nts-mt-opacity)."""
     return "--nts-mt-" + _kebab(param.key)
 
 
@@ -244,10 +248,10 @@ _EASE_TOP = (0.0, 0.0, 1.0, 1.0)
 
 
 def _ease_curve(smooth: float) -> str:
-    """把 0-1 的平滑度映射成连续的 cubic-bezier。
+    """Map a 0-1 smoothness onto a continuous cubic-bezier.
 
-    0 端最像 ease，0.5 是对称的 ease-in-out，1 是 linear。
-    返回 animation 简写里可以直出、不需要额外变量的字符串。
+    0 is closest to ease, 0.5 is the symmetric ease-in-out, 1 is linear.
+    Returns a string usable directly in the animation shorthand, with no extra variables.
     """
     t = _clamp(float(smooth), 0.0, 1.0)
     if t <= 0.5:
@@ -273,7 +277,7 @@ def _coerce_bool(raw: Any) -> bool | None:
 
 
 def _parse_color(raw: Any) -> tuple[int, int, int, float] | None:
-    """把 #rgb / #rrggbb / rgb() / rgba() 解析成 RGBA 元组。"""
+    """Parse #rgb / #rrggbb / rgb() / rgba() into an RGBA tuple."""
     if not isinstance(raw, str):
         return None
     text = raw.strip()
@@ -302,7 +306,7 @@ def _rgba(rgb: tuple[int, int, int, float], alpha: float) -> str:
 
 
 def _mix_rgb(one: tuple[int, int, int, float], two: tuple[int, int, int, float], ratio: float) -> tuple[int, int, int, float]:
-    """把 one 按 ratio（0-1）混向 two，返回 RGBA 元组。染料冷暖倾向用。"""
+    """Mix ``one`` towards ``two`` by ``ratio`` (0-1) and return an RGBA tuple. Used for dye warmth."""
     t = _clamp(float(ratio), 0.0, 1.0)
     return (
         int(round(one[0] * (1.0 - t) + two[0] * t)),
@@ -313,7 +317,7 @@ def _mix_rgb(one: tuple[int, int, int, float], two: tuple[int, int, int, float],
 
 
 def _coerce_param(param: Param, value: Any) -> tuple[bool, Any]:
-    """单个参数值 → (是否合法, 规整后的值)。"""
+    """Single param value -> (is_valid, normalized_value)."""
     if param.kind == "bool":
         coerced = _coerce_bool(value)
         return (coerced is not None, coerced)
@@ -337,7 +341,7 @@ def _coerce_param(param: Param, value: Any) -> tuple[bool, Any]:
 
 
 def _css_value(param: Param, value: Any) -> str:
-    """把参数值编译成 CSS 字面量（不含变量名）。"""
+    """Compile a param value into a CSS literal (without the variable name)."""
     kind = param.kind
     if kind == "bool":
         return "1" if value else "0"
@@ -372,7 +376,7 @@ def _blank_params() -> dict[str, dict[str, Any]]:
 
 
 def _clean_section(raw: Any, section: str, warnings: list[str], prefix: str) -> dict[str, Any]:
-    """一节参数 → 合法值；非法值回退该参数默认值并记警告。"""
+    """One section of params -> valid values; invalid values fall back to the param default with a warning."""
     out = _section_defaults(section)
     if not isinstance(raw, dict):
         return out
@@ -393,7 +397,7 @@ def _clean_section(raw: Any, section: str, warnings: list[str], prefix: str) -> 
 
 
 def _preset(**overrides: Any) -> dict[str, dict[str, Any]]:
-    """用默认值铺满五节再覆盖 —— 保证每套预设都是**完整**配置，不是只改一个颜色。"""
+    """Fill all five sections with defaults, then apply overrides -- so every preset is a **complete** config, not just one changed color."""
     params = _blank_params()
     for key, value in overrides.items():
         param = PARAM_BY_KEY.get(key)
@@ -488,7 +492,7 @@ PRESETS: dict[str, dict[str, dict[str, Any]]] = {
 
 
 def default_materials() -> dict[str, Any]:
-    """出厂材质：**未启用**，完整参数已铺好（面板一开就能调）。"""
+    """Factory materials: **disabled**, with the full param set pre-filled (editable as soon as the panel opens)."""
     blank = _blank_params()
     return {
         "version": MATERIAL_VERSION,
@@ -508,7 +512,7 @@ def default_materials() -> dict[str, Any]:
 
 
 def normalize_materials(raw: Any) -> tuple[dict[str, Any], list[str]]:
-    """任意来源的 materials → 合法结构；坏值回退默认并返回人类可读警告。"""
+    """Materials from any source -> valid structure; bad values fall back to defaults, with human-readable warnings returned."""
     base = default_materials()
     warnings: list[str] = []
     if not isinstance(raw, dict):
@@ -610,13 +614,14 @@ def normalize_materials(raw: Any) -> tuple[dict[str, Any], list[str]]:
 
 
 def apply_materials(current: dict[str, Any], patch: Any) -> tuple[dict[str, Any], list[str]]:
-    """把一次「应用材质」的增量补丁合并进现有材质。
+    """Merge one incremental "apply materials" patch into the existing materials.
 
-    语义：
+    Semantics:
 
-    * preset 指向内置预设且补丁没带具体参数 → 用整套预设铺底（切换预设）。
-    * 补丁里显式给出的参数优先；未给出的保持现状。
-    * enabled / quality / preset 直接覆盖。
+    * preset points at a built-in preset and the patch carries no explicit params ->
+      lay down the whole preset as the base (preset switch).
+    * Params explicitly given in the patch win; params not given keep their current values.
+    * enabled / quality / preset are overwritten directly.
     """
     base = copy.deepcopy(current) if isinstance(current, dict) else default_materials()
     if not isinstance(patch, dict):
@@ -718,7 +723,7 @@ def apply_materials(current: dict[str, Any], patch: Any) -> tuple[dict[str, Any]
 
 
 def resolve_section(materials: dict[str, Any], section: str, dark: bool) -> dict[str, Any]:
-    """取某一节在某模式下的**实际生效值**（暗色缺省键继承亮色）。"""
+    """Return the **effective values** of a section in a given mode (keys missing in dark inherit from light)."""
     light = materials.get(section) or {}
     if not dark:
         return dict(light)
@@ -729,7 +734,7 @@ def resolve_section(materials: dict[str, Any], section: str, dark: bool) -> dict
 
 
 def _scale_px(value: str, factor: float) -> str:
-    """把 '18px' 这类字面量按比例缩放；不是 px 就原样返回。"""
+    """Scale a literal like '18px' by ``factor``; non-px values are returned unchanged."""
     if not isinstance(value, str) or not value.endswith("px"):
         return value
     try:
@@ -740,7 +745,7 @@ def _scale_px(value: str, factor: float) -> str:
 
 
 def _scale_unit(value: str, factor: float) -> str:
-    """把 '0.35' 这类 0-1 乘子按比例缩放并钳到 [0, 1]。"""
+    """Scale a 0-1 multiplier like '0.35' by ``factor`` and clamp to [0, 1]."""
     try:
         number = float(value)
     except (TypeError, ValueError):
@@ -749,11 +754,11 @@ def _scale_unit(value: str, factor: float) -> str:
 
 
 def _scale_shadow_blur(value: str, factor: float) -> str:
-    """把 box-shadow shorthand 里的模糊半径按 factor 缩放。
+    """Scale the blur radius inside a box-shadow shorthand by ``factor``.
 
-    组件级阴影统一是 `0 <distance>px <blur>px <spread>px rgba(...)`，模糊是第 3 个长度值。
-    省电/极致档对全局 `--nts-mt-shadow-blur` 做了缩放，组件自定义阴影也必须同步 ——
-    否则用户给某个组件单独设了阴影之后，切画质档就只剩全局在降级。
+    Component-level shadows are always `0 <distance>px <blur>px <spread>px rgba(...)`; blur is the 3rd length.
+    The saver/ultra tiers scale the global `--nts-mt-shadow-blur`, so component custom shadows must follow --
+    otherwise once a user sets a per-component shadow, switching quality tiers only changes the global one.
     """
     if not isinstance(value, str) or value == "none":
         return value
@@ -770,7 +775,7 @@ def _scale_shadow_blur(value: str, factor: float) -> str:
 
 
 def _boost_alpha(value: str, factor: float) -> str:
-    """把 'rgba(r, g, b, a)' 的 a 按比例放大（钳到 1）。"""
+    """Scale up the ``a`` of 'rgba(r, g, b, a)' by ``factor`` (clamped to 1)."""
     if not isinstance(value, str) or not value.startswith("rgba("):
         return value
     body = value[5:-1].split(",")
@@ -785,13 +790,14 @@ def _boost_alpha(value: str, factor: float) -> str:
 
 
 def apply_quality(target: dict[str, str], quality: str) -> None:
-    """按画质档位做**实质性**降级/升级（不是只改个标签）。
+    """Apply a **substantive** downgrade/upgrade per quality tier (not just a label change).
 
-    * 省电：模糊减半、关掉折射色散/动态光照/液态形变/噪点/光斑 —— 这些是
-      逐帧重绘和 backdrop-filter 的大头，关掉之后滚动明显更顺。
-    * 均衡：出厂值，不额外处理。
-    * 高品质：环境反射与内高光加强一档，阴影更细腻。
-    * 极致：保持全量（折射/色散/动态反射都按用户设定跑）。
+    * saver: halve blur and turn off refraction dispersion / dynamic lighting / liquid
+      deformation / noise / spotlight -- these dominate per-frame repaint and
+      backdrop-filter cost, so scrolling gets noticeably smoother.
+    * balanced: factory values, no extra processing.
+    * high: ambient reflection and inner highlight one step stronger, finer shadows.
+    * ultra: keep everything (refraction / dispersion / dynamic reflection run as the user set them).
     """
     if quality == "saver":
         for key in ("--nts-mt-blur", "--nts-mt-refract-blur", "--nts-mt-ambient-blur"):
@@ -851,11 +857,12 @@ def apply_quality(target: dict[str, str], quality: str) -> None:
 
 
 def compile_materials(materials: dict[str, Any]) -> tuple[dict[str, str], dict[str, str]]:
-    """材质 → --nts-mt-* 变量（亮色 / 暗色两份）。
+    """Materials -> --nts-mt-* variables (one set for light, one for dark).
 
-    编译产物是**完整值**（颜色已带 alpha、阴影已拼成 shorthand），加载器与
-    面板预览都只做字符串拼接，不再做数值换算 —— 预览与应用窗口因此不会因为
-    「两边各算一遍」而出现偏差。
+    The output is **complete values** (colors already carry alpha, shadows are already
+    assembled shorthands); the loader and the panel preview only concatenate strings and
+    never recompute numbers -- so preview and app windows cannot drift apart from
+    "each side computing it separately".
     """
     light: dict[str, str] = {}
     dark: dict[str, str] = {}
@@ -1182,7 +1189,7 @@ def compile_materials(materials: dict[str, Any]) -> tuple[dict[str, str], dict[s
 
 
 def material_attributes(materials: dict[str, Any]) -> dict[str, str]:
-    """加载器要打在 <html> 上的材质属性（CSS 用它做性能降级 / 开关门控）。"""
+    """Material attributes the loader sets on <html> (CSS uses them for performance downgrades / on-off gating)."""
     quality = materials.get("quality", "balanced")
     if quality not in QUALITY_MODES:
         quality = "balanced"

@@ -49,7 +49,7 @@ from app.monitor_auth import (
 from utils.config_manager import get_config_manager, get_reserved
 from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 import uvicorn
 from fastapi.templating import Jinja2Templates
 from utils.frontend_utils import _is_within, find_models, find_model_config_file, find_model_directory
@@ -94,23 +94,20 @@ def _viewer_static_assets_ctx():
     now = asyncio.get_running_loop().time()
     cached_at, cached_version = _STATIC_ASSET_VERSION_CACHE
     if now - cached_at < 30.0:
-        version = cached_version
-    else:
-        from config import APP_VERSION
-        latest_mtime = 0
-        for relative_path in ("static/css/index.css", "static/css/edge-peek.css"):
-            try:
-                latest_mtime = max(latest_mtime, int(os.path.getmtime(get_resource_path(relative_path))))
-            except OSError:
-                continue
-        version = f"{APP_VERSION}-{latest_mtime or 0}"
-        _STATIC_ASSET_VERSION_CACHE = (now, version)
-    ctx = {"static_asset_version": version}
-    # 主题工坊加载器的缓存指纹（模板里 <link>/<script> 的 ?v= 用它拼）。monitor 页面
-    # 也要带，否则加载器每 15 秒会整份下载样式表来比签名。
-    from theme_studio.assets import loader_versions
-    ctx.update(loader_versions(get_resource_path("static/theme-studio/loader"), version))
-    return ctx
+        return {"static_asset_version": cached_version}
+    from config import APP_VERSION
+    latest_mtime = 0
+    for relative_path in ("static/css/index.css", "static/css/edge-peek.css"):
+        try:
+            latest_mtime = max(latest_mtime, int(os.path.getmtime(get_resource_path(relative_path))))
+        except OSError:
+            continue
+    version = f"{APP_VERSION}-{latest_mtime or 0}"
+    _STATIC_ASSET_VERSION_CACHE = (now, version)
+    # No theme loader versions here on purpose: the monitor process does not
+    # serve /api/theme_studio, so templates skip the Theme Studio loader when
+    # ``theme_loader_css_version`` is absent from the context.
+    return {"static_asset_version": version}
 
 
 @asynccontextmanager
@@ -193,8 +190,13 @@ def _mount_model_roots(target_app, workshop_path, user_mod_path):
 _mount_model_roots(app, get_default_workshop_folder(), _config_manager.get_workshop_path())
 
 @app.get("/subtitle")
-async def get_subtitle():
-    return FileResponse(get_resource_path('templates/subtitle.html'))
+async def get_subtitle(request: Request):
+    # subtitle.html carries Jinja markup (the main server renders it), so it must
+    # be rendered here too instead of being sent raw.
+    return templates.TemplateResponse(request, "templates/subtitle.html", {
+        "request": request,
+        **_viewer_static_assets_ctx(),
+    })
 
 @app.get("/api/config/page_config")
 async def get_page_config(response: Response, lanlan_name: str = ""):

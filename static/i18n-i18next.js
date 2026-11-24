@@ -29,7 +29,7 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    const LOCALE_VERSION = '2026-11-24-agent-model-probe-removed-main-merge';
+    const LOCALE_VERSION = '2026-11-24-theme-studio-menu';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

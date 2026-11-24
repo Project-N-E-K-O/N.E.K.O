@@ -453,6 +453,8 @@ jobs:
           # 读不到内容（survey 是 Steam-only，正是只在打包构建里跑）。
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=config/changelog=config/changelog"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=config/surveys=config/surveys"
+          # 主题工坊内置预设（JSON + 预览图）同理是纯数据，--include-package=theme_studio 不带。
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=theme_studio/presets=theme_studio/presets"
 
           # Data directories
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=assets=assets"
@@ -503,6 +505,7 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_routers"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=services"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=services.theater_workshop"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=theme_studio"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=memory"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=knowledge"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=nekopower"
@@ -623,6 +626,8 @@ jobs:
           rem changelog/.md 与 survey/.json 是纯数据，--include-package=config 不带，须显式打包
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=config/changelog=config/changelog
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=config/surveys=config/surveys
+          rem 主题工坊内置预设（JSON + 预览图）同理是纯数据，--include-package=theme_studio 不带
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=theme_studio/presets=theme_studio/presets
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=assets=assets
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=templates=templates
           rem Agent kit staged by prepare_nuitka_plugins.py prepare; the frozen
@@ -657,6 +662,7 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=main_routers
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=services
           set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=services.theater_workshop
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=theme_studio
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=memory
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=knowledge
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=nekopower

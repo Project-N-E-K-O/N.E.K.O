@@ -3832,19 +3832,21 @@ async function resetTheme() {
 }
 
 /**
- * 让本体后端直接把文件写到磁盘。
- * 面板跑在宿主的 sandbox iframe 里（sandbox 串里没有 allow-downloads），
- * Blob + <a download> 会被 Chromium 静默丢弃 —— 只能由后端写盘。
+ * 让后端打包文件内容，再由面板触发浏览器下载。
+ * 内置之后面板是普通顶层页面（不再是没有 allow-downloads 的 sandbox iframe），
+ * 后端不再往桌面 / 下载目录写文件。
  */
 async function saveThemeFile(args) {
   var result = await callPlugin('export_to_file', args);
-  if (!result || !result.path) throw new Error('后端没有返回保存路径');
+  var data = result && result.data ? String(result.data) : '';
+  if (!data || !result.filename) throw new Error('后端没有返回文件内容');
+  downloadBlob(base64ToBytes(data), result.filename, result.mime || 'application/octet-stream');
   return result;
 }
 
 function savedHint(result) {
   var kb = Math.round((result.bytes || 0) / 1024);
-  return '文件已保存到：' + result.path +
+  return '已下载：' + result.filename +
     '\n（' + kb + ' KB' + (result.images ? '，含 ' + result.images + ' 张背景图' : '') + '）';
 }
 
@@ -3863,13 +3865,13 @@ async function exportTheme() {
     var hint = pending
       ? '下面是已保存到 theme.json 的调色板 JSON（不含 ' + pending + ' 项未应用改动），可复制保存或分享。'
       : '下面是当前调色板的 JSON 文本，可复制保存或分享。';
-    // 顺手落磁盘：宿主的 iframe sandbox 没有 allow-downloads，浏览器下载会被丢弃。
+    // 同时下载一份 JSON 文件。
     try {
-      var savedJson = await saveThemeFile({ kind: 'json', target: 'desktop' });
+      var savedJson = await saveThemeFile({ kind: 'json' });
       hint = savedHint(savedJson) + '\n\n' + hint;
-      setStatus(pending ? '已导出并保存（不含未应用改动）' : '已导出并保存到桌面', 'ok');
+      setStatus(pending ? '已导出并下载（不含未应用改动）' : '已导出并下载', 'ok');
     } catch (saveError) {
-      hint = '保存文件失败（' + pluginErrorMessage(saveError) + '），下面是 JSON 文本，可手动复制。\n\n' + hint;
+      hint = '下载文件失败（' + pluginErrorMessage(saveError) + '），下面是 JSON 文本，可手动复制。\n\n' + hint;
       setStatus('已导出（未写出文件）', 'ok');
     }
     openModal('export', '导出主题', hint, result.payload || '');
@@ -4771,20 +4773,6 @@ async function exportLibraryItem(item, button) {
   if (button) button.disabled = true;
   setBusy(true, '正在打包…');
   try {
-    var savedZip = null;
-    try {
-      savedZip = await saveThemeFile({ kind: 'zip', target: 'desktop', id: item.id });
-    } catch (saveError) {
-      savedZip = null; // 写盘失败再退回浏览器下载
-    }
-    if (savedZip) {
-      showNotice('info', '分享包已保存到 ' + savedZip.path +
-        '\n（' + (savedZip.images ? '含 ' + savedZip.images + ' 张背景图，' : '') +
-        Math.round((savedZip.bytes || 0) / 1024) + ' KB）');
-      showToast('已保存 ' + savedZip.filename, 'ok');
-      setStatus('已保存分享包到桌面', 'ok');
-      return;
-    }
     var result = await callPlugin('export_theme_archive', { id: item.id });
     var data = result && result.data ? String(result.data) : '';
     if (!data) throw new Error('后端没有返回包内容');
@@ -5067,7 +5055,7 @@ async function backupLibrary(button) {
   setBusy(true, '正在打包主题库…');
   if (button) button.disabled = true;
   try {
-    var result = await saveThemeFile({ kind: 'library', target: 'desktop' });
+    var result = await saveThemeFile({ kind: 'library' });
     var count = result.themes || 0;
     showNotice('ok', '主题库已备份（' + count + ' 套）\n' + savedHint(result) +
       '\n换电脑或重装后，用「恢复备份」选这个 zip 就能整套拿回来（只新增、不覆盖）。');
@@ -6032,7 +6020,7 @@ function openModal(mode, title, hint, text) {
   if (area) {
     area.style.display = isMeta ? 'none' : '';
     area.value = isMeta ? '' : (text || '');
-    area.readOnly = mode === 'export';
+    area.readOnly = mode === 'export' || mode === 'help';
     if (mode === 'export') area.select();
   }
   if (fields) fields.style.display = isMeta ? '' : 'none';
@@ -6094,6 +6082,8 @@ function onModalOk() {
     });
     return;
   }
+  // 帮助弹窗只是说明文字：「确定」只关闭，绝不能当成调色板 JSON 去导入。
+  if (state.modalMode !== 'import') { closeModal(); return; }
   doImport();
 }
 

@@ -13,23 +13,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""主题工坊（Theme Studio）—— N.E.K.O 内置功能模块。
+"""Theme Studio, a built-in N.E.K.O feature module.
 
-历史：它原本是一个独立插件（``neko_theme_studio``，跑在插件的 48916 端口上，
-并且靠一个「应用侧补丁」把 loader 与模板标记注入本体）。现在它是本体的一部分：
+History: this used to be a standalone plugin (``neko_theme_studio``, served on
+the plugin port 48916, with an "app patch" injecting the loader into the host
+templates). It is now part of the host:
 
-* 没有插件宿主、没有独立端口、没有注入器（``_app_patch.py`` 已删除）。
-* 面板页面 ``/theme_studio`` 由 ``main_routers/pages_router.py`` 渲染。
-* 数据读写走 ``/api/theme_studio/*``（``main_routers/theme_studio_router.py``）。
-* loader 两件套是本体正常静态资源：``static/theme-studio/loader/``，
-  由模板直接 ``<script>`` / ``<link>`` 引入。
+* no plugin host, no separate port, no injector;
+* the panel page ``/theme_studio`` is rendered by ``main_routers/pages_router.py``;
+* data goes through ``/api/theme_studio/*`` (``main_routers/theme_studio_router.py``);
+* the loader assets are ordinary static files under ``static/theme-studio/loader/``
+  referenced directly by the templates.
 
-本模块只负责「服务实例 + entry 调度」这一层薄胶水，业务逻辑全在
-:mod:`theme_studio.service` 里。
+This module is only the thin glue layer (service singleton + entry dispatch).
+All business logic lives in :mod:`theme_studio.service`.
+
+Threading: every service method does synchronous disk / zip work and takes the
+module-level ``threading.RLock`` that the schedule thread also uses. Async
+callers must therefore go through the ``*_async`` helpers here, which run the
+work in a worker thread so the shared event loop is never blocked.
 """
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import threading
@@ -50,16 +57,18 @@ __all__ = [
     "backgrounds_dir",
     "data_dir",
     "entries",
-    "exports_dir",
     "get_service",
     "get_theme_document",
+    "get_theme_document_async",
     "library_dir",
     "presets_dir",
     "run_entry",
+    "run_entry_sync",
     "service_started",
     "set_data_dir_override",
     "shutdown_service",
     "startup_service",
+    "startup_service_async",
 ]
 
 logger = logging.getLogger("neko.theme_studio")
@@ -71,13 +80,13 @@ _data_dir_override: Path | None = None
 
 
 def set_data_dir_override(path: Path | str | None) -> None:
-    """测试 / 工具用：指定数据目录（必须在 :func:`get_service` 之前调用）。"""
+    """Pin the data directory (tests / tooling; call before :func:`get_service`)."""
     global _data_dir_override
     _data_dir_override = Path(path) if path else None
 
 
 def get_service() -> ThemeStudioService:
-    """返回进程内唯一的主题工坊服务实例（首次调用时构造）。"""
+    """Return the process-wide service instance, constructing it on first use."""
     global _service
     if _service is not None:
         return _service
@@ -88,12 +97,15 @@ def get_service() -> ThemeStudioService:
 
 
 def service_started() -> bool:
-    """是否已经跑过启动初始化（建目录 / 建 theme.json / 起排程线程）。"""
+    """Whether startup initialisation (dirs, theme.json, schedule thread) has run."""
     return _service_started
 
 
 def startup_service() -> ThemeStudioService:
-    """构造并初始化服务（同步，幂等）。应用启动钩子与路由初始化都调它。"""
+    """Construct and initialise the service (synchronous, idempotent).
+
+    Does blocking disk IO: from async code use :func:`startup_service_async`.
+    """
     global _service_started
     service = get_service()
     if _service_started:
@@ -106,73 +118,101 @@ def startup_service() -> ThemeStudioService:
 
 
 async def startup_service_async() -> ThemeStudioService:
-    """异步启动（FastAPI lifespan 里用）。"""
-    return startup_service()
+    """Async wrapper of :func:`startup_service` that runs it in a worker thread."""
+    if _service_started and _service is not None:
+        return _service
+    return await asyncio.to_thread(startup_service)
 
 
 def shutdown_service() -> None:
-    """停掉排程线程（应用退出时调用，尽力而为）。"""
+    """Stop the schedule thread (best effort, called on app shutdown).
+
+    Resets the started flag so a later :func:`startup_service` restarts the
+    schedule thread instead of leaving it dead until the process restarts.
+    """
     global _service_started
     service = _service
     if service is None:
         return
-    try:
-        service.shutdown()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("主题工坊停止时出现异常（忽略）：%s", exc)
-    _service_started = False
+    with _service_lock:
+        try:
+            service.shutdown()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Theme Studio shutdown raised (ignored): %s", exc)
+        _service_started = False
 
 
 def entries() -> list[str]:
-    """当前注册的 entry 列表（面板 / 调试用）。"""
+    """Registered entry ids (panel self-check / debugging)."""
     return sorted(ENTRY_REGISTRY)
 
 
 def _resolve_entry(service: Any, entry_id: str) -> Any:
-    """按 entry id 找到实现函数。
+    """Map an entry id to its implementation; unknown ids return ``None``.
 
-    优先用与 entry id 同名的方法：插件时代有一个 entry 的装饰器错挂在了内部工具
-    函数上（``apply_saved_theme`` 的 ``@plugin_entry`` 落在 ``_apply_theme_record``
-    头上），只按装饰器查表会拿到签名里没有 ``id`` 的那个实现，于是面板用
-    ``{id: ...}`` 调用就报「缺少 theme_id 参数」—— 内置化时必须把它修掉。
+    Only ids registered through ``@plugin_entry`` are dispatchable, so lifecycle
+    and internal methods (``startup``, ``shutdown``, ``startup_sync``,
+    ``enable_file_logging`` ...) can never be reached from ``/run/{entry_id}``.
+    The registered function is used as-is; it is unbound, so the caller passes
+    ``service`` explicitly.
     """
-    candidate = getattr(service, entry_id, None)
-    if callable(candidate) and getattr(candidate, "__name__", "") == entry_id:
-        # 取未绑定函数：run_entry 统一按 ``fn(service, **kwargs)`` 调用。
-        return getattr(candidate, "__func__", candidate)
+    del service  # kept in the signature for call-site symmetry
     return ENTRY_REGISTRY.get(entry_id)
 
 
-async def run_entry(entry_id: str, args: dict[str, Any] | None = None) -> Ok | Err:
-    """调度一个 entry，返回 ``Ok`` / ``Err``（与插件时代语义一致）。"""
+def _call_entry(fn: Any, service: Any, payload: dict[str, Any]) -> Any:
+    """Invoke an entry synchronously, driving it to completion if it is a coroutine.
+
+    The service's ``async def`` entries never await anything (they are plugin-era
+    signatures around synchronous bodies), so running them on a private event
+    loop inside the worker thread is cheap and keeps the main loop free.
+    """
+    result = fn(service, **_clean_kwargs(fn, payload))
+    if inspect.isawaitable(result):
+
+        async def _await(awaitable: Any) -> Any:
+            return await awaitable
+
+        result = asyncio.run(_await(result))
+    return result
+
+
+def run_entry_sync(entry_id: str, args: dict[str, Any] | None = None) -> Ok | Err:
+    """Dispatch one entry synchronously and return ``Ok`` / ``Err``.
+
+    Blocking: call it from a worker thread (see :func:`run_entry`).
+    """
     payload = args if isinstance(args, dict) else {}
-    startup_service()
-    service = get_service()
+    service = startup_service()
     fn = _resolve_entry(service, str(entry_id or ""))
     if fn is None:
         return Err(SdkError(f"未知的主题工坊操作：{entry_id}"))
     try:
-        result = fn(service, **_clean_kwargs(fn, payload))
-        if inspect.isawaitable(result):
-            result = await result
+        result = _call_entry(fn, service, payload)
     except SdkError as exc:
         return Err(exc)
-    except Exception as exc:  # noqa: BLE001 - 任何异常都必须变成可读错误
-        logger.exception("主题工坊操作失败：%s", entry_id)
+    except Exception as exc:  # noqa: BLE001 - every failure must become a readable error
+        logger.exception("Theme Studio entry failed: %s", entry_id)
         return Err(SdkError(f"操作失败：{exc}"))
     if isinstance(result, (Ok, Err)):
         return result
     return Ok(result)
 
 
-def _clean_kwargs(fn: Any, payload: dict[str, Any]) -> dict[str, Any]:
-    """只保留函数签名接受的参数（面板有时会多带字段）。
+async def run_entry(entry_id: str, args: dict[str, Any] | None = None) -> Ok | Err:
+    """Dispatch one entry in a worker thread so disk / zip work never blocks the loop."""
+    return await asyncio.to_thread(run_entry_sync, entry_id, args)
 
-    签名里若声明了 ``**_``，则原样透传 —— 与原插件宿主的行为一致。
+
+def _clean_kwargs(fn: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    """Keep only the keyword arguments the entry's signature accepts.
+
+    The panel sometimes sends extra fields. A ``**_`` parameter passes the
+    payload through unchanged, matching the former plugin host.
     """
     try:
         sig = inspect.signature(fn)
-    except (TypeError, ValueError):  # pragma: no cover - 内置函数才有
+    except (TypeError, ValueError):  # pragma: no cover - builtins only
         return payload
     params = list(sig.parameters.values())[1:]
     if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params):
@@ -187,37 +227,42 @@ def _clean_kwargs(fn: Any, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def get_theme_document() -> dict[str, Any]:
-    """加载器轮询用的调色板文档（含资源指纹，供换表 / 自升级判断）。"""
-    startup_service()
-    service = get_service()
-    palette = service._read_unlocked()  # noqa: SLF001
+    """Palette document polled by the loader (blocking; see the async variant).
+
+    Same shape as the ``get_theme`` entry: compiled material variables and
+    attributes are attached, otherwise windows would never see materials
+    (``_normalize`` drops the on-disk ``material_vars`` mirror). Asset
+    fingerprints are attached for the loader's stylesheet / self-upgrade checks.
+    """
+    service = startup_service()
+    palette = service._with_material_vars(service._read_unlocked())  # noqa: SLF001
     try:
         palette = service._with_asset_meta(palette)  # noqa: SLF001
     except Exception as exc:  # noqa: BLE001
-        logger.warning("读取 loader 资源指纹失败（忽略）：%s", exc)
+        logger.warning("Reading loader asset fingerprints failed (ignored): %s", exc)
     return palette
 
 
+async def get_theme_document_async() -> dict[str, Any]:
+    """:func:`get_theme_document` run in a worker thread."""
+    return await asyncio.to_thread(get_theme_document)
+
+
 def data_dir() -> Path:
-    """用户数据目录（theme.json / themes / backgrounds / schedule / exports）。"""
+    """User data directory (theme.json / themes / backgrounds / schedule)."""
     return get_service().data_dir
 
 
 def backgrounds_dir() -> Path:
-    """背景图目录。"""
+    """Chat background image directory."""
     return get_service()._backgrounds_dir()  # noqa: SLF001
 
 
-def exports_dir() -> Path:
-    """导出文件目录（面板「导出到文件 → 本体目录」的目标）。"""
-    return get_service()._export_dir("plugin")  # noqa: SLF001
-
-
 def presets_dir() -> Path:
-    """内置主题目录（随本体发布、只读；含 ``images/`` 子目录）。"""
+    """Built-in preset directory (read-only, shipped with the app; has ``images/``)."""
     return PRESETS_DIR
 
 
 def library_dir() -> Path:
-    """用户主题仓库目录（``themes/<id>.json``）。"""
+    """User theme library directory (``themes/<id>.json``)."""
     return get_service()._library_dir()  # noqa: SLF001

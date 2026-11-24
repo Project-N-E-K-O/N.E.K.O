@@ -13,25 +13,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""主题工坊加载器两件套的磁盘指纹（只给模板拼缓存版本号用）。
+"""Disk fingerprints of the Theme Studio loader assets.
 
-内置之后，模板里是普通的两行静态引用：
+Used for two things: the ``?v=`` cache versions in templates and the
+``css_sha8`` / ``loader_version`` fields the service attaches to theme.json.
+Templates reference the loader as two plain static files:
 
 .. code-block:: html
 
-    <link rel="stylesheet" href="/static/theme-studio/loader/neko-theme-studio.css?v=<版本>-<css8>">
-    <script src="/static/theme-studio/loader/neko-theme-studio.js?v=<版本>-<加载器版本>" defer></script>
+    <link rel="stylesheet" href="/static/theme-studio/loader/neko-theme-studio.css?v=VERSION-CSS8">
+    <script src="/static/theme-studio/loader/neko-theme-studio.js?v=VERSION-LOADERVERSION" defer></script>
 
-``?v=`` 后面的指纹不是装饰：浏览器侧加载器（``neko-theme-studio.js``）每 15 秒复检
-一次「页面里生效的样式表是不是磁盘上那一份」，判断依据就是 URL 里那段 ``-<css8>``。
-页面 URL 不带指纹时，它只能把 158KB 的 CSS 整份下载回来比规则签名 —— 每个窗口每
-15 秒一次，正是插件时代被用户抱怨的耗电点（1.6.x 之前的老模板）。
+The fingerprint is functional: every 15 s the browser-side loader checks that
+the stylesheet active in the page is the one on disk, using the ``-CSS8``
+suffix of that URL. Without it the loader has to download the whole 158 KB
+stylesheet to compare rule signatures, per window, every 15 s.
 
-这里只做 ``stat`` + 读两个小文件，不构造主题服务、不碰配置目录，所以页面渲染路径
-（``main_routers/pages_router.py``、``app/monitor.py``）可以随便调；文件缺失时返回
-空字典，模板里的 ``?v=`` 退化成普通 URL，加载器也会自己回落到下载比对的老路径。
-
-指纹按文件的 ``(mtime_ns, size)`` 缓存：改了就重算，没改就零开销。
+Only ``stat`` plus reading two small files happens here; no service is built
+and no config directory is touched, so page rendering can call it freely.
+Missing files yield ``{}``: templates then skip the loader, and the service
+reports empty fingerprints. Results are cached by ``(mtime_ns, size)``.
 """
 
 from __future__ import annotations
@@ -44,14 +45,14 @@ LOADER_DIR_NAME = "loader"
 CSS_FILE_NAME = "neko-theme-studio.css"
 JS_FILE_NAME = "neko-theme-studio.js"
 
-# 加载器脚本里的 `SCRIPT_VERSION = '1.6.39'`。只认点分数字，别的写法一律当没有。
-_RE_SCRIPT_VERSION = re.compile(r"SCRIPT_VERSION\s*=\s*'([0-9][0-9.]*)'")
+# ``SCRIPT_VERSION = '1.6.40'`` in the loader script; dotted digits only.
+_RE_SCRIPT_VERSION = re.compile(r"SCRIPT_VERSION\s*=\s*'([0-9]+(?:\.[0-9]+)*)'")
 
 _CACHE: tuple[tuple, dict] = ((), {})
 
 
 def loader_asset_meta(loader_dir: str | Path) -> dict:
-    """返回 ``{"css_sha8": ..., "loader_version": ...}``；资源不在时返回 ``{}``。"""
+    """Return ``{"css_sha8": ..., "loader_version": ...}``, or ``{}`` if assets are missing."""
     global _CACHE
 
     base = Path(loader_dir)
@@ -93,10 +94,11 @@ def loader_asset_meta(loader_dir: str | Path) -> dict:
 
 
 def loader_versions(loader_dir: str | Path, static_asset_version: str) -> dict:
-    """拼成模板上下文里可直接用的两个版本串。
+    """Build the two template context version strings.
 
-    ``theme_loader_js_version`` 优先用脚本自己声明的版本号（读得出来时）；读不出来
-    就退回 CSS 指纹 —— 两个变量只是 URL 的一部分，真实的新旧判断在加载器内部。
+    ``theme_loader_js_version`` prefers the version declared by the script and
+    falls back to the CSS fingerprint; both are only part of the URL, the real
+    freshness check happens inside the loader.
     """
     meta = loader_asset_meta(loader_dir)
     if not meta:

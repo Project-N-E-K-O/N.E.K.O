@@ -189,6 +189,8 @@ def add_data(src, dest):
 add_data('static', 'static')
 add_data('assets', 'assets')
 add_data('templates', 'templates')
+# Theme Studio built-in presets (JSON + preview images) are data, not modules.
+add_data('theme_studio/presets', 'theme_studio/presets')
 # tiktoken o200k_base is fetched on first use into TIKTOKEN_CACHE_DIR.
 # launcher.py points TIKTOKEN_CACHE_DIR at data/tiktoken_cache when it
 # exists in the bundle (PR #929). The CI build warms this dir before
