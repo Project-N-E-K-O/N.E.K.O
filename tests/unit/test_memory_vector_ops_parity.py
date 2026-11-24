@@ -594,18 +594,27 @@ def test_vec_cache_byte_accounting_survives_concurrent_scans(fresh_vec_cache):
         for t in range(4)
     ]
     # Small enough that every scan evicts.
+    errors = []
+    admitted = []
     with patch.object(hr, "HYBRID_RECALL_VEC_CACHE_MAX_BYTES", 200_000):
         def scan(pool):
-            for _ in range(5):
-                hr.decode_cached_vectors(
-                    hr.embedding_views(pool, lambda o: o.get('text', '')), MODEL_ID, None,
-                )
+            try:
+                for _ in range(5):
+                    vectors, _norms, _dim = hr.decode_cached_vectors(
+                        hr.embedding_views(pool, lambda o: o.get('text', '')), MODEL_ID, None,
+                    )
+                    admitted.append(sum(v is not None for v in vectors))
+            except BaseException as exc:  # surfaced below; a thread would swallow it
+                errors.append(exc)
 
         threads = [threading.Thread(target=scan, args=(p,)) for p in pools]
         for t in threads:
             t.start()
         for t in threads:
             t.join()
+        assert errors == []
+        assert admitted == [300] * 20  # every scan ran and decoded its whole pool
+        assert hr._VEC_CACHE, "the cache should hold something after the scans"
         assert hr._VEC_CACHE_BYTES == sum(entry[6] for entry in hr._VEC_CACHE.values())
         assert hr._VEC_CACHE_BYTES <= 200_000
 

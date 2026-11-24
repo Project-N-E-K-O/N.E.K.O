@@ -32,8 +32,10 @@ async def run_clusters_off_loop(
     in-loop call used to return.
     """
     snapshot = [dict(e) if isinstance(e, dict) else e for e in entries]
-    clusters = await asyncio.to_thread(compute, snapshot)
+    # Pair copies with originals before awaiting, so a caller reshaping
+    # ``entries`` meanwhile cannot shift the mapping.
     original = {id(copy): entry for copy, entry in zip(snapshot, entries)}
+    clusters = await asyncio.to_thread(compute, snapshot)
     return [
         [original.get(id(member), member) for member in cluster]
         for cluster in clusters
