@@ -427,6 +427,29 @@
             </form>
         </dialog>
     </dialog>
+    <dialog id="builtin-template-license" class="builtin-template-license" aria-labelledby="builtin-license-title" aria-describedby="builtin-license-intro">
+        <div class="builtin-license-body">
+            <h2 id="builtin-license-title" tabindex="-1" autofocus data-i18n="emoteMaker.builtinLicenseTitle">内置模板使用许可</h2>
+            <p id="builtin-license-intro" data-i18n="emoteMaker.builtinLicenseIntro">使用内置模板前，请阅读版权声明与使用许可。</p>
+            <ul class="builtin-license-summary">
+                <li data-i18n="emoteMaker.builtinLicenseUse">直播、视频和频道运营可以获得收益，无需额外授权或分成。</li>
+                <li data-i18n="emoteMaker.builtinLicenseSharing">可免费分享成品；日常分享无需逐次署名，商业内容可在频道简介等关联位置集中署名。</li>
+                <li data-i18n="emoteMaker.builtinLicenseSales">销售成品、付费定制成品或以销售为目的制作周边，需要另行书面授权。</li>
+                <li data-i18n="emoteMaker.builtinLicenseAssets">不得独立出售或公开分发工程、独立贴图、骨骼等模板资源。</li>
+            </ul>
+            <details class="builtin-license-full">
+                <summary data-i18n="emoteMaker.builtinLicenseFull">阅读完整许可（中文及英文摘要）</summary>
+                {% include 'templates/emote_template_license.html' %}
+            </details>
+            <p class="builtin-license-hint" data-i18n="emoteMaker.builtinLicenseHint">点击“我已知晓”表示接受本许可；关闭后仍可导入自己的模板。</p>
+        </div>
+        <div class="builtin-license-actions">
+            <form method="dialog">
+                <button class="tool-button" type="submit" data-i18n="emoteMaker.builtinLicenseSkip">暂不使用内置模板</button>
+            </form>
+            <button id="builtin-license-acknowledge" class="playback-button" type="button" data-i18n="emoteMaker.builtinLicenseAcknowledge">我已知晓</button>
+        </div>
+    </dialog>
     <div id="emote-confirm" class="emote-confirm" hidden>
         <div class="emote-confirm-card" role="alertdialog" aria-modal="true" aria-labelledby="emote-confirm-text">
             <p id="emote-confirm-text"></p>

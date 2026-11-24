@@ -958,3 +958,54 @@ async def test_an_input_that_is_too_long_is_not_taken_for_a_refusal_of_its_pictu
     events = await _events(provider, _with_screenshots("QUFB"))
     assert events[-1].message.text == "A desktop."
     assert [_pictures(request) for request in llm.requests] == [1, 1, 1]
+
+
+# ---------------------------------------------------------------------------
+# A failure the user has to fix: a refused key, an account with nothing left
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("said", "kind"),
+    [
+        # As ``LLMClientProvider`` writes a failed request: the SDK's
+        # error class, then what it says, the HTTP status folded into it.
+        ("AuthenticationError: Error code: 401 - {'error': {'message': 'Incorrect API key provided: sk-wro***'}}", "model_key"),
+        ("PermissionDeniedError: Error code: 403 - {'error': {'message': 'not allowed to use this model'}}", "model_key"),
+        ("APIStatusError: Error code: 401 - {'error': {'code': 'invalid_api_key'}}", "model_key"),
+        ("RateLimitError: Error code: 429 - {'error': {'message': 'You exceeded your current quota, please check your plan and billing details.', 'type': 'insufficient_quota'}}", "model_quota"),
+        ("APIStatusError: Error code: 402 - {'error': {'message': 'Insufficient Balance'}}", "model_quota"),
+        ("BadRequestError: Error code: 400 - {'error': {'message': 'Your credit balance is too low to access the Anthropic API.'}}", "model_quota"),
+        ("APIStatusError: Error code: 403 - {'code': 'Arrearage', 'message': 'Access denied, please make sure your account is in good standing.'}", "model_quota"),
+        ("RateLimitError: Error code: 429 - {'error': {'type': 'exceeded_current_quota_error'}}", "model_quota"),
+        ("APIStatusError: Error code: 429 - {'error': {'code': '1113', 'message': '余额不足或无可用资源包,请充值。'}}", "model_quota"),
+        ("APIStatusError: Error code: 403 - {'error': {'message': 'Quota exceeded for this project.'}}", "model_quota"),
+        # A rate limit is not a quota used up: trying again shortly helps.
+        ("RateLimitError: Error code: 429 - {'error': {'message': 'Rate limit reached for requests, try again in 20s'}}", None),
+        # Nor is a short-term limit worded as a quota.
+        ("RateLimitError: Error code: 429 - quota exceeded for this minute", None),
+        ("RateLimitError: Error code: 429 - RESOURCE_EXHAUSTED: Quota exceeded for metric 'requests per minute'", None),
+        ("RateLimitError: Error code: 429 - TPM quota exceeded, retry after 3s", None),
+        ("APIStatusError: Error code: 429 - Quota exceeded; please try again later.", None),
+        # Not the key either, though it came with a 403.
+        ("PermissionDeniedError: Error code: 403 - Quota exceeded for requests per minute", None),
+        # A refusal for where the request came from is not about the key.
+        ("PermissionDeniedError: Error code: 403 - {'error': {'code': 'unsupported_country_region_territory'}}", None),
+        ("PermissionDeniedError: Error code: 403 - {'error': {'message': 'This model is not available in your region.'}}", None),
+        # A 401 that only mentions a regional endpoint is the key all the same (Azure OpenAI).
+        ("AuthenticationError: Error code: 401 - {'error': {'code': '401', 'message': 'Access denied due to invalid subscription key or wrong API endpoint. Make sure to provide a valid key for an active subscription and use a correct regional API endpoint for your resource.'}}", "model_key"),
+        # Gemini's per-minute limit, worded as OpenAI words an empty account.
+        ("RateLimitError: Error code: 429 - [{'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 10 Please retry in 21.3s.', 'status': 'RESOURCE_EXHAUSTED'}}]", None),
+        # Nothing to do with the model.
+        ("PermissionError: unauthorized to write C:/data/out.txt", None),
+        ("RuntimeError: the session is busy", None),
+        ("APIConnectionError: Connection error.", None),
+        ("APITimeoutError: Request timed out.", None),
+        ("InternalServerError: Error code: 500 - upstream failed", None),
+        ("", None),
+    ],
+)
+def test_a_failure_the_user_has_to_fix_is_told_apart_from_the_rest(said, kind):
+    from nekopower.runtime.model import model_failure_kind
+
+    assert model_failure_kind(said) == kind

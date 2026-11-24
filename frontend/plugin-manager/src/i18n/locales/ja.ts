@@ -1,19 +1,19 @@
-import { pluginConsentMessages } from '../plugin-consent'
-import { modelApiMessages } from '../model-api'
-import { modelBindingsMessages } from '../model-bindings'
-import { marketFeedbackMessages } from '../market-feedback'
-import { authoringMessages } from '../authoring'
+import pluginConsentMessages from '../plugin-consent/ja'
+import modelApiMessages from '../model-api/ja'
+import modelBindingsMessages from '../model-bindings/ja'
+import marketFeedbackMessages from '../market-feedback/ja'
+import authoringMessages from '../authoring/ja'
 import powerMessages from '../power/ja'
 
 /**
  * 日本語言語パック
  */
 export default {
-  pluginConsent: pluginConsentMessages['ja'],
-  authoring: authoringMessages['ja'],
-  marketFeedback: marketFeedbackMessages['ja'],
-  modelApi: modelApiMessages['ja'],
-  modelBindings: modelBindingsMessages['ja'],
+  pluginConsent: pluginConsentMessages,
+  authoring: authoringMessages,
+  marketFeedback: marketFeedbackMessages,
+  modelApi: modelApiMessages,
+  modelBindings: modelBindingsMessages,
   power: powerMessages,
   common: {
     chooseLanguage: "言語を選択",
@@ -1060,6 +1060,8 @@ export default {
     pluginBuilt: 'プラグインをパッケージ化しました: {packageName}',
     pluginDeleted: 'プラグインを削除しました',
     pluginDeletedBuiltinRestartFailed: 'プラグイン {plugin} は削除されましたが、復元した内蔵版を起動できませんでした：{error}',
+    pluginDeletedPermissionsNotCleared: 'プラグイン {plugin} は削除されましたが、権限記録ファイルが破損しているか新しいバージョンのものであるため、残っている可能性のある許可を消去できませんでした。ファイルが再び読み取れるようになると、それらの許可が有効なままになる可能性があります。',
+    pluginsDeletedPermissionsNotCleared: 'プラグイン {plugins} は削除されましたが、権限記録ファイルが破損しているか新しいバージョンのものであるため、残っている可能性のある許可を消去できませんでした。ファイルが再び読み取れるようになると、それらの許可が有効なままになる可能性があります。',
     startFailed: '起動に失敗しました',
     autoStartEnabled: '自動起動を有効にしました',
     autoStartDisabled: '自動起動を無効にしました',

@@ -1,0 +1,41 @@
+import type { MarketFeedbackMessages } from './en-US'
+
+const messages: MarketFeedbackMessages = {
+  issuesTab: '问题反馈',
+  noIssues: '暂无问题反馈。',
+  issueOpen: '开放中',
+  issueClosed: '已关闭',
+  backToIssues: '返回问题列表',
+  closeIssue: '关闭 Issue',
+  reopenIssue: '重新打开 Issue',
+  updateIssueFailed: '更新 Issue 失败。',
+  reply: '回复',
+  message: '留言',
+  send: '发送',
+  verifyEmail: '请先验证插件市场账号的邮箱。',
+  sendFailed: '发送留言失败。',
+  sentAccountChanged: '操作已完成，但期间插件市场账号已切换，现在显示的是当前账号。',
+  notSentSessionChanged: '未发送：插件市场登录状态已变化。草稿已保留，确认账号后再发送。',
+  draftMaybePostedByOtherAccount:
+    '这段内容可能已经用之前的账号发出，再次发送前请先在上方对话里确认。',
+  title: '我的反馈',
+  loginRequired: '登录插件市场后查看你的插件收到的反馈。',
+  kind: '反馈类型',
+  allKinds: '全部类型',
+  comment: '评论',
+  issue: 'Issue',
+  status: '状态',
+  allStatuses: '全部状态',
+  unread: '未读',
+  awaitingReply: '待回复',
+  markAllRead: '全部标为已读',
+  markRead: '标为已读',
+  unlisted: '已下架 · 原帖不可打开',
+  open: '在市场打开',
+  empty: '没有符合条件的反馈。',
+  loadFailed: '反馈加载失败，请刷新重试。',
+  markFailed: '标记已读失败。',
+  loadMore: '加载更多',
+}
+
+export default messages

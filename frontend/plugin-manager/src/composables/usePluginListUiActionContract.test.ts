@@ -131,4 +131,31 @@ describe('plugin list UI action navigation contract', () => {
     )
     expect(ElMessage.success).not.toHaveBeenCalledWith('messages.pluginDeleted')
   })
+
+  it('warns when deletion could not clear the permission grants', async () => {
+    vi.mocked(deletePlugin).mockResolvedValue({
+      success: true,
+      plugin_id: 'generic-plugin',
+      plugin_dir: '/plugins/generic-plugin',
+      deleted_from_disk: true,
+      restored_builtin: false,
+      restored_builtin_started: false,
+      restored_builtin_restart_error: null,
+      permission_warning: {
+        code: 'PLUGIN_PERMISSIONS_CORRUPT',
+        message: 'Permission records could not be read',
+      },
+      message: 'Plugin deleted successfully',
+    })
+    const plugin = makePlugin({ id: 'open_detail', kind: 'builtin' })
+    const { buildActions, executeAction } = usePluginListContextActions()
+    const action = buildActions(plugin).find((candidate) => candidate.id === 'delete')
+
+    await executeAction(action!, plugin)
+
+    expect(ElMessage.warning).toHaveBeenCalledWith(
+      'messages.pluginDeletedPermissionsNotCleared',
+    )
+    expect(ElMessage.success).not.toHaveBeenCalledWith('messages.pluginDeleted')
+  })
 })

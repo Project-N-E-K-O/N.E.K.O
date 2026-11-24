@@ -4,7 +4,8 @@ import { createApp, defineComponent, h, markRaw, nextTick, ref } from 'vue'
 import { createI18n } from 'vue-i18n'
 import ElementPlus from 'element-plus'
 import AuthoringProjectSubmission from './AuthoringProjectSubmission.vue'
-import { authoringMessages } from '@/i18n/authoring'
+import authoringEnUs from '@/i18n/authoring/en-US'
+import authoringZhCn from '@/i18n/authoring/zh-CN'
 import {
   MarketSubmissionError,
   type MarketSubmission,
@@ -13,6 +14,8 @@ import {
   type SubmissionPanelState,
   type SubmissionWorkspace,
 } from '@/api/marketSubmissions'
+
+const authoringMessages = { 'en-US': authoringEnUs, 'zh-CN': authoringZhCn }
 
 const market = vi.hoisted(() => ({
   listMarketSubmissions: vi.fn(),

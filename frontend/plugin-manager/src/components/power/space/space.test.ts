@@ -18,6 +18,7 @@ const api = vi.hoisted(() => ({
   listReviews: vi.fn(), readReview: vi.fn(), deleteReview: vi.fn(),
   listPreferences: vi.fn(), editPreference: vi.fn(), removePreference: vi.fn(),
   getProjectBoard: vi.fn(), writeCard: vi.fn(), tellCommission: vi.fn(), answerCommission: vi.fn(), stopCommission: vi.fn(),
+  getTranscript: vi.fn(), getSessionUsage: vi.fn(),
   consoleErrorCode: (error: unknown) => (error as { code?: string })?.code ?? null,
 }))
 vi.mock('@/api/console', () => api)
@@ -319,7 +320,9 @@ describe('the familiar space page', () => {
     expect(byTest('space-project')).toBeNull()
     expect(api.readRules).toHaveBeenCalledWith({})
     const tabs = [...container.querySelectorAll('.el-tabs__item')].map(tab => tab.textContent?.trim())
-    expect(tabs).toEqual([words.space.familiars.tab, words.space.tabs.rules, words.space.tabs.notes, words.space.tabs.preferences])
+    expect(tabs).toEqual([
+      words.space.familiars.tab, words.space.tabs.activity, words.space.tabs.rules, words.space.tabs.notes, words.space.tabs.preferences,
+    ])
     // Opened on the rules: the familiars are read when their tab is.
     expect(container.querySelector('.el-tabs__item.is-active')?.textContent?.trim()).toBe(words.space.tabs.rules)
     expect(api.getProjectBoard).not.toHaveBeenCalled()
@@ -332,7 +335,9 @@ describe('the familiar space page', () => {
     expect(byTest('space-project')?.textContent).toContain('D:/code/ledger-tool')
     expect(api.readRules).toHaveBeenLastCalledWith({ project: 'Ledger tool' })
     const tabs = [...container.querySelectorAll('.el-tabs__item')].map(tab => tab.textContent?.trim())
-    expect(tabs).toEqual([words.space.familiars.tab, words.space.tabs.rules, words.space.tabs.notes, words.space.tabs.reviews])
+    expect(tabs).toEqual([
+      words.space.familiars.tab, words.space.tabs.activity, words.space.tabs.rules, words.space.tabs.notes, words.space.tabs.reviews,
+    ])
   })
 
   it('names an archived project by its directory and year, and shows it read-only', async () => {
@@ -392,6 +397,45 @@ describe('the familiar space page', () => {
     await click(rules)
     expect(route.query.tab).toBe('rules')
     expect(active()).toBe(words.space.tabs.rules)
+  })
+
+  it('says that the familiar an address names is off the board only once it knows which project is meant', async () => {
+    api.getTranscript.mockResolvedValue({ readable: true, before: null, entries: [] })
+    // The projects are still being read: the board that is read meanwhile is that of no project.
+    let known: (answer: unknown) => void = () => {}
+    api.listProjects.mockReturnValue(new Promise(resolve => { known = resolve }))
+    route.query = { project: 'Ledger tool', familiar: 's1' }
+    await mount(FamiliarSpace)
+    expect(api.getProjectBoard).toHaveBeenCalled()
+    expect(byTest('familiar-past')).toBeNull()
+    expect(api.getTranscript).not.toHaveBeenCalled()
+    // Known now, and the board of that project has no such familiar: said.
+    known({ projects: [project()] })
+    await flush()
+    expect(byTest('familiar-past')).toBeTruthy()
+    cleanup?.()
+    // The projects could not be read: nothing is known of the one that is named, nothing is concluded.
+    api.getTranscript.mockClear()
+    api.listProjects.mockRejectedValue({ code: 'agent_unreachable', response: { status: 503 } })
+    route.query = { project: 'Ledger tool', familiar: 's1' }
+    await mount(FamiliarSpace)
+    expect(byTest('familiar-past')).toBeNull()
+    expect(api.getTranscript).not.toHaveBeenCalled()
+    cleanup?.()
+    // Read, and the project that is named is not at work any more (put away, renamed): none of
+    // its familiars is on a board, and what was said in the one that is named is read all the same.
+    api.listProjects.mockResolvedValue({ projects: [
+      project(), project({ name: 'Moving list', archive_year: '2026', directory: 'moving-list', workdir: null, commissions: 2 }),
+    ] })
+    route.query = { project: 'Moving list', familiar: 's7' }
+    await mount(FamiliarSpace)
+    expect(byTest('familiar-past')).toBeTruthy()
+    expect(api.getTranscript).toHaveBeenCalledWith('s7', { before: null })
+    cleanup?.()
+    // No project named: the familiars of none are the ones meant.
+    route.query = { familiar: 's9' }
+    await mount(FamiliarSpace)
+    expect(byTest('familiar-past')).toBeTruthy()
   })
 
   it('asks for the reviews of an archived project by its year', async () => {

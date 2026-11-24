@@ -123,6 +123,19 @@ describe('the board', () => {
     expect(byTest('board-tally')?.textContent).toContain('1 waiting for you')
   })
 
+  it('draws the others of a project under its leader, and none so in a project with no leader', async () => {
+    api.getBoard.mockResolvedValue(board({ projects: [board().projects![0], {
+      name: 'Garden', description: '', workdir: null, archived: false, done_today: 0,
+      members: [
+        card({ id: 's5', name: 'Garden', kind: 'line', preset: 'general', avatar: 'general', leader: false }),
+        card({ id: 's6', name: 'Garden 2', kind: 'line', preset: 'scout', avatar: 'scout', leader: false }),
+      ],
+    }] }))
+    const page = await mount(FamiliarBoard)
+    const under = (id: string) => page.querySelector(`[data-familiar="${id}"]`)!.classList.contains('sub')
+    expect(['s1', 's2', 's5', 's6', 's4'].map(under)).toEqual([false, true, false, false, false])
+  })
+
   it('opens a familiar in the familiar space, in its project', async () => {
     api.getBoard.mockResolvedValue(board())
     const page = await mount(FamiliarBoard)

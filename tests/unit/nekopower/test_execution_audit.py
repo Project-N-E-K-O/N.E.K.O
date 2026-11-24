@@ -183,8 +183,10 @@ def test_long_combined_question_includes_all_choices():
                 "detail": {"tool": "read", "path": "path/" * 900, "content_to": "model/" * 1000}}
     rendered = render_question("work " * 600, question, "en")
     short = render_question("work", {**question, "detail": {"path": "file", "content_to": "model"}}, "en")
+    from config.prompts.prompts_nekopower_brain import PERMISSION_DETAIL_CUT_HINT
+
     assert count_tokens(rendered) <= QUESTION_TEXT_MAX_TOKENS
-    assert rendered.endswith(short.split("model")[-1])
+    assert rendered.endswith(short.split("model")[-1] + " " + PERMISSION_DETAIL_CUT_HINT["en"])
 
 
 def test_utf8_code_point_split_across_grep_chunks_keeps_later_matches(tmp_path, monkeypatch):

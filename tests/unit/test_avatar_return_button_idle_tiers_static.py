@@ -206,16 +206,16 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     source = _read_avatar_ui_buttons_source()
 
     assert "function _acquireNekoIdleCat1PlaygroundDropLifecycle(button, entryDetail)" in source
-    assert "function _releaseNekoIdleCat1PlaygroundDropLifecycle(button, reason)" in source
+    assert "function _releaseNekoIdleCat1PlaygroundDropLifecycle(button, reason, options = {})" in source
     assert "function _isNekoIdleCat1PlaygroundDropActive(button)" in source
-    assert "function _isNekoIdleCat1PlaygroundEntryOrDropActive(button, capability)" in source
+    assert "function _isNekoIdleCat1PlaygroundEntryOrDropActive(button, capability, options = {})" in source
     assert "function _isAnyNekoIdleCat1PlaygroundDropLifecycleActive()" in source
     assert "function _isNekoIdleCat1PlaygroundPairMoveFeedback(detail)" in source
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_PAIR_MOVE_SOURCE = 'cat1-playground-pair-move'" in source
     pair_move_feedback_block = _source_slice_between(
         source,
         "function _isNekoIdleCat1PlaygroundPairMoveFeedback(detail)",
-        "function _isNekoIdleCat1PlaygroundCapabilityBlocked(button, capability)",
+        "function _isNekoIdleCat1PlaygroundCapabilityBlocked(button, capability, options = {})",
         "cat1 playground pair-move feedback helper"
     )
     assert "detail.reason === _NEKO_IDLE_CAT1_PLAYGROUND_PAIR_MOVE_SOURCE" in pair_move_feedback_block
@@ -223,7 +223,7 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "detail.reason === 'idle-pair-move'" not in pair_move_feedback_block
     assert "detail.reason === 'cat1-pair-move'" not in pair_move_feedback_block
     assert "detail.source === 'cat1-pair-move'" not in pair_move_feedback_block
-    assert "function _isNekoIdleCat1PlaygroundCapabilityBlocked(button, capability)" in source
+    assert "function _isNekoIdleCat1PlaygroundCapabilityBlocked(button, capability, options = {})" in source
     assert "function _handleNekoIdleCat1PlaygroundEntryRequest(event)" in source
     assert "window.addEventListener('neko:idle-cat1-playground-entry-request', _handleNekoIdleCat1PlaygroundEntryRequest);" in source
     assert "button.__nekoIdleCat1PlaygroundDropState" in source
@@ -263,18 +263,18 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
 
     playground_gate_block = _source_slice_between(
         source,
-        "function _isNekoIdleCat1PlaygroundEntryOrDropActive(button, capability)",
-        "function _isAnyNekoIdleCat1PlaygroundDropActive()",
+        "function _isNekoIdleCat1PlaygroundEntryOrDropActive(button, capability, options = {})",
+        "function _isAnyNekoIdleCat1PlaygroundDropActive(capability, options = {})",
         "cat1 playground central entry/drop gate",
     )
     assert "_isNekoIdleCat1PlaygroundEntryPending(button)" in playground_gate_block
-    assert "_isNekoIdleCat1PlaygroundCapabilityBlocked(button, capability)" in playground_gate_block
+    assert "_isNekoIdleCat1PlaygroundCapabilityBlocked(button, capability, options)" in playground_gate_block
     assert "_isNekoIdleCat1PlaygroundDropActive(button)" not in playground_gate_block
 
     acquire_block = _source_slice_between(
         source,
         "function _acquireNekoIdleCat1PlaygroundDropLifecycle(button, entryDetail)",
-        "function _releaseNekoIdleCat1PlaygroundDropLifecycle(button, reason)",
+        "function _releaseNekoIdleCat1PlaygroundDropLifecycle(button, reason, options = {})",
         "cat1 playground lifecycle acquire",
     )
     assert "_cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });" in acquire_block
@@ -528,18 +528,23 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "_applyNekoIdleCat1PlaygroundBodyRotation(body);" in set_position_block
     assert "element.style.transformOrigin = 'center center';" in set_position_block
     assert "element.style.transform = `rotate(${Number(body.rotation) || 0}rad)`;" in set_position_block
-    assert set_position_block.index("body.id === 'yarn'") < set_position_block.index("_setNekoIdleCat1PlaygroundFixedBodyPosition(body.element, body.x, body.y);")
+    assert set_position_block.index("body.id === 'yarn'") < set_position_block.rindex("_setNekoIdleCat1PlaygroundFixedBodyPosition(body.element, body.x, body.y);")
+    # Cat and generic fixed bodies may share the bottom-level writer; it must
+    # never route back through the behavior position entry and recurse.
+    assert "_setNekoIdleCat1ContainerPosition(" not in set_position_block
 
     release_block = _source_slice_between(
         source,
-        "function _releaseNekoIdleCat1PlaygroundDropLifecycle(button, reason)",
+        "function _releaseNekoIdleCat1PlaygroundDropLifecycle(button, reason, options = {})",
         "function _isNekoIdleCat1PlaygroundDropActive(button)",
         "cat1 playground lifecycle release",
     )
     assert "_stopNekoIdleCat1PlaygroundPhysics(button);" in release_block
     assert "_clearNekoIdleCat1PlaygroundPointerListeners(button);" in release_block
     assert "_syncNekoIdleCat1QuestionMarkKeyboardAvailabilityForButton(button);" in release_block
-    assert "if (state.released) return false;" in release_block
+    assert "if (state.released) {" in release_block
+    assert "options.preserveThoughtBubbleInput !== true" in release_block
+    assert "state.thoughtBubblePointerIds.clear();" in release_block
     assert "state.bodies.forEach((body) => {" in release_block
     assert "_disposeNekoIdleCat1PlaygroundBody(state, body);" in release_block
     assert "state.cleanups" not in release_block
@@ -557,14 +562,15 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "reason: reason || (active ? 'active' : 'inactive')" in playground_state_block
     assert "restoreChatOnExit:" in playground_state_block
 
-    assert "function _releaseAllNekoIdleCat1PlaygroundDropLifecycles(reason)" in source
+    assert "function _releaseAllNekoIdleCat1PlaygroundDropLifecycles(reason, options = {})" in source
     page_release_block = _source_slice_between(
         source,
-        "function _releaseAllNekoIdleCat1PlaygroundDropLifecycles(reason)",
+        "function _releaseAllNekoIdleCat1PlaygroundDropLifecycles(reason, options = {})",
         "function _isNekoIdleCat1PlaygroundDropActive(button)",
         "cat1 playground page lifecycle release",
     )
-    assert "_releaseNekoIdleCat1PlaygroundDropLifecycle(button, reason || 'page-destroy');" in page_release_block
+    assert "_releaseNekoIdleCat1PlaygroundDropLifecycle(button, reason || 'page-destroy', {" in page_release_block
+    assert "preserveThoughtBubbleInput: options.restorePresentation === true" in page_release_block
     assert "_clearNekoIdleCat1PlaygroundQuestionBlockClone(button);" in page_release_block
     assert "window.addEventListener('pagehide', () => {" in source
     assert "_releaseAllNekoIdleCat1PlaygroundDropLifecycles('pagehide');" in source
@@ -616,7 +622,9 @@ def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
     )
     assert "const pointer = _resolveNekoIdleCat1PlaygroundPointerClient(state, body, event);" in pointer_move_block
     assert "if (!state.draggingBodyId) {" in pointer_move_block
-    assert "<= _NEKO_IDLE_CAT1_PLAYGROUND_MIN_CLICK_DRAG_PX" in pointer_move_block
+    assert "_isNekoIdleReturnCatDragMovement(deltaX, deltaY)" in pointer_move_block
+    assert "Math.hypot(deltaX, deltaY) > _NEKO_IDLE_CAT1_PLAYGROUND_MIN_CLICK_DRAG_PX" in pointer_move_block
+    assert "if (!movedPastThreshold) return true;" in pointer_move_block
     assert "_stopNekoIdleCat1PlaygroundPhysics(button);" not in pointer_move_block
     assert "_startNekoIdleCat1PlaygroundPhysics(button);" in pointer_move_block
     assert "state.draggingBodyId = body.id;" in pointer_move_block
@@ -645,9 +653,26 @@ def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
         "state.pendingYarnActivationGeneration = Number(body.yarnGeneration) || 0;",
     )
     assert "state.phase = 'ballistic';" in pointer_up_block
-    assert "state.suppressClickBodyId = body.id;" in pointer_up_block
+    assert "_suppressNekoIdleCat1PlaygroundClick(button, body.id);" in pointer_up_block
+    assert "_finishNekoIdleCat1PlaygroundBubblePointer(button, event)" in pointer_up_block
+    bubble_pointer_block = _source_slice_between(
+        source,
+        "function _finishNekoIdleCat1PlaygroundBubblePointer(button, event)",
+        "function _handleNekoIdleCat1PlaygroundPointerUp(button, event)",
+        "playground bubble pointer terminal and handoff",
+    )
+    assert "state.thoughtBubblePointerIds.delete(event && event.pointerId)" in bubble_pointer_block
+    assert "_suppressNekoIdleCat1PlaygroundClick(button, 'thought-bubble');" in bubble_pointer_block
     assert "body.angularVelocity = _getNekoIdleCat1PlaygroundThrowAngularVelocity(body, velocity, state);" in pointer_up_block
-    assert "state.suppressClickTimer = setTimeout" in pointer_up_block
+    suppress_click_block = _source_slice_between(
+        source,
+        "function _suppressNekoIdleCat1PlaygroundClick(button, bodyId)",
+        "function _handleNekoIdleCat1PlaygroundPointerUp(button, event)",
+        "playground shared post-gesture click suppression",
+    )
+    assert "state.suppressClickBodyId = bodyId;" in suppress_click_block
+    assert "state.suppressClickTimer = setTimeout" in suppress_click_block
+    assert "}, 80);" in suppress_click_block
     assert "state.pointerId = null;\n    state.pointerId = null;" not in pointer_up_block
     assert "_releaseNekoIdleCat1PlaygroundQuestionBlockPointerHold(state);" in pointer_up_block
     assert "_releaseNekoIdleCat1PlaygroundQuestionBlockPointerHold(state, { notify: false });" in pointer_up_block
@@ -672,7 +697,6 @@ def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
     )
     assert "['cat', 'yarn', 'desktop-yarn'].forEach" in restore_start_block
     assert "_setNekoIdleCat1PlaygroundBodyPosition(body, start.x, start.y, { force: true });" in restore_start_block
-    assert "_setNekoIdleCat1PlaygroundCatGroundedArt(button);" in restore_start_block
     question_click_block = _source_slice_between(
         source,
         "function _handleNekoIdleCat1PlaygroundQuestionBlockCloneClick(button, element, event)",
@@ -682,7 +706,15 @@ def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
     assert "state.suppressClickBodyId === 'question-block'" in question_click_block
     assert "pointerMoved" not in question_click_block
     assert "_restoreNekoIdleCat1PlaygroundStartPositions(button);" in question_click_block
-    assert "_releaseNekoIdleCat1PlaygroundDropLifecycle(button, 'question-block-click');" in question_click_block
+    assert "_releaseNekoIdleCat1PlaygroundDropLifecycle(button, 'question-block-click', {" in question_click_block
+    assert "preserveThoughtBubbleInput: true" in question_click_block
+    _assert_source_order(
+        question_click_block,
+        "question exit restores presentation after releasing physics ownership",
+        "_restoreNekoIdleCat1PlaygroundStartPositions(button);",
+        "_releaseNekoIdleCat1PlaygroundDropLifecycle(button, 'question-block-click', {",
+        "_syncNekoIdleReturnCurrentArt(button);",
+    )
     assert "_dispatchNekoIdleReturnClickFromButton(button);" not in question_click_block
 
     assert "function _suppressNekoIdleCat1PlaygroundNonCatNativeEvent(event)" in source
@@ -833,11 +865,11 @@ def test_cat1_playground_entry_minimizes_chat_to_yarn_before_drop():
 
     independent_action_block = _source_slice_between(
         source,
-        "function _isNekoIdleCat1IndependentActionActive(button)",
-        "function _isAnyNekoIdleCat1IndependentActionActive()",
+        "function _isNekoIdleCat1IndependentActionActive(button, capability, options = {})",
+        "function _isAnyNekoIdleCat1IndependentActionActive(capability, options = {})",
         "cat1 independent action active",
     )
-    assert "_isNekoIdleCat1PlaygroundEntryOrDropActive(button)" in independent_action_block
+    assert "_isNekoIdleCat1PlaygroundEntryOrDropActive(button, capability, options)" in independent_action_block
 
     assert "function _handleIdleCat1PlaygroundYarnRequest(event)" in app_source
     assert "window.addEventListener('neko:idle-cat1-playground-yarn-request', _handleIdleCat1PlaygroundYarnRequest);" in app_source
@@ -2265,14 +2297,14 @@ def test_cat1_walk_cancels_when_virtual_container_rect_is_unavailable():
     ):
         rect_guard = _source_slice_between(
             block,
-            f"const {rect_name} = _getNekoDesktopVirtualElementRect(",
+            f"const {rect_name} = ",
             "state.facingRight = _resolveNekoIdleCat1TargetFacing(",
             f"{name} virtual rect guard",
         )
         _assert_source_order(
             rect_guard,
             name,
-            f"const {rect_name} = _getNekoDesktopVirtualElementRect(",
+            "_getNekoDesktopVirtualElementRect(",
             f"if (!{rect_name}) {{",
             "_cancelNekoIdleCat1Journey(button, { resetArt: true, preserveObservers: true });",
             "return;",
@@ -2468,8 +2500,8 @@ def test_idle_thought_bubble_hides_during_drag_action():
 
     prepare_block = _source_slice_between(
         source,
-        "function _prepareNekoIdleReturnDragActionForContainer(container)",
-        "function _startNekoIdleReturnDragActionForContainer(container)",
+        "function _prepareNekoIdleReturnDragActionForContainer(container, options = {})",
+        "function _startNekoIdleReturnDragActionForContainer(container, options = {})",
         "return button drag pending preparation",
     )
     _assert_source_contains(
@@ -2480,7 +2512,7 @@ def test_idle_thought_bubble_hides_during_drag_action():
 
     start_block = _source_slice_between(
         source,
-        "function _startNekoIdleReturnDragActionForContainer(container)",
+        "function _startNekoIdleReturnDragActionForContainer(container, options = {})",
         "function _finishNekoIdleReturnDragAction(button, options = {})",
         "return button drag active start",
     )
@@ -2512,7 +2544,7 @@ def test_idle_thought_bubble_hides_during_drag_action():
     )
     _assert_source_contains(
         cancel_handler,
-        "_finishNekoIdleReturnDragActionForContainer(detail.container, { restoreArt: false });",
+        "restoreArt: playgroundGesture && detail.restoreArt !== false",
         "return button drag cancel handler",
     )
     assert ".neko-idle-return-btn.is-drag-action-pending .neko-idle-thought-bubble" in css_source
@@ -2524,8 +2556,8 @@ def test_return_button_drag_randomizes_asset_once_per_drag_action():
 
     set_drag_art_block = _source_slice_between(
         source,
-        "function _setNekoIdleReturnDragActionArt(button, tier)",
-        "function _prepareNekoIdleReturnDragActionForContainer(container)",
+        "function _getNekoIdleReturnDragActionAssetUrl(button, tier)",
+        "function _prepareNekoIdleReturnDragActionForContainer(container, options = {})",
         "return drag action art",
     )
     _assert_source_contains(
@@ -2548,10 +2580,17 @@ def test_return_button_drag_randomizes_asset_once_per_drag_action():
         "button.__nekoIdleReturnDragAssetTier = normalizedTier;",
         "return drag action art",
     )
+    _assert_source_order(
+        set_drag_art_block,
+        "drag rendering consumes the shared cached selection",
+        "function _setNekoIdleReturnDragActionArt(button, tier)",
+        "_getNekoIdleReturnDragActionAssetUrl(button, normalizedTier)",
+        "_setNekoIdleReturnArtSource(",
+    )
 
     start_drag_block = _source_slice_between(
         source,
-        "function _startNekoIdleReturnDragActionForContainer(container)",
+        "function _startNekoIdleReturnDragActionForContainer(container, options = {})",
         "function _finishNekoIdleReturnDragAction(button, options = {})",
         "return drag action start",
     )
@@ -2807,9 +2846,9 @@ def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
 
     set_drag_art_block = _source_slice_between(
         source,
+        "function _getNekoIdleReturnDragActionAssetUrl(button, tier)",
         "function _setNekoIdleReturnDragActionArt(button, tier)",
-        "function _prepareNekoIdleReturnDragActionForContainer(container)",
-        "return drag action art",
+        "return drag action asset selection",
     )
     _assert_source_order(
         set_drag_art_block,
@@ -2822,7 +2861,7 @@ def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
 
     start_drag_block = _source_slice_between(
         source,
-        "function _startNekoIdleReturnDragActionForContainer(container)",
+        "function _startNekoIdleReturnDragActionForContainer(container, options = {})",
         "function _finishNekoIdleReturnDragAction(button, options = {})",
         "return drag action start",
     )
@@ -3040,7 +3079,7 @@ def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
     _assert_source_order(
         handle_move_block,
             "niri return-ball waits for verified full carrier before moving",
-            "const movedPastThreshold = Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5;",
+            "const movedPastThreshold = _isNekoIdleReturnCatDragMovement(deltaX, deltaY);",
             "if (!movedPastThreshold) return;",
             "_dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-active', {",
             "dragSessionId: dragSafetyToken",

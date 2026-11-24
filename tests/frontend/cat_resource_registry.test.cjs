@@ -70,6 +70,33 @@ function loadRegistry(source = fs.readFileSync(REGISTRY_PATH, 'utf8'), overrides
   return window.NekoCatResourceRegistry;
 }
 
+test('cat states override one appearance at a time and keep the existing normal selection as fallback', () => {
+  const source = fs.readFileSync(REGISTRY_PATH, 'utf8');
+  const registry = loadRegistry(source);
+  assert.equal(registry.defaultCatState, 'normal');
+  assert.deepEqual(Object.keys(registry.stateAppearances), ['normal', 'happy', 'angry', 'sad', 'tired']);
+  for (const state of Object.keys(registry.stateAppearances)) {
+    for (const tier of ['cat1', 'cat2', 'cat3']) {
+      for (const pose of ['idle', 'hover']) {
+        const slot = `${pose === 'hover' ? 'click' : 'idle'}.${tier}`;
+        const getNormalUrl = () => registry.getAppearance(slot, { random: false }).url;
+        assert.equal(registry.resolveStateAppearanceUrl(state, tier, pose, getNormalUrl), getNormalUrl());
+      }
+    }
+  }
+
+  const withOverrides = loadRegistry(source.replace(
+    'sad: defineCatStateAppearance(),',
+    `sad: defineCatStateAppearance({ cat1: { idle: 'action.cat1.sad' }, cat2: { hover: 'unregistered.slot' } }),`,
+  ));
+  const getNormalUrl = () => '/normal';
+  const resolve = (tier, pose) => withOverrides.resolveStateAppearanceUrl('sad', tier, pose, getNormalUrl);
+  assert.equal(resolve('cat1', 'idle'), registry.getAppearance('action.cat1.sad').url);
+  assert.equal(resolve('cat1', 'hover'), getNormalUrl());
+  assert.equal(resolve('cat2', 'hover'), getNormalUrl());
+  assert.equal(resolve('cat3', 'idle'), getNormalUrl());
+});
+
 function parseAnimatedWebpDurationMs(buffer) {
   assert.equal(buffer.subarray(0, 4).toString('ascii'), 'RIFF');
   assert.equal(buffer.subarray(8, 12).toString('ascii'), 'WEBP');

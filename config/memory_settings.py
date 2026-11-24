@@ -566,7 +566,7 @@ HYBRID_RECALL_POOL_CACHE_MAX_FILES = 6
 # Resident-byte cap for decoded recall vectors (memory.hybrid_recall._VEC_CACHE).
 # Each cosine query decodes every candidate's base64-fp16 embedding into
 # fp32: measured ~49ms for 5000 entries (base64+fp16→fp32 ~32ms, per-entry isfinite
-# ~7ms, sha256 ~4ms), all on memory_server's event loop. Pool rows themselves
+# ~7ms, sha256 ~4ms), now done in worker threads (#4029). Pool rows themselves
 # are already cached by file identity in _POOL_CACHE; stable corpora decode identical vectors
 # every time, wasting work. Hits require unchanged (model_id, text object, both row stamps,
 # original embedding string); any mismatch falls back to full decoding and validation,
@@ -588,21 +588,36 @@ HYBRID_RECALL_POOL_CACHE_MAX_FILES = 6
 # residency, and actual growth is vector + bookkeeping (~2.4KB measured at 512d versus conservative
 # ~3.9KB). Do not read this cap as actual expected memory consumption.
 #
-# 32MB aims to restore typical actual growth to 20MB: conservative 512d accounting holds
-# ~8300 entries, which add 8300 × 2.4KB ≈ 19MB with shared strings, matching
-# the count cap's intended 20MB. Sizing capacity for worst-case usage needlessly halves
-# typical hit rate, so accounting is conservative but capacity targets typical usage. Vector pools contain active facts +
-# reflections only (archive embeddings are projected out before pooling), normally far below this gate;
-# it protects extreme multi-character × large-corpus residency, like the file-count gate above.
-HYBRID_RECALL_VEC_CACHE_MAX_BYTES = 32 * 1024 * 1024
+# Sizing: accounting is conservative but capacity targets typical usage — sizing for the
+# worst case would needlessly halve the typical hit rate. Vector pools contain active facts +
+# reflections + persona only (archive embeddings are projected out before pooling), normally
+# far below this gate; it protects extreme multi-character × large-corpus residency, like the
+# file-count gate above.
+#
+# 64MB (raised from 32MB, whose target was ~20MB of typical growth at 512d). The cache is an
+# OrderedDict filled one row at a time as recalls touch rows, never preallocated, so the cap
+# costs nothing until a corpus actually grows into it (a 2026-11 desktop corpus of six
+# characters, 482 vector-pool rows in all, uses ~3.6MB). It does stay resident once filled.
+# Measured at the current default 256d model (local-text-retrieval-v1-256d), where this
+# accounting comes to ~2.3KB per row: at 100x that corpus the largest character's pool is
+# ~17.6k rows ≈ 38.5MB, so 32MB kept ~3k of them permanently cold (cosine 44ms per recall)
+# and 64MB holds them all (27ms). A 512d model accounts ~3.9KB per row (see above), so the
+# same pool would need ~68MB and again only partly fit. Two such characters alternating
+# exceed the cap either way; that is the archive-sharding question again (#2716).
+HYBRID_RECALL_VEC_CACHE_MAX_BYTES = 64 * 1024 * 1024
 
 # Resident byte limit for the BM25 token cache (memory.hybrid_recall._TOKEN_CACHE).
 # Passive injection runs BM25 over the entire recall pool on every text turn; previously each call retokenized
 # from scratch (CJK 2/3-gram sliding windows account for about three quarters of BM25 time for 5000 entries). Cache by stop names +
 # original text, storing a single \x00-joined string (about 10 times less memory than token tuples;
 # roughly 3MB for 5000 entries), then split on a hit. Accounting remains conservative: include the original text
-# itself, even though pool rows usually retain it. 32MB holds about 50,000 short memories.
-HYBRID_RECALL_TOKEN_CACHE_MAX_BYTES = 32 * 1024 * 1024
+# itself, even though pool rows usually retain it.
+#
+# 64MB (raised from 32MB), filled on demand like the vector cache above (never
+# preallocated, resident once filled). Measured: 32MB held ~33k memories of 20-60 CJK
+# chars, so a 38k-row keyword pool (archive included, 100x a 2026-11 desktop corpus)
+# already re-tokenized the overflow on every recall; 64MB holds ~66k.
+HYBRID_RECALL_TOKEN_CACHE_MAX_BYTES = 64 * 1024 * 1024
 
 # ========================================================================
 # §3.7 LLM Context & Output Budget

@@ -100,6 +100,38 @@ async def test_command_output_is_utf8_and_a_failure_carries_its_exit_code(tmp_pa
         await session.close()
 
 
+@pytest.mark.parametrize(
+    ("inherited", "seen_by_the_command"),
+    [
+        # The backend defaulted itself to one BLAS thread: that is not the user's choice.
+        ({"OPENBLAS_NUM_THREADS": "1", "NEKO_INJECTED_OPENBLAS_THREADS": "1"}, "None None"),
+        # The user set a thread count themselves.
+        ({"OPENBLAS_NUM_THREADS": "4"}, "4 None"),
+    ],
+    ids=["injected", "set-by-the-user"],
+)
+async def test_a_command_runs_without_the_blas_thread_default_the_backend_gave_itself(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inherited: dict[str, str], seen_by_the_command: str
+) -> None:
+    for name in ("OPENBLAS_NUM_THREADS", "NEKO_INJECTED_OPENBLAS_THREADS"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in inherited.items():
+        monkeypatch.setenv(name, value)
+    script = _write(
+        tmp_path,
+        "threads.py",
+        "import os; print(os.environ.get('OPENBLAS_NUM_THREADS'), os.environ.get('NEKO_INJECTED_OPENBLAS_THREADS'))",
+    )
+    session, events, result, _llm = await _run_tool_call(
+        tmp_path, {"description": "Print the BLAS thread setting", "command": _python(script)}
+    )
+    try:
+        assert result["text"].strip() == seen_by_the_command
+        await events.wait_ended()
+    finally:
+        await session.close()
+
+
 async def test_successful_command_has_no_marker_and_empty_output_is_stated(tmp_path: Path) -> None:
     script = _write(tmp_path, "quiet.py", "pass\n")
     session, events, result, _llm = await _run_tool_call(

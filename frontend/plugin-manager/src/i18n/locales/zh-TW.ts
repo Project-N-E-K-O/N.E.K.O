@@ -1,19 +1,19 @@
-import { pluginConsentMessages } from '../plugin-consent'
-import { modelApiMessages } from '../model-api'
-import { modelBindingsMessages } from '../model-bindings'
-import { marketFeedbackMessages } from '../market-feedback'
-import { authoringMessages } from '../authoring'
+import pluginConsentMessages from '../plugin-consent/zh-TW'
+import modelApiMessages from '../model-api/zh-TW'
+import modelBindingsMessages from '../model-bindings/zh-TW'
+import marketFeedbackMessages from '../market-feedback/zh-TW'
+import authoringMessages from '../authoring/zh-TW'
 import powerMessages from '../power/zh-TW'
 
 /**
  * 繁體中文語言包
  */
 export default {
-  pluginConsent: pluginConsentMessages['zh-TW'],
-  authoring: authoringMessages['zh-TW'],
-  marketFeedback: marketFeedbackMessages['zh-TW'],
-  modelApi: modelApiMessages['zh-TW'],
-  modelBindings: modelBindingsMessages['zh-TW'],
+  pluginConsent: pluginConsentMessages,
+  authoring: authoringMessages,
+  marketFeedback: marketFeedbackMessages,
+  modelApi: modelApiMessages,
+  modelBindings: modelBindingsMessages,
   power: powerMessages,
   common: {
     chooseLanguage: "選擇語言",
@@ -1060,6 +1060,8 @@ export default {
     pluginBuilt: '外掛已構建：{packageName}',
     pluginDeleted: '外掛已刪除',
     pluginDeletedBuiltinRestartFailed: '外掛 {plugin} 已刪除，但還原的內建版本啟動失敗：{error}',
+    pluginDeletedPermissionsNotCleared: '外掛 {plugin} 已刪除，但權限記錄檔已損壞或版本不相容，未能清除它可能留有的授權；記錄檔恢復可讀後，這些授權可能仍然有效。',
+    pluginsDeletedPermissionsNotCleared: '外掛 {plugins} 已刪除，但權限記錄檔已損壞或版本不相容，未能清除它們可能留有的授權；記錄檔恢復可讀後，這些授權可能仍然有效。',
     startFailed: '啟動失敗',
     autoStartEnabled: '已開啟自動啟動',
     autoStartDisabled: '已關閉自動啟動',

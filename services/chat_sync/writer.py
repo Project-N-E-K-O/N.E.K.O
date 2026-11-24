@@ -16,6 +16,8 @@ import weakref
 
 from filelock import FileLock, Timeout
 
+from utils.file_utils import replace_with_busy_retry
+
 
 DATABASES = ('sources.sqlite3', 'state.sqlite3', 'originals.sqlite3', 'profiles.sqlite3', 'scheduler.sqlite3')
 _registry = {}
@@ -186,7 +188,10 @@ class ChatSyncWriter:
                 handle.write(json.dumps(value, sort_keys=True, separators=(',', ':')).encode())
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(target, self.path)
+            # Another handle on the witness (an antivirus or indexer scanning the file a peer
+            # just published) makes Windows refuse the replace for a few milliseconds; a
+            # refusal here would quarantine sync until cloud recovery. Retried briefly, not masked.
+            replace_with_busy_retry(target, self.path)
             # Windows lacks directory fsync; file replacement is still atomic,
             # and an interrupted finalization retains a recoverable reservation.
             if os.name != 'nt':

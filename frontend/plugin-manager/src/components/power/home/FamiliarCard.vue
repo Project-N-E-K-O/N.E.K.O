@@ -9,7 +9,7 @@
   >
     <span class="face" aria-hidden="true">
       <span v-if="card.leader" class="crown">👑</span>
-      <span class="cat">{{ FACES[card.avatar] ?? FACES.general }}</span>
+      <span class="cat">{{ FAMILIAR_FACES[card.avatar] ?? FAMILIAR_FACES.general }}</span>
     </span>
     <span class="words">
       <span class="name">
@@ -26,42 +26,23 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { BoardCard } from '@/api/console'
+import { FAMILIAR_FACES, familiarLook, presetName } from '../powerFormat'
 
 const props = defineProps<{ card: BoardCard }>()
 const emit = defineEmits<{ open: [card: BoardCard] }>()
 const { t, te } = useI18n()
 
-// Stand-ins until there is art for each kind of familiar: one face per avatar key.
-const FACES: Record<string, string> = {
-  boss: '😼', worker: '🐱', scout: '🙀', inspector: '😾', planner: '😺', general: '🐈', shadow: '🐈‍⬛',
-}
-
-/**
- * How it is drawn. A familiar that is asleep with something in hand is
- * resting until it is woken, or waiting its turn: told apart by what it has
- * in hand. A state the page does not know is drawn as asleep and named as it came.
- */
-const look = computed(() => {
-  const { state, commission } = props.card
-  if (state === 'asleep' && commission && (commission.status === 'resting' || commission.status === 'queued')) {
-    return commission.status
-  }
-  return ['working', 'waiting_user', 'idle', 'asleep', 'compacting'].includes(state) ? state : 'asleep'
-})
+const look = computed(() => familiarLook(props.card))
 const stateLabel = computed(() => {
   const known = `power.home.states.${look.value}`
   const given = `power.home.states.${props.card.state}`
   if (look.value === 'asleep' && !te(given)) return props.card.state
   return t(known)
 })
-const presetName = computed(() => {
-  const key = `power.home.presets.${props.card.preset}`
-  // A template of the user's names itself; one without a name is shown by its key.
-  return te(key) ? t(key) : props.card.label || props.card.preset
-})
-const shownName = computed(() => props.card.name || presetName.value)
+const kind = computed(() => presetName(props.card, t, te))
+const shownName = computed(() => props.card.name || kind.value)
 /** The title it earned, or what kind of familiar it is while it has none. */
-const shownTitle = computed(() => props.card.title || presetName.value)
+const shownTitle = computed(() => props.card.title || kind.value)
 /** What it is doing now, else what it is there for. */
 const line = computed(() => props.card.doing || props.card.duty)
 </script>
