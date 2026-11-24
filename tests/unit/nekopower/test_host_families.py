@@ -976,10 +976,14 @@ async def test_a_member_made_as_a_reader_is_asked_about_when_it_starts_with_tool
     # Asked for the member's own commission, which is the member's by now.
     member = await host.ledger.get_session(waiting.session_id)
     assert (member.kind, member.preset, waiting.handed_by is not None) == ("line", "scout", True)
+    # On record with the session, from when it was made: one that only reads.
+    assert member.seat == "reads"
     assert await host.answer(receipt.commission_id, "", choice=answer)
     if answer == "deny":
         failed = await wait_status(host, receipt.commission_id, "failed")
         assert "did not allow another task agent that can change files" in failed.status_reason
+        # Still one that only reads: asked about again the next time.
+        assert (await host.ledger.get_session(member.id)).seat == "reads"
         return
     await wait_status(host, receipt.commission_id, "done")
     await _let_go(host)
@@ -988,6 +992,7 @@ async def test_a_member_made_as_a_reader_is_asked_about_when_it_starts_with_tool
     assert await host.permission_store.mode("open_session") == "first_ask"
     # On record as allowed: it is not asked about a second time.
     assert [event.payload["changes_files"] for event in events if event.type == "member_made"] == [False, True]
+    assert (await host.ledger.get_session(member.id)).seat == ""
     opened = [event.payload["tools"] for event in events if event.type == "started"]
     assert {"write", "edit"} <= set(opened[-1])
 

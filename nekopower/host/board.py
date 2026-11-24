@@ -510,7 +510,8 @@ class Board:
         trees: dict[str, list[Tree]] = {}
         try:
             for tree in await self._ledger.trees():
-                if tree.session_id:
+                # (Not one the user discarded, which is only waiting to be removed.)
+                if tree.session_id and tree.state != "discarding":
                     trees.setdefault(tree.session_id, []).append(tree)
         except asyncio.CancelledError:
             raise

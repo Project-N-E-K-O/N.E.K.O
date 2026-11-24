@@ -1010,3 +1010,36 @@ async def test_an_inspector_that_ends_without_a_report_passed_nothing(hosts, tmp
     # It lands as if nobody had looked, and is put on record so: not as checked and passed.
     assert (workdir / "links.txt").read_text() == "repaired" and done.result_summary.startswith("links repaired")
     assert [(item["verdict"], item["round"]) for item in await _events(host, two.commission_id, "inspected")] == [("none", 1)]
+
+
+async def test_an_inspector_the_user_stops_is_out_of_the_worktree_before_anything_lands(hosts, tmp_path):
+    hold = asyncio.Event()
+
+    async def stubborn() -> None:
+        # Slow to stop: its run is over a while after it was told to.
+        try:
+            await hold.wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(1.0)
+            raise
+
+    host, trees, workdir, two, members = await _inspected(
+        hosts, tmp_path,
+        member=[_write("links.txt", "repaired"), _report("links repaired")],
+        inspector=[[stubborn, *_report("it holds")]],
+    )
+    await wait_until(lambda: len(members[CHECK].requests) == 1, what="the inspector being at work")
+    (check,) = await host.ledger.select(parent_id=two.commission_id)
+    seen: list[bool] = []
+    merge_back = trees.merge_back
+
+    async def merging(worktree: Any, landing: Any = None) -> Any:
+        live = host.task_agents._sessions.get(check.id)
+        seen.append(live is not None and not live.idle)
+        return await merge_back(worktree, landing)
+
+    trees.merge_back = merging
+    assert await host.abort(check.id)
+    await wait_status(host, two.commission_id, "done")
+    assert seen == [False] and (workdir / "links.txt").exists()
+    hold.set()

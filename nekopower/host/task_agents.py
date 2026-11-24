@@ -7745,7 +7745,9 @@ class TaskAgentManager(TreeWork):
                 )
             # Beside a member that works in the project's directory, one that changes files
             # has a git worktree made for each commission, where one can be made.
-            seat = await self.seat_of_new_member(leader.project) if template.changes_files else ""
+            # (One that only reads is put on record as that with the session itself: what the
+            # user is asked when it changes files later does not hang on this hand-over going through.)
+            seat = await self.seat_of_new_member(leader.project) if template.changes_files else "reads"
             if template.changes_files:
                 # Another task agent that can change files (through the shell as well): the user's to allow.
                 detail = {"tool": "hand_over", "title": f"{duty} <- {commission.title}", "preset": preset}
@@ -7798,21 +7800,14 @@ class TaskAgentManager(TreeWork):
         should its template say otherwise by the time it starts (the
         user changed it since), it is asked about now, for the
         commission it starts with, and noted as allowed so that it is
-        asked about once. Refused, it does not start. A member made
-        before this was kept on record is not asked about; one that
-        nothing is on record of and that never worked is (the hand-over
-        that made it was cut off before it was put on record).
+        asked about once. Refused, it does not start, and is asked
+        about again the next time. What it was made as is on record
+        with the session (``seat``, ``reads``), from when it is made:
+        a member made before that was kept is not asked about.
         """
         from config.prompts import prompts_nekopower_brain as texts
 
-        made = await self._ledger.last_event_in(member.id, "member_made")
-        if made is None:
-            # Nothing on record: made before this was kept, and it has worked since; or made by
-            # a hand-over that was cut off before it was put on record, and this is its first.
-            worked = await self._ledger.select(session_id=member.id, limit=2)
-            if any(item.id != commission.id for item in worked):
-                return
-        elif made.get("changes_files") is not False:
+        if member.seat != "reads":
             return
         decision = await self._permissions.check(
             commission.id,
@@ -7825,6 +7820,8 @@ class TaskAgentManager(TreeWork):
         )
         if not decision.allow:
             raise RuntimeError(texts.HAND_OVER_NOT_ALLOWED.format(reason=decision.reason or "declined"))
+        # One that changes files in the project's directory from here on, and not asked about again.
+        await self._ledger.update_session(member.id, seat="")
         await self._ledger.append_event(commission.id, "member_made", {"session": member.id, "changes_files": True})
 
     async def _close_leader_later(self, session: _Session) -> None:

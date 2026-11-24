@@ -1705,7 +1705,8 @@ class NekoPowerHost:
                 project, str(wanted), moves=self._moves_with(project, kept.workdir, leaders)
             )
             if before is None:
-                raise ProjectBusy("at_work")
+                # Something began in it since the look above: said by what it is.
+                raise ProjectBusy(await self._project_busy(project) or "at_work")
             # The record is written second: not written, the sessions go back, so that nothing is half changed.
             try:
                 changed = await self.space.set_project_workdir(project, str(wanted))

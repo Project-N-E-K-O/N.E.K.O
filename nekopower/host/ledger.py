@@ -642,7 +642,9 @@ class Session:
         return self.tokens_in + self.tokens_out + self.tokens_cache_read + self.tokens_cache_write
 
 
-SEATS: tuple[str, ...] = ("", "tree", "own")
+# (``reads``: a member a leader made as one that only reads, which the user was
+# not asked about; asked about when it first starts with tools that change files.)
+SEATS: tuple[str, ...] = ("", "tree", "own", "reads")
 _SESSION_COLUMNS: tuple[str, ...] = tuple(item.name for item in fields(Session))
 # Columns of ``sessions`` that its first schema did not have; see ``_ADDED_COLUMNS``.
 _ADDED_SESSION_COLUMNS: tuple[tuple[str, str], ...] = (
@@ -919,10 +921,12 @@ def _session(row: sqlite3.Row | None) -> Session | None:
 # (the setting that asks first); ``unlanded`` when it could not be landed
 # and the user is to say what becomes of it; ``kept`` once the user said
 # they see to it themselves, and is not reminded of it again.
-TREE_STATES: tuple[str, ...] = ("making", "active", "landing", "resolving", "held", "unlanded", "kept")
+# (``discarding``: the user discarded it and its directory could not be removed
+# then; nothing shows it any more, and it is removed when the host next starts.)
+TREE_STATES: tuple[str, ...] = ("making", "active", "landing", "resolving", "held", "unlanded", "kept", "discarding")
 # Those that keep a project where it is (``Ledger.move_project``): what such
 # a worktree holds is landed in the directory it was made from.
-TREE_STATES_PENDING: frozenset[str] = frozenset(TREE_STATES) - {"kept"}
+TREE_STATES_PENDING: frozenset[str] = frozenset(TREE_STATES) - {"kept", "discarding"}
 # Those whose commission is over, and which wait for the user.
 TREE_STATES_LEFT: frozenset[str] = frozenset({"held", "unlanded", "kept"})
 

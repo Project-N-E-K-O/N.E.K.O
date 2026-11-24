@@ -49,11 +49,12 @@ import contextlib
 import dataclasses
 import logging
 import os
+import shutil
 import time
 from pathlib import Path
 from typing import Any
 
-from nekopower.host.ledger import ENDED_STATUSES, TREE_STATES_LEFT, Commission, Session, Tree
+from nekopower.host.ledger import ENDED_STATUSES, TREE_STATES, TREE_STATES_LEFT, Commission, Session, Tree
 from nekopower.host.permissions import OPEN_SESSION
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,9 @@ CHECK_NONE = "none"
 
 # The states of a worktree whose commission is under way.
 _AT_WORK: frozenset[str] = frozenset({"making", "active", "landing", "resolving"})
+# The states of a worktree that is shown, and takes room among those a project may have: not
+# one the user discarded, which is only waiting to be removed.
+_SHOWN_STATES: tuple[str, ...] = tuple(state for state in TREE_STATES if state != "discarding")
 # How often what a landing waits for is looked at again, where nothing tells of it.
 _POLL_SECONDS = 0.2
 # How long the runs that work in a worktree are waited for to be over before it is looked at
@@ -315,7 +319,7 @@ class TreeWork:
             usable = kept[1]
         if not usable:
             return False
-        return len(await self._ledger.trees(project=project)) < settings.WORKTREES_PER_PROJECT
+        return len(await self._ledger.trees(project=project, states=_SHOWN_STATES)) < settings.WORKTREES_PER_PROJECT
 
     async def _works_in_tree(self, member: Session) -> bool:
         """Whether a member changes files in a worktree of its own, and so not in its project's directory.
@@ -336,14 +340,23 @@ class TreeWork:
     async def seat_of_new_member(self, project: str) -> str:
         """Return the seat a new member that changes files gets in a project: ``tree`` beside one that works in its directory.
 
-        The first member works in the project's directory itself; every
-        one added while that one still takes work has a worktree made
-        for each of its commissions, and so does not wait for it. (Of
-        every character: the directory is the project's.)
+        The first member that changes files works in the project's
+        directory itself; every one added while that one still takes
+        work has a worktree made for each of its commissions, and so
+        does not wait for it. One that only reads is nobody to wait
+        for. (Of every character: the directory is the project's.)
         """
         rows = await self._ledger.find_sessions(project=project, kind="line", limit=500, commissions_each=0)
         for row in rows:
-            if row.session.seat == "" and await self._ledger.session_alive(row.session):
+            if row.session.seat != "" or not await self._ledger.session_alive(row.session):
+                continue
+            try:
+                writes = bool((await self._template_of(row.session)).changes_files)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - one whose preset cannot be read counts as one that changes files
+                writes = True
+            if writes:
                 return "tree"
         return ""
 
@@ -422,13 +435,16 @@ class TreeWork:
             if session and self._tree_sessions.get(session) == row.id:
                 del self._tree_sessions[session]
 
-    async def _remove_tree(self, row: Tree, handle: Any = None) -> bool:
+    async def _remove_tree(self, row: Tree, handle: Any = None, *, discarded: bool = False) -> bool:
         """Remove a worktree and take it off the record; returns whether its directory went.
 
         One whose directory could not be removed (a file of it is in
         use) is taken off the record all the same: it holds nothing that
         was not landed, and is removed when what is left over is gone
-        through as the host next starts.
+        through as the host next starts. Not so one the user discards
+        (``discarded``), which holds what was not landed and would be
+        taken for one that was left: that one stays on record as one to
+        remove (``discarding``), shown nowhere.
         """
         from nekopower.host.worktrees import WorktreeError
 
@@ -445,8 +461,27 @@ class TreeWork:
                 gone = False
         self._tree_handles.pop(row.id, None)
         self._trees_mine.discard(row.id)
+        if discarded and not gone:
+            await self._ledger.update_tree(row.id, state="discarding", reason="")
+            return False
         await self._ledger.drop_tree(row.id)
         return gone
+
+    async def _remove_discarded(self, row: Tree) -> bool:
+        """Remove a worktree the user discarded that could not be removed then; returns whether it is gone, and off the record."""
+        handle = await self._handle_of(row)
+        if handle is not None:
+            return await self._remove_tree(row, handle, discarded=True)
+        if not await self._tree_is_gone(row):
+            # Not to be opened as a worktree any more (half removed): its directory is the host's own.
+            base, path = self._paths.worktrees_dir(), Path(row.path)
+            if _same_dir(str(path.parent), str(base)):
+                await asyncio.to_thread(shutil.rmtree, path, True)
+        if not await self._tree_is_gone(row):
+            return False
+        self._forget_tree(row)
+        await self._ledger.drop_tree(row.id)
+        return True
 
     async def _tree_to_work_in(self, commission: Commission, kept: Session, home: str, changes: bool) -> Tree | None:
         """Return the worktree a commission that starts is worked on in, made now where it has none; None for none.
@@ -477,8 +512,8 @@ class TreeWork:
                 row = await self._ledger.get_tree(tree_id)
                 if tree_id not in self._trees_in_hand:
                     break
-            if row is None or row.state == "kept":
-                # Gone since, or the user's to see to personally (and left alone, then).
+            if row is None or row.state in ("kept", "discarding"):
+                # Gone since, the user's to see to personally (and left alone, then), or discarded.
                 continue
             # Its own from here on, with nothing awaited since the look above: nothing else takes it in hand.
             self._tree_of[commission.id] = row.id
@@ -576,7 +611,7 @@ class TreeWork:
         async with self._tree_room:
             # Counted and put on record in one go: the room one takes is not taken by another
             # that starts at the same moment.
-            if len(await self._ledger.trees(project=project)) >= settings.WORKTREES_PER_PROJECT:
+            if len(await self._ledger.trees(project=project, states=_SHOWN_STATES)) >= settings.WORKTREES_PER_PROJECT:
                 return None, "too_many", f"the project has {settings.WORKTREES_PER_PROJECT} worktrees already"
             # (One of this commission that the user sees to personally keeps its name.)
             taken = {row.id for row in await self._ledger.trees(commission_id=commission.id)}
@@ -882,6 +917,12 @@ class TreeWork:
         chosen = await self.landing.get()
         if chosen["inspect"] or (await self._chosen(commission_id)).get("inspect"):
             verdict, findings = await self._inspect(row, commission)
+            if not await self._gone_from_runtime(commission_id):
+                # The inspector (stopped, say) is still at it in the worktree: nothing is merged under it.
+                self._dones.pop(commission_id, None)
+                return await self._not_landed(
+                    row, commission, done, REASON_FAILED, detail="an inspector could not be stopped in its worktree"
+                )
             if self._stale(commission_id, done):
                 return "again"
             await self._note_tree_event(
@@ -1426,7 +1467,7 @@ class TreeWork:
     async def trees_view(self, *, project: str | None = None, lanlan_name: str | None = None) -> list[dict[str, Any]]:
         """Return the worktrees on record as a page shows them, the oldest first; each with what its commission and session are called."""
         shown: list[dict[str, Any]] = []
-        for row in await self._ledger.trees(project=project, lanlan_name=lanlan_name):
+        for row in await self._ledger.trees(project=project, lanlan_name=lanlan_name, states=_SHOWN_STATES):
             commission = await self._ledger.get(row.commission_id) if row.commission_id else None
             session = await self._ledger.get_session(row.session_id) if row.session_id else None
             shown.append(
@@ -1476,13 +1517,19 @@ class TreeWork:
         carried out, ``ValueError("gone")`` when its directory is not
         there any more (it can be discarded), ``ValueError("not_opened")``
         when it is there and git cannot open it this moment (asked
-        again later).
+        again later), ``ValueError("moved")`` when its project works in
+        another directory by now than the one it was made from (it is
+        not merged into the old one; it can be discarded, or seen to by
+        hand).
         """
         async with self._tree_in_hand(tree_id, TREE_STATES_LEFT) as row:
             handle = await self._handle_of(row)
             if handle is None:
                 # Gone, or there and not to be opened this moment (asked again later).
                 raise ValueError("gone" if await self._tree_is_gone(row) else "not_opened")
+            if await self._project_moved(row):
+                # (One the user sees to personally does not keep its project where it is.)
+                raise ValueError("moved")
             was = row
             row = await self._ledger.update_tree(row.id, state="landing") or row
             try:
@@ -1516,7 +1563,7 @@ class TreeWork:
                 files=files, more=more, outside=outside[: settings.TREE_FILES_LISTED],
                 skipped=list(result.skipped[: settings.TREE_FILES_LISTED]),
             )
-            if result.status == "landed" or not result.skipped:
+            if result.status == "landed":
                 await self._note_tree_event(
                     row.commission_id, "landed", {**self._landed_payload(row, result, outside), "by": "user"}
                 )
@@ -1598,6 +1645,19 @@ class TreeWork:
             answer["kept_copies"] = result.kept_copies
         return answer
 
+    async def _project_moved(self, row: Tree) -> bool:
+        """Whether the project a worktree was made for works in another directory by now; False where that cannot be told."""
+        if self._space is None or not row.project:
+            return False
+        try:
+            project, _readable = await self._space.read_project(row.project)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - not known: landed where it was made from
+            logger.debug("where project %s works could not be read", row.project, exc_info=True)
+            return False
+        return project is not None and bool(project.workdir) and not _same_dir(project.workdir, row.project_dir)
+
     @staticmethod
     def _stuck_over(row: Tree, commission: Commission | None) -> bool:
         """Whether a commission is stuck over this worktree of its own, and not over another.
@@ -1631,7 +1691,7 @@ class TreeWork:
         Its commission, where it was stuck over it (and not over
         another worktree of its own), is put down as stopped.
         ``removed`` is False when its directory could not be removed (a
-        file of it is in use): it is off the record, and removed when
+        file of it is in use): it is shown no more, and removed when
         the host next starts. Raises as ``land_tree``.
         """
         async with self._tree_in_hand(tree_id, TREE_STATES_LEFT) as row:
@@ -1640,7 +1700,7 @@ class TreeWork:
                 # There, and not to be opened this moment: nothing of it could be removed.
                 raise ValueError("not_opened")
             stuck = self._stuck_over(row, await self._ledger.get(row.commission_id) if row.commission_id else None)
-            removed = await self._remove_tree(row, handle)
+            removed = await self._remove_tree(row, handle, discarded=True)
             await self._note_tree_event(row.commission_id, "tree_discarded", {"tree": row.id, "path": row.workdir})
             if row.commission_id and stuck:
                 moved = await self._ledger.transition(
@@ -1692,6 +1752,11 @@ class TreeWork:
         for row in await self._ledger.trees():
             homes.setdefault(os.path.normcase(os.path.normpath(row.project_dir)), (row.project_dir, row.project))
             if row.id in self._trees_mine or row.id in self._trees_in_hand or row.id in self._tree_of.values():
+                continue
+            if row.state == "discarding":
+                # The user discarded it, and it could not be removed then: removed now, whatever it holds.
+                if await self._remove_discarded(row):
+                    removed.append(row.id)
                 continue
             # In hand from here on, with nothing awaited since the look above: a commission that is
             # taken up again meanwhile waits for this before it goes on in its worktree
@@ -1928,7 +1993,7 @@ class TreeWork:
             if probe is None or not probe.usable:
                 why = (probe.detail or str(probe.reason)) if probe is not None else "the project has no directory"
                 raise RuntimeError(texts.START_TEAM_NO_TREES.format(reason=why))
-            there = len(await self._ledger.trees(project=leader.project))
+            there = len(await self._ledger.trees(project=leader.project, states=_SHOWN_STATES))
             if there + len(writers) > settings.WORKTREES_PER_PROJECT:
                 raise RuntimeError(
                     texts.START_TEAM_NO_ROOM.format(

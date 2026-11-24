@@ -113,6 +113,8 @@ class FakeTrees:
         self.removed: list[str] = []
         self.left_over: list[Path] = []
         self.reconciled: list[str] = []
+        # What removing a worktree fails with (a file of it is in use), while it is set.
+        self.fail_remove: Exception | None = None
         # Set once a worktree is looked at for changes, which waits for ``changes_gate`` when there is one.
         self.checking = asyncio.Event()
         self.changes_gate: asyncio.Event | None = None
@@ -180,6 +182,8 @@ class FakeTrees:
         return dataclasses.replace(worktree, start="start-2")
 
     async def remove(self, worktree: Worktree) -> None:
+        if self.fail_remove is not None:
+            raise self.fail_remove
         shutil.rmtree(worktree.path, ignore_errors=True)
         self.removed.append(worktree.id)
 
@@ -1286,7 +1290,8 @@ async def test_a_member_that_only_reads_gets_no_worktree_beside_another(hosts, t
     done = await wait_status(host, two.commission_id, "done")
 
     scout = await host.ledger.get_session(done.session_id)
-    assert (scout.preset, scout.seat) == ("scout", "") and trees.made == [] and done.workdir == str(workdir)
+    # (Made as one that only reads, and on record as that.)
+    assert (scout.preset, scout.seat) == ("scout", "reads") and trees.made == [] and done.workdir == str(workdir)
     assert await _events(host, two.commission_id, "tree_not_made") == []
 
 
@@ -1464,7 +1469,7 @@ async def test_a_session_that_was_its_own_before_it_became_a_projects_stays_wher
 
         # A worktree that holds work not landed keeps the project where it is; one left to the user does not.
         tree = await ledger.add_tree(id="abc", project="Reports", project_dir="p", path="t", workdir="t", state="unlanded")
-        assert TREE_STATES == ("making", "active", "landing", "resolving", "held", "unlanded", "kept")
+        assert TREE_STATES == ("making", "active", "landing", "resolving", "held", "unlanded", "kept", "discarding")
         assert await ledger.trees_pending("Reports")
         assert await ledger.move_project("Reports", str(tmp_path / "third"), moves=lambda _id, _workdir: True) is None
         assert (await ledger.update_tree(tree.id, state="kept", was=("unlanded",))).state == "kept"
@@ -2122,33 +2127,6 @@ async def test_what_was_left_over_is_looked_at_though_the_host_was_first_used_wi
     assert host._trees_looked_at is looked and trees.reconciled == [str(home)]
 
 
-async def test_a_member_nothing_is_on_record_of_is_asked_about_unless_it_has_worked_before(hosts, tmp_path, monkeypatch):
-    host, trees, workdir, one, two, _members = await _two_members(hosts, tmp_path, second=[_report("links repaired")])
-    host.release.set()
-    await wait_status(host, one.commission_id, "done")
-    await wait_status(host, two.commission_id, "done")
-    manager = host.task_agents
-    asked: list[tuple[str, str]] = []
-
-    async def check(commission_id: str, _category: str, detail: Any = None) -> Any:
-        asked.append((commission_id, detail["preset"]))
-        return types.SimpleNamespace(allow=True, reason="")
-
-    async def nothing(_session_id: str, _kind: str) -> None:
-        return None
-
-    monkeypatch.setattr(manager._permissions, "check", check)
-    monkeypatch.setattr(host.ledger, "last_event_in", nothing)
-    commission = await host.ledger.get(two.commission_id)
-    # Made before such a record was kept, and at work since: not asked about.
-    await manager._ask_about_member(commission, await _session_of(host, one.commission_id))
-    assert asked == []
-    # Made by a hand-over that was cut off before it was put on record: this is its first, and it is asked about.
-    new = types.SimpleNamespace(id="never-worked", preset="scout", duty="looks things up", name="Shop site/scout")
-    await manager._ask_about_member(commission, new)
-    assert asked == [(commission.id, "scout")]
-
-
 async def test_asked_first_what_was_said_to_it_meanwhile_is_done_before_it_is_held_back(hosts, tmp_path):
     host, trees, workdir, one, two, members = await _two_members(
         hosts, tmp_path,
@@ -2314,3 +2292,135 @@ async def test_a_card_of_a_session_that_is_summed_up_says_so_though_a_worktree_o
     assert card_of(session, None, (), None, None, tree=tree)["state"] == "unlanded"
     summed_up = dataclasses.replace(session, status="compacting")
     assert card_of(summed_up, None, (), None, None, tree=tree)["state"] == "compacting"
+
+
+@pytest.mark.parametrize("later", ["git removes it", "git cannot open it any more"])
+async def test_a_worktree_the_user_discards_that_cannot_be_removed_then_does_not_come_back(hosts, tmp_path, monkeypatch, later):
+    monkeypatch.setattr(settings, "WORKTREES_PER_PROJECT", 1)
+    clash = MergeResult("conflict", conflicts=("links.txt",))
+    host, trees, workdir, two, _members, _stuck = await _not_landed(hosts, tmp_path, [clash] * 4, turns=4)
+    (tree,) = await host.ledger.trees()
+    manager = host.task_agents
+    assert not await manager.tree_possible("Shop site", str(workdir))
+    # A file of it is in use (an editor has it open).
+    trees.fail_remove = WorktreeError("a file of it is in use")
+
+    assert await host.discard_worktree(tree.id) == {"removed": False}
+
+    # Discarded for the user: shown nowhere, in nobody's way, and no room taken; on record as one to remove.
+    assert await host.worktrees() == [] and await host._project_busy("Shop site") is None
+    assert (await host.ledger.get(two.commission_id)).status == "cancelled"
+    assert (await host.ledger.get_tree(tree.id)).state == "discarding" and Path(tree.path).is_dir()
+    assert await manager.tree_possible("Shop site", str(workdir))
+    cards = [card for project in (await host.board())["projects"] for card in project["members"]]
+    assert [card["tree"] for card in cards if card["tree"] is not None] == []
+    for decide in (host.land_worktree, host.discard_worktree, host.keep_worktree):
+        with pytest.raises(ValueError, match="at_work"):
+            await decide(tree.id)
+
+    # As the host starts anew: removed, whatever it holds, and not taken for one that was left with changes.
+    manager._trees_mine.clear()
+    manager._tree_handles.clear()
+    trees.fail_remove = None
+    trees.fail_open = later != "git removes it"
+    assert await manager.reconcile_trees() == {"removed": [tree.id], "kept": []}
+    assert await host.ledger.trees() == [] and not Path(tree.path).exists()
+    assert trees.removed == ([tree.id] if later == "git removes it" else [])
+
+
+async def test_a_worktree_the_user_kept_is_not_landed_where_its_project_no_longer_works(hosts, tmp_path):
+    clash = MergeResult("conflict", conflicts=("links.txt",))
+    host, trees, workdir, two, _members, _stuck = await _not_landed(hosts, tmp_path, [clash] * 4, turns=4)
+    (tree,) = await host.ledger.trees()
+    await host.keep_worktree(tree.id)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    # Seen to personally, it does not keep the project where it is.
+    await host.set_project_workdir("Shop site", str(elsewhere))
+    trees.merged.clear()
+
+    with pytest.raises(ValueError, match="moved"):
+        await host.land_worktree(tree.id)
+    # Nothing was merged into the directory the project left, and it can still be discarded.
+    assert trees.merged == [] and not (workdir / "links.txt").exists() and not (elsewhere / "links.txt").exists()
+    assert (await host.ledger.get_tree(tree.id)).state == "kept"
+    assert await host.discard_worktree(tree.id) == {"removed": True}
+
+
+async def test_nothing_is_said_to_be_landed_where_the_user_has_a_worktree_landed_that_changes_nothing(hosts, tmp_path):
+    clash = MergeResult("conflict", conflicts=("links.txt",))
+    host, trees, workdir, two, _members, _stuck = await _not_landed(hosts, tmp_path, [clash] * 4, turns=4)
+    (tree,) = await host.ledger.trees()
+    trees.results = [MergeResult("unchanged")]
+
+    answer = await host.land_worktree(tree.id)
+
+    assert (answer["status"], answer["files"]) == ("unchanged", []) and await host.ledger.trees() == []
+    assert await _events(host, two.commission_id, "landed") == []
+    await wait_status(host, two.commission_id, "done")
+
+
+async def test_a_member_that_changes_files_gets_a_worktree_beside_one_that_does_and_none_beside_one_that_only_reads(
+    hosts, tmp_path
+):
+    host, trees, workdir = await _shop(hosts, tmp_path, ScriptedLLM([]))
+    # The first member only reads: nobody waits for it, and nobody needs a worktree because of it.
+    reader = await host.open_member("Lan", "Shop site", preset="scout")
+    first = await host.open_member("Lan", "Shop site", preset="general")
+    second = await host.open_member("Lan", "Shop site", preset="general")
+    assert (reader["seat"], first["seat"], second["seat"]) == ("", "", "tree")
+
+
+async def test_a_project_that_cannot_be_given_another_directory_after_all_says_why(hosts, tmp_path, monkeypatch):
+    host, trees, workdir = await _shop(hosts, tmp_path, ScriptedLLM([]))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    busy = host._project_busy
+    looks: list[str | None] = []
+
+    async def in_the_way_since(project: str) -> str | None:
+        # Nothing is in the way when it is first looked at; a worktree waits for the user by the time it is moved.
+        looks.append(None if not looks else "tree_not_landed")
+        return looks[-1] if looks[-1] is not None or len(looks) > 1 else await busy(project)
+
+    async def not_moved(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(host, "_project_busy", in_the_way_since)
+    monkeypatch.setattr(host.ledger, "move_project", not_moved)
+    with pytest.raises(ProjectBusy, match="tree_not_landed"):
+        await host.set_project_workdir("Shop site", str(elsewhere))
+    assert looks == [None, "tree_not_landed"]
+
+
+async def test_a_member_made_as_one_that_only_reads_is_on_record_as_that_with_its_session(hosts, tmp_path, monkeypatch):
+    host, trees, workdir, one, two, _members = await _two_members(hosts, tmp_path, second=[_report("links repaired")])
+    host.release.set()
+    await wait_status(host, one.commission_id, "done")
+    await wait_status(host, two.commission_id, "done")
+    manager = host.task_agents
+    answers = [False, True]
+    asked: list[str] = []
+
+    async def check(commission_id: str, _category: str, detail: Any = None) -> Any:
+        asked.append(detail["preset"])
+        return types.SimpleNamespace(allow=answers.pop(0), reason="")
+
+    monkeypatch.setattr(manager._permissions, "check", check)
+    commission = await host.ledger.get(two.commission_id)
+    # One made as a writer, which the user was asked about then (or made before such a record was kept): not asked about.
+    await manager._ask_about_member(commission, await _session_of(host, one.commission_id))
+    assert asked == []
+    # One made as a reader, with nothing else on record of it (the hand-over that made it was cut off): asked about.
+    made = await host.ledger.create_session(
+        name="Shop site/scout", lanlan_name="Lan", kind="line", project="Shop site", workdir=str(workdir),
+        preset="scout", duty="looks things up", seat="reads",
+    )
+    with pytest.raises(RuntimeError, match="did not allow"):
+        await manager._ask_about_member(commission, made)
+    # Refused, it is still one that only reads: asked about again with the next commission, and not after it was allowed.
+    assert (await host.ledger.get_session(made.id)).seat == "reads"
+    await manager._ask_about_member(commission, await host.ledger.get_session(made.id))
+    assert asked == ["scout", "scout"] and (await host.ledger.get_session(made.id)).seat == ""
+    await manager._ask_about_member(commission, await host.ledger.get_session(made.id))
+    assert asked == ["scout", "scout"]
