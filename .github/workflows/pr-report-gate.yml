@@ -17,8 +17,19 @@ on:
     types: [opened, reopened, synchronize, edited, labeled, unlabeled]
 
 # Read-only: the check reads the diff and the PR body, posts nothing.
+# pull-requests: read lets it fetch the PR's current body and labels.
 permissions:
   contents: read
+  pull-requests: read
+
+# Only the newest run per PR matters; label swaps by the review bot used to
+# queue a dozen identical runs per PR. GitHub does not guarantee runs enter the
+# group in event order, so the surviving run may come from an older event:
+# the check therefore reads the body and labels live from the API rather than
+# from its own event payload.
+concurrency:
+  group: pr-report-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   pr-report-gate:
@@ -41,7 +52,17 @@ jobs:
         env:
           # Pass PR data through env (not inlined into the run: line) — same
           # zizmor template-injection indirection as analyze.yml's i18n step.
-          PR_BODY: ${{ github.event.pull_request.body }}
-          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           BASE_REF: ${{ github.base_ref }}
-        run: python scripts/check_pr_report.py --base "origin/${BASE_REF}"
+        # Body and labels come from the API, not the event payload: a surviving
+        # run triggered by an older event (see the concurrency note above) must
+        # still judge the PR's current description and labels.
+        run: |
+          set -euo pipefail
+          pr_json="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}")"
+          PR_BODY="$(jq -r '.body // ""' <<<"$pr_json")"
+          PR_LABELS="$(jq -r '[.labels[].name] | join(",")' <<<"$pr_json")"
+          export PR_BODY PR_LABELS
+          python scripts/check_pr_report.py --base "origin/${BASE_REF}"
