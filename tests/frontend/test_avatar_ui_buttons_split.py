@@ -728,6 +728,619 @@ def test_cat1_mouse_hover_selects_three_animations_and_restores_after_their_cycl
         page.mouse.move(0, 0)
 
 
+def test_playground_preserves_physics_and_dragging_across_idle_tiers(page: Page):
+    host = "http://neko.test/"
+    page.route(host, lambda route: route.fulfill(content_type="text/html", body="<main></main>"))
+
+    def serve_static(route):
+        asset = PROJECT_ROOT / route.request.url.removeprefix(host).split("?", 1)[0]
+        route.fulfill(path=str(asset)) if asset.is_file() else route.abort()
+
+    page.route(f"{host}static/**", serve_static)
+    page.goto(host)
+    page.add_style_tag(url=f"{host}static/css/index.css")
+    page.add_script_tag(content="class Live2DManager {}; window.Live2DManager = Live2DManager;")
+    for part_name in AVATAR_UI_BUTTON_PART_NAMES:
+        page.add_script_tag(path=str(AVATAR_UI_BUTTONS_DIR / part_name))
+    page.add_script_tag(path=str(BACKENDS[0][2]))
+    page.evaluate("""() => {
+        window.testTier = 'cat1';
+        window.nekoAutoGoodbye = { getState: () => ({ visualTier: testTier }) };
+        const container = new Live2DManager().createReturnButton();
+        Object.assign(container.style, {display: 'block', left: '120px', top: '120px', width: '96px', height: '96px'});
+        window.cat = container.querySelector('.neko-idle-return-btn');
+        setNekoIdleCatAudioEnabled(false);
+        if (!_startNekoIdleCat1PlaygroundDrop(cat, {}, {catOnly: true})) throw new Error('entry failed');
+        window.session = cat.__nekoIdleCat1PlaygroundDropState;
+        window.catBody = session.bodies.get('cat');
+        window.token = session.token;
+    }""")
+    page.wait_for_function("catBody.grounded && session.frame === 0")
+    for tier in ("cat2", "cat3", "cat1"):
+        page.evaluate("""tier => {
+            window.testTier = tier;
+            _applyNekoIdleReturnPresentation(cat, tier);
+        }""", tier)
+        page.wait_for_function("session.frame === 0")
+        assert page.evaluate("session.active && !session.released && session.token === token && session.bodies.get('cat') === catBody")
+        assert page.locator(".neko-idle-return-art").get_attribute("src").split("?", 1)[0].endswith(f"cat-idle-{tier}.webp")
+        assert page.evaluate("catBody.grounded && Math.abs(catBody.y - catBody.floorY) < 0.5")
+        rect = page.locator("#live2d-btn-return").bounding_box()
+        page.mouse.move(rect["x"] + rect["width"] / 2, rect["y"] + rect["height"] / 2)
+        page.mouse.down()
+        page.mouse.move(rect["x"] + rect["width"] / 2 + 40, rect["y"] + rect["height"] / 2 - 80, steps=3)
+        assert page.evaluate("session.draggingBodyId === 'cat'")
+        if tier != "cat1":
+            assert page.evaluate("""() => {
+                const src = cat.querySelector('.neko-idle-return-art').getAttribute('src').split('?')[0];
+                return _getNekoCatAppearanceUrls('drag.' + testTier).includes(src);
+            }""")
+        page.mouse.up()
+        page.wait_for_function("catBody.grounded && session.frame === 0")
+        assert page.locator(".neko-idle-return-art").get_attribute("src").split("?", 1)[0].endswith(f"cat-idle-{tier}.webp")
+    page.evaluate("_releaseNekoIdleCat1PlaygroundDropLifecycle(cat, 'test-cleanup')")
+    assert page.evaluate("session.released && !session.active && session.frame === 0 && session.bodies.size === 0 && session.pointerHandlers.length === 0")
+
+
+@pytest.mark.parametrize(
+    "initial_tier,pending_tier,active_tier",
+    (("cat1", "cat2", "cat3"), ("cat2", "cat3", "cat1"), ("cat3", "cat1", "cat2")),
+)
+def test_playground_keeps_held_pointer_and_released_motion_across_idle_tiers(
+    page: Page, initial_tier: str, pending_tier: str, active_tier: str
+):
+    host = "http://neko.test/"
+    page.route(host, lambda route: route.fulfill(content_type="text/html", body="<main></main>"))
+
+    def serve_static(route):
+        asset = PROJECT_ROOT / route.request.url.removeprefix(host).split("?", 1)[0]
+        route.fulfill(path=str(asset)) if asset.is_file() else route.abort()
+
+    page.route(f"{host}static/**", serve_static)
+    page.goto(host)
+    page.add_style_tag(url=f"{host}static/css/index.css")
+    page.add_script_tag(content="class Live2DManager {}; window.Live2DManager = Live2DManager;")
+    for part_name in AVATAR_UI_BUTTON_PART_NAMES:
+        page.add_script_tag(path=str(AVATAR_UI_BUTTONS_DIR / part_name))
+    page.add_script_tag(path=str(BACKENDS[0][2]))
+    page.evaluate("""() => {
+        window.testTier = 'cat1';
+        window.nekoAutoGoodbye = { getState: () => ({ visualTier: testTier }) };
+        const container = new Live2DManager().createReturnButton();
+        Object.assign(container.style, {display: 'block', left: '120px', top: '120px', width: '96px', height: '96px'});
+        window.cat = container.querySelector('.neko-idle-return-btn');
+        window.returnClicks = 0;
+        window.addEventListener('live2d-return-click', () => { window.returnClicks += 1; });
+        setNekoIdleCatAudioEnabled(false);
+        if (!_startNekoIdleCat1PlaygroundDrop(cat, {}, {catOnly: true})) throw new Error('entry failed');
+        window.session = cat.__nekoIdleCat1PlaygroundDropState;
+        window.catBody = session.bodies.get('cat');
+        window.token = session.token;
+    }""")
+    page.wait_for_function("catBody.grounded && session.frame === 0")
+    page.evaluate("""tier => {
+        window.testTier = tier;
+        _applyNekoIdleReturnPresentation(cat, tier);
+    }""", initial_tier)
+    page.wait_for_function("catBody.grounded && session.frame === 0")
+
+    rect = page.locator("#live2d-btn-return").bounding_box()
+    assert rect is not None
+    pointer_x = rect["x"] + rect["width"] / 2
+    pointer_y = rect["y"] + rect["height"] / 2
+    page.mouse.move(pointer_x, pointer_y)
+    page.mouse.down()
+    assert page.evaluate("""() => {
+        window.heldPointer = {
+            id: session.pointerId, samples: session.pointerSampleSession,
+            handlers: session.pointerHandlers,
+            x: catBody.x, y: catBody.y, vx: catBody.vx, vy: catBody.vy
+        };
+        return session.pointerBodyId === 'cat' && !session.draggingBodyId && catBody.dragging
+            && catBody.element.hasPointerCapture(heldPointer.id);
+    }""")
+    page.evaluate("""tier => {
+        window.testTier = tier;
+        _applyNekoIdleReturnPresentation(cat, tier);
+    }""", pending_tier)
+    assert page.evaluate("""() => {
+        return cat.__nekoIdleCat1PlaygroundDropState === session
+            && session.active && !session.released && session.token === token
+            && session.bodies.get('cat') === catBody
+            && session.pointerId === heldPointer.id && session.pointerBodyId === 'cat'
+            && !session.draggingBodyId && catBody.dragging
+            && session.pointerSampleSession === heldPointer.samples
+            && session.pointerHandlers === heldPointer.handlers
+            && catBody.element.hasPointerCapture(heldPointer.id)
+            && catBody.x === heldPointer.x && catBody.y === heldPointer.y
+            && catBody.vx === heldPointer.vx && catBody.vy === heldPointer.vy;
+    }""")
+    art = page.locator(".neko-idle-return-art")
+    assert art.get_attribute("src").split("?", 1)[0].endswith(f"cat-idle-{pending_tier}.webp")
+
+    page.mouse.move(pointer_x + 60, pointer_y - 120, steps=4)
+    assert page.evaluate("session.draggingBodyId === 'cat' && catBody.dragging")
+    page.evaluate("""tier => {
+        window.activeMotion = {x: catBody.x, y: catBody.y, vx: catBody.vx, vy: catBody.vy};
+        window.testTier = tier;
+        _applyNekoIdleReturnPresentation(cat, tier);
+    }""", active_tier)
+    assert page.evaluate("""() => {
+        const src = cat.querySelector('.neko-idle-return-art').getAttribute('src').split('?')[0];
+        return cat.__nekoIdleCat1PlaygroundDropState === session
+            && session.active && !session.released && session.token === token
+            && session.bodies.get('cat') === catBody
+            && session.pointerId === heldPointer.id && session.pointerBodyId === 'cat'
+            && session.draggingBodyId === 'cat' && catBody.dragging
+            && session.pointerSampleSession === heldPointer.samples
+            && session.pointerHandlers === heldPointer.handlers
+            && catBody.element.hasPointerCapture(heldPointer.id)
+            && catBody.x === activeMotion.x && catBody.y === activeMotion.y
+            && catBody.vx === activeMotion.vx && catBody.vy === activeMotion.vy
+            && _getNekoCatAppearanceUrls('drag.' + testTier).includes(src);
+    }""")
+
+    page.mouse.up()
+    assert page.evaluate("""() => {
+        return !catBody.dragging && !session.pointerBodyId && !session.draggingBodyId
+            && session.pointerId === null && !catBody.element.hasPointerCapture(heldPointer.id)
+            && !catBody.grounded && catBody.y < catBody.floorY - 30;
+    }""")
+    assert page.evaluate("""tier => {
+        const velocity = {vx: catBody.vx, vy: catBody.vy};
+        window.testTier = tier;
+        _applyNekoIdleReturnPresentation(cat, tier);
+        return session.active && !session.released && session.token === token
+            && cat.__nekoIdleCat1PlaygroundDropState === session
+            && session.bodies.get('cat') === catBody
+            && catBody.vx === velocity.vx && catBody.vy === velocity.vy;
+    }""", initial_tier)
+    page.wait_for_function("catBody.grounded && session.frame === 0")
+    assert art.get_attribute("src").split("?", 1)[0].endswith(f"cat-idle-{initial_tier}.webp")
+    assert page.evaluate("""() => session.active && !session.released && session.token === token
+        && session.bodies.get('cat') === catBody
+        && Math.abs(catBody.y - catBody.floorY) < 0.5 && returnClicks === 0""")
+    page.evaluate("_releaseNekoIdleCat1PlaygroundDropLifecycle(cat, 'test-cleanup')")
+    assert page.evaluate("session.released && !session.active && session.frame === 0 && session.bodies.size === 0")
+
+
+@pytest.fixture
+def playground_lifecycle_page(page: Page):
+    host = "http://neko.test/"
+    page.route(host, lambda route: route.fulfill(content_type="text/html", body="<main></main>"))
+
+    def serve_static(route):
+        asset = PROJECT_ROOT / route.request.url.removeprefix(host).split("?", 1)[0]
+        route.fulfill(path=str(asset)) if asset.is_file() else route.abort()
+
+    page.route(f"{host}static/**", serve_static)
+    page.goto(host)
+    page.add_style_tag(url=f"{host}static/css/index.css")
+    page.add_script_tag(content="class Live2DManager {}; window.Live2DManager = Live2DManager;")
+    for part_name in AVATAR_UI_BUTTON_PART_NAMES:
+        page.add_script_tag(path=str(AVATAR_UI_BUTTONS_DIR / part_name))
+    page.add_script_tag(path=str(BACKENDS[0][2]))
+    page.evaluate("""() => {
+        window.testTier = 'cat1';
+        window.nekoAutoGoodbye = { getState: () => ({ visualTier: testTier }) };
+        window.manager = new Live2DManager();
+        window.container = manager.createReturnButton();
+        Object.assign(container.style, {display: 'block', left: '120px', top: '120px', width: '96px', height: '96px'});
+        window.cat = container.querySelector('.neko-idle-return-btn');
+        window.art = cat.querySelector('.neko-idle-return-art');
+        window.returnClicks = 0;
+        window.lifecycleEvents = [];
+        window.addEventListener('live2d-return-click', () => { window.returnClicks += 1; });
+        window.addEventListener('neko:idle-cat1-playground-state', event => lifecycleEvents.push(event.detail.active));
+        setNekoIdleCatAudioEnabled(false);
+        window.enterPlayground = () => {
+            const started = _startNekoIdleCat1PlaygroundDrop(cat, {}, {catOnly: true});
+            window.session = cat.__nekoIdleCat1PlaygroundDropState;
+            window.catBody = session.bodies.get('cat');
+            return started;
+        };
+        window.changeTestTier = tier => {
+            window.testTier = tier;
+            _applyNekoIdleReturnPresentation(cat, tier);
+        };
+        window.readPlaygroundLifecycle = () => ({
+            active: session.active, released: session.released, frame: session.frame,
+            bodies: session.bodies.size, handlers: session.pointerHandlers.length,
+            pointerId: session.pointerId, pointerBody: session.pointerBodyId,
+            draggingBody: session.draggingBodyId, returnClicks
+        });
+    }""")
+    return page
+
+
+def test_playground_failed_entry_restores_ordinary_art_and_ambient_eligibility(playground_lifecycle_page: Page):
+    page = playground_lifecycle_page
+    result = page.evaluate("""() => {
+        setNekoIdleCatAudioEnabled(true);
+        const ambientBefore = _nekoIdleCat1AmbientSoundState.active;
+        const register = _registerNekoIdleCat1PlaygroundPhysicsBodies;
+        let started;
+        try {
+            _registerNekoIdleCat1PlaygroundPhysicsBodies = () => false;
+            started = enterPlayground();
+        } finally {
+            _registerNekoIdleCat1PlaygroundPhysicsBodies = register;
+        }
+        return {started, ambientBefore, ambientAfter: _nekoIdleCat1AmbientSoundState.active,
+            idle: _getNekoIdleReturnAssetUrl('cat1'), ...readPlaygroundLifecycle()};
+    }""")
+    assert result["ambientBefore"] is True
+    assert result["started"] is False
+    assert result["ambientAfter"] is True
+    assert result["active"] is False and result["released"] is True
+    assert result["bodies"] == result["handlers"] == result["frame"] == 0
+    page.wait_for_function("idle => art.getAttribute('src') === idle", arg=result["idle"], timeout=3000)
+    assert page.evaluate("lifecycleEvents") == [True, False]
+    assert page.evaluate("enterPlayground()") is True
+    page.wait_for_function("catBody.grounded && session.frame === 0")
+    page.evaluate("_releaseNekoIdleCat1PlaygroundDropLifecycle(cat, 'test-cleanup')")
+
+
+@pytest.mark.parametrize("tier", ("cat1", "cat2", "cat3"))
+def test_playground_reentry_is_idempotent_and_disabling_restores_current_tier(
+    playground_lifecycle_page: Page, tier: str
+):
+    page = playground_lifecycle_page
+    page.evaluate("setNekoIdleCatAudioEnabled(true)")
+    assert page.evaluate("enterPlayground()") is True
+    page.evaluate("window.nekoIdleCat1Playground.setGravityCatEnabled(true)")
+    page.wait_for_function("catBody.grounded && session.frame === 0")
+    page.evaluate("changeTestTier", tier)
+    page.wait_for_function("catBody.grounded && session.frame === 0")
+    assert page.evaluate("""() => {
+        const token = session.token, bodies = session.bodies, handlers = session.pointerHandlers;
+        const started = _startNekoIdleCat1PlaygroundDrop(cat, {}, {catOnly: true});
+        return started && cat.__nekoIdleCat1PlaygroundDropState === session
+            && session.token === token && session.bodies === bodies
+            && session.bodies.get('cat') === catBody && session.pointerHandlers === handlers;
+    }""")
+    assert page.evaluate("lifecycleEvents") == [True]
+    rect = page.locator("#live2d-btn-return").bounding_box()
+    assert rect is not None
+    page.mouse.move(rect["x"] + rect["width"] / 2, rect["y"] + rect["height"] / 2)
+    page.mouse.down()
+    page.mouse.move(rect["x"] + rect["width"] / 2 + 40, rect["y"] - 100, steps=3)
+    page.mouse.up()
+    assert page.evaluate("!catBody.grounded && !catBody.dragging")
+    result = page.evaluate("""() => {
+        window.nekoIdleCat1Playground.setGravityCatEnabled(false);
+        return {...readPlaygroundLifecycle(), enabled: window.nekoIdleCat1Playground.isGravityCatEnabled(),
+            tier: cat.getAttribute('data-neko-idle-tier'), idle: _getNekoIdleReturnAssetUrl(testTier),
+            ambient: _nekoIdleCat1AmbientSoundState.active, sleepTier: _nekoIdleSleepSoundState.tier};
+    }""")
+    assert result["enabled"] is False
+    assert result["active"] is False and result["released"] is True
+    assert result["bodies"] == result["handlers"] == result["frame"] == 0
+    assert result["tier"] == tier
+    assert result["ambient"] is (tier == "cat1")
+    assert result["sleepTier"] == ("none" if tier == "cat1" else tier)
+    page.wait_for_function("idle => art.getAttribute('src') === idle", arg=result["idle"], timeout=3000)
+    assert page.evaluate("lifecycleEvents") == [True, False]
+
+
+@pytest.mark.parametrize("cleanup", ("element", "manager"))
+@pytest.mark.parametrize("gesture", ("settled", "pending", "active"))
+def test_playground_container_cleanup_releases_session_and_pointer(
+    playground_lifecycle_page: Page, cleanup: str, gesture: str
+):
+    page = playground_lifecycle_page
+    assert page.evaluate("enterPlayground()") is True
+    page.wait_for_function("catBody.grounded && session.frame === 0")
+    if gesture != "settled":
+        rect = page.locator("#live2d-btn-return").bounding_box()
+        assert rect is not None
+        page.mouse.move(rect["x"] + rect["width"] / 2, rect["y"] + rect["height"] / 2)
+        page.mouse.down()
+        assert page.evaluate("session.pointerBodyId === 'cat' && !session.draggingBodyId")
+        if gesture == "active":
+            page.mouse.move(rect["x"] + rect["width"] / 2 + 60, rect["y"] - 100, steps=3)
+            assert page.evaluate("session.draggingBodyId === 'cat' && session.frame !== 0")
+    page.evaluate("""cleanup => {
+        window.removedPointerId = session.pointerId;
+        if (cleanup === 'element') _removeFloatingButtonsElement(container);
+        else manager.cleanupFloatingButtons();
+    }""", cleanup)
+    assert page.evaluate("container.isConnected") is False
+    assert page.evaluate("readPlaygroundLifecycle()") == {
+        "active": False, "released": True, "frame": 0, "bodies": 0, "handlers": 0,
+        "pointerId": None, "pointerBody": "", "draggingBody": "", "returnClicks": 0,
+    }
+    assert page.evaluate("removedPointerId === null || !catBody.element.hasPointerCapture(removedPointerId)")
+    if gesture != "settled":
+        page.mouse.up()
+    page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+    assert page.evaluate("session.released && !session.active && session.frame === 0 && session.bodies.size === 0")
+    assert page.evaluate("lifecycleEvents") == [True, False]
+
+
+@pytest.fixture
+def playground_manual_listener_capture(page: Page):
+    page.add_init_script("""(() => {
+        const add = window.addEventListener.bind(window);
+        window.gestureManualListeners = [];
+        window.addEventListener = function(type, listener, options) {
+            if (type === 'neko:return-ball-manual-move') gestureManualListeners.push({listener, options});
+            return add(type, listener, options);
+        };
+        window.rebindGestureManualListeners = controllerFirst => {
+            // Reorder the actual closures, including the event recorder and
+            // desktop bridge. The consumer implementations remain unchanged.
+            const bindings = gestureManualListeners.slice();
+            const controller = bindings.find(binding => binding.listener.toString().includes('handleReturnBallDragEnd'));
+            if (!controller) throw Error('Missing real stage consumer');
+            bindings.forEach(binding => window.removeEventListener('neko:return-ball-manual-move', binding.listener, binding.options));
+            const remaining = bindings.filter(binding => binding !== controller);
+            const ordered = controllerFirst ? [controller, ...remaining] : [...remaining, controller];
+            ordered.forEach(binding => add('neko:return-ball-manual-move', binding.listener, binding.options));
+        };
+    })();""")
+    return page
+
+
+@pytest.fixture
+def ordered_playground_gesture_page(playground_manual_listener_capture: Page, playground_gesture_page: Page):
+    return playground_gesture_page
+
+
+@pytest.fixture
+def playground_gesture_page(playground_lifecycle_page: Page):
+    page = playground_lifecycle_page
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    page.evaluate("""() => {
+        window.live2dManager = manager;
+        manager._goodbyeClicked = true;
+        window.manualFacts = [];
+        window.desktopBridgeFacts = [];
+        window.desktopChannelFacts = [];
+        window.addEventListener('neko:return-ball-manual-move', event => {
+            const {container: ignored, ...fact} = event.detail;
+            manualFacts.push(fact);
+        });
+        window.addEventListener('neko:idle-return-ball-state', event => desktopBridgeFacts.push(event.detail));
+        window.appInterpage = {nekoBroadcastChannel: {postMessage: fact => desktopChannelFacts.push(fact)}};
+        window.__appUiParts = {
+            normalizeNekoGoodbyeIdleAppearance: value => value === 'ball' ? 'ball' : 'cat',
+            getVisibleIdleReturnBallContainer: () => container,
+            NEKO_GOODBYE_IDLE_APPEARANCE_BALL: 'ball',
+            NEKO_GOODBYE_IDLE_APPEARANCE_ATTR: 'data-neko-goodbye-idle-appearance'
+        };
+        container.setAttribute('data-neko-return-visible', 'true');
+    }""")
+    page.add_script_tag(path=str(PROJECT_ROOT / "static/app/app-auto-goodbye.js"))
+    page.wait_for_function("window.nekoAutoGoodbye.getState().started")
+    page.evaluate("""() => {
+        nekoAutoGoodbye.clearTimers('gesture-test-controlled-clock');
+        window.changeGestureTier = tier => {
+            window.testTier = tier;
+            nekoAutoGoodbye.setVisualTier(tier, {source: 'gesture-test'});
+        };
+    }""")
+    page.add_script_tag(path=str(PROJECT_ROOT / "static/app/app-ui/return-transitions.js"))
+    yield page
+    assert errors == []
+
+
+def _point_at_return_cat(page: Page) -> tuple[float, float]:
+    rect = page.locator("#live2d-btn-return").bounding_box()
+    assert rect is not None
+    x, y = rect["x"] + rect["width"] / 2, rect["y"] + rect["height"] / 2
+    page.mouse.move(x, y)
+    return x, y
+
+
+@pytest.mark.parametrize("tier", ("cat1", "cat2", "cat3"))
+def test_playground_cat_gesture_uses_axis_threshold_and_shared_semantics(
+    playground_gesture_page: Page, tier: str
+):
+    page = playground_gesture_page
+    assert page.evaluate("enterPlayground()")
+    page.wait_for_function("catBody.grounded && session.frame === 0")
+    page.evaluate("changeGestureTier", tier)
+    page.wait_for_function("catBody.grounded && session.frame === 0")
+    x, y = _point_at_return_cat(page)
+    page.mouse.down()
+    assert page.evaluate("manualFacts.map(fact => fact.reason)") == ["return-ball-drag-start"]
+    assert page.evaluate("container.classList.contains(_NEKO_IDLE_RETURN_DRAG_PENDING_CLASS)")
+    for dx, dy in ((4, -4), (5, -5)):
+        page.mouse.move(x + dx, y + dy)
+        assert page.evaluate("!session.draggingBodyId && !_isNekoIdleReturnDragActionActive(cat)")
+        assert page.evaluate("manualFacts.length") == 1
+    page.mouse.move(x + 6, y - 5)
+    assert page.evaluate("session.draggingBodyId === 'cat' && _isNekoIdleReturnDragActionActive(cat)")
+    assert page.evaluate("""() => {
+        const src = art.getAttribute('src').split('?')[0];
+        return _getNekoCatAppearanceUrls('drag.' + cat.getAttribute('data-neko-idle-tier')).includes(src);
+    }""")
+    page.mouse.move(x + 40, y - 65, steps=3)
+    page.mouse.up()
+    page.mouse.up()
+    facts = page.evaluate("manualFacts")
+    reasons = [fact["reason"] for fact in facts]
+    assert reasons.count("return-ball-drag-start") == reasons.count("return-ball-drag-active") == 1
+    assert reasons.count("return-ball-drag-end") == 1
+    assert "return-ball-drag-cancel" not in reasons
+    assert reasons.index("return-ball-drag-active") < reasons.index("return-ball-drag-motion")
+    activity_id = facts[0]["activityId"]
+    assert activity_id and all(fact["activityId"] == activity_id for fact in facts)
+    assert all(fact["source"] == "cat1-playground" for fact in facts)
+    terminal = facts[-1]
+    assert terminal["pathDistancePx"] >= terminal["displacementPx"] > 0
+    assert terminal["durationMs"] >= 0 and terminal.get("dragCancelled") is not True
+    assert page.evaluate("!_isNekoIdleReturnDragActionActive(cat) && !session.pointerBodyId")
+    expected_tier = "cat1" if tier == "cat2" else tier
+    assert page.evaluate("nekoAutoGoodbye.getState().visualTier") == expected_tier
+    page.wait_for_function("catBody.grounded && session.frame === 0")
+    assert page.evaluate("session.active && !session.released && returnClicks === 0")
+    assert page.evaluate("desktopBridgeFacts.length === 0 && desktopChannelFacts.length === 0")
+
+
+def test_playground_two_real_cat3_drags_demote_once_and_keep_physics(playground_gesture_page: Page):
+    page = playground_gesture_page
+    assert page.evaluate("enterPlayground()")
+    page.wait_for_function("catBody.grounded && session.frame === 0")
+    page.evaluate("changeGestureTier", "cat3")
+    page.wait_for_function("catBody.grounded && session.frame === 0")
+    for expected_tier in ("cat3", "cat2"):
+        x, y = _point_at_return_cat(page)
+        page.mouse.down()
+        page.mouse.move(x + 45, y - 70, steps=3)
+        page.mouse.up()
+        assert page.evaluate("nekoAutoGoodbye.getState().visualTier") == expected_tier
+        page.wait_for_function("catBody.grounded && session.frame === 0")
+        assert page.evaluate("session.active && session.bodies.get('cat') === catBody && returnClicks === 0")
+    ids = page.evaluate("manualFacts.filter(fact => fact.reason === 'return-ball-drag-end').map(fact => fact.activityId)")
+    assert len(ids) == len(set(ids)) == 2
+    assert page.evaluate("desktopBridgeFacts.length === 0 && desktopChannelFacts.length === 0")
+
+
+@pytest.mark.parametrize("controller_first", (False, True), ids=("presentation-first", "controller-first"))
+def test_playground_drag_demotion_keeps_ambient_closed_in_either_listener_order(
+    ordered_playground_gesture_page: Page, controller_first: bool
+):
+    page = ordered_playground_gesture_page
+    page.evaluate("rebindGestureManualListeners", controller_first)
+    page.evaluate("setNekoIdleCatAudioEnabled(true)")
+    assert page.evaluate("_nekoIdleCat1AmbientSoundState.active")
+    assert page.evaluate("enterPlayground()")
+    page.wait_for_function("catBody.grounded && session.frame === 0")
+    page.evaluate("changeGestureTier", "cat2")
+    page.wait_for_function("catBody.grounded && session.frame === 0")
+    assert page.evaluate("!_nekoIdleCat1AmbientSoundState.active")
+    x, y = _point_at_return_cat(page)
+    page.mouse.down()
+    page.mouse.move(x + 50, y - 80, steps=3)
+    page.mouse.up()
+    assert page.evaluate("nekoAutoGoodbye.getState().visualTier") == "cat1"
+    assert page.evaluate("session.active && !session.released && !_isNekoIdleReturnDragActionActive(cat)")
+    assert page.evaluate("!_nekoIdleCat1AmbientSoundState.active")
+    assert page.evaluate("_playNekoIdleCat1AmbientSound(_nekoIdleCat1AmbientSoundState.token)") is False
+    assert page.evaluate("desktopBridgeFacts.length === 0 && desktopChannelFacts.length === 0")
+    page.evaluate("window.nekoIdleCat1Playground.setGravityCatEnabled(false)")
+    assert page.evaluate("session.released && _nekoIdleCat1AmbientSoundState.active")
+
+
+@pytest.mark.parametrize("active", (False, True), ids=("pending", "active"))
+@pytest.mark.parametrize("terminal", ("pointercancel", "setting-off", "container-remove"))
+def test_playground_cancel_has_one_terminal_without_success_demotion(
+    playground_gesture_page: Page, active: bool, terminal: str
+):
+    page = playground_gesture_page
+    assert page.evaluate("enterPlayground()")
+    page.evaluate("window.nekoIdleCat1Playground.setGravityCatEnabled(true)")
+    page.wait_for_function("catBody.grounded && session.frame === 0")
+    page.evaluate("changeGestureTier", "cat2")
+    page.wait_for_function("catBody.grounded && session.frame === 0")
+    x, y = _point_at_return_cat(page)
+    page.mouse.down()
+    if active:
+        page.mouse.move(x + 55, y - 80, steps=3)
+    assert page.evaluate("_isNekoIdleReturnDragActionActive(cat)") is active
+    page.evaluate("""terminal => {
+        window.cancelPointerId = session.pointerId;
+        if (terminal === 'pointercancel') {
+            catBody.element.dispatchEvent(new PointerEvent('pointercancel', {
+                pointerId: session.pointerId, bubbles: true
+            }));
+        } else if (terminal === 'setting-off') {
+            window.nekoIdleCat1Playground.setGravityCatEnabled(false);
+        } else {
+            _removeFloatingButtonsElement(container);
+        }
+    }""", terminal)
+    page.evaluate("""() => document.dispatchEvent(new PointerEvent('pointerup', {
+        pointerId: cancelPointerId, bubbles: true
+    }))""")
+    # A synthetic pointercancel does not cancel Chromium's physical mouse
+    # button. Release it away from the cat so this check cannot synthesize an
+    # unrelated compatibility click after the gesture has already terminated.
+    page.mouse.move(0, 0)
+    page.mouse.up()
+    page.mouse.up()
+    facts = page.evaluate("manualFacts")
+    terminals = [fact for fact in facts if fact["reason"] in ("return-ball-drag-end", "return-ball-drag-cancel")]
+    assert len(terminals) == 1
+    assert terminals[0]["reason"] == "return-ball-drag-cancel" and terminals[0]["dragCancelled"] is True
+    assert terminals[0]["activityId"] == facts[0]["activityId"]
+    assert (terminals[0]["pathDistancePx"] > 0) is active
+    assert page.evaluate("nekoAutoGoodbye.getState().visualTier") == "cat2"
+    assert page.evaluate("!_isNekoIdleReturnDragActionActive(cat) && !session.pointerBodyId && !session.draggingBodyId")
+    assert page.evaluate("!container.classList.contains(_NEKO_IDLE_RETURN_DRAG_PENDING_CLASS)")
+    if terminal == "pointercancel":
+        page.wait_for_function("catBody.grounded && session.frame === 0")
+        assert page.evaluate("session.active && returnClicks === 0")
+    else:
+        assert page.evaluate("session.released && !session.active && session.frame === 0 && session.bodies.size === 0")
+
+
+def test_playground_prop_keeps_radial_threshold_and_never_emits_cat_gesture(playground_gesture_page: Page):
+    page = playground_gesture_page
+    assert page.evaluate("""() => {
+        cat.__nekoIdleCat1PlaygroundQuestionBlockClone = _createNekoIdleCat1PlaygroundQuestionBlockClone(
+            {left: 350, top: 120, width: 48, height: 48}, cat
+        );
+        const started = _startNekoIdleCat1PlaygroundDrop(cat, {}, {catOnly: false});
+        window.session = cat.__nekoIdleCat1PlaygroundDropState;
+        window.catBody = session.bodies.get('cat');
+        window.propBody = session.bodies.get('question-block');
+        return started && !!propBody;
+    }""")
+    page.wait_for_function("Array.from(session.bodies.values()).every(body => body.grounded) && session.frame === 0")
+    page.evaluate("changeGestureTier", "cat2")
+    rect = page.locator(".neko-idle-cat1-playground-question-block").bounding_box()
+    assert rect is not None
+    x, y = rect["x"] + rect["width"] / 2, rect["y"] + rect["height"] / 2
+    page.mouse.move(x, y)
+    page.mouse.down()
+    page.mouse.move(x + 4, y - 4)
+    assert page.evaluate("session.draggingBodyId") == "question-block"
+    page.mouse.move(x + 30, y - 50)
+    page.mouse.up()
+    assert page.evaluate("manualFacts") == []
+    assert page.evaluate("nekoAutoGoodbye.getState().visualTier") == "cat2"
+    assert page.evaluate("!_isNekoIdleReturnDragActionActive(cat) && returnClicks === 0")
+
+
+@pytest.mark.parametrize("presentation", ("hover", "visual"))
+def test_ordinary_drag_pending_preserves_response_and_active_interrupts(
+    playground_gesture_page: Page, presentation: str
+):
+    page = playground_gesture_page
+    x, y = _point_at_return_cat(page)
+    if presentation == "visual":
+        assert page.evaluate("_playNekoIdleCat1VisualAction(cat, 'happy')")
+        page.wait_for_function("_isNekoIdleCat1VisualActionActive(cat) && cat.__nekoIdleCat1VisualActionState.timer !== 0")
+    assert page.evaluate("""presentation => {
+        window.preservedPresentation = presentation === 'hover'
+            ? {token: art.__nekoIdleHoverToken, started: art.__nekoIdleHoverStartedAt, src: art.__nekoIdleHoverSrc}
+            : {token: cat.__nekoIdleCat1VisualActionState.token, timer: cat.__nekoIdleCat1VisualActionState.timer};
+        return presentation === 'hover' ? !!preservedPresentation.src : _isNekoIdleCat1VisualActionActive(cat);
+    }""", presentation)
+    page.mouse.down()
+    assert page.evaluate("""presentation => presentation === 'hover'
+        ? art.__nekoIdleHoverToken === preservedPresentation.token
+            && art.__nekoIdleHoverStartedAt === preservedPresentation.started
+            && art.__nekoIdleHoverSrc === preservedPresentation.src
+        : _isNekoIdleCat1VisualActionActive(cat)
+            && cat.__nekoIdleCat1VisualActionState.token === preservedPresentation.token
+            && cat.__nekoIdleCat1VisualActionState.timer === preservedPresentation.timer
+    """, presentation)
+    page.mouse.move(x + 40, y - 40, steps=3)
+    assert page.evaluate("_isNekoIdleReturnDragActionActive(cat)")
+    assert page.evaluate("!art.__nekoIdleHoverSrc && !_isNekoIdleCat1VisualActionActive(cat)")
+    page.mouse.up()
+    page.wait_for_function("!_isNekoIdleReturnDragActionActive(cat)")
+    assert page.evaluate("returnClicks") == 0
+    page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+    assert page.evaluate("desktopBridgeFacts.some(fact => fact.reason.startsWith('return-ball-drag-'))")
+    assert page.evaluate("desktopChannelFacts.some(fact => fact.action === 'idle_return_ball_state')")
+
+
 def test_animated_webp_appearance_assets_decode_and_advance_in_chromium(page: Page):
     assets = tuple(sorted(APPEARANCE_ROOT.rglob("*.webp")))
     assert len(assets) == 43

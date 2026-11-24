@@ -40,6 +40,8 @@ function installYarnActivation(r) {
   for (const name of ['_getNekoIdleCat1PlaygroundScreenPoint', '_recordNekoIdleCat1PlaygroundPointerSample',
     '_getNekoIdleCat1PlaygroundPointerVelocity', '_getNekoIdleCat1PlaygroundThrowAngularVelocity',
     '_handleNekoIdleCat1PlaygroundPointerDownForBody', '_handleNekoIdleCat1PlaygroundPointerUp',
+    '_suppressNekoIdleCat1PlaygroundClick',
+    '_finishNekoIdleCat1PlaygroundBubblePointer',
     '_dispatchNekoIdleCat1PlaygroundDragState', '_disposeNekoIdleCat1PlaygroundBody',
     '_removeNekoIdleCat1PlaygroundYarnBody',
     '_releaseNekoIdleCat1PlaygroundQuestionBlockPointerHold',
@@ -68,6 +70,7 @@ for (const bodyId of ['yarn', 'desktop-yarn']) {
       const cat = { id: 'cat', vx: 123, vy: -45 };
       const state = r.button.__nekoIdleCat1PlaygroundDropState = {
         active: true, released: false, container: r.container, phase: 'ballistic',
+        thoughtBubblePointerIds: new Set(),
         bodies: new Map([['cat', cat], [bodyId, body]]), pointerBodyId: '',
         restoreChatOnExit: true,
         pendingYarnActivationId: 'request-1', pendingYarnActivationGeneration: 1,
@@ -129,6 +132,7 @@ test('a question block press holds pet input until the pointer is released', () 
   };
   const state = r.button.__nekoIdleCat1PlaygroundDropState = {
     active: true, released: false, container: r.container, phase: 'dropping',
+    thoughtBubblePointerIds: new Set(),
     bodies: new Map([['question-block', body]]), pointerBodyId: '',
   };
   const dragEvents = [];
@@ -163,6 +167,7 @@ test('activation rejection preserves yarn drag, and confirmation preserves a dif
   installYarnActivation(r);
   const state = r.button.__nekoIdleCat1PlaygroundDropState = {
     active: true, released: false, container: r.container, phase: 'dragging',
+    thoughtBubblePointerIds: new Set(),
     bodies: new Map([['cat', { id: 'cat', dragging: true }], ['yarn', { id: 'yarn', yarnGeneration: 1 }]]),
     pointerBodyId: 'yarn', pointerId: 17, draggingBodyId: 'yarn', pendingYarnActivationId: 'request-1',
     pendingYarnActivationGeneration: 1,
@@ -358,6 +363,7 @@ function runtime(options = {}) {
     },
     setAttribute(name, value) { containerAttrs.set(name, value); },
     removeAttribute(name) { containerAttrs.delete(name); },
+    querySelector(selector) { return selector === '.neko-idle-return-btn' ? button : null; },
     getBoundingClientRect() {
       const x = parseFloat(this.style.left), y = parseFloat(this.style.top);
       return { x, y, left: x, top: y, width: 122, height: 122, right: x + 122, bottom: y + 122 };
@@ -399,6 +405,7 @@ function runtime(options = {}) {
       disconnect() { observers.delete(this); }
     },
     _NEKO_IDLE_TIER_CAT1: 'cat1', _NEKO_GOODBYE_IDLE_APPEARANCE_CAT: 'cat',
+    _NEKO_IDLE_TIER_CAT2: 'cat2', _NEKO_IDLE_TIER_CAT3: 'cat3',
     _getNekoGoodbyeIdleAppearance: () => appearance,
     _getActiveNekoIdleReturnTier: () => attrs.get('data-neko-idle-tier'),
     _normalizeNekoIdleReturnTier: value => value,
@@ -415,7 +422,13 @@ function runtime(options = {}) {
     _isAnyNekoIdleCat1IndependentActionActive: () => !!gate.action || !!window.NekoDesktopWindowInteractions?.isActive(),
     _isNekoIdleCat1PositionPresentationBusy: () => !!gate.journey,
     _isNekoIdleCat1PlaygroundEntryOrDropActive: () => !!gate.playground,
+    _logNekoIdleReturnDragDebug() {},
     _setNekoIdleCat1PlaygroundBodyPosition: () => {},
+    // Isolated position tests stub presentation; shared-art tests install the production hook.
+    _syncNekoIdleReturnCurrentArt: () => false,
+    // These fixtures exercise physical ownership only. Shared presentation
+    // fixtures below install the real eligibility and cancellation hook.
+    _syncNekoIdleCat1PlaygroundBasicPresentation() {},
     _stepNekoIdleCat1PlaygroundCircularRollingPosition: () => false,
     _renderNekoIdleCat1PlaygroundCollisionDeformations: () => false,
   });
@@ -424,11 +437,29 @@ function runtime(options = {}) {
   const assetSource = fs.readFileSync(path.join(avatar, 'idle-assets-and-question.js'), 'utf8');
   const pendingStart = assetSource.indexOf('function _isNekoIdleReturnPending(');
   vm.runInContext(assetSource.slice(pendingStart, assetSource.indexOf('\n}', pendingStart) + 2), context);
+  context._NEKO_IDLE_THOUGHT_BUBBLE_ACTIVE_CLASS = 'is-thought-bubble-active';
+  for (const name of ['_isNekoIdleThoughtBubbleEventTarget', '_isNekoIdleThoughtBubbleEventHit']) {
+    loadAvatarFunction({ context }, 'idle-assets-and-question.js', name);
+  }
+  loadAvatarFunction({ context }, 'idle-drag-and-subactions.js', '_getNekoIdleReturnButtonFromContainer');
+  for (const name of ['_getNekoIdleCat1PlaygroundMoveTarget', '_applyNekoIdleCat1PlaygroundMovePosition',
+    '_setNekoIdleCat1PlaygroundFixedBodyPosition']) {
+    loadAvatarFunction({ context }, 'idle-playground.js', name);
+  }
+  loadAvatarFunction({ context }, 'idle-actions-and-audio.js', '_isNekoIdleCat1PlaygroundMoveActive');
+  loadAvatarFunction({ context }, 'idle-drag-and-subactions.js', '_getNekoIdleNowMs');
+  for (const name of ['_syncNekoIdleCat1PlaygroundMovementPause',
+    '_syncNekoIdleCat1PlaygroundPointerMovementPause', '_isNekoIdleCat1PlaygroundMovePlanCurrent',
+    '_syncNekoIdleCat1PlaygroundSmallMove']) {
+    loadAvatarFunction({ context }, 'idle-journey-and-presentation.js', name);
+  }
   const playgroundSource = fs.readFileSync(path.join(avatar, 'idle-playground.js'), 'utf8');
-  for (const name of ['_createNekoIdleDragSampleSession', '_recordNekoIdleDragSample', '_getNekoIdleDragReleaseVelocity']) {
+  for (const name of ['_createNekoIdleDragSampleSession', '_recordNekoIdleDragSample', '_getNekoIdleDragReleaseVelocity',
+    '_isNekoIdleReturnCatDragMovement', '_dispatchNekoIdleCat1PlaygroundCatDragFact']) {
     const start = playgroundSource.indexOf(`function ${name}(`);
     vm.runInContext(playgroundSource.slice(start, playgroundSource.indexOf('\n}', start) + 2), context);
   }
+  loadAvatarFunction({ context }, 'idle-journey-and-presentation.js', '_dispatchNekoIdleReturnBallManualMove');
   // Adapter tests supply a Playground driver. Gravity may wake this owner,
   // but must never create its own second RAF for an attached body.
   context._startNekoIdleCat1PlaygroundPhysics = () => {
@@ -526,6 +557,8 @@ function attachPlaygroundBody(r, overrides = {}) {
   };
   r.button.__nekoIdleCat1PlaygroundDropState = {
     active: true, released: false, frame: 0,
+    disabledCapabilities: new Set(),
+    thoughtBubblePointerIds: new Set(),
     bodies: new Map([['cat', body]]),
   };
   return body;
@@ -543,6 +576,486 @@ function installCatGeometry(r) {
   r.container.querySelector = () => r.button;
   return r.window.NekoCatResourceRegistry;
 }
+
+function loadAvatarFunction(r, file, name) {
+  const source = fs.readFileSync(path.join(avatar, file), 'utf8');
+  const start = source.indexOf(`function ${name}(`);
+  assert.notEqual(start, -1, `${file}: ${name}`);
+  vm.runInContext(source.slice(start, source.indexOf('\n}', start) + 2), r.context);
+}
+
+function installSharedCatPresentation(r, registry = installCatGeometry(r)) {
+  const actions = { play: false, eat: false, stretch: false, visual: null, drag: false };
+  const effects = { writes: [], ambientSync: [], sleepSync: [], releases: [], journey: 0, audioStops: 0 };
+  const ambient = { active: false, token: 7 };
+  const sleep = { tier: 'none', token: 0, audio: null };
+  r.art.removeAttribute = name => { delete r.art[name]; };
+  r.art.closest = () => r.button;
+  r.button.closest = () => r.container;
+  r.window.location = { href: 'http://localhost/' };
+  Object.assign(r.context, {
+    URL, clearTimeout: r.window.clearTimeout,
+    _NEKO_IDLE_TIER_NONE: 'none', _NEKO_GOODBYE_IDLE_APPEARANCE_CAT: 'cat',
+    _NEKO_IDLE_CAT1_PLAY_FINISHING_ATTR: 'data-neko-cat1-play-finishing',
+    _NEKO_IDLE_CAT1_PLAY_ASSET_URL: 'play.gif',
+    _isNekoGoodbyeIdleBallButton: () => false,
+    _setNekoGoodbyeIdleAppearanceForButton() {},
+    _isNekoIdleCat1PlaygroundEntryPending: () => false,
+    _isNekoIdleCat1PlaygroundDropActive: button => {
+      const state = button.__nekoIdleCat1PlaygroundDropState;
+      return !!(state && state.active && !state.released);
+    },
+    _releaseNekoIdleCat1PlaygroundDropLifecycle: (button, reason) => {
+      effects.releases.push(reason);
+      button.__nekoIdleCat1PlaygroundDropState.active = false;
+    },
+    _clearNekoIdleThoughtBubble() {}, _clearNekoIdleCat1QuestionMark() {},
+    _clearNekoIdleCat1EdgePeekForTierExit() {},
+    _cancelNekoIdleCat1EatAction: () => { actions.eat = false; },
+    _cancelNekoIdleCat1StretchAction: () => { actions.stretch = false; },
+    _cancelNekoIdleCat1PlayAction: () => { actions.play = false; },
+    _cancelNekoIdleCat1VisualAction: () => { actions.visual = null; },
+    _cancelNekoIdleCat1Journey() {},
+    // This fixture owns presentation/physics, not autonomous target scheduling.
+    _syncNekoIdleCat1PlaygroundJourney() {},
+    _scheduleNekoIdleCat1JourneySync: () => { effects.journey++; },
+    _isNekoIdleReturnDragActionActive: () => actions.drag,
+    _isAnyNekoIdleReturnDragActionActive: () => actions.drag,
+    _forEachNekoIdleReturnButton: callback => callback(r.button),
+    _isNekoIdleCat1PlayActionActive: () => actions.play,
+    _isNekoIdleCat1EatActionActive: () => actions.eat,
+    _isNekoIdleCat1StretchActionActive: () => actions.stretch,
+    _isNekoIdleCat1VisualActionActive: () => !!actions.visual,
+    _getNekoIdleCat1ActiveVisualActionProfile: () => actions.visual,
+    _getNekoIdleVisualActionTier: profile => profile.tier,
+    _getNekoIdleCat1VisualActionAssetUrl: () => actions.visual?.src,
+    _getNekoIdleCat1EatActionAssetUrl: () => 'eat.gif',
+    _getNekoIdleCat1StretchAssetUrl: () => 'stretch.gif',
+    _getNekoIdleCat1ArtSource: () => registry.getAppearance('idle.cat1').url,
+    _getNekoCatAppearanceUrl: slot => registry.getAppearance(slot, { random: false }).url,
+    _getNekoIdleReturnAssetUrl: tier => registry.getAppearance(`idle.${tier}`, { random: false }).url,
+    _getNekoIdleCat1RapidDragAssetUrl: () => '',
+    _pickNekoIdleReturnDragAssetUrl: tier => registry.getAppearance(`drag.${tier}`, { random: false }).url,
+    _NEKO_IDLE_SLEEP_SOUND_BY_TIER: { cat2: { volume: 0.06 }, cat3: { volume: 0.06 } },
+    _nekoIdleSleepSoundState: sleep,
+    _stopNekoIdleSleepSoundAudio: () => { effects.audioStops++; },
+    isNekoIdleCatAudioEnabled: () => true,
+    _nekoIdleCat1AmbientSoundState: ambient,
+    _stopNekoIdleCat1AmbientSoundAudio: () => { effects.audioStops++; },
+    _cleanupNekoIdleArtTransition() {},
+    _syncNekoIdleCat1QuestionMarkKeyboardAvailabilityForArt() {},
+    _shouldReduceNekoIdleMotion: () => false,
+    _applyNekoIdleCat1PlaygroundBodyRotation() {},
+    _getNekoIdleCat1PlaygroundViewportBottomPx: () => r.window.innerHeight,
+    _getNekoIdleCat1PlaygroundViewportTopPx: () => 0,
+    _getNekoIdleCat1PlaygroundViewportLeftPx: () => 0,
+    _getNekoIdleCat1PlaygroundViewportRightPx: () => r.window.innerWidth,
+  });
+  for (const name of ['_clearNekoIdleHoverPlayback', '_clearNekoIdleGifPlaybackSource',
+    '_buildNekoIdleAnimationRestartUrl', '_isNekoIdleAnimationRestartUrlForSource',
+    '_getNekoIdleReturnDragActionAssetUrl', '_setNekoIdleReturnDragActionArt',
+    '_getNekoIdleReturnCurrentArtUrl']) loadAvatarFunction(r, 'idle-drag-and-subactions.js', name);
+  for (const name of ['_stopNekoIdleCat1AmbientSound', '_syncNekoIdleCat1AmbientSoundForTier']) {
+    loadAvatarFunction(r, 'idle-actions-and-audio.js', name);
+  }
+  for (const name of ['_getNekoIdleSleepSoundConfig', '_isNekoIdlePresentationTransitionActive']) {
+    loadAvatarFunction(r, 'idle-assets-and-question.js', name);
+  }
+  for (const name of ['_stopNekoIdleSleepSound', '_syncNekoIdleSleepSoundForTier',
+    '_syncNekoIdleCat1PlaygroundStationaryActions', '_syncNekoIdleCat1PlaygroundBasicPresentation']) {
+    loadAvatarFunction(r, 'idle-actions-and-audio.js', name);
+  }
+  const playgroundSource = fs.readFileSync(path.join(avatar, 'idle-playground.js'), 'utf8');
+  const capabilityStart = playgroundSource.indexOf('const _NEKO_IDLE_CAT1_PLAYGROUND_CAPABILITIES =');
+  vm.runInContext(playgroundSource.slice(capabilityStart, playgroundSource.indexOf(';\n', capabilityStart) + 1), r.context);
+  for (const name of ['_isAnyNekoIdleCat1PlaygroundDropLifecycleActive', '_isAnyNekoIdleCat1PlaygroundDropActive',
+    '_isNekoIdleCat1PlaygroundCatPresentationStable', '_isNekoIdleCat1PlaygroundCapabilityBlocked',
+    '_isNekoIdleCat1PlaygroundEntryOrDropActive']) loadAvatarFunction(r, 'idle-playground.js', name);
+  const syncSleep = r.context._syncNekoIdleSleepSoundForTier;
+  r.context._syncNekoIdleSleepSoundForTier = tier => {
+    effects.sleepSync.push(tier);
+    syncSleep(tier);
+  };
+  const syncAmbient = r.context._syncNekoIdleCat1AmbientSoundForTier;
+  r.context._syncNekoIdleCat1AmbientSoundForTier = tier => {
+    effects.ambientSync.push(tier);
+    syncAmbient(tier);
+  };
+  for (const name of ['_normalizeNekoIdleScreenRect', '_getNekoIdleVisibleElementRect',
+    '_setNekoIdleCat1ContainerPosition', '_setNekoIdleReturnArtSource',
+    '_syncNekoIdleReturnCurrentArt', '_applyNekoIdleReturnPresentation']) {
+    loadAvatarFunction(r, 'idle-journey-and-presentation.js', name);
+  }
+  const setArt = r.context._setNekoIdleReturnArtSource;
+  r.context._setNekoIdleReturnArtSource = (...args) => {
+    effects.writes.push(args[1]);
+    return setArt(...args);
+  };
+  for (const name of ['_syncNekoIdleCat1PlaygroundCatGeometry', '_updateNekoIdleCat1PlaygroundBodyBounds',
+    '_setNekoIdleCat1PlaygroundBodyPosition']) loadAvatarFunction(r, 'idle-playground.js', name);
+  return { registry, actions, effects, ambient, sleep };
+}
+
+function installSharedPlaygroundPhysics(r) {
+  Object.assign(r.context, {
+    _shouldNekoIdleCat1PlaygroundBodySettleRotation: () => true,
+    _stepNekoIdleCat1PlaygroundBodyRestRotation: () => false,
+    _isNekoIdleCat1PlaygroundBodyRotating: () => false,
+    _isNekoIdleCat1PlaygroundBodySettlingRotation: () => false,
+    _isNekoIdleCat1PlaygroundBodyRestRotationPending: () => false,
+    _resolveNekoIdleCat1PlaygroundBodyCollisions: () => false,
+    _installNekoIdleCat1PlaygroundPointerListeners() {},
+    _beginNekoIdleCat1PlaygroundCollisionDeformation: () => false,
+    _NEKO_IDLE_CAT1_PLAYGROUND_HORIZONTAL_DAMPING: 0.99,
+    _NEKO_IDLE_CAT1_PLAYGROUND_GROUND_DAMPING: 0.9,
+    _NEKO_IDLE_CAT1_PLAYGROUND_WALL_RESTITUTION: 0.42,
+    _NEKO_IDLE_CAT1_PLAYGROUND_FLOOR_RESTITUTION: 0.52,
+    _NEKO_IDLE_CAT1_PLAYGROUND_FLOOR_REST_SPEED_PX_PER_SEC: 38,
+    _NEKO_IDLE_CAT1_PLAYGROUND_GROUND_STOP_VELOCITY_PX_PER_SEC: 3,
+  });
+  for (const name of ['_stepNekoIdleCat1PlaygroundPhysics', '_startNekoIdleCat1PlaygroundPhysics']) {
+    loadAvatarFunction(r, 'idle-playground.js', name);
+  }
+  loadAvatarFunction(r, 'idle-playground.js', '_setNekoIdleCat1PlaygroundFixedBodyPosition');
+}
+
+function installRealArtTransitionTimers(r) {
+  const timers = new Map();
+  let sequence = 0;
+  r.context.setTimeout = callback => { timers.set(++sequence, callback); return sequence; };
+  r.context.clearTimeout = id => timers.delete(id);
+  r.context._NEKO_IDLE_RETURN_TRANSITION_MS = 100;
+  r.context.document.createElement = () => ({
+    setAttribute(name, value) { this[name] = value; },
+    removeAttribute(name) { delete this[name]; },
+  });
+  r.button.appendChild = child => { child.parentNode = r.button; };
+  r.button.removeChild = child => { child.parentNode = null; };
+  loadAvatarFunction(r, 'idle-drag-and-subactions.js', '_cleanupNekoIdleArtTransition');
+  return timers;
+}
+
+for (const owner of ['same-source', 'hover']) for (const delivery of ['timer', 'preload']) {
+  test(`shared ${owner} recovery cancels a conflicting real ${delivery} transition before its late commit`, async () => {
+    const r = runtime({ web: true });
+    const { registry } = installSharedCatPresentation(r);
+    attachPlaygroundBody(r, { width: 122, height: 122, grounded: owner === 'hover' });
+    const timers = installRealArtTransitionTimers(r);
+    const current = registry.getAppearance(owner === 'hover' ? 'click.cat1' : 'playground.cat1.air').url;
+    const conflicting = registry.getAppearance('idle.cat1').url;
+    r.art.src = current;
+    let commits = 0;
+    r.context._setNekoIdleReturnArtSource(r.art, conflicting, 'cat1', {
+      animate: true, restartAnimation: delivery === 'preload', playbackToken: 74,
+      onTransitionEnd: () => { commits++; },
+    });
+    const timerId = r.art.__nekoIdleTransitionTimer;
+    const lateFinish = timers.get(timerId);
+    const nextArt = r.art.__nekoIdleTransitionNext;
+    const preload = r.art.__nekoIdleTransitionPreload;
+    if (owner === 'hover') Object.assign(r.art, {
+      __nekoIdleHoverSrc: current, __nekoIdleHoverTier: 'cat1', __nekoIdleHoverToken: 42,
+      __nekoIdleHoverTimer: 91, __nekoIdleHoverStartedAt: 800,
+    });
+    if (preload) {
+      // The old timer is already waiting for a successfully loaded restart image.
+      lateFinish();
+      preload.onload();
+    }
+    assert.equal(r.context._syncNekoIdleReturnCurrentArt(r.button), false,
+      'recovery must retain the current image rather than restart it');
+    // Even a callback already queued by the browser cannot regain ownership.
+    lateFinish();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(r.art.src, current);
+    assert.equal(commits, 0);
+    assert.equal(r.art.__nekoIdleTransitionTo, '');
+    assert.equal(timers.has(timerId), false);
+    assert.equal(nextArt.parentNode, null);
+    if (preload) {
+      assert.equal(preload.onload, null);
+      assert.equal(preload.src, undefined);
+    }
+    if (owner === 'hover') {
+      assert.equal(r.art.__nekoIdleHoverToken, 42);
+      assert.equal(r.art.__nekoIdleHoverTimer, 91);
+      assert.equal(r.art.__nekoIdleHoverStartedAt, 800);
+    }
+  });
+}
+
+test('shared recovery preserves a matching real transition and its restart entry through preload completion', async () => {
+  const r = runtime({ web: true });
+  const { registry } = installSharedCatPresentation(r);
+  attachPlaygroundBody(r, { width: 122, height: 122, grounded: false });
+  const timers = installRealArtTransitionTimers(r);
+  const target = registry.getAppearance('playground.cat1.air').url;
+  r.art.src = registry.getAppearance('idle.cat1').url;
+  let commits = 0;
+  r.context._setNekoIdleReturnArtSource(r.art, target, 'cat1', {
+    animate: true, restartAnimation: true, playbackToken: 75,
+    onTransitionEnd: () => { commits++; },
+  });
+  const timerId = r.art.__nekoIdleTransitionTimer;
+  const nextArt = r.art.__nekoIdleTransitionNext;
+  const preload = r.art.__nekoIdleTransitionPreload;
+  for (let index = 0; index < 3; index++) {
+    assert.equal(r.context._syncNekoIdleReturnCurrentArt(r.button), false);
+    assert.equal(r.art.__nekoIdleTransitionTimer, timerId);
+    assert.equal(r.art.__nekoIdleTransitionNext, nextArt);
+    assert.equal(r.art.__nekoIdleTransitionPreload, preload);
+  }
+  timers.get(timerId)();
+  preload.onload();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(r.art.src, r.context._buildNekoIdleAnimationRestartUrl(target, 75));
+  assert.equal(commits, 1);
+  assert.equal(nextArt.parentNode, null);
+  assert.equal(r.art.__nekoIdleTransitionTo, '');
+});
+
+test('shared physical recovery invalidates an older real GIF playback promise', async () => {
+  const r = runtime({ web: true });
+  const { registry } = installSharedCatPresentation(r);
+  attachPlaygroundBody(r, { width: 122, height: 122, grounded: false });
+  let finishPlayback;
+  r.context._getNekoIdleGifPlaybackSource = () => new Promise(resolve => { finishPlayback = resolve; });
+  for (const name of ['_normalizeNekoIdleGifPlaybackRate', '_applyNekoIdleGifPlaybackRate']) {
+    loadAvatarFunction(r, 'idle-drag-and-subactions.js', name);
+  }
+  const oldSource = registry.getAppearance('movement.cat1.walking').url;
+  r.art.src = oldSource;
+  r.context._applyNekoIdleGifPlaybackRate(r.art, oldSource, 1.5);
+  const oldToken = r.art.__nekoIdleGifPlaybackToken;
+  r.context._syncNekoIdleReturnCurrentArt(r.button);
+  assert.ok(r.art.__nekoIdleGifPlaybackToken > oldToken);
+  const expected = registry.getAppearance('playground.cat1.air').url;
+  assert.equal(r.art.src, expected);
+  finishPlayback('blob:late-walking-playback');
+  await Promise.resolve();
+  assert.equal(r.art.src, expected);
+  assert.equal(r.art.__nekoIdleGifPlaybackBaseSrc, '');
+});
+
+test('real tier presentation preserves the Playground body, motion and pending or active input across all three tiers', () => {
+  for (const web of [false, true]) for (const gesture of ['none', 'pending', 'active']) {
+    const r = runtime({ web });
+    const { registry, effects, ambient } = installSharedCatPresentation(r);
+    const held = gesture !== 'none';
+    const body = attachPlaygroundBody(r, { width: 122, height: 122, vx: 80, vy: 40, dragging: held });
+    const state = r.button.__nekoIdleCat1PlaygroundDropState;
+    Object.assign(state, { container: r.container, token: 7, pointerId: held ? 12 : null,
+      pointerBodyId: held ? 'cat' : '', draggingBodyId: gesture === 'active' ? 'cat' : '',
+      pointerOffsetX: 25, pointerOffsetY: 45 });
+    const input = state.pointerHandlers = [{ type: 'pointermove' }];
+    const samples = state.lastPointerSamples = [{ screenX: 300, screenY: 200, time: 1000 }];
+    if (!web) r.sample();
+    const owner = r.state()?.windowKey;
+    for (const tier of ['cat2', 'cat3', 'cat1']) {
+      const before = { x: body.x, y: body.y, vx: body.vx, vy: body.vy };
+      r.context._applyNekoIdleReturnPresentation(r.button, tier);
+      assert.equal(state.active, true);
+      assert.equal(state.token, 7);
+      assert.equal(state.bodies.get('cat'), body);
+      assert.equal(state.pointerHandlers, input);
+      assert.equal(state.pointerId, held ? 12 : null);
+      assert.equal(state.pointerBodyId, held ? 'cat' : '');
+      assert.equal(state.draggingBodyId, gesture === 'active' ? 'cat' : '');
+      assert.equal(state.lastPointerSamples, samples);
+      assert.deepEqual([state.pointerOffsetX, state.pointerOffsetY], [25, 45]);
+      assert.deepEqual({ x: body.x, y: body.y, vx: body.vx, vy: body.vy }, before);
+      assert.equal(r.button.getAttribute('data-neko-idle-tier'), tier);
+      assert.equal(r.container.getAttribute('data-neko-idle-tier'), tier);
+      const slot = gesture === 'active' ? `drag.${tier}` :
+        tier === 'cat1' ? 'playground.cat1.air' : `idle.${tier}`;
+      assert.equal(r.art.src, registry.getAppearance(slot, { random: false }).url);
+      if (!web) assert.equal(r.state().windowKey, owner);
+      if (!held) {
+        body.grounded = true;
+        r.context._syncNekoIdleReturnCurrentArt(r.button);
+        assert.equal(r.art.src, registry.getAppearance(`idle.${tier}`).url);
+        body.grounded = false;
+      }
+    }
+    assert.deepEqual(effects.ambientSync, ['cat2', 'cat3', 'cat1']);
+    assert.equal(ambient.active, false, 'tier changes cannot qualify the moving or held cat');
+    assert.equal(effects.journey, 0, 'preserving the session cannot start ordinary journey');
+    assert.deepEqual(effects.releases, []);
+  }
+});
+
+test('same-tier Playground presentation and physics refresh keep airborne ambient inactive without restarting audio', () => {
+  const r = runtime({ web: true });
+  const { ambient, effects } = installSharedCatPresentation(r);
+  attachPlaygroundBody(r, { width: 122, height: 122, grounded: false });
+  for (let i = 0; i < 8; i++) {
+    r.context._applyNekoIdleReturnPresentation(r.button, 'cat1');
+    r.context._syncNekoIdleReturnCurrentArt(r.button);
+  }
+  assert.equal(ambient.active, false);
+  assert.equal(ambient.token, 7);
+  assert.equal(effects.audioStops, 0);
+  assert.deepEqual(effects.ambientSync, []);
+  assert.deepEqual(effects.sleepSync, []);
+  assert.equal(effects.journey, 0);
+});
+
+for (const kind of ['hover', 'visual', 'restart', 'patched']) {
+  test(`multi-frame Playground physics preserves ${kind} playback while another body moves`, () => {
+    const r = runtime({ web: true });
+    const { registry, actions, effects, ambient } = installSharedCatPresentation(r);
+    installSharedPlaygroundPhysics(r);
+    const src = registry.getAppearance(kind === 'hover' ? 'click.cat1' : 'action.cat1.happy').url;
+    r.art.src = kind === 'restart' ? r.context._buildNekoIdleAnimationRestartUrl(src, 19) : src;
+    if (kind === 'patched') {
+      r.art.src = 'blob:patched-action';
+      r.art.__nekoIdleGifPlaybackBaseSrc = src;
+      r.art.__nekoIdleGifPlaybackRate = 2;
+      r.art.__nekoIdleGifPlaybackToken = 41;
+    }
+    const hull = registry.getAppearanceVisibleInsets(src);
+    const body = attachPlaygroundBody(r, { width: 122, height: 122, grounded: true,
+      y: 900 - 122 * (1 - hull.bottom), visibleInsetRatios: hull });
+    const state = r.button.__nekoIdleCat1PlaygroundDropState;
+    Object.assign(state, { token: 1, phase: 'settled', lastTickAt: 1000,
+      gravityPxPerSecond2: 2600, maxDeltaMs: 50 });
+    const prop = { id: 'test-prop', element: { style: style() }, x: 800, y: 80,
+      width: 50, height: 50, vx: 10, vy: 0, grounded: false, dragging: false };
+    state.bodies.set(prop.id, prop);
+    if (kind === 'hover') Object.assign(r.art, {
+      __nekoIdleHoverSrc: src, __nekoIdleHoverTier: 'cat1', __nekoIdleHoverToken: 23,
+      __nekoIdleHoverTimer: 91, __nekoIdleHoverStartedAt: 800,
+    });
+    else actions.visual = { tier: 'cat1', src };
+    const snapshot = { src: r.art.src, hoverToken: r.art.__nekoIdleHoverToken,
+      hoverTimer: r.art.__nekoIdleHoverTimer, hoverStart: r.art.__nekoIdleHoverStartedAt,
+      gifToken: r.art.__nekoIdleGifPlaybackToken, gifRate: r.art.__nekoIdleGifPlaybackRate };
+    r.context._syncNekoIdleCat1PlaygroundBasicPresentation(r.button);
+    const eligibilityToken = ambient.token;
+    const audioStops = effects.audioStops;
+    r.context._startNekoIdleCat1PlaygroundPhysics(r.button);
+    for (let index = 0; index < 12; index++) {
+      r.frame();
+      r.context._applyNekoIdleReturnPresentation(r.button, 'cat1');
+      assert.deepEqual({ src: r.art.src, hoverToken: r.art.__nekoIdleHoverToken,
+        hoverTimer: r.art.__nekoIdleHoverTimer, hoverStart: r.art.__nekoIdleHoverStartedAt,
+        gifToken: r.art.__nekoIdleGifPlaybackToken, gifRate: r.art.__nekoIdleGifPlaybackRate }, snapshot,
+      `${kind}: physical frames and same-tier presentation must retain the existing playback`);
+      assert.equal(body.grounded, true);
+    }
+    assert.ok(prop.y > 80, 'the real Playground loop must continue simulating the other body');
+    assert.ok(state.frame, 'the loop must remain active independently of the settled cat');
+    assert.deepEqual(effects.writes, []);
+    assert.ok(effects.ambientSync.every(tier => tier === 'cat1'));
+    assert.equal(ambient.active, true, 'the stable cat remains eligible while the other body moves');
+    assert.equal(ambient.token, eligibilityToken, 'idempotent sync cannot restart the response generation');
+    assert.equal(effects.audioStops, audioStops);
+  });
+}
+
+test('Playground physics restores air and idle art across an external support loss and landing', () => {
+  const r = runtime({ web: true, reduceMotion: true });
+  const { registry, effects, ambient } = installSharedCatPresentation(r);
+  installSharedPlaygroundPhysics(r);
+  const idleSrc = registry.getAppearance('idle.cat1').url;
+  const airSrc = registry.getAppearance('playground.cat1.air').url;
+  r.art.src = idleSrc;
+  const hull = registry.getAppearanceVisibleInsets(idleSrc);
+  const body = attachPlaygroundBody(r, { width: 122, height: 122, grounded: true,
+    y: 500, visibleInsetRatios: hull });
+  const state = r.button.__nekoIdleCat1PlaygroundDropState;
+  Object.assign(state, { token: 1, phase: 'settled', lastTickAt: 1000,
+    gravityPxPerSecond2: 2600, maxDeltaMs: 50 });
+  r.context._syncNekoIdleReturnCurrentArt(r.button);
+  // Window owners can mark the cat airborne before the next Playground frame.
+  body.grounded = false;
+  r.context._startNekoIdleCat1PlaygroundPhysics(r.button);
+  r.frame();
+  assert.equal(r.art.src, airSrc, 'the first frame after losing support must show the airborne pose');
+  r.settle();
+  assert.equal(body.grounded, true);
+  assert.equal(r.art.src, idleSrc);
+  assert.equal(body.visibleInsetRatios, hull);
+  assert.equal(state.frame, 0);
+  assert.deepEqual(effects.writes, [airSrc, idleSrc]);
+  assert.equal(ambient.active, true, 'landing restores eligibility without replaying audio');
+  assert.deepEqual(effects.ambientSync, ['cat1']);
+});
+
+test('a landing hull that loses a narrow window platform keeps the real Playground loop alive', () => {
+  const r = runtime({ reduceMotion: true });
+  const { registry, effects } = installSharedCatPresentation(r);
+  installSharedPlaygroundPhysics(r);
+  const airSrc = registry.getAppearance('playground.cat1.air').url;
+  const idleSrc = registry.getAppearance('idle.cat1').url;
+  const air = registry.getAppearanceVisibleInsets(airSrc);
+  r.art.src = airSrc;
+  const body = attachPlaygroundBody(r, { width: 122, height: 122, x: 300,
+    y: 550 - 122 * (1 - air.bottom) - 1, grounded: false, vy: 100,
+    visibleInsetRatios: air });
+  const state = r.button.__nekoIdleCat1PlaygroundDropState;
+  Object.assign(state, { token: 1, phase: 'dropping', lastTickAt: 1000,
+    gravityPxPerSecond2: 2600, maxDeltaMs: 50 });
+  const background = sceneWindow('background', { x: 200, y: 100, width: 600, height: 650 });
+  const platform = { ...sceneWindow('thin-platform', { x: 396, y: 550, width: 4, height: 100 }),
+    collisionOnly: true };
+  r.sample(background.rect, { windows: [platform, background] });
+  assert.equal(r.state().windowKey, background.key);
+  r.frame();
+  assert.equal(r.art.src, idleSrc, 'the larger airborne hull initially lands on the real platform');
+  assert.equal(body.grounded, false, 'the smaller idle hull no longer reaches the narrow platform');
+  assert.ok(state.frame > 0, 'geometry can change support after the original integration has settled');
+  assert.ok(r.resources().frames > 0, 'that changed support must schedule another physical frame');
+  assert.equal(state.phase, 'dropping');
+  const lostSupportY = body.y;
+  r.frame();
+  assert.equal(r.art.src, airSrc);
+  assert.ok(body.y > lostSupportY);
+  assert.ok(body.vy > 0);
+  r.settle();
+  assert.equal(body.grounded, true);
+  assert.equal(r.art.src, idleSrc);
+  assert.equal(body.visibleInsetRatios, registry.getAppearanceVisibleInsets(idleSrc));
+  assert.equal(state.frame, 0);
+  assert.equal(r.state().phase, 'resting');
+  assert.equal(r.state().windowKey, background.key);
+  assert.ok(Math.abs(body.y - body.floorY) < 0.001);
+  assert.deepEqual(effects.writes, [idleSrc, airSrc, idleSrc, airSrc, idleSrc],
+    'each real support change updates the pose once before the cat reaches the background floor');
+});
+
+test('the real question-block exit releases Playground before resolving the ordinary idle art', () => {
+  const r = runtime({ web: true });
+  const { registry, effects } = installSharedCatPresentation(r);
+  const body = attachPlaygroundBody(r, { width: 122, height: 122, x: 500, y: 400 });
+  const state = r.button.__nekoIdleCat1PlaygroundDropState;
+  state.start = { bodies: { cat: { x: 300, y: 200 } } };
+  r.art.src = registry.getAppearance('playground.cat1.air').url;
+  Object.assign(r.context, {
+    _dispatchNekoIdleCat1PlaygroundQuestionBlockClick() {},
+    _stopNekoIdleCat1PlaygroundPhysics() {},
+    _clearNekoIdleCat1PlaygroundPointerListeners() {},
+  });
+  for (const name of ['_restoreNekoIdleCat1PlaygroundStartPositions',
+    '_handleNekoIdleCat1PlaygroundQuestionBlockCloneClick']) {
+    loadAvatarFunction(r, 'idle-assets-and-question.js', name);
+  }
+  const seen = [];
+  const sync = r.context._syncNekoIdleReturnCurrentArt;
+  r.context._syncNekoIdleReturnCurrentArt = (...args) => {
+    seen.push(state.active);
+    return sync(...args);
+  };
+  assert.equal(r.context._handleNekoIdleCat1PlaygroundQuestionBlockCloneClick(r.button, {}, {
+    preventDefault() {}, stopPropagation() {},
+  }), true);
+  assert.deepEqual(seen, [false], 'restore must resolve after the old physical pose stops owning the cat');
+  assert.deepEqual(effects.releases, ['question-block-click']);
+  assert.deepEqual([body.x, body.y, body.vx, body.vy], [300, 200, 0, 0]);
+  assert.equal(r.art.src, registry.getAppearance('idle.cat1').url);
+});
 
 test('cat art and facing changes keep the painted edges against the same window walls', () => {
   const r = runtime();
@@ -670,6 +1183,7 @@ test('a Web Playground landing applies idle art geometry before its final animat
       _NEKO_IDLE_CAT1_PLAYGROUND_GROUND_STOP_VELOCITY_PX_PER_SEC: 3,
       _NEKO_IDLE_CAT1_PLAYGROUND_DEFORMATION_OWNER: 'idle-cat1-playground',
     });
+    installSharedCatPresentation(r, registry);
     const source = fs.readFileSync(path.join(avatar, 'idle-playground.js'), 'utf8');
     for (const name of ['_updateNekoIdleCat1PlaygroundBodyBounds',
       '_setNekoIdleCat1PlaygroundBodyPosition', '_applyNekoIdleCat1PlaygroundBodyRotation',
@@ -1160,7 +1674,7 @@ test('cat visit entry cancels a pending solo target and starts cat-only immediat
     'transferring pending entry to Visit must not roll back its chat minimization');
 });
 
-test('the real Playground starter forwards catOnly to body registration', () => {
+test('the real Playground starter forwards catOnly and preserves a repeated active session', () => {
   const r = runtime();
   installPlaygroundSetting(r);
   const registrations = [];
@@ -1169,7 +1683,8 @@ test('the real Playground starter forwards catOnly to body registration', () => 
     return true;
   };
   r.context._acquireNekoIdleCat1PlaygroundDropLifecycle = () => ({});
-  r.context._setNekoIdleCat1PlaygroundCatAirArt = () => {};
+  let presentationSyncs = 0;
+  r.context._syncNekoIdleReturnCurrentArt = () => { presentationSyncs++; return false; };
   r.context._installNekoIdleCat1PlaygroundPointerListeners = () => {};
   r.context._refreshNekoIdleCat1PlaygroundViewportBottom = () => {};
   r.context._startNekoIdleCat1PlaygroundPhysics = () => {};
@@ -1178,6 +1693,52 @@ test('the real Playground starter forwards catOnly to body registration', () => 
   assert.equal(start(r.button, {}), true);
   assert.deepEqual(registrations.map((item) => item.options.catOnly), [true, false]);
   assert.equal(registrations[0].button, r.button);
+  const body = { x: 400, y: 300, vx: 75, vy: -90, dragging: true };
+  const state = r.button.__nekoIdleCat1PlaygroundDropState = {
+    active: true, released: false, token: 17, pointerId: 9, bodies: new Map([['cat', body]]),
+  };
+  r.button.setAttribute('data-neko-idle-tier', 'cat3');
+  assert.equal(start(r.button, {}, { catOnly: true }), true,
+    'an existing session is already entered even after its tier changes');
+  assert.equal(registrations.length, 2, 'a repeated request cannot recreate the body');
+  assert.equal(presentationSyncs, 2, 'a repeated request cannot reset presentation');
+  assert.equal(r.button.__nekoIdleCat1PlaygroundDropState, state);
+  assert.equal(state.bodies.get('cat'), body);
+  assert.equal(state.token, 17);
+  assert.equal(state.pointerId, 9);
+  assert.deepEqual([body.x, body.y, body.vx, body.vy, body.dragging], [400, 300, 75, -90, true]);
+});
+
+test('release-all restores ordinary presentation only when requested for an active Playground session', () => {
+  for (const active of [false, true]) for (const restorePresentation of [false, true]) {
+    const r = runtime({ web: true });
+    const { registry } = installSharedCatPresentation(r);
+    const timers = installRealArtTransitionTimers(r);
+    attachPlaygroundBody(r, { width: 122, height: 122, dragging: true });
+    const state = r.button.__nekoIdleCat1PlaygroundDropState;
+    state.active = active;
+    state.released = !active;
+    r.button.setAttribute('data-neko-idle-tier', 'cat3');
+    const drag = registry.getAppearance('drag.cat3', { random: false }).url;
+    const idle = registry.getAppearance('idle.cat3').url;
+    r.art.src = drag;
+    Object.assign(r.context, {
+      _forEachNekoIdleReturnButton: callback => callback(r.button),
+      _cancelNekoIdleCat1PlaygroundPendingEntry() {},
+      _clearNekoIdleCat1PlaygroundQuestionBlockClone() {},
+    });
+    loadAvatarFunction(r, 'idle-playground.js', '_releaseAllNekoIdleCat1PlaygroundDropLifecycles');
+    r.context._releaseAllNekoIdleCat1PlaygroundDropLifecycles('gravity-cat-disabled', { restorePresentation });
+    assert.equal(state.active, false);
+    if (active && restorePresentation) {
+      assert.equal(r.art.__nekoIdleTransitionTo, idle);
+      timers.get(r.art.__nekoIdleTransitionTimer)();
+      assert.equal(r.art.src, idle);
+    } else {
+      assert.equal(r.art.src, drag, 'ordinary exit and inactive sessions must not start a restore transition');
+      assert.equal(timers.size, 0);
+    }
+  }
 });
 
 test('gravity preference on an ordinary model waits for active CAT1 and ignores a late entry after OFF', () => {
@@ -1965,7 +2526,6 @@ function installDragProducer(r, model, { fromCreation = false } = {}) {
     _getNekoDesktopVirtualViewportSize: () => ({ width: 1200, height: 900 }),
     _restoreNekoIdleCat1EdgePeekBeforeDrag: () => {},
     _applyNekoIdleCat1EdgePeekAfterDrag: () => {},
-    _dispatchNekoIdleReturnBallManualMove: (container, reason, detail) => r.drag(reason, { container, ...detail }),
   });
   let manager;
   if (model === 'native') {
@@ -2057,7 +2617,7 @@ function installDragProducer(r, model, { fromCreation = false } = {}) {
 function installPlaygroundPointerDrag(r) {
   const body = attachPlaygroundBody(r, { width: 122, height: 122 });
   const state = r.button.__nekoIdleCat1PlaygroundDropState;
-  Object.assign(state, { pointerBodyId: '', pointerId: null, draggingBodyId: '', phase: 'settled',
+  Object.assign(state, { container: r.container, pointerBodyId: '', pointerId: null, draggingBodyId: '', phase: 'settled',
     token: 1, lastTickAt: 0, maxDeltaMs: 50, gravityPxPerSecond2: 2600 });
   Object.assign(r.context, {
     _NEKO_IDLE_CAT1_PLAYGROUND_MIN_CLICK_DRAG_PX: 5,
@@ -2075,7 +2635,7 @@ function installPlaygroundPointerDrag(r) {
     '_resolveNekoIdleCat1PlaygroundPointerClient', '_setNekoIdleCat1PlaygroundBodyPosition',
     '_applyNekoIdleCat1PlaygroundBodyRotation', '_updateNekoIdleCat1PlaygroundBodyBounds',
     '_beginNekoIdleCat1PlaygroundCollisionDeformation',
-    '_setNekoIdleCat1PlaygroundCatAirArt', '_handleNekoIdleCat1PlaygroundPointerDownForBody',
+    '_handleNekoIdleCat1PlaygroundPointerDownForBody',
     '_handleNekoIdleCat1PlaygroundPointerMove', '_resolveNekoIdleCat1PlaygroundBodyCollisions',
     '_stepNekoIdleCat1PlaygroundPhysics', '_startNekoIdleCat1PlaygroundPhysics']) {
     const start = source.indexOf(`function ${name}(`);
@@ -2109,7 +2669,7 @@ for (const model of ['live2d', 'vrm', 'mmd', 'pngtuber']) for (const input of ['
     const playground = installPlaygroundPointerDrag(r);
     let ordinaryStarts = 0;
     r.window.addEventListener('neko:return-ball-manual-move', event => {
-      if (event.detail.reason === 'return-ball-drag-start') ordinaryStarts++;
+      if (event.detail.reason === 'return-ball-drag-start' && event.detail.source !== 'cat1-playground') ordinaryStarts++;
     });
     assert.equal(playground.down(360, 260), true);
     const compatibilityEvent = input === 'mouse' ? ordinary.down(360, 260) : ordinary.touchDown(360, 260);
@@ -2448,6 +3008,18 @@ test('stale movement plans cannot overwrite airborne momentum and work again aft
 });
 
 function installJourneyGravityBridge(r) {
+  // Journey states are supplied by each takeoff/landing scenario below.
+  r.context._getNekoIdleCat1Journey = button =>
+    button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
+  loadAvatarFunction(r, 'idle-playground.js', '_isNekoIdleCat1PlaygroundDropActive');
+  const documentListeners = new Map();
+  r.context.document.addEventListener = (type, callback) => {
+    if (!documentListeners.has(type)) documentListeners.set(type, []);
+    documentListeners.get(type).push(callback);
+  };
+  r.context.document.dispatchEvent = event => {
+    for (const callback of documentListeners.get(event.type) || []) callback(event);
+  };
   const source = fs.readFileSync(path.join(avatar, 'idle-journey-and-presentation.js'), 'utf8');
   for (const name of ['_pauseNekoIdleCat1JourneyForGravity', '_ensureNekoIdleReturnPresentationBridge',
     '_stepNekoIdleCat1Walk', '_startNekoIdleCat1Walk', '_scheduleNekoIdleCat1WalkStart',

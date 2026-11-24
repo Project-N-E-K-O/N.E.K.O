@@ -25,6 +25,7 @@
     var playgroundEntryMinimizeRejected = false;
     var COMPACT_EXPAND_WIPE_MS = 300;
     var COMPACT_EXPAND_TRANSITION_BUFFER_MS = 40;
+    var electronIdleDockPlaygroundGeneration = 0;
 
     // ── Idle-dock: independent orchestration (Phase 4) ──────────
     // Positions the minimized ball next to CAT2/CAT3 return-ball.
@@ -33,6 +34,40 @@
 
     I.isIdleDockTierActive = function isIdleDockTierActive() {
         return I.idleDockTier === I.IDLE_DOCK_TIER_CAT2 || I.idleDockTier === I.IDLE_DOCK_TIER_CAT3;
+    }
+
+    I.isIdleDockPlaygroundBlocked = function isIdleDockPlaygroundBlocked() {
+        if (typeof _isAnyNekoIdleCat1PlaygroundDropActive === 'function'
+            && _isAnyNekoIdleCat1PlaygroundDropActive()) return true;
+        if (I.idleCatPlaygroundActive || I.idleCatPlaygroundYarnSkinActive) return true;
+        var bridge = window.nekoChatWindow;
+        if (bridge && typeof bridge.isCatPlaygroundActive === 'function' && bridge.isCatPlaygroundActive()) return true;
+        var buttons = typeof document.querySelectorAll === 'function'
+            ? document.querySelectorAll('.neko-idle-return-btn') : [];
+        for (var index = 0; index < buttons.length; index += 1) {
+            var state = buttons[index].__nekoIdleCat1PlaygroundDropState;
+            if ((state && state.active) || buttons[index].__nekoIdleCat1PlaygroundPendingEntry) return true;
+        }
+        return false;
+    }
+
+    I.suspendIdleDockForPlayground = function suspendIdleDockForPlayground() {
+        // Playground owns the current surface transaction. Discard only the
+        // old dock's observers and restore coordinates, without moving or
+        // expanding the chat or cancelling the shared minimize transition.
+        var wasActive = I.idleDockActive;
+        I.clearIdleDockState();
+        I.idleDockParkedRestore = null;
+        if (I.isElectronChatWindow()) {
+            clearElectronIdleDockState();
+            I.electronIdleDockParkedRestoreBounds = null;
+            // Discard this collapse's rollback even if its promise completes
+            // after Playground has already exited.
+            electronIdleDockPlaygroundGeneration = I.electronIdleDockGeneration;
+        }
+        if (!wasActive) return;
+        var shell = I.getShell();
+        if (shell) shell.classList.remove('is-idle-docked');
     }
 
     I.isGoodbyeIdleBallAppearanceActive = function isGoodbyeIdleBallAppearanceActive() {
@@ -66,7 +101,7 @@
         // it collapses in place and stays put (pre-deletion behavior). Compact's
         // CAT2/CAT3 return-cat dock is untouched.
         if (isLegacyFullMinimizedBall()) return null;
-        if (!I.idleDockActive || !I.isIdleDockTierActive()) return null;
+        if (!I.idleDockActive || !I.isIdleDockTierActive() || I.isIdleDockPlaygroundBlocked()) return null;
         var container = getVisibleReturnButtonContainer();
         if (!container || typeof container.getBoundingClientRect !== 'function') return null;
         var rect = container.getBoundingClientRect();
@@ -108,6 +143,10 @@
     }
 
     function finishIdleDockMinimize(shell) {
+        if (I.isIdleDockPlaygroundBlocked()) {
+            I.suspendIdleDockForPlayground();
+            return;
+        }
         if (!shell || !I.isIdleDockTierActive() || I.idleDockActive) return;
         stopIdleDockMinimizeObserver();
         var rect = shell.getBoundingClientRect();
@@ -118,7 +157,13 @@
 
     function scheduleIdleDockMinimizeFallback(shell) {
         if (!shell) return;
+        var observer = I.idleDockMinimizeObserver;
         window.setTimeout(function () {
+            if (I.idleDockMinimizeObserver !== observer) return;
+            if (I.isIdleDockPlaygroundBlocked()) {
+                I.suspendIdleDockForPlayground();
+                return;
+            }
             if (!I.idleDockTriggeredMinimize || I.idleDockActive || !I.isIdleDockTierActive()) return;
             var latestShell = I.getShell();
             if (!latestShell) return;
@@ -586,7 +631,42 @@
     }
 
     function isElectronIdleDockCurrent(generation) {
+        if (I.isIdleDockPlaygroundBlocked()) {
+            I.suspendIdleDockForPlayground();
+            return false;
+        }
         return I.electronIdleDockDesired && generation === I.electronIdleDockGeneration;
+    }
+
+    function clearElectronIdleDockState() {
+        I.electronIdleDockDesired = false;
+        I.electronIdleDockGeneration += 1;
+        I.electronIdleDockActive = false;
+        I.electronIdleDockTriggeredCollapse = false;
+        I.electronIdleDockSavedBounds = null;
+        I.electronIdleDockLastScreenRect = null;
+        I.electronIdleDockEntering = false;
+        I.electronIdleDockCurrentBounds = null;
+        I.electronIdleDockWorkArea = null;
+        clearElectronIdleDockRetry();
+        clearElectronIdleDockPositionFrame();
+        I.electronIdleDockPositionSeq += 1;
+    }
+
+    function isElectronIdleDockPositionCurrent(positionSeq) {
+        if (I.isIdleDockPlaygroundBlocked()) {
+            I.suspendIdleDockForPlayground();
+            return false;
+        }
+        return positionSeq === I.electronIdleDockPositionSeq && I.electronIdleDockActive && I.electronIdleDockDesired;
+    }
+
+    function isElectronIdleDockExitCurrent(generation) {
+        if (I.isIdleDockPlaygroundBlocked()) {
+            I.suspendIdleDockForPlayground();
+            return false;
+        }
+        return generation === I.electronIdleDockGeneration && !I.electronIdleDockDesired;
     }
 
     function clearElectronIdleDockPositionFrame() {
@@ -613,16 +693,17 @@
         var bridge = getElectronIdleDockBridge();
         var targetRect = normalizeElectronRect(I.electronIdleDockLastScreenRect);
         var positionSeq = I.electronIdleDockPositionSeq;
-        if (!bridge || !targetRect || !I.electronIdleDockActive || !I.electronIdleDockDesired) return;
+        if (!bridge || !targetRect || !isElectronIdleDockPositionCurrent(positionSeq)) return;
 
         var bounds = I.electronIdleDockCurrentBounds;
         if (!bounds) {
             try {
-                bounds = rememberElectronIdleDockBounds(await bridge.getBounds());
+                bounds = await bridge.getBounds();
             } catch (_) {
                 bounds = null;
             }
-            if (positionSeq !== I.electronIdleDockPositionSeq || !I.electronIdleDockActive || !I.electronIdleDockDesired) return;
+            if (!isElectronIdleDockPositionCurrent(positionSeq)) return;
+            bounds = rememberElectronIdleDockBounds(bounds);
         }
         if (!bounds || !Number.isFinite(Number(bounds.width)) || !Number.isFinite(Number(bounds.height))) {
             return;
@@ -639,14 +720,15 @@
 
         if (!I.electronIdleDockWorkArea && typeof bridge.getWorkArea === 'function') {
             try {
-                I.electronIdleDockWorkArea = await bridge.getWorkArea();
+                var workArea = await bridge.getWorkArea();
             } catch (_) {
-                I.electronIdleDockWorkArea = null;
+                workArea = null;
             }
-            if (positionSeq !== I.electronIdleDockPositionSeq || !I.electronIdleDockActive || !I.electronIdleDockDesired) return;
+            if (!isElectronIdleDockPositionCurrent(positionSeq)) return;
+            I.electronIdleDockWorkArea = workArea;
         }
         nextBounds = clampElectronDockBounds(nextBounds, I.electronIdleDockWorkArea);
-        if (positionSeq !== I.electronIdleDockPositionSeq || !I.electronIdleDockActive || !I.electronIdleDockDesired) return;
+        if (!isElectronIdleDockPositionCurrent(positionSeq)) return;
 
         if (typeof bridge.idleDockCommitCollapsedBounds === 'function') {
             var committedBounds = null;
@@ -655,7 +737,7 @@
             } catch (_) {
                 committedBounds = null;
             }
-            if (positionSeq !== I.electronIdleDockPositionSeq || !I.electronIdleDockActive || !I.electronIdleDockDesired) return;
+            if (!isElectronIdleDockPositionCurrent(positionSeq)) return;
             if (committedBounds !== false && committedBounds !== null && committedBounds !== undefined) {
                 rememberElectronIdleDockBounds(committedBounds);
                 return;
@@ -704,7 +786,7 @@
     }
 
     async function commitElectronIdleDockCollapsedBounds(bridge, bounds, generation) {
-        if (!bridge || !bounds) return false;
+        if (!bridge || !bounds || !isElectronIdleDockExitCurrent(generation)) return false;
         if (typeof bridge.idleDockCommitCollapsedBounds === 'function') {
             for (var attempt = 0; attempt < 4; attempt += 1) {
                 var result = null;
@@ -713,14 +795,14 @@
                 } catch (_) {
                     result = null;
                 }
-                if (generation !== I.electronIdleDockGeneration || I.electronIdleDockDesired) return false;
+                if (!isElectronIdleDockExitCurrent(generation)) return false;
                 if (result !== false && result !== null && result !== undefined) {
                     rememberElectronIdleDockBounds(result);
                     return true;
                 }
                 if (attempt >= 3) break;
                 await waitElectronIdleDockCommitRetry(80);
-                if (generation !== I.electronIdleDockGeneration || I.electronIdleDockDesired) return false;
+                if (!isElectronIdleDockExitCurrent(generation)) return false;
             }
         }
         if (typeof bridge.setBounds === 'function') {
@@ -732,6 +814,10 @@
     }
 
     async function enterElectronIdleDock(screenRect) {
+        if (I.isIdleDockPlaygroundBlocked()) {
+            I.suspendIdleDockForPlayground();
+            return;
+        }
         if (typeof I.isCatLocalChatActive === 'function' && I.isCatLocalChatActive()) return;
         // full 独立窗口（Electron part B）完全避开 idle-dock —— 与 web 路径 enterIdleDock 的
         // full 守卫对偶：CAT2/CAT3 idle tier 不应把展开的 full 窗口自动折叠/贴猫。full 用旧版
@@ -762,16 +848,14 @@
         }
 
         I.electronIdleDockEntering = true;
+        var entrySavedBounds = null;
         try {
-            I.electronIdleDockSavedBounds = await bridge.getBounds();
+            entrySavedBounds = await bridge.getBounds();
         } catch (_) {
-            I.electronIdleDockSavedBounds = null;
+            entrySavedBounds = null;
         }
-        var entrySavedBounds = I.electronIdleDockSavedBounds;
-        if (!isElectronIdleDockCurrent(generation)) {
-            I.electronIdleDockEntering = false;
-            return;
-        }
+        if (!isElectronIdleDockCurrent(generation)) return;
+        I.electronIdleDockSavedBounds = entrySavedBounds;
 
         var alreadyCollapsed = false;
         try {
@@ -806,13 +890,13 @@
             }
             if (!isElectronIdleDockCurrent(generation)) {
                 try {
-                    if (collapsedResult && alreadyCollapsed && entrySavedBounds && typeof bridge.idleDockExpand === 'function') {
+                    if (generation >= electronIdleDockPlaygroundGeneration && collapsedResult && alreadyCollapsed &&
+                        entrySavedBounds && typeof bridge.idleDockExpand === 'function') {
                         await bridge.idleDockExpand(entrySavedBounds);
                     }
                 } catch (_) {
                     // Best effort rollback; the newer generation owns the next visible state.
                 }
-                I.electronIdleDockEntering = false;
                 return;
             }
             if (!collapsedResult || !alreadyCollapsed) {
@@ -823,21 +907,17 @@
             rememberElectronIdleDockBounds(collapsedResult);
         }
 
-        if (!isElectronIdleDockCurrent(generation)) {
-            I.electronIdleDockEntering = false;
-            return;
-        }
+        if (!isElectronIdleDockCurrent(generation)) return;
         if (!I.electronIdleDockWorkArea && typeof bridge.getWorkArea === 'function') {
             try {
-                I.electronIdleDockWorkArea = await bridge.getWorkArea();
+                var workArea = await bridge.getWorkArea();
             } catch (_) {
-                I.electronIdleDockWorkArea = null;
+                workArea = null;
             }
+            if (!isElectronIdleDockCurrent(generation)) return;
+            I.electronIdleDockWorkArea = workArea;
         }
-        if (!isElectronIdleDockCurrent(generation)) {
-            I.electronIdleDockEntering = false;
-            return;
-        }
+        if (!isElectronIdleDockCurrent(generation)) return;
         I.electronIdleDockTriggeredCollapse = shouldCollapseForIdleDock || !!parkedRestoreBounds;
         if (parkedRestoreBounds) {
             I.electronIdleDockSavedBounds = parkedRestoreBounds;
@@ -851,6 +931,10 @@
     }
 
     I.exitElectronIdleDock = async function exitElectronIdleDock(options) {
+        if (I.isIdleDockPlaygroundBlocked()) {
+            I.suspendIdleDockForPlayground();
+            return;
+        }
         var preserveCurrentPosition = !!(options && options.preserveCurrentPosition);
         var preserveScreenRect = normalizeElectronRect(options && options.preserveScreenRect);
         var parkRestoreForReturn = !!(options && options.parkRestoreForReturn);
@@ -862,19 +946,8 @@
         var currentBounds = I.electronIdleDockCurrentBounds;
         var workArea = I.electronIdleDockWorkArea;
 
-        I.electronIdleDockDesired = false;
-        I.electronIdleDockGeneration += 1;
+        clearElectronIdleDockState();
         var exitGeneration = I.electronIdleDockGeneration;
-        I.electronIdleDockActive = false;
-        I.electronIdleDockTriggeredCollapse = false;
-        I.electronIdleDockSavedBounds = null;
-        I.electronIdleDockLastScreenRect = null;
-        I.electronIdleDockEntering = false;
-        I.electronIdleDockCurrentBounds = null;
-        I.electronIdleDockWorkArea = null;
-        clearElectronIdleDockRetry();
-        clearElectronIdleDockPositionFrame();
-        I.electronIdleDockPositionSeq += 1;
         // A wake-up only ever hands the reopen on: it takes over this dock's duty,
         // or keeps the one already owed (e.g. a re-dock that had not finished yet).
         I.electronIdleDockParkedRestoreBounds = !parkRestoreForReturn
@@ -886,7 +959,7 @@
             // Only reopen a window that is still collapsed: the user may have
             // opened it between two minimized-state polls.
             if (parkedRestoreBounds && !preserveCurrentPosition && isElectronChatWindowCollapsed(bridge)) {
-                await restoreElectronIdleDockSavedBounds(bridge, parkedRestoreBounds, true);
+                await restoreElectronIdleDockSavedBounds(bridge, parkedRestoreBounds, true, exitGeneration);
             }
             return;
         }
@@ -902,7 +975,7 @@
                         basisBounds = null;
                     }
                 }
-                if (exitGeneration !== I.electronIdleDockGeneration || I.electronIdleDockDesired) return;
+                if (!isElectronIdleDockExitCurrent(exitGeneration)) return;
                 if (basisBounds &&
                     Number.isFinite(Number(basisBounds.width)) &&
                     Number.isFinite(Number(basisBounds.height))) {
@@ -919,35 +992,42 @@
                             workArea = null;
                         }
                     }
-                    if (exitGeneration !== I.electronIdleDockGeneration || I.electronIdleDockDesired) return;
+                    if (!isElectronIdleDockExitCurrent(exitGeneration)) return;
                     preserveBounds = clampElectronDockBounds(preserveBounds, workArea);
                 }
             }
             await commitElectronIdleDockCollapsedBounds(bridge, preserveBounds, exitGeneration);
-            if (exitGeneration !== I.electronIdleDockGeneration || I.electronIdleDockDesired) return;
+            if (!isElectronIdleDockExitCurrent(exitGeneration)) return;
             scheduleElectronChatMinimizedState('idle-dock-exit-preserve');
             return;
         }
 
         if (!savedBounds) return;
 
-        await restoreElectronIdleDockSavedBounds(bridge, savedBounds, triggeredCollapse);
+        await restoreElectronIdleDockSavedBounds(bridge, savedBounds, triggeredCollapse, exitGeneration);
     }
 
-    async function restoreElectronIdleDockSavedBounds(bridge, savedBounds, triggeredCollapse) {
+    async function restoreElectronIdleDockSavedBounds(bridge, savedBounds, triggeredCollapse, exitGeneration) {
+        if (!isElectronIdleDockExitCurrent(exitGeneration)) return;
         if (triggeredCollapse && typeof bridge.idleDockExpand === 'function') {
             try {
                 await bridge.idleDockExpand(savedBounds);
+                if (!isElectronIdleDockExitCurrent(exitGeneration)) return;
                 scheduleElectronChatMinimizedState('idle-dock-exit');
                 return;
             } catch (_) {}
         }
+        if (!isElectronIdleDockExitCurrent(exitGeneration)) return;
         bridge.setBounds(savedBounds.x, savedBounds.y, savedBounds.width, savedBounds.height);
         scheduleElectronChatMinimizedState('idle-dock-exit');
     }
 
     I.handleElectronIdleReturnBallState = function handleElectronIdleReturnBallState(detail) {
         if (!I.isElectronChatWindow()) return;
+        if (I.isIdleDockPlaygroundBlocked()) {
+            I.suspendIdleDockForPlayground();
+            return;
+        }
         var tier = detail && detail.tier;
         var activeTier = tier === I.IDLE_DOCK_TIER_CAT2 || tier === I.IDLE_DOCK_TIER_CAT3;
         if (detail && detail.visible && activeTier && detail.screenRect) {
@@ -998,6 +1078,10 @@
     // Enter idle-dock: minimize if needed, then position next to return-ball.
     // Enters through chatSurfaceMode so compact/full/minimized state stays in sync.
     I.enterIdleDock = function enterIdleDock() {
+        if (I.isIdleDockPlaygroundBlocked()) {
+            I.suspendIdleDockForPlayground();
+            return;
+        }
         if (typeof I.isCatLocalChatActive === 'function' && I.isCatLocalChatActive()) return;
         if (I.isElectronChatWindow()) return;
         // full 完全避开 idle-dock：CAT2/CAT3 视觉层级不应把展开的 full 窗口自动
@@ -1030,11 +1114,13 @@
             var shell = I.getShell();
             if (!shell) return;
 
-            I.idleDockMinimizeObserver = new MutationObserver(function () {
+            var observer = new MutationObserver(function () {
+                if (I.idleDockMinimizeObserver !== observer) return;
                 if (shell.classList.contains('is-minimized') && !shell.classList.contains('is-collapsing')) {
                     finishIdleDockMinimize(shell);
                 }
             });
+            I.idleDockMinimizeObserver = observer;
             I.idleDockMinimizeObserver.observe(shell, { attributes: true, attributeFilter: ['class'] });
 
             I.setChatSurfaceMode('minimized');
@@ -1044,6 +1130,10 @@
 
     // Exit idle-dock: restore position and un-minimize if idle-dock triggered it.
     I.exitIdleDock = function exitIdleDock(options) {
+        if (I.isIdleDockPlaygroundBlocked()) {
+            I.suspendIdleDockForPlayground();
+            return;
+        }
         var preserveCurrentPosition = !!(options && options.preserveCurrentPosition);
         var parkRestoreForReturn = !!(options && options.parkRestoreForReturn);
         var parkedRestore = I.idleDockParkedRestore;
@@ -1572,7 +1662,9 @@
     I._handleIdleCat1PlaygroundState = function _handleIdleCat1PlaygroundState(event) {
         var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
         var wasYarnSkinActive = I.idleCatPlaygroundYarnSkinActive;
+        I.idleCatPlaygroundActive = detail.active === true;
         I.idleCatPlaygroundYarnSkinActive = detail.active === true && detail.yarnEnabled === true;
+        if (detail.active === true) I.suspendIdleDockForPlayground();
         if (I.getCurrentChatSurfaceMode() === 'minimized') {
             I.applyMinimizedBallSkin(ensureMinimizedBallIcon());
             if (wasYarnSkinActive && !I.idleCatPlaygroundYarnSkinActive && !I.isElectronChatWindow()) {

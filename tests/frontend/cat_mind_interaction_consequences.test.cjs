@@ -80,12 +80,12 @@ function createProbe() {
     while (timers.length && remaining-- > 0) timers.shift()();
     assert.ok(remaining > 0, 'probe scheduler must stay asynchronous and bounded');
   };
-  const observe = (type, detail = {}) => {
-    now += 1;
+  const observe = (type, detail = {}, timestamp = ++now) => {
     win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {
-      detail: { type, source: 'interaction-consequence-test', tier: 'cat1', timestamp: now, detail },
+      detail: { type, source: 'interaction-consequence-test', tier: 'cat1', timestamp, detail },
     }));
     flush();
+    return timestamp;
   };
   const dispatchReturnBallMove = (detail = {}) => {
     now += 1;
@@ -106,13 +106,17 @@ function createProbe() {
     )),
   });
 
-  win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {
-    detail: { active: true, source: 'manual-goodbye', timestamp: now },
-  }));
-  flush();
+  const setCatActive = (active) => {
+    win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {
+      detail: { active, source: 'manual-goodbye', timestamp: now },
+    }));
+    flush();
+  };
+  setCatActive(true);
+  const getState = () => win.nekoCatMind.getState();
   const recentEvents = () => JSON.parse(JSON.stringify(win.nekoCatMind.getRecentEvents()));
   const advanceTime = (milliseconds) => { now += milliseconds; };
-  return { observe, dispatchReturnBallMove, snapshot, recentEvents, requests, advanceTime };
+  return { observe, dispatchReturnBallMove, snapshot, recentEvents, requests, advanceTime, getState, setCatActive };
 }
 
 function runScenario(events) {
@@ -133,6 +137,39 @@ function assertClose(actual, expected) {
 function mergeInteractionDose(current, dose) {
   return current + dose * (1 - current) * (1 + 0.8 * current);
 }
+
+test('recent cat interactions use accepted user events and keep only the latest three times', () => {
+  const runtime = createProbe();
+  const times = () => Array.from(runtime.getState().recentCatInteractionTimes);
+  runtime.observe('global_user_activity');
+  runtime.observe('desktop_occlusion_or_layer_change');
+  runtime.observe('cat1_walk_done_near_chat');
+  runtime.observe('chat_yarn_drag_completed', { userInitiated: true, endedNearCat: false, pathDistancePx: 100 });
+  assert.deepEqual(times(), []);
+
+  const firstHover = runtime.observe('cat_hover_reaction');
+  runtime.observe('cat_hover_reaction');
+  assert.deepEqual(times(), [firstHover]);
+  runtime.advanceTime(1500);
+  const secondHover = runtime.observe('cat_hover_reaction');
+  assert.deepEqual(times(), [firstHover, secondHover]);
+
+  const text = runtime.observe('cat_local_text_received', { requestId: 'text-1' });
+  runtime.observe('cat_local_text_received', { requestId: 'text-1' });
+  assert.deepEqual(times(), [firstHover, secondHover, text]);
+  runtime.observe('cat_local_text_received', { requestId: 'text-2' }, text);
+  assert.deepEqual(times(), [secondHover, text, text]);
+  const pop = runtime.observe('thought_bubble_pop');
+  runtime.observe('thought_bubble_pop', { reason: 'delayed-old-event' }, firstHover);
+  runtime.observe('thought_bubble_pop', { reason: 'previous-cat-session' }, 999);
+  assert.deepEqual(times(), [text, text, pop]);
+
+  runtime.getState().recentCatInteractionTimes.length = 0;
+  assert.deepEqual(times(), [text, text, pop]);
+  runtime.setCatActive(false);
+  runtime.setCatActive(true);
+  assert.deepEqual(times(), []);
+});
 
 test('hover, ordinary drag, and rapid drag produce distinct scored consequences', () => {
   const hover = runScenario([{ type: 'cat_hover_reaction' }]);
@@ -202,6 +239,7 @@ test('a strong yarn offer changes only play intent while bubble pop satisfies co
   }
   assert.equal(yarn.after.intents.cat1_play_yarn.reason, 'yarn_offer_far_to_near');
   assert.equal(yarn.runtime.requests.length, 0, 'intent must not bypass a rejected provider');
+  assert.equal(yarn.runtime.getState().recentCatInteractionTimes.length, 1);
 
   const hoverOnly = runScenario([{ type: 'cat_hover_reaction' }]);
   const popped = runScenario([
@@ -239,8 +277,13 @@ test('repeated real movement accumulates hunger and fatigue without creating act
 
 test('duplicate drag terminals settle interaction and physical feedback only once', () => {
   const runtime = createProbe();
+  const times = () => Array.from(runtime.getState().recentCatInteractionTimes);
   runtime.observe('drag_start');
-  runtime.observe('drag_end', {
+  runtime.observe('drag_cancelled', { activityId: 'unmoved-press', pathDistancePx: 0 });
+  runtime.observe('drag_start');
+  runtime.observe('rapid_drag');
+  assert.deepEqual(times(), []);
+  const end = runtime.observe('drag_end', {
     activityId: 'deduplicated-terminal',
     pathDistancePx: 160,
     durationMs: 2200,
@@ -253,6 +296,14 @@ test('duplicate drag terminals settle interaction and physical feedback only onc
     durationMs: 2200,
   });
   assert.deepEqual(runtime.snapshot().fields, settled.fields);
+  assert.deepEqual(times(), [end]);
+
+  const cancelled = runtime.observe('drag_cancelled', {
+    activityId: 'moved-before-cancel',
+    pathDistancePx: 100,
+    durationMs: 800,
+  });
+  assert.deepEqual(times(), [end, cancelled]);
 });
 
 test('delayed end-only terminal does not reuse rapid feedback from a stale gesture', () => {

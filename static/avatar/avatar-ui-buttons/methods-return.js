@@ -323,6 +323,11 @@ Object.assign(AvatarButtonMixin.methods, {
                 _handleNekoIdleCat1VisualActionRandomContextMenu(returnBtn, event);
             });
 
+            // A bubble press can outlive a switch back to ordinary cat mode.
+            // A new ordinary press must not inherit its click suppression.
+            returnBtn.addEventListener('pointerdown', (event) => {
+                _prepareNekoIdleCat1PlaygroundBubbleInputHandoff(returnBtn, event);
+            });
             returnBtn.addEventListener('click', (e) => {
                 if (_isNekoIdleThoughtBubbleEventHit(returnBtn, e)) {
                     e.preventDefault();
@@ -943,7 +948,7 @@ Object.assign(AvatarButtonMixin.methods, {
                     0,
                     Math.min(point.virtualY - dragGrabOffsetY, virtualViewport.height - h)
                 );
-                const movedPastThreshold = Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5;
+                const movedPastThreshold = _isNekoIdleReturnCatDragMovement(deltaX, deltaY);
                 if (!movedPastThreshold) return;
                 const screenPoint = getDragScreenPointFromVirtualPoint(nextVirtualLeft + w / 2, nextVirtualTop + h / 2, sourceEvent, clientX, clientY);
                 container.setAttribute('data-dragging', 'true');
