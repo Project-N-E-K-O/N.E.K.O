@@ -867,11 +867,11 @@ margin-top: 8px;
 background: #ffffff;
 }
 
-/* 自定义API配置按钮样式 - 与高级选项按钮一致 */
+/* 用渐变和圆角绘制胶囊，避免背景图片随长标题拉伸变形；与 API 管理簿入口保持一致。 */
 #custom-api-toggle-btn {
-    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
+    background: linear-gradient(to right, #40d3f9, #17a7ff) !important;
     background-color: transparent !important;
-    border: none !important;
+    border: 3px solid #d8f6ff !important;
     border-radius: 999px !important;
     height: auto;
     min-height: 54px;
@@ -921,21 +921,19 @@ background: #ffffff;
     -webkit-text-fill-color: transparent;
     color: transparent;
     font-weight: bold;
-    white-space: nowrap;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
     line-height: 1.2;
 }
 
 #custom-api-toggle-btn:hover:not(:disabled) {
-background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat;
-background-color: transparent;
 opacity: 0.9;
 transform: translateY(-1px);
 box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1) !important;
 }
 
 #custom-api-toggle-btn:active:not(:disabled) {
-background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
-background-color: transparent !important;
 transform: translateY(1px) scale(0.98) !important;
 box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
 opacity: 0.95 !important;
@@ -1726,9 +1724,9 @@ input:checked + .slider:before {
 }
 
 #key-book-toggle-btn {
-    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
+    background: linear-gradient(to right, #40d3f9, #17a7ff) !important;
     background-color: transparent !important;
-    border: none !important;
+    border: 3px solid #d8f6ff !important;
     border-radius: 999px !important;
     height: auto;
     min-height: 54px;
@@ -1778,21 +1776,19 @@ input:checked + .slider:before {
     -webkit-text-fill-color: transparent;
     color: transparent;
     font-weight: bold;
-    white-space: nowrap;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
     line-height: 1.2;
 }
 
 #key-book-toggle-btn:hover:not(:disabled) {
-    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat;
-    background-color: transparent;
     opacity: 0.9;
     transform: translateY(-1px);
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1) !important;
 }
 
 #key-book-toggle-btn:active:not(:disabled) {
-    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
-    background-color: transparent !important;
     transform: translateY(1px) scale(0.98) !important;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
     opacity: 0.95 !important;
