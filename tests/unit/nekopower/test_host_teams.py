@@ -46,6 +46,7 @@ from tests.unit.nekopower.test_host_tree_work import (  # noqa: F401 - the fixtu
     _by_role,
     _dispatch,
     _events,
+    _gave_way,
     _hand_over,
     _one_after_the_other,
     _report,
@@ -1072,11 +1073,13 @@ async def test_what_is_said_to_a_task_agent_while_its_changes_are_checked_is_not
         inspector=[[until_checked, *_report("it holds")], _report("it holds, the sitemap too")],
     )
     await wait_until(lambda: len(members[CHECK].requests) == 1, what="the inspector being at work")
+    gave_way = _gave_way(host.task_agents)
     # The user says more to the member while its changes are checked: it is at work again.
     assert await host.tell(two.commission_id, "write the sitemap anew as well")
     await wait_until(lambda: len(members["broken links"].requests) == 3, what="it being at work again")
     checking.set()
-    await asyncio.sleep(1.0)
+    # What the inspector said is dealt with, the member's run being still under way: the landing gave way to it.
+    await wait_until(lambda: gave_way, what="the landing giving way")
     # The inspector is gone, and the member's own run is no inspector that would not stop: nothing is given up.
     assert (await host.ledger.get(two.commission_id)).status == "working"
     assert await _events(host, two.commission_id, "not_landed") == []
@@ -1122,11 +1125,14 @@ async def test_a_task_agent_started_for_what_was_added_while_its_changes_were_ch
     await wait_status(host, (await _dispatch(host, FIRST)).commission_id, "done")
     two = await _dispatch(host, SECOND)
     await wait_until(lambda: len(members[CHECK].requests) == 1, what="the inspector being at work")
+    gave_way = _gave_way(host.task_agents)
     # The user says more while its changes are checked: it goes on, and starts a task agent for that.
     assert await host.tell(two.commission_id, "tidy the stylesheet as well")
     await wait_until(lambda: len(helper.requests) == 1, what="the task agent it started being at work")
     checking.set()
-    await asyncio.sleep(1.0)
+    # What the inspector said is dealt with while that task agent is still at work: the landing gave way.
+    await wait_until(lambda: gave_way, what="the landing giving way")
+    assert len(helper.requests) == 1 and not never.is_set()
     # The inspector is gone; what was started for the new work is nobody that would not stop.
     assert (await host.ledger.get(two.commission_id)).status == "working"
     assert await _events(host, two.commission_id, "not_landed") == []

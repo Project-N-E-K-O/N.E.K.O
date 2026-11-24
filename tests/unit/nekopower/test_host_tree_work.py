@@ -298,6 +298,33 @@ def _said_to(llm: ScriptedLLM) -> str:
     return json.dumps([message for request in llm.requests for message in request if message.get("role") != "system"])
 
 
+def _gave_way(manager: Any) -> list[str]:
+    """Record the worktrees whose landing gives way to more that was said (``_at_work_again``), from here on."""
+    gave_way: list[str] = []
+    at_work_again = manager._at_work_again
+
+    async def recorded(row: Any) -> str:
+        result = await at_work_again(row)
+        gave_way.append(row.id)
+        return result
+
+    manager._at_work_again = recorded
+    return gave_way
+
+
+def _waiting_for_its_end(manager: Any) -> list[str]:
+    """Record the commissions someone has come to wait for a landing to have put down as done, from here on."""
+    waiting: list[str] = []
+    written = manager._landing_end_written
+
+    async def recorded(commission_id: str) -> None:
+        waiting.append(commission_id)
+        await written(commission_id)
+
+    manager._landing_end_written = recorded
+    return waiting
+
+
 async def _two_members(
     hosts: list[Any], tmp_path: Path, second: list[list[Any]], first: Any = None, **more: Any
 ) -> tuple[Any, FakeTrees, Path, Any, Any, dict[str, ScriptedLLM]]:
@@ -2611,9 +2638,18 @@ async def test_a_worktree_the_user_kept_stays_the_users_where_it_cannot_be_lande
         assert (answer["status"], answer["detail"]) == ("failed", "the project's files are in the middle of a rebase")
         reason = "failed"
     elif why == "some of it is never carried over":
-        trees.results = [MergeResult("landed", files=(FileChange("links.txt", "added", 1, 0),), lines_added=1, skipped=("video.mp4",))]
+        (Path(tree.workdir) / "video.mp4").write_bytes(b"too large to carry over")
+
+        async def all_but_the_video(worktree: Any, landing: Any = None) -> Any:
+            shutil.copyfile(worktree.path / "links.txt", workdir / "links.txt")
+            return MergeResult("landed", files=(FileChange("links.txt", "added", 1, 0),), lines_added=1, skipped=("video.mp4",))
+
+        monkeypatch.setattr(trees, "merge_back", all_but_the_video)
         answer = await host.land_worktree(tree.id)
         assert (answer["status"], answer["skipped"]) == ("landed", ["video.mp4"])
+        # What could be carried over is in the project; the rest is where it was, in the worktree that stays.
+        assert (workdir / "links.txt").exists() and not (workdir / "video.mp4").exists()
+        assert (Path(tree.workdir) / "video.mp4").read_bytes() == b"too large to carry over"
         reason = "skipped"
     elif why == "it clashes":
         # Its commission is stuck over it, and is not handed it back all the same: the user's to merge.
@@ -2641,7 +2677,8 @@ async def test_a_worktree_the_user_kept_stays_the_users_where_it_cannot_be_lande
         reason = "conflict"
     # Still the user's to see to personally, whatever came of it: its commission does not go back into it.
     left = await host.ledger.get_tree(tree.id)
-    assert (left.state, left.reason) == ("kept", reason) and not (workdir / "links.txt").exists()
+    assert (left.state, left.reason) == ("kept", reason)
+    assert (workdir / "links.txt").exists() == (why == "some of it is never carried over")
 
 
 async def test_a_commission_is_done_before_its_worktree_is_removed(hosts, tmp_path):
@@ -2711,7 +2748,7 @@ def test_a_session_that_is_still_being_opened_has_no_run_under_way(hosts, tmp_pa
 
 
 async def test_what_is_left_of_a_discarded_worktree_is_removed_only_where_it_still_says_it_is_that(hosts, tmp_path):
-    from nekopower.host.tree_work import _says_it_is
+    from nekopower.host.tree_work import _repository_of, _says_it_is
 
     clash = MergeResult("conflict", conflicts=("links.txt",))
     host, trees, workdir, two, _members, _stuck = await _not_landed(hosts, tmp_path, [clash] * 4, turns=4)
@@ -2728,8 +2765,28 @@ async def test_what_is_left_of_a_discarded_worktree_is_removed_only_where_it_sti
         assert not _says_it_is(path, tree.id, tree.project_dir)
     (path / ".git").write_text(f"gitdir: {workdir.as_posix()}/.git/worktrees/{tree.id}\n", encoding="utf-8")
     assert _says_it_is(path, tree.id, tree.project_dir)
-    # (A project in a directory of its repository is of that repository.)
-    assert _says_it_is(path, tree.id, str(workdir / "site" / "pages"))
+    # (A project in a directory of its repository: the record tells which the repository is.)
+    inside = dataclasses.replace(tree, project_dir=str(workdir / "site" / "pages"), workdir=str(path / "site" / "pages"))
+    assert _repository_of(tree) == str(workdir) and _repository_of(inside) == str(workdir)
+    assert _says_it_is(path, tree.id, _repository_of(inside))
+    # (Nor a worktree of that name of a repository this one lies in, or of one that lies in this one.)
+    for other in (workdir.parent, workdir / "site"):
+        (path / ".git").write_text(f"gitdir: {other.as_posix()}/.git/worktrees/{tree.id}\n", encoding="utf-8")
+        assert not _says_it_is(path, tree.id, _repository_of(inside))
+        assert not _says_it_is(path, tree.id, _repository_of(tree))
+    (path / ".git").write_text(f"gitdir: {workdir.as_posix()}/.git/worktrees/{tree.id}\n", encoding="utf-8")
+    # (A record whose directories do not tell which the repository was says nothing for any directory.)
+    odd = dataclasses.replace(tree, project_dir=str(workdir / "site"), workdir=str(path / "pages"))
+    assert _repository_of(odd) is None and not _says_it_is(path, tree.id, _repository_of(odd))
+    assert _repository_of(dataclasses.replace(tree, workdir=str(workdir))) is None
+    # (Nor is a directory anywhere but where the host keeps its worktrees removed, whatever it says, or empty as it may be.)
+    for what in ("says so", "empty"):
+        outside = tmp_path / "elsewhere" / what / tree.id
+        outside.mkdir(parents=True)
+        if what == "says so":
+            (outside / ".git").write_text(f"gitdir: {workdir.as_posix()}/.git/worktrees/{tree.id}\n", encoding="utf-8")
+        there = dataclasses.replace(tree, path=str(outside), workdir=str(outside))
+        assert await manager._remove_what_is_left(there) is None and outside.is_dir()
     # (One whose repository keeps its git directory elsewhere does not say which repository it is of.)
     (path / ".git").write_text(f"gitdir: {workdir.as_posix()}/modules/worktrees/{tree.id}\n", encoding="utf-8")
     assert not _says_it_is(path, tree.id, tree.project_dir)
@@ -2768,41 +2825,37 @@ async def test_a_worktree_the_user_kept_is_not_landed_while_its_project_is_being
 
 
 async def test_a_commission_is_not_put_down_as_done_under_a_run_that_began_as_its_end_was_written(hosts, tmp_path):
-    more = asyncio.Event()
-
-    async def wait_for_more() -> None:
-        await more.wait()
-
-    host, trees, workdir, one, two, members = await _two_members(
-        hosts, tmp_path,
-        second=[_write("links.txt", "repaired"), _report("links repaired"), [wait_for_more, *_report("the footer too")]],
+    host, trees, workdir, one, two, _members = await _two_members(
+        hosts, tmp_path, second=[_write("links.txt", "repaired"), _report("links repaired")]
     )
     manager = host.task_agents
     update_tree = host.ledger.update_tree
-    said: list[bool] = []
+    began: list[Any] = []
 
-    async def as_more_is_said(tree_id: str, **values: Any) -> Any:
-        if values.get("state") == "discarding" and not said:
-            # Landed, and about to be put down as done: the user says more to it at this very moment.
-            said.append(await manager.tell(two.commission_id, "and the footer too"))
+    async def as_a_run_begins(tree_id: str, **values: Any) -> Any:
+        if values.get("state") == "discarding" and not began:
+            # Landed, and about to be put down as done: its runtime begins a run by itself at this very
+            # moment (as when a command it left running ends), which nothing the host holds back stops.
+            began.append(manager._sessions[two.commission_id])
+            began[0].idle = False
         return await update_tree(tree_id, **values)
 
-    host.ledger.update_tree = as_more_is_said
+    host.ledger.update_tree = as_a_run_begins
     host.release.set()
-    await wait_until(lambda: len(members["broken links"].requests) >= 3, what="the run that began being at work")
-    deadline = asyncio.get_running_loop().time() + 15
-    while (await host.ledger.trees())[0].state != "active":
-        assert asyncio.get_running_loop().time() < deadline, "the landing did not give way"
-        await asyncio.sleep(0.02)
 
+    async def at_work_again() -> bool:
+        rows = await host.ledger.trees()
+        return bool(began) and bool(rows) and rows[0].state == "active"
+
+    await wait_until(at_work_again, what="the landing giving way")
     # Landed, and neither done nor without its worktree: the run that began goes on in it.
     (tree,) = await host.ledger.trees()
-    assert said == [True] and (await host.ledger.get(two.commission_id)).status == "working"
+    assert (await host.ledger.get(two.commission_id)).status == "working"
     assert trees.removed == [] and two.commission_id in manager._tree_of and manager._landing_ends == {}
     assert (workdir / "links.txt").exists() and len(await _events(host, two.commission_id, "landed")) == 1
-    more.set()
-    done = await wait_status(host, two.commission_id, "done")
-    assert "the footer too" in done.result_summary and "and the footer too" in _said_to(members["broken links"])
+    # That run is over, with nothing more said: landed as it stands, and done.
+    began[0].idle = True
+    await wait_status(host, two.commission_id, "done")
     assert await host.ledger.trees() == [] and trees.removed == [tree.id]
 
 
@@ -2859,9 +2912,9 @@ async def test_a_landing_gives_way_at_once_to_more_the_user_said_and_stops_nothi
     manager._end_what_it_started = ending
     # More was said to it by the time its changes are to be landed (as what tells a landing of that says).
     manager._stale = lambda commission_id, done: (said["more"] and commission_id == two.commission_id) or stale(commission_id, done)
+    gave_way = _gave_way(manager)
     host.release.set()
-    await wait_until(lambda: two.commission_id in manager._dones, what="the second one saying it is done")
-    await asyncio.sleep(0.8)
+    await wait_until(lambda: gave_way, what="its landing giving way")
 
     # Nothing it may have started for that was stopped, and nothing landed: at work, in its worktree.
     (tree,) = await host.ledger.trees()
@@ -2916,27 +2969,39 @@ async def test_nothing_is_said_to_a_commission_while_a_landing_writes_that_it_is
     transition = manager._reporter.transition
     kept_back: list[Any] = []
     saying: list[Any] = []
+    waiting = _waiting_for_its_end(manager)
     child = dataclasses.replace(await host.ledger.get(one.commission_id), parent_id=two.commission_id)
 
     async def as_more_is_said(commission_id: str, target: str, **kwargs: Any) -> Any:
         if commission_id == two.commission_id and target == "done":
             # Whether more was said to it was looked at a moment ago; this is said before the write is through.
-            del sent[:]
             live = manager._sessions[two.commission_id]
             kept_back.extend((live, live.settling))
             saying.append(asyncio.ensure_future(manager.tell(two.commission_id, "and the footer too")))
             saying.append(asyncio.ensure_future(manager._tell_parent(child, "done", "the footer is found")))
-            await asyncio.sleep(0.05)
+            # Each of them has come to where it waits for the write, and none is through.
+            await wait_until(lambda: len(waiting) == 3, timeout=5, what="all that is said having come to wait")
             assert not any(said.done() for said in saying)
         return await transition(commission_id, target, **kwargs)
 
+    update_tree = host.ledger.update_tree
+
+    async def as_it_is_put_down_as_one_to_remove(tree_id: str, **values: Any) -> Any:
+        if values.get("state") == "discarding":
+            # Earlier still: as its worktree is put on record as one that a host that starts would remove.
+            saying.append(asyncio.ensure_future(manager.tell(two.commission_id, "and the header as well")))
+            await wait_until(lambda: len(waiting) == 1, timeout=5, what="what is said having come to wait")
+            assert not saying[0].done()
+        return await update_tree(tree_id, **values)
+
+    host.ledger.update_tree = as_it_is_put_down_as_one_to_remove
     manager._reporter.transition = as_more_is_said
     host.release.set()
     await wait_status(host, two.commission_id, "done")
-    told, _ = await asyncio.wait_for(asyncio.gather(*saying), 5)
+    first, told, _ = await asyncio.wait_for(asyncio.gather(*saying), 5)
 
     # Not passed on, so it is work of its own; and no run of a commission that is done began.
-    assert told is False and (two.commission_id, "steer") not in sent
+    assert first is False and told is False and (two.commission_id, "steer") not in sent
     assert await _events(host, two.commission_id, "told") == []
     # What waits to be handed to its session was kept back meanwhile, as while the end of a run is looked at.
     live, settling = kept_back
@@ -2972,6 +3037,7 @@ async def test_what_was_being_said_to_a_commission_as_a_landing_began_to_write_t
     )
     manager = host.task_agents
     transition = manager._reporter.transition
+    waiting = _waiting_for_its_end(manager)
     saying, hold = await _being_said_as_its_end_is_written(host, trees, two)
 
     async def as_it_is_put_on_record(commission_id: str, target: str, **kwargs: Any) -> Any:
@@ -2979,8 +3045,8 @@ async def test_what_was_being_said_to_a_commission_as_a_landing_began_to_write_t
             # What was said is on record now, and is about to be steered in: the write is under way.
             del sent[:]
             hold.set()
-            await asyncio.sleep(0.05)
-            assert not saying.done()
+            await wait_until(lambda: waiting, timeout=5, what="what was being said having come to wait")
+            assert not saying.done() and len(await _events(host, two.commission_id, "told")) == 1
         return await transition(commission_id, target, **kwargs)
 
     manager._reporter.transition = as_it_is_put_on_record
@@ -2996,6 +3062,7 @@ async def test_what_was_kept_back_while_a_landing_was_to_write_that_a_commission
     )
     manager = host.task_agents
     end, stale = manager._end, manager._stale
+    waiting = _waiting_for_its_end(manager)
     saying, hold = await _being_said_as_its_end_is_written(host, trees, two)
     first = manager._dones[two.commission_id]
     ending: list[str] = []
@@ -3005,7 +3072,7 @@ async def test_what_was_kept_back_while_a_landing_was_to_write_that_a_commission
             # It went on meanwhile (as what tells a landing of that says): its end is not written after all.
             ending.append(status)
             hold.set()
-            await asyncio.sleep(0.05)
+            await wait_until(lambda: waiting, timeout=5, what="what was being said having come to wait")
             assert not saying.done()
         return await end(commission_id, status, *args, **kwargs)
 
@@ -3029,19 +3096,21 @@ async def test_what_did_not_land_is_not_settled_under_a_run_that_began_while_it_
     merge_back = trees.merge_back
 
     async def clashing(worktree: Any, landing: Any = None) -> Any:
-        # More is said to it while the merge runs (as what tells a landing of that says); the merge clashes.
-        await merge_back(worktree, landing)
+        # More is said to it while the merge runs (as what tells a landing of that says); the merge
+        # clashes, which changes nothing in the project.
+        del landing
         merged.append(worktree.id)
         return MergeResult("conflict", conflicts=("links.txt",))
 
     trees.merge_back = clashing
     manager._stale = lambda commission_id, done: bool(merged) or stale(commission_id, done)
+    gave_way = _gave_way(manager)
     host.release.set()
-    await wait_until(lambda: merged, what="the merge")
-    await asyncio.sleep(0.6)
+    await wait_until(lambda: gave_way, what="its landing giving way")
 
     # Neither sent back to merge what clashed nor put down as stuck: at work, in its worktree, on what was added.
     (tree,) = await host.ledger.trees()
+    assert merged == [tree.id] and not (workdir / "links.txt").exists()
     assert (tree.state, tree.rounds) == ("active", 0) and trees.prepared == []
     assert (await host.ledger.get(two.commission_id)).status == "working"
     assert await _events(host, two.commission_id, "landing_conflict") == []
@@ -3288,3 +3357,77 @@ async def test_a_worktree_the_user_kept_is_not_landed_where_it_cannot_be_read_wh
     finally:
         host.ledger.find_sessions = find_sessions
     assert trees.merged == [] and (await host.ledger.get_tree(tree.id)).state == "kept"
+
+
+async def test_what_is_left_of_a_discarded_worktree_is_still_removed_where_only_its_empty_directory_stayed(hosts, tmp_path, monkeypatch):
+    from nekopower.host import tree_work
+
+    clash = MergeResult("conflict", conflicts=("links.txt",))
+    host, trees, workdir, two, _members, _stuck = await _not_landed(hosts, tmp_path, [clash] * 4, turns=4)
+    (tree,) = await host.ledger.trees()
+    manager = host.task_agents
+    path = Path(tree.path)
+    (path / ".git").write_text(f"gitdir: {workdir.as_posix()}/.git/worktrees/{tree.id}\n", encoding="utf-8")
+    shutil.rmtree(workdir)
+    manager._trees_mine.clear()
+    manager._tree_handles.clear()
+    trees.fail_open = True
+    # All in it goes, the file that says whose it is last; the directory itself is in use (a shell stands in it).
+    remove_empty = tree_work._remove_empty
+    monkeypatch.setattr(tree_work, "_remove_empty", lambda _path: None)
+
+    assert await host.discard_worktree(tree.id) == {"removed": False}
+    assert (await host.ledger.get_tree(tree.id)).state == "discarding" and path.is_dir() and list(path.iterdir()) == []
+    # Nothing says whose it is any more, and it is not forgotten for that: tried again as the host next starts.
+    assert await manager.reconcile_trees() == {"removed": [], "kept": []}
+    assert (await host.ledger.get_tree(tree.id)).state == "discarding" and path.is_dir()
+
+    monkeypatch.setattr(tree_work, "_remove_empty", remove_empty)
+    assert await manager.reconcile_trees() == {"removed": [tree.id], "kept": []}
+    assert await host.ledger.trees() == [] and not path.exists()
+
+
+async def test_what_did_not_land_with_no_round_left_is_not_settled_under_what_the_user_said_while_it_was_merged(hosts, tmp_path):
+    from config import nekopower_settings as settings
+
+    start, more = asyncio.Event(), asyncio.Event()
+
+    async def wait_to_start() -> None:
+        await start.wait()
+
+    async def wait_for_more() -> None:
+        await more.wait()
+
+    host, trees, workdir, one, two, members = await _two_members(
+        hosts, tmp_path,
+        second=[
+            [wait_to_start, *_write("links.txt", "mine")], _report("links repaired"),
+            [wait_for_more, *_report("the footer too")],
+        ],
+    )
+    manager = host.task_agents
+    await wait_until(lambda: len(members["broken links"].requests) >= 1, what="the second one being at work")
+    (tree,) = await host.ledger.trees()
+    # It was sent back to merge what clashed as often as it may be.
+    await host.ledger.update_tree(tree.id, rounds=settings.LANDING_CONFLICT_ROUNDS)
+    gave_way = _gave_way(manager)
+    clash = MergeResult("conflict", conflicts=("links.txt",))
+    trees.results = [clash]
+    trees.gate = asyncio.Event()
+    host.release.set()
+    start.set()
+    await asyncio.wait_for(trees.merging.wait(), 15)
+    # The user says more to it while its changes are merged: a run begins in its worktree; the merge clashes.
+    assert await manager.tell(two.commission_id, "and the footer too")
+    await wait_until(lambda: len(members["broken links"].requests) >= 3, what="the run that began being at work")
+    trees.gate.set()
+    await wait_until(lambda: gave_way, what="its landing giving way")
+
+    # Not put down as stuck, with no round left though: at work on what was said, in its worktree.
+    assert (await host.ledger.get(two.commission_id)).status == "working"
+    assert await _events(host, two.commission_id, "not_landed") == [] and trees.prepared == []
+    assert (await host.ledger.get_tree(tree.id)).state == "active" and not (workdir / "links.txt").exists()
+    # Landed once that run is over.
+    more.set()
+    done = await wait_status(host, two.commission_id, "done")
+    assert "the footer too" in done.result_summary and (workdir / "links.txt").read_text() == "mine"

@@ -145,14 +145,39 @@ class _Quiet:
     go: asyncio.Event = dataclasses.field(default_factory=asyncio.Event)
 
 
-def _says_it_is(path: Path, name: str, project_dir: str) -> bool:
-    """Whether a directory holds the ``.git`` file of the git worktree called ``name`` of the repository ``project_dir`` is in.
+def _repository_of(row: Tree) -> str | None:
+    """Return the root of the repository a worktree was made from, as its record tells; None where it does not.
+
+    The directory of its project, less the path the project has in the
+    repository (which is the path the directory worked in has in the
+    worktree).
+    """
+    try:
+        inside = Path(row.workdir).relative_to(row.path).parts
+    except ValueError:
+        return None
+    if not inside:
+        return row.project_dir
+    project = Path(row.project_dir).parts
+    if len(project) <= len(inside) or [os.path.normcase(part) for part in project[-len(inside) :]] != [
+        os.path.normcase(part) for part in inside
+    ]:
+        return None
+    return str(Path(*project[: -len(inside)]))
+
+
+def _says_it_is(path: Path, name: str, repository: str | None) -> bool:
+    """Whether a directory holds the ``.git`` file of the git worktree called ``name`` of the repository at ``repository``.
 
     Git writes ``gitdir: <repository>/.git/worktrees/<name>`` into a
-    worktree. One of the same name of another repository is not it; nor
-    is one whose repository that line does not tell (it keeps its git
-    directory elsewhere): not known to be it, it is left alone.
+    worktree. One of the same name of another repository is not it
+    (be that one beside the repository, or one the repository lies
+    in); nor is one whose repository that line does not tell (it keeps
+    its git directory elsewhere), or where the record does not tell
+    which the repository was: not known to be it, it is left alone.
     """
+    if repository is None:
+        return False
     try:
         said = (path / ".git").read_text(encoding="utf-8", errors="replace").strip()
     except OSError:
@@ -162,11 +187,23 @@ def _says_it_is(path: Path, name: str, project_dir: str) -> bool:
     parts = Path(said[len("gitdir:") :].strip()).parts
     if len(parts) < 4 or parts[-3:] != (".git", "worktrees", name):
         return False
-    repository, project = (os.path.normcase(os.path.realpath(found)) for found in (Path(*parts[:-3]), project_dir))
+    return os.path.normcase(os.path.realpath(Path(*parts[:-3]))) == os.path.normcase(os.path.realpath(repository))
+
+
+def _is_empty(path: Path) -> bool:
+    """Whether a directory is there with nothing in it."""
     try:
-        return os.path.commonpath([repository, project]) == repository
-    except ValueError:  # on different drives
+        return not any(path.iterdir())
+    except OSError:
         return False
+
+
+def _remove_empty(path: Path) -> None:
+    """Remove a directory that has nothing in it; one that cannot be removed (it is in use) is left."""
+    try:
+        os.rmdir(path)
+    except OSError:
+        pass
 
 
 def _remove_entry(entry: Path) -> None:
@@ -456,13 +493,22 @@ class TreeWork:
         Returns whether it went; None for a directory that is not the
         worktree's any more, which is left where it is. Only one that
         still says it is that worktree is removed (the ``.git`` file git
-        put into it names it, and the repository it is of): another
-        directory put in its place since is not what the user discarded.
+        put into it names it, and the repository it is of), or one with
+        nothing in it: another directory put in its place since is not
+        what the user discarded.
         """
         base, path = self._paths.worktrees_dir(), Path(row.path)
 
         def remove() -> bool:
-            if not (_same_dir(str(path.parent), str(base)) and _says_it_is(path, row.id, row.project_dir)):
+            if not _same_dir(str(path.parent), str(base)):
+                return False
+            if _is_empty(path):
+                # All of it went, and the directory itself did not (it was in use, or the host ended
+                # just then): nothing is lost with an empty directory, whoever made it. One that
+                # still cannot be removed stays on record as one to remove.
+                _remove_empty(path)
+                return True
+            if not _says_it_is(path, row.id, _repository_of(row)):
                 return False
             # The file that says whose the directory is goes last, with the directory: where
             # something of it is in use and stays, what is left still says so when this is
@@ -472,7 +518,8 @@ class TreeWork:
                     if entry.name != ".git":
                         _remove_entry(entry)
                 if all(entry.name == ".git" for entry in path.iterdir()):
-                    shutil.rmtree(path, True)
+                    _remove_entry(path / ".git")
+                    _remove_empty(path)
             except OSError:
                 pass
             return True
@@ -1313,19 +1360,22 @@ class TreeWork:
             # directory goes is a new commission's, and no run begins in it. Not done under a
             # run that began while its end was being written (``unless``): that one goes on in
             # the worktree, which stays.
-            if not result.skipped:
-                # On record as one to remove from here on (what it held is landed): shown nowhere,
-                # in nobody's way, and removed as the host next starts should it end this moment.
-                await self._ledger.update_tree(row.id, state="discarding")
-            # Whether more was said to it is looked at once, as its end is about to be written
-            # (``unless``); from here until it is written nothing more is said to its session:
-            # what the user says waits (``tell``), and so does what is handed on to it, as while
-            # the end of a run is looked at (``settling``).
+            # Nothing was said to it since it said it is done (looked at above, and nothing was
+            # awaited since). From here until its end is written nothing more is said to its
+            # session: what the user says waits (``tell``), and so does what is handed on to it,
+            # as while the end of a run is looked at (``settling``). Its worktree is put down as
+            # one to remove only with that in place: no run begins in one that a host that
+            # starts would remove.
             written = self._landing_ends[commission_id] = asyncio.get_running_loop().create_future()
             live = self._sessions.get(commission_id)
             if live is not None:
                 live.settling += 1
             try:
+                if not result.skipped:
+                    # On record as one to remove from here on (what it held is landed): shown nowhere,
+                    # in nobody's way, and removed as the host next starts should it end this moment.
+                    await self._ledger.update_tree(row.id, state="discarding")
+                # (``unless``: a run its runtime began by itself meanwhile, which nothing here holds back.)
                 ended = await self._end(
                     commission_id, "done", reason=done.reason, text=text,
                     shown="\n\n".join(part for part in (done.text, shown) if part) if shown else None,
