@@ -40,6 +40,7 @@ from plugin.sdk.shared.permissions.runtime import PERMISSIONS_UPDATE
 from plugin.core.entry_executor import EntryExecutor, execute_entry_command
 from plugin.core.entry_points import normalize_plugin_entry_point, plugin_package_matches_directory
 from plugin.core.model_gateway_access import model_gateway_access
+from plugin.core.rpc import request_deadline
 from plugin.core.state import state
 from plugin.core.source_imports import ensure_plugins_namespace as _ensure_plugins_namespace
 from plugin.logging_config import logger
@@ -1707,6 +1708,16 @@ def _plugin_process_runner(
                     ret.update(success=True, data={"state": {}, "actions": actions})
                     return
                 provider_budget = _ui_context_provider_budget(msg.get("timeout"))
+                # The caller's clock started when it sent the request, not when this process read
+                # it: a busy process reads late, and that wait must come out of the provider's share.
+                deadline = request_deadline(msg, None)
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    provider_budget = (
+                        min(provider_budget, _ui_context_provider_budget(remaining))
+                        if remaining >= _UI_CONTEXT_MIN_SENSIBLE_BUDGET
+                        else 0.0
+                    )
 
                 provider = ui_context_map.get(context_id)
                 if provider is None:
