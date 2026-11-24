@@ -3260,4 +3260,6 @@ async def test_a_member_with_too_much_waiting_does_not_get_what_goes_on_with_its
     assert (session.id, placed.beside_leader) == (leader, None)
     (decided,) = await _events(host, commission.id, "orchestrated")
     assert decided["placed"] == {"action": "to_leader", "session": leader}
+    # (What is on record is why it was sent to the member; no project got a leader for being busy.)
+    assert decided["reason"] == "named"
     assert await _events(host, commission.id, "leader_derived") == []

@@ -549,6 +549,13 @@ def named_member(sentence: str, members: Sequence[Agent], bars: Bars, project: s
     return None if best is None or tied else best[1]
 
 
+def _title_in(agent: Agent, words: str) -> bool:
+    """Whether the title on a task agent's card is in these words."""
+    from nekopower.host.space import name_occurs
+
+    return bool(agent.title) and name_occurs(agent.title, words)
+
+
 def clear_member(sentence: str, members: Sequence[Agent], bars: Bars, project: str = "") -> Agent | None:
     """Return the member whose own work a sentence plainly goes on with, or None.
 
@@ -622,11 +629,14 @@ def settle(
             if sentence and _has("fresh_start", sentence):
                 # A new one was asked for: the leader's to start, whichever member the words fit.
                 return verdict(TO_LEADER, project=project.name, relation=relation)
-            # A member the user names by its title is their choice, whatever it can do.
-            at = target if target is not None and target in working and layer == LAYER_RULES else None
+            # A member the user names by its title is their choice, whatever it can do: the one
+            # named in the user's own words before one named in what was dispatched.
+            at = named_member(said, working, bars, project.name) if said else None
+            if at is None and target is not None and target in working and layer == LAYER_RULES:
+                at = target
             if at is None:
                 at = named_member(sentence, working, bars, project.name)
-            if at is not None and not at.changes_files and named_member(said or sentence, [at], bars, project.name) is None:
+            if at is not None and not at.changes_files and not _title_in(at, said or sentence):
                 # Named in what was dispatched and not by the user: nobody chose it for this.
                 at = None
             if at is None:

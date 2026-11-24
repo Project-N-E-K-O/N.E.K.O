@@ -365,6 +365,15 @@ def test_doing_it_over_from_the_start_is_not_asking_for_another_task_agent():
     ):
         part = orch.by_rules(text, "", standing, bars)
         assert part is not None and (part.action, part.agent) == (orch.CONTINUE, "writer")
+    # Nor is beginning it again, in Chinese: said of the thing, as "from scratch" is.
+    for text in ("让 Report Writer 把那份周报重新开始写一遍", "Report Writer 重新开个头", "請 Report Writer 重新開一下那個本地服務"):
+        begun = orch.by_rules(text, "", standing, bars)
+        assert begun is not None and (begun.action, begun.agent) == (orch.CONTINUE, "writer"), text
+    # (With nobody named, such a sentence is left to the retrieval and is not a new matter by rule.)
+    assert orch.by_rules("把那份周报重新开始写一遍", "", standing, bars) is None
+    for text in ("另开一只来写周报，不要 Report Writer", "重新开一只写周报，不用 Report Writer", "重新開一隻來寫週報"):
+        other = orch.by_rules(text, "", standing, bars)
+        assert other is not None and (other.action, other.agent) == (orch.SUMMON_STRAY, None), text
     # Asking for another one is still that, whoever is named.
     for text in (
         "start a new agent for what Report Writer did",
@@ -499,6 +508,26 @@ def test_what_plainly_goes_on_with_a_members_work_goes_to_it_beside_the_leader()
     assert goes("Ask Page painter in shop for an update\nhow is the shop coming along", standing=titled, said="how is the shop coming along") == (
         orch.CONTINUE, "painter", True,
     )
+    # Of two that are named, the one in the user's own words has it, not the longer title she wrote.
+    finder = orch.Agent(id="finder", project="shop", preset="scout", title="Colour finder of the pages", changes_files=False)
+    two = orch.Standing(projects=(project,), agents=(lead, finder, painter))
+    assert goes(
+        "Ask Colour finder of the pages what Page painter did in shop\nwhat did Page painter do", standing=two,
+        said="what did Page painter do",
+    ) == (orch.CONTINUE, "painter", True)
+    # A member the user names has it though its title is in the project's name (which the words
+    # of a sentence that names only the project would not be held to name).
+    daily = orch.ProjectView(name="daily report", leader="lead")
+    reader = orch.Agent(id="reader", project="daily report", preset="scout", title="report", changes_files=False)
+    reports = orch.Standing(projects=(daily,), agents=(reader,))
+    asked = orch.by_rules("ask report for the numbers of yesterday", "ask report for the numbers of yesterday", reports, bars)
+    assert (asked.action, asked.agent, asked.direct) == (orch.CONTINUE, "reader", True)
+    # To begin a thing again is no call for a new task agent: it is said of the thing.
+    again_at = orch.by_rules("商店网站的 Page painter 重新开始做横幅", "", orch.Standing(
+        projects=(orch.ProjectView(name="商店网站", leader="lead"),),
+        agents=(orch.Agent(id="p", project="商店网站", preset="worker", title="Page painter"),),
+    ), bars)
+    assert (again_at.action, again_at.agent, again_at.direct) == (orch.CONTINUE, "p", True)
     # A new one that is asked for is the leader's to start, whichever member the words fit.
     anew = "in shop, start a new agent to swap the banner and the carousel on the home page for the new year layout"
     assert goes(anew) == (orch.TO_LEADER, None, False)

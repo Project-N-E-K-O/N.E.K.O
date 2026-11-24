@@ -300,12 +300,20 @@ class Families:
         leader hands it out.)
         """
         if self._changes is None:
-            return session.preset in _WORKING_PRESETS
+            # Nobody to ask of its template: as the preset that comes with the program has it.
+            from nekopower.host.templates import builtin_templates
+
+            builtin = builtin_templates().get(session.preset)
+            return builtin is not None and builtin.changes_files
         try:
             return bool(await self._changes(session))
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - its template cannot be used: it is not sent work so
+            logger.warning(
+                "whether member %s can change files could not be told; nothing goes to it beside its leader",
+                session.id, exc_info=True,
+            )
             return False
 
     async def _all_compared(self, commission: Commission, project: str, standing: Standing) -> bool:
@@ -430,8 +438,10 @@ class Families:
                 # (Not one that was sent to the member knowing of the leader: ``Verdict.direct``.)
                 session, project, action, moved = None, session.project, orch.TO_LEADER, True
             elif session.kind == "line" and session.project and await self._busy(session):
-                # The member it would go on in has too much waiting: the project gets a leader.
+                # The member it would go on in has too much waiting: the project gets a leader, or
+                # the leader it has hands the commission out.
                 session, project, action, moved = None, session.project, orch.TO_LEADER, True
+                # (The reason goes with ``leader_derived``, which is written only where one is made.)
                 verdict = replace(verdict, reason=LEADER_BUSY)
             else:
                 in_project = session.project if session.kind in PROJECT_KINDS else None

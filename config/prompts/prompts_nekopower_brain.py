@@ -1464,8 +1464,11 @@ REFERS_BACK_PATTERNS = (
 )
 
 # Words by which the user asks for a new task agent rather than one that is there.
+# Not words that say the work is to be begun again ("from scratch", and the
+# Chinese for "begin again", which starts with the same two characters as
+# "open another"): those are said of the thing more often than of who does it.
 FRESH_START_PATTERNS = (
-    r"另开|另開|新开一|新開一|另起|单独开|單獨開|换一只|換一隻|不要接着|不要接著|重新开|重新開",
+    r"另开|另開|(?<!重)新[开開]一|另起|单独开|單獨開|换一只|換一隻|不要接着|不要接著|重新[开開]一[只隻]",
     r"\b(?:start\s+a\s+new\s+(?:one|(?:task\s+)?agent|sub-?agent|session|familiar)|a\s+fresh\s+one|a\s+separate\s+(?:one|agent|session)|do\s+not\s+continue|don['’]t\s+continue)\b",
     r"新しく別の|別のを立ち上げ",
     r"새로\s*하나|따로\s*하나",
