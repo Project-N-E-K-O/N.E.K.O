@@ -165,7 +165,8 @@
         }
         return data;
     }
-    function report(error) { status.textContent = error.message; }
+    // A connection error must not hide that the form is still out of date.
+    function report(error) { status.textContent = formStale ? `${error.message} ${staleFormText()}` : error.message; }
     async function run(action) {
         const saving = typeof isApiSettingsSaveBusy === 'function'
             ? isApiSettingsSaveBusy() : typeof _apiSaveInProgress !== 'undefined' && _apiSaveInProgress;
@@ -208,9 +209,11 @@
         formStale = loaded === false;
         return !formStale;
     };
+    function staleFormText() {
+        return t('reloadFailed', 'The change was saved, but this page could not reload the settings. Reopen the page before saving anything else.');
+    }
     function reportStaleForm() {
-        if (!formStale) return;
-        status.textContent = t('reloadFailed', 'The change was saved, but this page could not reload the settings. Reopen the page before saving anything else.');
+        if (formStale) status.textContent = staleFormText();
     }
     enabled.addEventListener('change', () => {
         const requested = enabled.checked;

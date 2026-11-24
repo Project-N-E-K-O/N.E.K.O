@@ -404,6 +404,13 @@ test('a saved toggle whose settings reload fails says so instead of reporting a 
     // The enabled-subscription poll keeps the warning instead of "enabled and saved".
     await ui.timer();
     assert.match(ui.nodes.status.textContent, /could not reload the settings/);
+    // A failing poll shows its error and still the warning.
+    ui.setState(new Error('status offline'));
+    await ui.timer();
+    assert.match(ui.nodes.status.textContent, /status offline/);
+    assert.match(ui.nodes.status.textContent, /could not reload the settings/);
+    ui.setState(signedIn);
+    await ui.timer();
     // A successful reload from an ordinary save clears it too.
     ui.window.listeners['neko:api-settings-loaded']();
     await flush();
