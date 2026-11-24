@@ -15,9 +15,10 @@
 
 """PR-only check: frontend i18n locale files must be modified in lockstep.
 
-Three kinds of group, one rule each. Diff is computed against the merge-base of HEAD
-and the base ref (default ``origin/main``). On a regular ``main`` push or
-when nothing in the watched folders changed, this script is a no-op.
+Three kinds of group, one rule each. Diff is computed against the
+merge-base of HEAD and the base ref (default ``origin/main``). On a regular
+``main`` push or when nothing in the watched folders changed, this script is
+a no-op.
 
 Group 1 — static/locales/*.json
    When ANY file in static/locales/ changes, ALL 8 language files must
@@ -102,9 +103,14 @@ GROUPS: list[dict[str, object]] = [
 ]
 
 
-def _expand_groups(groups: list[dict[str, object]]) -> list[dict[str, object]]:
-    """Replace each ``<dir>/*`` group with one group per matching subdirectory."""
-    explicit = {str(g["dir"]).rstrip("/") for g in groups if not str(g["dir"]).endswith("/*")}
+def _expand_groups(
+    groups: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Replace each ``<dir>/*`` group with one per matching subdirectory."""
+    explicit = {
+        str(g["dir"]).rstrip("/")
+        for g in groups if not str(g["dir"]).endswith("/*")
+    }
     expanded: list[dict[str, object]] = []
     for group in groups:
         pattern = str(group["dir"])
@@ -118,9 +124,13 @@ def _expand_groups(groups: list[dict[str, object]]) -> list[dict[str, object]]:
         files = list(group["files"])  # type: ignore[arg-type]
         for child in sorted(p for p in parent_path.iterdir() if p.is_dir()):
             rel = f"{parent}/{child.name}"
-            if rel in explicit or not any((child / name).is_file() for name in files):
+            if rel in explicit:
                 continue
-            expanded.append({**group, "name": f"{group['name']} {child.name}/", "dir": rel})
+            if not any((child / name).is_file() for name in files):
+                continue
+            expanded.append(
+                {**group, "name": f"{group['name']} {child.name}/", "dir": rel}
+            )
     return expanded
 
 

@@ -111,6 +111,7 @@ def test_locales_dir_keeps_hunk_alignment(repo, capsys):
 
 
 def test_every_split_dir_of_the_repository_is_discovered(monkeypatch):
+    # Guard rail on the real tree: renaming one of these dirs should update this list.
     monkeypatch.setattr(SYNC, "REPO_ROOT", PROJECT_ROOT)
     dirs = {str(group["dir"]) for group in SYNC._expand_groups(SYNC.GROUPS)}
     for name in SPLIT_DIRS:
