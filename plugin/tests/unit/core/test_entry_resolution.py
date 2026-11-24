@@ -542,6 +542,17 @@ def test_a_lazy_non_data_descriptor_is_not_evaluated(tmp_path):
     assert evaluated == []
 
 
+def test_a_singledispatchmethod_still_resolves(tmp_path):
+    @neko_plugin
+    class Dispatching(NekoPluginBase):
+        @functools.singledispatchmethod
+        async def dispatch(self, value: object, **_: Any) -> str:
+            return "object"
+
+    executor, _instance, _logger = _runtime(tmp_path, instance=Dispatching(_ctx(tmp_path)), manifest=["dispatch"])
+    assert _resolve(executor, "dispatch") is not None
+
+
 def test_partialmethod_aliases_of_declared_members_are_not_resolved(tmp_path):
     @neko_plugin
     class Aliases(NekoPluginBase):

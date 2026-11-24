@@ -177,6 +177,9 @@ class EntryExecutor:
         # apart: _prune_output_checks drops ids that are not registered,
         # which these never are.
         self._deprecation_warned: dict[tuple[str, str], tuple[float, int]] = {}
+        # Collection-failure warnings, per id: kept apart so many failing ids
+        # cannot reset the deprecation records above.
+        self._collection_warned: dict[tuple[str, str], tuple[float, int]] = {}
 
     def _output_check(self, event_id: str, meta: object) -> OutputCheck | None:
         if len(self._output_checks) > len(self._metadata):
@@ -355,7 +358,7 @@ class EntryExecutor:
                 f"collection_failed:{type(exc).__name__}",
                 f"Plugin entry collection failed while resolving entry={event_id[:64]!r}: "
                 f"error_type={type(exc).__name__}",
-                records=self._deprecation_warned,
+                records=self._collection_warned,
             )
             return False
         return True

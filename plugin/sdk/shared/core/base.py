@@ -36,22 +36,31 @@ from .types import InputSchema, PluginContextProtocol, RouterProtocol
 DEFAULT_PLUGIN_VERSION = "0.0.0"
 
 
+_METHOD_LOOKUPS = (
+    types.FunctionType,
+    functools.partialmethod,
+    functools.singledispatchmethod,
+    staticmethod,
+    classmethod,
+)
+
+
 def is_computed_attribute(instance: object, name: str) -> bool:
     """Whether reading ``name`` would run descriptor code.
 
     Judged on the class attribute, so a cached property whose value already
-    sits in the instance ``__dict__`` still counts. Functions,
-    ``partialmethod``, ``staticmethod`` and ``classmethod`` are plain method
-    lookups; any other descriptor on the class (property, cached properties,
-    lazy loaders, data descriptors) is computed and is not evaluated just
-    because its name was called. Instance attributes and names a class
-    ``__getattr__`` provides are not computed.
+    sits in the instance ``__dict__`` still counts. Functions and the method
+    wrappers in ``_METHOD_LOOKUPS`` are plain method lookups; any other
+    descriptor on the class (property, cached properties, lazy loaders, data
+    descriptors) is computed and is not evaluated just because its name was
+    called. Instance attributes and names a class ``__getattr__`` provides
+    are not computed.
     """
     try:
         static = inspect.getattr_static(type(instance), name)
     except AttributeError:
         return False
-    if isinstance(static, (types.FunctionType, functools.partialmethod, staticmethod, classmethod)):
+    if isinstance(static, _METHOD_LOOKUPS):
         return False
     return hasattr(type(static), "__get__")
 
