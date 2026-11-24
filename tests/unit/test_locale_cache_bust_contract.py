@@ -66,6 +66,7 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-11-23-emote-maker-frontend-sync",
         "2026-11-22-emote-maker-model-memory-sync",
         "2026-11-22-star-map-cooldown-after-key-cleanup",
         "2026-11-22-emote-maker-bailian-sync",
@@ -619,7 +620,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "fafeaeb9fbd5e3693d14aa98150e952632546ee4a565a029f8b88b2d5f2e0c20"
+LOCALE_KEY_SIGNATURE = "03b2b19840e63d0579abd8cca65531e3e8e3e7da0dc2ca1753e46c7c48cdd3cc"
 
 
 _BUMP_INSTRUCTIONS = (

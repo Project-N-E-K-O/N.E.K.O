@@ -1,5 +1,7 @@
 """The license gates built-in activation, without restricting local imports."""
+import io
 import re
+import zipfile
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -13,31 +15,43 @@ pytestmark = [pytest.mark.template_license, pytest.mark.usefixtures("emote_templ
 KEY = "builtin:license-test"
 
 
-def _builtin(page, *, hooks=False):
+def _builtin(page, *, hooks=False, deferred=None, shortcut_spies=False):
     archive = spine_zip()
     package = inspect_spine_zip(archive, filename="license-test.zip")
     package["id"] = KEY
     package["source"].update(packageId=KEY, builtIn=True)
     downloads = []
-    page.route("**/api/emote-maker/builtins", lambda route: route.fulfill(
-        json={"success": True, "packages": [package]}))
+    def builtin_response(route):
+        def respond(include_package=True):
+            route.fulfill(json={"success": True, "packages": [package] if include_package else []})
+        if deferred is None:
+            respond()
+        else:
+            deferred.append(respond)
+
+    page.route("**/api/emote-maker/builtins", builtin_response)
 
     def download(route):
-        if parse_qs(urlsplit(route.request.url).query).get("key") != [KEY]:
+        if route.request.method != 'GET' or parse_qs(urlsplit(route.request.url).query).get("key") != [KEY]:
             route.continue_()
             return
         downloads.append(route.request.url)
         route.fulfill(body=archive, content_type="application/zip")
 
     page.route("**/api/emote-maker/library/archive?*", download)
-    if hooks:
+    if hooks or shortcut_spies:
         source = (Path(__file__).resolve().parents[2] / "static/js/emote_maker.js").read_text(encoding="utf-8")
+        if shortcut_spies:
+            for name, marker in [('save', '    async function downloadPng() {'),
+                                 ('undo', '    function undo() {'), ('redo', '    function redo() {')]:
+                assert source.count(marker) == 1
+                source = source.replace(marker, marker + f"\n        window.licenseShortcutCalls ??= {{}}; window.licenseShortcutCalls.{name} = (window.licenseShortcutCalls.{name} || 0) + 1; return;")
         marker = "    if (document.readyState === 'loading') {"
         assert source.count(marker) == 1
         injected = """    window.licenseTest = {
             tryRestoreTemplateFromArchive, applyTemplateFromRegistryNow, importTemplateFileNow,
             cache: () => loadedTemplates.set('builtin:license-test', {
-                pkg: builtinTemplates.get('builtin:license-test'), store: {},
+                pkg: builtinTemplates.get('builtin:license-test'), store: {release() {}},
             }),
             pkg: () => builtinTemplates.get('builtin:license-test'),
         };
@@ -95,6 +109,11 @@ def test_builtin_activation_requires_the_acknowledgement_button(page, running_se
     expect(page.locator("#animation-list .animation-card")).to_have_count(2)
     assert len(downloads) == 1
     page.screenshot(path=str(tmp_path / "template-license-icon.png"), animations="disabled")
+    page.evaluate("window.changeLanguage('es')")
+    info.click()
+    expect(dialog).to_be_visible()
+    expect(dialog.locator("form button")).to_have_text("Cerrar")
+    dialog.locator("form button").click()
 
 
 def test_declining_allows_importing_a_user_template(page, running_server):
@@ -125,19 +144,87 @@ def test_reopening_and_cached_restore_paths_require_acknowledgement(page, runnin
     page.goto(running_server + "/emote_maker", wait_until="networkidle")
     dialog = page.locator("#builtin-template-license")
     expect(dialog).to_be_visible()
-    assert page.evaluate("""async () => {
+    archive = list(spine_zip())
+    assert page.evaluate("""async bytes => {
         const gate = window.licenseTest;
         gate.cache();
         return await gate.tryRestoreTemplateFromArchive('builtin:license-test') === false
             && await gate.applyTemplateFromRegistryNow('builtin:license-test') === false
-            && await gate.importTemplateFileNow(new File([''], 'test.zip'), {
-                builtinPackage: gate.pkg(), restoreKey: 'builtin:license-test',
+            && await gate.importTemplateFileNow(new File([new Uint8Array(bytes)], 'test.zip'), {
+                builtinPackage: gate.pkg(), restoreKey: 'builtin:license-test', fromArchive: true,
             }) === false;
-    }""")
+    }""", archive)
     assert downloads == []
     page.locator("#builtin-license-acknowledge").click()
     expect(dialog).to_be_hidden()
+    assert page.evaluate("""bytes => window.licenseTest.importTemplateFileNow(
+        new File([new Uint8Array(bytes)], 'test.zip'), {
+            builtinPackage: window.licenseTest.pkg(), restoreKey: 'builtin:license-test', fromArchive: true,
+        })""", archive)
     page.reload(wait_until="networkidle")
     expect(dialog).to_be_visible()
     expect(page.locator("body")).not_to_have_class(re.compile(r"\beditor-has-template\b"))
     assert downloads == []
+
+
+@pytest.mark.parametrize("choice", ["cancel", "select"])
+def test_startup_license_waits_for_resource_selection(page, running_server, choice):
+    pending = []
+    downloads = _builtin(page, deferred=pending)
+    page.goto(running_server + "/emote_maker", wait_until="domcontentloaded")
+    stream = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(spine_zip())) as old, zipfile.ZipFile(stream, "w") as new:
+        for path in old.namelist():
+            new.writestr(path, old.read(path))
+        new.writestr("assets/second.json", old.read("assets/character.json"))
+    page.set_input_files("#template-archive-file", {
+        "name": "multiple.zip", "mimeType": "application/zip", "buffer": stream.getvalue(),
+    })
+    resource = page.locator(".emote-template-resource-choice")
+    expect(resource).to_be_visible()
+    assert len(pending) == 1
+    pending[0]()
+    expect(page.locator('[data-template-built-in="true"]')).to_have_count(1)
+    dialog = page.locator("#builtin-template-license")
+    expect(dialog).to_be_hidden()
+    if choice == "select":
+        resource.locator("select").select_option("assets/second.json")
+        resource.locator(".emote-confirm-ok").click()
+    else:
+        resource.locator(".emote-confirm-cancel").click()
+    expect(resource).to_have_count(0)
+    expect(dialog).to_be_visible()
+    expect(page.locator("#builtin-license-acknowledge")).to_be_enabled()
+    expect(dialog.locator("form button")).to_be_enabled()
+    dialog.locator("form button").click()
+    expect(dialog).to_be_hidden()
+    assert downloads == []
+
+
+def test_empty_builtin_list_does_not_show_a_deferred_prompt(page, running_server):
+    pending = []
+    _builtin(page, deferred=pending)
+    page.goto(running_server + "/emote_maker", wait_until="domcontentloaded")
+    expect(page.locator("#builtin-template-license")).to_be_hidden()
+    page.set_input_files("#template-archive-file", {
+        "name": "own.zip", "mimeType": "application/zip", "buffer": spine_zip(),
+    })
+    expect(page.locator("body")).to_have_class(re.compile(r"\beditor-has-template\b"), timeout=30000)
+    assert len(pending) == 1
+    with page.expect_response("**/api/emote-maker/builtins"):
+        pending[0](False)
+    expect(page.locator("#builtin-template-license")).to_be_hidden()
+
+
+def test_license_dialog_blocks_editor_shortcuts(page, running_server):
+    _builtin(page, shortcut_spies=True)
+    page.goto(running_server + "/emote_maker", wait_until="networkidle")
+    dialog = page.locator("#builtin-template-license")
+    expect(dialog).to_be_visible()
+    for shortcut in ['Control+s', 'Control+z', 'Control+Shift+z']:
+        page.keyboard.press(shortcut)
+    assert page.evaluate("window.licenseShortcutCalls || {}") == {}
+    page.keyboard.press("Escape")
+    expect(dialog).to_be_hidden()
+    page.keyboard.press('Control+s')
+    assert page.evaluate("window.licenseShortcutCalls.save") == 1

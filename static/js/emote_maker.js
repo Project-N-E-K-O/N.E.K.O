@@ -5957,6 +5957,7 @@
             lock.restore();
             exportEditingLock = null;
             renderAll();
+            showPendingBuiltinTemplateLicense();
         };
     }
 
@@ -6794,6 +6795,7 @@
     // Acknowledgement lasts only for this editor page, including restored templates.
     let builtinLicenseAcknowledged = false;
     let builtinLicensePrompt = null;
+    let builtinLicenseStartupPending = false;
     const pendingTemplateWrites = new Map();
     const pendingTemplateRemovals = new Set();
     let templateArchiveBytes = new Map();
@@ -6803,6 +6805,12 @@
 
     function isBuiltinTemplate(key, pkg) {
         return String(key || '').startsWith('builtin:') || builtinTemplates.has(key) || pkg?.source?.builtIn === true;
+    }
+
+    function showPendingBuiltinTemplateLicense() {
+        if (!builtinLicenseStartupPending || exportEditingLock) return;
+        builtinLicenseStartupPending = false;
+        if (builtinTemplates.size && !builtinLicenseAcknowledged) void requestBuiltinTemplateLicense();
     }
 
     function requestBuiltinTemplateLicense({ review = false } = {}) {
@@ -6857,7 +6865,8 @@
                 if (pkg?.source?.builtIn === true) builtinTemplates.set(pkg.id, pkg);
             }
             renderTemplateLibraryGrid();
-            if (builtinTemplates.size) void requestBuiltinTemplateLicense();
+            builtinLicenseStartupPending = builtinTemplates.size > 0 && !builtinLicenseAcknowledged;
+            showPendingBuiltinTemplateLicense();
         } catch (_) {
             // A library request failure leaves ordinary local imports available.
         }
@@ -9247,6 +9256,12 @@
         });
         bindViewportNavigation();
         window.addEventListener('keydown', (event) => {
+            if ($('#builtin-template-license')?.open) {
+                if ((event.ctrlKey || event.metaKey) && ['s', 'z'].includes(event.key.toLowerCase())) {
+                    event.preventDefault();
+                }
+                return;
+            }
             if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
                 event.preventDefault();
                 if (event.shiftKey) redo(); else undo();
