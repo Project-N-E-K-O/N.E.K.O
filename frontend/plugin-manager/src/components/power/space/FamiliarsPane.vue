@@ -1,6 +1,11 @@
 <template>
   <section class="panel" data-testid="familiars-pane">
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon class="block" data-testid="familiars-error" />
+    <!-- Of a project: one more familiar for it, and a leader where it has none. Not of the loose ones. -->
+    <template v-if="project !== null && loaded && !error">
+      <CrewTools :project="project" :has-leader="hasLeader" :lanlan-name="lanlanName" @changed="crewChanged" />
+      <ProjectTrees :project="project" :refresh="board?.revision" />
+    </template>
     <el-empty v-if="loaded && !members.length && !selectedId" :description="t('power.space.familiars.empty')" />
 
     <div v-if="members.length" class="members">
@@ -61,6 +66,9 @@
           <dt>{{ t('power.space.familiars.context') }}</dt><dd>{{ selected.context_tokens.toLocaleString() }}</dd>
         </div>
       </dl>
+
+      <!-- It works in a git worktree of its own, or left what it changed there for the user. -->
+      <TreeActions v-if="selected.tree" :tree="selected.tree" :title="selected.commission?.title" @changed="load" />
 
       <div class="views" role="tablist">
         <button
@@ -148,7 +156,10 @@ import type { Board, BoardCard } from '@/api/console'
 import AskBox from '../AskBox.vue'
 import FamiliarCard from '../home/FamiliarCard.vue'
 import { describeConsoleError } from '../powerFormat'
+import CrewTools from './CrewTools.vue'
+import ProjectTrees from './ProjectTrees.vue'
 import TranscriptPane from './TranscriptPane.vue'
+import TreeActions from './TreeActions.vue'
 import UsagePane from './UsagePane.vue'
 
 /** The familiars of a project, or with `project` null those that belong to none; and the one chosen, up close. */
@@ -197,6 +208,8 @@ const members = computed<BoardCard[]>(() => {
   return (now.projects ?? []).find(project => project.name === props.project)?.members ?? []
 })
 const hasLeader = computed(() => members.value.some(card => card.leader))
+// Whose familiars they are: a new one of the project is that character's as well.
+const lanlanName = computed(() => members.value.find(card => card.lanlan_name)?.lanlan_name ?? null)
 const selected = computed(() => members.value.find(card => card.id === props.selectedId) ?? null)
 // The one the address names is not on the board. Known only once the board was read, of the
 // project the address means: a board that could not be read, or another project's, holds nobody.
@@ -306,6 +319,12 @@ async function saveCard() {
     return
   }
   editing.value = false
+}
+
+/** One more familiar, or a leader, was made: shown at once, and up close. */
+async function crewChanged(sessionId: string) {
+  await load()
+  emit('select', sessionId)
 }
 
 function onVisibility() {

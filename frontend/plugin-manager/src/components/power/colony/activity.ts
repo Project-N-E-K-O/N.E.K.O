@@ -10,7 +10,9 @@
 import type { TimelineEntry } from '@/api/console'
 
 /** How a familiar is drawn. */
-export type CatLook = 'working' | 'waiting_user' | 'idle' | 'asleep' | 'compacting' | 'resting' | 'queued'
+export type CatLook =
+  | 'working' | 'waiting_user' | 'idle' | 'asleep' | 'compacting' | 'resting' | 'queued'
+  | 'landing' | 'resolving' | 'held' | 'unlanded'
 
 export interface SceneCat {
   look: CatLook
@@ -67,8 +69,22 @@ export function sceneAt(entries: TimelineEntry[], index: number): Map<string, Sc
       case 'rest_over': put(cats, id, 'idle'); break
       case 'ended':
         if (busyWithAnother(entry)) break
-        put(cats, id, 'idle')
+        // Stuck over what it changed in its worktree, which waits there for the user: drawn so.
+        if (entry.detail?.outcome !== 'blocked' || !['held', 'unlanded'].includes(cats.get(id ?? '')?.look ?? '')) {
+          put(cats, id, 'idle')
+        }
         if (id) atWork.delete(id)
+        break
+      // What a familiar changed in a worktree of its own: merged where it clashed, left for the user.
+      case 'landing_conflict': put(cats, id, busyWithAnother(entry) ? undefined : 'resolving'); break
+      case 'not_landed': put(cats, id, busyWithAnother(entry) ? undefined : 'unlanded'); break
+      case 'landing_held': put(cats, id, busyWithAnother(entry) ? undefined : 'held'); break
+      // The user decided on it, maybe long after: of one at another commission by then, that one says how it stands.
+      case 'landed': case 'tree_discarded': case 'tree_kept':
+        if (!busyWithAnother(entry)) {
+          const cat = put(cats, id)
+          if (cat && ['resolving', 'held', 'unlanded'].includes(cat.look)) cat.look = atWork.has(id ?? '') ? 'working' : 'idle'
+        }
         break
       case 'child_returned': case 'ask_answered': put(cats, id, 'idle'); break
       case 'child_started':
@@ -187,12 +203,43 @@ export function describeEntry(
   }
   let key = `power.activity.kinds.${entry.kind}`
   // How it ended is part of what is said: done, failed, stopped, stuck. Of a project that got its
-  // leader, why it got one.
-  const how = entry.detail?.[entry.kind === 'leader_derived' ? 'reason' : 'outcome']
-  const outcome = typeof how === 'string' ? how : ''
+  // leader, or of what a familiar changed that was not merged, why; of an inspection, what it found;
+  // of a landing, whether the user had it done.
+  const how = entry.detail?.[VARIANT_OF[entry.kind] ?? 'outcome']
+  const outcome = how === true ? 'user' : typeof how === 'string' ? how : ''
   if (outcome && te(`${key}_${outcome}`)) key = `${key}_${outcome}`
   if (!te(key)) return [who, entry.kind, text].filter(Boolean).join(' · ')
-  return t(key, { who, peer, text }).replace(/[\s：:]+$/u, '')
+  return t(key, { who, peer, text, ...figures(entry, t, te) }).replace(/[\s：:]+$/u, '')
+}
+
+// Which field of its `detail` tells the words of an entry apart; `outcome` for the others.
+const VARIANT_OF: Record<string, string> = {
+  leader_derived: 'reason', not_landed: 'reason', inspected: 'verdict', landed: 'by_user', landing_conflict: 'by_user',
+}
+
+/** Return what the words of an entry about worktrees and teams tell besides who: how many files, lines, members. */
+function figures(entry: TimelineEntry, t: Translate, te: Exists): Record<string, unknown> {
+  const detail = entry.detail ?? {}
+  const number = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : 0)
+  const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : [])
+  const members = list(detail.members).filter((item): item is { name?: unknown; preset?: unknown } => !!item && typeof item === 'object')
+  return {
+    files: list(detail.files).length + number(detail.more),
+    added: number(detail.lines_added),
+    deleted: number(detail.lines_deleted),
+    conflicts: list(detail.conflicts).length,
+    round: number(detail.round),
+    // Of a team, how many and what kinds; of a reminder, how many it had.
+    count: entry.kind === 'team_formed' ? members.length : number(detail.members),
+    names: members
+      .map(item => {
+        const preset = typeof item.preset === 'string' ? item.preset : ''
+        const named = `power.home.presets.${preset}`
+        return te(named) ? t(named) : typeof item.name === 'string' ? item.name : preset
+      })
+      .filter(Boolean)
+      .join(' · '),
+  }
 }
 
 /** Return a time of day for the list: hours and minutes, with seconds when `seconds` is set. */

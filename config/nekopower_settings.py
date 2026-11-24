@@ -1045,6 +1045,19 @@ CONSOLE_TRANSCRIPT_SCAN_MAX_BYTES = 32 * 1024 * 1024
 """How much of a record is read for one page at most. A page that reaches
 this ends there and says where to go on."""
 
+CONSOLE_TRANSCRIPT_SEARCH_HITS = 50
+"""Most places of a record a search from the console names
+(``NekoPowerHost.search_transcript``), the latest first; how many there are
+in all is said beside them."""
+
+CONSOLE_TRANSCRIPT_SEARCH_EXCERPT_TOKENS = 80
+"""Cap on the line shown of each place a search names."""
+
+CONSOLE_TRANSCRIPT_SEARCH_MAX_BYTES = 64 * 1024 * 1024
+"""How much of a record a search from the console reads, from its end: of a
+longer record the earliest part is not looked through, and the answer says
+so. The same as a task agent may look through (``SESSION_RECORD_MAX_BYTES``)."""
+
 CONSOLE_TIMELINE_RECENT_EVENT_ROWS = 20_000
 """How far back a page that opens begins reading the timeline, in rows of the
 events (``NekoPowerHost.timeline_start``). Most rows are steps of a task

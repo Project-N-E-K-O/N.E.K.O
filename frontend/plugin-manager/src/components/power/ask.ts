@@ -35,7 +35,9 @@ export function askLines(ask: BoardAsk, t: Translate, te: Exists): string[] {
   if (lines.length) return lines.length > 1 ? lines.map((line, index) => `${index + 1}. ${line}`) : lines
   const detail = ask.detail ?? {}
   const tool = typeof detail.tool === 'string' ? detail.tool : ''
-  return [[categoryName(ask, t, te), tool].filter(Boolean).join(' · ')].filter(Boolean)
+  // What a leader would do, in words where the pages have some: hand the work over, form a team.
+  const toolName = tool && te(`power.ask.tools.${tool}`) ? t(`power.ask.tools.${tool}`) : tool
+  return [[categoryName(ask, t, te), toolName].filter(Boolean).join(' · ')].filter(Boolean)
 }
 
 /** Return the one thing a request for approval is about, whole: the command it would run, or the path it would touch. */
@@ -74,7 +76,20 @@ const SHOWN_APART = new Set(['command', 'path', 'tool'])
 /** Return what else a request for approval says, each with its name: where it would run, to whom something goes. */
 export function askFacts(ask: BoardAsk, t: Translate, te: Exists): Array<{ name: string; label: string; value: string }> {
   const facts = []
-  for (const [name, value] of Object.entries(ask.detail ?? {})) {
+  const detail = ask.detail ?? {}
+  // A team is said one familiar a line (`members`); its `title` is the same in one line.
+  const members = Array.isArray(detail.members) ? detail.members.filter((item): item is string => typeof item === 'string' && item !== '') : []
+  for (const [name, value] of Object.entries(detail)) {
+    if (name === 'members' && members.length) {
+      facts.push({ name, label: label(name, t, te), value: members.map(item => `· ${item}`).join('\n') })
+      continue
+    }
+    if (name === 'title' && members.length) continue
+    // Of one that would change files: where, and what then becomes of what it changed.
+    if (name === 'tree' && value === true) {
+      facts.push({ name, label: label(name, t, te), value: t('power.ask.treeNote') })
+      continue
+    }
     if (SHOWN_APART.has(name) || (typeof value !== 'string' && typeof value !== 'number') || value === '') continue
     const key = `power.ask.facts.${name}`
     // The kind of familiar it would start, by the name the pages give that kind.
@@ -83,6 +98,11 @@ export function askFacts(ask: BoardAsk, t: Translate, te: Exists): Array<{ name:
     facts.push({ name, label: te(key) ? t(key) : name, value: shown })
   }
   return facts
+}
+
+function label(name: string, t: Translate, te: Exists): string {
+  const key = `power.ask.facts.${name}`
+  return te(key) ? t(key) : name
 }
 
 /** Return what a familiar asks in one line, for a list: its question, or the command or path it asks about, cut short. */

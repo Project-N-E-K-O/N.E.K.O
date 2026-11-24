@@ -891,6 +891,48 @@ class NekoPowerHost:
             return {"readable": False, "reason": "empty", "entries": [], "before": None}
         return {"readable": True, **page}
 
+    async def search_transcript(self, session_id: str, query: str) -> dict[str, Any] | None:
+        """Return where words occur in what was said in a session, for showing it to the user; None for an unknown session.
+
+        ``{"readable": True, "hits": [...], "total", "whole"}`` as
+        ``records.search_page`` says, the latest first; a hit is opened
+        with ``transcript(session_id, at=hit["at"])``. A session the
+        built-in runtime keeps no record of comes back as for
+        ``transcript``. The search the task agents have of each other's
+        records reads the same file. Raises ``ValueError`` with a code:
+        ``bad_query`` (no words to look for), ``record_unreadable``.
+        """
+        from config import nekopower_settings as settings
+        from nekopower.host import records
+        from nekopower.host.paths import DSH_SESSION_NAME, TRANSCRIPT_NAME
+
+        if not isinstance(query, str) or not query.split():
+            raise ValueError("bad_query")
+        kept = await self.ledger.get_session(session_id)
+        if kept is None:
+            return None
+
+        def place() -> tuple[Path, bool]:
+            session_dir = Path(self.task_agents.session_dir_of(kept))
+            return session_dir / TRANSCRIPT_NAME, (session_dir / DSH_SESSION_NAME).is_file()
+
+        path, in_dsh = await asyncio.to_thread(place)
+        try:
+            found = await asyncio.to_thread(
+                records.search_page,
+                path,
+                query,
+                hits=settings.CONSOLE_TRANSCRIPT_SEARCH_HITS,
+                excerpt_tokens=settings.CONSOLE_TRANSCRIPT_SEARCH_EXCERPT_TOKENS,
+                max_bytes=settings.CONSOLE_TRANSCRIPT_SEARCH_MAX_BYTES,
+            )
+        except records.RecordUnreadable:
+            raise ValueError("record_unreadable") from None
+        except records.RecordError:
+            # No record (nothing said yet, removed), or one dsh keeps where the host cannot read it.
+            return {"readable": False, "reason": "dsh" if in_dsh else "empty", "hits": [], "total": 0, "whole": True}
+        return {"readable": True, **found}
+
     async def session_usage(self, session_id: str) -> dict[str, Any] | None:
         """Return what a session used over all its commissions, and what the commission it has in hand may; None for an unknown one.
 

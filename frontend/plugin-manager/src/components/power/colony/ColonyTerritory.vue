@@ -16,12 +16,23 @@
         :x2="`${at(other).x * 100}%`" :y2="`${at(other).y * 100}%`"
       />
     </svg>
+    <!-- Those a leader started for one commission, with the leader: a team, framed together. -->
+    <div
+      v-for="team in teams"
+      :key="team.id"
+      class="team"
+      :style="{ left: `${team.left * 100}%`, top: `${team.top * 100}%`, width: `${team.width * 100}%`, height: `${team.height * 100}%` }"
+      :data-team="team.id"
+      aria-hidden="true"
+    >
+      <span class="team-name">{{ t('power.colony.team') }}</span>
+    </div>
     <button
       v-for="member in shown"
       :key="member.id"
       type="button"
       class="cat"
-      :class="[`cat--${member.look}`, { 'cat--lead': member.leader, 'cat--held': held === member.id }]"
+      :class="[`cat--${member.look}`, { 'cat--lead': member.leader, 'cat--grabbed': held === member.id }]"
       :style="{ left: `${at(member.id).x * 100}%`, top: `${at(member.id).y * 100}%` }"
       :data-cat="member.id"
       :data-look="member.look"
@@ -60,6 +71,8 @@ export interface ColonyMember {
   said: string
   /** Not there at the moment shown (while what happened is replayed). */
   hidden: boolean
+  /** The same for a leader and those it started for the commission it has in hand. */
+  team?: string | null
 }
 
 export interface Territory {
@@ -108,6 +121,27 @@ function at(id: string): Spot {
   const off = held.value === id ? undefined : stroll[id]
   return off ? { x: base.x + off.x, y: base.y + off.y } : base
 }
+
+// How far a team's frame reaches beyond the middles of those in it, as parts of the territory: a
+// familiar is drawn about 92 pixels wide, with its name below it.
+const TEAM_PAD_X = 0.09
+const TEAM_PAD_Y = 0.16
+/** The teams of two or more that are there now, each with the box that holds those in it. */
+const teams = computed(() => {
+  const by = new Map<string, Spot[]>()
+  for (const member of shown.value) {
+    if (member.team) by.set(member.team, [...(by.get(member.team) ?? []), at(member.id)])
+  }
+  return [...by.entries()]
+    .filter(([, spots]) => spots.length > 1)
+    .map(([id, spots]) => {
+      const left = Math.max(0, Math.min(...spots.map(spot => spot.x)) - TEAM_PAD_X)
+      const top = Math.max(0, Math.min(...spots.map(spot => spot.y)) - TEAM_PAD_Y)
+      const right = Math.min(1, Math.max(...spots.map(spot => spot.x)) + TEAM_PAD_X)
+      const bottom = Math.min(1, Math.max(...spots.map(spot => spot.y)) + TEAM_PAD_Y)
+      return { id, left, top, width: right - left, height: bottom - top }
+    })
+})
 
 const heldLinks = computed(() => {
   const id = held.value
@@ -268,15 +302,18 @@ onBeforeUnmount(() => {
 .land { position: relative; flex: none; max-width: 100%; border-radius: 50%; border: 1.5px dashed var(--el-border-color); background: var(--el-fill-color-lighter); touch-action: none; user-select: none; }
 .land--loose { border-style: dotted; }
 .land-name { position: absolute; top: 6px; left: 50%; transform: translateX(-50%); margin: 0; padding: 0 10px; font-size: 13px; font-weight: 600; white-space: nowrap; max-width: 70%; overflow: hidden; text-overflow: ellipsis; color: var(--el-text-color-secondary); background: var(--el-bg-color); border-radius: 10px; }
+.team { position: absolute; border: 1.5px dashed var(--el-color-primary-light-5); border-radius: 16px; background: var(--el-color-primary-light-9); pointer-events: none; transition: left 2.4s ease-in-out, top 2.4s ease-in-out, width 2.4s ease-in-out, height 2.4s ease-in-out; }
+.team-name { position: absolute; top: -9px; left: 12px; padding: 0 6px; font-size: 11px; line-height: 16px; color: var(--el-color-primary); background: var(--el-bg-color); border-radius: 8px; white-space: nowrap; }
 .lines { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .lines line { stroke: var(--el-color-primary); stroke-width: 2; stroke-dasharray: 5 5; }
 .cat { position: absolute; transform: translate(-50%, -50%); width: 92px; padding: 0; border: 0; background: none; font: inherit; color: inherit; text-align: center; cursor: grab; transition: left 2.4s ease-in-out, top 2.4s ease-in-out; }
-.cat--held { cursor: grabbing; transition: none; z-index: 2; }
+.cat--grabbed { cursor: grabbing; transition: none; z-index: 2; }
 .cat:focus-visible { outline: 2px solid var(--el-color-primary); outline-offset: 2px; border-radius: 10px; }
 .tag { display: inline-block; max-width: 100%; padding: 0 7px; font-size: 11px; line-height: 1.6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border: 1px solid var(--el-border-color-lighter); border-radius: 9px; background: var(--el-bg-color); }
 .cat--working .tag { border-color: var(--el-color-success); color: var(--el-color-success); }
-.cat--waiting_user .tag { border-color: var(--el-color-warning); color: var(--el-color-warning); }
+.cat--waiting_user .tag, .cat--held .tag, .cat--unlanded .tag { border-color: var(--el-color-warning); color: var(--el-color-warning); }
+.cat--landing .tag, .cat--resolving .tag { border-color: var(--el-color-primary); color: var(--el-color-primary); }
 .bubble { position: absolute; left: 50%; bottom: 100%; transform: translateX(-50%); max-width: 180px; padding: 0 7px; font-size: 11px; line-height: 1.6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border: 1px solid var(--el-border-color-lighter); border-radius: 9px; background: var(--el-bg-color); }
 .bubble--loud { color: #fff; font-weight: 600; border-color: var(--el-color-warning); background: var(--el-color-warning); }
-@media (prefers-reduced-motion: reduce) { .cat { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .cat, .team { transition: none; } }
 </style>

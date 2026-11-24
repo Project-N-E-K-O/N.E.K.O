@@ -1088,3 +1088,94 @@ describe('the colony on the home page', () => {
     expect(top).toBe(1000)
   })
 })
+
+describe('several familiars at work in one project', () => {
+  const look = (key: string) => key.split('.').slice(1).reduce<unknown>((at, part) => (at as Record<string, unknown> | undefined)?.[part], words)
+  const t = (key: string, named: Record<string, unknown> = {}) =>
+    String(look(key) ?? key).replace(/\{(\w+)\}/g, (_, name: string) => String(named[name] ?? ''))
+  const te = (key: string) => look(key) !== undefined
+  const nameOf = (id: string | null | undefined) => (id === 'kid' ? 'Kid' : id === 'lead' ? 'Blog' : 'someone')
+
+  it('tells what came of what a familiar changed in its worktree, why, and whether the user had it done', () => {
+    const files = [{ path: 'a' }, { path: 'b' }]
+    const landed = describeEntry(entry('landed', { session_id: 'kid', detail: { files, more: 1, lines_added: 7, lines_deleted: 2, by_user: false } }), nameOf, t, te)
+    expect(landed).toBe(t('power.activity.kinds.landed', { who: 'Kid', files: 3, added: 7, deleted: 2 }))
+    const byUser = describeEntry(entry('landed', { session_id: 'kid', detail: { files, more: 0, lines_added: 1, lines_deleted: 0, by_user: true } }), nameOf, t, te)
+    expect(byUser).toBe(t('power.activity.kinds.landed_user', { who: 'Kid', files: 2, added: 1, deleted: 0 }))
+    const clash = describeEntry(entry('landing_conflict', { session_id: 'kid', detail: { conflicts: ['a', 'b'], round: 2, by_user: false } }), nameOf, t, te)
+    expect(clash).toBe(t('power.activity.kinds.landing_conflict', { who: 'Kid', conflicts: 2, round: 2 }))
+    for (const reason of ['conflict', 'failed', 'inspection', 'stopped', 'restart']) {
+      const said = describeEntry(entry('not_landed', { session_id: 'kid', text: 'D:/wt/t1', detail: { reason } }), nameOf, t, te)
+      expect(said).toBe(t(`power.activity.kinds.not_landed_${reason}`, { who: 'Kid', text: 'D:/wt/t1' }))
+    }
+    // A reason the page has no words for: the words of the kind.
+    expect(describeEntry(entry('not_landed', { session_id: 'kid', text: 'D:/wt', detail: { reason: 'new' } }), nameOf, t, te))
+      .toBe(t('power.activity.kinds.not_landed', { who: 'Kid', text: 'D:/wt' }))
+    for (const verdict of ['pass', 'fail', 'none']) {
+      const said = describeEntry(entry('inspected', { session_id: 'kid', detail: { verdict, round: 1 } }), nameOf, t, te)
+      expect(said).toBe(t(`power.activity.kinds.inspected_${verdict}`, { who: 'Kid', round: 1 }))
+    }
+    for (const kind of ['landing_held', 'tree_discarded', 'tree_kept']) {
+      expect(describeEntry(entry(kind, { session_id: 'kid', text: 'D:/wt' }), nameOf, t, te)).not.toContain(kind)
+    }
+  })
+
+  it('tells who formed a team, how many and of what kinds, and that a leader was reminded', () => {
+    const members = [{ name: 'Blog/worker', preset: 'worker' }, { name: 'Blog/x', preset: 'translator' }, 'not one']
+    const team = describeEntry(entry('team_formed', { detail: { members, inspect: false } }), nameOf, t, te)
+    expect(team).toBe(t('power.activity.kinds.team_formed', { who: 'Blog', count: 2, names: `${words.home.presets.worker} · Blog/x` }))
+    expect(describeEntry(entry('stall_reminded', { detail: { members: 3 } }), nameOf, t, te))
+      .toBe(t('power.activity.kinds.stall_reminded', { who: 'Blog' }))
+  })
+
+  it('replays one whose changes clashed, waited for the user, and were decided on', () => {
+    const kid = { session_id: 'kid', commission_id: 'k1' }
+    const lines = [
+      entry('started', { ...kid }),
+      entry('landing_conflict', { ...kid, detail: { round: 1 } }),
+      entry('not_landed', { ...kid, detail: { reason: 'conflict' } }),
+      entry('ended', { ...kid, detail: { outcome: 'blocked' } }),
+      entry('landed', { ...kid, detail: { by_user: true } }),
+    ]
+    expect(sceneAt(lines, 1).get('kid')?.look).toBe('resolving')
+    expect(sceneAt(lines, 2).get('kid')?.look).toBe('unlanded')
+    // Stuck over it: still drawn as waiting for the user.
+    expect(sceneAt(lines, 3).get('kid')?.look).toBe('unlanded')
+    expect(sceneAt(lines, 4).get('kid')?.look).toBe('idle')
+    const held = [
+      entry('started', { ...kid }), entry('landing_held', { ...kid }), entry('ended', { ...kid, detail: { outcome: 'blocked' } }),
+      entry('tree_discarded', { ...kid }),
+    ]
+    expect(sceneAt(held, 2).get('kid')?.look).toBe('held')
+    expect(sceneAt(held, 3).get('kid')?.look).toBe('idle')
+    // Of one at another commission by then, that one says how it stands.
+    const later = [
+      entry('started', { ...kid }), entry('not_landed', { ...kid }), entry('ended', { ...kid, detail: { outcome: 'blocked' } }),
+      entry('started', { session_id: 'kid', commission_id: 'k2' }), entry('tree_kept', { ...kid }), entry('landing_held', { ...kid }),
+    ]
+    expect(sceneAt(later, 4).get('kid')?.look).toBe('working')
+    expect(sceneAt(later, 5).get('kid')?.look).toBe('working')
+    // Ended otherwise: at rest, whatever it was before.
+    const done = [entry('started', { ...kid }), entry('landing_conflict', { ...kid }), entry('ended', { ...kid, detail: { outcome: 'failed' } })]
+    expect(sceneAt(done, 2).get('kid')?.look).toBe('idle')
+  })
+
+  it('frames those of one team together, and none for a team of one or of nobody', async () => {
+    const lead = member({ team: 'c1' })
+    const kid = member({ id: 'kid', name: 'Kid', leader: false, parent: 'lead', look: 'resolving', team: 'c1' })
+    const other = member({ id: 'other', name: 'Other', leader: false, look: 'unlanded', team: null })
+    const alone = member({ id: 'alone', name: 'Alone', leader: false, look: 'held', team: 'c9' })
+    const { state } = await mount(ColonyTerritory, { territory: territory([lead, kid, other, alone]) })
+    const frames = [...document.querySelectorAll('[data-team]')]
+    expect(frames.map(frame => frame.getAttribute('data-team'))).toEqual(['c1'])
+    expect(frames[0].textContent).toContain(words.colony.team)
+    expect(cat('kid')?.getAttribute('data-look')).toBe('resolving')
+    expect(cat('other')?.classList.contains('cat--unlanded')).toBe(true)
+    // Being dragged is not what one waiting for the user to merge looks like.
+    expect(document.querySelector('.cat--grabbed')).toBeNull()
+    // One that is not there at the moment shown is not framed.
+    state.props = { territory: territory([lead, { ...kid, hidden: true }, other]) }
+    await flush()
+    expect(document.querySelector('[data-team]')).toBeNull()
+  })
+})

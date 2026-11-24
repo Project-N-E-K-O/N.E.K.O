@@ -145,7 +145,7 @@ function nameOf(sessionId: string | null | undefined): string {
 
 function member(card: BoardCard): ColonyMember {
   const at = scene.value.get(card.id)
-  const base = { id: card.id, name: nameOfCard(card), avatar: card.avatar, leader: card.leader, parent: card.parent }
+  const base = { id: card.id, name: nameOfCard(card), avatar: card.avatar, leader: card.leader, parent: card.parent, team: card.team ?? null }
   if (position.value === null) {
     // As it stands now; what it said lately stays above it for a while.
     const fresh = at && clock.value - at.saidAt <= SAID_SECONDS ? at.said : ''
