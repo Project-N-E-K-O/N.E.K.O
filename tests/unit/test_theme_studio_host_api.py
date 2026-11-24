@@ -196,6 +196,49 @@ def test_daily_schedule_applies_again_on_the_next_day(tmp_path):
 
 
 @pytest.mark.unit
+def test_legacy_schedule_without_date_applies_again_the_next_day(tmp_path):
+    import json
+    from datetime import datetime
+
+    studio = ts_service.ThemeStudioService(data_dir=tmp_path / "data")
+    studio._ensure_dirs()
+    # Written by a build before last_date existed: Monday morning already applied.
+    (studio.data_dir / "schedule.json").write_text(
+        json.dumps({
+            "schema": 2,
+            "enabled": True,
+            "zones": {"morning": "amber-dusk"},
+            "last_zone": "morning",
+            "last_theme": "amber-dusk",
+            "last_day_kind": "weekday",
+        }),
+        encoding="utf-8",
+    )
+    clock = {"now": datetime(2026, 11, 23, 8, 0)}
+    studio._now = lambda: clock["now"]
+
+    assert studio._schedule_tick()["action"] == "unchanged"
+    clock["now"] = datetime(2026, 11, 24, 8, 0)
+    assert studio._schedule_tick()["action"] == "applied"
+
+
+@pytest.mark.unit
+def test_reset_theme_refuses_when_theme_file_is_temporarily_unreadable(studio, monkeypatch):
+    path_type = type(studio.theme_path)
+    real_read_bytes = path_type.read_bytes
+
+    def locked(self):
+        if self == studio.theme_path:
+            raise PermissionError("in use")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(path_type, "read_bytes", locked)
+    result = theme_studio.run_entry_sync("reset_theme", {})
+    assert not result.ok
+    assert "稍后重试" in str(result.error)
+
+
+@pytest.mark.unit
 def test_night_zone_occurrence_belongs_to_the_day_it_started():
     from datetime import datetime
 

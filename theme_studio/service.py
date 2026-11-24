@@ -2517,10 +2517,19 @@ class ThemeStudioService(NekoPluginBase):
                 palette = default_palette()
                 # 自定义材质预设是用户的素材库，不是「当前外观」：恢复默认只清外观，
                 # 预设库照旧保留（与 apply_theme / apply_saved_theme 的合并规则一致）。
-                # 读不出当前文件时（重置常用来救坏文件）就没有可保留的，照常重置。
+                # 内容坏了（JSON 解析失败）时预设本来就拿不回来，照常重置——重置常用来救坏文件。
+                # 但暂时读不到（被占用 / 权限）时文件可能完好：此时写默认值会把预设库抹掉，
+                # 必须拒绝本次重置，让用户稍后重试。
                 try:
                     current = self._read_unlocked(strict=True)
-                except _ThemeUnreadable:
+                except _ThemeUnreadable as exc:
+                    if isinstance(exc.__cause__, OSError):
+                        return Err(
+                            SdkError(
+                                "暂时读不到 theme.json（可能被占用或没有权限），"
+                                "为了不丢失已保存的材质预设，这次没有恢复默认，请稍后重试。"
+                            )
+                        )
                     current = None
                 if current is not None:
                     kept = _materials.normalize_materials(current.get("materials"))[0]
@@ -3038,6 +3047,10 @@ class ThemeStudioService(NekoPluginBase):
             and schedule.get("last_date", occurrence) == occurrence
         )
         if not force and same_stamp and self._theme_exists(theme_id):
+            if "last_date" not in schedule:
+                # 老文件：把这一次认作「已切过的那次」并补上日期。不补的话，只设了
+                # 一个时段的排程永远不会再推进标记，以后每天都会被判成 unchanged。
+                self._update_schedule_stamp(last_date=occurrence)
             return {"action": "unchanged", "zone": zone, "day_kind": day_kind, "theme_id": theme_id}
         if not self._theme_exists(theme_id):
             fingerprint = f"{day_kind}|{zone}|{theme_id}"
