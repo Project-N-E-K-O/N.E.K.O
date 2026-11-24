@@ -568,6 +568,8 @@ IMAGE_MAX_BYTES = 4 * 1024 * 1024
 ARCHIVE_MAX_ENTRIES = 300
 ARCHIVE_MAX_UNCOMPRESSED = 24 * 1024 * 1024
 LIBRARY_MAX_ITEMS = 200
+# 每套主题含一个 JSON，亮暗模式各可引用一张背景图；另含清单和说明文件。
+LIBRARY_ARCHIVE_MAX_ENTRIES = LIBRARY_MAX_ITEMS * 3 + 2
 #: box-shadow 允许用逗号叠多层（霓虹/发光主题常见写法：两层不同颜色的光晕）。
 #: 早先三处校验器都只认单层，把含逗号的值整串拒掉 —— 用户从别处拿到的主题
 #: 一应用就少一条 `--nts-shadow`，还没人告诉他为什么。这里统一放开到 4 层。
@@ -3582,6 +3584,21 @@ class ThemeStudioService(NekoPluginBase):
             records.append(record)
         return records
 
+    @staticmethod
+    def _library_archive_files(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
+        """导出与恢复使用相同的文件数和解压体积上限。"""
+        files = [info for info in archive.infolist() if not info.is_dir()]
+        if len(files) > LIBRARY_ARCHIVE_MAX_ENTRIES:
+            raise SdkError(
+                f"备份包条目过多（{len(files)} 个，上限 {LIBRARY_ARCHIVE_MAX_ENTRIES} 个）。"
+            )
+        total = sum(info.file_size for info in files)
+        if total > ARCHIVE_MAX_UNCOMPRESSED:
+            raise SdkError(
+                f"备份包解压后过大（{total} 字节，上限 {ARCHIVE_MAX_UNCOMPRESSED} 字节）。"
+            )
+        return files
+
     def _build_library_archive(self) -> tuple:
         """把所有自定义主题打成一个 zip：``themes/<id>.json`` + ``images/`` + ``manifest.json``。
 
@@ -3660,6 +3677,7 @@ class ThemeStudioService(NekoPluginBase):
                 "manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2)
             )
             archive.writestr("README.txt", LIBRARY_ARCHIVE_README)
+            self._library_archive_files(archive)
             count = len(manifest["themes"])
         payload = buffer.getvalue()
         self._guard_export_size(payload, what="这份主题库备份")
@@ -3683,16 +3701,7 @@ class ThemeStudioService(NekoPluginBase):
         items = []
         images = {}
         with archive:
-            infos = [info for info in archive.infolist() if not info.is_dir()]
-            if len(infos) > ARCHIVE_MAX_ENTRIES:
-                raise SdkError(
-                    f"备份包条目过多（{len(infos)} 个，上限 {ARCHIVE_MAX_ENTRIES} 个）。"
-                )
-            total = sum(info.file_size for info in infos)
-            if total > ARCHIVE_MAX_UNCOMPRESSED:
-                raise SdkError(
-                    f"备份包解压后过大（{total} 字节，上限 {ARCHIVE_MAX_UNCOMPRESSED} 字节）。"
-                )
+            infos = self._library_archive_files(archive)
             for info in infos:
                 name = info.filename.replace("\\", "/")
                 if name.startswith("images/"):
