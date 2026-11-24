@@ -583,3 +583,72 @@ def test_the_scenarios_of_projects_with_a_leader_go_to_the_member_or_to_the_lead
         assert found.direct is (found.action == orch.CONTINUE), case["id"]
         seen[found.action] += 1
     assert seen == {orch.CONTINUE: 3, orch.TO_LEADER: 7}
+
+
+def test_what_is_plainly_about_something_else_than_the_member_that_works_is_told_as_apart() -> None:
+    project = orch.ProjectView(name="thesis", description="The master's thesis")
+    writer = orch.Agent(
+        id="writer", project="thesis", preset="general", title="Chapter three",
+        duty="Writes the chapters of the thesis",
+        done=(orch.Done(title="draft the survey of related work", result="twelve pages, forty references"),),
+        at_hand=("tighten the survey of related work", "cut the survey of related work down to eight pages"),
+    )
+    bars = orch.Bars()
+    standing = orch.Standing(projects=(project,), agents=(writer,))
+    key = orch.PROJECT_KEY + "thesis"
+
+    def found(sentence: str, **more: Any) -> tuple[str, str | None, bool]:
+        verdict = orch.settle(key, orch.FOLLOW_UP, more.pop("standing", standing), bars, sentence=sentence, **more)
+        return verdict.action, verdict.agent, verdict.apart
+
+    # It goes to the member that works either way; what shares nothing with its work is told as apart.
+    assert found("set up a script that backs the thesis up to the cloud every night") == (orch.CONTINUE, "writer", True)
+    # What it did lately, what it is at this moment, or its name: its own work.
+    assert found("add the forty references to the bibliography in the thesis") == (orch.CONTINUE, "writer", False)
+    assert found("the survey: keep the eight pages but add a table") == (orch.CONTINUE, "writer", False)
+    assert found("ask Chapter three for an outline of the appendix") == (orch.CONTINUE, "writer", False)
+    # Nothing said, or nothing but the project's own name: nothing tells what it is about.
+    assert found("") == (orch.CONTINUE, "writer", False)
+    assert found("the thesis") == (orch.CONTINUE, "writer", False)
+    # One word of its work is no match (``Bars.min_hits``); what it is at counts as what it did does.
+    assert orch.apart_from("a survey of the cafes and bakeries nearby", writer, bars, "thesis")
+    idle = replace(writer, at_hand=())
+    assert orch.apart_from("cut the whole text down to eight pages", idle, bars, "thesis")
+    assert not orch.apart_from("cut the whole text down to eight pages", writer, bars, "thesis")
+    # One that says few words of its own names nothing by itself: not told apart, whatever it shares.
+    assert not orch.apart_from("do that for the tables too", writer, bars, "thesis")
+    assert orch.apart_from("do that for the tables too", writer, replace(bars, apart_words=1), "thesis")
+    # A member the sentence was found to belong with is its own, whatever the count.
+    named = orch.settle(orch.AGENT_KEY + "writer", orch.FOLLOW_UP, standing, bars, sentence="set up a nightly backup")
+    assert (named.action, named.agent, named.apart) == (orch.CONTINUE, "writer", False)
+    # Nor is it told of a project that has a leader, which says who does what.
+    led = orch.Standing(
+        projects=(replace(project, leader="lead"),),
+        agents=(writer, orch.Agent(id="lead", project="thesis", preset="boss")),
+    )
+    assert found("set up a script that backs the thesis up to the cloud every night", standing=led) == (
+        orch.TO_LEADER, None, False,
+    )
+
+
+def test_the_sentences_said_beside_a_busy_member_are_told_apart_as_measured() -> None:
+    import json
+    from pathlib import Path
+
+    data = json.loads((Path(__file__).parent / "fixtures" / "beside_scenarios.json").read_text(encoding="utf-8"))
+    bars = orch.Bars()
+    members = {
+        name: orch.Agent(
+            id=name, project=item["project"], title=item["title"], duty=item["duty"], summary=item["summary"],
+            done=tuple(orch.Done(title=one["title"], result=one["result"]) for one in item["done"]),
+            at_hand=tuple(item["at_hand"]),
+        )
+        for name, item in data["members"].items()
+    }
+    told = {
+        case["id"]: orch.apart_from(case["sentence"], members[case["member"]], bars, members[case["member"]].project or "")
+        for case in data["cases"]
+    }
+    # As it was measured: every one that is about something else is told apart, and none that goes on is.
+    assert {case["id"] for case in data["cases"] if case["truth"] == "else"} == {name for name, apart in told.items() if apart}
+    assert len(told) == 38 and sum(told.values()) == 18

@@ -258,6 +258,18 @@ characters makes four. Set where
 ten scenarios and four sentences of the measurements fall apart: those that
 go on with a member's work share four to eight, the others none or one."""
 
+ORCHESTRATOR_APART_MIN_WORDS = 4
+"""A sentence is told to be about something else than what a member works
+on only when it says this many words of its own (as the retrieval counts
+them, the project's name left out) and shares fewer than
+``ORCHESTRATOR_MIN_HITS`` of them with that member's card, what it did lately
+and what it is at. One that says less ("do that for the tables too") names
+nothing by itself and goes on with what was said before. Set on the 38
+sentences of ``tests/unit/nekopower/fixtures/beside_scenarios.json``: with
+four, none of the twenty that go on with the member's work is told apart and
+none of the eighteen that are about something else is missed; with three,
+three of the twenty are told apart."""
+
 LEADER_AT_MEMBERS = 3
 """A project gets a leader when this many task agents would be its members,
 those that take no more work counted: the third is the leader's to start.

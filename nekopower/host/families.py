@@ -184,6 +184,13 @@ class Families:
                         if in_project and session.kind == "line" and session.project in leaders
                         else True
                     ),
+                    at_hand=tuple(
+                        words
+                        for item in theirs
+                        if item.status in UNDER_WAY_STATUSES
+                        for words in (item.title, item.dispatch_text)
+                        if words
+                    ),
                     done=tuple(
                         Done(
                             title=item.title,
