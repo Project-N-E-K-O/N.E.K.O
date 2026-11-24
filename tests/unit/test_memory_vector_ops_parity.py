@@ -1038,3 +1038,68 @@ def test_prepare_recall_pools_hand_written_expectations():
     )
     assert ids(bm25) == ["f_ok", "r_ok", "a_ok", "p_ok"]
     assert ids(emb_pool) == ["f_ok", "r_ok", "p_ok"]
+
+
+def test_prepare_recall_pools_hand_written_edges():
+    """Tier labels, computed reflection scores, the half-open time window's
+    edges and the legacy opt-in, each with fixed expected ids."""
+    from datetime import datetime
+
+    from memory.scopes import MemorySubject
+
+    group = MemorySubject.group_chat("qq", "7788")
+    now_iso = datetime.now().isoformat(timespec="seconds")
+
+    def row(rid, **extra):
+        return {"id": rid, "text": f"{rid} 的内容", **extra}
+
+    facts = [
+        row("f_ok", score=1.0, event_start_at="2026-11-10T10:00:00"),
+        row("f_notime", score=1.0),                                    # no anchor at all
+        row("f_at_end", score=1.0, event_start_at="2026-11-20T00:00:00"),  # == window end
+        row("f_span", score=1.0, event_start_at="2026-10-25T10:00:00",
+            event_end_at="2026-11-02T10:00:00"),                       # starts outside, ends inside
+        row("f_created", score=1.0, created_at="2026-11-05T10:00:00"),  # created_at fallback
+        row("f_group", score=1.0, event_start_at="2026-11-10T10:00:00",
+            **group.as_entry_fields()),
+    ]
+    reflections = [
+        # Reflections carry no stored score; _tag_tier derives it from evidence.
+        row("r_ok", status="pending", reinforcement=1.0, disputation=0.0,
+            event_start_at="2026-11-10T10:00:00"),
+        row("r_disputed", status="pending", reinforcement=0.0, disputation=3.0,
+            disp_last_signal_at=now_iso, event_start_at="2026-11-10T10:00:00"),
+    ]
+    archive = [row("a_ok", score=1.0, event_start_at="2026-11-10T10:00:00")]
+
+    def tagged(pool):
+        return [(r["id"], r["_tier"]) for r in pool]
+
+    bm25, emb_pool = hr._prepare_recall_pools(
+        facts, reflections, archive, [], lanlan_name="parity",
+        subjects=None, include_legacy_private=None, time_window=None,
+    )
+    assert tagged(bm25) == [
+        ("f_ok", "fact"), ("f_notime", "fact"), ("f_at_end", "fact"),
+        ("f_span", "fact"), ("f_created", "fact"),
+        ("r_ok", "reflection"), ("a_ok", "fact_archive"),
+    ]
+    assert tagged(emb_pool) == [
+        ("f_ok", "fact"), ("f_notime", "fact"), ("f_at_end", "fact"),
+        ("f_span", "fact"), ("f_created", "fact"), ("r_ok", "reflection"),
+    ]
+
+    window = (datetime(2026, 11, 1), datetime(2026, 11, 20))
+    bm25, _emb = hr._prepare_recall_pools(
+        facts, reflections, archive, [], lanlan_name="parity",
+        subjects=None, include_legacy_private=None, time_window=window,
+    )
+    assert [i for i, _t in tagged(bm25)] == ["f_ok", "f_span", "f_created", "r_ok", "a_ok"]
+
+    bm25, _emb = hr._prepare_recall_pools(
+        facts, reflections, archive, [], lanlan_name="parity",
+        subjects=[group], include_legacy_private=True, time_window=None,
+    )
+    assert [i for i, _t in tagged(bm25)] == [
+        "f_ok", "f_notime", "f_at_end", "f_span", "f_created", "f_group", "r_ok", "a_ok",
+    ]
