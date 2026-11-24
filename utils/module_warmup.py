@@ -42,6 +42,7 @@ swallowed; the lazy import on first use remains the single source of truth.
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import sys
 import threading
@@ -142,6 +143,18 @@ class WarmupConfig:
 
     @cached_property
     def core_config(self) -> Mapping[str, object]:
+        # get_core_config() answers a corrupt or unreadable file with the defaults,
+        # which would read as "no Claude, no Gemini". Check the file first so that
+        # case counts as a failed read. A missing file really is the defaults.
+        path = self._cm.get_config_path("core_config.json")
+        try:
+            with open(path, "r", encoding="utf-8") as stream:
+                saved = json.load(stream)
+        except FileNotFoundError:
+            pass
+        else:
+            if not isinstance(saved, dict):
+                raise ValueError("core_config.json does not hold an object")
         return self._cm.get_core_config() or {}
 
     @cached_property

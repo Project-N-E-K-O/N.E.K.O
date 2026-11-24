@@ -386,3 +386,41 @@ def test_config_rewarm_pass_skips_loaded_modules(monkeypatch):
     assert "config.prompts.prompts_directives:DIRECTIVE_PATTERNS" in entries
     full = module_warmup._pending_gated_entries(False, "main")
     assert full == MAIN_SERVER_WARMUP
+
+
+class _CoreConfigManager:
+    """Answers like ConfigManager.get_core_config: defaults when the file is unusable."""
+
+    def __init__(self, path):
+        self._path = path
+
+    def get_config_path(self, name):
+        assert name == "core_config.json"
+        return str(self._path)
+
+    def get_core_config(self):
+        return {"CORE_API_TYPE": "qwen"}
+
+    def get_model_api_config(self, slot, _core_config=None):
+        return dict(_OPENAI_SLOT)
+
+
+@pytest.mark.parametrize("content", ["{not json", "[1, 2]"])
+def test_corrupt_core_config_counts_as_a_failed_read(tmp_path, content):
+    path = tmp_path / "core_config.json"
+    path.write_text(content, encoding="utf-8")
+    cfg = _warmup_config(_CoreConfigManager(path))
+    results = evaluate_gates(cfg)
+    assert results["anthropic"] is True
+    assert results["gemini"] is True
+
+
+@pytest.mark.parametrize("content", [None, '{"CORE_API_TYPE": "qwen"}'])
+def test_missing_or_valid_core_config_is_read_normally(tmp_path, content):
+    path = tmp_path / "core_config.json"
+    if content is not None:
+        path.write_text(content, encoding="utf-8")
+    cfg = _warmup_config(_CoreConfigManager(path))
+    results = evaluate_gates(cfg)
+    assert results["anthropic"] is False
+    assert results["gemini"] is False
