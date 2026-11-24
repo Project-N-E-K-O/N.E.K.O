@@ -366,12 +366,19 @@ def test_doing_it_over_from_the_start_is_not_asking_for_another_task_agent():
         part = orch.by_rules(text, "", standing, bars)
         assert part is not None and (part.action, part.agent) == (orch.CONTINUE, "writer")
     # Nor is beginning it again, in Chinese: said of the thing, as "from scratch" is.
-    for text in ("让 Report Writer 把那份周报重新开始写一遍", "Report Writer 重新开个头", "請 Report Writer 重新開一下那個本地服務"):
+    for text in (
+        "让 Report Writer 把那份周报重新开始写一遍", "Report Writer 重新开个头", "請 Report Writer 重新開一下那個本地服務",
+        "让 Report Writer 重新开一个页面放图表",
+    ):
         begun = orch.by_rules(text, "", standing, bars)
         assert begun is not None and (begun.action, begun.agent) == (orch.CONTINUE, "writer"), text
     # (With nobody named, such a sentence is left to the retrieval and is not a new matter by rule.)
     assert orch.by_rules("把那份周报重新开始写一遍", "", standing, bars) is None
-    for text in ("另开一只来写周报，不要 Report Writer", "重新开一只写周报，不用 Report Writer", "重新開一隻來寫週報"):
+    for text in (
+        "另开一只来写周报，不要 Report Writer", "重新开一只写周报，不用 Report Writer", "重新開一隻來寫週報",
+        "重新开一个会话来写周报，不用 Report Writer", "重新開一個會話來寫週報，不用 Report Writer",
+        "重新开一个新的使魔写周报，不用 Report Writer",
+    ):
         other = orch.by_rules(text, "", standing, bars)
         assert other is not None and (other.action, other.agent) == (orch.SUMMON_STRAY, None), text
     # Asking for another one is still that, whoever is named.
