@@ -2708,7 +2708,7 @@ async def test_a_task_agent_that_became_a_project_s_since_is_gone_on_with_there_
 
 @pytest.mark.parametrize("when", ["before the start reads it again", "after it"])
 async def test_a_task_agent_made_a_member_while_it_starts_stays_the_projects(hosts, tmp_path, when):
-    llm = ScriptedLLM([_report("report written"), _report("report written again")])
+    llm = ScriptedLLM([_report("report written"), _report("report written again"), _report("and once more")])
     opened: list[Any] = []
 
     def pick(spec: Any) -> ScriptedLLM:
@@ -2758,12 +2758,21 @@ async def test_a_task_agent_made_a_member_while_it_starts_stays_the_projects(hos
     assert (member.kind, member.project) == ("line", "Reports")
     assert [item.id for item in await host.ledger.members("Lan", "Reports")] == [loose.id]
     assert agents._writes_in[loose.id] == ("Reports", loose.id)
-    assert loose.preset == "general" and "web_fetch" not in opened[0].disabled_tools
-    if when == "before the start reads it again":
-        # Seen by the start, it is opened as the project's from this run on: with what the project's
-        # template of its preset withholds, and told the project's rules.
-        assert "web_fetch" in opened[-1].disabled_tools
-        assert "Reports go out on Fridays." in opened[-1].instructions and "Reports go out" not in opened[0].instructions
+    # The start it was made a member in went on as it began, whole (its runtime and its gateway
+    # token were settled by its preset as it was read): as with one that is at work when it is
+    # made a member.
+    assert loose.preset == "general" and len(opened) == 2
+    assert all("web_fetch" not in spec.disabled_tools and "Reports go out" not in spec.instructions for spec in opened)
+    # With its next start it is the project's: what the project's template of its preset
+    # withholds it is without, and it is told the project's rules.
+    await _let_go(host)
+    third, _made = await host.ledger.create(
+        lanlan_name="Lan", title="the report once more", dispatch_text="write the weekly sales report once more",
+        source="dispatch", route="task_agent", session_id=loose.id, project="Reports",
+    )
+    await agents.submit(third)
+    await wait_status(host, third.id, "done")
+    assert "web_fetch" in opened[-1].disabled_tools and "Reports go out on Fridays." in opened[-1].instructions
 
 
 async def test_what_a_task_agent_started_before_it_became_a_member_takes_the_projects_turn_with_it(hosts, tmp_path):

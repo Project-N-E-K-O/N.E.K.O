@@ -3585,18 +3585,13 @@ class TaskAgentManager:
                 )
                 session_path, workdir, begun_in = await asyncio.to_thread(prepare)
                 commission = await self._ledger.update(commission.id, workdir=workdir) or commission
-            elif again is not None and (again.kind, again.project) != (kept.kind, kept.project):
-                # Made a project's member since it was read (``Ledger.adopt``, by a commission
-                # that came for the same matter): it works where it did, and is the project's.
-                kept = again
-                place = dataclasses.replace(place, kind=kept.kind, project=kept.project or place.project)
-                # What it may do and what it is told are the project's from this start on: its
-                # preset as that project has it, and the commission as it is filed by now (the
-                # project's rules are read by it). One made a member after this look starts as
-                # it was, like one that is at work when it is made one, and is the project's
-                # with its next start.
-                template = await self._template_of(kept)
-                commission = await self._ledger.get(commission.id) or commission
+            # (A session of one commission may have been made a project's member since it
+            # was read, by a commission that came for the same matter: ``Ledger.adopt``. This
+            # start goes on as it began, whole: its runtime was chosen and its gateway token
+            # issued by the preset as it was read, and a start that took the project's preset
+            # for its tools alone would be neither. It is as with one that is at work when it
+            # is made a member: the project's preset and rules are its own from its next start.
+            # Only whose it is on record must not be written over: ``note_project`` below.)
             # A blocked or failed commission must be working again before its
             # opening brief can reserve a call against the new run.
             spec = await self._spec(
