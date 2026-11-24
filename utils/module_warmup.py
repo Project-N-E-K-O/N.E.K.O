@@ -581,13 +581,19 @@ def request_config_rewarm(reason: str = "config", only: Iterable[str] | None = N
     """
     if _under_pytest():
         return False
+    global _gated_running, _gated_pending, _gated_pending_scope
     # After a startup pass that never ran, the first re-check covers everything.
     scope = None if only is None or _startup_pass_missing else frozenset(only)
-    # Nothing left that this change could add: no thread, no config reads.
-    if not _startup_pass_missing and not _unloaded_gates(scope) and not _unloaded_plain_entries():
+    # Nothing left that this change could add, and no earlier request kept waiting
+    # after its thread failed to start: no thread, no config reads.
+    if (
+        not _startup_pass_missing
+        and not _gated_pending
+        and not _unloaded_gates(scope)
+        and not _unloaded_plain_entries()
+    ):
         return False
 
-    global _gated_running, _gated_pending, _gated_pending_scope
     with _warmup_lock:
         if not _gated_started:
             return False

@@ -815,3 +815,25 @@ def test_failed_recheck_spawn_keeps_a_request_queued_while_it_was_starting(warmu
     module_warmup.request_config_rewarm("characters", only={"cosyvoice_clone"})
     assert module_warmup._gated_pending is True
     assert module_warmup._gated_pending_scope == frozenset({"cosyvoice_clone", "proactive_bilibili"})
+
+
+def test_a_kept_request_is_not_skipped_by_a_narrow_save_with_nothing_of_its_own(warmup_state, monkeypatch):
+    # Only anthropic is missing; a character save (voice only) has nothing of its own to add.
+    monkeypatch.setattr(
+        module_warmup, "_unloaded_gates",
+        lambda scope=None: {"anthropic"} if scope is None or "anthropic" in scope else set(),
+    )
+    monkeypatch.setattr(module_warmup, "_unloaded_plain_entries", lambda: [])
+    module_warmup._gated_started = True
+
+    def _boom(label, scope=None):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(module_warmup, "_spawn_gated_worker", _boom)
+    module_warmup.request_config_rewarm("core_api")  # kept: a full re-check
+    started: list = []
+    monkeypatch.setattr(
+        module_warmup, "_spawn_gated_worker", lambda label, scope=None: started.append(scope),
+    )
+    assert module_warmup.request_config_rewarm("characters", only={"cosyvoice_clone"}) is True
+    assert started == [None], "the kept full re-check must run, anthropic is still missing"
