@@ -2473,6 +2473,13 @@ class KnowledgeService:
             # both retrieval and automatic context start off again. Confirmed
             # source-version updates retain their switches.
             new_disclosure = job.kind == "pack_import" and job.initial_enabled is False
+            # A different local body replaces the built-in provenance. Same-body
+            # repairs and source updates keep their existing record's origin.
+            imported_replacement = (
+                previous is not None and previous.origin == "builtin"
+                and job.kind == "pack_import" and job.origin == "imported"
+                and sha != previous.pack_sha256
+            )
             record = PackRecord(
                 pack_id=pack.pack_id,
                 pack_sha256=sha,
@@ -2491,7 +2498,8 @@ class KnowledgeService:
                 subscription=job.subscription,
                 enabled=(False if new_disclosure
                          else previous.enabled if previous else (job.initial_enabled if job.initial_enabled is not None else True)),
-                origin=previous.origin if previous else (job.origin or ("market" if job.subscription else "builtin")),
+                origin=("imported" if imported_replacement else previous.origin if previous
+                        else (job.origin or ("market" if job.subscription else "builtin"))),
                 archive_sha256=job.archive_sha256,
             )
             final_path = self.root / PACKS_DIR / record.file_name
