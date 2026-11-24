@@ -2399,8 +2399,10 @@ def test_tool_readiness_settles_both_groups_without_asking_the_model():
     # Both groups are settled, neither is left "pending"; off the event loop.
     assert "await asyncio.to_thread(_keyboard_mouse_availability)" in func_src
     assert "await asyncio.to_thread(_browser_availability)" in func_src
-    assert '_set_capability("computer_use",' in func_src
-    assert '_set_capability("browser_use", browser_ready, browser_reason)' in func_src
+    assert '"computer_use", bool(keyboard.get("ready"))' in func_src
+    assert '_set_capability("browser_use", browser_ready, browser_reason, started=started)' in func_src
+    # As new as when the check started, not as when it ended.
+    assert "started = _capability_ticket_now()" in func_src
     assert "PENDING" not in func_src and "create_chat_llm" not in func_src
 
 
