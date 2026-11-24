@@ -500,8 +500,13 @@ class TreeWork:
         live = self._sessions.get(commission_id)
         return live is not None and live.ready and not live.idle
 
-    async def _gone_from_runtime(self, commission_id: str, *, itself: bool = True) -> bool:
+    async def _gone_from_runtime(self, commission_id: str, *, itself: bool = True, over: bool = False) -> bool:
         """Wait until no run is under way for the task agents a commission started, nor (``itself``) for the commission; returns whether that is so.
+
+        ``over``: of the task agents it started, only those that are
+        over on record (stopped, say, and not gone yet). One that is at
+        work as it should be is not waited for: its commission goes on
+        beside it, as when the result of another takes it up again.
 
         Before a worktree they work in is looked at for the last time:
         a tool of theirs that is finishing a write is through by then.
@@ -515,7 +520,11 @@ class TreeWork:
         deadline = time.monotonic() + _GONE_SECONDS
         while not self._closed:
             try:
-                theirs = [child.id for child in await self._ledger.select(parent_id=commission_id)]
+                theirs = [
+                    child.id
+                    for child in await self._ledger.select(parent_id=commission_id)
+                    if not over or child.status in ENDED_STATUSES
+                ]
                 if itself:
                     theirs.append(commission_id)
             except asyncio.CancelledError:
@@ -646,9 +655,11 @@ class TreeWork:
                 await self._ledger.drop_tree(row.id)
                 await self._note_tree_event(commission.id, "tree_lost", {"tree": row.id, "path": row.path})
                 continue
-            if not await self._gone_from_runtime(commission.id, itself=False):
-                # A task agent it started is still at it in there (it could not be stopped in
-                # time when the commission was): not gone on in under it.
+            if not await self._gone_from_runtime(commission.id, itself=False, over=True):
+                # A task agent it started, and that is over, is still at it in there (it could
+                # not be stopped in time when the commission was): not gone on in under it. (One
+                # that is at work as it should be is no such: the commission was at work all
+                # along, and is taken up again by the result of another it started.)
                 self._forget_tree(row, kept.id)
                 raise RuntimeError("a task agent this commission started is still at work in the directory it is worked on in")
             self._direct_now.discard(kept.id)
@@ -1097,9 +1108,7 @@ class TreeWork:
             root = Path(handle.path)
             left = await asyncio.to_thread(lambda: tuple(name for name in row.conflicts if _has_markers(root / name)))
             if left:
-                if unless is not None and unless():
-                    # More was said to it while the files were read: not told as one more clash under that run.
-                    return None
+                # (More said to it while the files were read is seen where this is acted on, ``_landed_or_not``.)
                 return MergeResult("conflict", conflicts=left, detail=_MARKERS_LEFT)
         return await self._merge_back(row, handle, unless=unless)
 
@@ -1910,7 +1919,13 @@ class TreeWork:
             return True
         # A change of where it works writes its sessions first and its record second: one that is
         # under way this moment shows in where its leader works already.
-        leaders = await self._ledger.find_sessions(project=row.project, kind="project", commissions_each=0)
+        try:
+            leaders = await self._ledger.find_sessions(project=row.project, kind="project", commissions_each=0)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - not known, as where the record cannot be read
+            logger.debug("where the leader of project %s works could not be read", row.project, exc_info=True)
+            return None
         return any(
             item.session.workdir and not _same_dir(item.session.workdir, row.project_dir) for item in leaders
         )
@@ -1949,7 +1964,10 @@ class TreeWork:
         another worktree of its own), is put down as stopped.
         ``removed`` is False when its directory could not be removed (a
         file of it is in use): it is shown no more, and removed when
-        the host next starts. Raises as ``land_tree``.
+        the host next starts. False as well where its repository is
+        gone and the directory there is not the worktree's any more:
+        that one is left alone for good, and only the record goes.
+        Raises as ``land_tree``.
         """
         async with self._tree_in_hand(tree_id, TREE_STATES_LEFT) as row:
             handle = await self._handle_of(row)
