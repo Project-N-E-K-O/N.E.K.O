@@ -37,8 +37,14 @@ names = ("DSH_HOME", "DSH_RESOURCE_CACHE", "pnpm_config_store_dir", "pnpm_config
          "pnpm_config_state_dir", "pnpm_config_registry", "pnpm_config_update_notifier")
 seen = {"argv": sys.argv[1:], "env": {name: os.environ.get(name) for name in names},
         "path": os.environ.get("PATH", "").split(os.pathsep)[0], "pnpm": shutil.which("pnpm")}
-with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "called.json"), "w", encoding="utf-8") as out:
-    json.dump(seen, out)
+here = os.path.dirname(os.path.abspath(__file__))
+calls = os.path.join(here, "calls.json")
+done = json.load(open(calls, encoding="utf-8")) if os.path.exists(calls) else []
+json.dump([*done, seen], open(calls, "w", encoding="utf-8"))
+# A registry named in failing.txt stands for one that answers but does not deliver.
+failing = os.path.join(here, "failing.txt")
+if os.path.exists(failing) and (os.environ.get("pnpm_config_registry") or "").startswith(open(failing).read()):
+    sys.exit(9)
 sys.exit(7)
 """
 
@@ -141,8 +147,13 @@ def _run(directory: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, capture_output=True, text=True, timeout=120, env=environment)
 
 
+def _calls(tmp_path: Path) -> list[dict]:
+    path = tmp_path / "fake-dsh" / "calls.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+
+
 def _called(tmp_path: Path) -> dict:
-    return json.loads((tmp_path / "fake-dsh" / "called.json").read_text(encoding="utf-8"))
+    return _calls(tmp_path)[-1]
 
 
 needs_shell = pytest.mark.skipif(
@@ -179,10 +190,14 @@ def test_the_first_plugin_fetches_pnpm_once_and_dsh_gets_it_with_the_data_roots_
     fetched = [path for path in registry.seen if path != "/-/ping"]
     assert len(fetched) == 2
 
+    asked = len(registry.seen)
     again = _run(directory, "list")
     assert again.returncode == 7, again.stderr
-    assert [path for path in registry.seen if path != "/-/ping"] == fetched  # fetched once
+    # Fetched once; and listing asks no registry at all, so it never waits for one.
+    assert len(registry.seen) == asked
     assert _called(tmp_path)["argv"][-1] == "list"
+    assert _called(tmp_path)["env"]["pnpm_config_registry"] is None
+    assert len(_calls(tmp_path)) == 2
 
 
 @needs_shell
@@ -222,6 +237,30 @@ def test_a_file_that_is_not_the_one_recorded_is_never_used(tmp_path, registries,
     assert done.returncode == 7, done.stderr
     pnpm = next((tmp_path / "dsh" / "pnpm").glob("*/" + PROGRAM_NAME))
     assert pnpm.read_bytes() == b"not really pnpm\n" * 64
+    # The first registry answered but did not deliver: the plugin comes from the one that did.
+    assert [call["env"]["pnpm_config_registry"] for call in _calls(tmp_path)] == [mirror.url + "/"]
+
+
+@needs_shell
+def test_a_plugin_that_one_registry_does_not_deliver_is_fetched_from_the_next(tmp_path, registries):
+    first = Registry(_files_of(_packages()))
+    mirror = Registry(_files_of(_packages()))
+    registries(first, mirror)
+    directory = _write(tmp_path)
+    (tmp_path / "fake-dsh" / "failing.txt").write_text(first.url, encoding="utf-8")
+
+    done = _run(directory, "add", "x")
+
+    assert done.returncode == 7, done.stderr
+    tried = [call["env"]["pnpm_config_registry"] for call in _calls(tmp_path)]
+    assert tried == [first.url + "/", mirror.url + "/"]
+    # When all fail, the answer of the last is handed on; a local command is never tried twice.
+    (tmp_path / "fake-dsh" / "failing.txt").write_text("http://127.0.0.1", encoding="utf-8")
+    assert _run(directory, "add", "x").returncode == 9
+    assert len(_calls(tmp_path)) == 4
+    (tmp_path / "fake-dsh" / "calls.json").unlink()
+    assert _run(directory, "remove", "x").returncode == 7
+    assert len(_calls(tmp_path)) == 1
 
 
 @needs_shell
@@ -234,7 +273,7 @@ def test_when_no_registry_delivers_pnpm_nothing_is_run_and_nothing_left(tmp_path
 
     assert done.returncode == 1
     assert "neko-dsh-plugin" in done.stderr
-    assert not (tmp_path / "fake-dsh" / "called.json").exists()
+    assert _calls(tmp_path) == []
     left = tmp_path / "dsh" / "pnpm"
     assert not left.exists() or list(left.iterdir()) == []
 
