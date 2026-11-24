@@ -123,6 +123,7 @@ const messages: PowerMessages = {
       incomplete: '模型回的内容不完整，可以再试一次，或者自己填。',
       no_preset: '现在读不到使魔的职能清单。',
     },
+    bossHint: '猫老大只派活、自己不干活：这个项目的事先到它这里，再由它分给别的使魔去办。',
     presets: {
       boss: '猫老大', worker: '猫小弟', scout: '侦察猫', inspector: '监工猫', planner: '军师猫',
       general: '打工猫', shadow: '副本',
@@ -219,11 +220,13 @@ const messages: PowerMessages = {
         plugin_entry: '插件入口',
         managed_delivery: '经可信适配端交付信息',
         other: 'dsh 插件带来的工具',
+        open_session: '猫老大召唤会改文件的使魔',
       },
       notes: {
         plugin_entry: '插件各有自己的开关。',
         managed_delivery: '即使允许，也按接收方询问。',
         other: '直接放行；可以改成每次都问或禁止。',
+        open_session: '猫老大把事交给新召唤的使魔之前；只读的使魔不问。',
       },
     },
     window: {
@@ -428,6 +431,14 @@ const messages: PowerMessages = {
       message: '{who} 对 {peer} 说：{text}',
       done_notice: '{who} 告诉 {peer}：那一轮办完了',
       asked_session: '{who} 问 {peer}：{text}',
+      orchestrated: '这件事改交给了 {peer}（原先定的去处行不通）',
+      family_formed: '做过同一件事的使魔组成了项目「{text}」',
+      leader_derived: '「{text}」有了猫老大，之后这里的事先交给它来派',
+      leader_derived_git: '「{text}」在 git 仓库里，有了猫老大来派活',
+      leader_derived_third_member: '「{text}」要第三只使魔了，有了猫老大来派活',
+      leader_derived_busy: '「{text}」的使魔手上的事太多，有了猫老大来派活',
+      leader_derived_user: '照你说的，「{text}」有了猫老大来派活',
+      handed_over: '猫老大把这件事交给了 {peer}',
     },
   },
   ask: {
@@ -443,6 +454,7 @@ const messages: PowerMessages = {
     },
     facts: {
       cwd: '在目录', title: '做什么', capability: '能力', content_to: '发给', used: '已经用了', more: '想再用', key: '服务',
+      preset: '职能',
     },
   },
   transcript: {

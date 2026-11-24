@@ -123,6 +123,7 @@ const messages: PowerMessages = {
       incomplete: 'モデルの返事が不完全でした。もう一度試すか、ご自分で入力してください。',
       no_preset: 'いまは使い魔の役割一覧を読み取れません。',
     },
+    bossHint: 'ボス猫は仕事を振り分けるだけで、自分では作業しません。このプロジェクトの仕事はまずボス猫に届き、ほかの使い魔に任されます。',
     presets: {
       boss: 'ボス猫', worker: '子分猫', scout: '偵察猫', inspector: '監督猫', planner: '軍師猫',
       general: 'はたらき猫', shadow: '分身',
@@ -219,11 +220,13 @@ const messages: PowerMessages = {
         plugin_entry: 'プラグインの入口',
         managed_delivery: '信頼できるアダプター経由での情報の受け渡し',
         other: 'dsh プラグインが追加するツール',
+        open_session: 'ボス猫がファイルを変更できる使い魔を召喚する',
       },
       notes: {
         plugin_entry: 'プラグインごとにスイッチがあります。',
         managed_delivery: '許可していても、受け取り先ごとに確認します。',
         other: '確認なしで許可します。「毎回確認」や「禁止」に変更できます。',
+        open_session: 'ボス猫が新しく召喚した使い魔に仕事を渡す前。読むだけの使い魔については確認しません。',
       },
     },
     window: {
@@ -428,6 +431,14 @@ const messages: PowerMessages = {
       message: '{who} が {peer} に伝えました：{text}',
       done_notice: '{who} が {peer} に、その回が終わったことを知らせました',
       asked_session: '{who} が {peer} に質問しました：{text}',
+      orchestrated: 'この件は {peer} に回されました（予定していた行き先が使えませんでした）',
+      family_formed: '同じ仕事をしてきた使い魔たちがプロジェクト「{text}」になりました',
+      leader_derived: '「{text}」にボス猫がつきました。これからはここの仕事をボス猫が振り分けます',
+      leader_derived_git: '「{text}」は git リポジトリにあるので、仕事を振り分けるボス猫がつきました',
+      leader_derived_third_member: '「{text}」に 3 匹目の使い魔が必要になったので、仕事を振り分けるボス猫がつきました',
+      leader_derived_busy: '「{text}」の使い魔が抱える仕事が多すぎるので、仕事を振り分けるボス猫がつきました',
+      leader_derived_user: 'あなたの指示で、「{text}」に仕事を振り分けるボス猫がつきました',
+      handed_over: 'ボス猫がこの件を {peer} に任せました',
     },
   },
   ask: {
@@ -443,6 +454,7 @@ const messages: PowerMessages = {
     },
     facts: {
       cwd: 'ディレクトリ', title: '内容', capability: '機能', content_to: '送り先', used: 'これまでの使用量', more: '追加で使いたい量', key: 'サーバー',
+      preset: '役割',
     },
   },
   transcript: {

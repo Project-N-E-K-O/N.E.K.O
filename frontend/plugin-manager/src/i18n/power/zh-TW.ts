@@ -123,6 +123,7 @@ const messages: PowerMessages = {
       incomplete: '模型回的內容不完整，可以再試一次，或者自己填。',
       no_preset: '現在讀不到使魔的職能清單。',
     },
+    bossHint: '貓老大只派活、自己不幹活：這個專案的事先到它這裡，再由它分給別的使魔去辦。',
     presets: {
       boss: '貓老大', worker: '貓小弟', scout: '偵察貓', inspector: '監工貓', planner: '軍師貓',
       general: '打工貓', shadow: '副本',
@@ -219,11 +220,13 @@ const messages: PowerMessages = {
         plugin_entry: '外掛入口',
         managed_delivery: '經可信任的配接端交付資訊',
         other: 'dsh 外掛帶來的工具',
+        open_session: '貓老大召喚會改檔案的使魔',
       },
       notes: {
         plugin_entry: '外掛各有自己的開關。',
         managed_delivery: '即使允許，也依接收方詢問。',
         other: '直接放行；可以改成每次都問或禁止。',
+        open_session: '貓老大把事交給新召喚的使魔之前；只讀的使魔不問。',
       },
     },
     window: {
@@ -428,6 +431,14 @@ const messages: PowerMessages = {
       message: '{who} 對 {peer} 說：{text}',
       done_notice: '{who} 告訴 {peer}：那一輪辦完了',
       asked_session: '{who} 問 {peer}：{text}',
+      orchestrated: '這件事改交給了 {peer}（原先定的去處行不通）',
+      family_formed: '做過同一件事的使魔組成了專案「{text}」',
+      leader_derived: '「{text}」有了貓老大，之後這裡的事先交給它來派',
+      leader_derived_git: '「{text}」在 git 儲存庫裡，有了貓老大來派活',
+      leader_derived_third_member: '「{text}」要第三隻使魔了，有了貓老大來派活',
+      leader_derived_busy: '「{text}」的使魔手上的事太多，有了貓老大來派活',
+      leader_derived_user: '照你說的，「{text}」有了貓老大來派活',
+      handed_over: '貓老大把這件事交給了 {peer}',
     },
   },
   ask: {
@@ -443,6 +454,7 @@ const messages: PowerMessages = {
     },
     facts: {
       cwd: '在目錄', title: '做什麼', capability: '能力', content_to: '傳給', used: '已經用了', more: '想再用', key: '伺服器',
+      preset: '職能',
     },
   },
   transcript: {

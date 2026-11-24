@@ -123,6 +123,7 @@ const messages: PowerMessages = {
       incomplete: '모델이 보낸 내용이 완전하지 않아요. 다시 시도하거나 직접 입력해 주세요.',
       no_preset: '지금은 사역마 역할 목록을 읽을 수 없어요.',
     },
+    bossHint: '대장 고양이는 일을 나눠 주기만 하고 직접 하지는 않아요. 이 프로젝트의 일은 먼저 대장 고양이에게 가고, 대장 고양이가 다른 사역마에게 맡겨요.',
     presets: {
       boss: '대장 고양이', worker: '막내 고양이', scout: '정찰 고양이', inspector: '감독 고양이', planner: '책사 고양이',
       general: '일꾼 고양이', shadow: '분신',
@@ -219,11 +220,13 @@ const messages: PowerMessages = {
         plugin_entry: '플러그인 진입점',
         managed_delivery: '신뢰할 수 있는 어댑터를 통한 정보 전달',
         other: 'dsh 플러그인이 가져온 도구',
+        open_session: '대장 고양이가 파일을 바꿀 수 있는 사역마 소환',
       },
       notes: {
         plugin_entry: '플러그인마다 스위치가 따로 있어요.',
         managed_delivery: '허용해도 받는 쪽마다 물어요.',
         other: '묻지 않고 허용해요. 매번 묻기나 금지로 바꿀 수 있어요.',
+        open_session: '대장 고양이가 새로 소환한 사역마에게 일을 넘기기 전. 읽기만 하는 사역마는 묻지 않아요.',
       },
     },
     window: {
@@ -428,6 +431,14 @@ const messages: PowerMessages = {
       message: '{who} → {peer}: {text}',
       done_notice: '{who} → {peer}: 이번 차례가 끝났어요',
       asked_session: '{who} → {peer} 질문: {text}',
+      orchestrated: '이 일은 {peer}에게 넘어갔어요 (처음 정한 곳으로는 갈 수 없었어요)',
+      family_formed: '같은 일을 해 온 사역마들이 프로젝트가 되었어요: 「{text}」',
+      leader_derived: '「{text}」에 대장 고양이가 생겼어요. 앞으로 이곳의 일은 대장 고양이가 나눠 줘요',
+      leader_derived_git: '「{text}」에 일을 나눠 줄 대장 고양이가 생겼어요 (git 저장소에 있는 프로젝트)',
+      leader_derived_third_member: '「{text}」에 일을 나눠 줄 대장 고양이가 생겼어요 (세 번째 사역마가 필요했어요)',
+      leader_derived_busy: '「{text}」에 일을 나눠 줄 대장 고양이가 생겼어요 (사역마에게 밀린 일이 너무 많았어요)',
+      leader_derived_user: '말씀하신 대로 「{text}」에 일을 나눠 줄 대장 고양이가 생겼어요',
+      handed_over: '대장 고양이가 이 일을 {peer}에게 넘겼어요',
     },
   },
   ask: {
@@ -443,6 +454,7 @@ const messages: PowerMessages = {
     },
     facts: {
       cwd: '디렉터리', title: '할 일', capability: '기능', content_to: '보낼 곳', used: '지금까지 사용', more: '추가 요청', key: '서버',
+      preset: '역할',
     },
   },
   transcript: {

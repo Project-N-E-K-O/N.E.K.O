@@ -27,7 +27,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { TimelineEntry } from '@/api/console'
-import { clockTime, describeEntry } from './activity'
+import { clockTime, describeEntry, toldInFeed } from './activity'
 
 /**
  * What happened among the familiars, a line each, the latest at the bottom.
@@ -53,13 +53,12 @@ const window = computed(() => {
   const end = props.current === null ? total : Math.min(total, props.current + 1 + SHOWN / 4)
   return { from: Math.max(0, Math.floor(end) - shown.value), to: Math.floor(end) }
 })
-const left = computed(() => window.value.from)
+// Entries the list has no line for (`toldInFeed`) are still there to replay, and are not counted as left out.
+const left = computed(() => props.entries.slice(0, window.value.from).filter(toldInFeed).length)
 const rows = computed(() =>
-  props.entries.slice(window.value.from, window.value.to).map((entry, offset) => ({
-    entry,
-    index: window.value.from + offset,
-    line: describeEntry(entry, props.nameOf, t, te),
-  })),
+  props.entries.slice(window.value.from, window.value.to).flatMap((entry, offset) => toldInFeed(entry)
+    ? [{ entry, index: window.value.from + offset, line: describeEntry(entry, props.nameOf, t, te) }]
+    : []),
 )
 
 /** Draw as many more of the entries before those drawn, and stay at the line that was at the top. */

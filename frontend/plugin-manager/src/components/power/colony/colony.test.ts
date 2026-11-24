@@ -10,7 +10,7 @@ import ActivityFeed from './ActivityFeed.vue'
 import ColonyTerritory from './ColonyTerritory.vue'
 import type { ColonyMember, Territory } from './ColonyTerritory.vue'
 import FamiliarColony from './FamiliarColony.vue'
-import { SAID_SECONDS, describeEntry, firstSeen, ghostsOf, sceneAt } from './activity'
+import { SAID_SECONDS, describeEntry, firstSeen, ghostsOf, sceneAt, toldInFeed } from './activity'
 import { defaultSpots, inTerritory, intoTerritory, keepSpots, keptSpots, territorySize } from './layout'
 
 const api = vi.hoisted(() => ({
@@ -193,6 +193,41 @@ describe('how the familiars stood at a moment of what happened', () => {
     expect(approval('brand_new')).toBe('Blog asks you: brand_new')
     // With nothing said the colon goes too.
     expect(describeEntry(entry('reported'), nameOf, t, te)).toBe('Blog reports')
+  })
+
+  it('says how a project came to be and got its leader, and to whom a leader handed a commission over', () => {
+    const i18n = createI18n({ legacy: false, locale: 'en-US', messages: { 'en-US': { power: words } } })
+    const { t, te } = i18n.global
+    const say = (kind: string, over: Partial<TimelineEntry> = {}) => describeEntry(entry(kind, over), nameOf, t, te)
+    const lead = { type: 'session' as const, session_id: 'lead', commission_id: null }
+    expect(say('family_formed', { text: 'Blog', detail: { project: 'Blog', members: ['a', 'b'] } }))
+      .toBe('The familiars that did this before became the project "Blog"')
+    // Why the project got its leader is said with it; a reason the page has no words for, in general words.
+    for (const reason of ['git', 'third_member', 'busy', 'user'] as const) {
+      expect(say('leader_derived', { text: 'Blog', peer: lead, detail: { project: 'Blog', reason } }))
+        .toBe(words.activity.kinds[`leader_derived_${reason}`].replace('{text}', 'Blog'))
+    }
+    expect(say('leader_derived', { text: 'Blog', peer: lead, detail: { project: 'Blog', reason: 'later' } }))
+      .toBe('"Blog" got a boss cat; its work goes there first from now on')
+    // The reason is a leader's only: of another kind it is not what is said.
+    expect(say('ended', { text: 'moved', detail: { outcome: 'done', reason: 'git' } })).toBe('Blog is done')
+    expect(say('ended', { text: 'moved', detail: { reason: 'done' } })).toBe('Blog ended: moved')
+    expect(say('handed_over', { text: 'Blog/worker', peer: { type: 'session', session_id: 'scout', commission_id: null }, detail: { preset: 'worker', new: true } }))
+      .toBe('The boss cat handed this over to Scout')
+    expect(say('orchestrated', { peer: { type: 'session', session_id: 'scout', commission_id: null }, detail: { action: 'continue', placed: 'summon_stray' } }))
+      .toBe('This went to Scout instead (where it was meant to go no longer worked)')
+  })
+
+  it('has a line for where a commission was decided to go only when it went elsewhere', () => {
+    const decided = (detail: Record<string, unknown>) => toldInFeed(entry('orchestrated', { detail }))
+    expect(decided({ action: 'continue' })).toBe(false)
+    expect(decided({ action: 'continue', placed: 'continue' })).toBe(false)
+    expect(decided({ action: 'continue', placed: '' })).toBe(false)
+    expect(decided({ action: 'continue', placed: 7 })).toBe(false)
+    expect(decided({ action: 'continue', placed: 'summon_in_project' })).toBe(true)
+    for (const kind of ['family_formed', 'leader_derived', 'handed_over', 'filed', 'kind_not_known']) {
+      expect(toldInFeed(entry(kind))).toBe(true)
+    }
   })
 })
 
@@ -587,6 +622,34 @@ describe('the list of what happened', () => {
     await flush()
     expect(document.querySelectorAll('.row').length).toBe(450)
     expect(byTest('activity-earlier')).toBeNull()
+  })
+
+  it('leaves out where a commission was decided to go unless it went elsewhere, and keeps each moment where it is', async () => {
+    const decided = (at: number, placed?: string) => entry('orchestrated', {
+      at, cursor: `e${at}.m0`, peer: { type: 'session', session_id: 'scout', commission_id: null },
+      detail: placed ? { action: 'continue', placed } : { action: 'continue' },
+    })
+    const entries = [
+      decided(1), entry('filed', { at: 2, cursor: 'e2.m0', text: 'Move the blog' }), decided(3, 'summon_stray'),
+      decided(4), entry('started', { at: 5, cursor: 'e5.m0' }),
+    ]
+    const picked: number[] = []
+    const { state } = await mount(ActivityFeed, { entries, current: null, nameOf, onPick: (index: number) => picked.push(index) })
+    const rows = [...document.querySelectorAll('.row')]
+    expect(rows.map(row => row.getAttribute('data-entry'))).toEqual(['filed', 'orchestrated', 'started'])
+    // Pressed, a line asks for its own moment: those left out are still there to replay.
+    ;(rows[0].querySelector('button') as HTMLElement).click()
+    ;(rows[2].querySelector('button') as HTMLElement).click()
+    expect(picked).toEqual([1, 4])
+    // Those it has no line for are not counted among those left out.
+    const many = [
+      ...Array.from({ length: 100 }, (_, n) => decided(n)),
+      ...Array.from({ length: 300 }, (_, n) => entry('started', { at: 100 + n, cursor: `e${100 + n}.m0` })),
+    ]
+    state.props = { entries: many, current: null, nameOf }
+    await flush()
+    expect(document.querySelectorAll('.row').length).toBe(200)
+    expect(byTest('activity-feed')?.textContent).toContain(words.activity.earlierLeftOut.replace('{count}', '100'))
   })
 })
 

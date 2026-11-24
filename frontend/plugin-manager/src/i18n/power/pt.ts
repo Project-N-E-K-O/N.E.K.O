@@ -123,6 +123,7 @@ const messages: PowerMessages = {
       incomplete: 'A resposta do modelo veio incompleta. Tente de novo ou preencha por conta própria.',
       no_preset: 'Não é possível ler a lista de funções dos familiares agora.',
     },
+    bossHint: 'O gato chefe só distribui o trabalho e não faz nada ele mesmo: o que chega para este projeto passa primeiro por ele, e ele entrega cada tarefa a outro familiar.',
     presets: {
       boss: 'Gato chefe', worker: 'Gato ajudante', scout: 'Gato batedor', inspector: 'Gato capataz', planner: 'Gato estrategista',
       general: 'Gato trabalhador', shadow: 'Duplo',
@@ -219,11 +220,13 @@ const messages: PowerMessages = {
         plugin_entry: 'Pontos de entrada de plugins',
         managed_delivery: 'Entregar informações por um adaptador confiável',
         other: 'Ferramentas trazidas por plugins do dsh',
+        open_session: 'Gato chefe invoca um familiar que pode alterar arquivos',
       },
       notes: {
         plugin_entry: 'Cada plugin tem o próprio interruptor.',
         managed_delivery: 'Mesmo quando permitido, pergunta para cada destinatário.',
         other: 'Permitido sem perguntar; você pode mudar para perguntar sempre ou para negar.',
+        open_session: 'Antes de um gato chefe passar uma tarefa a um familiar recém-invocado; sobre um que só lê não se pergunta.',
       },
     },
     window: {
@@ -428,6 +431,14 @@ const messages: PowerMessages = {
       message: '{who} disse a {peer}: {text}',
       done_notice: '{who} avisou {peer} de que aquela rodada terminou',
       asked_session: '{who} perguntou a {peer}: {text}',
+      orchestrated: 'Isto foi para {peer} (o destino previsto não servia mais)',
+      family_formed: 'Os familiares que já fizeram isto formaram o projeto “{text}”',
+      leader_derived: '“{text}” ganhou um gato chefe; a partir de agora o trabalho do projeto passa primeiro por ele',
+      leader_derived_git: '“{text}” está em um repositório git, então ganhou um gato chefe para distribuir o trabalho',
+      leader_derived_third_member: '“{text}” precisava de um terceiro familiar, então ganhou um gato chefe para distribuir o trabalho',
+      leader_derived_busy: 'O familiar de “{text}” tinha trabalho demais acumulado, então o projeto ganhou um gato chefe para distribuir o trabalho',
+      leader_derived_user: 'Como você pediu, “{text}” ganhou um gato chefe para distribuir o trabalho',
+      handed_over: 'O gato chefe passou isto para {peer}',
     },
   },
   ask: {
@@ -443,6 +454,7 @@ const messages: PowerMessages = {
     },
     facts: {
       cwd: 'Na pasta', title: 'O quê', capability: 'Recurso', content_to: 'Destinatário', used: 'Usado até agora', more: 'Pede mais', key: 'Servidor',
+      preset: 'Função',
     },
   },
   transcript: {

@@ -149,6 +149,20 @@ export function ghostsOf(entries: TimelineEntry[], known: Set<string>): Ghost[] 
   return [...found.values()]
 }
 
+/**
+ * Return whether the list of what happened has a line for an entry.
+ *
+ * Where each commission of hers goes is decided as it comes (`orchestrated`),
+ * and the lines of the commission itself say where it went: that entry is kept
+ * for replaying and looking into what was decided, and is told only when the
+ * commission went elsewhere than was decided.
+ */
+export function toldInFeed(entry: TimelineEntry): boolean {
+  if (entry.kind !== 'orchestrated') return true
+  const placed = entry.detail?.placed
+  return typeof placed === 'string' && placed !== '' && placed !== entry.detail?.action
+}
+
 type Translate = (key: string, named?: Record<string, unknown>) => string
 type Exists = (key: string) => boolean
 
@@ -171,8 +185,10 @@ export function describeEntry(
     if (named) text = [t(named), ...rest].join(': ')
   }
   let key = `power.activity.kinds.${entry.kind}`
-  // How it ended is part of what is said: done, failed, stopped, stuck.
-  const outcome = typeof entry.detail?.outcome === 'string' ? entry.detail.outcome : ''
+  // How it ended is part of what is said: done, failed, stopped, stuck. Of a project that got its
+  // leader, why it got one.
+  const how = entry.detail?.[entry.kind === 'leader_derived' ? 'reason' : 'outcome']
+  const outcome = typeof how === 'string' ? how : ''
   if (outcome && te(`${key}_${outcome}`)) key = `${key}_${outcome}`
   if (!te(key)) return [who, entry.kind, text].filter(Boolean).join(' · ')
   return t(key, { who, peer, text }).replace(/[\s：:]+$/u, '')
