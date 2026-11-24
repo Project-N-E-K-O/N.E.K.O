@@ -1206,7 +1206,7 @@ async def test_a_switch_that_cannot_come_back_at_start_says_why_and_keeps_the_in
     from app.agent_server import api_routes as srv_mod
 
     ari.set_intent("browser_use_enabled", True)
-    monkeypatch.setattr(srv_mod, "_browser_dependency_status", lambda: (False, "AGENT_BROWSER_NOT_FOUND"))
+    monkeypatch.setattr("app.agent_server.capabilities._browser_dependency_status", lambda: (False, "AGENT_BROWSER_NOT_FOUND"))
     srv_mod.Modules.analyzer_enabled = True
     written: list = []
     monkeypatch.setattr(ari, "set_intent", lambda *args, **kwargs: written.append(args))

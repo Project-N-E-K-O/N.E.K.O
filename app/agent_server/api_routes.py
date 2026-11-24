@@ -328,7 +328,9 @@ async def set_agent_flags(payload: Dict[str, Any]):
     if isinstance(bf, bool):
         if bf:
             started = _capability_ticket_now()
-            dependency_ready, dependency_error = await asyncio.to_thread(_browser_dependency_status)
+            # The model set up as well as a browser found: the configuration
+            # may have changed while an earlier part of this request waited.
+            dependency_ready, dependency_error = await asyncio.to_thread(_browser_availability)
             if Modules.browser_use_lifecycle_seq != browser_use_lifecycle_seq:
                 # The switch was set anew while this one looked for a
                 # browser: that later setting stands.

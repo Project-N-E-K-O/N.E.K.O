@@ -1037,7 +1037,7 @@ async def test_what_was_kept_is_gone_before_a_switch_that_takes_the_place_of_the
     kept = _kept_for_task_agents(monkeypatch)
     stage.state.agent_flags.update({"computer_use_enabled": True, "browser_use_enabled": False})
     as_it_was = _AsItWas(kept, answer=(True, ""))
-    monkeypatch.setattr(api_routes, "_browser_dependency_status", as_it_was.asked)
+    monkeypatch.setattr(api_routes, "_browser_availability", as_it_was.asked)
 
     # The keyboard and mouse go off, and the browser tools are to come on: whether they can is
     # found out in a thread, and no switch is on meanwhile.

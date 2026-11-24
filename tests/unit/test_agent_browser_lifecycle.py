@@ -752,7 +752,7 @@ async def test_a_browser_switched_off_while_an_earlier_request_looked_for_a_brow
         release.wait(5.0)
         return True, ""
 
-    monkeypatch.setattr(api_routes, "_browser_dependency_status", slow_search)
+    monkeypatch.setattr(api_routes, "_browser_availability", slow_search)
     switching_on = asyncio.ensure_future(
         api_routes.set_agent_flags({"browser_use_enabled": True, "_persist_intent": False})
     )
@@ -867,7 +867,7 @@ async def test_a_switch_on_that_waited_goes_by_a_newer_check_the_saved_configura
     if group == "keyboard_mouse":
         monkeypatch.setattr(api_routes, "_keyboard_mouse_availability", slow_keyboard)
     else:
-        monkeypatch.setattr(api_routes, "_browser_dependency_status", slow_search)
+        monkeypatch.setattr(api_routes, "_browser_availability", slow_search)
     switching_on = asyncio.ensure_future(api_routes.set_agent_flags({flag: True, "_persist_intent": False}))
     try:
         await asyncio.wait_for(asyncio.to_thread(asked.wait, 5.0), 6.0)
@@ -947,7 +947,7 @@ async def test_a_switch_on_waiting_for_its_check_is_not_held_back_by_the_master_
     if group == "keyboard_mouse":
         monkeypatch.setattr(api_routes, "_keyboard_mouse_availability", slow_keyboard)
     else:
-        monkeypatch.setattr(api_routes, "_browser_dependency_status", slow_search)
+        monkeypatch.setattr(api_routes, "_browser_availability", slow_search)
     # The background refresh the master switch starts is kept from running here.
     monkeypatch.setattr(api_routes, "_create_tracked_task", lambda coro: coro.close())
     modules.analyzer_enabled = False
@@ -1087,6 +1087,36 @@ async def test_a_step_of_the_master_switch_that_fails_still_has_the_tools_worked
     # Not left "not ready" for want of the check: it was started before the step that failed.
     assert modules.capability_cache["computer_use"] == {"ready": True, "reason": ""}
     assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
+
+
+async def test_switching_both_on_while_the_model_setup_goes_away_leaves_the_browser_off(
+    modules, search, browser, checks, monkeypatch, scheduled
+):
+    import threading
+
+    asked = threading.Event()
+    release = threading.Event()
+
+    def slow_keyboard() -> dict[str, Any]:
+        asked.set()
+        release.wait(5.0)
+        return {"enabled": True, "ready": True, "reasons": []}
+
+    monkeypatch.setattr(api_routes, "_keyboard_mouse_availability", slow_keyboard)
+    switching_on = asyncio.ensure_future(
+        api_routes.set_agent_flags({"computer_use_enabled": True, "browser_use_enabled": True, "_persist_intent": False})
+    )
+    try:
+        await asyncio.wait_for(asyncio.to_thread(asked.wait, 5.0), 6.0)
+        # The key is taken out of the configuration while the keyboard is checked.
+        _gate(monkeypatch, {"ready": False, "reasons": ["Agent API Key 未配置或不可用"], "is_free_version": False})
+    finally:
+        release.set()
+    await asyncio.wait_for(switching_on, 5.0)
+
+    # The browser is checked after that, and with the model: it does not come on.
+    assert modules.agent_flags["browser_use_enabled"] is False
+    assert modules.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_KEY_NOT_CONFIGURED"}
 
 
 async def test_without_a_browser_only_the_browser_tools_are_not_ready(modules, search, browser, checks, monkeypatch):
