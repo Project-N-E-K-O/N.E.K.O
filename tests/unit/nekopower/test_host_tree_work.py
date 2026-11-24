@@ -365,11 +365,23 @@ async def test_a_member_whose_worktree_cannot_be_made_as_it_starts_takes_its_tur
     async def until_looked() -> None:
         await hold.wait()
 
+    elsewhere = asyncio.Event()
+
+    async def in_another_project() -> None:
+        await elsewhere.wait()
+
     members = {
         "the header": ScriptedLLM([[wait, *_report("header fixed")]]),
         "broken links": ScriptedLLM([_write("links.txt"), [until_looked, *_report("links repaired")]]),
+        "photo album": ScriptedLLM([[in_another_project, *_report("sorted")]]),
     }
     host, trees, workdir = await _shop(hosts, tmp_path, _by_role(leader_llm, members))
+    photos = tmp_path / "photos"
+    photos.mkdir()
+    await host.space.touch_project("Photo album", workdir=str(photos))
+    # One that writes in another project is at work all the while: nobody of this project waits for it.
+    other = await _dispatch(host, "sort the photos of the photo album by date")
+    await wait_until(lambda: len(members["photo album"].requests) == 1, what="the other project's member being at work")
     # It looks as if one could be made, and the disk turns out to be full.
     trees.fail_create = WorktreeUnavailable("disk_space", "1 bytes free, 2 needed")
 
@@ -399,6 +411,9 @@ async def test_a_member_whose_worktree_cannot_be_made_as_it_starts_takes_its_tur
     done = await wait_status(host, two.commission_id, "done")
     assert done.workdir == str(workdir) and (workdir / "links.txt").exists() and trees.merged == []
     assert await host.ledger.trees() == []
+    assert (await host.ledger.get(other.commission_id)).status == "working"
+    elsewhere.set()
+    await wait_status(host, other.commission_id, "done")
 
 
 async def test_a_project_has_no_more_worktrees_than_it_may(hosts, tmp_path, monkeypatch):
@@ -875,10 +890,15 @@ async def test_a_worktree_in_which_nothing_was_changed_is_removed_and_nothing_is
 
 
 async def test_what_is_said_to_a_task_agent_while_its_changes_wait_to_land_is_done_first(hosts, tmp_path):
+    more = asyncio.Event()
+
+    async def wait() -> None:
+        await more.wait()
+
     host, trees, workdir, one, two, members = await _two_members(
         hosts, tmp_path,
         second=[_write("links.txt", "repaired"), _report("links repaired"),
-                _write("sitemap.txt", "new"), [say("the sitemap is there as well"), finish("stop")]],
+                [wait, *_write("sitemap.txt", "new")], [say("the sitemap is there as well"), finish("stop")]],
     )
     await wait_until(lambda: two.commission_id in host.task_agents._dones, what="the second one saying it is done")
     await wait_until(
@@ -887,8 +907,13 @@ async def test_what_is_said_to_a_task_agent_while_its_changes_wait_to_land_is_do
     # The first one is in the middle of a step: nothing lands yet, and the user says more.
     assert trees.merged == []
     assert await host.tell(two.commission_id, "write the sitemap anew as well")
-    await wait_until(lambda: len(members["broken links"].requests) == 4, what="it having done that as well")
+    await wait_until(lambda: len(members["broken links"].requests) == 3, what="it being at work again")
+    # The directory is quiet now, and the task agent is in the middle of what was added: not landed under it.
     host.release.set()
+    await wait_status(host, one.commission_id, "done")
+    await asyncio.sleep(0.6)
+    assert trees.merged == [] and (await host.ledger.get(two.commission_id)).status == "working"
+    more.set()
     done = await wait_status(host, two.commission_id, "done")
 
     # One landing, of all it changed, told with what it said last.
@@ -896,16 +921,23 @@ async def test_what_is_said_to_a_task_agent_while_its_changes_wait_to_land_is_do
     assert done.result_summary.startswith("the sitemap is there as well")
 
 
-async def test_a_landing_does_not_wait_for_one_that_waits_for_the_user(hosts, tmp_path):
+@pytest.mark.parametrize("asks", ["a question", "a permission"])
+async def test_a_landing_does_not_wait_for_one_that_waits_for_the_user(hosts, tmp_path, asks):
     hold = asyncio.Event()
 
     async def until_asked() -> None:
         await hold.wait()
 
+    def first(wait: Any) -> list[list[Any]]:
+        if asks == "a question":
+            return [[wait, *_report("which colour is the header to be?", status="waiting")]]
+        # Writing outside its directory is asked about: it waits in the middle of a run.
+        return [[wait, *_write(str(tmp_path / "outside.txt"))]]
+
     host, trees, workdir, one, two, members = await _two_members(
         hosts, tmp_path,
         second=[_write("links.txt", "repaired"), [until_asked, *_report("links repaired")]],
-        first=lambda wait: [[wait, *_report("which colour is the header to be?", status="waiting")]],
+        first=first,
     )
     await wait_until(lambda: len(members["broken links"].requests) == 2, what="the second member having written")
     host.release.set()
@@ -1025,6 +1057,8 @@ async def test_a_worktree_left_half_made_is_made_anew_when_its_commission_starts
 
     assert row is not None and row.id == commission.id[:12] and row.state == "active"
     assert [tree.id for tree in await host.ledger.trees()] == [row.id]
+    # Made anew as one that was never finished: nothing is said of a worktree that was lost.
+    assert await _events(host, commission.id, "tree_lost") == []
     # One whose session is to have none, or cannot change files, gets none.
     await host.task_agents._remove_tree(row)
     assert await host.task_agents._tree_to_work_in(commission, kept, str(workdir), False) is None
@@ -1148,6 +1182,51 @@ async def test_every_new_kind_of_timeline_entry_says_what_a_page_shows(tmp_path)
     }
     assert entries["inspected"]["detail"] == {"tree": "abc", "verdict": "fail", "round": 1}
     assert entries["stall_reminded"]["detail"] == {"members": 2}
+
+
+async def test_what_a_commission_that_is_over_changed_is_not_landed(hosts, tmp_path, monkeypatch):
+    from nekopower.host.tree_work import _Done
+
+    hold = asyncio.Event()
+
+    async def wait() -> None:
+        await hold.wait()
+
+    host, trees, workdir, one, two, members = await _two_members(
+        hosts, tmp_path, second=[_write("links.txt", "half"), [wait, *_report("links repaired")]]
+    )
+    await wait_until(lambda: len(members["broken links"].requests) == 2, what="the second one at work")
+
+    async def not_yet(_commission: Any) -> None:
+        return None
+
+    # Stopped, and what sees to its worktree has not come by yet: a landing that was under way lands nothing.
+    monkeypatch.setattr(host.task_agents, "_tree_left", not_yet)
+    assert await host.abort(two.commission_id)
+    done = _Done(text="links repaired", reason="the task agent reported ready", delivery=None, sent=1)
+    done.run_over.set()
+    host.task_agents._dones[two.commission_id] = done
+    assert await host.task_agents._land_once(two.commission_id, done) == "over"
+    assert trees.merged == [] and not (workdir / "links.txt").exists()
+    assert two.commission_id not in host.task_agents._dones
+    hold.set()
+    host.release.set()
+
+
+async def test_a_member_that_only_reads_gets_no_worktree_beside_another(hosts, tmp_path):
+    leader_llm = ScriptedLLM([*_hand_over(), *_hand_over(preset="scout", description="looks things up")])
+    members = {
+        "the header": ScriptedLLM([_report("header fixed")]),
+        "broken links": ScriptedLLM([_report("three of them are broken")]),
+    }
+    host, trees, workdir = await _shop(hosts, tmp_path, _by_role(leader_llm, members))
+    await wait_status(host, (await _dispatch(host, FIRST)).commission_id, "done")
+    two = await _dispatch(host, SECOND)
+    done = await wait_status(host, two.commission_id, "done")
+
+    scout = await host.ledger.get_session(done.session_id)
+    assert (scout.preset, scout.seat) == ("scout", "") and trees.made == [] and done.workdir == str(workdir)
+    assert await _events(host, two.commission_id, "tree_not_made") == []
 
 
 # ---------------------------------------------------------------------------

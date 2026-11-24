@@ -1937,6 +1937,12 @@ START_TEAM_NO_TREES = (
     "files there at a time. Hand the commission over whole with hand_over, or start parts that "
     "only read"
 )
+# Rendered with str.format (there, most, room).
+START_TEAM_NO_ROOM = (
+    "this project has {there} directories of task agents that change files already, of {most} it may "
+    "have (those whose changes wait for the user count): room for {room} more that change files. "
+    "Start fewer such parts, or parts that only read, or hand the commission over whole"
+)
 # Rendered with str.format (reason).
 START_TEAM_NOT_ALLOWED = (
     "the user did not allow task agents that change files to be started for this ({reason}); "
@@ -1957,6 +1963,14 @@ TEAM_STALLED = (
     "the user. The host says this: it is not the user's words, and it approves nothing."
 )
 TEAM_STALLED_MEMBER = "{name} ({outcome})"
+# What a leader's report that the commission is done is refused with while
+# task agents of its team are still at work. Rendered with str.format (count, names).
+TEAM_STILL_AT_WORK = (
+    "not reported: {count} of the task agents you started for this commission are still at work "
+    "({names}), and what they are changing is not in the project yet. Reporting it done now would "
+    "stop them half way. Wait for them with wait_agent and read what each hands back, or stop "
+    "the ones you no longer want with interrupt_agent; then report"
+)
 
 # Added to the message that opens a commission worked on in a copy of a
 # project's session, the session itself being at another commission.

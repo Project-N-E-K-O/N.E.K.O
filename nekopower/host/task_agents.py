@@ -3619,9 +3619,7 @@ class TaskAgentManager(TreeWork):
             # by now starts there, and that is what is put on record, not
             # the directory this start began with.
             again = await self._ledger.get_session(session.session_id)
-            # (Not one that is worked on in a git worktree: that is on record from before the
-            # look, and keeps the project where the worktree was made from, ``Ledger.move_project``.)
-            if tree is None and again is not None and again.workdir and again.workdir != kept.workdir:
+            if again is not None and again.workdir and again.workdir != kept.workdir:
                 kept = again
                 place = dataclasses.replace(
                     kept, workdir=kept.workdir, project=kept.project or commission.project
@@ -7479,6 +7477,9 @@ class TaskAgentManager(TreeWork):
         # The report arrives as an event as well; that is where it is acted on.
         # What it says the session takes from now on (``duty``) is no part of
         # that event: it is for the session's card, and written here.
+        # (A leader that says its commission is done while its team is at
+        # work is refused, and no event comes: ``_team_still_at_work``.)
+        await self._team_still_at_work(session_id, payload)
         duty = payload.get("duty")
         if not isinstance(duty, str) or not duty.strip():
             return None

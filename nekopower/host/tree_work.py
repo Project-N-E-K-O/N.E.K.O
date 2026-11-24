@@ -803,7 +803,6 @@ class TreeWork:
             or live.idle
             or live.closing
             or live.settling
-            or live.awaiting_prompt
             or live.stands is None
             or live.stands.status != "working"
             or live.stands.resting
@@ -1206,7 +1205,7 @@ class TreeWork:
             if handle is None:
                 raise ValueError("gone")
             was = row
-            row = await self._ledger.update_tree(row.id, state="landing", rounds=0, checks=0) or row
+            row = await self._ledger.update_tree(row.id, state="landing") or row
             try:
                 result = await self._merge_or_markers(row, handle)
             except BaseException:
@@ -1580,6 +1579,13 @@ class TreeWork:
             if probe is None or not probe.usable:
                 why = (probe.detail or str(probe.reason)) if probe is not None else "the project has no directory"
                 raise RuntimeError(texts.START_TEAM_NO_TREES.format(reason=why))
+            there = len(await self._ledger.trees(project=leader.project))
+            if there + len(writers) > settings.WORKTREES_PER_PROJECT:
+                raise RuntimeError(
+                    texts.START_TEAM_NO_ROOM.format(
+                        there=there, most=settings.WORKTREES_PER_PROJECT, room=max(0, settings.WORKTREES_PER_PROJECT - there)
+                    )
+                )
             if commission_id not in self._team_allowed:
                 members = [
                     truncate_to_tokens(
@@ -1640,6 +1646,30 @@ class TreeWork:
             )
         return {"message": message, "started": [item["name"] for item in started]}
 
+    async def _team_still_at_work(self, session_id: str, payload: dict[str, Any]) -> None:
+        """Raise when a leader reports a commission done while task agents of the team it started for it are still at work.
+
+        A commission that is done has what it started stopped: reported
+        done too early, a part that is still being worked on would be
+        stopped half way, with its changes not in the project, under a
+        report that says it is all there. The leader waits for them, or
+        stops the ones it no longer wants, and reports then. (Giving up,
+        ``blocked`` or ``failed``, is let through: that stops them.)
+        """
+        from config.prompts import prompts_nekopower_brain as texts
+        from nekopower.host.task_agents import _STILL_WORKING
+
+        commission_id = self._at_work_in(session_id)
+        if commission_id not in self._teams or payload.get("status") != "ready":
+            return
+        working = await self._ledger.select(parent_id=commission_id, statuses=_STILL_WORKING, oldest_first=True)
+        if working:
+            raise RuntimeError(
+                texts.TEAM_STILL_AT_WORK.format(
+                    count=len(working), names=", ".join(member.name or member.id[:8] for member in working)
+                )
+            )
+
     async def _watch_stall(self, commission_id: str) -> None:
         """Remind a leader, once, that every task agent it started for a commission is over and the commission stands still.
 
@@ -1656,7 +1686,7 @@ class TreeWork:
 
         try:
             await asyncio.sleep(settings.TEAM_STALL_SECONDS)
-            if self._closed or commission_id in self._stall_reminded:
+            if self._closed:
                 return
             commission = await self._ledger.get(commission_id)
             if commission is None or commission.status != "working" or commission.resting:

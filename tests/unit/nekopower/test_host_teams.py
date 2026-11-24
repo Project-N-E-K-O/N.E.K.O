@@ -314,6 +314,59 @@ async def test_a_task_agent_of_a_team_for_which_no_worktree_can_be_made_is_not_s
     assert not (workdir / "links.txt").exists() and "1 bytes free, 2 needed" in _said_to(lead)
 
 
+async def test_a_leader_cannot_report_its_commission_done_while_its_team_is_at_work(hosts, tmp_path):
+    go = asyncio.Event()
+
+    async def wait() -> None:
+        await go.wait()
+
+    lead = ScriptedLLM([
+        [call("start_team", {"parts": PARTS[:1]}), finish("tool_calls")],
+        # Too early: the part is still being worked on.
+        _report("the footer is redone"),
+        END,
+        _report("the footer is redone, now that the links are repaired"),
+    ])
+    members = {"PART-LINKS": ScriptedLLM([[wait, *_write("links.txt", "repaired")], _report("links repaired")])}
+    host, trees, workdir = await _shop(hosts, tmp_path, _by_role(lead, members))
+
+    receipt = await _dispatch(host, TEAM)
+    await wait_until(lambda: len(lead.requests) >= 3, what="the leader having been refused its report")
+    # Not done, and nobody was stopped: the part goes on.
+    assert (await host.ledger.get(receipt.commission_id)).status == "working"
+    (child,) = await host.ledger.select(parent_id=receipt.commission_id)
+    assert child.status == "working"
+    told = _said_to(lead)
+    assert "not reported: 1 of the task agents you started for this commission are still at work (links)" in told
+
+    go.set()
+    done = await wait_status(host, receipt.commission_id, "done")
+    assert done.result_summary == "the footer is redone, now that the links are repaired"
+    assert (workdir / "links.txt").read_text() == "repaired"
+    assert (await host.ledger.get(child.id)).status == "done"
+
+
+async def test_a_leader_that_gives_its_commission_up_stops_its_team(hosts, tmp_path):
+    hold = asyncio.Event()
+
+    async def wait() -> None:
+        await hold.wait()
+
+    lead = ScriptedLLM([
+        [call("start_team", {"parts": PARTS[:1]}), finish("tool_calls")],
+        _report("it cannot be done: the footer is generated elsewhere", status="blocked"),
+    ])
+    members = {"PART-LINKS": ScriptedLLM([[wait, *_write("links.txt", "repaired")], _report("links repaired")])}
+    host, trees, workdir = await _shop(hosts, tmp_path, _by_role(lead, members))
+
+    receipt = await _dispatch(host, TEAM)
+    stuck = await wait_status(host, receipt.commission_id, "blocked")
+    (child,) = await host.ledger.select(parent_id=receipt.commission_id)
+    await wait_status(host, child.id, "cancelled")
+    assert stuck.result_summary.startswith("it cannot be done") and not (workdir / "links.txt").exists()
+    hold.set()
+
+
 async def test_a_leader_is_reminded_once_when_its_team_is_over_and_nothing_told_it_so(hosts, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "TEAM_STALL_SECONDS", 0.2)
     hold = asyncio.Event()
@@ -344,6 +397,72 @@ async def test_a_leader_is_reminded_once_when_its_team_is_over_and_nothing_told_
     assert "Every task agent you started for this commission is over" in told and "fonts (cancelled)" in told
     assert await _events(host, receipt.commission_id, "stall_reminded") == [{"members": 1}]
     hold.set()
+
+
+@pytest.mark.parametrize("why", ["another is still at work", "the leader is in the middle of a turn"])
+async def test_a_leader_is_not_reminded_while_its_team_or_itself_is_at_work(hosts, tmp_path, monkeypatch, why):
+    monkeypatch.setattr(settings, "TEAM_STALL_SECONDS", 0.2)
+    hold, busy = asyncio.Event(), asyncio.Event()
+
+    async def wait() -> None:
+        await hold.wait()
+
+    async def in_a_turn() -> None:
+        await busy.wait()
+
+    colours = {"name": "colours", "preset": "scout", "description": "finds the colours", "brief": "Which colours? PART-COLOURS"}
+    if why == "another is still at work":
+        lead: Any = TeamLead([PARTS[2], colours], expect=1)
+    else:
+        lead = ScriptedLLM([
+            [call("start_team", {"parts": [PARTS[2]]}), finish("tool_calls")],
+            [in_a_turn, say("the fonts could not be found out"), finish("stop")],
+        ])
+    members = {
+        "PART-FONTS": ScriptedLLM([[wait, *_report("two fonts")]]),
+        "PART-COLOURS": ScriptedLLM([[in_a_turn, *_report("red and white")]]),
+    }
+    host, trees, workdir = await _shop(hosts, tmp_path, _by_role(lead, members))
+
+    receipt = await _dispatch(host, TEAM)
+    await wait_until(lambda: len(members["PART-FONTS"].requests) == 1, what="the scout being at work")
+    if why == "another is still at work":
+        await wait_until(
+            lambda: getattr(host.task_agents._sessions.get(receipt.commission_id), "idle", False),
+            what="the leader having ended its turn, to wait for its team",
+        )
+    else:
+        await wait_until(lambda: len(lead.requests) == 2, what="the leader being in the middle of its turn")
+    fonts = next(child for child in await host.ledger.select(parent_id=receipt.commission_id) if child.name == "fonts")
+    assert await host.abort(fonts.id)
+    await asyncio.sleep(0.8)
+    # Nobody is reminded: the commission does not stand still.
+    assert await _events(host, receipt.commission_id, "stall_reminded") == []
+    assert (await host.ledger.get(receipt.commission_id)).status == "working"
+    busy.set()
+    await wait_status(host, receipt.commission_id, "done")
+    assert "Every task agent you started" not in _said_to(lead)
+    hold.set()
+
+
+async def test_a_team_is_not_started_where_the_project_has_no_room_for_its_worktrees(hosts, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "WORKTREES_PER_PROJECT", 1)
+    lead = ScriptedLLM([
+        [call("start_team", {"parts": PARTS}), finish("tool_calls")],
+        [call("start_team", {"parts": [PARTS[0], PARTS[2]]}), finish("tool_calls")],
+        END, _report("the links are repaired, and the fonts are known"),
+    ])
+    host, trees, workdir = await _shop(hosts, tmp_path, _by_role(lead, _team_scripts()), allow=False)
+
+    receipt = await _dispatch(host, TEAM)
+    # Two that change files have no room: nobody is asked about a team that cannot start. One has.
+    waiting = await wait_status(host, receipt.commission_id, "waiting_user")
+    assert waiting.question()["detail"]["count"] == 1
+    assert "room for 1 more that change files" in _said_to(lead)
+    assert await host.answer(receipt.commission_id, "yes", choice="once")
+    await wait_status(host, receipt.commission_id, "done")
+    assert sorted(child.name for child in await host.ledger.select(parent_id=receipt.commission_id)) == ["fonts", "links"]
+    assert (workdir / "links.txt").exists() and len(trees.made) == 1
 
 
 async def test_a_leader_that_is_told_of_its_team_as_it_ends_is_not_reminded(hosts, tmp_path, monkeypatch):
@@ -521,16 +640,22 @@ async def test_a_member_the_user_adds_beside_one_that_works_in_the_directory_get
     # The first one of a project works in its directory.
     first = await host.open_member("Lan", "Shop site", duty="keeps the shop running")
     assert first["seat"] == ""
+    # Of every character: the directory is the project's.
+    assert (await host.open_member("Mei", "Shop site"))["seat"] == "tree"
     added = await host.open_member("Lan", "Shop site", preset="worker", title="Footer", duty="fixes the footer")
     scout = await host.open_member("Lan", "Shop site", preset="scout")
 
     assert (added["seat"], scout["seat"]) == ("tree", "")
+    # Beside one that still takes work: once none of those that work in the directory does, the
+    # next one works there itself.
+    await host.ledger.run(lambda conn: conn.execute("UPDATE sessions SET last_active_at = 0 WHERE project = 'Shop site'"))
+    assert not await host.ledger.session_alive(await host.ledger.get_session(first["session_id"]))
+    assert (await host.open_member("Lan", "Shop site", preset="worker"))["seat"] == ""
+    assert (await host.open_member("Lan", "Shop site", preset="worker"))["seat"] == "tree"
     session = await host.ledger.get_session(added["session_id"])
     assert (session.kind, session.preset, session.project, session.workdir) == ("line", "worker", "Shop site", str(workdir))
     assert (session.title, session.title_by, session.duty_by) == ("Footer", "user", "user")
     assert session.name == "Shop site/worker" and session.model_name
-    # Of every character: the directory is the project's.
-    assert (await host.open_member("Mei", "Shop site"))["seat"] == "tree"
     for wrong, error in (
         (("", "Shop site"), "no_character"), (("Lan", "Nowhere"), LookupError), (("Lan", "Shop site", "boss"), "bad_preset"),
         (("Lan", "Shop site", "wizard"), "bad_preset"),
@@ -540,8 +665,10 @@ async def test_a_member_the_user_adds_beside_one_that_works_in_the_directory_get
             with pytest.raises(ValueError, match=error):
                 await host.open_member(*wrong[:2], **kwargs)
         else:
-            with pytest.raises(error):
+            with pytest.raises(error) as refused:
                 await host.open_member(*wrong[:2], **kwargs)
+            # Said as that, of the project: not what looking it up happened to raise.
+            assert type(refused.value) is LookupError and refused.value.args == ("Nowhere",)
 
 
 async def test_a_new_member_beside_another_is_asked_about_as_one_that_works_in_a_copy(hosts, tmp_path):
@@ -589,6 +716,14 @@ async def test_a_project_has_no_more_members_that_take_work_than_it_may(hosts, t
     assert "hand over to one of them: Shop site/worker" in told
     # Handed to the one that is there instead.
     assert len(await host.ledger.members("Lan", "Shop site")) == 1 and done.result_summary == "links repaired"
+
+    # One that takes no more work is not counted: another may be opened in its stead.
+    await host.ledger.run(lambda conn: conn.execute("UPDATE sessions SET last_active_at = 0 WHERE kind = 'line'"))
+    leader_llm.turns.extend(_hand_over(description="third writer"))
+    members["the sitemap"] = ScriptedLLM([_report("sitemap written")])
+    three = await _dispatch(host, "write the sitemap of the shop site anew from the pages it has")
+    assert (await wait_status(host, three.commission_id, "done")).result_summary == "sitemap written"
+    assert len(await host.ledger.members("Lan", "Shop site")) == 2
 
 
 # ---------------------------------------------------------------------------
