@@ -650,6 +650,22 @@ describe('the list of what happened', () => {
     await flush()
     expect(document.querySelectorAll('.row').length).toBe(200)
     expect(byTest('activity-feed')?.textContent).toContain(words.activity.earlierLeftOut.replace('{count}', '100'))
+    // However many of those come last, the latest lines before them are drawn, and those before these are offered.
+    const buried = [
+      ...Array.from({ length: 300 }, (_, n) => entry('started', { at: n, cursor: `e${n}.m0` })),
+      ...Array.from({ length: 250 }, (_, n) => decided(300 + n)),
+    ]
+    state.props = { entries: buried, current: null, nameOf, onPick: (index: number) => picked.push(index) }
+    await flush()
+    const drawn = [...document.querySelectorAll('.row')]
+    expect(drawn.length).toBe(200)
+    expect(byTest('activity-feed')?.textContent).toContain(words.activity.earlierLeftOut.replace('{count}', '100'))
+    ;(drawn[199].querySelector('button') as HTMLElement).click()
+    expect(picked.at(-1)).toBe(299)
+    state.props = { entries: buried.slice(290), current: null, nameOf }
+    await flush()
+    expect(document.querySelectorAll('.row').length).toBe(10)
+    expect(byTest('activity-earlier')).toBeNull()
   })
 })
 

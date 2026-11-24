@@ -48,18 +48,20 @@ const list = ref<HTMLElement | null>(null)
 const SHOWN = 200
 const shown = ref(SHOWN)
 
+// Where the entries the list has a line for are (`toldInFeed`). The others are still there to replay, but
+// are neither drawn nor counted: the lines drawn are the latest so many of those, however many others lie between.
+const told = computed(() => props.entries.flatMap((entry, index) => toldInFeed(entry) ? [index] : []))
 const window = computed(() => {
   const total = props.entries.length
-  const end = props.current === null ? total : Math.min(total, props.current + 1 + SHOWN / 4)
-  return { from: Math.max(0, Math.floor(end) - shown.value), to: Math.floor(end) }
+  const end = Math.floor(props.current === null ? total : Math.min(total, props.current + 1 + SHOWN / 4))
+  const before = told.value.filter(index => index < end)
+  return { left: Math.max(0, before.length - shown.value), drawn: before.slice(-shown.value) }
 })
-// Entries the list has no line for (`toldInFeed`) are still there to replay, and are not counted as left out.
-const left = computed(() => props.entries.slice(0, window.value.from).filter(toldInFeed).length)
-const rows = computed(() =>
-  props.entries.slice(window.value.from, window.value.to).flatMap((entry, offset) => toldInFeed(entry)
-    ? [{ entry, index: window.value.from + offset, line: describeEntry(entry, props.nameOf, t, te) }]
-    : []),
-)
+const left = computed(() => window.value.left)
+const rows = computed(() => window.value.drawn.map(index => {
+  const entry = props.entries[index]
+  return { entry, index, line: describeEntry(entry, props.nameOf, t, te) }
+}))
 
 /** Draw as many more of the entries before those drawn, and stay at the line that was at the top. */
 async function showEarlier() {
