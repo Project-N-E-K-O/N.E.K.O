@@ -66,6 +66,7 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-11-24-agent-model-probe-removed-main-merge",
         "2026-11-24-agent-model-probe-removed",
         "2026-11-24-emote-template-license-main-sync",
         "2026-11-23-theater-market-recovery-main-merge",
@@ -621,7 +622,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "a1fab5bbe818c2092567194bb1bfd8ffeff49d299baa64ae33a331ca3039cf05"
+LOCALE_KEY_SIGNATURE = "9b4369cdf966848279871dfd526c1ab04841298d4b9e3a19dfee464e7666550a"
 
 
 _BUMP_INSTRUCTIONS = (

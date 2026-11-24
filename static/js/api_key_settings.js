@@ -1860,11 +1860,13 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
             // - 若 URL 为空，或当前 URL 是从其他 provider 自动填充的 readonly 值（用户没主动编辑过），
             //   覆盖为默认 URL；
             // - 若 URL 是用户主动编辑过的地址（非 readonly），保留。
-            // - A provider whose key lives in its own Key Book entry always starts from its
-            //   own endpoint, so another provider's URL is never paired with that key.
+            // - A provider whose key lives in its own Key Book entry starts from its own
+            //   endpoint when the user switches to it, so another provider's URL is never
+            //   paired with that key. Re-renders (e.g. a locale change) keep an edited URL.
             const wasReadonly = urlInput.hasAttribute('readonly');
-            if (!urlInput.value || !urlInput.value.trim() || wasReadonly
-                || (keyBookBacked && !_isLoadingSavedConfig)) {
+            const switchedToKeyBookBacked = keyBookBacked && userInitiated
+                && !_isLoadingSavedConfig && previousProvider !== provider;
+            if (!urlInput.value || !urlInput.value.trim() || wasReadonly || switchedToKeyBookBacked) {
                 urlInput.value = getProviderOpenrouterUrl(provider, pInfo) || _spMeta.default_url || '';
             }
             urlInput.removeAttribute('readonly');

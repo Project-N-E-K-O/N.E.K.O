@@ -1518,7 +1518,15 @@ def test_qwen_token_plan_tts_key_comes_from_key_book(mock_page: Page, running_se
             syncKeyToBook('qwen_token_plan', 'sk-sp-book-key');
             const probe = ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: 'tts' });
             const keyInput = document.getElementById('ttsModelApiKey');
+            const defaultUrl = document.getElementById('ttsModelUrl').value;
+            // A re-render that is not a provider switch (the locale-change handler calls
+            // onCustomModelProviderChange without userInitiated) keeps an edited URL.
+            document.getElementById('ttsModelUrl').value = 'https://token-plan.maas.qianwenaiapi.com';
+            onCustomModelProviderChange('tts');
+            const urlAfterRerender = document.getElementById('ttsModelUrl').value;
+            document.getElementById('ttsModelUrl').value = defaultUrl;
             const selected = {
+                urlAfterRerender,
                 probe: { key: probe.key, url: probe.url, subType: probe.subType },
                 key: getRealKey(keyInput),
                 readonly: keyInput.hasAttribute('readonly'),
@@ -1540,8 +1548,10 @@ def test_qwen_token_plan_tts_key_comes_from_key_book(mock_page: Page, running_se
         }
     """)
 
-    assert result["selected"]["key"] == "sk-sp-old-key"
+    # The re-render refreshed the read-only copy from the Key Book.
+    assert result["selected"]["key"] == "sk-sp-book-key"
     assert result["selected"]["readonly"] is True
+    assert result["selected"]["urlAfterRerender"] == "https://token-plan.maas.qianwenaiapi.com"
     # Another provider's URL is not kept for the Token Plan key.
     assert result["selected"]["url"] == "https://token-plan.cn-beijing.maas.aliyuncs.com"
     assert result["selected"]["probe"] == {
