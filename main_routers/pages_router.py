@@ -41,6 +41,7 @@ from .visit_router.local_guard import require_visit_enabled
 router = APIRouter(tags=["pages"])
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_THEME_STUDIO_LOADER_DIR = _PROJECT_ROOT / "static" / "theme-studio" / "loader"
 _TUTORIAL_RUNTIME_ASSET_PATHS = tuple(sorted(
     path
     for pattern in ("**/*.js", "**/*.json")
@@ -93,6 +94,13 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/index.css",
     _PROJECT_ROOT / "static/css/window_controls.css",
     _PROJECT_ROOT / "static/js/window_controls.js",
+    # 主题工坊外壳样式：模板扫描表在进程启动时就固定了，新加的样式表必须显式登记，
+    # 否则改完 CSS 浏览器还按旧的 ?v= 拿缓存副本。
+    _PROJECT_ROOT / "static/css/theme_studio_shell.css",
+    _PROJECT_ROOT / "static/theme-studio/style.css",
+    _PROJECT_ROOT / "static/theme-studio/materials.css",
+    _PROJECT_ROOT / "static/theme-studio/app.js",
+    _PROJECT_ROOT / "static/theme-studio/materials.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/days/day1-home-guide.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/days/day2-screen-voice-guide.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/days/day3-interaction-guide.js",
@@ -222,13 +230,18 @@ def _static_assets_ctx() -> dict:
     global _static_asset_version_cache
     now = time.monotonic()
     cached_at, cached_version = _static_asset_version_cache
-    if now - cached_at < _STATIC_ASSET_CACHE_TTL:
-        return {"static_asset_version": cached_version}
+    if now - cached_at >= _STATIC_ASSET_CACHE_TTL:
+        latest_mtime = _latest_asset_mtime(_YUI_GUIDE_ASSET_VERSION_PATHS)
+        cached_version = f"{APP_VERSION}-{latest_mtime or 0}"
+        _static_asset_version_cache = (now, cached_version)
 
-    latest_mtime = _latest_asset_mtime(_YUI_GUIDE_ASSET_VERSION_PATHS)
-    version = f"{APP_VERSION}-{latest_mtime or 0}"
-    _static_asset_version_cache = (now, version)
-    return {"static_asset_version": version}
+    ctx = {"static_asset_version": cached_version}
+    # 主题工坊加载器两件套：URL 里要带磁盘指纹，否则浏览器侧加载器每 15 秒就得把
+    # 158KB 的样式表整份下载回来，才判断得出「页面里的是不是旧的」（见 assets.py）。
+    from theme_studio.assets import loader_versions
+
+    ctx.update(loader_versions(_THEME_STUDIO_LOADER_DIR, cached_version))
+    return ctx
 
 
 def _latest_asset_mtime(paths) -> int:
@@ -563,7 +576,12 @@ async def get_web_chat_compact_page(request: Request):
 async def get_subtitle_page(request: Request):
     """Standalone subtitle window page."""
     templates = get_templates()
-    return templates.TemplateResponse(request, "templates/subtitle.html", {"request": request})
+    # 字幕窗同样加载主题工坊的加载器，必须拿到 ?v= 指纹：缺了版本号时加载器读不到
+    # 样式表哈希，会每 15s 重新下一遍 158KB 的 CSS（字幕窗常驻，代价最明显）。
+    return templates.TemplateResponse(request, "templates/subtitle.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
 
 
 @router.get("/agenthud", response_class=HTMLResponse)
@@ -622,8 +640,26 @@ async def get_jukebox_manager_page(request: Request):
 async def get_toast_page(request: Request):
     """Standalone toast notification window page (loaded by Electron)."""
     templates = get_templates()
-    return templates.TemplateResponse(request, "templates/toast.html", {"request": request})
+    # 同上：toast 窗是常驻窗口，缺 ?v= 指纹会让加载器反复整包下载 CSS。
+    return templates.TemplateResponse(request, "templates/toast.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
 
+
+
+@router.get("/theme_studio", response_class=HTMLResponse)
+async def get_theme_studio_page(request: Request):
+    """主题工坊面板（本体内置功能页）。
+
+    插件时代这一页跑在插件服务的 48916 端口、以跨源 iframe 形式嵌进插件管理页；
+    现在它是本体自己的一个普通页面：同源、无 iframe、无插件宿主。
+    """
+    templates = get_templates()
+    return templates.TemplateResponse(request, "templates/theme_studio.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
 
 
 @router.get("/{lanlan_name}", response_class=HTMLResponse)

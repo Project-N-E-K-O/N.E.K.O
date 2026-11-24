@@ -1,0 +1,405 @@
+/* 主题工坊本体内置版：外壳样式（与本体其它功能面板对齐）
+   本文件在 /static/theme-studio/style.css 之后加载，只做两件事：
+
+   1. 把主题工坊自己的设计变量（--surface / --accent / --radius …）重映射到本体的
+      面板配色，这样面板里几百条组件规则不用改一行就换了皮肤；
+   2. 提供本体那套外壳：渐变标题栏（.container-header.page-title-bar）、
+      .container-content 滚动区、贴底操作栏。
+
+   暗色跟随本体的 data-theme（theme-manager.js 写入），用 [data-theme="dark"]，
+   不再跟系统 prefers-color-scheme —— 和「记忆浏览 / API Key 设置」等页面保持一致。
+   style.css 里那段 @media (prefers-color-scheme: dark) 会被这里的 :root 覆盖掉，
+   因为同为 :root、本文件在后。 */
+
+/* ============================================================
+   1. 设计变量：本体面板配色（记忆浏览 / API Key 设置同源）
+   ============================================================ */
+:root {
+  color-scheme: light;
+
+  /* 画布与表面 */
+  --bg-sub: #f3f9fc;
+  --surface: #ffffff;
+  --surface-2: #f7fcff;
+  --surface-3: #eaf8ff;
+  --footer-bg: rgba(243, 249, 252, 0.86);
+
+  /* 描边 */
+  --border: rgba(64, 197, 241, 0.34);
+  --border-soft: rgba(39, 184, 234, 0.16);
+
+  /* 文字 */
+  --text: #1f2a36;
+  --text-sub: #5c6f7e;
+  --text-faint: #647887;   /* 5.1:1 on #fff */
+
+  /* 主色：--accent 给文字/描边（#147ea6 与白底 5.1:1），--accent-fill 给填充按钮
+     （白字 4.9:1；本体品牌色 #40c5f1 太浅，填充态不能用它） */
+  --accent: #147ea6;
+  --accent-strong: #0f5f8f;
+  --accent-fill: #147ea6;
+  --accent-soft: rgba(64, 197, 241, 0.13);
+  --accent-line: rgba(64, 197, 241, 0.44);
+
+  /* 语义色 */
+  --danger: #c03a35;
+  --danger-soft: rgba(192, 58, 53, 0.1);
+  --ok: #1f7d52;
+  --ok-soft: rgba(31, 125, 82, 0.1);
+  --warn: #8f6114;
+  --warn-soft: rgba(226, 160, 48, 0.14);
+
+  /* 形状与阴影 */
+  --radius: 14px;
+  --radius-sm: 8px;
+  --shadow-1: 0 1px 3px rgba(14, 116, 144, 0.08);
+  --shadow-2: 0 16px 44px rgba(14, 116, 144, 0.18);
+  --ring: 0 0 0 4px rgba(64, 197, 241, 0.2);
+  --page-glow: none;
+
+  /* 预览区（主题工坊自己的一小块画布） */
+  --preview-bg: #eef7fd;
+  --preview-line: rgba(64, 197, 241, 0.22);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg-sub: #111820;
+  --surface: #1f2a36;
+  --surface-2: #18222c;
+  --surface-3: #263445;
+  --footer-bg: rgba(17, 24, 32, 0.88);
+
+  --border: rgba(125, 211, 252, 0.28);
+  --border-soft: rgba(125, 211, 252, 0.16);
+
+  --text: #e6edf3;
+  --text-sub: #cbd5e1;
+  --text-faint: #94a3b8;
+
+  --accent: #7dd3fc;
+  --accent-strong: #38bdf8;
+  --accent-fill: #147ea6;
+  --accent-soft: rgba(56, 189, 248, 0.15);
+  --accent-line: rgba(125, 211, 252, 0.4);
+
+  --danger: #e0736f;
+  --danger-soft: rgba(224, 115, 111, 0.14);
+  --ok: #58c08d;
+  --ok-soft: rgba(88, 192, 141, 0.14);
+  --warn: #e0a44a;
+  --warn-soft: rgba(224, 164, 74, 0.16);
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.28);
+  --shadow-2: 0 20px 56px rgba(0, 0, 0, 0.52);
+  --ring: 0 0 0 4px rgba(56, 189, 248, 0.24);
+
+  --preview-bg: #16202a;
+  --preview-line: rgba(125, 211, 252, 0.2);
+}
+
+/* 暗色下别自己画底色：本体 dark-mode.css 已经把 body 刷成 #1e1e1e，
+   其他面板（记忆浏览 / API Key）的容器都是透明的，这里跟着透明才对得上。 */
+[data-theme="dark"] .theme-studio-page .container,
+[data-theme="dark"] .theme-studio-page .container-content {
+  background: transparent;
+}
+
+/* ============================================================
+   2. 外壳：与「记忆浏览 / API Key 设置」同一套骨架
+   body > .container > (.container-header + .container-content > .app)
+   ============================================================ */
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body.theme-studio-page {
+  min-height: 100vh;
+  padding: 0;
+  background: var(--bg-sub);
+  color: var(--text);
+  font-family: 'Segoe UI', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  -webkit-font-smoothing: antialiased;
+}
+
+.theme-studio-page .container {
+  max-width: 100%;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border-radius: 0;
+  background: var(--bg-sub);
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ---- 标题栏：渐变底 + 描边渐变字，和记忆浏览 / API Key 一模一样 ---- */
+.theme-studio-page .container-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 24px;
+  background: linear-gradient(to right, #4BD4FD, #17A7FF);
+  -webkit-app-region: drag;
+  position: relative;
+  z-index: 100;
+}
+
+.theme-studio-page .header-title-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.theme-studio-page .container-header h2 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+  font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
+  letter-spacing: 1px;
+  white-space: nowrap;
+  color: transparent;
+  position: relative;
+  --button-text-stroke-color: #22b3ff;
+}
+
+.theme-studio-page .container-header h2::before {
+  content: attr(data-text);
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  z-index: -1;
+  color: var(--button-text-stroke-color);
+  -webkit-text-stroke: 1px var(--button-text-stroke-color);
+  text-shadow:
+    2px 0 0 var(--button-text-stroke-color),
+    0 2px 0 var(--button-text-stroke-color),
+    -2px 0 0 var(--button-text-stroke-color),
+    0 -2px 0 var(--button-text-stroke-color),
+    1.4px 1.4px 0 var(--button-text-stroke-color),
+    -1.4px 1.4px 0 var(--button-text-stroke-color),
+    1.4px -1.4px 0 var(--button-text-stroke-color),
+    -1.4px -1.4px 0 var(--button-text-stroke-color);
+  white-space: nowrap;
+}
+
+.theme-studio-page .container-header h2::after {
+  content: attr(data-text);
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 10;
+  background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  white-space: nowrap;
+}
+
+/* 版本号：标题旁的小胶囊，和渐变标题同处一行 */
+.theme-studio-page .header-version {
+  flex: 0 0 auto;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.42);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  color: #0b3f5c;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  -webkit-app-region: no-drag;
+}
+
+.theme-studio-page .header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  -webkit-app-region: no-drag;
+}
+
+/* 当前主题 / 更新时间：跟着标题栏走，不占内容区一行 */
+.theme-studio-page .container-header .meta-pills {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.theme-studio-page .container-header .meta-pills .pill {
+  max-width: 220px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.78);
+  color: #0d4664;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.theme-studio-page .container-header .meta-pills .pill:last-child {
+  font-weight: 500;
+  color: #26617d;
+  background: rgba(255, 255, 255, 0.56);
+}
+
+/* 标题栏里的窗口控制按钮：window_controls.css 默认就是白字 + 半透明底 */
+.theme-studio-page .container-header .neko-window-controls {
+  margin-left: 0;
+}
+
+/* ---- 内容区：滚动交给 .container-content，.app 只管排版 ---- */
+.theme-studio-page .container-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(92, 111, 126, 0.3) transparent;
+  padding: 18px 24px 0;
+  background: var(--bg-sub);
+  border-radius: 0;
+}
+
+.theme-studio-page .container-content::-webkit-scrollbar { width: 8px; }
+.theme-studio-page .container-content::-webkit-scrollbar-track { background: transparent; }
+.theme-studio-page .container-content::-webkit-scrollbar-thumb {
+  background: rgba(92, 111, 126, 0.3);
+  border-radius: 999px;
+}
+.theme-studio-page .container-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(64, 197, 241, 0.62);
+}
+
+.theme-studio-page .app {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 0 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* ============================================================
+   3. 组件微调：卡片 / 标题 / 按钮 / 操作栏，向本体看齐
+   ============================================================ */
+.theme-studio-page .card {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
+
+.theme-studio-page .card-head {
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.theme-studio-page .card-title {
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.theme-studio-page .card-foot {
+  padding: 9px 16px 11px;
+  font-size: 12px;
+  color: var(--text-sub);
+}
+
+.theme-studio-page .toolbar {
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-soft);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
+
+.theme-studio-page .btn {
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.theme-studio-page .btn-primary {
+  border-color: transparent;
+  background: linear-gradient(135deg, #40c5f1, #5dd4f7);
+  color: #04132a;
+  font-weight: 600;
+  box-shadow: 0 2px 6px rgba(64, 197, 241, 0.3);
+}
+
+.theme-studio-page .btn-primary:hover:not(:disabled) {
+  background: linear-gradient(135deg, #35b8e2, #4fccf0);
+  border-color: transparent;
+  box-shadow: 0 3px 8px rgba(64, 197, 241, 0.36);
+}
+
+.theme-studio-page .btn-primary[data-busy="true"]::before {
+  border-color: rgba(4, 19, 42, 0.32);
+  border-top-color: #04132a;
+}
+
+.theme-studio-page .btn-danger {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 34%, transparent);
+}
+
+.theme-studio-page .app-footer {
+  margin: 2px 0 14px;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-soft);
+  background: var(--footer-bg);
+  box-shadow: 0 -1px 0 rgba(255, 255, 255, 0.6) inset, var(--shadow-1);
+}
+
+.theme-studio-page .panel-hint {
+  border-radius: var(--radius);
+}
+
+/* ============================================================
+   4. 响应式
+   ============================================================ */
+@media (max-width: 900px) {
+  .theme-studio-page .container-content { padding: 18px 16px 0; }
+  .theme-studio-page .container-header { padding: 12px 16px; }
+  .theme-studio-page .container-header .meta-pills .pill { max-width: 150px; }
+}
+
+@media (max-width: 620px) {
+  .theme-studio-page .container-header .meta-pills { display: none; }
+  .theme-studio-page .container-content { padding: 14px 12px 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-studio-page * { transition-duration: 0.01ms !important; }
+}

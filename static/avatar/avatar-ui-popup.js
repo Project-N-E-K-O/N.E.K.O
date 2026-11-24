@@ -24,6 +24,8 @@ function isAvatarFramedSettingsWindowUrl(finalUrl) {
             || finalUrl.startsWith('/voice_identity')
             || finalUrl.startsWith('/memory_browser')
             || finalUrl.startsWith('/emote_maker')
+            // 主题工坊：本体页面，用与角色管理同尺寸的窗格打开（面板是宽屏双栏）。
+            || finalUrl.startsWith('/theme_studio')
         );
 }
 
@@ -3420,6 +3422,8 @@ const AvatarPopupMixin = {
                                 windowName = 'neko_memory_browser';
                             } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/emote_maker')) {
                                 windowName = 'neko_emote_maker';
+                            } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/theme_studio')) {
+                                windowName = 'neko_theme_studio';
                             }
                             features = getAvatarNavigationWindowFeatures(finalUrl);
                         }
@@ -3663,6 +3667,8 @@ const AvatarPopupMixin = {
                 { id: 'api-keys', label: window.t ? window.t('settings.menu.apiKeys') : 'API密钥', labelKey: 'settings.menu.apiKeys', icon: '/static/icons/api_key_icon.png', action: 'navigate', url: '/api_key' },
             { id: 'voice-identity', label: window.t ? window.t('settings.menu.voiceIdentity') : '声纹身份', labelKey: 'settings.menu.voiceIdentity', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_identity' },
                 { id: 'memory', label: window.t ? window.t('settings.menu.memoryBrowser') : '记忆浏览', labelKey: 'settings.menu.memoryBrowser', icon: '/static/icons/memory_icon.png', action: 'navigate', url: '/memory_browser' },
+                // 主题工坊（本体内置功能）：配色、材质、聊天背景与按时段自动换主题。
+                { id: 'theme-studio', label: window.t ? window.t('settings.menu.themeStudio') : '主题工坊', labelKey: 'settings.menu.themeStudio', icon: '/static/icons/theme_studio_icon.png', action: 'navigate', url: '/theme_studio' },
             ];
 
             settingsItems.forEach(item => {

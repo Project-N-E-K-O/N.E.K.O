@@ -1,0 +1,352 @@
+/* 高级材质中心（材质工作台）样式。
+   与 style.css 共用面板私有变量；预览区读取后端编译出的 --nts-mt-* 变量，
+   因此预览与应用窗口用的是同一份编译产物。
+*/
+
+/* ---------- 外壳 ---------- */
+.mt-root { margin: 0 0 18px; }
+.mt-shell { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-1); overflow: hidden; }
+.mt-head { display: flex; flex-wrap: wrap; gap: 10px 12px; align-items: center; padding: 11px 14px; border-bottom: 1px solid var(--border-soft); background: var(--surface-2); }
+.mt-head-title { margin: 0; font-size: 13.5px; font-weight: 650; display: flex; align-items: center; gap: 8px; color: var(--text); }
+.mt-tag { font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent-line); }
+.mt-head-spacer { flex: 1 1 auto; }
+.mt-switch { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-sub); cursor: pointer; user-select: none; }
+.mt-switch input { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
+.mt-select { font: inherit; font-size: 11.5px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--text); }
+.mt-mini { font: inherit; font-size: 11.5px; padding: 4px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--text-sub); cursor: pointer; }
+.mt-mini:hover { border-color: var(--accent-line); color: var(--accent); }
+.mt-mini:disabled { opacity: .5; cursor: not-allowed; }
+.mt-mini.is-danger:hover { border-color: var(--danger); color: var(--danger); }
+.mt-master-warn {
+  margin: 0 12px 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--border, #d8dfe8);
+  border-left: 3px solid var(--accent, #3b82f6);
+  border-radius: 7px;
+  background: var(--accent-soft, rgba(59, 130, 246, 0.08));
+  color: var(--text, #1f2937);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.mt-dirty { font-size: 11px; color: var(--warn); background: var(--warn-soft); border-radius: 999px; padding: 1px 8px; display: none; }
+.mt-dirty.is-on { display: inline-block; }
+
+/* ---------- 主体布局 ---------- */
+.mt-body { display: grid; grid-template-columns: 150px minmax(0, 1fr) 246px; align-items: stretch; }
+.mt-tabs { display: flex; flex-direction: column; gap: 1px; padding: 8px 7px; border-right: 1px solid var(--border-soft); background: var(--surface-2); }
+.mt-tab { font: inherit; font-size: 12px; text-align: left; padding: 6px 9px; border: 0; border-radius: 7px; background: transparent; color: var(--text-sub); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-tab:hover { background: var(--surface-3); color: var(--text); }
+.mt-tab.is-active { background: var(--surface); color: var(--accent); font-weight: 600; box-shadow: inset 2px 0 0 var(--accent), var(--shadow-1); }
+.mt-pane { padding: 11px 14px 16px; min-height: 320px; max-height: 620px; overflow: auto; }
+.mt-sub { margin: 13px 0 5px; font-size: 11px; font-weight: 650; letter-spacing: .05em; color: var(--text-faint); display: flex; align-items: center; gap: 8px; }
+.mt-sub:first-child { margin-top: 2px; }
+.mt-sub::after { content: ''; flex: 1; height: 1px; background: var(--border-soft); }
+.mt-hint { font-size: 11.5px; color: var(--text-faint); line-height: 1.6; margin: 0 0 8px; }
+
+/* ---------- 参数行 ---------- */
+.mt-row { display: grid; grid-template-columns: minmax(88px, 38%) minmax(0, 1fr) 62px; gap: 9px; align-items: center; padding: 3px 0; }
+.mt-row-label { font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mt-row-label small { color: var(--text-faint); font-size: 10.5px; margin-left: 5px; font-variant-numeric: tabular-nums; }
+.mt-range { width: 100%; height: 16px; accent-color: var(--accent); cursor: pointer; }
+.mt-num { width: 100%; font: inherit; font-size: 11.5px; padding: 3px 5px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); text-align: right; font-variant-numeric: tabular-nums; }
+.mt-num:focus { outline: none; border-color: var(--accent-line); box-shadow: var(--ring); }
+.mt-color { width: 100%; display: flex; align-items: center; gap: 6px; }
+.mt-color input[type="color"] { width: 30px; height: 23px; padding: 0; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); cursor: pointer; flex: none; }
+.mt-color input[type="text"] { flex: 1; min-width: 0; font: inherit; font-size: 11.5px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font-variant-numeric: tabular-nums; }
+.mt-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-sub); cursor: pointer; }
+.mt-toggle input { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
+.mt-select-full { width: 100%; }
+
+/* ---------- 预设 / 组件卡片 ---------- */
+.mt-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(126px, 1fr)); gap: 7px; margin: 6px 0 2px; }
+.mt-preset { text-align: left; font: inherit; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); cursor: pointer; transition: border-color .12s, box-shadow .12s; }
+.mt-preset:hover { border-color: var(--accent-line); }
+.mt-preset.is-active { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.mt-preset b { display: block; font-size: 12.5px; color: var(--text); }
+.mt-preset span { display: block; margin-top: 2px; font-size: 10.5px; color: var(--text-faint); line-height: 1.4; }
+.mt-comp { border: 1px solid var(--border-soft); border-radius: 9px; padding: 7px 9px; margin-bottom: 6px; }
+.mt-comp-head { display: flex; align-items: center; gap: 8px; }
+.mt-comp-name { font-size: 12px; font-weight: 600; color: var(--text); flex: 1 1 auto; }
+.mt-comp-body { margin-top: 4px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 10px; }
+.mt-comp.is-off .mt-comp-body { display: none; }
+.mt-comp-note { font-size: 10.5px; color: var(--text-faint); }
+
+/* ---------- 预览 ---------- */
+.mt-pv-wrap { border-left: 1px solid var(--border-soft); background: var(--surface-2); padding: 11px; }
+.mt-pv-title { font-size: 11px; font-weight: 650; letter-spacing: .05em; color: var(--text-faint); margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.mt-pv-bg { font: inherit; font-size: 10.5px; font-weight: 600; letter-spacing: 0; padding: 2px 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text-sub); cursor: pointer; flex: none; }
+.mt-pv-bg:hover { border-color: var(--accent-line); color: var(--text); }
+.mt-pv { position: relative; border-radius: 12px; overflow: hidden; min-height: 268px; background: #10141d; isolation: isolate; }
+/* 预览壁纸可切深浅：深色壁纸看白玻璃反光与高光，浅色壁纸看浅色场景下还看不看得清。
+   玻璃在两种背景上的观感差别很大，只给一种等于让用户盲猜。 */
+.mt-pv[data-bg="light"], .mt-pv-ref[data-bg="light"] { background: #eef2f7; }
+.mt-pv[data-bg="light"] .mt-pv-wall,
+.mt-pv-ref[data-bg="light"] .mt-pv-wall { background:
+  radial-gradient(120% 80% at 18% 12%, #bae6fd 0%, transparent 58%),
+  radial-gradient(110% 78% at 82% 22%, #ddd6fe 0%, transparent 60%),
+  radial-gradient(130% 92% at 50% 108%, #bbf7d0 0%, transparent 62%),
+  linear-gradient(160deg, #f1f5f9, #e2e8f0 60%, #eef2f7);
+  filter: saturate(1.02);
+}
+.mt-pv-wall { position: absolute; inset: 0; background:
+  radial-gradient(120% 80% at 18% 12%, #7dd3fc 0%, transparent 58%),
+  radial-gradient(110% 78% at 82% 22%, #a78bfa 0%, transparent 60%),
+  radial-gradient(130% 92% at 50% 108%, #34d399 0%, transparent 62%),
+  linear-gradient(160deg, #0b1120, #1e293b 60%, #0f172a);
+  filter: saturate(1.15);
+}
+.mt-pv-stack { position: relative; padding: 16px 13px; display: flex; flex-direction: column; gap: 9px; }
+.mt-pv-card { position: relative; overflow: hidden; padding: 11px 12px; color: rgba(255,255,255,.94); font-size: 11.5px; line-height: 1.55;
+  border-radius: var(--nts-mt-radius-c, var(--nts-mt-radius, 16px));
+  border: var(--nts-mt-border-width, 1px) solid var(--nts-mt-border, rgba(255,255,255,.3));
+  background-color: var(--nts-mt-bg, rgba(255,255,255,.18));
+  /* 与应用窗口同序叠层：rim(边缘环带) → sheen(顶部镜面) → spot(鼠标追光) → refract-tint(折射染色)。
+     少铺 spot 与 refract-tint，就等于拖「追光半径/强度」和「折射染色」时预览纹丝不动 —— 假控件。 */
+  background-image: var(--nts-mt-rim-img, none), var(--nts-mt-sheen-img, none), var(--nts-mt-spot, none),
+    linear-gradient(var(--nts-mt-refract-tint, transparent), var(--nts-mt-refract-tint, transparent));
+  background-repeat: no-repeat;
+  background-size: cover, cover, cover, auto;
+  background-position: center, center, center, center;
+  backdrop-filter: blur(var(--nts-mt-blur, 14px)) saturate(var(--nts-mt-saturation, 1.4)) brightness(var(--nts-mt-brightness, 1.05)) contrast(1.03);
+  -webkit-backdrop-filter: blur(var(--nts-mt-blur, 14px)) saturate(var(--nts-mt-saturation, 1.4));
+  box-shadow:
+    var(--nts-mt-shadow, none),
+    var(--nts-mt-inset, none),
+    inset 0 0 var(--nts-mt-lens-blur, 12px) var(--nts-mt-lens-glow, rgba(255,255,255,.12)),
+    inset 0 0 calc(var(--nts-mt-border-width, 1px) * 6) var(--nts-mt-rim-shade, transparent),
+    inset 0 calc(var(--nts-mt-border-width, 1px) * -1.2) calc(var(--nts-mt-border-width, 1px) * 1.8) var(--nts-mt-under-glow, transparent),
+    inset 0 calc(var(--nts-mt-lens, 6px) * -1.4) calc(var(--nts-mt-lens, 6px) * 2.8) calc(var(--nts-mt-lens, 6px) * -1) var(--nts-mt-heel, rgba(0,0,0,.12)),
+    inset var(--nts-mt-disp-shift, 2px) 0 var(--nts-mt-disp-blur, 2px) var(--nts-mt-disp-warm, transparent),
+    inset calc(var(--nts-mt-disp-shift, 2px) * -1) 0 var(--nts-mt-disp-blur, 2px) var(--nts-mt-disp-cool, transparent),
+    /* 四边描边：玻璃的上缘亮、下缘暗，是「有厚度」的关键；只给一圈均匀 border 会变成塑料片 */
+    inset 0 var(--nts-mt-edge-width, 1px) 0 var(--nts-mt-edge-t, transparent),
+    inset 0 calc(-1 * var(--nts-mt-edge-width, 1px)) 0 var(--nts-mt-edge-b, transparent),
+    inset var(--nts-mt-edge-width, 1px) 0 0 var(--nts-mt-edge-l, transparent),
+    inset calc(-1 * var(--nts-mt-edge-width, 1px)) 0 0 var(--nts-mt-edge-r, transparent),
+    /* 底部液态折射：liquidAmp 调的就是这一条 */
+    inset 0 calc(-1 * var(--nts-mt-liquid-amp, 0px)) calc(var(--nts-mt-liquid-amp, 0px) * 2) var(--nts-mt-refract-tint, transparent);
+  transition: box-shadow .18s var(--nts-mt-easing, ease), background-color .18s var(--nts-mt-easing, ease); }
+.mt-pv-card::before { content: ''; position: absolute; inset: 0; z-index: -1; background: var(--nts-mt-dye, none); opacity: 1; }
+/* 悬停亮环与按压内阴影：让 hover / press 这组参数在预览里也有落点，
+   否则用户只能去应用窗口里反复点按来验证。 */
+.mt-pv-card::after { content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, var(--nts-mt-hover, .12));
+  opacity: 0; transition: opacity var(--nts-mt-hover-duration, 180ms) var(--nts-mt-easing, ease); }
+.mt-pv-card:hover::after { opacity: 1; }
+.mt-pv-card:active::after { opacity: 1; box-shadow: inset 0 2px 8px rgba(0, 0, 0, var(--nts-mt-press, .12)); }
+.mt-pv-hero { display: flex; align-items: center; gap: 10px; }
+.mt-pv-avatar { width: 34px; height: 34px; border-radius: 50%; flex: none; background: linear-gradient(140deg, #f9a8d4, #818cf8); box-shadow: 0 0 0 1px rgba(255,255,255,.4) inset; }
+.mt-pv-lines { flex: 1; min-width: 0; }
+.mt-pv-lines i { display: block; height: 6px; border-radius: 4px; background: rgba(255,255,255,.55); }
+.mt-pv-lines i + i { margin-top: 6px; width: 62%; background: rgba(255,255,255,.34); }
+.mt-pv-msg { margin-left: 22px; }
+.mt-pv-tag { display: inline-block; font-size: 10px; padding: 0 5px; border-radius: 4px; background: rgba(255,255,255,.18); margin-right: 5px; }
+/* 浅色壁纸下正文改深色：预览里的文字颜色必须跟随后景明暗，否则浅背景 + 白字读不出内容 */
+.mt-pv[data-bg="light"] .mt-pv-card { color: rgba(15, 23, 42, .88); }
+.mt-pv[data-bg="light"] .mt-pv-lines i { background: rgba(15, 23, 42, .40); }
+.mt-pv[data-bg="light"] .mt-pv-lines i + i { background: rgba(15, 23, 42, .22); }
+.mt-pv[data-bg="light"] .mt-pv-tag { background: rgba(15, 23, 42, .08); }
+/* 三个装饰层与应用窗口里的同名层一一对应：sheen = 顶部柔光带，inner = 内高光，
+   ambient = 环境反射。它们都吃后端编译好的"图"变量，所以预览里看到的层次就是
+   应用里会有的层次 —— 预览不自己重算，避免两边观感不一致。 */
+.mt-pv-edge { position: absolute; inset: 0; z-index: 2; pointer-events: none; border-radius: inherit; background: var(--nts-mt-rim-img, none), var(--nts-mt-sheen-img, none); background-repeat: no-repeat; background-size: cover, cover; }
+.mt-pv-ambient { position: absolute; inset: -20%; z-index: 1; pointer-events: none; background: var(--nts-mt-ambient-img, none); background-repeat: no-repeat; background-size: var(--nts-mt-ambient-size, 100%) var(--nts-mt-ambient-size, 100%); }
+.mt-pv-inner { position: absolute; inset: 0; z-index: 2; pointer-events: none; border-radius: inherit; background: var(--nts-mt-inner-img, none), var(--nts-mt-inner2, none); background-repeat: no-repeat, no-repeat; background-size: cover, cover; background-position: center, center; }
+.mt-pv-noise { position: absolute; inset: 0; z-index: 3; pointer-events: none; opacity: var(--nts-mt-noise-alpha, 0); background-image: var(--nts-mt-noise-img, none); background-size: var(--nts-mt-noise-size, 3px) var(--nts-mt-noise-size, 3px); mix-blend-mode: overlay; }
+.mt-pv-meta { margin-top: 8px; font-size: 10.5px; color: var(--text-faint); line-height: 1.5; word-break: break-all; }
+.mt-pv-meta b { color: var(--text-sub); font-weight: 600; }
+
+.mt-comp-row { display: grid; grid-template-columns: 62px minmax(0, 1fr) 44px; gap: 6px; align-items: center; font-size: 11px; color: var(--text-sub); }
+.mt-comp-num { text-align: right; font-variant-numeric: tabular-nums; color: var(--text); }
+.mt-pv-stack { z-index: 1; }
+.mt-pv-card { z-index: 0; }
+.mt-pv-ambient { z-index: 0; }
+/* ---------- 响应式 ---------- */
+@media (max-width: 1180px) {
+  .mt-body { grid-template-columns: 132px minmax(0, 1fr); }
+  .mt-pv-wrap { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--border-soft); }
+}
+@media (max-width: 720px) {
+  .mt-body { grid-template-columns: minmax(0, 1fr); }
+  .mt-tabs { flex-direction: row; flex-wrap: wrap; border-right: 0; border-bottom: 1px solid var(--border-soft); }
+  .mt-tab.is-active { box-shadow: inset 0 -2px 0 var(--accent); }
+  .mt-row { grid-template-columns: minmax(76px, 44%) minmax(0, 1fr) 54px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mt-preset { transition: none; }
+
+/* 自定义预设：卡片本体 + 右上角删除，避免误点卡片本体触发整套套用。 */
+.mt-preset-wrap { position: relative; }
+.mt-preset-wrap .mt-preset { width: 100%; padding-right: 46px; }
+.mt-preset-del { position: absolute; top: 6px; right: 6px; opacity: .72; }
+.mt-preset-del:hover { opacity: 1; }
+.mt-save-row { display: flex; gap: 7px; align-items: center; margin: 7px 0 2px; }
+.mt-input { flex: 1; min-width: 0; font: inherit; font-size: 11.5px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--text); }
+.mt-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+}
+
+/* 可读性提示：玻璃基底偏实时出现，只是提醒，不拦操作。 */
+.mt-pv-warn {
+  margin-top: 8px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: #fbbf24;
+  background: rgba(251, 191, 36, .1);
+  border: 1px solid rgba(251, 191, 36, .28);
+}
+
+.mt-pv-warn:empty {
+  display: none;
+}
+
+
+/* 暗色覆盖的清除按钮：跟在参数名后面，点一下回到继承亮色 */
+.mt-row-clear {
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 10px;
+  line-height: 1.6;
+  cursor: pointer;
+  color: #fbbf24;
+  background: rgba(251, 191, 36, .12);
+  border: 1px solid rgba(251, 191, 36, .3);
+  border-radius: 6px;
+}
+
+.mt-row-clear:hover {
+  background: rgba(251, 191, 36, .22);
+}
+
+
+.mt-pv-off {
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 6px;
+  font-size: 10px;
+  color: #fbbf24;
+  background: rgba(251, 191, 36, .12);
+  border: 1px solid rgba(251, 191, 36, .3);
+}
+
+/* 组件材质缩略块（组件页顶部）：直接吃组件别名变量，未自定义时回退全局值。
+   只示意颜色 / 圆角 / 模糊 / 边框 / 阴影，不含任何布局属性。 */
+.mt-comp-strip { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin: 6px 0 12px; }
+.mt-comp-chip { display: flex; flex-direction: column; gap: 6px; align-items: center; }
+.mt-comp-chip-face {
+  width: 100%;
+  height: 46px;
+  border-radius: var(--chip-radius, 10px);
+  background-color: var(--chip-bg, rgba(255, 255, 255, 0.12));
+  border: var(--chip-bw, 1px) solid rgba(148, 163, 184, 0.28);
+  box-shadow: var(--chip-shadow, 0 8px 20px rgba(2, 6, 23, 0.35));
+  backdrop-filter: blur(var(--chip-blur, 0px));
+  -webkit-backdrop-filter: blur(var(--chip-blur, 0px));
+}
+.mt-comp-chip-name { font-size: 10px; line-height: 1.2; color: rgba(148, 163, 184, 0.9); }
+@media (max-width: 720px) { .mt-comp-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+/* 参数搜索：90 个参数散在 8 个界面，没有搜索只能翻页找。 */
+.mt-search {
+  width: 190px;
+  padding: 5px 9px;
+  font-size: 12px;
+  color: #e2e8f0;
+  background: rgba(148, 163, 184, 0.12);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 8px;
+  outline: none;
+}
+.mt-search:focus { border-color: rgba(96, 165, 250, 0.55); }
+.mt-search::placeholder { color: rgba(148, 163, 184, 0.75); }
+@media (max-width: 720px) { .mt-search { width: 100%; } }
+
+/* 批量重置：组件页一次回到继承全局，暗色一次清空全部覆盖 */
+.mt-comp-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 6px 0 10px;
+}
+
+.mt-comp-bar-text {
+  font-size: 12px;
+  opacity: 0.72;
+}
+
+.mt-dark-clear {
+  margin-left: 8px;
+  font-size: 11px;
+  padding: 2px 8px;
+  color: #fbbf24;
+  border-color: rgba(251, 191, 36, 0.3);
+}
+
+/* ---- 预览：6 类组件 + 原始/当前对比（v0.15.69 起）----
+   规范要求预览至少覆盖玻璃卡片 / 普通按钮 / 聊天气泡 / 输入框 / 弹窗 / 侧边栏，
+   并且要能看到调整前的原始材质。每类组件读自己的组件别名，未自定义时回退全局。 */
+.mt-pv-row { display: flex; gap: 8px; align-items: stretch; }
+.mt-pv-chat {
+  background-color: var(--nts-mt-c-bg-chat, var(--nts-mt-bg));
+  border-radius: var(--nts-mt-c-radius-chat, var(--nts-mt-radius));
+  border-width: var(--nts-mt-c-border-width-chat, var(--nts-mt-border-width));
+  box-shadow: var(--nts-mt-c-shadow-chat, var(--nts-mt-shadow));
+  -webkit-backdrop-filter: blur(var(--nts-mt-c-blur-chat, var(--nts-mt-blur))) saturate(var(--nts-mt-saturation, 165%)) brightness(var(--nts-mt-brightness, 105%)) contrast(1.03);
+  backdrop-filter: blur(var(--nts-mt-c-blur-chat, var(--nts-mt-blur))) saturate(var(--nts-mt-saturation, 165%)) brightness(var(--nts-mt-brightness, 105%)) contrast(1.03);
+}
+.mt-pv-msg {
+  background-color: var(--nts-mt-c-bg-bubble, var(--nts-mt-bg));
+  border-radius: var(--nts-mt-c-radius-bubble, var(--nts-mt-radius));
+  border-width: var(--nts-mt-c-border-width-bubble, var(--nts-mt-border-width));
+  box-shadow: var(--nts-mt-c-shadow-bubble, var(--nts-mt-shadow));
+}
+.mt-pv-btn {
+  flex: none; display: flex; align-items: center; padding: 4px 11px;
+  font-size: 10.5px; font-weight: 600; color: rgba(255, 255, 255, .94);
+  border-radius: var(--nts-mt-c-radius-button, var(--nts-mt-radius));
+  background-color: var(--nts-mt-c-bg-button, var(--nts-mt-bg));
+  border: var(--nts-mt-c-border-width-button, var(--nts-mt-border-width)) solid var(--nts-mt-border, rgba(255, 255, 255, .3));
+  box-shadow: var(--nts-mt-c-shadow-button, var(--nts-mt-shadow));
+  -webkit-backdrop-filter: blur(var(--nts-mt-c-blur-button, var(--nts-mt-blur, 0px)));
+  backdrop-filter: blur(var(--nts-mt-c-blur-button, var(--nts-mt-blur, 0px)));
+}
+.mt-pv-input {
+  flex: 1 1 auto; min-width: 0; min-height: 26px;
+  border-radius: var(--nts-mt-c-radius-input, var(--nts-mt-radius));
+  background-color: var(--nts-mt-c-bg-input, var(--nts-mt-bg));
+  border: var(--nts-mt-c-border-width-input, var(--nts-mt-border-width)) solid var(--nts-mt-border, rgba(255, 255, 255, .3));
+  box-shadow: var(--nts-mt-c-shadow-input, var(--nts-mt-shadow));
+}
+.mt-pv-side {
+  flex: none; width: 34px; display: flex; flex-direction: column; justify-content: center; gap: 3px; padding: 5px 4px;
+  border-radius: var(--nts-mt-c-radius-sidebar, var(--nts-mt-radius));
+  background-color: var(--nts-mt-c-bg-sidebar, var(--nts-mt-bg));
+  border: var(--nts-mt-c-border-width-sidebar, var(--nts-mt-border-width)) solid var(--nts-mt-border, rgba(255, 255, 255, .3));
+  box-shadow: var(--nts-mt-c-shadow-sidebar, var(--nts-mt-shadow));
+}
+.mt-pv-side i { display: block; height: 3px; border-radius: 2px; background: rgba(255, 255, 255, .45); }
+.mt-pv-pop {
+  padding: 8px 9px; color: rgba(255, 255, 255, .9);
+  border-radius: var(--nts-mt-c-radius-dialog, var(--nts-mt-radius));
+  background-color: var(--nts-mt-c-bg-dialog, var(--nts-mt-bg));
+  border: var(--nts-mt-c-border-width-dialog, var(--nts-mt-border-width)) solid var(--nts-mt-border, rgba(255, 255, 255, .3));
+  box-shadow: var(--nts-mt-c-shadow-dialog, var(--nts-mt-shadow));
+}
+.mt-pv-pop-head { display: flex; align-items: center; justify-content: space-between; font-size: 10.5px; font-weight: 600; margin-bottom: 5px; }
+.mt-pv-x { font-size: 9px; opacity: .7; }
+.mt-pv-pop-body { font-size: 10px; line-height: 1.5; opacity: .85; }
+.mt-pv[data-bg="light"] .mt-pv-btn,
+.mt-pv[data-bg="light"] .mt-pv-pop { color: rgba(15, 23, 42, .88); }
+.mt-pv[data-bg="light"] .mt-pv-side i { background: rgba(15, 23, 42, .35); }
+/* 对比层只保留右半屏：clip-path 切掉左边 50%，中缝用 1px 亮线标出分界。 */
+.mt-pv-ref { position: absolute; inset: 0; z-index: 2; display: none; pointer-events: none; overflow: hidden; clip-path: inset(0 0 0 50%); }
+.mt-pv[data-compare="1"] .mt-pv-ref { display: block; }
+.mt-pv-ref::after { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 1px; background: rgba(255, 255, 255, .55); }
+.mt-pv-side-label { position: absolute; top: 5px; left: 5px; z-index: 6; display: none; font-size: 9.5px; font-weight: 600; padding: 1px 5px; border-radius: 5px; background: rgba(0, 0, 0, .45); color: #fff; pointer-events: none; }
+.mt-pv-label-cur { z-index: 6; }
+.mt-pv[data-compare="1"] .mt-pv-label-cur,
+.mt-pv[data-compare="1"] .mt-pv-ref .mt-pv-side-label { display: block; }
+.mt-pv-bg.is-on { border-color: var(--accent-line); color: var(--text); background: var(--surface-2); }

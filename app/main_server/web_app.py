@@ -400,6 +400,7 @@ from main_routers.storage_location_router import router as storage_location_rout
 from main_routers.plugin_card_router import router as plugin_card_router  # noqa
 from main_routers.plugin_media_router import router as plugin_media_router  # noqa
 from main_routers.system_router import router as system_router  # noqa
+from main_routers.theme_studio_router import router as theme_studio_router  # noqa
 from main_routers.tool_router import router as tool_router  # noqa
 from main_routers.vrm_router import router as vrm_router  # noqa
 from main_routers.vmc_router import router as vmc_router  # noqa
@@ -840,6 +841,8 @@ app.include_router(agent_router)
 app.include_router(avatar_drop_router)
 app.include_router(avatar_tool_router)
 app.include_router(system_router)
+# Theme Studio is a first-class app feature (was a plugin with its own port).
+app.include_router(theme_studio_router)
 app.include_router(tool_router)
 app.include_router(music_router)
 app.include_router(galgame_router)
