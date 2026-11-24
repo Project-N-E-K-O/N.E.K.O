@@ -592,7 +592,7 @@ async def test_what_an_inspector_finds_wrong_goes_back_to_the_task_agent_before_
         # It works in the worktree itself, and is told what was to be done.
         assert (session.preset, session.kind, item.workdir) == ("inspector", "child", tree_dir)
     asked = _said_to(members[CHECK])
-    assert "`git status` and `git diff` there show exactly what it changed" in asked and SECOND in asked
+    assert "a file it made new is only named there, so read it" in asked and SECOND in asked
     assert "ready: you read the changes" in asked and "failed: you could not check it at all" in asked
     verdicts = [(item["verdict"], item["round"]) for item in await _events(host, two.commission_id, "inspected")]
     assert verdicts == [("fail", 1), ("pass", 2)]
@@ -851,8 +851,11 @@ async def _real_shop(hosts: list[Any], tmp_path: Path, project: Path, pick: Any)
 
     host.task_agents.families._probe = probe
     await host.permission_store.set_mode("open_session", "allow")
-    if not (await host.task_agents.worktrees.probe(project)).usable:
+    found = await host.task_agents.worktrees.probe(project)
+    if found.reason in ("git_missing", "git_too_old"):
         pytest.skip("the git that is installed is older than worktrees need")
+    # (Any other reason is a fault of the probe, and is not passed over.)
+    assert found.usable, (found.reason, found.detail)
     return host
 
 
@@ -862,6 +865,7 @@ async def test_with_git_itself_a_members_changes_land_as_uncommitted_changes(hos
     members = {
         "the header": ScriptedLLM([_report("header fixed")]),
         "broken links": ScriptedLLM([
+            [call("read", {"file_path": "c.txt"}), finish("tool_calls")],
             _write("a.txt", "one\ntwo\nthree\nfour\n"), _write("b.txt", "new\n"), _report("links repaired"),
         ]),
     }
@@ -872,6 +876,8 @@ async def test_with_git_itself_a_members_changes_land_as_uncommitted_changes(hos
 
     two = await _dispatch(host, SECOND)
     done = await wait_status(host, two.commission_id, "done", timeout=120)
+    # (It read the file there, in its worktree.)
+    assert "the user's" in _said_to(members["broken links"])
 
     (made,) = await _events(host, two.commission_id, "tree_made")
     # The commission worked in the project's place inside the worktree, which is of the whole repository.
@@ -983,3 +989,16 @@ async def test_with_git_itself_what_lies_beside_the_project_in_a_worktree_is_ask
     assert await host.answer(two.commission_id, "", choice="deny")
     await wait_status(host, two.commission_id, "done", timeout=120)
     assert "node_modules" not in _said_to(members["broken links"])
+
+
+async def test_an_inspector_that_ends_without_a_report_passed_nothing(hosts, tmp_path):
+    host, trees, workdir, two, members = await _inspected(
+        hosts, tmp_path,
+        member=[_write("links.txt", "repaired"), _report("links repaired")],
+        inspector=[END],
+    )
+    done = await wait_status(host, two.commission_id, "done")
+
+    # It lands as if nobody had looked, and is put on record so: not as checked and passed.
+    assert (workdir / "links.txt").read_text() == "repaired" and done.result_summary.startswith("links repaired")
+    assert [(item["verdict"], item["round"]) for item in await _events(host, two.commission_id, "inspected")] == [("none", 1)]

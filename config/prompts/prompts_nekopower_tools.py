@@ -913,7 +913,7 @@ NEKOPOWER_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             'properties': {
                 'parts': {
                     'type': 'array',
-                    'description': 'The parts, every one of them: whoever is asked to allow the team is shown this list.',
+                    'description': 'The parts, every one of them: whoever is asked to allow the team is shown those that change files.',
                     'items': {
                         'type': 'object',
                         'properties': {

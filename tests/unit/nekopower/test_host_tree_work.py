@@ -454,15 +454,13 @@ async def test_a_project_has_no_more_worktrees_than_it_may(hosts, tmp_path, monk
 
 
 async def test_a_member_in_a_worktree_writes_there_and_not_in_its_projects_directory(hosts, tmp_path):
-    kept: dict[str, Any] = {}
-
-    def into_the_project() -> list[Any]:
-        return _write(str(kept["workdir"] / "links.txt"), "straight into the project")
-
+    # (Where the project's directory will be: known before anybody is at work.)
+    there = tmp_path / "Shop site-files"
     host, trees, workdir, one, two, members = await _two_members(
-        hosts, tmp_path, [into_the_project, _write("links.txt", "in my own"), _report("links repaired")]
+        hosts, tmp_path,
+        [_write(str(there / "links.txt"), "straight into the project"), _write("links.txt", "in my own"), _report("links repaired")],
     )
-    kept["workdir"] = workdir
+    assert workdir == there
     host.release.set()
     await wait_status(host, two.commission_id, "done")
 
@@ -511,12 +509,10 @@ async def test_nobody_writes_in_the_worktree_of_another_and_what_is_there_is_rea
 
 
 async def test_a_task_agent_a_member_in_a_worktree_starts_works_there_with_it(hosts, tmp_path):
-    kept: dict[str, Any] = {}
-
-    def into_the_project() -> list[Any]:
-        return _write(str(kept["workdir"] / "styles.css"), "straight into the project")
-
-    helper = ScriptedLLM([into_the_project, _write("styles.css", "tidy"), _report("styles tidied")])
+    there = tmp_path / "Shop site-files"
+    helper = ScriptedLLM([
+        _write(str(there / "styles.css"), "straight into the project"), _write("styles.css", "tidy"), _report("styles tidied"),
+    ])
     host, trees, workdir, one, two, members = await _two_members(
         hosts, tmp_path,
         second=[
@@ -526,7 +522,7 @@ async def test_a_task_agent_a_member_in_a_worktree_starts_works_there_with_it(ho
         ],
         **{"PART-STYLES": helper},
     )
-    kept["workdir"] = workdir
+    assert workdir == there
     host.release.set()
     done = await wait_status(host, two.commission_id, "done")
 
@@ -1983,3 +1979,28 @@ async def test_a_worktree_its_commission_is_finding_again_is_passed_by_as_the_ho
     assert await telling
     await wait_status(host, two.commission_id, "done")
     assert (workdir / "links.txt").read_text() == "half" and (workdir / "more.txt").exists()
+
+
+async def test_a_card_shows_that_its_commission_waits_for_the_user_though_its_worktree_is_at_work(hosts, tmp_path):
+    from nekopower.host.board import card_of
+
+    hold = asyncio.Event()
+
+    async def wait() -> None:
+        await hold.wait()
+
+    host, trees, workdir, one, two, members = await _two_members(
+        hosts, tmp_path, second=[_write("links.txt", "mine"), _report("links repaired"), [wait, *_report("merged")]]
+    )
+    trees.results = [MergeResult("conflict", conflicts=("links.txt",))]
+    host.release.set()
+    await wait_until(lambda: len(members["broken links"].requests) == 3, what="it merging what clashed")
+    (tree,) = await host.ledger.trees()
+    commission = await host.ledger.get(two.commission_id)
+    session = await host.ledger.get_session(commission.session_id)
+    assert tree.state == "resolving" and card_of(session, commission, (), None, None, tree=tree)["state"] == "resolving"
+    # It asks the user something while it merges: the card says that it waits.
+    asking = dataclasses.replace(commission, status="waiting_user")
+    assert card_of(session, asking, (), None, None, tree=tree)["state"] == "waiting_user"
+    hold.set()
+    await wait_status(host, two.commission_id, "done")

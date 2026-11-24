@@ -1079,7 +1079,7 @@ PERMISSION_CATEGORY_TEXTS = {
               "managed_delivery_arguments": "傳遞工作輸入 {detail}", "managed_delivery_result": "交付工作結果 {detail}",
               "managed_delivery_value": "交付給程式的結果 {detail}", "managed_delivery_content": "交付給模型看的內容 {detail}",
               "usage_limit": "再用約 {more} token 接著辦，用到了會再問一次（這件事已經用了 {used} token，到了一件事的用量上限）",
-              "open_session": "另開一隻能改檔案的使魔來辦這件事：{detail}", "open_session_tree": "另開一隻能改檔案的使魔來辦這件事，牠在一份獨立的副本裡改，做完合回專案目錄（副本建不成時排隊在專案目錄裡改）：{detail}",
+              "open_session": "另開一隻能改檔案的使魔來辦這件事：{detail}", "open_session_tree": "另開一隻能改檔案的使魔辦這件事，在獨立副本裡改，做完合回專案目錄（建不成副本就在專案目錄裡排隊改）：{detail}",
               "open_session_team": "為這件事組一支隊伍：{count} 隻使魔同時改檔案，各在獨立的副本裡改，做完合回專案目錄（{detail}）",
               "plugin_entry": "呼叫 {detail}", "other": "使用 {detail}"},
     'en': {"run_command": "run the command {detail}", "outside_write": "write the file {detail} outside the working directory",
@@ -1109,7 +1109,7 @@ PERMISSION_CATEGORY_TEXTS = {
            "managed_delivery_arguments": "작업 입력 전달 {detail}", "managed_delivery_result": "작업 결과 전달 {detail}",
            "managed_delivery_value": "프로그램에 결과 전달 {detail}", "managed_delivery_content": "모델에 내용 전달 {detail}",
            "usage_limit": "약 {more} token을 더 써서 계속하기(다 쓰면 다시 묻습니다. 이 일은 이미 {used} token을 써서 한 건의 사용량 한도에 이르렀습니다)",
-           "open_session": "파일을 바꿀 수 있는 사역마를 하나 더 불러 이 일을 맡기기: {detail}", "open_session_tree": "파일을 바꿀 수 있는 사역마를 하나 더 불러 이 일을 맡기기(자기만의 사본에서 작업하고 끝나면 프로젝트 폴더에 반영합니다. 사본을 만들 수 없으면 프로젝트 폴더에서 차례를 기다려 작업합니다): {detail}",
+           "open_session": "파일을 바꿀 수 있는 사역마를 하나 더 불러 이 일을 맡기기: {detail}", "open_session_tree": "파일을 바꿀 수 있는 사역마를 하나 더 부르기(자기 사본에서 작업하고 끝나면 프로젝트 폴더에 반영, 사본을 못 만들면 프로젝트 폴더에서 차례대로 작업): {detail}",
            "open_session_team": "이 일을 위해 팀 꾸리기: 사역마 {count}마리가 동시에 파일을 바꾸며, 각자 자기 사본에서 작업하고 끝나면 프로젝트 폴더에 반영합니다({detail})",
            "plugin_entry": "{detail} 호출", "other": "{detail} 사용"},
     'ru': {"run_command": "выполнить команду {detail}", "outside_write": "записать файл {detail} вне рабочего каталога",
@@ -1928,8 +1928,8 @@ TREE_CHECK_BRIEF = (
     "Another task agent says it is done with the work below. Check it before the host merges it "
     "into the project.\n"
     "The directory you are in is that task agent's own: a git worktree of the project, holding "
-    "what it changed and nothing committed. `git status` and `git diff` there show exactly what "
-    "it changed. What git ignores is not in it (installed dependencies, build output), so some "
+    "what it changed and nothing committed. `git status` and `git diff` there show what it "
+    "changed; a file it made new is only named there, so read it. What git ignores is not in it (installed dependencies, build output), so some "
     "checks may not run here.\n"
     "End with one report, and choose its status by this:\n"
     "- ready: you read the changes and ran what could be run, and the work holds.\n"

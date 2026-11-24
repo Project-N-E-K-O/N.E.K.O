@@ -258,7 +258,8 @@ def card_of(
     found = template.template if template is not None else None
     state = state_of(session, commission)
     if tree is not None:
-        if tree.state in _TREE_AT_WORK and commission is not None and tree.commission_id == commission.id:
+        if tree.state in _TREE_AT_WORK and state == "working" and commission is not None and tree.commission_id == commission.id:
+            # (One that waits for the user's answer meanwhile shows as waiting.)
             state = tree.state
         elif tree.state in _TREE_WAITS and commission is None:
             state = tree.state

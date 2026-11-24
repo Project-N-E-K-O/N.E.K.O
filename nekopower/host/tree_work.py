@@ -1297,9 +1297,13 @@ class TreeWork:
         if inspection is not None and not inspection.done() and commission.status == "cancelled":
             # Stopped, which no report of its own tells of.
             inspection.set_result(("cancelled", ""))
-        if commission.parent_id in self._teams and commission.parent_id not in self._stall_watches:
-            if commission.parent_id not in self._stall_reminded:
-                self._stall_watches[commission.parent_id] = self._tree_task(self._watch_stall(commission.parent_id))
+        if commission.parent_id in self._teams and commission.parent_id not in self._stall_reminded:
+            # Anew with every one that ends: a watch that looked while this one was still at work
+            # does not stand for the one that looks after it.
+            earlier = self._stall_watches.pop(commission.parent_id, None)
+            if earlier is not None:
+                earlier.cancel()
+            self._stall_watches[commission.parent_id] = self._tree_task(self._watch_stall(commission.parent_id))
         if commission.id in self._tree_of:
             self._tree_task(self._tree_left(commission))
 
@@ -1695,8 +1699,9 @@ class TreeWork:
         the commission (what it uses is the commission's), which works
         in the worktree itself. Told by how it reports and not by its
         words: ``ready`` passes, ``blocked`` says something is wrong
-        with the work, anything else (``failed``, stopped, not started)
-        is no verdict, and the changes land as if nobody had looked.
+        with the work, anything else (``failed``, stopped, not started,
+        ended without a report) is no verdict, and the changes land as
+        if nobody had looked.
         """
         from config import nekopower_settings as settings
         from config.prompts import prompts_nekopower_brain as texts
@@ -1739,7 +1744,8 @@ class TreeWork:
         finally:
             self._inspections.pop(child.id, None)
         if status == "completed":
-            return CHECK_PASSED, said
+            # (Done by a report, or by a run that ended without one: only the first says it passes.)
+            return (CHECK_PASSED if await self._ledger.has_event(child.id, "report") else CHECK_NONE), said
         if status == "blocked":
             return CHECK_FAILED, said
         return CHECK_NONE, said
