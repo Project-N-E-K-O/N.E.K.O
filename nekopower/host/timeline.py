@@ -420,6 +420,10 @@ def _event_entry(
             "more": _number(payload.get("more")) or 0,
             "lines_added": _number(payload.get("lines_added")) or 0,
             "lines_deleted": _number(payload.get("lines_deleted")) or 0,
+            # Changed outside the project's directory, elsewhere in its repository; and not
+            # carried over, being too large or a repository of their own (still in the worktree).
+            "outside": [_text(item) for item in payload.get("outside") or [] if isinstance(item, str)],
+            "skipped": [_text(item) for item in payload.get("skipped") or [] if isinstance(item, str)],
             # Landed at the user's word, after it had not been.
             "by_user": payload.get("by") == "user",
         }

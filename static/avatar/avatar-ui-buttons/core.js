@@ -247,6 +247,9 @@ function _removeFloatingButtonsElement(el) {
         _stopNekoIdleCat1AmbientSound({ reason: 'container-removed' });
         const returnButton = el.querySelector('.neko-idle-return-btn');
         if (returnButton) {
+            _cancelNekoIdleCat1PlaygroundPendingEntry(returnButton);
+            _clearNekoIdleCat1PlaygroundQuestionBlockClone(returnButton);
+            _releaseNekoIdleCat1PlaygroundDropLifecycle(returnButton, 'container-removed');
             _cancelNekoIdleCat1EatAction(returnButton, { restoreArt: false });
             _cancelNekoIdleCat1VisualAction(returnButton, { restoreArt: false, reason: 'container-removed' });
             _cancelNekoIdleCat1StretchAction(returnButton, { restoreArt: false });

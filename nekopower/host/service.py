@@ -1239,8 +1239,10 @@ class NekoPowerHost:
                 raise LookupError(project)
             if not readable:
                 raise ProjectUnreadable(project)
-            if await self._project_busy(project) is not None:
-                raise ProjectBusy("at_work")
+            busy = await self._project_busy(project)
+            if busy is not None:
+                # (Why, as for a project that is to work somewhere else: ``set_project_workdir``.)
+                raise ProjectBusy(busy)
             # Looked at again where it is moved, under the lock commissions are filed and taken
             # up under: one filed since the look above leaves it where it is, and so does one
             # taken up again since (that one was counted before; it shows in when the project
@@ -1562,8 +1564,10 @@ class NekoPowerHost:
         hands it.
 
         Returns ``{"session_id", "seat"}``. Raises ``ValueError`` with a
-        code (``no_character``, ``bad_preset``) and ``LookupError`` for
-        a project that is not there (or is archived).
+        code (``no_character``, ``bad_preset``, and ``too_many_members``
+        for a project that has as many members that take work as it may,
+        ``PROJECT_MEMBERS_MAX``) and ``LookupError`` for a project that
+        is not there (or is archived).
         """
         if not isinstance(lanlan_name, str) or not lanlan_name.strip():
             raise ValueError("no_character")
@@ -1577,6 +1581,16 @@ class NekoPowerHost:
             known = {item.name: item for item in await self.space.list_projects(include_archived=False)}
             if project not in known or project == DEFAULT_PROJECT:
                 raise LookupError(project)
+            from config.nekopower_settings import PROJECT_MEMBERS_MAX
+
+            taking = [
+                member
+                for member in await self.ledger.members(lanlan_name.strip(), project)
+                if await self.ledger.session_alive(member)
+            ]
+            if len(taking) >= PROJECT_MEMBERS_MAX:
+                # As many as its leader is told of, and may open itself (``TaskAgentManager._hand_over``).
+                raise ValueError("too_many_members")
             resolved = await asyncio.to_thread(self.task_agents.templates.resolve, preset, project)
             seat = await self.task_agents.seat_of_new_member(project) if resolved.changes_files else ""
             session = await self.ledger.create_session(
@@ -1625,8 +1639,18 @@ class NekoPowerHost:
         return await self.task_agents.keep_tree(tree_id)
 
     async def landing_settings(self) -> dict[str, Any]:
-        """Return what the user set about landing: ``{"mode": "auto" | "ask", "inspect": bool}`` (``landing_settings.py``)."""
-        return await self.task_agents.landing.get()
+        """Return what the user set about landing, with how many git worktrees a project may have.
+
+        ``{"mode": "auto" | "ask", "inspect": bool, "worktrees_per_project": int}``
+        (``landing_settings.py``). The last is no setting of the user's:
+        it is for a page to say when a project has as many as it may
+        (those the user sees to personally count, ``worktrees()`` lists
+        them), which is when its next task agent works in the project's
+        directory in its turn and a team is not started.
+        """
+        from config.nekopower_settings import WORKTREES_PER_PROJECT
+
+        return {**await self.task_agents.landing.get(), "worktrees_per_project": WORKTREES_PER_PROJECT}
 
     async def set_landing_settings(self, *, mode: Any = None, inspect: Any = None) -> dict[str, Any]:
         """Set what is given of the landing settings and return them as they stand.
@@ -1638,7 +1662,10 @@ class NekoPowerHost:
         changed before every landing. Raises ``ValueError("bad_mode")``
         or ``ValueError("bad_inspect")``.
         """
-        return await self.task_agents.landing.put(mode=mode, inspect=inspect)
+        from config.nekopower_settings import WORKTREES_PER_PROJECT
+
+        stands = await self.task_agents.landing.put(mode=mode, inspect=inspect)
+        return {**stands, "worktrees_per_project": WORKTREES_PER_PROJECT}
 
     async def derive_leader(self, project: str, lanlan_name: str) -> dict[str, Any]:
         """Give a project a leader for one character, as the user asks; returns ``{"session_id", "made"}``.

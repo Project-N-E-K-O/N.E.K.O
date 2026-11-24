@@ -258,7 +258,8 @@ def card_of(
     found = template.template if template is not None else None
     state = state_of(session, commission)
     if tree is not None:
-        if tree.state in _TREE_AT_WORK and commission is not None and tree.commission_id == commission.id:
+        if tree.state in _TREE_AT_WORK and state == "working" and commission is not None and tree.commission_id == commission.id:
+            # (One that waits for the user's answer meanwhile shows as waiting.)
             state = tree.state
         elif tree.state in _TREE_WAITS and commission is None:
             state = tree.state
@@ -320,14 +321,15 @@ def card_of(
 def tree_of(trees: list[Tree], commission: Commission | None) -> Tree | None:
     """Return the git worktree a session's card shows, of those on record for the session; None for none.
 
-    The one its commission in hand is worked on in; else the oldest that
+    The one its commission in hand is worked on in (before one of that
+    commission the user sees to personally); else the oldest that
     waits for the user (held back, or not landed); else one the user
     sees to personally.
     """
     if commission is not None:
-        for tree in trees:
-            if tree.commission_id == commission.id:
-                return tree
+        mine = [tree for tree in trees if tree.commission_id == commission.id]
+        for tree in sorted(mine, key=lambda tree: tree.state == "kept"):
+            return tree
     for wanted in (_TREE_WAITS, frozenset({"kept"})):
         for tree in trees:
             if tree.state in wanted:

@@ -65,8 +65,11 @@ REASON_INSPECTION = "inspection"
 REASON_ASK = "ask"
 REASON_STOPPED = "stopped"
 REASON_RESTART = "restart"
+# What it changed was landed, but for files that are never carried over (too large, or a
+# repository of their own): those are still in it.
+REASON_SKIPPED = "skipped"
 TREE_REASONS: tuple[str, ...] = (
-    REASON_CONFLICT, REASON_FAILED, REASON_INSPECTION, REASON_ASK, REASON_STOPPED, REASON_RESTART,
+    REASON_CONFLICT, REASON_FAILED, REASON_INSPECTION, REASON_ASK, REASON_STOPPED, REASON_RESTART, REASON_SKIPPED,
 )
 
 # What an inspector found (the ``inspected`` event).
@@ -81,18 +84,33 @@ _POLL_SECONDS = 0.2
 # What a merge is said to have come to when files that clashed still hold conflict markers
 # (``MergeResult.detail``): nothing was merged, and nothing is put into the worktree anew.
 _MARKERS_LEFT = "conflict markers are left"
-# How much of a file is read for conflict markers.
-_MARKERS_READ_BYTES = 4 * 1024 * 1024
+# How a line begins that begins one side of a clash, and how much of a file is read at a time
+# when it is looked through for one.
+_MARKS = (b"<<<<<<< ", b">>>>>>> ")
+_MARKERS_CHUNK_BYTES = 1024 * 1024
 
 
 def _has_markers(path: Path) -> bool:
-    """Whether a file still holds conflict markers of a merge: a line that begins one side of a clash."""
+    """Whether a file still holds conflict markers of a merge: a line that begins one side of a clash.
+
+    The whole file is looked through, a piece at a time: a clash far
+    into a large file is one all the same.
+    """
     try:
         with open(path, "rb") as file:
-            data = file.read(_MARKERS_READ_BYTES)
+            # (The start of a file is the start of a line.)
+            kept = b"\n"
+            while True:
+                piece = file.read(_MARKERS_CHUNK_BYTES)
+                if not piece:
+                    return False
+                data = kept + piece
+                if any(end + mark in data for end in (b"\n", b"\r") for mark in _MARKS):
+                    return True
+                # A line's end and the beginning of a marker may lie across two pieces.
+                kept = data[-len(_MARKS[0]) :]
     except OSError:
         return False
-    return any(line.startswith((b"<<<<<<< ", b">>>>>>> ")) for line in data.splitlines())
 
 
 @dataclasses.dataclass
@@ -213,8 +231,19 @@ class TreeWork:
         # By commission: how it said it is done, while what it changed is landed, and the task that lands it.
         self._dones: dict[str, _Done] = {}
         self._landings: dict[str, asyncio.Task[Any]] = {}
-        # Worktrees the user is having landed, discarded or kept this moment.
+        # Worktrees the user is having landed, discarded or kept this moment, and those an earlier
+        # process left that are being gone through: a commission goes on in none of them meanwhile.
         self._trees_in_hand: set[str] = set()
+        # The commissions of the worktrees the user's decision is being carried out on, by worktree.
+        self._decided_for: dict[str, str] = {}
+        # Held while a project's worktrees are counted and one more is put on record: two that
+        # start at once do not both take the last room.
+        self._tree_room = asyncio.Lock()
+        # How many worktrees are being made this moment, and how often those an earlier process
+        # left are being gone through: neither while the other is under way, so one that is
+        # being made is not taken for one that was left.
+        self._trees_making = 0
+        self._trees_looking = 0
         self._tree_tasks: set[asyncio.Task[Any]] = set()
         # Inspectors the host started, by their commission: what each reported, once it is over.
         self._inspections: dict[str, asyncio.Future[tuple[str, str]]] = {}
@@ -342,6 +371,35 @@ class TreeWork:
         self._trees_mine.add(row.id)
         return handle
 
+    @staticmethod
+    async def _tree_is_gone(row: Tree) -> bool:
+        """Whether a worktree's directory is not there any more (and not merely not to be opened this moment)."""
+        return not await asyncio.to_thread(Path(row.path).is_dir)
+
+    async def _gone_from_runtime(self, commission_id: str, seconds: float = 15.0) -> None:
+        """Wait until no run is under way for a commission, nor for the task agents it started; no longer than ``seconds``.
+
+        Before a worktree they work in is looked at for the last time:
+        a tool of theirs that is finishing a write is through by then.
+        """
+
+        def at_it(item: str) -> bool:
+            live = self._sessions.get(item)
+            return live is not None and not live.idle
+
+        deadline = time.monotonic() + seconds
+        while not self._closed and time.monotonic() < deadline:
+            theirs = [commission_id]
+            try:
+                theirs += [child.id for child in await self._ledger.select(parent_id=commission_id)]
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - its own session is waited for all the same
+                logger.debug("the task agents a commission started could not be read", exc_info=True)
+            if not any(at_it(item) for item in theirs):
+                return
+            await asyncio.sleep(_POLL_SECONDS)
+
     def _forget_tree(self, row: Tree) -> None:
         """Forget that a commission is worked on in a worktree: it is over there, or the worktree is gone."""
         if row.commission_id and self._tree_of.get(row.commission_id) == row.id:
@@ -379,28 +437,45 @@ class TreeWork:
         """Return the worktree a commission that starts is worked on in, made now where it has none; None for none.
 
         One it was worked on in before (it is taken up again) is found
-        again as it was left. Otherwise one is made for a session that
-        is to have one (``seat``) and can change files. Where none can
-        be made: a member works in its project's directory, once nobody
-        else changes files there; a task agent of a team is not started.
+        again as it was left; it stays on record as it was left until
+        the commission is at work (``_tree_at_work``), so a start that
+        comes to nothing leaves it so. Not one the user sees to
+        personally (``kept``): that one is the user's from then on, and
+        the commission gets another. Otherwise one is made for a session
+        that is to have one (``seat``) and can change files. Where none
+        can be made: a member works in its project's directory, once
+        nobody else changes files there; a task agent of a team is not
+        started.
         """
         from config.prompts import prompts_nekopower_brain as texts
 
         for row in reversed(await self._ledger.trees(commission_id=commission.id)):
+            while row.id in self._trees_in_hand and not self._closed:
+                # What an earlier process left is being gone through, or the user's decision on it
+                # is being carried out: it is gone on in once that is through, as it stands then.
+                await asyncio.sleep(_POLL_SECONDS)
+            row = await self._ledger.get_tree(row.id)
+            if row is None or row.state == "kept":
+                # Gone since, or the user's to see to personally (and left alone, then).
+                continue
+            # Its own from here on, with nothing awaited since the look above: nothing else takes it in hand.
+            self._tree_of[commission.id] = row.id
+            self._tree_sessions[kept.id] = row.id
             if row.state == "making":
                 # Left half made by a start that was cut off: made anew.
                 await self._remove_tree(row)
                 continue
             handle = await self._handle_of(row)
+            if handle is None and not await self._tree_is_gone(row):
+                # There, and not to be opened this moment (git did not answer): it holds what the
+                # commission changed, and is not given up for a new one.
+                self._forget_tree(row)
+                raise RuntimeError(f"the directory this commission is worked on in cannot be opened just now: {row.path}")
             if handle is None:
                 self._forget_tree(row)
                 await self._ledger.drop_tree(row.id)
                 await self._note_tree_event(commission.id, "tree_lost", {"tree": row.id, "path": row.path})
                 continue
-            state = "resolving" if row.state == "resolving" else "active"
-            row = await self._ledger.update_tree(row.id, state=state, reason="", session_id=kept.id) or row
-            self._tree_of[commission.id] = row.id
-            self._tree_sessions[kept.id] = row.id
             self._direct_now.discard(kept.id)
             await asyncio.to_thread(lambda found=row: Path(found.workdir).mkdir(parents=True, exist_ok=True))
             return row
@@ -416,6 +491,28 @@ class TreeWork:
         await self._takes_its_turn(commission.id, kept)
         return None
 
+    async def _tree_at_work(self, commission_id: str, session_id: str) -> None:
+        """Put the worktree a commission goes on in on record as at work in, now that the commission is at work."""
+        tree_id = self._tree_of.get(commission_id)
+        row = await self._ledger.get_tree(tree_id) if tree_id else None
+        if row is None:
+            return
+        state = "resolving" if row.state == "resolving" else "active"
+        await self._ledger.update_tree(row.id, state=state, reason="", session_id=session_id)
+
+    async def _waits_in_tree(self) -> set[str]:
+        """Return the commissions whose changes wait in a worktree for the user to decide on; empty where that cannot be read."""
+        try:
+            rows = await self._ledger.trees(states=sorted(TREE_STATES_LEFT))
+            # And those the user's decision is being carried out on this moment, whose worktree
+            # is on record as being landed, or is gone already, with its commission not done yet.
+            return {str(row.commission_id) for row in rows if row.commission_id} | set(self._decided_for.values())
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - what a commission started is ended as ever
+            logger.warning("the worktrees that wait for the user could not be read", exc_info=True)
+            return set()
+
     async def _tree_not_started(self, commission_id: str) -> None:
         """A start that made or found a worktree for a commission did not start it: the worktree is seen to as for one that ended."""
         if commission_id not in self._tree_of:
@@ -429,6 +526,16 @@ class TreeWork:
 
     async def _make_tree(self, commission: Commission, kept: Session, home: str) -> tuple[Tree | None, str, str]:
         """Make a worktree of ``home`` for a commission; returns its row, or None with why none was made."""
+        while self._trees_looking and not self._closed:
+            await asyncio.sleep(_POLL_SECONDS)
+        # (Nothing is awaited between the look above and this.)
+        self._trees_making += 1
+        try:
+            return await self._make_tree_now(commission, kept, home)
+        finally:
+            self._trees_making -= 1
+
+    async def _make_tree_now(self, commission: Commission, kept: Session, home: str) -> tuple[Tree | None, str, str]:
         from config import nekopower_settings as settings
         from nekopower.host.paths import worktree_name
         from nekopower.host.worktrees import WorktreeError
@@ -443,24 +550,30 @@ class TreeWork:
             return None, "git_failed", str(exc)
         if not probe.usable:
             return None, str(probe.reason), probe.detail
-        if len(await self._ledger.trees(project=project)) >= settings.WORKTREES_PER_PROJECT:
-            return None, "too_many", f"the project has {settings.WORKTREES_PER_PROJECT} worktrees already"
-        try:
-            name = worktree_name(commission.id[:12])
+        async with self._tree_room:
+            # Counted and put on record in one go: the room one takes is not taken by another
+            # that starts at the same moment.
+            if len(await self._ledger.trees(project=project)) >= settings.WORKTREES_PER_PROJECT:
+                return None, "too_many", f"the project has {settings.WORKTREES_PER_PROJECT} worktrees already"
+            # (One of this commission that the user sees to personally keeps its name.)
+            taken = {row.id for row in await self._ledger.trees(commission_id=commission.id)}
+            base = commission.id[:12]
+            name = worktree_name(next(item for item in (base, *(f"{base}-{n}" for n in range(2, 100))) if item not in taken))
             path = self._paths.worktree_dir(name)
-            row = await self._ledger.add_tree(
-                id=name,
-                session_id=kept.id,
-                commission_id=commission.id,
-                lanlan_name=commission.lanlan_name,
-                project=project,
-                project_dir=home,
-                path=str(path),
-                workdir=str(path / probe.subpath) if probe.subpath else str(path),
-            )
-        except ValueError as exc:
-            return None, "name_taken", str(exc)
-        self._trees_mine.add(row.id)
+            try:
+                row = await self._ledger.add_tree(
+                    id=name,
+                    session_id=kept.id,
+                    commission_id=commission.id,
+                    lanlan_name=commission.lanlan_name,
+                    project=project,
+                    project_dir=home,
+                    path=str(path),
+                    workdir=str(path / probe.subpath) if probe.subpath else str(path),
+                )
+            except ValueError as exc:
+                return None, "name_taken", str(exc)
+            self._trees_mine.add(row.id)
         try:
             # Where its session works was read a moment ago, and the project may have been
             # given another directory since: from here on the row keeps it where it is.
@@ -598,9 +711,19 @@ class TreeWork:
             return {"allow": False, "reason": texts.TREE_PROJECT_WRITE_REFUSED.format(tree=mine.workdir)}
         return None
 
-    async def _tree_places(self) -> list[tuple[str, str | None, str | None]]:
-        """Return the worktrees on record as places sessions work in, for what is read there without asking."""
-        return [(row.session_id or row.id, row.path, None) for row in await self._ledger.trees()]
+    async def _tree_places(self, but: str | None = None) -> list[tuple[str, str | None, str | None]]:
+        """Return the worktrees on record as places sessions work in, for what is read there without asking; not those of session ``but``.
+
+        The directory in each that stands for its project's: a worktree
+        is of the whole repository, and what lies beside the project in
+        it is read under the same rule as anything outside a working
+        directory.
+        """
+        return [
+            (row.session_id or row.id, row.workdir, None)
+            for row in await self._ledger.trees()
+            if not (but and row.session_id == but)
+        ]
 
     # -- landing ----------------------------------------------------------
 
@@ -620,7 +743,7 @@ class TreeWork:
         done = _Done(text=text, reason=reason, delivery=delivery, sent=session.sent)
         if run_over:
             done.run_over.set()
-        self._dones[commission_id] = done
+        self._replace_done(commission_id, done)
         if commission_id not in self._landings:
             task = self._tree_task(self._land(commission_id))
             self._landings[commission_id] = task
@@ -630,6 +753,18 @@ class TreeWork:
                 else None
             )
         return True
+
+    def _replace_done(self, commission_id: str, done: _Done) -> None:
+        """Keep how a commission said it is done, in place of how it said so before; whoever waited for that run is woken.
+
+        The landing may wait for the run of the one that is replaced to
+        be over, which nothing says any more: woken, it looks at the one
+        that stands now (``_land``).
+        """
+        before = self._dones.get(commission_id)
+        self._dones[commission_id] = done
+        if before is not None and before is not done:
+            before.run_over.set()
 
     def _run_over_in_tree(self, session: Any, event: dict[str, Any]) -> bool:
         """Note that a run of a commission whose changes are being landed is over; False when none are.
@@ -646,7 +781,7 @@ class TreeWork:
             done = _Done(
                 text=str(event.get("text") or "") or done.text, reason=done.reason, delivery=done.delivery, sent=session.sent
             )
-            self._dones[session.commission_id] = done
+            self._replace_done(session.commission_id, done)
         session.idle = True
         done.run_over.set()
         return True
@@ -659,6 +794,9 @@ class TreeWork:
                 if done is None:
                     return
                 await done.run_over.wait()
+                if self._dones.get(commission_id) is not done:
+                    # Said anew meanwhile (it reported once more, or went on at the user's word): that one stands.
+                    continue
                 if await self._land_once(commission_id, done) != "again":
                     return
                 # More was said to it meanwhile and it is at work again: landed once that run is over.
@@ -674,6 +812,11 @@ class TreeWork:
             commission = await self._ledger.get(commission_id)
             if row is not None and commission is not None and done is not None:
                 await self._not_landed(row, commission, done, REASON_FAILED, detail="the host could not land it")
+            elif commission is not None and commission.status == "working":
+                # Its changes are landed (or left for the user), and how it ended could not be put on
+                # record: not left at work for nobody. Nothing is merged a second time.
+                await self._fail(commission_id, "what came of it could not be put on record", said="run")
+                await self._wrap_up_in_tree(commission_id)
 
     def _stale(self, commission_id: str, done: _Done) -> bool:
         """Whether a commission went on working since it said it is done: what it changed is not landed under it."""
@@ -703,6 +846,11 @@ class TreeWork:
             self._dones.pop(commission_id, None)
             return await self._not_landed(row, commission, done, REASON_FAILED, detail="its worktree is gone")
         row = await self._ledger.update_tree(row.id, state="landing") or row
+        # A task agent it started works in the same worktree, and may still be at it though the
+        # commission says it is done: stopped, as when a commission is done anywhere, and gone
+        # from its runtime before what was changed is read.
+        await self._end_what_it_started(commission_id)
+        await self._gone_from_runtime(commission_id)
         chosen = await self.landing.get()
         if chosen["inspect"] or (await self._chosen(commission_id)).get("inspect"):
             verdict, findings = await self._inspect(row, commission)
@@ -850,7 +998,8 @@ class TreeWork:
                 try:
                     await asyncio.wait_for(quiet.changed.wait(), timeout=_POLL_SECONDS)
                 except asyncio.TimeoutError:
-                    pass
+                    # Nothing was said to have changed: looked at again all the same.
+                    continue
             yield quiet
         finally:
             quiet.go.set()
@@ -923,38 +1072,23 @@ class TreeWork:
 
         commission_id = commission.id
         if result.status in ("landed", "unchanged"):
-            text = done.text
+            files, more = files_of(result.files, settings.TREE_FILES_LISTED)
+            outside = outside_of(result.files, getattr(handle, "subpath", ""))
             if result.status == "landed":
-                files, more = files_of(result.files, settings.TREE_FILES_LISTED)
-                await self._note_tree_event(
-                    commission_id,
-                    "landed",
-                    {
-                        "tree": row.id, "files": files, "more": more, "lines_added": result.lines_added,
-                        "lines_deleted": result.lines_deleted, "skipped": list(result.skipped[: settings.TREE_FILES_LISTED]),
-                        "outside": outside_of(result.files, getattr(handle, "subpath", ""))[: settings.TREE_FILES_LISTED],
-                    },
-                )
-                landed = texts.TREE_LANDED.format(
-                    project=row.project_dir, files=files_text(files, more, settings.LANDED_NOTE_MAX_TOKENS)
-                )
-                outside = outside_of(result.files, getattr(handle, "subpath", ""))
-                if outside:
-                    # A worktree is of the whole repository: what a command changed elsewhere in it
-                    # landed with the rest. Said, so that it does not go unnoticed.
-                    landed += texts.TREE_LANDED_OUTSIDE.format(
-                        files=names_text(outside, settings.TREE_FILES_LISTED, settings.LANDED_NOTE_MAX_TOKENS // 3)
-                    )
-                if result.skipped:
-                    landed += texts.TREE_LANDED_SKIPPED.format(
-                        files=names_text(result.skipped, settings.TREE_FILES_LISTED, settings.LANDED_NOTE_MAX_TOKENS // 3)
-                    )
-                text = f"{text}\n\n{landed}" if text else landed
+                await self._note_tree_event(commission_id, "landed", self._landed_payload(row, result, outside))
+            told, shown = self._landed_texts(row, commission.lang, files, more, outside, result.skipped)
+            text = "\n\n".join(part for part in (done.text, told) if part)
             self._dones.pop(commission_id, None)
-            await self._remove_tree(row, handle)
+            if result.skipped:
+                # What is never carried over (too large, or a repository of its own) is in the
+                # worktree alone: removed with it, it would be gone. Kept, for the user to see to.
+                await self._keep_for_skipped(row, result.skipped)
+            else:
+                await self._remove_tree(row, handle)
             await self._end(
-                commission_id, "done", reason=done.reason, text=text, suggested_delivery=done.delivery,
-                result_summary=self._summary(text),
+                commission_id, "done", reason=done.reason, text=text,
+                shown="\n\n".join(part for part in (done.text, shown) if part) if shown else None,
+                suggested_delivery=done.delivery, result_summary=self._summary(text),
             )
             await self._wrap_up_in_tree(commission_id)
             return "landed"
@@ -999,6 +1133,71 @@ class TreeWork:
             kept_copies=result.kept_copies,
         )
 
+    @staticmethod
+    def _landed_payload(row: Tree, result: Any, outside: list[str]) -> dict[str, Any]:
+        """Return what goes on record of a landing: the files it changed, and those among them that tell of something."""
+        from config import nekopower_settings as settings
+
+        files, more = files_of(result.files, settings.TREE_FILES_LISTED)
+        return {
+            "tree": row.id, "files": files, "more": more, "lines_added": result.lines_added,
+            "lines_deleted": result.lines_deleted,
+            # Not carried over, being too large or a repository of their own: still in the worktree.
+            "skipped": list(result.skipped[: settings.TREE_FILES_LISTED]),
+            # Changed outside the project's directory, elsewhere in its repository.
+            "outside": outside[: settings.TREE_FILES_LISTED],
+        }
+
+    def _landed_texts(
+        self, row: Tree, lang: str | None, files: list[dict[str, Any]], more: int, outside: list[str], skipped: Any
+    ) -> tuple[str, str]:
+        """Return what is told of a landing after the result of its commission: to a model, and to the user in the language of the dialogue.
+
+        Which files it changed; which of them lie outside the project's
+        directory (a worktree is of the whole repository: what a command
+        changed elsewhere in it landed with the rest, and is said so
+        that it does not go unnoticed); and which were not carried over
+        and where those are kept. Empty where there is nothing to tell.
+        """
+        from config import nekopower_settings as settings
+        from config.prompts import prompts_nekopower_brain as texts
+        from nekopower.host.task_brain import _texts
+
+        most, third = settings.TREE_FILES_LISTED, settings.LANDED_NOTE_MAX_TOKENS // 3
+        words = _texts(texts.TREE_LANDED_TEXTS, lang or "en")
+        told = shown = ""
+        if files:
+            told = texts.TREE_LANDED.format(
+                project=row.project_dir, files=files_text(files, more, settings.LANDED_NOTE_MAX_TOKENS)
+            )
+            listed = ", ".join(str(item["path"]) for item in files) + (words["more"].format(more=more) if more else "")
+            shown = words["landed"].format(files=listed)
+        if outside:
+            told += texts.TREE_LANDED_OUTSIDE.format(files=names_text(outside, most, third))
+            shown += words["outside"].format(files=", ".join(outside[:most]))
+        if skipped:
+            told += (" " if told else "") + texts.TREE_LANDED_SKIPPED.format(
+                files=names_text(skipped, most, third), path=row.workdir
+            )
+            shown += words["skipped"].format(files=", ".join(list(skipped)[:most]), path=row.workdir)
+        return told, shown.strip()
+
+    async def _keep_for_skipped(self, row: Tree, skipped: Any) -> Tree:
+        """Keep a worktree whose changes were landed but for files that are never carried over, for the user to see to."""
+        from config import nekopower_settings as settings
+
+        row = await self._ledger.update_tree(row.id, state="unlanded", reason=REASON_SKIPPED, conflicts=skipped) or row
+        self._forget_tree(row)
+        await self._note_tree_event(
+            row.commission_id,
+            "not_landed",
+            {
+                "tree": row.id, "path": row.workdir, "reason": REASON_SKIPPED,
+                "conflicts": list(skipped)[: settings.TREE_FILES_LISTED], "rounds": 0,
+            },
+        )
+        return row
+
     def _not_landed_texts(
         self, row: Tree, lang: str | None, reason: str, *, rounds: int = 0, detail: str = "",
         conflicts: Any = (), kept_copies: str = "",
@@ -1014,6 +1213,9 @@ class TreeWork:
         told = texts.TREE_NOT_LANDED.format(
             why=why, path=row.workdir, files=texts.TREE_NOT_LANDED_FILES.format(files=clashed) if clashed else ""
         )
+        if reason == REASON_ASK:
+            # Nothing went wrong: said so, lest whoever is told (a leader, of a part of its team) has it done again.
+            told = texts.TREE_HELD.format(path=row.workdir)
         words = _texts(texts.TREE_NOT_LANDED_TEXTS, lang or "en")
         shown = words[reason].format(rounds=rounds) + words["where"].format(path=row.workdir)
         if clashed:
@@ -1037,7 +1239,11 @@ class TreeWork:
         from config import nekopower_settings as settings
 
         state = "held" if reason == REASON_ASK else "unlanded"
-        row = await self._ledger.update_tree(row.id, state=state, reason=reason, conflicts=conflicts) or row
+        # (The files that clashed last stay on record where none are named now: they are looked at
+        # for markers before anything of it lands, ``_merge_or_markers``.)
+        row = await self._ledger.update_tree(
+            row.id, state=state, reason=reason, conflicts=tuple(conflicts) or row.conflicts
+        ) or row
         self._forget_tree(row)
         self._dones.pop(commission.id, None)
         payload: dict[str, Any] = {"tree": row.id, "path": row.workdir, "reason": reason}
@@ -1091,9 +1297,13 @@ class TreeWork:
         if inspection is not None and not inspection.done() and commission.status == "cancelled":
             # Stopped, which no report of its own tells of.
             inspection.set_result(("cancelled", ""))
-        if commission.parent_id in self._teams and commission.parent_id not in self._stall_watches:
-            if commission.parent_id not in self._stall_reminded:
-                self._stall_watches[commission.parent_id] = self._tree_task(self._watch_stall(commission.parent_id))
+        if commission.parent_id in self._teams and commission.parent_id not in self._stall_reminded:
+            # Anew with every one that ends: a watch that looked while this one was still at work
+            # does not stand for the one that looks after it.
+            earlier = self._stall_watches.pop(commission.parent_id, None)
+            if earlier is not None:
+                earlier.cancel()
+            self._stall_watches[commission.parent_id] = self._tree_task(self._watch_stall(commission.parent_id))
         if commission.id in self._tree_of:
             self._tree_task(self._tree_left(commission))
 
@@ -1118,9 +1328,13 @@ class TreeWork:
         self._forget_tree(row)
         if row.state not in _AT_WORK:
             return
+        # Its run is being stopped, and may be finishing a write: looked at once it is gone.
+        await self._gone_from_runtime(commission.id)
         handle = await self._handle_of(row)
         try:
             changed = handle is not None and await self.worktrees.has_changes(handle)
+            if handle is None and not await self._tree_is_gone(row):
+                changed = True  # there, and not to be opened this moment: kept
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - kept: it may hold something
@@ -1164,19 +1378,21 @@ class TreeWork:
         """Take a worktree the user decides on in hand, one decision at a time; raises as the three methods below say."""
         if tree_id in self._trees_in_hand:
             raise ValueError("busy")
-        row = await self._ledger.get_tree(tree_id)
-        if row is None:
-            raise LookupError(tree_id)
-        if row.state not in states:
-            raise ValueError("at_work")
-        if tree_id in self._trees_in_hand:
-            # Taken in hand while the ledger was read.
-            raise ValueError("busy")
+        # In hand before anything is awaited: a commission that is taken up again meanwhile
+        # waits for this, and reads the worktree as this leaves it (``_tree_to_work_in``).
         self._trees_in_hand.add(tree_id)
         try:
+            row = await self._ledger.get_tree(tree_id)
+            if row is None:
+                raise LookupError(tree_id)
+            if row.state not in states or tree_id in self._tree_of.values():
+                raise ValueError("at_work")
+            if row.commission_id:
+                self._decided_for[tree_id] = row.commission_id
             yield row
         finally:
             self._trees_in_hand.discard(tree_id)
+            self._decided_for.pop(tree_id, None)
 
     async def land_tree(self, tree_id: str) -> dict[str, Any]:
         """Land a worktree the user decides on, as the user asks: once more, or for the first time where the user is asked first.
@@ -1193,17 +1409,15 @@ class TreeWork:
         ``ValueError("at_work")`` for one whose commission is under
         way, ``ValueError("busy")`` while another decision on it is
         carried out, ``ValueError("gone")`` when its directory is not
-        there any more (it can be discarded).
+        there any more (it can be discarded), ``ValueError("not_opened")``
+        when it is there and git cannot open it this moment (asked
+        again later).
         """
-        from config import nekopower_settings as settings
-        from config.prompts import prompts_nekopower_brain as texts
-        from nekopower.host.task_agents import _Found
-        from nekopower.host.worktrees import WorktreeError
-
         async with self._tree_in_hand(tree_id, TREE_STATES_LEFT) as row:
             handle = await self._handle_of(row)
             if handle is None:
-                raise ValueError("gone")
+                # Gone, or there and not to be opened this moment (asked again later).
+                raise ValueError("gone" if await self._tree_is_gone(row) else "not_opened")
             was = row
             row = await self._ledger.update_tree(row.id, state="landing") or row
             try:
@@ -1211,84 +1425,112 @@ class TreeWork:
             except BaseException:
                 await asyncio.shield(self._ledger.update_tree(row.id, state=was.state, rounds=was.rounds, checks=was.checks))
                 raise
-            commission = await self._ledger.get(row.commission_id) if row.commission_id else None
-            answer: dict[str, Any] = {
-                "status": result.status, "files": [], "more": 0, "conflicts": [], "resolving": False, "detail": result.detail,
-            }
-            if result.status in ("landed", "unchanged"):
-                files, more = files_of(result.files, settings.TREE_FILES_LISTED)
-                answer.update(files=files, more=more)
+            try:
+                return await self._landed_at_the_users_word(tree_id, row, handle, result)
+            except BaseException:
+                # What follows the merge was cut off or failed: one still on record as being landed
+                # is the user's to decide on again, and does not stay so until the host starts anew.
+                await asyncio.shield(self._ledger.update_tree(row.id, was=("landing",), state="unlanded", reason=REASON_FAILED))
+                raise
+
+    async def _landed_at_the_users_word(self, tree_id: str, row: Tree, handle: Any, result: Any) -> dict[str, Any]:
+        """Act on what a merge the user asked for came to; returns what ``land_tree`` answers."""
+        from config import nekopower_settings as settings
+        from config.prompts import prompts_nekopower_brain as texts
+        from nekopower.host.task_agents import _Found
+        from nekopower.host.worktrees import WorktreeError
+
+        commission = await self._ledger.get(row.commission_id) if row.commission_id else None
+        answer: dict[str, Any] = {
+            "status": result.status, "files": [], "more": 0, "conflicts": [], "resolving": False, "detail": result.detail,
+        }
+        if result.status in ("landed", "unchanged"):
+            files, more = files_of(result.files, settings.TREE_FILES_LISTED)
+            outside = outside_of(result.files, getattr(handle, "subpath", ""))
+            answer.update(
+                files=files, more=more, outside=outside[: settings.TREE_FILES_LISTED],
+                skipped=list(result.skipped[: settings.TREE_FILES_LISTED]),
+            )
+            if result.status == "landed" or not result.skipped:
                 await self._note_tree_event(
-                    row.commission_id,
-                    "landed",
-                    {
-                        "tree": row.id, "files": files, "more": more, "lines_added": result.lines_added,
-                        "lines_deleted": result.lines_deleted, "skipped": list(result.skipped[: settings.TREE_FILES_LISTED]),
-                        "by": "user",
-                    },
+                    row.commission_id, "landed", {**self._landed_payload(row, result, outside), "by": "user"}
                 )
+            if result.skipped:
+                # Landed, but for what is never carried over: that stays where it is, with the worktree.
+                await self._keep_for_skipped(row, result.skipped)
+            else:
                 await self._remove_tree(row, handle)
-                if commission is not None and commission.status == "blocked":
-                    text = (
-                        texts.TREE_LANDED_LATER.format(files=files_text(files, more, settings.LANDED_NOTE_MAX_TOKENS))
-                        if files
-                        else texts.TREE_LANDED_LATER_NOTHING
-                    )
-                    moved = await self._ledger.transition(
-                        commission.id, "working", reason="the user had what it changed landed", only_from=("blocked",)
-                    )
-                    if moved.applied:
+            if commission is not None and commission.status == "blocked":
+                text = (
+                    texts.TREE_LANDED_LATER.format(files=files_text(files, more, settings.LANDED_NOTE_MAX_TOKENS))
+                    if files
+                    else texts.TREE_LANDED_LATER_NOTHING
+                )
+                moved = await self._ledger.transition(
+                    commission.id, "working", reason="the user had what it changed landed", only_from=("blocked",)
+                )
+                if moved.applied:
+                    try:
                         await self._end(
                             commission.id, "done", reason="what it changed was landed at the user's word", text=text,
                             result_summary=self._summary(text),
                         )
-                        await self._settle_after_decision(commission)
-                return answer
-            if result.status == "conflict":
-                answer["conflicts"] = list(result.conflicts[: settings.TREE_FILES_LISTED])
-                taker = await self._ledger.get_session(commission.session_id) if commission is not None else None
-                if (
-                    commission is not None
-                    and commission.status == "blocked"
-                    and taker is not None
-                    and await self._ledger.session_alive(taker)
-                ):
-                    try:
-                        if result.detail != _MARKERS_LEFT:
-                            handle = await self.worktrees.prepare_conflicts(handle, result)
-                    except (WorktreeError, OSError) as exc:
-                        await self._ledger.update_tree(
-                            row.id, state="unlanded", reason=REASON_FAILED, conflicts=result.conflicts
-                        )
-                        answer.update(status="failed", detail=str(exc))
-                        return answer
-                    self._tree_handles[row.id] = handle
-                    await self._ledger.update_tree(
-                        row.id, state="resolving", rounds=1, conflicts=result.conflicts, token=handle.token, reason=""
-                    )
-                    await self._note_tree_event(
-                        commission.id,
-                        "landing_conflict",
-                        {"tree": row.id, "conflicts": answer["conflicts"], "round": 1, "by": "user"},
-                    )
-                    said = _Found(
-                        texts.TREE_TRY_AGAIN
-                        + "\n\n"
-                        + (texts.TREE_MARKERS_LEFT if result.detail == _MARKERS_LEFT else texts.TREE_CONFLICT).format(
-                            files=names_text(result.conflicts, settings.TREE_FILES_LISTED, settings.LANDED_NOTE_MAX_TOKENS),
-                            round=1,
-                            rounds=settings.LANDING_CONFLICT_ROUNDS,
-                        )
-                    )
-                    if await self._take_up_again(commission.id, said):
-                        answer["resolving"] = True
-                        return answer
-                await self._ledger.update_tree(row.id, state="unlanded", reason=REASON_CONFLICT, conflicts=result.conflicts)
-                return answer
-            await self._ledger.update_tree(row.id, state="unlanded", reason=REASON_FAILED)
-            if result.kept_copies:
-                answer["kept_copies"] = result.kept_copies
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:  # noqa: BLE001 - its changes are landed; it is not left at work for nobody
+                        logger.exception("commission %s could not be put down as done after its landing", commission.id)
+                        await self._fail(commission.id, "what came of it could not be put on record", said="run")
+                    await self._settle_after_decision(commission)
             return answer
+        if result.status == "conflict":
+            answer["conflicts"] = list(result.conflicts[: settings.TREE_FILES_LISTED])
+            taker = await self._ledger.get_session(commission.session_id) if commission is not None else None
+            if (
+                commission is not None
+                # (One that failed is taken up again as one that is stuck is: left by a host
+                # that ended under it, or by a run that stopped on an error.)
+                and commission.status in ("blocked", "failed")
+                and taker is not None
+                and await self._ledger.session_alive(taker)
+            ):
+                try:
+                    if result.detail != _MARKERS_LEFT:
+                        handle = await self.worktrees.prepare_conflicts(handle, result)
+                except (WorktreeError, OSError) as exc:
+                    await self._ledger.update_tree(
+                        row.id, state="unlanded", reason=REASON_FAILED, conflicts=result.conflicts
+                    )
+                    answer.update(status="failed", detail=str(exc))
+                    return answer
+                self._tree_handles[row.id] = handle
+                await self._ledger.update_tree(
+                    row.id, state="resolving", rounds=1, conflicts=result.conflicts, token=handle.token, reason=""
+                )
+                await self._note_tree_event(
+                    commission.id,
+                    "landing_conflict",
+                    {"tree": row.id, "conflicts": answer["conflicts"], "round": 1, "by": "user"},
+                )
+                said = _Found(
+                    texts.TREE_TRY_AGAIN
+                    + "\n\n"
+                    + (texts.TREE_MARKERS_LEFT if result.detail == _MARKERS_LEFT else texts.TREE_CONFLICT).format(
+                        files=names_text(result.conflicts, settings.TREE_FILES_LISTED, settings.LANDED_NOTE_MAX_TOKENS),
+                        round=1,
+                        rounds=settings.LANDING_CONFLICT_ROUNDS,
+                    )
+                )
+                # (Out of hand from here: its commission goes on in it, ``_tree_to_work_in``.)
+                self._trees_in_hand.discard(tree_id)
+                if await self._take_up_again(commission.id, said):
+                    answer["resolving"] = True
+                    return answer
+            await self._ledger.update_tree(row.id, state="unlanded", reason=REASON_CONFLICT, conflicts=result.conflicts)
+            return answer
+        await self._ledger.update_tree(row.id, state="unlanded", reason=REASON_FAILED)
+        if result.kept_copies:
+            answer["kept_copies"] = result.kept_copies
+        return answer
 
     async def _settle_after_decision(self, commission: Commission) -> None:
         """Write where the session of a commission stands that the user's decision on its worktree ended.
@@ -1349,6 +1591,16 @@ class TreeWork:
         (``WorktreeManager.reconcile``): removed where they hold
         nothing, put on record for the user where they do.
         """
+        self._trees_looking += 1
+        try:
+            while self._trees_making and not self._closed:
+                # One is being made, on record or about to be: gone through once it stands.
+                await asyncio.sleep(_POLL_SECONDS)
+            return await self._reconcile_trees_now()
+        finally:
+            self._trees_looking -= 1
+
+    async def _reconcile_trees_now(self) -> dict[str, list[str]]:
         from nekopower.host.worktrees import GitError, WorktreeError, WorktreeUnavailable
 
         removed: list[str] = []
@@ -1356,31 +1608,43 @@ class TreeWork:
         homes: dict[str, tuple[str, str | None]] = {}
         for row in await self._ledger.trees():
             homes.setdefault(os.path.normcase(os.path.normpath(row.project_dir)), (row.project_dir, row.project))
-            if row.id in self._trees_mine:
+            if row.id in self._trees_mine or row.id in self._trees_in_hand or row.id in self._tree_of.values():
                 continue
-            handle = await self._handle_of(row)
-            if handle is None:
-                self._forget_tree(row)
-                await self._ledger.drop_tree(row.id)
-                removed.append(row.id)
-                continue
+            # In hand from here on, with nothing awaited since the look above: a commission that is
+            # taken up again meanwhile waits for this before it goes on in its worktree
+            # (``_tree_to_work_in``), and finds it as this leaves it.
+            self._trees_in_hand.add(row.id)
             try:
-                changed = await self.worktrees.has_changes(handle)
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001 - kept: it may hold something
-                changed = True
-            if not changed:
-                await self._remove_tree(row, handle)
-                removed.append(row.id)
-            elif row.state in _AT_WORK:
-                await self._ledger.update_tree(row.id, state="unlanded", reason=REASON_RESTART)
-                await self._note_tree_event(
-                    row.commission_id, "not_landed", {"tree": row.id, "path": row.workdir, "reason": REASON_RESTART}
-                )
-                kept.append(row.id)
-            else:
-                kept.append(row.id)
+                handle = await self._handle_of(row)
+                if handle is None and not await self._tree_is_gone(row):
+                    # There, and not to be opened this moment (git did not answer): left on record
+                    # as it is, and looked at when the host next starts.
+                    kept.append(row.id)
+                    continue
+                if handle is None:
+                    self._forget_tree(row)
+                    await self._ledger.drop_tree(row.id)
+                    removed.append(row.id)
+                    continue
+                try:
+                    changed = await self.worktrees.has_changes(handle)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - kept: it may hold something
+                    changed = True
+                if not changed:
+                    await self._remove_tree(row, handle)
+                    removed.append(row.id)
+                elif row.state in _AT_WORK:
+                    await self._ledger.update_tree(row.id, state="unlanded", reason=REASON_RESTART)
+                    await self._note_tree_event(
+                        row.commission_id, "not_landed", {"tree": row.id, "path": row.workdir, "reason": REASON_RESTART}
+                    )
+                    kept.append(row.id)
+                else:
+                    kept.append(row.id)
+            finally:
+                self._trees_in_hand.discard(row.id)
         if self._space is not None:
             try:
                 for project in await self._space.list_projects(include_archived=False):
@@ -1435,8 +1699,9 @@ class TreeWork:
         the commission (what it uses is the commission's), which works
         in the worktree itself. Told by how it reports and not by its
         words: ``ready`` passes, ``blocked`` says something is wrong
-        with the work, anything else (``failed``, stopped, not started)
-        is no verdict, and the changes land as if nobody had looked.
+        with the work, anything else (``failed``, stopped, not started,
+        ended without a report) is no verdict, and the changes land as
+        if nobody had looked.
         """
         from config import nekopower_settings as settings
         from config.prompts import prompts_nekopower_brain as texts
@@ -1479,7 +1744,8 @@ class TreeWork:
         finally:
             self._inspections.pop(child.id, None)
         if status == "completed":
-            return CHECK_PASSED, said
+            # (Done by a report, or by a run that ended without one: only the first says it passes.)
+            return (CHECK_PASSED if await self._ledger.has_event(child.id, "report") else CHECK_NONE), said
         if status == "blocked":
             return CHECK_FAILED, said
         return CHECK_NONE, said
@@ -1600,6 +1866,16 @@ class TreeWork:
                         "tool": "start_team",
                         "title": "; ".join(members),
                         "members": members,
+                        # The same, apart: for a page that names a preset in its own words.
+                        "parts": [
+                            {
+                                "preset": part["preset"],
+                                "description": truncate_to_tokens(
+                                    part["description"], settings.TEAM_ASK_MEMBERS_MAX_TOKENS
+                                ),
+                            }
+                            for part in writers
+                        ],
                         "count": len(writers),
                         "tree": True,
                     },
@@ -1615,7 +1891,7 @@ class TreeWork:
                     raise RuntimeError(texts.HANDED_OVER_ALREADY)
                 self._team_allowed.add(commission_id)
         inspect = bool(payload.get("inspect"))
-        started: list[dict[str, Any]] = []
+        taken: list[dict[str, Any]] = []
         refused: list[tuple[str, str]] = []
         for part in parts:
             chosen: dict[str, Any] = {"team": True}
@@ -1631,9 +1907,13 @@ class TreeWork:
             except RuntimeError as exc:
                 refused.append((str(part["name"] or part["description"]), str(exc)))
                 continue
-            started.append(
-                {"name": name, "preset": part["preset"], "commission_id": child.id, "writes": part["writes"]}
-            )
+            taken.append({"name": name, "preset": part["preset"], "commission_id": child.id, "writes": part["writes"]})
+        # Taken is not started: one for which no worktree could be made after all is not one of the team.
+        without = await self._got_no_tree(
+            [item["commission_id"] for item in taken if item["writes"]], settings.TEAM_START_WAIT_SECONDS
+        )
+        started = [item for item in taken if item["commission_id"] not in without]
+        refused.extend((item["name"], without[item["commission_id"]]) for item in taken if item["commission_id"] in without)
         if started:
             self._teams.add(commission_id)
             await self._note_tree_event(commission_id, "team_formed", {"members": started, "inspect": inspect})
@@ -1645,6 +1925,31 @@ class TreeWork:
                 names=", ".join(name for name, _why in refused), reason=refused[0][1]
             )
         return {"message": message, "started": [item["name"] for item in started]}
+
+    async def _got_no_tree(self, commission_ids: list[str], seconds: float) -> dict[str, str]:
+        """Wait until each of a team's task agents has its worktree or is over; return why, for those that got none.
+
+        No longer than ``seconds``: one still being started by then
+        counts as started, and its parent hears of it as of any that
+        fails.
+        """
+        deadline = time.monotonic() + seconds
+        without: dict[str, str] = {}
+        waiting = list(commission_ids)
+        while waiting and not self._closed:
+            for item in list(waiting):
+                if item in self._tree_of:
+                    waiting.remove(item)
+                    continue
+                stands = await self._ledger.get(item)
+                if stands is None or stands.status in ENDED_STATUSES:
+                    waiting.remove(item)
+                    if stands is not None and await self._ledger.has_event(item, "tree_not_made"):
+                        without[item] = stands.status_reason or "no worktree could be made for it"
+            if not waiting or time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(_POLL_SECONDS)
+        return without
 
     async def _team_still_at_work(self, session_id: str, payload: dict[str, Any]) -> None:
         """Raise when a leader reports a commission done while task agents of the team it started for it are still at work.
@@ -1660,7 +1965,10 @@ class TreeWork:
         from nekopower.host.task_agents import _STILL_WORKING
 
         commission_id = self._at_work_in(session_id)
-        if commission_id not in self._teams or payload.get("status") != "ready":
+        if payload.get("status") != "ready":
+            return
+        if commission_id not in self._teams and not await self._ledger.has_event(commission_id, "team_formed"):
+            # (By what is on record as well: a host started since knows of no team it started.)
             return
         working = await self._ledger.select(parent_id=commission_id, statuses=_STILL_WORKING, oldest_first=True)
         if working:

@@ -775,6 +775,11 @@
                 ? detail.tier
                 : I.IDLE_DOCK_TIER_NONE;
 
+            if (I.isIdleDockPlaygroundBlocked()) {
+                I.suspendIdleDockForPlayground();
+                return;
+            }
+
             var overlay = I.getOverlay();
             if (!overlay || overlay.hidden || I.isElectronChatWindow()) return;
 
@@ -816,6 +821,11 @@
                 I.idleDockTier = currentTier === I.IDLE_DOCK_TIER_CAT2 || currentTier === I.IDLE_DOCK_TIER_CAT3
                     ? currentTier
                     : I.IDLE_DOCK_TIER_NONE;
+            }
+
+            if (I.isIdleDockPlaygroundBlocked()) {
+                I.suspendIdleDockForPlayground();
+                return;
             }
 
             var overlay = I.getOverlay();

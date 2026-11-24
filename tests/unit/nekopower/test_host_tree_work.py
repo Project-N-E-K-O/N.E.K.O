@@ -30,7 +30,7 @@ import asyncio
 import dataclasses
 import json
 import shutil
-import subprocess
+import types
 import uuid
 from pathlib import Path
 from typing import Any
@@ -48,7 +48,6 @@ from nekopower.host.worktrees import (
     ReconcileReport,
     Worktree,
     WorktreeError,
-    WorktreeManager,
     WorktreeUnavailable,
 )
 from tests.unit.nekopower.fakes import ScriptedLLM, call, finish, say
@@ -93,6 +92,17 @@ class FakeTrees:
     def __init__(self) -> None:
         self.unusable: str | None = None
         self.fail_create: Exception | None = None
+        # Which makings fail so, counted from one; every one when none is named.
+        self.fail_creates: set[int] = set()
+        self.creates = 0
+        # Set once a worktree is being made, which waits for ``create_gate`` when there is one.
+        self.creating = asyncio.Event()
+        self.create_gate: asyncio.Event | None = None
+        # Whether a worktree that is there cannot be opened this moment (git does not answer).
+        self.fail_open = False
+        # Set once a worktree is being opened, which waits for ``open_gate`` when there is one.
+        self.opening = asyncio.Event()
+        self.open_gate: asyncio.Event | None = None
         # What the next merges come to; one that is not said copies the files and says ``landed``.
         self.results: list[Any] = []
         self.gate: asyncio.Event | None = None
@@ -103,6 +113,9 @@ class FakeTrees:
         self.removed: list[str] = []
         self.left_over: list[Path] = []
         self.reconciled: list[str] = []
+        # Set once a worktree is looked at for changes, which waits for ``changes_gate`` when there is one.
+        self.checking = asyncio.Event()
+        self.changes_gate: asyncio.Event | None = None
 
     async def probe(self, directory: Any) -> Probe:
         if self.unusable is not None:
@@ -111,7 +124,11 @@ class FakeTrees:
 
     async def create(self, project_dir: Any, path: Any, start: Any = None) -> Worktree:
         del start
-        if self.fail_create is not None:
+        self.creates += 1
+        self.creating.set()
+        if self.create_gate is not None:
+            await self.create_gate.wait()
+        if self.fail_create is not None and (not self.fail_creates or self.creates in self.fail_creates):
             raise self.fail_create
         Path(path).mkdir(parents=True)
         self.made.append(Path(path))
@@ -120,9 +137,17 @@ class FakeTrees:
     async def open(self, project_dir: Any, path: Any) -> Worktree:
         if not Path(path).is_dir():
             raise WorktreeError(f"{path} is not a worktree")
+        self.opening.set()
+        if self.open_gate is not None:
+            await self.open_gate.wait()
+        if self.fail_open:
+            raise WorktreeError("git did not answer")
         return Worktree(Path(path).name, Path(project_dir), Path(path), "", "start", "")
 
     async def has_changes(self, worktree: Worktree) -> bool:
+        self.checking.set()
+        if self.changes_gate is not None:
+            await self.changes_gate.wait()
         return worktree.path.is_dir() and any(worktree.path.iterdir())
 
     async def merge_back(self, worktree: Worktree, landing: Any = None) -> MergeResult:
@@ -429,15 +454,13 @@ async def test_a_project_has_no_more_worktrees_than_it_may(hosts, tmp_path, monk
 
 
 async def test_a_member_in_a_worktree_writes_there_and_not_in_its_projects_directory(hosts, tmp_path):
-    kept: dict[str, Any] = {}
-
-    def into_the_project() -> list[Any]:
-        return _write(str(kept["workdir"] / "links.txt"), "straight into the project")
-
+    # (Where the project's directory will be: known before anybody is at work.)
+    there = tmp_path / "Shop site-files"
     host, trees, workdir, one, two, members = await _two_members(
-        hosts, tmp_path, [into_the_project, _write("links.txt", "in my own"), _report("links repaired")]
+        hosts, tmp_path,
+        [_write(str(there / "links.txt"), "straight into the project"), _write("links.txt", "in my own"), _report("links repaired")],
     )
-    kept["workdir"] = workdir
+    assert workdir == there
     host.release.set()
     await wait_status(host, two.commission_id, "done")
 
@@ -486,12 +509,10 @@ async def test_nobody_writes_in_the_worktree_of_another_and_what_is_there_is_rea
 
 
 async def test_a_task_agent_a_member_in_a_worktree_starts_works_there_with_it(hosts, tmp_path):
-    kept: dict[str, Any] = {}
-
-    def into_the_project() -> list[Any]:
-        return _write(str(kept["workdir"] / "styles.css"), "straight into the project")
-
-    helper = ScriptedLLM([into_the_project, _write("styles.css", "tidy"), _report("styles tidied")])
+    there = tmp_path / "Shop site-files"
+    helper = ScriptedLLM([
+        _write(str(there / "styles.css"), "straight into the project"), _write("styles.css", "tidy"), _report("styles tidied"),
+    ])
     host, trees, workdir, one, two, members = await _two_members(
         hosts, tmp_path,
         second=[
@@ -501,7 +522,7 @@ async def test_a_task_agent_a_member_in_a_worktree_starts_works_there_with_it(ho
         ],
         **{"PART-STYLES": helper},
     )
-    kept["workdir"] = workdir
+    assert workdir == there
     host.release.set()
     done = await wait_status(host, two.commission_id, "done")
 
@@ -540,13 +561,15 @@ async def test_a_commission_whose_worktree_is_gone_when_it_is_taken_up_again_get
 # ---------------------------------------------------------------------------
 
 
-async def test_a_landing_waits_until_whoever_works_in_the_directory_is_between_two_steps(hosts, tmp_path):
+@pytest.mark.parametrize("tool", [("glob", {"pattern": "*.html"}), ("list_agents", {})], ids=["a file tool", "a tool nobody rules on"])
+async def test_a_landing_waits_until_whoever_works_in_the_directory_is_between_two_steps(hosts, tmp_path, tool):
     host, trees, workdir, one, two, members = await _two_members(
         hosts, tmp_path,
         second=[_write("links.txt", "repaired"), _report("links repaired")],
-        # (Its first request: it is in the middle of a step until it is let go on, and then looks for files.)
+        # (Its first request: it is in the middle of a step until it is let go on, and then uses a tool:
+        # one the host rules on, or one it is not asked about, which is held before the next request.)
         first=lambda wait: [
-            [wait, call("glob", {"pattern": "*.html"}), finish("tool_calls")], [say("going on"), finish("stop")],
+            [wait, call(*tool), finish("tool_calls")], [say("going on"), finish("stop")],
         ],
     )
     trees.gate = asyncio.Event()
@@ -630,8 +653,13 @@ async def test_after_three_tries_the_changes_stay_in_the_worktree_and_the_user_d
     elsewhere.mkdir()
     with pytest.raises(ProjectBusy, match="tree_not_landed"):
         await host.set_project_workdir("Shop site", str(elsewhere))
+    # Nor is it put away meanwhile, and that says why as well.
+    with pytest.raises(ProjectBusy, match="tree_not_landed"):
+        await host.archive_project("Shop site")
     listed = await host.worktrees(project="Shop site")
     assert [(item["id"], item["state"], item["title"]) for item in listed] == [(tree.id, "unlanded", stuck.title)]
+    # What this process made is not gone through as something an earlier one left.
+    assert await host.task_agents.reconcile_trees() == {"removed": [], "kept": []}
     # What the user is shown is in the language of the dialogue.
     words = brain_texts.TREE_NOT_LANDED_TEXTS
     assert set(words) == {"zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"}
@@ -722,8 +750,10 @@ async def test_asked_first_nothing_lands_until_the_user_says_so(hosts, tmp_path)
         "broken links": ScriptedLLM([_write("links.txt", "repaired"), _report("links repaired")]),
     }
     host, trees, workdir = await _shop(hosts, tmp_path, _by_role(leader_llm, members))
-    assert await host.landing_settings() == {"mode": "auto", "inspect": False}
-    assert await host.set_landing_settings(mode="ask") == {"mode": "ask", "inspect": False}
+    # (With how many worktrees a project may have, which is no setting of the user's: for a page to say so.)
+    most = settings.WORKTREES_PER_PROJECT
+    assert await host.landing_settings() == {"mode": "auto", "inspect": False, "worktrees_per_project": most}
+    assert await host.set_landing_settings(mode="ask") == {"mode": "ask", "inspect": False, "worktrees_per_project": most}
     for wrong, code in (({"mode": "later"}, "bad_mode"), ({"inspect": "yes"}, "bad_inspect")):
         with pytest.raises(ValueError, match=code):
             await host.set_landing_settings(**wrong)
@@ -736,7 +766,8 @@ async def test_asked_first_nothing_lands_until_the_user_says_so(hosts, tmp_path)
     assert (tree.state, tree.reason) == ("held", "ask") and trees.merged == []
     assert not (workdir / "links.txt").exists()
     assert await _events(host, two.commission_id, "landing_held") and not await _events(host, two.commission_id, "not_landed")
-    assert held.result_summary.startswith("links repaired") and "the user is asked before anything is merged" in held.result_summary
+    assert held.result_summary.startswith("links repaired")
+    assert "nothing is merged into the project's directory before the user says so" in held.result_summary
     await wait_until(lambda: host.task_agents._held_by == {}, what="every session being let go")
     cards = {card["id"]: card for card in (await host.board())["projects"][0]["members"]}
     assert (cards[tree.session_id]["state"], cards[tree.session_id]["tree"]["state"]) == ("held", "held")
@@ -776,9 +807,15 @@ async def test_a_task_agent_stopped_at_work_leaves_what_it_changed_for_the_user(
 
 
 async def test_a_commission_taken_up_again_goes_on_in_the_worktree_it_left(hosts, tmp_path):
+    more = asyncio.Event()
+
+    async def wait() -> None:
+        await more.wait()
+
     host, trees, workdir, one, two, members = await _two_members(
         hosts, tmp_path,
-        second=[_write("links.txt", "half"), _report("which pages?", status="blocked"), _write("more.txt"), _report("all of them")],
+        second=[_write("links.txt", "half"), _report("which pages?", status="blocked"),
+                [wait, *_write("more.txt")], _report("all of them")],
     )
     host.release.set()
     await wait_status(host, two.commission_id, "blocked")
@@ -787,6 +824,13 @@ async def test_a_commission_taken_up_again_goes_on_in_the_worktree_it_left(hosts
     assert (tree.state, tree.reason) == ("unlanded", "stopped")
 
     assert await host.tell(two.commission_id, "every page")
+    await wait_until(lambda: len(members["broken links"].requests) == 3, what="it being at work again")
+    # At work in it again, and on record so: no longer the user's to decide on.
+    again = await host.ledger.get_tree(tree.id)
+    assert (again.state, again.reason, again.session_id) == ("active", "", tree.session_id)
+    with pytest.raises(ValueError, match="at_work"):
+        await host.land_worktree(tree.id)
+    more.set()
     done = await wait_status(host, two.commission_id, "done")
 
     # The same worktree, with what it had changed before: both files landed.
@@ -1072,11 +1116,16 @@ async def test_one_decision_on_a_worktree_at_a_time_and_none_on_one_that_is_gone
     (tree,) = await host.ledger.trees()
     trees.gate = asyncio.Event()
     trees.merging.clear()
+    # (As if an earlier process had made it.)
+    host.task_agents._trees_mine.clear()
     landing = asyncio.ensure_future(host.land_worktree(tree.id))
     await asyncio.wait_for(trees.merging.wait(), 10)
     for decide in (host.land_worktree, host.discard_worktree, host.keep_worktree):
         with pytest.raises(ValueError, match="busy"):
             await decide(tree.id)
+    # Nor is it gone through meanwhile as one that was left at work.
+    assert await host.task_agents.reconcile_trees() == {"removed": [], "kept": []}
+    assert (await host.ledger.get_tree(tree.id)).state == "landing"
     trees.results = [MergeResult("failed", detail="the disk is full")]
     trees.gate.set()
     answer = await landing
@@ -1139,7 +1188,8 @@ async def test_every_new_kind_of_timeline_entry_says_what_a_page_shows(tmp_path)
         )
         said = [
             ("landed", {"tree": "abc", "files": [{"path": "a.txt", "status": "added", "added": 1, "deleted": 0}, "x"],
-                        "more": 2, "lines_added": 1, "lines_deleted": 0, "skipped": ["big.bin"], "outside": [], "by": "user"}),
+                        "more": 2, "lines_added": 1, "lines_deleted": 0, "skipped": ["big.bin"],
+                        "outside": ["tools/build.py", 5], "by": "user"}),
             ("landing_conflict", {"tree": "abc", "conflicts": ["a.txt", 7], "round": 2}),
             ("not_landed", {"tree": "abc", "path": "C:/wt/abc", "reason": "conflict", "conflicts": ["a.txt"], "rounds": 3,
                             "detail": "secret detail", "left_changed": [], "kept_copies": ""}),
@@ -1167,7 +1217,7 @@ async def test_every_new_kind_of_timeline_entry_says_what_a_page_shows(tmp_path)
     assert set(entries) <= set(TIMELINE_KINDS) and "tree_made" not in entries and "member_made" not in entries
     assert entries["landed"]["detail"] == {
         "tree": "abc", "files": [{"path": "a.txt", "status": "added", "added": 1, "deleted": 0}], "more": 2,
-        "lines_added": 1, "lines_deleted": 0, "by_user": True,
+        "lines_added": 1, "lines_deleted": 0, "outside": ["tools/build.py"], "skipped": ["big.bin"], "by_user": True,
     }
     assert entries["landing_conflict"]["detail"] == {"tree": "abc", "conflicts": ["a.txt"], "round": 2, "by_user": False}
     assert entries["not_landed"]["detail"] == {
@@ -1227,6 +1277,153 @@ async def test_a_member_that_only_reads_gets_no_worktree_beside_another(hosts, t
     scout = await host.ledger.get_session(done.session_id)
     assert (scout.preset, scout.seat) == ("scout", "") and trees.made == [] and done.workdir == str(workdir)
     assert await _events(host, two.commission_id, "tree_not_made") == []
+
+
+@pytest.mark.parametrize("merged", ["some of it", "nothing else"])
+async def test_what_is_never_carried_over_stays_in_its_worktree_for_the_user(hosts, tmp_path, merged):
+    host, trees, workdir, one, two, _members = await _two_members(
+        hosts, tmp_path, second=[_write("links.txt", "repaired"), _report("links repaired")]
+    )
+    left = ("video.mp4", "vendor/")
+    if merged == "some of it":
+        trees.results = [MergeResult("landed", files=(FileChange("links.txt", "added", 1, 0),), lines_added=1, skipped=left)]
+    else:
+        trees.results = [MergeResult("unchanged", skipped=left)]
+    host.release.set()
+    done = await wait_status(host, two.commission_id, "done")
+
+    # The commission is done, and the worktree is kept: removed, what was not carried over would be gone.
+    (tree,) = await host.ledger.trees()
+    assert (tree.state, tree.reason, tree.conflicts) == ("unlanded", "skipped", left)
+    assert trees.removed == [] and Path(tree.path).is_dir() and two.commission_id not in host.task_agents._tree_of
+    assert "Not merged, being too large or a repository of their own: video.mp4, vendor/" in done.result_summary
+    assert tree.workdir in done.result_summary
+    assert ("Merged into the project's directory" in done.result_summary) == (merged == "some of it")
+    landed = await _events(host, two.commission_id, "landed")
+    assert [item["skipped"] for item in landed] == ([list(left)] if merged == "some of it" else [])
+    (kept,) = await _events(host, two.commission_id, "not_landed")
+    assert (kept["reason"], kept["conflicts"], kept["path"]) == ("skipped", list(left), tree.workdir)
+    # What the user is shown says so in the language of the dialogue.
+    _told, shown = host.task_agents._landed_texts(
+        tree, "zh", [{"path": "links.txt", "status": "added", "added": 1, "deleted": 0}], 2, ["tools/x.py"], left
+    )
+    assert shown.startswith("已合回项目目录：links.txt 等另外 2 个") and "其中在项目目录以外（仓库里别处）：tools/x.py" in shown
+    assert f"有文件没合回（太大，或者本身是一个仓库）：video.mp4, vendor/。它们留在：{tree.workdir}" in shown
+    assert set(brain_texts.TREE_LANDED_TEXTS) == set(brain_texts.TREE_NOT_LANDED_TEXTS)
+    assert len({frozenset(words) for words in brain_texts.TREE_LANDED_TEXTS.values()}) == 1
+
+    # Tried again at the user's word, what is left is still not carried over: it stays, until it is discarded.
+    trees.results = [MergeResult("unchanged", skipped=("video.mp4",))]
+    answer = await host.land_worktree(tree.id)
+    assert (answer["status"], answer["skipped"]) == ("unchanged", ["video.mp4"])
+    (tree,) = await host.ledger.trees()
+    assert (tree.state, tree.reason, tree.conflicts) == ("unlanded", "skipped", ("video.mp4",)) and trees.removed == []
+    assert len(await _events(host, two.commission_id, "landed")) == len(landed)
+    assert await host.discard_worktree(tree.id) == {"removed": True}
+    assert (await host.ledger.get(two.commission_id)).status == "done" and await host.ledger.trees() == []
+
+
+async def test_what_the_user_allows_during_a_landing_is_done_once_it_is_through(hosts, tmp_path):
+    hold = asyncio.Event()
+
+    async def until_asked() -> None:
+        await hold.wait()
+
+    outside = tmp_path / "outside.txt"
+    host, trees, workdir, one, two, members = await _two_members(
+        hosts, tmp_path,
+        second=[_write("links.txt", "repaired"), [until_asked, *_report("links repaired")]],
+        # Writing outside its directory is asked about: it waits for the user in the middle of a run.
+        first=lambda wait: [[wait, *_write(str(outside), "allowed")], _report("header fixed")],
+    )
+    await wait_until(lambda: len(members["broken links"].requests) == 2, what="the second member having written")
+    host.release.set()
+    await wait_status(host, one.commission_id, "waiting_user")
+    trees.gate = asyncio.Event()
+    hold.set()
+    await asyncio.wait_for(trees.merging.wait(), 10)
+
+    # Answered while the merge runs: what was allowed is not done under it.
+    assert await host.answer(one.commission_id, "", choice="once")
+    await asyncio.sleep(0.6)
+    assert not outside.exists() and (await host.ledger.get(two.commission_id)).status == "working"
+    trees.gate.set()
+    await wait_status(host, two.commission_id, "done")
+    await wait_status(host, one.commission_id, "done")
+    assert outside.read_text() == "allowed"
+
+
+@pytest.mark.parametrize(
+    "first", ["going through what was left", "going through what was left and removing it", "the commission going on"]
+)
+async def test_a_worktree_is_in_one_hand_at_a_time_as_the_host_starts(hosts, tmp_path, first):
+    more = asyncio.Event()
+
+    async def wait() -> None:
+        await more.wait()
+
+    host, trees, workdir, one, two, members = await _two_members(
+        hosts, tmp_path,
+        second=[_write("links.txt", "half"), _report("which pages?", status="blocked"),
+                [wait, *_write("more.txt")], _report("all of them")],
+    )
+    host.release.set()
+    await wait_status(host, two.commission_id, "blocked")
+    await wait_until(lambda: not host.task_agents._tree_tasks, what="its worktree being seen to")
+    (tree,) = await host.ledger.trees()
+    # As after the host was started anew with the commission's worktree left at work.
+    host.task_agents._trees_mine.clear()
+    host.task_agents._tree_handles.clear()
+    await host.ledger.update_tree(tree.id, state="active")
+
+    removing = first.endswith("removing it")
+    if removing:
+        # Nothing is in it any more: gone through, it is removed.
+        (Path(tree.path) / "links.txt").unlink()
+    if first.startswith("going through what was left"):
+        trees.changes_gate = asyncio.Event()
+        trees.checking.clear()
+        going = asyncio.ensure_future(host.task_agents.reconcile_trees())
+        await asyncio.wait_for(trees.checking.wait(), 10)
+        telling = asyncio.ensure_future(host.tell(two.commission_id, "every page"))
+        await asyncio.sleep(0.6)
+        # The commission does not go on in it while it is gone through.
+        assert tree.id in host.task_agents._trees_in_hand and two.commission_id not in host.task_agents._tree_of
+        assert len(members["broken links"].requests) == 2
+        trees.changes_gate.set()
+        assert await going == ({"removed": [tree.id], "kept": []} if removing else {"removed": [], "kept": [tree.id]})
+        assert await telling
+    else:
+        assert await host.tell(two.commission_id, "every page")
+        await wait_until(lambda: len(members["broken links"].requests) == 3, what="it being at work again")
+        # At work in it: what goes through those left over passes it by.
+        assert await host.task_agents.reconcile_trees() == {"removed": [], "kept": []}
+        assert (await host.ledger.get_tree(tree.id)).state == "active"
+    more.set()
+    done = await wait_status(host, two.commission_id, "done")
+
+    if removing:
+        # It found its worktree gone from the record once that was through, and went on in one made anew.
+        assert trees.made == [Path(tree.path)] * 2 and trees.removed == [tree.id] * 2
+        assert not (workdir / "links.txt").exists() and (workdir / "more.txt").exists()
+    else:
+        # The same worktree, with what it had changed before: nothing was removed under it, and both files landed.
+        assert trees.made == [Path(tree.path)] and trees.removed == [tree.id]
+        assert (workdir / "links.txt").read_text() == "half" and (workdir / "more.txt").exists()
+    assert done.result_summary.startswith("all of them") and await host.ledger.trees() == []
+
+
+async def test_what_is_read_in_a_worktree_without_asking_is_the_projects_place_in_it(hosts, tmp_path):
+    host, _trees = _host(hosts, tmp_path, ScriptedLLM([]))
+    path = host.paths.worktrees_dir() / "abc"
+    await host.ledger.add_tree(
+        id="abc", session_id="s1", project="Site", project_dir=str(tmp_path / "repo" / "site"), path=str(path),
+        workdir=str(path / "site"), state="active",
+    )
+    # A worktree is of the whole repository: what lies beside the project in it is no session's working directory.
+    assert await host.task_agents._tree_places() == [("s1", str(path / "site"), None)]
+    # Its own is not another's place to the session that works in it.
+    assert await host.task_agents._tree_places(but="s1") == []
 
 
 # ---------------------------------------------------------------------------
@@ -1307,3 +1504,503 @@ async def test_the_board_and_the_timeline_tell_of_landings(hosts, tmp_path):
     # Kept by the user: the card says so, and is shown as the session stands.
     card = {item["id"]: item for item in (await host.board())["projects"][0]["members"]}[tree.session_id]
     assert card["tree"]["state"] == "kept" and card["state"] in ("idle", "asleep")
+
+
+# ---------------------------------------------------------------------------
+# What reviewers found
+# ---------------------------------------------------------------------------
+
+
+def test_conflict_markers_are_found_wherever_they_are_in_a_file(tmp_path, monkeypatch):
+    from nekopower.host import tree_work
+
+    monkeypatch.setattr(tree_work, "_MARKERS_CHUNK_BYTES", 16)
+
+    def holds(data: bytes) -> bool:
+        file = tmp_path / "f.txt"
+        file.write_bytes(data)
+        return tree_work._has_markers(file)
+
+    assert holds(b"<<<<<<< ours\nmine\n")
+    # Far into the file, beyond what is read at once.
+    assert holds(b"line\n" * 40 + b">>>>>>> theirs\n")
+    # The end of a line and the marker lie across two pieces, at every place they can.
+    for before in range(8, 26):
+        assert holds(b"a" * before + b"\n<<<<<<< ours\n"), before
+    assert holds(b"one\r>>>>>>> theirs\rtwo")
+    # Not at the start of a line: not a marker.
+    assert not holds(b"see <<<<<<< here\n" * 5) and not holds(b"plain\n" * 30)
+    assert not tree_work._has_markers(tmp_path / "missing.txt")
+
+
+def _stand_ins(number: int, home: Path) -> tuple[Any, Any]:
+    """A commission and its session, as far as making a worktree looks at them."""
+    commission = types.SimpleNamespace(id=str(number) * 32, lanlan_name="Lan", project="Site")
+    kept = types.SimpleNamespace(id=f"s{number}", project="Site", workdir=str(home))
+    return commission, kept
+
+
+async def test_two_that_start_at_once_do_not_both_take_the_last_room(hosts, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "WORKTREES_PER_PROJECT", 1)
+    host, trees = _host(hosts, tmp_path, ScriptedLLM([]))
+    home = tmp_path / "site"
+    home.mkdir()
+
+    made = await asyncio.gather(
+        *(host.task_agents._make_tree(*_stand_ins(number, home), str(home)) for number in (1, 2))
+    )
+
+    assert sorted(why for _row, why, _detail in made) == ["", "too_many"]
+    assert len(await host.ledger.trees()) == 1 and len(trees.made) == 1
+
+
+@pytest.mark.parametrize("first", ["one being made", "going through what was left"])
+async def test_no_worktree_is_made_while_those_left_over_are_gone_through_nor_the_other_way_round(hosts, tmp_path, first):
+    host, trees = _host(hosts, tmp_path, ScriptedLLM([]))
+    home = tmp_path / "site"
+    home.mkdir()
+    await host.space.touch_project("Site", workdir=str(home))
+    manager = host.task_agents
+    if first == "one being made":
+        trees.create_gate = asyncio.Event()
+        making = asyncio.ensure_future(manager._make_tree(*_stand_ins(1, home), str(home)))
+        await asyncio.wait_for(trees.creating.wait(), 10)
+        going = asyncio.ensure_future(manager.reconcile_trees())
+        await asyncio.sleep(0.6)
+        # On record and not there yet: what goes through those left over waits until it stands.
+        assert trees.reconciled == [] and not going.done()
+        trees.create_gate.set()
+        _row, why, _detail = await making
+        assert why == "" and await going == {"removed": [], "kept": []}
+        assert trees.reconciled == [str(home)] and [tree.state for tree in await host.ledger.trees()] == ["active"]
+    else:
+        left = host.paths.worktrees_dir() / "left"
+        left.mkdir(parents=True)
+        (left / "a.txt").write_text("x")
+        await host.ledger.add_tree(
+            id="left", project="Site", project_dir=str(home), path=str(left), workdir=str(left), state="active"
+        )
+        trees.changes_gate = asyncio.Event()
+        going = asyncio.ensure_future(manager.reconcile_trees())
+        await asyncio.wait_for(trees.checking.wait(), 10)
+        making = asyncio.ensure_future(manager._make_tree(*_stand_ins(1, home), str(home)))
+        await asyncio.sleep(0.6)
+        assert trees.creates == 0 and not making.done()
+        trees.changes_gate.set()
+        assert (await going)["kept"] == ["left"]
+        _row, why, _detail = await making
+        assert why == "" and len(trees.made) == 1
+
+
+async def test_a_landing_that_waits_for_a_run_goes_by_how_the_commission_said_it_is_done_last(hosts, tmp_path):
+    from nekopower.host.tree_work import _Done
+
+    host, _trees = _host(hosts, tmp_path, ScriptedLLM([]))
+    manager = host.task_agents
+    landed: list[Any] = []
+
+    async def land_once(_commission_id: str, done: Any) -> str:
+        landed.append(done)
+        manager._dones.pop("c1", None)
+        return "over"
+
+    manager._land_once = land_once
+    first = _Done(text="first", reason="", delivery=None, sent=1)
+    manager._dones["c1"] = first
+    landing = asyncio.ensure_future(manager._land("c1"))
+    await asyncio.sleep(0.2)
+    # More was said to it before the run that said so was over: that run's end says it is done anew.
+    second = _Done(text="second", reason="", delivery=None, sent=2)
+    manager._replace_done("c1", second)
+    await asyncio.sleep(0.2)
+    assert landed == [] and not landing.done()
+    second.run_over.set()
+    await asyncio.wait_for(landing, 10)
+    assert landed == [second]
+
+
+def _slow_to_stop(hold: asyncio.Event) -> Any:
+    """A step of a run that is over a while after it was told to stop."""
+
+    async def stubborn() -> None:
+        try:
+            await hold.wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(1.0)
+            raise
+
+    return stubborn
+
+
+async def test_a_task_agent_a_member_started_in_its_worktree_is_stopped_before_what_they_changed_is_merged(hosts, tmp_path):
+    hold = asyncio.Event()
+    helper = ScriptedLLM([[_slow_to_stop(hold), *_write("styles.css", "half")]])
+
+    async def until_it_works() -> None:
+        await wait_until(lambda: len(helper.requests) >= 1, what="the task agent it started being at work")
+
+    host, trees, workdir, one, two, members = await _two_members(
+        hosts, tmp_path,
+        second=[
+            [call("subagent", {"description": "styles", "prompt": "Tidy the stylesheet. PART-STYLES"}), finish("tool_calls")],
+            [until_it_works, *_report("links repaired")],
+        ],
+        **{"PART-STYLES": helper},
+    )
+    seen: dict[str, Any] = {}
+    merge_back = trees.merge_back
+
+    async def merging(worktree: Any, landing: Any = None) -> Any:
+        (child,) = await host.ledger.select(parent_id=two.commission_id)
+        live = host.task_agents._sessions.get(child.id)
+        seen.update(status=child.status, at_it=live is not None and not live.idle)
+        return await merge_back(worktree, landing)
+
+    trees.merge_back = merging
+    host.release.set()
+    await wait_status(host, two.commission_id, "done")
+    # Stopped as the commission said it is done, and out of the worktree before that was read.
+    assert seen == {"status": "cancelled", "at_it": False}
+    hold.set()
+
+
+async def test_held_back_for_the_user_the_files_that_clashed_last_stay_on_record(hosts, tmp_path):
+    hold = asyncio.Event()
+
+    async def wait() -> None:
+        await hold.wait()
+
+    host, trees, workdir, one, two, members = await _two_members(
+        hosts, tmp_path,
+        second=[_write("links.txt", "mine"), _report("links repaired"), [wait, *_write("links.txt", "both")], _report("merged")],
+    )
+    trees.results = [MergeResult("conflict", conflicts=("links.txt",))]
+    host.release.set()
+    await wait_until(lambda: len(members["broken links"].requests) == 3, what="it merging what clashed")
+    # The user wants to be asked first from now on.
+    await host.set_landing_settings(mode="ask")
+    hold.set()
+    await wait_status(host, two.commission_id, "blocked")
+
+    (tree,) = await host.ledger.trees()
+    # What clashed is still looked at for markers when the user has it landed.
+    assert (tree.state, tree.reason, tree.conflicts) == ("held", "ask", ("links.txt",))
+
+
+async def test_a_worktree_is_looked_at_for_changes_once_the_run_that_was_stopped_is_over(hosts, tmp_path):
+    hold = asyncio.Event()
+    host, trees, workdir, one, two, members = await _two_members(
+        hosts, tmp_path, second=[_write("links.txt", "half"), [_slow_to_stop(hold), *_report("links repaired")]]
+    )
+    await wait_until(lambda: len(members["broken links"].requests) == 2, what="the second one at work")
+    seen: list[bool] = []
+    has_changes = trees.has_changes
+
+    async def looking(worktree: Any) -> bool:
+        live = host.task_agents._sessions.get(two.commission_id)
+        seen.append(live is not None and not live.idle)
+        return await has_changes(worktree)
+
+    trees.has_changes = looking
+    assert await host.abort(two.commission_id)
+    await wait_until(lambda: seen, what="its worktree being looked at")
+    assert seen == [False]
+    await wait_until(lambda: not host.task_agents._tree_tasks, what="that being through")
+    hold.set()
+    host.release.set()
+
+
+async def test_a_worktree_that_cannot_be_opened_this_moment_is_not_taken_for_one_that_is_gone(hosts, tmp_path):
+    host, trees, workdir, one, two, members = await _two_members(
+        hosts, tmp_path,
+        second=[_write("links.txt", "half"), _report("which pages?", status="blocked"), _write("more.txt"), _report("all of them")],
+    )
+    host.release.set()
+    await wait_status(host, two.commission_id, "blocked")
+    await wait_until(lambda: not host.task_agents._tree_tasks, what="its worktree being seen to")
+    (tree,) = await host.ledger.trees()
+    # As after the host was started anew, with git not answering just now.
+    manager = host.task_agents
+    manager._trees_mine.clear()
+    manager._tree_handles.clear()
+    trees.fail_open = True
+
+    # Gone through as the host starts, it stays on record as it is.
+    assert await manager.reconcile_trees() == {"removed": [], "kept": [tree.id]}
+    assert await host.ledger.get_tree(tree.id) == tree and trees.removed == []
+    # It cannot be landed now, and is not said to be gone.
+    with pytest.raises(ValueError, match="not_opened"):
+        await host.land_worktree(tree.id)
+    # Its commission is not given another worktree in its place: it does not go on, and what it changed stays.
+    await host.tell(two.commission_id, "every page")
+    failed = await wait_status(host, two.commission_id, "failed")
+    assert "cannot be opened just now" in failed.status_reason
+    assert await _events(host, two.commission_id, "tree_lost") == [] and len(trees.made) == 1
+    assert await host.ledger.get_tree(tree.id) is not None and (Path(tree.workdir) / "links.txt").exists()
+
+    trees.fail_open = False
+    await wait_until(lambda: host.task_agents._held_by == {}, what="every session being let go")
+    assert await host.tell(two.commission_id, "every page")
+    await wait_status(host, two.commission_id, "done")
+    assert (workdir / "links.txt").read_text() == "half" and (workdir / "more.txt").exists()
+
+
+async def test_a_worktree_its_commission_goes_on_in_is_not_decided_on(hosts, tmp_path):
+    clash = MergeResult("conflict", conflicts=("links.txt",))
+    host, trees, workdir, two, _members, _stuck = await _not_landed(hosts, tmp_path, [clash] * 4, turns=4)
+    (tree,) = await host.ledger.trees()
+    # Its commission was taken up again this moment, and its row does not say so yet.
+    host.task_agents._tree_of[two.commission_id] = tree.id
+    for decide in (host.land_worktree, host.discard_worktree, host.keep_worktree):
+        with pytest.raises(ValueError, match="at_work"):
+            await decide(tree.id)
+    assert tree.id not in host.task_agents._trees_in_hand and trees.removed == []
+    del host.task_agents._tree_of[two.commission_id]
+    assert (await host.land_worktree(tree.id))["status"] == "landed"
+
+
+async def test_a_commission_that_failed_goes_back_to_merge_what_clashes_at_the_users_word(hosts, tmp_path):
+    host, trees, workdir, two, members, _stuck = await _not_landed(hosts, tmp_path, [WorktreeError("git went away")])
+    (tree,) = await host.ledger.trees()
+    # As one that a host which ended under it left: failed, with what it changed kept.
+    await host.ledger.transition(two.commission_id, "failed", reason="the host ended while it was worked on")
+    members["broken links"].turns.extend([_write("links.txt", "both"), _report("merged by hand")])
+    trees.results = [MergeResult("conflict", conflicts=("links.txt",))]
+
+    answer = await host.land_worktree(tree.id)
+
+    assert (answer["status"], answer["resolving"]) == ("conflict", True)
+    done = await wait_status(host, two.commission_id, "done")
+    assert (workdir / "links.txt").read_text() == "both" and done.result_summary.startswith("merged by hand")
+    assert await host.ledger.trees() == []
+
+
+def _end_fails_once(host: Any, commission_id: str) -> None:
+    """Have putting a commission down as done fail once, as with a ledger that cannot be written this moment."""
+    manager = host.task_agents
+    end = manager._end
+    failed: list[bool] = []
+
+    async def failing(ended: str, status: str, *args: Any, **kwargs: Any) -> Any:
+        if ended == commission_id and status == "done" and not failed:
+            failed.append(True)
+            raise RuntimeError("the ledger cannot be written")
+        return await end(ended, status, *args, **kwargs)
+
+    manager._end = failing
+
+
+@pytest.mark.parametrize("by", ["the host", "the user"])
+async def test_a_commission_whose_end_cannot_be_put_on_record_once_it_landed_is_not_left_at_work(hosts, tmp_path, by):
+    if by == "the host":
+        host, trees, workdir, one, two, _members = await _two_members(
+            hosts, tmp_path, second=[_write("links.txt", "repaired"), _report("links repaired")]
+        )
+        _end_fails_once(host, two.commission_id)
+        host.release.set()
+    else:
+        clash = MergeResult("conflict", conflicts=("links.txt",))
+        host, trees, workdir, two, _members, _stuck = await _not_landed(hosts, tmp_path, [clash] * 4, turns=4)
+        (tree,) = await host.ledger.trees()
+        trees.merged.clear()
+        _end_fails_once(host, two.commission_id)
+        assert (await host.land_worktree(tree.id))["status"] == "landed"
+
+    failed = await wait_status(host, two.commission_id, "failed")
+    assert failed.status_reason == "what came of it could not be put on record"
+    # What it changed is in the project, merged once, and its worktree is gone.
+    assert (workdir / "links.txt").exists() and len(trees.merged) == 1 and await host.ledger.trees() == []
+    await wait_until(lambda: two.commission_id not in host.task_agents._tree_of, what="its worktree being forgotten")
+
+
+async def test_a_task_agent_stopped_while_its_worktree_cannot_be_opened_leaves_it_on_record(hosts, tmp_path):
+    hold = asyncio.Event()
+
+    async def wait() -> None:
+        await hold.wait()
+
+    host, trees, workdir, one, two, members = await _two_members(
+        hosts, tmp_path, second=[_write("links.txt", "half"), [wait, *_report("links repaired")]]
+    )
+    await wait_until(lambda: len(members["broken links"].requests) == 2, what="the second one at work")
+    (tree,) = await host.ledger.trees()
+    # The host has no hold of it any more, and git does not answer just now.
+    host.task_agents._tree_handles.clear()
+    trees.fail_open = True
+
+    assert await host.abort(two.commission_id)
+    await wait_until(lambda: two.commission_id not in host.task_agents._tree_of, what="its worktree being seen to")
+    await wait_until(lambda: not host.task_agents._tree_tasks, what="that being through")
+
+    # Whether it holds changes could not be told: kept for the user, as one that does.
+    (left,) = await host.ledger.trees()
+    assert (left.state, left.reason) == ("unlanded", "stopped") and Path(tree.path).is_dir() and trees.removed == []
+    hold.set()
+    host.release.set()
+
+
+async def test_a_worktree_the_user_sees_to_personally_is_not_taken_back_when_its_commission_goes_on(hosts, tmp_path):
+    from nekopower.host.board import tree_of
+
+    clash = MergeResult("conflict", conflicts=("links.txt",))
+    host, trees, workdir, two, members, _stuck = await _not_landed(hosts, tmp_path, [clash] * 4, turns=4)
+    (tree,) = await host.ledger.trees()
+    await host.keep_worktree(tree.id)
+    mine = await host.ledger.get_tree(tree.id)
+    hold = asyncio.Event()
+
+    async def wait() -> None:
+        await hold.wait()
+
+    members["broken links"].turns.extend([[wait, *_write("more.txt", "more")], _report("all of them")])
+
+    assert await host.tell(two.commission_id, "the other pages as well")
+    await wait_until(lambda: len(trees.made) == 2, what="another worktree being made for it")
+    await wait_status(host, two.commission_id, "working")
+
+    # It goes on in one of its own, under another name; the user's is as the user left it.
+    other = await host.ledger.get_tree(f"{tree.id}-2")
+    assert other is not None and (other.state, other.commission_id) == ("active", two.commission_id)
+    assert await host.ledger.get_tree(tree.id) == mine and mine.state == "kept"
+    # Its card shows the one it works in, whichever is read first.
+    commission = await host.ledger.get(two.commission_id)
+    assert tree_of([mine, other], commission) == other and tree_of([other, mine], commission) == other
+    hold.set()
+    done = await wait_status(host, two.commission_id, "done")
+    assert done.result_summary.startswith("all of them") and (workdir / "more.txt").read_text() == "more"
+    # Nothing of the user's was merged, or removed.
+    assert not (workdir / "links.txt").exists() and (Path(mine.workdir) / "links.txt").read_text() == "mine"
+    assert await host.ledger.trees() == [mine] and trees.removed == [other.id]
+
+
+async def test_a_start_that_comes_to_nothing_leaves_a_worktree_as_the_user_was_to_decide_on_it(hosts, tmp_path):
+    clash = MergeResult("conflict", conflicts=("links.txt",))
+    host, trees, workdir, two, members, _stuck = await _not_landed(hosts, tmp_path, [clash] * 4, turns=4)
+    (tree,) = await host.ledger.trees()
+    transition = host.ledger.transition
+    refused: list[str] = []
+
+    async def stopped_meanwhile(commission_id: str, status: str, *args: Any, **kwargs: Any) -> Any:
+        if commission_id == two.commission_id and status == "working" and not refused:
+            refused.append(status)
+            return dataclasses.replace(await transition(commission_id, "blocked", reason="still"), applied=False)
+        return await transition(commission_id, status, *args, **kwargs)
+
+    host.ledger.transition = stopped_meanwhile
+    await host.tell(two.commission_id, "try once more")
+    await wait_until(lambda: refused and two.commission_id not in host.task_agents._tree_of, what="the start being given up")
+    await wait_until(lambda: not host.task_agents._tree_tasks, what="its worktree being seen to")
+
+    # Why it was not landed, and what clashed, still stand: the user decides on it as before.
+    assert await host.ledger.get_tree(tree.id) == tree
+    assert (tree.state, tree.reason, tree.rounds, tree.conflicts) == ("unlanded", "conflict", 3, ("links.txt",))
+    assert (await host.land_worktree(tree.id))["status"] == "landed"
+
+
+async def test_a_decision_that_fails_after_the_merge_does_not_leave_the_worktree_as_being_landed(hosts, tmp_path):
+    clash = MergeResult("conflict", conflicts=("links.txt",))
+    host, trees, workdir, two, _members, _stuck = await _not_landed(hosts, tmp_path, [clash] * 4, turns=4)
+    (tree,) = await host.ledger.trees()
+    remove = host.task_agents._remove_tree
+
+    async def failing(*_args: Any, **_kwargs: Any) -> bool:
+        raise RuntimeError("the ledger cannot be written")
+
+    host.task_agents._remove_tree = failing
+    with pytest.raises(RuntimeError, match="cannot be written"):
+        await host.land_worktree(tree.id)
+
+    # Merged, and not taken off the record: the user's to decide on again, at once.
+    left = await host.ledger.get_tree(tree.id)
+    assert (left.state, left.reason) == ("unlanded", "failed") and (workdir / "links.txt").exists()
+    host.task_agents._remove_tree = remove
+    assert await host.discard_worktree(tree.id) == {"removed": True}
+
+
+async def test_a_worktree_left_to_the_user_as_its_commission_was_about_to_go_on_is_the_users(hosts, tmp_path):
+    clash = MergeResult("conflict", conflicts=("links.txt",))
+    host, trees, workdir, two, members, _stuck = await _not_landed(hosts, tmp_path, [clash] * 4, turns=4)
+    (tree,) = await host.ledger.trees()
+    members["broken links"].turns.extend([_write("more.txt", "more"), _report("all of them")])
+    # The user's decision on it is being carried out as the commission is taken up again.
+    host.task_agents._trees_in_hand.add(tree.id)
+    telling = asyncio.ensure_future(host.tell(two.commission_id, "the other pages as well"))
+    await asyncio.sleep(0.6)
+    assert trees.made == [Path(tree.path)] and len(members["broken links"].requests) == 5
+    await host.ledger.update_tree(tree.id, state="kept")
+    host.task_agents._trees_in_hand.discard(tree.id)
+
+    assert await telling
+    await wait_status(host, two.commission_id, "done")
+    # It went on in another, and the user's was not merged.
+    assert len(trees.made) == 2 and (workdir / "more.txt").exists() and not (workdir / "links.txt").exists()
+    assert [(item.id, item.state) for item in await host.ledger.trees()] == [(tree.id, "kept")]
+
+
+async def test_a_worktree_being_landed_at_the_users_word_keeps_its_commission_from_being_stopped_with_its_parent(hosts, tmp_path):
+    clash = MergeResult("conflict", conflicts=("links.txt",))
+    host, trees, workdir, two, _members, _stuck = await _not_landed(hosts, tmp_path, [clash] * 4, turns=4)
+    (tree,) = await host.ledger.trees()
+    manager = host.task_agents
+    trees.gate = asyncio.Event()
+    trees.merging.clear()
+    landing = asyncio.ensure_future(host.land_worktree(tree.id))
+    await asyncio.wait_for(trees.merging.wait(), 10)
+
+    # On record as being landed, which is not waiting for the user any more: still one of those
+    # that are not ended with what started them.
+    assert (await host.ledger.get_tree(tree.id)).state == "landing"
+    assert two.commission_id in await manager._waits_in_tree()
+    trees.gate.set()
+    assert (await landing)["status"] == "landed"
+    assert two.commission_id not in await manager._waits_in_tree()
+
+
+async def test_a_worktree_its_commission_is_finding_again_is_passed_by_as_the_host_starts(hosts, tmp_path):
+    host, trees, workdir, one, two, members = await _two_members(
+        hosts, tmp_path,
+        second=[_write("links.txt", "half"), _report("which pages?", status="blocked"), _write("more.txt"), _report("all of them")],
+    )
+    host.release.set()
+    await wait_status(host, two.commission_id, "blocked")
+    await wait_until(lambda: not host.task_agents._tree_tasks, what="its worktree being seen to")
+    (tree,) = await host.ledger.trees()
+    # As after the host was started anew: nothing of it is in hand, and git is slow to open it.
+    manager = host.task_agents
+    manager._trees_mine.clear()
+    manager._tree_handles.clear()
+    trees.open_gate = asyncio.Event()
+
+    telling = asyncio.ensure_future(host.tell(two.commission_id, "every page"))
+    await asyncio.wait_for(trees.opening.wait(), 10)
+    # Its commission took it and is still finding it again: not gone through as one that was left.
+    assert await asyncio.wait_for(manager.reconcile_trees(), 5) == {"removed": [], "kept": []}
+    trees.open_gate.set()
+    assert await telling
+    await wait_status(host, two.commission_id, "done")
+    assert (workdir / "links.txt").read_text() == "half" and (workdir / "more.txt").exists()
+
+
+async def test_a_card_shows_that_its_commission_waits_for_the_user_though_its_worktree_is_at_work(hosts, tmp_path):
+    from nekopower.host.board import card_of
+
+    hold = asyncio.Event()
+
+    async def wait() -> None:
+        await hold.wait()
+
+    host, trees, workdir, one, two, members = await _two_members(
+        hosts, tmp_path, second=[_write("links.txt", "mine"), _report("links repaired"), [wait, *_report("merged")]]
+    )
+    trees.results = [MergeResult("conflict", conflicts=("links.txt",))]
+    host.release.set()
+    await wait_until(lambda: len(members["broken links"].requests) == 3, what="it merging what clashed")
+    (tree,) = await host.ledger.trees()
+    commission = await host.ledger.get(two.commission_id)
+    session = await host.ledger.get_session(commission.session_id)
+    assert tree.state == "resolving" and card_of(session, commission, (), None, None, tree=tree)["state"] == "resolving"
+    # It asks the user something while it merges: the card says that it waits.
+    asking = dataclasses.replace(commission, status="waiting_user")
+    assert card_of(session, asking, (), None, None, tree=tree)["state"] == "waiting_user"
+    hold.set()
+    await wait_status(host, two.commission_id, "done")

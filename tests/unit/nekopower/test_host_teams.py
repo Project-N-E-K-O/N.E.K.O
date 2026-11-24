@@ -130,6 +130,9 @@ async def test_a_leader_starts_a_team_once_the_user_allowed_it_and_reports_once(
     assert (question["kind"], question["category"]) == ("permission", "open_session")
     # Asked once, for those that change files, with who they are and what becomes of what they change.
     assert question["detail"]["members"] == ["worker: repairs the links", "worker: tidies the styles"]
+    assert question["detail"]["parts"] == [
+        {"preset": "worker", "description": "repairs the links"}, {"preset": "worker", "description": "tidies the styles"},
+    ]
     assert (question["detail"]["count"], question["detail"]["tree"], question["detail"]["tool"]) == (2, True, "start_team")
     asked = describe_permission(question, "en")
     assert asked.startswith("form a team for this task: 2 familiars change files at the same time")
@@ -314,7 +317,40 @@ async def test_a_task_agent_of_a_team_for_which_no_worktree_can_be_made_is_not_s
     assert not (workdir / "links.txt").exists() and "1 bytes free, 2 needed" in _said_to(lead)
 
 
-async def test_a_leader_cannot_report_its_commission_done_while_its_team_is_at_work(hosts, tmp_path):
+async def test_a_leader_is_told_which_of_its_team_got_no_worktree_after_all(hosts, tmp_path):
+    from nekopower.host.worktrees import WorktreeUnavailable
+
+    go = asyncio.Event()
+    lead = TeamLead(PARTS[:2])
+    host, trees, workdir = await _shop(hosts, tmp_path, _by_role(lead, _team_scripts(go)))
+    # There was room when the leader asked; the disk is full by the time the second worktree is made.
+    trees.fail_create = WorktreeUnavailable("disk_space", "1 bytes free, 2 needed")
+    trees.fail_creates = {2}
+
+    receipt = await _dispatch(host, TEAM)
+
+    async def formed() -> list[dict[str, Any]]:
+        return await _events(host, receipt.commission_id, "team_formed")
+
+    await wait_until(formed, what="the team being formed")
+    ((team,),) = (await formed(),)
+    # The one that got none is not of the team, and the leader was told so with what start_team answered.
+    (member,) = team["members"]
+    (tree,) = await host.ledger.trees()
+    assert tree.commission_id == member["commission_id"]
+    await wait_until(lambda: len(lead.requests) >= 2, what="the leader reading what start_team answered")
+    answered = [
+        message["content"] for request in lead.requests for message in request
+        if message.get("role") == "tool" and "Started: " in str(message.get("content"))
+    ]
+    assert answered and f"Started: {member['name']}." in answered[0]
+    assert " Not started: " in answered[0] and "1 bytes free, 2 needed" in answered[0]
+    go.set()
+    await wait_status(host, receipt.commission_id, "done")
+
+
+@pytest.mark.parametrize("restarted", [False, True])
+async def test_a_leader_cannot_report_its_commission_done_while_its_team_is_at_work(hosts, tmp_path, restarted):
     go = asyncio.Event()
 
     async def wait() -> None:
@@ -329,6 +365,16 @@ async def test_a_leader_cannot_report_its_commission_done_while_its_team_is_at_w
     ])
     members = {"PART-LINKS": ScriptedLLM([[wait, *_write("links.txt", "repaired")], _report("links repaired")])}
     host, trees, workdir = await _shop(hosts, tmp_path, _by_role(lead, members))
+    if restarted:
+        # As where the host was started anew since the team was: it is told by what is on record.
+        start = host.task_agents._cb_start_team
+
+        async def and_forgets(session_id: str, payload: dict[str, Any]) -> Any:
+            started = await start(session_id, payload)
+            host.task_agents._teams.clear()
+            return started
+
+        host.task_agents._cb_start_team = and_forgets
 
     receipt = await _dispatch(host, TEAM)
     await wait_until(lambda: len(lead.requests) >= 3, what="the leader having been refused its report")
@@ -365,6 +411,36 @@ async def test_a_leader_that_gives_its_commission_up_stops_its_team(hosts, tmp_p
     await wait_status(host, child.id, "cancelled")
     assert stuck.result_summary.startswith("it cannot be done") and not (workdir / "links.txt").exists()
     hold.set()
+
+
+async def test_a_team_whose_changes_wait_for_the_users_word_is_not_done_again(hosts, tmp_path):
+    lead = TeamLead(PARTS[:2])
+    host, trees, workdir = await _shop(hosts, tmp_path, _by_role(lead, _team_scripts()))
+    await host.set_landing_settings(mode="ask")
+
+    receipt = await _dispatch(host, TEAM)
+    done = await wait_status(host, receipt.commission_id, "done")
+
+    # Each part is done and waits for the user: the leader is told that nothing is wrong with it.
+    assert sorted((tree.state, tree.reason) for tree in await host.ledger.trees()) == [("held", "ask")] * 2
+    assert trees.merged == [] and not (workdir / "links.txt").exists()
+    children = await host.ledger.select(parent_id=receipt.commission_id)
+    assert sorted(child.status for child in children) == ["blocked", "blocked"]
+    told = _said_to(lead)
+    last = json.dumps(lead.requests[-1])
+    assert last.count("The work is done, and nothing is wrong with it.") == 2
+    assert last.count("Do not do this work again and start nobody anew for it") == 2
+    assert "try again, discard" not in told and done.result_summary == "the footer is redone"
+    # Started once each: nobody did a part a second time.
+    assert len(children) == 2 and len(await _events(host, receipt.commission_id, "team_formed")) == 1
+
+    # Their commissions were not put down as stopped when the leader's was done: each is done
+    # once the user has what it changed landed.
+    for tree in await host.ledger.trees():
+        assert (await host.land_worktree(tree.id))["status"] == "landed"
+        assert (await wait_status(host, tree.commission_id, "done")).status == "done"
+    assert (workdir / "links.txt").exists() and (workdir / "styles.css").exists()
+    assert await host.ledger.trees() == []
 
 
 async def test_a_leader_is_reminded_once_when_its_team_is_over_and_nothing_told_it_so(hosts, tmp_path, monkeypatch):
@@ -516,7 +592,7 @@ async def test_what_an_inspector_finds_wrong_goes_back_to_the_task_agent_before_
         # It works in the worktree itself, and is told what was to be done.
         assert (session.preset, session.kind, item.workdir) == ("inspector", "child", tree_dir)
     asked = _said_to(members[CHECK])
-    assert "`git status` and `git diff` there show exactly what it changed" in asked and SECOND in asked
+    assert "a file it made new is only named there, so read it" in asked and SECOND in asked
     assert "ready: you read the changes" in asked and "failed: you could not check it at all" in asked
     verdicts = [(item["verdict"], item["round"]) for item in await _events(host, two.commission_id, "inspected")]
     assert verdicts == [("fail", 1), ("pass", 2)]
@@ -541,7 +617,7 @@ async def test_what_does_not_pass_in_two_rounds_is_left_for_the_user(hosts, tmp_
     (tree,) = await host.ledger.trees()
     assert (tree.state, tree.reason, tree.checks) == ("unlanded", "inspection", 1) and trees.merged == []
     assert not (workdir / "links.txt").exists()
-    assert "an inspector found problems that 2 rounds of fixing did not settle" in stuck.result_summary
+    assert "an inspector found problems in it, and it did not pass in 2 checks" in stuck.result_summary
     assert "wrong as before" in stuck.result_summary
     assert (await _events(host, two.commission_id, "not_landed"))[0]["reason"] == "inspection"
 
@@ -634,7 +710,7 @@ async def test_a_task_agent_the_user_makes_without_naming_a_preset_does_the_work
     assert await host.ledger.lead_session("Lan", "Blog") is None
 
 
-async def test_a_member_the_user_adds_beside_one_that_works_in_the_directory_gets_worktrees(hosts, tmp_path):
+async def test_a_member_the_user_adds_beside_one_that_works_in_the_directory_gets_worktrees(hosts, tmp_path, monkeypatch):
     host, _trees, workdir = await _shop(hosts, tmp_path, ScriptedLLM([]))
 
     # The first one of a project works in its directory.
@@ -656,6 +732,14 @@ async def test_a_member_the_user_adds_beside_one_that_works_in_the_directory_get
     assert (session.kind, session.preset, session.project, session.workdir) == ("line", "worker", "Shop site", str(workdir))
     assert (session.title, session.title_by, session.duty_by) == ("Footer", "user", "user")
     assert session.name == "Shop site/worker" and session.model_name
+    # No more members that take work than a project may have, for one character.
+    count = len([m for m in await host.ledger.members("Lan", "Shop site") if await host.ledger.session_alive(m)])
+    monkeypatch.setattr(settings, "PROJECT_MEMBERS_MAX", count)
+    with pytest.raises(ValueError, match="too_many_members"):
+        await host.open_member("Lan", "Shop site", preset="scout")
+    assert (await host.open_member("Mei", "Shop site", preset="scout"))["seat"] == ""
+    monkeypatch.setattr(settings, "PROJECT_MEMBERS_MAX", count + 1)
+    assert (await host.open_member("Lan", "Shop site", preset="scout"))["seat"] == ""
     for wrong, error in (
         (("", "Shop site"), "no_character"), (("Lan", "Nowhere"), LookupError), (("Lan", "Shop site", "boss"), "bad_preset"),
         (("Lan", "Shop site", "wizard"), "bad_preset"),
@@ -767,8 +851,11 @@ async def _real_shop(hosts: list[Any], tmp_path: Path, project: Path, pick: Any)
 
     host.task_agents.families._probe = probe
     await host.permission_store.set_mode("open_session", "allow")
-    if not (await host.task_agents.worktrees.probe(project)).usable:
+    found = await host.task_agents.worktrees.probe(project)
+    if found.reason in ("git_missing", "git_too_old"):
         pytest.skip("the git that is installed is older than worktrees need")
+    # (Any other reason is a fault of the probe, and is not passed over.)
+    assert found.usable, (found.reason, found.detail)
     return host
 
 
@@ -778,6 +865,7 @@ async def test_with_git_itself_a_members_changes_land_as_uncommitted_changes(hos
     members = {
         "the header": ScriptedLLM([_report("header fixed")]),
         "broken links": ScriptedLLM([
+            [call("read", {"file_path": "c.txt"}), finish("tool_calls")],
             _write("a.txt", "one\ntwo\nthree\nfour\n"), _write("b.txt", "new\n"), _report("links repaired"),
         ]),
     }
@@ -788,6 +876,8 @@ async def test_with_git_itself_a_members_changes_land_as_uncommitted_changes(hos
 
     two = await _dispatch(host, SECOND)
     done = await wait_status(host, two.commission_id, "done", timeout=120)
+    # (It read the file there, in its worktree.)
+    assert "the user's" in _said_to(members["broken links"])
 
     (made,) = await _events(host, two.commission_id, "tree_made")
     # The commission worked in the project's place inside the worktree, which is of the whole repository.
@@ -875,3 +965,40 @@ async def test_with_git_itself_a_worktree_left_by_an_earlier_process_is_kept_or_
     assert await host.discard_worktree("leftchanged") == {"removed": True}
     assert await host.ledger.trees() == [] and len(_git(repo, "worktree", "list").splitlines()) == 1
     assert _git(repo, "for-each-ref", "refs/nekopower/").strip() == ""
+
+
+async def test_with_git_itself_what_lies_beside_the_project_in_a_worktree_is_asked_about_before_it_is_read(hosts, tmp_path):
+    repo, project = _repository(tmp_path, below="site")
+    leader_llm = ScriptedLLM([*_hand_over(), *_hand_over(description="second writer")])
+    members = {
+        "the header": ScriptedLLM([_report("header fixed")]),
+        # (The worktree is of the whole repository: the file above the project is there as well.)
+        "broken links": ScriptedLLM([
+            [call("read", {"file_path": "../.gitignore"}), finish("tool_calls")], _report("links repaired"),
+        ]),
+    }
+    host = await _real_shop(hosts, tmp_path, project, _by_role(leader_llm, members))
+    await wait_status(host, (await _dispatch(host, FIRST)).commission_id, "done")
+
+    two = await _dispatch(host, SECOND)
+    waiting = await wait_status(host, two.commission_id, "waiting_user", timeout=120)
+
+    # As anything outside the directory it works in: its own worktree is no other session's place to it.
+    question = waiting.question()
+    assert (question["kind"], question["category"]) == ("permission", "outside_read")
+    assert await host.answer(two.commission_id, "", choice="deny")
+    await wait_status(host, two.commission_id, "done", timeout=120)
+    assert "node_modules" not in _said_to(members["broken links"])
+
+
+async def test_an_inspector_that_ends_without_a_report_passed_nothing(hosts, tmp_path):
+    host, trees, workdir, two, members = await _inspected(
+        hosts, tmp_path,
+        member=[_write("links.txt", "repaired"), _report("links repaired")],
+        inspector=[END],
+    )
+    done = await wait_status(host, two.commission_id, "done")
+
+    # It lands as if nobody had looked, and is put on record so: not as checked and passed.
+    assert (workdir / "links.txt").read_text() == "repaired" and done.result_summary.startswith("links repaired")
+    assert [(item["verdict"], item["round"]) for item in await _events(host, two.commission_id, "inspected")] == [("none", 1)]
