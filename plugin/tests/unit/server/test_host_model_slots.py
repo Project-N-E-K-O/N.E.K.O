@@ -71,6 +71,9 @@ def test_materialize_detects_anthropic_endpoints_by_url_like_the_main_app(endpoi
     ({"model": "m", "base_url": ""}, "host_api_not_configured"),
     ({"model": "", "base_url": "https://x.test/v1"}, "host_api_not_configured"),
     ({"model": "m", "base_url": "wss://realtime.test/core"}, "host_api_unsupported"),
+    # ChatGPT subscription tiers carry no API key and need the main app's OAuth client.
+    ({"model": "m", "base_url": "https://api.openai.com/v1", "api_key": "", "provider_type": "chatgpt"},
+     "host_api_unsupported"),
 ])
 def test_unusable_host_config_is_rejected(config, code):
     with pytest.raises(ModelGatewayError) as exc:

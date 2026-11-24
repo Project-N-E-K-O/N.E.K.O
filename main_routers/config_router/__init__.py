@@ -106,3 +106,5 @@ from .model_catalog import (  # noqa: F401
     ModelListRequest,
     list_models,
 )
+
+from . import chatgpt  # noqa: F401  # Register local OAuth routes.

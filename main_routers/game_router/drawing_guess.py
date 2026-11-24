@@ -3262,6 +3262,7 @@ async def _generate_persona_chat_line(
             model,
             str(char_info.get("base_url") or "") or None,
             str(char_info.get("api_key") or "") or None,
+            provider_type=str(char_info.get("provider_type") or "") or None,
             max_completion_tokens=220,
             timeout=GAME_CHAT_TIMEOUT_SECONDS,
         )
@@ -3449,6 +3450,7 @@ async def _generate_persona_game_line(
             model,
             str(char_info.get("base_url") or "") or None,
             str(char_info.get("api_key") or "") or None,
+            provider_type=str(char_info.get("provider_type") or "") or None,
             max_completion_tokens=180,
             timeout=GAME_EVENT_LINE_TIMEOUT_SECONDS,
         )
@@ -3667,6 +3669,7 @@ async def _classify_game_input_intent(
             model,
             str(char_info.get("base_url") or "") or None,
             str(char_info.get("api_key") or "") or None,
+            provider_type=str(char_info.get("provider_type") or "") or None,
             max_completion_tokens=160,
             timeout=INPUT_INTENT_TIMEOUT_SECONDS,
         )
@@ -3889,6 +3892,7 @@ async def _generate_text_context_guess(
             model,
             str(char_info.get("base_url") or "") or None,
             str(char_info.get("api_key") or "") or None,
+            provider_type=str(char_info.get("provider_type") or "") or None,
             max_completion_tokens=360,
             timeout=TEXT_GUESS_TIMEOUT_SECONDS,
         )

@@ -86,6 +86,10 @@ def unsupported_reason(model: ModelConfig) -> str | None:
         return "the model has no address to forward its requests to"
     if _is_anthropic_endpoint(model.base_url, model.provider_type):
         return "the model is reached through the Anthropic Messages API, which is not forwarded for dsh"
+    if str(model.provider_type or "").strip().lower() == "chatgpt":
+        # Sign in with ChatGPT: OAuth plus the Responses API, held by the host's
+        # client; dsh forwards Chat Completions with an API key.
+        return "the model is reached through the ChatGPT subscription, which is not forwarded for dsh"
     return None
 
 

@@ -126,6 +126,12 @@ def test_all_assist_providers_have_decision_fields():
     }
     assert set(native_expected.keys()).issubset(providers.keys())
     for key, profile in providers.items():
+        if profile.get("model_slot_only"):
+            # Never the assist provider and not offered to the decision slot
+            # (ChatGPT subscription), so no decision tier resolves through it.
+            assert key not in native_expected, f"{key} must keep its decision fields"
+            assert "decision" not in profile.get("supported_model_types", [])
+            continue
         assert "decision_model" in profile, f"{key} missing decision_model"
         assert "decision_protocol" in profile, f"{key} missing decision_protocol"
         if key in native_expected:

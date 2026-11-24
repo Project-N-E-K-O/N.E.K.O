@@ -758,6 +758,21 @@ async def update_core_config(request: Request):
                         apply_core_config_secret_update(core_cfg, data, field)
                     else:
                         core_cfg[field] = data[field]
+        # ChatGPT (subscription) signs in with OAuth and has an account-specific model
+        # catalog: only the slots it declares, an explicit model, its fixed endpoint, no key.
+        from utils.api_config_loader import get_config as _get_api_config
+        chatgpt_slots = set(
+            _get_api_config().get('assist_api_providers', {}).get('chatgpt', {}).get('supported_model_types', [])
+        )
+        for mt in CORE_CONFIG_MODEL_TYPES:
+            if core_cfg.get(f'{mt}ModelProvider') == 'chatgpt':
+                if mt not in chatgpt_slots:
+                    return {"success": False, "error": "ChatGPT plan usage supports text slots only"}
+                model_id = core_cfg.get(f'{mt}ModelId')
+                if not isinstance(model_id, str) or not model_id.strip():
+                    return {"success": False, "error": "Select an available ChatGPT model before saving"}
+                core_cfg[f'{mt}ModelUrl'] = 'https://api.openai.com/v1'
+                core_cfg[f'{mt}ModelApiKey'] = ''
         _drop_retired_model_fields(core_cfg)
         # Lazy migration after retiring gptsovitsEnabled, at the save boundary, symmetric with #1842 voice_id:
         # ttsModelProvider=='gptsovits' is the sole GSV-enabled truth; old gptsovitsEnabled remains only
