@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -824,9 +825,11 @@ async def test_a_project_has_no_more_members_that_take_work_than_it_may(hosts, t
 
 
 def _git(cwd: Path, *args: str) -> str:
+    # (Not in a repository the caller's environment names: a test run from a git hook has those set.)
+    env = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
     done = subprocess.run(
         ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", *args],
-        cwd=cwd, capture_output=True, text=True, check=True, timeout=60,
+        cwd=cwd, capture_output=True, text=True, check=True, timeout=60, env=env,
     )
     return done.stdout
 

@@ -1866,7 +1866,10 @@ async def test_a_worktree_the_user_sees_to_personally_is_not_taken_back_when_its
     clash = MergeResult("conflict", conflicts=("links.txt",))
     host, trees, workdir, two, members, _stuck = await _not_landed(hosts, tmp_path, [clash] * 4, turns=4)
     (tree,) = await host.ledger.trees()
+    assert two.commission_id in await host.task_agents._waits_in_tree()
     await host.keep_worktree(tree.id)
+    # Seen to personally, it is not what its commission waits for the user over.
+    assert two.commission_id not in await host.task_agents._waits_in_tree()
     mine = await host.ledger.get_tree(tree.id)
     hold = asyncio.Event()
 
@@ -1886,6 +1889,9 @@ async def test_a_worktree_the_user_sees_to_personally_is_not_taken_back_when_its
     # Its card shows the one it works in, whichever is read first.
     commission = await host.ledger.get(two.commission_id)
     assert tree_of([mine, other], commission) == other and tree_of([other, mine], commission) == other
+    # The run is at it in the one it works in, and not in the user's.
+    await wait_until(lambda: len(members["broken links"].requests) == 6, what="it being at work again")
+    assert await host.task_agents._still_at_it_in(other) and not await host.task_agents._still_at_it_in(mine)
     hold.set()
     done = await wait_status(host, two.commission_id, "done")
     assert done.result_summary.startswith("all of them") and (workdir / "more.txt").read_text() == "more"
@@ -2220,7 +2226,9 @@ async def test_what_is_decided_on_a_worktree_the_user_kept_does_not_settle_a_com
         trees.results = [clash]
         answer = await host.land_worktree(first.id)
         assert (answer["status"], answer["resolving"]) == ("conflict", False)
-        assert (await host.ledger.get_tree(first.id)).state == "unlanded"
+        # Still the user's to see to personally: its commission does not go back into it.
+        left = await host.ledger.get_tree(first.id)
+        assert (left.state, left.reason, left.conflicts) == ("kept", "conflict", ("links.txt",))
     else:
         assert await host.discard_worktree(first.id) == {"removed": True}
     assert (await host.ledger.get(two.commission_id)).status == "blocked"
@@ -2242,13 +2250,27 @@ async def test_a_worktree_in_which_a_run_cannot_be_stopped_in_time_is_kept_as_it
         hosts, tmp_path, second=[[_slow_to_stop(hold), *_report("links repaired")]]
     )
     await wait_until(lambda: len(members["broken links"].requests) == 1, what="the second one at work")
-    assert await host.abort(two.commission_id)
-    await wait_until(lambda: two.commission_id not in host.task_agents._tree_of, what="its worktree being seen to")
-    await wait_until(lambda: not host.task_agents._tree_tasks, what="that being through")
+    manager = host.task_agents
+    # (Stopping it comes back once its run is gone, which takes a while.)
+    stopping = asyncio.ensure_future(host.abort(two.commission_id))
 
+    async def kept_for_the_user() -> Any:
+        rows = await host.ledger.trees()
+        return rows if rows and rows[0].state == "unlanded" else None
+
+    await wait_until(kept_for_the_user, what="its worktree being kept")
     # Still at it when the wait was over: not looked at, and kept for the user.
     (tree,) = await host.ledger.trees()
     assert (tree.state, tree.reason) == ("unlanded", "stopped") and trees.removed == [] and not trees.checking.is_set()
+    # Nor decided on while its run is still on its way out.
+    assert manager._at_it(two.commission_id) and not stopping.done()
+    for decide in (host.land_worktree, host.discard_worktree, host.keep_worktree):
+        with pytest.raises(ValueError, match="at_work"):
+            await decide(tree.id)
+    assert await stopping
+    await wait_until(lambda: not manager._at_it(two.commission_id), what="its run being over")
+    await wait_until(lambda: not manager._tree_tasks, what="what was under way being through")
+    assert await host.discard_worktree(tree.id) == {"removed": True}
     hold.set()
     host.release.set()
 
@@ -2421,3 +2443,85 @@ async def test_a_member_made_as_one_that_only_reads_is_on_record_as_that_with_it
     assert asked == ["scout", "scout"] and (await host.ledger.get_session(made.id)).seat == ""
     await manager._ask_about_member(commission, await host.ledger.get_session(made.id))
     assert asked == ["scout", "scout"]
+
+
+async def test_conflict_markers_are_not_told_of_under_a_run_that_began_meanwhile(hosts, tmp_path, monkeypatch):
+    from nekopower.host import tree_work
+
+    host, trees, workdir, one, two, members = await _two_members(
+        hosts, tmp_path,
+        second=[_write("links.txt", "mine"), _report("links repaired"), _write("links.txt", "both"), _report("merged")],
+    )
+    trees.results = [MergeResult("conflict", conflicts=("links.txt",))]
+    manager = host.task_agents
+    stale = manager._stale
+    looked: list[Any] = []
+    markers = {"left": True}
+
+    def has_markers(path: Any) -> bool:
+        looked.append(path)
+        return markers["left"]
+
+    monkeypatch.setattr(tree_work, "_has_markers", has_markers)
+    # More is said to it while the files are read for markers (as what tells a landing of that says).
+    manager._stale = lambda commission_id, done: bool(looked) or stale(commission_id, done)
+    host.release.set()
+    await wait_until(lambda: looked, what="the files being read for markers")
+    await asyncio.sleep(0.6)
+    # Not told as one more clash under the run that began: counted once, and the commission is at work.
+    assert [item["round"] for item in await _events(host, two.commission_id, "landing_conflict")] == [1]
+    assert (await host.ledger.get(two.commission_id)).status == "working"
+    markers["left"] = False
+    manager._stale = stale
+    await wait_status(host, two.commission_id, "done")
+    assert (workdir / "links.txt").read_text() == "both"
+
+
+async def test_what_is_said_to_a_task_agent_while_its_changes_are_merged_is_done_in_the_same_worktree(hosts, tmp_path):
+    more = asyncio.Event()
+
+    async def wait() -> None:
+        await more.wait()
+
+    host, trees, workdir, one, two, members = await _two_members(
+        hosts, tmp_path,
+        second=[_write("links.txt", "repaired"), _report("links repaired"),
+                [wait, *_write("sitemap.txt", "new")], _report("the sitemap is there as well")],
+    )
+    trees.gate = asyncio.Event()
+    host.release.set()
+    await asyncio.wait_for(trees.merging.wait(), 10)
+    # The merge is under way, and the user says more.
+    assert await host.tell(two.commission_id, "write the sitemap anew as well")
+    await wait_until(lambda: len(members["broken links"].requests) == 3, what="it being at work again")
+    trees.gate.set()
+    await wait_until(lambda: (workdir / "links.txt").exists(), what="what it had changed being landed")
+    await asyncio.sleep(0.5)
+
+    # Landed, and its worktree is not removed under the run that does what was added.
+    (tree,) = await host.ledger.trees()
+    assert tree.state == "active" and trees.removed == [] and Path(tree.path).is_dir()
+    assert (await host.ledger.get(two.commission_id)).status == "working"
+    more.set()
+    done = await wait_status(host, two.commission_id, "done")
+    assert (workdir / "sitemap.txt").exists() and done.result_summary.startswith("the sitemap is there as well")
+    assert len(trees.merged) == 2 and trees.removed == [tree.id] and await host.ledger.trees() == []
+    assert len(await _events(host, two.commission_id, "landed")) == 2
+
+
+async def test_what_clashes_and_cannot_be_said_to_the_task_agent_is_left_for_the_user(hosts, tmp_path):
+    host, trees, workdir, one, two, _members = await _two_members(
+        hosts, tmp_path, second=[_write("links.txt", "mine"), _report("links repaired")]
+    )
+    trees.results = [MergeResult("conflict", conflicts=("links.txt",))]
+
+    async def nobody_hears(*_args: Any, **_kwargs: Any) -> bool:
+        return False
+
+    host.task_agents._say_to = nobody_hears
+    host.release.set()
+    await wait_status(host, two.commission_id, "blocked")
+
+    # Not left at work for nobody: the user decides on it.
+    (tree,) = await host.ledger.trees()
+    assert (tree.state, tree.reason, tree.rounds, tree.conflicts) == ("unlanded", "conflict", 1, ("links.txt",))

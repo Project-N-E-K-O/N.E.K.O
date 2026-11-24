@@ -392,6 +392,20 @@ class TreeWork:
         """Whether a worktree's directory is not there any more (and not merely not to be opened this moment)."""
         return not await asyncio.to_thread(Path(row.path).is_dir)
 
+    async def _still_at_it_in(self, row: Tree) -> bool:
+        """Whether a run of a worktree's commission, or of a task agent it started, is under way in that worktree this moment."""
+        commission = await self._ledger.get(row.commission_id) if row.commission_id else None
+        if commission is None or not _same_dir(commission.workdir, row.workdir):
+            # (At work in another worktree of its own, or nowhere.)
+            return False
+        theirs = [commission.id, *(child.id for child in await self._ledger.select(parent_id=commission.id))]
+        return any(self._at_it(item) for item in theirs)
+
+    def _at_it(self, commission_id: str) -> bool:
+        """Whether a commission has a run under way in a runtime."""
+        live = self._sessions.get(commission_id)
+        return live is not None and not live.idle
+
     async def _gone_from_runtime(self, commission_id: str) -> bool:
         """Wait until no run is under way for a commission, nor for the task agents it started; returns whether that is so.
 
@@ -401,11 +415,6 @@ class TreeWork:
         by then, or when the task agents it started could not be read.
         Whoever asks keeps the worktree as it is then.
         """
-
-        def at_it(item: str) -> bool:
-            live = self._sessions.get(item)
-            return live is not None and not live.idle
-
         deadline = time.monotonic() + _GONE_SECONDS
         while not self._closed:
             try:
@@ -415,7 +424,7 @@ class TreeWork:
             except Exception:  # noqa: BLE001 - not known: asked again, and not taken for gone
                 logger.debug("the task agents a commission started could not be read", exc_info=True)
                 theirs = None
-            if theirs is not None and not any(at_it(item) for item in theirs):
+            if theirs is not None and not any(self._at_it(item) for item in theirs):
                 return True
             if time.monotonic() >= deadline:
                 break
@@ -561,7 +570,8 @@ class TreeWork:
     async def _waits_in_tree(self) -> set[str]:
         """Return the commissions whose changes wait in a worktree for the user to decide on; empty where that cannot be read."""
         try:
-            rows = await self._ledger.trees(states=sorted(TREE_STATES_LEFT))
+            # (Not one the user sees to personally: its commission may be at work in another.)
+            rows = await self._ledger.trees(states=("held", "unlanded"))
             # And those the user's decision is being carried out on this moment, whose worktree
             # is on record as being landed, or is gone already, with its commission not done yet.
             return {str(row.commission_id) for row in rows if row.commission_id} | set(self._decided_for.values())
@@ -961,6 +971,9 @@ class TreeWork:
             root = Path(handle.path)
             left = await asyncio.to_thread(lambda: tuple(name for name in row.conflicts if _has_markers(root / name)))
             if left:
+                if unless is not None and unless():
+                    # More was said to it while the files were read: not told as one more clash under that run.
+                    return None
                 return MergeResult("conflict", conflicts=left, detail=_MARKERS_LEFT)
         return await self._merge_back(row, handle, unless=unless)
 
@@ -1148,6 +1161,12 @@ class TreeWork:
             outside = outside_of(result.files, getattr(handle, "subpath", ""))
             if result.status == "landed":
                 await self._note_tree_event(commission_id, "landed", self._landed_payload(row, result, outside))
+            if self._stale(commission_id, done):
+                # More was said to it while the merge ran, and it is at work on that in its worktree:
+                # what it had changed is landed, the worktree stays, and what it changes now lands
+                # when that run is over.
+                await self._ledger.update_tree(row.id, state="active")
+                return "again"
             told, shown = self._landed_texts(row, commission.lang, files, more, outside, result.skipped)
             text = "\n\n".join(part for part in (done.text, told) if part)
             self._dones.pop(commission_id, None)
@@ -1186,7 +1205,6 @@ class TreeWork:
                 "landing_conflict",
                 {"tree": row.id, "conflicts": list(result.conflicts[: settings.TREE_FILES_LISTED]), "round": row.rounds},
             )
-            self._dones.pop(commission_id, None)
             said = _Found(
                 (texts.TREE_MARKERS_LEFT if result.detail == _MARKERS_LEFT else texts.TREE_CONFLICT).format(
                     files=names_text(result.conflicts, settings.TREE_FILES_LISTED, settings.LANDED_NOTE_MAX_TOKENS),
@@ -1194,7 +1212,12 @@ class TreeWork:
                     rounds=settings.LANDING_CONFLICT_ROUNDS,
                 )
             )
-            await self._say_to(commission_id, said, reason="what it changed clashes with its project's directory")
+            self._dones.pop(commission_id, None)
+            if not await self._say_to(commission_id, said, reason="what it changed clashes with its project's directory"):
+                # Nobody could be told to merge it: not left at work for nobody.
+                return await self._not_landed(
+                    row, commission, done, REASON_CONFLICT, rounds=row.rounds, conflicts=result.conflicts
+                )
             return "resolving"
         if result.status == "conflict":
             return await self._not_landed(
@@ -1493,6 +1516,10 @@ class TreeWork:
                 raise LookupError(tree_id)
             if row.state not in states or tree_id in self._tree_of.values():
                 raise ValueError("at_work")
+            if row.commission_id and await self._still_at_it_in(row):
+                # Its commission was stopped and the run has not gone yet (it was kept without a
+                # look for that): not landed or removed under a tool that is finishing a write.
+                raise ValueError("at_work")
             if row.commission_id:
                 self._decided_for[tree_id] = row.commission_id
             yield row
@@ -1538,14 +1565,16 @@ class TreeWork:
                 await asyncio.shield(self._ledger.update_tree(row.id, state=was.state, rounds=was.rounds, checks=was.checks))
                 raise
             try:
-                return await self._landed_at_the_users_word(tree_id, row, handle, result)
+                return await self._landed_at_the_users_word(tree_id, row, handle, result, was.state == "kept")
             except BaseException:
                 # What follows the merge was cut off or failed: one still on record as being landed
                 # is the user's to decide on again, and does not stay so until the host starts anew.
                 await asyncio.shield(self._ledger.update_tree(row.id, was=("landing",), state="unlanded", reason=REASON_FAILED))
                 raise
 
-    async def _landed_at_the_users_word(self, tree_id: str, row: Tree, handle: Any, result: Any) -> dict[str, Any]:
+    async def _landed_at_the_users_word(
+        self, tree_id: str, row: Tree, handle: Any, result: Any, was_kept: bool = False
+    ) -> dict[str, Any]:
         """Act on what a merge the user asked for came to; returns what ``land_tree`` answers."""
         from config import nekopower_settings as settings
         from config.prompts import prompts_nekopower_brain as texts
@@ -1572,6 +1601,8 @@ class TreeWork:
                 await self._keep_for_skipped(row, result.skipped)
             else:
                 await self._remove_tree(row, handle)
+            # (Read as it is settled: its commission may have gone on in another worktree meanwhile.)
+            commission = await self._ledger.get(row.commission_id) if row.commission_id else None
             if commission is not None and commission.status == "blocked" and self._stuck_over(row, commission):
                 text = (
                     texts.TREE_LANDED_LATER.format(files=files_text(files, more, settings.LANDED_NOTE_MAX_TOKENS))
@@ -1638,7 +1669,10 @@ class TreeWork:
                 if await self._take_up_again(commission.id, said):
                     answer["resolving"] = True
                     return answer
-            await self._ledger.update_tree(row.id, state="unlanded", reason=REASON_CONFLICT, conflicts=result.conflicts)
+            # (One the user sees to personally stays that: its commission goes on in another.)
+            await self._ledger.update_tree(
+                row.id, state="kept" if was_kept else "unlanded", reason=REASON_CONFLICT, conflicts=result.conflicts
+            )
             return answer
         await self._ledger.update_tree(row.id, state="unlanded", reason=REASON_FAILED)
         if result.kept_copies:
@@ -1699,9 +1733,10 @@ class TreeWork:
             if handle is None and not await self._tree_is_gone(row):
                 # There, and not to be opened this moment: nothing of it could be removed.
                 raise ValueError("not_opened")
-            stuck = self._stuck_over(row, await self._ledger.get(row.commission_id) if row.commission_id else None)
             removed = await self._remove_tree(row, handle, discarded=True)
             await self._note_tree_event(row.commission_id, "tree_discarded", {"tree": row.id, "path": row.workdir})
+            # (Read as it is settled: its commission may have gone on in another worktree meanwhile.)
+            stuck = self._stuck_over(row, await self._ledger.get(row.commission_id) if row.commission_id else None)
             if row.commission_id and stuck:
                 moved = await self._ledger.transition(
                     row.commission_id, "cancelled", reason="the user discarded what it changed", only_from=("blocked",)
