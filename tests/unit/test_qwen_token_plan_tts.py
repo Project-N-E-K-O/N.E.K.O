@@ -301,13 +301,17 @@ def _wav(pcm: bytes, rate: int, channels: int = 1) -> bytes:
     return buf.getvalue()
 
 
-def _extensible_wav(pcm: bytes, rate: int, channels: int = 1) -> bytes:
+_PCM_SUBFORMAT = b"\x01\x00\x00\x00\x00\x00\x10\x00\x80\x00\x00\xaa\x00\x38\x9b\x71"
+
+
+def _extensible_wav(pcm: bytes, rate: int, channels: int = 1, *, subformat: bytes = _PCM_SUBFORMAT,
+                    cb_size: int = 22) -> bytes:
     """A WAVE_FORMAT_EXTENSIBLE header (rejected by Python 3.11's ``wave``) plus a LIST chunk."""
     import struct
 
     align = 2 * channels
     fmt = struct.pack("<HHIIHH", 0xFFFE, channels, rate, rate * align, align, 16)
-    fmt += struct.pack("<HHI", 22, 16, 0) + b"\x01\x00\x00\x00\x00\x00\x10\x00\x80\x00\x00\xaa\x00\x38\x9b\x71"
+    fmt += (struct.pack("<HHI", cb_size, 16, 0) + subformat)[: 2 + cb_size]
     body = b"WAVE" + b"fmt " + struct.pack("<I", len(fmt)) + fmt
     body += b"LIST" + struct.pack("<I", 3) + b"abc\x00"  # odd size: padded
     body += b"data" + struct.pack("<I", len(pcm)) + pcm
@@ -341,7 +345,11 @@ def test_worker_skips_wav_header_of_downloaded_result(monkeypatch, rate, channel
 @pytest.mark.parametrize("wav, reason", [
     (b"RIFF\x10\x00\x00\x00WAVEjunk", "invalid WAV audio"),
     (None, "sample width: 8 bit"),
-])
+    # IEEE float data in a 16-bit extensible container is not PCM16.
+    (_extensible_wav(b"\x00\x00" * 8, 24000, subformat=b"\x03" + _PCM_SUBFORMAT[1:]), "non-PCM extensible"),
+    # An extensible header cut short before its SubFormat GUID.
+    (_extensible_wav(b"\x00\x00" * 8, 24000, cb_size=0), "non-PCM extensible"),
+], ids=["garbage", "8-bit", "extensible-float", "extensible-truncated"])
 def test_unsupported_downloaded_wav_is_reported(wav, reason):
     import struct
 

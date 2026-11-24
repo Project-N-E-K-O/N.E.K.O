@@ -48,6 +48,8 @@ logger = get_module_logger(__name__, "Main")
 _PROVIDER_KEY = "qwen_token_plan"
 _WAVE_FORMAT_PCM = 0x0001
 _WAVE_FORMAT_EXTENSIBLE = 0xFFFE
+# KSDATAFORMAT_SUBTYPE_PCM as stored in a WAVEFORMATEXTENSIBLE header.
+_WAVE_SUBFORMAT_PCM = bytes.fromhex("0100000000001000800000aa00389b71")
 
 
 def _decode_downloaded_audio(data: bytes) -> tuple[bytes, int]:
@@ -62,6 +64,7 @@ def _decode_downloaded_audio(data: bytes) -> tuple[bytes, int]:
     if data[8:12] != b"WAVE":
         raise QwenTokenPlanTtsError("invalid WAV audio")
     fmt = None
+    fmt_body = b""
     frames = None
     pos = 12
     while pos + 8 <= len(data):
@@ -70,6 +73,7 @@ def _decode_downloaded_audio(data: bytes) -> tuple[bytes, int]:
         body = data[pos + 8:pos + 8 + size]
         if chunk_id == b"fmt " and len(body) >= 16:
             fmt = struct.unpack("<HHIIHH", body[:16])
+            fmt_body = body
         elif chunk_id == b"data":
             frames = body  # A truncated or streamed data chunk keeps what arrived.
             break
@@ -77,6 +81,12 @@ def _decode_downloaded_audio(data: bytes) -> tuple[bytes, int]:
     if fmt is None or frames is None:
         raise QwenTokenPlanTtsError("invalid WAV audio")
     format_tag, channels, sample_rate, _byte_rate, _align, bits = fmt
+    if format_tag == _WAVE_FORMAT_EXTENSIBLE:
+        # The real encoding is the SubFormat GUID; float or compressed data may
+        # also sit in a 16-bit container and must not be played as PCM16.
+        cb_size = int.from_bytes(fmt_body[16:18], "little") if len(fmt_body) >= 18 else 0
+        if cb_size < 22 or len(fmt_body) < 40 or fmt_body[24:40] != _WAVE_SUBFORMAT_PCM:
+            raise QwenTokenPlanTtsError("unsupported WAV format: non-PCM extensible")
     if format_tag not in (_WAVE_FORMAT_PCM, _WAVE_FORMAT_EXTENSIBLE) or channels < 1 or not sample_rate:
         raise QwenTokenPlanTtsError(f"unsupported WAV format: {format_tag}")
     if bits != 16:
