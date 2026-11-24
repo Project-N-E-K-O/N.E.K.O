@@ -369,7 +369,8 @@ def test_doing_it_over_from_the_start_is_not_asking_for_another_task_agent():
     for text in (
         "让 Report Writer 把那份周报重新开始写一遍", "Report Writer 重新开个头", "請 Report Writer 重新開一下那個本地服務",
         "让 Report Writer 重新开一个页面放图表", "让 Report Writer 重新开一个对话框查看导出设置",
-        "請 Report Writer 重新開一個對話框",
+        "請 Report Writer 重新開一個對話框", "让 Report Writer 重新开一个对话窗口查看导出设置",
+        "請 Report Writer 重新開一個對話視窗",
     ):
         begun = orch.by_rules(text, "", standing, bars)
         assert begun is not None and (begun.action, begun.agent) == (orch.CONTINUE, "writer"), text
