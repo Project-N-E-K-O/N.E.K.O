@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest'
 
 const consentDir = dirname(fileURLToPath(import.meta.url))
 const srcDir = resolve(consentDir, '../..')
+const projectRoot = resolve(srcDir, '..')
 const consentTesting = resolve(consentDir, 'testing')
 
 const SOURCE_FILE = /\.(?:[cm]?[jt]sx?|vue)$/
@@ -79,6 +80,8 @@ function resolveSpecifier(file: string, specifier: string): string | null {
   let target: string
   if (path.startsWith('@/')) target = resolve(srcDir, path.slice(2))
   else if (path.startsWith('.')) target = resolve(dirname(file), path)
+  // Vite resolves root-absolute paths such as `/src/...` from the project root.
+  else if (path.startsWith('/')) target = resolve(projectRoot, path.slice(1))
   else return null
   return target.replace(SCRIPT_EXTENSION, '')
 }
@@ -116,9 +119,10 @@ describe('plugin-consent/testing stays test-only', () => {
           'const b = import(\n  // why\n  `./i18n/plugin-consent/testing`\n)',
           "export * as ns from './i18n/plugin-consent/testing'",
           "const re = /'/; const c = import('@/i18n/plugin-consent/testing')",
+          "import d from '/src/i18n/plugin-consent/testing'",
         ].join('\n'),
       ),
-    ).toEqual(Array(5).fill(consentTesting))
+    ).toEqual(Array(6).fill(consentTesting))
   })
 
   it('is not imported by any app source file', () => {

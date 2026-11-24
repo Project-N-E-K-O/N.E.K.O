@@ -14,15 +14,21 @@ import skipFormatting from '@vue/eslint-config-prettier/skip-formatting'
 // also `./testing`. Specifiers are matched as written, not resolved, and only
 // plain string ones: template-literal or concatenated `import()` paths are not.
 // The unit test in `src/i18n/plugin-consent/testing.guard.test.ts` resolves them.
-const CONSENT_TESTING_IMPORT = /(^|\/)plugin-consent\/(\.\/)*testing(\.[cm]?[jt]s)?(\?.*)?$/
+const CONSENT_TESTING_IMPORT = /(^|\/)plugin-consent\/(\.\/)*testing(\.[cm]?[jt]sx?)?(\?.*)?$/
 const CONSENT_TESTING_SIBLING_IMPORT = new RegExp(
-  `${CONSENT_TESTING_IMPORT.source}|^(\\./)+testing(\\.[cm]?[jt]s)?(\\?.*)?$`,
+  `${CONSENT_TESTING_IMPORT.source}|^(\\./)+testing(\\.[cm]?[jt]sx?)?(\\?.*)?$`,
 )
+// Same file set as the unit test in `src/i18n/plugin-consent/testing.guard.test.ts`.
+const SOURCE_FILES = '*.{js,mjs,cjs,jsx,ts,mts,cts,tsx,vue}'
 const TEST_FILES = ['src/**/*.{test,spec}.*', 'src/**/__tests__/**', 'src/**/e2e/**']
 const CONSENT_TESTING_MESSAGE =
   'plugin-consent/testing loads every language and is for tests only. ' +
   'App code should go through the per-language bundles (see src/i18n/localeBundles.ts).'
 
+// Flat config replaces, not merges, the options of a rule set again by a later
+// config object. Any future `no-restricted-imports` / `no-restricted-syntax`
+// for `src/**` must include these entries (spread `forbidConsentTesting(...)`),
+// or it will silently drop this guard.
 function forbidConsentTesting(importSource: RegExp): Linter.RulesRecord {
   return {
     'no-restricted-imports': [
@@ -59,13 +65,13 @@ export default defineConfigWithVueTs(
   // Test files (and the e2e helpers) are exempt.
   {
     name: 'app/no-consent-testing-import',
-    files: ['src/**/*.{ts,mts,tsx,vue}'],
+    files: [`src/**/${SOURCE_FILES}`],
     ignores: TEST_FILES,
     rules: forbidConsentTesting(CONSENT_TESTING_IMPORT),
   },
   {
     name: 'app/no-consent-testing-import-sibling',
-    files: ['src/i18n/plugin-consent/**/*.{ts,mts,tsx,vue}'],
+    files: [`src/i18n/plugin-consent/**/${SOURCE_FILES}`],
     ignores: TEST_FILES,
     rules: forbidConsentTesting(CONSENT_TESTING_SIBLING_IMPORT),
   },
