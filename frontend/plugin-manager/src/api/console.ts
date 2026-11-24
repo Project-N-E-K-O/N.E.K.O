@@ -320,6 +320,10 @@ export interface Landing {
   resolving: boolean
   detail: string
   kept_copies?: string[]
+  /** Changed outside the project's directory, elsewhere in its repository: landed with the rest. */
+  outside?: string[]
+  /** Not carried over (too large, a repository of their own): still in the worktree, which stays. */
+  skipped?: string[]
 }
 
 export interface LandingSettings {
@@ -327,6 +331,8 @@ export interface LandingSettings {
   mode: 'auto' | 'ask'
   /** Whether an inspector looks at what was changed before every landing. */
   inspect: boolean
+  /** How many worktrees a project may have, those the user sees to included; no setting of the user's. */
+  worktrees_per_project?: number
 }
 
 export interface BoardProject {

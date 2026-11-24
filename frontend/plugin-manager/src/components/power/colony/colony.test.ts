@@ -1111,6 +1111,14 @@ describe('several familiars at work in one project', () => {
     // A reason the page has no words for: the words of the kind.
     expect(describeEntry(entry('not_landed', { session_id: 'kid', text: 'D:/wt', detail: { reason: 'new' } }), nameOf, t, te))
       .toBe(t('power.activity.kinds.not_landed', { who: 'Kid', text: 'D:/wt' }))
+    // What landed outside the project folder, and what was not carried over, is said after it.
+    const outside = describeEntry(entry('landed', { session_id: 'kid', detail: { files, more: 0, lines_added: 1, lines_deleted: 0, outside: ['x', 'y'], skipped: ['z'] } }), nameOf, t, te)
+    expect(outside).toBe([
+      t('power.activity.kinds.landed', { who: 'Kid', files: 2, added: 1, deleted: 0 }),
+      t('power.activity.landedOutside', { count: 2 }), t('power.activity.landedSkipped', { count: 1 }),
+    ].join(' '))
+    expect(describeEntry(entry('not_landed', { session_id: 'kid', text: 'D:/wt', detail: { reason: 'skipped' } }), nameOf, t, te))
+      .toBe(t('power.activity.kinds.not_landed_skipped', { who: 'Kid', text: 'D:/wt' }))
     for (const verdict of ['pass', 'fail', 'none']) {
       const said = describeEntry(entry('inspected', { session_id: 'kid', detail: { verdict, round: 1 } }), nameOf, t, te)
       expect(said).toBe(t(`power.activity.kinds.inspected_${verdict}`, { who: 'Kid', round: 1 }))

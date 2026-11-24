@@ -137,6 +137,9 @@ describe('what a familiar asks the user', () => {
       { name: 'count', label: words.ask.facts.count, value: '2' },
       { name: 'tree', label: words.ask.facts.tree, value: words.ask.treeNote },
     ])
+    // Where the kind of each is given apart, it is said by its name.
+    const named = { ...team, detail: { ...team.detail, parts: [{ preset: 'worker', description: 'a' }, { preset: 'translator', description: 'b' }] } }
+    expect(askFacts(named, t, te)[0]).toEqual({ name: 'members', label: words.ask.facts.members, value: `· ${words.home.presets.worker}: a\n· translator: b` })
     // A tool the pages have no words for is named as it is.
     expect(askLines({ category: 'open_session', detail: { tool: 'brand_new' } }, t, te)[0]).toContain('brand_new')
     expect(askFacts({ category: 'open_session', detail: { preset: 'translator' } }, t, te)[0].value).toBe('translator')

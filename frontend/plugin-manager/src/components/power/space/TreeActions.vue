@@ -6,13 +6,14 @@
     </p>
     <p v-if="title" class="muted">{{ title }}</p>
     <p v-if="tree.conflicts.length" class="muted" data-testid="tree-conflicts">
-      {{ t('power.trees.conflicts', { files: tree.conflicts.slice(0, CONFLICTS_SHOWN).join(', ') }) }}
+      {{ t(skipped ? 'power.trees.skippedFiles' : 'power.trees.conflicts', { files: tree.conflicts.slice(0, CONFLICTS_SHOWN).join(', ') }) }}
       <template v-if="tree.conflicts.length > CONFLICTS_SHOWN">{{ t('power.trees.conflictsMore', { count: tree.conflicts.length - CONFLICTS_SHOWN }) }}</template>
     </p>
     <p class="muted path" data-testid="tree-path">{{ t('power.trees.where', { path: tree.workdir || tree.path }) }}</p>
 
     <div v-if="decides" class="buttons">
-      <el-button type="primary" size="small" :loading="busy === 'land'" :disabled="busy !== ''" data-testid="tree-land" @click="land">
+      <!-- What was not carried over is not carried over by trying again either. -->
+      <el-button v-if="!skipped" type="primary" size="small" :loading="busy === 'land'" :disabled="busy !== ''" data-testid="tree-land" @click="land">
         {{ retries ? t('power.trees.retry') : t('power.trees.land') }}
       </el-button>
       <el-button size="small" :disabled="busy !== ''" data-testid="tree-discard" @click="discarding = true">{{ t('power.trees.discard') }}</el-button>
@@ -27,6 +28,7 @@
     <el-dialog v-model="discarding" :title="t('power.trees.discardTitle')" width="460px" append-to-body>
       <p>{{ title || tree.id }}</p>
       <p class="muted">{{ t('power.trees.discardText', { path: tree.workdir || tree.path }) }}</p>
+      <p v-if="skipped" class="warn" data-testid="tree-discard-skipped">{{ t('power.trees.discardSkipped', { files: tree.conflicts.join(', ') }) }}</p>
       <template #footer>
         <el-button @click="discarding = false">{{ t('common.cancel') }}</el-button>
         <el-button type="danger" :loading="busy === 'discard'" data-testid="tree-discard-confirm" @click="discard">{{ t('power.trees.discard') }}</el-button>
@@ -59,6 +61,8 @@ const CONFLICTS_SHOWN = 5
 
 // Merging once more is trying again, but for one an inspector did not pass: the host merges that
 // one without another inspection, which is merging it as the user says.
+// What was merged landed but for files that are never carried over, which stay in it (`conflicts` names them).
+const skipped = computed(() => props.tree.state === 'unlanded' && props.tree.reason === 'skipped')
 const retries = computed(() => props.tree.state === 'unlanded' && props.tree.reason !== 'inspection')
 /** The states the user decides on; in the others it is at work. */
 const decides = computed(() => ['held', 'unlanded', 'kept'].includes(props.tree.state))
@@ -81,8 +85,14 @@ watch(() => props.tree.id, () => {
 
 /** What came of landing it, in words. */
 function landed(result: Landing): string {
-  if (result.status === 'landed') return t('power.trees.landed', { count: result.files.length + result.more })
-  if (result.status === 'unchanged') return t('power.trees.unchanged')
+  if (result.status === 'landed' || result.status === 'unchanged') {
+    // What changed outside the project's directory landed without being asked about; what was not
+    // carried over stays in the worktree.
+    const told = [result.status === 'landed' ? t('power.trees.landed', { count: result.files.length + result.more }) : t('power.trees.unchanged')]
+    if (result.outside?.length) told.push(t('power.trees.outsideNote', { files: result.outside.join(', ') }))
+    if (result.skipped?.length) told.push(t('power.trees.skippedNote', { files: result.skipped.join(', ') }))
+    return told.join(' ')
+  }
   if (result.status === 'conflict') return result.resolving ? t('power.trees.resolving') : t('power.trees.stillClashes')
   const kept = result.kept_copies?.length ? ` ${t('power.trees.keptCopies', { paths: result.kept_copies.join(', ') })}` : ''
   return `${t('power.trees.failed', { detail: result.detail || '—' })}${kept}`
@@ -126,5 +136,6 @@ async function discard() {
 .path { font-family: Consolas, Menlo, monospace; }
 .buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .buttons .el-button + .el-button { margin-left: 0; }
+.warn { margin: 8px 0 0; font-size: 13px; color: var(--el-color-danger); overflow-wrap: anywhere; }
 .error { margin: 6px 0 0; color: var(--el-color-danger); font-size: 12px; }
 </style>

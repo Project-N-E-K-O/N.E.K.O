@@ -77,8 +77,18 @@ const SHOWN_APART = new Set(['command', 'path', 'tool'])
 export function askFacts(ask: BoardAsk, t: Translate, te: Exists): Array<{ name: string; label: string; value: string }> {
   const facts = []
   const detail = ask.detail ?? {}
-  // A team is said one familiar a line (`members`); its `title` is the same in one line.
-  const members = Array.isArray(detail.members) ? detail.members.filter((item): item is string => typeof item === 'string' && item !== '') : []
+  // A team is said one familiar a line (`members`); its `title` is the same in one line. Where the
+  // service names the kind of each apart (`parts`), the kind is said by the name the pages give it.
+  const parts = (Array.isArray(detail.parts) ? detail.parts : [])
+    .filter((item): item is { preset?: unknown; description?: unknown } => !!item && typeof item === 'object')
+    .map(item => {
+      const preset = typeof item.preset === 'string' ? item.preset : ''
+      const kind = te(`power.home.presets.${preset}`) ? t(`power.home.presets.${preset}`) : preset
+      return [kind, typeof item.description === 'string' ? item.description : ''].filter(Boolean).join(': ')
+    })
+    .filter(Boolean)
+  const strings = Array.isArray(detail.members) ? detail.members.filter((item): item is string => typeof item === 'string' && item !== '') : []
+  const members = parts.length ? parts : strings
   for (const [name, value] of Object.entries(detail)) {
     if (name === 'members' && members.length) {
       facts.push({ name, label: label(name, t, te), value: members.map(item => `· ${item}`).join('\n') })

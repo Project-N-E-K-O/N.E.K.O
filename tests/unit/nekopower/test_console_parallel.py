@@ -33,6 +33,7 @@ class _Console:
 
     def __init__(self, tmp_path: Path, *, character: str | None = "Lan") -> None:
         self.host = make_host(tmp_path, None, task_agent_model=fake_model, decision_llm=FakeDecisionLLM())
+        _no_reconciling(self.host)
         self.opened: list[Path] = []
 
         async def get_host() -> Any:
@@ -67,6 +68,20 @@ async def consoles() -> Any:
     yield make
     for console in made:
         await console.aclose()
+
+
+def _no_reconciling(host: Any) -> None:
+    """Keep the host from going through the worktrees on record as it is first used.
+
+    It would do so in the background, taking each in hand meanwhile; the
+    worktrees these tests put on record stand for what the user decides on,
+    and are no leftovers of an earlier run (``test_host_tree_work.py``).
+    """
+
+    async def nothing() -> dict[str, list[str]]:
+        return {"removed": [], "kept": []}
+
+    host.task_agents.reconcile_trees = nothing
 
 
 def _code(response: httpx.Response) -> tuple[int, str]:
@@ -168,6 +183,15 @@ async def test_a_member_that_cannot_be_added_is_refused_with_a_code(consoles, tm
     assert len((await console.host.board("Garden"))["projects"][0]["members"]) == 1
 
 
+async def test_a_project_with_as_many_members_as_it_may_takes_no_more(consoles, tmp_path, monkeypatch):
+    console = consoles(tmp_path)
+    await _project(console)
+    monkeypatch.setattr(settings, "PROJECT_MEMBERS_MAX", 2)
+    assert (await console.post("/familiars/member", {"project": "Garden"})).status_code == 200
+    assert _code(await console.post("/familiars/member", {"project": "Garden"})) == (409, "too_many_members")
+    assert len((await console.host.board("Garden"))["projects"][0]["members"]) == 2
+
+
 async def test_a_member_for_nobody_is_refused(consoles, tmp_path):
     console = consoles(tmp_path, character=None)
     made = await console.post("/familiars", {"name": "Garden", "preset": "general", "lanlan_name": "Lan"})
@@ -234,7 +258,10 @@ async def test_a_worktree_whose_directory_is_gone_is_said_to_be_and_can_be_disca
     console = consoles(tmp_path)
     await _project(console)
     tree = await _tree(console, tmp_path, "t1", "unlanded", reason="conflict")
-    # Its directory is there, but no git worktree of the repository on record.
+    # Its directory is there, and git cannot open it as a worktree: not now, maybe later.
+    assert _code(await console.post(f"/worktrees/{tree}/land")) == (409, "not_opened")
+    (tmp_path / "trees" / "t1").rmdir()
+    # Not there any more.
     assert _code(await console.post(f"/worktrees/{tree}/land")) == (409, "gone")
     assert (await console.host.ledger.get_tree(tree)).state == "unlanded"
     discarded = await console.post(f"/worktrees/{tree}/discard")
@@ -242,6 +269,19 @@ async def test_a_worktree_whose_directory_is_gone_is_said_to_be_and_can_be_disca
     assert discarded.json()["success"] is True and isinstance(discarded.json()["removed"], bool)
     assert await console.host.ledger.get_tree(tree) is None
     assert _code(await console.post(f"/worktrees/{tree}/discard")) == (404, "no_worktree")
+
+
+@pytest.mark.parametrize(("raised", "wanted"), [("not_opened", "not_opened"), ("something_new", "worktree_refused")])
+async def test_a_worktree_git_cannot_open_just_now_is_said_apart_from_one_that_is_gone(consoles, tmp_path, monkeypatch, raised, wanted):
+    console = consoles(tmp_path)
+    await _project(console)
+    tree = await _tree(console, tmp_path, "t1", "unlanded", reason="conflict")
+
+    async def refused(tree_id: str) -> Any:
+        raise ValueError(raised)
+
+    monkeypatch.setattr(console.host.task_agents, "land_tree", refused)
+    assert _code(await console.post(f"/worktrees/{tree}/land")) == (409, wanted)
 
 
 async def test_a_decision_on_a_worktree_while_another_is_carried_out_is_refused(consoles, tmp_path):
@@ -271,6 +311,7 @@ async def test_the_directory_of_a_worktree_is_shown_only_for_one_on_record(conso
 
 async def test_a_directory_that_cannot_be_shown_is_said_with_a_code(tmp_path):
     host = make_host(tmp_path, None, task_agent_model=fake_model, decision_llm=FakeDecisionLLM())
+    _no_reconciling(host)
 
     async def get_host() -> Any:
         return host
@@ -298,11 +339,15 @@ async def test_the_landing_settings_are_shown_and_set_one_at_a_time(consoles, tm
     console = consoles(tmp_path)
     shown = (await console.get("/landing")).json()
     assert (shown["success"], shown["mode"], shown["inspect"]) == (True, "auto", False)
+    # How many worktrees a project may have, for the page to say when one is full.
+    assert shown["worktrees_per_project"] == settings.WORKTREES_PER_PROJECT
     asked = (await console.post("/landing", {"mode": "ask"})).json()
     assert (asked["mode"], asked["inspect"]) == ("ask", False)
     inspected = (await console.post("/landing", {"inspect": True})).json()
     assert (inspected["mode"], inspected["inspect"]) == ("ask", True)
-    assert await console.host.landing_settings() == {"mode": "ask", "inspect": True}
+    assert {key: value for key, value in (await console.host.landing_settings()).items() if key != "worktrees_per_project"} == {
+        "mode": "ask", "inspect": True,
+    }
     both = (await console.post("/landing", {"mode": "auto", "inspect": False})).json()
     assert (both["mode"], both["inspect"]) == ("auto", False)
 
@@ -321,7 +366,8 @@ async def test_the_landing_settings_are_shown_and_set_one_at_a_time(consoles, tm
 async def test_a_landing_setting_that_is_none_is_refused_and_nothing_is_set(consoles, tmp_path, payload, wanted):
     console = consoles(tmp_path)
     assert _code(await console.post("/landing", payload)) == wanted
-    assert await console.host.landing_settings() == {"mode": "auto", "inspect": False}
+    assert (await console.host.landing_settings())["mode"] == "auto"
+    assert (await console.host.landing_settings())["inspect"] is False
 
 
 async def test_a_landing_setting_that_could_not_be_written_is_said_with_a_code(consoles, tmp_path, monkeypatch):

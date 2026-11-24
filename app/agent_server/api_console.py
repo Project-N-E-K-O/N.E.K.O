@@ -840,6 +840,9 @@ def build_console_router(
             raise _refuse(404, "no_project") from None
         except ValueError as exc:
             code = str(exc)
+            if code == "too_many_members":
+                # The project has as many members that take work as it may (``PROJECT_MEMBERS_MAX``).
+                raise _refuse(409, code) from None
             raise _refuse(400, code if code in ("no_character", "bad_preset") else "bad_name") from None
         return {"success": True, **made}
 
@@ -868,8 +871,9 @@ def build_console_router(
             return _refuse(404, "no_worktree")
         code = str(exc)
         # ``at_work``: its commission is under way; ``busy``: another decision on it is carried
-        # out; ``gone``: its directory is not there any more (it can be discarded).
-        return _refuse(409, code if code in ("at_work", "busy", "gone") else "worktree_refused")
+        # out; ``gone``: its directory is not there any more (it can be discarded); ``not_opened``:
+        # it is there and git could not open it just now (try again in a while).
+        return _refuse(409, code if code in ("at_work", "busy", "gone", "not_opened") else "worktree_refused")
 
     @router.get("/worktrees")
     async def list_worktrees(project: str | None = None) -> dict[str, Any]:

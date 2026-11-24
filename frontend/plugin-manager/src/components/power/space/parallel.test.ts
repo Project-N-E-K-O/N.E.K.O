@@ -128,6 +128,35 @@ describe('what a familiar changed in a worktree of its own', () => {
     expect(byTest('tree-keep')).toBeNull()
   })
 
+  it('of which files were not carried over offers no merging again, and warns that discarding takes them too', async () => {
+    api.discardWorktree.mockResolvedValue({ removed: true })
+    await mount(TreeActions, { tree: tree({ reason: 'skipped', conflicts: ['big.bin'] }) })
+    expect(byTest('tree-land')).toBeNull()
+    expect(byTest('tree-keep')).toBeTruthy()
+    expect(byTest('tree-actions')?.textContent).toContain(words.trees.reasons.skipped)
+    expect(byTest('tree-conflicts')?.textContent).toContain(words.trees.skippedFiles.replace('{files}', 'big.bin'))
+    await click(byTest('tree-discard'))
+    expect(byTest('tree-discard-skipped')?.textContent).toBe(words.trees.discardSkipped.replace('{files}', 'big.bin'))
+    cleanup?.()
+    // Of another reason nothing of the kind is said.
+    await mount(TreeActions, { tree: tree() })
+    await click(byTest('tree-discard'))
+    expect(byTest('tree-discard-skipped')).toBeNull()
+  })
+
+  it('that landed says what of it was outside the project folder and what was not carried over', async () => {
+    api.landWorktree.mockResolvedValue({
+      status: 'landed', files: [{ path: 'a.py' }], more: 0, conflicts: [], resolving: false, detail: '',
+      outside: ['../tools/x.py'], skipped: ['big.bin'],
+    })
+    await mount(TreeActions, { tree: tree({ state: 'held', reason: 'ask' }) })
+    await click(byTest('tree-land'))
+    const said = byTest('tree-note')?.textContent ?? ''
+    expect(said).toContain(words.trees.landed.replace('{count}', '1'))
+    expect(said).toContain(words.trees.outsideNote.replace('{files}', '../tools/x.py'))
+    expect(said).toContain(words.trees.skippedNote.replace('{files}', 'big.bin'))
+  })
+
   it.each(['making', 'active', 'landing', 'resolving'])('at work (%s) offers nothing to decide', async state => {
     await mount(TreeActions, { tree: tree({ state, reason: '' }) })
     expect(byTest('tree-actions')?.textContent).toContain(words.trees.states[state as keyof typeof words.trees.states])
@@ -221,6 +250,20 @@ describe('the worktrees of a project that wait for the user', () => {
     await click(byTest('tree-keep'))
     expect(byTest('tree-note')?.textContent).toBe(words.trees.keptNote)
     expect(byTest('trees-said')).toBeNull()
+  })
+
+  it('once a project has all it may, say so and which ones hold the places', async () => {
+    api.getLanding.mockResolvedValue({ mode: 'auto', inspect: false, worktrees_per_project: 2 })
+    api.listWorktrees.mockResolvedValue({ worktrees: [tree({ state: 'kept' }), tree({ id: 't2', state: 'active', reason: '', title: 'Fix the footer' })] })
+    await mount(ProjectTrees, { project: 'App' })
+    expect(byTest('trees-full')?.textContent).toBe(words.trees.full.replace('{used}', '2').replace('{most}', '2'))
+    expect([...document.querySelectorAll('[data-tree-held]')].map(item => item.getAttribute('data-tree-held'))).toEqual(['t2'])
+    expect(document.querySelector('[data-tree-held="t2"]')?.textContent).toContain('Fix the footer')
+    cleanup?.()
+    // Room left: nothing is said of it.
+    api.getLanding.mockResolvedValue({ mode: 'auto', inspect: false, worktrees_per_project: 3 })
+    await mount(ProjectTrees, { project: 'App' })
+    expect(byTest('trees-full')).toBeNull()
   })
 
   it('are not shown when none waits', async () => {

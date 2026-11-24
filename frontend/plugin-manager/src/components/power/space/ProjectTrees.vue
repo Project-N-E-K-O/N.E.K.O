@@ -1,5 +1,12 @@
 <template>
-  <section v-if="waiting.length || error || said" class="trees" data-testid="project-trees">
+  <section v-if="waiting.length || error || said || full" class="trees" data-testid="project-trees">
+    <!-- How many worktrees the project has and may: once it is full, which ones hold the places. -->
+    <template v-if="full">
+      <p class="full" role="status" data-testid="trees-full">{{ t('power.trees.full', { used: trees.length, most }) }}</p>
+      <p v-for="item in atWork" :key="item.id" class="muted" :data-tree-held="item.id">
+        · {{ [item.session_name, item.title].filter(Boolean).join(' · ') || item.id }} · {{ stateWords(item.state) }}
+      </p>
+    </template>
     <template v-if="waiting.length">
       <h4>{{ t('power.trees.waiting', { count: waiting.length }) }}</h4>
       <p class="muted">{{ t('power.trees.waitingHint') }}</p>
@@ -20,7 +27,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { listWorktrees } from '@/api/console'
+import { getLanding, listWorktrees } from '@/api/console'
 import type { Worktree } from '@/api/console'
 import { describeConsoleError } from '../powerFormat'
 import TreeActions from './TreeActions.vue'
@@ -44,6 +51,16 @@ const said = computed(() => (waiting.value.some(item => item.id === last.value.t
 let turn = 0
 
 const waiting = computed(() => trees.value.filter(item => ['held', 'unlanded', 'kept'].includes(item.state)))
+// How many a project may have; unknown until read (a service from before it says nothing of it).
+const most = ref(0)
+// Every one on record holds a place, those the user sees to included.
+const full = computed(() => most.value > 0 && trees.value.length >= most.value)
+const atWork = computed(() => trees.value.filter(item => !waiting.value.includes(item)))
+
+function stateWords(state: string): string {
+  const key = `power.trees.states.${state}`
+  return te(key) ? t(key) : state
+}
 
 async function load() {
   const mine = ++turn
@@ -69,6 +86,14 @@ watch(() => props.project, () => {
   void load()
 }, { immediate: true })
 watch(() => props.refresh, () => void load())
+// Read once: it is no setting the user changes.
+void (async () => {
+  try {
+    most.value = (await getLanding()).worktrees_per_project ?? 0
+  } catch {
+    // Not said: the list is shown without how many it may hold.
+  }
+})()
 defineExpose({ load })
 </script>
 
@@ -76,6 +101,7 @@ defineExpose({ load })
 .trees { margin-bottom: 14px; }
 h4 { margin: 0 0 2px; font-size: 13px; font-weight: 600; }
 .muted { margin: 0; color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.6; }
+.full { margin: 0 0 4px; font-size: 13px; color: var(--el-color-warning); }
 .said { margin: 4px 0 0; font-size: 12px; color: var(--el-color-success); }
 .error { margin: 6px 0 0; color: var(--el-color-danger); font-size: 12px; }
 </style>

@@ -209,7 +209,15 @@ export function describeEntry(
   const outcome = how === true ? 'user' : typeof how === 'string' ? how : ''
   if (outcome && te(`${key}_${outcome}`)) key = `${key}_${outcome}`
   if (!te(key)) return [who, entry.kind, text].filter(Boolean).join(' · ')
-  return t(key, { who, peer, text, ...figures(entry, t, te) }).replace(/[\s：:]+$/u, '')
+  const line = t(key, { who, peer, text, ...figures(entry, t, te) }).replace(/[\s：:]+$/u, '')
+  // Of a landing: what landed outside the project's directory was not asked about; what was not
+  // carried over stays in the worktree. No other kind says either.
+  const told = [line]
+  for (const [field, words] of [['outside', 'power.activity.landedOutside'], ['skipped', 'power.activity.landedSkipped']] as const) {
+    const files = entry.detail?.[field]
+    if (Array.isArray(files) && files.length) told.push(t(words, { count: files.length }))
+  }
+  return told.join(' ')
 }
 
 // Which field of its `detail` tells the words of an entry apart; `outcome` for the others.

@@ -1873,7 +1873,7 @@ token 数是本地按 `count_tokens` 数的。
 
 - 项目的「使魔」页签上：「召唤使魔」（`POST /console/familiars/member` → `host.open_member`，职能里不给猫老大；在不在副本里干由宿主定，建好后页面照它回的 `seat` 说一句）；项目没有老大时多一个「配一只猫老大」（先确认，`POST /console/space/projects/leader` → `host.derive_leader`）。都不调模型。
 - 群落：`team` 相同、在场的两只以上画一个虚线框「同一支队伍」，跟着站位移动。
-- 组队时的问话（`open_session`，`detail.tool = start_team`）：工具名换成「组队」，队员一只一行，`title`（同样的内容拼成一行）不再重复显示，`tree: true` 显示成「在自己的独立副本里改，做完合回项目目录」。老大转交的问话同理（「交给另一只使魔」）。
+- 组队时的问话（`open_session`，`detail.tool = start_team`）：工具名换成「组队」，队员一只一行（有 `detail.parts` 时职能按页面的叫法显示），`title`（同样的内容拼成一行）不再重复显示，`tree: true` 显示成「在自己的独立副本里改，做完合回项目目录」。老大转交的问话同理（「交给另一只使魔」）。
 - 时间线 9 种新种类都有八种语言的说法：`landed`、`landing_conflict` 按是不是用户点的分两种说法，`not_landed` 按原因、`inspected` 按结论分。回放里撞了算在自己合、没合回去 / 先问我算等用户，委托因此卡住时不画成闲着；用户决定以后回到闲着（那只成员那时已经在干别的就不动）。
 
 **对话搜索、已归档项目的使魔**
