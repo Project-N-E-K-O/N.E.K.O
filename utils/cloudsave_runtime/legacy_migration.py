@@ -817,6 +817,16 @@ def import_legacy_runtime_root_if_needed(config_manager) -> dict[str, Any]:
         ):
             continue
 
+        from utils.model_workshop_storage import ModelWorkshopStorageError, inspect_model_workshop_metadata
+        try:
+            inspect_model_workshop_metadata(source_root)
+        except ModelWorkshopStorageError as error:
+            # Preserve the original root; never transplant an unfinished commit
+            # into a fresh runtime where its identities cannot be recovered.
+            logger.warning("Legacy runtime import deferred: %s", str(error))
+            return {"migrated": False, "source": str(source_root), "copied_paths": [],
+                    "backup_path": "", "repair_reason": "", "result": "legacy_root_" + str(error)}
+
         source_summary = _runtime_root_summary(config_manager, source_root)
         should_repair, repair_reason = _legacy_root_provides_repair_benefit(
             config_manager,

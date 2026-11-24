@@ -102,7 +102,11 @@ class Snapshot:
         """Resolve only trusted entry/root/stem identities, never a filename prefix."""
         if not isinstance(value, str):
             return None
-        local = local_path(self.paths, value) if self.paths else None
+        is_url = value.startswith("/") or "://" in value
+        try:
+            local = local_path(self.paths, value) if self.paths and is_url else None
+        except ValueError:
+            local = None
         for row in self.records:
             if row["model_format"] != kind:
                 continue
