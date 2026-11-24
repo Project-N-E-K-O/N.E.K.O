@@ -461,7 +461,7 @@ def prune_uninstalled_plugin_grants(manager) -> list[str]:
     """Drop grant records left behind by plugins that were uninstalled.
 
     An uninstall leaves the records in place when the permission store was
-    unusable at the time (see ``_UNUSABLE_STORE_CODES``). Run once at startup,
+    unusable at the time (see ``UNUSABLE_STORE_CODES``). Run once at startup,
     after the install-source reconcile, under the plugin operation lock.
 
     A record is dropped only when the lock proves the plugin uninstalled, no
