@@ -162,7 +162,7 @@ def test_copy_fallback_when_move_fails(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.setattr(Path, "unlink", unlink)
     logger = _Logger()
 
-    assert _migrate_legacy_inbox(legacy, target, logger) is True
+    assert _migrate_legacy_inbox(legacy, target, logger) == companion._MIGRATION_DONE
 
     assert json.loads(target.read_text(encoding="utf-8")) == _legacy_payload()
     assert legacy.is_file()  # could not be removed, left in place
@@ -406,12 +406,46 @@ def test_data_inbox_with_bad_encoding_loads_as_empty(tmp_path: Path) -> None:
     assert InboxQueue(str(path)).pending() == []
 
 
-def test_uninspectable_paths_without_legacy_file_open_the_inbox(
+def test_uninspectable_paths_keep_existing_data_inbox(
     plugin: ClaudeCompanionPlugin, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Migration could not inspect the paths and there is no legacy file to
-    # read: nothing waits for migration, so the inbox opens as usual.
-    monkeypatch.setattr(companion, "_migrate_legacy_inbox", lambda *_args: False)
+    legacy = companion._LEGACY_INBOX_PATH
+    _write_legacy(legacy)
+    target = plugin.data_path("inbox.json")
+    target.parent.mkdir(parents=True)
+    newer = json.dumps([dict(_legacy_payload()[0], id="newer001", content="newer")])
+    target.write_text(newer, encoding="utf-8")
+    real_exists = Path.exists
+
+    def exists(self: Path) -> bool:
+        if self == target:
+            raise PermissionError("denied")
+        return real_exists(self)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(Path, "exists", exists)
+        plugin._init_inbox()
+
+    # The target's state is unknown: the inbox stays closed and neither file
+    # is touched, so the newer data inbox is not replaced by the legacy copy.
+    assert plugin._inbox is None
+    assert target.read_text(encoding="utf-8") == newer
+    assert legacy.is_file()
+    assert [level for level, _msg, _args in plugin.logger.lines] == ["warning", "warning"]
+    assert _SECRET not in plugin.logger.text()
+
+    plugin._init_inbox()
+
+    assert [m["id"] for m in plugin._inbox.pending()] == ["newer001"]
+    assert not legacy.exists()
+
+
+def test_pending_migration_without_legacy_file_opens_the_inbox(
+    plugin: ClaudeCompanionPlugin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The legacy file vanished between the migration attempt and the read:
+    # the target is known not to exist, so the inbox opens as usual.
+    monkeypatch.setattr(companion, "_migrate_legacy_inbox", lambda *_args: companion._MIGRATION_PENDING)
 
     plugin._init_inbox()
 
