@@ -301,15 +301,29 @@ def _wav(pcm: bytes, rate: int, channels: int = 1) -> bytes:
     return buf.getvalue()
 
 
+def _extensible_wav(pcm: bytes, rate: int, channels: int = 1) -> bytes:
+    """A WAVE_FORMAT_EXTENSIBLE header (rejected by Python 3.11's ``wave``) plus a LIST chunk."""
+    import struct
+
+    align = 2 * channels
+    fmt = struct.pack("<HHIIHH", 0xFFFE, channels, rate, rate * align, align, 16)
+    fmt += struct.pack("<HHI", 22, 16, 0) + b"\x01\x00\x00\x00\x00\x00\x10\x00\x80\x00\x00\xaa\x00\x38\x9b\x71"
+    body = b"WAVE" + b"fmt " + struct.pack("<I", len(fmt)) + fmt
+    body += b"LIST" + struct.pack("<I", 3) + b"abc\x00"  # odd size: padded
+    body += b"data" + struct.pack("<I", len(pcm)) + pcm
+    return b"RIFF" + struct.pack("<I", len(body)) + body
+
+
 @pytest.mark.unit
+@pytest.mark.parametrize("make_wav", [_wav, _extensible_wav])
 @pytest.mark.parametrize("rate, channels", [(24000, 1), (16000, 2)])
-def test_worker_skips_wav_header_of_downloaded_result(monkeypatch, rate, channels):
+def test_worker_skips_wav_header_of_downloaded_result(monkeypatch, rate, channels, make_wav):
     samples = 960
     pcm = np.full(samples * channels, 1000, dtype="<i2").tobytes()
 
     def handler(request):
         if request.method == "GET":
-            return httpx.Response(200, content=_wav(pcm, rate, channels))
+            return httpx.Response(200, content=make_wav(pcm, rate, channels))
         return httpx.Response(200, json={"output": {"finish_reason": "stop",
                                                     "audio": {"url": "https://oss.example/a.wav"}}})
 
@@ -321,6 +335,21 @@ def test_worker_skips_wav_header_of_downloaded_result(monkeypatch, rate, channel
     # A header played as samples shows up as values far from the constant tone.
     assert out[len(out) // 4: 3 * len(out) // 4].min() > 500
     assert out.max() < 2000
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("wav, reason", [
+    (b"RIFF\x10\x00\x00\x00WAVEjunk", "invalid WAV audio"),
+    (None, "sample width: 8 bit"),
+])
+def test_unsupported_downloaded_wav_is_reported(wav, reason):
+    import struct
+
+    if wav is None:
+        fmt = struct.pack("<HHIIHH", 1, 1, 24000, 24000, 1, 8)
+        wav = b"RIFF\x00\x00\x00\x00WAVEfmt " + struct.pack("<I", 16) + fmt + b"data\x02\x00\x00\x00\x80\x80"
+    with pytest.raises(QwenTokenPlanTtsError, match=reason):
+        worker_module._decode_downloaded_audio(wav)
 
 
 @pytest.mark.unit

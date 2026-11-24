@@ -16,9 +16,8 @@
 
 from __future__ import annotations
 
-import io
 import json
-import wave
+import struct
 from functools import partial
 
 import numpy as np
@@ -47,26 +46,41 @@ from .dummy import dummy_tts_worker
 logger = get_module_logger(__name__, "Main")
 
 _PROVIDER_KEY = "qwen_token_plan"
+_WAVE_FORMAT_PCM = 0x0001
+_WAVE_FORMAT_EXTENSIBLE = 0xFFFE
 
 
 def _decode_downloaded_audio(data: bytes) -> tuple[bytes, int]:
     """Raw PCM16 mono and its sample rate from a downloaded result file.
 
     The request asks for raw PCM, but the signed result file may still be a WAV;
-    its RIFF header must not be played as samples.
+    its RIFF header must not be played as samples. Chunks are read directly
+    because Python 3.11's ``wave`` rejects WAVE_FORMAT_EXTENSIBLE headers.
     """
     if data[:4] != b"RIFF":
         return data, QWEN_TOKEN_PLAN_TTS_SAMPLE_RATE
-    try:
-        with wave.open(io.BytesIO(data), "rb") as wav:
-            sample_rate = wav.getframerate()
-            channels = wav.getnchannels()
-            sample_width = wav.getsampwidth()
-            frames = wav.readframes(wav.getnframes())
-    except (wave.Error, EOFError) as exc:
-        raise QwenTokenPlanTtsError("invalid WAV audio") from exc
-    if sample_width != 2:
-        raise QwenTokenPlanTtsError(f"unsupported WAV sample width: {sample_width * 8} bit")
+    if data[8:12] != b"WAVE":
+        raise QwenTokenPlanTtsError("invalid WAV audio")
+    fmt = None
+    frames = None
+    pos = 12
+    while pos + 8 <= len(data):
+        chunk_id = data[pos:pos + 4]
+        size = int.from_bytes(data[pos + 4:pos + 8], "little")
+        body = data[pos + 8:pos + 8 + size]
+        if chunk_id == b"fmt " and len(body) >= 16:
+            fmt = struct.unpack("<HHIIHH", body[:16])
+        elif chunk_id == b"data":
+            frames = body  # A truncated or streamed data chunk keeps what arrived.
+            break
+        pos += 8 + size + (size & 1)
+    if fmt is None or frames is None:
+        raise QwenTokenPlanTtsError("invalid WAV audio")
+    format_tag, channels, sample_rate, _byte_rate, _align, bits = fmt
+    if format_tag not in (_WAVE_FORMAT_PCM, _WAVE_FORMAT_EXTENSIBLE) or channels < 1 or not sample_rate:
+        raise QwenTokenPlanTtsError(f"unsupported WAV format: {format_tag}")
+    if bits != 16:
+        raise QwenTokenPlanTtsError(f"unsupported WAV sample width: {bits} bit")
     if channels > 1:
         samples = np.frombuffer(frames[: len(frames) - len(frames) % (2 * channels)], dtype="<i2")
         frames = samples.reshape(-1, channels).mean(axis=1).astype("<i2").tobytes()

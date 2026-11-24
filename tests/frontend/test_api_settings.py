@@ -1660,6 +1660,40 @@ def test_tts_url_autofilled_by_token_plan_is_replaced_on_switch(mock_page: Page,
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize("previous_provider", ["qwen_token_plan", "vllm_omni"])
+def test_editable_tts_defaults_are_cleared_when_switching_to_custom(
+    mock_page: Page, running_server: str, previous_provider,
+):
+    """Another provider's default URL / model / voice are not carried over to a custom service."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#ttsModelProvider option[value='qwen_token_plan']", state="attached", timeout=10000)
+
+    result = mock_page.evaluate("""
+        async (previousProvider) => {
+            document.getElementById('enableCustomApi').checked = true;
+            toggleCustomApi();
+            const provider = document.getElementById('ttsModelProvider');
+            const fields = ['ttsModelUrl', 'ttsModelId', 'ttsVoiceId'].map(id => document.getElementById(id));
+            provider.value = previousProvider;
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            const filled = fields.map(f => f.value);
+            provider.value = 'custom';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            return { filled, custom: fields.map(f => f.value) };
+        }
+    """, previous_provider)
+
+    if previous_provider == "qwen_token_plan":
+        assert result["filled"] == [
+            "https://token-plan.cn-beijing.maas.aliyuncs.com", "qwen-audio-3.0-tts-plus", "longanlingxin",
+        ]
+    assert result["filled"][0] and result["filled"][1]
+    assert result["custom"] == ["", "", ""]
+
+
+@pytest.mark.frontend
 @pytest.mark.parametrize("intermediate_provider", [None, "gptsovits"])
 def test_deepseek_tts_preserves_saved_custom_slot_in_ui(
     mock_page: Page, running_server: str, intermediate_provider,
