@@ -99,7 +99,11 @@ def adds_plugin(command: str) -> bool:
 def written_for(directory: Path, executable: Path) -> bool:
     """Blocking: whether ``directory`` holds a ``neko-dsh-plugin`` that runs ``executable``."""
     try:
-        texts = [path.read_text(encoding="utf-8-sig") for path in directory.rglob(f"{COMMAND}*") if path.is_file()]
+        texts = [
+            path.read_text(encoding="utf-8-sig")
+            for path in directory.rglob(f"{COMMAND}*")
+            if path.is_file() and not path.name.endswith(".tmp")
+        ]
     except (OSError, ValueError):
         return False
     return any(_ps(executable) in text or _sh(executable) in text for text in texts)
@@ -201,7 +205,11 @@ def render_powershell(*, root: Path, executable: Path, leading: tuple[str, ...],
         "}",
         "",
         "function Save-Registry($registry) {",
-        "  try { [IO.File]::WriteAllText($Remembered, $registry) } catch { }",
+        # Written aside and renamed: a run reading it meanwhile never finds it half written.
+        "  try {",
+        "    [IO.File]::WriteAllText(\"$Remembered.$PID\", $registry)",
+        "    Move-Item -LiteralPath \"$Remembered.$PID\" -Destination $Remembered -Force",
+        "  } catch { Remove-Item -LiteralPath \"$Remembered.$PID\" -Force -ErrorAction SilentlyContinue }",
         "}",
         "",
         "function Expand-Package($archive, $target) {",
@@ -270,7 +278,8 @@ def render_powershell(*, root: Path, executable: Path, leading: tuple[str, ...],
         "$code = 1",
         "for ($i = 0; $i -lt $tries.Count; $i++) {",
         "  if ($tries[$i]) { $env:pnpm_config_registry = \"$($tries[$i])/\" }",
-        "  $LASTEXITCODE = 1",
+        # The global one, which running dsh sets, however this script comes to be run.
+        "  $global:LASTEXITCODE = 1",
         f"  & $Dsh @Leading plugin --profile {_ps(profile)} @args",
         "  $code = if ($null -eq $LASTEXITCODE) { 1 } else { $LASTEXITCODE }",
         "  if ($code -eq 0) {",
@@ -358,7 +367,11 @@ def render_sh(*, root: Path, executable: Path, leading: tuple[str, ...], profile
         "  return 1",
         "}",
         "",
-        "save_registry() { printf '%s' \"$1\" > \"$REMEMBERED\" 2>/dev/null || true; }",
+        # Written aside and renamed: a run reading it meanwhile never finds it half written.
+        "save_registry() {",
+        "  if printf '%s' \"$1\" > \"$REMEMBERED.$$\" 2>/dev/null; then mv -f \"$REMEMBERED.$$\" \"$REMEMBERED\" 2>/dev/null; fi",
+        "  rm -f \"$REMEMBERED.$$\" 2>/dev/null || true",
+        "}",
         "",
         "# Fetch one file from the first registry that delivers it whole, which is left in",
         "# ``delivered``; never keep a file that differs.",
@@ -418,11 +431,17 @@ def render_sh(*, root: Path, executable: Path, leading: tuple[str, ...], profile
         "fi",
         # dsh runs as a child, waited for: a signal that ends this script is handed on to it, so
         # that neither dsh nor its pnpm is left running when the command is given up.
+        # A command run in the background gets no standard input of its own: it is handed this
+        # script's, kept as descriptor 3.
         "child=''",
-        "trap 'if [ -n \"$child\" ]; then kill \"$child\" 2>/dev/null; fi; exit 143' TERM INT HUP",
+        "stop() { if [ -n \"$child\" ]; then kill \"$child\" 2>/dev/null; fi; exit \"$1\"; }",
+        "trap 'stop 143' TERM",
+        "trap 'stop 130' INT",
+        "trap 'stop 129' HUP",
+        "exec 3<&0",
         "run() { "
         + " ".join(["\"$DSH\"", *(_sh(item) for item in leading), "plugin --profile", _sh(profile), "\"$@\""])
-        + " & child=$!; wait \"$child\"; }",
+        + " <&3 & child=$!; wait \"$child\"; }",
         "if [ -z \"$tries\" ]; then run \"$@\"; exit $?; fi",
         "code=1",
         "for source in $tries; do",
