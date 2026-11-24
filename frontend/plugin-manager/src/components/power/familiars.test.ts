@@ -67,6 +67,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   api.getTemplates.mockResolvedValue({ templates: [
     { name: 'boss', label: '', description: '', avatar: 'boss', source: 'builtin', valid: true, error: '' },
+    { name: 'general', label: '', description: '', avatar: 'general', source: 'builtin', valid: true, error: '' },
     { name: 'scout', label: '', description: '', avatar: 'scout', source: 'builtin', valid: true, error: '' },
     { name: 'translator', label: 'Translator', description: '', avatar: 'general', source: 'global', valid: true, error: '' },
     { name: 'broken', label: '', description: '', avatar: 'general', source: 'global', valid: false, error: 'unknown fields' },
@@ -116,7 +117,7 @@ describe('making a familiar', () => {
     expect(byTest('familiar-error')?.textContent).toContain(words.home.nameRequired)
     await type('familiar-name', '  Trip ')
     await click(byTest('familiar-make'))
-    expect(api.makeFamiliar).toHaveBeenCalledWith({ name: 'Trip', title: '', preset: 'boss', duty: '', description: '', rules: '', workdir: '' })
+    expect(api.makeFamiliar).toHaveBeenCalledWith({ name: 'Trip', title: '', preset: 'general', duty: '', description: '', rules: '', workdir: '' })
     expect(api.draftFamiliar).not.toHaveBeenCalled()
   })
 
@@ -159,7 +160,27 @@ describe('making a familiar', () => {
     await type('familiar-about', 'something')
     await click(byTest('familiar-fill'))
     await click(byTest('familiar-make'))
-    expect(api.makeFamiliar.mock.calls[0][0].preset).toBe('boss')
+    expect(api.makeFamiliar.mock.calls[0][0].preset).toBe('general')
+  })
+
+  it('is a worker until another kind is chosen, and says that a boss only hands the work on', async () => {
+    api.draftFamiliar.mockResolvedValue({ draft: { name: 'N', title: '', preset: 'boss', duty: '', description: '', rules: '' } })
+    await open()
+    expect(byTest('familiar-preset')?.textContent).toContain(words.home.presets.general)
+    expect(byTest('familiar-boss-hint')).toBeNull()
+    await type('familiar-about', 'something')
+    await click(byTest('familiar-fill'))
+    expect(byTest('familiar-boss-hint')?.textContent).toBe(words.home.bossHint)
+  })
+
+  it('offers a worker when the kinds cannot be read', async () => {
+    api.getTemplates.mockRejectedValue(new Error('down'))
+    api.makeFamiliar.mockResolvedValue({ project: { name: 'N' }, session_id: 's4' })
+    await open()
+    expect(byTest('familiar-preset')?.textContent).toContain(words.home.presets.general)
+    await type('familiar-name', 'N')
+    await click(byTest('familiar-make'))
+    expect(api.makeFamiliar.mock.calls[0][0].preset).toBe('general')
   })
 })
 

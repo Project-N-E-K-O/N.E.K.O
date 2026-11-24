@@ -130,6 +130,7 @@ const messages = {
       incomplete: 'What the model answered was incomplete. Try again, or fill it in yourself.',
       no_preset: 'The kinds of familiar cannot be read right now.',
     },
+    bossHint: 'A boss cat only hands out work and does none of it: whatever new comes to this project that no familiar there is already on, it passes on to another familiar.',
     presets: {
       boss: 'Boss cat', worker: 'Helper cat', scout: 'Scout cat', inspector: 'Inspector cat', planner: 'Planner cat',
       general: 'Working cat', shadow: 'Copy',
@@ -226,11 +227,13 @@ const messages = {
         plugin_entry: 'Plugin entries',
         managed_delivery: 'Hand information to a trusted adapter',
         other: 'Tools brought by dsh plugins',
+        open_session: 'Boss cat summons a familiar that can change files',
       },
       notes: {
         plugin_entry: 'Each plugin has its own switch.',
         managed_delivery: 'Asked per recipient even when allowed.',
         other: 'Allowed without asking; can be set to ask every time or to deny.',
+        open_session: 'Before a boss cat hands a job to a newly summoned familiar; one that only reads is not asked about.',
       },
     },
     window: {
@@ -435,6 +438,14 @@ const messages = {
       message: '{who} told {peer}: {text}',
       done_notice: '{who} let {peer} know that the turn is over',
       asked_session: '{who} asked {peer}: {text}',
+      orchestrated: 'This went to {peer}, not where it was first meant to go',
+      family_formed: 'The familiars that did this before became the project "{text}"',
+      leader_derived: '"{text}" got a boss cat; from now on it hands out what comes there that no familiar is already on',
+      leader_derived_git: '"{text}" is in a git repository, so it got a boss cat to hand out its work',
+      leader_derived_third_member: '"{text}" needed a third familiar, so it got a boss cat to hand out its work',
+      leader_derived_busy: 'The familiar of "{text}" had too much waiting, so the project got a boss cat to hand out its work',
+      leader_derived_user: 'As you asked, "{text}" got a boss cat to hand out its work',
+      handed_over: 'The boss cat handed this over to {peer}',
     },
   },
   ask: {
@@ -450,6 +461,7 @@ const messages = {
     },
     facts: {
       cwd: 'In folder', title: 'What', capability: 'Ability', content_to: 'Sent to', used: 'Used so far', more: 'Asks for', key: 'Server',
+      preset: 'Kind',
     },
   },
   transcript: {
