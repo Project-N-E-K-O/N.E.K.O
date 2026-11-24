@@ -1587,6 +1587,46 @@ def test_qwen_token_plan_tts_key_comes_from_key_book(mock_page: Page, running_se
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize("saved_url, replaced", [
+    ("https://token-plan.cn-beijing.maas.aliyuncs.com", True),   # the default, as autofilled before saving
+    ("https://token-plan.maas.qianwenaiapi.com", False),        # a host the user chose
+])
+def test_saved_token_plan_url_after_reopen_follows_autofill_rules(
+    mock_page: Page, running_server: str, saved_url, replaced,
+):
+    """Reopening the page loads the saved URL; a saved default still counts as autofilled."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+
+    def seed_core_config(route):
+        response = route.fetch()
+        data = response.json()
+        data.update(
+            enableCustomApi=True,
+            ttsModelProvider="qwen_token_plan",
+            ttsModelUrl=saved_url,
+            ttsModelId="qwen-audio-3.0-tts-plus",
+            ttsVoiceId="longanlingxin",
+        )
+        route.fulfill(response=response, json=data)
+
+    mock_page.route("**/api/config/core_api", seed_core_config)
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+
+    provider = mock_page.locator("#ttsModelProvider")
+    url = mock_page.locator("#ttsModelUrl")
+    expect(provider).to_have_value("qwen_token_plan")
+    expect(url).to_have_value(saved_url)
+    provider.select_option("vllm_omni", force=True, timeout=5000)
+    if replaced:
+        vllm_default = mock_page.evaluate("getTtsProviderMeta('vllm_omni').default_url")
+        assert vllm_default and "token-plan" not in vllm_default
+        expect(url).to_have_value(vllm_default)
+    else:
+        expect(url).to_have_value(saved_url)
+
+
+@pytest.mark.frontend
 @pytest.mark.parametrize("edit_url", [False, True])
 def test_tts_url_autofilled_by_token_plan_is_replaced_on_switch(mock_page: Page, running_server: str, edit_url):
     """An endpoint another provider filled in is replaced on switch; a user edit is kept."""

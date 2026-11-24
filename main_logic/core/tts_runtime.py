@@ -59,6 +59,10 @@ from main_logic.tts_client import (
 )
 from main_logic.tts_client.workers.gptsovits import GPTSOVITS_END_TIMEOUT_SECONDS
 from utils.gptsovits_config import is_gsv_disabled_voice_id
+from utils.qwen_token_plan_tts import (
+    QWEN_TOKEN_PLAN_TTS_DEFAULT_BASE_URL,
+    QWEN_TOKEN_PLAN_TTS_DEFAULT_MODEL,
+)
 from utils.config_manager import _as_bool, get_reserved
 from utils.tts import provider_registry
 from utils.tts.native_voice_registry import is_free_preset_voice_id, resolve_native_voice_for_routing
@@ -734,6 +738,19 @@ class TtsRuntimeMixin:
             or 'default',
         )
 
+    @staticmethod
+    def _resolve_qwen_token_plan_runtime_config(core_config: dict) -> tuple[str, str]:
+        # The Token Plan worker reads its slot from core_config.json, not tts_custom,
+        # so its endpoint and model must be part of the runtime identity explicitly.
+        if str(core_config.get('ttsModelProvider') or '').strip().lower() != 'qwen_token_plan':
+            return ('', '')
+        return (
+            str(core_config.get('ttsModelUrl') or '').strip()
+            or QWEN_TOKEN_PLAN_TTS_DEFAULT_BASE_URL,
+            str(core_config.get('ttsModelId') or '').strip()
+            or QWEN_TOKEN_PLAN_TTS_DEFAULT_MODEL,
+        )
+
     def _build_tts_runtime_key(self) -> tuple:
         """Return the effective TTS worker identity for ready-state reuse."""
         try:
@@ -771,6 +788,7 @@ class TtsRuntimeMixin:
                 tts_config.get('base_url', ''),
                 tts_config.get('model', ''),
                 self._resolve_vllm_omni_runtime_config(core_config),
+                self._resolve_qwen_token_plan_runtime_config(core_config),
                 hosted_default_voice,
                 api_key,
                 tuple(sorted(getattr(self, "_tts_excluded_provider_keys", frozenset()))),

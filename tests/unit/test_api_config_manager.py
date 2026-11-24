@@ -2484,14 +2484,15 @@ class TestGptsovitsEnabledSaveMigration:
         assert config_manager.get_tts_api_key('qwen_token_plan') == (expected_slot or None)
 
     @pytest.mark.unit
-    def test_token_plan_slot_is_not_tts_custom_credentials_for_cosyvoice(self, config_manager):
+    @pytest.mark.parametrize('provider_value', ['qwen_token_plan', ' qwen_token_plan '])
+    def test_token_plan_slot_is_not_tts_custom_credentials_for_cosyvoice(self, config_manager, provider_value):
         _write_core_config(config_manager, {
             'coreApiKey': 'sk-core',
             'coreApi': 'qwen',
             'assistApi': 'qwen',
             'assistApiKeyQwen': '',
             'enableCustomApi': True,
-            'ttsModelProvider': 'qwen_token_plan',
+            'ttsModelProvider': provider_value,
             'ttsModelUrl': 'https://token-plan.cn-beijing.maas.aliyuncs.com',
             'ttsModelId': 'qwen-audio-3.0-tts-plus',
             'ttsModelApiKey': 'sk-sp-token-plan',

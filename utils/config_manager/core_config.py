@@ -1613,7 +1613,7 @@ class CoreConfigMixin:
                     # provider) actually supplies count. Anything incomplete is handed whole to
                     # the followed tier at runtime, never patched field by field.
                     config[model_key] = config[url_key] = config[apikey_key] = ''
-                if prefix == 'tts' and provider == 'qwen_token_plan':
+                if prefix == 'tts' and str(provider or '').strip().lower() == 'qwen_token_plan':
                     # The hosted worker reads its slot from core_config.json directly. The
                     # slot holds a Token Plan key and host, which must not become the
                     # tts_custom credentials that CosyVoice clones fall back to.

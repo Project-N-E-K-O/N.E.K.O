@@ -288,6 +288,58 @@ def test_worker_downloads_signed_url_without_the_key_for_a_non_streaming_reply(m
     assert _audio_bytes(items)
 
 
+def _wav(pcm: bytes, rate: int, channels: int = 1) -> bytes:
+    import io
+    import wave
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wav:
+        wav.setnchannels(channels)
+        wav.setsampwidth(2)
+        wav.setframerate(rate)
+        wav.writeframes(pcm)
+    return buf.getvalue()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("rate, channels", [(24000, 1), (16000, 2)])
+def test_worker_skips_wav_header_of_downloaded_result(monkeypatch, rate, channels):
+    samples = 960
+    pcm = np.full(samples * channels, 1000, dtype="<i2").tobytes()
+
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, content=_wav(pcm, rate, channels))
+        return httpx.Response(200, json={"output": {"finish_reason": "stop",
+                                                    "audio": {"url": "https://oss.example/a.wav"}}})
+
+    _, items = _run_worker(monkeypatch, handler)
+
+    out = np.frombuffer(_audio_bytes(items), dtype="<i2")
+    expected = samples * 48000 // rate
+    assert abs(len(out) - expected) <= 64
+    # A header played as samples shows up as values far from the constant tone.
+    assert out[len(out) // 4: 3 * len(out) // 4].min() > 500
+    assert out.max() < 2000
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("events, expected_calls", [
+    ([{"code": "InvalidParameter", "message": "bad voice"}], []),
+    ([_audio_event(b"\x00\x00" * 100, finish="stop")], [("qwen-audio-3.0-tts-plus", len("你好喵。"))]),
+])
+def test_telemetry_counts_only_sentences_that_produced_audio(monkeypatch, events, expected_calls):
+    calls = []
+    monkeypatch.setattr(worker_module, "_record_tts_telemetry", lambda model, n: calls.append((model, n)))
+
+    def handler(request):
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=_sse(events))
+
+    _run_worker(monkeypatch, handler)
+
+    assert calls == expected_calls
+
+
 @pytest.mark.unit
 def test_worker_reports_error_event(monkeypatch):
     def handler(request):

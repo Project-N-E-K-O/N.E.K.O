@@ -1445,18 +1445,6 @@ function getTtsProviderMeta(pk) {
 }
 
 /**
- * 该 provider 是否真的具备某个槽位所需的能力。
- *
- * TTS 与「实时全模态」两个下拉原本把辅助 LLM 全表无差别铺开，于是列出了一堆后端
- * 根本没有对应实现的服务商：选中后 TTS 仍由核心 API 决定 worker、实时全模态则落进
- * 未实现的 api_type='local' 或被静默忽略，而下拉自动填进去的 URL/Key 还会污染该槽
- * 的凭证。能力真相各有单一来源——实时全模态是 core_api_providers（后端按它分流），
- * TTS 是后端 tts_provider_registry——这里据此过滤，前端不硬编码任何 provider key。
- *
- * 两处都 fail-open：元数据没取到（/api_providers 失败）时不过滤，宁可多列几项，
- * 也不要把用户正在用的服务商从下拉里藏掉。
- */
-/**
  * Whether the TTS URL input still holds the endpoint a provider filled in by default.
  */
 function isTtsUrlStillAutofilled(urlInput) {
@@ -1474,6 +1462,18 @@ function isKeyBookBackedTtsProvider(providerKey) {
     return field !== 'ttsModelApiKey' && !!_apiKeyRegistry[providerKey];
 }
 
+/**
+ * 该 provider 是否真的具备某个槽位所需的能力。
+ *
+ * TTS 与「实时全模态」两个下拉原本把辅助 LLM 全表无差别铺开，于是列出了一堆后端
+ * 根本没有对应实现的服务商：选中后 TTS 仍由核心 API 决定 worker、实时全模态则落进
+ * 未实现的 api_type='local' 或被静默忽略，而下拉自动填进去的 URL/Key 还会污染该槽
+ * 的凭证。能力真相各有单一来源——实时全模态是 core_api_providers（后端按它分流），
+ * TTS 是后端 tts_provider_registry——这里据此过滤，前端不硬编码任何 provider key。
+ *
+ * 两处都 fail-open：元数据没取到（/api_providers 失败）时不过滤，宁可多列几项，
+ * 也不要把用户正在用的服务商从下拉里藏掉。
+ */
 function isProviderCapableForModelType(providerKey, modelType) {
     const pk = String(providerKey || '').trim();
     if (!pk || pk === 'custom' || pk.startsWith('follow_')) return true;
@@ -1877,11 +1877,16 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
             const switchedProvider = !_isLoadingSavedConfig && previousProvider !== provider;
             const switchedToKeyBookBacked = keyBookBacked && userInitiated && switchedProvider;
             const stillAutofilled = isTtsUrlStillAutofilled(urlInput);
+            const providerDefaultUrl = getProviderOpenrouterUrl(provider, pInfo) || _spMeta.default_url || '';
             if (!urlInput.value || !urlInput.value.trim() || wasReadonly || switchedToKeyBookBacked
                 || (switchedProvider && stillAutofilled)) {
-                urlInput.value = getProviderOpenrouterUrl(provider, pInfo) || _spMeta.default_url || '';
-                urlInput.dataset.autofilledUrl = urlInput.value.trim();
-            } else if (!stillAutofilled) {
+                urlInput.value = providerDefaultUrl;
+            }
+            // A URL equal to this provider's default counts as autofilled, including one
+            // loaded from saved config after reopening the page.
+            if (providerDefaultUrl && urlInput.value.trim() === providerDefaultUrl.trim()) {
+                urlInput.dataset.autofilledUrl = providerDefaultUrl.trim();
+            } else if (!isTtsUrlStillAutofilled(urlInput)) {
                 delete urlInput.dataset.autofilledUrl;
             }
             urlInput.removeAttribute('readonly');

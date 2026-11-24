@@ -16,7 +16,9 @@
 
 from __future__ import annotations
 
+import io
 import json
+import wave
 from functools import partial
 
 import numpy as np
@@ -45,6 +47,30 @@ from .dummy import dummy_tts_worker
 logger = get_module_logger(__name__, "Main")
 
 _PROVIDER_KEY = "qwen_token_plan"
+
+
+def _decode_downloaded_audio(data: bytes) -> tuple[bytes, int]:
+    """Raw PCM16 mono and its sample rate from a downloaded result file.
+
+    The request asks for raw PCM, but the signed result file may still be a WAV;
+    its RIFF header must not be played as samples.
+    """
+    if data[:4] != b"RIFF":
+        return data, QWEN_TOKEN_PLAN_TTS_SAMPLE_RATE
+    try:
+        with wave.open(io.BytesIO(data), "rb") as wav:
+            sample_rate = wav.getframerate()
+            channels = wav.getnchannels()
+            sample_width = wav.getsampwidth()
+            frames = wav.readframes(wav.getnframes())
+    except (wave.Error, EOFError) as exc:
+        raise QwenTokenPlanTtsError("invalid WAV audio") from exc
+    if sample_width != 2:
+        raise QwenTokenPlanTtsError(f"unsupported WAV sample width: {sample_width * 8} bit")
+    if channels > 1:
+        samples = np.frombuffer(frames[: len(frames) - len(frames) % (2 * channels)], dtype="<i2")
+        frames = samples.reshape(-1, channels).mean(axis=1).astype("<i2").tobytes()
+    return frames, sample_rate
 
 
 def qwen_token_plan_tts_worker(
@@ -137,7 +163,6 @@ def qwen_token_plan_tts_worker(
                         )
                         return
 
-                    _record_tts_telemetry(tts_model, len(text))
                     content_type = resp.headers.get("content-type", "").lower()
                     if "text/event-stream" not in content_type:
                         handle_event(json.loads((await resp.aread()).decode("utf-8")))
@@ -176,10 +201,18 @@ def qwen_token_plan_tts_worker(
                     audio_resp = await client.get(download_url)
                     if audio_resp.status_code != 200:
                         raise QwenTokenPlanTtsError(f"audio download HTTP {audio_resp.status_code}")
-                    emit(audio_resp.content)
+                    audio, sample_rate = _decode_downloaded_audio(audio_resp.content)
+                    if sample_rate == QWEN_TOKEN_PLAN_TTS_SAMPLE_RATE:
+                        emit(audio)
+                    elif len(audio) >= 2:
+                        received_audio = True
+                        pcm = np.frombuffer(audio[: len(audio) & ~1], dtype="<i2")
+                        response_queue.put(_resample_audio(pcm, sample_rate, 48000))
                 if not received_audio:
                     _enqueue_error(response_queue, "阿里百炼 Token Plan TTS 响应未包含音频")
                     return
+                # Counted once audio actually arrived, like Doubao Speech.
+                _record_tts_telemetry(tts_model, len(text))
                 # Flush the resampler tail so the end of the sentence is not cut off.
                 tail = _resample_audio(
                     np.empty(0, dtype="<i2"), QWEN_TOKEN_PLAN_TTS_SAMPLE_RATE, 48000, resampler, last=True,
