@@ -51,7 +51,8 @@ export function askWhole(ask: BoardAsk): { kind: 'command' | 'path'; text: strin
 // Each call of `neko-dsh-plugin` in a command line, with the word after it; a call whose first word
 // is not one of these may bring a plugin in. The same as `adds_plugin` in
 // `nekopower/dsh/plugin_command.py`.
-const DSH_PLUGIN_CALL = /neko-dsh-plugin(?:\.cmd)?['"]?(?:\s+['"]?([^\s'"]*))?/gi
+// The word is looked for on the same line only: a command on the next one is no argument.
+const DSH_PLUGIN_CALL = /neko-dsh-plugin(?:\.cmd)?['"]?(?:[ \t]+['"]?([^\s'"]*))?/gi
 const DSH_PLUGIN_LOCAL = new Set([
   'list', 'ls', 'remove', 'rm', 'uninstall', 'un', 'why', 'allow-version', 'revoke-version', 'version-exemptions',
 ])

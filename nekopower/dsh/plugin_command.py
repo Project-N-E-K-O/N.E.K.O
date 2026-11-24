@@ -71,7 +71,8 @@ LOCAL_COMMANDS = (
 # (``add``, but also ``update``, ``install``, an option before ``add``), so the
 # permission question about it says what a plugin may do. The frontend
 # recognizes the same (``components/power/ask.ts``).
-_CALL = re.compile(rf"{COMMAND}(?:\.cmd)?['\"]?(?:\s+['\"]?([^\s'\"]*))?", re.IGNORECASE)
+# The word is looked for on the same line only: a command on the next one is no argument.
+_CALL = re.compile(rf"{COMMAND}(?:\.cmd)?['\"]?(?:[ \t]+['\"]?([^\s'\"]*))?", re.IGNORECASE)
 
 _HEADER = (
     "Written by N.E.K.O each time it starts dsh; a change made here is lost.",

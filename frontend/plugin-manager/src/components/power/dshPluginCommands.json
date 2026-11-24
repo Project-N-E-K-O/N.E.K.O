@@ -10,7 +10,9 @@
     "neko-dsh-plugin update dsh-free-search",
     "neko-dsh-plugin install",
     "neko-dsh-plugin",
-    "neko-dsh-plugin list && neko-dsh-plugin add x"
+    "neko-dsh-plugin list && neko-dsh-plugin add x",
+    "neko-dsh-plugin\nlist",
+    "neko-dsh-plugin\r\nneko-dsh-plugin list"
   ],
   "local": [
     "neko-dsh-plugin list",
