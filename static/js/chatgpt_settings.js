@@ -281,6 +281,8 @@
         if (!result.revocation_confirmed) status.textContent = t('revocationUnconfirmed', 'Signed out locally. Disconnect the app in ChatGPT Settings to confirm remote revocation.');
     }));
     window.addEventListener('localechange', () => refresh().catch(report));
+    // Any successful settings reload (an ordinary save included) brings the form back in sync.
+    window.addEventListener('neko:api-settings-loaded', () => { formStale = false; });
     window.addEventListener('pagehide', () => {
         suspended = true;
         finishConfirmation?.(false);

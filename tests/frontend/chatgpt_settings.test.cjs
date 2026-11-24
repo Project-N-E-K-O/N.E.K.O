@@ -394,9 +394,16 @@ test('a saved toggle whose settings reload fails says so instead of reporting a 
     // The enabled-subscription poll keeps the warning instead of "enabled and saved".
     await ui.timer();
     assert.match(ui.nodes.status.textContent, /could not reload the settings/);
-    // A later successful reload clears it.
-    ui.setReloadWork(async () => undefined);
+    // A successful reload from an ordinary save clears it too.
+    ui.window.listeners['neko:api-settings-loaded']();
+    await ui.timer();
+    assert.match(ui.nodes.status.textContent, /available-model/);
+    ui.setReloadWork(async () => false);
     await toggle(ui, false);
+    assert.match(ui.nodes.status.textContent, /could not reload the settings/);
+    // And so does a later successful reload from the switch itself.
+    ui.setReloadWork(async () => undefined);
+    await toggle(ui, true);
     assert.doesNotMatch(ui.nodes.status.textContent, /could not reload the settings/);
 });
 

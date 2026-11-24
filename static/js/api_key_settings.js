@@ -3219,7 +3219,10 @@ async function loadCurrentApiKey() {
         // 缓存仅覆盖保存成功后的这一次重载。页面刷新或后续普通加载仍绝不回显密钥。
         _secretDisplayCache = null;
     }
-    // 订阅开关据此区分「已保存」和「表单已同步」。
+    // 订阅开关据此区分「已保存」和「表单已同步」；任何一次载入成功都通知它（普通保存也会重新载入）。
+    if (loaded && typeof window.dispatchEvent === 'function') {
+        window.dispatchEvent(new Event('neko:api-settings-loaded'));
+    }
     return loaded;
 }
 
