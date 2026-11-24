@@ -29,6 +29,9 @@
     let pending = false;
     let modelAccountState;
     let finishConfirmation;
+    // The last reload after a subscription change failed: the form does not show
+    // the saved configuration until a later reload succeeds or the page reopens.
+    let formStale = false;
     let confirmationFocus;
     window.isChatGPTSettingsBusy = () => busy;
     const t = (key, fallback) => {
@@ -151,6 +154,8 @@
         } else if (subscription.enabled && !pending && !data.error && data.login_status !== 'expired') {
             status.textContent = t('enabled', 'ChatGPT subscription is enabled and saved. Model: {{model}}').replace('{{model}}', subscription.model);
         }
+        // Polling must not cover the warning with "enabled and saved".
+        if (!pending && !subscription.authorization_required) reportStaleForm();
         if (pending) timer = setTimeout(() => refresh().catch(report), 1500);
         else {
             const nextModelAccountState = JSON.stringify([data.active, connected, !!subscription.authorization_required]);
@@ -190,11 +195,13 @@
         if (typeof window.refreshCustomConnectivityLightBindings === 'function') {
             window.refreshCustomConnectivityLightBindings();
         }
-        return loaded !== false;
+        formStale = loaded === false;
+        return !formStale;
     };
-    const reportStaleForm = () => {
+    function reportStaleForm() {
+        if (!formStale) return;
         status.textContent = t('reloadFailed', 'The change was saved, but this page could not reload the settings. Reopen the page before saving anything else.');
-    };
+    }
     enabled.addEventListener('change', () => {
         const requested = enabled.checked;
         enabled.checked = subscription.enabled;

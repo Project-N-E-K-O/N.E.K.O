@@ -386,10 +386,18 @@ test('a saved toggle whose settings reload fails says so instead of reporting a 
     // A successful reload re-points the connectivity lights at the new slot keys.
     assert.equal(ui.window.rebinds, 1);
     assert.match(ui.nodes.status.textContent, /available-model/);
-    ui.setReloadWork(async () => false);
     await toggle(ui, false);
-    assert.equal(ui.reloads, 2);
+    ui.setReloadWork(async () => false);
+    await toggle(ui, true);
+    assert.equal(ui.reloads, 3);
     assert.match(ui.nodes.status.textContent, /could not reload the settings/);
+    // The enabled-subscription poll keeps the warning instead of "enabled and saved".
+    await ui.timer();
+    assert.match(ui.nodes.status.textContent, /could not reload the settings/);
+    // A later successful reload clears it.
+    ui.setReloadWork(async () => undefined);
+    await toggle(ui, false);
+    assert.doesNotMatch(ui.nodes.status.textContent, /could not reload the settings/);
 });
 
 test('switching accounts invalidates connectivity again after the switch, even if the refresh fails', async () => {
