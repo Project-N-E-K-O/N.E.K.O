@@ -75,6 +75,13 @@ def _check(src: str) -> list[tuple[int, int, str]]:
         "opts = dict([('temperature', 0.2)])\n",
         "opts = OrderedDict([('model', 'm'), ('temperature', 0.2)])\n",
         "opts.update([('temperature', 0.2)])\n",
+        # ... including pairs / keys produced by a comprehension or generator
+        "opts = dict(('temperature', v) for v in [0.2])\n",
+        "llm.ainvoke(messages, **dict(('temperature', v) for v in [0.2]))\n",
+        "opts = dict([('temperature', v) for v in [0.2]])\n",
+        "opts.update({('temperature', v) for v in [0.2]})\n",
+        "opts = dict.fromkeys(['temperature' for _ in range(1)], 0.2)\n",
+        "opts = dict.fromkeys(('temperature' for _ in range(1)), 0.2)\n",
         # nested inside other code
         "def outer():\n    def inner():\n        return create(temperature=0.2)\n    return inner\n",
         "def f(client: type(create_chat_llm(temperature=0.2))):\n    return client\n",
@@ -118,6 +125,9 @@ def test_flags_every_way_of_setting_temperature(snippet: str):
         "temperature = slot.defaults.temperature\n",
         # opaque forwarding is not a setting by itself
         "def wrap(**kwargs):\n    return create_chat_llm(**kwargs)\n",
+        "opts = dict((k, v) for k, v in pairs)\n",
+        "opts = dict([(k, 0) for k in ('top_p', 'max_tokens')])\n",
+        "opts = dict.fromkeys([k for k in keys], None)\n",
     ],
 )
 def test_allows_reading_removing_and_unrelated_code(snippet: str):

@@ -41,7 +41,10 @@ What is reported (``NO_TEMPERATURE``)
 7. a call that sets the key by name: ``d.setdefault("temperature", t)``,
    ``setattr(obj, "temperature", t)``, ``operator.setitem(d, "temperature", t)``,
    ``dict.fromkeys([..., "temperature"], t)``, and a ``("temperature", t)``
-   pair handed to ``dict(...)`` / ``OrderedDict(...)`` / ``.update(...)``.
+   pair handed to ``dict(...)`` / ``OrderedDict(...)`` / ``.update(...)``;
+   the key or pair may sit in a list / tuple / set display or be produced by
+   a list / set comprehension or generator
+   (``dict(("temperature", v) for v in values)``).
 
 Reading, testing for or removing the field is not reported:
 ``"temperature" in body``, ``body.get("temperature")``,
@@ -76,7 +79,7 @@ import os
 import sys
 import warnings
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Callable, Iterable, Iterator
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -164,23 +167,32 @@ def _call_name(func: ast.expr) -> str | None:
     return None
 
 
+_DISPLAYS = (ast.List, ast.Tuple, ast.Set)
+_COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.GeneratorExp)
+
+
+def _is_field_pair(node: ast.expr) -> bool:
+    return isinstance(node, (ast.Tuple, ast.List)) and len(node.elts) == 2 and _is_field_name(node.elts[0])
+
+
+def _holds(node: ast.expr, matches: Callable[[ast.expr], bool]) -> bool:
+    """A list / tuple / set display with an item that ``matches``, or a
+    list / set comprehension or generator whose produced element does."""
+    if isinstance(node, _DISPLAYS):
+        return any(matches(item) for item in node.elts)
+    if isinstance(node, _COMPREHENSIONS):
+        return matches(node.elt)
+    return False
+
+
 def _holds_field_pair(node: ast.expr) -> bool:
-    """A list / tuple / set display holding a ``("temperature", value)`` pair."""
-    if not isinstance(node, (ast.List, ast.Tuple, ast.Set)):
-        return False
-    return any(
-        isinstance(item, (ast.Tuple, ast.List))
-        and len(item.elts) == 2
-        and _is_field_name(item.elts[0])
-        for item in node.elts
-    )
+    """Holds / produces a ``("temperature", value)`` pair."""
+    return _holds(node, _is_field_pair)
 
 
 def _holds_field_name(node: ast.expr) -> bool:
-    """A list / tuple / set display holding the constant ``"temperature"``."""
-    return isinstance(node, (ast.List, ast.Tuple, ast.Set)) and any(
-        _is_field_name(item) for item in node.elts
-    )
+    """Holds / produces the constant ``"temperature"``."""
+    return _holds(node, _is_field_name)
 
 
 def _call_violation(node: ast.Call) -> str | None:
