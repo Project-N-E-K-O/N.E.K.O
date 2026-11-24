@@ -246,6 +246,15 @@ this share of that one's score. They become members of the project with it."""
 # Leaders and members of projects
 # ---------------------------------------------------------------------------
 
+ORCHESTRATOR_MEMBER_HITS = 4
+"""In a project that has a leader, a commission goes to a member without
+coming to the leader when it shares this many words with that member's card
+and what the member did lately, the words of the project's own name left
+out (every sentence that names the project shares those with every member),
+and more than with any other member by ``ORCHESTRATOR_MIN_HITS``. Set where
+ten scenarios and four sentences of the measurements fall apart: those that
+go on with a member's work share four to eight, the others none or one."""
+
 LEADER_AT_MEMBERS = 3
 """A project gets a leader when this many task agents would be its members,
 those that take no more work counted: the third is the leader's to start.

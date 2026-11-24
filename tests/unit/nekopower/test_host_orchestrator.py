@@ -152,9 +152,10 @@ def test_the_longest_name_wins_and_two_task_agents_of_one_title_name_neither() -
 
 def test_where_a_project_s_sentence_goes() -> None:
     standing, bars = _standing(), Bars()
-    # A leader takes whatever is the project's, a member that was named included.
+    # A leader takes what is the project's; a member that was named takes its own, beside the leader.
     assert cases_of.as_destination(orch.settle("project:shop", orch.FOLLOW_UP, standing, bars)) == {"action": "to_leader", "project": "shop"}
-    assert cases_of.as_destination(orch.settle("agent:painter", orch.FOLLOW_UP, standing, bars)) == {"action": "to_leader", "project": "shop"}
+    named = orch.settle("agent:painter", orch.FOLLOW_UP, standing, bars)
+    assert (cases_of.as_destination(named), named.direct) == ({"action": "continue", "agent": "painter"}, True)
     # A project in a git repository gets a leader now.
     assert orch.settle("project:thesis", orch.FOLLOW_UP, standing, bars).action == orch.TO_LEADER
     # No leader: the member that works takes it, not the one that only reads.
@@ -414,3 +415,77 @@ def test_a_project_named_goes_to_the_member_that_works_else_to_the_member_it_has
     # One that takes no more work is not gone on with: a new member that works.
     none = orch.settle(key, orch.FOLLOW_UP, orch.Standing(projects=(project,), agents=(over,)), bars)
     assert (none.action, none.agent, none.preset) == (orch.SUMMON_IN_PROJECT, None, orch.WORKING_PRESET)
+
+
+def test_what_plainly_goes_on_with_a_members_work_goes_to_it_beside_the_leader() -> None:
+    project = orch.ProjectView(name="shop", description="The pages of the shop", leader="lead")
+    lead = orch.Agent(id="lead", project="shop", preset="boss", title="Shop lead", duty="Runs the shop pages; hands work out")
+    home = orch.Agent(
+        id="home", project="shop", preset="worker", duty="The home page of the shop: layout, banner and carousel",
+        done=(orch.Done(title="rebuild the home page in three columns", result="three columns, banner on top"),),
+    )
+    detail = orch.Agent(id="detail", project="shop", preset="worker", duty="The template of the detail pages")
+    over = orch.Agent(id="over", project="shop", preset="worker", duty=home.duty, idle_seconds=10.0**9)
+    bars = orch.Bars()
+    standing = orch.Standing(projects=(project,), agents=(lead, home, detail, over))
+    key = orch.PROJECT_KEY + "shop"
+
+    def goes(sentence: str, **more: Any) -> tuple[str, str | None, bool]:
+        found = orch.settle(key, orch.FOLLOW_UP, more.pop("standing", standing), bars, sentence=sentence, **more)
+        return found.action, found.agent, found.direct
+
+    # Five words of its own work and more: the member's, with no round through the leader.
+    assert goes("swap the banner and the carousel on the home page for the new year layout") == (orch.CONTINUE, "home", True)
+    # Too few, or nothing of any member's: the leader says who does it.
+    assert goes("change the banner on the home page") == (orch.TO_LEADER, None, False)
+    assert goes("add a newsletter sign-up form to the shop") == (orch.TO_LEADER, None, False)
+    assert goes("") == (orch.TO_LEADER, None, False)
+    # Two members it fits about as well: nobody's plainly, so the leader's.
+    twin = orch.Agent(id="twin", project="shop", preset="worker", duty=home.duty)
+    both = orch.Standing(projects=(project,), agents=(lead, home, twin))
+    assert goes("swap the banner and the carousel on the home page for the new year layout", standing=both) == (
+        orch.TO_LEADER, None, False,
+    )
+    # Not a member that takes no more work, and never the leader itself, whatever its card says.
+    gone = orch.Standing(projects=(project,), agents=(lead, over))
+    assert goes("swap the banner and the carousel on the home page for the new year layout", standing=gone)[0] == orch.TO_LEADER
+    assert goes("who runs the shop pages and hands the work out to the others")[0] == orch.TO_LEADER
+    # The words of the project's own name are no sign of a member's work: every sentence that
+    # names the project shares them with every member that worked on it.
+    budget = orch.ProjectView(name="记账小程序", leader="L")
+    wrote = orch.Agent(
+        id="w", project="记账小程序", preset="worker", duty="写记账小程序的 budget.py 和 README",
+        done=(orch.Done(title="给记账小程序写 budget.py（用命令行参数 add 加一笔支出），再写 README.md 说明用法", result="写好了"),),
+    )
+    led = orch.Standing(projects=(budget,), agents=(wrote,))
+    named = orch.PROJECT_KEY + "记账小程序"
+    other = orch.settle(named, orch.FOLLOW_UP, led, bars, sentence="给记账小程序做一个网页版的界面")
+    assert len(orch.content_tokens("给记账小程序做一个网页版的界面") & orch.token_set("记账小程序")) >= bars.member_hits
+    assert (other.action, other.direct) == (orch.TO_LEADER, False)
+    more = orch.settle(named, orch.FOLLOW_UP, led, bars, sentence="给记账小程序的 budget.py 加一个 list 命令，并在 README.md 里补上说明")
+    assert (more.action, more.agent, more.direct) == (orch.CONTINUE, "w", True)
+    # A project without a leader goes on as it did: the member that works.
+    plain = orch.Standing(projects=(orch.ProjectView(name="shop"),), agents=(home, detail))
+    found = orch.settle(key, orch.FOLLOW_UP, plain, bars, sentence="swap the banner and the carousel on the home page")
+    assert (found.action, found.direct) == (orch.CONTINUE, False)
+    assert orch.as_record(found)["direct"] is False
+    assert orch.clear_member("", [home], bars) is None and orch.clear_member("the banner", [], bars) is None
+
+
+def test_the_scenarios_of_projects_with_a_leader_go_to_the_member_or_to_the_leader_as_they_say() -> None:
+    standings, listed = cases_of.load()
+    bars = orch.Bars()
+    seen = {orch.CONTINUE: 0, orch.TO_LEADER: 0}
+    for case in listed:
+        standing = standings[case["world"]]
+        wanted = case["truth"].get("matter") or ""
+        project = standing.project(wanted[len(orch.PROJECT_KEY) :]) if wanted.startswith(orch.PROJECT_KEY) else None
+        if project is None or project.leader is None:
+            continue
+        # Whichever layer finds the project (its name, the words, or the small model): what follows is a rule.
+        sentence = orch.sentence_of(case["dispatch"], case["user"])
+        found = orch.settle(wanted, orch.FOLLOW_UP, standing, bars, sentence=sentence)
+        assert cases_of.as_destination(found) == case["expect"], case["id"]
+        assert found.direct is (found.action == orch.CONTINUE), case["id"]
+        seen[found.action] += 1
+    assert seen == {orch.CONTINUE: 3, orch.TO_LEADER: 7}

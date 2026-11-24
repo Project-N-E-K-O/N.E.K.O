@@ -144,8 +144,8 @@ async def test_sessions_are_grouped_by_project_with_every_field_of_a_card(host):
         "id": lead.id, "name": "Budget app", "kind": "project", "lanlan_name": "Lan", "runtime": "builtin",
         "workdir": "D:/budget",
         "preset": "boss", "avatar": "boss", "label": "",
-        "description": "The leader of a project: every commission filed under it comes to it first; it decides who "
-        "does it and hands it out, and does none of the work itself.",
+        "description": "The leader of a project: its commissions come to it, but for those that plainly go on with "
+        "a member's own work; it decides who does each and hands it out, and does none of the work itself.",
         "title": "记账管家", "title_by": "user", "duty": "add a chart", "duty_by": "creator",
         "summary": "Made the table.", "summary_by": "review",
         "doing": "add a chart", "state": "asleep", "leader": True, "parent": None, "team": None,
@@ -941,7 +941,7 @@ async def test_the_presets_are_listed_with_what_each_is_and_the_wrong_ones_with_
 FORM = {
     "name": "Monthly reports",
     "title": "Report keeper",
-    "preset": "lead",
+    "preset": "general",
     "duty": "the monthly report page and its exports",
     "description": "Builds the household's monthly spending report.",
     "rules": "- Keep the date format as year-month-day.\n- Do not touch the raw data folder.",
@@ -957,7 +957,7 @@ async def test_the_form_of_a_new_session_is_filled_in_by_one_call(host, tmp_path
 
     form = await host.draft_session("我想要一只专门管月报页面和导出的使魔", workdir=str(workdir), lanlan_name="Lan")
 
-    assert form == {**FORM, "preset": "boss"}
+    assert form == {**FORM, "preset": "general"}
     ((tier, messages),) = host._decision_llm.calls
     assert tier == TIER_SESSION_DRAFT
     system, user = (message["content"] for message in messages)
@@ -968,9 +968,11 @@ async def test_the_form_of_a_new_session_is_filled_in_by_one_call(host, tmp_path
 
     for guide in (presets.CARD_TITLE_GUIDE, presets.CARD_DUTY_GUIDE, presets.CARD_DESCRIPTION_GUIDE):
         assert guide in system
-    # The presets it may name: the lead of a project, which most are, and by their lines the ones
-    # that read only, check or plan. Not a worker, which another task agent starts, nor a session of one errand.
-    assert "preset: which kind of task agent it is. lead for one that does the work itself" in system
+    # The presets it may name: one that does the work itself, which most are, and by their lines the
+    # ones that read only, check or plan. Not a worker, which another task agent starts, nor the lead
+    # of a project, which does none of the work: no form filled in for the user makes one of those.
+    assert "preset: which kind of task agent it is. general for one that does the work itself" in system
+    assert "name: a short name for the project this task agent works on, " in system
     for name in ("scout", "inspector", "planner"):
         assert f"\n- {name}: " in system
     for name in ("lead", "boss", "worker", "general"):
@@ -1014,10 +1016,10 @@ async def test_the_preset_of_a_form_is_one_there_is(host):
 
     assert await preset("scout") == "scout"
     assert await preset("doc-writer") == "doc-writer"
-    # The lead by the name a model reads, and whatever is no preset, missing or wrong: the lead of a project.
-    assert await preset("lead") == "boss"
-    for answered in ("wizard", "", None, 7, "broken", "boss", "worker", "general"):
-        assert await preset(answered) == "boss"
+    # Whatever is no preset, missing or wrong: one that does the work itself. The lead of a project
+    # among them, by either of its names: it would hand out what the user set this session up to do.
+    for answered in ("wizard", "", None, 7, "broken", "lead", "boss", "worker", "general"):
+        assert await preset(answered) == "general"
     system = host._decision_llm.calls[-1][1][0]["content"]
     assert "\n- doc-writer: When documents are written." in system and "broken" not in system
 
@@ -1027,7 +1029,7 @@ async def test_no_form_is_filled_in_while_the_preset_it_would_name_cannot_be_use
     templates = host.paths.space().templates_dir()
     if wrong == "a file":
         templates.mkdir(parents=True)
-        (templates / "boss.md").write_text("---\nname: boss\ndescription: Leads.\ntools: [bash]\n---\n", encoding="utf-8")
+        (templates / "general.md").write_text("---\nname: general\ndescription: Works.\ntools: [bash]\n---\n", encoding="utf-8")
     else:
         templates.parent.mkdir(parents=True)
         templates.write_text("not a folder", encoding="utf-8")
@@ -1060,7 +1062,7 @@ async def test_a_template_task_agents_are_not_told_of_is_not_offered_for_a_new_s
 
     listed = {item["name"]: item for item in await host.templates()}
     assert listed["doc-writer"]["valid"] is True and listed["doc-writer"]["error"].startswith("not offered")
-    assert "doc-writer" not in host._decision_llm.calls[0][1][0]["content"] and form["preset"] == "boss"
+    assert "doc-writer" not in host._decision_llm.calls[0][1][0]["content"] and form["preset"] == "general"
 
 
 async def test_what_comes_back_is_cut_to_its_caps_and_named_as_a_folder_can_be(host):
@@ -1170,7 +1172,7 @@ async def test_what_is_sent_to_fill_in_a_form_stays_within_its_cap(host, tmp_pat
     told = [line for line in system.splitlines() if line.startswith("- helper-")]
     assert 0 < len(told) < 12 and "- helper-11: " not in system
     assert count_tokens("\n".join(line for line in system.splitlines() if line.startswith("- "))) <= settings.SESSION_DRAFT_PRESETS_MAX_TOKENS
-    assert form["preset"] == "boss"
+    assert form["preset"] == "general"
     assert all(item["valid"] for item in await host.templates())
     assert count_tokens(system) + count_tokens(user) <= settings.SESSION_DRAFT_INPUT_MAX_TOKENS == 2000
     # Of the folder the first entries by name, and no more than are looked at.

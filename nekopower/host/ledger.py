@@ -438,6 +438,11 @@ class Commission:
     # The session of the leader that handed it over to the member it is
     # worked on in; None for one that was not handed over.
     handed_by: str | None = None
+    # The session of the leader its project had when it went to a member
+    # directly, without the leader handing it over (it plainly went on
+    # with that member's work): the leader is told what came of it, as of
+    # one it handed over. None otherwise.
+    beside_leader: str | None = None
     # Since when it rests: ``working``, with nobody at work on it, until
     # something it asked to be woken for comes (``Ledger.rest``). No runtime
     # has its session open meanwhile, and it does not hold its session. None
@@ -504,6 +509,7 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("usage_allowed", "INTEGER"),
     ("relation", "TEXT"),
     ("handed_by", "TEXT"),
+    ("beside_leader", "TEXT"),
 )
 # What is counted of the model requests, with a commission and with a session.
 _USAGE_COLUMNS: tuple[str, ...] = ("requests", "tokens_in", "tokens_out", "tokens_cache_read", "tokens_cache_write")
@@ -2128,7 +2134,7 @@ class Ledger:
         return await self.run(work)
 
     async def handed_work(self, session_id: str, *, limit: int) -> list[tuple[Commission, int]]:
-        """Return the commissions a leader handed over that are over and that it was not told of yet, the most recent first.
+        """Return the commissions a leader handed over, or that went to a member beside it, that are over and that it was not told of yet, the most recent first.
 
         Each with which ending this is: the number of the event that
         wrote its status last, which is what ``told_to_leader`` says it
@@ -2156,8 +2162,9 @@ class Ledger:
                 "AND events.type = 'told_to_leader' ORDER BY seq DESC LIMIT 1) AS told_of, "
                 "(SELECT COALESCE(MAX(seq), 0) FROM events WHERE events.commission_id = commissions.id "
                 "AND events.type = 'status') AS ending FROM commissions "
-                "WHERE handed_by = ? AND status IN ('done', 'blocked', 'failed', 'cancelled') ORDER BY updated_at DESC",
-                (session_id,),
+                "WHERE (handed_by = ? OR beside_leader = ?) AND status IN ('done', 'blocked', 'failed', 'cancelled') "
+                "ORDER BY updated_at DESC",
+                (session_id, session_id),
             )
             found: list[tuple[Commission, int]] = []
             for row in rows:

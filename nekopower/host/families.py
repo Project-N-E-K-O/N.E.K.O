@@ -246,7 +246,14 @@ class Families:
         standing = await self.standing(commission, known)
         project = named.name if named is not None else commission.project
         if project and project != DEFAULT_PROJECT:
-            verdict = orch.settle(orch.PROJECT_KEY + project, orch.FOLLOW_UP, standing, bars, reason="named")
+            verdict = orch.settle(
+                orch.PROJECT_KEY + project,
+                orch.FOLLOW_UP,
+                standing,
+                bars,
+                reason="named",
+                sentence=orch.sentence_of(commission.dispatch_text, commission.user_text),
+            )
             if verdict.action == orch.SUMMON_STRAY:
                 # Not among what was read (its record cannot be read, say): the project's all the same.
                 verdict = Verdict(action=orch.SUMMON_IN_PROJECT, project=project, preset=orch.WORKING_PRESET,
@@ -259,6 +266,7 @@ class Families:
                     verdict = await self._ask(commission, standing, matches, bars)
         if (
             settings.LEADER_IN_GIT_REPOSITORIES
+            and not verdict.direct
             and verdict.project
             and verdict.action in (orch.CONTINUE, orch.SUMMON_IN_PROJECT)
             and await self.in_git(getattr(known.get(verdict.project), "workdir", None))
@@ -273,12 +281,14 @@ class Families:
         """Ask the small model which of the best matches a commission belongs with; anything unreadable is none of them."""
         from utils.tokenize import truncate_to_tokens
 
+        sentence = orch.sentence_of(commission.dispatch_text, commission.user_text)
+
         def settled(key: str | None, relation: str, reason: str, calls: int) -> Verdict:
             return orch.settle(
-                key, relation, standing, bars, matches=matches, layer=orch.LAYER_MODEL, model_calls=calls, reason=reason
+                key, relation, standing, bars, matches=matches, layer=orch.LAYER_MODEL, model_calls=calls, reason=reason,
+                sentence=sentence,
             )
 
-        sentence = orch.sentence_of(commission.dispatch_text, commission.user_text)
         keys = orch.shown_keys(matches, bars, sentence, standing)
         if not keys or self._judge is None:
             clear, best = orch.clear_match(matches, bars)
@@ -286,7 +296,8 @@ class Families:
                 # A clear match that nobody can be asked about: it goes on
                 # there, and no project is made of it.
                 return orch.settle(
-                    best.key, orch.FOLLOW_UP, standing, bars, matches=matches, layer=orch.LAYER_RETRIEVAL, reason="clear match"
+                    best.key, orch.FOLLOW_UP, standing, bars, matches=matches, layer=orch.LAYER_RETRIEVAL,
+                    reason="clear match", sentence=sentence,
                 )
             return settled(None, orch.NEW, "not asked", 0)
         messages = orch.question(
@@ -367,9 +378,11 @@ class Families:
             elif (
                 session.kind == "line"
                 and session.project
+                and not verdict.direct
                 and await self._ledger.lead_session(commission.lanlan_name, session.project) is not None
             ):
                 # Its project got a leader since it was looked at: the commission is the leader's.
+                # (Not one that was sent to the member knowing of the leader: ``Verdict.direct``.)
                 session, project, action, moved = None, session.project, orch.TO_LEADER, True
             elif session.kind == "line" and session.project and await self._busy(session):
                 # The member it would go on in has too much waiting: the project gets a leader.
@@ -377,7 +390,14 @@ class Families:
                 verdict = replace(verdict, reason=LEADER_BUSY)
             else:
                 in_project = session.project if session.kind in PROJECT_KINDS else None
-                commission = await self._file(commission, in_project, known, session_id=session.id)
+                more: dict[str, Any] = {}
+                if verdict.direct and in_project:
+                    # Beside its project's leader, which is told what came of it with the next
+                    # commission that opens in it (``leader_notes``): no model is asked for that.
+                    leader = await self._ledger.lead_session(commission.lanlan_name, in_project)
+                    if leader is not None:
+                        more["beside_leader"] = leader.id
+                commission = await self._file(commission, in_project, known, session_id=session.id, **more)
 
         if action == orch.SUMMON_IN_PROJECT and project:
             members = await self._ledger.members(commission.lanlan_name, project)
@@ -656,8 +676,10 @@ class Families:
                     " ".join((item.result_summary or item.status_reason or item.status).split()),
                     settings.LEADER_HANDED_WORK_RESULT_MAX_TOKENS,
                 )
+                # One it handed over, or one that went to the member beside it.
+                line = texts.LEADER_HANDED_WORK_ITEM if item.handed_by else texts.LEADER_DIRECT_WORK_ITEM
                 items.append(
-                    texts.LEADER_HANDED_WORK_ITEM.format(
+                    line.format(
                         title=item.title, outcome=item.status, member=names.get(str(item.session_id), "a member"), result=result
                     )
                 )

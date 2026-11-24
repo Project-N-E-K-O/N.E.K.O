@@ -166,6 +166,9 @@ class Bars:
     # with, on this many words at least, did the same thing.
     peer: float = settings.ORCHESTRATOR_PEER_SHARE
     peer_hits: int = settings.ORCHESTRATOR_PEER_HITS
+    # In a project with a leader, a sentence that shares this many words
+    # with a member's own work (the project's name not counted) is that member's.
+    member_hits: int = settings.ORCHESTRATOR_MEMBER_HITS
     # A name shorter than this (white space removed) is not looked for in a sentence.
     name_min_chars: int = settings.SPACE_PROJECT_MATCH_MIN_CHARS
     # A task agent whose last commission ended longer ago takes no more work.
@@ -201,6 +204,9 @@ class Verdict:
     candidates: list[Match] = field(default_factory=list)
     model_calls: int = 0
     reason: str = ""
+    # ``CONTINUE`` in a member of a project that has a leader: it plainly goes on with what that
+    # member does, and does not go through the leader (which is told of it afterwards).
+    direct: bool = False
     # How long finding it took, the small model's answer included.
     seconds: float = 0.0
 
@@ -513,6 +519,33 @@ def _occurrences(agents: Sequence[Agent]) -> int:
     )
 
 
+def clear_member(sentence: str, members: Sequence[Agent], bars: Bars, project: str = "") -> Agent | None:
+    """Return the member whose own work a sentence plainly goes on with, or None.
+
+    By the words it shares with the member's card and what the member
+    did lately: ``Bars.member_hits`` of them, and more than with any
+    other member by what makes a match at all (``Bars.min_hits``). The
+    words of the project's own name (``project``) are not counted: a
+    sentence that names the project shares them with every member that
+    ever worked on it. Counted, with no weights: there are too few
+    members to weigh a word by. No model is asked.
+    """
+    words = content_tokens(sentence) - token_set(project)
+    if not words or not members:
+        return None
+    shared = sorted(
+        ((len(words & token_set("\n".join(_lines_of_agent(member)))), member) for member in members),
+        key=lambda item: item[0],
+        reverse=True,
+    )
+    most, member = shared[0]
+    if most < bars.member_hits:
+        return None
+    if len(shared) > 1 and most - shared[1][0] < bars.min_hits:
+        return None
+    return member
+
+
 def settle(
     key: str | None,
     relation: str,
@@ -523,8 +556,14 @@ def settle(
     layer: str = LAYER_RULES,
     model_calls: int = 0,
     reason: str = "",
+    sentence: str = "",
 ) -> Verdict:
-    """Turn the project or task agent a sentence belongs with into where the commission goes."""
+    """Turn the project or task agent a sentence belongs with into where the commission goes.
+
+    ``sentence`` is what was said, for a project that has a leader: what
+    plainly goes on with a member's own work (``clear_member``) is that
+    member's, and the rest the leader's.
+    """
     shown = list(matches)
 
     def verdict(action: str, **more: Any) -> Verdict:
@@ -536,10 +575,26 @@ def settle(
         # A member that was named: the sentence is its project's.
         project = standing.project(target.project)
     if project is not None:
-        if project.leader is not None or project.in_git:
-            # Its leader says who does it. A project in a git repository gets one now.
+        working = [
+            member
+            for member in standing.members(project.name)
+            if _takes_work(member, bars) and member.id != project.leader
+        ]
+        if project.leader is not None:
+            # A leader is not the only one a project's work comes to: what plainly goes on with a
+            # member's own work (it was named, or the words say so) is that member's, with no
+            # round through the leader. Whatever else is the project's, its leader says who does.
+            at = (
+                target
+                if target is not None and target in working
+                else clear_member(sentence, working, bars, project.name)
+            )
+            if at is not None:
+                return verdict(CONTINUE, agent=at.id, project=project.name, relation=relation, direct=True)
             return verdict(TO_LEADER, project=project.name, relation=relation)
-        working = [member for member in standing.members(project.name) if _takes_work(member, bars)]
+        if project.in_git:
+            # A project in a git repository gets a leader now (where the settings say so).
+            return verdict(TO_LEADER, project=project.name, relation=relation)
         if target is not None and target in working:
             return verdict(CONTINUE, agent=target.id, project=project.name, relation=relation)
         # The member that works; where the project has none of that preset, the member it has. (A
@@ -585,11 +640,11 @@ def by_rules(dispatch_text: str, user_text: str, standing: Standing, bars: Bars)
     key = named(sentence, standing, bars)
     if key is not None and key.startswith(PROJECT_KEY):
         # A project that is named has it, whatever else the sentence says.
-        return settle(key, FOLLOW_UP, standing, bars, reason="named")
+        return settle(key, FOLLOW_UP, standing, bars, reason="named", sentence=sentence)
     if _has("fresh_start", sentence):
         return settle(None, NEW, standing, bars, reason="asked for a new one")
     if key is not None:
-        return settle(key, relation_by_words(sentence, names_agent=True), standing, bars, reason="named")
+        return settle(key, relation_by_words(sentence, names_agent=True), standing, bars, reason="named", sentence=sentence)
     return None
 
 
@@ -611,7 +666,9 @@ def by_retrieval(
     if best is None:
         return settle(None, NEW, standing, bars, matches=matches, layer=LAYER_RETRIEVAL, reason="nothing matches"), matches
     relation = relation_by_words(sentence) if best.key.startswith(AGENT_KEY) else FOLLOW_UP
-    verdict = settle(best.key, relation, standing, bars, matches=matches, layer=LAYER_RETRIEVAL, reason="clear match")
+    verdict = settle(
+        best.key, relation, standing, bars, matches=matches, layer=LAYER_RETRIEVAL, reason="clear match", sentence=sentence
+    )
     if verdict.action == FORM_FAMILY:
         # No project is made on words alone: whether this is the same job
         # once more, or one more change to what was made, the words do not
@@ -648,6 +705,7 @@ def as_record(verdict: Verdict) -> dict[str, Any]:
         "model_calls": verdict.model_calls,
         "reason": verdict.reason,
         "seconds": verdict.seconds,
+        "direct": verdict.direct,
     }
 
 

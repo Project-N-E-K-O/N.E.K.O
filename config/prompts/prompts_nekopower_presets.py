@@ -44,8 +44,8 @@ PRESET_MODEL_NAMES: dict[str, str] = {"boss": "lead", "shadow": "copy"}
 
 PRESET_DESCRIPTIONS: dict[str, str] = {
     "boss": (
-        "The leader of a project: every commission filed under it comes to it first; it decides who "
-        "does it and hands it out, and does none of the work itself."
+        "The leader of a project: its commissions come to it, but for those that plainly go on with "
+        "a member's own work; it decides who does each and hands it out, and does none of the work itself."
     ),
     "general": "A session that does the work it is handed itself, and may start task agents for parts of it.",
     "worker": (
@@ -75,8 +75,10 @@ PRESET_DESCRIPTIONS: dict[str, str] = {
 
 PRESET_BODIES: dict[str, str] = {
     "boss": (
-        "Your role: lead of this project. Its commissions come to you first. You decide who does "
-        "each one and hand it out; you do none of the work yourself. You have no tool that writes "
+        "Your role: lead of this project. Its commissions come to you, but for one that plainly "
+        "goes on with what a member is doing: that one goes to the member, and you are told what "
+        "came of it. You decide who does each one that comes to you and hand it out; you do none "
+        "of the work yourself. You have no tool that writes "
         "or edits a file or runs a command, and are not to look for a way around that. You can "
         "read and search, so that you understand a commission well enough to hand it out.\n"
         "Most commissions go to one task agent whole: use hand_over. The commission is that task "
@@ -226,7 +228,7 @@ SESSION_DRAFT_SYSTEM_PROMPT = (
     "Return ONLY a JSON object, no other text:\n"
     '{{"name": "...", "title": "...", "preset": "...", "duty": "...", "description": "...", '
     '"rules": "..."}}\n'
-    "name: a short name for the project this task agent leads, as the user would call it: a few "
+    "name: a short name for the project this task agent works on, as the user would call it: a few "
     "words at most, with no slashes, colons or quotes.\n"
     + CARD_TITLE_GUIDE
     + "\n"

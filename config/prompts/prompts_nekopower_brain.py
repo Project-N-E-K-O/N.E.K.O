@@ -1559,8 +1559,11 @@ LEADER_MEMBER_STATES = {
 # What came of commissions a leader handed over, told once each. Rendered
 # with str.format (items); each item is LEADER_HANDED_WORK_ITEM (title,
 # outcome, member, result).
-LEADER_HANDED_WORK = "What came of commissions you handed over, since you were last told:\n{items}"
+LEADER_HANDED_WORK = "What came of commissions of this project that its members worked on, since you were last told:\n{items}"
 LEADER_HANDED_WORK_ITEM = '- "{title}" ({outcome}, by {member}): {result}'
+# The same for a commission that went to a member without coming to the
+# leader: it plainly went on with what that member does.
+LEADER_DIRECT_WORK_ITEM = '- "{title}" ({outcome}, by {member}, to whom it went directly): {result}'
 
 # Said to a member of a project with a commission that opens in it, when
 # other members worked somewhere else. Rendered with str.format (places).

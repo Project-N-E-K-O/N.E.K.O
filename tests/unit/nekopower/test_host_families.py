@@ -3043,3 +3043,80 @@ async def test_a_session_is_noted_by_the_tools_it_is_opened_with_as_it_starts(ho
     assert agents._writes_in == {member.id: ("Budget app", member.id)}
     release.set()
     await wait_status(host, receipt.commission_id, "done")
+
+
+async def test_what_goes_on_with_a_members_work_goes_to_it_and_its_leader_is_told_afterwards(hosts, tmp_path):
+    leader_llm = ScriptedLLM(_hand_over(description="Adds the sign-up form"))
+    members = {
+        "dark mode colours": ScriptedLLM([_report("colours warmed")]),
+        "newsletter": ScriptedLLM([_report("form added")]),
+    }
+    judge = FakeDecisionLLM()
+    host = _host(hosts, tmp_path, _by_role(leader_llm, members), decision_llm=judge)
+    await _project(host, "Shop site", tmp_path)
+    await _allow_members(host)
+    leader = (await host.derive_leader("Shop site", "Lan"))["session_id"]
+    stylist = await host.ledger.create_session(
+        lanlan_name="Lan", name="Shop site/stylist", kind="line", project="Shop site", preset="worker", parent_id=leader,
+        duty="The styles and the theme: header, footer, colours and the dark mode",
+    )
+
+    # It plainly goes on with what the stylist does: the stylist's, with no round through the leader.
+    first = await _dispatch(host, "make the dark mode colours of the header and the footer of the shop site warmer")
+    done = await wait_status(host, first.commission_id, "done")
+    await _let_go(host)
+
+    assert (done.session_id, done.handed_by, done.beside_leader) == (stylist.id, None, leader)
+    assert leader_llm.requests == [] and judge.belongs_calls == []
+    (decided,) = await _events(host, first.commission_id, "orchestrated")
+    assert (decided["action"], decided["agent"], decided["direct"], decided["model_calls"]) == ("continue", stylist.id, True, 0)
+    assert "placed" not in decided and await _events(host, first.commission_id, "handed_over") == []
+    # One at a time changes files in the project all the same.
+    assert host.task_agents._writes_in[stylist.id] == ("Shop site", stylist.id)
+
+    # What is nobody's in particular comes to the leader, which is told then what came of the other.
+    second = await _dispatch(host, "add a newsletter sign-up form to the shop site")
+    other = await wait_status(host, second.commission_id, "done")
+    assert other.handed_by == leader and other.beside_leader is None and other.session_id != stylist.id
+    (asked,) = await _events(host, second.commission_id, "orchestrated")
+    assert (asked["action"], asked["direct"]) == ("to_leader", False)
+    told = "\n".join(_user_messages(leader_llm.requests[0]))
+    line = brain_texts.LEADER_DIRECT_WORK_ITEM.format(
+        title=done.title, outcome="done", member="Shop site/stylist", result="colours warmed"
+    )
+    assert brain_texts.LEADER_HANDED_WORK.split("\n")[0] in told and line in told
+    assert len(await _events(host, first.commission_id, "told_to_leader")) == 1
+    await _let_go(host)
+    assert [item for item, _ending in await host.ledger.handed_work(leader, limit=9)] == [
+        await host.ledger.get(second.commission_id)
+    ]
+
+
+async def test_a_member_with_too_much_waiting_does_not_get_what_goes_on_with_its_work_beside_the_leader(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    await _project(host, "Shop site", tmp_path)
+    leader = (await host.derive_leader("Shop site", "Lan"))["session_id"]
+    stylist = await host.ledger.create_session(
+        lanlan_name="Lan", name="Shop site/stylist", kind="line", project="Shop site", preset="worker", parent_id=leader,
+        duty="The styles and the theme: header, footer, colours and the dark mode",
+    )
+    for index in range(settings.LEADER_WHEN_UNDER_WAY):
+        await host.ledger.create(
+            lanlan_name="Lan", title=f"job {index}", dispatch_text=f"job {index}", source="dispatch", route="task_agent",
+            session_id=stylist.id, project="Shop site",
+        )
+    text = "make the dark mode colours of the header and the footer of the shop site warmer"
+    commission, _made = await host.ledger.create(
+        lanlan_name="Lan", title=text, dispatch_text=text, source="dispatch", route="task_agent"
+    )
+    families = host.task_agents.families
+
+    verdict = await families.decide(commission)
+    placed, session = await families.place(commission, verdict)
+
+    # Sent to the member, which has enough: the leader's to hand out, and no other leader is made.
+    assert (verdict.action, verdict.agent, verdict.direct) == (orch.CONTINUE, stylist.id, True)
+    assert (session.id, placed.beside_leader) == (leader, None)
+    (decided,) = await _events(host, commission.id, "orchestrated")
+    assert decided["placed"] == {"action": "to_leader", "session": leader}
+    assert await _events(host, commission.id, "leader_derived") == []
