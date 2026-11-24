@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 from pathlib import Path
 
@@ -243,11 +244,11 @@ def test_explicit_paths_outside_the_repository_are_scanned(tmp_path: Path, capsy
 def test_unreadable_and_broken_files_do_not_stop_the_scan(tmp_path: Path, capsys):
     folder = tmp_path / "loop_dir"
     _write(folder / "broken.py", "def (:\n")
+    # A self-referencing symlink cannot be read. Creating one needs privileges
+    # on Windows; without them broken.py alone still covers the skip path.
     loop_file = folder / "a.py"
-    try:
+    with contextlib.suppress(OSError):
         loop_file.symlink_to(loop_file)
-    except OSError:
-        loop_file = None
     _write(folder / "z.py", "make(temperature=0.2)\n")
     assert MOD.main([str(folder)]) == 1
     captured = capsys.readouterr()
