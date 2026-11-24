@@ -442,3 +442,20 @@ class ChatChatGPT(ChatOpenAI):
         except Exception as exc:
             self._raise_auth_or_limit(exc)
             raise
+
+
+async def acreate_chatgpt_client(**kwargs) -> ChatChatGPT:
+    """Build a client off the event loop (the store read can refresh a token).
+
+    A caller cancelled while the worker thread is still constructing never
+    receives the client, so the finished client is closed here instead.
+    """
+    construction = asyncio.ensure_future(asyncio.to_thread(lambda: ChatChatGPT(**kwargs)))  # noqa: LLM_OUTPUT_BUDGET # Callers pass their own budget.
+    try:
+        return await asyncio.shield(construction)
+    except asyncio.CancelledError:
+        def close_orphan(task):
+            if not task.cancelled() and task.exception() is None:
+                asyncio.ensure_future(task.result().aclose())
+        construction.add_done_callback(close_orphan)
+        raise

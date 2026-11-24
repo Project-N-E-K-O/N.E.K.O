@@ -59,8 +59,10 @@ def revision(config, slots):
 def preview(config, slots):
     state = config.get(STATE_KEY) or {}
     return {'enabled': bool(state), 'slots': slots, 'revision': revision(config, slots),
+            # Every configured slot is rewritten, a ChatGPT one included: enabling
+            # picks the catalog default model for all of them.
             'overwritten': [slot for slot in slots
-                            if config.get(f'{slot}ModelProvider') not in (None, '', 'chatgpt')],
+                            if config.get(f'{slot}ModelProvider') not in (None, '')],
             'model': state.get('model', '')}
 
 

@@ -16,6 +16,9 @@ from ._shared import router
 
 _attempt = None
 _lock = threading.Lock()
+# A restored configuration whose reload failed: the next account or
+# subscription change reapplies it even when nothing is left to restore.
+_reload_pending = False
 
 
 def local_settings(request: Request, response: Response):
@@ -42,11 +45,23 @@ class AccountRequest(BaseModel):
 
 
 def _status():
+    # Login state first: "connected" is set only after the account is saved,
+    # so the account list read afterwards already includes it.
+    attempt = _attempt
+    login_status = attempt.status if attempt else "idle"
+    error = attempt.error if attempt else ""
     result = get_store().status()
-    result.update(
-        login_status=_attempt.status if _attempt else "idle",
-        error=_attempt.error if _attempt else "",
-    )
+    result.update(login_status=login_status, error=error)
+    return result
+
+
+async def _reload(config):
+    """Apply a persisted configuration, remembering a failure for the next change."""
+    global _reload_pending
+    from .core_config import reload_api_configuration
+
+    result = await reload_api_configuration(config)
+    _reload_pending = not result.get('success')
     return result
 
 
@@ -105,7 +120,7 @@ async def chatgpt_select(body: AccountRequest):
 @router.post("/chatgpt/logout", dependencies=[Depends(local_settings)])
 async def chatgpt_logout(body: AccountRequest):
     from copy import deepcopy
-    from .core_config import _core_api_save_lock, reload_api_configuration
+    from .core_config import _core_api_save_lock
     from utils.config_manager import get_config_manager
     from utils.chatgpt_subscription import disable
     restored = False
@@ -125,13 +140,17 @@ async def chatgpt_logout(body: AccountRequest):
                 restored = disable(value)
                 return deepcopy(value)
             config = await get_config_manager().aupdate_json_config('core_config.json', restore)
+        elif _reload_pending:
+            from utils.config_manager.json_update import load_json_config_snapshot
+            config = await asyncio.to_thread(load_json_config_snapshot, get_config_manager(), 'core_config.json')
+        reload_needed = restored or _reload_pending
         try:
             confirmed = await _safe_call(_change_account, "sign_out", body.account_id)
         except HTTPException as exc:
             # The restored configuration is already committed. Reload it even
             # when credential cleanup fails, after releasing the save lock.
             sign_out_error = exc
-    result = await reload_api_configuration(config) if restored else {'success': True}
+    result = await _reload(config) if reload_needed else {'success': True}
     if sign_out_error is not None:
         raise sign_out_error
     return {**result, "revocation_confirmed": confirmed, "subscription_restored": restored}
@@ -166,13 +185,15 @@ async def chatgpt_subscription_preview(verify_authorization: bool = False):
 async def chatgpt_subscription_update(body: SubscriptionRequest):
     from utils.config_manager import get_config_manager
     from utils.chatgpt_subscription import enable, disable, preview, supported_slots
-    from .core_config import _core_api_save_lock, reload_api_configuration
-    from utils.llm_client.chatgpt_client import ChatChatGPT, ChatGPTResponseError
+    from .core_config import _core_api_save_lock
+    from utils.llm_client.chatgpt_client import ChatGPTResponseError, acreate_chatgpt_client
     from copy import deepcopy
 
     manager = get_config_manager()
     async with _core_api_save_lock:
-        slots = await asyncio.to_thread(supported_slots)
+        # Turning off restores from the saved snapshot alone, so it must not
+        # depend on the provider metadata that enabling reads.
+        slots = await asyncio.to_thread(supported_slots) if body.enabled else None
         model = ''
         if body.enabled:
             if _attempt and not _attempt.done.is_set():
@@ -180,7 +201,12 @@ async def chatgpt_subscription_update(body: SubscriptionRequest):
             before = await _safe_call(get_store().status)
             if not before['active']:
                 raise HTTPException(400, 'signInRequired')
-            client = await _safe_call(lambda: ChatChatGPT(timeout=20))  # noqa: LLM_OUTPUT_BUDGET # Model catalog only.
+            try:
+                client = await acreate_chatgpt_client(timeout=20)  # noqa: LLM_OUTPUT_BUDGET # Model catalog only.
+            except ChatGPTAuthError:
+                raise HTTPException(400, 'signInRequired') from None
+            except (httpx.HTTPError, OSError):
+                raise HTTPException(503, 'failed') from None
             try:
                 models = await client.alist_models()
             except ChatGPTAuthError:
@@ -190,6 +216,9 @@ async def chatgpt_subscription_update(body: SubscriptionRequest):
                 raise HTTPException(exc.status_code or 502, detail) from None
             except httpx.HTTPError:
                 raise HTTPException(503, 'failed') from None
+            except Exception:
+                # e.g. a catalog body that is not the expected JSON
+                raise HTTPException(502, 'failed') from None
             finally:
                 await client.aclose()
             ids = sorted({item['id'] for item in models if isinstance(item.get('id'), str) and item['id']})
@@ -210,5 +239,10 @@ async def chatgpt_subscription_update(body: SubscriptionRequest):
             config = await manager.aupdate_json_config('core_config.json', apply)
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from None
-    result = await reload_api_configuration(config)
+    result = await _reload(config)
+    if slots is None:
+        try:
+            slots = await asyncio.to_thread(supported_slots)
+        except Exception:
+            slots = []
     return {**result, 'subscription': preview(config, slots)}

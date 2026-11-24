@@ -1333,6 +1333,7 @@
       "signInRequired": "Entre no ChatGPT primeiro.",
       "noModels": "A conta não retornou modelos disponíveis. A configuração não foi alterada.",
       "accountChanged": "A conta mudou. Tente novamente.",
+      "reloadFailed": "A alteração foi salva, mas esta página não conseguiu recarregar as configurações. Reabra a página antes de salvar outras configurações.",
       "managedSettings": "Desative a assinatura do ChatGPT antes de alterar os provedores gerenciados.",
       "independentSettings": "Esta assinatura ativou apenas as configurações personalizadas dos modelos de texto. Para alterar as configurações independentes dos modelos de decisão, geração de imagens ou voz, desative a assinatura do ChatGPT e depois ative a API personalizada para configurá-las."
     },

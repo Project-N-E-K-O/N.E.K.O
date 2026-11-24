@@ -219,6 +219,7 @@ def routes(manager, monkeypatch):
     import asyncio
     monkeypatch.setattr(core_config, '_core_api_save_lock', asyncio.Lock())
     monkeypatch.setattr(core_config, 'reload_api_configuration', AsyncMock(return_value={'success': True}))
+    monkeypatch.setattr(chatgpt, '_reload_pending', False)
     store = SimpleNamespace(status=lambda: {'active': 'fixture-account', 'accounts': [
         {'id': 'fixture-account', 'connected': True}]}, access_token=lambda: 'fixture-token')
     monkeypatch.setattr(chatgpt, 'get_store', lambda: store)
@@ -250,10 +251,13 @@ async def test_enable_failure_never_changes_configuration(manager, routes, failu
     rev = revision(original, supported_slots())
     if failure == 'signed-out': store.status = lambda: {'active': None}
     if failure == 'empty': client.alist_models.return_value = []
-    if failure == 'catalog-error': client.alist_models.side_effect = RuntimeError('offline')
+    if failure == 'catalog-error': client.alist_models.side_effect = ValueError('catalog body is not JSON')
     if failure == 'stale': rev = 'obsolete'
-    with pytest.raises((HTTPException, RuntimeError)):
+    with pytest.raises(HTTPException) as raised:
         await route.chatgpt_subscription_update(route.SubscriptionRequest(enabled=True, revision=rev))
+    expected = {'signed-out': (400, 'signInRequired'), 'empty': (400, 'noModels'),
+                'catalog-error': (502, 'failed'), 'stale': (409, 'configurationChanged')}[failure]
+    assert (raised.value.status_code, raised.value.detail) == expected
     assert manager.load_json_config('core_config.json') == original
     core.reload_api_configuration.assert_not_awaited()
 
@@ -359,6 +363,63 @@ async def test_logout_failure_still_reloads_restored_configuration(manager, rout
     assert error.value.status_code == (503 if failure == 'write' else 400)
     assert manager.load_json_config('core_config.json') == original
     core.reload_api_configuration.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_logout_retry_reapplies_a_restore_whose_reload_failed(manager, routes, monkeypatch):
+    route, core, store, _ = routes
+    original = {'enableCustomApi': False, 'conversationModelProvider': 'custom'}
+    config = deepcopy(original)
+    enable(config, supported_slots(), 'model', revision(config, supported_slots()))
+    manager.save_json_config('core_config.json', config)
+    monkeypatch.setattr(route, '_change_account', lambda action, account_id: True)
+    core.reload_api_configuration.return_value = {'success': False, 'error': 'reload failed'}
+    first = await route.chatgpt_logout(route.AccountRequest(account_id='fixture-account'))
+    assert first['subscription_restored'] and not first['success']
+    # The snapshot is gone now, but the runtime never took the restored file.
+    core.reload_api_configuration.return_value = {'success': True}
+    retry = await route.chatgpt_logout(route.AccountRequest(account_id='fixture-account'))
+    assert retry['success'] and not retry['subscription_restored']
+    assert core.reload_api_configuration.await_count == 2
+    assert core.reload_api_configuration.await_args.args[0] == original
+    # Once applied, an ordinary logout skips the reload again.
+    await route.chatgpt_logout(route.AccountRequest(account_id='fixture-account'))
+    assert core.reload_api_configuration.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_turning_off_restores_without_provider_metadata(manager, routes, monkeypatch):
+    route, core, store, _ = routes
+    original = {'enableCustomApi': False, 'conversationModelProvider': 'custom'}
+    config = deepcopy(original)
+    enable(config, supported_slots(), 'model', revision(config, supported_slots()))
+    manager.save_json_config('core_config.json', config)
+
+    def unreadable_metadata():
+        raise KeyError('assist_api_providers')
+    monkeypatch.setattr('utils.chatgpt_subscription.supported_slots', unreadable_metadata)
+    result = await route.chatgpt_subscription_update(route.SubscriptionRequest(enabled=False))
+    assert manager.load_json_config('core_config.json') == original
+    assert result['success'] and result['subscription']['enabled'] is False
+
+
+def test_preview_lists_a_manually_configured_chatgpt_slot():
+    config = {'conversationModelProvider': 'chatgpt', 'conversationModelId': 'z-model'}
+    # Enabling rewrites it with the catalog default, so the user is told.
+    assert preview(config, ['conversation', 'memory'])['overwritten'] == ['conversation']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('model_id', [{'id': 'model-a'}, ['model-a'], '   ', None])
+async def test_core_save_requires_a_string_chatgpt_model_id(manager, routes, model_id):
+    route, core, store, _ = routes
+    manager.save_json_config('core_config.json', {'coreApi': 'qwen', 'assistApi': 'qwen', 'enableCustomApi': True})
+    request = SimpleNamespace(json=AsyncMock(return_value={
+        'coreApi': 'qwen', 'assistApi': 'qwen', 'enableCustomApi': True,
+        'conversationModelProvider': 'chatgpt', 'conversationModelId': model_id}))
+    result = await core.update_core_config(request)
+    assert result == {'success': False, 'error': 'Select an available ChatGPT model before saving'}
+    assert 'conversationModelId' not in manager.load_json_config('core_config.json')
 
 
 @pytest.mark.asyncio

@@ -1333,6 +1333,7 @@
       "signInRequired": "Sign in to ChatGPT first.",
       "noModels": "The account returned no available models. Configuration was not changed.",
       "accountChanged": "The account changed. Please try again.",
+      "reloadFailed": "The change was saved, but this page could not reload the settings. Reopen the page before saving anything else.",
       "managedSettings": "Turn off ChatGPT subscription before changing managed providers.",
       "independentSettings": "This subscription enabled only text model overrides. To change separate decision, image or voice model settings, turn off ChatGPT subscription, then enable custom API and configure them."
     },

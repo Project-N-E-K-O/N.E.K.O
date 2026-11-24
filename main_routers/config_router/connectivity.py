@@ -702,9 +702,9 @@ async def _test_connectivity_candidates(
                 result = {"success": False, "error": "不支持的 TTS 探测协议", "error_code": "unsupported"}
         elif provider_type == "chatgpt":
             from config import OPENAI_CONNECTIVITY_TEST_MAX_TOKENS
-            from utils.llm_client.chatgpt_client import ChatChatGPT, ChatGPTOutputLimitError
-            client = await asyncio.to_thread(ChatChatGPT, base_url=candidate_url, model=model,
-                                 max_completion_tokens=OPENAI_CONNECTIVITY_TEST_MAX_TOKENS, timeout=15)
+            from utils.llm_client.chatgpt_client import ChatGPTOutputLimitError, acreate_chatgpt_client
+            client = await acreate_chatgpt_client(base_url=candidate_url, model=model,
+                                                  max_completion_tokens=OPENAI_CONNECTIVITY_TEST_MAX_TOKENS, timeout=15)
             try:
                 await client.ainvoke("Reply OK.")
                 result = {"success": True, "message": "ChatGPT connected"}

@@ -801,7 +801,8 @@ async def update_core_config(request: Request):
             if core_cfg.get(f'{mt}ModelProvider') == 'chatgpt':
                 if mt not in TEXT_SLOTS:
                     return {"success": False, "error": "ChatGPT plan usage supports text slots only"}
-                if not str(core_cfg.get(f'{mt}ModelId') or '').strip():
+                model_id = core_cfg.get(f'{mt}ModelId')
+                if not isinstance(model_id, str) or not model_id.strip():
                     return {"success": False, "error": "Select an available ChatGPT model before saving"}
                 core_cfg[f'{mt}ModelUrl'] = 'https://api.openai.com/v1'
                 core_cfg[f'{mt}ModelApiKey'] = ''

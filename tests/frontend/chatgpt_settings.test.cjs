@@ -26,11 +26,12 @@ function surface(initial, respond = () => ({}), browser = false) {
     const window = {
         listeners: {}, addEventListener(name, fn) { this.listeners[name] = fn; },
         open: () => null, confirm: () => true,
+        rebinds: 0, refreshCustomConnectivityLightBindings() { this.rebinds++; },
         electronShell: { openExternal: async url => { opened = url; } }
     };
     if (browser) delete window.electronShell;
     const context = {
-        window, URL, _apiSaveInProgress: false, loadCurrentApiKey: async () => { reloads++; await reloadWork?.(); },
+        window, URL, _apiSaveInProgress: false, loadCurrentApiKey: async () => { reloads++; return await reloadWork?.(); },
         ConnectivityManager: {invalidateChatGPTAccount() { connectivityInvalidations++; }},
         document: {
             getElementById: id => nodes[id.replace('chatgpt-', '')],
@@ -374,6 +375,34 @@ test('toggle confirms affected slots, saves once, reloads and reflects persisted
     assert.equal(ui.reloads, 2);
 });
 
+test('a saved toggle whose settings reload fails says so instead of reporting a synced form', async () => {
+    let ui;
+    ui = surface(signedIn, (url, body) => {
+        ui.setSubscription({enabled: body.enabled, model: 'available-model'});
+        return {success: true};
+    });
+    await flush();
+    await toggle(ui, true);
+    // A successful reload re-points the connectivity lights at the new slot keys.
+    assert.equal(ui.window.rebinds, 1);
+    assert.match(ui.nodes.status.textContent, /available-model/);
+    ui.setReloadWork(async () => false);
+    await toggle(ui, false);
+    assert.equal(ui.reloads, 2);
+    assert.match(ui.nodes.status.textContent, /could not reload the settings/);
+});
+
+test('switching accounts invalidates connectivity again after the switch, even if the refresh fails', async () => {
+    const ui = surface({...signedIn, accounts: [...signedIn.accounts, {id: 'other-87654321', email: 'b@example.test'}]},
+        () => ({success: true}));
+    await flush();
+    const before = ui.connectivityInvalidations;
+    ui.setState(new Error('offline'));
+    ui.nodes.account.value = 'other-87654321';
+    await ui.nodes.account.listeners.change();
+    assert.equal(ui.connectivityInvalidations - before, 2);
+});
+
 test('failed toggle reconciles persisted state and authorization warning keeps off available', async () => {
     const ui = surface(signedIn, () => ({detail: 'save failed'}));
     await flush();
@@ -608,6 +637,25 @@ test('untouched dormant voice settings never block a save, whatever legacy voice
         await ui.context.saveApiKey({...fullForm, ttsVoiceId: 'edited-voice'});
         assert.equal(ui.calls.length, 1, 'a real dormant voice edit is still rejected');
     }
+});
+
+test('a dormant slot that follows another tier is not edited when that tier changes', async () => {
+    const values = {decisionModelProvider: 'follow_assist', decisionModelId: 'hand-picked-decision',
+        decisionModelUrl: 'https://qwen.test/v1', decisionModelApiKey: '__NEKO_SECRET_MASKED__'};
+    const ui = independentSettingsSurface(values);
+    ui.context.MODEL_TYPES.push('decision');
+    ui.context.rememberChatGPTIndependentSettings(['decision']);
+    // Switching the assist provider clears follower model IDs and refreshes their URL.
+    const fullForm = {enableCustomApi: true, coreApi: 'qwen', assistApi: 'openai',
+        decisionModelProvider: 'follow_assist', decisionModelId: '', decisionModelUrl: 'https://openai.test/v1',
+        decisionModelApiKey: '__NEKO_SECRET_MASKED__'};
+    await ui.context.saveApiKey(fullForm);
+    assert.equal(ui.calls.length, 1);
+    assert.equal(ui.calls[0].body.assistApi, 'openai');
+    for (const field of Object.keys(values)) assert.equal(Object.hasOwn(ui.calls[0].body, field), false);
+    // Picking another provider for the dormant slot is still refused.
+    await ui.context.saveApiKey({...fullForm, decisionModelProvider: 'custom'});
+    assert.equal(ui.calls.length, 1);
 });
 
 test('ordinary saves use the same GSV defaults and unknown image serialization as the form', async () => {

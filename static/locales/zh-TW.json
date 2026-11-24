@@ -1333,6 +1333,7 @@
       "signInRequired": "請先登入 ChatGPT。",
       "noModels": "帳號未傳回可用模型，未變更設定。",
       "accountChanged": "帳號已變更，請重新操作。",
+      "reloadFailed": "變更已儲存，但本頁未能重新載入設定。請重新開啟本頁後再儲存其他設定。",
       "managedSettings": "請先關閉 ChatGPT 訂閱開關，再修改受管理欄位的服務商。",
       "independentSettings": "目前訂閱只啟用了文字模型的自訂設定。若要變更決策、圖片生成或語音模型的獨立設定，請先關閉 ChatGPT 訂閱，再啟用自訂 API 後設定。"
     },

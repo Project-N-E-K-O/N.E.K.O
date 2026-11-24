@@ -1333,6 +1333,7 @@
       "signInRequired": "Primero inicia sesión en ChatGPT.",
       "noModels": "La cuenta no devolvió modelos disponibles. No se cambió la configuración.",
       "accountChanged": "La cuenta ha cambiado. Vuelve a intentarlo.",
+      "reloadFailed": "El cambio se guardó, pero esta página no pudo volver a cargar la configuración. Vuelve a abrir la página antes de guardar otros ajustes.",
       "managedSettings": "Desactiva la suscripción de ChatGPT antes de cambiar los proveedores administrados.",
       "independentSettings": "Esta suscripción solo activó la configuración personalizada de los modelos de texto. Para cambiar la configuración independiente de los modelos de decisión, generación de imágenes o voz, desactiva la suscripción de ChatGPT y luego activa la API personalizada para configurarla."
     },

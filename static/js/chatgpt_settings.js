@@ -35,15 +35,27 @@
         const translated = window.t ? window.t(`api.chatgpt.${key}`) : '';
         return translated && translated !== `api.chatgpt.${key}` ? translated : fallback;
     };
+    // One deadline covers the request and its body, so a stalled response
+    // cannot keep the page's save lock (busy) forever. Enabling reads the
+    // account catalog and reloads the app, hence the generous bound; callers
+    // reconcile with a fresh status read instead of resending a write.
+    const API_TIMEOUT_MS = 60000;
     const api = async (path, body) => {
-        const response = await fetch(`/api/config/chatgpt/${path}`, {
-            method: body === undefined ? 'GET' : 'POST', cache: 'no-store',
-            headers: { 'Content-Type': 'application/json' },
-            ...(body === undefined ? {} : { body: JSON.stringify(body) })
-        });
+        const signal = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+            ? AbortSignal.timeout(API_TIMEOUT_MS) : undefined;
+        let response;
         let data;
-        try { data = await response.json(); }
-        catch { throw new Error(t('failed', 'ChatGPT connection failed.')); }
+        try {
+            response = await fetch(`/api/config/chatgpt/${path}`, {
+                method: body === undefined ? 'GET' : 'POST', cache: 'no-store',
+                headers: { 'Content-Type': 'application/json' }, signal,
+                ...(body === undefined ? {} : { body: JSON.stringify(body) })
+            });
+            data = await response.json();
+        } catch (error) {
+            if (!response && error?.name !== 'TimeoutError') throw error;
+            throw new Error(t('failed', 'ChatGPT connection failed.'));
+        }
         if (!response.ok) throw new Error(typeof data.detail === 'string' ? t(data.detail, data.detail) : t('failed', 'ChatGPT connection failed.'));
         return data;
     };
@@ -170,14 +182,25 @@
             confirmationFocus = undefined;
         }
     }
+    // Returns whether the settings form now shows the saved configuration.
     const reloadSettings = async () => {
-        if (typeof loadCurrentApiKey === 'function') await loadCurrentApiKey();
+        if (typeof loadCurrentApiKey !== 'function') return true;
+        const loaded = await loadCurrentApiKey();
+        // Values were set without change events: point the lights at the new slot keys.
+        if (typeof window.refreshCustomConnectivityLightBindings === 'function') {
+            window.refreshCustomConnectivityLightBindings();
+        }
+        return loaded !== false;
+    };
+    const reportStaleForm = () => {
+        status.textContent = t('reloadFailed', 'The change was saved, but this page could not reload the settings. Reopen the page before saving anything else.');
     };
     enabled.addEventListener('change', () => {
         const requested = enabled.checked;
         enabled.checked = subscription.enabled;
         return run(async () => {
             let attempted = false;
+            let reloaded = true;
             try {
                 const current = await api('subscription');
                 // Same slot names as the connectivity lights (api_key_settings.js).
@@ -193,8 +216,11 @@
                 if (!result.success) throw new Error(result.error || t('failed', 'ChatGPT connection failed.'));
             } finally {
                 // Reconcile after a timeout too: persistence may already have completed.
-                try { if (attempted) await reloadSettings(); }
-                finally { await refresh(); }
+                try { if (attempted) reloaded = await reloadSettings(); }
+                finally {
+                    await refresh();
+                    if (!reloaded) reportStaleForm();
+                }
             }
         });
     });
@@ -227,7 +253,8 @@
     account.addEventListener('change', () => run(async () => {
         invalidate();
         try { await api('select', { account_id: account.value }); }
-        finally { await refresh(); }
+        // Again after the switch: a test started before it must not land even if refresh fails.
+        finally { invalidate(); await refresh(); }
     }));
     logout.addEventListener('click', () => run(async () => {
         invalidate();
@@ -235,10 +262,14 @@
         let failure;
         try { result = await api('logout', { account_id: account.value }); }
         catch (error) { failure = error; }
+        let reloaded = true;
         try {
             // A lost/error response may follow successful local restoration.
-            if (failure || result.subscription_restored) await reloadSettings();
-        } finally { await refresh(); }
+            if (failure || result.subscription_restored) reloaded = await reloadSettings();
+        } finally {
+            await refresh();
+            if (!reloaded) reportStaleForm();
+        }
         if (failure) throw failure;
         if (!result.revocation_confirmed) status.textContent = t('revocationUnconfirmed', 'Signed out locally. Disconnect the app in ChatGPT Settings to confirm remote revocation.');
     }));

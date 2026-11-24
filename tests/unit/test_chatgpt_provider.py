@@ -1,5 +1,6 @@
 """ChatGPT OAuth and Responses contract tests; no real credentials or network."""
 
+import asyncio
 import json
 import os
 import time
@@ -805,3 +806,30 @@ async def test_sdk_raised_stream_limit_error_is_safe_and_not_retried(store, mode
         assert len(calls) == 1
     finally:
         await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_client_built_for_a_cancelled_caller_is_closed(monkeypatch):
+    import threading
+    from utils.llm_client import chatgpt_client
+
+    release = threading.Event()
+    closed = asyncio.Event()
+
+    class Built:
+        async def aclose(self):
+            closed.set()
+
+    def slow_build(**kwargs):
+        release.wait(5)
+        return Built()
+
+    monkeypatch.setattr(chatgpt_client, "ChatChatGPT", slow_build)
+    caller = asyncio.ensure_future(chatgpt_client.acreate_chatgpt_client(timeout=1))
+    await asyncio.sleep(0)
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    release.set()
+    async with asyncio.timeout(5):
+        await closed.wait()

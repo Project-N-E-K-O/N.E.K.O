@@ -66,6 +66,7 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-11-24-chatgpt-subscription-main-merge",
         "2026-11-23-theater-market-recovery-main-merge",
         "2026-11-19-chatgpt-review-feedback",
         "2026-11-17-chatgpt-independent-settings",
@@ -634,7 +635,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "0ac6da80c66e3a847738a77f4e028786407bc293fd2706299d8c3d5c2aa2d639"
+LOCALE_KEY_SIGNATURE = "de3ff780b8c0c1a6fa65f26626772d1c3d5fcee384dab6b696a04b183c982ba9"
 
 
 _BUMP_INSTRUCTIONS = (

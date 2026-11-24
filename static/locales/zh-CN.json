@@ -1333,6 +1333,7 @@
       "signInRequired": "请先登录 ChatGPT。",
       "noModels": "账号未返回可用模型，未更改配置。",
       "accountChanged": "账号已变更，请重新操作。",
+      "reloadFailed": "更改已保存，但本页未能重新载入设置。请重新打开本页后再保存其他设置。",
       "managedSettings": "请先关闭 ChatGPT 订阅开关，再修改托管槽位的服务商。",
       "independentSettings": "当前订阅只启用了文字模型的自定义配置。要更改决策、图片生成或语音模型的独立配置，请先关闭 ChatGPT 订阅，再启用自定义 API 后配置。"
     },

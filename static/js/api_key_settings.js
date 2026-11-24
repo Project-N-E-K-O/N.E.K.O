@@ -2903,6 +2903,7 @@ async function loadCurrentApiKey() {
 
     syncProviderSelectDropdowns();
 
+    let loaded = false;
     try {
         const response = await fetch('/api/config/core_api');
         if (response.ok) {
@@ -3205,6 +3206,7 @@ async function loadCurrentApiKey() {
                 document.getElementById('disableTts').checked = data.disableTts;
             }
             rememberChatGPTIndependentSettings(data.chatgptIndependentSlots);
+            loaded = true;
 
         } else {
             showCurrentApiKey(window.t ? window.t('api.getCurrentApiKeyFailed') : '获取当前API Key失败', '', false);
@@ -3217,6 +3219,8 @@ async function loadCurrentApiKey() {
         // 缓存仅覆盖保存成功后的这一次重载。页面刷新或后续普通加载仍绝不回显密钥。
         _secretDisplayCache = null;
     }
+    // 订阅开关据此区分「已保存」和「表单已同步」。
+    return loaded;
 }
 
 // 全局变量存储待保存的API Key
@@ -4314,9 +4318,10 @@ function prepareChatGPTIndependentSettingsForSave(params) {
             && provider === _loadedChatGPTIndependentFields[providerField];
         for (const suffix of ['Provider', 'Url', 'Id', 'ApiKey']) {
             const field = `${slot}Model${suffix}`;
-            // Follow-provider defaults can be refreshed without editing this slot.
-            const inherited = followsUnchanged && (suffix === 'Url' || suffix === 'ApiKey'
-                || (suffix === 'Id' && document.getElementById(field)?.dataset.fixedModelHidden === 'true'));
+            // A slot that still follows another tier takes its URL, key and model ID
+            // from it: they change when that tier changes (switching the assist
+            // provider clears follower model IDs), which is not an edit of this slot.
+            const inherited = followsUnchanged && suffix !== 'Provider';
             if (Object.hasOwn(params, field) && !inherited
                 && params[field] !== _loadedChatGPTIndependentFields[field]) return null;
             // Ordinary full-form saves must not persist auto-filled dormant settings.
@@ -6352,6 +6357,10 @@ function initConnectivityLights() {
 
     // ===== Task 7.2: Custom model indicator lights =====
     const customCurrentKeys = {}; // { [modelType]: currentKey }
+    // 订阅开关整页重载配置时不触发 change 事件，由 chatgpt_settings.js 调这里重绑各档位的灯。
+    window.refreshCustomConnectivityLightBindings = () => {
+        CONNECTIVITY_TESTABLE_TYPES.forEach(reRegisterModelSlot);
+    };
     function reRegisterModelSlot(modelType) {
         if (!lightRefs.custom[modelType]) return;
         const oldKey = customCurrentKeys[modelType];
