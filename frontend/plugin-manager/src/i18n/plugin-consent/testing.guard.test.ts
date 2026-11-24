@@ -29,20 +29,48 @@ function listAppSourceFiles(dir: string): string[] {
 }
 
 /**
- * Module specifiers of every static import, re-export and string-literal
- * `import()` in the file. TypeScript's pre-processor skips comments and
- * ordinary strings, so an example import inside either is not counted.
- * Known gaps: `import.meta.glob(...)`, and imports right after a regex literal
- * that contains a quote (the pre-processor's scanner can lose track there).
+ * Module specifiers of every import, re-export (including `export * as ns`)
+ * and string-literal `import()` in a script. The script is parsed, so example
+ * imports inside comments or ordinary strings are not counted.
+ * Known gaps: `import.meta.glob(...)`, `new URL(..., import.meta.url)`, `require()`.
  */
+function specifiersIn(script: string, fileName: string): string[] {
+  const kind = /\.[jt]sx$/.test(fileName) ? ts.ScriptKind.TSX : ts.ScriptKind.TS
+  const sourceFile = ts.createSourceFile(fileName, script, ts.ScriptTarget.Latest, false, kind)
+  const specifiers: string[] = []
+  const visit = (node: ts.Node) => {
+    if (
+      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+      node.moduleSpecifier &&
+      ts.isStringLiteral(node.moduleSpecifier)
+    ) {
+      specifiers.push(node.moduleSpecifier.text)
+    } else if (
+      ts.isImportEqualsDeclaration(node) &&
+      ts.isExternalModuleReference(node.moduleReference) &&
+      ts.isStringLiteral(node.moduleReference.expression)
+    ) {
+      specifiers.push(node.moduleReference.expression.text)
+    } else if (
+      ts.isCallExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+      node.arguments[0] &&
+      ts.isStringLiteralLike(node.arguments[0])
+    ) {
+      specifiers.push(node.arguments[0].text)
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
+  return specifiers
+}
+
 function importSpecifiers(file: string): string[] {
   const source = readFileSync(file, 'utf8')
   const scripts = file.endsWith('.vue')
     ? [...source.matchAll(VUE_SCRIPT_BLOCK)].map((match) => match[1]!)
     : [source]
-  return scripts.flatMap((script) =>
-    ts.preProcessFile(script, true, true).importedFiles.map((imported) => imported.fileName),
-  )
+  return scripts.flatMap((script) => specifiersIn(script, file))
 }
 
 /** Where a specifier points to, without query or extension; null for packages. */
@@ -70,9 +98,7 @@ describe('plugin-consent/testing stays test-only', () => {
   it('reads imports from code, not from comments or strings', () => {
     const fixture = resolve(srcDir, 'fixture.ts')
     const specifiers = (code: string) =>
-      ts
-        .preProcessFile(code, true, true)
-        .importedFiles.map((imported) => resolveSpecifier(fixture, imported.fileName))
+      specifiersIn(code, fixture).map((specifier) => resolveSpecifier(fixture, specifier))
     expect(
       specifiers(
         [
@@ -88,9 +114,11 @@ describe('plugin-consent/testing stays test-only', () => {
           "import a from './i18n/plugin-consent/./testing'",
           "export * from '@/i18n/plugin-consent/testing.ts?raw'",
           'const b = import(\n  // why\n  `./i18n/plugin-consent/testing`\n)',
+          "export * as ns from './i18n/plugin-consent/testing'",
+          "const re = /'/; const c = import('@/i18n/plugin-consent/testing')",
         ].join('\n'),
       ),
-    ).toEqual([consentTesting, consentTesting, consentTesting])
+    ).toEqual(Array(5).fill(consentTesting))
   })
 
   it('is not imported by any app source file', () => {
