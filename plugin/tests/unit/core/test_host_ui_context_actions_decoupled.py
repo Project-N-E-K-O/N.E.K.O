@@ -76,6 +76,22 @@ async def test_actions_survive_a_hanging_context_provider(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_hanging_provider_budget_counts_from_the_callers_deadline(tmp_path) -> None:
+    """Time the request spends unread in the child comes out of the provider's budget.
+
+    Counting the budget from when the child reads the request lets a late read push the
+    fallback past the caller's own timeout, which is how the test above failed on CI.
+    """
+    result = await _run_fixture(
+        tmp_path, "ui_ctx_slow_listen", "SlowToListenHangingUiContextFixturePlugin", timeout=2.0,
+    )
+
+    assert _action_ids(result) == ["ping"]
+    assert "timed out" in str(result.get("context_error"))
+    assert result.get("state") == {}
+
+
+@pytest.mark.asyncio
 async def test_mapping_valued_action_metadata_survives_serialization(tmp_path) -> None:
     """confirm is declared Mapping; non-dict mappings must not be stringified."""
     result = await _run_fixture(

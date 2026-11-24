@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from collections.abc import Mapping
 
 from plugin.sdk.plugin import NekoPluginBase, custom_event, plugin_entry, ui
@@ -53,6 +54,14 @@ class HangingUiContextFixturePlugin(NekoPluginBase):
     async def main_context(self, **_: object) -> dict[str, object]:
         await asyncio.sleep(3600)
         return {}
+
+
+class SlowToListenHangingUiContextFixturePlugin(HangingUiContextFixturePlugin):
+    """Hanging provider in a process that reads its first command late, like a busy CI machine."""
+
+    async def _on_command_loop_start(self) -> None:
+        # Blocks the loop on purpose: the request waits unread, as it does while a loaded machine finishes startup.
+        time.sleep(0.6)
 
 
 class UncancellableUiContextFixturePlugin(NekoPluginBase):
