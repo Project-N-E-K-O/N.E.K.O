@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import hashlib
 from unittest.mock import AsyncMock
 
 import pytest
@@ -151,6 +152,7 @@ async def test_native_apply_http_reuses_real_save_and_duplicate_is_read_only(app
                                        steamworks=None, templates=None, init_one_catgirl=harness.module.init_one_catgirl)
         driver = ConnectedDownloads()
         launch = driver.launches.create(config)
+        driver.launches.select(config, launch.request_id, 1, 'a' * 64, 1, '1' * 32)
         package, _ = bundle_path(tmp_path, kind)
         launch.result = _public_result(config, install(owner, package)['result'])
         launch.phase = 'installed'
@@ -165,12 +167,105 @@ async def test_native_apply_http_reuses_real_save_and_duplicate_is_read_only(app
             assert (await client.post(url, json={'role': OTHER}, headers=headers)).status_code == 400
             assert config.get_runtime_config_path('characters.json').read_bytes() == before
             # Both accepted callers await one owner; neither can cause a second save.
-            first, second = await asyncio.gather(*(client.post(url, json={}, headers=headers) for _ in range(2)))
+            first, second = await asyncio.gather(*(client.post(url, json={'operation_id': '1' * 32}, headers=headers) for _ in range(2)))
             assert first.status_code == second.status_code == 200
             assert first.json()['phase'] == second.json()['phase'] == 'saved'
             saved = config.get_runtime_config_path('characters.json').read_bytes()
             assert saved != before
-            assert (await client.post(url, json={}, headers=headers)).json()['phase'] == 'saved'
+            assert (await client.post(url, json={'operation_id': '1' * 32}, headers=headers)).json()['phase'] == 'saved'
             assert config.get_runtime_config_path('characters.json').read_bytes() == saved
             assert first.headers['cache-control'] == 'no-store'
+        await driver.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kind', ['live2d', 'vrm', 'pmx', 'pmd'])
+async def test_one_pairing_saves_a_b_a_and_active_reselection_is_read_only(application, owner, no_network, tmp_path, monkeypatch, kind):
+    """Use real installs, HTTP guards, persistence and runtime refresh for every choice."""
+    import httpx
+    from fastapi import FastAPI
+    from main_routers import model_market_router as api
+    from main_routers.system_router import _shared
+    from services.model_workshop.download import ConnectedDownloads
+
+    _, config = application
+    async with main_character_runtime(config, {NAME: 'idle', OTHER: 'idle'}) as harness:
+        shared_state.init_shared_state(role_state=harness.module.role_state, config_manager=config,
+                                       steamworks=None, templates=None, init_one_catgirl=harness.module.init_one_catgirl)
+        driver = ConnectedDownloads()
+        connection = driver.launches.create(config)
+        entries = []
+        for index, format_name in enumerate((kind, 'vrm' if kind != 'vrm' else 'live2d')):
+            folder = tmp_path / str(index); folder.mkdir()
+            package, _ = bundle_path(folder, format_name)
+            entries.append((hashlib.sha256(package.read_bytes()).hexdigest(), package.stat().st_size,
+                            _public_result(config, install(owner, package)['result'])))
+        monkeypatch.setattr(api, 'connected_downloads', driver)
+        monkeypatch.setattr(_shared, 'AUTOSTART_CSRF_TOKEN', 'continuous-save')
+        app = FastAPI(); app.include_router(api.router)
+        base = '/api/model-market/launch/' + connection.request_id
+        headers = {'Origin': 'http://127.0.0.1:48911', 'X-CSRF-Token': 'continuous-save'}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app, client=('127.0.0.1', 40000)), base_url='http://127.0.0.1:48911') as client:
+            for index, selected in enumerate((0, 1, 0, 0)):
+                digest, size, result = entries[selected]
+                operation_id = f'{index + 1:032x}'
+                row, fresh = driver.launches.select(config, connection.request_id, selected + 1, digest, size, operation_id)
+                assert fresh
+                row.result, row.phase = result, 'installed'
+                before = config.get_runtime_config_path('characters.json').read_bytes()
+                response = await client.post(base + '/apply', json={'operation_id': operation_id}, headers=headers)
+                assert response.status_code == 200, response.text
+                assert response.json()['phase'] == ('completed' if index == 3 else 'saved'), (
+                    index, get_reserved(config.load_characters()['猫娘'][NAME], 'avatar'), result['url'])
+                assert not response.json()['can_select']
+                if index == 3:
+                    assert config.get_runtime_config_path('characters.json').read_bytes() == before
+                    assert response.json()['result']['already_active']
+                # Only the local manager can release the next selection after its own checks.
+                assert (await client.post(base + '/ready', json={'operation_id': operation_id})).status_code == 403
+                ready = await client.post(base + '/ready', json={'operation_id': operation_id}, headers=headers)
+                assert ready.status_code == 200 and ready.json()['can_select']
+                if index:
+                    stale = {'operation_id': f'{index:032x}'}
+                    assert (await client.post(base + '/cancel', json=stale, headers=headers)).status_code == 200
+                    assert (await client.post(base + '/ready', json=stale, headers=headers)).status_code == 409
+                    assert driver.status(config, connection.request_id)['can_select']
+            assert len(driver.launches.items) == 1
+        await driver.close()
+
+
+@pytest.mark.asyncio
+async def test_status_during_own_write_and_ready_after_competing_edit(application, owner, no_network, tmp_path, monkeypatch):
+    """Reads cannot revoke an in-flight own save; ready cannot absorb a later unrelated write."""
+    from services.model_workshop.download import ConnectedDownloads
+
+    _, config = application
+    async with main_character_runtime(config, {NAME: 'idle', OTHER: 'idle'}) as harness:
+        shared_state.init_shared_state(role_state=harness.module.role_state, config_manager=config,
+                                       steamworks=None, templates=None, init_one_catgirl=harness.module.init_one_catgirl)
+        driver = ConnectedDownloads(); row = driver.launches.create(config)
+        package, _ = bundle_path(tmp_path, 'vrm')
+        driver.launches.select(config, row.request_id, 1, 'a' * 64, 100, '1' * 32)
+        row.result, row.phase = _public_result(config, install(owner, package)['result']), 'installed'
+        written, release = asyncio.Event(), asyncio.Event()
+        original = config.asave_characters
+
+        async def paused_write(characters):
+            await original(characters)
+            written.set()
+            await release.wait()
+
+        monkeypatch.setattr(config, 'asave_characters', paused_write)
+        applying = asyncio.create_task(driver.apply(config, row.request_id, row.operation_id))
+        try:
+            await asyncio.wait_for(written.wait(), 5)
+            observed = driver.status(config, row.request_id)
+            assert observed['phase'] == 'applying' and observed['connection_error'] is None
+        finally:
+            release.set()
+        assert (await applying)['phase'] == 'saved'
+        config.save_characters(config.load_characters())
+        with pytest.raises(WorkshopError, match='target_changed'):
+            await driver.ready(config, row.request_id, row.operation_id)
+        assert not driver.status(config, row.request_id)['can_select']
         await driver.close()

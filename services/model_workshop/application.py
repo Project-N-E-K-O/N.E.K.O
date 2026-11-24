@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+from urllib.parse import unquote
 
 from starlette.requests import Request
+
+from utils.config_manager import get_reserved
 
 from .market import Launch
 from .paths import WorkshopError
@@ -33,6 +36,24 @@ async def apply_installed(config, launch: Launch):
         if actual is not config:
             raise WorkshopError("model_market_target_changed")
         launch.check(config, characters)
+        # The original save calls this inside its lock. A no-op selection must
+        # not write configuration, reset model settings or refresh the runtime.
+        avatar = get_reserved(characters["猫娘"][launch.name], "avatar", default={})
+        active = avatar.get("model_type") == ("live2d" if kind == "live2d" else "live3d")
+        active = active and (kind == "live2d" or avatar.get("live3d_sub_type") == kind)
+        current_path = avatar.get(kind, {}).get("model_path")
+        # Live2D persistence deliberately strips the URL prefix; use its existing
+        # catalog normalization while retaining the source check against name collisions.
+        if kind == "live2d":
+            normalized = unquote(models._normalize_live2d_catalog_path(current_path))
+            # The existing API also persists a bare managed directory identity.
+            same_path = normalized in {result["name"], unquote(models._normalize_live2d_catalog_path(result["url"]))}
+        else:
+            same_path = current_path == result["url"]
+        if active and avatar.get("asset_source") == "local_imported" and same_path:
+            launch.result = {**result, "already_active": True}
+            launch.phase = "completed"
+            return True
         managers = get_session_manager()
         manager = managers.get(launch.name)
         # Use the same voice/start predicates as the existing voice-status API.
@@ -53,7 +74,7 @@ async def apply_installed(config, launch: Launch):
     request = Request({"type": "http", "method": "PUT", "path": "/",
                        "query_string": b"", "headers": [],
                        "state": {"model_workshop_guard": guard,
-                                 "model_workshop_saved": lambda: setattr(launch, "phase", "saved")}}, receive)
+                                 "model_workshop_saved": lambda: launch.saved(config)}}, receive)
     response = await models.update_catgirl_l2d(launch.name, request)
     data = json.loads(response.body)
     if not data.get("success"):
@@ -64,5 +85,6 @@ async def apply_installed(config, launch: Launch):
             return launch.public()
         launch.phase = "blocked"
         raise WorkshopError(data.get("error_code") or "model_market_apply_failed")
-    launch.phase = "saved"
+    if launch.phase != "completed":
+        launch.phase = "saved"
     return launch.public()

@@ -2,22 +2,38 @@
 (function () {
     'use strict';
     const KEY = 'neko.modelWorkshop.launch';
+    const META = KEY + '.operation';
     const ID = /^[A-Za-z0-9_-]{32}$/;
-    const ACTIVE = new Set(['browsing', 'downloading', 'installing', 'installed', 'applying']);
+    const OPERATION = /^[0-9a-f]{32}$/;
     function mount(panel, host) {
         if (!panel || panel.dataset.mounted) return;
         panel.dataset.mounted = 'true';
         const start = panel.querySelector('[data-workshop="start"]');
         let requestId = null, context = null, timer = null, stopped = false, token = null;
         let working = false, terminal = false, invalidated = false, failures = 0;
+        let idleReady = false, reloading = false, meta = {};
+        try { meta = JSON.parse(sessionStorage.getItem(META) || '{}'); } catch (_) { /* No saved handoff. */ }
+        if (!meta || typeof meta !== 'object' || Array.isArray(meta)) meta = {};
+        // Only a new page instance may acknowledge the reload requested by its predecessor.
+        const restoredReady = meta?.awaiting;
         // Only bound disconnected polling here; Main retains the authoritative expiry.
         let retryUntil = Date.now() + 30 * 60 * 1000;
         function remember(value) {
             // Keep only the opaque handle and edit-invalidated bit, never credentials.
             try { if (value) sessionStorage.setItem(KEY, value); else sessionStorage.removeItem(KEY); } catch (_) { /* In-page recovery still works. */ }
         }
-        function labels() { panel.querySelector('[data-i18n="modelWorkshop.title"]').textContent = host.translate('title'); }
-        function finish() { terminal = true; remember(null); clearTimeout(timer); start.disabled = false; }
+        function labels() {
+            const label = panel.querySelector('[data-i18n="modelWorkshop.title"]'), text = host.translate('title');
+            label.textContent = text; label.dataset.text = text; start.title = text;
+        }
+        function rememberOperation() {
+            try { sessionStorage.setItem(META, JSON.stringify(meta)); return true; }
+            catch (_) { return false; }
+        }
+        function finish() {
+            terminal = true; remember(invalidated && requestId ? 'blocked:' + requestId : null);
+            clearTimeout(timer); start.disabled = false;
+        }
         async function request(suffix, body) {
             const headers = {};
             if (body !== undefined) {
@@ -39,26 +55,64 @@
         async function accept(data) {
             if (stopped || terminal) return;
             if (data.request_id !== requestId || typeof data.character_name !== 'string') throw new Error('invalid_task');
+            const operation = data.operation_id;
+            if (operation !== null && !OPERATION.test(operation || '')) throw new Error('invalid_operation');
+            const current = await host.current(context, data.character_name);
+            if (invalidated || !current || data.connection_error) {
+                invalidated = true; remember('blocked:' + requestId);
+                start.disabled = true;
+                // A committed result stays a real result even if a local edit wins the next gate.
+                if (data.phase === 'saved' && meta.notified !== operation) {
+                    meta.notified = operation; rememberOperation(); host.applied(data, false);
+                }
+                const revoked = await request('/' + requestId + '/invalidate', {});
+                // Revocation can race the commit gate; report the server's saved
+                // result rather than implying that cancellation restored the old model.
+                if (revoked.phase === 'saved' && meta.notified !== revoked.operation_id) {
+                    meta.notified = revoked.operation_id; rememberOperation(); host.applied(revoked, false);
+                }
+                // Past the commit gate, cancellation cannot undo saving. Keep
+                // observing that operation until its real saved/failed result.
+                if (revoked.phase === 'applying') { later(); return; }
+                finish(); return;
+            }
+            idleReady = data.can_select === true;
+            start.disabled = !idleReady;
             if (data.phase === 'installed') {
                 // Removing inline UI must not remove the edit/role authorization gate.
-                const current = await host.current(context, data.character_name);
-                if (invalidated || !current) {
-                    invalidated = true; remember('blocked:' + requestId);
-                    // Respect the actual save result if cancellation loses a commit race.
-                    await accept(await request('/' + requestId + '/cancel', {}));
-                    return;
+                if (!stopped) await accept(await request('/' + requestId + '/apply', { operation_id: operation }));
+                return;
+            }
+            if (data.phase === 'saved' && !idleReady) {
+                if (data.error_code) {
+                    if (meta.notified !== operation) { meta.notified = operation; rememberOperation(); host.applied(data, false); }
+                    finish(); return;
                 }
-                if (!stopped) await accept(await request('/' + requestId + '/apply', {}));
+                if (restoredReady === operation && !reloading) {
+                    // Main validates the exact committed baseline again; capturing
+                    // a new page cannot renew permission invalidated by other edits.
+                    await request('/' + requestId + '/ready', { operation_id: operation });
+                    meta.awaiting = null; rememberOperation(); later(); return;
+                }
+                if (!reloading) {
+                    meta.notified = operation; meta.awaiting = operation;
+                    if (!rememberOperation()) {
+                        invalidated = true; await request('/' + requestId + '/invalidate', {}); finish(); return;
+                    }
+                    reloading = true;
+                    // Keep the handle across the existing clean-page reload, without a second save.
+                    host.applied(data, true);
+                }
+                later(); return;
+            }
+            if (['completed', 'failed', 'cancelled', 'blocked'].includes(data.phase) && !idleReady) {
+                // A no-op/failed/cancelled operation needs no preview reload, but
+                // only this checked local page may release the next selection.
+                await request('/' + requestId + '/ready', { operation_id: operation });
+                later();
                 return;
             }
-            if (data.phase === 'saved' || data.phase === 'completed') {
-                finish();
-                // The existing role-filtered notification works while minimized too.
-                host.applied(data, !invalidated && await host.current(context, data.character_name));
-                return;
-            }
-            if (!ACTIVE.has(data.phase)) { finish(); return; }
-            later();
+            later(idleReady ? 2000 : 1000);
         }
         async function poll() {
             if (!requestId || stopped || terminal || working) return;
@@ -76,7 +130,7 @@
             } finally { working = false; }
         }
         start.addEventListener('click', async () => {
-            if (working || (requestId && !terminal)) return;
+            if (working || (requestId && !terminal && !idleReady)) return;
             const shell = window.electronShell;
             const external = typeof shell?.openExternal === 'function';
             // Reserve a browser popup within the click gesture, before pairing.
@@ -87,6 +141,10 @@
             try {
                 context = await host.capture();
                 if (!await host.current(context, context.character)) { popup?.close(); start.disabled = false; return; }
+                // Reopening the entry is explicit consent to replace the old pairing,
+                // rather than leaving two browser permissions active for the same role.
+                if (requestId && !terminal) await request('/' + requestId + '/invalidate', {});
+                meta = {}; rememberOperation(); reloading = false; idleReady = false;
                 const data = await request('', {});
                 requestId = data.request_id; terminal = false; invalidated = false; failures = 0;
                 retryUntil = Date.now() + 30 * 60 * 1000;
@@ -110,7 +168,7 @@
                 later();
             } catch (_) {
                 popup?.close();
-                if (ID.test(requestId || '')) { try { await request('/' + requestId + '/cancel', {}); } catch (_) { /* No selection is sent by launch. */ } }
+                if (ID.test(requestId || '')) { try { await request('/' + requestId + '/invalidate', {}); } catch (_) { /* No selection is sent by launch. */ } }
                 requestId = null; finish();
                 console.warn('[ModelWorkshop] Could not open the market');
             } finally { working = false; }

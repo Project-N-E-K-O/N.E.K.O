@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from main_routers import model_market_router as api
 from main_routers.system_router import _shared
 from services.model_workshop import download
+from services.model_workshop.paths import WorkshopError
 from tests.unit.test_model_workshop_install import bundle_path, install
 from tests.unit.test_model_workshop_migration import owner as owner
 
@@ -102,7 +103,7 @@ async def opened(flow):
 
 
 async def select(flow, row, **changes):
-    body = {"model_id": 7, "expected_sha256": flow.model['file_sha256'], 'byte_size': flow.model['byte_size'], **changes}
+    body = {"model_id": 7, "expected_sha256": flow.model['file_sha256'], 'byte_size': flow.model['byte_size'], 'operation_id': '1' * 32, **changes}
     return await flow.client.post('/api/model-market/launch/' + row['request_id'] + '/select', json=body, headers=AUTH)
 
 
@@ -146,6 +147,88 @@ async def test_already_installed_package_reuses_files_after_fresh_auth_check(flo
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('already_installed', [False, True])
+async def test_unrelated_unsafe_model_does_not_block_the_selected_package(flow, tmp_path, already_installed):
+    original = install(flow.owner, flow.package)['result'] if already_installed else None
+    other_dir = tmp_path / 'other-package'
+    other_dir.mkdir()
+    other_package, _ = bundle_path(other_dir, 'live2d')
+    other = install(flow.owner, other_package)['result']
+    resource = flow.owner.paths.root / other['local_entrypoint']
+    outside = tmp_path / 'outside.json'
+    outside.write_bytes(b'preserve outside file')
+    resource.unlink()
+    try:
+        resource.symlink_to(outside)
+    except OSError as error:
+        if getattr(error, 'winerror', None) == 1314:
+            pytest.skip('symlink privilege unavailable')
+        raise
+
+    row = await opened(flow)
+    assert (await select(flow, row)).status_code == 202
+    await settled(flow)
+    value = flow.driver.status(flow.config, row['request_id'])
+
+    assert value['phase'] == 'installed', value
+    assert value['result']['package_sha256'] == flow.model['file_sha256']
+    assert value['result']['already_installed'] is already_installed
+    assert len(flow.bodies) == (0 if already_installed else 1)
+    if original:
+        assert value['result']['install_id'] == original['install_id']
+    assert resource.is_symlink() and outside.read_bytes() == b'preserve outside file'
+    with pytest.raises(WorkshopError, match='unsafe_path'):
+        flow.owner.installer.registry.status(other)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('fault', ['unsafe_resource', 'newer_attempt'])
+async def test_selected_package_still_requires_safe_resources_and_current_attempt(flow, tmp_path, fault):
+    original = install(flow.owner, flow.package)['result']
+    registry = flow.owner.installer.registry
+    outside = tmp_path / 'outside.vrm'
+    outside.write_bytes(b'preserve outside file')
+    if fault == 'unsafe_resource':
+        target = flow.owner.paths.root / original['local_entrypoint']
+        target.unlink()
+        try:
+            target.symlink_to(outside)
+        except OSError as error:
+            if getattr(error, 'winerror', None) == 1314:
+                pytest.skip('symlink privilege unavailable')
+            raise
+        expected = 'model_workshop_unsafe_path'
+    else:
+        state = registry.read()
+        state['attempts'][original['package_sha256']] = 'f' * 32
+        registry.save(state['installed'], state['attempts'])
+        expected = 'model_workshop_install_conflict'
+
+    row = await opened(flow)
+    assert (await select(flow, row)).status_code == 202
+    await settled(flow)
+    value = flow.driver.status(flow.config, row['request_id'])
+
+    assert (value['phase'], value['error_code']) == ('failed', expected)
+    assert registry.load()[original['package_sha256']]['install_id'] == original['install_id']
+    assert outside.read_bytes() == b'preserve outside file'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('action', ['apply', 'cancel', 'ready'])
+async def test_null_operation_never_targets_the_current_choice(flow, action):
+    """An old/malformed write cannot use null as an alias for the newest operation."""
+    row = await opened(flow); await select(flow, row); await settled(flow)
+    before = flow.config.get_runtime_config_path('characters.json').read_bytes()
+    response = await flow.client.post('/api/model-market/launch/' + row['request_id'] + '/' + action,
+                                     headers=AUTH, json={'operation_id': None})
+    assert response.status_code == 409 and response.json()['error_code'] == 'model_market_invalid_selection'
+    assert flow.driver.status(flow.config, row['request_id'])['phase'] == 'installed'
+    assert not flow.driver.launches.get(row['request_id']).cancel.is_set()
+    assert flow.config.get_runtime_config_path('characters.json').read_bytes() == before
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('fault', ['hash', 'truncated', 'type', 'encoding', 'redirect', 'metadata'])
 async def test_untrusted_response_never_publishes_model(flow, fault):
     row = await opened(flow)
@@ -167,7 +250,7 @@ async def test_cancel_and_shutdown_drain_receiving_thread(flow):
     flow.state.enter, flow.state.release = threading.Event(), threading.Event()
     row = await opened(flow); await select(flow, row)
     assert await asyncio.to_thread(flow.state.enter.wait, 3)
-    response = await flow.client.post('/api/model-market/launch/' + row['request_id'] + '/cancel', json={}, headers=AUTH)
+    response = await flow.client.post('/api/model-market/launch/' + row['request_id'] + '/cancel', json={'operation_id': '1' * 32}, headers=AUTH)
     assert response.status_code == 200 and response.headers['cache-control'] == 'no-store'
     closing = asyncio.create_task(flow.driver.close())
     # Cleanup must wait for the actual reader, not just cancel its awaiter.

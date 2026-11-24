@@ -13,7 +13,7 @@ from .runtime import filter_catalog, snapshot
 def find_models():
     """Preserve existing built-in/Steam discovery and local model identities."""
     models = _find_models()
-    return filter_catalog(get_config_manager(), models)
+    return filter_catalog(get_config_manager(), models, url_encoded=False)
 
 
 def find_model_directory(model_name):

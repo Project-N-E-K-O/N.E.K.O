@@ -117,6 +117,21 @@ async def test_remote_relay_preserves_only_command_and_main_auth_headers(connect
 
 
 @pytest.mark.asyncio
+async def test_operation_lookup_is_bounded_and_local_readiness_cannot_be_proxied(connected):
+    """Pairing grants task reads, never the local manager's next-choice approval."""
+    c = connected; path = f'/market/models/launch/{REQUEST}'
+    headers = {**c.headers, 'Origin': MARKET}
+    response = await c.client.get(path, params={'operation_id': '1' * 32, 'url': 'https://evil.test'}, headers=headers)
+    assert response.status_code == 200
+    assert dict(c.state.calls[-1].url.params) == {'operation_id': '1' * 32}
+    before = len(c.state.calls)
+    for action in ('ready', 'invalidate', 'apply'):
+        assert (await c.client.post(path + '/' + action, headers=headers, json={'operation_id': '1' * 32})).status_code == 404
+    assert (await c.client.get(path, headers=headers, params={'operation_id': '../escape'})).status_code == 400
+    assert len(c.state.calls) == before
+
+
+@pytest.mark.asyncio
 async def test_relay_rejects_unknown_actions_origins_and_excess_actual_bytes(connected):
     c = connected; path = f'/market/models/launch/{REQUEST}'
     assert (await c.client.get(path, headers=c.headers)).status_code == 403

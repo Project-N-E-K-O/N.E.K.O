@@ -9886,7 +9886,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // Use the established role-filtered notification, then the page's
                 // original startup loader. No form fields or second save are sent.
                 sendMessageToMainPage('reload_model', { lanlan_name: data.character_name });
-                if (clean) window.location.reload();
+                if (clean) {
+                    // The workshop saved a new type without using the local type
+                    // selector. Align only its clean reload with that committed type;
+                    // restoring the old mode can preload another model and race the
+                    // authoritative character loader (notably VRM -> Live2D).
+                    const format = data.result?.model_format;
+                    try {
+                        if (format === 'live2d') localStorage.setItem('modelType', 'live2d');
+                        else if (format === 'vrm' || format === 'mmd') {
+                            localStorage.setItem('modelType', 'live3d');
+                            localStorage.setItem('live3dSubType', format);
+                        }
+                    } catch (_) { console.warn('[ModelWorkshop] Could not remember the saved model type'); }
+                    window.location.reload();
+                }
             }
         });
     }

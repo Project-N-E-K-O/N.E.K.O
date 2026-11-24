@@ -109,7 +109,7 @@ def test_pair_select_stream_install_over_real_service_hops(owner, tmp_path, monk
         assert paired.status_code == 200, paired.text
         headers = {'Origin': market, 'Authorization': 'Bearer ' + paired.json()['bridge_token']}
         path = urls['main'] + '/market/models/launch/' + selection['request_id']
-        body = {'model_id': 7, 'expected_sha256': digest, 'byte_size': len(raw)}
+        body = {'model_id': 7, 'expected_sha256': digest, 'byte_size': len(raw), 'operation_id': '1' * 32}
         assert client.post(path + '/select', json=body, headers=headers).status_code == 202
         deadline = time.monotonic() + 5
         while True:
@@ -134,7 +134,8 @@ def test_pair_select_stream_install_over_real_service_hops(owner, tmp_path, monk
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('path', ['models/package/7', 'models/descriptor/7',
-    'models/launch/' + 'r' * 32 + '/../../package/7', 'models/launch/' + 'r' * 32 + '/apply'])
+    'models/launch/' + 'r' * 32 + '/../../package/7', 'models/launch/' + 'r' * 32 + '/apply',
+    'models/launch/' + 'r' * 32 + '/ready', 'models/launch/' + 'r' * 32 + '/invalidate'])
 async def test_generic_proxy_cannot_buffer_model_files_or_normalized_aliases(monkeypatch, path):
     monkeypatch.setattr(web_app, '_resolve_user_plugin_base', lambda: pytest.fail('must reject before any forwarding'))
     request = Request({'type': 'http', 'method': 'GET', 'path': '/market/' + path,

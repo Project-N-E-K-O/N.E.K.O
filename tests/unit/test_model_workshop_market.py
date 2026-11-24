@@ -11,6 +11,8 @@ from services.model_workshop import market
 from services.model_workshop.paths import WorkshopError
 from tests.fake_clock import patch_module_clock
 
+OPERATION = "1" * 32
+
 
 @pytest.fixture
 def config(tmp_path):
@@ -55,10 +57,10 @@ def test_missing_role_file_fails_closed_without_a_filesystem_error(config):
 
 def test_selection_is_idempotent_and_launch_cannot_be_retargeted(config):
     launches = market.Launches(); row = launches.create(config)
-    assert launches.select(config, row.request_id, 1, "a" * 64, 100) == (row, True)
-    assert launches.select(config, row.request_id, 1, "a" * 64, 100) == (row, False)
+    assert launches.select(config, row.request_id, 1, "a" * 64, 100, OPERATION) == (row, True)
+    assert launches.select(config, row.request_id, 1, "a" * 64, 100, OPERATION) == (row, False)
     with pytest.raises(WorkshopError, match="selection_changed"):
-        launches.select(config, row.request_id, 2, "a" * 64, 100)
+        launches.select(config, row.request_id, 2, "a" * 64, 100, OPERATION)
 
 
 @pytest.mark.parametrize("model_id,digest,size", [(True, "a" * 64, 1), (0, "a" * 64, 1),
@@ -67,7 +69,7 @@ def test_selection_is_idempotent_and_launch_cannot_be_retargeted(config):
 def test_bad_selection_rejected_before_job(config, model_id, digest, size):
     launches = market.Launches(); row = launches.create(config)
     with pytest.raises(WorkshopError, match="invalid_selection"):
-        launches.select(config, row.request_id, model_id, digest, size)
+        launches.select(config, row.request_id, model_id, digest, size, OPERATION)
     assert row.phase == "browsing" and row.selection is None
 
 
@@ -76,12 +78,50 @@ def test_launch_and_active_limits_are_bounded(config, monkeypatch):
     rows = [launches.create(config) for _ in range(market.MAX_LAUNCHES)]
     with pytest.raises(WorkshopError, match="busy"):
         launches.create(config)
-    for row in rows[:2]: launches.select(config, row.request_id, 1, "a" * 64, 1)
+    # Distinct roles exercise the global quota separately from per-role serialization.
+    for index, row in enumerate(rows): row.character_id = str(index)
+    for row in rows[:2]: launches.select(config, row.request_id, 1, "a" * 64, 1, OPERATION)
     with pytest.raises(WorkshopError, match="busy"):
-        launches.select(config, rows[2].request_id, 1, "a" * 64, 1)
+        launches.select(config, rows[2].request_id, 1, "a" * 64, 1, OPERATION)
     patch_module_clock(monkeypatch, market, monotonic=lambda: rows[0].expires + 1)
     with pytest.raises(WorkshopError, match="expired"):
         rows[0].check(config)
+
+
+def test_next_choice_keeps_old_receipts_and_requires_local_ready(config):
+    """An old request remains idempotent after an explicitly admitted new choice."""
+    launches = market.Launches(); first = launches.create(config)
+    launches.select(config, first.request_id, 1, "a" * 64, 100, OPERATION)
+    first.phase = "saved"
+    with pytest.raises(WorkshopError, match="busy"):
+        launches.select(config, first.request_id, 2, "b" * 64, 200, "2" * 32)
+    first.connection.ready = True  # Native ready acknowledgement is tested through HTTP below.
+    second, fresh = launches.select(config, first.request_id, 2, "b" * 64, 200, "2" * 32)
+    assert fresh and second is not first and second.connection is first.connection
+    assert first.selection == (1, "a" * 64, 100) and first.phase == "saved"
+    assert launches.select(config, first.request_id, 1, "a" * 64, 100, OPERATION) == (first, False)
+    assert not first.public()["can_select"]
+    assert launches.get(first.request_id, OPERATION) is first
+
+
+def test_multiple_pairings_cannot_replace_one_role_concurrently(config):
+    launches = market.Launches()
+    first, second = launches.create(config), launches.create(config)
+    launches.select(config, first.request_id, 1, "a" * 64, 100, OPERATION)
+    first.phase = "installed"
+    with pytest.raises(WorkshopError, match="busy"):
+        launches.select(config, second.request_id, 2, "b" * 64, 200, "2" * 32)
+
+
+def test_operation_receipts_stay_bounded_without_replaying_evicted_writes(config, monkeypatch):
+    launches = market.Launches(); row = launches.create(config)
+    monkeypatch.setattr(market, "MAX_OPERATIONS", 1)
+    launches.select(config, row.request_id, 1, "a" * 64, 100, OPERATION)
+    row.phase = "failed"; row.connection.ready = True
+    assert not row.public()["can_select"]
+    with pytest.raises(WorkshopError, match="busy"):
+        launches.select(config, row.request_id, 2, "b" * 64, 200, "2" * 32)
+    assert launches.get(row.request_id, OPERATION) is row
 
 
 @pytest.mark.parametrize("chunks,size,digest", [([b"abc"], 4, hashlib.sha256(b"abc").hexdigest()),

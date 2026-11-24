@@ -25,6 +25,11 @@ from .paths import (
 from .registry import JOURNAL_SCHEMA, STATE_BYTES, Registry, make_record, task_id
 
 
+def _resource_version(info):
+    """Cheap identity/content-change evidence rechecked inside the storage fence."""
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
 class Installer:
     """Internal synchronous operations; the owning Main service schedules the worker.
 
@@ -54,10 +59,15 @@ class Installer:
 
     @contextmanager
     def mutation(self):
+        from utils.cloudsave_runtime import MaintenanceModeError
+
         self._assert_owner()
-        with self.paths.transaction(self.config):
-            self._assert_owner()
-            yield
+        try:
+            with self.paths.transaction(self.config):
+                self._assert_owner()
+                yield
+        except MaintenanceModeError as exc:
+            raise WorkshopError("model_workshop_storage_blocked") from exc
 
     def journal_path(self, attempt):
         return self.paths.checked(
@@ -171,7 +181,7 @@ class Installer:
 
     def verify_resources(self, record, target: Path):
         """Require exact initial bytes/inventory only before first completed registration."""
-        expected = set()
+        expected, versions = set(), {}
         for item in record["files"]:
             path = self.paths.checked(item["local_path"])
             expected.add(path)
@@ -198,6 +208,7 @@ class Installer:
                 raise WorkshopError("model_workshop_recovery_conflict")
             if identity(path)[:2] != [after.st_dev, after.st_ino]:
                 raise WorkshopError("model_workshop_recovery_conflict")
+            versions[path] = _resource_version(after)
         if record["model_format"] != "vrm":
             actual = set()
             allowed_dirs = {target}
@@ -208,6 +219,7 @@ class Installer:
                     if parent == target or target in parent.parents
                 )
             for parent, dirs, files in os.walk(target, followlinks=False):
+                versions[Path(parent)] = _resource_version(Path(parent).lstat())
                 for name in dirs:
                     path = Path(parent) / name
                     if identity(path)[2] != stat.S_IFDIR or path not in allowed_dirs:
@@ -218,6 +230,15 @@ class Installer:
                         raise WorkshopError("model_workshop_recovery_conflict")
                     actual.add(path)
             if actual != expected:
+                raise WorkshopError("model_workshop_recovery_conflict")
+        return versions
+
+    @staticmethod
+    def verify_resource_versions(versions):
+        """Reject changes during the unfenced hash before recording completion."""
+        for path, version in versions.items():
+            identity(path)
+            if _resource_version(path.lstat()) != version:
                 raise WorkshopError("model_workshop_recovery_conflict")
 
     def _publish(self, source, target, record):
@@ -244,62 +265,67 @@ class Installer:
         progress("staging")
         source = self._extract(journal, bundle, event)
         record = journal["record"]
-        with self.lifecycle(bundle.sha256), self.registry.lock, self.mutation():
-            state = (
-                self.registry.read()
-            )  # Never merge a snapshot captured before this lock.
-            rows, attempts = dict(state["installed"]), dict(state["attempts"])
-            self.cancelled(event)
-            previous = rows.get(bundle.sha256)
-            if (
-                previous
-                and attempts.get(bundle.sha256) == previous["install_id"]
-                and self.registry.status(previous) == "installed"
-            ):
-                self.cleanup_private_stage(journal)
-                return dict(previous, status="installed", already_installed=True)
-            # An unresolved older publication must be recovered, never replaced by a retry.
-            for other in self.registry.journals():
+        with self.lifecycle(bundle.sha256), self.registry.lock:
+            with self.mutation():
+                state = (
+                    self.registry.read()
+                )  # Never merge a snapshot captured before this lock.
+                rows, attempts = dict(state["installed"]), dict(state["attempts"])
+                self.cancelled(event)
+                previous = rows.get(bundle.sha256)
                 if (
-                    other["task_id"] != journal["task_id"]
-                    and other["phase"] == "committing"
-                    and (other["record"]["package_sha256"] == bundle.sha256)
+                    previous
+                    and attempts.get(bundle.sha256) == previous["install_id"]
+                    and self.registry.status(previous) == "installed"
                 ):
+                    self.cleanup_private_stage(journal)
+                    return dict(previous, status="installed", already_installed=True)
+                # An unresolved older publication must be recovered, never replaced by a retry.
+                for other in self.registry.journals():
+                    if (
+                        other["task_id"] != journal["task_id"]
+                        and other["phase"] == "committing"
+                        and (other["record"]["package_sha256"] == bundle.sha256)
+                    ):
+                        if previous and previous["install_id"] == other["task_id"]:
+                            continue  # A completed attempt outranks its cleanup residue.
+                        raise WorkshopError("model_workshop_recovery_conflict")
+                target = self.paths.checked(record["target"])
+                if os.path.lexists(target):
+                    raise WorkshopError("model_workshop_install_conflict")
+                self.paths.mkdir(target.parent.relative_to(self.paths.root).as_posix())
+                if source.stat().st_dev != target.parent.stat().st_dev:
+                    raise WorkshopError("model_workshop_publication_unsupported")
+                rows[bundle.sha256] = record
+                attempts[bundle.sha256] = journal["task_id"]
+                self.registry.check_capacity(rows, attempts)
+                self.cancelled(event)
+                commit_gate()  # Atomically wins/loses against a concurrent cancel request.
+                # Persist the current logical attempt before recording publication intent.
+                # An older completed row must not claim this reinstall if its commit fails.
+                self.registry.save(state["installed"], attempts)
+                journal["phase"] = "committing"
+                journal["object_identity"] = identity(source)
+                self.save_journal(
+                    journal
+                )  # Durable identity evidence precedes any visible resource.
+                self._publish(source, target, record)
+                if identity(target) != journal["object_identity"]:
                     raise WorkshopError("model_workshop_recovery_conflict")
-            target = self.paths.checked(record["target"])
-            if os.path.lexists(target):
-                raise WorkshopError("model_workshop_install_conflict")
-            self.paths.mkdir(target.parent.relative_to(self.paths.root).as_posix())
-            if source.stat().st_dev != target.parent.stat().st_dev:
-                raise WorkshopError("model_workshop_publication_unsupported")
-            rows[bundle.sha256] = record
-            attempts[bundle.sha256] = journal["task_id"]
-            self.registry.check_capacity(rows, attempts)
-            self.cancelled(event)
-            commit_gate()  # Atomically wins/loses against a concurrent cancel request.
-            # Persist the current logical attempt before recording publication intent.
-            # An older completed row must not claim this reinstall if its commit fails.
-            self.registry.save(state["installed"], attempts)
-            journal["phase"] = "committing"
-            journal["object_identity"] = identity(source)
-            self.save_journal(
-                journal
-            )  # Durable identity evidence precedes any visible resource.
-            self._publish(source, target, record)
-            if identity(target) != journal["object_identity"]:
-                raise WorkshopError("model_workshop_recovery_conflict")
-            self.verify_resources(record, target)
-            # Hash equality alone cannot claim a copy swapped in during the
-            # scan: retain the publication identity through the final check.
-            if identity(target) != journal["object_identity"]:
-                raise WorkshopError("model_workshop_recovery_conflict")
-            self.registry.save(rows, attempts)
-            # Once completed, residual logs cannot revoke later local edits.
-            try:
-                self.cleanup_private_stage(journal)
-            except OSError:
-                pass
-            return dict(record, status="installed", already_installed=False)
+            versions = self.verify_resources(record, target)
+            with self.mutation():
+                # Hash equality alone cannot claim a copy swapped in during the
+                # scan: retain the publication identity through the final check.
+                if identity(target) != journal["object_identity"]:
+                    raise WorkshopError("model_workshop_recovery_conflict")
+                self.verify_resource_versions(versions)
+                self.registry.save(rows, attempts)
+                # Once completed, residual logs cannot revoke later local edits.
+                try:
+                    self.cleanup_private_stage(journal)
+                except OSError:
+                    pass
+                return dict(record, status="installed", already_installed=False)
 
     def recover(self, active=frozenset()):
         """Only the root owner recovers; each conflict preserves its log and target."""
@@ -325,7 +351,7 @@ class Installer:
                 )
                 record = journal["record"]
                 digest = record["package_sha256"] if record else journal["task_id"]
-                with self.lifecycle(digest), self.registry.lock, self.mutation():
+                with self.lifecycle(digest), self.registry.lock:
                     state = (
                         self.registry.read()
                     )  # An unreadable registry never becomes empty.
@@ -335,7 +361,8 @@ class Installer:
                     if completed and completed["install_id"] == journal["task_id"]:
                         # Same attempt preserves local edits; a newer attempt
                         # supersedes the old log without touching current assets.
-                        self.cleanup_private_stage(journal)
+                        with self.mutation():
+                            self.cleanup_private_stage(journal)
                         results[path.stem] = (
                             "completed"
                             if completed["install_id"] == path.stem
@@ -344,27 +371,32 @@ class Installer:
                     elif (
                         record and current is not None and current != journal["task_id"]
                     ):
-                        self.cleanup_private_stage(journal)
+                        with self.mutation():
+                            self.cleanup_private_stage(journal)
                         results[path.stem] = "superseded"
                     elif journal["phase"] != "committing":
-                        self.cleanup_private_stage(journal)
+                        with self.mutation():
+                            self.cleanup_private_stage(journal)
                         results[path.stem] = "interrupted"
                     else:
                         target = self.paths.checked(record["target"])
                         if not os.path.lexists(target):
-                            self.cleanup_private_stage(journal)
+                            with self.mutation():
+                                self.cleanup_private_stage(journal)
                             results[path.stem] = "interrupted"
                             continue
                         if identity(target) != journal["object_identity"]:
                             raise WorkshopError("model_workshop_recovery_conflict")
-                        self.verify_resources(record, target)
-                        if identity(target) != journal["object_identity"]:
-                            raise WorkshopError("model_workshop_recovery_conflict")
-                        rows[record["package_sha256"]] = record
-                        if current != journal["task_id"]:
-                            raise WorkshopError("model_workshop_recovery_conflict")
-                        self.registry.save(rows, attempts)
-                        self.cleanup_private_stage(journal)
+                        versions = self.verify_resources(record, target)
+                        with self.mutation():
+                            if identity(target) != journal["object_identity"]:
+                                raise WorkshopError("model_workshop_recovery_conflict")
+                            self.verify_resource_versions(versions)
+                            rows[record["package_sha256"]] = record
+                            if current != journal["task_id"]:
+                                raise WorkshopError("model_workshop_recovery_conflict")
+                            self.registry.save(rows, attempts)
+                            self.cleanup_private_stage(journal)
                         results[path.stem] = "completed"
             except (OSError, WorkshopError) as exc:
                 results[path.stem] = (

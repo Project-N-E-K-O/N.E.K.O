@@ -1,5 +1,6 @@
 """N3 read isolation and existing-delete coordination, with real N2 transactions."""
 
+import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -15,6 +16,7 @@ from tests.unit.test_model_workshop_install import (
     fail_registration,
     journal,
 )
+from tests.unit.test_model_workshop_formats import live2d_files, make_native_bundle
 
 
 @pytest.fixture
@@ -47,6 +49,19 @@ def test_identity_distinguishes_cloud_placeholders_from_redirecting_reparse_poin
     else:
         with pytest.raises(WorkshopError, match="unsafe_path"):
             identity(path)
+
+
+def test_shared_parameters_remain_editable_after_managed_install(owned, tmp_path):
+    files = live2d_files()
+    files["parameters.json"] = b'{"param_0":1}'
+    package = make_native_bundle(tmp_path, files=files)
+    row = install(owned, package)["result"]
+    target = (owned.paths.root / row["local_entrypoint"]).parent / "parameters.json"
+    assert json.loads(target.read_text()) == {"param_0": 1}
+    assert runtime.write_managed_json(owned.config, target, {"param_0": 2.5}) is True
+    assert owned.installer.registry.installed()[0]["status"] == "installed"
+    assert install(owned, package)["result"]["already_installed"]
+    assert json.loads(target.read_text()) == {"param_0": 2.5}
 
 
 def test_root_alias_keeps_managed_write_and_delete_protection(owned, tmp_path):

@@ -133,7 +133,7 @@ def test_saved_workshop_model_reloads_the_opener(full_manager_app, tmp_path, kin
             browser.close()
 
 
-def test_connected_native_owner_saves_and_reloads_host_without_manual_save(full_manager_app, tmp_path, monkeypatch):
+def test_connected_native_owner_reloads_and_continues_a_b_a_without_manual_save(full_manager_app, tmp_path, monkeypatch):
     """Actual native edit witness, HTTP apply, runtime and host renderer.
 
     Pairing/Market selection is the sole substitute; the previous loopback and
@@ -148,6 +148,16 @@ def test_connected_native_owner_saves_and_reloads_host_without_manual_save(full_
     driver = ConnectedDownloads()
     monkeypatch.setattr(api, 'connected_downloads', driver)
     launches = []
+    installed = {}
+
+    def received(config, operation):
+        # Only the Market byte source is substituted. Installs below, Main's
+        # selection admission, edit witness, save, reload and GPU rendering are real.
+        model_id, digest, size = operation.selection
+        package_size, result = installed[model_id]
+        assert config is cfg and digest == result['package_sha256'] and size == package_size
+        operation.result, operation.phase = result, 'installed'
+    monkeypatch.setattr(driver, '_receive', received)
 
     async def launch(config, origin):
         assert config is cfg and origin == url
@@ -160,43 +170,78 @@ def test_connected_native_owner_saves_and_reloads_host_without_manual_save(full_
         # Only suppress opening an external Market browser in this isolated test.
         context.add_init_script('window.electronShell = {openExternal: async () => {}};')
         host = context.new_page(); host.set_viewport_size({'width':800, 'height':600})
+        logs = []
+        manager = None
         try:
             host.goto(url + '/workshop-host?lanlan_name=' + quote(NAME))
             host.wait_for_function("window.live2dManager?._modelLoadState === 'ready'", timeout=60000)
             with host.expect_popup() as opened:
                 host.evaluate("url => window.open(url, 'connected-manager')", url + '/model_manager?lanlan_name=' + quote(NAME))
             manager = opened.value
+            manager.on('console', lambda message: logs.append(message.type + ': ' + message.text))
+            manager.on('pageerror', lambda error: logs.append('pageerror: ' + str(error)))
             manager.wait_for_function("document.querySelector('#model-workshop-panel')?.dataset.mounted === 'true'", timeout=90000)
             skip = manager.locator('#neko-page-tutorial-skip-btn')
             if skip.is_visible(): skip.click()
             manager.wait_for_function('!isModelManagerSettingsWaiting() && !window.hasUnsavedChanges')
-            # Emulate completed controlled download through the actual N2 HTTP installer.
-            package = real_package(tmp_path, 'live2d')
             token = manager.request.get(url + '/api/config/page_config').json()['autostart_csrf_token']
-            accepted = manager.request.post(url + '/api/model-market/imports', headers={'Origin':url, 'X-CSRF-Token':token},
-                multipart={'file':{'name':package.name, 'mimeType':'application/zip', 'buffer':package.read_bytes()}})
-            assert accepted.status == 202
-            deadline = time.monotonic() + 60
-            while True:
-                state = manager.request.get(url + '/api/model-market/tasks/' + accepted.json()['task_id']).json()
-                if state['phase'] in {'completed','failed','cancelled'}: break
-                assert time.monotonic() < deadline
-                time.sleep(.02)
-            assert state['phase'] == 'completed'
+            headers = {'Origin':url, 'X-CSRF-Token':token}
+            # Install two renderable formats using the normal bounded HTTP receiver.
+            for model_id, kind in enumerate(('live2d', 'vrm'), 1):
+                folder = tmp_path / str(model_id); folder.mkdir()
+                package = real_package(folder, kind)
+                accepted = manager.request.post(url + '/api/model-market/imports', headers=headers,
+                    multipart={'file':{'name':package.name, 'mimeType':'application/zip', 'buffer':package.read_bytes()}})
+                assert accepted.status == 202
+                deadline = time.monotonic() + 60
+                while True:
+                    state = manager.request.get(url + '/api/model-market/tasks/' + accepted.json()['task_id']).json()
+                    if state['phase'] in {'completed','failed','cancelled'}: break
+                    assert time.monotonic() < deadline
+                    time.sleep(.02)
+                assert state['phase'] == 'completed'
+                installed[model_id] = (package.stat().st_size, state['result'])
             manager.locator('[data-workshop=start]').click()
             manager.wait_for_function("sessionStorage.getItem('neko.modelWorkshop.launch') !== null")
             assert len(launches) == 1 and applied == []
-            launches[0].result = state['result']; launches[0].phase = 'installed'
-            # Saving must notify immediately, while the manager is still open.
-            host.bring_to_front()
-            host.wait_for_function(MODEL_READY, arg={'kind':'live2d','url':state['result']['url']}, timeout=90000)
-            assert applied == [NAME]
-            assert not manager.is_closed()
-            manager.wait_for_function(MODEL_READY, arg={'kind':'live2d','url':state['result']['url']}, timeout=90000)
-            assert driver.status(cfg, launches[0].request_id)['phase'] == 'saved'
+            path = '/api/model-market/launch/' + launches[0].request_id
+            for index, model_id in enumerate((1, 2, 1)):
+                size, result = installed[model_id]
+                operation = {'operation_id': f'{index + 1:032x}', 'model_id': model_id,
+                             'expected_sha256': result['package_sha256'], 'byte_size': size}
+                accepted = manager.request.post(url + path + '/select', headers=headers, data=operation)
+                assert accepted.status == 202, accepted.text()
+                # The actual native page must save, notify and reload without another entry click.
+                host.bring_to_front()
+                expected = {'kind':result['model_format'], 'url':result['url']}
+                host.wait_for_function(MODEL_READY, arg=expected, timeout=90000)
+                manager.wait_for_function(MODEL_READY, arg=expected, timeout=90000)
+                manager.wait_for_function("async path => (await fetch(path).then(r => r.json())).can_select === true", arg=path, timeout=90000)
+                assert applied == [NAME] * (index + 1)
+                assert not manager.is_closed() and len(launches) == 1
+                # Lost/repeated acknowledgements must not create another save or reload.
+                assert manager.request.post(url + path + '/select', headers=headers, data=operation).status == 202
+                assert applied == [NAME] * (index + 1)
+                host.screenshot(path=str(tmp_path / f'continuous-{index + 1}-{result["model_format"]}.png'))
             reserved = cfg.load_characters()['猫娘'][NAME]['_reserved']
             assert reserved['avatar']['asset_source'] == 'local_imported'
             assert reserved['character_origin']['source'] == 'steam_workshop'
             host.screenshot(path=str(tmp_path/'connected-host.png'))
+        except Exception:
+            # Preserve the actual manager state before teardown, rather than
+            # inferring a renderer or edit-witness problem from a timeout alone.
+            if manager is not None:
+                diagnostic = manager.evaluate('''() => ({url:location.href,
+                    handle:sessionStorage.getItem('neko.modelWorkshop.launch'),
+                    operation:sessionStorage.getItem('neko.modelWorkshop.launch.operation'),
+                    dirty:window.hasUnsavedChanges, parameters:window._modelManagerParameterEditedSinceSave,
+                    waiting:typeof isModelManagerSettingsWaiting === 'function' && isModelManagerSettingsWaiting(),
+                    model:window.live2dManager?._lastLoadedModelPath, state:window.live2dManager?._modelLoadState,
+                    vrm:window.vrmManager?.currentModel?.url, vrmState:window.vrmManager?._loadState})''')
+                diagnostic['task'] = driver.status(cfg, launches[0].request_id) if launches else None
+                (tmp_path / 'continuous-diagnostic.json').write_text(json.dumps(diagnostic, ensure_ascii=False, indent=2))
+                (tmp_path / 'continuous-browser.log').write_text('\n'.join(logs))
+                manager.screenshot(path=str(tmp_path / 'continuous-manager-failure.png'), timeout=10000)
+            raise
         finally:
             browser.close()

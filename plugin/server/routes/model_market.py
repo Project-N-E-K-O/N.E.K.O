@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from urllib.parse import urlencode
 
 import anyio
 import httpx
@@ -19,7 +20,7 @@ from plugin.server.routes import market_bridge as auth
 from plugin.server.routes.knowledge_bridge import main_write_headers
 from plugin.settings import MARKET_ORIGINS
 from services.model_workshop.bundle import BundleLimits
-from services.model_workshop.market import HASH, REQUEST
+from services.model_workshop.market import HASH, OPERATION, REQUEST
 from utils.http.knowledge_proxy import BodyTooLarge, capped_body, is_body_too_large
 
 router = APIRouter(prefix="/market/models", tags=["market-models"])
@@ -191,6 +192,13 @@ async def paired_model_command(request_id: str, request: Request, action: str = 
     target = f"http://127.0.0.1:{auth._main_server_port()}/api/model-market/launch/{request_id}"
     if action:
         target += "/" + action
+    elif "operation_id" in request.query_params:
+        # Only an opaque operation lookup may cross this fixed-target reader;
+        # no arbitrary query, URL or local-only ready/apply command is forwarded.
+        values = request.query_params.getlist("operation_id")
+        if len(values) != 1 or not OPERATION.fullmatch(values[0]):
+            raise HTTPException(400, "invalid model operation")
+        target += "?" + urlencode({"operation_id": values[0]})
     try:
         async with asyncio.timeout(25), _client() as client:
             async with client.stream(request.method, target, headers=headers,

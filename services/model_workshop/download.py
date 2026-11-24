@@ -12,6 +12,7 @@ import json
 import time
 from urllib.parse import urlencode
 
+import anyio
 import httpx
 
 from config.network import resolve_user_plugin_base
@@ -80,7 +81,7 @@ class ConnectedDownloads:
 
     def __init__(self):
         self.launches = Launches()
-        self.jobs: dict[str, asyncio.Task] = {}
+        self.jobs: dict[tuple[str, str], asyncio.Task] = {}
         self.closed = False
 
     async def launch(self, config, origin):
@@ -126,21 +127,30 @@ class ConnectedDownloads:
                 raise
             raise WorkshopError("model_market_unavailable") from None
 
-    def select(self, config, request_id, model_id, digest, size):
+    async def select(self, config, request_id, model_id, digest, size, operation_id):
         if self.closed:
             raise WorkshopError("model_workshop_closed")
         _ready(config)
-        row, fresh = self.launches.select(config, request_id, model_id, digest, size)
+        # Coordinate admission with the original role-save lock; the per-role
+        # limit also covers the saved callback while its runtime refresh is pending.
+        async with character_config_mutation_lock:
+            row, fresh = self.launches.select(config, request_id, model_id, digest, size, operation_id)
         if fresh:
             job = asyncio.create_task(self._run(config, row))
-            self.jobs[row.request_id] = job
-            job.add_done_callback(lambda finished: self._forget(row.request_id, finished))
+            key = (row.request_id, row.operation_id)
+            self.jobs[key] = job
+            row.connection.running = True
+            job.add_done_callback(lambda finished: self._forget(key, finished))
         return row.public()
 
     def _forget(self, request_id, finished):
         # A queued callback from download must not discard a newer apply owner.
         if self.jobs.get(request_id) is finished:
             self.jobs.pop(request_id, None)
+            # A late completion callback must not clear a successor's worker ownership.
+            row = self.launches.get(*request_id)
+            row.connection.running = any(key[0] == row.request_id and not job.done()
+                                         for key, job in self.jobs.items())
 
     async def _run(self, config, row):
         try:
@@ -171,9 +181,16 @@ class ConnectedDownloads:
             service = get_service(config)
             # Fresh authorization is still checked above, but an already
             # installed, locally editable model needs no second network copy.
-            with service.activity():
-                existing = next((item for item in service.installer.registry.installed()
-                                 if item["package_sha256"] == digest and item["status"] == "installed"), None)
+            registry = service.installer.registry
+            with service.activity(), registry.lock:
+                # A different model's unsafe/missing resources must not block
+                # this choice; retain the selected package's attempt/status gates.
+                installed = registry.read()
+                candidate = installed["installed"].get(digest)
+                existing = (dict(candidate, status="installed")
+                            if candidate is not None
+                            and installed["attempts"].get(digest) == candidate["install_id"]
+                            and registry.status(candidate) == "installed" else None)
             if existing is not None:
                 state = {"phase": "completed", "result": {**existing, "already_installed": True}}
             else:
@@ -212,8 +229,18 @@ class ConnectedDownloads:
             else:
                 row.phase = "installed"
 
-    def status(self, config, request_id):
-        row = self.launches.get(request_id)
+    def status(self, config, request_id, operation_id=None):
+        row = self.launches.get(request_id, operation_id)
+        current = self.launches.get(request_id)
+        # Validate the current baseline even between choices, preserving saved receipts.
+        if current.phase != "applying":
+            # asave_characters yields while writing. Only its locked commit
+            # callback may advance the witness; a concurrent read must not
+            # revoke that in-flight save by observing its intermediate file.
+            try:
+                current.check_connection(config)
+            except WorkshopError as error:
+                current.connection.error = str(error)
         if row.phase in {"browsing", "installed"}:
             try:
                 row.check(config)
@@ -221,24 +248,25 @@ class ConnectedDownloads:
                 row.phase, row.error = "blocked", str(error)
         return row.public()
 
-    async def apply(self, config, request_id):
+    async def apply(self, config, request_id, operation_id):
         """Only the local manager may finish its edit check and authorize saving.
 
         Keep a single background owner across HTTP disconnect/repeated polling;
         the original save handler rechecks role identity inside its mutation lock.
         """
-        row = self.launches.get(request_id)
+        row = self.launches.operation(request_id, operation_id)
         if row.phase in {"saved", "completed", "blocked", "failed", "cancelled"}:
             return row.public()
         if self.closed:
             raise WorkshopError("model_workshop_closed")
         _ready(config)
-        job = self.jobs.get(request_id)
+        key = (request_id, operation_id)
+        job = self.jobs.get(key)
         if row.phase == "installed" and job is not None and not job.done():
             # The download's final callback, or another save caller, still owns
             # this row. Settle it before deciding whether a save is needed.
             await asyncio.shield(job)
-            return await self.apply(config, request_id)
+            return await self.apply(config, request_id, operation_id)
         if row.phase == "installed" and (job is None or job.done()):
             async def save():
                 try:
@@ -249,21 +277,51 @@ class ConnectedDownloads:
                     if row.phase != "saved":
                         row.phase = "blocked"
             job = asyncio.create_task(save())
-            self.jobs[request_id] = job
-            job.add_done_callback(lambda finished: self._forget(request_id, finished))
+            self.jobs[key] = job
+            row.connection.running = True
+            job.add_done_callback(lambda finished: self._forget(key, finished))
         elif row.phase not in {"installed", "applying"}:
             raise WorkshopError("model_market_not_installed")
         if job is not None:
             await asyncio.shield(job)
         return row.public()
 
-    def cancel(self, request_id):
-        row = self.launches.get(request_id)
+    def cancel(self, request_id, operation_id):
+        row = self.launches.operation(request_id, operation_id)
         # Never claim cancellation rolled back a role-save commit.
         if row.phase not in {"applying", "saved", "completed"}:
             row.cancel.set()
             if row.phase in {"browsing", "installed", "blocked"}:
                 row.phase, row.error = "cancelled", "model_market_cancelled"
+        return row.public()
+
+    async def ready(self, config, request_id, operation_id):
+        """Only the native manager can acknowledge its clean reload/edit checks."""
+        if self.closed:
+            raise WorkshopError("model_workshop_closed")
+        row = self.launches.operation(request_id, operation_id)
+        job = self.jobs.get((request_id, operation_id))
+        if row.phase in {"saved", "completed", "failed", "cancelled", "blocked"} and job is not None:
+            await asyncio.shield(job)
+        _ready(config)
+        async with character_config_mutation_lock:
+            row.check_connection(config)
+            if row.phase not in {"saved", "completed", "failed", "cancelled", "blocked"} or row.error == "model_market_refresh_failed":
+                raise WorkshopError("model_market_busy")
+            row.connection.ready = True
+            # Capacity exhaustion ends this pairing instead of promising another
+            # choice or discarding a receipt that a delayed request could replay.
+            from .market import MAX_OPERATIONS
+            if len(row.connection.operations) >= MAX_OPERATIONS:
+                row.connection.error = "model_market_expired"
+        return row.public()
+
+    def invalidate(self, request_id):
+        """A local edit permanently revokes this pairing, including future choices."""
+        row = self.launches.get(request_id)
+        row.connection.error = row.connection.error or "model_market_target_changed"
+        if row.operation_id is not None:
+            return self.cancel(request_id, row.operation_id)
         return row.public()
 
     async def close(self):
@@ -272,12 +330,15 @@ class ConnectedDownloads:
             if row.phase in {"downloading", "installing", "installed"}:
                 row.cancel.set()
         pending = asyncio.gather(*list(self.jobs.values()), return_exceptions=True)
-        cancelled = False
-        while not pending.done():
-            try:
-                await asyncio.shield(pending)
-            except asyncio.CancelledError:
-                cancelled = True
+        try:
+            await asyncio.shield(pending)
+        except asyncio.CancelledError:
+            with anyio.CancelScope(shield=True):
+                while not pending.done():
+                    try:
+                        await asyncio.wait({pending})
+                    except asyncio.CancelledError:
+                        continue
+            pending.result()
+            raise
         pending.result()
-        if cancelled:
-            raise asyncio.CancelledError

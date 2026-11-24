@@ -74,7 +74,7 @@ def _error(exc):
         else "model_workshop_io_error"
     )
     status = 422 if isinstance(exc, BundleError) else 503
-    if code in {"model_workshop_task_not_found", "model_market_expired"}:
+    if code in {"model_workshop_task_not_found", "model_market_expired", "model_market_operation_unknown"}:
         status = 404
     elif code.endswith("too_large"):
         status = 413
@@ -131,31 +131,31 @@ async def launch_market(request: Request, response: Response):
 
 
 @router.get("/launch/{request_id}")
-async def connected_status(request_id: str, response: Response):
+async def connected_status(request_id: str, response: Response, operation_id: str | None = None):
     response.headers["Cache-Control"] = "no-store"
     try:
-        return {"success": True, **connected_downloads.status(get_config_manager(), request_id)}
+        return {"success": True, **connected_downloads.status(get_config_manager(), request_id, operation_id)}
     except (WorkshopError, OSError) as error:
         return _error(error)
 
 
 @router.post("/launch/{request_id}/select", status_code=202)
 async def select_market_model(request_id: str, request: Request, response: Response):
-    value = await _command(request, {"model_id", "expected_sha256", "byte_size"})
+    value = await _command(request, {"model_id", "expected_sha256", "byte_size", "operation_id"})
     response.headers["Cache-Control"] = "no-store"
     try:
-        return {"success": True, **connected_downloads.select(get_config_manager(), request_id,
-            value["model_id"], value["expected_sha256"], value["byte_size"])}
+        return {"success": True, **await connected_downloads.select(get_config_manager(), request_id,
+            value["model_id"], value["expected_sha256"], value["byte_size"], value["operation_id"])}
     except (WorkshopError, OSError, MaintenanceModeError) as error:
         return _error(error)
 
 
 @router.post("/launch/{request_id}/cancel")
 async def cancel_connected_download(request_id: str, request: Request, response: Response):
-    await _command(request, set())
+    value = await _command(request, {"operation_id"})
     response.headers["Cache-Control"] = "no-store"
     try:
-        return {"success": True, **connected_downloads.cancel(request_id)}
+        return {"success": True, **connected_downloads.cancel(request_id, value["operation_id"])}
     except WorkshopError as error:
         return _error(error)
 
@@ -164,11 +164,33 @@ async def cancel_connected_download(request_id: str, request: Request, response:
 async def apply_connected_model(request_id: str, request: Request, response: Response):
     # Deliberately absent from the remote bridge allowlist: only the native
     # manager can authorize this step after checking its own unsaved edits.
+    value = await _command(request, {"operation_id"})
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return {"success": True, **await connected_downloads.apply(get_config_manager(), request_id, value["operation_id"])}
+    except (WorkshopError, OSError, MaintenanceModeError) as error:
+        return _error(error)
+
+
+@router.post("/launch/{request_id}/ready")
+async def ready_connected_model(request_id: str, request: Request, response: Response):
+    # Like apply, this permission is local-only and absent from every remote allowlist.
+    value = await _command(request, {"operation_id"})
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return {"success": True, **await connected_downloads.ready(get_config_manager(), request_id, value["operation_id"])}
+    except (WorkshopError, OSError, MaintenanceModeError) as error:
+        return _error(error)
+
+
+@router.post("/launch/{request_id}/invalidate")
+async def invalidate_model_connection(request_id: str, request: Request, response: Response):
+    # Unsaved local edits revoke the pairing without granting the Market a save capability.
     await _command(request, set())
     response.headers["Cache-Control"] = "no-store"
     try:
-        return {"success": True, **await connected_downloads.apply(get_config_manager(), request_id)}
-    except (WorkshopError, OSError, MaintenanceModeError) as error:
+        return {"success": True, **connected_downloads.invalidate(request_id)}
+    except WorkshopError as error:
         return _error(error)
 
 

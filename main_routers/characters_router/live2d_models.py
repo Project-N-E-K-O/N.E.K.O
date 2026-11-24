@@ -864,8 +864,10 @@ async def update_catgirl_l2d(name: str, request: Request):
             # its captured target inside the same lock as the real avatar save;
             # ordinary HTTP model/parameter edits retain their existing path.
             market_guard = getattr(request.state, 'model_workshop_guard', None)
-            if market_guard is not None:
-                market_guard(_config_manager, characters)
+            if market_guard is not None and market_guard(_config_manager, characters):
+                # Only the internal workshop guard can confirm this exact asset
+                # is already active. Ordinary HTTP saves keep their original behavior.
+                return JSONResponse(content={'success': True})
 
             # Ensure the neko configuration exists.
             if '猫娘' not in characters:

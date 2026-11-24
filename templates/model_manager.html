@@ -64,8 +64,11 @@
 
         {% if model_workshop_enabled | default(false) %}
         <!-- Reuse the existing import artwork; the original local import stays separate. -->
-        <section id="model-workshop-panel" class="model-workshop-panel">
-            <button data-workshop="start" type="button"><img src="/static/icons/import_model_button_icon.png?v=1" alt="" aria-hidden="true" draggable="false"><span data-i18n="modelWorkshop.title"></span></button>
+        <section id="model-workshop-panel" class="control-group model-workshop-panel">
+            <button id="model-workshop-btn" class="btn btn-primary" data-workshop="start" type="button" data-i18n-title="modelWorkshop.title">
+                <img src="/static/icons/import_model_button_icon.png?v=1" class="import-icon" alt="" aria-hidden="true" draggable="false" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
+                <span class="round-stroke-text" data-i18n="modelWorkshop.title" data-text=""></span>
+            </button>
         </section>
         {% endif %}
 

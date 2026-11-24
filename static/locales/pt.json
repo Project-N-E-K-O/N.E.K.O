@@ -7353,7 +7353,7 @@
         "retry": "Tentar novamente"
     },
   "modelWorkshop": {
-    "title": "Compartilhar / baixar modelos do mercado",
+    "title": "Oficina de modelos",
     "help": "Escolha um pacote .neko-model.zip do mercado (até 500 MiB). Suporta Live2D, VRM e MMD; não cria personagens. Tarefas aceitas continuam após fechar a página.",
     "fileLabel": "Pacote de modelo",
     "start": "Iniciar importação",

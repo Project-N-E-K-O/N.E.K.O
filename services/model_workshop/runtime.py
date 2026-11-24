@@ -122,13 +122,13 @@ class Snapshot:
 
 
 def local_path(
-    paths: WorkshopPaths, value: str, *, readable_live2d=None
+    paths: WorkshopPaths, value: str, *, readable_live2d=None, url_encoded=True
 ) -> Path | None:
     """Map existing local URL prefixes (including CFA); decode exactly once."""
     parsed = urlsplit(value)
-    if parsed.scheme and parsed.hostname not in ("localhost", "127.0.0.1", "::1"):
+    if (parsed.scheme or parsed.netloc) and parsed.hostname not in ("localhost", "127.0.0.1", "::1"):
         return None
-    raw = unquote(parsed.path, errors="strict").replace("\\", "/")
+    raw = (unquote(parsed.path, errors="strict") if url_encoded else value).replace("\\", "/")
     for prefix, directory in (
         ("/user_live2d/", readable_live2d or paths.live2d),
         ("/user_live2d_local/", paths.live2d),
@@ -168,6 +168,8 @@ def snapshot(config=None, *, paths=None) -> Snapshot:
             return dict(installed={}, attempts={})
 
     for _ in range(3):
+        # A later stable read supersedes transient rename/removal failures.
+        errors.clear()
         before = read_state()
         journals = []
         try:
@@ -181,13 +183,14 @@ def snapshot(config=None, *, paths=None) -> Snapshot:
                         paths.checked("model_workshop/transactions/" + path.name),
                         STATE_BYTES,
                     )
-                    journals.append(validate_journal(data, path.name))
+                    if data is not None:
+                        journals.append(validate_journal(data, path.name))
                 except (OSError, WorkshopError):
                     errors.append("model_workshop_state_unreadable")
         except (OSError, WorkshopError):
             errors.append("model_workshop_state_unreadable")
         after = read_state()
-        if before == after:
+        if before == after and not errors:
             break
     else:
         errors.append("model_workshop_state_busy")
@@ -333,6 +336,15 @@ def maintain(config):
 def require_url(config, value: str, *, for_binding: bool = False) -> None:
     state = snapshot(config)
     if state.paths is not None:
+        if for_binding:
+            try:
+                parsed = urlsplit(value)
+                raw = unquote(parsed.path, errors="strict").replace("\\", "/")
+            except ValueError as exc:
+                raise WorkshopError("model_workshop_unsafe_path") from exc
+            local_origin = not (parsed.scheme or parsed.netloc) or parsed.hostname in ("localhost", "127.0.0.1", "::1")
+            if local_origin and ".." in raw.split("/"):
+                raise WorkshopError("model_workshop_unsafe_path")
         path = local_path(
             state.paths,
             value,
@@ -343,7 +355,7 @@ def require_url(config, value: str, *, for_binding: bool = False) -> None:
             # normalize encoded dot segments before fetching a local URL.
             parsed = urlsplit(value)
             raw = unquote(parsed.path, errors="strict").replace("\\", "/")
-            local_origin = not parsed.scheme or parsed.hostname in ("localhost", "127.0.0.1", "::1")
+            local_origin = not (parsed.scheme or parsed.netloc) or parsed.hostname in ("localhost", "127.0.0.1", "::1")
             relative = not parsed.scheme and not parsed.netloc and not raw.startswith("/")
             if local_origin and (relative or raw.startswith((
                 "/user_live2d/", "/user_live2d_local/", "/user_vrm/", "/user_mmd/",
@@ -413,7 +425,7 @@ def close_all():
             service.close()
 
 
-def filter_catalog(config, items):
+def filter_catalog(config, items, *, url_encoded=True):
     """Keep existing option identity/source fields; add only trusted local display metadata."""
     state = snapshot(config)
     if state.paths is None:
@@ -421,15 +433,16 @@ def filter_catalog(config, items):
     result = []
     for item in items:
         value = item.get("url") or item.get("path")
-        path = (
-            local_path(
-                state.paths,
-                value,
-                readable_live2d=getattr(config, "readable_live2d_dir", None),
+        try:
+            path = (
+                local_path(
+                    state.paths, value, url_encoded=url_encoded,
+                    readable_live2d=getattr(config, "readable_live2d_dir", None),
+                )
+                if isinstance(value, str) else None
             )
-            if isinstance(value, str)
-            else None
-        )
+        except ValueError:
+            continue  # One malformed URL cannot suppress unrelated models.
         if path is not None:
             try:
                 state.require(path)
