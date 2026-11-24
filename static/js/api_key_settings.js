@@ -1457,6 +1457,14 @@ function getTtsProviderMeta(pk) {
  * 也不要把用户正在用的服务商从下拉里藏掉。
  */
 /**
+ * Whether the TTS URL input still holds the endpoint a provider filled in by default.
+ */
+function isTtsUrlStillAutofilled(urlInput) {
+    const autofilled = urlInput && urlInput.dataset.autofilledUrl;
+    return !!autofilled && urlInput.value.trim() === autofilled;
+}
+
+/**
  * Whether a TTS provider keeps its key in its own Key Book entry (registry
  * api_key_field other than the shared ttsModelApiKey slot).
  */
@@ -1863,18 +1871,28 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
             // - A provider whose key lives in its own Key Book entry starts from its own
             //   endpoint when the user switches to it, so another provider's URL is never
             //   paired with that key. Re-renders (e.g. a locale change) keep an edited URL.
+            // - A URL some provider filled in by default (and the user left unchanged) is
+            //   that provider's endpoint, not a user edit: switching replaces it too.
             const wasReadonly = urlInput.hasAttribute('readonly');
-            const switchedToKeyBookBacked = keyBookBacked && userInitiated
-                && !_isLoadingSavedConfig && previousProvider !== provider;
-            if (!urlInput.value || !urlInput.value.trim() || wasReadonly || switchedToKeyBookBacked) {
+            const switchedProvider = !_isLoadingSavedConfig && previousProvider !== provider;
+            const switchedToKeyBookBacked = keyBookBacked && userInitiated && switchedProvider;
+            const stillAutofilled = isTtsUrlStillAutofilled(urlInput);
+            if (!urlInput.value || !urlInput.value.trim() || wasReadonly || switchedToKeyBookBacked
+                || (switchedProvider && stillAutofilled)) {
                 urlInput.value = getProviderOpenrouterUrl(provider, pInfo) || _spMeta.default_url || '';
+                urlInput.dataset.autofilledUrl = urlInput.value.trim();
+            } else if (!stillAutofilled) {
+                delete urlInput.dataset.autofilledUrl;
             }
             urlInput.removeAttribute('readonly');
         }
-        if (modelIdInput && (!_isLoadingSavedConfig || !modelIdInput.value || !modelIdInput.value.trim())) {
+        // Defaults only when the provider actually changes or the field is empty;
+        // re-renders of the same provider (e.g. a locale change) keep unsaved edits.
+        const fillDefaults = !_isLoadingSavedConfig && previousProvider !== provider;
+        if (modelIdInput && (fillDefaults || !modelIdInput.value || !modelIdInput.value.trim())) {
             modelIdInput.value = pInfo.tts_default_model || _spMeta.default_model || '';
         }
-        if (voiceInput && (!_isLoadingSavedConfig || !voiceInput.value || !voiceInput.value.trim())) {
+        if (voiceInput && (fillDefaults || !voiceInput.value || !voiceInput.value.trim())) {
             voiceInput.value = pInfo.tts_default_voice || _spMeta.default_voice || '';
         }
         if (keyBookBacked) {
@@ -1894,7 +1912,14 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
         }
     } else if (provider === 'custom') {
         // custom: remove readonly
-        if (urlInput) urlInput.removeAttribute('readonly');
+        if (urlInput) {
+            // Another provider's default endpoint is not a custom address.
+            if (modelType === 'tts' && previousProvider !== provider && isTtsUrlStillAutofilled(urlInput)) {
+                urlInput.value = '';
+            }
+            delete urlInput.dataset.autofilledUrl;
+            urlInput.removeAttribute('readonly');
+        }
         if (modelIdInput) modelIdInput.removeAttribute('readonly');
         setKeyEditable(keyInput);
     } else {

@@ -1522,11 +1522,19 @@ def test_qwen_token_plan_tts_key_comes_from_key_book(mock_page: Page, running_se
             // A re-render that is not a provider switch (the locale-change handler calls
             // onCustomModelProviderChange without userInitiated) keeps an edited URL.
             document.getElementById('ttsModelUrl').value = 'https://token-plan.maas.qianwenaiapi.com';
+            document.getElementById('ttsModelId').value = 'qwen-audio-3.0-tts-plus-edited';
+            document.getElementById('ttsVoiceId').value = 'longanlufeng';
             onCustomModelProviderChange('tts');
             const urlAfterRerender = document.getElementById('ttsModelUrl').value;
+            const modelAfterRerender = document.getElementById('ttsModelId').value;
+            const voiceAfterRerender = document.getElementById('ttsVoiceId').value;
             document.getElementById('ttsModelUrl').value = defaultUrl;
+            document.getElementById('ttsModelId').value = 'qwen-audio-3.0-tts-plus';
+            document.getElementById('ttsVoiceId').value = 'longanlingxin';
             const selected = {
                 urlAfterRerender,
+                modelAfterRerender,
+                voiceAfterRerender,
                 probe: { key: probe.key, url: probe.url, subType: probe.subType },
                 key: getRealKey(keyInput),
                 readonly: keyInput.hasAttribute('readonly'),
@@ -1544,7 +1552,11 @@ def test_qwen_token_plan_tts_key_comes_from_key_book(mock_page: Page, running_se
 
             provider.value = 'custom';
             provider.dispatchEvent(new Event('change', { bubbles: true }));
-            return { selected, payload, keyAfterLeaving: getRealKey(document.getElementById('ttsModelApiKey')) };
+            return {
+                selected, payload,
+                keyAfterLeaving: getRealKey(document.getElementById('ttsModelApiKey')),
+                urlAfterLeaving: document.getElementById('ttsModelUrl').value,
+            };
         }
     """)
 
@@ -1552,6 +1564,8 @@ def test_qwen_token_plan_tts_key_comes_from_key_book(mock_page: Page, running_se
     assert result["selected"]["key"] == "sk-sp-book-key"
     assert result["selected"]["readonly"] is True
     assert result["selected"]["urlAfterRerender"] == "https://token-plan.maas.qianwenaiapi.com"
+    assert result["selected"]["modelAfterRerender"] == "qwen-audio-3.0-tts-plus-edited"
+    assert result["selected"]["voiceAfterRerender"] == "longanlufeng"
     # Another provider's URL is not kept for the Token Plan key.
     assert result["selected"]["url"] == "https://token-plan.cn-beijing.maas.aliyuncs.com"
     assert result["selected"]["probe"] == {
@@ -1568,6 +1582,41 @@ def test_qwen_token_plan_tts_key_comes_from_key_book(mock_page: Page, running_se
     assert "ttsModelApiKey" not in payload
     # The Token Plan key must not stay in the slot once another provider is chosen.
     assert result["keyAfterLeaving"] not in ("sk-sp-book-key", "sk-sp-old-key")
+    # Back on custom: the user's own address comes back, not the Token Plan default.
+    assert result["urlAfterLeaving"] == "https://my-custom.example/v1"
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("edit_url", [False, True])
+def test_tts_url_autofilled_by_token_plan_is_replaced_on_switch(mock_page: Page, running_server: str, edit_url):
+    """An endpoint another provider filled in is replaced on switch; a user edit is kept."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#ttsModelProvider option[value='qwen_token_plan']", state="attached", timeout=10000)
+
+    result = mock_page.evaluate("""
+        async (editUrl) => {
+            document.getElementById('enableCustomApi').checked = true;
+            toggleCustomApi();
+            const provider = document.getElementById('ttsModelProvider');
+            const url = document.getElementById('ttsModelUrl');
+            provider.value = 'qwen_token_plan';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            const tokenPlanUrl = url.value;
+            if (editUrl) url.value = 'http://127.0.0.1:8091/v1';
+            provider.value = 'vllm_omni';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            return { tokenPlanUrl, vllmUrl: url.value, vllmDefault: getTtsProviderMeta('vllm_omni').default_url };
+        }
+    """, edit_url)
+
+    assert result["tokenPlanUrl"] == "https://token-plan.cn-beijing.maas.aliyuncs.com"
+    if edit_url:
+        assert result["vllmUrl"] == "http://127.0.0.1:8091/v1"
+    else:
+        assert "token-plan" not in result["vllmUrl"]
+        assert result["vllmUrl"] == result["vllmDefault"]
 
 
 @pytest.mark.frontend
