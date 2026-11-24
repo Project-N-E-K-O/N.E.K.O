@@ -45,7 +45,7 @@ json.dump([*done, seen], open(calls, "w", encoding="utf-8"))
 failing = os.path.join(here, "failing.txt")
 if os.path.exists(failing) and (os.environ.get("pnpm_config_registry") or "").startswith(open(failing).read()):
     sys.exit(9)
-sys.exit(7)
+sys.exit(0)
 """
 
 
@@ -170,12 +170,14 @@ def test_the_first_plugin_fetches_pnpm_once_and_dsh_gets_it_with_the_data_roots_
 
     done = _run(directory, "add", "dsh-free-search")
 
-    assert done.returncode == 7, done.stderr  # dsh's own answer, handed on
+    assert done.returncode == 0, done.stderr
     root = tmp_path / "dsh"
     pnpm = next((root / "pnpm").glob("*/" + PROGRAM_NAME)).parent
     assert (pnpm / PROGRAM_NAME).read_bytes() == b"not really pnpm\n" * 64
     assert (pnpm / "dist" / "pnpm.mjs").is_file()
-    assert [item.name for item in (root / "pnpm").iterdir()] == [pnpm.name]  # nothing half made is left
+    # Nothing half made is left; beside pnpm, which registry delivered it.
+    assert sorted(item.name for item in (root / "pnpm").iterdir()) == sorted([pnpm.name, plugin_command.REGISTRY_FILE])
+    assert (root / "pnpm" / plugin_command.REGISTRY_FILE).read_text(encoding="utf-8") == registry.url
     called = _called(tmp_path)
     assert called["argv"] == ["plugin", "--profile", profile.PROFILE, "add", "dsh-free-search"]
     assert Path(called["path"]) == pnpm and Path(called["pnpm"]).parent == pnpm
@@ -192,12 +194,38 @@ def test_the_first_plugin_fetches_pnpm_once_and_dsh_gets_it_with_the_data_roots_
 
     asked = len(registry.seen)
     again = _run(directory, "list")
-    assert again.returncode == 7, again.stderr
+    assert again.returncode == 0, again.stderr
     # Fetched once; and listing asks no registry at all, so it never waits for one.
     assert len(registry.seen) == asked
     assert _called(tmp_path)["argv"][-1] == "list"
-    assert _called(tmp_path)["env"]["pnpm_config_registry"] is None
+    # Given the registry that delivered, as pnpm keeps it, though that one was not asked.
+    assert _called(tmp_path)["env"]["pnpm_config_registry"] == registry.url + "/"
     assert len(_calls(tmp_path)) == 2
+
+
+@needs_shell
+def test_a_plugin_added_from_the_mirror_is_removed_with_the_mirror_and_without_asking_it(tmp_path, registries):
+    down = Registry(status=503)
+    mirror = Registry(_files_of(_packages()))
+    registries(down, mirror)
+    directory = _write(tmp_path)
+    assert _run(directory, "add", "x").returncode == 0
+    asked = len(mirror.seen) + len(down.seen)
+
+    done = _run(directory, "remove", "x")
+
+    # pnpm would refuse another registry than its packages came from, or wait for one that does not answer.
+    assert done.returncode == 0, done.stderr
+    assert _called(tmp_path)["env"]["pnpm_config_registry"] == mirror.url + "/"
+    assert len(mirror.seen) + len(down.seen) == asked
+    # Nothing remembered (pnpm put there before): a local command names no registry.
+    (tmp_path / "dsh" / "pnpm" / plugin_command.REGISTRY_FILE).unlink()
+    assert _run(directory, "remove", "x").returncode == 0
+    assert _called(tmp_path)["env"]["pnpm_config_registry"] is None
+    # Something else written there is not taken for a registry.
+    (tmp_path / "dsh" / "pnpm" / plugin_command.REGISTRY_FILE).write_text("http://elsewhere.test", encoding="utf-8")
+    assert _run(directory, "remove", "x").returncode == 0
+    assert _called(tmp_path)["env"]["pnpm_config_registry"] is None
 
 
 @needs_shell
@@ -208,7 +236,7 @@ def test_a_registry_that_does_not_answer_is_followed_by_the_mirror(tmp_path, reg
 
     done = _run(_write(tmp_path), "add", "x")
 
-    assert done.returncode == 7, done.stderr
+    assert done.returncode == 0, done.stderr
     assert _called(tmp_path)["env"]["pnpm_config_registry"] == mirror.url + "/"
 
 
@@ -234,7 +262,7 @@ def test_a_file_that_is_not_the_one_recorded_is_never_used(tmp_path, registries,
     done = _run(_write(tmp_path), "add", "x")
 
     # The tampered file was thrown away and the mirror's taken.
-    assert done.returncode == 7, done.stderr
+    assert done.returncode == 0, done.stderr
     pnpm = next((tmp_path / "dsh" / "pnpm").glob("*/" + PROGRAM_NAME))
     assert pnpm.read_bytes() == b"not really pnpm\n" * 64
     # The first registry answered but did not deliver: the plugin comes from the one that did.
@@ -251,7 +279,7 @@ def test_a_plugin_that_one_registry_does_not_deliver_is_fetched_from_the_next(tm
 
     done = _run(directory, "add", "x")
 
-    assert done.returncode == 7, done.stderr
+    assert done.returncode == 0, done.stderr
     tried = [call["env"]["pnpm_config_registry"] for call in _calls(tmp_path)]
     assert tried == [first.url + "/", mirror.url + "/"]
     # When all fail, the answer of the last is handed on; a local command is never tried twice.
@@ -259,8 +287,11 @@ def test_a_plugin_that_one_registry_does_not_deliver_is_fetched_from_the_next(tm
     assert _run(directory, "add", "x").returncode == 9
     assert len(_calls(tmp_path)) == 4
     (tmp_path / "fake-dsh" / "calls.json").unlink()
-    assert _run(directory, "remove", "x").returncode == 7
+    (tmp_path / "fake-dsh" / "failing.txt").unlink()
+    assert _run(directory, "remove", "x").returncode == 0
     assert len(_calls(tmp_path)) == 1
+    # The registry remembered is the last that delivered: the mirror, which did the first add.
+    assert _called(tmp_path)["env"]["pnpm_config_registry"] == mirror.url + "/"
 
 
 @needs_shell
@@ -362,7 +393,7 @@ def test_powershell_that_runs_no_scripts_still_runs_the_command_and_keeps_its_va
         env={**os.environ, "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"},
     )
 
-    assert "code=7 home=" in done.stdout, done.stdout + done.stderr
+    assert "code=0 home=" in done.stdout, done.stdout + done.stderr
     assert "home=\n" in done.stdout or done.stdout.rstrip().endswith("home=")  # nothing set in the caller's shell
     assert _called(tmp_path)["argv"][-2:] == ["add", "x"]
 
