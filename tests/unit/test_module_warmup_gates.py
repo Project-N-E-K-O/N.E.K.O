@@ -182,9 +182,19 @@ def test_all_gates_off_for_minimal_config():
 
 
 def test_gate_that_cannot_read_config_falls_back_to_warming():
-    class _Broken:
-        def __getattr__(self, name):
+    def _unreadable(name):
+        def read(self):
             raise OSError(f"cannot read {name}")
+        return property(read)
+
+    # Every config read the gates use fails, the way WarmupConfig's reads do.
+    _Broken = type("_Broken", (), {
+        name: _unreadable(name)
+        for name in (
+            "core_config", "realtime_config", "llm_slot_configs",
+            "china_region", "current_voice_meta", "conversation_settings",
+        )
+    })
 
     results = evaluate_gates(_Broken())
     assert set(results) == set(_GATES)
