@@ -231,9 +231,9 @@ def _tokenize(text: str, stop_names: list[str] | None) -> list[str]:
 #
 # Same scan-aware admission as ``_VEC_CACHE`` (a scan never evicts what it
 # touched itself), bounded by ``HYBRID_RECALL_TOKEN_CACHE_MAX_BYTES``.
-# Unlike ``_VEC_CACHE`` this one takes a lock: the passive path scores in a
-# worker thread while ``recall_memory`` scores on the event loop. The lock
-# covers only the dict operations, never the tokenizing.
+# Like ``_VEC_CACHE`` it takes a lock: the passive path and ``hybrid_recall``
+# both run BM25 in worker threads, so two scans can tokenize concurrently.
+# The lock covers only the dict operations, never the tokenizing.
 _TOKEN_SEP = "\x00"
 _TOKEN_CACHE: OrderedDict[tuple[tuple[str, ...], str], tuple[str, int]] = OrderedDict()
 _TOKEN_CACHE_BYTES = 0
@@ -1487,16 +1487,31 @@ async def hybrid_recall(
         logger.debug("[hybrid_recall] collect_stop_names skipped: %s", exc)
         stop_names = []
 
-    # Score. BM25 is sync + cheap (≤ few-hundred docs, pure-Python loop);
-    # cosine is async (embed_batch). Run cosine first so the BM25 work
-    # can proceed while embedding model warms (if first call).
+    # Score. Cosine is async (embed_batch, then scoring in a worker thread);
+    # start it first so it runs while BM25 does.
     # Only the first HYBRID_RECALL_BUDGET_EACH cosine rows are ever read
     # (threshold filter keeps a prefix of a DESC ranking, then [:BUDGET_EACH]).
     cosine_stats: dict = {}
     cosine_scored_task = asyncio.create_task(_cosine_rank(
         query, embedding_pool, limit=HYBRID_RECALL_BUDGET_EACH, stats=cosine_stats,
     ))
-    bm25_scored = _bm25_rank(query, bm25_pool, stop_names=stop_names)
+    # BM25 is a pure-Python loop over the whole keyword pool (archive
+    # included): a few ms today, but ~0.2 s at 38k rows and over 1 s at 99k,
+    # so it runs in a worker thread like the passive path's ``_bm25_scores``
+    # does. The pool rows are ``_tag_tier``'s private copies and
+    # ``_TOKEN_CACHE`` is locked, so the worker shares nothing mutable.
+    # A thread cannot be interrupted: if this call is cancelled (only when the
+    # client goes away), the BM25 scan still runs to completion in the default
+    # executor and its result is dropped.
+    try:
+        bm25_scored = await asyncio.to_thread(
+            _bm25_rank, query, bm25_pool, stop_names=stop_names,
+        )
+    except BaseException:
+        # However this call leaves (cancelled, failed, interrupted), the cosine
+        # task is no longer awaited by anyone: stop it instead of orphaning it.
+        cosine_scored_task.cancel()
+        raise
     if budget_ms is None:
         cosine_scored = await cosine_scored_task
     else:
