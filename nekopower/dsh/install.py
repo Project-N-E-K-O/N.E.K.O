@@ -184,14 +184,17 @@ class DshInstallation:
         home.mkdir(parents=True, exist_ok=True)
         launch = DshLaunch(executable=executable, home=home)
         tag = platform_tag()
-        try:
-            from nekopower.dsh.plugin_command import write_command
+        from nekopower.dsh.plugin_command import COMMAND, bin_dir, write_command
 
+        try:
             directory = write_command(self.root(), executable=executable, leading=(), home=home, tag=str(tag))
         except OSError:
-            # dsh works without it; only adding a plugin from a session does not.
+            # dsh works without it; only adding a plugin from a session does
+            # not. The one written at an earlier start serves, when it is there.
             logger.warning("could not write the command that adds dsh plugins", exc_info=True)
-            return launch
+            directory = bin_dir(self.root())
+            if not any(directory.glob(f"{COMMAND}*")):
+                return launch
         return DshLaunch(executable=executable, home=home, path=(directory,))
 
     def preference(self) -> str:

@@ -96,7 +96,10 @@ def main() -> int:
     files = [packages["main"], packages[tag]]
     picked = range(1, len(registries) + 1)
     if options.registries:
-        picked = [int(part) for part in options.registries.split(",") if part.strip()]
+        try:
+            picked = [int(part) for part in options.registries.split(",") if part.strip()]
+        except ValueError:
+            parser.error(f"--registries 要写源的序号，用逗号分隔，比如 1,2（一共 {len(registries)} 个源）")
     director = shared.opener(options.use_system_proxy)
     timeout = float(settings["DSH_DOWNLOAD_READ_SECONDS"])
 

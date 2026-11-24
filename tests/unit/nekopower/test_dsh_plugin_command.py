@@ -284,7 +284,7 @@ def test_a_platform_pnpm_is_not_built_for_says_so(tmp_path):
             tmp_path / ("w" if windows else "p"), executable=Path("dsh"), leading=(), home=tmp_path / "home",
             tag="macos-x64", windows=windows,
         )
-        text = "".join(path.read_text(encoding="utf-8-sig") for path in directory.iterdir())
+        text = _text(directory)
         assert "not built for this computer" in text
         assert "@pnpm/" not in text
 
@@ -296,7 +296,7 @@ def test_paths_with_quotes_are_kept_whole_in_both_scripts(tmp_path):
             odd / ("w" if windows else "p"), executable=odd / "dsh", leading=(), home=odd / "home", tag=TAG,
             windows=windows,
         )
-        text = "".join(path.read_text(encoding="utf-8-sig") for path in directory.iterdir())
+        text = _text(directory)
         quoted = "''" if windows else "'\\''"
         assert f"it{quoted}s here" in text
 
@@ -312,18 +312,91 @@ def test_the_command_is_written_when_dsh_starts_and_put_in_front_of_its_path(tmp
     launch = dsh.launch()
 
     assert launch.path == (tmp_path / "dsh" / "bin",)
-    written = {path.name: path.stat().st_mtime_ns for path in launch.path[0].iterdir()}
-    assert written and all(name.startswith(plugin_command.COMMAND) for name in written)
-    text = "".join(path.read_text(encoding="utf-8-sig") for path in launch.path[0].iterdir())
+    written = _stamps(launch.path[0])
+    assert written and all(Path(name).name.startswith(plugin_command.COMMAND) for name in written)
+    text = _text(launch.path[0])
     assert str(runtime / executable_name(TAG)) in text and str(tmp_path / "dsh" / "home") in text
     # Started again: the same text is not written again.
     dsh.launch()
-    assert {path.name: path.stat().st_mtime_ns for path in launch.path[0].iterdir()} == written
+    assert _stamps(launch.path[0]) == written
 
     environment = profile.child_environment({"Path": "C:/somewhere"}, home=launch.home, token="t", path=launch.path)
     assert environment["Path"] == os.pathsep.join([str(launch.path[0]), "C:/somewhere"])
     assert "PATH" not in environment
     assert profile.child_environment({}, home=launch.home, token="t", path=launch.path)["PATH"] == str(launch.path[0])
+
+
+def _text(directory: Path) -> str:
+    return "".join(path.read_text(encoding="utf-8-sig") for path in sorted(directory.rglob("*")) if path.is_file())
+
+
+def _stamps(directory: Path) -> dict[str, int]:
+    return {str(path.relative_to(directory)): path.stat().st_mtime_ns for path in directory.rglob("*") if path.is_file()}
+
+
+def test_on_the_path_there_is_the_cmd_alone_so_powershell_does_not_run_the_script_by_its_policy(tmp_path):
+    directory = plugin_command.write_command(
+        tmp_path / "dsh", executable=Path("dsh.exe"), leading=(), home=tmp_path / "dsh" / "home", tag="win-x64",
+        windows=True,
+    )
+
+    # PowerShell picks a .ps1 on the PATH before the .cmd of the same name, and a .ps1 runs only
+    # when the execution policy lets it; the .cmd runs it with the policy stepped around.
+    assert sorted(path.name for path in directory.iterdir() if path.is_file()) == [f"{plugin_command.COMMAND}.cmd"]
+    script = directory / plugin_command.SCRIPT_DIR / f"{plugin_command.COMMAND}.ps1"
+    assert script.is_file()
+    cmd = (directory / f"{plugin_command.COMMAND}.cmd").read_text(encoding="ascii")
+    assert f'-ExecutionPolicy Bypass -File "%~dp0{plugin_command.SCRIPT_DIR}' + chr(92) + f'{plugin_command.COMMAND}.ps1"' in cmd
+
+
+@pytest.mark.skipif(not (WINDOWS and shutil.which("powershell.exe")), reason="Windows PowerShell only")
+def test_powershell_that_runs_no_scripts_still_runs_the_command_and_keeps_its_variables(tmp_path, registries):
+    registries(Registry(_files_of(_packages())))
+    directory = _write(tmp_path)
+    # As a task agent's shell would call it by its name, with a policy that runs no script.
+    line = (f"$env:PATH = '{directory};' + $env:PATH; neko-dsh-plugin add x; "
+            "Write-Output \"code=$LASTEXITCODE home=$env:DSH_HOME\"")
+    done = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Restricted", "-Command", line],
+        capture_output=True, text=True, timeout=120,
+        env={**os.environ, "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"},
+    )
+
+    assert "code=7 home=" in done.stdout, done.stdout + done.stderr
+    assert "home=\n" in done.stdout or done.stdout.rstrip().endswith("home=")  # nothing set in the caller's shell
+    assert _called(tmp_path)["argv"][-2:] == ["add", "x"]
+
+
+def test_a_command_that_cannot_be_written_again_leaves_the_last_one_on_the_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(install_module, "platform_tag", lambda: TAG)
+    dsh = DshInstallation(tmp_path / "dsh")
+    runtime = dsh.runtime_dir()
+    runtime.mkdir(parents=True)
+    (runtime / executable_name(TAG)).write_bytes(b"dsh")
+    (runtime / INSTALLED_FILE).write_text("{}", encoding="utf-8")
+
+    def refuse(*args, **kwargs):
+        raise PermissionError("in use")
+
+    monkeypatch.setattr(plugin_command, "write_command", refuse)
+    # Never written: nothing to put on the PATH.
+    assert dsh.launch().path == ()
+    # Written at an earlier start: that one serves.
+    (tmp_path / "dsh" / "bin").mkdir()
+    (tmp_path / "dsh" / "bin" / plugin_command.COMMAND).write_text("echo", encoding="utf-8")
+    assert dsh.launch().path == (tmp_path / "dsh" / "bin",)
+
+
+def test_a_file_that_cannot_be_replaced_leaves_no_temporary_file(tmp_path, monkeypatch):
+    target = tmp_path / "command"
+
+    def refuse(*args):
+        raise PermissionError("in use")
+
+    monkeypatch.setattr(plugin_command.os, "replace", refuse)
+    with pytest.raises(PermissionError):
+        plugin_command._write(target, "text", encoding="utf-8")
+    assert list(tmp_path.iterdir()) == []
 
 
 async def test_an_uninstall_removes_the_command_and_its_pnpm(tmp_path):
@@ -342,9 +415,18 @@ async def test_an_uninstall_removes_the_command_and_its_pnpm(tmp_path):
         ("neko-dsh-plugin add dsh-free-search", True),
         ('& "C:\\N.E.K.O\\nekopower\\dsh\\bin\\neko-dsh-plugin.cmd" add dsh-free-search', True),
         ("cd D:/blog && NEKO-DSH-PLUGIN  add a b", True),
+        # Whatever else may bring a plugin in: an option first, a quoted word, another command.
+        ("neko-dsh-plugin --silent add dsh-free-search", True),
+        ('neko-dsh-plugin "add" dsh-free-search', True),
+        ("neko-dsh-plugin update dsh-free-search", True),
+        ("neko-dsh-plugin install", True),
+        ("neko-dsh-plugin", True),
+        ("neko-dsh-plugin list && neko-dsh-plugin add x", True),
+        # Looking and removing bring nothing in.
         ("neko-dsh-plugin list", False),
+        ("neko-dsh-plugin LS", False),
         ("neko-dsh-plugin remove dsh-free-search", False),
-        ("echo add neko-dsh-plugin", False),
+        ("neko-dsh-plugin.cmd why dsh-free-search", False),
         ("pnpm add dsh-free-search", False),
     ],
 )

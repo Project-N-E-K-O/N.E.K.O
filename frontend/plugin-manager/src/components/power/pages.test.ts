@@ -140,8 +140,14 @@ describe('what a familiar asks the user', () => {
   it('says what a dsh plugin may do when the command would add one, and only then', async () => {
     const adding = permission({ detail: { tool: 'bash', command: 'cd D:/x && neko-dsh-plugin add dsh-free-search' } })
     expect(askWarning(adding, t)).toBe(words.runtime.plugins.warning)
-    expect(askWarning(permission({ detail: { command: '& "C:/n/bin/neko-dsh-plugin.cmd" add a' } }), t)).toBe(words.runtime.plugins.warning)
-    for (const command of ['neko-dsh-plugin list', 'neko-dsh-plugin remove a', 'pnpm add a', LONG]) {
+    // Whatever may bring a plugin in, as the backend's question says (`adds_plugin`).
+    for (const command of [
+      '& "C:/n/bin/neko-dsh-plugin.cmd" add a', 'neko-dsh-plugin --silent add a', 'neko-dsh-plugin "add" a',
+      'neko-dsh-plugin update a', 'neko-dsh-plugin', 'neko-dsh-plugin list && neko-dsh-plugin add a',
+    ]) {
+      expect(askWarning(permission({ detail: { command } }), t)).toBe(words.runtime.plugins.warning)
+    }
+    for (const command of ['neko-dsh-plugin list', 'neko-dsh-plugin LS', 'neko-dsh-plugin remove a', 'neko-dsh-plugin.cmd why a', 'pnpm add a', LONG]) {
       expect(askWarning(permission({ detail: { command } }), t)).toBeNull()
     }
     // Only a command asks to run it: a path that happens to read so is no plugin being added.

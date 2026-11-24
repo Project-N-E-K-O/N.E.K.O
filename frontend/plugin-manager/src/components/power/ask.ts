@@ -48,18 +48,23 @@ export function askWhole(ask: BoardAsk): { kind: 'command' | 'path'; text: strin
   return null
 }
 
-// A command that adds a dsh plugin through `neko-dsh-plugin`, wherever in the command line it
-// stands; the same as `ADDS_PLUGIN` in `nekopower/dsh/plugin_command.py`.
-const ADDS_DSH_PLUGIN = /neko-dsh-plugin(?:\.cmd|\.ps1)?['"]?\s+add\b/i
+// Each call of `neko-dsh-plugin` in a command line, with the word after it; a call whose first word
+// is not one of these may bring a plugin in. The same as `adds_plugin` in
+// `nekopower/dsh/plugin_command.py`.
+const DSH_PLUGIN_CALL = /neko-dsh-plugin(?:\.cmd)?['"]?(?:\s+['"]?([^\s'"]*))?/gi
+const DSH_PLUGIN_LOCAL = new Set([
+  'list', 'ls', 'remove', 'rm', 'uninstall', 'un', 'why', 'allow-version', 'revoke-version', 'version-exemptions',
+])
 
 /**
- * Return what has to be known before saying yes, when the request is to add a dsh plugin: it runs
+ * Return what has to be known before saying yes, when the request may add a dsh plugin: it runs
  * inside dsh with all that dsh may do, without a sandbox. Null for any other request.
  */
 export function askWarning(ask: BoardAsk, t: Translate): string | null {
   const command = ask.detail?.command
-  if (ask.category !== 'run_command' || typeof command !== 'string' || !ADDS_DSH_PLUGIN.test(command)) return null
-  return t('power.runtime.plugins.warning')
+  if (ask.category !== 'run_command' || typeof command !== 'string') return null
+  const adds = [...command.matchAll(DSH_PLUGIN_CALL)].some(call => !DSH_PLUGIN_LOCAL.has((call[1] ?? '').toLowerCase()))
+  return adds ? t('power.runtime.plugins.warning') : null
 }
 
 const SHOWN_APART = new Set(['command', 'path', 'tool'])

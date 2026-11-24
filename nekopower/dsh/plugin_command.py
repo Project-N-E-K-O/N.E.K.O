@@ -54,18 +54,24 @@ from pathlib import Path
 
 COMMAND = "neko-dsh-plugin"
 BIN_DIR = "bin"
+# Below ``bin``, not on the PATH: PowerShell would run a ``.ps1`` it finds
+# there before the ``.cmd`` of the same name, under the execution policy the
+# ``.cmd`` steps around (by default one that runs no script at all).
+SCRIPT_DIR = "lib"
 PNPM_DIR = "pnpm"
 
-# A command that adds a dsh plugin through the script, wherever in a command
-# line it stands: the permission question about it says what a plugin may do.
-# The frontend recognizes the same (``components/power/ask.ts``).
-ADDS_PLUGIN = re.compile(rf"{COMMAND}(?:\.cmd|\.ps1)?['\"]?\s+add\b", re.IGNORECASE)
-
 # What pnpm (and dsh) do without fetching anything: no registry is asked first, and none is
-# tried after another.
+# tried after another. Nor do they bring a plugin in.
 LOCAL_COMMANDS = (
     "list", "ls", "remove", "rm", "uninstall", "un", "why", "allow-version", "revoke-version", "version-exemptions",
 )
+
+# Each call of the script in a command line, with the word after it. Any call
+# whose first word is not one of ``LOCAL_COMMANDS`` may bring a plugin in
+# (``add``, but also ``update``, ``install``, an option before ``add``), so the
+# permission question about it says what a plugin may do. The frontend
+# recognizes the same (``components/power/ask.ts``).
+_CALL = re.compile(rf"{COMMAND}(?:\.cmd)?['\"]?(?:\s+['\"]?([^\s'\"]*))?", re.IGNORECASE)
 
 _HEADER = (
     "Written by N.E.K.O each time it starts dsh; a change made here is lost.",
@@ -83,8 +89,8 @@ def pnpm_root(root: Path) -> Path:
 
 
 def adds_plugin(command: str) -> bool:
-    """Whether a command line adds a dsh plugin through ``neko-dsh-plugin``."""
-    return bool(ADDS_PLUGIN.search(command or ""))
+    """Whether a command line may add a dsh plugin: it calls ``neko-dsh-plugin`` other than to look or remove."""
+    return any((call.group(1) or "").lower() not in LOCAL_COMMANDS for call in _CALL.finditer(command or ""))
 
 
 def _pnpm_environment(root: Path) -> dict[str, str]:
@@ -251,7 +257,7 @@ def render_cmd() -> str:
     return (
         "@echo off\r\n"
         f"rem {_HEADER[0]}\r\n"
-        f'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0{COMMAND}.ps1" %*\r\n'
+        f'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0{SCRIPT_DIR}\\{COMMAND}.ps1" %*\r\n'
         "exit /b %ERRORLEVEL%\r\n"
     )
 
@@ -283,7 +289,7 @@ def render_sh(*, root: Path, executable: Path, leading: tuple[str, ...], profile
         "",
         "fetch() {",
         "  if command -v curl >/dev/null 2>&1; then curl -fsSL --connect-timeout 15 --max-time 600 -o \"$2\" \"$1\"",
-        "  elif command -v wget >/dev/null 2>&1; then wget -q --timeout=60 -O \"$2\" \"$1\"",
+        "  elif command -v wget >/dev/null 2>&1; then wget -q --tries=2 --timeout=60 -O \"$2\" \"$1\"",
         "  else return 1; fi",
         "}",
         "",
@@ -296,7 +302,7 @@ def render_sh(*, root: Path, executable: Path, leading: tuple[str, ...], profile
         # sh has no local variables: the loops' are named apart from ``registry`` below.
         "probe() {",
         "  if command -v curl >/dev/null 2>&1; then curl -fsS --connect-timeout 10 --max-time 15 -o /dev/null \"$1\"",
-        "  elif command -v wget >/dev/null 2>&1; then wget -q --timeout=15 -O /dev/null \"$1\"",
+        "  elif command -v wget >/dev/null 2>&1; then wget -q --tries=1 --timeout=15 -O /dev/null \"$1\"",
         "  else return 1; fi",
         "}",
         "",
@@ -399,7 +405,9 @@ def write_command(root: Path, *, executable: Path, leading: tuple[str, ...], hom
     if windows:
         # Windows PowerShell reads a script without a byte order mark in the
         # system's code page, which would garble a path in another script.
-        _write(directory / f"{COMMAND}.ps1", render_powershell(**arguments), encoding="utf-8-sig")
+        scripts = directory / SCRIPT_DIR
+        scripts.mkdir(exist_ok=True)
+        _write(scripts / f"{COMMAND}.ps1", render_powershell(**arguments), encoding="utf-8-sig")
         _write(directory / f"{COMMAND}.cmd", render_cmd(), encoding="ascii")
     else:
         target = directory / COMMAND
@@ -416,5 +424,9 @@ def _write(path: Path, text: str, *, encoding: str) -> None:
     except OSError:
         pass
     temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    temporary.write_bytes(data)
-    os.replace(temporary, path)
+    try:
+        temporary.write_bytes(data)
+        os.replace(temporary, path)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        raise
