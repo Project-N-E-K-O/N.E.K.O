@@ -50,7 +50,8 @@ def is_computed_attribute(instance: object, name: str) -> bool:
 
     Judged on the class attribute, so a cached property whose value already
     sits in the instance ``__dict__`` still counts. Functions and the method
-    wrappers in ``_METHOD_LOOKUPS`` are plain method lookups; any other
+    wrappers in ``_METHOD_LOOKUPS`` are plain method lookups (a
+    ``partialmethod`` or ``classmethod`` is judged by what it wraps); any other
     descriptor on the class (property, cached properties, lazy loaders, data
     descriptors) is computed and is not evaluated just because its name was
     called. Instance attributes and names a class ``__getattr__`` provides
@@ -60,6 +61,17 @@ def is_computed_attribute(instance: object, name: str) -> bool:
         static = inspect.getattr_static(type(instance), name)
     except AttributeError:
         return False
+    seen: set[int] = set()
+    while id(static) not in seen:
+        seen.add(id(static))
+        # partialmethod and classmethod hand the attribute lookup on to what
+        # they wrap (a property inside one would be evaluated): look inside.
+        if isinstance(static, functools.partialmethod):
+            static = static.func
+        elif isinstance(static, classmethod):
+            static = static.__func__
+        else:
+            break
     if isinstance(static, _METHOD_LOOKUPS):
         return False
     return hasattr(type(static), "__get__")

@@ -542,6 +542,36 @@ def test_a_lazy_non_data_descriptor_is_not_evaluated(tmp_path):
     assert evaluated == []
 
 
+def test_a_wrapped_computed_descriptor_is_not_evaluated(tmp_path):
+    evaluated: list[str] = []
+
+    async def target(**_: Any) -> str:
+        return "ran"
+
+    def getter(self):
+        evaluated.append("getter")
+        return target
+
+    @neko_plugin
+    class Wrapped(NekoPluginBase):
+        via_partial = functools.partialmethod(property(getter))
+        via_classmethod = classmethod(property(getter))
+
+        @classmethod
+        async def plain_classmethod(cls, **_: Any) -> str:
+            return "classmethod"
+
+    instance = Wrapped(_ctx(tmp_path))
+    executor, _instance, _logger = _runtime(
+        tmp_path, instance=instance, manifest=["via_partial", "via_classmethod", "plain_classmethod"]
+    )
+    evaluated.clear()
+    assert _resolve(executor, "via_partial") is None
+    assert _resolve(executor, "via_classmethod") is None
+    assert evaluated == []
+    assert _resolve(executor, "plain_classmethod") is not None
+
+
 def test_a_singledispatchmethod_still_resolves(tmp_path):
     @neko_plugin
     class Dispatching(NekoPluginBase):
