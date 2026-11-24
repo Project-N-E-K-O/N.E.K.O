@@ -1,7 +1,8 @@
-import { withPermissions } from './shared'
-import permissionLabels from '../plugin-permissions/es'
+import labels from '../plugin-permissions/es'
+import { withPermissionLabels } from '../plugin-permissions/shared'
+import type { PluginConsentMessages } from './en-US'
 
-const messages = {
+const messages: PluginConsentMessages = {
   title: 'Permisos',
   dialogTitle: 'Confirmar capacidades del plugin',
   introduction: 'Este plugin puede usar las siguientes capacidades mientras se ejecuta. Confírmalas para iniciarlo.',
@@ -84,4 +85,4 @@ const messages = {
   },
 }
 
-export default withPermissions(messages, permissionLabels)
+export default { ...messages, capabilities: withPermissionLabels(messages.capabilities, labels) }

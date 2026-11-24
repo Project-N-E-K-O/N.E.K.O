@@ -3,6 +3,9 @@
  *
  * Keys are derived by `capabilityMessageKey`: every `.` and `:` becomes `_`.
  * Ids that had an earlier capability name reuse that name's label.
+ *
+ * One label module per language next to this file, so that a language pack
+ * carries its own words only (see `../localeBundles.ts`).
  */
 
 import type { PermissionLabels } from './en-US'

@@ -1,7 +1,8 @@
-import { withPermissions } from './shared'
-import permissionLabels from '../plugin-permissions/ko'
+import labels from '../plugin-permissions/ko'
+import { withPermissionLabels } from '../plugin-permissions/shared'
+import type { PluginConsentMessages } from './en-US'
 
-const messages = {
+const messages: PluginConsentMessages = {
   title: '권한',
   dialogTitle: '플러그인 기능 확인',
   introduction: '이 플러그인은 실행 중 아래 기능을 사용합니다. 확인하면 시작할 수 있습니다.',
@@ -84,4 +85,4 @@ const messages = {
   },
 }
 
-export default withPermissions(messages, permissionLabels)
+export default { ...messages, capabilities: withPermissionLabels(messages.capabilities, labels) }

@@ -1,5 +1,5 @@
-import { withPermissions } from './shared'
-import permissionLabels from '../plugin-permissions/en-US'
+import labels from '../plugin-permissions/en-US'
+import { withPermissionLabels } from '../plugin-permissions/shared'
 
 const messages = {
   title: 'Permissions',
@@ -88,4 +88,6 @@ const messages = {
   },
 }
 
-export default withPermissions(messages, permissionLabels)
+export type PluginConsentMessages = typeof messages
+
+export default { ...messages, capabilities: withPermissionLabels(messages.capabilities, labels) }

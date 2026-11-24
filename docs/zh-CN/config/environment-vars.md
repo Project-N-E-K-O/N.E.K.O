@@ -64,6 +64,13 @@ launcher 是前台进程：绝不守护化脱管，属主进程一消失就把�
 
 通用布尔解析通常接受 `1/true/yes/on` 与 `0/false/no/off`；`NEKO_MERGED` 自身只接受 `1/true/yes` 与 `0/false/no`。向量变量也兼容无前缀形式。
 
+## 原生数学库线程数
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `OPENBLAS_NUM_THREADS` | `1`（没有设置线程数时生效） | numpy 自带的 OpenBLAS 库使用的线程数。OpenBLAS 在 numpy 加载时为每个线程预留 32 MiB 缓冲区，按 CPU 核数的默认值会让每个导入 numpy 的进程白白预订数百 MiB。在 shell、`.env` 或容器里通过本变量、`OPENBLAS_DEFAULT_NUM_THREADS`、`GOTO_NUM_THREADS` 或 `OMP_NUM_THREADS` 设置的正整数会保留；空值、`0`、负数和非数字按未设置处理，因为 OpenBLAS 会忽略它们。插件进程继承该设置，插件启动的程序（应用启动器、stdio MCP server）也会继承。任务 agent 替你执行的命令（内置运行时和 dsh 都是）不继承：注入的默认值会从它们的环境里去掉，你自己设置的线程数则原样传入。 |
+| `NEKO_INJECTED_OPENBLAS_THREADS` | 由 N.E.K.O 写入 | 内部使用。和注入的 `OPENBLAS_NUM_THREADS` 一起写入，用来区分注入的默认值和你自己设置的值。不要手动设置。 |
+
 ## 插件自启动并发
 
 | 变量 | 默认值 | 说明 |

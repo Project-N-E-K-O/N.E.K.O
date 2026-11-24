@@ -32,5 +32,4 @@ const labels = {
 } satisfies Record<string, Label>
 
 export type PermissionLabels = Record<keyof typeof labels, Label>
-
 export default labels

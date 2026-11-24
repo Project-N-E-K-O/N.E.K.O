@@ -15,7 +15,8 @@ import {
   capabilityOrigin,
 } from './pluginCapabilities'
 import type { CapabilityAnalysis } from '@/api/pluginConsent'
-import { pluginConsentMessages } from '@/i18n/plugin-consent'
+import { SUPPORTED_LOCALES } from '@/i18n'
+import { allPluginConsentMessages as pluginConsentMessages } from '@/i18n/plugin-consent/testing'
 
 // Mirrors PERMISSION_IDS in plugin/sdk/shared/permissions/catalog.py; a Python
 // test checks this list against the catalog.
@@ -200,6 +201,10 @@ describe('consentSaveErrorKey', () => {
 })
 
 describe('permission labels', () => {
+  it('checks every supported language', () => {
+    expect(Object.keys(pluginConsentMessages).sort()).toEqual([...SUPPORTED_LOCALES].sort())
+  })
+
   it.each(Object.entries(pluginConsentMessages))('%s labels system.network:listen', (_, messages) => {
     for (const field of ['title', 'description'] as const) {
       const key = capabilityMessageKey('system.network:listen', field).replace(/^pluginConsent\./, '')

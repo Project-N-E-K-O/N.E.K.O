@@ -1,7 +1,8 @@
-import { withPermissions } from './shared'
-import permissionLabels from '../plugin-permissions/ja'
+import labels from '../plugin-permissions/ja'
+import { withPermissionLabels } from '../plugin-permissions/shared'
+import type { PluginConsentMessages } from './en-US'
 
-const messages = {
+const messages: PluginConsentMessages = {
   title: '権限',
   dialogTitle: 'プラグイン機能の確認',
   introduction: 'このプラグインは実行中に以下の機能を使用します。確認すると起動できます。',
@@ -84,4 +85,4 @@ const messages = {
   },
 }
 
-export default withPermissions(messages, permissionLabels)
+export default { ...messages, capabilities: withPermissionLabels(messages.capabilities, labels) }

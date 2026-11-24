@@ -30,6 +30,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from config.native_runtime import env_for_user_programs
 from nekopower.runtime.loop.tools import AgentTool
 from nekopower.runtime.tools import procs
 from nekopower.runtime.tools.base import (
@@ -232,7 +233,9 @@ def build_shell_tool(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> li
             process = await procs.spawn(
                 shell_argv(kind, command),
                 cwd=str(workdir),
-                env={**os.environ, **ENV_OVERRIDES},
+                # The user's command, not a backend process: it does not get the
+                # single BLAS thread the backend defaults itself to.
+                env={**env_for_user_programs(), **ENV_OVERRIDES},
                 stdout=stdout,
                 stderr=stderr,
             )
