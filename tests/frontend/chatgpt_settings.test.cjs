@@ -193,6 +193,24 @@ test('a signed-out saved account stays chosen so it can sign in again', async ()
     assert.equal(JSON.parse(login.options.body).account_id, 'other-87654321');
 });
 
+test('adding another account after choosing a signed-out one shows the new account', async () => {
+    const x = {id: 'signed-out-x-11111111', email: 'x@example.test', connected: false};
+    const z = {id: 'added-z-22222222', email: 'z@example.test', connected: true};
+    const ui = surface({...signedIn, accounts: [...signedIn.accounts, x]},
+        () => ({url: 'https://auth.openai.com/api/accounts/authorize?state=add'}));
+    await flush();
+    ui.nodes.account.value = x.id;
+    await ui.nodes.account.listeners.change();
+    assert.equal(ui.nodes.account.value, x.id);
+    ui.setState({...signedIn, accounts: [...signedIn.accounts, x], login_status: 'pending'});
+    await ui.nodes.add.listeners.click();
+    assert.equal(JSON.parse(ui.calls.find(c => c.url.endsWith('/login')).options.body).account_id, null);
+    // The sign-in completes with Z as the active account; X is still signed out.
+    ui.setState({accounts: [...signedIn.accounts, x, z], active: z.id, login_status: 'connected', error: ''});
+    await ui.timer();
+    assert.equal(ui.nodes.account.value, z.id);
+});
+
 test('choosing a signed-out account keeps the stale-form warning', async () => {
     const accounts = [...signedIn.accounts, {id: 'other-87654321', email: 'b@example.test', connected: false}];
     let ui;

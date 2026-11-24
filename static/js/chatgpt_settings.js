@@ -138,6 +138,11 @@
             option.textContent = t('noAccount', 'No saved account');
             account.appendChild(option);
         }
+        // A sign-in that just finished with another account active (e.g. "Add account")
+        // ends the pending re-authorization: show what is actually in use.
+        if (pending && data.login_status !== 'pending' && data.active && data.active !== reauthorizeAccount) {
+            reauthorizeAccount = '';
+        }
         const reauthorizable = data.accounts.some(a => a.id === reauthorizeAccount && a.connected === false);
         if (!reauthorizable) reauthorizeAccount = '';
         account.value = reauthorizeAccount || data.active
@@ -291,7 +296,11 @@
         }
     });
     login.addEventListener('click', () => signIn(account.value));
-    add.addEventListener('click', () => signIn(null));
+    add.addEventListener('click', () => {
+        // Adding another account is not re-authorizing the signed-out one chosen.
+        reauthorizeAccount = '';
+        return signIn(null);
+    });
     account.addEventListener('change', () => run(async () => {
         if (knownAccounts.some(entry => entry.id === account.value && entry.connected === false)) {
             // Selecting it would be refused; keep it chosen so Continue with ChatGPT signs it in again.
