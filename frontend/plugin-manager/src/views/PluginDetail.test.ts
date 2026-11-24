@@ -20,7 +20,11 @@ const apiMocks = vi.hoisted(() => ({
 const routerMocks = vi.hoisted(() => ({
   push: vi.fn(),
   replace: vi.fn(),
-  route: { params: { id: 'study_companion' }, query: {} as Record<string, string> },
+  route: {
+    name: 'PluginDetail' as string,
+    params: { id: 'study_companion' } as Record<string, string>,
+    query: {} as Record<string, string>,
+  },
 }))
 const hostedFrameMocks = vi.hoisted(() => ({ refreshContext: vi.fn() }))
 const configEditorMocks = vi.hoisted(() => ({ mounts: 0 }))
@@ -226,7 +230,7 @@ describe('PluginDetail surface selection', () => {
 
   it('sends no detail request when the route id is cleared on leave', async () => {
     const originalRoute = routerMocks.route
-    const route = reactive({ params: { id: 'study_companion' } as { id?: string }, query: {} })
+    const route = reactive({ name: 'PluginDetail', params: { id: 'study_companion' } as Record<string, string>, query: {} })
     routerMocks.route = route as typeof routerMocks.route
     try {
       const mounted = await mountDetail([surface({ id: 'main' })])
@@ -253,6 +257,37 @@ describe('PluginDetail surface selection', () => {
         await nextTick()
       }
       expect(apiMocks.getPlugin).not.toHaveBeenCalled()
+      expect(apiMocks.getPluginUiSurfaceInfo).not.toHaveBeenCalled()
+      mounted.unmount()
+    } finally {
+      routerMocks.route = originalRoute
+    }
+  })
+
+  it.each([
+    ['Logs', '_server'],
+    ['AdapterUI', 'demo_adapter'],
+  ])('sends no detail request when leaving for the sibling %s route', async (name, id) => {
+    const originalRoute = routerMocks.route
+    const route = reactive({ name: 'PluginDetail', params: { id: 'study_companion' } as Record<string, string>, query: {} })
+    routerMocks.route = route as typeof routerMocks.route
+    try {
+      const mounted = await mountDetail([surface({ id: 'main' })])
+      apiMocks.getPlugin.mockClear()
+      apiMocks.getPlugins.mockClear()
+      apiMocks.getPluginStatus.mockClear()
+      apiMocks.getPluginUiSurfaceInfo.mockClear()
+
+      // Vue Router swaps the whole location; this view is still mounted.
+      Object.assign(route, { name, params: { id } })
+      for (let index = 0; index < 10; index += 1) {
+        await Promise.resolve()
+        await nextTick()
+      }
+
+      expect(apiMocks.getPlugin).not.toHaveBeenCalled()
+      expect(apiMocks.getPlugins).not.toHaveBeenCalled()
+      expect(apiMocks.getPluginStatus).not.toHaveBeenCalled()
       expect(apiMocks.getPluginUiSurfaceInfo).not.toHaveBeenCalled()
       mounted.unmount()
     } finally {

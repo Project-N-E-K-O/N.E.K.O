@@ -264,7 +264,12 @@ const router = useRouter()
 const pluginStore = usePluginStore()
 const { locale } = useI18n()
 
-const pluginId = computed(() => route.params.id as string)
+// Sibling routes (logs/:id, adapter/:id/ui) share the `id` param, and this
+// view stays mounted through the leave transition, so only this route's id
+// counts; anywhere else the id is empty and loadDetail() skips loading.
+const pluginId = computed(() =>
+  route.name === 'PluginDetail' && typeof route.params.id === 'string' ? route.params.id : '',
+)
 const activeTab = ref('info')
 const configPageScroll = ref(false)
 const loading = ref(true)
@@ -605,9 +610,9 @@ async function retrySurfaces() {
 
 async function loadDetail() {
   const currentPluginId = pluginId.value
-  // Leaving the route clears params.id while this view is still mounted, and
+  // Leaving the route empties pluginId while this view is still mounted, and
   // the sync watch below fires first; an empty id must not reach the API
-  // (it would request /plugins/undefined). Keep the loading state so the
+  // (it would request /plugins/undefined or another route's id). Keep the loading state so the
   // leaving page shows no not-found flash, and so a locale change meanwhile
   // takes the full reload path, which lands back here.
   if (!currentPluginId) {
