@@ -108,6 +108,35 @@ def _assert_no_cat_gesture(page: Page):
     assert page.evaluate("session.active && !session.released && session.pointerBodyId === '' && session.draggingBodyId === ''")
 
 
+@pytest.mark.parametrize("tier", ("cat1", "cat2", "cat3"))
+@pytest.mark.parametrize("audio", (False, True))
+def test_question_block_exit_restores_current_tier_feedback_without_replaying(
+    basic_interaction_page: Page, tier, audio
+):
+    page = basic_interaction_page
+    page.evaluate("""() => {
+        _storeNekoIdleCat1PlaygroundQuestionBlockClone(cat,
+            _createNekoIdleCat1PlaygroundQuestionBlockClone({left: 350, top: 120, width: 48, height: 48}, cat));
+    }""")
+    _enter(page, "gravity", tier, audio=audio)
+    page.clock.run_for(2000)
+    assert page.evaluate("session.bodies.get('question-block').grounded")
+    if audio:
+        page.evaluate("startBasicVoice()")
+        _bubble_point(page)
+    plays_before_exit = page.evaluate("audioPlays.length")
+    page.locator(".neko-idle-cat1-playground-question-block").click()
+    assert page.evaluate("session.released && !session.active && session.bodies.size === 0 && returnClicks === 0")
+    assert page.evaluate("_nekoIdleCat1AmbientSoundState.active") is (audio and tier == "cat1")
+    assert page.evaluate("_nekoIdleSleepSoundState.tier") == (tier if audio and tier != "cat1" else "none")
+    assert page.evaluate("audioPlays.length") == plays_before_exit
+    assert page.evaluate("!cat.classList.contains('is-thought-bubble-active')")
+    if audio:
+        page.evaluate("startBasicVoice()")
+        _bubble_point(page)
+        assert page.evaluate("audioPlays.length") == plays_before_exit + 1
+
+
 @pytest.mark.parametrize("mode", ("ordinary", "gravity", "visit"))
 @pytest.mark.parametrize("tier", ("cat1", "cat2", "cat3"))
 def test_hover_uses_existing_cycle_in_both_modes_and_cat_only(basic_interaction_page: Page, mode, tier):

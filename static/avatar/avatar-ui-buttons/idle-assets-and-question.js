@@ -1227,6 +1227,9 @@ function _handleNekoIdleCat1PlaygroundQuestionBlockCloneClick(button, element, e
             preserveThoughtBubbleInput: true
         });
         _syncNekoIdleReturnCurrentArt(button);
+        const tier = button.getAttribute('data-neko-idle-tier');
+        _syncNekoIdleSleepSoundForTier(tier);
+        _syncNekoIdleCat1AmbientSoundForTier(tier);
     }
     return true;
 }

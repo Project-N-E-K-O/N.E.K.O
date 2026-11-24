@@ -264,6 +264,22 @@ for (const handoff of ['replacement PG play', 'exit to ordinary play']) {
   });
 }
 
+test('an orphaned yarn lease cannot reveal the persistent DOM now held by a newer body', () => {
+  const r = setup(), oldBody = r.state.bodies.get('yarn');
+  oldBody.element.style.visibility = 'visible'; oldBody.element.style.pointerEvents = 'auto';
+  assert.equal(play(r), true);
+  const oldLease = playState(r).playgroundYarnControl;
+  const newControl = {};
+  const newBody = { ...oldBody, actionControl: newControl };
+  r.state.token += 1;
+  r.state.bodies.set('yarn', newBody);
+  assert.equal(oldBody.actionControl, oldLease);
+  assert.equal(r.context._releaseNekoIdleCat1PlaygroundYarnControl(r.button, oldLease), false);
+  assert.equal(newBody.actionControl, newControl);
+  assert.equal(newBody.element.style.visibility, 'hidden');
+  assert.equal(newBody.element.style.pointerEvents, 'none');
+});
+
 test('an old yarn removal cannot dispose a new desktop generation installed by its terminal callback', async () => {
   const r = runtime(), old = r.state.bodies.get('yarn');
   // The VM host needs the standard document event-removal boundary when the

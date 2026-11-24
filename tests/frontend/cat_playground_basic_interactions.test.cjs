@@ -77,7 +77,8 @@ function runtime(tier = 'cat1', { playground = true, catOnly = false } = {}) {
       display: element.style.display || 'block', visibility: element.style.visibility || 'visible',
       opacity: element.style.opacity ?? '1',
     }),
-    NekoCollisionDeformation: { isCollisionDeformationActive: () => controls.collisionActive },
+    NekoCollisionDeformation: { isCollisionDeformationActive: () => controls.collisionActive,
+      clearCollisionDeformation() {} },
     Audio: class extends EventTarget {
       constructor(src) {
         super(); this.src = src; this.volume = 1; this.currentTime = 0;
@@ -407,6 +408,27 @@ test('cancelling a pending gravity entry restores only ordinary audio eligibilit
   assert.equal(journeySyncs, 0);
   assert.equal(r.audios.length, 0);
 });
+
+for (const tier of ['cat1', 'cat2', 'cat3']) for (const audioEnabled of [false, true]) {
+  test(`${tier}: question-block exit restores ordinary audio eligibility without replay (audio: ${audioEnabled})`, async () => {
+    const r = runtime(tier); r.controls.audioEnabled = audioEnabled; r.sync();
+    if (audioEnabled) { assert.equal(r.play(), true); await r.flush(); }
+    const audioCount = r.audios.length;
+    let journeySyncs = 0; r.context._scheduleNekoIdleCat1JourneySync = () => { journeySyncs++; };
+    r.context._handleNekoIdleCat1PlaygroundQuestionBlockCloneClick(r.button, null, null);
+    assert.equal(r.state.active, false);
+    assert.equal(tier === 'cat1' ? r.soundState().active : r.soundState().tier,
+      tier === 'cat1' ? audioEnabled : audioEnabled ? tier : 'none');
+    assert.equal(r.audios.length, audioCount, 'restoring eligibility does not replay a response');
+    assert.ok(r.audios.every(audio => audio.paused), 'the old Playground voice has ended');
+    assert.equal(journeySyncs, 0, 'question-block exit does not restart the ordinary journey');
+    if (audioEnabled) {
+      assert.equal(r.play(), true, 'the existing scheduler can request the next ordinary response');
+      await r.flush();
+      assert.equal(r.button.classList.contains('is-thought-bubble-active'), true);
+    }
+  });
+}
 
 for (const tier of ['cat2', 'cat3']) {
   test(`${tier}: real Cat Mind drag interruption enables its existing cadence recovery`, async () => {
