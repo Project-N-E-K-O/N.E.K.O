@@ -263,7 +263,12 @@ async def test_enable_failure_never_changes_configuration(manager, routes, failu
 
 
 @pytest.mark.asyncio
-async def test_catalog_http_429_returns_structured_error_without_saving(manager, routes, monkeypatch):
+@pytest.mark.parametrize('upstream, expected', [
+    ('quota', (429, {'detail': 'usageLimit'})),
+    # A 200 whose body is not JSON reaches the real catalog parser.
+    ('not-json', (502, {'detail': 'failed'})),
+])
+async def test_catalog_errors_return_structured_status_without_saving(manager, routes, monkeypatch, upstream, expected):
     import httpx
     from fastapi import FastAPI
     from utils.chatgpt_auth import store as auth
@@ -275,6 +280,8 @@ async def test_catalog_http_429_returns_structured_error_without_saving(manager,
 
     def handler(request):
         requests.append(request)
+        if upstream == 'not-json':
+            return httpx.Response(200, text='<html>upstream maintenance</html>')
         return httpx.Response(429, json={'error': {'message': 'fixture quota'}})
 
     client = ChatChatGPT(credential_store=store, timeout=5)
@@ -290,8 +297,7 @@ async def test_catalog_http_429_returns_structured_error_without_saving(manager,
         ) as api:
             response = await api.post('/api/config/chatgpt/subscription',
                                       json={'enabled': True, 'revision': revision(original, supported_slots())})
-        assert response.status_code == 429
-        assert response.json() == {'detail': 'usageLimit'}
+        assert (response.status_code, response.json()) == expected
         assert len(requests) == 1 and requests[0].url.path == '/v1/models'
         assert manager.load_json_config('core_config.json') == original
         core.reload_api_configuration.assert_not_awaited()
