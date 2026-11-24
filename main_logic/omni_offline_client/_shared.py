@@ -29,8 +29,8 @@ from utils.llm_client import (  # noqa: F401
     AIMessage,
     LLMStreamChunk,
     ThinkingStreamStripper,
-    anthropic_retry_error_types,
     chat_retry_error_types,
+    chat_retry_error_types_snapshot,
     strip_thinking_segments,
     create_chat_llm,
     create_chat_llm_async,
@@ -64,10 +64,11 @@ def _llm_retry_error_types() -> tuple[type[BaseException], ...]:
         return _LLM_RETRY_ERROR_TYPES
     from openai import AuthenticationError
 
-    types = (AuthenticationError, *chat_retry_error_types())
+    retry_types, final = chat_retry_error_types_snapshot()
+    types = (AuthenticationError, *retry_types)
     # The Anthropic classes appear once an Anthropic client has loaded the SDK;
-    # caching before that would leave them out for good.
-    if anthropic_retry_error_types():
+    # caching before all of them are there would leave the rest out for good.
+    if final:
         _LLM_RETRY_ERROR_TYPES = types
     return types
 
