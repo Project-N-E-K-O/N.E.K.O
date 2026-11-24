@@ -137,5 +137,6 @@ async function lead() {
 <style scoped>
 .crew { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }
 .crew .el-button + .el-button { margin-left: 0; }
+.el-dialog .muted { margin-bottom: 12px; }
 .muted { margin: 0; color: var(--el-text-color-secondary); font-size: 13px; line-height: 1.6; }
 </style>

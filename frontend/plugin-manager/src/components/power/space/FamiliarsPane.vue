@@ -68,7 +68,8 @@
       </dl>
 
       <!-- It works in a git worktree of its own, or left what it changed there for the user. -->
-      <TreeActions v-if="selected.tree" :tree="selected.tree" :title="selected.commission?.title" @changed="load" />
+      <TreeActions v-if="selected.tree" :tree="selected.tree" :title="selected.commission?.title" @changed="treeChanged" />
+      <p v-if="treeSaid.said && selected.tree?.id !== treeSaid.tree" class="muted" role="status" data-testid="tree-said">{{ treeSaid.said }}</p>
 
       <div class="views" role="tablist">
         <button
@@ -181,6 +182,8 @@ const error = ref('')
 // Why the card was not taken, for its editor alone: reading the board anew neither clears nor sets it.
 const cardError = ref('')
 const note = ref('')
+// What came of the last thing done to its worktree: said after the worktree is gone from its card as well.
+const treeSaid = ref({ tree: '', said: '' })
 const busy = ref('')
 const sentence = ref('')
 // Which of the three views of the chosen familiar is open: what it has in hand, what was said in it, what it used.
@@ -321,6 +324,11 @@ async function saveCard() {
   editing.value = false
 }
 
+function treeChanged(tree: string, said: string) {
+  treeSaid.value = { tree, said }
+  void load()
+}
+
 /** One more familiar, or a leader, was made: shown at once, and up close. */
 async function crewChanged(sessionId: string) {
   await load()
@@ -340,6 +348,7 @@ watch(() => props.selectedId, () => {
   // The editor was opened for the one the user has left.
   editing.value = false
   note.value = ''
+  treeSaid.value = { tree: '', said: '' }
   sentence.value = ''
   view.value = 'doing'
   pastView.value = 'talk'

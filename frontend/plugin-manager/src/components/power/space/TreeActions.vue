@@ -48,7 +48,8 @@ import { describeConsoleError } from '../powerFormat'
  * go, look at it, or see to it themselves.
  */
 const props = defineProps<{ tree: BoardTree | Worktree; title?: string }>()
-const emit = defineEmits<{ changed: [] }>()
+// What came of it is passed on as well: once it is merged or let go, this one is not shown any more.
+const emit = defineEmits<{ changed: [tree: string, said: string] }>()
 const { t, te } = useI18n()
 const busy = ref('')
 const note = ref('')
@@ -91,11 +92,11 @@ async function act(name: string, work: () => Promise<string>) {
   error.value = ''
   try {
     note.value = await work()
-    emit('changed')
+    emit('changed', props.tree.id, note.value)
   } catch (failure) {
     error.value = describeConsoleError(failure, t, te)
     // Gone, taken in hand elsewhere, at work again: what is shown is not how it stands.
-    emit('changed')
+    emit('changed', props.tree.id, error.value)
   } finally {
     busy.value = ''
   }

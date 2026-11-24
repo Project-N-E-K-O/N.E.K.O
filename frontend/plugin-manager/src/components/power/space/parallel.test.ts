@@ -196,6 +196,27 @@ describe('the worktrees of a project that wait for the user', () => {
     expect(api.listWorktrees).toHaveBeenCalledTimes(2)
   })
 
+  it('say what came of the last one dealt with, also once it is not listed any more', async () => {
+    api.listWorktrees.mockResolvedValueOnce({ worktrees: [tree({ state: 'held', reason: 'ask' })] }).mockResolvedValue({ worktrees: [] })
+    api.landWorktree.mockResolvedValue({ status: 'landed', files: [{ path: 'a.py' }], more: 0, conflicts: [], resolving: false, detail: '' })
+    const { state } = await mount(ProjectTrees, { project: 'App' })
+    await click(byTest('tree-land'))
+    expect(document.querySelector('[data-tree]')).toBeNull()
+    expect(byTest('trees-said')?.textContent).toBe(words.trees.landed.replace('{count}', '1'))
+    // Of another project it is not said.
+    state.props = { project: 'Other' }
+    await flush()
+    expect(byTest('project-trees')).toBeNull()
+    cleanup?.()
+    // One that is still listed says what came of it itself: not said twice.
+    api.listWorktrees.mockResolvedValue({ worktrees: [tree()] })
+    api.keepWorktree.mockResolvedValue({ worktree: tree({ state: 'kept' }) })
+    await mount(ProjectTrees, { project: 'App' })
+    await click(byTest('tree-keep'))
+    expect(byTest('tree-note')?.textContent).toBe(words.trees.keptNote)
+    expect(byTest('trees-said')).toBeNull()
+  })
+
   it('are not shown when none waits', async () => {
     api.listWorktrees.mockResolvedValue({ worktrees: [tree({ state: 'active', reason: '' })] })
     await mount(ProjectTrees, { project: 'App' })
@@ -263,6 +284,13 @@ describe('more familiars for a project', () => {
     expect(byTest('leader-give')).toBeTruthy()
     expect(document.querySelector('[data-detail="s2"] [data-testid="tree-actions"]')).toBeTruthy()
     expect(document.querySelector('[data-familiar="s2"]')?.textContent).toContain(words.home.states.unlanded)
+    // Let go from its card: once its worktree is gone from the card, what came of it is still said.
+    api.discardWorktree.mockResolvedValue({ removed: true })
+    api.getProjectBoard.mockResolvedValue(board([card(), { ...member, state: 'idle', tree: null }]))
+    await click(document.querySelector('[data-detail="s2"] [data-testid="tree-discard"]'))
+    await click(byTest('tree-discard-confirm'))
+    expect(document.querySelector('[data-detail="s2"] [data-testid="tree-actions"]')).toBeNull()
+    expect(byTest('tree-said')?.textContent).toBe(words.trees.discarded)
     cleanup?.()
     api.getProjectBoard.mockResolvedValue({ revision: 'r', projects: [], loose: [card()] })
     await mount(FamiliarsPane, { project: null, selectedId: '' })
