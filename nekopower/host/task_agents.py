@@ -200,7 +200,8 @@ _NO_PLACE_REASON = "no task agent place was free"
 # Children that can still produce a result their parent should wait for.
 _STILL_WORKING = frozenset({"queued", "working", "waiting_user"})
 # The tools a session changes files with: one opened without all of them changes none
-# (``Template.changes_files`` says the same of a preset).
+# (``Template.changes_files`` says the same of a preset). What goes through the gateway
+# (``capability_call``) is not among them: see ``_note_writer``.
 _CHANGING_TOOLS = frozenset({"write", "edit", "bash", "pwsh"})
 _REPORT_TO_STATUS = {"ready": "done", "blocked": "blocked", "failed": "failed"}
 # The pool the screenshots of every built-in tool are counted in (``TaskAgentSpec.image_pools``).
@@ -2112,9 +2113,15 @@ class TaskAgentManager:
         does not wait for, while the members of the project wait for it
         as they wait for the member (a task agent whose stop was not
         seen through may still be at it when the member is over). Not
-        the project's leader, which changes nothing, nor what the leader
-        starts, which looks and checks; not a copy, which reads. One
-        whose preset cannot be read counts as one that changes files.
+        the project's leader, which has none of those tools, nor what
+        the leader starts, which looks and checks; not a copy, which
+        reads. One whose preset cannot be read counts as one that
+        changes files. What a session does through ``capability_call``
+        (a plugin, a connected service) is not counted, the leader's
+        included: it is none of the runtime's tools that work in the
+        project's directory, and goes by the permission of its own
+        category. A plugin that changes a file of the project does so
+        beside whichever member is at work.
         Noted as the project and the member: by project alone do they
         wait, every character's members working in its one directory.
         """
