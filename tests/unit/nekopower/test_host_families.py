@@ -3092,6 +3092,45 @@ async def test_what_goes_on_with_a_members_work_goes_to_it_and_its_leader_is_tol
     ]
 
 
+async def test_nothing_goes_to_a_member_beside_the_leader_while_not_every_member_was_looked_at(hosts, tmp_path, monkeypatch):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    await _project(host, "Shop site", tmp_path)
+    leader = (await host.derive_leader("Shop site", "Lan"))["session_id"]
+    duty = "The styles and the theme: header, footer, colours and the dark mode"
+    older = await host.ledger.create_session(
+        lanlan_name="Lan", name="Shop site/stylist", kind="line", project="Shop site", preset="worker", parent_id=leader, duty=duty,
+    )
+    newer = await host.ledger.create_session(
+        lanlan_name="Lan", name="Shop site/painter", kind="line", project="Shop site", preset="worker", parent_id=leader,
+        duty="The header and the footer of the pages, and their dark mode colours",
+    )
+    await host.ledger.update_session(newer.id, last_active_at=older.last_active_at + 60)
+    text = "make the dark mode colours of the header and the footer of the shop site warmer"
+    commission, _made = await host.ledger.create(
+        lanlan_name="Lan", title=text, dispatch_text=text, source="dispatch", route="task_agent"
+    )
+    families = host.task_agents.families
+
+    # Both are looked at: it fits the two about as well, so it is nobody's plainly.
+    assert (await families.decide(commission)).action == orch.TO_LEADER
+    # Only the session last in use is: the one that is seen would have it, the other not being
+    # held against it. It is the leader's, which is told of every member.
+    monkeypatch.setattr(settings, "ORCHESTRATOR_SESSIONS_LOOKED_AT", 1)
+    standing = await families.standing(commission)
+    assert [agent.id for agent in standing.agents] == [newer.id]
+    alone = orch.settle(orch.PROJECT_KEY + "Shop site", orch.FOLLOW_UP, standing, orch.Bars(), sentence=text)
+    assert (alone.action, alone.agent, alone.direct) == (orch.CONTINUE, newer.id, True)
+    verdict = await families.decide(commission)
+    assert (verdict.action, verdict.agent, verdict.direct) == (orch.TO_LEADER, None, False)
+    assert verdict.reason == "not every member was looked at"
+    # A member that takes no more work is none that had to be looked at.
+    await host.ledger.update_session(
+        older.id, last_active_at=older.last_active_at - (settings.SESSION_SINGLE_LIFETIME_DAYS + 1) * 86400
+    )
+    verdict = await families.decide(commission)
+    assert (verdict.action, verdict.agent, verdict.direct) == (orch.CONTINUE, newer.id, True)
+
+
 async def test_a_member_with_too_much_waiting_does_not_get_what_goes_on_with_its_work_beside_the_leader(hosts, tmp_path):
     host = _host(hosts, tmp_path, ScriptedLLM([]))
     await _project(host, "Shop site", tmp_path)

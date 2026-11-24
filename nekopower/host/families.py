@@ -264,6 +264,12 @@ class Families:
                 verdict, matches = orch.by_retrieval(commission.dispatch_text, commission.user_text, standing, bars)
                 if verdict is None:
                     verdict = await self._ask(commission, standing, matches, bars)
+        if verdict.direct and verdict.project and not await self._all_compared(commission, verdict.project, standing):
+            # A member was chosen without all of them being held against the sentence: the
+            # leader, which is told of every member, says who does it.
+            verdict = replace(
+                verdict, action=orch.TO_LEADER, agent=None, direct=False, reason="not every member was looked at"
+            )
         if (
             settings.LEADER_IN_GIT_REPOSITORIES
             and not verdict.direct
@@ -276,6 +282,20 @@ class Families:
             verdict = replace(verdict, action=orch.TO_LEADER, agent=None, preset=None, reason=LEADER_GIT)
         verdict.seconds = round(time.perf_counter() - started, 4)
         return verdict
+
+    async def _all_compared(self, commission: Commission, project: str, standing: Standing) -> bool:
+        """Whether every member of a project that still takes work was among the task agents a sentence was held against.
+
+        ``standing`` reads the sessions last in use only
+        (``ORCHESTRATOR_SESSIONS_LOOKED_AT``, of all projects): in a
+        project of many members, the one a sentence goes on with may not
+        be among them, and another would be taken for it.
+        """
+        seen = {agent.id for agent in standing.agents}
+        for member in await self._ledger.members(commission.lanlan_name, project):
+            if member.id not in seen and member.status != "cleared" and await self._ledger.session_alive(member):
+                return False
+        return True
 
     async def _ask(self, commission: Commission, standing: Standing, matches: list[Any], bars: Bars) -> Verdict:
         """Ask the small model which of the best matches a commission belongs with; anything unreadable is none of them."""

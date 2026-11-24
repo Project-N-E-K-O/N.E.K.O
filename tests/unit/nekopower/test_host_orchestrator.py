@@ -450,6 +450,19 @@ def test_what_plainly_goes_on_with_a_members_work_goes_to_it_beside_the_leader()
     gone = orch.Standing(projects=(project,), agents=(lead, over))
     assert goes("swap the banner and the carousel on the home page for the new year layout", standing=gone)[0] == orch.TO_LEADER
     assert goes("who runs the shop pages and hands the work out to the others")[0] == orch.TO_LEADER
+    # A member that is named by its title has it, however few words it shares with the member's
+    # work: the sentence names the project too, which is what it was matched with.
+    painter = orch.Agent(id="painter", project="shop", preset="worker", title="Page painter", duty="The pictures")
+    titled = orch.Standing(projects=(project,), agents=(lead, home, painter))
+    assert goes("ask Page painter in shop for an update", standing=titled) == (orch.CONTINUE, "painter", True)
+    assert orch.by_rules("ask Page painter in shop for an update", "", titled, bars).agent == "painter"
+    # Not two of one title, not one that takes no more work, and not a title the project's name has in it.
+    again = orch.Agent(id="again", project="shop", preset="worker", title="Page painter", duty="The icons")
+    assert goes("ask Page painter in shop for an update", standing=orch.Standing(projects=(project,), agents=(lead, painter, again)))[0] == orch.TO_LEADER
+    left = orch.Agent(id="left", project="shop", preset="worker", title="Page painter", duty="The pictures", idle_seconds=10.0**9)
+    assert goes("ask Page painter in shop for an update", standing=orch.Standing(projects=(project,), agents=(lead, left)))[0] == orch.TO_LEADER
+    keeper = orch.Agent(id="keeper", project="shop", preset="worker", title="shop", duty="The pictures")
+    assert goes("ask the shop for an update", standing=orch.Standing(projects=(project,), agents=(lead, keeper)))[0] == orch.TO_LEADER
     # The words of the project's own name are no sign of a member's work: every sentence that
     # names the project shares them with every member that worked on it.
     budget = orch.ProjectView(name="记账小程序", leader="L")

@@ -519,6 +519,32 @@ def _occurrences(agents: Sequence[Agent]) -> int:
     )
 
 
+def named_member(sentence: str, members: Sequence[Agent], bars: Bars, project: str = "") -> Agent | None:
+    """Return the member a sentence names by the title on its card, or None.
+
+    For a sentence that names its project too, which ``named`` answers
+    with the project. The longest title wins; two members of one title
+    name neither. A title that is in the project's own name (``project``)
+    names nobody: every sentence that names the project would name that
+    member.
+    """
+    from nekopower.host.space import name_occurs, normalize_name
+
+    best: tuple[int, Agent] | None = None
+    tied = False
+    for member in members:
+        length = len(normalize_name(member.title))
+        if length < bars.name_min_chars or not name_occurs(member.title, sentence):
+            continue
+        if project and name_occurs(member.title, project):
+            continue
+        if best is None or length > best[0]:
+            best, tied = (length, member), False
+        elif length == best[0]:
+            tied = True
+    return None if best is None or tied else best[1]
+
+
 def clear_member(sentence: str, members: Sequence[Agent], bars: Bars, project: str = "") -> Agent | None:
     """Return the member whose own work a sentence plainly goes on with, or None.
 
@@ -561,8 +587,9 @@ def settle(
     """Turn the project or task agent a sentence belongs with into where the commission goes.
 
     ``sentence`` is what was said, for a project that has a leader: what
-    plainly goes on with a member's own work (``clear_member``) is that
-    member's, and the rest the leader's.
+    names a member (``named_member``) or plainly goes on with a member's
+    own work (``clear_member``) is that member's, and the rest the
+    leader's.
     """
     shown = list(matches)
 
@@ -584,11 +611,11 @@ def settle(
             # A leader is not the only one a project's work comes to: what plainly goes on with a
             # member's own work (it was named, or the words say so) is that member's, with no
             # round through the leader. Whatever else is the project's, its leader says who does.
-            at = (
-                target
-                if target is not None and target in working
-                else clear_member(sentence, working, bars, project.name)
-            )
+            at = target if target is not None and target in working else None
+            if at is None:
+                at = named_member(sentence, working, bars, project.name) or clear_member(
+                    sentence, working, bars, project.name
+                )
             if at is not None:
                 return verdict(CONTINUE, agent=at.id, project=project.name, relation=relation, direct=True)
             return verdict(TO_LEADER, project=project.name, relation=relation)
