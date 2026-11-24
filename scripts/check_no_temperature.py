@@ -17,8 +17,10 @@
 
 Policy
 ------
-No code in this repository chooses a sampling temperature for a model call.
-Requests go out without the field and each provider applies its own default.
+Code in this repository does not choose a sampling temperature for a model
+call. Requests go out without the field and each provider applies its own
+default. The exceptions, each with its reason, are the entries of
+``EXEMPTIONS`` (for example voice sessions whose APIs take a temperature).
 Reasons:
 
 * reasoning models (o1 / o3 / gpt-5-thinking, Claude extended thinking) reject
@@ -117,20 +119,23 @@ EXCLUDE_DIRS = frozenset(
 # Repository-relative POSIX path (a file, or a folder covering everything under
 # it) -> why that code may mention ``temperature`` the ways listed above.
 EXEMPTIONS: dict[str, str] = {
-    "plugin/server/domain/model_config.py": (
-        "Plugin model slot schema: the optional default temperature a user "
-        "enters for a slot in the plugin manager. Part of the plugin model API; "
-        "changing it needs an owner decision."
+    "main_logic/omni_realtime_client/_transport.py": (
+        "Voice: the GLM and Qwen realtime voice sessions accept a session "
+        "temperature, and these values are part of the voice session setup."
     ),
-    "plugin/server/model_gateway/request.py": (
-        "Plugin model gateway: fills in the user-entered slot default when the "
-        "plugin's own request has no temperature. Part of the plugin model API; "
-        "changing it needs an owner decision."
+    "main_logic/omni_realtime_client/_gemini_support.py": (
+        "Voice: the Gemini Live session accepts a temperature in its "
+        "generation_config, and this value is part of the voice session setup."
+    ),
+    "main_logic/asr_client/workers/gemini.py": (
+        "Voice: Gemini speech recognition accepts a temperature, and 0 is part "
+        "of the transcription request setup."
     ),
     **{
         f"plugin/tests/unit/server/{name}.py": (
-            "Test of the plugin model gateway / slot configuration above, which "
-            "accept and validate a temperature chosen by a plugin or by the user."
+            "Tests that a temperature a plugin sends, one saved in a model slot or "
+            "sent by an older plugin manager, or one in provider settings is "
+            "accepted, dropped with a warning and never reaches the upstream request."
         )
         for name in (
             "test_host_model_slots",
@@ -496,7 +501,7 @@ def main(argv: list[str] | None = None) -> int:
     if total:
         print(
             f"\n{total} problem(s) found.\n"
-            "Project policy: no code in this repository sets a model temperature. "
+            "Project policy: repository code does not set a model temperature. "
             "Remove the keyword, parameter, dict key or field so the request goes "
             "out without it and the provider's own default applies. An exception "
             "needs an entry with its reason in EXEMPTIONS in "

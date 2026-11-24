@@ -41,20 +41,70 @@ def test_defaults_and_model_resolution_preserve_original(slot, body):
 
 def test_explicit_options_override_defaults_even_for_models_with_special_main_rules(slot, body):
     slot.model = "o3"
-    slot.defaults = ModelDefaults(temperature=0.8, max_output_tokens=500)
-    body.update(temperature=0, max_completion_tokens=123, stream=True, stream_options={"include_usage": False})
+    slot.defaults = ModelDefaults(max_output_tokens=500)
+    body.update(max_completion_tokens=123, stream=True, stream_options={"include_usage": False})
     result = prepare_chat_request(slot, body)
-    assert result["temperature"] == 0
     assert result["max_completion_tokens"] == 123
     assert "max_tokens" not in result
     assert result["stream_options"] == {"include_usage": False}
 
 
 def test_slot_defaults_are_applied(slot, body):
-    slot.defaults = ModelDefaults(temperature=0.3, max_output_tokens=2048)
+    slot.defaults = ModelDefaults(max_output_tokens=2048)
     result = prepare_chat_request(slot, body)
-    assert result["temperature"] == 0.3
     assert result["max_completion_tokens"] == 2048
+    assert "temperature" not in result
+
+
+class _RecordingLogger:
+    def __init__(self):
+        self.warnings: list[tuple] = []
+
+    def warning(self, message, *args):
+        self.warnings.append((message, *args))
+
+
+@pytest.fixture
+def gateway_log(monkeypatch):
+    import plugin.server.model_gateway.request as request_module
+
+    log = _RecordingLogger()
+    monkeypatch.setattr(request_module, "logger", log)
+    monkeypatch.setattr(request_module, "_warned_drops", set())
+    return log
+
+
+# Whatever a plugin sends, including values the gateway once rejected.
+@pytest.mark.parametrize("value", [0, 0.7, 1.5, 2, -0.1, 2.1, True, None, "hot", float("nan"), float("inf"), 10**1000])
+def test_plugin_temperature_is_accepted_and_dropped_with_a_warning(slot, body, gateway_log, value):
+    body["temperature"] = value
+    original = copy.deepcopy(body)
+    result = prepare_chat_request(slot, body)
+    assert "temperature" not in result
+    assert body.keys() == original.keys()  # the caller's body is left as it was
+    assert len(gateway_log.warnings) == 1
+    assert "analysis" in gateway_log.warnings[0] and "temperature" in gateway_log.warnings[0]
+
+
+def test_dropped_temperature_is_reported_once_per_usage(slot, body, gateway_log):
+    body["temperature"] = 0.3
+    for _ in range(3):
+        prepare_chat_request(slot, copy.deepcopy(body))
+    assert len(gateway_log.warnings) == 1
+    other = {**copy.deepcopy(body), "model": "summary"}
+    prepare_chat_request(slot, other)
+    assert len(gateway_log.warnings) == 2
+    prepare_chat_request(slot, {"model": "analysis", "messages": body["messages"]})
+    assert len(gateway_log.warnings) == 2
+
+
+def test_saved_default_temperature_is_ignored(slot, body, gateway_log):
+    slot.defaults = ModelDefaults.model_validate({"temperature": 0.8, "max_output_tokens": 500})
+    assert slot.defaults.model_dump() == {"max_output_tokens": 500}
+    result = prepare_chat_request(slot, body)
+    assert "temperature" not in result
+    assert result["max_completion_tokens"] == 500
+    assert gateway_log.warnings == []
 
 
 def test_ordered_images_and_text_are_preserved(slot, body):
@@ -116,8 +166,7 @@ def test_tool_arguments_are_json_objects(slot, body, arguments):
 
 
 @pytest.mark.parametrize("changes", [
-    {"temperature": True}, {"temperature": float("nan")}, {"temperature": float("inf")},
-    {"temperature": -0.1}, {"temperature": 2.1}, {"temperature": 10**1000}, {"top_p": 1.1}, {"top_p": "0.5"},
+    {"top_p": 1.1}, {"top_p": "0.5"}, {"top_p": True}, {"top_p": float("nan")}, {"top_p": -0.1},
     {"max_tokens": True}, {"max_tokens": 0}, {"max_tokens": 1.5}, {"max_tokens": 1_000_001},
     {"max_tokens": 100, "max_completion_tokens": 100}, {"max_completion_tokens": None},
     {"n": 2}, {"n": True}, {"stream": 1},

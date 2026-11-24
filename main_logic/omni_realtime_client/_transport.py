@@ -679,6 +679,7 @@ class _TransportMixin:
                     "type": "far_field",
                 },
                 "beta_fields": dict(GLM_REALTIME_BETA_FIELDS),
+                "temperature": 1.0
             }
             # GLM Realtime: tools only honoured in audio mode per docs.
             # Use the flat (OpenAI-Realtime-style) schema GLM expects.
@@ -702,6 +703,7 @@ class _TransportMixin:
                     "silence_duration_ms": 650
                 },
                 "repetition_penalty": 1.2,
+                "temperature": 0.7,
                 # "enable_search": True,
                 # "search_options": {'enable_source': True}
             }

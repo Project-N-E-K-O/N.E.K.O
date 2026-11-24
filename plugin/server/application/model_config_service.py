@@ -15,6 +15,7 @@ from plugin.server.domain.model_config import (
     SECRET_MASK,
     ModelSlot,
     PluginModelsConfig,
+    has_retired_defaults,
     secret_preview,
 )
 from plugin.server.infrastructure.config_paths import get_plugin_manifest_path
@@ -69,17 +70,14 @@ def _validate_slot(payload: dict) -> ModelSlot:
         ) from exc
 
 
-def _check_host_follow_save_temperature(slot: ModelSlot) -> None:
-    """Save-path limit: the main app may resolve to Anthropic at any moment.
-
-    Kept out of the domain validators so a legacy document with a higher
-    default stays readable (and updatable) for explicit request overrides.
-    """
-    temperature = slot.defaults.temperature
-    if slot.source == "host_follow" and temperature is not None and temperature > 1:
-        raise ServerDomainError(
-            "MODEL_SLOT_INVALID", "Invalid model slot fields", 422,
-            {"fields": ["defaults.temperature"]},
+def _report_retired_defaults(payload: object) -> None:
+    # An older plugin manager may still send a default temperature. It is
+    # accepted and dropped (see RETIRED_DEFAULT_FIELDS) rather than rejected.
+    # A payload of the wrong shape is left to validation (422).
+    if isinstance(payload, dict) and has_retired_defaults(payload.get("defaults")):
+        logger.warning(
+            "Ignored a default temperature in a model slot save request; plugin model "
+            "requests carry no temperature and the provider default applies"
         )
 
 
@@ -182,8 +180,8 @@ class ModelConfigService:
         return self._view(config, slot_id)
 
     def create_slot(self, payload: dict) -> dict:
+        _report_retired_defaults(payload)
         slot = _validate_slot(payload)
-        _check_host_follow_save_temperature(slot)
         slot_id = "slot_" + uuid4().hex
 
         def change(config):
@@ -207,6 +205,8 @@ class ModelConfigService:
             fallback = target.fallback_slot_id
 
     def update_slot(self, slot_id: str, payload: dict) -> dict:
+        _report_retired_defaults(payload)
+
         def change(config):
             old = self._slot(config, slot_id)
             updates = dict(payload)
@@ -224,12 +224,6 @@ class ModelConfigService:
                 merged["protocol"] = updates.get("protocol", "openai_chat")
                 merged["host_api"] = None
             slot = _validate_slot(merged)
-            if slot.source == "host_follow" and (
-                old.source != "host_follow" or slot.defaults.temperature != old.defaults.temperature
-            ):
-                # A new/changed host-follow default must meet the intersection;
-                # unrelated edits preserve an untouched legacy value.
-                _check_host_follow_save_temperature(slot)
             if old.source == "manual" and slot.source == "manual" and old.api_key and "api_key" not in updates and (
                 old.protocol != slot.protocol or not same_endpoint(old.base_url, slot.base_url)
             ):

@@ -410,7 +410,11 @@ def test_reads_files_in_their_declared_source_encoding(tmp_path: Path, capsys):
 
 @pytest.mark.unit
 def test_every_exemption_has_a_reason_and_exists():
-    assert MOD.EXEMPTIONS, "the plugin model gateway still needs its exemption"
+    assert MOD.EXEMPTIONS
+    # The plugin model gateway itself sets no temperature either: only its
+    # tests (which send one to check it is dropped), the voice sessions whose
+    # APIs take one, and the weather plugin (air temperature) are exempt.
+    assert not [key for key in MOD.EXEMPTIONS if key.startswith("plugin/server")]
     for key, reason in MOD.EXEMPTIONS.items():
         assert (ROOT / key).exists(), key
         # Whether a reason is good enough is for review; it must not be blank.

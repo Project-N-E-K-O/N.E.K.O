@@ -759,7 +759,7 @@ Diagnostics 是**元操作**环境, 提供**事后**查看 / 归档 / 重置能�
 - `provider` (下拉, 从 Providers 子页列表选)
 - `model` (文本, e.g. `gpt-4o-mini / claude-3-5-sonnet-latest`)
 - `base_url` / `api_key` (从 provider 继承, 可本组覆盖)
-- `max_tokens` / `timeout` (不设 temperature: 仓库代码一律不设, 由模型端用默认值)
+- `max_tokens` / `timeout` (不设 temperature: testbench 不设, 由模型端用默认值)
 
 每组底部 **[测试连接]** 发一个最小 chat completion 验证通. 测试结果只 toast, 不写持久日志.
 

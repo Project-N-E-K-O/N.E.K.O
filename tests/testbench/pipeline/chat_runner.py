@@ -146,7 +146,7 @@ def resolve_group_config(session: Session, group: GroupKey) -> ModelGroupConfig:
     ``max_tokens`` / ``timeout`` are returned as-is: ``None`` is a
     legitimate value that callers must translate to "don't send this
     parameter" when talking to the model. There is no temperature setting:
-    no code in the repository sets one (scripts/check_no_temperature.py).
+    the testbench sets none (scripts/check_no_temperature.py).
 
     Used by:
     * :meth:`OfflineChatBackend.stream_send` for the active ``chat`` turn.

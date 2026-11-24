@@ -50,7 +50,7 @@ class ModelGroupConfig(BaseModel):
         ),
     )
     model: str = Field(default="", description="Model name to send in request body.")
-    # No temperature field: no code in the repository sets one, the provider
+    # No temperature field: the testbench sets none, the provider
     # default applies (scripts/check_no_temperature.py). A ``temperature`` key
     # in an older saved config is ignored on load (pydantic's default
     # ``extra="ignore"``).

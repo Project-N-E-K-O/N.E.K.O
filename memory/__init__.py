@@ -19,12 +19,14 @@
 **Any call in memory/ and utils/ going through ``utils.llm_client.create_chat_llm`` /
 ``ChatOpenAI``:**
 
-1. **Do not set a temperature**. No code in the repository sets one: the clients have
+1. **Do not set a temperature**. Repository code does not set one (the few exceptions,
+   such as realtime voice sessions that take one, are listed with reasons in ``EXEMPTIONS``
+   of the gatekeeper below): the clients have
    no ``temperature`` parameter and never write the field into the request body, so the
-   model endpoint uses its own default. The one exception is the plugin model gateway,
-   which still forwards a temperature that a plugin sends or that the user entered as a
-   slot default (listed in ``EXEMPTIONS`` of the gatekeeper below); it does not go
-   through these clients. The same rule applies to any wrapper helper
+   model endpoint uses its own default. The plugin model gateway follows the same
+   rule: a temperature a plugin sends is accepted, dropped with a warning and never
+   forwarded, and model slots have no default temperature. The same rule applies to any
+   wrapper helper
    (e.g. ``FactStore._allm_call_with_retries`` historically accepted ``temperature=``;
    it has been removed).
    Rationale: (1) compatibility with models that reject the parameter, such as

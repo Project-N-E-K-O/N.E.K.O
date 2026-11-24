@@ -105,7 +105,7 @@ jobs:
         run: python scripts/check_no_tkinter.py
 
       - name: Forbid setting a model temperature anywhere in the repository
-        # Project policy: no code in the repository sets a sampling
+        # Project policy: repository code does not set a sampling
         # temperature (keyword, parameter, request-body key, attribute or
         # schema field); every provider uses its own default. Required for
         # o1/o3/gpt-5-thinking/Claude extended-thinking, and avoids

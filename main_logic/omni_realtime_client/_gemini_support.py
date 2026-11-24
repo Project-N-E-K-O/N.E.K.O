@@ -197,6 +197,7 @@ class _GeminiMixin:
                 "system_instruction": instructions,
                 "media_resolution": types.MediaResolution.MEDIA_RESOLUTION_LOW,
                 "tools": gemini_tools,
+                "generation_config": {"temperature": 1.1},
                 "input_audio_transcription": {},
                 "output_audio_transcription": {},
                 "speech_config": types.SpeechConfig(

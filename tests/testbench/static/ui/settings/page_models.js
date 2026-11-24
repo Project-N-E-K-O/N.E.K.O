@@ -84,7 +84,7 @@ function renderGroupCard(groupKey, current, providers, keysStatus) {
   // 本地 draft — 初始化为 current 的浅拷贝.
   // 注意: current 里的 api_key 是 masked (只告诉我们"有没有"); 编辑时需要用户重新输入或维持空字符串.
   // max_tokens: null = "不发送此字段给模型端, 由模型自决". 后端 `_params`
-  // 只在非 None 时才把它写进请求体. 没有 temperature: 仓库代码一律不设
+  // 只在非 None 时才把它写进请求体. 没有 temperature: testbench 不设
   // (scripts/check_no_temperature.py), 由模型端用自己的默认值.
   const draft = {
     provider: current.provider ?? null,

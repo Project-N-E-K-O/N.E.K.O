@@ -8,10 +8,12 @@ description: "Gemini 模型通过 OpenAI 兼容 API 接入指南。包含：(1) 
 Gemini 提供 OpenAI 兼容端点，可作为辅助 API 使用。
 
 > [!IMPORTANT]
-> **全仓库都不设 `temperature`**。项目级约定：任何模型调用都不下发
+> **全仓库都不设 `temperature`（豁免除外）**。项目级约定：模型调用不下发
 > `temperature` 字段（包括 `generation_config` / `extra_body` 里的），由模型用
 > 自己的默认值；`create_chat_llm` / `ChatOpenAI` 也没有这个参数。守门见
-> `scripts/check_no_temperature.py`（CI 必拦）。`extra_body`（控制 thinking）/
+> `scripts/check_no_temperature.py`（CI 必拦）。例外：Gemini Live 的
+> `generation_config` 和 Gemini 语音识别本身接收 temperature，已在守卫的
+> `EXEMPTIONS` 里写明理由。`extra_body`（控制 thinking）/
 > `max_completion_tokens` / `timeout` / `max_retries` 这类参数继续按需配置。
 
 ## Base URL

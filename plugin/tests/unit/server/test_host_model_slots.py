@@ -127,25 +127,21 @@ def test_status_reports_unconfigured_host(monkeypatch):
     assert status["error_code"] == "host_api_unsupported"
     assert "WebSocket" in status["message"]
 
-def test_legacy_high_default_does_not_block_resolution(monkeypatch):
-    # Saving rejects >1 for host-follow slots; a legacy document may still
-    # carry it. Resolution must succeed so an explicit valid request override
-    # keeps working — the effective value is judged at request preparation.
-    slot = host_slot(defaults={"temperature": 1.0})
-    object.__setattr__(slot.defaults, "temperature", 1.5)
+def test_saved_default_temperature_does_not_affect_resolution(monkeypatch):
+    # A slot saved with a default temperature (above Anthropic's limit of 1,
+    # once rejected) loads with the value dropped, so it resolves for either
+    # protocol and the resolved snapshot carries no temperature.
+    slot = host_slot(defaults={"temperature": 1.5})
+    assert slot.defaults.model_dump() == {"max_output_tokens": None}
     config = {"model": "m", "base_url": "https://api.test/v1", "api_key": "k", "provider_type": "anthropic"}
     resolved = materialize_host_slot(slot, config)
     assert resolved.protocol == "anthropic_messages"
-    assert resolved.defaults.temperature == 1.5
-    # Within the Anthropic range the snapshot resolves normally too.
-    ok = materialize_host_slot(host_slot(defaults={"temperature": 1.0}), config)
-    assert ok.protocol == "anthropic_messages"
-    # OpenAI resolution keeps the legacy default untouched.
+    assert resolved.defaults.model_dump() == {"max_output_tokens": None}
     openai = materialize_host_slot(slot, {**config, "provider_type": "openai_compatible"})
-    assert openai.defaults.temperature == 1.5
+    assert openai.protocol == "openai_chat"
 
 
-def test_status_stays_configured_with_legacy_high_default(monkeypatch):
+def test_status_stays_configured_with_saved_default_temperature(monkeypatch):
     import utils.config_manager as config_manager
 
     class Manager:
@@ -153,9 +149,6 @@ def test_status_stays_configured_with_legacy_high_default(monkeypatch):
             return {"model": "m", "base_url": "https://api.test/v1", "api_key": "k", "provider_type": "anthropic"}
 
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
-    legacy = host_slot(defaults={"temperature": 1.0})
-    object.__setattr__(legacy.defaults, "temperature", 1.5)
-    status = host_slot_status(legacy)
-    # The slot is usable with an explicit override; do not label it broken.
+    status = host_slot_status(host_slot(defaults={"temperature": 1.5}))
     assert status["configured"] is True
     assert status["protocol"] == "anthropic_messages"
