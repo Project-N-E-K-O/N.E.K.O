@@ -347,15 +347,15 @@ describe('the built-in abilities tab', () => {
     expect(page.textContent).toContain('Found on this computer: Chrome, Edge')
     expect(byTest('builtin-needs-power')).toBeNull()
 
-    // Switched on, and put off again at once by a model that cannot be reached.
+    // Switched on while there is no input to send: it cannot be used, and says why.
     api.setDeviceSwitch.mockResolvedValue({ success: true })
     api.getSwitches.mockResolvedValueOnce(switches({
       flags: { computer_use_enabled: true, browser_use_enabled: true },
-      capabilities: { computer_use: { ready: false, reason: 'AGENT_API_KEY_INVALID' }, browser_use: { ready: true } },
+      capabilities: { computer_use: { ready: false, reason: 'AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE' }, browser_use: { ready: true } },
     }))
     await click(byTest('switch-keyboard')?.querySelector('input'))
     expect(api.setDeviceSwitch).toHaveBeenCalledWith('computer_use_enabled', true)
-    expect(byTest('keyboard-reason')?.textContent).toContain('AGENT_API_KEY_INVALID')
+    expect(byTest('keyboard-reason')?.textContent).toContain('AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE')
 
     api.setDeviceSwitch.mockRejectedValue(refusal('switch_failed'))
     api.getSwitches.mockResolvedValueOnce(switches())
@@ -369,7 +369,7 @@ describe('the built-in abilities tab', () => {
   it('says that nothing here takes effect while it is all switched off', async () => {
     api.getSwitches.mockResolvedValue(switches({
       enabled: false,
-      capabilities: { computer_use: { ready: false, reason: 'AGENT_PRECHECK_PENDING' }, browser_use: { ready: true } },
+      capabilities: { computer_use: { ready: false, reason: '' }, browser_use: { ready: true } },
     }))
     api.getBrowser.mockResolvedValue(browser())
     await mount(BuiltinTab)

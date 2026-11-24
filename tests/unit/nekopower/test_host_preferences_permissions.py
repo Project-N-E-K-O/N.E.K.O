@@ -635,6 +635,8 @@ async def test_defaults_of_the_design(store):
         "plugin_entry": "allow",
         "managed_delivery": "first_ask",
         "mcp_server": "first_ask",
+        # Another task agent that can change files, opened beside the ones a project has.
+        "open_session": "first_ask",
     }
     assert DEFAULT_MODES == dict.fromkeys(effective_modes, "auto")
     assert (await store.snapshot())["categories"] == DEFAULT_MODES

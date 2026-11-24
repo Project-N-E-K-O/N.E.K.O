@@ -2,13 +2,12 @@
 
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 from openai import AsyncOpenAI, OpenAI
 
-from utils.chatgpt_auth import ChatGPTAuthError
 from utils.llm_client.chatgpt_client import ChatChatGPT, ChatGPTOutputLimitError, ChatGPTResponseError, ResponseState
 
 
@@ -134,26 +133,6 @@ async def test_connection_probe_accepts_reasoning_only_budget_limit(monkeypatch)
     result = await _test_connectivity_candidates(['https://api.openai.com/v1'], '', 'selected', 'chatgpt', False)
     assert result['success']
     assert client.ainvoke.await_count == client.aclose.await_count == 1
-
-
-@pytest.mark.parametrize('error,expected', [(ChatGPTAuthError('sign in'), 'AGENT_API_KEY_INVALID'),
-    (ChatGPTResponseError('limit', status_code=429), 'AGENT_QUOTA_EXCEEDED'),
-    (ChatGPTOutputLimitError('budget'), '')])
-def test_agent_probe_does_not_retry_terminal_or_budget_response(error, expected, monkeypatch):
-    from app.agent_server.model_probe import AgentModelProbe
-    client = MagicMock()
-    client.invoke_raw.side_effect = error
-    monkeypatch.setattr('utils.llm_client.create_chat_llm', lambda **kw: client)
-    adapter = object.__new__(AgentModelProbe)
-    adapter._config_manager = MagicMock()
-    adapter._config_manager.get_model_api_config.return_value = {
-        'model': 'selected', 'base_url': 'https://api.openai.com/v1', 'api_key': '', 'provider_type': 'chatgpt'}
-    adapter._client = adapter._client_sig = None
-    assert adapter.check_connectivity(_retries=2) == (not bool(expected), expected)
-    assert client.invoke_raw.call_count == 1
-
-    from config import OPENAI_CONNECTIVITY_TEST_MAX_TOKENS
-    assert client.invoke_raw.call_args.kwargs["max_completion_tokens"] == OPENAI_CONNECTIVITY_TEST_MAX_TOKENS
 
 
 @pytest.mark.parametrize('outcome', ['complete', 'truncated', 'auth', 'quota', 'failed'])

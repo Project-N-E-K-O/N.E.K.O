@@ -63,8 +63,8 @@ These routes concern the keyboard-and-mouse tools and the browser tools that tas
 
 Both answer `{"enabled":true,"ready":true|false,"reasons":[...],"provider":"nekopower"}`; the keyboard-and-mouse answer also carries `model`. While the agent model is not configured, the answer is only `{"ready":false,"reasons":[...]}`.
 
-- Keyboard and mouse are ready when the agent model's connectivity probe has passed and input can be sent on this machine. When input cannot be sent, `reasons` carries one of the `AGENT_PYAUTOGUI_*` codes, for example `AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE` on a machine without a display.
-- The browser is ready when a usable browser is installed and the agent model's connectivity probe has passed. No browser comes with the application; when no Chrome, Edge, Brave, or Chromium is found, `reasons` is `["AGENT_BROWSER_NOT_FOUND"]`. The search is a few file checks and its answer is kept for 30 seconds.
+- Keyboard and mouse are ready when the agent model is configured (address, model and key filled in) and input can be sent on this machine. The model is not sent any request to find this out: a key that is wrong, or an account with no quota left, shows when a task agent first uses the model, and that task fails with the reason. When input cannot be sent, `reasons` carries one of the `AGENT_PYAUTOGUI_*` codes, for example `AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE` on a machine without a display.
+- The browser is ready when the agent model is configured and a usable browser is installed; as above, the model is not asked anything for it. No browser comes with the application; when no Chrome, Edge, Brave, or Chromium is found, `reasons` is `["AGENT_BROWSER_NOT_FOUND"]`, and when the search itself fails, `["AGENT_BROWSER_CHECK_FAILED"]`. The search is a few file checks and its answer is kept for 30 seconds.
 
 ### `GET /builtin/activity`
 

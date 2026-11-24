@@ -179,6 +179,138 @@ FOLLOW_UP_ROWS = 8
 """Most commissions that are over a dispatched sentence is compared with."""
 
 # ---------------------------------------------------------------------------
+# The orchestrator: which task agent a new commission goes to
+# ---------------------------------------------------------------------------
+# Measured on the built-in free tier only (the scenarios in
+# ``tests/unit/nekopower/fixtures/orchestrator_scenarios.json``). Another
+# small model may want other numbers.
+
+ORCHESTRATOR_MIN_HITS = 2
+"""Least number of a sentence's own words (function words and particles left
+out) that must occur in what a project or a loose task agent is about for the
+sentence to be held against it at all. With fewer in every one of them the
+commission is a loose one of its own, and no model is asked: most one-off
+requests end here. Lower, and more one-off requests cost a call of the small
+model; higher, and more follow-ups in other words are missed."""
+
+ORCHESTRATOR_ATTACH_SCORE = 0.75
+ORCHESTRATOR_ATTACH_HITS = 5
+ORCHESTRATOR_ATTACH_MARGIN = 0.1
+"""When a match is clear enough to attach a sentence without asking the small
+model: this share of the sentence's own words (weighed) occurs there, on this
+many words at least, and the next best match is this far behind. High on
+purpose: a sentence attached to work it has nothing to do with is worked on
+with what was said about something else, which does more harm than one task
+agent too many."""
+
+ORCHESTRATOR_CANDIDATES_SHOWN = 4
+"""How many of the best matches the small model is shown."""
+
+ORCHESTRATOR_CANDIDATE_MAX_TOKENS = 90
+"""Cap on the line one project or loose task agent is shown to the small
+model as: its name or title, what it does, what it did lately."""
+
+ORCHESTRATOR_OUTPUT_MAX_TOKENS = 60
+"""Cap on the small model's answer: a number and a word, as JSON."""
+
+ORCHESTRATOR_FAMILY_MIN_OCCURRENCES = 3
+"""How often the same job has to have come up, this time included, for the
+loose task agents that did it to become a project. Follow-ups of one piece of
+work do not count: only commissions filed as new or as the same job once
+more."""
+
+ORCHESTRATOR_SESSIONS_LOOKED_AT = 60
+ORCHESTRATOR_COMMISSIONS_EACH = 3
+"""How much of the ledger a sentence is held against: the sessions of the
+character last in use (leaders, members and those of one commission), and of
+each the commissions last worked on in it."""
+
+ORCHESTRATOR_REQUEST_MAX_TOKENS = 300
+"""Cap on what she dispatched, and on the user's own words, as the small
+model is shown each. With the fixed text (about 300 tokens) and the
+candidates, a request is some 1300 tokens at most."""
+
+ORCHESTRATOR_MODEL_SLOT = "emotion"
+"""The model tier of the main app the orchestrator's one request goes to:
+the small, fast one (shown as the recognition model). Measured on the free
+tier, the summary tier was right more often (95% against 92% of the
+scenarios); it costs more on most providers."""
+
+ORCHESTRATOR_PEER_SHARE = 0.4
+ORCHESTRATOR_PEER_HITS = 2
+"""Which other loose task agents did the same thing as the one a sentence
+goes with: those that match the sentence on this many words at least, with
+this share of that one's score. They become members of the project with it."""
+
+# ---------------------------------------------------------------------------
+# Leaders and members of projects
+# ---------------------------------------------------------------------------
+
+ORCHESTRATOR_MEMBER_HITS = 4
+"""In a project that has a leader, a commission goes to a member without
+coming to the leader when it shares this many words with that member's card
+and what the member did lately, the words of the project's own name left
+out (every sentence that names the project shares those with every member),
+and more than with any other member by ``ORCHESTRATOR_MIN_HITS``. Words as
+the retrieval counts them: a word of Latin letters is one, and so is every
+two characters of Chinese that stand together, so one phrase of five
+characters makes four. Set where
+ten scenarios and four sentences of the measurements fall apart: those that
+go on with a member's work share four to eight, the others none or one."""
+
+LEADER_AT_MEMBERS = 3
+"""A project gets a leader when this many task agents would be its members,
+those that take no more work counted: the third is the leader's to start.
+The backstop; one whose member has too much waiting gets one sooner
+(``LEADER_WHEN_UNDER_WAY``)."""
+
+LEADER_IN_GIT_REPOSITORIES = False
+"""Whether a project whose directory is in a git repository gets a leader
+with its first commission. Off: as long as one task agent writes in a
+project at a time, a leader there only adds its own requests to every
+commission (two more, some 17,000 to 19,000 tokens sent and ten to twenty
+seconds, measured on the free tier), so a project gets one when there is
+work to hand out: a third member, a member with too much waiting, or the
+user asking."""
+
+LEADER_WHEN_UNDER_WAY = 3
+"""A project without a leader gets one when a new commission would be this
+many under way in the member it would go to, or more: the one it is at, and those that
+wait for it (``families.family_is_busy``)."""
+
+LEADER_GIT_PROBE_SECONDS = 300.0
+"""How long it is remembered whether a project's directory is in a git
+repository, before git is asked again."""
+
+LEADER_FIRST_ROSTER_MAX_TOKENS = 3000
+LEADER_ROSTER_MAX_TOKENS = 800
+"""Caps on what a leader is told of its project's members with a commission
+that opens in it: the first time (each member's card, what it did lately and
+has in hand), and every time after (name, preset, state and what it takes).
+Put together by the host from the ledger; no model is asked."""
+
+LEADER_ROSTER_MEMBERS = 12
+LEADER_ROSTER_LINE_MAX_TOKENS = 60
+LEADER_ROSTER_SUMMARY_MAX_TOKENS = 120
+LEADER_ROSTER_RESULTS_EACH = 2
+"""Of that: how many members are listed (the ones last in use), and the caps
+on one line (what a member takes; what came of a commission), on a member's
+summary, and on how many of its late commissions are told the first time."""
+
+LEADER_HANDED_WORK_MAX_ITEMS = 5
+LEADER_HANDED_WORK_RESULT_MAX_TOKENS = 120
+"""How many of the commissions a leader handed over it is told the outcome
+of with the next one that opens in it, and the cap on each outcome."""
+
+HAND_OVER_BRIEF_MAX_TOKENS = 1500
+"""Cap on the brief a leader hands a commission over with, as whoever takes
+it is told it."""
+
+MEMBER_EARLIER_WORK_MAX_TOKENS = 200
+"""Cap on what a member of a project is told of the directories other
+members worked in (those of a family stay where they were)."""
+
+# ---------------------------------------------------------------------------
 # Task agents
 # ---------------------------------------------------------------------------
 

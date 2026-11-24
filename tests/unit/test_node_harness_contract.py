@@ -1343,3 +1343,67 @@ def test_the_exit_code_has_exactly_one_definition():
     assert "= 87;" not in node_harness._PRELOAD_SOURCE, (
         "预载不该再自带一个 87 的字面量，否则和 Python 常量会各改各的"
     )
+
+
+def _stall_after_start(times):
+    """A fake ``subprocess.run`` whose first ``times`` runs reach the script, then stall."""
+    calls = []
+    ok = subprocess.CompletedProcess(["node"], 0, "ok", "")
+
+    def _fake_run(argv, **kwargs):
+        calls.append(argv)
+        if len(calls) <= times:
+            marker = kwargs["env"][node_harness._MARKER_ENV]
+            with open(marker, "w", encoding="utf-8"):
+                pass  # the preload's "reached the script" signal
+            raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
+        return ok
+
+    return calls, ok, _fake_run
+
+
+def test_a_rerun_safe_script_that_stalls_after_starting_is_retried(monkeypatch):
+    """An in-memory harness has nothing outside node to repeat, so it is re-run.
+
+    A Windows runner once held such a settings harness for 60s after node had
+    reached it, without the watchdog firing; the same script takes ~0.1s.
+    """
+    calls, ok, fake = _stall_after_start(times=1)
+    monkeypatch.setattr(node_harness.subprocess, "run", fake)
+    result = run_node_script("node", "process.stdout.write('ok');", timeout=3, rerun_safe=True)
+    assert result is ok
+    assert len(calls) == 2
+
+
+def test_a_script_not_marked_rerun_safe_is_still_not_retried_after_starting(monkeypatch):
+    calls, _ok, fake = _stall_after_start(times=1)
+    monkeypatch.setattr(node_harness.subprocess, "run", fake)
+    with pytest.raises(NodeHarnessSpawnTimeout) as excinfo:
+        run_node_script("node", "process.stdout.write('ok');", timeout=3)
+    assert len(calls) == 1, "没声明可重跑的脚本，跑起来后卡住必须原样报出来"
+    assert excinfo.value.started is True
+
+
+def test_a_rerun_safe_script_that_always_stalls_reports_every_attempt(monkeypatch):
+    calls, _ok, fake = _stall_after_start(times=99)
+    monkeypatch.setattr(node_harness.subprocess, "run", fake)
+    with pytest.raises(NodeHarnessSpawnTimeout) as excinfo:
+        run_node_script("node", "process.stdout.write('ok');", timeout=3, rerun_safe=True)
+    assert len(calls) == node_harness._SPAWN_ATTEMPTS
+    assert len(excinfo.value.attempts) == node_harness._SPAWN_ATTEMPTS
+    assert "stalled on every attempt" in str(excinfo.value), str(excinfo.value)
+
+
+def test_the_in_memory_settings_harness_is_marked_rerun_safe(monkeypatch):
+    from tests.support import websocket_source_harness
+
+    seen = {}
+
+    def _record(node_path, script, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(["node"], 0, "", "")
+
+    monkeypatch.setattr(websocket_source_harness.shutil, "which", lambda name: "node")
+    monkeypatch.setattr(websocket_source_harness, "run_node_script", _record)
+    websocket_source_harness._run_settings_node_harness("process.stdout.write('ok');")
+    assert seen.get("rerun_safe") is True
