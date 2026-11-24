@@ -7,20 +7,18 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 
 const consentDir = dirname(fileURLToPath(import.meta.url))
 const srcDir = resolve(consentDir, '../..')
+const consentTesting = resolve(consentDir, 'testing')
 
 const SOURCE_FILE = /\.(?:[cm]?[jt]sx?|vue)$/
 const TEST_FILE = /\.(?:test|spec)\.[^/]+$/
 const TEST_DIRS = new Set(['__tests__', 'e2e', 'node_modules'])
-
-// `from '…'`, `import '…'`, `import('…')`, `import(`…`)`, and
-// `import(/* @vite-ignore */ '…')`.
-const IMPORT_SPECIFIER = /\b(?:from|import)\s*\(?(?:\s|\/\*[\s\S]*?\*\/)*(['"`])([^'"`\n]+)\1/g
-const CONSENT_TESTING = /(?:^|\/)plugin-consent\/testing(?:\.[cm]?[jt]s)?(?:\?.*)?$/
-const SIBLING_TESTING = /^\.\/testing(?:\.[cm]?[jt]s)?(?:\?.*)?$/
+const VUE_SCRIPT_BLOCK = /<script\b[^>]*>([\s\S]*?)<\/script>/g
+const SCRIPT_EXTENSION = /\.[cm]?[jt]sx?$/
 
 function listAppSourceFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -30,12 +28,31 @@ function listAppSourceFiles(dir: string): string[] {
   })
 }
 
-function importsConsentTesting(file: string): string[] {
-  const inConsentDir = dirname(file) === consentDir
+/**
+ * Module specifiers of every static import, re-export and string-literal
+ * `import()` in the file. TypeScript's pre-processor skips comments and
+ * ordinary strings, so an example import inside either is not counted.
+ * Known gaps: `import.meta.glob(...)`, and imports right after a regex literal
+ * that contains a quote (the pre-processor's scanner can lose track there).
+ */
+function importSpecifiers(file: string): string[] {
   const source = readFileSync(file, 'utf8')
-  return [...source.matchAll(IMPORT_SPECIFIER)]
-    .map((match) => match[2]!)
-    .filter((spec) => CONSENT_TESTING.test(spec) || (inConsentDir && SIBLING_TESTING.test(spec)))
+  const scripts = file.endsWith('.vue')
+    ? [...source.matchAll(VUE_SCRIPT_BLOCK)].map((match) => match[1]!)
+    : [source]
+  return scripts.flatMap((script) =>
+    ts.preProcessFile(script, true, true).importedFiles.map((imported) => imported.fileName),
+  )
+}
+
+/** Where a specifier points to, without query or extension; null for packages. */
+function resolveSpecifier(file: string, specifier: string): string | null {
+  const path = specifier.replace(/\?.*$/, '')
+  let target: string
+  if (path.startsWith('@/')) target = resolve(srcDir, path.slice(2))
+  else if (path.startsWith('.')) target = resolve(dirname(file), path)
+  else return null
+  return target.replace(SCRIPT_EXTENSION, '')
 }
 
 describe('plugin-consent/testing stays test-only', () => {
@@ -50,9 +67,37 @@ describe('plugin-consent/testing stays test-only', () => {
     expect(scanned.some((file) => TEST_FILE.test(file))).toBe(false)
   })
 
+  it('reads imports from code, not from comments or strings', () => {
+    const fixture = resolve(srcDir, 'fixture.ts')
+    const specifiers = (code: string) =>
+      ts
+        .preProcessFile(code, true, true)
+        .importedFiles.map((imported) => resolveSpecifier(fixture, imported.fileName))
+    expect(
+      specifiers(
+        [
+          "// import('./i18n/plugin-consent/testing')",
+          "/* import x from '@/i18n/plugin-consent/testing' */",
+          "const example = \"import x from './i18n/plugin-consent/testing'\"",
+        ].join('\n'),
+      ),
+    ).toEqual([])
+    expect(
+      specifiers(
+        [
+          "import a from './i18n/plugin-consent/./testing'",
+          "export * from '@/i18n/plugin-consent/testing.ts?raw'",
+          'const b = import(\n  // why\n  `./i18n/plugin-consent/testing`\n)',
+        ].join('\n'),
+      ),
+    ).toEqual([consentTesting, consentTesting, consentTesting])
+  })
+
   it('is not imported by any app source file', () => {
     const offenders = appFiles.flatMap((file) =>
-      importsConsentTesting(file).map((spec) => `${toRelative(file)}: ${spec}`),
+      importSpecifiers(file)
+        .filter((specifier) => resolveSpecifier(file, specifier) === consentTesting)
+        .map((specifier) => `${toRelative(file)}: ${specifier}`),
     )
     expect(offenders).toEqual([])
   })

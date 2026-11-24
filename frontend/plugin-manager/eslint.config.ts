@@ -11,11 +11,12 @@ import skipFormatting from '@vue/eslint-config-prettier/skip-formatting'
 
 // `@/i18n/plugin-consent/testing`, `../plugin-consent/testing`, ... with or
 // without an extension or a Vite `?query`. Inside `plugin-consent/` itself,
-// also `./testing`. Only plain string specifiers are matched; template-literal
-// or concatenated `import()` paths are not.
-const CONSENT_TESTING_IMPORT = /(^|\/)plugin-consent\/testing(\.[cm]?[jt]s)?(\?.*)?$/
+// also `./testing`. Specifiers are matched as written, not resolved, and only
+// plain string ones: template-literal or concatenated `import()` paths are not.
+// The unit test in `src/i18n/plugin-consent/testing.guard.test.ts` resolves them.
+const CONSENT_TESTING_IMPORT = /(^|\/)plugin-consent\/(\.\/)*testing(\.[cm]?[jt]s)?(\?.*)?$/
 const CONSENT_TESTING_SIBLING_IMPORT = new RegExp(
-  `${CONSENT_TESTING_IMPORT.source}|^\\./testing(\\.[cm]?[jt]s)?(\\?.*)?$`,
+  `${CONSENT_TESTING_IMPORT.source}|^(\\./)+testing(\\.[cm]?[jt]s)?(\\?.*)?$`,
 )
 const TEST_FILES = ['src/**/*.{test,spec}.*', 'src/**/__tests__/**', 'src/**/e2e/**']
 const CONSENT_TESTING_MESSAGE =
