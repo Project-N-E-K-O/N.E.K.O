@@ -376,6 +376,7 @@ def warmup_state(monkeypatch):
     monkeypatch.setattr(module_warmup, "_gated_pending_scope", None)
     monkeypatch.setattr(module_warmup, "_startup_pass_missing", False)
     monkeypatch.setattr(module_warmup, "_failed_entries", set())
+    monkeypatch.setattr(module_warmup, "_failure_counts", {})
     return spawned
 
 
@@ -386,8 +387,15 @@ def test_rewarm_is_a_no_op_before_startup_warmup(warmup_state):
 
 
 def _something_left_to_warm(monkeypatch):
-    """Make the re-check see a module to import, whatever this process has loaded."""
-    monkeypatch.setattr(module_warmup, "_unloaded_gates", lambda scope=None: {"anthropic"})
+    """Make the re-check see a module to import, whatever this process has loaded.
+
+    Scope-aware like the real one: a voice-only save sees the voice gate missing.
+    """
+    missing = {"anthropic", "cosyvoice_clone", "proactive_bilibili"}
+    monkeypatch.setattr(
+        module_warmup, "_unloaded_gates",
+        lambda scope=None: set(missing) if scope is None else missing & set(scope),
+    )
 
 
 def test_rewarm_after_startup_warmup_finished_starts_a_worker(warmup_state, monkeypatch):
@@ -725,7 +733,7 @@ def test_failed_imports_are_not_retried_on_every_save(warmup_state, monkeypatch)
     monkeypatch.delitem(sys.modules, broken, raising=False)
 
     def _fail(name):
-        raise ImportError(name)
+        raise ModuleNotFoundError(name)  # not installed
 
     monkeypatch.setattr(module_warmup, "_warm_one", _fail)
     module_warmup._warm_entries((broken,), "config")
@@ -837,3 +845,110 @@ def test_a_kept_request_is_not_skipped_by_a_narrow_save_with_nothing_of_its_own(
     )
     assert module_warmup.request_config_rewarm("characters", only={"cosyvoice_clone"}) is True
     assert started == [None], "the kept full re-check must run, anthropic is still missing"
+
+
+def test_other_import_errors_are_retried_later(warmup_state):
+    # A DLL briefly locked by an antivirus, say: not final, unlike a missing module.
+    def _fail(name):
+        raise ImportError("DLL load failed")
+
+    original = module_warmup._warm_one
+    module_warmup._warm_one = _fail
+    try:
+        module_warmup._warm_entries(("pyncm_async",), "config")
+    finally:
+        module_warmup._warm_one = original
+    assert "pyncm_async" not in module_warmup._failed_entries
+
+
+def test_missing_startup_flag_survives_a_full_pass_that_failed(monkeypatch):
+    monkeypatch.setattr(module_warmup, "_startup_pass_missing", True)
+    monkeypatch.setattr(module_warmup, "_gated_running", True)
+    monkeypatch.setattr(module_warmup, "_gated_pending", False)
+
+    def _boom(*a, **k):
+        raise RuntimeError("config unreadable")
+
+    monkeypatch.setattr(module_warmup, "_pending_gated_entries", _boom)
+    module_warmup._run_gated_warmup("config", None)
+    assert module_warmup._startup_pass_missing is True
+
+
+def test_realtime_read_failure_falls_back_to_core_api_type():
+    cfg = _voice_cfg({"CORE_API_TYPE": "free"})
+
+    class _Broken(dict):
+        def get(self, *a, **k):
+            raise OSError("realtime slot unreadable")
+
+    cfg.realtime_config = _Broken()
+    assert cfg.core_api_type == "free"
+
+
+def test_an_import_that_keeps_failing_stops_being_retried(warmup_state):
+    # Installed but broken (a missing VC++ runtime, say): retried once, then given up.
+    def _fail(name):
+        raise ImportError("DLL load failed")
+
+    original = module_warmup._warm_one
+    module_warmup._warm_one = _fail
+    try:
+        module_warmup._warm_entries(("pyncm_async",), "config")
+        assert "pyncm_async" not in module_warmup._failed_entries
+        module_warmup._warm_entries(("pyncm_async",), "config")
+    finally:
+        module_warmup._warm_one = original
+    assert "pyncm_async" in module_warmup._failed_entries
+
+
+_DIRECTIVES = "config.prompts.prompts_directives:DIRECTIVE_PATTERNS"
+
+
+def test_an_attribute_entry_that_failed_once_gets_its_retry_on_the_next_save(warmup_state, monkeypatch):
+    monkeypatch.setattr(module_warmup, "_unloaded_gates", lambda scope=None: set())
+    for entry in [e for e in MAIN_SERVER_WARMUP if ":" not in e]:
+        monkeypatch.setitem(sys.modules, entry, object())
+    module_warmup._gated_started = True
+
+    def _fail_once(name):
+        raise OSError("transient")
+
+    monkeypatch.setattr(module_warmup, "_warm_one", _fail_once)
+    module_warmup._warm_entries((_DIRECTIVES,), "main")
+    assert _DIRECTIVES not in module_warmup._failed_entries
+    # A narrow save with nothing else to add still starts a re-check for it.
+    assert _DIRECTIVES in module_warmup._unloaded_plain_entries()
+    assert module_warmup.request_config_rewarm("characters", only={"cosyvoice_clone"}) is True
+    monkeypatch.setattr(module_warmup, "evaluate_gates", lambda cfg=None, only=None: {})
+    assert _DIRECTIVES in module_warmup._pending_gated_entries(True, "config")
+
+
+def test_a_successful_retry_closes_the_attribute_entry(warmup_state, monkeypatch):
+    calls = []
+
+    def _fail_then_ok(name):
+        calls.append(name)
+        if len(calls) == 1:
+            raise OSError("transient")
+
+    monkeypatch.setattr(module_warmup, "_warm_one", _fail_then_ok)
+    module_warmup._warm_entries((_DIRECTIVES,), "main")
+    module_warmup._warm_entries((_DIRECTIVES,), "config")
+    assert _DIRECTIVES not in module_warmup._failure_counts
+    assert _DIRECTIVES not in module_warmup._unloaded_plain_entries(), (
+        "a succeeded attribute entry must not be re-evaluated on every save"
+    )
+
+
+
+def test_a_startup_pass_that_fails_as_a_whole_leaves_a_full_recheck(monkeypatch):
+    monkeypatch.setattr(module_warmup, "_startup_pass_missing", False)
+    monkeypatch.setattr(module_warmup, "_gated_running", True)
+    monkeypatch.setattr(module_warmup, "_gated_pending", False)
+
+    def _boom(*a, **k):
+        raise RuntimeError("config unreadable")
+
+    monkeypatch.setattr(module_warmup, "_pending_gated_entries", _boom)
+    module_warmup._run_gated_warmup("main")
+    assert module_warmup._startup_pass_missing is True

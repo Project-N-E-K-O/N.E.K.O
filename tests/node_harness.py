@@ -103,7 +103,9 @@ can never show any, and an inherited ``NODE_OPTIONS`` preload that prints before
 stalling shows some without the harness being reached at all.  The preload drops
 a marker file the moment node compiles the script, and that file is the whole
 signal: an attempt that never got that far is repeated, and one that did is
-reported as it stands, because a second run would stall in the same place.
+reported as it stands, because a second run would stall in the same place --
+unless the caller declares the script ``rerun_safe`` (it touches nothing
+outside node), in which case it gets one more run (``_STARTED_RERUNS``).
 
 A cold node binary stalls a process on both sides of that line, and neither
 the marker nor the watchdog can see it for what it is.  On a freshly
@@ -158,6 +160,13 @@ _SPAWN_ATTEMPTS = 3
 # thousands of page-sized faults a cold first process would take.
 _PREWARM_CHUNK_BYTES = 1 << 20
 
+# For a ``rerun_safe`` script, how many more runs a stall *after* reaching the
+# script gets.  One: a runner hiccup clears on the next run, while a script that
+# really blocks at its top level stalls every time, and each stall costs a full
+# ceiling (65s for the settings harnesses) -- spending all three on it would let
+# a genuine hang push a shard toward its own timeout.
+_STARTED_RERUNS = 1
+
 _prewarm_guard = threading.Lock()
 _prewarmed_binaries: set[str] = set()
 
@@ -207,12 +216,13 @@ class NodeHarnessSpawnTimeout(subprocess.TimeoutExpired):
     """The run hit the ceiling without node exiting.
 
     Subclasses ``TimeoutExpired`` so existing ``except`` clauses keep working,
-    and carries what each attempt managed to emit.  One attempt means node had
-    reached the script and the stall was not worth repeating; more than one
-    means every attempt stalled before getting that far.
+    and carries what each attempt managed to emit and whether it reached the
+    script (``attempts_started``, one flag per attempt).  ``started`` is the
+    last attempt's flag.
     """
 
-    def __init__(self, cmd, timeout, attempts, started=False, rerun_safe=False):
+    def __init__(self, cmd, timeout, attempts, started=False, rerun_safe=False,
+                 attempts_started=None):
         # Carry the last attempt's output on the exception the way
         # ``subprocess.run`` would have: a caller that catches
         # ``TimeoutExpired`` and reads ``.stdout``/``.stderr`` (or ``.output``)
@@ -227,18 +237,43 @@ class NodeHarnessSpawnTimeout(subprocess.TimeoutExpired):
         self.attempts = list(attempts)
         self.started = started
         self.rerun_safe = rerun_safe
+        # Without per-attempt flags only the last one is known, and earlier ones
+        # are assumed not to have reached the script (true without rerun_safe,
+        # where the loop never continues past a start). Flags are kept one per
+        # attempt so no attempt goes unreported.
+        count = len(self.attempts)
+        if attempts_started is None:
+            flags = [False] * max(count - 1, 0) + [started] * bool(count)
+        else:
+            # Aligned on the last attempt, the one ``started`` describes.
+            flags = list(attempts_started)[-count:] if count else []
+            flags = [False] * (count - len(flags)) + flags
+        self.attempts_started = flags
 
     def __str__(self) -> str:
-        if self.started and self.rerun_safe:
+        # Judged on every attempt, not the last one: attempts can disagree.
+        reached = sum(self.attempts_started)
+        total = len(self.attempts_started)
+        if reached == 0:
             diagnosis = (
-                "node reached the harness script and stalled on every attempt "
-                "without the watchdog firing. The caller marked the script safe "
-                "to re-run, so each stall was retried; one that repeats on "
-                "every run points at the script itself (a synchronous block), "
-                "not at the runner."
+                "node never reached the harness script -- process creation, "
+                "reading it off disk, or V8 bootstrap stalled. Nothing was "
+                "under test, so the attempt was repeated."
             )
-        elif self.started:
+        elif self.rerun_safe and total >= 2 and all(self.attempts_started[-2:]):
             diagnosis = (
+                "node reached the harness script and stalled again after it was "
+                "re-run, without the watchdog firing. The caller marked the "
+                "script safe to re-run, so a stall after it started got one more "
+                "run; one that repeats points at the script itself (a "
+                "synchronous block), not at the runner."
+            )
+        elif total == 1 or (self.started and not self.rerun_safe):
+            earlier = (
+                f"After {total - 1} attempt(s) that never reached it, "
+                if total > 1 else ""
+            )
+            diagnosis = earlier + (
                 "node reached the harness script and then stalled without "
                 "the watchdog firing. Either the script's top level blocked "
                 "the event loop or compiling it did -- a timer cannot "
@@ -251,14 +286,18 @@ class NodeHarnessSpawnTimeout(subprocess.TimeoutExpired):
             )
         else:
             diagnosis = (
-                "node never reached the harness script -- process creation, "
-                "reading it off disk, or V8 bootstrap stalled. Nothing was "
-                "under test, so the attempt was repeated."
+                f"{reached} of {total} attempts reached the harness script and "
+                "stalled there; the others stalled before reaching it. Stalls "
+                "that vary from run to run point at the runner rather than at "
+                "the script."
             )
         lines = [super().__str__(), "", diagnosis]
-        for index, attempt in enumerate(self.attempts, 1):
+        for index, (attempt, reached) in enumerate(
+            zip(self.attempts, self.attempts_started), 1
+        ):
+            where = "reached the script" if reached else "never reached the script"
             lines.append(
-                f"  attempt {index}: stdout={_excerpt(attempt.stdout)} "
+                f"  attempt {index} ({where}): stdout={_excerpt(attempt.stdout)} "
                 f"stderr={_excerpt(attempt.stderr)}"
             )
         return "\n".join(lines)
@@ -550,7 +589,7 @@ def _run_retrying_spawn_stalls(next_attempt, cmd_for_error, *, rerun_safe=False)
     is reported as it stands, however many are left -- unless the caller passed
     ``rerun_safe``: its script only simulates in memory, so running it again
     repeats nothing outside the process. Then a stall after the script started
-    is retried too. On a Windows runner node has reached a pure in-memory
+    gets ``_STARTED_RERUNS`` more runs (one). On a Windows runner node has reached a pure in-memory
     settings harness and sat 60s without the watchdog firing, while the same
     script finishes in ~0.1s locally and passed 1216 runs under 16-way load:
     the runner stalled the synchronous file reads or compilation at the top.
@@ -560,6 +599,7 @@ def _run_retrying_spawn_stalls(next_attempt, cmd_for_error, *, rerun_safe=False)
     the killed first attempt left behind.
     """
     attempts = []
+    attempts_started = []
     for attempt in range(1, _SPAWN_ATTEMPTS + 1):
         argv, run_kwargs, marker = next_attempt()
         try:
@@ -567,10 +607,16 @@ def _run_retrying_spawn_stalls(next_attempt, cmd_for_error, *, rerun_safe=False)
         except subprocess.TimeoutExpired as exc:
             attempts.append(exc)
             started = _script_started(marker)
-            if attempt == _SPAWN_ATTEMPTS or (started and not rerun_safe):
+            attempts_started.append(started)
+            started_stalls = sum(attempts_started)
+            give_up = attempt == _SPAWN_ATTEMPTS or (
+                started and (not rerun_safe or started_stalls > _STARTED_RERUNS)
+            )
+            if give_up:
                 raise NodeHarnessSpawnTimeout(
                     cmd_for_error, exc.timeout, attempts,
                     started=started, rerun_safe=rerun_safe,
+                    attempts_started=attempts_started,
                 ) from exc
         finally:
             try:
