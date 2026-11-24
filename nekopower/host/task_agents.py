@@ -9401,7 +9401,7 @@ class TaskAgentManager(TreeWork):
             # What another task agent changed in its git worktree is read as
             # what it left in any working directory. (Writes there are ruled
             # on before this: ``_rule_on_tree_write``.)
-            places.extend(await self._tree_places(own))
+            places.extend(await self._tree_places())
         if not places:
             return None
         kept_files = (TRANSCRIPT_NAME, SYSTEM_FILE, DSH_SESSION_NAME)

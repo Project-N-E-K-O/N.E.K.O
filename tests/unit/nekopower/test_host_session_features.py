@@ -6068,24 +6068,30 @@ async def test_a_change_of_where_a_project_works_is_carried_through_when_whoever
     assert (await host.ledger.get_session(lan.id)).workdir == str(new)
 
 
-async def test_no_change_of_where_a_project_works_comes_between_the_two_writes_of_a_new_task_agent(hosts, tmp_path):
-    """A task agent made for the user: its project's record and its session say the same place."""
+@pytest.mark.parametrize("preset", [None, "boss"])
+async def test_no_change_of_where_a_project_works_comes_between_the_two_writes_of_a_new_task_agent(hosts, tmp_path, preset):
+    """A task agent made for the user: its project's record and its session say the same place.
+
+    A member that does the project's work, which is what is made when no
+    preset is named, and its leader alike.
+    """
     host = _host(hosts, tmp_path, ScriptedLLM())
     first, second = tmp_path / "first", tmp_path / "second"
     first.mkdir()
     second.mkdir()
 
-    make = host.ledger.project_session
+    writes = "project_session" if preset == "boss" else "create_session"
+    make = getattr(host.ledger, writes)
     changing: list[asyncio.Future] = []
 
-    async def then_a_change_is_asked_for(lanlan_name: str, project: str, **values: Any) -> Any:
+    async def then_a_change_is_asked_for(*args: Any, **values: Any) -> Any:
         # The project is on record, its session not yet: a change asked for now waits for it.
-        changing.append(asyncio.ensure_future(host.set_project_workdir(project, str(second))))
+        changing.append(asyncio.ensure_future(host.set_project_workdir("Budget app", str(second))))
         await asyncio.sleep(0.05)
-        return await make(lanlan_name, project, **values)
+        return await make(*args, **values)
 
-    host.ledger.project_session = then_a_change_is_asked_for
-    made = await host.open_session("Lan", "Budget app", workdir=str(first))
+    setattr(host.ledger, writes, then_a_change_is_asked_for)
+    made = await host.open_session("Lan", "Budget app", workdir=str(first), **({"preset": preset} if preset else {}))
     await changing[0]
     record = (await host.space.get_project("Budget app")).workdir
     assert record == str(second)

@@ -598,13 +598,9 @@ class TreeWork:
             return {"allow": False, "reason": texts.TREE_PROJECT_WRITE_REFUSED.format(tree=mine.workdir)}
         return None
 
-    async def _tree_places(self, own_session: str | None) -> list[tuple[str, str | None, str | None]]:
-        """Return the worktrees on record as places other sessions work in, for what is read there without asking."""
-        return [
-            (row.session_id or row.id, row.path, None)
-            for row in await self._ledger.trees()
-            if row.session_id != own_session
-        ]
+    async def _tree_places(self) -> list[tuple[str, str | None, str | None]]:
+        """Return the worktrees on record as places sessions work in, for what is read there without asking."""
+        return [(row.session_id or row.id, row.path, None) for row in await self._ledger.trees()]
 
     # -- landing ----------------------------------------------------------
 
@@ -1167,12 +1163,15 @@ class TreeWork:
     @contextlib.asynccontextmanager
     async def _tree_in_hand(self, tree_id: str, states: Any) -> Any:
         """Take a worktree the user decides on in hand, one decision at a time; raises as the three methods below say."""
+        if tree_id in self._trees_in_hand:
+            raise ValueError("busy")
         row = await self._ledger.get_tree(tree_id)
         if row is None:
             raise LookupError(tree_id)
         if row.state not in states:
             raise ValueError("at_work")
         if tree_id in self._trees_in_hand:
+            # Taken in hand while the ledger was read.
             raise ValueError("busy")
         self._trees_in_hand.add(tree_id)
         try:

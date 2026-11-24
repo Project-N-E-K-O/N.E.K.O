@@ -40,6 +40,20 @@ model is asked and no runtime. Not every session is on it (see
 * ``idle``         - open in a runtime with nothing to do;
 * ``asleep``       - no runtime has it open.
 
+Four more are of a session that changes files in a git worktree
+(``tree_work.py``), which ``tree`` on its card tells of:
+
+* ``landing``      - its commission is done, and what it changed is on its
+  way into the project's directory (being checked, waiting for its turn,
+  or being merged);
+* ``resolving``    - that clashed, and it merges what clashed;
+* ``held``         - it is done and waits for the user to say that it lands;
+* ``unlanded``     - it was not landed, and the user decides what becomes of
+  what it changed.
+
+The first two stand in for ``working`` while its commission is under way,
+the other two for ``idle`` or ``asleep`` once it has none in hand.
+
 The state is the session's; how the commission in hand stands is said by
 ``commission.status``. So a session whose commission rests until a time it
 set, or waits for its turn, is ``asleep`` with a commission whose status is

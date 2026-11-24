@@ -253,6 +253,32 @@ async def test_a_team_has_no_more_at_work_than_it_may_and_parts_must_say_what_th
     assert await host.ledger.select(parent_id=receipt.commission_id) == []
 
 
+async def test_what_a_leader_starts_with_subagent_counts_towards_how_many_work_for_it(hosts, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "TEAM_MAX_WORKING", 1)
+    hold = asyncio.Event()
+
+    async def wait() -> None:
+        await hold.wait()
+
+    lead = ScriptedLLM([
+        [call("start_team", {"parts": [PARTS[2]]}), finish("tool_calls")],
+        [call("subagent", {"description": "colours", "prompt": "Which colours? PART-COLOURS", "preset": "scout"}),
+         finish("tool_calls")],
+        END, _report("two fonts"),
+    ])
+    members = {"PART-FONTS": ScriptedLLM([[wait, *_report("two fonts")]]), "PART-COLOURS": ScriptedLLM([_report("red")])}
+    host, _trees, _workdir = await _shop(hosts, tmp_path, _by_role(lead, members))
+
+    receipt = await _dispatch(host, TEAM)
+    await wait_until(lambda: len(lead.requests) >= 3, what="the leader having been refused another")
+    hold.set()
+    await wait_status(host, receipt.commission_id, "done")
+
+    assert "a team has 1 task agents at work at the most, and 1 of this commission's are" in _said_to(lead)
+    assert [child.name for child in await host.ledger.select(parent_id=receipt.commission_id)] == ["fonts"]
+    assert members["PART-COLOURS"].requests == []
+
+
 async def test_only_a_leader_has_the_tool_that_starts_a_team(hosts, tmp_path):
     specs: list[Any] = []
     leader_llm = ScriptedLLM(_hand_over())
@@ -412,6 +438,51 @@ async def test_an_inspector_that_could_not_check_does_not_keep_the_changes_from_
     assert (workdir / "links.txt").read_text() == "repaired" and done.result_summary.startswith("links repaired")
     assert [(item["verdict"], item["round"]) for item in await _events(host, two.commission_id, "inspected")] == [("none", 1)]
     assert "found problems" not in _said_to(members["broken links"])
+
+
+async def test_an_inspector_the_user_stops_does_not_keep_the_changes_from_landing(hosts, tmp_path):
+    hold = asyncio.Event()
+
+    async def wait() -> None:
+        await hold.wait()
+
+    host, trees, workdir, two, members = await _inspected(
+        hosts, tmp_path,
+        member=[_write("links.txt", "repaired"), _report("links repaired")],
+        inspector=[[wait, *_report("it holds")]],
+    )
+    await wait_until(lambda: len(members[CHECK].requests) == 1, what="the inspector being at work")
+    (check,) = await host.ledger.select(parent_id=two.commission_id)
+    assert await host.abort(check.id)
+
+    done = await wait_status(host, two.commission_id, "done")
+    assert (workdir / "links.txt").exists() and done.result_summary.startswith("links repaired")
+    assert [item["verdict"] for item in await _events(host, two.commission_id, "inspected")] == ["none"]
+    hold.set()
+
+
+async def test_a_task_agent_stopped_while_it_is_checked_has_its_inspector_stopped_with_it(hosts, tmp_path):
+    hold = asyncio.Event()
+
+    async def wait() -> None:
+        await hold.wait()
+
+    host, trees, workdir, two, members = await _inspected(
+        hosts, tmp_path,
+        member=[_write("links.txt", "repaired"), _report("links repaired")],
+        inspector=[[wait, *_report("it holds")]],
+    )
+    await wait_until(lambda: len(members[CHECK].requests) == 1, what="the inspector being at work")
+    (check,) = await host.ledger.select(parent_id=two.commission_id)
+
+    assert await host.abort(two.commission_id)
+    await wait_status(host, check.id, "cancelled")
+    await wait_until(lambda: not host.task_agents._tree_tasks, what="its worktree being seen to")
+    (tree,) = await host.ledger.trees()
+    # What it changed is kept for the user, and nothing landed.
+    assert (tree.state, tree.reason) == ("unlanded", "stopped") and trees.merged == []
+    assert not (workdir / "links.txt").exists() and host.task_agents._inspections == {}
+    hold.set()
 
 
 async def test_a_team_whose_leader_asks_for_it_is_checked_though_the_setting_is_off(hosts, tmp_path):
