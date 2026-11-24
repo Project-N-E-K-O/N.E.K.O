@@ -1867,7 +1867,11 @@ token 数是本地按 `count_tokens` 数的。
 - 卡片的 `tree` 有值时，使魔空间里点开那只使魔就显示这份副本：状态、没合回的原因、撞了的文件、副本里的项目目录。等用户的三种状态给按钮：合回（`unlanded` 时叫「再试一次」）、不要了（先确认，删了找不回来）、打开目录、我自己处理（之后不再提醒，仍可合回或不要了）。按钮调 `POST /console/worktrees/{id}/land|discard|keep|open`，宿主那边是 `land_worktree` / `discard_worktree` / `keep_worktree`；「打开目录」只开宿主记着的副本里的项目目录。
 - 很久没活的成员不在看板上，它留下的副本只能从 `GET /console/worktrees` 看到：项目的「使魔」页签上另列一栏「等你决定的副本」，看板一变就重读。
 - 设置：「使魔运行时 → 权限」页签下面加一张卡片「合回」：自动 / 先问我，「每次合回前自动来一只监工猫」（`GET` / `POST /console/landing`，宿主 `landing_settings` / `set_landing_settings`）。
-- 改项目目录时宿主因为还有副本没合回而拒绝（`project_busy`，原因 `tree_not_landed`），页面说清是这个原因（`describeConsoleError` 认拒绝里的 `reason`）。
+- 改项目目录、送走项目时宿主因为还有副本没合回而拒绝（`project_busy`，原因 `tree_not_landed`），页面说清是这个原因（`describeConsoleError` 认拒绝里的 `reason`）。
+- 合回时带不过去的文件（太大、或是独立仓库；`reason = skipped`，`conflicts` 放的是这些文件）：改动已经合回，这份副本留给用户。再点合回也带不过去，所以不给合回按钮，只给「我自己处理」「不要了」，「不要了」的确认框写明这些文件会一起删。合回时顺带改到的项目目录以外、仓库以内的文件（`outside`）在合回结果和动态里单独说出来：它们没经过「工作目录外写文件」那一问。
+- 副本 git 一时打不开（`not_opened`）和目录没了（`gone`）分开说：前者让用户过会儿再试，不提示删除。
+- 副本名额：一个项目最多 `worktrees_per_project` 份（`landing_settings` 带回，现在 8，不是用户设置），「我自己处理」的也占。满了时「等你决定的副本」一栏顶上说明，并列出在干活、占着名额的那几份。
+- 「召唤使魔」在项目里接活的成员到上限时被拒（`too_many_members`），页面说清不能再召唤。
 
 **老大、成员、队伍**
 
