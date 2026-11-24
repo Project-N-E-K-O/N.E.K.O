@@ -12,7 +12,7 @@ import posixpath
 import re
 import struct
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from urllib.parse import quote, unquote, urljoin, urlsplit
 
 from .bundle import BundleError, BundleLimits, inspect_bundle
@@ -97,6 +97,17 @@ class _Resources:
     def __init__(self, bundle, archive, limits: FormatLimits):
         self.bundle, self.archive, self.limits = bundle, archive, limits
         self.files = {item.path: item for item in bundle.files}
+        self.warnings = []
+        self.warning_count = 0
+
+    def warn(self, code: str, path: str) -> None:
+        self.warning_count += 1
+        if len(self.warnings) < 100:
+            self.warnings.append({"code": code, "path": path})
+
+    def admitted(self):
+        return replace(self.bundle, compatibility_warnings=tuple(self.warnings),
+                       compatibility_warning_count=self.warning_count)
 
     def json(self, path: str) -> dict:
         with self.archive.open("model/" + path) as handle:
@@ -106,7 +117,8 @@ class _Resources:
         with self.archive.open("model/" + path) as handle:
             return handle.read(size)
 
-    def dependency(self, reference, *, base: str = "", suffixes=(), manager: bool = False) -> str:
+    def dependency(self, reference, *, base: str = "", suffixes=(), manager: bool = False,
+                   optional: bool = False) -> str:
         """Resolve like a browser, then require the same exact package resource.
 
         MMD references are relative to the main file's parent. Archive members
@@ -128,38 +140,58 @@ class _Resources:
             decoded = unquote(url.path, encoding="utf-8", errors="strict")
         except (ValueError, UnicodeError) as exc:
             raise ModelFormatError("invalid_model_reference", reference) from exc
-        _require(
-            url.scheme == "https" and url.netloc == "model.invalid" and not url.query and not url.fragment
-            and posixpath.normpath(decoded) == "/__root__/" + target,
-            reference, "incompatible_model_reference",
-        )
-        _require(target in self.files, reference, "missing_model_resource")
+        runtime_path = posixpath.normpath(decoded)
+        compatible = (url.scheme == "https" and url.netloc == "model.invalid" and not url.query and not url.fragment
+                      and runtime_path == "/__root__/" + target)
+        if optional:
+            # Missing effects and literal '#' filenames do not prevent rendering.
+            # Still prove that the URL the loader will request stays in this model.
+            _require(url.scheme == "https" and url.netloc == "model.invalid"
+                     and runtime_path.startswith("/__root__/"), reference, "external_model_reference")
+            if not compatible or target not in self.files:
+                self.warn("live2d_optional_resource_unavailable", reference)
+        else:
+            _require(compatible, reference, "incompatible_model_reference")
+            _require(target in self.files, reference, "missing_model_resource")
         _require(not suffixes or target.lower().endswith(suffixes), reference, "unsupported_model_resource")
         return target
 
 
-def _allowed_files(resources: _Resources, suffixes: tuple) -> None:
+def _allowed_files(resources: _Resources, suffixes: tuple, *, filenames: tuple = (), paths=()) -> None:
     """Retain model resources and ordinary license/readme files; reject payloads."""
     for name in resources.files:
         lower = name.lower()
         documentation = lower.endswith((".txt", ".md")) or posixpath.basename(lower) in {
             "readme", "license", "licence", "copying", "notice", "authors",
         }
-        _require(documentation or lower.endswith(suffixes), name, "unsupported_model_resource")
+        # Exact companion basenames must not admit similarly suffixed payloads.
+        _require(documentation or lower.endswith(suffixes) or posixpath.basename(lower) in filenames or name in paths,
+                 name, "unsupported_model_resource")
 
 
-def _motion(data: dict, path: str) -> None:
-    """Validate Cubism segment layout without changing lip-sync or emotion data."""
+def _motion(data: dict, path: str) -> tuple[str, ...]:
+    """Separate loader-tolerated metadata from unsafe layout; never rewrite curves."""
     meta, curves = data.get("Meta"), data.get("Curves")
-    _require(data.get("Version") == 3 and isinstance(meta, dict) and isinstance(curves, list), path)
+    # The bundled Cubism parser also loads Version 0 motions used by yui.
+    _require(type(data.get("Version")) is int and data["Version"] in (0, 3)
+             and isinstance(meta, dict) and isinstance(curves, list), path)
     _require(_number(meta.get("Duration")) and meta["Duration"] >= 0, path)
-    _require(_number(meta.get("Fps")) and meta["Fps"] > 0 and type(meta.get("Loop")) is bool, path)
-    segments = points = 0
+    _require(_number(meta.get("Fps")) and meta["Fps"] > 0, path)
+    _require("Loop" not in meta or type(meta["Loop"]) is bool, path)
+    segments = points = slots = 0
+    warnings = set()
     for curve in curves:
-        _require(isinstance(curve, dict) and curve.get("Target") in ("Model", "Parameter", "PartOpacity"), path)
+        _require(isinstance(curve, dict) and isinstance(curve.get("Target"), str) and bool(curve["Target"]), path)
+        if curve["Target"] not in ("Model", "Parameter", "PartOpacity"):
+            warnings.add("live2d_unknown_motion_target")
         _require(isinstance(curve.get("Id"), str) and bool(curve["Id"]), path)
         values = curve.get("Segments")
-        _require(isinstance(values, list) and len(values) >= 2 and all(_number(v) for v in values), path)
+        _require(isinstance(values, list) and all(_number(v) for v in values), path)
+        if not values:
+            warnings.add("live2d_empty_motion_curve")
+            continue
+        _require(len(values) >= 5, path)
+        slots += len(values)
         points += 1
         offset = 2
         while offset < len(values):
@@ -170,8 +202,21 @@ def _motion(data: dict, path: str) -> None:
             points += 3 if opcode == 1 else 1
             segments += 1
             offset += width
-    for key, expected in (("CurveCount", len(curves)), ("TotalSegmentCount", segments), ("TotalPointCount", points)):
-        _require(type(meta.get(key)) is int and meta[key] == expected, path)
+    # The bundled evaluator falls back to points[0] for an empty curve.
+    # A mixed motion can render; an entirely empty point table cannot.
+    if "live2d_empty_motion_curve" in warnings:
+        _require(points > 0, path)
+    _require(type(meta.get("CurveCount")) is int and meta["CurveCount"] == len(curves), path)
+    for key, expected in (("TotalSegmentCount", segments), ("TotalPointCount", points)):
+        # NEKO's bundled JS parser grows points dynamically, but preallocates
+        # segments using Meta. Reject underallocation and bound both declarations
+        # by the actual numeric input rather than trusting claimed allocation sizes.
+        _require(type(meta.get(key)) is int and 0 <= meta[key] <= slots, path)
+        if key == "TotalSegmentCount":
+            _require(meta[key] >= segments, path)
+        if meta[key] != expected:
+            warnings.add("live2d_motion_count_mismatch")
+    return tuple(sorted(warnings))
 
 
 def _expression(data: dict, path: str) -> None:
@@ -182,9 +227,9 @@ def _expression(data: dict, path: str) -> None:
         _require(_number(parameter.get("Value")) and parameter.get("Blend", "Add") in ("Add", "Multiply", "Overwrite"), path)
 
 
-def _auxiliary(data: dict, path: str) -> None:
+def _auxiliary(data: dict, path: str, *, kind: str = "") -> None:
     """Check required containers of non-animation Cubism JSON resources."""
-    lower = path.lower()
+    lower = kind or "." + posixpath.basename(path).lower()
     # NEKO's bundled mao_pro pose uses Type instead of Version; its loader accepts it.
     legacy_pose = lower.endswith(".pose3.json") and data.get("Type") == "Live2D Pose" and "Version" not in data
     _require(data.get("Version") == 3 or legacy_pose, path)
@@ -240,7 +285,7 @@ def _live2d(resources: _Resources) -> None:
     data = resources.json(entry)
     refs = data.get("FileReferences")
     _require(data.get("Version") == 3 and isinstance(refs, dict), entry)
-    known = {"Moc", "Textures", "Physics", "Pose", "DisplayInfo", "UserData", "Expressions", "Motions"}
+    known = {"Moc", "Textures", "Physics", "PhysicsV2", "Pose", "DisplayInfo", "UserData", "Expressions", "Motions"}
     _require(not (set(refs) - known), entry, "unsupported_model_reference")
     moc = resources.dependency(refs.get("Moc"), suffixes=(".moc3",))
     _require(resources.prefix(moc, 4) == b"MOC3", moc)
@@ -248,21 +293,47 @@ def _live2d(resources: _Resources) -> None:
     _require(isinstance(textures, list) and bool(textures), entry)
     for ref in textures:
         resources.dependency(ref, suffixes=(".png", ".jpg", ".jpeg", ".webp"))
+    # Generic JSON names are admitted only for the exact resources referenced in
+    # this model, and then checked using their declared role, not their filename.
+    roles, audio_files = {}, set()
+    tool_effects = False
     for key, suffix in (("Physics", ".physics3.json"), ("Pose", ".pose3.json"),
                         ("DisplayInfo", ".cdi3.json"), ("UserData", ".userdata3.json")):
-        if key in refs:
-            resources.dependency(refs[key], suffixes=(suffix,))
+        # Exporters may serialize an unused optional resource as null or "".
+        # Nonempty optional references remain confined even if the file is absent.
+        if key in refs and refs[key] is not None and refs[key] != "":
+            target = resources.dependency(refs[key], suffixes=(".json",), optional=True)
+            roles.setdefault(target, set()).add(suffix)
+    physics_v2 = refs.get("PhysicsV2")
+    if physics_v2 is not None and physics_v2 != "":
+        # The bundled SDK does not consume this third-party extension. Preserve
+        # it as data, while still checking any declared local physics resource.
+        _require(isinstance(physics_v2, dict), entry)
+        tool_effects = True
+        if physics_v2.get("File") is not None and physics_v2.get("File") != "":
+            target = resources.dependency(physics_v2["File"], suffixes=(".json",), optional=True)
+            roles.setdefault(target, set()).add("PhysicsV2")
     expressions, motions = refs.get("Expressions", []), refs.get("Motions", {})
     _require(isinstance(expressions, list) and isinstance(motions, dict), entry)
     for ref in expressions:
         _require(isinstance(ref, dict) and isinstance(ref.get("Name"), str), entry)
-        resources.dependency(ref.get("File"), suffixes=(".exp3.json",))
+        target = resources.dependency(ref.get("File"), suffixes=(".json",), optional=True)
+        roles.setdefault(target, set()).add(".exp3.json")
     for group in motions.values():
         _require(isinstance(group, list), entry)
         for ref in group:
             _require(isinstance(ref, dict), entry)
-            resources.dependency(ref.get("File"), suffixes=(".motion3.json",))
-            _require(not ref.get("Sound"), entry, "unsupported_model_resource")
+            if ref.get("File") is None or ref.get("File") == "":
+                # Some exporters store menus and commands alongside real motions.
+                # NEKO does not execute those commands or synthesize a motion.
+                tool_effects = True
+            else:
+                target = resources.dependency(ref["File"], suffixes=(".json",), optional=True)
+                roles.setdefault(target, set()).add(".motion3.json")
+            if ref.get("Sound") is not None and ref.get("Sound") != "":
+                audio_files.add(resources.dependency(ref["Sound"], suffixes=(".mp3", ".wav", ".ogg"), optional=True))
+    if tool_effects:
+        resources.warn("live2d_unsupported_tool_effect", entry)
     mapping = data.get("EmotionMapping", {})
     _require(isinstance(mapping, dict), entry)
     for key, suffix in (("expressions", ".exp3.json"), ("motions", ".motion3.json")):
@@ -271,22 +342,51 @@ def _live2d(resources: _Resources) -> None:
         for group in groups.values():
             _require(isinstance(group, list), entry)
             for ref in group:
-                resources.dependency(ref, suffixes=(suffix,), manager=True)
+                resources.dependency(ref, suffixes=(suffix,), manager=True, optional=True)
     allowed = (".model3.json", ".moc3", ".png", ".jpg", ".jpeg", ".webp", ".motion3.json",
-               ".exp3.json", ".physics3.json", ".pose3.json", ".cdi3.json", ".userdata3.json")
-    _allowed_files(resources, allowed)
+               ".exp3.json", ".physics3.json", ".pose3.json", ".cdi3.json", ".userdata3.json", ".vtube.json", ".xyplugin.json")
+    _allowed_files(resources, allowed, filenames=("items_pinned_to_model.json", "parameters.json",
+                                                "physics3.json", "pose3.json", "cdi3.json", "userdata3.json"),
+                   paths=roles.keys() | audio_files)
     # Even assets absent from FileReferences are loaded by NEKO's recursive scan.
-    for name in resources.files:
+    for name in sorted(resources.files):
         # Suffix detection is case-insensitive; actual dependency lookup stays exact.
         lower = name.lower()
-        if lower.endswith(".motion3.json"):
-            _motion(resources.json(name), name)
-        elif lower.endswith(".exp3.json"):
-            _expression(resources.json(name), name)
-        elif lower.endswith((".physics3.json", ".pose3.json", ".cdi3.json", ".userdata3.json")):
-            _auxiliary(resources.json(name), name)
+        kinds = roles.get(name, set()) | {suffix for suffix in (".motion3.json", ".exp3.json", ".physics3.json",
+                                                               ".pose3.json", ".cdi3.json", ".userdata3.json")
+                                        if ("." + posixpath.basename(lower)).endswith(suffix)}
+        if kinds:
+            contents = resources.json(name)
+            for kind in sorted(kinds):
+                if kind == ".motion3.json":
+                    for code in _motion(contents, name):
+                        resources.warn(code, name)
+                elif kind == ".exp3.json":
+                    _expression(contents, name)
+                elif kind != "PhysicsV2":
+                    _auxiliary(contents, name, kind=kind)
+        if posixpath.basename(lower) == "parameters.json":
+            # NEKO's parameter editor saves finite numeric overrides keyed by
+            # model ID or legacy param_N. Keys never become paths or commands.
+            parameters = resources.json(name)
+            _require(all(_number(value) for value in parameters.values()), name)
+        elif lower.endswith((".vtube.json", ".xyplugin.json")) or posixpath.basename(lower) == "items_pinned_to_model.json":
+            # Preserve external tool settings verbatim as data. Reuse bounded JSON
+            # checks without interpreting commands, paths or URLs as dependencies.
+            resources.json(name)
         elif name.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
             _image(resources, name)
+        elif lower.endswith((".mp3", ".wav", ".ogg")):
+            header = resources.prefix(name, 12)
+            if lower.endswith(".mp3"):
+                valid = header.startswith(b"ID3") or (len(header) >= 4 and header[0] == 0xff
+                         and header[1] & 0xe0 == 0xe0 and header[1] & 0x18 != 0x08 and header[1] & 0x06 != 0
+                         and header[2] & 0xf0 != 0xf0 and header[2] & 0x0c != 0x0c)
+            elif lower.endswith(".wav"):
+                valid = header.startswith(b"RIFF") and header[8:12] == b"WAVE"
+            else:
+                valid = header.startswith(b"OggS\x00")
+            _require(valid, name, "invalid_model_structure")
 
 
 def validate_live2d_bundle(path, *, limits: BundleLimits = BundleLimits(),
@@ -294,8 +394,9 @@ def validate_live2d_bundle(path, *, limits: BundleLimits = BundleLimits(),
     """Admit a Live2D bundle using the container's open, stable source object."""
     with inspect_bundle(path, limits=limits) as (bundle, archive):
         _require(bundle.model_format == "live2d", bundle.entrypoint, "invalid_model_format")
-        _live2d(_Resources(bundle, archive, format_limits))
-    return bundle
+        resources = _Resources(bundle, archive, format_limits)
+        _live2d(resources)
+    return resources.admitted()
 
 
 def _uint(value, path: str) -> int:
@@ -482,6 +583,27 @@ def _vrm(resources: _Resources) -> None:
                 width = {5121: 1, 5123: 2, 5125: 4}.get(_uint(part.get("componentType"), entry)) if key == "indices" else element_size
                 _require(width is not None, entry)
                 _require(_uint(part.get("byteOffset", 0), entry) + sparse_count * width <= view["byteLength"], entry)
+    # Mesh dependencies are loaded regardless of animation. Validate once per
+    # mesh, then reuse cardinalities instead of rescanning for each channel.
+    mesh_morph_counts = []
+    for mesh in meshes:
+        _require(isinstance(mesh, dict) and isinstance(mesh.get("primitives"), list), entry)
+        counts = []
+        for primitive in mesh["primitives"]:
+            _require(isinstance(primitive, dict) and isinstance(primitive.get("attributes"), dict), entry)
+            for accessor in primitive["attributes"].values():
+                _index(accessor, accessors, entry)
+            if "indices" in primitive:
+                _index(primitive["indices"], accessors, entry)
+            morphs = primitive.get("targets", [])
+            if "targets" in primitive:
+                _require(isinstance(morphs, list) and bool(morphs), entry)
+                for morph in morphs:
+                    _require(isinstance(morph, dict), entry)
+                    for index in morph.values():
+                        _index(index, accessors, entry)
+            counts.append(len(morphs))
+        mesh_morph_counts.append(tuple(set(counts)))
     for animation in animations:
         _require(isinstance(animation, dict), entry)
         samplers, channels = animation.get("samplers"), animation.get("channels")
@@ -510,6 +632,11 @@ def _vrm(resources: _Resources) -> None:
             normalized = (path in ("rotation", "weights") and output["componentType"] in (5120, 5121, 5122, 5123)
                           and output.get("normalized") is True)
             _require(floating or normalized, entry)
+            if normalized and "node" in target:
+                # GLTFLoader._getArrayFromAccessor creates a new Float32Array
+                # per channel, even when its output accessor is shared.
+                allocated += output["count"] * (4 if path == "rotation" else 1) * 4
+                _require(allocated <= resources.limits.vrm_accessor_bytes, entry, "model_accessor_budget_exceeded")
             cubic = sample.get("interpolation", "LINEAR") == "CUBICSPLINE"
             _require(not cubic or sample_input["count"] >= 2, entry)
             expected = sample_input["count"] * (3 if cubic else 1)
@@ -521,21 +648,8 @@ def _vrm(resources: _Resources) -> None:
                     continue
                 node = nodes[target["node"]]
                 _require(isinstance(node, dict), entry)
-                mesh = meshes[_index(node.get("mesh"), meshes, entry)]
-                _require(isinstance(mesh, dict), entry)
-                primitives = mesh.get("primitives")
-                _require(isinstance(primitives, list) and bool(primitives), entry)
-                counts = []
-                for primitive in primitives:
-                    _require(isinstance(primitive, dict), entry)
-                    morphs = primitive.get("targets")
-                    _require(isinstance(morphs, list) and bool(morphs), entry)
-                    counts.append(len(morphs))
-                    for morph in morphs:
-                        _require(isinstance(morph, dict), entry)
-                        for index in morph.values():
-                            _index(index, accessors, entry)
-                _require(len(set(counts)) == 1, entry)
+                counts = mesh_morph_counts[_index(node.get("mesh"), meshes, entry)]
+                _require(len(counts) == 1 and counts[0] > 0, entry)
                 expected *= counts[0]
             _require(output["count"] == expected, entry)
     for node in nodes:
@@ -558,14 +672,6 @@ def _vrm(resources: _Resources) -> None:
                 colors[node] = 1
                 stack.append((node, True))
                 stack.extend((child, False) for child in nodes[node].get("children", []))
-    for mesh in meshes:
-        _require(isinstance(mesh, dict) and isinstance(mesh.get("primitives"), list), entry)
-        for primitive in mesh["primitives"]:
-            _require(isinstance(primitive, dict) and isinstance(primitive.get("attributes"), dict), entry)
-            for accessor in primitive["attributes"].values():
-                _index(accessor, accessors, entry)
-            if "indices" in primitive:
-                _index(primitive["indices"], accessors, entry)
     for skin in skins:
         _require(isinstance(skin, dict) and isinstance(skin.get("joints"), list), entry)
         for joint in skin["joints"]:
@@ -885,5 +991,6 @@ def validate_model_bundle(path, *, limits: BundleLimits = BundleLimits(),
                           format_limits: FormatLimits = FormatLimits()):
     """Single format dispatcher for both final market packages and offline import."""
     with inspect_bundle(path, limits=limits) as (bundle, archive):
-        {"live2d": _live2d, "vrm": _vrm, "mmd": _mmd}[bundle.model_format](_Resources(bundle, archive, format_limits))
-    return bundle
+        resources = _Resources(bundle, archive, format_limits)
+        {"live2d": _live2d, "vrm": _vrm, "mmd": _mmd}[bundle.model_format](resources)
+    return resources.admitted()
