@@ -1084,3 +1084,50 @@ async def test_what_is_said_to_a_task_agent_while_its_changes_are_checked_is_not
     done = await wait_status(host, two.commission_id, "done")
     assert done.result_summary.startswith("the sitemap is there as well")
     assert (workdir / "links.txt").exists() and (workdir / "sitemap.txt").exists()
+
+
+async def test_a_task_agent_started_for_what_was_added_while_its_changes_were_checked_is_no_inspector_at_work(
+    hosts, tmp_path, monkeypatch
+):
+    from nekopower.host import tree_work
+
+    monkeypatch.setattr(tree_work, "_GONE_SECONDS", 0.3)
+    checking, more, never = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def until_checked() -> None:
+        await checking.wait()
+
+    async def wait() -> None:
+        await more.wait()
+
+    async def for_long() -> None:
+        await never.wait()
+
+    helper = ScriptedLLM([[for_long, *_write("styles.css", "half")]])
+    leader_llm = ScriptedLLM([*_hand_over(), *_hand_over(description="second writer")])
+    members = {
+        "the header": ScriptedLLM([_report("header fixed")]),
+        "broken links": ScriptedLLM([
+            _write("links.txt", "repaired"), _report("links repaired"),
+            [call("subagent", {"description": "styles", "prompt": "Tidy the stylesheet. PART-STYLES"}), finish("tool_calls")],
+            [wait, *_report("the styles are being seen to as well")],
+        ]),
+        CHECK: ScriptedLLM([[until_checked, *_report("it holds")], _report("it holds still")]),
+        "PART-STYLES": helper,
+    }
+    host, trees, workdir = await _shop(hosts, tmp_path, _by_role(leader_llm, members))
+    assert (await host.set_landing_settings(inspect=True))["inspect"] is True
+    await wait_status(host, (await _dispatch(host, FIRST)).commission_id, "done")
+    two = await _dispatch(host, SECOND)
+    await wait_until(lambda: len(members[CHECK].requests) == 1, what="the inspector being at work")
+    # The user says more while its changes are checked: it goes on, and starts a task agent for that.
+    assert await host.tell(two.commission_id, "tidy the stylesheet as well")
+    await wait_until(lambda: len(helper.requests) == 1, what="the task agent it started being at work")
+    checking.set()
+    await asyncio.sleep(1.0)
+    # The inspector is gone; what was started for the new work is nobody that would not stop.
+    assert (await host.ledger.get(two.commission_id)).status == "working"
+    assert await _events(host, two.commission_id, "not_landed") == []
+    more.set()
+    done = await wait_status(host, two.commission_id, "done")
+    assert done.result_summary.startswith("the styles are being seen to as well") and (workdir / "links.txt").exists()

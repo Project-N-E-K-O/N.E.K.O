@@ -2586,7 +2586,7 @@ async def test_what_clashes_and_cannot_be_said_to_the_task_agent_is_left_for_the
 @pytest.mark.parametrize(
     "why",
     [
-        "the merge cannot be written", "it clashes",
+        "the merge cannot be written", "it clashes", "some of it is never carried over",
         "where its project works cannot be read", "its project's record cannot be read", "its project is put away",
     ],
 )
@@ -2601,6 +2601,11 @@ async def test_a_worktree_the_user_kept_stays_the_users_where_it_cannot_be_lande
         answer = await host.land_worktree(tree.id)
         assert (answer["status"], answer["detail"]) == ("failed", "the project's files are in the middle of a rebase")
         reason = "failed"
+    elif why == "some of it is never carried over":
+        trees.results = [MergeResult("landed", files=(FileChange("links.txt", "added", 1, 0),), lines_added=1, skipped=("video.mp4",))]
+        answer = await host.land_worktree(tree.id)
+        assert (answer["status"], answer["skipped"]) == ("landed", ["video.mp4"])
+        reason = "skipped"
     elif why == "it clashes":
         # Its commission is stuck over it, and is not handed it back all the same: the user's to merge.
         trees.results = [clash]
@@ -2639,7 +2644,11 @@ async def test_a_commission_is_done_before_its_worktree_is_removed(hosts, tmp_pa
 
     async def removing(worktree: Any) -> None:
         commission = await host.ledger.get(two.commission_id)
+        (row,) = await host.ledger.trees()
         seen.append((commission.status, two.commission_id in host.task_agents._tree_of))
+        # On record as one to remove, and shown nowhere: not one that waits, should the host end this moment.
+        assert row.state == "discarding" and await host.worktrees() == []
+        assert not await host.ledger.trees_pending("Shop site")
         await remove(worktree)
 
     trees.remove = removing
@@ -2798,3 +2807,33 @@ async def test_what_is_left_of_a_discarded_worktree_and_cannot_be_removed_now_is
     monkeypatch.setattr(tree_work.shutil, "rmtree", rmtree)
     assert await manager.reconcile_trees() == {"removed": [tree.id], "kept": []}
     assert await host.ledger.trees() == [] and not path.exists()
+
+
+async def test_a_landing_gives_way_at_once_to_more_the_user_said_and_stops_nothing_that_was_started_for_it(hosts, tmp_path):
+    host, trees, workdir, one, two, _members = await _two_members(
+        hosts, tmp_path, second=[_write("links.txt", "repaired"), _report("links repaired")]
+    )
+    manager = host.task_agents
+    stale = manager._stale
+    said = {"more": True}
+    ended: list[str] = []
+    end_what_it_started = manager._end_what_it_started
+
+    async def ending(commission_id: str) -> None:
+        ended.append(commission_id)
+        await end_what_it_started(commission_id)
+
+    manager._end_what_it_started = ending
+    # More was said to it by the time its changes are to be landed (as what tells a landing of that says).
+    manager._stale = lambda commission_id, done: (said["more"] and commission_id == two.commission_id) or stale(commission_id, done)
+    host.release.set()
+    await wait_until(lambda: two.commission_id in manager._dones, what="the second one saying it is done")
+    await asyncio.sleep(0.8)
+
+    # Nothing it may have started for that was stopped, and nothing landed: at work, in its worktree.
+    (tree,) = await host.ledger.trees()
+    assert two.commission_id not in ended and trees.merged == [] and tree.state == "active"
+    assert (await host.ledger.get(two.commission_id)).status == "working"
+    said["more"] = False
+    await wait_status(host, two.commission_id, "done")
+    assert two.commission_id in ended and (workdir / "links.txt").exists()

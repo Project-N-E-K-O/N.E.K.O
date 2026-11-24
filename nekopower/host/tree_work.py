@@ -77,6 +77,8 @@ TREE_REASONS: tuple[str, ...] = (
 CHECK_PASSED = "pass"
 CHECK_FAILED = "fail"
 CHECK_NONE = "none"
+# (Not a verdict that is put on record: the inspector could not be stopped, and is still at it.)
+CHECK_STUCK = "stuck"
 
 # The states of a worktree whose commission is under way.
 _AT_WORK: frozenset[str] = frozenset({"making", "active", "landing", "resolving"})
@@ -981,11 +983,17 @@ class TreeWork:
             self._dones.pop(commission_id, None)
             return await self._not_landed(row, commission, done, REASON_FAILED, detail="its worktree is gone")
         row = await self._ledger.update_tree(row.id, state="landing") or row
+        if self._stale(commission_id, done):
+            # More was said to it since, and it is at work on that: what it started for that is
+            # not stopped, and nothing is landed under it.
+            return await self._at_work_again(row)
         # A task agent it started works in the same worktree, and may still be at it though the
         # commission says it is done: stopped, as when a commission is done anywhere, and gone
         # from its runtime before what was changed is read.
         await self._end_what_it_started(commission_id)
         if not await self._gone_from_runtime(commission_id, itself=False):
+            if self._stale(commission_id, done):
+                return await self._at_work_again(row)
             # One of them is still at it in the worktree: nothing is merged under it.
             self._dones.pop(commission_id, None)
             return await self._not_landed(
@@ -994,14 +1002,16 @@ class TreeWork:
         chosen = await self.landing.get()
         if chosen["inspect"] or (await self._chosen(commission_id)).get("inspect"):
             verdict, findings = await self._inspect(row, commission)
-            if not await self._gone_from_runtime(commission_id, itself=False):
+            if self._stale(commission_id, done):
+                # More was said to it while it was checked (what it started for that is its own
+                # to wait for): checked anew once that run is over.
+                return await self._at_work_again(row)
+            if verdict == CHECK_STUCK:
                 # The inspector (stopped, say) is still at it in the worktree: nothing is merged under it.
                 self._dones.pop(commission_id, None)
                 return await self._not_landed(
                     row, commission, done, REASON_FAILED, detail="an inspector could not be stopped in its worktree"
                 )
-            if self._stale(commission_id, done):
-                return await self._at_work_again(row)
             await self._note_tree_event(
                 commission_id, "inspected", {"tree": row.id, "verdict": verdict, "round": row.checks + 1}
             )
@@ -1251,6 +1261,10 @@ class TreeWork:
             # run that began while its end was being written (``unless``): that one goes on in
             # the worktree, which stays.
             self._landing_ends.add(commission_id)
+            if not result.skipped:
+                # On record as one to remove from here on (what it held is landed): shown nowhere,
+                # in nobody's way, and removed as the host next starts should it end this moment.
+                await self._ledger.update_tree(row.id, state="discarding")
             try:
                 ended = await self._end(
                     commission_id, "done", reason=done.reason, text=text,
@@ -1378,11 +1392,16 @@ class TreeWork:
             shown += words["skipped"].format(files=", ".join(list(skipped)[:most]), path=row.workdir)
         return told, shown.strip()
 
-    async def _keep_for_skipped(self, row: Tree, skipped: Any) -> Tree:
-        """Keep a worktree whose changes were landed but for files that are never carried over, for the user to see to."""
+    async def _keep_for_skipped(self, row: Tree, skipped: Any, *, kept: bool = False) -> Tree:
+        """Keep a worktree whose changes were landed but for files that are never carried over, for the user to see to.
+
+        ``kept``: it was the user's to see to personally, and stays that.
+        """
         from config import nekopower_settings as settings
 
-        row = await self._ledger.update_tree(row.id, state="unlanded", reason=REASON_SKIPPED, conflicts=skipped) or row
+        row = await self._ledger.update_tree(
+            row.id, state="kept" if kept else "unlanded", reason=REASON_SKIPPED, conflicts=skipped
+        ) or row
         self._forget_tree(row)
         await self._note_tree_event(
             row.commission_id,
@@ -1713,7 +1732,7 @@ class TreeWork:
                 )
             if result.skipped:
                 # Landed, but for what is never carried over: that stays where it is, with the worktree.
-                await self._keep_for_skipped(row, result.skipped)
+                await self._keep_for_skipped(row, result.skipped, kept=was_kept)
             else:
                 await self._remove_tree(row, handle)
             # (Read as it is settled: its commission may have gone on in another worktree meanwhile.)
@@ -2073,6 +2092,9 @@ class TreeWork:
             raise
         finally:
             self._inspections.pop(child.id, None)
+        if not await self._gone_from_runtime(child.id):
+            # Heard of (stopped, say) and not gone from its runtime: it may be finishing a tool in there.
+            return CHECK_STUCK, said
         if status == "completed":
             # (Done by a report, or by a run that ended without one: only the first says it passes.)
             return (CHECK_PASSED if await self._ledger.has_event(child.id, "report") else CHECK_NONE), said
