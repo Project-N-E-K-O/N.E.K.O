@@ -227,7 +227,10 @@ def check(plugin_id: str, parent_request_id: object, capability: str, operation:
         if decision.allowed and "possible_laundering" not in flags:
             if record is not None:
                 registry.note_use(record, capability)
-            return decision
+            # An allowance based on the last record read (store unreadable)
+            # is also audited below, so it can be told apart.
+            if "consent_unavailable" not in flags:
+                return decision
         verdict = "allow" if decision.allowed else "would_deny"
         key = (plugin_id, capability, verdict, decision.reason, decision.blocked_by, tuple(sorted(flags)))
         now = time.monotonic()

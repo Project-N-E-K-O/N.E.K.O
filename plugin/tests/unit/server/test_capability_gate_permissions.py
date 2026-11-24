@@ -199,6 +199,10 @@ def test_a_failed_read_uses_the_last_record_and_backs_off(env, monkeypatch):
     assert capability_gate.granted_capabilities("demo") == (frozenset({MEMORY}), False)
     assert capability_gate.granted_capabilities("demo") == (frozenset({MEMORY}), False)
     assert reads == ["demo"]  # the second read waits for the back-off
+    # An allowance from the last record is audited and marked, not taken
+    # silently like one judged against a readable store.
+    entry = _verdict("demo")
+    assert entry["verdict"] == "allow" and "consent_unavailable" in entry["flags"]
 
 
 def test_the_master_switch_does_not_change_the_verdict(env, monkeypatch):
