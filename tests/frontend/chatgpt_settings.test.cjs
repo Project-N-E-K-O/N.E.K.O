@@ -525,7 +525,7 @@ function independentSettingsSurface(values = {}) {
             querySelectorAll: () => [],
         },
         MODEL_TYPES: ['conversation', 'omni', 'tts'], _imageProviders: {},
-        _chatgptIndependentSlots: [], _loadedChatGPTIndependentFields: {},
+        _chatgptIndependentSlots: [], _loadedChatGPTIndependentFields: {}, _followClearedModelIds: new Set(),
         _apiSaveInProgress: false, getRealKey: input => input.value,
         showStatus: (message, status) => messages.push({message, status}),
         setApiSaveInProgress: value => { context._apiSaveInProgress = value; },
@@ -660,7 +660,15 @@ test('a dormant slot that follows another tier is not edited when that tier chan
     const ui = independentSettingsSurface(values);
     ui.context.MODEL_TYPES.push('decision');
     ui.context.rememberChatGPTIndependentSettings(['decision']);
-    // Switching the assist provider clears follower model IDs and refreshes their URL.
+    // Switching the assist provider clears follower model IDs (the real cascade
+    // records the cleared field) and refreshes their URL.
+    const source = fs.readFileSync(path.join(__dirname, '../../static/js/api_key_settings.js'), 'utf8');
+    const cascadeStart = source.indexOf('function clearFollowModelIdsOnApiChange(');
+    vm.runInNewContext(source.slice(cascadeStart, source.indexOf('\nfunction ', cascadeStart + 1)), ui.context);
+    ui.context._isLoadingSavedConfig = false;
+    ui.context.MODEL_TYPES = ['decision'];
+    ui.context.clearFollowModelIdsOnApiChange('follow_assist', 'qwen', 'openai');
+    assert.equal(ui.nodes.decisionModelId.value, '');
     const fullForm = {enableCustomApi: true, coreApi: 'qwen', assistApi: 'openai',
         decisionModelProvider: 'follow_assist', decisionModelId: '', decisionModelUrl: 'https://openai.test/v1',
         decisionModelApiKey: '__NEKO_SECRET_MASKED__'};
@@ -677,6 +685,13 @@ test('a dormant slot that follows another tier is not edited when that tier chan
     assert.equal(ui.calls.length, 1);
     assert.equal(ui.messages.length, before + 1);
     assert.equal(ui.messages.at(-1).message, 'api.chatgpt.independentSettings');
+    // Clearing the ID by hand, without switching the followed provider, is an edit too.
+    const manual = independentSettingsSurface(values);
+    manual.context.MODEL_TYPES.push('decision');
+    manual.context.rememberChatGPTIndependentSettings(['decision']);
+    await manual.context.saveApiKey({...fullForm, assistApi: 'qwen', decisionModelUrl: 'https://qwen.test/v1'});
+    assert.equal(manual.calls.length, 0);
+    assert.equal(manual.messages.at(-1).message, 'api.chatgpt.independentSettings');
 });
 
 test('ordinary saves use the same GSV defaults and unknown image serialization as the form', async () => {

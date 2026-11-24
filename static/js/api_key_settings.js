@@ -30,6 +30,9 @@ let _coreApiKeyInputDirty = false;
 let _apiSaveInProgress = false;
 let _chatgptIndependentSlots = [];
 let _loadedChatGPTIndependentFields = {};
+// 被「切换被跟随的服务商」联动清空的模型 ID 输入框（clearFollowModelIdsOnApiChange），
+// 订阅期间保存时只有这些清空算继承，用户手动清空仍按改动处理。
+const _followClearedModelIds = new Set();
 // 本页已提醒过的阿里美国 API URL，避免同一轮检测重复弹窗。
 const _aliyunUsApiWarningShownKeys = new Set();
 
@@ -2153,7 +2156,10 @@ function clearFollowModelIdsOnApiChange(mode, previousProvider, provider) {
         if (modelType === 'omni' || modelType === 'tts') return;
         const select = document.getElementById(`${modelType}ModelProvider`);
         const input = document.getElementById(`${modelType}ModelId`);
-        if (select?.value === mode && input) input.value = '';
+        if (select?.value === mode && input) {
+            input.value = '';
+            _followClearedModelIds.add(`${modelType}ModelId`);
+        }
     });
 }
 
@@ -4268,6 +4274,7 @@ function refreshAutoResolvedModelUrlsForSave(params) {
 
 
 function rememberChatGPTIndependentSettings(slots) {
+    _followClearedModelIds.clear();
     _chatgptIndependentSlots = Array.isArray(slots)
         ? slots.filter(slot => MODEL_TYPES.includes(slot) || slot === 'image') : [];
     _loadedChatGPTIndependentFields = {};
@@ -4326,7 +4333,7 @@ function prepareChatGPTIndependentSettingsForSave(params) {
             // neither is an edit of this slot. A model ID typed in is one, and is refused
             // with the explanation rather than dropped.
             const inherited = followsUnchanged && (suffix === 'Url' || suffix === 'ApiKey'
-                || (suffix === 'Id' && (params[field] === ''
+                || (suffix === 'Id' && ((params[field] === '' && _followClearedModelIds.has(field))
                     || document.getElementById(field)?.dataset.fixedModelHidden === 'true')));
             if (Object.hasOwn(params, field) && !inherited
                 && params[field] !== _loadedChatGPTIndependentFields[field]) return null;
