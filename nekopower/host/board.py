@@ -70,7 +70,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import PurePath
 from typing import Any
 
-from nekopower.host.ledger import BoardRows, Commission, Ledger, Session
+from nekopower.host.ledger import PROJECT_KINDS, BoardRows, Commission, Ledger, Session
 from nekopower.host.paths import DEFAULT_PROJECT, SpacePaths
 from nekopower.host.space import PROJECT_ARCHIVED, Project, TaskAgentSpace
 from nekopower.host.templates import SHADOW, Listed, TemplateStore
@@ -465,7 +465,8 @@ class Board:
         leads_of: dict[str, list[Session]] = {}
         loose: list[Session] = []
         for session in rows.sessions:
-            if session.kind == "project" and session.project:
+            if session.kind in PROJECT_KINDS and session.project:
+                # The leader of a project, if it has one, and its members.
                 leads_of.setdefault(session.project, []).append(session)
             elif session.kind == "single":
                 loose.append(session)

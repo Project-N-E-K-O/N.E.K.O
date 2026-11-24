@@ -51,11 +51,14 @@ logger = logging.getLogger(__name__)
 DRAFT_REASONS: tuple[str, ...] = ("empty", "no_model", "no_preset", "timeout", "failed", "unreadable", "incomplete")
 
 # The preset of a session the user sets up, unless the answer names another
-# that is there: it leads a project of its own.
-DEFAULT_PRESET = "boss"
+# that is there: one that does the work it is handed itself.
+DEFAULT_PRESET = "general"
 # Presets such a session is not offered: how a task agent another one started
-# is opened, and a session of one errand that belongs to no project.
-NOT_OFFERED: frozenset[str] = frozenset({"worker", "general"})
+# is opened, and the leader of a project, which does none of the work. A
+# project gets a leader when it has grown (``families.LEADER_REASONS``), or
+# when the user chooses that preset themselves; a form filled in for them
+# never makes a session that only hands work out.
+NOT_OFFERED: frozenset[str] = frozenset({"worker", "boss"})
 
 
 class DraftError(RuntimeError):

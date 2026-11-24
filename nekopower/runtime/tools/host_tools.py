@@ -308,4 +308,20 @@ def build_host_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> li
 
         tools.append(define_tool(schemas["ask_session"], ask_session))
 
+    if "hand_over" in capabilities:
+
+        async def hand_over(args: dict[str, Any], call: ToolCallInfo) -> str:
+            brief = str(args.get("brief") or "")
+            if not brief.strip():
+                raise ToolError("brief must be a non-empty string")
+            payload = {
+                "to": str(args["to"]).strip() if args.get("to") else None,
+                "preset": str(args["preset"]).strip() if args.get("preset") else None,
+                "description": str(args.get("description") or ""),
+                "brief": brief,
+            }
+            return said(await ask_host("hand_over", payload, call), "message")
+
+        tools.append(define_tool(schemas["hand_over"], hand_over))
+
     return tools

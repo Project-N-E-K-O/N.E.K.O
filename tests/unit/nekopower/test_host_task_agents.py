@@ -146,7 +146,7 @@ async def test_commission_goes_to_a_task_agent_and_its_report_ends_it(hosts, tmp
     assert report.payload["summary"] == "sorted 12 photos\nin D:/Photos/by-month"
     assert report.payload["delivery_mode"] == "proactive"
     kinds = [event.type for event in await _events(host, receipt.commission_id)]
-    assert kinds[:3] == ["created", "decision", "status"]
+    assert kinds[:3] == ["created", "decision", "orchestrated"] and kinds[3] == "status"
     assert {"started", "tool_start", "tool_end", "report", "ended"} <= set(kinds)
 
 
@@ -2320,7 +2320,7 @@ async def test_child_task_agent_runs_under_its_parent_and_reports_back_to_it(hos
     assert sub.lanlan_name == "Lan"
     # The child got its part as its work and may not start task agents itself.
     child_spec = next(spec for spec in specs if not spec.top_level)
-    assert sorted(child_spec.disabled_tools) == ["ask_session", "message_session", "schedule_wake", "subagent"]
+    assert sorted(child_spec.disabled_tools) == ["ask_session", "hand_over", "message_session", "schedule_wake", "subagent"]
     assert child.requests[0][-1]["content"].startswith("Your part: count the files\nCount the files in the folder.")
     assert "another task agent" in child.requests[0][0]["content"]
     assert "You work for Lan" not in child.requests[0][0]["content"]
