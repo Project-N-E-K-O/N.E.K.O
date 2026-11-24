@@ -7,6 +7,7 @@ import { ElMessage } from 'element-plus'
 import { API_BASE_URL, API_TIMEOUT } from './constants'
 import { useConnectionStore } from '@/stores/connection'
 import { i18n } from '@/i18n'
+import { permissionErrorKey } from './pluginPermissionErrors'
 
 let lastNetworkErrorShownAt = 0
 
@@ -466,6 +467,9 @@ service.interceptors.response.use(
         default:
           message = formatHttpError(error) || i18n.global.t('messages.requestFailedWithStatus', { status })
       }
+      // Permission-store failures (e.g. on uninstall) get a message that says what to do.
+      const permissionKey = permissionErrorKey(readErrorCode(error))
+      if (permissionKey) message = i18n.global.t(permissionKey)
     } else if (error.request && isRequestTimeout(error)) {
       // Axios 超时只说明当前请求未按时完成，不能据此标记服务器断连。
       const timeoutMessageKey = (error.config as ErrorDisplayRequestConfig | undefined)

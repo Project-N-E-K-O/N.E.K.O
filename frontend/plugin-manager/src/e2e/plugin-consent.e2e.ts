@@ -5,6 +5,8 @@ type Options = {
   analysisStatus?: string
   capabilities?: string[]
   running?: boolean
+  permissions?: Record<string, { declared: string | null; findings: Array<{ file: string; line: number }> }>
+  blindSpots?: Array<{ type: string; file: string | null; line: number | null }>
 }
 
 const ANALYZING = new Set(['queued', 'running', 'unavailable'])
@@ -13,6 +15,8 @@ async function fixture(page: Page, options: Options = {}) {
   const analysisStatus = options.analysisStatus ?? 'completed'
   const capabilities = options.capabilities ?? ['conversations.read', 'memory.read', 'messages.push']
   let running = options.running ?? false
+  const permissions = options.permissions ?? {}
+  const blindSpots = options.blindSpots ?? []
   let decision: 'approved' | 'denied' | null = null
   const approvedCapabilities: string[] = []
   const calls = { decided: [] as boolean[], started: 0 }
@@ -50,6 +54,8 @@ async function fixture(page: Page, options: Options = {}) {
           ]
         : [],
       warnings: analysisStatus === 'failed' ? [{ code: 'analysis_failed' }] : [],
+      permissions,
+      blind_spots: blindSpots,
     },
   })
   await page.route('**/*', async (route) => {
@@ -76,7 +82,12 @@ async function fixture(page: Page, options: Options = {}) {
     type: 'plugin',
     status: running ? 'running' : 'stopped',
     entries: [],
-    consent: { state: state(), decision, upgraded: decision === 'approved' && unconfirmed().length > 0 },
+    consent: {
+      state: state(),
+      decision,
+      upgraded: decision === 'approved' && unconfirmed().length > 0,
+      blind_spots: blindSpots.length,
+    },
   })
   await page.route('**/plugins?*', (route) =>
     route.fulfill({ json: { plugins: [plugin()], message: '' } })
@@ -156,12 +167,41 @@ test('clean analysis is disclosed in Permissions and starts without a decision',
   const calls = await fixture(page, { capabilities: [] })
   await page.goto(`${PREVIEW_ORIGIN}/ui/plugins/consent_demo?tab=permissions`)
   const permissions = page.locator('.plugin-permissions')
-  await expect(permissions).toContainText('No calls that read conversations')
+  await expect(permissions).toContainText('No issues found')
   await expect(permissions.getByRole('button', { name: 'Approve and start' })).toHaveCount(0)
   await startButton(page).click()
   await expect.poll(() => calls.started).toBe(1)
   expect(calls.decided).toEqual([])
   await expect(page.getByRole('dialog', { name: 'Confirm plugin capabilities' })).toHaveCount(0)
+})
+
+test('used permissions and blind spots are disclosed instead of nothing found', async ({
+  page,
+}, testInfo) => {
+  await fixture(page, {
+    capabilities: [],
+    permissions: {
+      'system.network:connect': { declared: null, findings: [{ file: 'main.py', line: 12 }] },
+    },
+    blindSpots: [
+      { type: 'dynamic_import', file: 'main.py', line: 30 },
+      { type: 'not_analyzed', file: 'vendor/big.py', line: null },
+    ],
+  })
+  await page.goto(`${PREVIEW_ORIGIN}/ui/plugins/consent_demo?tab=permissions`)
+  const permissions = page.locator('.plugin-permissions')
+  await expect(permissions).toContainText('This plugin uses 1 permission(s)')
+  await expect(permissions).toContainText('Connect to the internet')
+  await expect(permissions).toContainText('2 place(s) could not be confirmed by static analysis')
+  await expect(permissions).not.toContainText('No issues found')
+  await page.screenshot({ path: testInfo.outputPath('blind-spots-detail.png'), fullPage: true })
+
+  await page.goto(`${PREVIEW_ORIGIN}/ui/plugins`)
+  await expect(page.locator('[data-testid="plugin-blind-spots"]').first()).toHaveText(
+    'Partly unconfirmable',
+  )
+  await expect(page.locator('[data-testid="plugin-permission-review"]')).toHaveCount(0)
+  await page.screenshot({ path: testInfo.outputPath('blind-spots-list.png'), fullPage: true })
 })
 
 test('discloses capabilities, saves the decision once, and starts without asking again', async ({

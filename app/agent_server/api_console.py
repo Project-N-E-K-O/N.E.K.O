@@ -51,8 +51,8 @@ TOKEN_HEADER = "X-CSRF-Token"
 # How long the sizes of the directories are added up for, all of them
 # together; what was not reached by then is reported as not measured.
 _SIZE_BUDGET_SECONDS = 1.5
-# The categories a page shows a row for. The setting of the MCP servers is
-# not among them: there is nowhere yet to configure a server.
+# The categories the permission table shows a row for. The setting of the
+# MCP servers is not among them: it is shown with the servers (``/mcp``).
 _SHOWN_CATEGORIES: tuple[str, ...] = (
     "workdir_files", "outside_read", "outside_write", "run_command",
     "keyboard_mouse", "browser", "plugin_entry", "managed_delivery", "other",
@@ -288,6 +288,10 @@ def build_console_router(
             changed = await host.permission_store.set_mode(category, mode, expected_version=expected)
         except PermissionFileError:
             raise _refuse(409, "permissions_unreadable") from None
+        except OSError as exc:
+            # The file could not be written; the setting is still what it was.
+            logger.warning("permission setting for %s could not be saved: %s", category, type(exc).__name__)
+            raise _refuse(409, "permissions_not_saved") from None
         if not changed:
             raise _refuse(409, "stale")
         return await permissions_view(host)
@@ -775,6 +779,260 @@ def build_console_router(
         if stopped is None:
             raise _refuse(404, "no_commission")
         return {"success": True, "status": stopped.status}
+
+    @router.post("/space/projects/archive")
+    async def archive_project(payload: dict[str, Any]) -> dict[str, Any]:
+        """Put a project away into the archive. Nothing is removed, and a commission that names it brings it back."""
+        payload = payload or {}
+        project, _ = scope(payload.get("project"))
+        if project is None:
+            raise _refuse(400, "bad_name")
+        host = await get_host()
+        try:
+            archived = await space_call(host.archive_project(project))
+        except LookupError:
+            raise _refuse(404, "no_project") from None
+        except RuntimeError as exc:
+            kind = type(exc).__name__
+            if kind == "HostShuttingDown":
+                raise _refuse(503, "agent_unreachable") from None
+            if kind == "ProjectUnreadable":
+                raise _refuse(409, "space_refused") from None
+            if kind == "ProjectNotMoved":
+                # A file in its directory is held open: it stays where it is.
+                raise _refuse(409, "archive_failed") from None
+            if kind != "ProjectBusy":
+                raise
+            raise _refuse(409, "project_busy", reason=str(exc)) from None
+        return {"success": True, "project": archived}
+
+    # -- what happened among the task agents, and who waits for whom -------
+
+    def whole_number(value: Any, code: str, *, least: int = 0) -> int | None:
+        """Return a number a page sent as a query; None for none. What is no such number is refused with ``code``."""
+        if value is None or value == "":
+            return None
+        try:
+            number = int(str(value), 10)
+        except ValueError:
+            raise _refuse(400, code) from None
+        if not least <= number <= _ROW_MAX:
+            raise _refuse(400, code)
+        return number
+
+    @router.get("/timeline")
+    async def get_timeline(
+        project: str | None = None, after: str | None = None, limit: str | None = None
+    ) -> dict[str, Any]:
+        """Return a page of what happened among the task agents, in the order it happened; see ``NekoPowerHost.timeline``."""
+        project, _ = scope(project)
+        rows = whole_number(limit, "bad_limit", least=1)
+        host = await get_host()
+        try:
+            page = await host.timeline(project, None, after or None, rows)
+        except ValueError:
+            # Not a cursor a page of the timeline gave.
+            raise _refuse(400, "bad_cursor") from None
+        return {"success": True, **page}
+
+    @router.get("/timeline/start")
+    async def get_timeline_start() -> dict[str, Any]:
+        """Return where a page begins reading the timeline for what happened lately; see ``NekoPowerHost.timeline_start``."""
+        host = await get_host()
+        return {"success": True, **(await host.timeline_start())}
+
+    @router.get("/waits")
+    async def get_waits(project: str | None = None) -> dict[str, Any]:
+        """Return who waits for whom now; see ``NekoPowerHost.waits``."""
+        project, _ = scope(project)
+        host = await get_host()
+        return {"success": True, **(await host.waits(project, None))}
+
+    # -- the model each kind of task agent is sent to ------------------------
+
+    @router.get("/role-models")
+    async def get_role_models() -> dict[str, Any]:
+        """Return the model setting of every preset, what it comes to, and the slots to choose from."""
+        host = await get_host()
+        return {"success": True, **(await host.role_models())}
+
+    @router.post("/role-models")
+    async def set_role_model(payload: dict[str, Any]) -> dict[str, Any]:
+        """Set the model the new task agents of one preset are sent to; ``value`` None goes back to its default."""
+        payload = payload or {}
+        preset, value = payload.get("preset"), payload.get("value")
+        host = await get_host()
+        try:
+            view = await host.set_role_model(preset, value)
+        except ValueError as exc:
+            code = str(exc)
+            known = (
+                "unknown_preset", "cannot_inherit", "bad_value", "no_slots", "slot_not_found",
+                "model_config_unreadable", "capability_missing",
+            )
+            raise _refuse(400, code if code in known else "bad_value") from None
+        except OSError:
+            # The file of settings is there and cannot be read: nothing was written over it.
+            raise _refuse(409, "role_models_unreadable") from None
+        return {"success": True, **view}
+
+    # -- one task agent: what was said in it, what it used ---------------------
+
+    @router.get("/familiars/{session_id}/transcript")
+    async def get_transcript(
+        session_id: str, before: str | None = None, limit: str | None = None, at: str | None = None
+    ) -> dict[str, Any]:
+        """Return a page of what was said in a task agent's session, the last entries first asked for.
+
+        ``before`` is the place a page before gave; ``at`` asks for the one
+        entry that begins there, whole. A session dsh holds, or one nothing
+        was said in, answers ``readable`` false with the reason.
+        """
+        place = whole_number(before, "bad_place")
+        rows = whole_number(limit, "bad_limit", least=1)
+        one = whole_number(at, "bad_place")
+        host = await get_host()
+        try:
+            page = await host.transcript(session_id, place, rows, one)
+        except ValueError as exc:
+            code = str(exc)
+            if code == "record_unreadable":
+                raise _refuse(409, code) from None
+            raise _refuse(413 if code == "too_large" else 400, code if code in ("bad_place", "too_large") else "bad_place") from None
+        if page is None:
+            raise _refuse(404, "no_familiar")
+        return {"success": True, **page}
+
+    @router.get("/familiars/{session_id}/usage")
+    async def get_session_usage(session_id: str) -> dict[str, Any]:
+        """Return what a task agent used over all it did, and what the commission it has in hand may."""
+        host = await get_host()
+        usage = await host.session_usage(session_id)
+        if usage is None:
+            raise _refuse(404, "no_familiar")
+        return {"success": True, **usage}
+
+    # -- the commissions ----------------------------------------------------
+
+    @router.get("/commissions")
+    async def list_commissions(
+        status: str | None = None, project: str | None = None, loose: str | None = None,
+        days: str | None = None, limit: str | None = None,
+    ) -> dict[str, Any]:
+        """Return the commissions, the newest first: those under way and those that changed lately.
+
+        ``status`` is one status or several with commas between them;
+        ``project`` keeps to one project, ``loose`` (``1`` or ``true``) to
+        those of no project, and the two are not asked for together;
+        ``days`` how far back (0: however long ago).
+        """
+        from nekopower.host.ledger import STATUSES
+
+        wanted = None
+        if status:
+            wanted = tuple(part.strip() for part in status.split(",") if part.strip())
+            if not wanted or any(part not in (*STATUSES, "resting") for part in wanted):
+                raise _refuse(400, "bad_status")
+        project, _ = scope(project)
+        loosely = (loose or "").strip().lower()
+        if loosely not in ("", "0", "false", "1", "true"):
+            raise _refuse(400, "bad_name")
+        if loosely in ("1", "true"):
+            if project is not None:
+                # Of one project and of none at once: no commission is both.
+                raise _refuse(400, "bad_name")
+            project = ""
+        span = whole_number(days, "bad_days")
+        rows = whole_number(limit, "bad_limit", least=1)
+        host = await get_host()
+        return {"success": True, **(await host.commissions(wanted, project, span, rows))}
+
+    @router.get("/commissions/{commission_id}/usage")
+    async def get_commission_usage(commission_id: str) -> dict[str, Any]:
+        """Return what a commission used and what it may; see ``NekoPowerHost.usage``."""
+        host = await get_host()
+        usage = await host.usage(commission_id)
+        if usage is None:
+            raise _refuse(404, "no_commission")
+        return {"success": True, **usage}
+
+    # -- the MCP tools, and how each server is set -----------------------------
+
+    @router.get("/mcp")
+    async def get_mcp() -> dict[str, Any]:
+        """Return the MCP tools by server, with the setting of each server; see ``NekoPowerHost.mcp_tools``."""
+        host = await get_host()
+        # Read first: the version is of the settings as they were read for it.
+        view = await host.mcp_tools()
+        return {"success": True, "version": host.permission_store.version, **view}
+
+    @router.post("/mcp/permission")
+    async def set_mcp_permission(payload: dict[str, Any]) -> dict[str, Any]:
+        """Set how one MCP server is treated, or all of them when ``server`` is not given.
+
+        A server set to ``auto`` is left without a setting of its own and
+        goes by the one all servers share, as one that was never set does
+        (``PermissionStore.clear_mcp_server``).
+        """
+        from nekopower.host.permissions import MCP_SERVER_CATEGORY, MODES, PermissionFileError
+
+        payload = payload or {}
+        server, mode = payload.get("server"), payload.get("mode")
+        if server is not None and (
+            not isinstance(server, str) or not server.strip() or server.strip() == "*" or len(server) > 200
+        ):
+            raise _refuse(400, "bad_server")
+        if mode not in MODES:
+            raise _refuse(400, "bad_mode")
+        expected = payload.get("expected_version")
+        if expected is not None and (isinstance(expected, bool) or not isinstance(expected, int)):
+            raise _refuse(400, "bad_version")
+        host = await get_host()
+        try:
+            if server is not None and mode == "auto":
+                changed = await host.permission_store.clear_mcp_server(server.strip(), expected_version=expected)
+            else:
+                changed = await host.permission_store.set_mode(
+                    MCP_SERVER_CATEGORY, mode, server.strip() if server is not None else None, expected_version=expected
+                )
+        except PermissionFileError:
+            raise _refuse(409, "permissions_unreadable") from None
+        except OSError:
+            # The file could not be written.
+            raise _refuse(409, "permissions_not_saved") from None
+        if not changed:
+            raise _refuse(409, "stale")
+        view = await host.mcp_tools()
+        return {"success": True, "version": host.permission_store.version, **view}
+
+    # -- how much one commission may use ---------------------------------------
+
+    @router.get("/usage-limit")
+    async def get_usage_limit() -> dict[str, Any]:
+        """Return how much the work on one commission may use before the user is asked."""
+        host = await get_host()
+        return {"success": True, **(await host.usage_limit())}
+
+    @router.post("/usage-limit")
+    async def set_usage_limit(payload: dict[str, Any]) -> dict[str, Any]:
+        """Set that limit, in tokens; ``tokens`` None goes back to the default."""
+        payload = payload or {}
+        # Said in so many words: a payload that names no ``tokens`` asks for nothing, and does
+        # not put the limit back to the default.
+        if "tokens" not in payload:
+            raise _refuse(400, "not_a_number", field="tokens")
+        tokens = payload["tokens"]
+        if tokens is not None and (isinstance(tokens, bool) or not isinstance(tokens, int)):
+            raise _refuse(400, "not_a_number", field="tokens")
+        host = await get_host()
+        try:
+            view = await host.set_usage_limit(tokens)
+        except ValueError:
+            raise _refuse(400, "out_of_range", field="tokens") from None
+        except OSError:
+            # Its file could not be written: the limit is what it was.
+            raise _refuse(409, "limit_not_saved") from None
+        return {"success": True, **view}
 
     # -- how she likes tasks done -----------------------------------------
 

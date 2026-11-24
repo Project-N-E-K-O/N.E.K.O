@@ -20,8 +20,12 @@
       <el-tab-pane :label="t('power.runtime.tabs.permissions')" name="permissions" lazy>
         <PermissionsTab />
       </el-tab-pane>
+      <el-tab-pane :label="t('power.runtime.tabs.roles')" name="roles" lazy>
+        <RoleModelsTab />
+      </el-tab-pane>
       <el-tab-pane :label="t('power.runtime.tabs.window')" name="window" lazy>
         <WindowTab />
+        <UsageLimitCard />
       </el-tab-pane>
       <el-tab-pane :label="t('power.runtime.tabs.places')" name="places" lazy>
         <PlacesTab />
@@ -39,10 +43,12 @@ import BuiltinTab from '@/components/power/BuiltinTab.vue'
 import DshPluginsTab from '@/components/power/DshPluginsTab.vue'
 import PermissionsTab from '@/components/power/PermissionsTab.vue'
 import PlacesTab from '@/components/power/PlacesTab.vue'
+import RoleModelsTab from '@/components/power/RoleModelsTab.vue'
 import RuntimeTab from '@/components/power/RuntimeTab.vue'
+import UsageLimitCard from '@/components/power/UsageLimitCard.vue'
 import WindowTab from '@/components/power/WindowTab.vue'
 
-const TABS = ['runtime', 'plugins', 'builtin', 'permissions', 'window', 'places']
+const TABS = ['runtime', 'plugins', 'builtin', 'permissions', 'roles', 'window', 'places']
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()

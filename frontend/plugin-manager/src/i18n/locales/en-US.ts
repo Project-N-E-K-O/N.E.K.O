@@ -1,4 +1,4 @@
-import { pluginConsentMessages } from '../plugin-consent'
+import pluginConsentMessages from '../plugin-consent/en-US'
 import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
 import { marketFeedbackMessages } from '../market-feedback'
@@ -9,7 +9,7 @@ import powerMessages from '../power/en-US'
  * English language pack
  */
 export default {
-  pluginConsent: pluginConsentMessages['en-US'],
+  pluginConsent: pluginConsentMessages,
   authoring: authoringMessages['en-US'],
   marketFeedback: marketFeedbackMessages['en-US'],
   modelApi: modelApiMessages['en-US'],
@@ -1060,6 +1060,8 @@ export default {
     pluginBuilt: 'Plugin built: {packageName}',
     pluginDeleted: 'Plugin deleted',
     pluginDeletedBuiltinRestartFailed: 'Plugin {plugin} was deleted, but the restored built-in version failed to start: {error}',
+    pluginDeletedPermissionsNotCleared: 'Plugin {plugin} was deleted, but the permission records file is damaged or from a newer version, so any permission grants it had could not be cleared. If the file becomes readable again, they may still apply.',
+    pluginsDeletedPermissionsNotCleared: 'Plugins {plugins} were deleted, but the permission records file is damaged or from a newer version, so any permission grants they had could not be cleared. If the file becomes readable again, they may still apply.',
     startFailed: 'Failed to start',
     autoStartEnabled: 'Auto start enabled',
     autoStartDisabled: 'Auto start disabled',
