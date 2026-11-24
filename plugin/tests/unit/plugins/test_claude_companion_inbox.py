@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -660,3 +661,79 @@ def test_copy_fallback_works_where_fsync_needs_a_writable_handle(
 
     assert json.loads(target.read_text(encoding="utf-8")) == _legacy_payload()
     assert [level for level, _msg, _args in logger.lines] == ["info"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_save_writes_through_a_private_temp_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "inbox.json"
+    stale = path.with_name("inbox.json.tmp")
+    stale.write_text("left by an interrupted save", encoding="utf-8")
+    stale.chmod(0o644)
+    modes: list[int] = []
+    real_dump = json.dump
+
+    def dump(obj: object, fp: Any, **kwargs: object) -> None:
+        modes.append(os.fstat(fp.fileno()).st_mode & 0o777)
+        real_dump(obj, fp, **kwargs)
+
+    monkeypatch.setattr(companion.json, "dump", dump)
+
+    InboxQueue(str(path)).add("hello")
+
+    assert modes == [0o600]  # private while the content is being written
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert not stale.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_copy_fallback_writes_a_private_copy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    legacy = tmp_path / "install" / "inbox.json"
+    target = tmp_path / "data" / "inbox.json"
+    _write_legacy(legacy)
+    legacy.chmod(0o644)
+
+    def replace(src: object, dst: object) -> None:
+        if Path(src) == legacy:
+            raise OSError("cross-device link")
+        _REAL_REPLACE(src, dst)
+
+    monkeypatch.setattr(companion.os, "replace", replace)
+
+    assert _migrate_legacy_inbox(legacy, target, _Logger()) == companion._MIGRATION_DONE
+    assert target.stat().st_mode & 0o777 == 0o600
+
+
+def test_save_syncs_the_directory_after_replacing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "inbox.json"
+    synced: list[tuple[Path, bool]] = []
+
+    def sync(directory: Path) -> bool:
+        synced.append((directory, path.exists()))
+        return True
+
+    monkeypatch.setattr(companion, "_sync_directory", sync)
+
+    InboxQueue(str(path)).add("hello")
+
+    assert synced == [(tmp_path, True)]
+
+
+def test_leftover_legacy_is_kept_until_the_directory_sync_succeeds(
+    plugin: ClaudeCompanionPlugin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    legacy = companion._LEGACY_INBOX_PATH
+    _write_legacy(legacy)
+    target = plugin.data_path("inbox.json")
+    target.parent.mkdir(parents=True)
+    target.write_text(json.dumps(_legacy_payload()), encoding="utf-8")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(companion, "_sync_directory", lambda _directory: False)
+        plugin._init_inbox()
+        plugin._init_inbox()  # a second start without a successful sync
+
+    assert legacy.is_file()
+
+    plugin._init_inbox()
+
+    assert not legacy.exists()

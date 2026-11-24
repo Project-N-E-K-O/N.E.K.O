@@ -144,7 +144,7 @@ class InboxQueue:
         tmp_path = self._path.with_name(self._path.name + ".tmp")
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            with open(tmp_path, "w", encoding="utf-8") as f:
+            with _open_private(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(self._messages, f, ensure_ascii=False, indent=2)
                 f.flush()
                 os.fsync(f.fileno())  # the data must be on disk before the rename
@@ -157,6 +157,7 @@ class InboxQueue:
                 except FileNotFoundError:
                     pass  # first save: nothing to copy from
             os.replace(tmp_path, self._path)
+            _sync_directory(self._path.parent)  # best effort: make the rename durable
         except OSError:
             try:
                 tmp_path.unlink(missing_ok=True)
@@ -260,11 +261,13 @@ def _migrate_legacy_inbox(legacy_path: Path, target_path: Path, logger: Any) -> 
         logger.warning("Skipping legacy inbox migration, cannot inspect paths: {}", type(e).__name__)
         return _MIGRATION_UNKNOWN
     if target_exists:
-        try:
-            legacy_path.unlink()
-            logger.info("Removed a leftover legacy inbox")
-        except OSError:
-            pass  # e.g. read-only install directory; harmless while the target exists
+        # Only once the target's directory entry is known to be on disk.
+        if _sync_directory(target_path.parent):
+            try:
+                legacy_path.unlink()
+                logger.info("Removed a leftover legacy inbox")
+            except OSError:
+                pass  # e.g. read-only install directory; harmless while the target exists
         return _MIGRATION_DONE
     try:
         target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -280,7 +283,7 @@ def _migrate_legacy_inbox(legacy_path: Path, target_path: Path, logger: Any) -> 
         pass
     tmp_path = target_path.with_name(target_path.name + ".migrating")
     try:
-        with open(legacy_path, "rb") as src, open(tmp_path, "wb") as dst:
+        with open(legacy_path, "rb") as src, _open_private(tmp_path, "wb") as dst:
             shutil.copyfileobj(src, dst)
             dst.flush()
             os.fsync(dst.fileno())  # the copy must be on disk before the rename
@@ -306,6 +309,23 @@ def _migrate_legacy_inbox(legacy_path: Path, target_path: Path, logger: Any) -> 
             type(e).__name__,
         )
     return _MIGRATION_DONE
+
+
+def _open_private(path: Path, mode: str, **kwargs: Any):
+    """Open a file for writing that only the current user can read (0600).
+
+    The mode is set when the file is created, so its content is never
+    readable by others, not even before a later chmod or after a crash.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
+    fd = os.open(path, flags, 0o600)
+    try:
+        if os.name != "nt":
+            os.fchmod(fd, 0o600)  # a leftover file keeps its old mode on O_TRUNC
+        return os.fdopen(fd, mode, **kwargs)
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 def _sync_directory(directory: Path) -> bool:
