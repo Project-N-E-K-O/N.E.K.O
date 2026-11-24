@@ -2403,6 +2403,25 @@ def test_a_late_settings_read_never_overwrites_a_newer_one(mock_page: Page, runn
     }""")
     assert newer is True
 
+    # A read that failed on the server (HTTP 200 {success: false}) is not a loaded form.
+    failed = mock_page.evaluate("""async () => {
+        const realFetch = window.fetch;
+        window.fetch = (url, init) => String(url).endsWith('/api/config/core_api')
+            ? Promise.resolve(new Response(JSON.stringify({success: false, error: 'read failed'}),
+                {status: 200, headers: {'Content-Type': 'application/json'}}))
+            : realFetch(url, init);
+        let loadedEvents = 0;
+        const onLoaded = () => { loadedEvents += 1; };
+        window.addEventListener('neko:api-settings-loaded', onLoaded);
+        try {
+            return {read: await loadCurrentApiKey(), loadedEvents};
+        } finally {
+            window.removeEventListener('neko:api-settings-loaded', onLoaded);
+            window.fetch = realFetch;
+        }
+    }""")
+    assert failed == {"read": False, "loadedEvents": 0}, failed
+
 
 @pytest.mark.frontend
 def test_a_reload_resets_a_provider_the_saved_config_no_longer_has(mock_page: Page, running_server: str):

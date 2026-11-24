@@ -27,6 +27,10 @@
     let refreshGeneration = 0;
     let busy = false;
     let pending = false;
+    // A signed-out saved account the user picked: it cannot become active until it
+    // signs in again, so it stays selected for "Continue with ChatGPT".
+    let reauthorizeAccount = '';
+    let knownAccounts = [];
     let modelAccountState;
     let finishConfirmation;
     // The last reload after a subscription change failed: the form does not show
@@ -120,6 +124,7 @@
         enabled.checked = subscription.enabled;
         enabled.disabled = busy || pending || (!connected && !subscription.enabled);
         const previous = account.value;
+        knownAccounts = data.accounts;
         account.replaceChildren();
         for (const entry of data.accounts) {
             const option = document.createElement('option');
@@ -133,7 +138,10 @@
             option.textContent = t('noAccount', 'No saved account');
             account.appendChild(option);
         }
-        account.value = data.active || (data.accounts.some(a => a.id === previous) ? previous : account.options[0].value);
+        const reauthorizable = data.accounts.some(a => a.id === reauthorizeAccount && a.connected === false);
+        if (!reauthorizable) reauthorizeAccount = '';
+        account.value = reauthorizeAccount || data.active
+            || (data.accounts.some(a => a.id === previous) ? previous : account.options[0].value);
         const finishedLogin = pending && data.login_status !== 'pending';
         pending = data.login_status === 'pending';
         if (!pending) {
@@ -285,6 +293,13 @@
     login.addEventListener('click', () => signIn(account.value));
     add.addEventListener('click', () => signIn(null));
     account.addEventListener('change', () => run(async () => {
+        if (knownAccounts.some(entry => entry.id === account.value && entry.connected === false)) {
+            // Selecting it would be refused; keep it chosen so Continue with ChatGPT signs it in again.
+            reauthorizeAccount = account.value;
+            status.textContent = t('signInRequired', 'Sign in to ChatGPT first.');
+            return;
+        }
+        reauthorizeAccount = '';
         invalidate();
         try { await api('select', { account_id: account.value }); }
         // Again after the switch: a test started before it must not land even if refresh fails.

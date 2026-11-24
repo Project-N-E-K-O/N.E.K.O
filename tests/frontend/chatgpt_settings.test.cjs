@@ -178,6 +178,21 @@ test('a logout whose restored configuration failed to apply says so', async () =
     assert.equal(ui.nodes.login.disabled, false);
 });
 
+test('a signed-out saved account stays chosen so it can sign in again', async () => {
+    const accounts = [...signedIn.accounts, {id: 'other-87654321', email: 'b@example.test', connected: false}];
+    const ui = surface({...signedIn, accounts}, () => ({url: 'https://auth.openai.com/api/accounts/authorize?state=x'}));
+    await flush();
+    ui.nodes.account.value = 'other-87654321';
+    await ui.nodes.account.listeners.change();
+    assert.equal(ui.calls.some(c => c.url.endsWith('/select')), false, 'selecting it would be refused');
+    ui.window.listeners.localechange(); // any status refresh
+    await flush();
+    assert.equal(ui.nodes.account.value, 'other-87654321', 'a status refresh keeps the choice');
+    await ui.nodes.login.listeners.click();
+    const login = ui.calls.find(c => c.url.endsWith('/login'));
+    assert.equal(JSON.parse(login.options.body).account_id, 'other-87654321');
+});
+
 test('status failures retry and restore controls after login completes or expires', async () => {
     for (const terminal of ['connected', 'expired']) {
         const ui = surface({...signedIn, login_status: 'pending'});

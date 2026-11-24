@@ -2932,6 +2932,8 @@ async function loadCurrentApiKey() {
         if (response.ok) {
             const data = await response.json();
             if (superseded()) return false;
+            // The route answers read failures with HTTP 200 {success: false}: not settings.
+            if (data && data.success === false) throw new Error(data.error || 'core_api read failed');
             _resolvedProviderUrls = (data.resolvedProviderUrls && typeof data.resolvedProviderUrls === 'object')
                 ? { ...data.resolvedProviderUrls }
                 : {};
