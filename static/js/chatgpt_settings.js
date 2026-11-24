@@ -296,6 +296,8 @@
         if (knownAccounts.some(entry => entry.id === account.value && entry.connected === false)) {
             // Selecting it would be refused; keep it chosen so Continue with ChatGPT signs it in again.
             reauthorizeAccount = account.value;
+            // run() stopped the status checks; refresh restarts them and keeps this choice.
+            await refresh();
             status.textContent = t('signInRequired', 'Sign in to ChatGPT first.');
             return;
         }

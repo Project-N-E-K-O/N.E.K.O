@@ -193,6 +193,20 @@ test('a signed-out saved account stays chosen so it can sign in again', async ()
     assert.equal(JSON.parse(login.options.body).account_id, 'other-87654321');
 });
 
+test('choosing a signed-out account keeps the subscription status checks running', async () => {
+    const accounts = [...signedIn.accounts, {id: 'other-87654321', email: 'b@example.test', connected: false}];
+    const ui = surface({...signedIn, accounts});
+    ui.setSubscription({enabled: true, model: 'available-model'});
+    ui.window.listeners.localechange();
+    await flush();
+    assert.ok(ui.timer, 'an enabled subscription polls');
+    ui.nodes.account.value = 'other-87654321';
+    await ui.nodes.account.listeners.change();
+    assert.ok(ui.timer, 'polling restarts after the choice');
+    assert.equal(ui.nodes.account.value, 'other-87654321');
+    assert.match(ui.nodes.status.textContent, /Sign in|signInRequired/);
+});
+
 test('status failures retry and restore controls after login completes or expires', async () => {
     for (const terminal of ['connected', 'expired']) {
         const ui = surface({...signedIn, login_status: 'pending'});
