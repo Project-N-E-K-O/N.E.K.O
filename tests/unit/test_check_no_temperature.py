@@ -235,17 +235,27 @@ def test_stale_exemption_fails_the_whole_repository_run(fake_repo: Path, monkeyp
     assert MOD.main(["app"]) == 0
 
 
-@pytest.mark.unit
-@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
-def test_repository_scan_skips_gitignored_local_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys):
-    root = tmp_path / "gitrepo"
+def _git(cwd: Path, *args: str) -> None:
+    # Inherited GIT_DIR / GIT_INDEX_FILE (e.g. inside a git hook) would point
+    # these commands at the caller's repository instead of the temporary one.
+    subprocess.run(["git", *args], cwd=cwd, env=MOD._git_env(), check=True, capture_output=True)
+
+
+def _git_repo_with_ignored_plugin(root: Path) -> Path:
     _write(root / "app" / "ok.py", "create_chat_llm('m', None, None)\n")
     _write(root / ".gitignore", "plugin/plugins/local_only/\nnested_checkout/\n")
     # Installed locally but not part of the repository, like a gitignored plugin.
     _write(root / "plugin" / "plugins" / "local_only" / "main.py", "make(temperature=0.8)\n")
     _write(root / "nested_checkout" / "tool.py", "make(temperature=0.8)\n")
-    subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
-    subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
+    _git(root, "init", "-q")
+    _git(root, "add", "-A")
+    return root
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+def test_repository_scan_skips_gitignored_local_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys):
+    root = _git_repo_with_ignored_plugin(tmp_path / "gitrepo")
     monkeypatch.setattr(MOD, "REPO_ROOT", root)
     monkeypatch.setattr(MOD, "EXEMPTIONS", {})
 
@@ -261,6 +271,25 @@ def test_repository_scan_skips_gitignored_local_code(tmp_path: Path, monkeypatch
 
     # Naming an ignored folder explicitly still scans it.
     assert MOD.main([str(root / "plugin" / "plugins" / "local_only")]) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+def test_inherited_git_location_variables_do_not_redirect_the_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    root = _git_repo_with_ignored_plugin(tmp_path / "gitrepo")
+    other = tmp_path / "other"
+    _write(other / "README", "x\n")
+    _git(other, "init", "-q")
+    monkeypatch.setattr(MOD, "REPO_ROOT", root)
+    monkeypatch.setattr(MOD, "EXEMPTIONS", {})
+    # As inside a git hook of another repository.
+    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(other))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(other / ".git" / "index"))
+
+    assert MOD.main([]) == 0
 
 
 @pytest.mark.unit

@@ -338,6 +338,26 @@ def _exemption_for(rel: str | None) -> str | None:
     return None
 
 
+# Variables that point git at a repository other than the one ``cwd`` is in;
+# they are set inside git hooks, for example. Dropped for the calls below.
+GIT_LOCATION_VARS = frozenset(
+    {
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_PREFIX",
+    }
+)
+
+
+def _git_env() -> dict[str, str]:
+    return {key: value for key, value in os.environ.items() if key not in GIT_LOCATION_VARS}
+
+
 def _git_listed_python_files(root: Path) -> list[Path] | None:
     """Python files git tracks in ``root`` plus untracked ones it does not
     ignore, or None when ``root`` is not the top of a git work tree or git is
@@ -347,16 +367,17 @@ def _git_listed_python_files(root: Path) -> list[Path] | None:
     checkouts) is not repository code and is left out; a new file is still
     seen before it is ever ``git add``-ed.
     """
+    env = _git_env()
     try:
         top = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
-            cwd=root, capture_output=True, text=True, timeout=60, check=False,
+            cwd=root, env=env, capture_output=True, text=True, timeout=60, check=False,
         )
         if top.returncode != 0 or Path(top.stdout.strip()).resolve() != root.resolve():
             return None
         listed = subprocess.run(
             ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*.py"],
-            cwd=root, capture_output=True, timeout=120, check=False,
+            cwd=root, env=env, capture_output=True, timeout=120, check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
