@@ -282,6 +282,7 @@ async def get_core_config_api():
             return fallback_key if provider in _fallback_providers else ''
 
         from utils.chatgpt_subscription import restricted_slots
+        from utils.config_manager import _as_bool
         response = {
             "api_key": api_key,
             "coreApi": _core_api_provider,
@@ -331,7 +332,9 @@ async def get_core_config_api():
             "openclawUrl": core_cfg.get('openclawUrl'),
             "openclawTimeout": core_cfg.get('openclawTimeout'),
             "openclawDefaultSenderId": core_cfg.get('openclawDefaultSenderId'),
-            "enableCustomApi": core_cfg.get('enableCustomApi', False),
+            # Legacy files (and a subscription restoring one) may hold 'false', 'off' or 0:
+            # the page only reads a boolean, so send the value the runtime uses.
+            "enableCustomApi": _as_bool(core_cfg.get('enableCustomApi', False)),
             "chatgptIndependentSlots": restricted_slots(core_cfg, CORE_CONFIG_MODEL_TYPES),
             "resolvedProviderUrls": core_cfg.get('resolvedProviderUrls', {}) if isinstance(core_cfg.get('resolvedProviderUrls'), dict) else {},
             # Custom API fields: Provider / Url / Id / ApiKey per model type

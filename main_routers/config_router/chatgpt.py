@@ -170,11 +170,14 @@ async def chatgpt_subscription_preview(verify_authorization: bool = False):
     from utils.config_manager import get_config_manager
     from utils.config_manager.json_update import load_json_config_snapshot
     from utils.chatgpt_subscription import preview, supported_slots
+    from utils.config_manager.tier_renames import migrate_renamed_tier_fields
     manager = get_config_manager()
     config, slots = await asyncio.gather(
         asyncio.to_thread(load_json_config_snapshot, manager, 'core_config.json'),
         asyncio.to_thread(supported_slots),
     )
+    # Read with the current tier names, as enabling sees it (and as the revision is taken).
+    migrate_renamed_tier_fields(config)
     result = preview(config, slots)
     result['authorization_required'] = False
     if result['enabled'] and verify_authorization:
@@ -235,6 +238,11 @@ async def chatgpt_subscription_update(body: SubscriptionRequest):
 
         def apply(config):
             if body.enabled:
+                # Old tier fields (summaryModel*, emotionModel*) still in the file must be in
+                # the restore snapshot under their current names, or a later save's migration
+                # drops them and turning the subscription off cannot bring them back.
+                from utils.config_manager.tier_renames import migrate_renamed_tier_fields
+                migrate_renamed_tier_fields(config)
                 enable(config, slots, model, body.revision)
             else:
                 disable(config)

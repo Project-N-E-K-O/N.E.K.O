@@ -542,6 +542,39 @@ async def test_ordinary_subscription_save_preserves_dormant_slots(manager, route
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('stored, expected', [('false', False), ('off', False), (0, False), ('on', True), (1, True)])
+async def test_settings_response_sends_the_custom_api_flag_as_a_boolean(manager, routes, stored, expected):
+    # Disabling the subscription restores whatever was stored, legacy strings included.
+    route, core, store, client = routes
+    manager.save_json_config('core_config.json', {'coreApi': 'qwen', 'assistApi': 'qwen', 'enableCustomApi': stored})
+    result = await core.get_core_config_api()
+    assert result['enableCustomApi'] is expected
+
+
+@pytest.mark.asyncio
+async def test_old_tier_fields_survive_enable_save_and_disable(manager, routes):
+    from utils.config_manager.tier_renames import migrate_renamed_tier_fields
+
+    route, core, store, client = routes
+    old = {'summaryModelProvider': 'custom', 'summaryModelUrl': 'https://old.test/v1',
+           'summaryModelId': 'old-memory', 'summaryModelApiKey': 'old-secret'}
+    manager.save_json_config('core_config.json', {'enableCustomApi': True, **old})
+    current = await route.chatgpt_subscription_preview()
+    assert 'memory' in current['overwritten']
+    await route.chatgpt_subscription_update(route.SubscriptionRequest(enabled=True, revision=current['revision']))
+    # An ordinary save in between migrates whatever old names are left.
+    saved = manager.load_json_config('core_config.json')
+    migrate_renamed_tier_fields(saved)
+    manager.save_json_config('core_config.json', saved)
+    await route.chatgpt_subscription_update(route.SubscriptionRequest(enabled=False))
+    restored = manager.load_json_config('core_config.json')
+    assert {key: restored.get(key) for key in ('memoryModelProvider', 'memoryModelUrl', 'memoryModelId', 'memoryModelApiKey')} == {
+        'memoryModelProvider': 'custom', 'memoryModelUrl': 'https://old.test/v1',
+        'memoryModelId': 'old-memory', 'memoryModelApiKey': 'old-secret'}
+    assert not any(key.startswith('summaryModel') for key in restored)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('custom', [False, True])
 async def test_settings_response_exposes_only_restricted_slot_names(manager, routes, custom):
     route, core, store, client = routes
