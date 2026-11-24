@@ -273,3 +273,36 @@ describe('plugin list UI-action wiring contract', () => {
     )
   })
 })
+
+describe('permission marks', () => {
+  it.each([
+    ['list row', PluginListRow],
+    ['card', PluginCard],
+  ] as const)('%s marks pending confirmations and blind spots separately', async (_, component) => {
+    const consents: Array<[PluginMeta['consent'], boolean, boolean]> = [
+      [undefined, false, false],
+      [{ state: 'clear', decision: 'approved', upgraded: false, blind_spots: 0 }, false, false],
+      [{ state: 'confirm', decision: null, upgraded: false }, true, false],
+      [{ state: 'clear', decision: 'approved', upgraded: false, blind_spots: 3 }, false, true],
+      [{ state: 'confirm', decision: null, upgraded: false, blind_spots: 1 }, true, true],
+      [
+        { state: 'clear', decision: 'approved', upgraded: false, blind_spots: 0, analysis_incomplete: true },
+        false,
+        true,
+      ],
+    ]
+    for (const [consent, pending, partial] of consents) {
+      const { container } = await mountEntry(component, { ...makePlugin(null), consent })
+      const label = JSON.stringify(consent)
+      const pendingTag = container.querySelector('[data-testid="plugin-permission-review"]')
+      expect(Boolean(pendingTag), label).toBe(pending)
+      if (pendingTag) expect(pendingTag.textContent).toBe('pluginConsent.pending')
+      const partialTag = container.querySelector('[data-testid="plugin-blind-spots"]')
+      expect(Boolean(partialTag), label).toBe(partial)
+      if (partialTag) {
+        expect(partialTag.textContent).toBe('pluginConsent.findings.partialTag')
+        expect(partialTag.getAttribute('title')).toBe('pluginConsent.findings.partialTagHint')
+      }
+    }
+  })
+})
