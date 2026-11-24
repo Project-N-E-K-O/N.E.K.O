@@ -466,3 +466,75 @@ def test_init_failure_logs_error_type_only(
     assert plugin._inbox is None
     assert plugin.logger.lines == [("warning", "Failed to initialize inbox: {}", ("ValueError",))]
     assert _SECRET not in plugin.logger.text()
+
+
+def test_unreadable_inbox_after_move_is_left_untouched(
+    plugin: ClaudeCompanionPlugin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    legacy = companion._LEGACY_INBOX_PATH
+    _write_legacy(legacy)
+    original = legacy.read_bytes()
+    target = plugin.data_path("inbox.json")
+    real_open = open
+
+    def guarded_open(file: object, *args: object, **kwargs: object):
+        # Like a mode-000 file: renaming works (directory permissions), reading does not.
+        if Path(file) == target and (not args or "r" in str(args[0])):
+            raise PermissionError("denied")
+        return real_open(file, *args, **kwargs)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(companion, "open", guarded_open, raising=False)
+        plugin._init_inbox()
+
+    # The move succeeded but the file cannot be read: the inbox stays closed
+    # instead of saving an empty queue over the only copy of the messages.
+    assert plugin._inbox is None
+    assert not legacy.exists()
+    assert target.read_bytes() == original
+    assert plugin.logger.lines[-1] == ("warning", "Failed to initialize inbox: {}", ("PermissionError",))
+
+    plugin._init_inbox()
+
+    assert [m["id"] for m in plugin._inbox.pending()] == ["abc12345"]
+
+
+def test_legacy_check_error_keeps_existing_data_inbox(
+    plugin: ClaudeCompanionPlugin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    legacy = companion._LEGACY_INBOX_PATH
+    _write_legacy(legacy)
+    target = plugin.data_path("inbox.json")
+    target.parent.mkdir(parents=True)
+    newer = json.dumps([dict(_legacy_payload()[0], id="newer001", content="newer")])
+    target.write_text(newer, encoding="utf-8")
+    real_is_file = Path.is_file
+
+    def is_file(self: Path) -> bool:
+        if self == legacy:
+            raise PermissionError("denied")
+        return real_is_file(self)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(Path, "is_file", is_file)
+        plugin._init_inbox()
+
+    # The legacy check failed before the target was looked at: its state is
+    # unknown, so nothing is written.
+    assert plugin._inbox is None
+    assert target.read_text(encoding="utf-8") == newer
+    assert legacy.is_file()
+
+
+@pytest.mark.parametrize("payload", ["{}", '["x"]', '[{"id": "a"}]'])
+def test_data_inbox_that_is_not_a_message_list_counts_as_empty(
+    plugin: ClaudeCompanionPlugin, payload: str
+) -> None:
+    target = plugin.data_path("inbox.json")
+    target.parent.mkdir(parents=True)
+    target.write_text(payload, encoding="utf-8")
+
+    plugin._init_inbox()
+
+    assert plugin._inbox is not None
+    assert plugin._inbox.pending() == []

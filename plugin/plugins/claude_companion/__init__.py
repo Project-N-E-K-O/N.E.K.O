@@ -118,15 +118,20 @@ class InboxQueue:
             self._load()
 
     def _load(self):
-        """Load the queue from a file."""
-        if self._path.exists():
-            try:
-                with open(self._path, "r", encoding="utf-8") as f:
-                    self._messages = json.load(f)
-            except (ValueError, OSError):  # ValueError covers bad JSON and bad UTF-8
-                self._messages = []
-        else:
-            self._messages = []
+        """Load the queue from a file.
+
+        A missing or unparseable file counts as empty. Any other read error
+        propagates: treating an unreadable file as empty would let the next
+        save replace the only copy of the messages.
+        """
+        try:
+            with open(self._path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            data = []
+        except ValueError:  # bad JSON or bad UTF-8
+            data = []
+        self._messages = _message_list(data)
 
     def _save(self):
         """Persist the queue to a file.
@@ -285,6 +290,13 @@ def _migrate_legacy_inbox(legacy_path: Path, target_path: Path, logger: Any) -> 
     return _MIGRATION_DONE
 
 
+def _message_list(data: Any) -> List[Dict[str, Any]]:
+    """The message entries of parsed inbox JSON; anything else counts as empty."""
+    if not isinstance(data, list):
+        return []
+    return [m for m in data if isinstance(m, dict) and "id" in m and "status" in m and "timestamp" in m]
+
+
 def _read_legacy_inbox(legacy_path: Path) -> List[Dict[str, Any]]:
     """Messages of a legacy inbox; raises OSError when it cannot be read.
 
@@ -295,7 +307,7 @@ def _read_legacy_inbox(legacy_path: Path) -> List[Dict[str, Any]]:
             data = json.loads(f.read())
     except ValueError:  # bad JSON or bad UTF-8; OSError propagates
         return []
-    return data if isinstance(data, list) else []
+    return _message_list(data)
 
 
 # ── Activity summary generator ─────────────────────────────────────────────
@@ -739,7 +751,10 @@ class ClaudeCompanionPlugin(NekoPluginBase):
                     initial = None  # the legacy file vanished; the target is known absent
                 except OSError as e:
                     self.logger.warning(
-                        "Inbox disabled for this run, the legacy inbox cannot be read: {}", type(e).__name__
+                        "Inbox disabled for this run, the legacy inbox cannot be read: {}. "
+                        "Fix its permissions, or delete inbox.json from the plugin folder "
+                        "to start with an empty inbox.",
+                        type(e).__name__,
                     )
                     self._inbox = None
                     return
