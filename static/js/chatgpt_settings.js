@@ -151,11 +151,17 @@
             disclosure.setAttribute('aria-expanded', 'true');
             disclosure.classList.toggle('rotated', true);
             status.textContent = t('authorizationRequired', 'ChatGPT authorization is unavailable. Sign in again or turn off the switch to restore your previous configuration.');
-        } else if (subscription.enabled && !pending && !data.error && data.login_status !== 'expired') {
+        }
+        const showsEnabled = !subscription.authorization_required && subscription.enabled
+            && !pending && !data.error && data.login_status !== 'expired';
+        if (showsEnabled) {
             status.textContent = t('enabled', 'ChatGPT subscription is enabled and saved. Model: {{model}}').replace('{{model}}', subscription.model);
         }
-        // Polling must not cover the warning with "enabled and saved".
-        if (!pending && !subscription.authorization_required) reportStaleForm();
+        // An out-of-date form is always said: it replaces "enabled and saved" (which
+        // it contradicts) and follows any other state (pending sign-in, authorization).
+        if (formStale) {
+            status.textContent = showsEnabled ? staleFormText() : `${status.textContent} ${staleFormText()}`;
+        }
         if (pending) timer = setTimeout(() => refresh().catch(report), 1500);
         else {
             const nextModelAccountState = JSON.stringify([data.active, connected, !!subscription.authorization_required]);
@@ -195,7 +201,11 @@
         if (typeof AbortSignal === 'undefined' || typeof AbortSignal.timeout !== 'function') return promise;
         const deadline = AbortSignal.timeout(RELOAD_TIMEOUT_MS);
         return Promise.race([promise, new Promise(resolve => {
-            deadline.addEventListener('abort', () => resolve(false), { once: true });
+            deadline.addEventListener('abort', () => {
+                // The late response must not land on edits made after the controls unlock.
+                if (typeof window.abandonApiSettingsLoad === 'function') window.abandonApiSettingsLoad();
+                resolve(false);
+            }, { once: true });
         })]);
     };
     // Returns whether the settings form now shows the saved configuration.
@@ -212,15 +222,11 @@
     function staleFormText() {
         return t('reloadFailed', 'The change was saved, but this page could not reload the settings. Reopen the page before saving anything else.');
     }
-    function reportStaleForm() {
-        if (formStale) status.textContent = staleFormText();
-    }
     enabled.addEventListener('change', () => {
         const requested = enabled.checked;
         enabled.checked = subscription.enabled;
         return run(async () => {
             let attempted = false;
-            let reloaded = true;
             try {
                 const current = await api('subscription');
                 // Same slot names as the connectivity lights (api_key_settings.js).
@@ -236,11 +242,9 @@
                 if (!result.success) throw new Error(result.error || t('failed', 'ChatGPT connection failed.'));
             } finally {
                 // Reconcile after a timeout too: persistence may already have completed.
-                try { if (attempted) reloaded = await reloadSettings(); }
-                finally {
-                    await refresh();
-                    if (!reloaded) reportStaleForm();
-                }
+                // refresh() states a failed reload (formStale) alongside whatever else it shows.
+                try { if (attempted) await reloadSettings(); }
+                finally { await refresh(); }
             }
         });
     });
@@ -282,14 +286,10 @@
         let failure;
         try { result = await api('logout', { account_id: account.value }); }
         catch (error) { failure = error; }
-        let reloaded = true;
         try {
             // A lost/error response may follow successful local restoration.
-            if (failure || result.subscription_restored) reloaded = await reloadSettings();
-        } finally {
-            await refresh();
-            if (!reloaded) reportStaleForm();
-        }
+            if (failure || result.subscription_restored) await reloadSettings();
+        } finally { await refresh(); }
         if (failure) throw failure;
         if (!result.revocation_confirmed) status.textContent = t('revocationUnconfirmed', 'Signed out locally. Disconnect the app in ChatGPT Settings to confirm remote revocation.');
     }));

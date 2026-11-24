@@ -29,6 +29,7 @@ function surface(initial, respond = () => ({}), browser = false) {
         listeners: {}, addEventListener(name, fn) { this.listeners[name] = fn; },
         open: () => null, confirm: () => true,
         rebinds: 0, refreshCustomConnectivityLightBindings() { this.rebinds++; },
+        abandoned: 0, abandonApiSettingsLoad() { this.abandoned++; },
         electronShell: { openExternal: async url => { opened = url; } }
     };
     if (browser) delete window.electronShell;
@@ -448,6 +449,32 @@ test('a stalled settings reload after a toggle releases the controls and warns',
     ui.expireDeadlines();
     await action;
     assert.equal(ui.window.isChatGPTSettingsBusy(), false);
+    assert.match(ui.nodes.status.textContent, /could not reload the settings/);
+    // The timed-out read is abandoned, so its late answer cannot land on later edits.
+    assert.equal(ui.window.abandoned, 1);
+});
+
+test('the stale-form warning follows every other status it meets', async () => {
+    let ui;
+    ui = surface(signedIn, (url, body) => {
+        ui.setSubscription({enabled: body.enabled, model: 'available-model'});
+        return {success: true};
+    });
+    await flush();
+    // The status read right after the change fails: its error and the warning both show.
+    ui.setReloadWork(async () => { ui.setState(new Error('status offline')); return false; });
+    await toggle(ui, true);
+    assert.match(ui.nodes.status.textContent, /status offline/);
+    assert.match(ui.nodes.status.textContent, /could not reload the settings/);
+    // A pending sign-in or a lost authorization keeps it too.
+    ui.setState({...signedIn, login_status: 'pending'});
+    await ui.timer();
+    assert.match(ui.nodes.status.textContent, /browser/);
+    assert.match(ui.nodes.status.textContent, /could not reload the settings/);
+    ui.setState(signedIn);
+    ui.setSubscription({authorization_required: true});
+    await ui.timer();
+    assert.match(ui.nodes.status.textContent, /authorization is unavailable/);
     assert.match(ui.nodes.status.textContent, /could not reload the settings/);
 });
 

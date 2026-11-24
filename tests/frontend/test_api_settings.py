@@ -2370,6 +2370,30 @@ def test_a_late_settings_read_never_overwrites_a_newer_one(mock_page: Page, runn
     }""")
     assert result == {"older": False, "newer": True, "loadedEvents": 1, "customApi": True}, result
 
+    # A read the subscription panel abandoned (its wait timed out) is dropped as well,
+    # so it cannot overwrite what the user changed after the controls unlocked.
+    abandoned = mock_page.evaluate("""async () => {
+        const realFetch = window.fetch;
+        const base = await (await realFetch('/api/config/core_api')).json();
+        let release;
+        window.fetch = (url, init) => {
+            if (!String(url).endsWith('/api/config/core_api')) return realFetch(url, init);
+            return new Promise(resolve => { release = () => resolve(new Response(
+                JSON.stringify({...base, enableCustomApi: false}),
+                {status: 200, headers: {'Content-Type': 'application/json'}})); });
+        };
+        try {
+            const read = loadCurrentApiKey();
+            window.abandonApiSettingsLoad();
+            document.getElementById('enableCustomApi').checked = true; // edited after unlocking
+            release();
+            return {read: await read, customApi: document.getElementById('enableCustomApi').checked};
+        } finally {
+            window.fetch = realFetch;
+        }
+    }""")
+    assert abandoned == {"read": False, "customApi": True}, abandoned
+
 
 @pytest.mark.frontend
 def test_chat_model_card_says_it_must_read_images(mock_page: Page, running_server: str):
