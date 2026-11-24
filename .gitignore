@@ -228,6 +228,15 @@ plugin/plugins/claude_companion/inbox.json
 plugin/neko-plugin-docs/
 plugin/rust/
 
+# PC/Electron 客户端是独立仓库（origin: Project-N-E-K-O/N.E.K.O.-PC），本地摊在主仓库
+# 工作区里只是为了联调，它带自己的 .git 和 node_modules；不挡的话一次 `git add -A`
+# 就会被记成 gitlink，把整份客户端源码混进主仓库的历史。
+/N.E.K.O.-PC/
+# The bundled YUI template is distributed from the desktop asset directory.
+/assets/emote-templates/yui-*.zip
+/assets/emote-templates/yui-*/
+/templates/emote/yui-*/
+
 # 本地调试/测试用插件
 plugin/plugins/music_tester/
 plugin/plugins/web_radio/

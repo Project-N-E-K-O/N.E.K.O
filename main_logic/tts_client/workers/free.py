@@ -42,6 +42,10 @@ def free_realtime_tts_worker(
     )
 
 
+# Recognizes TTS_PRECONNECT_SENTINEL (see .._preconnect.SpareSocket).
+free_realtime_tts_worker.supports_preconnect = True
+
+
 register_tts_worker_resolver(
     "free",
     make_native_tts_resolver(free_realtime_tts_worker, "tts_default_api_key"),

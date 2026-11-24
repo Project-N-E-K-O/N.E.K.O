@@ -110,6 +110,8 @@ class TokenTracker(_StorageMixin, _RecordingMixin, _ReportingMixin):
 
     def __init__(self):
         self._lock = threading.Lock()
+        self._report_lock = threading.Lock()
+        self._bypass_report_interval = False
         self._config_manager = get_config_manager()
 
         # Unpersisted incremental data (cleared after a successful save)
@@ -134,6 +136,11 @@ class TokenTracker(_StorageMixin, _RecordingMixin, _ReportingMixin):
         # seen_batches can deduplicate retries after a network timeout when the server already committed.
         # Clear after a successful 200; allocate a new seq for the next window. Persist alongside _unsent_daily.
         self._pending_batch_seq: Optional[str] = None
+        self._pending_report_daily: dict = {}
+        self._pending_report_records: list = []
+        self._unsent_queue_loaded = False
+        self._storage_dir_sync_pending: bool = False
+        self._storage_dir_sync_epoch: int = 0
         self._has_recorded_app_start: bool = False  # 🔒 One-time app_start reporting lock
         self._session_start_ts: float = 0.0  # Used to calculate session_end duration
         self._session_process: str = "unknown"

@@ -116,15 +116,24 @@ EOF
 # 设置目录权限（venv 需要 nobody 可读，data 需要可写）
 sudo chown -R nobody:$RUN_GROUP "$INSTALL_DIR/venv" "$INSTALL_DIR/data"
 
-# 启动
+# 启动/重启（确保更新代码和 env 后加载新进程与新 ADMIN_TOKEN）
 sudo systemctl daemon-reload
-sudo systemctl enable --now $SERVICE_NAME
+sudo systemctl enable "$SERVICE_NAME"
+sudo systemctl restart "$SERVICE_NAME"
 
 echo ""
-sleep 1
 
 # 验证
-if curl -sf http://localhost:$PORT/health > /dev/null 2>&1; then
+HEALTH_OK=0
+for _ in $(seq 1 10); do
+    if sudo systemctl is-active --quiet "$SERVICE_NAME" && curl -sf "http://localhost:$PORT/health" > /dev/null 2>&1; then
+        HEALTH_OK=1
+        break
+    fi
+    sleep 0.5
+done
+
+if [ "$HEALTH_OK" -eq 1 ]; then
     echo "✅ Server is running on port $PORT"
 else
     echo "⚠  Server may still be starting, check: systemctl status $SERVICE_NAME"
@@ -140,10 +149,10 @@ echo "    systemctl status $SERVICE_NAME     # 状态"
 echo "    journalctl -u $SERVICE_NAME -f     # 日志"
 echo "    systemctl restart $SERVICE_NAME    # 重启"
 echo ""
-echo "  仪表盘:"
+echo "  查询/导出（需 admin token，更多接口见 README.md）:"
 echo "    curl -H 'Authorization: Bearer $ADMIN_TOKEN' \\"
-echo "         http://YOUR_SERVER_IP:$PORT/api/v1/admin/dashboard"
+echo "         http://YOUR_SERVER_IP:$PORT/api/v1/admin/stats"
 echo ""
-echo "  客户端配置 (token_tracker.py):"
+echo "  客户端配置 (utils/token_tracker/reporting.py):"
 echo "    _TELEMETRY_SERVER_URL = \"http://YOUR_SERVER_IP:$PORT\""
 echo ""

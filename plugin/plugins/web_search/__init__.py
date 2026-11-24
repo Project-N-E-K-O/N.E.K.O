@@ -882,8 +882,15 @@ class WebSearchPlugin(NekoPluginBase):
                     **kwargs,
                 )
 
-            async with asyncio.timeout(max(0.01, budget)):
-                return await coordinator_for(backend).run(key, fetch)
+            effective_budget = max(0.01, budget)
+            fetch_reserve = min(5.0, effective_budget * 0.3)
+            max_wait = max(0.0, effective_budget - fetch_reserve)
+            async with asyncio.timeout(effective_budget):
+                return await coordinator_for(backend).run(
+                    key,
+                    fetch,
+                    max_wait_seconds=max_wait,
+                )
 
         try:
             async with asyncio.timeout(total_timeout):

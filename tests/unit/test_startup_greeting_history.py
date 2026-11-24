@@ -486,3 +486,78 @@ def test_evicting_a_live_greeting_identity_does_not_retire_it(tmp_path):
     )
     history._flush_snapshot(*staged)
     assert (tmp_path / "Neko" / "startup_greetings.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("store_kind", "raise_on_error"),
+    [
+        ("startup_greeting", False),
+        ("anti_repeat", False),
+        ("anti_repeat_effects", False),
+        ("anti_repeat_effects", True),
+    ],
+)
+def test_sidecar_sequence_fence_advances_on_dir_sync_error(
+    tmp_path, monkeypatch, store_kind, raise_on_error
+):
+    """Directory sync errors after replace must not let older queued snapshots overwrite newer ones."""
+    import errno
+    from memory.anti_repeat import AntiRepeatCorpus
+    from memory.anti_repeat_effects import AntiRepeatEffectStore
+    from utils import file_utils
+
+    (tmp_path / "Neko").mkdir()
+    cm = MagicMock()
+    cm.memory_dir = str(tmp_path)
+
+    if store_kind == "startup_greeting":
+        store = StartupGreetingHistory(cm)
+        s1 = store.stage_committed("Neko", "first greeting", variant_key="simple_presence", committed_at=1000.0)
+        s2 = store.stage_committed("Neko", "second greeting", variant_key="simple_presence", committed_at=1001.0)
+        disk_path = tmp_path / "Neko" / "startup_greetings.json"
+        expected_texts = lambda data: [item["text"] for item in data["records"]]  # noqa: E731
+        expected = ["first greeting", "second greeting"]
+    elif store_kind == "anti_repeat":
+        store = AntiRepeatCorpus()
+        store._config_manager = cm
+        long_1 = "我今天去海边散步吹了海风还捡了很多贝壳回来放进玻璃瓶里。" * 2
+        long_2 = "晚上在院子里看到流星划过天际许下了一个很长久的小愿望。" * 2
+        s1 = store._record_in_memory("Neko", long_1, is_proactive=False, now=1000.0)
+        s2 = store._record_in_memory("Neko", long_2, is_proactive=False, now=1001.0)
+        disk_path = tmp_path / "Neko" / "anti_repeat_corpus.json"
+        expected_texts = lambda data: len(data["window"])  # noqa: E731
+        expected = 2
+    else:
+        store = AntiRepeatEffectStore()
+        store._config_manager = cm
+        s1 = store._stage_hint_counter("Neko", "soft_hint", now=1000.0)
+        s2 = store._stage_hint_counter("Neko", "soft_hint", now=1001.0)
+        disk_path = tmp_path / "Neko" / "anti_repeat_effects.json"
+        expected_texts = lambda data: sum(  # noqa: E731
+            bucket.get("counters", {}).get("soft_hint", 0)
+            for bucket in data.get("daily_buckets", {}).values()
+        )
+        expected = 2
+
+    real_fsync_dir = file_utils._fsync_directory
+
+    def fail_dir_sync(_path):
+        raise OSError(errno.EIO, "injected dir sync error")
+
+    monkeypatch.setattr(file_utils, "_fsync_directory", fail_dir_sync)
+    if store_kind == "anti_repeat_effects":
+        store._flush_snapshot(*s2, raise_on_error=raise_on_error)
+    else:
+        store._flush_snapshot(*s2)
+
+    assert store._written_seq["Neko"] == s2[2]
+
+    monkeypatch.setattr(file_utils, "_fsync_directory", real_fsync_dir)
+    if store_kind == "anti_repeat_effects":
+        store._flush_snapshot(*s1, raise_on_error=raise_on_error)
+    else:
+        store._flush_snapshot(*s1)
+
+    assert store._written_seq["Neko"] == s2[2]
+    persisted = json.loads(disk_path.read_text(encoding="utf-8"))
+    assert expected_texts(persisted) == expected

@@ -29,9 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // Preserve knowledge copy and main's frontend locale fixes together;
-    // retire both prior versions so clients fetch the merged key set.
-    const LOCALE_VERSION = '2026-11-23-knowledge-frontend-i18n-merge';
+    // Fetch the merged knowledge, emote and theater locale key set.
+    const LOCALE_VERSION = '2026-11-24-knowledge-emote-theater-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

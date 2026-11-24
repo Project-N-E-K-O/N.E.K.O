@@ -117,12 +117,13 @@
     }
 
     function leaveAutomaticDock() {
-        if (I.idleDockTriggeredMinimize || I.idleDockActive) {
+        if (I.idleDockTriggeredMinimize || I.idleDockActive || I.idleDockParkedRestore) {
             if (typeof I.exitIdleDock === 'function') {
                 I.exitIdleDock({});
             }
         }
-        if (I.electronIdleDockTriggeredCollapse || I.electronIdleDockActive || I.electronIdleDockDesired) {
+        if (I.electronIdleDockTriggeredCollapse || I.electronIdleDockActive || I.electronIdleDockDesired ||
+            I.electronIdleDockParkedRestoreBounds) {
             if (typeof I.exitElectronIdleDock === 'function') {
                 I.exitElectronIdleDock({});
             }

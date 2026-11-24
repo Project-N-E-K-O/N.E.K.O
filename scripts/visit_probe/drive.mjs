@@ -325,6 +325,7 @@ async function phaseBlank(c) {
 
 async function phaseT2(c) {
   const r = { blank: [], fps: [] };
+  if (results.runs.t2) results.runs.t2.partialData = r;
   await c.eval(`await window.__visitProbe.makeFrame('guest', 'guest', window.__visitProbe.GUEST_STYLE);
     window.__visitProbe.fp('guest').configure({ crop: [320, 448], packer: '2d', verifyEvery: 0 });
     return window.__visitProbe.computeCrop(320, 448);`).then((v) => { r.crop = v; });
@@ -332,17 +333,24 @@ async function phaseT2(c) {
   r.refreshHz = env.refreshHz;
   try {
     // 300-frame blank checks: timer-driven and rAF-driven, plus the async (postMessage-like) control.
-    await c.eval(`return window.__visitProbe.setMode({ kind: 'timer', fps: 30 });`);
-    await sleep(800);
-    r.blank.push(await blankRun(c, 'timer30-sync', 300));
-    await c.eval(`return window.__visitProbe.setMode({ kind: 'raf', fps: 0 });`);
-    await sleep(800);
-    r.blank.push(await blankRun(c, 'raf-vsync-sync', 300));
-    await c.eval(`return window.__visitProbe.setMode({ kind: 'timer', fps: 60 });`);
-    await sleep(800);
-    r.blank.push(await blankRun(c, 'timer60-sync', 300));
-    r.blank.push(await blankRun(c, 'timer60-async-control', 300, { async: true }));
-    save();
+    const blankSpecs = [
+      { mode: { kind: 'timer', fps: 30 }, label: 'timer30-sync' },
+      { mode: { kind: 'raf', fps: 0 }, label: 'raf-vsync-sync' },
+      { mode: { kind: 'timer', fps: 60 }, label: 'timer60-sync' },
+      { mode: null, label: 'timer60-async-control', opts: { async: true } },
+    ];
+    for (const spec of blankSpecs) {
+      if (spec.mode) {
+        await c.eval(`return window.__visitProbe.setMode(${JSON.stringify(spec.mode)});`);
+        await sleep(800);
+      }
+      const b = await blankRun(c, spec.label, 300, spec.opts);
+      r.blank.push(b);
+      save();
+      if (!b.complete) {
+        throw new Error(`${b.label}: only ${b.framesChecked}/300 frames verified before timeout; not a valid blank check`);
+      }
+    }
 
     // 30 fps acceptance via loopback RTCPeerConnection getStats (no vendor needed for the pacing question).
     // Fresh iframe: the blank checks above used getImageData, which makes Chromium demote those canvases
@@ -405,6 +413,7 @@ async function phaseT2(c) {
     await c.eval(`window.__visitProbe.unhook(); window.__visitProbe.restoreFps(); window.__visitProbe.removeFrame('guest'); return true;`);
   }
   results.t2 = r;
+  if (results.runs.t2) delete results.runs.t2.partialData;
   save();
 }
 

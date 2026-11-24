@@ -243,6 +243,14 @@ class HostPaths:
     def model_capabilities_json(self) -> Path:
         return self.root() / "model_capabilities.json"
 
+    def role_models_json(self) -> Path:
+        """Return where the model each preset's sessions are sent to is set (``role_models.py``)."""
+        return self.root() / "role_models.json"
+
+    def usage_limit_json(self) -> Path:
+        """Return where the usage limit the user set is kept (``usage_limit.py``)."""
+        return self.root() / "usage_limit.json"
+
     def dsh(self) -> Path:
         """Return where dsh is installed, for a user who downloaded it (``nekopower.dsh.install``).
 

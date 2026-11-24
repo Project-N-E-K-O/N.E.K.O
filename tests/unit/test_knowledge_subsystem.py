@@ -3249,3 +3249,105 @@ async def test_sampling_skips_a_pack_replaced_after_the_version_check(tmp_path, 
         assert [hit["pack_id"] for hit in result["hits"]] == ["fact-pack"]
     finally:
         await service.stop()
+
+
+async def test_reconcile_persists_updated_counts_after_chunking_change(tmp_path, monkeypatch):
+    """F0137: startup reconcile updates PackRecord counts on disk so subsequent startups do not rebuild."""
+    from dataclasses import replace as dc_replace
+
+    from knowledge.registry import save_registry
+
+    long_content = " ".join(f"segment-{i}" for i in range(400))
+    pack = _pack(
+        "chunk-pack",
+        entries=[
+            {
+                "title": "Long Entry",
+                "terms": {"alias": ["long"]},
+                "tags": ["domain:test"],
+                "summary": "Long summary",
+                "content": long_content,
+            }
+        ],
+    )
+    service = await _started(tmp_path)
+    try:
+        await _import(service, pack)
+    finally:
+        await service.stop()
+
+    # Simulate stale counts in registry.json (as when chunking parameters change).
+    stale_reg = load_registry(tmp_path)
+    orig_record = stale_reg.packs["chunk-pack"]
+    stale_reg = stale_reg.with_pack(
+        dc_replace(orig_record, entries=orig_record.entries + 1, chunks=orig_record.chunks + 1)
+    )
+    save_registry(tmp_path, stale_reg)
+
+    rebuilds: list[str] = []
+    real_replace = service_module.KnowledgeStore.replace_pack
+
+    def spy_replace(self_store, p, **kwargs):
+        rebuilds.append(p.pack_id)
+        return real_replace(self_store, p, **kwargs)
+
+    monkeypatch.setattr(service_module.KnowledgeStore, "replace_pack", spy_replace)
+
+    # First restart: reconciles once and persists healed counts.
+    service2 = await _started(tmp_path)
+    try:
+        assert rebuilds == ["chunk-pack"]
+        assert service2._registry.packs["chunk-pack"].entries == orig_record.entries
+        assert service2._registry.packs["chunk-pack"].chunks == orig_record.chunks
+    finally:
+        await service2.stop()
+
+    persisted = load_registry(tmp_path)
+    assert persisted.packs["chunk-pack"].entries == orig_record.entries
+    assert persisted.packs["chunk-pack"].chunks == orig_record.chunks
+    assert persisted.packs["chunk-pack"].updated_at == orig_record.updated_at
+
+    # Second restart: zero rebuilds.
+    rebuilds.clear()
+    service3 = await _started(tmp_path)
+    try:
+        assert rebuilds == []
+    finally:
+        await service3.stop()
+
+
+async def test_reconcile_registry_save_failure_warns_without_wiping_db(tmp_path, monkeypatch):
+    """F0137: OSError while persisting reconciled registry must not trigger DB wipe retry."""
+    from dataclasses import replace as dc_replace
+
+    from knowledge.registry import save_registry
+
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack("warn-pack"))
+    finally:
+        await service.stop()
+
+    stale_reg = load_registry(tmp_path)
+    orig = stale_reg.packs["warn-pack"]
+    save_registry(tmp_path, stale_reg.with_pack(dc_replace(orig, chunks=orig.chunks + 2)))
+
+    def fail_save(_root, _reg):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(service_module, "save_registry", fail_save)
+    remove_calls: list[str] = []
+    monkeypatch.setattr(
+        service_module.KnowledgeStore,
+        "remove_files",
+        lambda self_store: remove_calls.append("removed"),
+    )
+
+    service2 = await _started(tmp_path)
+    try:
+        assert remove_calls == []
+        status = await service2.status()
+        assert status["state"] == "ready"
+        assert service2._registry.packs["warn-pack"].chunks == orig.chunks
+    finally:
+        await service2.stop()

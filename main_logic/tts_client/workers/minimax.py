@@ -21,6 +21,7 @@ import json
 from functools import partial
 from urllib.parse import urlparse, urlunparse
 
+from .._http_pool import make_tts_http_client
 from .._infra import _resample_audio, _enqueue_error, _run_sentence_tts_worker
 from .._telemetry import _record_tts_telemetry
 from utils.logger_config import get_module_logger
@@ -256,9 +257,11 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
                 )
                 raise RuntimeError("MiniMax TTS 探测失败")
 
-        client = httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=10, read=None, write=10, pool=10),
-            limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
+        client = make_tts_http_client(
+            # Finite read timeout (the longest gap between two chunks): a kept-
+            # alive connection a middlebox dropped silently must not hang the
+            # sentence forever.
+            timeout=httpx.Timeout(connect=10, read=60, write=10, pool=10),
         )
 
         async def synthesize(text: str, speech_id: str) -> None:

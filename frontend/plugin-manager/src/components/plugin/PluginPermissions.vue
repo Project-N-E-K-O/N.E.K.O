@@ -8,7 +8,10 @@
         <strong>{{ banner.title }}</strong>
         <p v-if="banner.description">{{ banner.description }}</p>
       </div>
-      <div v-if="banner.kind !== 'info' && banner.kind !== 'clean'" class="consent-banner__actions">
+      <div
+        v-if="banner.kind !== 'info' && banner.kind !== 'clean' && banner.kind !== 'findings'"
+        class="consent-banner__actions"
+      >
         <template v-if="banner.kind === 'confirm' || banner.kind === 'denied'">
           <el-button
             type="primary"
@@ -59,12 +62,19 @@ import { ElMessage } from 'element-plus'
 import {
   CircleCheckFilled,
   CircleCloseFilled,
+  InfoFilled,
   Loading,
   WarningFilled,
 } from '@element-plus/icons-vue'
 import type { Component } from 'vue'
 import { usePluginStore } from '@/stores/plugin'
-import { consentSnapshot } from '@/utils/pluginCapabilities'
+import {
+  analysisFoundNothing,
+  blindSpots,
+  consentSaveErrorKey,
+  consentSnapshot,
+  usedPermissions,
+} from '@/utils/pluginCapabilities'
 import { usePluginConsentState } from '@/stores/pluginConsentState'
 import { usePluginStartGate } from '@/composables/usePluginStartGate'
 import PluginCapabilityReport from './PluginCapabilityReport.vue'
@@ -79,7 +89,7 @@ const running = computed(() => store.getPluginById(props.pluginId)?.status === '
 const busy = ref<'approve' | 'reject' | 'revoke' | null>(null)
 const capabilityReport = ref<InstanceType<typeof PluginCapabilityReport> | null>(null)
 
-type BannerKind = 'info' | 'confirm' | 'denied' | 'approved' | 'clean'
+type BannerKind = 'info' | 'confirm' | 'denied' | 'approved' | 'clean' | 'findings'
 const banner = computed<{
   kind: BannerKind
   tone: 'info' | 'warning' | 'danger' | 'success'
@@ -142,7 +152,7 @@ const banner = computed<{
           : null,
     }
   }
-  if (r.analysis.status === 'completed' && !r.analysis.capabilities.length)
+  if (analysisFoundNothing(r.analysis))
     return {
       kind: 'clean',
       tone: 'success',
@@ -150,6 +160,20 @@ const banner = computed<{
       spin: false,
       title: t('pluginConsent.noneFound'),
       description: null,
+    }
+  const used = usedPermissions(r.analysis).length
+  const unseen = blindSpots(r.analysis).length
+  if (used || unseen)
+    return {
+      kind: 'findings',
+      tone: unseen ? 'warning' : 'info',
+      icon: unseen ? WarningFilled : InfoFilled,
+      spin: false,
+      title: used
+        ? t('pluginConsent.findings.usedBanner', { n: used })
+        : t('pluginConsent.findings.blindSpotsTitle', { n: unseen }),
+      description:
+        used && unseen ? t('pluginConsent.findings.blindSpotsTitle', { n: unseen }) : null,
     }
   return null
 })
@@ -168,8 +192,8 @@ async function approve() {
     if (!running.value && (await startGate.startWithConsent(props.pluginId))) {
       ElMessage.success(t('messages.pluginStarted'))
     }
-  } catch {
-    ElMessage.error(t(saved ? 'messages.startFailed' : 'pluginConsent.saveFailed'))
+  } catch (error) {
+    ElMessage.error(t(saved ? 'messages.startFailed' : consentSaveErrorKey(error)))
   } finally {
     busy.value = null
     refreshReport()
@@ -186,8 +210,8 @@ async function reject() {
     } catch {
       // A refresh failure must not hide a recorded decision.
     }
-  } catch {
-    ElMessage.error(t('pluginConsent.saveFailed'))
+  } catch (error) {
+    ElMessage.error(t(consentSaveErrorKey(error)))
   } finally {
     busy.value = null
     refreshReport()
@@ -197,8 +221,8 @@ async function revoke() {
   busy.value = 'revoke'
   try {
     await consentState.revoke(props.pluginId)
-  } catch {
-    ElMessage.error(t('pluginConsent.saveFailed'))
+  } catch (error) {
+    ElMessage.error(t(consentSaveErrorKey(error)))
   } finally {
     busy.value = null
     refreshReport()

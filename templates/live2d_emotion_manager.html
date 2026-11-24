@@ -817,6 +817,9 @@
         let availableMotions = [];
         let availableExpressions = [];
         let currentSelectionId = 0;
+        let isModelConfigReady = false;
+        let loadedSelectionId = 0;
+        let activeSelectionAbortController = null;
 
         // 下拉菜单位置计算辅助函数
         function computeDropdownPlacement(header, options, maxHeight = 250) {
@@ -985,12 +988,37 @@
             }
         }
 
+        function resetEmotionConfigForSelection() {
+            currentModelInfo = null;
+            isModelConfigReady = false;
+            loadedSelectionId = 0;
+            availableMotions = [];
+            availableExpressions = [];
+            emotionConfig.style.display = 'none';
+            saveBtn.disabled = true;
+            resetBtn.disabled = true;
+            document.querySelectorAll('.custom-multiselect').forEach(ms => {
+                const optionsContainer = ms.querySelector('.multiselect-options');
+                if (optionsContainer) {
+                    optionsContainer.innerHTML = '';
+                }
+                updateMultiselectHeader(ms);
+            });
+        }
+
         // 从下拉框选择模型
         function selectModelFromDropdown(modelName, modelInfo) {
             currentSelectionId++;
             const selectionId = currentSelectionId;
-            
-            currentModelInfo = modelInfo;
+
+            if (activeSelectionAbortController && typeof activeSelectionAbortController.abort === 'function') {
+                activeSelectionAbortController.abort();
+            }
+            const abortController = typeof AbortController !== 'undefined' ? new AbortController() : null;
+            activeSelectionAbortController = abortController;
+            const signal = abortController ? abortController.signal : undefined;
+
+            resetEmotionConfigForSelection();
             modelSelect.value = modelName;
             modelSingleselectText.textContent = modelName;
             modelSingleselect.classList.remove('active', 'open-up', 'open-down');
@@ -1002,11 +1030,22 @@
                 item.setAttribute('aria-selected', isSelected ? 'true' : 'false');
             });
 
-            loadModelFiles(modelName, modelInfo, selectionId).then((success) => {
-                if (success && selectionId === currentSelectionId) {
-                    loadEmotionMapping(modelName);
+            (async () => {
+                const filesLoaded = await loadModelFiles(modelName, modelInfo, selectionId, signal);
+                if (!filesLoaded || selectionId !== currentSelectionId) {
+                    return;
                 }
-            });
+                const mappingLoaded = await loadEmotionMapping(modelName, selectionId, signal);
+                if (!mappingLoaded || selectionId !== currentSelectionId) {
+                    return;
+                }
+                currentModelInfo = modelInfo;
+                loadedSelectionId = selectionId;
+                isModelConfigReady = true;
+                emotionConfig.style.display = 'block';
+                saveBtn.disabled = false;
+                resetBtn.disabled = false;
+            })();
         }
 
         // 切换模型选择下拉框
@@ -1042,7 +1081,7 @@
         });
 
         // 加载模型文件列表
-        async function loadModelFiles(modelName, modelInfo, selectionId) {
+        async function loadModelFiles(modelName, modelInfo, selectionId, signal) {
             try {
                 let apiUrl = '';
                 if (modelInfo.source === 'user_mods') {
@@ -1053,7 +1092,10 @@
                     apiUrl = `/api/live2d/model_files/${encodeURIComponent(modelName)}`;
                 }
 
-                const response = await fetch(apiUrl);
+                const response = await fetch(apiUrl, signal ? { signal } : undefined);
+                if (selectionId !== currentSelectionId) {
+                    return false;
+                }
                 if (!response.ok) {
                     throw new Error(`HTTP ${response.status}: ${response.statusText}`);
                 }
@@ -1068,13 +1110,15 @@
                     availableMotions = data.motion_files || [];
                     availableExpressions = data.expression_files || [];
                     populateSelects();
-                    emotionConfig.style.display = 'block';
                     return true;
                 } else {
                     showStatus(t('emotionManager.loadModelFilesFailed') + ': ' + (data.error || t('common.unknownError')), 'error');
                     return false;
                 }
             } catch (error) {
+                if (error && error.name === 'AbortError') {
+                    return false;
+                }
                 console.error('加载模型文件失败:', error);
                 
                 // 检查是否仍然是当前选择
@@ -1248,11 +1292,81 @@
             });
         }
 
+        function normalizePreservedFileList(rawFiles) {
+            const list = typeof rawFiles === 'string'
+                ? [rawFiles]
+                : (Array.isArray(rawFiles) ? rawFiles : []);
+            return list
+                .map(entry => {
+                    if (typeof entry === 'string') return entry;
+                    if (entry && typeof entry === 'object' && typeof entry.File === 'string') return entry.File;
+                    return '';
+                })
+                .map(path => path.replace(/\\/g, '/'))
+                .filter(path => path.trim().length > 0);
+        }
+
+        async function fetchPreservedModelConfig(modelName, signal) {
+            const mappingResp = await fetch(
+                `/api/live2d/emotion_mapping/${encodeURIComponent(modelName)}`,
+                signal ? { signal } : undefined
+            );
+            if (!mappingResp.ok) {
+                throw new Error(`HTTP ${mappingResp.status}: ${mappingResp.statusText}`);
+            }
+            const mappingData = await mappingResp.json();
+            if (!mappingData || !mappingData.success || !mappingData.config || typeof mappingData.config !== 'object') {
+                throw new Error((mappingData && mappingData.error) || t('common.unknownError'));
+            }
+
+            const existingConfig = mappingData.config;
+            const preservedMotions = {};
+            const preservedExpressions = {};
+
+            if (existingConfig.motions && typeof existingConfig.motions === 'object') {
+                Object.entries(existingConfig.motions).forEach(([groupName, files]) => {
+                    if (emotions.includes(groupName) || groupName === '常驻') {
+                        return;
+                    }
+                    preservedMotions[groupName] = normalizePreservedFileList(files);
+                });
+            }
+
+            if (existingConfig.expressions && typeof existingConfig.expressions === 'object') {
+                Object.entries(existingConfig.expressions).forEach(([groupName, files]) => {
+                    if (emotions.includes(groupName)) {
+                        return;
+                    }
+                    const sanitizedFiles = normalizePreservedFileList(files);
+                    if (sanitizedFiles.length > 0) {
+                        preservedExpressions[groupName] = sanitizedFiles;
+                    }
+                });
+            }
+
+            return {
+                motions: preservedMotions,
+                expressions: preservedExpressions
+            };
+        }
+
         // 加载情感映射配置
-        async function loadEmotionMapping(modelName) {
+        async function loadEmotionMapping(modelName, selectionId, signal) {
             try {
-                const response = await fetch(`/api/live2d/emotion_mapping/${encodeURIComponent(modelName)}`);
+                const response = await fetch(
+                    `/api/live2d/emotion_mapping/${encodeURIComponent(modelName)}`,
+                    signal ? { signal } : undefined
+                );
+                if (selectionId !== currentSelectionId) {
+                    return false;
+                }
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
                 const data = await response.json();
+                if (selectionId !== currentSelectionId) {
+                    return false;
+                }
 
                 if (data.success && data.config) {
                     const config = data.config;
@@ -1320,23 +1434,40 @@
                     });
 
                     showStatus(t('emotionManager.configLoadSuccess'), 'success');
+                    return true;
                 }
+                showStatus(t('emotionManager.loadModelFilesFailed') + ': ' + ((data && data.error) || t('common.unknownError')), 'error');
+                return false;
             } catch (error) {
+                if (error && error.name === 'AbortError') {
+                    return false;
+                }
                 console.error('加载情感映射配置失败:', error);
+                if (selectionId === currentSelectionId) {
+                    showStatus(t('emotionManager.loadModelFilesFailed') + ': ' + error.message, 'error');
+                }
+                return false;
             }
         }
 
+        const modelSaveChains = new Map();
+
         // 保存情感映射配置
         async function saveEmotionMapping() {
-            if (!currentModelInfo) {
+            if (!currentModelInfo
+                || !isModelConfigReady
+                || loadedSelectionId !== currentSelectionId
+                || modelSelect.value !== currentModelInfo.name) {
                 showStatus(t('emotionManager.pleaseSelectModelFirst'), 'error');
                 return;
             }
 
-            const config = {
-                motions: {},
-                expressions: {}
-            };
+            const savingSelectionId = currentSelectionId;
+            const savingModelInfo = currentModelInfo;
+            const modelSaveKey = savingModelInfo.name;
+
+            const uiMotions = {};
+            const uiExpressions = {};
 
             emotions.forEach(emotion => {
                 const motionMS = document.querySelector(`.emotion-motion-select[data-emotion="${emotion}"]`);
@@ -1344,25 +1475,55 @@
 
                 if (motionMS) {
                     const selected = Array.from(motionMS.querySelectorAll('input:checked')).map(cb => cb.value);
-                    if (selected.length > 0) config.motions[emotion] = selected;
+                    if (selected.length > 0) uiMotions[emotion] = selected;
                 }
 
                 if (expressionMS) {
                     const selected = Array.from(expressionMS.querySelectorAll('input:checked')).map(cb => cb.value);
-                    if (selected.length > 0) config.expressions[emotion] = selected;
+                    if (selected.length > 0) uiExpressions[emotion] = selected;
                 }
             });
 
+            const previousModelSave = modelSaveChains.get(modelSaveKey) || Promise.resolve();
+            let releaseModelSave;
+            const currentModelSave = new Promise(resolve => { releaseModelSave = resolve; });
+            modelSaveChains.set(modelSaveKey, currentModelSave);
+
+            saveBtn.disabled = true;
             try {
-                const response = await fetch(`/api/live2d/emotion_mapping/${encodeURIComponent(currentModelInfo.name)}`, {
+                await previousModelSave.catch(() => {});
+                if (savingSelectionId !== currentSelectionId) {
+                    return;
+                }
+
+                const preservedConfig = await fetchPreservedModelConfig(savingModelInfo.name);
+                if (savingSelectionId !== currentSelectionId) {
+                    return;
+                }
+
+                const config = {
+                    motions: Object.assign({}, preservedConfig.motions, uiMotions),
+                    expressions: Object.assign({}, preservedConfig.expressions, uiExpressions)
+                };
+
+                const response = await fetch(`/api/live2d/emotion_mapping/${encodeURIComponent(savingModelInfo.name)}`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify(config)
                 });
+                if (savingSelectionId !== currentSelectionId) {
+                    return;
+                }
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
 
                 const data = await response.json();
+                if (savingSelectionId !== currentSelectionId) {
+                    return;
+                }
 
                 if (data.success) {
                     showStatus(t('emotionManager.configSaveSuccess'), 'success');
@@ -1370,8 +1531,21 @@
                     showStatus(t('emotionManager.saveFailed') + ': ' + (data.error || t('common.unknownError')), 'error');
                 }
             } catch (error) {
+                if (savingSelectionId !== currentSelectionId) {
+                    return;
+                }
                 console.error('保存情感映射配置失败:', error);
                 showStatus(t('emotionManager.saveFailed') + ': ' + error.message, 'error');
+            } finally {
+                if (typeof releaseModelSave === 'function') {
+                    releaseModelSave();
+                }
+                if (modelSaveChains.get(modelSaveKey) === currentModelSave) {
+                    modelSaveChains.delete(modelSaveKey);
+                }
+                if (savingSelectionId === currentSelectionId && isModelConfigReady) {
+                    saveBtn.disabled = false;
+                }
             }
         }
 

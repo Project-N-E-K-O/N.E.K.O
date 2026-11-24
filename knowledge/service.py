@@ -684,17 +684,28 @@ class KnowledgeService:
                 logger.warning("[Knowledge] rebuild of pack %s exceeds the chunk budget", pack_id)
                 continue
             options, chunks = plan
-            self._store.replace_pack(pack, pack_sha256=record.pack_sha256,
-                                     disabled_keys=record.disabled_titles, **options)
+            chunk_total = self._store.replace_pack(pack, pack_sha256=record.pack_sha256,
+                                                   disabled_keys=record.disabled_titles, **options)
+            # Heal both counts after rebuilding. Wrappers without a return
+            # value retain the verified token/seed plan, not a default layout.
+            if isinstance(chunk_total, int) and not isinstance(chunk_total, bool):
+                chunks = chunk_total
+            actual_entries = len(pack.entries)
             reserved[pack_id] = chunks
-            if chunks != record.chunks:
-                registry = registry.with_pack(replace(record, chunks=chunks))
+            if actual_entries != record.entries or chunks != record.chunks:
+                registry = registry.with_pack(replace(record, entries=actual_entries, chunks=chunks))
             logger.info("[Knowledge] rebuilt index of pack %s", pack_id)
         if registry != original_registry:
-            # Startup reservations include missing sources, so the row-only
-            # replan coordinator cannot recover a failed save. Let the open
-            # path retain the database and disable admission until a restart.
-            save_registry(self.root, registry)
+            try:
+                save_registry(self.root, registry)
+            except (OSError, KnowledgeRegistryError) as exc:
+                # Broken packs can reserve more than their rows show: never
+                # admit work until those reservations are durably repaired.
+                if broken:
+                    raise
+                # A fully rebuilt index is usable with corrected in-memory
+                # counts; a later startup can retry the metadata writeback.
+                logger.warning("[Knowledge] could not persist reconciled registry (%s)", type(exc).__name__)
         return broken, registry
 
     def _rebuild_options(self, record: PackRecord, scenario: str) -> dict[str, Any]:

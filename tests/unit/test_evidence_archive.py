@@ -2097,3 +2097,79 @@ def test_load_facts_full_converges_id_overlap_to_the_active_copy(tmp_path):
     assert survivor["note"] == "active"
     warnings = sink.at_least(logging.WARNING)
     assert any("id 重叠" in m for m in warnings), warnings
+
+
+def test_archive_absorbed_normalizes_aware_timestamps_and_skips_non_dicts(tmp_path):
+    """F0233: aware ISO timestamps (Z / +offset / extreme year) and non-dict rows must not crash _archive_absorbed."""
+    from datetime import timezone
+
+    from memory.facts import _ARCHIVE_AGE_DAYS
+
+    fs = _archive_fact_store(str(tmp_path))
+    name = "小天"
+    old_utc = (datetime.now(timezone.utc) - timedelta(days=_ARCHIVE_AGE_DAYS + 2)).isoformat()
+    old_z = old_utc.replace("+00:00", "Z")
+    old_offset = (
+        datetime.now(timezone(timedelta(hours=5, minutes=30)))
+        - timedelta(days=_ARCHIVE_AGE_DAYS + 2)
+    ).isoformat()
+    recent_z = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+
+    fs._facts[name] = [
+        {
+            "id": "old_z",
+            "hash": "h-old-z",
+            "text": "absorbed z",
+            "absorbed": True,
+            "created_at": old_z,
+        },
+        {
+            "id": "old_offset",
+            "hash": "h-old-offset",
+            "text": "absorbed offset",
+            "absorbed": True,
+            "created_at": old_offset,
+        },
+        {
+            "id": "old_extreme",
+            "hash": "h-old-extreme",
+            "text": "absorbed extreme",
+            "absorbed": True,
+            "created_at": "0001-01-01T00:00:00+14:00",
+        },
+        {
+            "id": "recent_z",
+            "hash": "h-recent-z",
+            "text": "recent absorbed z",
+            "absorbed": True,
+            "created_at": recent_z,
+        },
+        {
+            "id": "bad_ts",
+            "hash": "h-bad-ts",
+            "text": "bad ts",
+            "absorbed": True,
+            "created_at": "not-a-timestamp",
+        },
+        {
+            "id": "none_ts",
+            "hash": "h-none-ts",
+            "text": "none ts",
+            "absorbed": True,
+            "created_at": None,
+        },
+        "corrupt-non-dict-row",
+        None,
+    ]
+
+    with _capture_logger(_FACTS_LOGGER) as sink:
+        fs.save_facts(name)
+
+    assert sink.at_least(logging.WARNING) == []
+    archived = _read_json(fs._facts_archive_path(name))
+    assert sorted(r["id"] for r in archived) == ["old_extreme", "old_offset", "old_z"]
+    active = _read_json(fs._facts_path(name))
+    active_ids = [r["id"] for r in active if isinstance(r, dict)]
+    assert active_ids == ["recent_z", "bad_ts", "none_ts"]
+    assert "corrupt-non-dict-row" in active
+    assert None in active

@@ -601,7 +601,7 @@ test('five sleep-tier actions start in their filename tier and keep explicit ter
 
     if (entry.terminalTier === 'cat1') {
       assert.deepEqual(h.demotions, [{
-        from: entry.tier, source: entry.finished, reason: entry.finished,
+        from: entry.tier, source: 'cat-sleep-wake-demotion', reason: entry.finished,
       }]);
       assert.equal(h.gates.tier, 'cat1');
       assert.equal(h.sources.length, 2, 'tier presentation owns the terminal CAT1 art');

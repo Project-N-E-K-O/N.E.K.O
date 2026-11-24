@@ -151,9 +151,9 @@ describe('Sidebar navigation', () => {
   it('保留主入口顺序与路径，折叠后详情页仍标记插件管理为当前页', async () => {
     routeState.path = '/plugins/demo'
     const mounted = await mountSidebar()
-    expect(Array.from(mounted.container.querySelectorAll('[data-to]')).slice(0, 10).map((element) => element.getAttribute('data-to'))).toEqual([
-      '/', '/familiars/space', '/familiars/runtime', '/plugins', '/plugins/_overview', '/plugins/_forge',
-      '/knowledge', '/model-api', '/runs', '/logs/_server',
+    expect(Array.from(mounted.container.querySelectorAll('[data-to]')).slice(0, 12).map((element) => element.getAttribute('data-to'))).toEqual([
+      '/', '/familiars/space', '/familiars/commissions', '/familiars/runtime', '/familiars/mcp',
+      '/plugins', '/plugins/_overview', '/plugins/_forge', '/knowledge', '/model-api', '/runs', '/logs/_server',
     ])
     expect(getByRole(mounted.container, 'button', { name: 'nav.plugins' }).getAttribute('aria-current')).toBe('page')
     getByRole(mounted.container, 'button', { name: 'nav.collapseSidebar' }).click()
@@ -186,6 +186,14 @@ describe('Sidebar navigation', () => {
     expect(getByRole(other.container, 'button', { name: 'power.nav.space' }).getAttribute('aria-current')).toBeNull()
     expect(getByRole(other.container, 'button', { name: 'power.nav.home' }).getAttribute('aria-current')).toBeNull()
     other.unmount()
+
+    // 「委托」「MCP 工具」各是自己的页面：不把上面那一项也标成当前页。
+    routeState.path = '/familiars/mcp'
+    const mcp = await mountSidebar()
+    expect(getByRole(mcp.container, 'button', { name: 'power.nav.mcp' }).getAttribute('aria-current')).toBe('page')
+    expect(getByRole(mcp.container, 'button', { name: 'power.nav.runtime' }).getAttribute('aria-current')).toBeNull()
+    expect(getByRole(mcp.container, 'button', { name: 'power.nav.commissions' }).getAttribute('aria-current')).toBeNull()
+    mcp.unmount()
   })
 
   it('适配器子项的 id 编码后再进路径段，普通 id 不受影响', async () => {

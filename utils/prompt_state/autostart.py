@@ -455,7 +455,7 @@ def process_autostart_prompt_heartbeat(
         state = load_autostart_prompt_state(config_manager)
         changed = False
 
-        # On network failure, clients return delta to pending and retry the same heartbeat_token.
+        # On network failure, clients retain the unconfirmed delta batch and retry the same heartbeat_token.
         # Do not add delta again when detecting replay;
         # only recompute eligibility from current state. Without an active token, force should_prompt=false,
         # avoiding shown/decision 400 responses when the frontend receives a null token.

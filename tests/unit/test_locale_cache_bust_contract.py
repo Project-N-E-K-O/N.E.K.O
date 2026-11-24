@@ -66,16 +66,27 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-11-23-theater-market-recovery-main-merge",
+        "2026-11-23-knowledge-frontend-i18n-merge",
+        "2026-11-23-emote-maker-frontend-sync",
+        "2026-11-19-theater-market-recovery",
+        "2026-11-22-emote-maker-model-memory-sync",
+        "2026-11-22-star-map-cooldown-after-key-cleanup",
+        "2026-11-22-emote-maker-bailian-sync",
         "2026-11-23-agent-advanced-game-recognition-merge",
         "2026-11-22-knowledge-star-map-merge",
         "2026-11-22-knowledge-locale-prune-merge",
-        "2026-11-22-star-map-cooldown-after-key-cleanup",
         "2026-11-22-knowledge-chat-settings-merge",
         "2026-11-22-capture-mask-toggle-after-star-map-cooldown",
         "2026-11-23-agent-advanced-game-recognition",
+        "2026-11-23-frontend-i18n-after-capture-mask-merge",
+        "2026-11-22-pr03-i18n-rebase",
+        "2026-11-22-frontend-i18n-sync",
+        "2026-11-22-emote-maker-star-map-sync",
+        "2026-11-23-frontend-i18n-after-agent-advanced-merge",
+        "2026-11-22-star-map-label-cooldown-hint",
         "2026-11-22-drop-dead-api-keys",
         "2026-11-22-knowledge-legacy-vision-merge",
-        "2026-11-22-star-map-label-cooldown-hint",
         "2026-11-22-chat-model-rename-after-vision",
         "2026-11-22-chat-model-rename",
         "2026-11-22-knowledge-task-order-merge",
@@ -94,6 +105,18 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-11-19-unified-knowledge-manager-merge",
         "2026-11-19-eight-locale-gap-fill",
         "2026-11-18-unified-knowledge-manager",
+        "2026-11-21-emote-maker-review-main-sync",
+        "2026-11-21-emote-maker-upstream-sync",
+        "2026-11-18-emote-maker-restore-confirmations",
+        "2026-11-18-emote-maker-upstream-sync",
+        "2026-10-11-emote-group-export",
+        "2026-10-19-emote-dead-cleanup",
+        "2026-10-19-emote-stage-rename",
+        "2026-10-19-emote-copy-cleanup",
+        "2026-10-18-emote-stage-image-missing",
+        "2026-11-18-emote-maker-main-merge",
+        "2026-11-14-emote-wardrobe-dismissible-padding",
+        "2026-10-20-emote-copy-trim",
         "2026-11-17-remote-pairing-key-help",
         "2026-11-17-knowledge-source-labels",
         "2026-11-17-knowledge-package-scope",
@@ -268,6 +291,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-12-pr3140-gravity-main-merge",
         "2026-10-12-visit-frame-badges-main-merge-4",
         "2026-10-12-visit-frame-badges-main-merge-3",
+        "2026-10-12-visit-ambiguous-names-pr13-pr15-merge",
         "2026-10-12-gravity-cat-settings",
         "2026-10-12-pr14a-debrief-pr3398-merge",
         "2026-10-12-visit-frame-badges-main-merge-2",
@@ -275,7 +299,6 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-12-visit-frame-badges-merge",
         "2026-10-12-pr14a-debrief-ambiguous-names-merge",
         "2026-10-12-pr14a-debrief-main-merge",
-        "2026-10-12-visit-ambiguous-names-pr13-pr15-merge",
         "2026-10-11-vrm-emotion-recovery",
         "2026-10-11-vrm-emotion-load-state-main-rebase",
         "2026-10-11-pr3385-cloudsave-visit-data-busy",
@@ -598,11 +621,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-03-air-basketball-review-fixes",
         "2026-10-03-air-basketball-review-round2",
         "2026-10-01-theater-click-guide-memory-reactivation",
-        "2026-11-23-frontend-i18n-after-capture-mask-merge",
-        "2026-11-22-pr03-i18n-rebase",
-        "2026-11-22-frontend-i18n-sync",
         "2026-11-23-knowledge-model-tiers-merge",
-        "2026-11-23-frontend-i18n-after-agent-advanced-merge",
     }
 )
 
@@ -615,7 +634,8 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "be02cb796e3970a2f60ceec332302687cd92eed68714bdd52aca595dc6ac44f3"
+LOCALE_KEY_SIGNATURE = "d76f58d47678fdea4bc4f8cf465fbe1d598d0c878c6144570d2092d5589ed640"
+
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "

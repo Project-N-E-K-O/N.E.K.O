@@ -1559,7 +1559,9 @@
             });
         }
         I.scheduleIdleReturnBallDesktopBridge(
-            detail.source === 'return-ball-drag-demotion' ? 'return-ball-drag-demotion' : 'visual-tier'
+            detail.source === 'return-ball-drag-demotion' || detail.source === 'cat-sleep-wake-demotion'
+                ? detail.source
+                : 'visual-tier'
         );
     });
     window.addEventListener('neko:goodbye-idle-appearance', (event) => {

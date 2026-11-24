@@ -10,13 +10,13 @@ from __future__ import annotations
 import asyncio
 from collections import OrderedDict
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 import math
 import random
 import time
-from typing import Awaitable, Callable, Dict, Hashable, List, Mapping, Optional
+from typing import Any, Awaitable, Callable, Dict, Hashable, List, Mapping, Optional
 
 import httpx
 
@@ -24,7 +24,6 @@ SearchResults = List[Dict[str, str]]
 
 _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 _NO_RETRY_STATUS = frozenset({429})
-_MAX_THROTTLE_WAIT_SECONDS = 3.0
 
 
 def _copy_results(results: SearchResults) -> SearchResults:
@@ -79,6 +78,7 @@ class _BackendState:
     next_allowed: float = 0.0
     cooldown_until: float = 0.0
     block_count: int = 0
+    lock_waiters: int = 0
 
 
 async def request_with_retry(
@@ -130,6 +130,34 @@ class _CacheEntry:
     stale_until: float
 
 
+@dataclass
+class _InflightFlight:
+    """Per-key coalesced fetch state tracking active waiter deadlines."""
+
+    task: asyncio.Task[SearchResults]
+    waiter_deadlines: Dict[object, Optional[float]] = field(default_factory=dict)
+    fetch_started: bool = False
+    wait_until: Optional[float] = None
+    _deadline_event: asyncio.Event = field(default_factory=asyncio.Event)
+    _state_event: asyncio.Event = field(default_factory=asyncio.Event)
+
+    def effective_wait_deadline(self) -> Optional[float]:
+        if not self.waiter_deadlines:
+            return None
+        deadlines = self.waiter_deadlines.values()
+        if any(deadline is None for deadline in deadlines):
+            return None
+        return max(d for d in deadlines if d is not None)
+
+    def notify_deadline_changed(self) -> None:
+        self._deadline_event.set()
+        self._deadline_event = asyncio.Event()
+
+    def notify_state_changed(self) -> None:
+        self._state_event.set()
+        self._state_event = asyncio.Event()
+
+
 class SearchCoordinator:
     """TTL cache plus single-flight coalescing for identical searches."""
 
@@ -155,8 +183,7 @@ class SearchCoordinator:
         )
         self.queue_wait_seconds = max(0.0, float(queue_wait_seconds))
         self._cache: OrderedDict[Hashable, _CacheEntry] = OrderedDict()
-        self._inflight: Dict[Hashable, asyncio.Task[SearchResults]] = {}
-        self._waiters: Dict[Hashable, int] = {}
+        self._inflight: Dict[Hashable, _InflightFlight] = {}
         self._backends: Dict[Hashable, _BackendState] = {}
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -191,17 +218,87 @@ class SearchCoordinator:
         # upstream Retry-After must still be respected.
         return max(values)
 
+    async def _acquire_backend_lock(
+        self,
+        state: _BackendState,
+        flight: Optional[_InflightFlight],
+        wait_deadline: Optional[float],
+    ) -> None:
+        if not state.lock.locked() and state.lock_waiters == 0:
+            await state.lock.acquire()
+            return
+        start = time.monotonic()
+        queue_deadline = start + self.queue_wait_seconds
+        acquire_task = asyncio.create_task(state.lock.acquire())
+        state.lock_waiters += 1
+        try:
+            while not acquire_task.done():
+                deadline_event = flight._deadline_event if flight is not None else None
+                effective = (
+                    flight.effective_wait_deadline()
+                    if flight is not None
+                    else wait_deadline
+                )
+                limit = (
+                    queue_deadline
+                    if effective is None
+                    else min(queue_deadline, effective)
+                )
+                remaining = limit - time.monotonic()
+                if remaining <= 0:
+                    raise SearchBusyError("search backend is busy; retry shortly")
+                wait_tasks: set[asyncio.Task[Any]] = {acquire_task}
+                event_task: Optional[asyncio.Task[bool]] = None
+                if deadline_event is not None:
+                    event_task = asyncio.create_task(deadline_event.wait())
+                    wait_tasks.add(event_task)
+                try:
+                    done, _pending = await asyncio.wait(
+                        wait_tasks,
+                        timeout=remaining,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                finally:
+                    if event_task is not None and not event_task.done():
+                        event_task.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await event_task
+                if acquire_task in done:
+                    acquire_task.result()
+                    return
+                if (
+                    deadline_event is not None
+                    and ((event_task is not None and event_task in done) or deadline_event.is_set())
+                ):
+                    continue
+                raise SearchBusyError("search backend is busy; retry shortly")
+        except BaseException:
+            if acquire_task.done() and not acquire_task.cancelled():
+                with suppress(Exception):
+                    if acquire_task.exception() is None:
+                        state.lock.release()
+            else:
+                acquire_task.cancel()
+                try:
+                    acquired = await acquire_task
+                except asyncio.CancelledError:
+                    acquired = False
+                if acquired:
+                    state.lock.release()
+            raise
+        finally:
+            state.lock_waiters -= 1
+
     async def _guarded_fetch(
         self,
         backend: Hashable,
         fetch: Callable[[], Awaitable[SearchResults]],
+        *,
+        wait_deadline: Optional[float] = None,
+        flight: Optional[_InflightFlight] = None,
     ) -> SearchResults:
         state = self._backends.setdefault(backend, _BackendState(asyncio.Lock()))
-        try:
-            async with asyncio.timeout(self.queue_wait_seconds):
-                await state.lock.acquire()
-        except TimeoutError as error:
-            raise SearchBusyError("search backend is busy; retry shortly") from error
+        await self._acquire_backend_lock(state, flight, wait_deadline)
         try:
             now = time.monotonic()
             if now < state.cooldown_until:
@@ -211,11 +308,25 @@ class SearchCoordinator:
                 )
             wait_seconds = state.next_allowed - now
             if wait_seconds > 0:
-                if wait_seconds > _MAX_THROTTLE_WAIT_SECONDS:
-                    raise SearchBusyError(
-                        "search backend rate-limited; retry shortly"
-                    )
+                effective = (
+                    flight.effective_wait_deadline()
+                    if flight is not None
+                    else wait_deadline
+                )
+                if effective is not None:
+                    remaining_wait = effective - now
+                    if remaining_wait <= 0 or wait_seconds >= remaining_wait:
+                        raise SearchBusyError(
+                            "search backend rate-limited; retry shortly"
+                        )
+                if flight is not None:
+                    flight.wait_until = state.next_allowed
+                    flight.notify_state_changed()
                 await asyncio.sleep(wait_seconds)
+            if flight is not None:
+                flight.wait_until = None
+                flight.fetch_started = True
+                flight.notify_state_changed()
             try:
                 results = await fetch()
             except Exception as error:
@@ -265,14 +376,55 @@ class SearchCoordinator:
         """Return a retained result after a caller-level timeout, if available."""
         return self._entry(key, fresh=False)
 
+    async def _await_flight(
+        self,
+        flight: _InflightFlight,
+        caller_deadline: Optional[float],
+    ) -> SearchResults:
+        if caller_deadline is None:
+            return await asyncio.shield(flight.task)
+        while not flight.task.done() and not flight.fetch_started:
+            state_event = flight._state_event
+            if flight.wait_until is not None and flight.wait_until >= caller_deadline:
+                raise SearchBusyError("search backend rate-limited; retry shortly")
+            remaining = max(0.0, caller_deadline - time.monotonic())
+            wait_tasks: set[asyncio.Task[Any]] = {flight.task}
+            event_task = asyncio.create_task(state_event.wait())
+            wait_tasks.add(event_task)
+            try:
+                done, _pending = await asyncio.wait(
+                    wait_tasks,
+                    timeout=remaining,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                if not event_task.done():
+                    event_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await event_task
+            if flight.task in done:
+                return flight.task.result()
+            if event_task in done or state_event.is_set():
+                continue
+            raise SearchBusyError("search backend is busy; retry shortly")
+        return await asyncio.shield(flight.task)
+
     async def run(
         self,
         key: Hashable,
         fetch: Callable[[], Awaitable[SearchResults]],
+        *,
+        max_wait_seconds: Optional[float] = None,
     ) -> SearchResults:
         cached = self._entry(key, fresh=True)
         if cached is not None:
             return cached
+
+        caller_deadline: Optional[float] = None
+        if max_wait_seconds is not None:
+            wait_budget = float(max_wait_seconds)
+            if math.isfinite(wait_budget):
+                caller_deadline = time.monotonic() + max(0.0, wait_budget)
 
         loop = asyncio.get_running_loop()
         if self._loop is not loop:
@@ -280,15 +432,20 @@ class SearchCoordinator:
             # never leak into a different event loop; the plain cache may persist.
             self._loop = loop
             self._inflight.clear()
-            self._waiters.clear()
             self._backends.clear()
 
-        task = self._inflight.get(key)
-        if task is None:
+        waiter_token = object()
+        flight = self._inflight.get(key)
+        if flight is None:
             backend = key[0] if isinstance(key, tuple) and key else key
 
             async def fetch_and_cache() -> SearchResults:
-                results = await self._guarded_fetch(backend, fetch)
+                results = await self._guarded_fetch(
+                    backend,
+                    fetch,
+                    wait_deadline=caller_deadline,
+                    flight=flight,
+                )
                 if results:
                     self._store(key, results)
                 else:
@@ -296,37 +453,43 @@ class SearchCoordinator:
                 return results
 
             task = loop.create_task(fetch_and_cache())
-            self._inflight[key] = task
+            flight = _InflightFlight(
+                task=task,
+                waiter_deadlines={waiter_token: caller_deadline},
+            )
+            self._inflight[key] = flight
 
             def finish(done: asyncio.Task[SearchResults]) -> None:
-                if self._inflight.get(key) is done:
+                if self._inflight.get(key) is flight:
                     self._inflight.pop(key, None)
+                if not done.cancelled():
+                    done.exception()
 
             task.add_done_callback(finish)
+        else:
+            flight.waiter_deadlines[waiter_token] = caller_deadline
+            flight.notify_deadline_changed()
 
-        self._waiters[key] = self._waiters.get(key, 0) + 1
         try:
-            return _copy_results(await asyncio.shield(task))
+            return _copy_results(await self._await_flight(flight, caller_deadline))
         except Exception:
             stale = self._entry(key, fresh=False)
             if stale is not None:
                 return stale
             raise
         finally:
-            remaining = self._waiters.get(key, 1) - 1
-            if remaining > 0:
-                self._waiters[key] = remaining
-            else:
-                self._waiters.pop(key, None)
-                if not task.done():
-                    if self._inflight.get(key) is task:
-                        self._inflight.pop(key, None)
-                    task.cancel()
-                    # Python 3.11 can race cancellation with the internal lock
-                    # waiter. Give it a turn and repeat cancellation so a caller
-                    # timeout remains a hard bound without leaking the fetch.
-                    await asyncio.sleep(0)
-                    if not task.done():
-                        task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await task
+            flight.waiter_deadlines.pop(waiter_token, None)
+            if flight.waiter_deadlines:
+                flight.notify_deadline_changed()
+            elif not flight.task.done():
+                if self._inflight.get(key) is flight:
+                    self._inflight.pop(key, None)
+                flight.task.cancel()
+                # Python 3.11 can race cancellation with the internal lock
+                # waiter. Give it a turn and repeat cancellation so a caller
+                # timeout remains a hard bound without leaking the fetch.
+                await asyncio.sleep(0)
+                if not flight.task.done():
+                    flight.task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await flight.task

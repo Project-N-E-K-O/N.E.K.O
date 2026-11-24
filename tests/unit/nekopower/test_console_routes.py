@@ -270,6 +270,32 @@ async def test_a_permission_file_that_cannot_be_read_is_shown_as_such_and_not_ov
     assert path.read_text(encoding="utf-8") == "{ not json"
 
 
+async def test_a_permission_that_cannot_be_saved_is_told_and_is_not_shown_as_set(console, monkeypatch):
+    client, host, _ = console
+    store = host.permission_store
+    version = (await client.get("/console/permissions", headers=HEADERS)).json()["version"]
+
+    def full(*_args: Any) -> None:
+        raise OSError("the disk is full")
+
+    monkeypatch.setattr(store, "_write", full)
+    refused = await client.post(
+        "/console/permissions", headers=HEADERS,
+        json={"category": "run_command", "mode": "allow", "expected_version": version},
+    )
+    assert refused.status_code == 409 and refused.json()["detail"]["code"] == "permissions_not_saved"
+    seen = (await client.get("/console/permissions", headers=HEADERS)).json()
+    assert {row["category"]: row["mode"] for row in seen["categories"]}["run_command"] == "auto"
+    # Nothing moved, so the same view can try again once the file can be written.
+    assert seen["version"] == version
+    monkeypatch.undo()
+    changed = await client.post(
+        "/console/permissions", headers=HEADERS,
+        json={"category": "run_command", "mode": "allow", "expected_version": version},
+    )
+    assert changed.status_code == 200 and await store.mode("run_command") == "allow"
+
+
 # ---------------------------------------------------------------------------
 # The model's window
 # ---------------------------------------------------------------------------

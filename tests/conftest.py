@@ -109,6 +109,7 @@ from tests.utils.llm_judger import LLMJudger
 
 logger = logging.getLogger(__name__)
 
+
 SYSTEM_CHROME_PATH = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 _RUNTIME_TEST_PORTS: dict[str, int] = {}
 _RUNTIME_TEST_PORT_RETRY_LIMIT = 10
@@ -190,6 +191,13 @@ def pytest_addoption(parser):
 
 
 def pytest_configure(config):
+    # A plugin of its own, not hooks imported here: this conftest already takes
+    # its pytest_runtest_teardown from storage_root_env_guard, and pytest finds
+    # conftest hooks by name, so a second one here would replace that one.
+    from tests import teardown_watchdog
+
+    if not config.pluginmanager.is_registered(teardown_watchdog):
+        config.pluginmanager.register(teardown_watchdog, "neko-teardown-watchdog")
     config.addinivalue_line("markers", "manual: requires human supervision and real API/screen/browser")
     config.addinivalue_line("markers", "unit: unit tests")
     config.addinivalue_line("markers", "frontend: frontend integration tests")
@@ -716,6 +724,25 @@ def mock_memory_server():
 
     server.should_exit = True
     thread.join(timeout=5)
+
+
+@pytest.fixture()
+def emote_template_library_dir(tmp_path, monkeypatch):
+    from main_routers import emote_template_router
+
+    directory = tmp_path / "emote-templates"
+    monkeypatch.setattr(emote_template_router, "_template_library_directory", lambda: directory)
+    return directory
+
+
+@pytest.fixture()
+def builtin_emote_template_dir():
+    from main_routers.emote_template_router import _builtin_template_directory
+
+    directory = _builtin_template_directory()
+    if not directory.is_dir():
+        pytest.skip("YUI desktop template assets are not installed")
+    return directory
 
 
 @pytest.fixture(scope="session")

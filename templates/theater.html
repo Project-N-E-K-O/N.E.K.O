@@ -17,19 +17,41 @@
     <script src="/static/js/theater_selector.js?v={{ static_asset_version }}" defer></script>
 </head>
 <body>
-    {% if request.query_params.get('market') %}
-    <main class="theater-selector-shell">
-        <p id="theater-selector-status" role="status" data-i18n="theater.marketPreparing">正在连接剧本市场…</p>
-    </main>
-    {% else %}
-    <main class="theater-selector-shell" data-theater-selector-app>
+    {% set market_entry = 'market' in request.query_params %}
+    <main class="theater-selector-shell"{% if not market_entry %} data-theater-selector-app{% endif %}>
         <header class="theater-title-bar page-title-bar">
             <div class="theater-title-copy">
                 <h2 data-i18n="theater.title">小剧场</h2>
+                {% if not market_entry %}
                 <span class="theater-mode-badge" data-i18n="theater.scriptMode">剧本模式</span>
                 <div class="theater-status" id="theater-selector-status" role="status" aria-live="polite" aria-label="正在准备舞台..." data-i18n="theater.loading" data-i18n-aria="theater.loading">正在准备舞台...</div>
+                {% endif %}
+            </div>
+            <div class="neko-window-controls theater-window-controls">
+                <button type="button" class="neko-window-control-btn" data-neko-window-control="pin" hidden data-i18n-title="common.pinWindow" data-i18n-aria="common.pinWindow" title="置顶窗口" aria-label="置顶窗口" aria-pressed="false">
+                    <span class="neko-window-pin-icon" aria-hidden="true"></span>
+                </button>
+                <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
+                    <span class="neko-window-minimize-icon"></span>
+                </button>
+                <button type="button" class="neko-window-control-btn" data-neko-window-control="maximize" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化">
+                    <span class="neko-window-maximize-icon"></span>
+                </button>
+                <button type="button" class="neko-window-control-btn" data-neko-window-control="close" data-i18n-title="common.close" data-i18n-aria="common.close" title="关闭" aria-label="关闭"></button>
             </div>
         </header>
+        {% if market_entry %}
+        <section class="theater-market-connection" aria-labelledby="theater-market-title">
+            <div class="theater-market-card" id="theater-market-connection" aria-busy="true">
+                <h1 id="theater-market-title" data-i18n="theater.marketTitle">剧本市场</h1>
+                <p id="theater-selector-status" role="status" aria-live="polite" data-i18n="theater.marketPreparing">正在连接剧本市场…</p>
+                <div class="theater-market-actions">
+                    <button type="button" class="theater-primary" id="theater-market-retry-btn" data-i18n="theater.marketRetry" hidden>重新连接</button>
+                    <a href="/theater" id="theater-market-back-link" data-i18n="theater.marketBackToSelector">返回选择剧本</a>
+                </div>
+            </div>
+        </section>
+        {% else %}
         <div class="theater-selector-layout">
             <aside class="theater-story-library" aria-labelledby="theater-library-title">
                 <div class="theater-library-heading">
@@ -76,7 +98,9 @@
                 </div>
             </section>
         </div>
+        {% endif %}
     </main>
+    {% if not market_entry %}
     <div class="theater-modal-backdrop" id="theater-modal" hidden>
         <section class="theater-modal" role="dialog" aria-modal="true" aria-labelledby="theater-modal-title" aria-describedby="theater-modal-body" tabindex="-1">
             <h2 id="theater-modal-title"></h2><p id="theater-modal-body"></p><div class="theater-modal-error" id="theater-modal-error" role="alert" hidden></div>

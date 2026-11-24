@@ -68,3 +68,42 @@ async def test_permanent_update_persists_without_reloading_quarantined_host(
     assert result["hot_reloaded"] is False
     assert persisted_calls == [("demo", {"runtime": {"enabled": True}})]
     assert host.update_calls == 0
+
+
+class _RunningHost:
+    def __init__(self) -> None:
+        self.configs: list[dict[str, object]] = []
+
+    async def send_config_update(self, *, config: dict[str, object], **_kwargs: object) -> dict[str, object]:
+        self.configs.append(config)
+        return {"success": True}
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["temporary", "permanent"])
+async def test_hot_update_drops_reserved_permissions_table(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    host = _RunningHost()
+    persisted: list[dict[str, object]] = []
+    monkeypatch.setattr(module, "_get_host_sync", lambda _plugin_id: host)
+    monkeypatch.setattr(
+        module,
+        "update_plugin_config",
+        lambda plugin_id, updates: persisted.append(updates) or {"success": True},
+    )
+    monkeypatch.setattr(
+        module,
+        "load_plugin_config",
+        lambda _plugin_id: {"config": {"runtime": {"enabled": True}}},
+    )
+
+    await module.hot_update_plugin_config(
+        plugin_id="demo",
+        updates={"runtime": {"enabled": True}, "permissions": {"ask": {}}},
+        mode=mode,
+    )
+
+    assert host.configs == [{"runtime": {"enabled": True}}]
+    assert persisted == ([{"runtime": {"enabled": True}}] if mode == "permanent" else [])

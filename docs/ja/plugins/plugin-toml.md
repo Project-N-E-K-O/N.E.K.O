@@ -296,6 +296,13 @@ UI が不要なら、このセクションは書かなくてかまいません�
 - `ask` 項目をユーザーが使っていないときにも使う場合は、`background = true` と `background_reason` を書きます。
 - `hosts`（`system.network:connect` のみ）は参考としてユーザーに表示されます。
 
+`require` と `ask` の選び方：
+
+- `require` の権限はバックグラウンドでの使用も含むので、`require` の項目には `background` を書きません。
+- ユーザーの操作によらずに使う `ask` 項目（タイマー、起動時、リスナーやイベントのコールバック、バックグラウンドスレッドなど）には、必ず `background = true` と `background_reason` を書きます。
+- 環境変数から設定を読むこと、プラグインの環境変数を引き継ぐプログラムを起動することは、常に `system.env:read` として `require` に入れます。
+- `system.network:listen` は常に `require` です。
+
 権限 ID：
 
 | ID | 意味 |
@@ -305,6 +312,7 @@ UI が不要なら、このセクションは書かなくてかまいません�
 | `plugin_sdk.main_agent.messages:push` | N.E.K.O にメッセージ・カード・返信の添付を送る |
 | `plugin_sdk.models:invoke` | AI モデルを呼び出す |
 | `system.network:connect` | ネットワークに接続する |
+| `system.network:listen` | このコンピューターでネットワークポートを開き、他のプログラムから接続できるようにする |
 | `system.fs:read` / `system.fs:write` | プラグイン自身のデータディレクトリ以外のファイルを読む / 書く |
 | `system.process:spawn` | 他のプログラムを起動する |
 | `system.env:read` | 環境変数を読む |
@@ -317,6 +325,22 @@ UI が不要なら、このセクションは書かなくてかまいません�
 - スキャンで見通せないコード（動的 import、名前を計算する `getattr`、`eval`/`exec`、`ctypes`、スレッド、`vendor/`、Python 以外のファイル）は info として表示されます。「何も見つからない」はプラグインが無害だと証明されたという意味ではありません。
 
 このトップレベルのテーブルは、`[[plugin.ui.panel]]` / `[[plugin.ui.guide]]` の `permissions` リストとは別物です。
+
+#### コンポーネントごとの絞り込み
+
+コンポーネントは、デコレーターに `permissions=[...]` を書くことで、テーブルで宣言した権限の一部だけを使うことを示せます。対象は `@plugin_entry`、`@llm_tool`、エントリフック（`@hook`、`@before_entry`、`@after_entry`、`@around_entry`、`@replace_entry`）、`@on_event`、`@custom_event`、`@timer_interval` と、それぞれの `plugin.entry` / `plugin.event` / `plugin.hook` / `plugin.timer` / `plugin.custom_event` 形式です。`register_llm_tool`、`register_dynamic_entry`、`PluginRouter.add_entry` も同じ引数を受け付けます。
+
+```python
+@llm_tool(name="weather", permissions=["plugin_sdk.main_agent.memory:read"])
+async def weather(self, **_): ...
+```
+
+- 書かないのが既定です。コンポーネントは宣言した権限をすべて引き継ぎます。絞り込みは「この権限をオフにするとどの機能が使えなくなるか」をユーザーに示すためだけに使われ、コンポーネントの動作は制限しません。
+- プラグインがコンポーネントを登録するとき、絞り込みは `[permissions.require]` + `[permissions.ask]` の部分集合でなければなりません。それ以外を書いたコンポーネントは登録されず（エントリは呼び出せず、イベントハンドラーは購読されません）、どのコンポーネントがなぜ登録されなかったかがプラグインのログに出ます。公開前の `neko-plugin check` も同じ問題を報告します。
+- エントリフックの権限は、`target` に一致する各エントリに加わります。宣言されていない権限を書いたフックは、それらのエントリを閉じます。
+  - 注意：`permissions=` を書かないフックは宣言した権限をすべて必要とするため、一致するエントリもすべてを引き継ぎます。そのようなフックが `target="*"` に 1 つでもあると、すべてのエントリの絞り込みが無効になります。エントリを絞り込む場合は、フックにも `permissions=` を書いてください。
+- `PluginRouter` はクラス属性 `permissions = [...]`（または `PluginRouter(permissions=[...])`）で全エントリを絞り込めます。エントリ自身や `add_entry(..., permissions=...)` で指定したものが優先されます。組み込み済みの router で宣言されていない権限を `add_entry` に渡すと `Err(PermissionDeniedError)` が返ります。
+- `@neko_plugin`、`@lifecycle`、`@message` などコンポーネント以外のデコレーターは `permissions=` を受け付けません。
 
 ---
 
