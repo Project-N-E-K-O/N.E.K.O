@@ -201,7 +201,7 @@ Pull requests run the four behavior markers in `unit-test-shards.yml`, while
 `unit_fast`, `runtime`, `integration_serial`, and `frontend_contract`, plus the
 Node frontend contract test. The same shard job also runs the root-level
 `tests/unit/*.test.js` node:test suites, which pytest never collects. Each
-Python shard performs a non-empty collection check before execution.
+Python shard fails if its marker selects no tests (pytest exit code 5).
 
 The unmarked remainder of `tests/unit` is too slow (30+ minutes) for every
 pull request. `unit-tests.yml` runs all of it only on pushes to `main` and on
