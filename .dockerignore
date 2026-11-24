@@ -76,7 +76,14 @@ docker/logs/
 # Build artifacts
 build/
 dist/
+/output/
 *.spec
+
+# Desktop-only emote templates and their former source paths
+/N.E.K.O.-PC/
+/assets/emote-templates/yui-*.zip
+/assets/emote-templates/yui-*/
+/templates/emote/yui-*/
 
 # OS
 .DS_Store

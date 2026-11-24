@@ -536,6 +536,30 @@ def test_clear_removes_a_stored_id_the_vocabulary_no_longer_has(manager):
         store.clear("y", "system.retired:read")
 
 
+def test_a_new_id_stored_here_reads_like_a_dropped_id_without_it_in_the_vocabulary(monkeypatch, manager):
+    """A grant for system.network:listen, read by a build whose vocabulary
+    does not have it, behaves like any id the vocabulary no longer has."""
+    from types import MappingProxyType
+
+    from plugin.sdk.shared.permissions import catalog
+
+    listen = "system.network:listen"
+    store = PluginPermissionStore(manager)
+    store.decide("x", MEMORY_READ, "granted")
+    assert list(store.decide("x", listen, "granted")["permissions"]) == [MEMORY_READ, listen]
+
+    older = MappingProxyType({key: spec for key, spec in catalog.PERMISSIONS.items() if key != listen})
+    monkeypatch.setattr(catalog, "PERMISSIONS", older)
+    store = PluginPermissionStore(manager)
+
+    # Kept and readable, other grants untouched; no new decision for it.
+    assert set(store.read("x")["permissions"]) == {MEMORY_READ, listen}
+    with pytest.raises(ValueError):
+        store.decide("x", listen, "denied")
+    # Clearing it still works because the record holds it.
+    assert list(store.clear("x", listen)["permissions"]) == [MEMORY_READ]
+
+
 # ---------------------------------------------------------------------------
 # Source binding
 # ---------------------------------------------------------------------------
@@ -1479,6 +1503,13 @@ def test_holds_unbound_grant_does_not_save_for_a_plugin_without_a_record(manager
         store.holds_unbound_grant("x")
 
 
-@pytest.mark.parametrize("installed", [None, 3])
-def test_forget_installed_plugins_tolerates_a_malformed_install_result(installed):
-    assert permission_service.forget_installed_plugins({"installed_plugins": installed}) is True
+def test_forget_plugin_grants_drops_only_the_given_plugins(monkeypatch, manager):
+    store = PluginPermissionStore(manager, source_resolver=lambda _plugin_id: None)
+    monkeypatch.setattr(permission_service, "permission_store", store)
+    for plugin_id in ("demo", "other"):
+        store.decide(plugin_id, MEMORY_READ, "granted", source=None)
+
+    assert permission_service.forget_plugin_grants(("demo",)) is True
+
+    assert MEMORY_READ not in (store.read("demo") or {}).get("permissions", {})
+    assert store.read("other")["permissions"][MEMORY_READ]["state"] == "granted"

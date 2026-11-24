@@ -961,28 +961,67 @@ class PluginRunner:
                     result["error"] = f"Run {last_status}"
 
             try:
-                response = await client.get(f"{base}/runs/{run_id}/export", params={"limit": 50})
-                if response.status_code == 200:
-                    for item in response.json().get("items") or []:
+                fallback_raw: dict[str, Any] | None = None
+                trigger_raw: dict[str, Any] | None = None
+                after: str | None = None
+                seen_cursors: set[str] = set()
+                for _ in range(1000):
+                    params: dict[str, Any] = {"limit": 50}
+                    if after is not None:
+                        params["after"] = after
+                    response = await client.get(f"{base}/runs/{run_id}/export", params=params)
+                    if response.status_code != 200:
+                        break
+                    payload = response.json()
+                    for item in payload.get("items") or []:
                         if not isinstance(item, dict):
                             continue
-                        if item.get("type") == "json" and (
-                            item.get("json") is not None or item.get("json_data") is not None
-                        ):
-                            raw = item.get("json") or item.get("json_data")
-                            if isinstance(raw, dict):
-                                result["data"] = raw.get("data")
-                                result["meta"] = raw.get("meta")
-                                if raw.get("error"):
-                                    error = raw["error"]
-                                    if isinstance(error, dict):
-                                        result["error"] = error.get("message") or str(error)
-                                    elif isinstance(error, str):
-                                        result["error"] = error
+                        if item.get("type") != "json":
+                            continue
+                        raw = item.get("json")
+                        if raw is None:
+                            raw = item.get("json_data")
+                        if not isinstance(raw, dict):
+                            continue
+                        metadata = item.get("metadata")
+                        is_trigger_response = (
+                            item.get("label") == "trigger_response"
+                            or (
+                                isinstance(metadata, dict)
+                                and metadata.get("kind") == "trigger_response"
+                            )
+                        )
+                        if is_trigger_response:
+                            trigger_raw = raw
                             break
+                        if fallback_raw is None:
+                            fallback_raw = raw
+                    if trigger_raw is not None:
+                        break
+                    next_after = payload.get("next_after")
+                    if (
+                        not isinstance(next_after, str)
+                        or not next_after
+                        or next_after in seen_cursors
+                    ):
+                        break
+                    seen_cursors.add(next_after)
+                    after = next_after
+
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - the run's status still stands
                 _reraise_swallowed_cancellation()
                 logger.debug("export of run %s could not be read: %s", run_id, type(exc).__name__)
+
+            chosen_raw = trigger_raw if trigger_raw is not None else fallback_raw
+            if chosen_raw is not None:
+                result["data"] = chosen_raw.get("data")
+                result["meta"] = chosen_raw.get("meta")
+                if chosen_raw.get("error"):
+                    error = chosen_raw["error"]
+                    if isinstance(error, dict):
+                        result["error"] = error.get("message") or str(error)
+                    elif isinstance(error, str):
+                        result["error"] = error
             return result

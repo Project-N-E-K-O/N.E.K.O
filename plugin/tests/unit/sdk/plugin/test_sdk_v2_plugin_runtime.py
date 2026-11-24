@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import fields
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -80,6 +82,7 @@ def test_runtime_typed_structures_and_dataclasses() -> None:
         "output_schema",
         "output_model",
         "strict_output",
+        "permissions",
     ]
 
 
@@ -395,3 +398,404 @@ def test_runtime_all_exports_exist() -> None:
     # Explicit contract placeholders should exist.
     assert rt.CallChain.__name__ == "CallChain"
     assert rt.AsyncCallChain.__name__ == "AsyncCallChain"
+
+
+@pytest.mark.asyncio
+async def test_os_activity_snapshot_ticks_unstarted_collector_on_demand(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import time as _time
+    import main_logic.activity as activity_mod
+
+    class _StubCollector:
+        def __init__(self) -> None:
+            self.os_signals_available = True
+            self._task = None
+            self._poll_interval = 5.0
+            self._psutil = None
+            self.tick_calls = 0
+            self._latest = SimpleNamespace(
+                timestamp=0.0,
+                idle_seconds=None,
+                window_title=None,
+                process_name=None,
+                os_signals_available=False,
+            )
+
+        def snapshot(self):
+            return self._latest
+
+        async def _tick(self) -> None:
+            self.tick_calls += 1
+            self._latest = SimpleNamespace(
+                timestamp=_time.time(),
+                idle_seconds=12.5,
+                window_title="Code",
+                process_name="code.exe",
+                os_signals_available=True,
+            )
+
+    stub = _StubCollector()
+    monkeypatch.setattr(activity_mod, "get_system_signal_collector", lambda: stub)
+    monkeypatch.setattr(activity_api, "_privacy_mode_enabled", lambda: False)
+    monkeypatch.setattr(
+        activity_api,
+        "_active_window_from_system_snapshot",
+        lambda snap: SimpleNamespace(category="coding") if snap.window_title == "Code" else None,
+    )
+
+    snap1 = await activity_api.get_os_activity_snapshot("study_companion")
+    assert stub.tick_calls == 1
+    assert snap1.os_signals_available is True
+    assert snap1.foreground_category == "coding"
+    assert snap1.system_idle_seconds == 12.5
+    assert snap1.privacy_state == "visible"
+
+    snap2 = await activity_api.get_os_activity_snapshot("study_companion")
+    assert stub.tick_calls == 1
+    assert snap2.os_signals_available is True
+
+
+@pytest.mark.asyncio
+async def test_os_activity_snapshot_skips_tick_when_unavailable_or_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import main_logic.activity as activity_mod
+
+    class _UnavailableCollector:
+        os_signals_available = False
+        _task = None
+        _poll_interval = 5.0
+        tick_calls = 0
+
+        def snapshot(self):
+            return SimpleNamespace(timestamp=0.0, idle_seconds=None, os_signals_available=False)
+
+        async def _tick(self) -> None:
+            self.tick_calls += 1
+
+    unavailable = _UnavailableCollector()
+    monkeypatch.setattr(activity_mod, "get_system_signal_collector", lambda: unavailable)
+    monkeypatch.setattr(activity_api, "_privacy_mode_enabled", lambda: False)
+    snap_unavail = await activity_api.get_os_activity_snapshot("study_companion")
+    assert unavailable.tick_calls == 0
+    assert snap_unavail.os_signals_available is False
+    assert snap_unavail.privacy_state == "unavailable"
+
+    class _RunningTask:
+        def done(self) -> bool:
+            return False
+
+    class _RunningCollector:
+        os_signals_available = True
+        _task = _RunningTask()
+        _poll_interval = 5.0
+        tick_calls = 0
+
+        def snapshot(self):
+            return SimpleNamespace(timestamp=0.0, idle_seconds=3.0, os_signals_available=True)
+
+        async def _tick(self) -> None:
+            self.tick_calls += 1
+
+    running = _RunningCollector()
+    monkeypatch.setattr(activity_mod, "get_system_signal_collector", lambda: running)
+    monkeypatch.setattr(
+        activity_api,
+        "_active_window_from_system_snapshot",
+        lambda _snap: SimpleNamespace(category="browser"),
+    )
+    snap_running = await activity_api.get_os_activity_snapshot("study_companion")
+    assert running.tick_calls == 0
+    assert snap_running.foreground_category == "browser"
+    assert snap_running.privacy_state == "visible"
+
+
+@pytest.mark.asyncio
+async def test_os_activity_snapshot_handles_on_demand_tick_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import main_logic.activity as activity_mod
+
+    class _FailingTickCollector:
+        os_signals_available = True
+        _task = None
+        _poll_interval = 5.0
+        _psutil = None
+        tick_calls = 0
+
+        def snapshot(self):
+            return SimpleNamespace(
+                timestamp=1.0,
+                idle_seconds=4.5,
+                window_title="Code",
+                process_name="code.exe",
+                os_signals_available=True,
+            )
+
+        async def _tick(self) -> None:
+            self.tick_calls += 1
+            raise RuntimeError("executor shut down")
+
+    stub = _FailingTickCollector()
+    monkeypatch.setattr(activity_mod, "get_system_signal_collector", lambda: stub)
+    monkeypatch.setattr(activity_api, "_privacy_mode_enabled", lambda: False)
+    monkeypatch.setattr(
+        activity_api,
+        "_active_window_from_system_snapshot",
+        lambda snap: SimpleNamespace(category="coding") if snap.window_title == "Code" else None,
+    )
+
+    snap = await activity_api.get_os_activity_snapshot("study_companion", now=100.0)
+    assert stub.tick_calls == 1
+    assert snap.os_signals_available is True
+    assert snap.foreground_category == "coding"
+    assert snap.system_idle_seconds == 4.5
+    assert snap.privacy_state == "visible"
+
+
+@pytest.mark.asyncio
+async def test_os_activity_snapshot_skips_on_demand_tick_in_privacy_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import main_logic.activity as activity_mod
+    import utils.preferences as prefs_mod
+
+    class _RunningTask:
+        def done(self) -> bool:
+            return False
+
+    class _PopulatedCollector:
+        os_signals_available = True
+        _task = None
+        _poll_interval = 5.0
+        _psutil = None
+        tick_calls = 0
+
+        def __init__(self) -> None:
+            self._latest = SimpleNamespace(
+                timestamp=0.0,
+                idle_seconds=5.0,
+                window_title="Steam",
+                process_name="steam.exe",
+                os_signals_available=True,
+            )
+
+        def snapshot(self):
+            return self._latest
+
+        async def _tick(self) -> None:
+            self.tick_calls += 1
+
+    def _assert_private(snap: activity_api.OsActivitySnapshot) -> None:
+        assert snap.os_signals_available is False
+        assert snap.foreground_category is None
+        assert snap.system_idle_seconds is None
+        assert snap.privacy_state == "private"
+
+    collector = _PopulatedCollector()
+    monkeypatch.setattr(activity_mod, "get_system_signal_collector", lambda: collector)
+    monkeypatch.setattr(
+        activity_api,
+        "_active_window_from_system_snapshot",
+        lambda snap: SimpleNamespace(category="gaming")
+        if getattr(snap, "window_title", None) == "Steam"
+        else None,
+    )
+
+    prefs_path = tmp_path / "user_preferences.json"
+    monkeypatch.setattr(prefs_mod, "PREFERENCES_FILE", str(prefs_path))
+    monkeypatch.setattr(prefs_mod, "_get_active_preferences_path", lambda: str(prefs_path))
+
+    # 1) Missing preferences file must fail closed without ticking or leaking cached snapshot.
+    _assert_private(await activity_api.get_os_activity_snapshot("study_companion"))
+    assert collector.tick_calls == 0
+
+    # 2) Present preferences entry missing proactiveVisionEnabled must fail closed (first-start overseas case).
+    prefs_path.write_text(
+        json.dumps([{"model_path": prefs_mod.GLOBAL_CONVERSATION_KEY}]),
+        encoding="utf-8",
+    )
+    _assert_private(await activity_api.get_os_activity_snapshot("study_companion"))
+    assert collector.tick_calls == 0
+
+    # 3) Explicit False and non-bool string "false" must both block ticks and cached foreground data.
+    for value in (False, "false"):
+        prefs_path.write_text(
+            json.dumps([{"model_path": prefs_mod.GLOBAL_CONVERSATION_KEY, "proactiveVisionEnabled": value}]),
+            encoding="utf-8",
+        )
+        _assert_private(await activity_api.get_os_activity_snapshot("study_companion"))
+        assert collector.tick_calls == 0
+
+    # 4) Corrupt JSON read failure triggers strict reload error -> fail-closed.
+    prefs_path.write_text("{corrupt json", encoding="utf-8")
+    _assert_private(await activity_api.get_os_activity_snapshot("study_companion"))
+    assert collector.tick_calls == 0
+
+    # 5) Unreadable path (directory) raises OSError during open() -> fail-closed.
+    unreadable_dir = tmp_path / "unreadable_prefs"
+    unreadable_dir.mkdir()
+    monkeypatch.setattr(prefs_mod, "_get_active_preferences_path", lambda: str(unreadable_dir))
+    _assert_private(await activity_api.get_os_activity_snapshot("study_companion"))
+    assert collector.tick_calls == 0
+
+    # 6) Running background collector still cannot expose cached window info under privacy mode.
+    prefs_path.write_text(
+        json.dumps([{"model_path": prefs_mod.GLOBAL_CONVERSATION_KEY, "proactiveVisionEnabled": False}]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(prefs_mod, "_get_active_preferences_path", lambda: str(prefs_path))
+    collector._task = _RunningTask()
+    _assert_private(await activity_api.get_os_activity_snapshot("study_companion"))
+    assert collector.tick_calls == 0
+
+    # 7) Control: persisted proactiveVisionEnabled=True permits on-demand tick and visible category.
+    collector._task = None
+    prefs_path.write_text(
+        json.dumps([{"model_path": prefs_mod.GLOBAL_CONVERSATION_KEY, "proactiveVisionEnabled": True}]),
+        encoding="utf-8",
+    )
+    snap_visible = await activity_api.get_os_activity_snapshot("study_companion")
+    assert collector.tick_calls == 1
+    assert snap_visible.os_signals_available is True
+    assert snap_visible.foreground_category == "gaming"
+    assert snap_visible.system_idle_seconds == 5.0
+    assert snap_visible.privacy_state == "visible"
+
+
+def test_os_activity_snapshot_loop_lock_does_not_leak_closed_loop() -> None:
+    import asyncio
+    import gc
+    import weakref
+
+    async def exercise_contention() -> None:
+        observed_locks: list[asyncio.Lock] = []
+        order: list[tuple[str, int]] = []
+
+        async def worker(idx: int) -> None:
+            lock = activity_api._get_loop_lock()
+            observed_locks.append(lock)
+            async with lock:
+                order.append(("enter", idx))
+                await asyncio.sleep(0.01)
+                order.append(("exit", idx))
+
+        await asyncio.gather(worker(1), worker(2))
+        assert observed_locks[0] is observed_locks[1]
+        assert order in (
+            [("enter", 1), ("exit", 1), ("enter", 2), ("exit", 2)],
+            [("enter", 2), ("exit", 2), ("enter", 1), ("exit", 1)],
+        )
+
+    loop = asyncio.new_event_loop()
+    loop_ref = weakref.ref(loop)
+    try:
+        loop.run_until_complete(exercise_contention())
+    finally:
+        loop.close()
+    del loop
+    gc.collect()
+
+    assert loop_ref() is None
+    assert len(activity_api._loop_locks) == 0
+
+
+@pytest.mark.asyncio
+async def test_os_activity_snapshot_rechecks_privacy_after_lock_and_tick_wait(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import asyncio
+    import main_logic.activity as activity_mod
+    import utils.preferences as prefs_mod
+
+    class _DynamicCollector:
+        os_signals_available = True
+        _task = None
+        _poll_interval = 5.0
+        _psutil = None
+
+        def __init__(self, *, revoke_in_tick: bool = False) -> None:
+            self.tick_calls = 0
+            self.revoke_in_tick = revoke_in_tick
+            self._latest = SimpleNamespace(
+                timestamp=0.0,
+                idle_seconds=None,
+                window_title=None,
+                process_name=None,
+                os_signals_available=False,
+            )
+
+        def snapshot(self):
+            return self._latest
+
+        async def _tick(self) -> None:
+            self.tick_calls += 1
+            if self.revoke_in_tick:
+                prefs_path.write_text(
+                    json.dumps([{"model_path": prefs_mod.GLOBAL_CONVERSATION_KEY, "proactiveVisionEnabled": False}]),
+                    encoding="utf-8",
+                )
+            self._latest = SimpleNamespace(
+                timestamp=100.0,
+                idle_seconds=9.0,
+                window_title="Steam",
+                process_name="steam.exe",
+                os_signals_available=True,
+            )
+
+    prefs_path = tmp_path / "user_preferences.json"
+    monkeypatch.setattr(prefs_mod, "PREFERENCES_FILE", str(prefs_path))
+    monkeypatch.setattr(prefs_mod, "_get_active_preferences_path", lambda: str(prefs_path))
+    monkeypatch.setattr(
+        activity_api,
+        "_active_window_from_system_snapshot",
+        lambda snap: SimpleNamespace(category="gaming")
+        if getattr(snap, "window_title", None) == "Steam"
+        else None,
+    )
+
+    # 1) Privacy revoked while caller is waiting for _get_loop_lock(): must skip _tick() and stay private.
+    prefs_path.write_text(
+        json.dumps([{"model_path": prefs_mod.GLOBAL_CONVERSATION_KEY, "proactiveVisionEnabled": True}]),
+        encoding="utf-8",
+    )
+    lock_wait_collector = _DynamicCollector(revoke_in_tick=False)
+    monkeypatch.setattr(activity_mod, "get_system_signal_collector", lambda: lock_wait_collector)
+    loop_lock = activity_api._get_loop_lock()
+    await loop_lock.acquire()
+    try:
+        call_task = asyncio.create_task(activity_api.get_os_activity_snapshot("study_companion"))
+        for _ in range(50):
+            await asyncio.sleep(0.005)
+            if getattr(loop_lock, "_waiters", None):
+                break
+        assert getattr(loop_lock, "_waiters", None)
+        prefs_path.write_text(
+            json.dumps([{"model_path": prefs_mod.GLOBAL_CONVERSATION_KEY, "proactiveVisionEnabled": False}]),
+            encoding="utf-8",
+        )
+    finally:
+        loop_lock.release()
+    snap_after_lock = await call_task
+    assert lock_wait_collector.tick_calls == 0
+    assert snap_after_lock.os_signals_available is False
+    assert snap_after_lock.foreground_category is None
+    assert snap_after_lock.system_idle_seconds is None
+    assert snap_after_lock.privacy_state == "private"
+
+    # 2) Privacy revoked while _tick() is in flight: must discard collected window data and return private.
+    prefs_path.write_text(
+        json.dumps([{"model_path": prefs_mod.GLOBAL_CONVERSATION_KEY, "proactiveVisionEnabled": True}]),
+        encoding="utf-8",
+    )
+    tick_revoke_collector = _DynamicCollector(revoke_in_tick=True)
+    monkeypatch.setattr(activity_mod, "get_system_signal_collector", lambda: tick_revoke_collector)
+    snap_after_tick = await activity_api.get_os_activity_snapshot("study_companion")
+    assert tick_revoke_collector.tick_calls == 1
+    assert snap_after_tick.os_signals_available is False
+    assert snap_after_tick.foreground_category is None
+    assert snap_after_tick.system_idle_seconds is None
+    assert snap_after_tick.privacy_state == "private"

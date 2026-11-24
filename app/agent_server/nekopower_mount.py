@@ -297,16 +297,17 @@ async def send_report(item: Any) -> bool:
 
 
 async def _count_task_agent_request(commission_id: str) -> bool:
-    """Count one model request of a task agent against the free daily quota of the agent model.
+    """Count one model request of a task agent against the free daily quota.
 
-    Task agents run on the agent model, as keyboard-and-mouse and browser
-    control do, and are counted the same way. A paid configuration is not
-    metered and always has a request left.
+    The host asks only for a session whose requests go with the built-in
+    free key (``nekopower/host/role_models.py``), as the plugin gateway
+    counts its calls: a session sent to a model with a key of the user's
+    own is never counted, whatever the task agent model is.
     """
     del commission_id
     from utils.config_manager import get_config_manager
 
-    allowed, _info = await get_config_manager().aconsume_agent_daily_quota(source="nekopower.task_agent", units=1)
+    allowed, _info = await get_config_manager().aconsume_free_daily_quota(source="nekopower.task_agent", units=1)
     return bool(allowed)
 
 
@@ -315,6 +316,7 @@ def mount_nekopower_host(change_token: Optional[Callable[[], Any]] = None) -> No
     global _unsubscribe
     try:
         from nekopower.host import mount
+        from nekopower.host.role_models import PluginModelSlots
 
         from .nekopower_builtins import on_builtin_activity, provider
 
@@ -328,6 +330,8 @@ def mount_nekopower_host(change_token: Optional[Callable[[], Any]] = None) -> No
             on_progress=_on_progress,
             on_commission=_on_commission_change,
             task_agent_meter=_count_task_agent_request,
+            # The slots of the model panel each preset's model is chosen from.
+            model_slots=PluginModelSlots(),
         )
         if _unsubscribe is None:
             # A plugin that starts, stops, reloads, is installed or removed

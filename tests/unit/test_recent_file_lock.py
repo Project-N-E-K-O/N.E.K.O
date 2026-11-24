@@ -846,13 +846,47 @@ def test_unreadable_reads_keep_process_pending_visible_without_duplicates(tmp_pa
 # ─────────────── T5: the invariant the no-dedup design rests on ───────────────
 
 
-def test_atomic_write_failure_leaves_target_byte_identical(tmp_path, monkeypatch):
-    """``atomic_write_json`` raising ⟹ the target file was NOT replaced.
+def test_directory_sync_failure_does_not_requeue_visible_messages(tmp_path, monkeypatch):
+    from utils import file_utils
 
-    The whole "just re-append the pending batch, no dedup needed" design rests
-    on this, so it is pinned explicitly even though the code under test is
-    utils.file_utils rather than this PR's code.
-    """
+    mgr, name, path = _make_manager(tmp_path)
+    _write_disk(path, [HumanMessage(content="A")])
+    with recent_file.recent_file_access(path) as locked:
+        before = recent_file.get_recent_content_version_unlocked(locked)
+
+    def fail_sync(directory):
+        raise OSError("injected directory sync failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(file_utils, "_fsync_directory", fail_sync)
+        asyncio.run(mgr.update_history([HumanMessage(content="B")], name, compress=False))
+
+    assert [m.content for m in _read_disk(path)] == ["A", "B"]
+    assert mgr._pending_batches(name) == []
+    with recent_file.recent_file_access(path) as locked:
+        assert recent_file.get_recent_content_version_unlocked(locked) == before + 1
+    asyncio.run(mgr.update_history([HumanMessage(content="C")], name, compress=False))
+    assert [m.content for m in _read_disk(path)] == ["A", "B", "C"]
+
+
+def test_receipt_sidecar_sync_failure_leaves_history_untouched(tmp_path, monkeypatch):
+    from utils import file_utils
+
+    path = tmp_path / "recent.json"
+    path.write_text("[]")
+
+    def fail_sync(directory):
+        raise OSError("injected directory sync failure")
+
+    monkeypatch.setattr(file_utils, "_fsync_directory", fail_sync)
+    with recent_file.recent_file_access(path) as locked:
+        with pytest.raises(file_utils.PublishedFileSyncError):
+            recent_file.write_recent_payload_unlocked(locked, [{"new": True}], receipt=("consumer", "1"))
+    assert path.read_text() == "[]"
+
+
+def test_atomic_write_failure_leaves_target_byte_identical(tmp_path, monkeypatch):
+    """A failed replacement leaves the original history available for replay."""
     target = tmp_path / "recent.json"
     target.write_text(json.dumps([{"keep": "me"}]), encoding="utf-8")
     before = target.read_bytes()

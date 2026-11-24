@@ -548,6 +548,7 @@
         enableTimeoutId: null,
         enableTimeoutResolve: null,
         mutationHeaders: null,
+        rejectionWarned: false,
         contextProvider: null,
         enableTimeoutMs: DEFAULT_LOG_ENABLE_TIMEOUT_MS,
         aggregateLimit: DEFAULT_LOG_AGGREGATE_LIMIT,
@@ -2793,7 +2794,34 @@
           keepalive: true,
           signal: controller.signal,
         }))
-        .then((response) => item.resolve(response))
+        .then(async (response) => {
+          if (!response || response.ok === false) {
+            return { ok: false, status: response?.status, reason: 'http_error' };
+          }
+          if (typeof response.json === 'function') {
+            try {
+              const target = typeof response.clone === 'function' ? response.clone() : response;
+              const data = await target.json();
+              if (data && data.ok === false) {
+                return { ok: false, status: response.status, reason: data.reason || 'backend_rejected', data };
+              }
+            } catch (_) {
+              // Non-JSON 2xx response still counts as delivered transport response.
+            }
+          }
+          return response;
+        })
+        .then((result) => {
+          if (result && result.ok === false && !this._logger.rejectionWarned) {
+            this._logger.rejectionWarned = true;
+            this._logger.originalWarn?.call(
+              this._console,
+              `[${this.displayName}] [SessionLog] 联合调试日志被后端拒绝`,
+              result,
+            );
+          }
+          item.resolve(result);
+        })
         .catch((error) => item.resolve({ ok: false, reason: 'request_failed', error }))
         .finally(() => {
           this._window.clearTimeout(timeoutId);
@@ -3311,6 +3339,7 @@
       logger.enableInFlight = false;
       logger.enablePromise = null;
       logger.mutationHeaders = null;
+      logger.rejectionWarned = false;
       this._cancelLoggerEnableTimeout();
     }
 
@@ -3325,24 +3354,10 @@
 
     enableLoggerAfterRouteStart() {
       const logger = this._logger;
-      const generation = logger.enableGeneration;
-      if (this._hasLoggerSendCredentials()) {
-        const security = this._window.nekoLocalMutationSecurity;
-        if (!logger.mutationHeaders && security && typeof security.peekCachedToken === 'function') {
-          try {
-            const token = security.peekCachedToken();
-            if (token) {
-              logger.mutationHeaders = { 'Content-Type': 'application/json', 'X-CSRF-Token': token };
-            }
-          } catch (_) { /* continue with asynchronous credential lookup */ }
-        }
-        if (csrfTokenFromHeaders(logger.mutationHeaders || {})) {
-          logger.enabled = true;
-          return Promise.resolve({ ok: true, reason: 'route_start_credentials_ready' });
-        }
-      }
+      if (logger.enabled) return Promise.resolve({ ok: true, skipped: 'already_enabled' });
       if (logger.enableInFlight && logger.enablePromise) return logger.enablePromise;
       logger.enableInFlight = true;
+      const generation = logger.enableGeneration;
       return this._startLoggerEnablePromise(
         this.getMutationHeaders().then((headers) => {
           if (logger.enableGeneration !== generation) return { ok: false, reason: 'stale_enable_result' };
@@ -3351,7 +3366,8 @@
             return { ok: false, reason: 'missing_csrf_token' };
           }
           logger.mutationHeaders = debugLogMutationHeaders;
-          return { ok: true, enableReason: 'route_start_send_gate' };
+          return this._enableLogWithHeaders('route_start', debugLogMutationHeaders)
+            .then((result) => ({ ...(result || {}), enableReason: 'route_start_send_gate' }));
         }),
         generation,
       );

@@ -1555,6 +1555,28 @@ class CoreConfigMixin:
                            or (named_profile.get('VISION_MODEL') if prefix in ('agent', 'agentAdvanced') else '')
                            or named_profile.get('CONVERSATION_MODEL') or '').strip()
 
+            def _resolve_named_provider_region_url(prefix: str, provider: str, slot_url: str) -> str:
+                """Candidate endpoint the save-time probe pinned for a named provider, '' to keep slot_url.
+
+                A named slot stores the URL the settings page filled in. A later save can re-probe the
+                provider with the stored key (the page cannot: keys come back masked) and pin another
+                of its candidates (e.g. qwen_intl on the US host) in resolvedProviderUrls only. Follow
+                that pin like the follow_* slots and the page do; a URL outside the candidates is kept.
+                """
+                if prefix in ('omni', 'tts') or not provider or provider == 'custom' or provider.startswith('follow_'):
+                    return ''
+                named_profile = assist_api_profiles.get(provider)
+                if not isinstance(named_profile, dict):
+                    return ''
+                candidates = self._provider_url_candidates(
+                    named_profile, 'OPENROUTER_URL', 'OPENROUTER_URLS'
+                )
+                if len(candidates) < 2 or not slot_url or not any(same_endpoint(slot_url, c) for c in candidates):
+                    return ''
+                return self._get_saved_provider_url(
+                    core_cfg, 'assist', provider, named_profile, 'OPENROUTER_URL', 'OPENROUTER_URLS'
+                )
+
             _custom_api_fields = [
                 # (frontend field prefix, model config key, URL config key, API-key config key)
                 ('conversation', 'CONVERSATION_MODEL', 'CONVERSATION_MODEL_URL', 'CONVERSATION_MODEL_API_KEY'),
@@ -1640,6 +1662,11 @@ class CoreConfigMixin:
                     else:
                         if cfg_url is not None:
                             config[url_key] = cfg_url or config.get(url_key, '')
+                        region_url = _resolve_named_provider_region_url(
+                            prefix, provider, str(config.get(url_key) or '').strip()
+                        )
+                        if region_url:
+                            config[url_key] = region_url
 
                 # Model ID: empty falls back to existing configuration.
                 cfg_model = core_cfg.get(f'{prefix}ModelId')

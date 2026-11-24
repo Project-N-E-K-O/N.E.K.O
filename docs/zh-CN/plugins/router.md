@@ -110,7 +110,7 @@ class LifeKitPlugin(NekoPluginBase):
         return Ok({"status": "ready"})
 ```
 
-`self.include_router()` 绑定 router，并把其中的入口点注册到当前插件下，使它们可以运行。`__routers__` 类属性同样必须写：宿主不实例化插件就从插件类读取入口元数据，而且只扫描 `__routers__` 里列出的 router（类；实例则通过它的 `collect_entries()`）。只传给 `include_router()` 的 router 仍然能运行，但它的入口不在这次静态扫描里（`include_router()` 不会把它们报给宿主）：除非 `plugin.toml` 里有 `[[plugin.entries]]` 条目声明了它们（这样的条目只带它自己写的字段），插件管理面板和 Agent 的入口列表里都看不到它们；Hosted UI 动作也可能找不到它们；经宿主发起的调用以宿主默认超时为上限（装饰器的 `timeout` 更短时，插件进程仍会按它执行）。对列在 `__routers__` 里的 router 入口，`plugin.toml` 中 `[[plugin.entries]]` 的配置覆盖和主类上的入口一样生效。
+`self.include_router()` 绑定 router，并把其中的入口点注册到当前插件下，使它们可以运行。`__routers__` 类属性同样必须写：宿主不实例化插件就从插件类读取入口元数据，而且只扫描 `__routers__` 里列出的 router（类；实例则通过它的 `collect_entries()`）。只传给 `include_router()` 的 router 仍然能运行，但它的入口不在这次静态扫描里（`include_router()` 不会把它们报给宿主）：除非 `plugin.toml` 里有 `[[plugin.entries]]` 条目声明了它们（这样的条目只带它自己写的字段），插件管理面板和 Agent 的入口列表里都看不到它们；Hosted UI 动作也可能找不到它们；它们不能作为 reply-tail 订阅（`ctx.reply_tail.subscribe`）的目标，回调会返回 `ENTRY_NOT_REGISTERED`；经宿主发起的调用以宿主默认超时为上限（装饰器的 `timeout` 更短时，插件进程仍会按它执行）。对列在 `__routers__` 里的 router 入口，`plugin.toml` 中 `[[plugin.entries]]` 的配置覆盖和主类上的入口一样生效。
 
 用旧版 `neko-plugin build` 打包的插件（打包元数据 schema 4 及更早）里，router 入口可能缺少宿主侧的 handler。宿主无法区分，所以这类插件包第一次启动时都会重新扫描一次入口，并重写打包元数据；之后照常启动，用户不用做什么。如果元数据无法重写（例如插件包目录只读），每次启动都会重新扫描。用当前的 `neko-plugin build` 重新打包可以省掉这次扫描。
 

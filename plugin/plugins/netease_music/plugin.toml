@@ -32,3 +32,10 @@ permissions = ["state:read", "action:call"]
 [plugin_runtime]
 enabled = false
 auto_start = false
+
+# Permissions this plugin needs from the user (see docs/plugins/plugin-toml.md).
+[permissions.require."system.network:connect"]
+reason = { zh-CN = "在网易云音乐搜索并获取歌曲。", zh-TW = "在網易雲音樂搜尋並取得歌曲。", en = "Search NetEase Cloud Music and fetch songs.", ja = "NetEase Cloud Music で曲を検索して取得します。", ko = "NetEase Cloud Music에서 곡을 검색하고 가져옵니다.", ru = "Искать и получать песни в NetEase Cloud Music.", es = "Buscar y obtener canciones en NetEase Cloud Music.", pt = "Pesquisar e obter músicas no NetEase Cloud Music." }
+
+[permissions.require."plugin_sdk.main_agent.messages:push"]
+reason = { zh-CN = "把找到的歌曲发到对话里播放。", zh-TW = "把找到的歌曲傳到對話裡播放。", en = "Send the song it finds to the chat to play.", ja = "見つけた曲を会話に送って再生します。", ko = "찾은 곡을 대화로 보내 재생합니다.", ru = "Отправлять найденную песню в чат для воспроизведения.", es = "Enviar al chat la canción encontrada para reproducirla.", pt = "Enviar ao chat a música encontrada para tocar." }

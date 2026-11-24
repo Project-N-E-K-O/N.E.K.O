@@ -186,6 +186,9 @@ from .review import (  # noqa: F401
     correction_tasks,
     introspection_tasks,
     maybe_spawn_review,
+    persona_refine_tasks,
+    reflection_refine_tasks,
+    scoped_refine_tasks,
 )
 
 from . import evidence_loops  # noqa: F401

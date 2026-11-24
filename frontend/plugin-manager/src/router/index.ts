@@ -60,6 +60,22 @@ const routes: RouteRecordRaw[] = [
         }
       },
       {
+        path: 'familiars/commissions',
+        name: 'Commissions',
+        component: () => import('@/views/CommissionList.vue'),
+        meta: {
+          titleKey: 'power.commissions.title'
+        }
+      },
+      {
+        path: 'familiars/mcp',
+        name: 'McpTools',
+        component: () => import('@/views/McpTools.vue'),
+        meta: {
+          titleKey: 'power.mcp.title'
+        }
+      },
+      {
         path: 'familiars/runtime',
         name: 'FamiliarRuntime',
         component: () => import('@/views/FamiliarRuntime.vue'),

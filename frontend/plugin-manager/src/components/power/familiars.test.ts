@@ -12,6 +12,7 @@ import FamiliarsPane from './space/FamiliarsPane.vue'
 const api = vi.hoisted(() => ({
   getTemplates: vi.fn(), draftFamiliar: vi.fn(), makeFamiliar: vi.fn(), pickDirectory: vi.fn(),
   getProjectBoard: vi.fn(), writeCard: vi.fn(), tellCommission: vi.fn(), answerCommission: vi.fn(), stopCommission: vi.fn(),
+  getTranscript: vi.fn(), getSessionUsage: vi.fn(),
   consoleErrorCode: (error: unknown) => (error as { response?: { data?: { detail?: { code?: string } } } })?.response?.data?.detail?.code ?? null,
 }))
 vi.mock('@/api/console', () => api)
@@ -215,6 +216,17 @@ describe('a familiar up close', () => {
     expect(field('familiar-say').value).toBe('still there?')
   })
 
+  it('passes a sentence on once however often Enter is pressed while it is on its way', async () => {
+    const working = card({ state: 'working', commission: { id: 'c1', title: 'Add an Excel export', status: 'working', started_at: 0 } })
+    await show([working])
+    api.tellCommission.mockReturnValue(new Promise(() => {}))
+    await type('familiar-say', 'use openpyxl')
+    field('familiar-say').dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }))
+    field('familiar-say').dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }))
+    await flush()
+    expect(api.tellCommission).toHaveBeenCalledTimes(1)
+  })
+
   it('shows a question with its choices and answers it by the one that was pressed', async () => {
     const asking = card({ state: 'waiting_user', commission: { id: 'c1', title: 'Add an Excel export', status: 'waiting_user', started_at: 0, ask: {
       id: 'q1', kind: 'permission', category: 'run_command', detail: { tool: 'bash', command: 'pip install openpyxl' }, options: ['always', 'session', 'once', 'deny'],
@@ -252,6 +264,124 @@ describe('a familiar up close', () => {
     expect(lines).toEqual(['1. Which day? (Friday / Saturday)', '2. Window seat?'])
     // Answered in words, like a question that is one.
     expect(byTest('familiar-reply')).toBeTruthy()
+  })
+
+  it('shows what was said in it and what it used when asked, and reads what it used anew as it uses more', async () => {
+    vi.useFakeTimers()
+    const working = (tokens: number) => card({
+      state: 'working', usage: { requests: 3, tokens }, context_tokens: 900,
+      commission: { id: 'c1', title: 'Add an Excel export', status: 'working', started_at: 0 },
+    })
+    api.getTranscript.mockResolvedValue({ readable: true, before: null, entries: [
+      { at: 0, role: 'user', text: 'add an export', cut: false, calls: [], tool: null, failed: false, pictures: 0, time: null },
+    ] })
+    api.getSessionUsage.mockResolvedValue({
+      session: { requests: 3, input: 100, output: 20, cache_read: 0, cache_write: 0, tokens: 120, context_tokens: 900 },
+      window: null, commission: null,
+    })
+    await show([working(120)])
+    // What it has in hand at first; neither of the other two was read for nothing.
+    expect(byTest('familiar-summary')).toBeTruthy()
+    expect(api.getTranscript).not.toHaveBeenCalled()
+    expect(api.getSessionUsage).not.toHaveBeenCalled()
+    await click(document.querySelector('[data-view="talk"]'))
+    expect(api.getTranscript).toHaveBeenCalledWith('s1', { before: null })
+    expect(byTest('transcript-pane')?.textContent).toContain('add an export')
+    expect(byTest('familiar-summary')).toBeNull()
+    await click(document.querySelector('[data-view="usage"]'))
+    expect(api.getSessionUsage).toHaveBeenCalledTimes(1)
+
+    // The board says it used more, the same thing still in hand: read again. Nothing new on it: not read again.
+    api.getProjectBoard.mockResolvedValue(boardOf([working(120)], 'r2'))
+    await vi.advanceTimersByTimeAsync(2100)
+    await flush()
+    expect(api.getSessionUsage).toHaveBeenCalledTimes(1)
+    api.getProjectBoard.mockResolvedValue(boardOf([working(4_300)], 'r3'))
+    await vi.advanceTimersByTimeAsync(2100)
+    await flush()
+    expect(api.getSessionUsage).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows what was said in one that is not on the board any more, and what it used, by its session', async () => {
+    api.getTranscript.mockResolvedValue({ readable: true, before: null, entries: [
+      { at: 0, role: 'user', text: 'sort the photos', cut: false, calls: [], tool: null, failed: false, pictures: 0, time: null },
+    ] })
+    api.getSessionUsage.mockResolvedValue({
+      session: { requests: 3, input: 100, output: 20, cache_read: 0, cache_write: 0, tokens: 120, context_tokens: 900 },
+      window: null, commission: null,
+    })
+    // The address names a session whose work was over days ago: the board has no card of it.
+    await show([card()], 'long-ago')
+    expect(byTest('familiar-past')?.textContent).toContain(words.space.familiars.notOnBoard)
+    expect(api.getTranscript).toHaveBeenCalledWith('long-ago', { before: null })
+    expect(byTest('transcript-pane')?.textContent).toContain('sort the photos')
+    // Nobody is asked to pick one: one was picked, by the address.
+    expect(document.body.textContent).not.toContain(words.space.familiars.pick)
+    await click(document.querySelector('[data-testid="familiar-past"] [data-view="usage"]'))
+    expect(api.getSessionUsage).toHaveBeenCalledWith('long-ago')
+    expect(byTest('usage-pane')).toBeTruthy()
+    cleanup?.()
+    // None named, or one that is on the board: nothing of the kind.
+    await show([card()], '')
+    expect(byTest('familiar-past')).toBeNull()
+    expect(document.body.textContent).toContain(words.space.familiars.pick)
+    cleanup?.()
+    await show([card()])
+    expect(byTest('familiar-past')).toBeNull()
+  })
+
+  it('does not say that a familiar is off the board when the board was not read, or is not the one that is meant', async () => {
+    api.getTranscript.mockResolvedValue({ readable: true, before: null, entries: [] })
+    // The board could not be read: nobody is on it, and nothing follows from that.
+    api.getProjectBoard.mockRejectedValue(refusal('agent_unreachable', {}, 503))
+    await mount(FamiliarsPane, { project: 'Ledger tool', selectedId: 's1', onSelect: selected })
+    expect(byTest('familiars-error')).toBeTruthy()
+    expect(byTest('familiar-past')).toBeNull()
+    expect(api.getTranscript).not.toHaveBeenCalled()
+    cleanup?.()
+    // Whoever shows it does not know yet which project is meant: the board read meanwhile is
+    // another's. Known, and the familiar is not on that one either: then it is said.
+    api.getProjectBoard.mockResolvedValue(boardOf([]))
+    const { state } = await mount(FamiliarsPane, { project: null, selectedId: 's1', settled: false, onSelect: selected })
+    expect(byTest('familiar-past')).toBeNull()
+    expect(api.getTranscript).not.toHaveBeenCalled()
+    // Nor that nobody ever worked here, of a place that is not the one meant, with one named.
+    expect(document.querySelector('.el-empty')).toBeNull()
+    state.props = { project: 'Ledger tool', selectedId: 's1', settled: true, onSelect: selected }
+    await flush()
+    expect(byTest('familiar-past')).toBeTruthy()
+    expect(api.getTranscript).toHaveBeenCalledWith('s1', { before: null })
+  })
+
+  it('opens another one that is off the board on what was said in it, whatever was looked at of the one before', async () => {
+    api.getTranscript.mockResolvedValue({ readable: true, before: null, entries: [] })
+    api.getSessionUsage.mockResolvedValue({
+      session: { requests: 3, input: 100, output: 20, cache_read: 0, cache_write: 0, tokens: 120, context_tokens: 900 }, window: null, commission: null,
+    })
+    const { state } = await show([card()], 'long-ago')
+    await click(document.querySelector('[data-testid="familiar-past"] [data-view="usage"]'))
+    expect(byTest('usage-pane')).toBeTruthy()
+    state.props = { ...state.props, selectedId: 'longer-ago' }
+    await flush()
+    expect(byTest('transcript-pane')).toBeTruthy()
+    expect(byTest('usage-pane')).toBeNull()
+  })
+
+  it('shows the whole command it asks about, and says when its model is not the one that was set', async () => {
+    const long = `npm run build ${'--flag '.repeat(200)}&& echo done`
+    const asking = card({
+      state: 'waiting_user', model_fallback: 'slot_not_found',
+      commission: { id: 'c1', title: 'Build it', status: 'waiting_user', started_at: 0, ask: {
+        id: 'q1', kind: 'permission', category: 'run_command', detail: { tool: 'bash', command: long, cwd: 'D:/code' }, options: ['once', 'deny'],
+      } },
+    })
+    await show([asking])
+    expect(byTest('ask-whole')?.textContent).toBe(long)
+    expect(byTest('familiar-fallback')?.textContent).toBe(words.roles.fellBack)
+    cleanup?.()
+    await show([card()])
+    expect(byTest('familiar-fallback')).toBeNull()
+    expect(byTest('ask-whole')).toBeNull()
   })
 
   it('writes only the lines of the card that were changed', async () => {

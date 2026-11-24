@@ -1060,6 +1060,8 @@ export default {
     pluginBuilt: '플러그인이 패키징되었습니다: {packageName}',
     pluginDeleted: '플러그인이 삭제되었습니다',
     pluginDeletedBuiltinRestartFailed: '플러그인 {plugin}은(는) 삭제되었지만 복원된 내장 버전을 시작하지 못했습니다: {error}',
+    pluginDeletedPermissionsNotCleared: '플러그인 {plugin}은(는) 삭제되었지만 권한 기록 파일이 손상되었거나 더 새로운 버전의 파일이라 남아 있을 수 있는 권한 허용을 지우지 못했습니다. 파일을 다시 읽을 수 있게 되면 해당 허용이 계속 적용될 수 있습니다.',
+    pluginsDeletedPermissionsNotCleared: '플러그인 {plugins}이(가) 삭제되었지만 권한 기록 파일이 손상되었거나 더 새로운 버전의 파일이라 남아 있을 수 있는 권한 허용을 지우지 못했습니다. 파일을 다시 읽을 수 있게 되면 해당 허용이 계속 적용될 수 있습니다.',
     startFailed: '시작에 실패했습니다',
     autoStartEnabled: '자동 시작을 켰습니다',
     autoStartDisabled: '자동 시작을 껐습니다',

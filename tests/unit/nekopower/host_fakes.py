@@ -111,7 +111,9 @@ def pick_plugin(plugin_id: str, entry_id: str, args: dict[str, Any] | None = Non
 
 
 async def fake_model() -> dict[str, Any]:
-    return {"model": "fake-model", "api_key": "test-key"}
+    # The built-in free key: requests go against the free daily quota, as a
+    # meter given to the host counts them (``role_models.is_free_key``).
+    return {"model": "fake-model", "api_key": "free-access"}
 
 
 async def no_model() -> None:
@@ -257,6 +259,28 @@ async def wait_until(predicate: Callable[[], Any], timeout: float = 15.0, what: 
         if asyncio.get_running_loop().time() > deadline:
             raise AssertionError(f"{what} did not happen within {timeout}s")
         await asyncio.sleep(0.02)
+
+
+async def let_go(host: Any) -> None:
+    """Wait until no commission holds a session and no background work started by ``_spawn`` is left.
+
+    A session is let go in a task of its own (``_settle_hold``) that goes on
+    after the hold is gone: it reads the model the session is sent to, to
+    set its idle timer (``_schedule_idle_compact``). A test that swaps
+    ``_model_config`` right after this, to hold a start up while it reads
+    the model, would otherwise catch that read first on a slow machine,
+    before the start it waits for has taken its place.
+
+    This waits for every task in ``_starting``, not only the ones letting a
+    session go set off (a retry, an idle summary, a copy being closed are
+    there too), and for both to be true at the same moment: such a task may
+    start the next queued commission, which holds its session again.
+    """
+    tasks = host.task_agents
+    await wait_until(
+        lambda: tasks._held_by == {} and not tasks._starting,
+        what="every session being let go and every task started by _spawn being done",
+    )
 
 
 async def outbox(host: Any, kind: str | None = None) -> list[Any]:

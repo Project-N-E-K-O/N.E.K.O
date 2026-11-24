@@ -40,6 +40,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
+from plugin.sdk.shared.permissions.narrowing import normalize_narrowing
+
 # Module-level attribute used by the decorator to mark methods. Pulling
 # this onto a constant lets ``NekoPluginBase`` discover decorated
 # methods via ``getattr(method, _LLM_TOOL_META_ATTR, None)`` without a
@@ -96,6 +98,10 @@ class LlmToolMeta:
     # register) can remove exactly this registration and never a newer one
     # of the same name. ``None`` on the decorator / sync paths.
     registration_id: str | None = None
+    # Component narrowing (``permissions=``): checked when the tool is
+    # registered and recorded on its ``__llm_tool__{name}`` entry. Not sent
+    # to main_server.
+    permissions: tuple[str, ...] | None = None
 
     def to_ipc_payload(self, *, plugin_id: str) -> dict[str, Any]:
         """Build the LLM_TOOL_REGISTER IPC message payload.
@@ -124,6 +130,7 @@ def llm_tool(
     timeout: float = 30.0,
     role: str | None = None,
     reply_tail: bool = False,
+    permissions: list[str] | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator marking a plugin method as a model-callable LLM tool.
 
@@ -178,6 +185,11 @@ def llm_tool(
         Opt in to v1 original-reply image context under ``_ctx.host_reply``.
         The handler must accept ``_ctx`` or ``**kwargs``. False preserves the
         existing arguments. Realtime and old frontends receive no capability.
+    permissions:
+        Optional narrowing: the permission ids (a subset of what plugin.toml
+        declares) this tool needs. Left out, the tool inherits every declared
+        permission. A tool listing an undeclared permission is not registered
+        and the reason is logged.
 
     Notes
     -----
@@ -249,6 +261,7 @@ def llm_tool(
         timeout_seconds = float(timeout)
         if timeout_seconds <= 0:
             raise ValueError(f"@llm_tool timeout must be > 0, got {timeout_seconds}")
+        narrowed = normalize_narrowing(permissions, where="@llm_tool")
 
         meta = LlmToolMeta(
             name=resolved_name,
@@ -257,6 +270,7 @@ def llm_tool(
             timeout_seconds=timeout_seconds,
             role=role,
             reply_tail=reply_tail,
+            permissions=narrowed,
         )
         setattr(func, LLM_TOOL_META_ATTR, meta)
         return func

@@ -22,21 +22,18 @@ ChangeCallback = Callable[[str, PermissionState], object]
 
 
 class FakePermissions:
-    """Settable ``get`` / ``request`` / ``on_change`` over a dict of states.
+    """Settable ``get`` / ``on_change`` over a dict of states.
 
     ``states`` maps a permission id to a status string, a ``PermissionState``
     or a mapping with ``status`` / ``background`` / ``enforced``. Ids not
     listed get ``default``. For a string, or a mapping without ``enforced``,
     ``enforced`` comes from the vocabulary (False for disclosure-only ids); a
     ``PermissionState`` is used as given. ``checks_disabled=True`` makes it
-    False for every id, as the host's master switch does. ``answers`` is what ``request()`` resolves an id
-    to, as if the user had answered; without one it returns the current state.
-    Unknown ids raise ``ValueError`` so a typo fails the test.
+    False for every id, as the host's master switch does. Unknown ids raise
+    ``ValueError`` so a typo fails the test.
 
-    ``request()`` exists only here for now: the ``ctx.permissions`` of a real
-    plugin process has ``get`` and ``on_change`` but no ``request`` yet, so a
-    plugin that calls it passes against the fake and fails with
-    ``AttributeError`` in a real process.
+    The plugin-facing methods are exactly those of the real ``ctx.permissions``
+    (``get`` and ``on_change``); ``set`` and ``denial`` are test controls.
     """
 
     def __init__(
@@ -44,33 +41,20 @@ class FakePermissions:
         states: Mapping[str, StateLike] | None = None,
         *,
         default: StateLike = "granted",
-        answers: Mapping[str, StateLike] | None = None,
         checks_disabled: bool = False,
     ) -> None:
         self._checks_disabled = checks_disabled
         self._default = default
         self._states: dict[str, PermissionState] = {}
-        self._answers: dict[str, StateLike] = {}
         self._callbacks: list[ChangeCallback] = []
-        self.requests: list[tuple[str, bool]] = []
         self._coerce(next(iter(PERMISSIONS)), default)  # validate now
         for permission, state in (states or {}).items():
             self._states[_known(permission)] = self._coerce(permission, state)
-        for permission, state in (answers or {}).items():
-            self._coerce(permission, state)  # validate now
-            self._answers[_known(permission)] = state
 
     def get(self, permission: str) -> PermissionState:
         permission = _known(permission)
         state = self._states.get(permission)
         return state if state is not None else self._coerce(permission, self._default)
-
-    async def request(self, permission: str, *, wait: bool = True, timeout: float | None = None) -> PermissionState:
-        permission = _known(permission)
-        self.requests.append((permission, wait))
-        if permission in self._answers:
-            return self.set(permission, self._answers[permission])
-        return self.get(permission)
 
     def on_change(self, callback: ChangeCallback) -> PermissionSubscription:
         if is_async_callable(callback):

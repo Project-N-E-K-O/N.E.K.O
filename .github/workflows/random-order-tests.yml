@@ -19,9 +19,10 @@ name: Random Order Tests
 # 这里的两个 -m 表达式要同步改。
 #
 # 两步各有 step 级时限：某个 seed 下用例卡死时，超时的那一步记为 failure 而不是
-# 整个 job 被 cancelled，另一步照样跑完、产出结果。`-o faulthandler_timeout` 让单条
-# 用例跑过 10 分钟时打印所有线程的调用栈，方便定位卡在哪（xdist worker 的 stderr
-# 不保证都能回到日志里，所以兜底的是 step 时限）。
+# 整个 job 被 cancelled，另一步照样跑完、产出结果。单条用例的时限沿用 pytest.ini：
+# 280 秒时 faulthandler 打印所有线程的调用栈，300 秒时 pytest-timeout 让这条失败
+# （不在这里用 -o 覆盖：覆盖成比 300 秒长，打印调用栈之前进程就已经被结束了）。
+# xdist worker 的 stderr 不保证都能回到日志里，所以最后兜底的仍是 step 时限。
 #
 # 并行时 seed 的语义：pytest-randomly 让 controller 把 seed 下发给每个 worker，
 # 所有 worker 洗出同一份顺序（xdist 也要求各 worker 收集结果一致）。loadfile 把
@@ -134,7 +135,7 @@ jobs:
           SEED: ${{ steps.seed.outputs.value }}
         run: |
           Write-Host "randomly-seed = $env:SEED"
-          uv run pytest tests/unit -q -n auto --dist loadfile --no-loadscope-reorder --randomly-seed=$env:SEED -o faulthandler_timeout=600 -m "not integration_serial and not frontend_contract"
+          uv run pytest tests/unit -q -n auto --dist loadfile --no-loadscope-reorder --randomly-seed=$env:SEED -m "not integration_serial and not frontend_contract"
 
       - name: Run serial-only markers in a random order
         # 上一步红了也要跑：两步合起来才是完整的 tests/unit。
@@ -146,4 +147,4 @@ jobs:
           SEED: ${{ steps.seed.outputs.value }}
         run: |
           Write-Host "randomly-seed = $env:SEED"
-          uv run pytest tests/unit -q --randomly-seed=$env:SEED -o faulthandler_timeout=600 -m "integration_serial or frontend_contract"
+          uv run pytest tests/unit -q --randomly-seed=$env:SEED -m "integration_serial or frontend_contract"

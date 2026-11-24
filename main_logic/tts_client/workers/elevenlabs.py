@@ -21,16 +21,25 @@ import re
 import base64
 import websockets
 import asyncio
+import time
 
+from collections import deque
 from functools import partial
+from urllib.parse import urlparse
 from utils.tts.providers.elevenlabs import ELEVENLABS_TTS_DEFAULT_MODEL, ELEVENLABS_TTS_DEFAULT_OUTPUT_FORMAT, normalize_elevenlabs_voice_id
 
 from .._infra import (
     AudioDoneEmitter,
+    TTS_PRECONNECT_SENTINEL,
     TTS_SHUTDOWN_SENTINEL,
     _resample_audio,
     make_audio_jitter_buffer,
     _enqueue_error,
+)
+from .._preconnect import (
+    SpareSocket,
+    defer_queued_work_until_control,
+    ws_may_hold_connection,
 )
 from .._telemetry import _record_tts_telemetry
 from utils.logger_config import get_module_logger
@@ -128,6 +137,10 @@ def _drain_elevenlabs_resampler(resampler, pcm_sample_rate: int) -> bytes:
         last=True,
     )
 
+class _ConnectPreempted(Exception):
+    """A queued interrupt or shutdown cut the wait before a connect."""
+
+
 def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base_url=None):
     """ElevenLabs worker using Text-to-Dialogue WebSocket PCM output."""
     normalized_voice_id = _normalize_elevenlabs_voice_id(voice_id)
@@ -148,6 +161,12 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
         output_format,
     )
     pcm_sample_rate = _parse_elevenlabs_pcm_sample_rate(output_format)
+    try:
+        ws_host = urlparse(ws_url).hostname or ws_url
+    except ValueError:
+        # Log label only: a malformed URL goes on to fail at connect inside
+        # the worker's own error handling, exactly as before this label.
+        ws_host = ws_url
 
     async def async_worker():
         ws = None
@@ -164,6 +183,59 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
         # isFinal / audio.done closes this round's stream. _receive_ws_messages pins speech_id
         # in task arguments; reuse that ownership to avoid labeling it as the next round.
         audio_done = AudioDoneEmitter(response_queue)
+        # Requests read ahead of a queued interrupt/shutdown (see
+        # defer_queued_work_until_control); consumed before the queue.
+        deferred_requests = deque()
+
+        def _defer_control() -> bool:
+            return defer_queued_work_until_control(request_queue, deferred_requests)
+
+        async def _connect_socket():
+            return await websockets.connect(
+                ws_url,
+                additional_headers={"xi-api-key": audio_api_key},
+                ping_interval=None,
+                close_timeout=0.5,
+                max_size=10 * 1024 * 1024,
+            )
+
+        # Socket opened ahead of the next speech on core's preconnect request,
+        # bound to no speech until a connect adopts it. Transport only: the
+        # init message is a plain send with no reply to wait for, so sending
+        # it early would save nothing.
+        spare = SpareSocket(connect=_connect_socket, defer_control=_defer_control)
+
+        def _round_socket_finished() -> bool:
+            """Whether the socket ``ws`` holds finished its round.
+
+            ``close_socket`` went out and the session-final event arrived; the
+            server closes such a socket itself, this only stops waiting for it.
+            """
+            return text_done_sent and response_finished.is_set()
+
+        async def _retire_finished_socket() -> None:
+            """Close a finished round's socket so a spare can replace it.
+
+            Closed in the background, tracked by the spare so the next connect
+            still waits for it.
+            """
+            nonlocal ws, receive_task
+            old_ws = ws
+            ws = None
+            if receive_task and not receive_task.done():
+                # Released as _close_ws does before replacing a socket.
+                _flush_resampler_tail()
+                audio_jitter.flush()
+                receive_task.cancel()
+                try:
+                    await receive_task
+                except asyncio.CancelledError:
+                    # Expected: this task was cancelled just above.
+                    pass
+                except Exception as exc:
+                    logger.debug("ElevenLabs retired receive task cleanup failed: %s", exc)
+            receive_task = None
+            spare.close_tracked(old_ws)
 
         def _reset_session_metrics() -> None:
             nonlocal response_finished, text_done_sent, resampler
@@ -219,10 +291,12 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                         await asyncio.wait_for(response_finished.wait(), timeout=30.0)
                     except Exception:
                         pass
-                try:
-                    await asyncio.wait_for(ws.close(), timeout=0.5)
-                except Exception:
-                    pass
+                # Via the spare's tracked close: an inline wait_for would
+                # cancel a slow close and leave the socket CLOSING untracked,
+                # beside the next connect. Waited for up to the socket's own
+                # 0.5s close bound, as the inline close was, so the receiver
+                # still reads what is already on the wire.
+                await spare.close_tracked_and_wait(ws, 0.6)
             ws = None
             if receive_task and not receive_task.done():
                 if not interrupt:
@@ -244,12 +318,29 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                 raise RuntimeError("ElevenLabs voice_id is not configured")
             if not audio_api_key:
                 raise RuntimeError("ElevenLabs API key is not configured")
-            ws = await websockets.connect(
-                ws_url,
-                additional_headers={"xi-api-key": audio_api_key},
-                ping_interval=None,
-                close_timeout=0.5,
-                max_size=10 * 1024 * 1024,
+            connect_started = time.perf_counter()
+            try:
+                adopted = await spare.take()
+            except asyncio.TimeoutError:
+                adopted = None
+            if adopted is not None:
+                ws = adopted[0]
+            else:
+                if not await spare.await_cleanup():
+                    raise _ConnectPreempted()
+                ws = await _connect_socket()
+            if _defer_control():
+                # An interrupt/shutdown queued while connecting owns this
+                # boundary: no init or text goes out on this socket.
+                spare.close_tracked(ws)
+                ws = None
+                raise _ConnectPreempted()
+            logger.info(
+                "[voice-chain] stage=tts_socket speech_id=%s host=%s preconnected=%s wait_ms=%d",
+                speech_id,
+                ws_host,
+                adopted is not None,
+                int((time.perf_counter() - connect_started) * 1000),
             )
             _reset_session_metrics()
             current_speech_id = speech_id
@@ -395,13 +486,26 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
             response_queue.put(("__ready__", True))
             loop = asyncio.get_running_loop()
             while True:
-                try:
-                    sid, tts_text = await loop.run_in_executor(None, request_queue.get)
-                except Exception:
-                    break
+                if deferred_requests:
+                    sid, tts_text = deferred_requests.popleft()
+                else:
+                    try:
+                        sid, tts_text = await loop.run_in_executor(None, request_queue.get)
+                    except Exception:
+                        break
 
                 if sid == TTS_SHUTDOWN_SENTINEL:
                     break
+
+                if sid == TTS_PRECONNECT_SENTINEL:
+                    # A reply's LLM request just started; have its socket ready
+                    # before the first text. A finished round's socket the
+                    # server has not closed yet is retired first so the spare
+                    # is never a second connection.
+                    if ws_may_hold_connection(ws) and _round_socket_finished():
+                        await _retire_finished_socket()
+                    spare.start(lambda: ws_may_hold_connection(ws), after_cleanup=True)
+                    continue
 
                 if sid == "__interrupt__":
                     audio_jitter.begin_interrupt()
@@ -411,6 +515,7 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                         current_speech_id = None
                         pending_text.clear()
                         pending_text_sid = None
+                        deferred_requests.clear()
                         audio_jitter.reset()  # Interruption: discard buffered audio not yet released.
                         audio_done.reset()
                     finally:
@@ -428,6 +533,9 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                                 sent_text = "".join(pending_text)
                                 await _send_text(sent_text, current_speech_id)
                                 _record_tts_telemetry(options['model'], len(sent_text))
+                        except _ConnectPreempted:
+                            # The queued interrupt/shutdown owns this boundary.
+                            continue
                         except Exception as exc:
                             logger.warning("ElevenLabs WS flush pending text failed: %s", exc)
                             _enqueue_error(response_queue, {
@@ -472,6 +580,9 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                         pending_text_sid = None
                     try:
                         await _ensure_session(sid)
+                    except _ConnectPreempted:
+                        # The queued interrupt/shutdown owns this boundary.
+                        continue
                     except Exception as exc:
                         logger.warning("ElevenLabs WS ensure session failed: %s", exc)
                         pending_text.append(payload_text)
@@ -493,16 +604,30 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
             logger.error("ElevenLabs WS Worker error: %s", exc, exc_info=True)
             response_queue.put(("__ready__", False))
         finally:
+            # Drop the spare (and any preconnect waiting on a close) first, so
+            # nothing new opens while the current socket closes; _close_ws
+            # hands that socket to the tracked close, which the drain waits for.
+            spare.discard()
             try:
                 await _close_ws(send_final_empty=False, wait_for_final=False)
             except Exception:
                 pass
+            try:
+                await spare.drain(2.5)
+            except Exception as exc:
+                logger.debug("关闭预建 TTS socket 失败: %s", exc)
 
     try:
         asyncio.run(async_worker())
     except Exception as exc:
         logger.error("ElevenLabs WS Worker startup failed: %s", exc, exc_info=True)
         response_queue.put(("__ready__", False))
+
+# Recognizes TTS_PRECONNECT_SENTINEL (see .._preconnect.SpareSocket). The
+# resolver binds base_url with functools.partial; core reads the flag through
+# it (worker_supports_preconnect).
+elevenlabs_tts_worker.supports_preconnect = True
+
 
 def _elevenlabs_clone_is_selected(ctx) -> bool:
     vm = ctx.voice_meta

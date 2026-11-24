@@ -2,6 +2,10 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
+
+from jinja2 import Environment
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -626,6 +630,49 @@ def test_theater_entry_uses_independent_proactive_invites():
         assert "url: '/theater'" not in source
         assert "url: '/theater-home'" not in source
         assert "url: '/theater-numeric'" not in source
+
+
+@pytest.mark.parametrize("market", ["browse", "random", ""])
+def test_market_connection_keeps_window_controls(market):
+    html = Environment(autoescape=True).from_string(_source("templates/theater.html")).render(
+        request=SimpleNamespace(query_params={"market": market}), static_asset_version="test",
+    )
+    assert 'class="theater-title-bar page-title-bar"' in html
+    for control in ("pin", "minimize", "maximize", "close"):
+        assert html.count(f'data-neko-window-control="{control}"') == 1
+    assert 'data-theater-selector-app' not in html
+    assert 'href="/theater"' in html
+
+
+def test_selector_renders_only_without_market_parameter():
+    html = Environment(autoescape=True).from_string(_source("templates/theater.html")).render(
+        request=SimpleNamespace(query_params={}), static_asset_version="test",
+    )
+    assert "data-theater-selector-app" in html
+    assert "theater-market-connection" not in html
+
+
+def test_selector_title_bar_has_shared_window_controls():
+    """The selector is its own window; its title bar must keep the shared window buttons."""
+
+    html = _source("templates/theater.html")
+    selector_start = html.index("data-theater-selector-app")
+    header = html[html.index("<header", selector_start):html.index("</header>", selector_start)]
+
+    assert "/static/js/window_controls.js" in html
+    assert "/static/css/window_controls.css" in html
+    assert 'class="neko-window-controls' in header
+    for control in ("pin", "minimize", "maximize", "close"):
+        assert f'data-neko-window-control="{control}"' in header
+    # Pin stays hidden until the desktop host reports it as available.
+    assert 'data-neko-window-control="pin" hidden' in header
+
+    css = _source("static/css/theater_selector.css")
+    # The page-wide button min-height must not leak into the shared 30px controls.
+    assert ".theater-window-controls .neko-window-control-btn{\nmin-height:0}" in css
+    # An implicit min-content column would let a long status push the controls off-screen.
+    shell = css[css.index(".theater-selector-shell{"):]
+    assert "grid-template-columns:minmax(0,1fr);" in shell[:shell.index("}")]
 
 
 _THEATER_FRONTEND_SOURCES = (

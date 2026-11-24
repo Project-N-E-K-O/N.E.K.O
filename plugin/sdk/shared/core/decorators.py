@@ -19,6 +19,7 @@ from plugin.sdk.shared.constants import (
     PERSIST_ATTR,
 )
 from .events import EventMeta, QuickActionConfig
+from plugin.sdk.shared.permissions.narrowing import normalize_narrowing
 from plugin._types.entry_metadata import check_schema_depth, detached_copy
 
 from .output_contract import is_pydantic_model
@@ -55,6 +56,8 @@ class HookDecoratorMeta:
     timing: str
     priority: int
     condition: str | None
+    # Joined into every entry ``target`` matches (see permissions.narrowing).
+    permissions: tuple[str, ...] | None = None
 
 
 def _unwrap_model_annotation(hint: object) -> type | None:
@@ -416,10 +419,12 @@ def on_event(
     seconds: int | None = None,
     extra: dict[str, object] | None = None,
     metadata: dict[str, object] | None = None,
+    permissions: list[str] | tuple[str, ...] | None = None,
 ) -> Callable[[F], F]:
     event_type_clean = event_type.strip()
     if event_type_clean == "":
         raise ValueError("event_type must be non-empty")
+    narrowed = normalize_narrowing(permissions, where="@on_event")
 
     def _decorator(fn: F) -> F:
         event_id = (id or fn.__name__).strip()
@@ -441,6 +446,7 @@ def on_event(
             timeout=None,
             extra=_json_compatible_mapping(_merge_metadata(extra, mode=mode, seconds=seconds)),
             metadata=_json_compatible_mapping(metadata),
+            permissions=narrowed,
         )
         return _attach_event_meta(fn, meta)
 
@@ -466,8 +472,10 @@ def plugin_entry(
     quick_action: bool = False,
     output_schema: Mapping[str, object] | None = None,
     strict_output: bool = False,
+    permissions: list[str] | tuple[str, ...] | None = None,
     _localns: Mapping[str, object] | None = None,
 ) -> Callable[[F], F]:
+    narrowed = normalize_narrowing(permissions, where="@plugin_entry")
     if output_schema is not None and not isinstance(output_schema, Mapping):
         raise ValueError("output_schema must be a JSON schema mapping")
     if output_schema is not None:
@@ -572,6 +580,7 @@ def plugin_entry(
             output_model=output_model,
             strict_output=bool(strict_output),
             metadata=_json_compatible_mapping(metadata),
+            permissions=narrowed,
         )
         wrapped = _attach_event_meta(fn, meta)
         # Read @quick_action config stored on fn by the decorator below
@@ -635,6 +644,7 @@ def timer_interval(
     description: str = "",
     auto_start: bool = True,
     metadata: dict[str, object] | None = None,
+    permissions: list[str] | tuple[str, ...] | None = None,
 ) -> Callable[[F], F]:
     if seconds <= 0:
         raise ValueError("seconds must be > 0")
@@ -648,6 +658,7 @@ def timer_interval(
         mode="interval",
         seconds=seconds,
         metadata=_merge_metadata(metadata, seconds=seconds),
+        permissions=normalize_narrowing(permissions, where="@timer_interval"),
     )
 
 
@@ -662,6 +673,7 @@ def custom_event(
     auto_start: bool = False,
     trigger_method: str = "message",
     metadata: dict[str, object] | None = None,
+    permissions: list[str] | tuple[str, ...] | None = None,
 ) -> Callable[[F], F]:
     return on_event(
         event_type=event_type,
@@ -673,36 +685,65 @@ def custom_event(
         auto_start=auto_start,
         extra=_merge_metadata(None, trigger_method=trigger_method),
         metadata=_merge_metadata(metadata, trigger_method=trigger_method),
+        permissions=normalize_narrowing(permissions, where="@custom_event"),
     )
 
 
-def hook(*, target: str = "*", timing: str = "before", priority: int = 0, condition: str | None = None) -> Callable[[F], F]:
+_Narrowing = list[str] | tuple[str, ...] | None
+
+
+def hook(
+    *,
+    target: str = "*",
+    timing: str = "before",
+    priority: int = 0,
+    condition: str | None = None,
+    permissions: _Narrowing = None,
+) -> Callable[[F], F]:
+    """Mark an entry hook.
+
+    ``permissions`` narrows the hook like a component; it is joined into
+    every entry ``target`` matches. Left out, the hook needs every declared
+    permission, so the entries it targets inherit everything as well: one
+    such hook on ``target="*"`` cancels the narrowing of every entry.
+    """
     if timing not in {"before", "after", "around", "replace"}:
         raise ValueError("timing must be one of: before, after, around, replace")
+    narrowed = normalize_narrowing(permissions, where="@hook")
 
     def _decorator(fn: F) -> F:
         return _attach_hook_meta(
             fn,
-            HookDecoratorMeta(target=target, timing=timing, priority=priority, condition=condition),
+            HookDecoratorMeta(
+                target=target, timing=timing, priority=priority, condition=condition, permissions=narrowed,
+            ),
         )
 
     return _decorator
 
 
-def before_entry(*, target: str = "*", priority: int = 0, condition: str | None = None) -> Callable[[F], F]:
-    return hook(target=target, timing="before", priority=priority, condition=condition)
+def before_entry(
+    *, target: str = "*", priority: int = 0, condition: str | None = None, permissions: _Narrowing = None,
+) -> Callable[[F], F]:
+    return hook(target=target, timing="before", priority=priority, condition=condition, permissions=permissions)
 
 
-def after_entry(*, target: str = "*", priority: int = 0, condition: str | None = None) -> Callable[[F], F]:
-    return hook(target=target, timing="after", priority=priority, condition=condition)
+def after_entry(
+    *, target: str = "*", priority: int = 0, condition: str | None = None, permissions: _Narrowing = None,
+) -> Callable[[F], F]:
+    return hook(target=target, timing="after", priority=priority, condition=condition, permissions=permissions)
 
 
-def around_entry(*, target: str = "*", priority: int = 0, condition: str | None = None) -> Callable[[F], F]:
-    return hook(target=target, timing="around", priority=priority, condition=condition)
+def around_entry(
+    *, target: str = "*", priority: int = 0, condition: str | None = None, permissions: _Narrowing = None,
+) -> Callable[[F], F]:
+    return hook(target=target, timing="around", priority=priority, condition=condition, permissions=permissions)
 
 
-def replace_entry(*, target: str = "*", priority: int = 0, condition: str | None = None) -> Callable[[F], F]:
-    return hook(target=target, timing="replace", priority=priority, condition=condition)
+def replace_entry(
+    *, target: str = "*", priority: int = 0, condition: str | None = None, permissions: _Narrowing = None,
+) -> Callable[[F], F]:
+    return hook(target=target, timing="replace", priority=priority, condition=condition, permissions=permissions)
 
 
 class _PluginDecorators:

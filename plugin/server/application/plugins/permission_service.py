@@ -43,7 +43,7 @@ MESSAGES_PUSH = "plugin_sdk.main_agent.messages:push"
 # are still on disk, though; if the file becomes readable again (e.g. after
 # upgrading back to the version that wrote it) they apply as stored, and the
 # usual source rules reconcile them on the next plugin start.
-_UNUSABLE_STORE_CODES = (CORRUPT, UNSUPPORTED_VERSION)
+UNUSABLE_STORE_CODES = (CORRUPT, UNSUPPORTED_VERSION)
 
 # A replacement cannot tell which source a source-less grant record belongs to.
 SOURCE_UNKNOWN = "PLUGIN_PERMISSION_SOURCE_UNKNOWN"
@@ -208,31 +208,24 @@ def reconcile_installed_plugins(result: dict) -> None:
         reconcile_permission_source(plugin_id)
 
 
-def forget_installed_plugins(result: dict, *, plugin_ids: tuple[str, ...] = ()) -> bool:
-    """Drop all grants of every plugin of an install result, plus ``plugin_ids``.
+def forget_plugin_grants(plugin_ids: tuple[str, ...]) -> bool:
+    """Drop all grants of ``plugin_ids``.
 
-    Used when a replacement committed new code but its install source could
-    not be recorded: the grants stay bound to the previous source, so they
-    are dropped and the plugin is asked again. Call under the plugin
-    operation lock. Never raises; returns whether every grant was dropped.
-    A damaged or newer-version store counts as dropped (see
-    ``_UNUSABLE_STORE_CODES``), although its records stay on disk.
+    Used inside a replacement, before the plugin restarts, when the new
+    package's install source could not be recorded: the grants would stay
+    bound to the previous source, so they are dropped and the plugin is
+    asked again. A rollback of that replacement puts them back from its
+    snapshot. Call under the plugin operation lock. Never raises; returns
+    whether every grant was dropped. A damaged or newer-version store counts
+    as dropped (see ``UNUSABLE_STORE_CODES``), although its records stay on
+    disk.
     """
-    targets = set(plugin_ids)
     complete = True
-    for plugin_id in _installed_plugin_ids(result):
-        if plugin_id is None:
-            logger.warning(
-                "plugin permission grants not dropped: installed manifest id unavailable"
-            )
-            complete = False
-            continue
-        targets.add(plugin_id)
-    for plugin_id in sorted(targets):
+    for plugin_id in sorted(set(plugin_ids)):
         try:
             forget_permissions(plugin_id)
         except ServerDomainError as exc:
-            if exc.code in _UNUSABLE_STORE_CODES:
+            if exc.code in UNUSABLE_STORE_CODES:
                 # Holds no usable grant, same as bind_permission_source.
                 continue
             logger.error(
@@ -307,7 +300,7 @@ def bind_permission_source(plugin_id: str, source: PluginSource) -> None:
     try:
         permission_store.bind_unbound_source(plugin_id, source)
     except ServerDomainError as exc:
-        if exc.code not in _UNUSABLE_STORE_CODES:
+        if exc.code not in UNUSABLE_STORE_CODES:
             raise
         logger.warning(
             "plugin permission source not bound plugin_id={} code={}", plugin_id, exc.code
@@ -346,7 +339,7 @@ def bind_entry_permission_source(plugin_id: str, entry) -> None:
     try:
         held = permission_store.holds_unbound_grant(plugin_id)
     except ServerDomainError as exc:
-        if exc.code not in _UNUSABLE_STORE_CODES:
+        if exc.code not in UNUSABLE_STORE_CODES:
             raise
         logger.warning(
             "plugin permission source not bound plugin_id={} code={}", plugin_id, exc.code
@@ -623,6 +616,21 @@ def _invalidate_last_records(plugin_ids: frozenset[str] | None) -> None:
         for plugin_id in plugin_ids:
             _last_records.pop(plugin_id, None)
             _removals[plugin_id] = _removals.get(plugin_id, 0) + 1
+
+
+def forget_remembered_permissions(plugin_id: str) -> None:
+    """Drop the in-process copy of the plugin's last read grants without
+    touching the store.
+
+    For an uninstall that could not clear an unusable store: nothing is
+    written, so no change notification drops the copy, and a later read
+    failure would otherwise hand the removed plugin's grants to whatever
+    runs under the same id in this process. The read-failure count goes
+    too, so the next plugin under this id logs its first failure.
+    """
+    _invalidate_last_records(frozenset({plugin_id}))
+    with _snapshot_lock:
+        _read_failures.pop(plugin_id, None)
 
 
 def _on_store_change(plugin_ids: frozenset[str] | None) -> None:

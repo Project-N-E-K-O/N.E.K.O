@@ -29,9 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 合并 main（api.agentAdvanced* / api.gameRecognitionModelConfig）与 PR-03（chat.composerOverflowMenu、
-    // chat.exportActionFailed、memory.recentFile*、visit.socialHub.*）八语言 key 结构，刷新客户端缓存。
-    const LOCALE_VERSION = '2026-11-23-frontend-i18n-after-agent-advanced-merge';
+    // 合并 main 后重新 bump：剧本市场连接页文案（八语言）与主线表情包制作资源。
+    const LOCALE_VERSION = '2026-11-23-theater-market-recovery-main-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

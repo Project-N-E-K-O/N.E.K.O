@@ -33,7 +33,7 @@ CARD_KEYS = {
     "id", "name", "kind", "lanlan_name", "runtime", "workdir",
     "preset", "avatar", "label", "description",
     "title", "title_by", "duty", "duty_by", "summary", "summary_by",
-    "doing", "state", "leader", "parent", "team", "model",
+    "doing", "state", "leader", "parent", "team", "model", "model_fallback",
     "usage", "context_tokens", "last_active_at", "tree", "commission",
 }
 PROJECT_KEYS = {"name", "description", "description_by", "workdir", "archived", "done_today", "members"}
@@ -149,7 +149,7 @@ async def test_sessions_are_grouped_by_project_with_every_field_of_a_card(host):
         "title": "记账管家", "title_by": "user", "duty": "add a chart", "duty_by": "creator",
         "summary": "Made the table.", "summary_by": "review",
         "doing": "add a chart", "state": "asleep", "leader": True, "parent": None, "team": None,
-        "model": "fake-model",
+        "model": "fake-model", "model_fallback": None,
         "usage": {
             "requests": 1, "tokens_in": 100, "tokens_out": 20, "tokens_cache_read": 0, "tokens_cache_write": 0,
             "tokens": 120,
@@ -163,7 +163,7 @@ async def test_sessions_are_grouped_by_project_with_every_field_of_a_card(host):
         single.id, "single", "general", "general", False, "Mia",
     )
     # Nothing of the model but its name is on the board: not its key, not its address.
-    assert "test-key" not in json.dumps(board) and "api_key" not in json.dumps(board)
+    assert "free-access" not in json.dumps(board) and "api_key" not in json.dumps(board)
 
 
 async def test_the_board_of_one_project_and_of_one_character(host):
