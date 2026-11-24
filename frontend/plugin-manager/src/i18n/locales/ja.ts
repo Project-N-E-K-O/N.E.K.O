@@ -1,8 +1,8 @@
 import pluginConsentMessages from '../plugin-consent/ja'
-import { modelApiMessages } from '../model-api'
-import { modelBindingsMessages } from '../model-bindings'
-import { marketFeedbackMessages } from '../market-feedback'
-import { authoringMessages } from '../authoring'
+import modelApiMessages from '../model-api/ja'
+import modelBindingsMessages from '../model-bindings/ja'
+import marketFeedbackMessages from '../market-feedback/ja'
+import authoringMessages from '../authoring/ja'
 import powerMessages from '../power/ja'
 
 /**
@@ -10,10 +10,10 @@ import powerMessages from '../power/ja'
  */
 export default {
   pluginConsent: pluginConsentMessages,
-  authoring: authoringMessages['ja'],
-  marketFeedback: marketFeedbackMessages['ja'],
-  modelApi: modelApiMessages['ja'],
-  modelBindings: modelBindingsMessages['ja'],
+  authoring: authoringMessages,
+  marketFeedback: marketFeedbackMessages,
+  modelApi: modelApiMessages,
+  modelBindings: modelBindingsMessages,
   power: powerMessages,
   common: {
     chooseLanguage: "言語を選択",
