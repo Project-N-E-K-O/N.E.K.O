@@ -205,10 +205,11 @@ def test_no_browser_on_this_computer_is_said_with_its_own_reason(search):
     assert capabilities._browser_dependency_status() == (False, "AGENT_BROWSER_NOT_FOUND")
 
 
-def test_a_search_that_fails_counts_as_no_browser(search):
+def test_a_search_that_fails_is_not_usable_and_says_the_search_failed(search):
     search.found = OSError("the registry cannot be read")
 
-    assert capabilities._browser_dependency_status() == (False, "AGENT_BROWSER_NOT_FOUND")
+    # Not usable all the same; but not said as "there is no browser".
+    assert capabilities._browser_dependency_status() == (False, "AGENT_BROWSER_CHECK_FAILED")
 
 
 def test_the_answer_of_the_browser_search_is_kept_for_a_moment(search, monkeypatch):

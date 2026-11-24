@@ -43,6 +43,9 @@ _BROWSER_SEARCH_TTL_SECONDS = 30.0
 _browser_search: Optional[Tuple[float, bool, str]] = None
 
 BROWSER_NOT_FOUND = "AGENT_BROWSER_NOT_FOUND"
+# The search itself failed (the settings could not be read, a check broke):
+# not usable either, but not said as "there is none".
+BROWSER_CHECK_FAILED = "AGENT_BROWSER_CHECK_FAILED"
 
 
 def _browser_dependency_status() -> tuple[bool, str]:
@@ -63,10 +66,11 @@ def _browser_dependency_status() -> tuple[bool, str]:
 
     try:
         found = provider.browser_installed()
+        reason = "" if found else BROWSER_NOT_FOUND
     except Exception as exc:
         logger.warning("[Agent] Searching for a browser failed: %s", exc)
-        found = False
-    _browser_search = (now, found, "" if found else BROWSER_NOT_FOUND)
+        found, reason = False, BROWSER_CHECK_FAILED
+    _browser_search = (now, found, reason)
     return _browser_search[1], _browser_search[2]
 
 
@@ -161,7 +165,7 @@ async def _refresh_tool_capabilities() -> None:
         browser_ready, browser_reason = await asyncio.to_thread(_browser_availability)
     except Exception as exc:  # noqa: BLE001 - not usable then
         logger.warning("[Agent] Checking for a browser failed: %s", exc)
-        browser_ready, browser_reason = False, "AGENT_BROWSER_CHECK_FAILED"
+        browser_ready, browser_reason = False, BROWSER_CHECK_FAILED
     if mine == _tool_refresh_seq:
         _set_capability("browser_use", browser_ready, browser_reason)
 
