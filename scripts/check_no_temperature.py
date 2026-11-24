@@ -37,7 +37,9 @@ What is reported (``NO_TEMPERATURE``)
    augmented and annotated assignment included; a bare annotation without a
    value stores nothing and is not reported);
 5. a store to a ``.temperature`` attribute (``client.temperature = t``);
-6. a class-body field named ``temperature`` (dataclass / pydantic / TypedDict);
+6. a class-body field named ``temperature`` (dataclass / pydantic / TypedDict),
+   including one bound inside an ``if`` / ``try`` / ``with`` / ``match`` / loop
+   block of the class body (method bodies are not class scope);
 7. a call that sets the key by name: ``d.setdefault("temperature", t)``,
    ``setattr(obj, "temperature", t)``, ``operator.setitem(d, "temperature", t)``,
    ``dict.fromkeys([..., "temperature"], t)``, and a ``("temperature", t)``
@@ -60,8 +62,9 @@ Scope and exemptions
 The default scope is the whole repository, minus virtualenvs, dependency and
 build folders, caches and ``.claude`` (local worktrees). The only exemptions
 are the entries of ``EXEMPTIONS``, each with its reason. A run over the
-default scope also reports an exemption that no longer suppresses anything,
-so the list cannot go stale.
+repository root (no arguments, ``.`` or its absolute path) also reports an
+exemption that no longer suppresses anything, so the list cannot go stale.
+Files are decoded per their source-encoding declaration (UTF-8 otherwise).
 
 Output
 ------
@@ -77,6 +80,7 @@ import argparse
 import ast
 import os
 import sys
+import tokenize
 import warnings
 from pathlib import Path
 from typing import Callable, Iterable, Iterator
@@ -210,17 +214,51 @@ def _call_violation(node: ast.Call) -> str | None:
     return None
 
 
+_OWN_SCOPE = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+
+def _class_scope_statements(node: ast.ClassDef) -> Iterator[ast.stmt]:
+    """Statements that run in the class's own scope: its body plus the blocks
+    of ``if`` / ``for`` / ``while`` / ``with`` / ``try`` / ``match`` inside it,
+    but not the bodies of nested functions or classes (scopes of their own)."""
+    stack: list[ast.stmt] = list(node.body)
+    while stack:
+        stmt = stack.pop()
+        yield stmt
+        if isinstance(stmt, _OWN_SCOPE):
+            continue
+        for attr in ("body", "orelse", "finalbody"):
+            stack.extend(getattr(stmt, attr, None) or [])
+        for handler in getattr(stmt, "handlers", None) or []:
+            stack.extend(handler.body)
+        for case in getattr(stmt, "cases", None) or []:
+            stack.extend(case.body)
+
+
+def _target_names(target: ast.expr) -> Iterator[ast.Name]:
+    if isinstance(target, ast.Name):
+        yield target
+    elif isinstance(target, (ast.Tuple, ast.List)):
+        for item in target.elts:
+            yield from _target_names(item)
+    elif isinstance(target, ast.Starred):
+        yield from _target_names(target.value)
+
+
 def _class_field_targets(node: ast.ClassDef) -> Iterator[ast.Name]:
-    for stmt in node.body:
-        if isinstance(stmt, ast.AnnAssign):
-            targets: list[ast.expr] = [stmt.target]
-        elif isinstance(stmt, ast.Assign):
-            targets = stmt.targets
+    for stmt in _class_scope_statements(node):
+        if isinstance(stmt, ast.Assign):
+            targets: list[ast.expr] = stmt.targets
+        elif isinstance(stmt, (ast.AnnAssign, ast.AugAssign, ast.For, ast.AsyncFor)):
+            targets = [stmt.target]
+        elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+            targets = [item.optional_vars for item in stmt.items if item.optional_vars is not None]
         else:
             continue
         for target in targets:
-            if isinstance(target, ast.Name) and target.id == FIELD:
-                yield target
+            for name in _target_names(target):
+                if name.id == FIELD:
+                    yield name
 
 
 def check_tree(tree: ast.AST) -> list[tuple[int, int, str]]:
@@ -279,6 +317,13 @@ def _repo_relative(path: Path) -> str | None:
         return None
 
 
+def _is_repo_root(path: Path) -> bool:
+    try:
+        return path.resolve() == REPO_ROOT.resolve()
+    except OSError:
+        return False
+
+
 def _exemption_for(rel: str | None) -> str | None:
     if rel is None:
         return None
@@ -305,8 +350,11 @@ def _iter_python_files(paths: Iterable[Path]) -> Iterator[Path]:
 
 def _parse_file(path: Path) -> ast.Module | None:
     try:
-        source = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as e:
+        # Decode the way Python does: the file's coding declaration, else UTF-8.
+        # An unknown declared encoding raises SyntaxError here.
+        with tokenize.open(path) as fh:
+            source = fh.read()
+    except (OSError, UnicodeDecodeError, SyntaxError) as e:
         print(f"{path}: skipped — {e}", file=sys.stderr)
         return None
     try:
@@ -331,9 +379,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    whole_repo = not args.paths
     raw_paths = args.paths or DEFAULT_PATHS
     targets = [Path(p) if Path(p).is_absolute() else REPO_ROOT / p for p in raw_paths]
+    # Stale exemptions can only be judged when the repository root itself is
+    # scanned (no arguments, ".", or its absolute path).
+    whole_repo = any(_is_repo_root(target) for target in targets)
 
     total = 0
     used_exemptions: set[str] = set()

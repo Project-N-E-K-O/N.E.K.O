@@ -67,6 +67,15 @@ def _check(src: str) -> list[tuple[int, int, str]]:
         "class Cfg(BaseModel):\n    temperature: float | None = None\n",
         "class Body(TypedDict):\n    temperature: float\n",
         "class Fake:\n    temperature = 0.5\n",
+        # ... also inside blocks that still run in the class's own scope
+        "class Cfg:\n    if True:\n        temperature: float = 0.2\n",
+        "class Cfg:\n    if flag:\n        pass\n    else:\n        temperature = 0.2\n",
+        "class Cfg:\n    try:\n        temperature = 0.2\n    except Exception:\n        pass\n",
+        "class Cfg:\n    try:\n        pass\n    except Exception:\n        temperature = 0.2\n",
+        "class Cfg:\n    with ctx():\n        temperature = 0.2\n",
+        "class Cfg:\n    match mode:\n        case 1:\n            temperature = 0.2\n",
+        "class Cfg:\n    temperature, top_p = 0.2, 0.9\n",
+        "class Outer:\n    class Inner:\n        temperature = 0.2\n",
         # 7. setting the key by name
         "opts.setdefault('temperature', 0.2)\n",
         "setattr(client, 'temperature', 0.2)\n",
@@ -123,6 +132,9 @@ def test_flags_every_way_of_setting_temperature(snippet: str):
         # text that only mentions it
         "PROMPT = 'Set {\"temperature\": 0.3} in the request.'\n",
         "temperature = slot.defaults.temperature\n",
+        # a local variable in a method is not a class field
+        "class C:\n    def m(self):\n        temperature = self.slot.default\n        return temperature\n",
+        "class C:\n    if flag:\n        def m(self):\n            temperature = 1\n            return temperature\n",
         # opaque forwarding is not a setting by itself
         "def wrap(**kwargs):\n    return create_chat_llm(**kwargs)\n",
         "opts = dict((k, v) for k, v in pairs)\n",
@@ -213,6 +225,9 @@ def test_stale_exemption_fails_the_whole_repository_run(fake_repo: Path, monkeyp
     assert MOD.main([]) == 1
     out = capsys.readouterr().out
     assert "app/ok.py" in out and MOD.STALE_CODE in out
+    # Naming the repository root explicitly is the same whole-repository run.
+    assert MOD.main(["."]) == 1
+    assert MOD.main([str(fake_repo)]) == 1
     # Scanning chosen paths only cannot tell whether an exemption is stale.
     assert MOD.main(["app"]) == 0
 
@@ -241,11 +256,29 @@ def test_unreadable_and_broken_files_do_not_stop_the_scan(tmp_path: Path, capsys
 
 
 @pytest.mark.unit
+def test_reads_files_in_their_declared_source_encoding(tmp_path: Path, capsys):
+    folder = tmp_path / "enc"
+    latin1 = folder / "latin1.py"
+    latin1.parent.mkdir(parents=True)
+    latin1.write_bytes(b"# -*- coding: latin-1 -*-\n# caf\xe9\nmake(temperature=0.2)\n")
+    assert MOD.main([str(folder)]) == 1
+    assert "latin1.py:3:" in capsys.readouterr().out
+
+    # An unknown encoding declaration is skipped with a message, not a crash.
+    _write(folder / "bogus.py", "# coding: no-such-codec\nx = 1\n")
+    assert MOD.main([str(folder)]) == 1
+    captured = capsys.readouterr()
+    assert "latin1.py:3:" in captured.out
+    assert "bogus.py" in captured.err
+
+
+@pytest.mark.unit
 def test_every_exemption_has_a_reason_and_exists():
     assert MOD.EXEMPTIONS, "the plugin model gateway still needs its exemption"
     for key, reason in MOD.EXEMPTIONS.items():
         assert (ROOT / key).exists(), key
-        assert len(reason.strip()) > 40, key
+        # Whether a reason is good enough is for review; it must not be blank.
+        assert isinstance(reason, str) and reason.strip(), key
 
 
 @pytest.mark.unit

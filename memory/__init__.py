@@ -21,7 +21,10 @@
 
 1. **Do not set a temperature**. No code in the repository sets one: the clients have
    no ``temperature`` parameter and never write the field into the request body, so the
-   model endpoint uses its own default. The same rule applies to any wrapper helper
+   model endpoint uses its own default. The one exception is the plugin model gateway,
+   which still forwards a temperature that a plugin sends or that the user entered as a
+   slot default (listed in ``EXEMPTIONS`` of the gatekeeper below); it does not go
+   through these clients. The same rule applies to any wrapper helper
    (e.g. ``FactStore._allm_call_with_retries`` historically accepted ``temperature=``;
    it has been removed).
    Rationale: (1) compatibility with models that reject the parameter, such as
