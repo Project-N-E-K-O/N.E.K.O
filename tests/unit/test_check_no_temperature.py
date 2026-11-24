@@ -293,6 +293,46 @@ def test_inherited_git_location_variables_do_not_redirect_the_scan(
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+def test_repository_root_with_non_ascii_path_still_uses_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    # Git prints paths as UTF-8; decoding them with a Windows locale code page
+    # used to mismatch the root (silent fall back to walking every folder) or
+    # raise UnicodeDecodeError.
+    root = _git_repo_with_ignored_plugin(tmp_path / "项目" / "张三的仓库")
+    monkeypatch.setattr(MOD, "REPO_ROOT", root)
+    monkeypatch.setattr(MOD, "EXEMPTIONS", {})
+    real_run = subprocess.run
+
+    def run_with_chinese_windows_locale(*args, **kwargs):
+        # Text mode decodes with the locale code page, GBK on a Chinese
+        # Windows without UTF-8 mode, whatever this machine uses.
+        if kwargs.get("text") and not kwargs.get("encoding"):
+            kwargs["encoding"] = "gbk"
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(MOD.subprocess, "run", run_with_chinese_windows_locale)
+
+    assert MOD.main([]) == 0
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+@pytest.mark.parametrize("variable", ["GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS"])
+def test_pathspec_variables_do_not_shrink_the_file_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, variable: str
+):
+    root = _git_repo_with_ignored_plugin(tmp_path / "gitrepo")
+    _write(root / "app" / "deep" / "new.py", "make(temperature=0.2)\n")
+    monkeypatch.setattr(MOD, "REPO_ROOT", root)
+    monkeypatch.setattr(MOD, "EXEMPTIONS", {})
+    monkeypatch.setenv(variable, "1")
+
+    assert MOD.main([]) == 1
+    out = capsys.readouterr().out
+    assert "app/deep/new.py:1:" in out and "local_only" not in out
+
+
+@pytest.mark.unit
 def test_explicit_paths_outside_the_repository_are_scanned(tmp_path: Path, capsys):
     outside = _write(tmp_path / "elsewhere" / "nekopower" / "runtime" / "bad.py", "make(temperature=0.2)\n")
     assert MOD.main([str(outside.parent.parent)]) == 1

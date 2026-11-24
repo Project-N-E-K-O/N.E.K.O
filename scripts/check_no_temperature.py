@@ -367,16 +367,22 @@ def _git_listed_python_files(root: Path) -> list[Path] | None:
     checkouts) is not repository code and is left out; a new file is still
     seen before it is ever ``git add``-ed.
     """
+    # Output is read as bytes: git prints paths as UTF-8, which a Windows locale
+    # code page (GBK, cp1252, ...) would mis-decode for a non-ASCII checkout path.
     env = _git_env()
     try:
-        top = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            cwd=root, env=env, capture_output=True, text=True, timeout=60, check=False,
+        # Empty exactly when ``root`` is the top of the work tree; no path
+        # comparison, so the checkout's own path never needs decoding.
+        cdup = subprocess.run(
+            ["git", "rev-parse", "--show-cdup"],
+            cwd=root, env=env, capture_output=True, timeout=60, check=False,
         )
-        if top.returncode != 0 or Path(top.stdout.strip()).resolve() != root.resolve():
+        if cdup.returncode != 0 or cdup.stdout.strip():
             return None
+        # No pathspec: GIT_LITERAL_PATHSPECS / GIT_GLOB_PATHSPECS would change
+        # what one matches. Python picks the .py files instead.
         listed = subprocess.run(
-            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*.py"],
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
             cwd=root, env=env, capture_output=True, timeout=120, check=False,
         )
     except (OSError, subprocess.SubprocessError):
@@ -385,7 +391,7 @@ def _git_listed_python_files(root: Path) -> list[Path] | None:
         return None
     files: set[Path] = set()
     for raw in listed.stdout.split(b"\0"):
-        if not raw:
+        if not raw.endswith(b".py"):
             continue
         rel = raw.decode("utf-8", "surrogateescape")
         if EXCLUDE_DIRS.intersection(rel.split("/")[:-1]):
