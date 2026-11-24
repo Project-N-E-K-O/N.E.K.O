@@ -132,6 +132,7 @@
         'stimulation_need',
     ]);
     var RECENT_EVENT_LIMIT = 40;
+    var RECENT_CAT_INTERACTION_LIMIT = 3;
     var SEEN_EVENT_LIMIT = 80;
     var DEBUG_TIMELINE_LIMIT = 600;
     var DEBUG_TIMELINE_DETAIL_FIELDS = Object.freeze([
@@ -396,6 +397,7 @@
             sequence: 0,
             fields: createInitialMindFields(),
             recentEvents: [],
+            recentCatInteractionTimes: [],
             seenEventKeys: [],
             actionIntentEvidence: {},
             accountedPhysicalActivityIds: [],
@@ -1297,6 +1299,7 @@
         if (observation.type !== OBSERVATION_TYPES.CHAT_YARN_DRAG_COMPLETED) return;
         var strength = getYarnOfferIntentStrength(observation);
         if (strength) {
+            recordCatInteraction(observation.timestamp);
             addActionIntentEvidence(
                 ACTION_IDS.CAT1_PLAY_YARN,
                 strength,
@@ -2253,6 +2256,14 @@
             isUserInteractionObservationType(type);
     }
 
+    function recordCatInteraction(timestamp) {
+        if (timestamp < runtimeState.enteredAt) return;
+        var times = runtimeState.recentCatInteractionTimes;
+        times.push(timestamp);
+        times.sort(function (left, right) { return left - right; });
+        if (times.length > RECENT_CAT_INTERACTION_LIMIT) times.shift();
+    }
+
     function getReturnEpisodeAccumulator() {
         if (!runtimeState.returnEpisodeAccumulator ||
             typeof runtimeState.returnEpisodeAccumulator !== 'object') {
@@ -2586,12 +2597,11 @@
         }
         if (type === OBSERVATION_TYPES.DRAG_START) {
             beginInteractionGesture(observation);
-        } else if (type === OBSERVATION_TYPES.DRAG_END) {
-            settleInteractionGesture(false, observation);
-            applyPhysicalActivity(observation.detail);
-        } else if (type === OBSERVATION_TYPES.DRAG_CANCELLED) {
-            settleInteractionGesture(true, observation);
-            applyPhysicalActivity(observation.detail);
+        } else if (type === OBSERVATION_TYPES.DRAG_END || type === OBSERVATION_TYPES.DRAG_CANCELLED) {
+            var cancelled = type === OBSERVATION_TYPES.DRAG_CANCELLED;
+            var settled = settleInteractionGesture(cancelled, observation);
+            var moved = applyPhysicalActivity(observation.detail);
+            if (settled && (!cancelled || moved)) recordCatInteraction(observation.timestamp);
         } else if (type === OBSERVATION_TYPES.RAPID_DRAG) {
             applyRapidGestureFeedback(observation);
         } else if (type === OBSERVATION_TYPES.CAT_HOVER_REACTION) {
@@ -2600,11 +2610,13 @@
             // legal action without an event-to-runner mapping.
             mergeInteractionNeed(INTERACTION_FEEDBACK_POLICY.hover);
         } else if (type === OBSERVATION_TYPES.CAT_LOCAL_TEXT_RECEIVED) {
+            recordCatInteraction(observation.timestamp);
             // Text content is deliberately absent. One accepted local cat-chat
             // request is only bounded social/stimulation evidence; the shared
             // selector and its existing gates still own every action decision.
             mergeInteractionNeed(INTERACTION_FEEDBACK_POLICY.localText);
         } else if (type === OBSERVATION_TYPES.THOUGHT_BUBBLE_POP) {
+            recordCatInteraction(observation.timestamp);
             // Popping the bubble is a completed moment of contact, so it
             // satisfies social/stimulation need instead of feeding another
             // bubble-producing action loop.
@@ -2709,6 +2721,10 @@
         }
         addRecentEvent(observation);
         if (shouldScheduleDecisionForObservation(observation)) {
+            // Use the same short coalescing window for hover counts and wakeups.
+            if (observation.type === OBSERVATION_TYPES.CAT_HOVER_REACTION) {
+                recordCatInteraction(observation.timestamp);
+            }
             scheduleDecision(observation);
         }
         emitStateChange('observation', { observation: observation });
@@ -3338,6 +3354,7 @@
             durationSeconds: currentDurationSeconds(),
             fields: clonePlain(runtimeState.fields),
             recentEventCount: runtimeState.recentEvents.length,
+            recentCatInteractionTimes: runtimeState.recentCatInteractionTimes.slice(),
             pendingActionRequest: clonePlain(runtimeState.scheduler.pendingActionRequest),
             activeAction: clonePlain(runtimeState.scheduler.activeAction),
             actionCooldowns: getActiveActionCooldownSnapshot(timestamp),

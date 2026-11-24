@@ -251,11 +251,16 @@
         return applyCollisionDeformation(button, sample, state.pivot);
     }
 
+    function isCollisionDeformationActive(button) {
+        return !!button && activeDeformations.has(button);
+    }
+
     const api = Object.freeze({
         computeCollisionDeformation,
         beginCollisionDeformation,
         renderCollisionDeformation,
         clearCollisionDeformation,
+        isCollisionDeformationActive,
     });
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     if (global) global.NekoCollisionDeformation = api;
