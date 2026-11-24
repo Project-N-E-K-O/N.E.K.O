@@ -3590,6 +3590,13 @@ class TaskAgentManager:
                 # that came for the same matter): it works where it did, and is the project's.
                 kept = again
                 place = dataclasses.replace(place, kind=kept.kind, project=kept.project or place.project)
+                # What it may do and what it is told are the project's from this start on: its
+                # preset as that project has it, and the commission as it is filed by now (the
+                # project's rules are read by it). One made a member after this look starts as
+                # it was, like one that is at work when it is made one, and is the project's
+                # with its next start.
+                template = await self._template_of(kept)
+                commission = await self._ledger.get(commission.id) or commission
             # A blocked or failed commission must be working again before its
             # opening brief can reserve a call against the new run.
             spec = await self._spec(

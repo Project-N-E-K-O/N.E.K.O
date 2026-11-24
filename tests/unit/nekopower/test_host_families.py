@@ -2708,8 +2708,22 @@ async def test_a_task_agent_that_became_a_project_s_since_is_gone_on_with_there_
 @pytest.mark.parametrize("when", ["before the start reads it again", "after it"])
 async def test_a_task_agent_made_a_member_while_it_starts_stays_the_projects(hosts, tmp_path, when):
     llm = ScriptedLLM([_report("report written"), _report("report written again")])
-    host = _host(hosts, tmp_path, llm)
+    opened: list[Any] = []
+
+    def pick(spec: Any) -> ScriptedLLM:
+        opened.append(spec)
+        return llm
+
+    host = _host(hosts, tmp_path, pick)
     await _project(host, "Reports", tmp_path)
+    # The project has rules of its own, and its own way with the preset the task agent is of.
+    space = host.paths.space()
+    space.rules("Reports").parent.mkdir(parents=True, exist_ok=True)
+    space.rules("Reports").write_text("Reports go out on Fridays.\n", encoding="utf-8")
+    space.templates_dir("Reports").mkdir(parents=True, exist_ok=True)
+    (space.templates_dir("Reports") / "general.md").write_text(
+        "---\nname: general\ndescription: Writes the reports.\nwithhold: [web_fetch]\n---\n", encoding="utf-8"
+    )
     agents = host.task_agents
     first = await wait_status(host, (await _dispatch(host, "write the weekly sales report")).commission_id, "done")
     await _let_go(host)
@@ -2743,6 +2757,12 @@ async def test_a_task_agent_made_a_member_while_it_starts_stays_the_projects(hos
     assert (member.kind, member.project) == ("line", "Reports")
     assert [item.id for item in await host.ledger.members("Lan", "Reports")] == [loose.id]
     assert agents._writes_in[loose.id] == ("Reports", loose.id)
+    assert loose.preset == "general" and "web_fetch" not in opened[0].disabled_tools
+    if when == "before the start reads it again":
+        # Seen by the start, it is opened as the project's from this run on: with what the project's
+        # template of its preset withholds, and told the project's rules.
+        assert "web_fetch" in opened[-1].disabled_tools
+        assert "Reports go out on Fridays." in opened[-1].instructions and "Reports go out" not in opened[0].instructions
 
 
 async def test_what_a_task_agent_started_before_it_became_a_member_takes_the_projects_turn_with_it(hosts, tmp_path):
