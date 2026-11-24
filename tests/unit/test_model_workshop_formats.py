@@ -60,6 +60,73 @@ def test_accepts_live2d_and_preserves_original_bytes(tmp_path):
     assert list(tmp_path.iterdir()) == [path]
 
 
+
+@pytest.mark.parametrize("name", ["Avatar.vtube.json", "Avatar.xyplugin.json", "settings/Avatar.XYPLUGIN.JSON",
+                                "items_pinned_to_model.json", "settings/ITEMS_PINNED_TO_MODEL.JSON"])
+def test_live2d_tool_settings_are_preserved_as_data(tmp_path, name):
+    """Tool settings are opaque to NEKO; their strings never become dependencies."""
+    files = live2d_files()
+    files[name] = b'{"url":"http://127.0.0.1/private","path":"../../outside.png","command":"do not execute"}'
+    path = make_native_bundle(tmp_path, files=files)
+    before = path.read_bytes()
+    result = validate_live2d_bundle(path)
+    assert {item.path for item in result.files} == set(files)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("name", ["Avatar.vtube.json", "Avatar.xyplugin.json", "items_pinned_to_model.json", "parameters.json"])
+@pytest.mark.parametrize("raw", [b"not JSON", b'{"x":1,"x":2}', b'{"x":NaN}', b'{"x":1e999}', b"\xff", b"[]"])
+def test_live2d_tool_settings_require_valid_json_objects(tmp_path, name, raw):
+    """A recognized filename cannot admit binary payloads or malformed JSON."""
+    files = live2d_files()
+    files[name] = raw
+    with pytest.raises(ModelFormatError, match="invalid_model_structure") as error:
+        validate_live2d_bundle(make_native_bundle(tmp_path, files=files))
+    assert error.value.path == name
+
+
+@pytest.mark.parametrize("budget", ["bytes", "depth", "nodes"])
+@pytest.mark.parametrize("name", ["Avatar.vtube.json", "Avatar.xyplugin.json", "parameters.json"])
+def test_live2d_tool_settings_use_existing_json_limits(tmp_path, budget, name):
+    files = live2d_files()
+    if budget == "bytes":
+        value, limits, code = {"note": "x" * 600}, FormatLimits(json_bytes=512), "model_json_too_large"
+    elif budget == "depth":
+        value = {}
+        for _ in range(12):
+            value = {"nested": value}
+        limits, code = FormatLimits(json_depth=8), "model_json_too_complex"
+    else:
+        value, limits, code = {"values": list(range(200))}, FormatLimits(json_nodes=100), "model_json_too_complex"
+    files[name] = json.dumps(value).encode()
+    with pytest.raises(ModelFormatError, match=code) as error:
+        validate_live2d_bundle(make_native_bundle(tmp_path, files=files), format_limits=limits)
+    assert error.value.path == name
+
+
+@pytest.mark.parametrize("name", ["not_items_pinned_to_model.json", "Avatar.vtube.json.exe", "unknown.json",
+                                "Avatar.xyplugin.json.exe", "other_parameters.json", "parameters.json.exe"])
+def test_live2d_tool_settings_do_not_allow_other_payload_names(tmp_path, name):
+    files = live2d_files()
+    files[name] = b"{}"
+    with pytest.raises(ModelFormatError, match="unsupported_model_resource") as error:
+        validate_live2d_bundle(make_native_bundle(tmp_path, files=files))
+    assert error.value.path == name
+
+
+@pytest.mark.parametrize("kind", ["vrm", "mmd"])
+@pytest.mark.parametrize("name", ["Avatar.xyplugin.json", "items_pinned_to_model.json", "parameters.json"])
+def test_tool_settings_exception_is_limited_to_live2d(tmp_path, kind, name):
+    """Compatibility for Live2D must not relax other formats' resource contracts."""
+    entry = "Avatar.vrm" if kind == "vrm" else "Models/Avatar.pmx"
+    files = {entry: vrm_bytes()} if kind == "vrm" else {
+        entry: pmx_bytes(), "Textures/face.png": b"\x89PNG\r\n\x1a\nfixture",
+    }
+    files[name] = b"{}"
+    with pytest.raises(ModelFormatError, match="unsupported_model_resource"):
+        validate_model_bundle(make_native_bundle(tmp_path, kind=kind, entry=entry, files=files))
+
+
 @pytest.mark.parametrize("reference", [
     "../textures/face.png", "/textures/face.png", "https://other.invalid/face.png",
     "textures/Face.png", "textures/face%2Epng", "textures/face.png#hidden", "textures/face.png?q=1",
@@ -103,6 +170,389 @@ def test_rejects_malformed_motion_layout(tmp_path, change):
     files["motions/test.motion3.json"] = json.dumps(motion).encode()
     with pytest.raises(ModelFormatError):
         validate_live2d_bundle(make_native_bundle(tmp_path, files=files))
+
+
+@pytest.mark.parametrize("validator", [validate_live2d_bundle, validate_model_bundle])
+def test_nonstandard_motion_reports_compatibility_without_rewriting(tmp_path, validator):
+    files = live2d_files()
+    motion = json.loads(files["motions/test.motion3.json"])
+    motion["Curves"][0]["Target"] = "2422911982"
+    motion["Meta"].update(TotalSegmentCount=2, TotalPointCount=1)
+    files["motions/test.motion3.json"] = json.dumps(motion).encode()
+    path = make_native_bundle(tmp_path, files=files)
+    before = path.read_bytes()
+    result = validator(path)
+    assert result.compatibility_warning_count == 2
+    assert result.compatibility_warnings == (
+        {"code": "live2d_motion_count_mismatch", "path": "motions/test.motion3.json"},
+        {"code": "live2d_unknown_motion_target", "path": "motions/test.motion3.json"},
+    )
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("validator", [validate_live2d_bundle, validate_model_bundle])
+@pytest.mark.parametrize("position", [0, 1])
+def test_empty_curve_in_an_otherwise_playable_motion_reports_compatibility(tmp_path, validator, position):
+    files = live2d_files()
+    motion = json.loads(files["motions/test.motion3.json"])
+    motion["Curves"].insert(position, {"Target": "Parameter", "Id": "ParamMouthForm", "Segments": []})
+    motion["Meta"]["CurveCount"] = 2
+    files["motions/test.motion3.json"] = json.dumps(motion).encode()
+    path = make_native_bundle(tmp_path, files=files)
+    before = path.read_bytes()
+    result = validator(path)
+    assert result.compatibility_warning_count == 1
+    assert result.compatibility_warnings == (
+        {"code": "live2d_empty_motion_curve", "path": "motions/test.motion3.json"},
+    )
+    assert path.read_bytes() == before
+
+
+def test_motion_with_only_empty_curves_still_fails_without_a_fallback_point(tmp_path):
+    files = live2d_files()
+    motion = json.loads(files["motions/test.motion3.json"])
+    motion["Curves"][0]["Segments"] = []
+    motion["Meta"].update(TotalSegmentCount=0, TotalPointCount=0)
+    files["motions/test.motion3.json"] = json.dumps(motion).encode()
+    with pytest.raises(ModelFormatError, match="invalid_model_structure"):
+        validate_model_bundle(make_native_bundle(tmp_path, files=files))
+
+
+@pytest.mark.parametrize("change", ["underallocated_segments", "oversized_segments", "oversized_points",
+                                   "invalid_points", "empty_target", "numeric_target", "empty_segments", "bad_opcode"])
+def test_motion_compatibility_does_not_admit_unsafe_layouts(tmp_path, change):
+    files = live2d_files()
+    motion = json.loads(files["motions/test.motion3.json"])
+    if change == "underallocated_segments":
+        motion["Meta"]["TotalSegmentCount"] = 0
+    elif change == "oversized_segments":
+        motion["Meta"]["TotalSegmentCount"] = 10 ** 12
+    elif change == "oversized_points":
+        motion["Meta"]["TotalPointCount"] = 10 ** 12
+    elif change == "invalid_points":
+        motion["Meta"]["TotalPointCount"] = True
+    elif change == "empty_target":
+        motion["Curves"][0]["Target"] = ""
+    elif change == "numeric_target":
+        motion["Curves"][0]["Target"] = 2422911982
+    elif change == "empty_segments":
+        motion["Curves"][0]["Segments"] = [0, 0]
+    else:
+        motion["Curves"][0]["Segments"][2] = 9
+    files["motions/test.motion3.json"] = json.dumps(motion).encode()
+    with pytest.raises(ModelFormatError):
+        validate_model_bundle(make_native_bundle(tmp_path, files=files))
+
+
+def test_motion_compatibility_report_is_bounded_and_keeps_total(tmp_path):
+    files = live2d_files()
+    motion = json.loads(files.pop("motions/test.motion3.json"))
+    motion["Curves"][0]["Target"] = "CustomTarget"
+    for index in range(101):
+        files[f"motions/{index:03}.motion3.json"] = json.dumps(motion).encode()
+    result = validate_model_bundle(make_native_bundle(tmp_path, files=files))
+    assert result.compatibility_warning_count == 101
+    assert len(result.compatibility_warnings) == 100
+    assert result.compatibility_warnings[-1]["path"] == "motions/099.motion3.json"
+
+
+
+
+@pytest.mark.parametrize("validator", [validate_live2d_bundle, validate_model_bundle])
+def test_null_display_info_is_unset_and_resource_bytes_are_preserved(tmp_path, validator):
+    files = live2d_files()
+    model = json.loads(files["Avatar.model3.json"])
+    model["FileReferences"]["DisplayInfo"] = None
+    files["Avatar.model3.json"] = json.dumps(model).encode()
+    path = make_native_bundle(tmp_path, files=files)
+    before = path.read_bytes()
+    result = validator(path)
+    assert result.model_format == "live2d" and not result.compatibility_warning_count
+    assert path.read_bytes() == before
+    with zipfile.ZipFile(path) as archive:
+        assert archive.read("model/Avatar.model3.json") == files["Avatar.model3.json"]
+
+
+@pytest.mark.parametrize("reference", [False, 0, [], {}, "../info.cdi3.json",
+                                     "/info.cdi3.json", "https://other.invalid/info.cdi3.json"])
+def test_display_info_values_still_require_a_valid_internal_reference(tmp_path, reference):
+    files = live2d_files()
+    model = json.loads(files["Avatar.model3.json"])
+    model["FileReferences"]["DisplayInfo"] = reference
+    files["Avatar.model3.json"] = json.dumps(model).encode()
+    with pytest.raises(ModelFormatError):
+        validate_model_bundle(make_native_bundle(tmp_path, files=files))
+
+
+@pytest.mark.parametrize("contents", [b"not JSON", b"{}", b'{"Version":3,"Parameters":"invalid"}'])
+def test_display_info_file_contents_remain_validated(tmp_path, contents):
+    files = live2d_files()
+    model = json.loads(files["Avatar.model3.json"])
+    model["FileReferences"]["DisplayInfo"] = "info.cdi3.json"
+    files["Avatar.model3.json"] = json.dumps(model).encode()
+    files["info.cdi3.json"] = contents
+    with pytest.raises(ModelFormatError):
+        validate_model_bundle(make_native_bundle(tmp_path, files=files))
+
+
+@pytest.mark.parametrize("field", ["Physics", "Pose", "DisplayInfo", "UserData", "Motions", "Expressions", "Sound", "mapping"])
+def test_missing_optional_effect_warns_without_changing_the_package(tmp_path, field):
+    files = live2d_files()
+    model = json.loads(files["Avatar.model3.json"])
+    missing = "missing.json" if field != "Sound" else "missing.mp3"
+    refs = model["FileReferences"]
+    if field == "Motions":
+        refs[field] = {"Tap": [{"File": missing}]}
+    elif field == "Expressions":
+        refs[field] = [{"Name": "Smile", "File": missing}]
+    elif field == "Sound":
+        refs["Motions"] = {"Tap": [{"File": "motions/test.motion3.json", "Sound": missing}]}
+    elif field == "mapping":
+        model["EmotionMapping"] = {"motions": {"happy": ["missing.motion3.json"]}}
+        missing = "missing.motion3.json"
+    else:
+        refs[field] = missing
+    files["Avatar.model3.json"] = json.dumps(model).encode()
+    path = make_native_bundle(tmp_path, files=files)
+    before = path.read_bytes()
+    result = validate_model_bundle(path)
+    assert result.compatibility_warnings == ({"code": "live2d_optional_resource_unavailable", "path": missing},)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("file_value", ["absent", None, ""])
+def test_command_only_motion_entries_are_preserved_with_one_compatibility_notice(tmp_path, file_value):
+    files = live2d_files()
+    model = json.loads(files["Avatar.model3.json"])
+    command = {"Name": "init", "PostCommand": "parameters lock touch_drag1 $drag1", "VarFloats": [{"Code": "init 0"}]}
+    if file_value != "absent":
+        command["File"] = file_value
+    model["FileReferences"]["Motions"] = {"init": [command, {"Name": "menu", "Choices": []}]}
+    files["Avatar.model3.json"] = json.dumps(model).encode()
+    path = make_native_bundle(tmp_path, files=files)
+    before = path.read_bytes()
+    result = validate_model_bundle(path)
+    assert result.compatibility_warnings == ({"code": "live2d_unsupported_tool_effect", "path": "Avatar.model3.json"},)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("physics", [{"File": "missing.json"}, {"File": "physics.json"}, {}, None, ""])
+def test_third_party_physics_config_is_safe_data_and_reports_unsupported_effects(tmp_path, physics):
+    files = live2d_files()
+    model = json.loads(files["Avatar.model3.json"])
+    model["FileReferences"]["PhysicsV2"] = physics
+    files["Avatar.model3.json"] = json.dumps(model).encode()
+    files["physics.json"] = b'{"Version":3,"Meta":{"PhysicsSettingCount":0},"PhysicsSettings":[]}'
+    if not isinstance(physics, dict) or physics.get("File") != "physics.json":
+        files.pop("physics.json")
+    path = make_native_bundle(tmp_path, files=files)
+    before = path.read_bytes()
+    result = validate_model_bundle(path)
+    expected = []
+    if physics == {"File": "missing.json"}:
+        expected.append({"code": "live2d_optional_resource_unavailable", "path": "missing.json"})
+    if isinstance(physics, dict):
+        expected.append({"code": "live2d_unsupported_tool_effect", "path": "Avatar.model3.json"})
+    assert list(result.compatibility_warnings) == expected
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("reference", [False, 0, [], {}, "../outside.json", "%2e%2e/outside.json",
+                                     "https://other.invalid/a.json", "/a.json", "payload.exe"])
+@pytest.mark.parametrize("field", ["PhysicsV2", "Motions"])
+def test_tool_effect_references_still_require_safe_local_resource_types(tmp_path, reference, field):
+    files = live2d_files()
+    model = json.loads(files["Avatar.model3.json"])
+    model["FileReferences"][field] = {"File": reference} if field == "PhysicsV2" else {"init": [{"File": reference}]}
+    files["Avatar.model3.json"] = json.dumps(model).encode()
+    with pytest.raises(ModelFormatError):
+        validate_model_bundle(make_native_bundle(tmp_path, files=files))
+
+
+@pytest.mark.parametrize("raw", [b'{"customPhysics":{"url":"https://other.invalid/ignored","command":"ignored"}}',
+                               b'not JSON', b'[]', b'{"x":1,"x":2}', b'{"x":NaN}'])
+def test_physics_v2_companion_is_bounded_opaque_json(tmp_path, raw):
+    files = live2d_files()
+    model = json.loads(files["Avatar.model3.json"])
+    model["FileReferences"]["PhysicsV2"] = {"File": "third-party.json"}
+    files["Avatar.model3.json"] = json.dumps(model).encode()
+    files["third-party.json"] = raw + b' ' * 512
+    path = make_native_bundle(tmp_path, files=files)
+    if raw.startswith(b'{"customPhysics"'):
+        assert validate_model_bundle(path).compatibility_warning_count == 1
+        with pytest.raises(ModelFormatError, match="model_json_too_large") as error:
+            validate_model_bundle(path, format_limits=FormatLimits(json_bytes=len(files["third-party.json"]) - 1))
+        assert error.value.path == "third-party.json"
+    else:
+        with pytest.raises(ModelFormatError):
+            validate_model_bundle(path)
+
+
+def test_command_only_motion_still_checks_its_sound_reference(tmp_path):
+    files = live2d_files()
+    model = json.loads(files["Avatar.model3.json"])
+    model["FileReferences"]["Motions"] = {"init": [{"PostCommand": "ignored", "Sound": "https://other.invalid/voice.wav"}]}
+    files["Avatar.model3.json"] = json.dumps(model).encode()
+    with pytest.raises(ModelFormatError):
+        validate_model_bundle(make_native_bundle(tmp_path, files=files))
+
+
+@pytest.mark.parametrize("value", [False, 0, [], "file.json"])
+def test_physics_v2_container_cannot_be_a_scalar_or_array(tmp_path, value):
+    files = live2d_files()
+    model = json.loads(files["Avatar.model3.json"])
+    model["FileReferences"]["PhysicsV2"] = value
+    files["Avatar.model3.json"] = json.dumps(model).encode()
+    with pytest.raises(ModelFormatError):
+        validate_model_bundle(make_native_bundle(tmp_path, files=files))
+
+
+def test_unknown_reference_extensions_are_not_blanket_allowed(tmp_path):
+    files = live2d_files()
+    model = json.loads(files["Avatar.model3.json"])
+    model["FileReferences"]["UnknownPlugin"] = {"File": "missing.json"}
+    files["Avatar.model3.json"] = json.dumps(model).encode()
+    with pytest.raises(ModelFormatError, match="unsupported_model_reference"):
+        validate_model_bundle(make_native_bundle(tmp_path, files=files))
+
+
+@pytest.mark.parametrize("reference", ["motions/Idle#2.json", "motions/Idle%232.json"])
+def test_optional_motion_with_a_safe_but_incompatible_url_warns(tmp_path, reference):
+    files = live2d_files()
+    files[reference] = files.pop("motions/test.motion3.json")
+    model = json.loads(files["Avatar.model3.json"])
+    model["FileReferences"]["Motions"] = {"Idle": [{"File": reference}]}
+    files["Avatar.model3.json"] = json.dumps(model).encode()
+    result = validate_model_bundle(make_native_bundle(tmp_path, files=files))
+    assert result.compatibility_warnings == ({"code": "live2d_optional_resource_unavailable", "path": reference},)
+
+
+@pytest.mark.parametrize("reference", ["../outside.json", "%2e%2e/outside.json", "x/%2e%2e/%2e%2e/outside.json",
+                                     "https://other.invalid/a.json", "//other.invalid/a.json", "/a.json",
+                                     "x#hidden/../../outside.json", "x\x00.json", "script.js", "missing.json.exe"])
+def test_optional_effects_cannot_escape_or_admit_payloads(tmp_path, reference):
+    files = live2d_files()
+    model = json.loads(files["Avatar.model3.json"])
+    model["FileReferences"]["Physics"] = reference
+    files["Avatar.model3.json"] = json.dumps(model).encode()
+    with pytest.raises(ModelFormatError):
+        validate_model_bundle(make_native_bundle(tmp_path, files=files))
+
+
+@pytest.mark.parametrize("malformed", [False, True])
+def test_referenced_generic_json_motion_is_checked_by_content(tmp_path, malformed):
+    files = live2d_files()
+    files["Motions_Tap_0.json"] = files.pop("motions/test.motion3.json")
+    if malformed:
+        files["Motions_Tap_0.json"] = b'{}'
+    model = json.loads(files["Avatar.model3.json"])
+    model["FileReferences"]["Motions"] = {"Tap": [{"File": "Motions_Tap_0.json", "PostCommand": "do not execute"}]}
+    files["Avatar.model3.json"] = json.dumps(model).encode()
+    path = make_native_bundle(tmp_path, files=files)
+    if malformed:
+        with pytest.raises(ModelFormatError):
+            validate_model_bundle(path)
+    else:
+        assert validate_model_bundle(path).compatibility_warning_count == 0
+
+
+@pytest.mark.parametrize("name", ["physics3.json", "Physics.json"])
+def test_generic_optional_physics_uses_the_physics_schema(tmp_path, name):
+    files = live2d_files()
+    model = json.loads(files["Avatar.model3.json"])
+    # The bare standard basename is recognizable even when an exporter points elsewhere.
+    model["FileReferences"]["Physics"] = "Physics.json"
+    files["Avatar.model3.json"] = json.dumps(model).encode()
+    files[name] = b'{"Version":3,"Meta":{"PhysicsSettingCount":0},"PhysicsSettings":[]}'
+    assert validate_model_bundle(make_native_bundle(tmp_path, files=files)).model_format == "live2d"
+    files[name] = b'{"Version":3}'
+    with pytest.raises(ModelFormatError):
+        validate_model_bundle(make_native_bundle(tmp_path, files=files))
+
+
+@pytest.mark.parametrize(("extension", "header"), [("mp3", b'\xff\xfb\xb0\x04'), ("mp3", b'ID3'),
+                                                  ("wav", b'RIFF\x00\x00\x00\x00WAVE'), ("ogg", b'OggS\x00')])
+def test_motion_audio_is_preserved_as_a_local_resource(tmp_path, extension, header):
+    files = live2d_files()
+    name = "voice." + extension
+    files[name] = header + b'\x00' * 24
+    model = json.loads(files["Avatar.model3.json"])
+    model["FileReferences"]["Motions"] = {"Tap": [{"File": "motions/test.motion3.json", "Sound": name}]}
+    files["Avatar.model3.json"] = json.dumps(model).encode()
+    path = make_native_bundle(tmp_path, files=files)
+    before = path.read_bytes()
+    assert validate_model_bundle(path).compatibility_warning_count == 0
+    assert path.read_bytes() == before
+    files[name] = b'<script>not audio</script>'
+    with pytest.raises(ModelFormatError):
+        validate_model_bundle(make_native_bundle(tmp_path, files=files))
+
+
+@pytest.mark.parametrize("field", ["Moc", "Textures"])
+def test_null_display_info_exception_does_not_relax_other_references(tmp_path, field):
+    files = live2d_files()
+    model = json.loads(files["Avatar.model3.json"])
+    model["FileReferences"].update(DisplayInfo=None)
+    model["FileReferences"][field] = None
+    files["Avatar.model3.json"] = json.dumps(model).encode()
+    with pytest.raises(ModelFormatError):
+        validate_model_bundle(make_native_bundle(tmp_path, files=files))
+
+
+
+
+@pytest.mark.parametrize("name", ["parameters.json", "settings/PARAMETERS.JSON"])
+def test_neko_model_parameters_are_preserved_without_interpreting_keys(tmp_path, name):
+    files = live2d_files()
+    files[name] = b'{"param_0":1,"ParamAngleX":-2.5,"custom/id":0}'
+    path = make_native_bundle(tmp_path, files=files)
+    before = path.read_bytes()
+    result = validate_model_bundle(path)
+    assert name in {item.path for item in result.files}
+    assert path.read_bytes() == before
+    assert result.compatibility_warning_count == 0
+
+
+@pytest.mark.parametrize("value", [True, None, "1", "../outside.png", [], {}, float("inf")])
+def test_neko_model_parameters_require_finite_numeric_values(tmp_path, value):
+    files = live2d_files()
+    files["parameters.json"] = json.dumps({"param_0": value}).encode()
+    with pytest.raises(ModelFormatError):
+        validate_model_bundle(make_native_bundle(tmp_path, files=files))
+
+
+@pytest.mark.parametrize("field", ["Physics", "Pose", "DisplayInfo", "UserData"])
+@pytest.mark.parametrize("empty", [None, ""])
+def test_empty_optional_live2d_resources_are_unset(tmp_path, field, empty):
+    files = live2d_files()
+    model = json.loads(files["Avatar.model3.json"])
+    model["FileReferences"][field] = empty
+    files["Avatar.model3.json"] = json.dumps(model).encode()
+    path = make_native_bundle(tmp_path, files=files)
+    before = path.read_bytes()
+    result = validate_model_bundle(path)
+    assert result.model_format == "live2d" and path.read_bytes() == before
+
+
+@pytest.mark.parametrize("field", ["Physics", "Pose", "DisplayInfo", "UserData"])
+@pytest.mark.parametrize("value", [False, 0, [], {}])
+def test_optional_resource_compatibility_does_not_accept_wrong_types(tmp_path, field, value):
+    files = live2d_files()
+    model = json.loads(files["Avatar.model3.json"])
+    model["FileReferences"][field] = value
+    files["Avatar.model3.json"] = json.dumps(model).encode()
+    with pytest.raises(ModelFormatError):
+        validate_model_bundle(make_native_bundle(tmp_path, files=files))
+
+
+@pytest.mark.parametrize("validator", [validate_live2d_bundle, validate_model_bundle])
+def test_optional_motion_loop_can_be_omitted(tmp_path, validator):
+    files = live2d_files()
+    motion = json.loads(files["motions/test.motion3.json"])
+    del motion["Meta"]["Loop"]
+    files["motions/test.motion3.json"] = json.dumps(motion).encode()
+    assert validator(make_native_bundle(tmp_path, files=files)).compatibility_warning_count == 0
+
 
 
 def test_rejects_duplicate_native_json_fields(tmp_path):
@@ -534,3 +984,40 @@ def test_vrm_accepts_compatible_animation_outputs_and_normalized_rotations(tmp_p
     raw = vrm_bytes(change=lambda data: vrm_animation_output(data, *options))
     path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': raw})
     validate_vrm_bundle(path)
+@pytest.mark.parametrize("version", [0, 3])
+def test_bundled_cubism_motion_versions_are_admitted(tmp_path, version):
+    """The bundled SDK loads both legacy default-model and current motions."""
+    files = live2d_files()
+    name = "motions/test.motion3.json"
+    motion = json.loads(files[name])
+    motion["Version"] = version
+    files[name] = json.dumps(motion).encode()
+    validate_live2d_bundle(make_native_bundle(tmp_path, files=files))
+
+
+@pytest.mark.parametrize("budget,accepted", [(55, False), (56, True)])
+def test_normalized_animation_outputs_count_each_channel_allocation(tmp_path, budget, accepted):
+    """Shared normalized outputs still allocate one float array per channel."""
+    def graph(data):
+        data.update(bufferViews=[], accessors=[
+            {"componentType": 5126, "count": 1, "type": "SCALAR"},
+            {"componentType": 5121, "normalized": True, "count": 1, "type": "VEC4"},
+        ], animations=[{"samplers": [{"input": 0, "output": 1}],
+                        "channels": [{"sampler": 0, "target": {"node": 0, "path": "rotation"}} for _ in range(3)]}])
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(change=graph)})
+    if accepted:
+        validate_vrm_bundle(path, format_limits=FormatLimits(vrm_accessor_bytes=budget))
+    else:
+        with pytest.raises(ModelFormatError, match="model_accessor_budget_exceeded"):
+            validate_vrm_bundle(path, format_limits=FormatLimits(vrm_accessor_bytes=budget))
+
+
+@pytest.mark.parametrize("targets", [[{"POSITION": 999}], [], ["invalid"]])
+def test_morph_dependencies_are_checked_without_weight_animations(tmp_path, targets):
+    """Mesh loading resolves morph accessors even when the model has no animation."""
+    def graph(data):
+        data.update(accessors=[{"componentType": 5126, "count": 1, "type": "VEC3"}],
+                    meshes=[{"primitives": [{"attributes": {"POSITION": 0}, "targets": targets}]}])
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(change=graph)})
+    with pytest.raises(ModelFormatError):
+        validate_vrm_bundle(path)

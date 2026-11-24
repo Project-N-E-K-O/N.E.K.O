@@ -708,7 +708,7 @@ async def get_mmd_models():
         except Exception as e:
             logger.error(f"获取创意工坊MMD模型时出错: {e}")
 
-        return JSONResponse(content={"success": True, "models": await _drain_sync(lambda: _filter_workshop_models(config_mgr, models))})
+        return JSONResponse(content={"success": True, "models": await _drain_sync(lambda: _filter_workshop_models(config_mgr, models, url_encoded=False))})
     except Exception as e:
         logger.error(f"获取 MMD 模型列表失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})

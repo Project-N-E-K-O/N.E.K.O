@@ -235,6 +235,7 @@ async def test_unreadable_local_registry_keeps_unrelated_live2d_binding_sources(
 @pytest.mark.parametrize('kind,spelling', [
     ('live2d', 'encoded'), ('vrm', 'encoded'), ('pmx', 'encoded'),
     ('pmd', 'encoded'), ('live2d', 'relative'),
+    ('vrm', 'other-prefix'), ('live2d', 'other-prefix'),
 ])
 async def test_encoded_local_prefix_escape_cannot_bypass_pending_binding(application, owner, no_network, monkeypatch, tmp_path, kind, spelling):
     app, config = application
@@ -257,6 +258,8 @@ async def test_encoded_local_prefix_escape_cannot_bypass_pending_binding(applica
         payload[model_kind] = prefix + '/%2e%2e/' + prefix.lstrip('/') + '/' + tail
         if spelling == 'relative':
             payload[model_kind] = '../' + prefix.lstrip('/') + '/' + tail
+        elif spelling == 'other-prefix':
+            payload[model_kind] = '/static/vrm/%2e%2e/%2e%2e/' + prefix.lstrip('/') + '/' + tail
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
             response = await client.put('/api/characters/catgirl/l2d/' + NAME, json=payload)
         assert response.status_code == 409, response.text

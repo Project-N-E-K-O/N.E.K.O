@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from itertools import islice
 
+import anyio
 import portalocker
 
 from .bundle import BundleError, BundleLimits
@@ -36,25 +37,21 @@ class _Task:
 async def _drain_sync(call):
     """A cancelled awaiter still waits for the synchronous owner to finish its I/O."""
     future = asyncio.create_task(asyncio.to_thread(call))
-    cancelled = False
-    while True:
-        try:
-            result = await asyncio.shield(future)
-            break
-        except asyncio.CancelledError:
-            cancelled = True
-            if future.done():
-                break
-        except BaseException:
-            if cancelled:
-                raise asyncio.CancelledError from None
-            raise
-    if cancelled:
+    try:
+        return await asyncio.shield(future)
+    except asyncio.CancelledError:
+        # AnyIO reissues cancellation at every checkpoint outside a shield.
+        # Keep waiting for the real thread without busy-spinning on disconnect.
+        with anyio.CancelScope(shield=True):
+            while not future.done():
+                try:
+                    await asyncio.wait({future})
+                except asyncio.CancelledError:
+                    continue
         # Retrieve any worker exception so cancellation cannot leak an unobserved task.
-        if future.done() and not future.cancelled():
+        if not future.cancelled():
             future.exception()
-        raise asyncio.CancelledError
-    return result
+        raise
 
 
 class WorkshopTasks:
@@ -358,7 +355,12 @@ class WorkshopTasks:
                     key for key, task in self._tasks.items() if not task.done.is_set()
                 )
             self.recovery = self.installer.recover(active)
-            self._recovery_version = self._recovery_metadata_version()
+            metadata, tasks = self._recovery_metadata_version()
+            # Recovery skipped these tasks. If one settled during the scan,
+            # retain the skipped state so the next maintenance retries its log.
+            self._recovery_version = (
+                metadata, tuple((key, False if key in active else done) for key, done in tasks)
+            )
             return self.recovery
 
     def _recovery_metadata_version(self):
