@@ -1028,7 +1028,9 @@ PERMISSION_DETAIL_CUT_HINT = {
 # the task agent space, so that the user sees it is not just any command.
 # Nor is ``usage_limit``: asked when the work on a commission has used as much
 # as one commission may (``TASK_AGENT_USAGE_LIMIT_TOKENS``); ``{used}`` is what
-# it used and ``{more}`` what it gets when the user allows it.
+# it used and ``{more}`` what it gets when the user allows it. Nor is
+# ``dsh_plugin_add``: the words a ``run_command`` question is put in when the
+# command may add a dsh plugin (``nekopower.dsh.plugin_command.adds_plugin``).
 PERMISSION_CATEGORY_TEXTS = {
     'zh': {"run_command": "运行命令 {detail}", "outside_write": "在工作目录以外写文件 {detail}",
            "outside_read": "读取工作目录以外的文件 {detail}", "workdir_files": "读写工作目录里的文件 {detail}",

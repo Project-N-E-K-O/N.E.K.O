@@ -188,7 +188,7 @@ class DshInstallation:
 
         try:
             directory = write_command(self.root(), executable=executable, leading=(), home=home, tag=str(tag))
-        except OSError:
+        except Exception:  # noqa: BLE001 - whatever it is, dsh still starts without the command
             # dsh works without it; only adding a plugin from a session does
             # not. The one written at an earlier start serves, when it runs
             # this dsh (not the one of a version since replaced).

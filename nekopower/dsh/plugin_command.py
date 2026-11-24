@@ -63,13 +63,16 @@ PNPM_DIR = "pnpm"
 REGISTRY_FILE = "registry.txt"
 
 # What pnpm (and dsh) do without fetching anything: no registry is asked first, and none is
-# tried after another. Nor do they bring a plugin in.
+# tried after another.
 LOCAL_COMMANDS = (
     "list", "ls", "remove", "rm", "uninstall", "un", "why", "allow-version", "revoke-version", "version-exemptions",
 )
+# Of those, the ones that bring no plugin in. Not ``allow-version``: it lets dsh load a
+# plugin version it would refuse.
+HARMLESS_COMMANDS = tuple(command for command in LOCAL_COMMANDS if command != "allow-version")
 
 # Each call of the script in a command line, with the word after it. Any call
-# whose first word is not one of ``LOCAL_COMMANDS`` may bring a plugin in
+# whose first word is not one of ``HARMLESS_COMMANDS`` may bring a plugin in
 # (``add``, but also ``update``, ``install``, an option before ``add``), so the
 # permission question about it says what a plugin may do. The frontend
 # recognizes the same (``components/power/ask.ts``).
@@ -93,7 +96,7 @@ def pnpm_root(root: Path) -> Path:
 
 def adds_plugin(command: str) -> bool:
     """Whether a command line may add a dsh plugin: it calls ``neko-dsh-plugin`` other than to look or remove."""
-    return any((call.group(1) or "").lower() not in LOCAL_COMMANDS for call in _CALL.finditer(command or ""))
+    return any((call.group(1) or "").lower() not in HARMLESS_COMMANDS for call in _CALL.finditer(command or ""))
 
 
 def written_for(directory: Path, executable: Path) -> bool:
@@ -235,7 +238,11 @@ def render_powershell(*, root: Path, executable: Path, leading: tuple[str, ...],
         "    Expand-Package \"$staging\\main.tgz\" \"$staging\\program\"",
         "    Expand-Package \"$staging\\platform.tgz\" \"$staging\\platform\"",
         "    Copy-Item -LiteralPath \"$staging\\platform\\pnpm.exe\" -Destination \"$staging\\program\\pnpm.exe\"",
-        "    # Another run may have put it there meanwhile: then that one is kept.",
+        # A directory left without its program (taken away by a virus scanner, say) is
+        # replaced; one that another run has just put there whole is kept.
+        "    if ((Test-Path -LiteralPath $PnpmDir) -and -not (Test-Path -LiteralPath (Join-Path $PnpmDir 'pnpm.exe'))) {",
+        "      Remove-Item -LiteralPath $PnpmDir -Recurse -Force",
+        "    }",
         "    if (-not (Test-Path -LiteralPath $PnpmDir)) {",
         "      Move-Item -LiteralPath \"$staging\\program\" -Destination $PnpmDir",
         "    }",
@@ -418,6 +425,9 @@ def render_sh(*, root: Path, executable: Path, leading: tuple[str, ...], profile
         "    && (cd \"$staging/platform\" && tar -xzf - --strip-components 1) < \"$staging/platform.tgz\" \\",
         "    && cp \"$staging/platform/pnpm\" \"$staging/program/pnpm\" && chmod +x \"$staging/program/pnpm\"; then",
         "    # Another run may have put it there meanwhile: then that one is kept.",
+        # A directory left without its program (taken away by a virus scanner, say) is
+        # replaced; one that another run has just put there whole is kept.
+        "    if [ -e \"$PNPM_DIR\" ] && [ ! -f \"$PNPM_DIR/pnpm\" ]; then rm -rf \"$PNPM_DIR\"; fi",
         "    [ -e \"$PNPM_DIR\" ] || mv \"$staging/program\" \"$PNPM_DIR\"",
         "  fi",
         "  rm -rf \"$staging\"",
@@ -535,9 +545,14 @@ def _write(path: Path, text: str, *, encoding: str) -> None:
             return
     except OSError:
         pass
-    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    import tempfile
+
+    # A name of its own: two dsh processes may be started at once, from two threads.
+    handle, name = tempfile.mkstemp(prefix=f"{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary = Path(name)
     try:
-        temporary.write_bytes(data)
+        with os.fdopen(handle, "wb") as out:
+            out.write(data)
         os.replace(temporary, path)
     except OSError:
         temporary.unlink(missing_ok=True)

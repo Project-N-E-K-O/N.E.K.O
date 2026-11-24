@@ -53,8 +53,9 @@ export function askWhole(ask: BoardAsk): { kind: 'command' | 'path'; text: strin
 // `nekopower/dsh/plugin_command.py`.
 // The word is looked for on the same line only: a command on the next one is no argument.
 const DSH_PLUGIN_CALL = /neko-dsh-plugin(?:\.cmd)?['"]?(?:[ \t]+['"]?([^\s'"]*))?/gi
+// Not `allow-version`: it lets dsh load a plugin version it would refuse (`HARMLESS_COMMANDS`).
 const DSH_PLUGIN_LOCAL = new Set([
-  'list', 'ls', 'remove', 'rm', 'uninstall', 'un', 'why', 'allow-version', 'revoke-version', 'version-exemptions',
+  'list', 'ls', 'remove', 'rm', 'uninstall', 'un', 'why', 'revoke-version', 'version-exemptions',
 ])
 
 /**

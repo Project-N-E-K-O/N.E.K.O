@@ -460,6 +460,39 @@ def test_what_a_run_killed_outright_left_is_removed_by_the_next(tmp_path, regist
     assert (pnpm / version / PROGRAM_NAME).is_file()
 
 
+@needs_shell
+def test_a_pnpm_directory_left_without_its_program_is_replaced(tmp_path, registries):
+    registries(Registry(_files_of(_packages())))
+    directory = _write(tmp_path)
+    # As after a virus scanner took the program away: the rest of the directory is there.
+    broken = tmp_path / "dsh" / "pnpm" / plugin_command_version()
+    (broken / "dist").mkdir(parents=True)
+    (broken / "dist" / "pnpm.mjs").write_text("// what was left", encoding="utf-8")
+
+    assert _run(directory, "add", "x").returncode == 0
+
+    assert (broken / PROGRAM_NAME).read_bytes() == b"not really pnpm\n" * 64
+    assert _called(tmp_path)["argv"][-2:] == ["add", "x"]
+
+
+def test_whatever_goes_wrong_writing_the_command_dsh_still_starts(tmp_path, monkeypatch):
+    monkeypatch.setattr(install_module, "platform_tag", lambda: TAG)
+    dsh = DshInstallation(tmp_path / "dsh")
+    runtime = dsh.runtime_dir()
+    runtime.mkdir(parents=True)
+    (runtime / executable_name(TAG)).write_bytes(b"dsh")
+    (runtime / INSTALLED_FILE).write_text("{}", encoding="utf-8")
+
+    def garbled(*args, **kwargs):
+        raise UnicodeEncodeError("utf-8", "\udcff", 0, 1, "surrogates not allowed")
+
+    monkeypatch.setattr(plugin_command, "write_command", garbled)
+
+    launch = dsh.launch()
+
+    assert launch.executable == runtime / executable_name(TAG) and launch.path == ()
+
+
 def plugin_command_version() -> str:
     from config.nekopower_settings import DSH_PNPM_VERSION
 
