@@ -106,6 +106,26 @@ signal: an attempt that never got that far is repeated, and one that did is
 reported as it stands, because a second run would stall in the same place --
 unless the caller declares the script ``rerun_safe`` (it touches nothing
 outside node), in which case it gets one more run (``_STARTED_RERUNS``).
+
+A cold node binary stalls a process on both sides of that line, and neither
+the marker nor the watchdog can see it for what it is.  On a freshly
+provisioned Windows runner the first node process of the job pages its own
+executable in from a disk nothing has read yet, one fault at a time, wherever
+execution first touches a page.  Traced on eight fresh runners, that first
+process took 1.4-1.8s to reach the preload (about 20ms for every process after
+it) and 0.77-1.0s for its first ``vm.runInContext`` (16ms after it): the cost
+lands before the script, where it reads as a spawn stall, and well inside it,
+where it reads as the script's own.  A page fault blocks the thread
+synchronously, so the watchdog cannot fire through it.  The frontend-contract
+shard's first test once spent its entire 65s ceiling this way -- marker
+written, nothing printed, no watchdog -- and was reported as a script that
+blocked itself.  Reading the binary through once, front to back, before the
+first spawn turns those faults into a few dozen large reads and leaves the
+pages in the file cache, so no attempt's budget is charged for a cold disk.
+``_prewarm_binary`` does that once per process, outside every ceiling.  On
+three more fresh runners the read took 0.72-1.0s for the 87 MB binary, after
+which the first process reached the preload in 36ms and ran that first
+``vm.runInContext`` in 27ms -- what every later process already got.
 """
 
 import atexit
@@ -135,6 +155,10 @@ _WATCHDOG_EXIT_CODE = 87
 # gives a passing stall on the runner the time to clear.  Bounded all the same,
 # so a node that never starts on this machine still comes back red.
 _SPAWN_ATTEMPTS = 3
+# Read size for warming the node binary.  Large enough that the whole binary
+# (about 87 MB on the runners) goes through in a few dozen reads instead of the
+# thousands of page-sized faults a cold first process would take.
+_PREWARM_CHUNK_BYTES = 1 << 20
 
 # For a ``rerun_safe`` script, how many more runs a stall *after* reaching the
 # script gets.  One: a runner hiccup clears on the next run, while a script that
@@ -143,6 +167,38 @@ _SPAWN_ATTEMPTS = 3
 # a genuine hang push a shard toward its own timeout.
 _STARTED_RERUNS = 1
 
+_prewarm_guard = threading.Lock()
+_prewarmed_binaries: set[str] = set()
+
+
+def _read_through(path: str) -> None:
+    """Read ``path`` front to back and discard it; only the cache effect counts."""
+    with open(path, "rb", buffering=0) as handle:
+        while handle.read(_PREWARM_CHUNK_BYTES):
+            pass
+
+
+def _prewarm_binary(node_path: str) -> None:
+    """Get the node binary into the file cache before this process first runs it.
+
+    Once per binary per process, and outside every attempt's ceiling, so a cold
+    disk is paid for here rather than by whichever harness happens to run first.
+    The lock is held for the read itself: a second thread arriving meanwhile
+    waits for a warm binary instead of racing a cold one.  A path that cannot be
+    opened -- a bare ``"node"``, a missing file -- is left to ``subprocess`` to
+    report the way it always has; warming is an optimisation, never a new way
+    to fail.
+    """
+    key = os.path.normcase(os.path.abspath(node_path))
+    with _prewarm_guard:
+        if key in _prewarmed_binaries:
+            return
+        _prewarmed_binaries.add(key)
+        try:
+            _read_through(node_path)
+        except OSError:
+            # Deliberate: see the docstring -- spawning reports a bad path.
+            pass
 
 
 def _excerpt(blob, limit: int = 400) -> str:
@@ -215,9 +271,12 @@ class NodeHarnessSpawnTimeout(subprocess.TimeoutExpired):
                 "node reached the harness script and then stalled without "
                 "the watchdog firing. Either the script's top level blocked "
                 "the event loop or compiling it did -- a timer cannot "
-                "interrupt either, and from out here they look the same. Not "
-                "retried: a second run stalls the same way, and repeating a "
-                "script that may already have run is the worse mistake."
+                "interrupt either, and from out here they look the same. So "
+                "does the machine stalling node mid-script, e.g. paging in a "
+                "cold node binary -- the launcher reads the binary through "
+                "before the first spawn to keep that out. Not retried: a "
+                "script that blocks stalls the same way again, and repeating "
+                "a script that may already have run is the worse mistake."
             )
         else:
             diagnosis = (
@@ -575,6 +634,7 @@ def run_node_script(
     see ``_run_retrying_spawn_stalls``. Extra keyword arguments go straight to
     ``subprocess.run``.
     """
+    _prewarm_binary(node_path)
     budget, deadline_seconds = _budgeted(_utf8(kwargs))
     staged: list[str] = []
 
@@ -610,6 +670,7 @@ def run_node_stdin(node_path: str, script: str, **kwargs) -> subprocess.Complete
     stdin form; stdin has no length ceiling, so only the encoding pin matters
     here. Extra keyword arguments go straight to ``subprocess.run``.
     """
+    _prewarm_binary(node_path)
     budget, deadline_seconds = _budgeted(_utf8(kwargs))
 
     def _attempt():
