@@ -149,8 +149,10 @@ def _write(tmp_path: Path) -> Path:
 
 def _run(directory: Path, *arguments: str, extra: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     # Names on Windows are the same whatever their case: one given here replaces the inherited one.
-    replaced = {name.upper() for name in extra or {}}
-    environment = {name: value for name, value in os.environ.items() if name.upper() not in replaced}
+    replaced = {name.upper() for name in extra or {}} if WINDOWS else set(extra or {})
+    environment = {
+        name: value for name, value in os.environ.items() if (name.upper() if WINDOWS else name) not in replaced
+    }
     environment.update({"NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost", **(extra or {})})
     if WINDOWS:
         command = [str(directory / f"{plugin_command.COMMAND}.cmd"), *arguments]
