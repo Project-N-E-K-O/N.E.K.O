@@ -650,10 +650,13 @@ HOST_RESTART_FAILED_TEXT = {
 }
 
 # What she is told of a commission of hers that failed for a reason of the
-# host's own rather than the task agent's report: the familiar's model ran out
-# of quota before the familiar started on it (``quota``) or partway through
-# (``quota_run``), the familiar could not start on it (``start``), or its run
-# stopped on an error (``run``). In English, as the host tells a model what
+# host's own rather than the task agent's report: the task agent's model ran out
+# of quota before the task agent started on it (``quota``) or partway through
+# (``quota_run``), the task agent could not start on it (``start``), or its run
+# stopped on an error (``run``); or, read from that error, the provider refused
+# the API key of the task agent's model (``model_key``) or says its account has
+# no quota or balance left (``model_quota``). Those two are for the user to
+# fix: she can tell them what to do. In English, as the host tells a model what
 # happened; she tells the user in her own words. Rendered with str.format
 # (why); when the error itself is known, TASK_AGENT_FAILED_ERROR follows, the
 # error as it came. What the HUD shows is TASK_AGENT_FAILED_TEXTS.
@@ -665,32 +668,45 @@ HOST_RESTART_FAILED_TEXT = {
 # background; until then she reads them when she asks how the task went.
 # Nothing is shown for them (the frontend has its own notice of the
 # quota). They say the quota is short for now and the task can be dispatched
-# again once it is refreshed or the user switches the familiar to another API
+# again once it is refreshed or the user switches the task agent to another API
 # (the quota is only that of the free model), so that she goes on dispatching
 # tasks afterwards rather than take this as a reason not to, and can tell the
-# user what would help. Partway through, the familiar may have done part of it (moved
+# user what would help. Partway through, the task agent may have done part of it (moved
 # files, sent something): dispatched again, it is to go on from there, not do
 # that part twice.
 TASK_AGENT_FAILED_NOTICE = "This task was not finished: {why}"
 TASK_AGENT_FAILED_WHY = {
     "quota": (
-        "the familiar's model is out of quota for now, so it did not start on it. Nothing was wrong with "
+        "the task agent's model is out of quota for now, so it did not start on it. Nothing was wrong with "
         "the task itself or with how it was dispatched. This task can be dispatched again once the quota "
-        "is refreshed, or once the user switches the familiar to another API."
+        "is refreshed, or once the user switches the task agent to another API."
     ),
     "quota_run": (
-        "the familiar's model is out of quota for now; it ran out partway through, so part of it may "
+        "the task agent's model is out of quota for now; it ran out partway through, so part of it may "
         "already be done. Nothing was wrong with the task itself or with how it was dispatched. This task "
-        "can be dispatched again once the quota is refreshed, or once the user switches the familiar to "
+        "can be dispatched again once the quota is refreshed, or once the user switches the task agent to "
         "another API; it should then go on from where it stopped rather than start over."
     ),
-    "start": "the familiar could not start on it.",
-    "run": "the familiar stopped on an error partway through.",
+    "start": "the task agent could not start on it.",
+    "run": "the task agent stopped on an error partway through.",
+    "model_key": (
+        "the provider of the task agent's model refused its API key (it may be wrong, expired, or not allowed to "
+        "use this model). Nothing was wrong with the task itself. It can be dispatched again once the user "
+        "fixes the key of the model the task agent used (the general one, or the one chosen for this work) in the API settings."
+    ),
+    "model_quota": (
+        "the provider of the task agent's model says the account has no quota or balance left; if this happened "
+        "partway through, part of it may already be done. Nothing was wrong with the task itself. It can be "
+        "dispatched again once the user tops that account up or switches the task agent to another API; it "
+        "should then go on from where it stopped rather than start over."
+    ),
 }
 TASK_AGENT_FAILED_ERROR = " Error: {detail}"
 
 # What the HUD shows, as it is written, of a commission of hers that could not
-# start (``start``) or stopped on an error (``run``); she is told
+# start (``start``), stopped on an error (``run``), or failed because the
+# provider refused the model's API key (``model_key``) or the account has no
+# quota or balance left (``model_quota``); she is told
 # TASK_AGENT_FAILED_NOTICE instead. When the error itself is known it follows
 # as ``error`` (str.format, detail), as it came, untranslated; ``error``
 # carries its own leading space where the language puts one between
@@ -698,27 +714,43 @@ TASK_AGENT_FAILED_ERROR = " Error: {detail}"
 TASK_AGENT_FAILED_TEXTS = {
     'zh': {"start": "使魔没能开工。",
            "run": "使魔办到一半出错停下了。",
+           "model_key": "使魔所用模型的 API Key 被服务商拒绝了（可能填错、过期，或没有这个模型的权限），请到 API 设置里检查这个模型的 Key。",
+           "model_quota": "使魔所用模型的服务商额度或余额已经用完，充值或换一个 API 后再试。",
            "error": "报错：{detail}"},
     'zh-TW': {"start": "使魔沒能開工。",
               "run": "使魔辦到一半出錯停下了。",
+              "model_key": "使魔所用模型的 API Key 被服務商拒絕了（可能填錯、過期，或沒有這個模型的權限），請到 API 設定裡檢查這個模型的 Key。",
+              "model_quota": "使魔所用模型的服務商額度或餘額已經用完，儲值或換一個 API 後再試。",
               "error": "錯誤訊息：{detail}"},
     'en': {"start": "The familiar could not start on it.",
            "run": "The familiar stopped on an error partway through.",
+           "model_key": "The provider refused the API key of the model the familiar used: it may be wrong, expired, or not allowed to use this model. Check that model's key in the API settings.",
+           "model_quota": "The provider of the model the familiar used says the quota or balance is used up. Top it up or switch to another API, then try again.",
            "error": " Error: {detail}"},
     'ja': {"start": "使い魔が作業を始められませんでした。",
            "run": "使い魔が途中でエラーになり止まりました。",
+           "model_key": "使い魔が使ったモデルの API キーがサービス側に拒否されました（入力ミス、期限切れ、またはこのモデルの利用権限がない可能性があります）。API 設定でこのモデルのキーを確認してください。",
+           "model_quota": "使い魔が使ったモデルのサービスの利用枠または残高が尽きました。チャージするか別の API に切り替えてから、もう一度お試しください。",
            "error": "エラー：{detail}"},
     'ko': {"start": "사역마가 일을 시작하지 못했습니다.",
            "run": "사역마가 도중에 오류로 멈췄습니다.",
+           "model_key": "사역마가 사용한 모델의 API 키가 서비스 제공자에게 거부되었습니다(잘못 입력했거나 만료되었거나 이 모델을 쓸 권한이 없을 수 있습니다). API 설정에서 이 모델의 키를 확인해 주세요.",
+           "model_quota": "사역마가 사용한 모델 서비스의 할당량 또는 잔액이 소진되었습니다. 충전하거나 다른 API로 바꾼 뒤 다시 시도해 주세요.",
            "error": " 오류: {detail}"},
     'ru': {"start": "Фамильяр не смог начать работу.",
            "run": "Фамильяр остановился на полпути из-за ошибки.",
+           "model_key": "Провайдер отклонил API-ключ модели, которой пользовался фамильяр: он может быть неверным, просроченным или без доступа к этой модели. Проверьте ключ этой модели в настройках API.",
+           "model_quota": "У провайдера модели, которой пользовался фамильяр, закончилась квота или баланс. Пополните его или переключитесь на другой API и попробуйте снова.",
            "error": " Ошибка: {detail}"},
     'es': {"start": "El familiar no pudo empezar.",
            "run": "El familiar se detuvo a mitad por un error.",
+           "model_key": "El proveedor rechazó la clave API del modelo que usó el familiar: puede ser incorrecta, haber caducado o no tener acceso a este modelo. Revisa la clave de ese modelo en los ajustes de API.",
+           "model_quota": "El proveedor del modelo que usó el familiar indica que se agotó la cuota o el saldo. Recárgalo o cambia a otra API y vuelve a intentarlo.",
            "error": " Error: {detail}"},
     'pt': {"start": "O familiar não conseguiu começar.",
            "run": "O familiar parou no meio por um erro.",
+           "model_key": "O provedor recusou a chave de API do modelo que o familiar usou: pode estar errada, expirada ou sem acesso a este modelo. Verifique a chave desse modelo nas configurações de API.",
+           "model_quota": "O provedor do modelo que o familiar usou informa que a cota ou o saldo acabou. Recarregue ou mude para outra API e tente de novo.",
            "error": " Erro: {detail}"},
 }
 

@@ -364,6 +364,16 @@ async def _filed(host: Any, text: str, **values: Any) -> Any:
     return commission
 
 
+async def _own_key_model() -> dict[str, Any]:
+    return {"model": "fake-model", "api_key": "sk-the-users-own"}
+
+
+# What a failed model request of a task agent says (``LLMClientProvider``).
+KEY_REFUSED = "AuthenticationError: Error code: 401 - {'error': {'message': 'Incorrect API key provided'}}"
+QUOTA_USED_UP = "RateLimitError: Error code: 429 - {'error': {'type': 'insufficient_quota'}}"
+RATE_LIMITED = "RateLimitError: Error code: 429 - Rate limit reached, try again in 20s"
+
+
 def _failed(said: str, lang: str, detail: str = "") -> tuple[str, str]:
     """What she is told of a commission that failed for a reason of the host's own, and what the HUD shows."""
     told = TASK_AGENT_FAILED_NOTICE.format(why=TASK_AGENT_FAILED_WHY[said])
@@ -3156,10 +3166,21 @@ async def test_a_run_that_ends_lets_go_of_the_browser_and_of_what_was_allowed_on
          "start", "the session is busy", "the session is busy"),
         # Refused without a word: the host's own fallback is for the record only.
         ({"kind": "error", "command": "prompt"}, "start", "", "the runtime rejected the command"),
+        # The provider refused the key, or the account has nothing left: told as
+        # that, in plain words, for the user to fix; the error still follows.
+        ({"kind": "ended", "reason": "error", "inputs": 1, "error": KEY_REFUSED},
+         "model_key", KEY_REFUSED, KEY_REFUSED),
+        ({"kind": "ended", "reason": "error", "inputs": 1, "error": QUOTA_USED_UP},
+         "model_quota", QUOTA_USED_UP, QUOTA_USED_UP),
+        # Refused before any of it was taken: the same, not "could not start".
+        ({"kind": "error", "command": "prompt", "message": KEY_REFUSED}, "model_key", KEY_REFUSED, KEY_REFUSED),
+        # A rate limit is not one of them.
+        ({"kind": "ended", "reason": "error", "inputs": 1, "error": RATE_LIMITED}, "run", RATE_LIMITED, RATE_LIMITED),
     ],
 )
 async def test_how_a_run_failed_is_told_to_her_in_english_shown_in_her_language_and_kept_as_it_was(hosts, tmp_path, event, said, detail, reason):
-    host, runtimes = _recording_host(hosts, tmp_path)
+    # A key of the user's own: a refused key or an empty account is theirs to fix.
+    host, runtimes = _recording_host(hosts, tmp_path, task_agent_model=_own_key_model)
     commission = await _filed(host, "tidy the desktop", lang="ja")
     assert await host.task_agents.submit(commission)
     runtime = runtimes[0]
@@ -3177,6 +3198,28 @@ async def test_how_a_run_failed_is_told_to_her_in_english_shown_in_her_language_
     # Nothing of the English record reaches her when the error named nothing.
     if not detail:
         assert reason not in report.payload["summary"]
+
+
+@pytest.mark.parametrize("error", [KEY_REFUSED, QUOTA_USED_UP])
+@pytest.mark.parametrize("how", ["the run ended", "the prompt was refused"])
+async def test_with_the_free_key_a_refused_key_or_empty_account_is_told_as_it_came(hosts, tmp_path, error, how):
+    # The built-in free key (``fake_model``): there is no key or account of
+    # the user's to fix, so nothing tells them to, however the failure came.
+    host, runtimes = _recording_host(hosts, tmp_path)
+    commission = await _filed(host, "tidy the desktop", lang="zh")
+    assert await host.task_agents.submit(commission)
+
+    if how == "the run ended":
+        runtimes[0].say(commission.id, "ended", reason="error", inputs=1, error=error)
+        said = "run"
+    else:
+        runtimes[0].say(commission.id, "error", command="prompt", message=error)
+        said = "start"
+
+    await wait_status(host, commission.id, "failed")
+    told, shown = _failed(said, "zh", error)
+    (report,) = await outbox(host, "task_result")
+    assert (report.payload["summary"], report.payload["text"]) == (told, shown)
 
 
 async def test_work_refused_after_some_was_taken_is_said_to_have_stopped_partway(hosts, tmp_path):
