@@ -56,8 +56,12 @@ from utils.logger_config import get_module_logger
 logger = get_module_logger(__name__)
 
 # Heavy modules to warm after main_server is ready. Importing genai brings in mcp,
-# so listing genai makes a separate mcp entry unnecessary. translatepy subtranslators each have data tables; list them individually
-# so all enter the sys.modules cache.
+# so listing genai makes a separate mcp entry unnecessary.
+#
+# translatepy is deliberately absent: it only serves subtitle translation in the
+# China region, whose switch lives in the frontend (off by default) and is
+# invisible here, so warming it kept ~28 MiB resident for users who never turn
+# subtitles on. translate_text imports it on first use, off the event loop.
 MAIN_SERVER_WARMUP: tuple[str, ...] = (
     # openai/anthropic were once top-level utils/llm_client imports, at the front of the merged startup's
     # serial chain (~0.7s total, mostly pydantic model construction). Warm lazy imports here so the first real
@@ -66,13 +70,6 @@ MAIN_SERVER_WARMUP: tuple[str, ...] = (
     "anthropic",
     "google.genai",
     "google.genai.types",
-    "translatepy",
-    "translatepy.translators.microsoft",
-    "translatepy.translators.bing",
-    "translatepy.translators.reverso",
-    "translatepy.translators.libre",
-    "translatepy.translators.mymemory",
-    "translatepy.translators.translatecom",
     "googletrans",
     # Heavy feature-route dependencies (voice-clone TTS / NetEase Cloud / web scraping / Bilibili) moved from router /
     # util module tops into handlers; warm them here so the first feature use need not wait for imports.
@@ -97,13 +94,6 @@ _ENTRY_GATES: dict[str, str] = {
     "anthropic": "anthropic",
     "google.genai": "gemini",
     "google.genai.types": "gemini",
-    "translatepy": "translate_china",
-    "translatepy.translators.microsoft": "translate_china",
-    "translatepy.translators.bing": "translate_china",
-    "translatepy.translators.reverso": "translate_china",
-    "translatepy.translators.libre": "translate_china",
-    "translatepy.translators.mymemory": "translate_china",
-    "translatepy.translators.translatecom": "translate_china",
     "googletrans": "translate_global",
     "dashscope": "cosyvoice_clone",
     "dashscope.audio.tts_v2": "cosyvoice_clone",
@@ -272,15 +262,10 @@ def _needs_gemini(cfg: WarmupConfig) -> bool:
     )
 
 
-def _needs_translate_china(cfg: WarmupConfig) -> bool:
-    # Subtitle translation uses translatepy in the China region. Whether subtitles
-    # are on is invisible here (the switch lives in the frontend's localStorage),
-    # so only the region decides.
-    return cfg.china_region is not False
-
-
 def _needs_translate_global(cfg: WarmupConfig) -> bool:
-    # ...and googletrans everywhere else.
+    # Subtitle translation uses googletrans outside the China region (translatepy
+    # inside it, which is never warmed; see MAIN_SERVER_WARMUP). googletrans is
+    # tiny, so it is warmed whenever the region may be anything but China.
     return cfg.china_region is not True
 
 
@@ -330,7 +315,6 @@ def _needs_proactive_bilibili(cfg: WarmupConfig) -> bool:
 _GATES: dict[str, Callable[[WarmupConfig], bool]] = {
     "anthropic": _needs_anthropic,
     "gemini": _needs_gemini,
-    "translate_china": _needs_translate_china,
     "translate_global": _needs_translate_global,
     "cosyvoice_clone": _needs_cosyvoice_clone,
     "proactive_bilibili": _needs_proactive_bilibili,

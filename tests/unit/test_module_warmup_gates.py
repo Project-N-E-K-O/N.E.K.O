@@ -99,22 +99,16 @@ def test_gemini_on_for_core_realtime_or_native_slot(overrides):
 
 # --- subtitle translation --------------------------------------------------
 
-def test_translation_china_region_warms_translatepy_only():
-    cfg = _cfg(china_region=True)
-    assert _gate("translate_china", cfg) is True
-    assert _gate("translate_global", cfg) is False
+def test_googletrans_not_warmed_in_china_region():
+    assert _gate("translate_global", _cfg(china_region=True)) is False
 
 
-def test_translation_other_regions_warm_googletrans_only():
-    cfg = _cfg(china_region=False)
-    assert _gate("translate_china", cfg) is False
-    assert _gate("translate_global", cfg) is True
+def test_googletrans_warmed_in_other_regions():
+    assert _gate("translate_global", _cfg(china_region=False)) is True
 
 
-def test_translation_undecided_region_warms_both():
-    cfg = _cfg(china_region=None)
-    assert _gate("translate_china", cfg) is True
-    assert _gate("translate_global", cfg) is True
+def test_googletrans_warmed_while_region_is_undecided():
+    assert _gate("translate_global", _cfg(china_region=None)) is True
 
 
 # --- CosyVoice clone (dashscope) --------------------------------------------
@@ -195,7 +189,6 @@ def test_all_gates_off_for_minimal_config():
     assert evaluate_gates(_cfg()) == {
         "anthropic": False,
         "gemini": False,
-        "translate_china": True,
         "translate_global": False,
         "cosyvoice_clone": False,
         "proactive_bilibili": False,
