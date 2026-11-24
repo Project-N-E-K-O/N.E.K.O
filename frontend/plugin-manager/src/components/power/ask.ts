@@ -77,7 +77,10 @@ export function askFacts(ask: BoardAsk, t: Translate, te: Exists): Array<{ name:
   for (const [name, value] of Object.entries(ask.detail ?? {})) {
     if (SHOWN_APART.has(name) || (typeof value !== 'string' && typeof value !== 'number') || value === '') continue
     const key = `power.ask.facts.${name}`
-    facts.push({ name, label: te(key) ? t(key) : name, value: String(value) })
+    // The kind of familiar it would start, by the name the pages give that kind.
+    const kind = `power.home.presets.${value}`
+    const shown = name === 'preset' && te(kind) ? t(kind) : String(value)
+    facts.push({ name, label: te(key) ? t(key) : name, value: shown })
   }
   return facts
 }

@@ -35,6 +35,7 @@
         <el-select v-model="form.preset" :aria-label="t('power.home.preset')" data-testid="familiar-preset">
           <el-option v-for="item in presets" :key="item.name" :value="item.name" :label="presetName(item)" />
         </el-select>
+        <span v-if="form.preset === 'boss'" class="muted" data-testid="familiar-boss-hint">{{ t('power.home.bossHint') }}</span>
       </el-form-item>
       <el-form-item :label="t('power.home.duty')">
         <el-input v-model="form.duty" maxlength="200" data-testid="familiar-duty" />
@@ -66,7 +67,8 @@ const props = defineProps<{ modelValue: boolean }>()
 const emit = defineEmits<{ 'update:modelValue': [open: boolean]; made: [project: string, sessionId: string] }>()
 const { t, te } = useI18n()
 
-const blank = (): FamiliarForm => ({ name: '', title: '', preset: 'boss', duty: '', description: '', rules: '' })
+// A worker of its own project unless another kind is chosen: a boss hands the work on and does none of it.
+const blank = (): FamiliarForm => ({ name: '', title: '', preset: 'general', duty: '', description: '', rules: '' })
 const about = ref('')
 const workdir = ref('')
 const form = reactive<FamiliarForm>(blank())
@@ -81,7 +83,7 @@ let turn = 0
 /** The kinds that can be chosen. Until the list is read (or when it cannot be), the one every familiar can be. */
 const presets = computed<Array<Pick<FamiliarTemplate, 'name' | 'label'>>>(() => {
   const valid = templates.value.filter(item => item.valid)
-  return valid.length ? valid : [{ name: 'boss', label: '' }]
+  return valid.length ? valid : [{ name: 'general', label: '' }]
 })
 
 function presetName(item: Pick<FamiliarTemplate, 'name' | 'label'>): string {
