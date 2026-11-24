@@ -21,6 +21,9 @@ from memory._embeddings.ranking import (
 )
 from memory._embeddings.schema import stamp_embedding_fields
 
+import memory.embeddings as emb
+import memory.hybrid_recall as hr
+
 MODEL_ID = "parity-profile-8d-fp32"
 DIM = 8
 
@@ -80,15 +83,13 @@ def _legacy_clusters(matrix, threshold, topk, size_max):
 
 def _legacy_decode(entries, model_id, target_dim):
     """The recall reranker's old decode loop: validity check, then decode again."""
-    from memory.embeddings import decode_embedding, is_cached_embedding_valid
-
     out = []
     for e in entries:
         text = e.get('text', '')
-        if not is_cached_embedding_valid(e, text, model_id):
+        if not emb.is_cached_embedding_valid(e, text, model_id):
             out.append(None)
             continue
-        cvec = decode_embedding(e.get('embedding'))
+        cvec = emb.decode_embedding(e.get('embedding'))
         if cvec is None or cvec.size == 0:
             out.append(None)
             continue
@@ -350,11 +351,10 @@ async def test_scoped_refine_pass_clusters_off_the_event_loop():
 
 @pytest.fixture
 def fresh_vec_cache():
-    from memory.hybrid_recall import _invalidate_vec_cache
 
-    _invalidate_vec_cache()
+    hr._invalidate_vec_cache()
     yield
-    _invalidate_vec_cache()
+    hr._invalidate_vec_cache()
 
 
 def _mixed_pool(seed):
@@ -372,25 +372,23 @@ def _mixed_pool(seed):
 @pytest.mark.parametrize("seed", range(5))
 @pytest.mark.parametrize("target_dim", [None, DIM])
 def test_decode_cached_vectors_matches_legacy_cold_and_warm(fresh_vec_cache, seed, target_dim):
-    from memory.hybrid_recall import decode_cached_vectors, embedding_views
 
     pool = _mixed_pool(seed)
     expected, expected_dim = _legacy_decode(pool, MODEL_ID, target_dim)
     for _round in ("cold", "warm"):
-        got, norms, dim = decode_cached_vectors(
-            embedding_views(pool, lambda o: o.get('text', '')), MODEL_ID, target_dim,
+        got, norms, dim = hr.decode_cached_vectors(
+            hr.embedding_views(pool, lambda o: o.get('text', '')), MODEL_ID, target_dim,
         )
-        assert dim == expected_dim
-        assert [g is None for g in got] == [e is None for e in expected]
+        assert dim == expected_dim, _round
+        assert [g is None for g in got] == [e is None for e in expected], _round
         for g, e, norm in zip(got, expected, norms):
             if e is not None:
-                assert np.array_equal(g, e) and g.dtype == e.dtype
-                assert norm == float(np.linalg.norm(e))
+                assert np.array_equal(g, e) and g.dtype == e.dtype, _round
+                assert norm == float(np.linalg.norm(e)), _round
 
 
 @pytest.mark.asyncio
 async def test_recall_rerankers_decode_off_the_event_loop(fresh_vec_cache):
-    import memory.hybrid_recall as hr
     from memory.recall import MemoryRecallReranker
 
     rng = np.random.default_rng(7)
@@ -424,12 +422,10 @@ async def test_recall_rerankers_decode_off_the_event_loop(fresh_vec_cache):
 
 def _legacy_cosine_full(pool, qarr):
     """``_cosine_rank``'s old scoring tail (rows, keep mask, full sort)."""
-    from memory.embeddings import decode_valid_cached_embedding
-
     qnorm = float(np.linalg.norm(qarr))
     rows, vecs, norms = [], [], []
     for doc in pool:
-        cvec = decode_valid_cached_embedding(doc, doc.get('text', '') or '', MODEL_ID)
+        cvec = emb.decode_valid_cached_embedding(doc, doc.get('text', '') or '', MODEL_ID)
         if cvec is None or cvec.size != DIM:
             continue
         rows.append(doc)
@@ -458,8 +454,6 @@ def _cosine_pool(seed):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("seed", range(6))
 async def test_cosine_rank_head_matches_legacy_full_sort(fresh_vec_cache, seed):
-    import memory.embeddings as emb
-    from memory.hybrid_recall import _cosine_rank
 
     pool, qarr = _cosine_pool(seed)
     expected = _legacy_cosine_full(pool, qarr)
@@ -472,19 +466,17 @@ async def test_cosine_rank_head_matches_legacy_full_sort(fresh_vec_cache, seed):
         return [(d["id"], s) for d, s in ranking]
 
     with patch.object(emb, "get_embedding_service", MagicMock(return_value=service)):
-        full = await _cosine_rank("q", pool)
+        full = await hr._cosine_rank("q", pool)
         assert ids(full) == ids(expected)
         for limit in (0, 1, 2, 4, 7, len(expected), len(expected) + 5):
             stats = {}
-            head = await _cosine_rank("q", pool, limit=limit, stats=stats)
+            head = await hr._cosine_rank("q", pool, limit=limit, stats=stats)
             assert ids(head) == ids(expected)[:limit], limit
             assert stats["scored"] == len(expected)
 
 
 @pytest.mark.asyncio
 async def test_cosine_rank_scores_off_the_event_loop(fresh_vec_cache):
-    import memory.embeddings as emb
-    import memory.hybrid_recall as hr
 
     pool, qarr = _cosine_pool(0)
     service = MagicMock()
@@ -510,11 +502,9 @@ async def test_cosine_rank_scores_off_the_event_loop(fresh_vec_cache):
 
 def _legacy_reflection_scores(candidates, query_rows, target_dim):
     """``ascore_against_queries``' old candidate half, verbatim."""
-    from memory.embeddings import decode_valid_cached_embedding
-
     texts = [str(e.get('text') or '') for e in candidates]
     vectors = [
-        decode_valid_cached_embedding(e, text, MODEL_ID) if text else None
+        emb.decode_valid_cached_embedding(e, text, MODEL_ID) if text else None
         for e, text in zip(candidates, texts)
     ]
     index, rows = [], []
@@ -536,7 +526,6 @@ def _legacy_reflection_scores(candidates, query_rows, target_dim):
 
 @pytest.mark.parametrize("seed", range(8))
 def test_reflection_candidate_scores_match_legacy_exactly(fresh_vec_cache, seed):
-    from memory.hybrid_recall import embedding_views
     from memory.reflection.similarity import _score_candidates
 
     rng = np.random.default_rng(seed)
@@ -551,15 +540,14 @@ def test_reflection_candidate_scores_match_legacy_exactly(fresh_vec_cache, seed)
     expected = _legacy_reflection_scores(candidates, query_rows, DIM)
     for _round in ("cold", "warm"):
         got = _score_candidates(
-            embedding_views(candidates, lambda e: str(e.get('text') or '')),
+            hr.embedding_views(candidates, lambda e: str(e.get('text') or '')),
             MODEL_ID, DIM, np.stack(query_rows),
         )
-        assert got == expected
+        assert got == expected, _round
 
 
 @pytest.mark.asyncio
 async def test_reflection_scoring_runs_off_the_event_loop(fresh_vec_cache):
-    import memory.hybrid_recall as hr
     from memory.reflection.similarity import ascore_against_queries
 
     rng = np.random.default_rng(3)
@@ -586,7 +574,6 @@ async def test_reflection_scoring_runs_off_the_event_loop(fresh_vec_cache):
 
 
 def test_vec_cache_byte_accounting_survives_concurrent_scans(fresh_vec_cache):
-    import memory.hybrid_recall as hr
 
     rng = np.random.default_rng(11)
     pools = [
@@ -624,8 +611,6 @@ def test_vec_cache_byte_accounting_survives_concurrent_scans(fresh_vec_cache):
 async def test_hybrid_recall_results_unchanged_by_cosine_head_cut(fresh_vec_cache, tmp_path, seed):
     """The call site asks ``_cosine_rank`` for only the head it reads; the
     fused recall must equal what the full ranking produced."""
-    import memory.embeddings as emb
-    import memory.hybrid_recall as hr
 
     pool, qarr = _cosine_pool(seed)
     facts = [
@@ -668,7 +653,6 @@ async def test_hybrid_recall_results_unchanged_by_cosine_head_cut(fresh_vec_cach
 
 
 def test_turn_context_pool_matrix_matches_per_row_normalization(fresh_vec_cache):
-    import memory.hybrid_recall as hr
     from memory.turn_context import _pool_matrix
 
     rng = np.random.default_rng(5)
@@ -700,7 +684,6 @@ def test_turn_context_pool_matrix_matches_per_row_normalization(fresh_vec_cache)
 def test_decode_cached_vectors_first_row_fixes_dim_without_parseable_model(fresh_vec_cache):
     """With a model id that carries no dimension, the first valid row fixes
     it and later rows of another size drop out — the old loop's rule."""
-    from memory.hybrid_recall import decode_cached_vectors, embedding_views
 
     model = "parity-custom-model"
     pool = []
@@ -710,8 +693,8 @@ def test_decode_cached_vectors_first_row_fixes_dim_without_parseable_model(fresh
         stamp_embedding_fields(entry, np.arange(1, size + 1, dtype=np.float32), text, model)
         pool.append(entry)
     expected, expected_dim = _legacy_decode(pool, model, None)
-    got, _norms, dim = decode_cached_vectors(
-        embedding_views(pool, lambda o: o.get('text', '')), model, None,
+    got, _norms, dim = hr.decode_cached_vectors(
+        hr.embedding_views(pool, lambda o: o.get('text', '')), model, None,
     )
     assert dim == expected_dim == 6
     assert [g is None for g in got] == [e is None for e in expected] == [
@@ -720,7 +703,6 @@ def test_decode_cached_vectors_first_row_fixes_dim_without_parseable_model(fresh
 
 
 def test_reflection_scores_skip_empty_text_even_with_a_valid_stamp(fresh_vec_cache):
-    from memory.hybrid_recall import embedding_views
     from memory.reflection.similarity import _score_candidates
 
     empty = {"id": "empty", "text": ""}
@@ -730,7 +712,7 @@ def test_reflection_scores_skip_empty_text_even_with_a_valid_stamp(fresh_vec_cac
     expected = _legacy_reflection_scores(candidates, query_rows, DIM)
     assert expected[0] is None and expected[1] is not None
     got = _score_candidates(
-        embedding_views(candidates, lambda e: str(e.get('text') or '')),
+        hr.embedding_views(candidates, lambda e: str(e.get('text') or '')),
         MODEL_ID, DIM, np.stack(query_rows),
     )
     assert got == expected
