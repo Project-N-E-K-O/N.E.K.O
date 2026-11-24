@@ -510,13 +510,71 @@ def test_data_descriptors_are_not_evaluated(tmp_path):
 
     instance = WithDescriptors(_ctx(tmp_path))
     executor, _instance, _logger = _runtime(tmp_path, instance=instance, manifest=["data", "cached"])
-    # Building the tables scans members (and caches the cached property):
-    # only what the call does counts.
-    instance.__dict__.pop("cached", None)
+    # Building the tables scans members, which also caches the cached
+    # property in the instance __dict__: it is still not resolved.
+    assert "cached" in instance.__dict__
     evaluated.clear()
     assert _resolve(executor, "data") is None
     assert _resolve(executor, "cached") is None
     assert evaluated == []
+
+
+def test_a_lazy_non_data_descriptor_is_not_evaluated(tmp_path):
+    evaluated: list[str] = []
+
+    async def target(**_: Any) -> str:
+        return "ran"
+
+    class Lazy:
+        # Only __get__, like third-party cached properties and lazy loaders.
+        def __get__(self, obj, owner=None):
+            evaluated.append("lazy")
+            return target
+
+    @neko_plugin
+    class WithLazy(NekoPluginBase):
+        loaded = Lazy()
+
+    instance = WithLazy(_ctx(tmp_path))
+    executor, _instance, _logger = _runtime(tmp_path, instance=instance, manifest=["loaded"])
+    evaluated.clear()
+    assert _resolve(executor, "loaded") is None
+    assert evaluated == []
+
+
+def test_partialmethod_aliases_of_declared_members_are_not_resolved(tmp_path):
+    @neko_plugin
+    class Aliases(NekoPluginBase):
+        @plugin_entry(id="add_one", params=_AddParams)
+        async def do_add(self, params: _AddParams, **_: Any) -> int:
+            return params.n + 1
+
+        @timer_interval(id="tick", seconds=3600, auto_start=False)
+        async def tick(self, **_: Any) -> str:
+            return "tick"
+
+        # Narrows outside plugin.toml: refused.
+        @plugin_entry(id="work", permissions=["system.env:read"])
+        async def work(self, **_: Any) -> str:
+            return "work"
+
+        async def plain(self, value: str, **_: Any) -> str:
+            return value
+
+        entry_alias = functools.partialmethod(do_add)
+        timer_alias = functools.partialmethod(tick)
+        refused_alias = functools.partialmethod(work)
+        plain_alias = functools.partialmethod(plain, "plain")
+
+    instance = Aliases(_ctx(tmp_path))
+    executor, _instance, _logger = _runtime(tmp_path, instance=instance)
+    assert instance._narrowing_refused
+    assert _resolve(executor, "entry_alias") is None
+    assert _resolve(executor, "timer_alias") is None
+    assert _resolve(executor, "refused_alias") is None
+    assert _resolve(executor, "work") is None
+    # A partialmethod over an undeclared plain method is the grace case.
+    assert _resolve(executor, "plain_alias") is not None
 
 
 async def test_a_failing_collection_reports_an_unknown_id_as_not_found(tmp_path, monkeypatch):
@@ -530,11 +588,29 @@ async def test_a_failing_collection_reports_an_unknown_id_as_not_found(tmp_path,
     executor, _instance, _logger = _runtime(tmp_path, instance=instance)
     with pytest.raises(PluginEntryNotFoundError):
         await executor.invoke("plugin_entry", "no_such_entry", {})
-    # Logged (error type only), so a broken collection is told apart from a typo.
+    with pytest.raises(PluginEntryNotFoundError):
+        await executor.invoke("plugin_entry", "other_missing", {})
+    # Logged per id (error type only), so a broken collection is told apart from a typo.
     assert [w for w in _logger.warnings if "collection failed" in w] == [
-        "Plugin entry collection failed while resolving entry='no_such_entry': error_type=RuntimeError"
+        "Plugin entry collection failed while resolving entry='no_such_entry': error_type=RuntimeError",
+        "Plugin entry collection failed while resolving entry='other_missing': error_type=RuntimeError",
     ]
     assert await executor.invoke("plugin_entry", "registered", {}) == "registered"
+
+
+def test_a_failing_refresh_for_a_registered_id_is_not_found(tmp_path, monkeypatch):
+    instance = _Plugin(_ctx(tmp_path))
+    executor, _instance, logger = _runtime(tmp_path, instance=instance)
+
+    def broken(**_kwargs: object):
+        raise RuntimeError("collect failed")
+
+    # The state check reports a newly registered id the maps do not hold
+    # yet, and the rebuild then fails.
+    monkeypatch.setattr(instance, "_entry_state", lambda _entry_id: "registered")
+    monkeypatch.setattr(instance, "collect_entries", broken)
+    assert _resolve(executor, "added_later") is None
+    assert any("entry='added_later'" in w for w in logger.warnings)
 
 
 def test_a_non_callable_attribute_is_not_resolved(tmp_path):

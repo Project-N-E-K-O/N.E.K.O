@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import functools
 import inspect
+import types
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -36,19 +37,23 @@ DEFAULT_PLUGIN_VERSION = "0.0.0"
 
 
 def is_computed_attribute(instance: object, name: str) -> bool:
-    """Whether reading ``name`` would run code: a property, a cached property
-    or another data descriptor. Such an attribute is not evaluated just
-    because its name was called. Methods, ``partialmethod``, non-data
-    descriptors and names a class ``__getattr__`` provides are not.
+    """Whether reading ``name`` would run descriptor code.
+
+    Judged on the class attribute, so a cached property whose value already
+    sits in the instance ``__dict__`` still counts. Functions,
+    ``partialmethod``, ``staticmethod`` and ``classmethod`` are plain method
+    lookups; any other descriptor on the class (property, cached properties,
+    lazy loaders, data descriptors) is computed and is not evaluated just
+    because its name was called. Instance attributes and names a class
+    ``__getattr__`` provides are not computed.
     """
     try:
-        static = inspect.getattr_static(instance, name)
+        static = inspect.getattr_static(type(instance), name)
     except AttributeError:
         return False
-    if isinstance(static, (property, functools.cached_property)):
-        return True
-    kind = type(static)
-    return hasattr(kind, "__get__") and (hasattr(kind, "__set__") or hasattr(kind, "__delete__"))
+    if isinstance(static, (types.FunctionType, functools.partialmethod, staticmethod, classmethod)):
+        return False
+    return hasattr(type(static), "__get__")
 
 
 @runtime_checkable

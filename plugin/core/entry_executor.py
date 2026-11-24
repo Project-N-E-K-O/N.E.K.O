@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import inspect
 import re
 import time
@@ -92,30 +93,37 @@ _SDK_DECLARATION_ATTRS = (
 )
 
 
-def _own_event_meta(member: Any) -> Any:
-    """The event metadata ``member`` (or a function it wraps) carries, if any."""
+def _unwrapped(member: Any):
+    """``member`` and every callable it wraps: ``__wrapped__`` chains and the
+    function inside a ``functools.partial`` / ``partialmethod``."""
     current = member
     seen: set[int] = set()
     while current is not None and id(current) not in seen:
         seen.add(id(current))
+        yield current
+        inner = getattr(current, "__wrapped__", None)
+        if inner is None and isinstance(current, (functools.partial, functools.partialmethod)):
+            inner = current.func
+        current = inner
+
+
+def _own_event_meta(member: Any) -> Any:
+    """The event metadata ``member`` (or a function it wraps) carries, if any."""
+    for current in _unwrapped(member):
         meta = getattr(current, EVENT_META_ATTR, None)
         if meta is not None:
             return meta
-        current = getattr(current, "__wrapped__", None)
     return None
 
 
 def _has_sdk_declaration(member: Any) -> bool:
     """Whether ``member`` (or a function it wraps) carries an SDK declaration."""
-    current = member
-    seen: set[int] = set()
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        # A bound method reads its function's attributes.
-        if any(getattr(current, attr, None) is not None for attr in _SDK_DECLARATION_ATTRS):
-            return True
-        current = getattr(current, "__wrapped__", None)
-    return False
+    # A bound method reads its function's attributes.
+    return any(
+        getattr(current, attr, None) is not None
+        for current in _unwrapped(member)
+        for attr in _SDK_DECLARATION_ATTRS
+    )
 
 
 class EntryExecutor:
@@ -321,27 +329,36 @@ class EntryExecutor:
         if state == "closed":
             return None
         if method is None and state == "registered":
-            self._refresh()
+            if not self._refresh_or_warn(event_id):
+                return None
             method = self._mapped_entry(event_id)
         if method is None:
             method = self._undeclared_method(event_id)
         if method is None:
-            try:
-                self._refresh()
-            except Exception as exc:
-                # The plugin's own collection is failing: the id stays
-                # unknown (entry not found), as with the rebuild above. Logged
-                # so it is not mistaken for a mistyped id.
-                self._warn_limited(
-                    "",
-                    f"collection_failed:{type(exc).__name__}",
-                    f"Plugin entry collection failed while resolving entry={event_id[:64]!r}: "
-                    f"error_type={type(exc).__name__}",
-                    records=self._deprecation_warned,
-                )
+            if not self._refresh_or_warn(event_id):
                 return None
             method = self._mapped_entry(event_id)
         return method
+
+    def _refresh_or_warn(self, event_id: str) -> bool:
+        """Rebuild the maps; on failure log (rate-limited per id) and return False.
+
+        The plugin's own collection failing leaves the id unknown (entry not
+        found), as with the rebuild above. Logged so it is not mistaken for a
+        mistyped id; the entry id and the error type only.
+        """
+        try:
+            self._refresh()
+        except Exception as exc:
+            self._warn_limited(
+                event_id[:64],
+                f"collection_failed:{type(exc).__name__}",
+                f"Plugin entry collection failed while resolving entry={event_id[:64]!r}: "
+                f"error_type={type(exc).__name__}",
+                records=self._deprecation_warned,
+            )
+            return False
+        return True
 
     def _mapped_entry(self, event_id: str):
         """The plugin_entry handler the maps hold for ``event_id``, if any.
