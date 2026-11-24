@@ -431,7 +431,7 @@ const messages: PowerMessages = {
       message: 'Mensaje de {who} para {peer}: {text}',
       done_notice: 'Aviso de {who} para {peer}: esa ronda terminó',
       asked_session: 'Pregunta de {who} para {peer}: {text}',
-      orchestrated: 'Esto pasó a {peer} (el destino previsto ya no servía)',
+      orchestrated: 'Esto acabó en {peer}, no donde se pensó al principio',
       family_formed: 'Los familiares que ya hicieron esto formaron el proyecto «{text}»',
       leader_derived: '«{text}» tiene ahora un gato jefe; desde ahora reparte lo nuevo que no siga el trabajo de ningún familiar',
       leader_derived_git: '«{text}» está en un repositorio git, así que tiene un gato jefe que reparte el trabajo',

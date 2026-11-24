@@ -431,7 +431,7 @@ const messages: PowerMessages = {
       message: '{who} 對 {peer} 說：{text}',
       done_notice: '{who} 告訴 {peer}：那一輪辦完了',
       asked_session: '{who} 問 {peer}：{text}',
-      orchestrated: '這件事改交給了 {peer}（原先定的去處行不通）',
+      orchestrated: '這件事最後交給了 {peer}，不是原先定的去處',
       family_formed: '做過同一件事的使魔組成了專案「{text}」',
       leader_derived: '「{text}」有了貓老大，之後這裡新來的、對不上現成使魔的事由它來派',
       leader_derived_git: '「{text}」在 git 儲存庫裡，有了貓老大來派活',

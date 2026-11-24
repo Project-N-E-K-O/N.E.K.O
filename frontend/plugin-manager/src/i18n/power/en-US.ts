@@ -438,7 +438,7 @@ const messages = {
       message: '{who} told {peer}: {text}',
       done_notice: '{who} let {peer} know that the turn is over',
       asked_session: '{who} asked {peer}: {text}',
-      orchestrated: 'This went to {peer} instead (where it was meant to go no longer worked)',
+      orchestrated: 'This went to {peer}, not where it was first meant to go',
       family_formed: 'The familiars that did this before became the project "{text}"',
       leader_derived: '"{text}" got a boss cat; from now on it hands out what comes there that no familiar is already on',
       leader_derived_git: '"{text}" is in a git repository, so it got a boss cat to hand out its work',

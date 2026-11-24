@@ -431,7 +431,7 @@ const messages: PowerMessages = {
       message: '{who} が {peer} に伝えました：{text}',
       done_notice: '{who} が {peer} に、その回が終わったことを知らせました',
       asked_session: '{who} が {peer} に質問しました：{text}',
-      orchestrated: 'この件は {peer} に回されました（予定していた行き先が使えませんでした）',
+      orchestrated: 'この件は最終的に {peer} に回されました（最初に決めた行き先とは別です）',
       family_formed: '同じ仕事をしてきた使い魔たちがプロジェクト「{text}」になりました',
       leader_derived: '「{text}」にボス猫がつきました。これからは、いまの使い魔に当てはまらない新しい仕事をボス猫が振り分けます',
       leader_derived_git: '「{text}」は git リポジトリにあるので、仕事を振り分けるボス猫がつきました',

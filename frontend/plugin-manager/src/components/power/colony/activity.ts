@@ -155,12 +155,13 @@ export function ghostsOf(entries: TimelineEntry[], known: Set<string>): Ghost[] 
  * Where each commission of hers goes is decided as it comes (`orchestrated`),
  * and the lines of the commission itself say where it went: that entry is kept
  * for replaying and looking into what was decided, and is told only when the
- * commission went elsewhere than was decided.
+ * commission went elsewhere than was decided. The host says where only then
+ * (`placed`), also where it went on as decided, but in another familiar.
  */
 export function toldInFeed(entry: TimelineEntry): boolean {
   if (entry.kind !== 'orchestrated') return true
   const placed = entry.detail?.placed
-  return typeof placed === 'string' && placed !== '' && placed !== entry.detail?.action
+  return typeof placed === 'string' && placed !== ''
 }
 
 type Translate = (key: string, named?: Record<string, unknown>) => string

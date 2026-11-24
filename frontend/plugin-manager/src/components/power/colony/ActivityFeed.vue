@@ -11,7 +11,7 @@
         v-for="row in rows"
         :key="row.entry.cursor"
         class="row"
-        :class="{ now: row.index === current, later: current !== null && row.index > current }"
+        :class="{ now: row.index === shownNow, later: current !== null && row.index > current }"
         :data-entry="row.entry.kind"
       >
         <button type="button" class="pick" :title="t('power.activity.showMoment')" @click="emit('pick', row.index)">
@@ -58,6 +58,14 @@ const window = computed(() => {
   return { left: Math.max(0, before.length - shown.value), drawn: before.slice(-shown.value) }
 })
 const left = computed(() => window.value.left)
+// The line marked as the moment replayed: that moment's own, or, where the list has no line for it,
+// the line of what happened last before it.
+const shownNow = computed(() => {
+  const current = props.current
+  if (current === null) return null
+  const before = told.value.filter(index => index <= current)
+  return before.length ? before[before.length - 1] : null
+})
 const rows = computed(() => window.value.drawn.map(index => {
   const entry = props.entries[index]
   return { entry, index, line: describeEntry(entry, props.nameOf, t, te) }

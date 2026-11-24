@@ -215,13 +215,15 @@ describe('how the familiars stood at a moment of what happened', () => {
     expect(say('handed_over', { text: 'Blog/worker', peer: { type: 'session', session_id: 'scout', commission_id: null }, detail: { preset: 'worker', new: true } }))
       .toBe('The boss cat handed this over to Scout')
     expect(say('orchestrated', { peer: { type: 'session', session_id: 'scout', commission_id: null }, detail: { action: 'continue', placed: 'summon_stray' } }))
-      .toBe('This went to Scout instead (where it was meant to go no longer worked)')
+      .toBe('This went to Scout, not where it was first meant to go')
   })
 
   it('has a line for where a commission was decided to go only when it went elsewhere', () => {
     const decided = (detail: Record<string, unknown>) => toldInFeed(entry('orchestrated', { detail }))
     expect(decided({ action: 'continue' })).toBe(false)
-    expect(decided({ action: 'continue', placed: 'continue' })).toBe(false)
+    expect(decided({ action: 'continue', direct: true })).toBe(false)
+    // Gone on as decided, but in another familiar: the host says where only when it went elsewhere.
+    expect(decided({ action: 'continue', placed: 'continue' })).toBe(true)
     expect(decided({ action: 'continue', placed: '' })).toBe(false)
     expect(decided({ action: 'continue', placed: 7 })).toBe(false)
     expect(decided({ action: 'continue', placed: 'summon_in_project' })).toBe(true)
@@ -641,6 +643,15 @@ describe('the list of what happened', () => {
     ;(rows[0].querySelector('button') as HTMLElement).click()
     ;(rows[2].querySelector('button') as HTMLElement).click()
     expect(picked).toEqual([1, 4])
+    // A moment replayed that the list has no line for: the line of what happened last before it is the one marked.
+    state.props = { entries, current: 3, nameOf }
+    await flush()
+    expect(document.querySelector('.row.now')?.getAttribute('data-entry')).toBe('orchestrated')
+    expect([...document.querySelectorAll('.row.later')].map(row => row.getAttribute('data-entry'))).toEqual(['started'])
+    state.props = { entries, current: 0, nameOf }
+    await flush()
+    expect(document.querySelector('.row.now')).toBeNull()
+    expect(document.querySelectorAll('.row.later').length).toBe(3)
     // Those it has no line for are not counted among those left out.
     const many = [
       ...Array.from({ length: 100 }, (_, n) => decided(n)),
