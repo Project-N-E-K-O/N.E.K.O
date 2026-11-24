@@ -333,7 +333,8 @@ async def get_core_config_api():
             "openclawTimeout": core_cfg.get('openclawTimeout'),
             "openclawDefaultSenderId": core_cfg.get('openclawDefaultSenderId'),
             # Legacy files (and a subscription restoring one) may hold 'false', 'off' or 0:
-            # the page only reads a boolean, so send the value the runtime uses.
+            # the page only reads a boolean, so send the stored switch as one. This is the
+            # stored value, not the effective one (a subscription can run text slots with it off).
             "enableCustomApi": _as_bool(core_cfg.get('enableCustomApi', False)),
             "chatgptIndependentSlots": restricted_slots(core_cfg, CORE_CONFIG_MODEL_TYPES),
             "resolvedProviderUrls": core_cfg.get('resolvedProviderUrls', {}) if isinstance(core_cfg.get('resolvedProviderUrls'), dict) else {},

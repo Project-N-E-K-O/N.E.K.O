@@ -6,6 +6,12 @@ with the same code as the plugin gateway, so it works whether or not the
 plugin server is running. Nothing here writes: seeding, bindings and edits
 stay with the plugin server.
 
+Unlike the plugin gateway, a host-follow slot on a ChatGPT subscription tier
+resolves here: task agents call a followed tier through the host's own
+client with that tier's provider type (``RoleModels.slot``). The
+``ResolvedModel`` of such a slot (api.openai.com, no key, ``openai_chat``)
+is for display and bookkeeping only and must not be used to send requests.
+
 Credentials live only in the returned ``ResolvedModel`` (kept out of its
 repr) and are never logged or persisted. Both functions read files
 synchronously; async callers run them in a worker thread.

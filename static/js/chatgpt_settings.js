@@ -307,8 +307,8 @@
             reauthorizeAccount = account.value;
             // run() stopped the status checks; refresh restarts them and keeps this choice.
             await refresh();
-            const signIn = t('signInRequired', 'Sign in to ChatGPT first.');
-            status.textContent = formStale ? `${signIn} ${staleFormText()}` : signIn;
+            const signInText = t('signInRequired', 'Sign in to ChatGPT first.');
+            status.textContent = formStale ? `${signInText} ${staleFormText()}` : signInText;
             return;
         }
         reauthorizeAccount = '';

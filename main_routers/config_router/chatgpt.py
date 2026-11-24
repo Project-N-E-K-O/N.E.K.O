@@ -257,4 +257,8 @@ async def chatgpt_subscription_update(body: SubscriptionRequest):
             slots = await asyncio.to_thread(supported_slots)
         except Exception:
             slots = []
-    return {**result, 'subscription': preview(config, slots)}
+    # Same tier names as the GET preview, so the overwritten list and revision agree.
+    from utils.config_manager.tier_renames import migrate_renamed_tier_fields
+    shown = deepcopy(config)
+    migrate_renamed_tier_fields(shown)
+    return {**result, 'subscription': preview(shown, slots)}
