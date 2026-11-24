@@ -404,6 +404,13 @@ class CharactersMixin:
                 self._characters_dirty = False
                 self._clear_characters_persist_backoff_locked()
 
+        # A new voice or a switch of current character may now reach the CosyVoice
+        # worker; import dashscope in the background before its first sentence.
+        # Never raises or blocks, and is a no-op outside main_server or once
+        # every gated SDK is loaded.
+        from utils.module_warmup import request_config_rewarm
+        request_config_rewarm("characters")
+
     async def asave_characters(self, data, character_json_path=None, *, bypass_write_fence: bool = False):
         """Async wrapper: the sync version must not run directly on the event loop (atomic_write_json blocks)."""
         return await asyncio.to_thread(

@@ -186,24 +186,57 @@ class WarmupConfig:
         return language_utils.is_china_region()
 
     @cached_property
-    def current_voice_meta(self) -> Mapping[str, object] | None:
-        """Stored metadata of the current character's voice (see _get_voice_meta)."""
+    def current_voice_id(self) -> str:
+        """The current character's voice, as the TTS routing reads it ('' for none)."""
         from utils.config_manager.reserved_schema import get_reserved
-        from utils.voice_config import is_imported_voice_ref, read_legacy_voice_id
+        from utils.voice_config import read_legacy_voice_id
 
         characters = self._cm.load_characters() or {}
         profile = (characters.get("猫娘") or {}).get(characters.get("当前猫娘"))
         if not isinstance(profile, dict):
-            return None
-        voice_id = read_legacy_voice_id(
+            return ""
+        return read_legacy_voice_id(
             get_reserved(profile, "voice_id", default="", legacy_keys=("voice_id",))
         )
+
+    @cached_property
+    def current_voice_meta(self) -> Mapping[str, object] | None:
+        """Stored metadata of the current character's voice (see _get_voice_meta)."""
+        from utils.voice_config import is_imported_voice_ref
+
+        voice_id = self.current_voice_id
         if not voice_id:
             return None
         meta = self._cm.get_imported_voice(voice_id) if is_imported_voice_ref(voice_id) else None
         if meta is None:
             meta = (self._cm.get_voices_for_current_api() or {}).get(voice_id)
         return meta if isinstance(meta, dict) else None
+
+    @cached_property
+    def current_voice_is_stock(self) -> bool:
+        """The current voice is a free preset or the realtime provider's own voice.
+
+        Those never reach the CosyVoice worker (``_has_custom_tts`` is False for
+        a provider-native voice, ``get_tts_worker`` skips free presets).
+        """
+        from utils.tts.native_voice_registry import (
+            is_free_preset_voice_id,
+            resolve_native_voice_for_routing,
+        )
+
+        voice_id = self.current_voice_id
+        if is_free_preset_voice_id(voice_id):
+            return True
+        core_api_type = str(
+            self.realtime_config.get("api_type") or self.core_config.get("CORE_API_TYPE") or ""
+        )
+        _, native = resolve_native_voice_for_routing(
+            core_api_type,
+            voice_id,
+            self._cm.voice_id_exists_in_any_storage,
+            realtime_base_url=str(self.realtime_config.get("base_url") or ""),
+        )
+        return bool(native)
 
     @cached_property
     def conversation_settings(self) -> Mapping[str, object]:
@@ -252,9 +285,23 @@ def _needs_translate_global(cfg: WarmupConfig) -> bool:
 
 
 def _needs_cosyvoice_clone(cfg: WarmupConfig) -> bool:
-    """The current character's voice is a CosyVoice clone (see get_tts_worker)."""
+    """The current character's voice can reach the CosyVoice worker (see get_tts_worker)."""
+    from utils.voice_config import is_imported_voice_ref
+
+    voice_id = cfg.current_voice_id
+    if not voice_id:
+        return False
     meta = cfg.current_voice_meta
-    return meta is not None and meta.get("provider") in _COSYVOICE_PROVIDERS
+    if meta is not None:
+        return meta.get("provider") in _COSYVOICE_PROVIDERS
+    # An imported voice with no stored record gets the "unavailable" worker.
+    if is_imported_voice_ref(voice_id):
+        return False
+    # Any other voice without a stored record still goes to the CosyVoice worker
+    # when it is custom (not a free preset, not the provider's own voice). This can
+    # also warm for a few voices routed elsewhere (GPT-SoVITS, xAI custom voices);
+    # that costs memory only, a miss would cost the first sentence.
+    return not cfg.current_voice_is_stock
 
 
 def _proactive_flags(settings: Mapping[str, object], *names: str) -> bool:
@@ -290,11 +337,21 @@ _GATES: dict[str, Callable[[WarmupConfig], bool]] = {
 }
 
 
-def evaluate_gates(cfg: WarmupConfig | None = None) -> dict[str, bool]:
-    """Run every gate against one config snapshot; a gate that raises counts as needed."""
+def evaluate_gates(
+    cfg: WarmupConfig | None = None,
+    only: Iterable[str] | None = None,
+) -> dict[str, bool]:
+    """Run the gates (all, or those named in ``only``) against one config snapshot.
+
+    A gate that raises counts as needed. Config is read lazily, so gates left
+    out cost no reads.
+    """
     cfg = WarmupConfig() if cfg is None else cfg
+    wanted = set(_GATES) if only is None else set(only)
     results: dict[str, bool] = {}
     for name, gate in _GATES.items():
+        if name not in wanted:
+            continue
         try:
             results[name] = bool(gate(cfg))
         except Exception as exc:
@@ -366,21 +423,33 @@ def _warm_entries(module_list: tuple[str, ...], label: str) -> None:
     )
 
 
+def _unloaded_gates() -> set[str]:
+    """Gates that still have a module to import."""
+    return {gate for entry, gate in _ENTRY_GATES.items() if entry not in sys.modules}
+
+
 def _pending_gated_entries(skip_loaded: bool, label: str) -> tuple[str, ...]:
-    entries = select_warmup_entries(MAIN_SERVER_WARMUP, evaluate_gates())
-    skipped = [entry for entry in MAIN_SERVER_WARMUP if entry not in entries]
-    logger.log(
-        logging.INFO if label == "main" else logging.DEBUG,
-        "[warmup:%s] not needed by current config: %s",
-        label, ", ".join(skipped) or "(none)",
-    )
     if not skip_loaded:
+        entries = select_warmup_entries(MAIN_SERVER_WARMUP, evaluate_gates())
+        skipped = [entry for entry in MAIN_SERVER_WARMUP if entry not in entries]
+        logger.log(
+            logging.INFO if label == "main" else logging.DEBUG,
+            "[warmup:%s] not needed by current config: %s",
+            label, ", ".join(skipped) or "(none)",
+        )
         return entries
-    # A re-run only has to pick up what became reachable since the last pass.
-    return tuple(
-        entry for entry in entries
-        if ":" in entry or entry not in sys.modules
+    # A re-check only has to pick up what became reachable since the last pass:
+    # gated modules not loaded yet. Gates whose modules are all loaded are not
+    # evaluated, so they cost no config reads.
+    results = evaluate_gates(only=_unloaded_gates())
+    entries = tuple(
+        entry for entry in MAIN_SERVER_WARMUP
+        if entry in _ENTRY_GATES
+        and entry not in sys.modules
+        and results.get(_ENTRY_GATES[entry], True)
     )
+    logger.debug("[warmup:%s] newly needed: %s", label, ", ".join(entries) or "(none)")
+    return entries
 
 
 def _run_gated_warmup(label: str) -> None:
@@ -449,6 +518,10 @@ def request_config_rewarm(reason: str = "config") -> bool:
     the worker thread.
     """
     if _under_pytest():
+        return False
+    # Everything gated is loaded already: nothing a config change could add.
+    # Keeps frequent writers (character saves) from starting threads for nothing.
+    if not _unloaded_gates():
         return False
 
     global _gated_running, _gated_pending

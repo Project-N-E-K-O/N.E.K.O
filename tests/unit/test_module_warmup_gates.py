@@ -47,7 +47,9 @@ def _cfg(**overrides):
         realtime_config={"api_type": "qwen"},
         llm_slot_configs=(_OPENAI_SLOT,),
         china_region=True,
+        current_voice_id="",
         current_voice_meta=None,
+        current_voice_is_stock=True,
         conversation_settings=dict(_PROACTIVE_ALL_OFF),
     )
     base.update(overrides)
@@ -117,17 +119,36 @@ def test_translation_undecided_region_warms_both():
 
 # --- CosyVoice clone (dashscope) --------------------------------------------
 
-def test_cosyvoice_off_without_a_stored_voice():
-    assert _gate("cosyvoice_clone", _cfg(current_voice_meta=None)) is False
+def test_cosyvoice_off_without_a_voice():
+    assert _gate("cosyvoice_clone", _cfg(current_voice_id="")) is False
 
 
 def test_cosyvoice_off_for_other_clone_providers():
-    assert _gate("cosyvoice_clone", _cfg(current_voice_meta={"provider": "minimax"})) is False
+    cfg = _cfg(current_voice_id="v-1", current_voice_meta={"provider": "minimax"}, current_voice_is_stock=False)
+    assert _gate("cosyvoice_clone", cfg) is False
 
 
 @pytest.mark.parametrize("provider", ["cosyvoice", "cosyvoice_intl"])
 def test_cosyvoice_on_for_cosyvoice_clone(provider):
-    assert _gate("cosyvoice_clone", _cfg(current_voice_meta={"provider": provider})) is True
+    cfg = _cfg(current_voice_id="v-1", current_voice_meta={"provider": provider})
+    assert _gate("cosyvoice_clone", cfg) is True
+
+
+def test_cosyvoice_on_for_custom_voice_without_stored_record():
+    # get_tts_worker still sends such a voice to the CosyVoice worker.
+    cfg = _cfg(current_voice_id="cosyvoice-v2-lost", current_voice_meta=None, current_voice_is_stock=False)
+    assert _gate("cosyvoice_clone", cfg) is True
+
+
+def test_cosyvoice_off_for_preset_or_native_voice_without_record():
+    cfg = _cfg(current_voice_id="Cherry", current_voice_meta=None, current_voice_is_stock=True)
+    assert _gate("cosyvoice_clone", cfg) is False
+
+
+def test_cosyvoice_off_for_imported_voice_without_record():
+    # An imported voice with no stored record gets the "unavailable" worker.
+    cfg = _cfg(current_voice_id="voice_" + "a" * 32, current_voice_meta=None, current_voice_is_stock=False)
+    assert _gate("cosyvoice_clone", cfg) is False
 
 
 # --- proactive sources (bilibili_api) ---------------------------------------
@@ -308,6 +329,30 @@ def test_current_voice_meta_resolves_imported_voice_refs():
     assert _warmup_config(cm).current_voice_meta == {"provider": "cosyvoice_intl"}
 
 
+def test_current_voice_is_stock_for_presets_and_native_voices(monkeypatch):
+    from utils.tts import native_voice_registry as registry
+
+    cm = _FakeConfigManager(characters={"当前猫娘": "A", "猫娘": {"A": {"voice_id": "v"}}})
+    cm.voice_id_exists_in_any_storage = lambda voice_id: False
+    cfg = _warmup_config(cm)
+    cfg.core_config = {"CORE_API_TYPE": "qwen"}
+    cfg.realtime_config = {"api_type": "qwen", "base_url": ""}
+
+    monkeypatch.setattr(registry, "is_free_preset_voice_id", lambda voice_id: True)
+    assert cfg.current_voice_is_stock is True
+
+    cfg2 = _warmup_config(cm)
+    cfg2.core_config, cfg2.realtime_config = cfg.core_config, cfg.realtime_config
+    monkeypatch.setattr(registry, "is_free_preset_voice_id", lambda voice_id: False)
+    monkeypatch.setattr(registry, "resolve_native_voice_for_routing", lambda *a, **k: (a[1], True))
+    assert cfg2.current_voice_is_stock is True
+
+    cfg3 = _warmup_config(cm)
+    cfg3.core_config, cfg3.realtime_config = cfg.core_config, cfg.realtime_config
+    monkeypatch.setattr(registry, "resolve_native_voice_for_routing", lambda *a, **k: (a[1], False))
+    assert cfg3.current_voice_is_stock is False
+
+
 def test_china_region_is_none_until_the_probe_is_conclusive(monkeypatch):
     from utils import language_utils
 
@@ -378,13 +423,61 @@ def test_rewarm_never_raises(warmup_state, monkeypatch):
 
 
 def test_config_rewarm_pass_skips_loaded_modules(monkeypatch):
-    monkeypatch.setattr(module_warmup, "evaluate_gates", lambda cfg=None: {name: True for name in _GATES})
+    asked: list[set] = []
+
+    def _all_open(cfg=None, only=None):
+        asked.append(None if only is None else set(only))
+        return {name: True for name in _GATES}
+
+    monkeypatch.setattr(module_warmup, "evaluate_gates", _all_open)
     monkeypatch.setitem(sys.modules, "anthropic", object())
     entries = module_warmup._pending_gated_entries(True, "config")
     assert "anthropic" not in entries
-    assert "config.prompts.prompts_directives:DIRECTIVE_PATTERNS" in entries
+    # Only gated modules not yet loaded; ungated ones were warmed at startup.
+    assert set(entries) <= set(_ENTRY_GATES)
+    assert "dashscope" in entries or "dashscope" in sys.modules
+    # The anthropic gate is not even evaluated once its module is loaded.
+    assert "anthropic" not in asked[-1]
     full = module_warmup._pending_gated_entries(False, "main")
     assert full == MAIN_SERVER_WARMUP
+
+
+def test_evaluate_gates_only_reads_what_the_named_gates_need():
+    class _OnlyVoice(SimpleNamespace):
+        @property
+        def llm_slot_configs(self):
+            raise AssertionError("anthropic/gemini gates must not run")
+
+    base = vars(_cfg(current_voice_id="v-1", current_voice_meta={"provider": "cosyvoice"})).copy()
+    base.pop("llm_slot_configs")
+    assert evaluate_gates(_OnlyVoice(**base), only={"cosyvoice_clone"}) == {"cosyvoice_clone": True}
+
+
+def test_rewarm_is_skipped_once_every_gated_sdk_is_loaded(warmup_state, monkeypatch):
+    module_warmup._gated_started = True
+    for entry in _ENTRY_GATES:
+        monkeypatch.setitem(sys.modules, entry, object())
+    assert module_warmup.request_config_rewarm("characters") is False
+    assert warmup_state == []
+
+
+def test_character_save_requests_a_recheck(tmp_path, monkeypatch):
+    import threading
+
+    from utils.config_manager.characters import CharactersMixin
+
+    calls: list[str] = []
+    monkeypatch.setattr(module_warmup, "request_config_rewarm", calls.append)
+    fake = SimpleNamespace(
+        _characters_reload_lock=threading.RLock(),
+        _characters_cache_lock=threading.RLock(),
+        ensure_config_directory=lambda: None,
+        _clear_characters_persist_backoff_locked=lambda: None,
+    )
+    path = tmp_path / "characters.json"
+    CharactersMixin.save_characters(fake, {"猫娘": {}}, str(path), bypass_write_fence=True)
+    assert path.exists()
+    assert calls == ["characters"]
 
 
 class _CoreConfigManager:
