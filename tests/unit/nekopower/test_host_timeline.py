@@ -478,7 +478,7 @@ async def test_every_kind_is_in_the_list_and_steps_are_left_out(ledger):
     assert SECRET not in json.dumps(entries)
     assert _of(entries, "queued")[0]["detail"] == {"from": None, "ahead": 1, "behind": None}
     assert _of(entries, "woken")[0]["detail"] == {"count": 1, "reasons": []}
-    assert len(set(TIMELINE_KINDS)) == len(TIMELINE_KINDS) == 24
+    assert len(set(TIMELINE_KINDS)) == len(TIMELINE_KINDS) == 28
 
 
 async def _raw_event(ledger: Ledger, commission_id: str, kind: str, payload: str) -> None:

@@ -212,7 +212,7 @@ class NodeHarnessSpawnTimeout(subprocess.TimeoutExpired):
     means every attempt stalled before getting that far.
     """
 
-    def __init__(self, cmd, timeout, attempts, started=False):
+    def __init__(self, cmd, timeout, attempts, started=False, rerun_safe=False):
         # Carry the last attempt's output on the exception the way
         # ``subprocess.run`` would have: a caller that catches
         # ``TimeoutExpired`` and reads ``.stdout``/``.stderr`` (or ``.output``)
@@ -226,9 +226,18 @@ class NodeHarnessSpawnTimeout(subprocess.TimeoutExpired):
         )
         self.attempts = list(attempts)
         self.started = started
+        self.rerun_safe = rerun_safe
 
     def __str__(self) -> str:
-        if self.started:
+        if self.started and self.rerun_safe:
+            diagnosis = (
+                "node reached the harness script and stalled on every attempt "
+                "without the watchdog firing. The caller marked the script safe "
+                "to re-run, so each stall was retried; one that repeats on "
+                "every run points at the script itself (a synchronous block), "
+                "not at the runner."
+            )
+        elif self.started:
             diagnosis = (
                 "node reached the harness script and then stalled without "
                 "the watchdog firing. Either the script's top level blocked "
@@ -534,11 +543,17 @@ def _guarded(merged: dict, deadline_seconds: float, marker: str) -> tuple[list[s
     return ["--require", _preload_path()], dict(merged, env=environment)
 
 
-def _run_retrying_spawn_stalls(next_attempt, cmd_for_error):
+def _run_retrying_spawn_stalls(next_attempt, cmd_for_error, *, rerun_safe=False):
     """Run, and run again while node stalls without ever reaching the script.
 
     At most ``_SPAWN_ATTEMPTS`` runs in all; an attempt that reached the script
-    is reported as it stands, however many are left.
+    is reported as it stands, however many are left -- unless the caller passed
+    ``rerun_safe``: its script only simulates in memory, so running it again
+    repeats nothing outside the process. Then a stall after the script started
+    is retried too. On a Windows runner node has reached a pure in-memory
+    settings harness and sat 60s without the watchdog firing, while the same
+    script finishes in ~0.1s locally and passed 1216 runs under 16-way load:
+    the runner stalled the synchronous file reads or compilation at the top.
 
     ``next_attempt`` is called per attempt so a caller that stages a temp file
     gets a fresh one, rather than a second attempt inheriting whatever state
@@ -552,9 +567,10 @@ def _run_retrying_spawn_stalls(next_attempt, cmd_for_error):
         except subprocess.TimeoutExpired as exc:
             attempts.append(exc)
             started = _script_started(marker)
-            if attempt == _SPAWN_ATTEMPTS or started:
+            if attempt == _SPAWN_ATTEMPTS or (started and not rerun_safe):
                 raise NodeHarnessSpawnTimeout(
-                    cmd_for_error, exc.timeout, attempts, started=started
+                    cmd_for_error, exc.timeout, attempts,
+                    started=started, rerun_safe=rerun_safe,
                 ) from exc
         finally:
             try:
@@ -567,11 +583,16 @@ def _run_retrying_spawn_stalls(next_attempt, cmd_for_error):
     raise AssertionError("unreachable")  # pragma: no cover
 
 
-def run_node_script(node_path: str, script: str, **kwargs) -> subprocess.CompletedProcess[str]:
+def run_node_script(
+    node_path: str, script: str, *, rerun_safe: bool = False, **kwargs
+) -> subprocess.CompletedProcess[str]:
     """Run ``script`` from a temp file under ``node_path``.
 
     Use this when the script is large or grows with the behaviour it simulates.
-    Extra keyword arguments go straight to ``subprocess.run``.
+    ``rerun_safe``: the script has no effect outside its own process (no files,
+    child processes or network), so a stall after it started may be retried;
+    see ``_run_retrying_spawn_stalls``. Extra keyword arguments go straight to
+    ``subprocess.run``.
     """
     _prewarm_binary(node_path)
     budget, deadline_seconds = _budgeted(_utf8(kwargs))
@@ -588,7 +609,9 @@ def run_node_script(node_path: str, script: str, **kwargs) -> subprocess.Complet
         return [node_path, *preload, staged[-1]], merged, marker
 
     try:
-        return _run_retrying_spawn_stalls(_attempt, [node_path, "<temp script>"])
+        return _run_retrying_spawn_stalls(
+            _attempt, [node_path, "<temp script>"], rerun_safe=rerun_safe
+        )
     finally:
         for path in staged:
             try:

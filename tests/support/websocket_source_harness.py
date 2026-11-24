@@ -20,4 +20,8 @@ def _run_settings_node_harness(script: str) -> subprocess.CompletedProcess[str]:
         text=True,
         check=False,
         timeout=60,
+        # These harnesses only simulate windows, storage and fetch in memory:
+        # running one again repeats nothing outside node, so a runner stall
+        # after the script started is retried instead of failing the PR.
+        rerun_safe=True,
     )

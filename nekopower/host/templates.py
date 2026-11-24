@@ -19,7 +19,10 @@ and never changed. A preset is a ``Template``: one sentence that says when
 it is used, what a session of it is told of its role, and what it is opened
 without. Six come with the program (``PRESETS``):
 
-* ``boss``      - the main session of a project; nothing is withheld.
+* ``boss``      - the leader of a project: hands its commissions out and
+  does none of the work. It has no tool that writes or edits a file or runs
+  a command; the task agents it starts and hands over to have theirs
+  (``withhold_own``).
 * ``general``   - a session of one commission that belongs to no project;
   nothing is withheld, and it is told nothing of a role.
 * ``worker``    - a task agent another one started, as it always was.
@@ -59,7 +62,10 @@ variable is not seen), and only a preset without the shell cannot at all.
 
 A template only takes away: it withholds tools, makes a session read only,
 gives it no memory. What it takes from a session it takes from the task
-agents that session starts as well (``Template.under``). It names no model, address or key (``model`` says only
+agents that session starts as well (``Template.under``), except what it
+names under ``withhold_own``: tools a session of it is without itself and
+the task agents it starts keep, for one that is to hand work out and not
+do it. It names no model, address or key (``model`` says only
 whose model a session of it follows by default, and is kept for the pull
 request that makes use of it). What a file gets wrong is an error with a
 reason, never ignored: a field this does not know, a value that is not one
@@ -127,9 +133,17 @@ _GATEWAY_TOOLS: tuple[str, ...] = ("capability_search", "capability_call")
 # Presets no task agent is started with by another: the first is the lead of
 # a project, the second a session of its own.
 NOT_FOR_CHILDREN: frozenset[str] = frozenset({"boss", "general"})
+# What the leader of a project is without, itself only: what writes or edits
+# a file and what runs a command. It keeps what reads and searches (it has
+# to understand the work to hand it out), what reaches other sessions, and
+# what starts task agents and hands a commission over.
+LEADER_WITHHELD: tuple[str, ...] = ("write", "edit", "bash", "pwsh")
 
 _FIELDS: frozenset[str] = frozenset(
-    {"name", "description", "withhold", "read_only", "writes", "memory", "model", "max_requests", "avatar", "label"}
+    {
+        "name", "description", "withhold", "withhold_own", "read_only", "writes", "memory", "model", "max_requests",
+        "avatar", "label",
+    }
 )
 _NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")
 _SUFFIX = ".md"
@@ -151,6 +165,9 @@ class Template:
     body: str = ""
     # Tools its sessions are opened without, besides those the next three imply.
     withhold: tuple[str, ...] = ()
+    # Tools its sessions are opened without that the task agents they start
+    # keep (``under``): for a preset that hands work out and does none.
+    withhold_own: tuple[str, ...] = ()
     read_only: bool = False
     # ``inherit``: writes where its session works. ``none``: has no tools
     # that write files (a command still can, where the shell is not withheld).
@@ -171,8 +188,8 @@ class Template:
     label: str = ""
     source: str = SOURCE_BUILTIN
 
-    def withheld(self) -> frozenset[str]:
-        """Return every tool a session of this preset is opened without."""
+    def handed_down(self) -> frozenset[str]:
+        """Return the tools a session of this preset is opened without that its task agents are without as well."""
         tools = set(self.withhold)
         if self.read_only:
             tools.update(READ_ONLY_WITHHELD)
@@ -182,6 +199,33 @@ class Template:
             tools.update(_MEMORY_NONE_WITHHELD)
         return frozenset(tools)
 
+    def withheld(self) -> frozenset[str]:
+        """Return every tool a session of this preset is opened without."""
+        return self.handed_down() | frozenset(self.withhold_own)
+
+    @property
+    def writes_files(self) -> bool:
+        """Whether its sessions have a tool that writes or edits a file.
+
+        By ``write`` and ``edit`` alone. What a project holds its members
+        to goes by ``changes_files``, which counts the shell as well.
+        """
+        return not {"write", "edit"} <= self.withheld()
+
+    @property
+    def changes_files(self) -> bool:
+        """Whether its sessions can change files at all: with a tool that writes or edits one, or through the shell.
+
+        What one task agent at a time does in a project, what the user is
+        asked about before a leader opens another such member, and what
+        no task agent a leader starts itself can: a command can change
+        the files another is working on as well as ``write`` can, and
+        once the user allowed commands they are not asked about one by
+        one. (The built-in inspector keeps the shell to run checks, and
+        so counts.)
+        """
+        return not {"write", "edit", "bash", "pwsh"} <= self.withheld()
+
     def under(self, starter: Template) -> Template:
         """Return this preset as a task agent has it that a session of ``starter`` started.
 
@@ -189,14 +233,24 @@ class Template:
         memory where that one has none, so that a session cannot get back
         through a task agent what its template took from it: neither a
         tool, nor what was noted before (a task agent that read the notes
-        would bring them into what it reports). The role and the cap on
-        requests are the task agent's own preset's.
+        would bring them into what it reports). Not what ``starter`` is
+        without itself only (``withhold_own``): a preset that hands work
+        out says so to keep its own hands off, and whoever it starts does
+        the work. The role and the cap on requests are the task agent's
+        own preset's. What ``starter`` hands down is handed down by the
+        task agent in turn, also where its own preset withholds the same
+        tool from itself only: the task agents it starts are without it.
         """
-        more = starter.withheld() - self.withheld()
+        more = starter.handed_down() - self.handed_down()
         memory = "none" if starter.memory == "none" else self.memory
         if not more and memory == self.memory:
             return self
-        return replace(self, withhold=tuple(sorted({*self.withhold, *more})), memory=memory)
+        return replace(
+            self,
+            withhold=tuple(sorted({*self.withhold, *more})),
+            withhold_own=tuple(tool for tool in self.withhold_own if tool not in more),
+            memory=memory,
+        )
 
     @property
     def calls_nothing(self) -> bool:
@@ -299,7 +353,7 @@ def _builtin(name: str, **values: Any) -> Template:
 def builtin_templates() -> dict[str, Template]:
     """Return the presets that come with the program, by name, in the order they are listed in."""
     made = {
-        "boss": _builtin("boss", model="agent"),
+        "boss": _builtin("boss", model="agent", withhold_own=LEADER_WITHHELD),
         "worker": _builtin("worker"),
         "scout": _builtin("scout", read_only=True, writes="none"),
         "inspector": _builtin(
@@ -422,6 +476,18 @@ def parse_template(text: str, *, name: str, source: str) -> Template:
     if kept:
         raise TemplateError(f"{', '.join(kept)} cannot be withheld: a session ends its commissions with it")
 
+    withhold_own = data.get("withhold_own", [])
+    if isinstance(withhold_own, str):
+        withhold_own = [item for item in (part.strip() for part in withhold_own.split(",")) if item]
+    if not isinstance(withhold_own, list) or not all(isinstance(item, str) for item in withhold_own):
+        raise TemplateError("withhold_own is a list of tool names")
+    not_tools = sorted(set(withhold_own) - known_tools())
+    if not_tools:
+        raise TemplateError(f"withhold_own names no tool: {', '.join(not_tools)}")
+    kept = sorted(set(withhold_own) & _NEVER_WITHHELD)
+    if kept:
+        raise TemplateError(f"{', '.join(kept)} cannot be withheld: a session ends its commissions with it")
+
     read_only = data.get("read_only", False)
     if not isinstance(read_only, bool):
         raise TemplateError(f"read_only is true or false, not {read_only!r}")
@@ -456,6 +522,8 @@ def parse_template(text: str, *, name: str, source: str) -> Template:
         description=description,
         body=body,
         withhold=tuple(sorted(set(withhold))),
+        # What is withheld from its task agents as well is said once, there.
+        withhold_own=tuple(sorted(set(withhold_own) - set(withhold))),
         read_only=read_only,
         writes=writes,
         memory=memory,

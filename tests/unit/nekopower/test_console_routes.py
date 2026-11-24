@@ -827,7 +827,7 @@ async def test_the_form_of_a_new_task_agent_is_filled_in_and_a_failure_says_whic
     client, host = familiars
     host._decision_llm.answer = dict(FORM)
     filled = await client.post("/console/familiars/draft", headers=HEADERS, json={"text": "a task agent for the monthly reports"})
-    assert filled.status_code == 200 and filled.json()["draft"] == {**FORM, "preset": "boss"}
+    assert filled.status_code == 200 and filled.json()["draft"] == {**FORM, "preset": "general"}
     assert len(host._decision_llm.calls) == 1
     # Nothing was made by filling it in.
     assert await host.space.list_projects() == [] and await host.ledger.find_sessions() == []

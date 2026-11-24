@@ -1346,6 +1346,81 @@ def _embedding_service_state() -> str:
 # ── public entry ──────────────────────────────────────────────────────
 
 
+def _prepare_recall_pools(
+    active_facts: list[dict],
+    active_reflections: list[dict],
+    archive_facts: list[dict],
+    persona_left_out: list[dict],
+    *,
+    lanlan_name: str,
+    subjects,
+    include_legacy_private: bool | None,
+    time_window: tuple | None,
+) -> tuple[list[dict], list[dict]]:
+    """Build ``(bm25_pool, embedding_pool)`` from the loaded rows.
+
+    Archive overlap removal, tier tagging (private shallow copies), scope
+    filtering, the optional time window and the hard filter — the same steps,
+    in the same order, ``hybrid_recall`` used to run inline.
+
+    Runs in a worker thread while the event loop keeps serving other
+    coroutines. The four lists must be snapshots the caller took on the
+    event loop, never the stores' own lists: writers reshape FactStore's
+    cached list in place (``facts[:] = ...``) from the loop, and iterating it
+    here would skip rows. The rows inside are still the stores' own dicts.
+    That is no new exposure: writers already mutate those rows from worker
+    threads (``amark_absorbed`` / ``asave_facts`` run under
+    ``asyncio.to_thread``), and under the GIL ``_tag_tier``'s single
+    ``dict(row)`` copies each one whole. The worst case is a field update on
+    one row landing between two other rows' copies; the path is read-only,
+    so nothing of that persists past the answer.
+    """
+    archive_facts = _drop_archive_overlap(archive_facts, active_facts, lanlan_name)
+
+    facts_tagged = _tag_tier(active_facts, 'fact')
+    refl_tagged = _tag_tier(active_reflections, 'reflection')
+    arch_tagged = _tag_tier(archive_facts, 'fact_archive')
+    persona_tagged = _tag_tier(persona_left_out, 'persona')
+
+    # Security boundary: scope filtering happens before any BM25/cosine/RRF
+    # scoring. A group caller never searches the private/global corpus and then
+    # hides results afterwards. With no subjects, missing scope keeps the legacy
+    # private behaviour; explicit subjects exclude legacy rows by default.
+    from memory.scopes import filter_entries_for_subjects
+    facts_tagged = filter_entries_for_subjects(
+        facts_tagged, subjects, include_legacy_private=include_legacy_private,
+    )
+    refl_tagged = filter_entries_for_subjects(
+        refl_tagged, subjects, include_legacy_private=include_legacy_private,
+    )
+    arch_tagged = filter_entries_for_subjects(
+        arch_tagged, subjects, include_legacy_private=include_legacy_private,
+    )
+    persona_tagged = filter_entries_for_subjects(
+        persona_tagged, subjects, include_legacy_private=include_legacy_private,
+    )
+
+    # Joint semantic + time retrieval: given time_window, hard-filter candidate pool by event time
+    # before subsequent BM25/cosine scoring.
+    if time_window is not None:
+        ws, we = time_window
+        facts_tagged = [d for d in facts_tagged if _overlaps_window(d, ws, we)]
+        refl_tagged = [d for d in refl_tagged if _overlaps_window(d, ws, we)]
+        arch_tagged = [d for d in arch_tagged if _overlaps_window(d, ws, we)]
+        persona_tagged = [d for d in persona_tagged if _overlaps_window(d, ws, we)]
+
+    bm25_pool_raw = facts_tagged + refl_tagged + arch_tagged + persona_tagged
+    embedding_pool_raw = facts_tagged + refl_tagged + persona_tagged
+
+    # Hard filter (drop score<0 / suppressed / terminal reflection / protected).
+    # Imported lazily so a circular-import-safe boot path stays viable.
+    from memory.recall import MemoryRecallReranker
+    return (
+        MemoryRecallReranker._hard_filter(bm25_pool_raw),
+        MemoryRecallReranker._hard_filter(embedding_pool_raw),
+    )
+
+
 async def hybrid_recall(
     *,
     lanlan_name: str,
@@ -1420,9 +1495,6 @@ async def hybrid_recall(
     )
     active_facts = active_facts or []
     active_reflections = active_reflections or []
-    archive_facts = _drop_archive_overlap(
-        archive_facts or [], active_facts, lanlan_name,
-    )
     # Persona entries the private render leaves out of the system prompt
     # (over its budget) are recallable like any other memory; the ones it
     # keeps are already in front of the model.
@@ -1437,46 +1509,22 @@ async def hybrid_recall(
             logger.debug("[hybrid_recall] persona residency skipped: %s", exc)
             persona_left_out = []
 
-    facts_tagged = _tag_tier(active_facts, 'fact')
-    refl_tagged = _tag_tier(active_reflections, 'reflection')
-    arch_tagged = _tag_tier(archive_facts, 'fact_archive')
-    persona_tagged = _tag_tier(persona_left_out, 'persona')
-
-    # Security boundary: scope filtering happens before any BM25/cosine/RRF
-    # scoring. A group caller never searches the private/global corpus and then
-    # hides results afterwards. With no subjects, missing scope keeps the legacy
-    # private behaviour; explicit subjects exclude legacy rows by default.
-    from memory.scopes import filter_entries_for_subjects
-    facts_tagged = filter_entries_for_subjects(
-        facts_tagged, subjects, include_legacy_private=include_legacy_private,
+    # Everything between loading and scoring is synchronous and linear in the
+    # pool (archive included): ~1 ms on a 1k-row keyword pool, ~130 ms at
+    # 100k rows. It runs in a worker thread on list snapshots taken here, in
+    # one synchronous step: some writers shrink FactStore's cached list in
+    # place from the event loop (``facts[:] = ...``), and a worker iterating
+    # the live list would silently skip untouched rows. Copying the pointers
+    # costs well under a millisecond even at 100k rows.
+    bm25_pool, embedding_pool = await asyncio.to_thread(
+        _prepare_recall_pools,
+        list(active_facts), list(active_reflections),
+        list(archive_facts or []), list(persona_left_out),
+        lanlan_name=lanlan_name,
+        subjects=subjects,
+        include_legacy_private=include_legacy_private,
+        time_window=time_window,
     )
-    refl_tagged = filter_entries_for_subjects(
-        refl_tagged, subjects, include_legacy_private=include_legacy_private,
-    )
-    arch_tagged = filter_entries_for_subjects(
-        arch_tagged, subjects, include_legacy_private=include_legacy_private,
-    )
-    persona_tagged = filter_entries_for_subjects(
-        persona_tagged, subjects, include_legacy_private=include_legacy_private,
-    )
-
-    # Joint semantic + time retrieval: given time_window, hard-filter candidate pool by event time
-    # before subsequent BM25/cosine scoring.
-    if time_window is not None:
-        ws, we = time_window
-        facts_tagged = [d for d in facts_tagged if _overlaps_window(d, ws, we)]
-        refl_tagged = [d for d in refl_tagged if _overlaps_window(d, ws, we)]
-        arch_tagged = [d for d in arch_tagged if _overlaps_window(d, ws, we)]
-        persona_tagged = [d for d in persona_tagged if _overlaps_window(d, ws, we)]
-
-    bm25_pool_raw = facts_tagged + refl_tagged + arch_tagged + persona_tagged
-    embedding_pool_raw = facts_tagged + refl_tagged + persona_tagged
-
-    # Hard filter (drop score<0 / suppressed / terminal reflection / protected).
-    # Imported lazily so a circular-import-safe boot path stays viable.
-    from memory.recall import MemoryRecallReranker
-    bm25_pool = MemoryRecallReranker._hard_filter(bm25_pool_raw)
-    embedding_pool = MemoryRecallReranker._hard_filter(embedding_pool_raw)
 
     # stop_names: strip master/neko nicknames so high-DF entity names do not
     # dominate BM25 IDF.

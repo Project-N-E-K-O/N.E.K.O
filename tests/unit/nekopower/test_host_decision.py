@@ -907,7 +907,17 @@ def test_every_prompt_table_sent_to_a_model_is_under_that_check():
         "TURN_CHECK_PROMPT",
         "PLUGIN_SHORT_DESCRIPTION_SYSTEM_PROMPT",
         "TASK_BRAIN_SIDE_QUESTION_PROMPT",
+        "ORCHESTRATOR_PROMPT",
     }
+
+
+def test_the_orchestrator_prompt_opens_as_the_free_tier_takes_it():
+    # One text for every language. Measured on the built-in free tier
+    # (2026-11-23): it takes the phrase followed by a comma, and turns away
+    # a prompt that ends the phrase with a full stop.
+    from config.prompts.prompts_nekopower_brain import ORCHESTRATOR_PROMPT
+
+    assert "automation assessment agent, " in ORCHESTRATOR_PROMPT.splitlines()[0]
 
 
 def test_the_short_description_prompt_opens_as_the_analyzers_did():
