@@ -20,6 +20,13 @@ on:
 permissions:
   contents: read
 
+# Each push, body edit or label change carries the PR's latest body and labels,
+# so only the newest run matters; label swaps by the review bot used to queue a
+# dozen identical runs per PR.
+concurrency:
+  group: pr-report-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   pr-report-gate:
     name: Require regression-report / no-split-rationale in PR body

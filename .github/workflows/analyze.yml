@@ -11,6 +11,11 @@ on:
 permissions:
   contents: read
 
+# A new push to a PR supersedes the old run; runs on main are never cancelled.
+concurrency:
+  group: analyze-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Five parallel jobs, split by concern so a failing check name points at a
 # category (expand it to see which step is red) instead of one giant title
