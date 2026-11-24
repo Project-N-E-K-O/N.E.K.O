@@ -5,9 +5,11 @@ import { createI18n } from 'vue-i18n'
 import ElementPlus, { ElMessageBox } from 'element-plus'
 import type { MessageBoxData } from 'element-plus'
 import ModelApi from './ModelApi.vue'
-import { modelApiMessages } from '@/i18n/model-api'
+import modelApiEnUs from '@/i18n/model-api/en-US'
 import { maskedKeyCopy, modelSlotForm, modelSlotPayload, needsModelKeyUpdate, temperatureLimit } from './model-api-form'
 import type { ModelSlot, ModelUsageResult } from '@/types/model-api'
+
+const modelApiMessages = { 'en-US': modelApiEnUs }
 
 const api = vi.hoisted(() => ({ listModelSlots: vi.fn(), createModelSlot: vi.fn(), updateModelSlot: vi.fn(), deleteModelSlot: vi.fn(), deleteModelBinding: vi.fn(), testModelSlot: vi.fn(), getModelUsage: vi.fn() }))
 vi.mock('@/api/models', () => api)

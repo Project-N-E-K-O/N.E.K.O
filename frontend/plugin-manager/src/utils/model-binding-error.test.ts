@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import { bindingErrorKey } from './model-binding-error'
-import { modelBindingErrors } from '@/i18n/model-binding-errors'
+import bindingErrorsZhCn from '@/i18n/model-binding-errors/zh-CN'
+import bindingErrorsJa from '@/i18n/model-binding-errors/ja'
 import { createI18n } from 'vue-i18n'
+
+const modelBindingErrors = { 'zh-CN': bindingErrorsZhCn, ja: bindingErrorsJa }
 
 describe('binding error localization', () => {
   it.each(['zh-CN', 'ja'] as const)('translates Axios conflict and unknown-result errors in %s', (locale) => {

@@ -1,8 +1,8 @@
 import pluginConsentMessages from '../plugin-consent/zh-TW'
-import { modelApiMessages } from '../model-api'
-import { modelBindingsMessages } from '../model-bindings'
-import { marketFeedbackMessages } from '../market-feedback'
-import { authoringMessages } from '../authoring'
+import modelApiMessages from '../model-api/zh-TW'
+import modelBindingsMessages from '../model-bindings/zh-TW'
+import marketFeedbackMessages from '../market-feedback/zh-TW'
+import authoringMessages from '../authoring/zh-TW'
 import powerMessages from '../power/zh-TW'
 
 /**
@@ -10,10 +10,10 @@ import powerMessages from '../power/zh-TW'
  */
 export default {
   pluginConsent: pluginConsentMessages,
-  authoring: authoringMessages['zh-TW'],
-  marketFeedback: marketFeedbackMessages['zh-TW'],
-  modelApi: modelApiMessages['zh-TW'],
-  modelBindings: modelBindingsMessages['zh-TW'],
+  authoring: authoringMessages,
+  marketFeedback: marketFeedbackMessages,
+  modelApi: modelApiMessages,
+  modelBindings: modelBindingsMessages,
   power: powerMessages,
   common: {
     chooseLanguage: "選擇語言",

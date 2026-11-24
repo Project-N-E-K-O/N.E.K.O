@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createApp, defineComponent, h, nextTick, ref } from 'vue'
+import { createApp, defineComponent, h, nextTick, reactive, ref } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import PluginDetail from './PluginDetail.vue'
 import type { PluginUiSurface } from '@/types/api'
@@ -222,6 +222,33 @@ describe('PluginDetail surface selection', () => {
     process.off('unhandledRejection', unhandled)
     warn.mockRestore()
     mounted.unmount()
+  })
+
+  it('sends no detail request when the route id is cleared on leave', async () => {
+    const originalRoute = routerMocks.route
+    const route = reactive({ params: { id: 'study_companion' } as { id?: string }, query: {} })
+    routerMocks.route = route as typeof routerMocks.route
+    try {
+      const mounted = await mountDetail([surface({ id: 'main' })])
+      apiMocks.getPlugin.mockClear()
+      apiMocks.getPlugins.mockClear()
+      apiMocks.getPluginStatus.mockClear()
+      apiMocks.getPluginUiSurfaceInfo.mockClear()
+
+      route.params = {}
+      for (let index = 0; index < 10; index += 1) {
+        await Promise.resolve()
+        await nextTick()
+      }
+
+      expect(apiMocks.getPlugin).not.toHaveBeenCalled()
+      expect(apiMocks.getPlugins).not.toHaveBeenCalled()
+      expect(apiMocks.getPluginStatus).not.toHaveBeenCalled()
+      expect(apiMocks.getPluginUiSurfaceInfo).not.toHaveBeenCalled()
+      mounted.unmount()
+    } finally {
+      routerMocks.route = originalRoute
+    }
   })
 
   it('keeps the detail card and its drafts mounted when only the locale changes', async () => {

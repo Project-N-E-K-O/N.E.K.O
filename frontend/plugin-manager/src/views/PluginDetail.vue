@@ -604,8 +604,12 @@ async function retrySurfaces() {
 }
 
 async function loadDetail() {
-  const generation = ++detailGeneration
   const currentPluginId = pluginId.value
+  // Leaving the route clears params.id while this view is still mounted, and
+  // the sync watch below fires first; an empty id must not reach the API
+  // (it would request /plugins/undefined).
+  if (!currentPluginId) return
+  const generation = ++detailGeneration
   const requestLocale = locale.value
   const isCurrent = () => detailMounted && generation === detailGeneration
     && currentPluginId === pluginId.value && requestLocale === locale.value
