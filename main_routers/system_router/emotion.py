@@ -976,7 +976,6 @@ async def emotion_analysis(request: Request):
             emotion_base_url,
             api_key,
             provider_type=emotion_provider_type,
-            temperature=0.3,
             # Gemini may return Markdown requiring more tokens.
             max_completion_tokens=EMOTION_ANALYSIS_MAX_TOKENS,
             timeout=30,

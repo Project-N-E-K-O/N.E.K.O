@@ -37,7 +37,8 @@ def _load(name: str) -> ModuleType:
 def test_nekopower_is_registered_in_every_directory_list() -> None:
     assert "nekopower" in _load("check_async_blocking").DEFAULT_PATHS
     assert "nekopower" in _load("check_startup_import_lazy").DEFAULT_PATHS
-    assert "nekopower" in _load("check_no_temperature").DEFAULT_PATHS
+    # Scans the whole repository, so every package is covered without a list.
+    assert _load("check_no_temperature").DEFAULT_PATHS == ["."]
     layering = _load("check_module_layering")
     # At the top of the stack: above the plugins it calls, below the entry
     # points that mount it.

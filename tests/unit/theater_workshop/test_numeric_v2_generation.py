@@ -3052,7 +3052,7 @@ def _capture_upstream_enhancement_request(generator, story, candidate, target):
     assert story == before
     assert len(calls) == 1
     assert calls[0][1] == {
-        "temperature": 0.3, "max_tokens": 4000, "max_retries": 1,
+        "max_tokens": 4000, "max_retries": 1,
         "response_format": {"type": "json_object"}, "thinking": {"type": "disabled"},
         "operation": "numeric_v2_node_enhancement",
     }

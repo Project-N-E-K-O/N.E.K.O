@@ -50,17 +50,10 @@ class ModelGroupConfig(BaseModel):
         ),
     )
     model: str = Field(default="", description="Model name to send in request body.")
-    temperature: float | None = Field(
-        default=None,
-        ge=0.0,
-        le=2.0,
-        description=(
-            "Optional sampling temperature. ``None`` means \"do not send a"
-            " temperature field in the request body\" — required for models"
-            " that reject the parameter entirely (o1 / o3 / gpt-5-thinking /"
-            " Claude extended-thinking). UI exposes an empty input = None."
-        ),
-    )
+    # No temperature field: no code in the repository sets one, the provider
+    # default applies (scripts/check_no_temperature.py). A ``temperature`` key
+    # in an older saved config is ignored on load (pydantic's default
+    # ``extra="ignore"``).
     max_tokens: int | None = Field(
         default=None,
         ge=1,
@@ -94,7 +87,6 @@ class ModelGroupConfig(BaseModel):
             "provider": self.provider,
             "base_url": self.base_url,
             "model": self.model,
-            "temperature": self.temperature,
             "max_tokens": self.max_tokens,
             "timeout": self.timeout,
             "api_key_configured": bool(self.api_key),

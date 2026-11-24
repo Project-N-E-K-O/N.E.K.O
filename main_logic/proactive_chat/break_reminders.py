@@ -376,7 +376,6 @@ async def _deliver_break_reminder_via_llm(
                 chat_base_url,
                 chat_api_key,
                 provider_type=chat_provider_type,
-                temperature=1.0,
                 max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                 streaming=True,
                 timeout=timeout_seconds,
@@ -510,7 +509,6 @@ async def _deliver_break_reminder_via_llm(
                     chat_base_url,
                     chat_api_key,
                     provider_type=chat_provider_type,
-                    temperature=1.0,
                     max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                     timeout=regen_timeout,
                 ) as regen_llm:

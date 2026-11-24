@@ -468,7 +468,7 @@ async def structured_json_completion(cfg, system_prompt, content, job, validate,
                 bounded.append(block)
         client = await create_chat_llm_async(model=cfg['model'], api_key=cfg.get('api_key'),
             base_url=cfg.get('base_url'), provider_type=cfg.get('provider_type'),
-            temperature=0.65, timeout=120, max_retries=0, max_completion_tokens=max_completion_tokens)
+            timeout=120, max_retries=0, max_completion_tokens=max_completion_tokens)
         try:
             response = await client.ainvoke(
                 [{"role":"system", "content":system_prompt},

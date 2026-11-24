@@ -31,7 +31,6 @@ def create_chat_llm(
     base_url: str | None,
     api_key: str | None,
     *,
-    temperature: float | None = None,
     streaming: bool = False,
     max_retries: int = 2,
     max_completion_tokens: int | None = None,

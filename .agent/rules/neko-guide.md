@@ -11,8 +11,8 @@ trigger: always_on
 - 使用 `uv run` 来运行本项目的任何 Python 程序（pytest、脚本等），不要直接用系统 Python。原因：pyproject.toml 限制了 Python 版本（3.11），uv 会自动选择合适版本并管理虚拟环境。
 - 任何涉及用户隐私（原始对话）的 log 只能用 `print` 输出，不得使用 `logger`。
 - 翻译 system prompt 时，即使出于其他原因也应当保留 `======以上为`，这是一个水印。
+- **不要给模型调用设置 `temperature`（全仓库，CI 必拦）**：任何代码都不设采样温度，让各家模型用自己的默认值。包括关键字参数 `temperature=`、请求体／`extra_body`／`generation_config` 里的 `"temperature"` 键、名为 `temperature` 的函数参数、`.temperature = ...` 赋值和配置类里的 `temperature` 字段；`create_chat_llm` / `ChatOpenAI` / `ChatAnthropic` 也已没有这个参数。理由：(1) o1/o3/gpt-5-thinking/Claude extended-thinking 拒收该字段；(2) 各处自定温度会引入难复现的回归。守门：`scripts/check_no_temperature.py` 扫全仓库（CI 见 `.github/workflows/analyze.yml`）。例外只在脚本的 `EXEMPTIONS` 里逐条写理由（目前只有插件模型网关转发插件／用户给的值，以及天气插件的气温字段）。
 - **辅助 LLM 调用约定（memory/ + utils/）**：
-  - **不下发 `temperature`**：所有 `utils.llm_client.create_chat_llm` / `ChatOpenAI` 及其包装 helper 一律不传 `temperature=...`，默认 `None` 表示"不写进请求体"。理由：(1) 兼容 o1/o3/gpt-5-thinking/Claude extended-thinking；(2) 各 task 自定温度会引入难复现的回归。守门：`scripts/check_no_temperature.py`（CI 见 `.github/workflows/analyze.yml`）。
   - **每个 LLM 调用必须有 budget + timeout（硬性，全仓生效）**：
     - **输出**：每个 `create_chat_llm()` / `ChatOpenAI()` 构造都必须带 **token budget**（`max_completion_tokens=` 或 `max_tokens=`）**和** `timeout=`（或 `request_timeout=`）。没有 budget 输出会失控（成本 / 延迟 / 上下文爆炸），没有 timeout 上游卡死会拖垮整条 async 管线——两者在 `utils/llm_client.py` 都**没有安全默认值**。若 budget/timeout 改在 **调用时** per-call 设（`invoke/ainvoke/astream/..(**overrides)`、或裸 `_client.chat.completions.create()`、或 `asyncio.timeout()/wait_for()` 包裹），**或藏在 `**kwargs` splat 里**（lint 看不到 splat 内容），在构造行加 `# noqa: LLM_OUTPUT_BUDGET` 并注明理由。
     - **输入**：每条拼进 `messages` 的字符串都要先过 token budget（`truncate_to_tokens` / `truncate_head_tail_tokens` / `*_MAX_TOKENS` 常量，见 `docs/design/llm-prompt-budget.md`）。lint 用启发式检查"调用所在函数里有没有 budget 痕迹"，故意保守、会有误报；确实不该 cap 的（用户配置 / OS 窗口标题等"咎由自取"项，见 §6）用 `# noqa: LLM_INPUT_BUDGET` 并注明理由。

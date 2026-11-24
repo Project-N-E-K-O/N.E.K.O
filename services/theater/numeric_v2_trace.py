@@ -116,8 +116,7 @@ async def invoke_with_trace(client: Any, messages: list[Any], *, stage: str,
     started_at = time.monotonic()
     try:
         trace_event("model.request", call_id=call_id, stage=stage, model=getattr(client, "model", None),
-                    max_completion_tokens=getattr(client, "max_completion_tokens", None),
-                    temperature=getattr(client, "temperature", None), **request_options,
+                    max_completion_tokens=getattr(client, "max_completion_tokens", None), **request_options,
                     messages=[{"role": m.role, "content": m.content} if not isinstance(m, dict)
                               else {"role": m.get("role"), "content": m.get("content")} for m in messages])
     except Exception as exc:

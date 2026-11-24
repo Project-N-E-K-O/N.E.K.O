@@ -104,13 +104,13 @@ jobs:
         # Electron's desktopCapturer region path.
         run: python scripts/check_no_tkinter.py
 
-      - name: Forbid `temperature=` kwargs on LLM client calls (memory + utils)
-        # Project policy: do NOT pass `temperature=` to create_chat_llm /
-        # ChatOpenAI / wrappers in memory_server.py + memory/ + utils/. The
-        # default (None) omits the field — required for o1/o3/gpt-5-thinking/
-        # Claude extended-thinking, and avoids per-call-site temperature drift
-        # across memory tasks. See memory/__init__.py and .agent/rules/
-        # neko-guide.md for the rationale.
+      - name: Forbid setting a model temperature anywhere in the repository
+        # Project policy: no code in the repository sets a sampling
+        # temperature (keyword, parameter, request-body key, attribute or
+        # schema field); every provider uses its own default. Required for
+        # o1/o3/gpt-5-thinking/Claude extended-thinking, and avoids
+        # per-call-site temperature drift. Exemptions are listed with their
+        # reasons in the script. See .agent/rules/neko-guide.md.
         run: python scripts/check_no_temperature.py
 
       - name: Keep heavy SDKs off the startup import chain (lazy-import contract)

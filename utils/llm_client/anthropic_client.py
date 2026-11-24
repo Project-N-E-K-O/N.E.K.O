@@ -714,7 +714,6 @@ _ANTHROPIC_BODY_OVERRIDE_KEYS = {
     "metadata",
     "stop_sequences",
     "system",
-    "temperature",
     "thinking",
     "top_k",
     "top_p",
@@ -765,7 +764,6 @@ class ChatAnthropic:
         model: str = "",
         base_url: str | None = None,
         api_key: str | None = None,
-        temperature: float | None = None,
         streaming: bool = False,
         max_retries: int = 2,
         extra_body: dict | None = None,
@@ -787,7 +785,6 @@ class ChatAnthropic:
                 raise RuntimeError("anthropic package is required for Anthropic-compatible providers") from exc
         self.model = model
         self.base_url = _normalize_anthropic_sdk_base_url(base_url)
-        self.temperature = temperature
         self.extra_body = dict(extra_body) if extra_body else {}
         self._max_tokens = _coerce_anthropic_max_tokens(
             max_tokens if max_tokens is not None else max_completion_tokens
@@ -843,8 +840,6 @@ class ChatAnthropic:
         if system:
             payload["system"] = system
         payload["max_tokens"] = int(self.max_tokens)
-        if self.temperature is not None:
-            payload["temperature"] = self.temperature
         if include_default_extra_body and self.extra_body:
             _apply_anthropic_body_fields(payload, self.extra_body)
         anthropic_tools = _convert_openai_tools_to_anthropic(self.tools)
