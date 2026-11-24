@@ -6808,7 +6808,7 @@
     }
 
     function showPendingBuiltinTemplateLicense() {
-        if (!builtinLicenseStartupPending || exportEditingLock) return;
+        if (!builtinLicenseStartupPending || exportEditingLock || $('#emote-confirm')?.hidden === false) return;
         builtinLicenseStartupPending = false;
         if (builtinTemplates.size && !builtinLicenseAcknowledged) void requestBuiltinTemplateLicense();
     }
@@ -7118,6 +7118,7 @@
                 document.removeEventListener('keydown', onKey, true);
                 if (previousFocus?.isConnected) previousFocus.focus();
                 resolve(value);
+                showPendingBuiltinTemplateLicense();
             };
             const onOk = () => done(true);
             const onCancel = () => done(false);

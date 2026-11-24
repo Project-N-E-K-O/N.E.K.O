@@ -201,6 +201,40 @@ def test_startup_license_waits_for_resource_selection(page, running_server, choi
     assert downloads == []
 
 
+@pytest.mark.parametrize("choice", ["cancel", "delete"])
+def test_startup_license_waits_for_delete_confirmation(page, running_server, choice):
+    pending = []
+    downloads = _builtin(page, deferred=pending)
+    page.goto(running_server + "/emote_maker", wait_until="domcontentloaded")
+    page.set_input_files("#template-archive-file", {
+        "name": "own.zip", "mimeType": "application/zip", "buffer": spine_zip(),
+    })
+    own = page.locator('.template-lib-card:not([data-template-built-in])')
+    expect(own).to_have_count(1)
+    own.locator(".template-lib-remove").click()
+    confirm = page.locator("#emote-confirm")
+    expect(confirm).to_be_visible()
+    assert len(pending) == 1
+    pending[0]()
+    expect(page.locator('[data-template-built-in="true"]')).to_have_count(1)
+    dialog = page.locator("#builtin-template-license")
+    expect(dialog).to_be_hidden()
+    expect(page.locator("#emote-confirm-ok")).to_be_focused()
+    if choice == "cancel":
+        page.keyboard.press("Tab")
+        expect(page.locator("#emote-confirm-cancel")).to_be_focused()
+    page.keyboard.press("Enter")
+    expect(confirm).to_be_hidden()
+    expect(own).to_have_count(1 if choice == "cancel" else 0)
+    expect(dialog).to_be_visible()
+    page.locator("#builtin-license-acknowledge").focus()
+    page.keyboard.press("Enter")
+    expect(dialog).to_be_hidden()
+    page.locator('[data-template-built-in="true"] .template-lib-open').click()
+    expect(page.locator('.template-lib-card.is-selected')).to_have_attribute('data-template-built-in', 'true')
+    assert len(downloads) == 1
+
+
 def test_empty_builtin_list_does_not_show_a_deferred_prompt(page, running_server):
     pending = []
     _builtin(page, deferred=pending)
