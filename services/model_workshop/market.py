@@ -31,20 +31,19 @@ _ACCOUNT_FILE = Path.home() / ".neko" / "market_auth.json"
 
 
 def _account_witness():
-    """Reuse the persisted OAuth session identity; refreshes do not create a login."""
-    for attempt in range(3):
-        try:
-            data = read_json(_ACCOUNT_FILE, 64 * 1024)
-            if data is None:
-                return None
-            keys = ("session_id", "subject", "client_id", "auth_url")
-            if not isinstance(data, dict) or any(data.get(key) is not None and not isinstance(data[key], str) for key in keys):
-                raise WorkshopError("market_auth_required")
-            return tuple(data.get(key) for key in keys)
-        except (OSError, WorkshopError, ValueError) as error:
-            # Atomic token refresh can replace the file while it is being read.
-            if attempt == 2:
-                raise WorkshopError("market_auth_required") from error
+    """Read the login session, excluding token refresh and pending subject discovery."""
+    try:
+        data = read_json(_ACCOUNT_FILE, 64 * 1024)
+        if data is None:
+            return None
+        keys = ("session_id", "client_id", "auth_url")
+        if any(data.get(key) is not None and not isinstance(data[key], str) for key in keys):
+            raise ValueError("invalid account session")
+        return tuple(data.get(key) for key in keys)
+    except (OSError, WorkshopError, ValueError) as error:
+        # OAuth currently truncates then rewrites this file. A temporary read
+        # failure refuses this request; normal polling can retry after the write.
+        raise WorkshopError("market_auth_pending") from error
 
 
 def _witness(config):
@@ -70,6 +69,7 @@ class Connection:
     ready: bool = True
     error: str | None = None
     running: bool = False
+    account: tuple | None = None
 
 
 @dataclass
@@ -79,7 +79,6 @@ class Launch:
     character_id: str
     witness: tuple
     expires: float
-    account: tuple | None = None
     phase: str = "browsing"
     selection: tuple | None = None
     task_id: str | None = None
@@ -99,12 +98,12 @@ class Launch:
         """Cancellation ends an operation; role/edit conflicts revoke its whole pairing."""
         if self.connection.error:
             raise WorkshopError(self.connection.error)
-        try:
-            if _account_witness() != self.account:
-                raise WorkshopError("market_auth_required")
-        except WorkshopError:
+        account = _account_witness()  # Unreadable is transient, never proof of logout.
+        if self.connection.account is None:
+            self.connection.account = account  # Bind the first login across all operations.
+        elif account != self.connection.account:
             self.connection.error = "market_auth_required"
-            raise
+            raise WorkshopError("market_auth_required")
         if time.monotonic() >= self.expires:
             raise WorkshopError("model_market_expired")
         if self.operation_id != self.connection.current:
@@ -162,7 +161,7 @@ class Launches:
         if not name or not character_id:
             raise WorkshopError("model_market_target_changed")
         row = Launch(secrets.token_urlsafe(24), name, character_id,
-                     _witness(config), now + TTL, account=_account_witness())
+                     _witness(config), now + TTL, connection=Connection(account=_account_witness()))
         self.items[row.request_id] = row
         return row
 
@@ -216,7 +215,7 @@ class Launches:
         if row.operation_id is not None:
             # Each worker keeps its own object; late completion cannot overwrite its successor.
             row = Launch(row.request_id, row.name, row.character_id, row.witness,
-                         row.expires, account=row.account, connection=row.connection)
+                         row.expires, connection=row.connection)
         row.operation_id = operation_id
         row.connection.current = operation_id
         row.connection.ready = False

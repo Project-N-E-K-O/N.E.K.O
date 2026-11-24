@@ -183,7 +183,7 @@ def test_nonstandard_motion_reports_compatibility_without_rewriting(tmp_path, va
     before = path.read_bytes()
     result = validator(path)
     assert result.compatibility_warning_count == 2
-    assert result.compatibility_warnings == (
+    assert tuple(item.as_dict() for item in result.compatibility_warnings) == (
         {"code": "live2d_motion_count_mismatch", "path": "motions/test.motion3.json"},
         {"code": "live2d_unknown_motion_target", "path": "motions/test.motion3.json"},
     )
@@ -202,7 +202,7 @@ def test_empty_curve_in_an_otherwise_playable_motion_reports_compatibility(tmp_p
     before = path.read_bytes()
     result = validator(path)
     assert result.compatibility_warning_count == 1
-    assert result.compatibility_warnings == (
+    assert tuple(item.as_dict() for item in result.compatibility_warnings) == (
         {"code": "live2d_empty_motion_curve", "path": "motions/test.motion3.json"},
     )
     assert path.read_bytes() == before
@@ -252,8 +252,8 @@ def test_motion_compatibility_report_is_bounded_and_keeps_total(tmp_path):
         files[f"motions/{index:03}.motion3.json"] = json.dumps(motion).encode()
     result = validate_model_bundle(make_native_bundle(tmp_path, files=files))
     assert result.compatibility_warning_count == 101
-    assert len(result.compatibility_warnings) == 100
-    assert result.compatibility_warnings[-1]["path"] == "motions/099.motion3.json"
+    assert len(tuple(item.as_dict() for item in result.compatibility_warnings)) == 100
+    assert tuple(item.as_dict() for item in result.compatibility_warnings)[-1]["path"] == "motions/099.motion3.json"
 
 
 
@@ -316,7 +316,7 @@ def test_missing_optional_effect_warns_without_changing_the_package(tmp_path, fi
     path = make_native_bundle(tmp_path, files=files)
     before = path.read_bytes()
     result = validate_model_bundle(path)
-    assert result.compatibility_warnings == ({"code": "live2d_optional_resource_unavailable", "path": missing},)
+    assert tuple(item.as_dict() for item in result.compatibility_warnings) == ({"code": "live2d_optional_resource_unavailable", "path": missing},)
     assert path.read_bytes() == before
 
 
@@ -332,7 +332,7 @@ def test_command_only_motion_entries_are_preserved_with_one_compatibility_notice
     path = make_native_bundle(tmp_path, files=files)
     before = path.read_bytes()
     result = validate_model_bundle(path)
-    assert result.compatibility_warnings == ({"code": "live2d_unsupported_tool_effect", "path": "Avatar.model3.json"},)
+    assert tuple(item.as_dict() for item in result.compatibility_warnings) == ({"code": "live2d_unsupported_tool_effect", "path": "Avatar.model3.json"},)
     assert path.read_bytes() == before
 
 
@@ -353,7 +353,7 @@ def test_third_party_physics_config_is_safe_data_and_reports_unsupported_effects
         expected.append({"code": "live2d_optional_resource_unavailable", "path": "missing.json"})
     if isinstance(physics, dict):
         expected.append({"code": "live2d_unsupported_tool_effect", "path": "Avatar.model3.json"})
-    assert list(result.compatibility_warnings) == expected
+    assert list(tuple(item.as_dict() for item in result.compatibility_warnings)) == expected
     assert path.read_bytes() == before
 
 
@@ -424,7 +424,7 @@ def test_optional_motion_with_a_safe_but_incompatible_url_warns(tmp_path, refere
     model["FileReferences"]["Motions"] = {"Idle": [{"File": reference}]}
     files["Avatar.model3.json"] = json.dumps(model).encode()
     result = validate_model_bundle(make_native_bundle(tmp_path, files=files))
-    assert result.compatibility_warnings == ({"code": "live2d_optional_resource_unavailable", "path": reference},)
+    assert tuple(item.as_dict() for item in result.compatibility_warnings) == ({"code": "live2d_optional_resource_unavailable", "path": reference},)
 
 
 @pytest.mark.parametrize("reference", ["../outside.json", "%2e%2e/outside.json", "x/%2e%2e/%2e%2e/outside.json",
@@ -1115,7 +1115,7 @@ def test_damaged_optional_physics_warns_without_rewriting_the_model(tmp_path, da
     else: setting["Input"][0]["Weight"] = "invalid"
     files["Avatar.physics3.json"] = json.dumps(data).encode()
     result = validate_model_bundle(make_native_bundle(tmp_path, files=files))
-    assert {"code": "live2d_optional_resource_unavailable", "path": "Avatar.physics3.json"} in result.compatibility_warnings
+    assert {"code": "live2d_optional_resource_unavailable", "path": "Avatar.physics3.json"} in tuple(item.as_dict() for item in result.compatibility_warnings)
 
 
 def test_old_pmd_without_toon_table_cannot_invent_a_shared_toon(tmp_path):
@@ -1123,3 +1123,68 @@ def test_old_pmd_without_toon_table_cannot_invent_a_shared_toon(tmp_path):
     with pytest.raises(ModelFormatError):
         validate_model_bundle(make_native_bundle(tmp_path, kind="mmd", entry=main,
             files={main: pmd_bytes("", toon=0)}))
+
+
+@pytest.mark.parametrize("offset,valid", [(0, True), (4, True), (8, False), (12, False)])
+def test_interleaved_accessor_checks_allocation_and_last_element(tmp_path, offset, valid):
+    def graph(data):
+        vrm_graph(data)
+        data['bufferViews'][1].update(byteStride=16, byteLength=32)
+        data['accessors'] = [{'bufferView': 1, 'componentType': 5126, 'type': 'VEC3', 'byteOffset': offset, 'count': 2}]
+        data['animations'] = []; data['skins'] = []; data['nodes'][0].pop('skin')
+        data['meshes'] = [{'primitives': [{'attributes': {'POSITION': 0}}]}]
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
+    if valid:
+        assert validate_model_bundle(path).model_format == 'vrm'
+    else:
+        with pytest.raises(ModelFormatError): validate_model_bundle(path)
+
+
+@pytest.mark.parametrize('fps', [1e300, 1e9, -1, 'invalid'])
+def test_physics_fps_cannot_exhaust_the_main_thread(tmp_path, fps):
+    files = live2d_files()
+    files['Avatar.physics3.json'] = json.dumps({'Version': 3, 'Meta': {'Fps': fps, 'PhysicsSettingCount': 0}, 'PhysicsSettings': []}).encode()
+    with pytest.raises(ModelFormatError): validate_model_bundle(make_native_bundle(tmp_path, files=files))
+
+
+@pytest.mark.parametrize('case', ['valid', 'index', 'shape', 'count', 'budget', 'primitives'])
+def test_gpu_instances_validate_attributes_and_per_node_matrix_budget(tmp_path, case):
+    def graph(data):
+        vrm_graph(data)
+        data['animations'] = []; data['skins'] = []; data['nodes'][0].pop('skin')
+        data['accessors'].append({'componentType': 5126, 'type': 'VEC3', 'count': 4})
+        attrs = {'TRANSLATION': 3}
+        if case == 'index': attrs['TRANSLATION'] = 999
+        elif case == 'shape': data['accessors'][3]['type'] = 'SCALAR'
+        elif case == 'count': attrs['SCALE'] = 1
+        data['meshes'] = [{'primitives': [{'attributes': {'POSITION': 1}}] * (2 if case == 'primitives' else 1)}]
+        data['nodes'][0].update(mesh=0, extensions={'EXT_mesh_gpu_instancing': {'attributes': attrs}})
+        if case == 'budget': data['nodes'].append(dict(data['nodes'][0]))
+        data['extensionsUsed'].append('EXT_mesh_gpu_instancing')
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
+    if case == 'valid':
+        assert validate_model_bundle(path, format_limits=FormatLimits(vrm_accessor_bytes=512)).model_format == 'vrm'
+    else:
+        with pytest.raises(ModelFormatError): validate_model_bundle(path, format_limits=FormatLimits(vrm_accessor_bytes=512))
+
+
+@pytest.mark.parametrize('case', ['vrm0_texture', 'missing_source'])
+def test_vrm_texture_dependencies_must_be_loadable(tmp_path, case):
+    def graph(data):
+        vrm_graph(data)
+        if case == 'missing_source': data['textures'][0].pop('source')
+        else: data['extensions']['VRM']['materialProperties'] = [{'textureProperties': {'_MainTex': 99}}]
+    raw = vrm_bytes(version='0.0' if case == 'vrm0_texture' else '1.0', change=graph)
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': raw})
+    with pytest.raises(ModelFormatError): validate_model_bundle(path)
+
+
+def test_compatibility_warnings_are_frozen_and_bundle_remains_hashable(tmp_path):
+    from dataclasses import FrozenInstanceError
+    files = live2d_files()
+    model = json.loads(files['Avatar.model3.json']); model['FileReferences']['Physics'] = 'missing.physics3.json'
+    files['Avatar.model3.json'] = json.dumps(model).encode()
+    bundle = validate_model_bundle(make_native_bundle(tmp_path, files=files))
+    assert hash(bundle) == hash(bundle)
+    warning = bundle.compatibility_warnings[0]
+    with pytest.raises(FrozenInstanceError): warning.code = 'changed'

@@ -290,3 +290,11 @@ def test_read_queries_and_mutations_apply_the_current_runtime_root(owned, tmp_pa
         state.record_for(new_root / row["local_entrypoint"])["install_id"]
         == row["install_id"]
     )
+
+
+@pytest.mark.parametrize('name', ['100%FF', '100%20literal', 'normal'])
+def test_raw_model_identifier_is_not_url_decoded(owned, name):
+    row = {'model_format': 'vrm', 'target': 'vrm/' + name + '.vrm', 'local_entrypoint': 'vrm/' + name + '.vrm'}
+    state = runtime.Snapshot(owned.paths, records=(row,))
+    assert state.identifier('vrm', name) == row
+    assert state.identifier('mmd', name) is None

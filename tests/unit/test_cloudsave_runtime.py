@@ -5775,3 +5775,24 @@ def test_keyed_write_bookkeeping_names_match_the_memory_server():
     assert set(KEYED_WRITE_BOOKKEEPING_FILENAMES) == {idempotency.IDEMPOTENCY_KEYS_FILENAME}
     assert KEYED_WRITE_TOMBSTONES_FILENAME == idempotency.TOMBSTONES_FILENAME
     assert KEYED_WRITE_STAGING_DIRNAME == idempotency.STAGING_DIRNAME
+
+
+@pytest.mark.parametrize('state', ['pending', 'unreadable'])
+def test_legacy_bootstrap_preserves_old_root_with_unfinished_workshop(tmp_path, state):
+    from utils.cloudsave_runtime import import_legacy_runtime_root_if_needed
+    from utils.model_workshop_storage import inspect_model_workshop_metadata
+    cm = _make_config_manager(tmp_path / 'new')
+    cm.app_docs_dir.mkdir(parents=True, exist_ok=True)
+    old = tmp_path / 'old'; workshop = old / 'model_workshop'; workshop.mkdir(parents=True)
+    if state == 'pending':
+        transactions = workshop / 'transactions'; transactions.mkdir()
+        (transactions / ('a' * 32 + '.json')).write_text('{}', encoding='utf-8')
+    else:
+        (workshop / 'installed.json').write_text('{', encoding='utf-8')
+    cm.get_legacy_app_root_candidates = lambda: [old]
+    before = {str(p.relative_to(old)): p.read_bytes() for p in old.rglob('*') if p.is_file()}
+    result = import_legacy_runtime_root_if_needed(cm)
+    assert not result['migrated'] and result['result'].startswith('legacy_root_model_workshop_')
+    assert not (cm.app_docs_dir / 'model_workshop').exists()
+    assert inspect_model_workshop_metadata(cm.app_docs_dir) is None
+    assert {str(p.relative_to(old)): p.read_bytes() for p in old.rglob('*') if p.is_file()} == before

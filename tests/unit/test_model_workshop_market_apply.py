@@ -21,6 +21,35 @@ from utils.character_memory import character_config_mutation_lock
 
 
 @pytest.mark.asyncio
+async def test_active_live2d_literal_percent_name_skips_save_and_voice_checks(application, owner, no_network, tmp_path, monkeypatch):
+    from tests.unit.test_model_workshop_formats import live2d_files, make_native_bundle
+
+    _, config = application
+    files = live2d_files()
+    entry = 'Avatar%20name.model3.json'
+    files[entry] = files.pop('Avatar.model3.json')
+    path = make_native_bundle(tmp_path, entry=entry, files=files)
+    record = install(owner, path)['result']
+    async with main_character_runtime(config, {NAME: 'idle', OTHER: 'idle'}) as harness:
+        shared_state.init_shared_state(role_state=harness.module.role_state, config_manager=config,
+                                       steamworks=None, templates=None, init_one_catgirl=harness.module.init_one_catgirl)
+        first = Launches().create(config)
+        first.result, first.phase = _public_result(config, record), 'installed'
+        await apply_installed(config, first)
+        second = Launches().create(config)
+        second.result, second.phase = _public_result(config, record), 'installed'
+        before = config.get_runtime_config_path('characters.json').read_bytes()
+
+        def unexpected():
+            raise AssertionError('already-active choice must precede voice checks')
+
+        monkeypatch.setattr(shared_state, 'get_session_manager', unexpected)
+        await apply_installed(config, second)
+        assert second.phase == 'completed' and second.result['already_active']
+        assert config.get_runtime_config_path('characters.json').read_bytes() == before
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('kind', ['live2d', 'vrm', 'pmx', 'pmd'])
 async def test_installed_selection_saves_without_manual_button(application, owner, no_network, tmp_path, kind):
     _, config = application

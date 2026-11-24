@@ -184,5 +184,34 @@ def test_atomic_account_file_refresh_retries_without_revoking_the_connection(con
         return value
     monkeypatch.setattr(market, "read_json", read)
     row = market.Launches().create(config)
+    with pytest.raises(WorkshopError, match="market_auth_pending"):
+        row.check(config)
+    assert row.connection.error is None
     row.check(config)
-    assert count == 3 and row.connection.error is None
+    assert count == 3
+
+
+@pytest.mark.parametrize('pending', [False, True])
+def test_connection_binds_the_first_login_and_accepts_subject_confirmation(config, tmp_path, monkeypatch, pending):
+    path = tmp_path / 'auth.json'; monkeypatch.setattr(market, '_ACCOUNT_FILE', path)
+    session = {'session_id': 'same-login', 'subject': None, 'client_id': 'desktop', 'auth_url': 'https://auth.test'}
+    if pending: path.write_text(json.dumps(session))
+    launches = market.Launches(); row = launches.create(config)
+    session['subject'] = 'verified-user'; path.write_text(json.dumps(session))
+    row.check(config)
+    # The first login belongs to the pairing, including later operation objects.
+    second, _ = launches.select(config, row.request_id, 1, 'a' * 64, 1, OPERATION)
+    assert second.connection is row.connection
+    path.unlink()
+    with pytest.raises(WorkshopError, match='market_auth_required'): second.check(config)
+
+
+def test_transient_nonatomic_token_write_does_not_permanently_revoke_pairing(config, tmp_path, monkeypatch):
+    path = tmp_path / 'auth.json'; monkeypatch.setattr(market, '_ACCOUNT_FILE', path)
+    path.write_text(json.dumps({'session_id': 'login', 'subject': 'user'}))
+    row = market.Launches().create(config)
+    path.write_text('{')
+    with pytest.raises(WorkshopError): row.check(config)
+    assert row.connection.error is None
+    path.write_text(json.dumps({'session_id': 'login', 'subject': 'user'}))
+    row.check(config)

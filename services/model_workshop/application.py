@@ -45,7 +45,9 @@ async def apply_installed(config, launch: Launch):
         # Live2D persistence deliberately strips the URL prefix; use its existing
         # catalog normalization while retaining the source check against name collisions.
         if kind == "live2d":
-            normalized = unquote(models._normalize_live2d_catalog_path(current_path))
+            normalized = models._normalize_live2d_catalog_path(current_path)
+            if isinstance(current_path, str) and (current_path.startswith("/") or "://" in current_path):
+                normalized = unquote(normalized)
             # The existing API also persists a bare managed directory identity.
             same_path = normalized in {result["name"], unquote(models._normalize_live2d_catalog_path(result["url"]))}
         else:

@@ -303,13 +303,21 @@ class Installer:
                 commit_gate()  # Atomically wins/loses against a concurrent cancel request.
                 # Persist the current logical attempt before recording publication intent.
                 # An older completed row must not claim this reinstall if its commit fails.
-                self.registry.save(state["installed"], attempts)
                 journal["phase"] = "committing"
+                self.registry.save(state["installed"], attempts)
                 journal["object_identity"] = identity(source)
                 self.save_journal(
                     journal
                 )  # Durable identity evidence precedes any visible resource.
-                self._publish(source, target, record)
+                try:
+                    self._publish(source, target, record)
+                except BaseException:
+                    if not os.path.lexists(target):
+                        try:
+                            self._discard_unpublished(journal, state["installed"], attempts)
+                        except (OSError, WorkshopError):
+                            pass  # Failed cleanup retains evidence for recovery.
+                    raise
                 if identity(target) != journal["object_identity"]:
                     raise WorkshopError("model_workshop_recovery_conflict")
             versions = self.verify_resources(record, target)
@@ -332,8 +340,11 @@ class Installer:
         record = journal["record"]
         if record:
             digest = record["package_sha256"]
-            if digest not in rows and attempts.get(digest) == journal["task_id"]:
-                attempts.pop(digest)
+            if attempts.get(digest) == journal["task_id"]:
+                if digest in rows:
+                    attempts[digest] = rows[digest]["install_id"]
+                else:
+                    attempts.pop(digest)
                 self.registry.save(rows, attempts)
         self.cleanup_private_stage(journal)
 
