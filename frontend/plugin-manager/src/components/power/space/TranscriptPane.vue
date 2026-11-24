@@ -169,18 +169,18 @@ async function open(entry: TranscriptEntry) {
 async function search() {
   const words = query.value.trim()
   if (!words) return
-  const session = props.sessionId
+  // Another search, or another familiar (which ends this one), makes what this one finds stale.
   const mine = ++searchTurn
   searching.value = true
   try {
-    const answer = await searchTranscript(session, words)
-    if (mine !== searchTurn || session !== props.sessionId) return
+    const answer = await searchTranscript(props.sessionId, words)
+    if (mine !== searchTurn) return
     found.value = answer
     shownHit.value = null
     hitEntry.value = null
     error.value = ''
   } catch (failure) {
-    if (mine === searchTurn && session === props.sessionId) error.value = describeConsoleError(failure, t, te)
+    if (mine === searchTurn) error.value = describeConsoleError(failure, t, te)
   } finally {
     if (mine === searchTurn) searching.value = false
   }

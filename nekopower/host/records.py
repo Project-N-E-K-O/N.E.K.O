@@ -525,12 +525,8 @@ def search_page(path: Path, query: str, *, hits: int, excerpt_tokens: int, max_b
     try:
         with handle:
             size = os.fstat(handle.fileno()).st_size
+            # Where that is in the middle of a line, the rest of that line is no JSON and is passed over.
             begin = max(0, size - max_bytes)
-            handle.seek(begin)
-            if begin and not _at_line_start(handle, begin):
-                # In the middle of a line: looked through from the next one.
-                handle.seek(begin)
-                begin += len(handle.readline())
             handle.seek(begin)
             place = begin
             for raw in handle:

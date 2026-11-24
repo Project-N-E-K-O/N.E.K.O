@@ -1152,9 +1152,9 @@ describe('several familiars at work in one project', () => {
     const later = [
       entry('started', { ...kid }), entry('not_landed', { ...kid }), entry('ended', { ...kid, detail: { outcome: 'blocked' } }),
       entry('started', { session_id: 'kid', commission_id: 'k2' }), entry('tree_kept', { ...kid }), entry('landing_held', { ...kid }),
+      entry('not_landed', { ...kid }), entry('landing_conflict', { ...kid }),
     ]
-    expect(sceneAt(later, 4).get('kid')?.look).toBe('working')
-    expect(sceneAt(later, 5).get('kid')?.look).toBe('working')
+    for (const at of [4, 5, 6, 7]) expect(sceneAt(later, at).get('kid')?.look).toBe('working')
     // Ended otherwise: at rest, whatever it was before.
     const done = [entry('started', { ...kid }), entry('landing_conflict', { ...kid }), entry('ended', { ...kid, detail: { outcome: 'failed' } })]
     expect(sceneAt(done, 2).get('kid')?.look).toBe('idle')
