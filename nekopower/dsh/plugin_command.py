@@ -340,10 +340,12 @@ def render_sh(*, root: Path, executable: Path, leading: tuple[str, ...], profile
         # Run as a child, waited for: a signal to this script is acted on at once (``stop`` ends
         # the download), not when the download is over.
         "fetch() {",
+        "  hold",
         "  if command -v curl >/dev/null 2>&1; then curl -fsSL --connect-timeout 15 --max-time 600 -o \"$2\" \"$1\" &",
         "  elif command -v wget >/dev/null 2>&1; then wget -q --tries=2 --timeout=60 -O \"$2\" \"$1\" &",
-        "  else return 1; fi",
+        "  else release; return 1; fi",
         "  child=$!",
+        "  release",
         "  wait \"$child\"; fetched=$?",
         "  child=''",
         "  return $fetched",
@@ -434,9 +436,15 @@ def render_sh(*, root: Path, executable: Path, leading: tuple[str, ...], profile
         "  if [ -n \"$staging\" ]; then rm -rf \"$staging\"; fi",
         "  exit \"$1\"",
         "}",
-        "trap 'stop 143' TERM",
-        "trap 'stop 130' INT",
-        "trap 'stop 129' HUP",
+        # Between starting a child and knowing its process, a signal is only noted, and acted on
+        # once ``child`` names it: otherwise ``stop`` could miss a child just started.
+        "noted=''",
+        "hold() { noted=''; trap 'noted=143' TERM; trap 'noted=130' INT; trap 'noted=129' HUP; }",
+        "release() {",
+        "  trap 'stop 143' TERM; trap 'stop 130' INT; trap 'stop 129' HUP",
+        "  if [ -n \"$noted\" ]; then stop \"$noted\"; fi",
+        "}",
+        "release",
         "",
         "first=$(printf '%s' \"${1:-}\" | tr '[:upper:]' '[:lower:]')",
         f"case \"$first\" in {'|'.join(LOCAL_COMMANDS)}) offline=1 ;; *) offline=0 ;; esac",
@@ -466,9 +474,9 @@ def render_sh(*, root: Path, executable: Path, leading: tuple[str, ...], profile
         # dsh runs as a child, waited for (see ``stop``). A command run in the background gets no
         # standard input of its own: it is handed this script's, kept as descriptor 3.
         "exec 3<&0",
-        "run() { "
+        "run() { hold; "
         + " ".join(["\"$DSH\"", *(_sh(item) for item in leading), "plugin --profile", _sh(profile), "\"$@\""])
-        + " <&3 & child=$!; wait \"$child\"; }",
+        + " <&3 & child=$!; release; wait \"$child\"; ran=$?; child=''; return $ran; }",
         "if [ -z \"$tries\" ]; then run \"$@\"; exit $?; fi",
         "code=1",
         "for source in $tries; do",

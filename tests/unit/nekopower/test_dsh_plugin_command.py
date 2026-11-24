@@ -504,6 +504,30 @@ def test_ending_the_script_while_it_fetches_pnpm_leaves_nothing_half_made(tmp_pa
 
 
 @pytest.mark.skipif(WINDOWS or not shutil.which("tar"), reason="the sh script, with POSIX signals")
+def test_a_signal_between_starting_a_download_and_knowing_it_still_ends_it(tmp_path, registries):
+    from config.nekopower_settings import DSH_PNPM_VERSION
+
+    packages = _packages()
+    registry = Registry(_files_of(packages), slow=str(packages["main"]["file"]))
+    registries(registry, packages=packages)
+    directory = _write(tmp_path)
+    script = directory / plugin_command.COMMAND
+    text = script.read_text(encoding="utf-8")
+    # The signal is made to land where it is only noted: after ``hold``, before the child is known.
+    assert text.count("fetch() {\n  hold\n") == 1
+    script.write_text(text.replace("fetch() {\n  hold\n", "fetch() {\n  hold\n  kill -TERM $$\n"), encoding="utf-8")
+
+    done = subprocess.run([str(script), "add", "x"], capture_output=True, text=True, timeout=20,
+                          env={**os.environ, "NO_PROXY": "127.0.0.1", "no_proxy": "127.0.0.1"})
+
+    assert done.returncode == 143, done.stderr
+    left = tmp_path / "dsh" / "pnpm"
+    assert not left.exists() or [path.name for path in left.iterdir()] == []
+    assert not (left / DSH_PNPM_VERSION).exists()
+    assert _calls(tmp_path) == []
+
+
+@pytest.mark.skipif(WINDOWS or not shutil.which("tar"), reason="the sh script, with POSIX signals")
 def test_ending_the_script_ends_dsh_too(tmp_path, registries):
     import signal
     import time
