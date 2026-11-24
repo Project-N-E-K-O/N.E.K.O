@@ -67,6 +67,7 @@ from ._shared import (  # noqa: F401
     _bump_state_revision,
     _put_switch_off,
     _set_capability,
+    _capability_ticket_now,
     _track_background_task,
     _create_tracked_task,
     _now_iso,

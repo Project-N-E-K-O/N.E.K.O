@@ -39,6 +39,7 @@ from .api_shared import (  # noqa: F401
     _refresh_tool_capabilities,
     _refresh_tool_capabilities_and_tell,
     _set_capability,
+    _capability_ticket_now,
     app,
     asyncio,
     builtin_provider,
@@ -289,6 +290,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
     # when a task agent first uses it, and is reported with its reason).
     if isinstance(cf, bool):
         if cf: # Attempting to enable
+            started = _capability_ticket_now()
             try:
                 avail = await asyncio.to_thread(_keyboard_mouse_availability)
                 failed: Optional[Exception] = None
@@ -304,7 +306,12 @@ async def set_agent_flags(payload: Dict[str, Any]):
                 logger.error(f"[Agent] Cannot enable Computer Use: Check failed {failed}")
             else:
                 reasons = avail.get('reasons', []) if isinstance(avail, dict) else []
-                _set_capability("computer_use", bool(avail.get("ready")) if isinstance(avail, dict) else False, reasons[0] if reasons else "")
+                _set_capability(
+                    "computer_use",
+                    bool(avail.get("ready")) if isinstance(avail, dict) else False,
+                    reasons[0] if reasons else "",
+                    started=started,
+                )
                 if avail.get("ready"):
                     Modules.agent_flags["computer_use_enabled"] = True
                 else:
@@ -318,6 +325,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
     # 2.5. Handle Browser Use Flag with Capability Check
     if isinstance(bf, bool):
         if bf:
+            started = _capability_ticket_now()
             dependency_ready, dependency_error = await asyncio.to_thread(_browser_dependency_status)
             if Modules.browser_use_lifecycle_seq != browser_use_lifecycle_seq:
                 # The switch was set anew while this one looked for a
@@ -325,11 +333,11 @@ async def set_agent_flags(payload: Dict[str, Any]):
                 logger.info("[Agent] Browser Use enable request overtaken by a later one; left as it is")
             elif not dependency_ready:
                 _put_switch_off("browser_use_enabled")
-                _set_capability("browser_use", False, dependency_error)
+                _set_capability("browser_use", False, dependency_error, started=started)
                 Modules.notification = json.dumps({"code": "AGENT_BU_UNAVAILABLE", "details": {"reason_code": dependency_error}})
             else:
                 Modules.agent_flags["browser_use_enabled"] = True
-                _set_capability("browser_use", True, "")
+                _set_capability("browser_use", True, "", started=started)
         else:
             _put_switch_off("browser_use_enabled")
 
@@ -785,10 +793,11 @@ async def _restore_tool_flags(intent: dict) -> None:
         and (os.environ.get("XDG_SESSION_TYPE") == "wayland" or bool(os.environ.get("WAYLAND_DISPLAY")))
     )
     if intent.get("computer_use_enabled") and needs_screen_reauthorization:
+        started = _capability_ticket_now()
         availability = await asyncio.to_thread(_keyboard_mouse_availability)
         reasons = availability.get("reasons", []) if isinstance(availability, dict) else []
         ready = bool(availability.get("ready")) if isinstance(availability, dict) else False
-        _set_capability("computer_use", ready, reasons[0] if reasons else "")
+        _set_capability("computer_use", ready, reasons[0] if reasons else "", started=started)
         if ready:
             Modules.notification = json.dumps({"code": "AGENT_SCREEN_SHARE_REQUIRED"})
         _bump_state_revision()
@@ -834,10 +843,11 @@ async def computer_use_availability():
     if gate.get("ready") is not True:
         return {"ready": False, "reasons": gate.get("reasons", ["Agent API 未配置"])}
 
+    started = _capability_ticket_now()
     status = await asyncio.to_thread(_keyboard_mouse_availability)
     reasons = status.get("reasons", []) if isinstance(status, dict) else []
     ready = bool(status.get("ready")) if isinstance(status, dict) else False
-    _set_capability("computer_use", ready, reasons[0] if reasons else "")
+    _set_capability("computer_use", ready, reasons[0] if reasons else "", started=started)
 
     # Auto-update flag if capability lost
     if not status.get("ready") and Modules.agent_flags.get("computer_use_enabled"):
@@ -873,9 +883,10 @@ async def browser_use_availability():
     gate = _check_agent_api_gate()
     if gate.get("ready") is not True:
         return {"ready": False, "reasons": gate.get("reasons", ["Agent API 未配置"])}
+    started = _capability_ticket_now()
     ready, reason = await asyncio.to_thread(_browser_availability)
     # No browser comes with the application; one the user has is used.
-    _set_capability("browser_use", ready, reason)
+    _set_capability("browser_use", ready, reason, started=started)
     return {"enabled": True, "ready": ready, "reasons": [reason] if reason else [], "provider": "nekopower"}
 
 

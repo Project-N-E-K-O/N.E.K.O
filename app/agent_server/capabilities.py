@@ -32,6 +32,7 @@ from . import _shared
 from ._shared import (
     logger,
     _capability_reason_code,
+    _capability_ticket_now,
     _set_capability,
     _bump_state_revision,
 )
@@ -152,44 +153,30 @@ def _browser_availability() -> Tuple[bool, str]:
     return _browser_dependency_status()
 
 
-# Generation of ``_refresh_tool_capabilities``: bumped by each one that
-# starts. One that started earlier (from the configuration as it was then)
-# and finishes later writes nothing over what a later one found.
-_tool_refresh_seq = 0
-
-
 async def _refresh_tool_capabilities() -> None:
     """Say anew whether the keyboard-and-mouse and the browser tools can be used.
 
     For when that may have changed: the master switch came on, the
-    configuration was saved. Asks no model anything. Each answer is written
-    only while no later refresh has started.
+    configuration was saved. Asks no model anything. The answers are as new
+    as when this started (``_set_capability``'s tickets): one that started
+    earlier and ends later writes nothing over a later one's, whatever wrote it.
     """
-    global _tool_refresh_seq
-    _tool_refresh_seq += 1
-    mine = _tool_refresh_seq
-    # Written meanwhile by anything else (a switch, the browser settings, an
-    # availability route): that stands too.
-    written = dict(_shared.capability_writes)
-
-    def still_mine(name: str) -> bool:
-        return mine == _tool_refresh_seq and _shared.capability_writes.get(name, 0) == written.get(name, 0)
-
+    started = _capability_ticket_now()
     try:
         keyboard = await asyncio.to_thread(_keyboard_mouse_availability)
     except Exception as exc:  # noqa: BLE001 - not usable then; the browser is still looked at
         logger.warning("[Agent] Checking the keyboard and mouse failed: %s", exc)
         keyboard = {"ready": False, "reasons": ["AGENT_INPUT_CHECK_FAILED"]}
     keyboard_reasons = keyboard.get("reasons") or []
-    if still_mine("computer_use"):
-        _set_capability("computer_use", bool(keyboard.get("ready")), keyboard_reasons[0] if keyboard_reasons else "")
+    _set_capability(
+        "computer_use", bool(keyboard.get("ready")), keyboard_reasons[0] if keyboard_reasons else "", started=started
+    )
     try:
         browser_ready, browser_reason = await asyncio.to_thread(_browser_availability)
     except Exception as exc:  # noqa: BLE001 - not usable then
         logger.warning("[Agent] Checking for a browser failed: %s", exc)
         browser_ready, browser_reason = False, BROWSER_CHECK_FAILED
-    if still_mine("browser_use"):
-        _set_capability("browser_use", browser_ready, browser_reason)
+    _set_capability("browser_use", browser_ready, browser_reason, started=started)
 
 
 async def _refresh_tool_capabilities_and_tell(lanlan_name: Optional[str] = None) -> None:
@@ -240,9 +227,10 @@ async def _set_closed_browser_capability(capability_reason: Optional[str], still
     if capability_reason is not None:
         _set_capability("browser_use", False, capability_reason)
         return
+    started = _capability_ticket_now()
     dependency_ready, dependency_error = await asyncio.to_thread(_browser_dependency_status)
     if still_current():
-        _set_capability("browser_use", dependency_ready, dependency_error)
+        _set_capability("browser_use", dependency_ready, dependency_error, started=started)
 
 
 async def _close_browser(

@@ -48,6 +48,7 @@ from .api_shared import (  # noqa: F401
     _ensure_plugin_lifecycle_started,
     _ensure_plugin_lifecycle_stopped,
     _set_capability,
+    _capability_ticket_now,
     _start_embedded_user_plugin_server,
     _stop_embedded_user_plugin_server,
     app,
@@ -1245,8 +1246,9 @@ async def set_browser_settings(payload: Dict[str, Any]):
     # once. Left as it was (no browser found, from before one was named
     # here), the tools would stay refused until something asked again.
     # In a worker thread: it reads the configuration from the disk.
+    started = _capability_ticket_now()
     browser_ready, browser_reason = await asyncio.to_thread(_browser_availability)
-    _set_capability("browser_use", browser_ready, browser_reason)
+    _set_capability("browser_use", browser_ready, browser_reason, started=started)
     _bump_state_revision()
     await _emit_agent_status_update()
     return {"success": True, **view}

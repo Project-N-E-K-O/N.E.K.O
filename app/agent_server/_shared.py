@@ -176,18 +176,39 @@ def _capability_reason_code(raw_reason: str) -> str:
     return "AGENT_ENDPOINT_NOT_CONFIGURED"
 
 
-# How many times each capability was written: a background refresh that
-# waited for its check writes nothing over what was written meanwhile.
-capability_writes: Dict[str, int] = {}
+# Tickets: what is written of a capability after a check that waited (for
+# the configuration, the desktop, the browser search) is as new as when that
+# check started, not as when it ended. Each such check takes a ticket when it
+# starts (``_capability_ticket_now``) and writes with it; an answer from a
+# check that started before the one last written is dropped. Writes that do
+# not wait take a ticket as they write.
+_capability_ticket = 0
+_capability_ticket_written: Dict[str, int] = {}
 
 
-def _set_capability(name: str, ready: bool, reason: str = "") -> None:
-    capability_writes[name] = capability_writes.get(name, 0) + 1
+def _capability_ticket_now() -> int:
+    """Return a ticket for a check of a capability that starts now."""
+    global _capability_ticket
+    _capability_ticket += 1
+    return _capability_ticket
+
+
+def _set_capability(name: str, ready: bool, reason: str = "", *, started: Optional[int] = None) -> bool:
+    """Write whether a capability can be used, and why not; False when the answer is older than the one written.
+
+    ``started``: the ticket of the check the answer comes from, taken when
+    that check started. Without it the write counts as of now.
+    """
+    ticket = started if started is not None else _capability_ticket_now()
+    if ticket < _capability_ticket_written.get(name, 0):
+        return False
+    _capability_ticket_written[name] = ticket
     prev = Modules.capability_cache.get(name, {})
     normalized_reason = _capability_reason_code(reason)
     Modules.capability_cache[name] = {"ready": bool(ready), "reason": normalized_reason}
     if prev.get("ready") != bool(ready) or prev.get("reason", "") != normalized_reason:
         _bump_state_revision()
+    return True
 
 
 def _track_background_task(task: asyncio.Task) -> asyncio.Task:

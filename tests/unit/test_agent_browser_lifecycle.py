@@ -754,6 +754,55 @@ async def test_a_browser_switched_off_while_an_earlier_request_looked_for_a_brow
     assert modules.notification is None
 
 
+async def test_an_older_check_that_ends_first_does_not_keep_a_later_refresh_from_writing(
+    modules, search, browser, checks, monkeypatch
+):
+    import threading
+
+    older_asked = threading.Event()
+    release_older = threading.Event()
+    newer_asked = threading.Event()
+    release_newer = threading.Event()
+    calls: list[int] = []
+
+    def keyboard() -> dict[str, Any]:
+        calls.append(1)
+        if len(calls) == 1:
+            # An availability route, from the configuration before it was saved.
+            older_asked.set()
+            release_older.wait(5.0)
+            return {"enabled": True, "ready": False, "reasons": ["AGENT_KEY_NOT_CONFIGURED"]}
+        # The refresh that saving the configuration started.
+        newer_asked.set()
+        release_newer.wait(5.0)
+        return {"enabled": True, "ready": True, "reasons": []}
+
+    monkeypatch.setattr(api_routes, "_keyboard_mouse_availability", keyboard)
+    monkeypatch.setattr(capabilities, "_keyboard_mouse_availability", keyboard)
+
+    async def no_pictures_asked() -> dict[str, Any]:
+        return {"sees": True}
+
+    monkeypatch.setattr(api_routes, "_model_images_status", no_pictures_asked)
+    older = asyncio.ensure_future(api_routes.computer_use_availability())
+    newer: Any = None
+    try:
+        await asyncio.wait_for(asyncio.to_thread(older_asked.wait, 5.0), 6.0)
+        newer = asyncio.ensure_future(capabilities._refresh_tool_capabilities())
+        await asyncio.wait_for(asyncio.to_thread(newer_asked.wait, 5.0), 6.0)
+        # The older one ends first and writes what it found...
+        release_older.set()
+        await asyncio.wait_for(older, 5.0)
+        assert modules.capability_cache["computer_use"]["reason"] == "AGENT_KEY_NOT_CONFIGURED"
+    finally:
+        release_older.set()
+        release_newer.set()
+    # ...and the later refresh still writes what the new configuration says.
+    await asyncio.wait_for(newer, 5.0)
+
+    assert modules.capability_cache["computer_use"] == {"ready": True, "reason": ""}
+
+
 async def test_what_is_written_while_a_refresh_checks_is_not_written_over(modules, search, browser, checks, monkeypatch):
     import threading
 
