@@ -100,7 +100,7 @@ def test_startup_moves_legacy_inbox(plugin: ClaudeCompanionPlugin) -> None:
     assert _SECRET not in plugin.logger.text()
 
 
-def test_existing_data_inbox_wins_over_legacy(plugin: ClaudeCompanionPlugin) -> None:
+def test_existing_data_inbox_wins_and_leftover_legacy_is_removed(plugin: ClaudeCompanionPlugin) -> None:
     legacy = companion._LEGACY_INBOX_PATH
     _write_legacy(legacy)
     target = plugin.data_path("inbox.json")
@@ -109,8 +109,37 @@ def test_existing_data_inbox_wins_over_legacy(plugin: ClaudeCompanionPlugin) -> 
 
     plugin._init_inbox()
 
+    assert not legacy.exists()
+    assert plugin._inbox.pending() == []
+
+    # Clearing the data directory later must not bring the stale copy back.
+    target.unlink()
+    plugin._init_inbox()
+    assert plugin._inbox.pending() == []
+
+
+def test_leftover_legacy_that_cannot_be_removed_is_ignored(
+    plugin: ClaudeCompanionPlugin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    legacy = companion._LEGACY_INBOX_PATH
+    _write_legacy(legacy)
+    target = plugin.data_path("inbox.json")
+    target.parent.mkdir(parents=True)
+    target.write_text("[]", encoding="utf-8")
+    real_unlink = Path.unlink
+
+    def unlink(self: Path, missing_ok: bool = False) -> None:
+        if self == legacy:
+            raise PermissionError("read-only install directory")
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+
+    plugin._init_inbox()
+
     assert legacy.is_file()
     assert plugin._inbox.pending() == []
+    assert [level for level, _msg, _args in plugin.logger.lines] == []
 
 
 def test_copy_fallback_when_move_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -353,3 +382,53 @@ async def test_set_user_name_log_omits_name(plugin: ClaudeCompanionPlugin) -> No
     assert plugin.store.data == {"user_name": name}
     assert plugin.logger.lines == [("info", "User name updated ({} chars)", (len(name),))]
     assert name not in plugin.logger.text()
+
+
+def test_legacy_inbox_with_bad_encoding_counts_as_empty(
+    plugin: ClaudeCompanionPlugin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    legacy = companion._LEGACY_INBOX_PATH
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"\xff\xfe not utf-8")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(companion.os, "replace", _replace_failing_from_legacy)
+        patched.setattr(companion.shutil, "copyfile", _fail)
+        plugin._init_inbox()
+
+    assert plugin._inbox is not None
+    assert plugin._inbox.pending() == []
+
+
+def test_data_inbox_with_bad_encoding_loads_as_empty(tmp_path: Path) -> None:
+    path = tmp_path / "inbox.json"
+    path.write_bytes(b"\xff\xfe not utf-8")
+    assert InboxQueue(str(path)).pending() == []
+
+
+def test_uninspectable_paths_without_legacy_file_open_the_inbox(
+    plugin: ClaudeCompanionPlugin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Migration could not inspect the paths and there is no legacy file to
+    # read: nothing waits for migration, so the inbox opens as usual.
+    monkeypatch.setattr(companion, "_migrate_legacy_inbox", lambda *_args: False)
+
+    plugin._init_inbox()
+
+    assert plugin._inbox is not None
+    assert not [line for line in plugin.logger.lines if line[0] == "warning"]
+
+
+def test_init_failure_logs_error_type_only(
+    plugin: ClaudeCompanionPlugin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = plugin.data_path("inbox.json")
+    target.parent.mkdir(parents=True)
+    bad = [dict(_legacy_payload()[0], status="read", timestamp=_SECRET)]
+    target.write_text(json.dumps(bad), encoding="utf-8")
+
+    plugin._init_inbox()
+
+    assert plugin._inbox is None
+    assert plugin.logger.lines == [("warning", "Failed to initialize inbox: {}", ("ValueError",))]
+    assert _SECRET not in plugin.logger.text()

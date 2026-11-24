@@ -119,7 +119,7 @@ class InboxQueue:
             try:
                 with open(self._path, "r", encoding="utf-8") as f:
                     self._messages = json.load(f)
-            except (json.JSONDecodeError, OSError):
+            except (ValueError, OSError):  # ValueError covers bad JSON and bad UTF-8
                 self._messages = []
         else:
             self._messages = []
@@ -220,17 +220,30 @@ def _migrate_legacy_inbox(legacy_path: Path, target_path: Path, logger: Any) -> 
     Runs only when the legacy file exists and the target does not. A plain move
     is tried first; if that fails (read-only install directory, another drive)
     the file is copied instead and the legacy copy removed when possible.
+    A legacy file found next to an existing target is a leftover (a copy whose
+    source could not be removed, or one the queue's first save completed) and
+    is removed, so it is not migrated again should the data directory be
+    cleared later. (Messages an older plugin version wrote there after the
+    migration, e.g. after a downgrade, are dropped with it.)
     Never raises. Returns False when a legacy file is left unmigrated; the
     caller must then not write an empty inbox at the target, or later starts
     would skip the migration.
     Log lines carry the error type only, never paths or the file content.
     """
     try:
-        if target_path.exists() or not legacy_path.is_file():
+        if not legacy_path.is_file():
             return True
+        target_exists = target_path.exists()
     except OSError as e:
         logger.warning("Skipping legacy inbox migration, cannot inspect paths: {}", type(e).__name__)
         return False
+    if target_exists:
+        try:
+            legacy_path.unlink()
+            logger.info("Removed a leftover legacy inbox")
+        except OSError:
+            pass  # e.g. read-only install directory; harmless while the target exists
+        return True
     try:
         target_path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as e:
@@ -270,11 +283,10 @@ def _read_legacy_inbox(legacy_path: Path) -> List[Dict[str, Any]]:
 
     Unparseable content counts as empty, as InboxQueue._load treats it.
     """
-    with open(legacy_path, "r", encoding="utf-8") as f:
-        raw = f.read()
     try:
-        data = json.loads(raw)
-    except ValueError:
+        with open(legacy_path, "r", encoding="utf-8") as f:
+            data = json.loads(f.read())
+    except ValueError:  # bad JSON or bad UTF-8; OSError propagates
         return []
     return data if isinstance(data, list) else []
 
@@ -709,9 +721,11 @@ class ClaudeCompanionPlugin(NekoPluginBase):
                 # messages in it: its first save then completes the migration.
                 try:
                     initial = _read_legacy_inbox(_LEGACY_INBOX_PATH)
+                except FileNotFoundError:
+                    initial = None  # nothing to carry over (paths could not be inspected)
                 except OSError as e:
                     self.logger.warning(
-                        "Inbox disabled until the legacy inbox can be migrated: {}", type(e).__name__
+                        "Inbox disabled for this run, the legacy inbox cannot be read: {}", type(e).__name__
                     )
                     self._inbox = None
                     return
@@ -721,7 +735,8 @@ class ClaudeCompanionPlugin(NekoPluginBase):
             if pending_count:
                 self.logger.info("Inbox initialized with {} pending messages", pending_count)
         except Exception as e:
-            self.logger.warning("Failed to initialize inbox: {}", e)
+            # Error type only: messages (e.g. a bad timestamp) can quote the file.
+            self.logger.warning("Failed to initialize inbox: {}", type(e).__name__)
             self._inbox = None
 
     @lifecycle(id="startup")
