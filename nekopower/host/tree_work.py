@@ -450,11 +450,18 @@ class TreeWork:
         from config.prompts import prompts_nekopower_brain as texts
 
         for row in reversed(await self._ledger.trees(commission_id=commission.id)):
-            while row.id in self._trees_in_hand and not self._closed:
-                # What an earlier process left is being gone through, or the user's decision on it
-                # is being carried out: it is gone on in once that is through, as it stands then.
-                await asyncio.sleep(_POLL_SECONDS)
-            row = await self._ledger.get_tree(row.id)
+            tree_id = row.id
+            while not self._closed:
+                # What an earlier process left is being gone through, the user's decision on it is
+                # being carried out, or it is being seen to after the run that left it: it is gone
+                # on in once that is through, as it stands then. (Looked at once more after the
+                # read: it may have been taken in hand meanwhile.)
+                if tree_id in self._trees_in_hand:
+                    await asyncio.sleep(_POLL_SECONDS)
+                    continue
+                row = await self._ledger.get_tree(tree_id)
+                if tree_id not in self._trees_in_hand:
+                    break
             if row is None or row.state == "kept":
                 # Gone since, or the user's to see to personally (and left alone, then).
                 continue
@@ -1307,6 +1314,25 @@ class TreeWork:
         if commission.id in self._tree_of:
             self._tree_task(self._tree_left(commission))
 
+    async def _seen_to_after_its_run(self, row: Tree, commission: Commission) -> Tree | None:
+        """Remove a worktree a run left without changes, or put it on record as not landed; returns it, None when it is removed."""
+        # Its run is being stopped, and may be finishing a write: looked at once it is gone.
+        await self._gone_from_runtime(commission.id)
+        handle = await self._handle_of(row)
+        try:
+            changed = handle is not None and await self.worktrees.has_changes(handle)
+            if handle is None and not await self._tree_is_gone(row):
+                changed = True  # there, and not to be opened this moment: kept
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - kept: it may hold something
+            logger.warning("whether worktree %s holds changes could not be told; it is kept", row.id, exc_info=True)
+            changed = True
+        if not changed:
+            await self._remove_tree(row, handle)
+            return None
+        return await self._ledger.update_tree(row.id, state="unlanded", reason=REASON_STOPPED) or row
+
     async def _tree_left(self, commission: Commission) -> None:
         """A commission ended otherwise than by its changes being landed: its worktree is removed, or kept for the user.
 
@@ -1328,22 +1354,18 @@ class TreeWork:
         self._forget_tree(row)
         if row.state not in _AT_WORK:
             return
-        # Its run is being stopped, and may be finishing a write: looked at once it is gone.
-        await self._gone_from_runtime(commission.id)
-        handle = await self._handle_of(row)
+        # In hand until it is seen to, with nothing awaited since it was forgotten: a commission
+        # that is taken up again meanwhile waits for this, and goes on in the worktree as this
+        # leaves it (or in another, where this removes it), ``_tree_to_work_in``.
+        tree_id, mine = row.id, row.id not in self._trees_in_hand
+        self._trees_in_hand.add(tree_id)
         try:
-            changed = handle is not None and await self.worktrees.has_changes(handle)
-            if handle is None and not await self._tree_is_gone(row):
-                changed = True  # there, and not to be opened this moment: kept
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 - kept: it may hold something
-            logger.warning("whether worktree %s holds changes could not be told; it is kept", row.id, exc_info=True)
-            changed = True
-        if not changed:
-            await self._remove_tree(row, handle)
+            row = await self._seen_to_after_its_run(row, commission)
+        finally:
+            if mine:
+                self._trees_in_hand.discard(tree_id)
+        if row is None:
             return
-        row = await self._ledger.update_tree(row.id, state="unlanded", reason=REASON_STOPPED) or row
         await self._note_tree_event(
             commission.id, "not_landed", {"tree": row.id, "path": row.workdir, "reason": REASON_STOPPED}
         )

@@ -2004,3 +2004,61 @@ async def test_a_card_shows_that_its_commission_waits_for_the_user_though_its_wo
     assert card_of(session, asking, (), None, None, tree=tree)["state"] == "waiting_user"
     hold.set()
     await wait_status(host, two.commission_id, "done")
+
+
+async def test_a_worktree_being_seen_to_after_its_run_is_not_gone_on_in_until_that_is_through(hosts, tmp_path):
+    host, trees, workdir, one, two, members = await _two_members(
+        hosts, tmp_path,
+        second=[_write("links.txt", "half"), _report("which pages?", status="blocked"), _write("more.txt"), _report("all of them")],
+    )
+    # Looking whether it holds changes takes a while.
+    trees.changes_gate = asyncio.Event()
+    host.release.set()
+    await wait_status(host, two.commission_id, "blocked")
+    await asyncio.wait_for(trees.checking.wait(), 10)
+    (tree,) = await host.ledger.trees()
+    manager = host.task_agents
+    assert tree.id in manager._trees_in_hand and tree.state == "active"
+
+    # The user says more to it meanwhile: it does not go on in the worktree under the look.
+    telling = asyncio.ensure_future(host.tell(two.commission_id, "every page"))
+    await asyncio.sleep(0.8)
+    assert len(members["broken links"].requests) == 2 and two.commission_id not in manager._tree_of
+    trees.changes_gate.set()
+    assert await telling
+    done = await wait_status(host, two.commission_id, "done")
+
+    # The same worktree, as the look left it: nothing was removed under the commission, and both files landed.
+    assert trees.made == [Path(tree.path)] and trees.removed == [tree.id]
+    assert (workdir / "links.txt").read_text() == "half" and (workdir / "more.txt").exists()
+    assert done.result_summary.startswith("all of them") and await host.ledger.trees() == []
+    assert [item["reason"] for item in await _events(host, two.commission_id, "not_landed")] == ["stopped"]
+
+
+async def test_a_worktree_taken_in_hand_as_its_commission_reads_it_again_is_waited_for(hosts, tmp_path):
+    clash = MergeResult("conflict", conflicts=("links.txt",))
+    host, trees, workdir, two, members, _stuck = await _not_landed(hosts, tmp_path, [clash] * 4, turns=4)
+    (tree,) = await host.ledger.trees()
+    members["broken links"].turns.extend([_write("more.txt", "more"), _report("all of them")])
+    manager = host.task_agents
+    get_tree = host.ledger.get_tree
+    taken: list[str] = []
+
+    async def taken_meanwhile(tree_id: str) -> Any:
+        row = await get_tree(tree_id)
+        if not taken:
+            # Somebody takes it in hand while the commission that is taken up again reads its row.
+            taken.append(tree_id)
+            manager._trees_in_hand.add(tree_id)
+        return row
+
+    host.ledger.get_tree = taken_meanwhile
+    telling = asyncio.ensure_future(host.tell(two.commission_id, "the other pages as well"))
+    await wait_until(lambda: taken, what="its row being read")
+    await asyncio.sleep(0.6)
+    # Not its own while it is in another hand: it has not gone on in it.
+    assert two.commission_id not in manager._tree_of and len(members["broken links"].requests) == 5
+    manager._trees_in_hand.discard(tree.id)
+    assert await telling
+    await wait_status(host, two.commission_id, "done")
+    assert (workdir / "more.txt").exists() and await host.ledger.trees() == []
