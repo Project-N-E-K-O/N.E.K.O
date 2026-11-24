@@ -725,3 +725,34 @@ def test_reflection_scores_skip_empty_text_even_with_a_valid_stamp(fresh_vec_cac
         MODEL_ID, DIM, np.stack(query_rows),
     )
     assert got == expected
+
+
+@pytest.mark.parametrize("block", [1, 3, 7])
+def test_cosine_clusters_blocked_truncation_matches_legacy(block):
+    """Truncation takes in-component maxima in row blocks; small blocks force
+    many block boundaries inside one large component."""
+    import memory._embeddings.ranking as ranking
+
+    rng = np.random.default_rng(42)
+    matrix = _discrete_vectors(rng, 80)
+    with patch.object(ranking, "_ROW_BLOCK", block):
+        got = cosine_clusters(matrix, threshold=1.0, topk=3, size_max=5)
+    expected = _legacy_clusters(matrix, 1.0, 3, 5)
+    assert got == expected
+    assert any(len(c) == 5 for c in expected), "fixture should truncate"
+
+
+@pytest.mark.parametrize("block", [1, 3, 7, 256])
+def test_strongest_internal_matches_naive_max_over_others(block):
+    import memory._embeddings.ranking as ranking
+
+    rng = np.random.default_rng(9)
+    sim = rng.standard_normal((60, 60)).astype(np.float32)  # no ties
+    np.fill_diagonal(sim, -1.0)
+    members = np.asarray(sorted(rng.choice(60, size=41, replace=False)), dtype=np.intp)
+    expected = [
+        max(float(sim[i][j]) for j in members if j != i) for i in members
+    ]
+    with patch.object(ranking, "_ROW_BLOCK", block):
+        got = ranking._strongest_internal(sim, members)
+    assert got.tolist() == expected

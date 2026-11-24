@@ -110,6 +110,32 @@ def threshold_top_k(row, threshold: float, k: int) -> list[int]:
     return idx[stable_top_indices(row[idx], k)].tolist()
 
 
+# Rows per block when taking in-component maxima: bounds the temporary to
+# ``_ROW_BLOCK × component size`` floats instead of a full component² copy.
+_ROW_BLOCK = 256
+
+
+def _strongest_internal(sim_matrix, members):
+    """Each member's strongest similarity to another member of ``members``.
+
+    A component can hold most of the pool (``topk`` bounds edges, not
+    component size), so the component × component submatrix is never
+    materialized at once: rows are gathered in blocks of ``_ROW_BLOCK``.
+    ``max`` is exact, so blocking cannot change the result.
+    """
+    import numpy as np
+
+    size = int(members.size)
+    strongest = np.empty(size, dtype=sim_matrix.dtype)
+    for start in range(0, size, _ROW_BLOCK):
+        stop = min(start + _ROW_BLOCK, size)
+        block = sim_matrix[members[start:stop][:, None], members[None, :]]
+        local = np.arange(stop - start)
+        block[local, start + local] = -np.inf  # exclude self
+        strongest[start:stop] = block.max(axis=1)
+    return strongest
+
+
 def cosine_clusters(
     matrix,
     *,
@@ -162,9 +188,7 @@ def cosine_clusters(
             continue
         if len(indices) > size_max:
             members = np.asarray(indices, dtype=np.intp)
-            internal = sim_matrix[np.ix_(members, members)]
-            np.fill_diagonal(internal, -np.inf)
-            strongest = internal.max(axis=1)
+            strongest = _strongest_internal(sim_matrix, members)
             if size_max >= 0:
                 order = stable_top_indices(strongest, size_max)
             else:
