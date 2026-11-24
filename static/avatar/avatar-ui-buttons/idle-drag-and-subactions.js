@@ -1512,7 +1512,11 @@ function _setNekoIdleCat1Classes(button, state) {
     } else {
         button.removeAttribute(profile.dataAttributes.targetKind);
     }
-    const nativeYarnRect = targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE
+    // Playground side targets come from the physical yarn body, so the CSS
+    // image offsets paired with the ordinary native chat ball must not apply.
+    const playgroundState = button.__nekoIdleCat1PlaygroundDropState;
+    const playgroundOwned = !!(playgroundState && playgroundState.active);
+    const nativeYarnRect = targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE && !playgroundOwned
         ? _getNekoIdleChatMinimizedRect()
         : null;
     const nativeYarnVisualAnchor = _usesNekoIdleCat1NativeYarnVisualAnchor(nativeYarnRect);

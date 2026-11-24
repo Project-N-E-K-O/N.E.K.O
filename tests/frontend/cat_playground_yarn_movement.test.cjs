@@ -672,6 +672,29 @@ for (const profile of ['web', 'windows', 'wayland', 'niri']) {
 }
 
 for (const facingRight of [true, false]) {
+  test(`Wayland Playground walk/stretch ignores the native ball image anchor (right=${facingRight})`, async () => {
+    const r = runtime(); attachDesktopTestYarn(r, 'wayland');
+    r.context._setNekoIdleCat1PlaygroundBodyPosition(r.body, facingRight ? 100 : 800, r.body.floorY);
+    const anchorAttrs = () => [
+      r.button.getAttribute('data-neko-cat1-native-yarn-visual-anchor'),
+      r.button.getAttribute('data-neko-cat1-native-yarn-side'),
+    ];
+    const rememberMinimizedBall = () => r.context._rememberNekoIdleDesktopChatPairMoveRect(
+      { left: 600, top: 842, width: 58, height: 58 });
+    rememberMinimizedBall();
+    assert.ok(r.context._getNekoIdleChatMinimizedRect(), 'a fresh native minimized ball rect is present');
+    startJourney(r);
+    await r.enter(); await r.runFrames(100);
+    assert.equal(r.journey.substate, r.journey.profile.walkingSubstate);
+    assert.equal(r.journey.targetKind, 'minimized-side');
+    assert.deepEqual(anchorAttrs(), [null, null]);
+    r.random(.9); await r.runFrames(7000);
+    assert.equal(r.journey.walkFinishResolution, 'stretch');
+    rememberMinimizedBall();
+    r.context._setNekoIdleCat1Classes(r.button, r.journey);
+    assert.deepEqual(anchorAttrs(), [null, null]);
+  });
+
   test(`ordinary Wayland retains its native ball image calibration (right=${facingRight})`, () => {
     const r = runtime(); attachDesktopTestYarn(r, 'wayland');
     const cat = { left: facingRight ? 100 : 800, top: r.body.y, width: 96, height: 96 };
