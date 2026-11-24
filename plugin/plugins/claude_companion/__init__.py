@@ -148,6 +148,14 @@ class InboxQueue:
                 json.dump(self._messages, f, ensure_ascii=False, indent=2)
                 f.flush()
                 os.fsync(f.fileno())  # the data must be on disk before the rename
+            if os.name != "nt":
+                # Keep the existing file's permissions (e.g. 0600). Not on
+                # Windows: access there comes from inherited ACLs, and copying
+                # a read-only flag would leave a temp file that cannot be removed.
+                try:
+                    shutil.copymode(self._path, tmp_path)
+                except FileNotFoundError:
+                    pass  # first save: nothing to copy from
             os.replace(tmp_path, self._path)
         except OSError:
             try:
@@ -272,9 +280,10 @@ def _migrate_legacy_inbox(legacy_path: Path, target_path: Path, logger: Any) -> 
         pass
     tmp_path = target_path.with_name(target_path.name + ".migrating")
     try:
-        shutil.copyfile(legacy_path, tmp_path)
-        with open(tmp_path, "rb") as f:
-            os.fsync(f.fileno())  # the copy must be on disk before the rename
+        with open(legacy_path, "rb") as src, open(tmp_path, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+            dst.flush()
+            os.fsync(dst.fileno())  # the copy must be on disk before the rename
         os.replace(tmp_path, target_path)
     except OSError as e:
         logger.warning("Legacy inbox migration failed: {}", type(e).__name__)
@@ -283,6 +292,11 @@ def _migrate_legacy_inbox(legacy_path: Path, target_path: Path, logger: Any) -> 
         except OSError:
             pass
         return _MIGRATION_PENDING
+    if not _sync_directory(target_path.parent):
+        # The new name may not be on disk yet: keep the legacy file for now;
+        # a later start removes it as a leftover once the target exists.
+        logger.info("Copied legacy inbox into the plugin data directory; the old file is kept for now")
+        return _MIGRATION_DONE
     try:
         legacy_path.unlink()
         logger.info("Copied legacy inbox into the plugin data directory")
@@ -294,14 +308,42 @@ def _migrate_legacy_inbox(legacy_path: Path, target_path: Path, logger: Any) -> 
     return _MIGRATION_DONE
 
 
-def _is_message(item: Any) -> bool:
-    if not isinstance(item, dict):
+def _sync_directory(directory: Path) -> bool:
+    """Flush a directory entry change (rename) to disk; best effort.
+
+    Windows cannot open directory handles and NTFS journals the change
+    itself, so it counts as done there.
+    """
+    if os.name == "nt":
+        return True
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError:
         return False
-    if not all(isinstance(item.get(key), str) for key in ("id", "status", "timestamp")):
+    return True
+
+
+def _is_message(item: Any) -> bool:
+    """Whether an inbox entry can be served and cleaned up.
+
+    Pending entries need a string id; cleanup() never reads their timestamp,
+    so a damaged one does not cost an unread message. Read entries also need
+    a timestamp cleanup() can convert.
+    """
+    if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+        return False
+    status = item.get("status")
+    if status == "pending":
+        return True
+    if status != "read":
         return False
     try:
-        datetime.fromisoformat(item["timestamp"])
-    except ValueError:
+        datetime.fromisoformat(item["timestamp"]).timestamp()
+    except (KeyError, TypeError, ValueError, OverflowError, OSError):
         return False
     return True
 
@@ -314,8 +356,12 @@ def _message_list(data: Any) -> List[Dict[str, Any]]:
 
 
 def _log_label(value: Any, limit: int = 32) -> str:
-    """A request-supplied label (source, activity type) cut short for the log."""
-    return str(value)[:limit]
+    """A request-supplied label (source, activity type) made safe for the log.
+
+    Cut short, with line breaks and other control characters replaced so a
+    caller cannot forge log lines.
+    """
+    return "".join(ch if ch.isprintable() else "?" for ch in str(value)[:limit])
 
 
 def _read_legacy_inbox(legacy_path: Path) -> List[Dict[str, Any]]:
@@ -788,7 +834,7 @@ class ClaudeCompanionPlugin(NekoPluginBase):
             if pending_count:
                 self.logger.info("Inbox initialized with {} pending messages", pending_count)
         except Exception as e:
-            # Error type only: messages (e.g. a bad timestamp) can quote the file.
+            # Error type only: exception messages can quote file content.
             self.logger.warning("Failed to initialize inbox: {}", type(e).__name__)
             self._inbox = None
 

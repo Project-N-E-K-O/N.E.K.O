@@ -197,7 +197,7 @@ def test_failed_migration_keeps_legacy_messages(
 
     with monkeypatch.context() as patched:
         patched.setattr(companion.os, "replace", _replace_failing_from_legacy)
-        patched.setattr(companion.shutil, "copyfile", _fail)
+        patched.setattr(companion.shutil, "copyfileobj", _fail)
         plugin._init_inbox()
 
     # The legacy file could not be moved or copied but is readable: the queue
@@ -229,7 +229,7 @@ def test_failed_migration_survives_ack_before_restart(
 
     with monkeypatch.context() as patched:
         patched.setattr(companion.os, "replace", _replace_failing_from_legacy)
-        patched.setattr(companion.shutil, "copyfile", _fail)
+        patched.setattr(companion.shutil, "copyfileobj", _fail)
         plugin._init_inbox()
     assert plugin._on_inbox_ack({"message_ids": ["other"]}) == {"status": "ok", "acknowledged": 0}
 
@@ -247,7 +247,7 @@ def test_unreadable_legacy_inbox_disables_inbox_until_migrated(
 
     with monkeypatch.context() as patched:
         patched.setattr(companion.os, "replace", _replace_failing_from_legacy)
-        patched.setattr(companion.shutil, "copyfile", _fail)
+        patched.setattr(companion.shutil, "copyfileobj", _fail)
         patched.setattr(companion, "_read_legacy_inbox", _fail)
         plugin._init_inbox()
 
@@ -279,7 +279,7 @@ def test_corrupt_legacy_inbox_counts_as_empty(
 
     with monkeypatch.context() as patched:
         patched.setattr(companion.os, "replace", _replace_failing_from_legacy)
-        patched.setattr(companion.shutil, "copyfile", _fail)
+        patched.setattr(companion.shutil, "copyfileobj", _fail)
         plugin._init_inbox()
 
     assert plugin._inbox is not None
@@ -319,7 +319,7 @@ def test_interrupted_first_save_leaves_migration_retryable(
 
     with monkeypatch.context() as patched:
         patched.setattr(companion.os, "replace", _replace_failing_from_legacy)
-        patched.setattr(companion.shutil, "copyfile", _fail)
+        patched.setattr(companion.shutil, "copyfileobj", _fail)
         patched.setattr(companion.json, "dump", _interrupted_dump)
         plugin._init_inbox()
 
@@ -393,7 +393,7 @@ def test_legacy_inbox_with_bad_encoding_counts_as_empty(
 
     with monkeypatch.context() as patched:
         patched.setattr(companion.os, "replace", _replace_failing_from_legacy)
-        patched.setattr(companion.shutil, "copyfile", _fail)
+        patched.setattr(companion.shutil, "copyfileobj", _fail)
         plugin._init_inbox()
 
     assert plugin._inbox is not None
@@ -553,7 +553,7 @@ def test_data_inbox_that_is_not_a_message_list_counts_as_empty(
 def test_unusable_entries_are_dropped_and_good_ones_kept(plugin: ClaudeCompanionPlugin) -> None:
     target = plugin.data_path("inbox.json")
     target.parent.mkdir(parents=True)
-    bad = dict(_legacy_payload()[0], id="bad00001", timestamp="not a time")
+    bad = dict(_legacy_payload()[0], id="bad00001", status="read", timestamp="not a time")
     target.write_text(json.dumps([bad] + _legacy_payload()), encoding="utf-8")
 
     plugin._init_inbox()
@@ -569,3 +569,94 @@ def test_request_labels_are_cut_short_in_the_log(plugin: ClaudeCompanionPlugin) 
     assert plugin._on_inbox_send({"content": "hi", "source": source})["status"] == "ok"
 
     assert plugin.logger.lines == [("info", "Inbox: new message from {} ({} chars)", ("s" * 32, 2))]
+
+
+def test_read_entry_whose_timestamp_cannot_be_converted_is_dropped(plugin: ClaudeCompanionPlugin) -> None:
+    target = plugin.data_path("inbox.json")
+    target.parent.mkdir(parents=True)
+    # Parses, but converting it to a POSIX timestamp fails.
+    bad = dict(_legacy_payload()[0], id="bad00001", status="read", timestamp="0001-01-01T00:00:00")
+    target.write_text(json.dumps([bad] + _legacy_payload()), encoding="utf-8")
+
+    plugin._init_inbox()
+
+    assert plugin._inbox is not None
+    assert [m["id"] for m in plugin._inbox.pending()] == ["abc12345"]
+
+
+def test_pending_entry_with_damaged_timestamp_is_kept(plugin: ClaudeCompanionPlugin) -> None:
+    target = plugin.data_path("inbox.json")
+    target.parent.mkdir(parents=True)
+    damaged = dict(_legacy_payload()[0], timestamp="not a time")
+    target.write_text(json.dumps([damaged]), encoding="utf-8")
+
+    plugin._init_inbox()
+
+    assert [m["id"] for m in plugin._inbox.pending()] == ["abc12345"]
+
+
+def test_copy_keeps_legacy_until_directory_is_synced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    legacy = tmp_path / "install" / "inbox.json"
+    target = tmp_path / "data" / "inbox.json"
+    _write_legacy(legacy)
+
+    def replace(src: object, dst: object) -> None:
+        if Path(src) == legacy:
+            raise OSError("cross-device link")
+        _REAL_REPLACE(src, dst)
+
+    monkeypatch.setattr(companion.os, "replace", replace)
+    monkeypatch.setattr(companion, "_sync_directory", lambda _directory: False)
+
+    assert _migrate_legacy_inbox(legacy, target, _Logger()) == companion._MIGRATION_DONE
+
+    assert json.loads(target.read_text(encoding="utf-8")) == _legacy_payload()
+    assert legacy.is_file()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_save_keeps_existing_file_permissions(tmp_path: Path) -> None:
+    path = tmp_path / "inbox.json"
+    queue = InboxQueue(str(path))
+    queue.add("first")
+    path.chmod(0o600)
+
+    queue.add("second")
+
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_request_labels_cannot_forge_log_lines() -> None:
+    assert companion._log_label("neko\nFAKE line\r\x1b[31m") == "neko?FAKE line??[31m"
+
+
+def test_copy_fallback_works_where_fsync_needs_a_writable_handle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fcntl = pytest.importorskip("fcntl")
+    legacy = tmp_path / "install" / "inbox.json"
+    target = tmp_path / "data" / "inbox.json"
+    _write_legacy(legacy)
+    real_fsync = os.fsync
+
+    def windows_like_fsync(fd: int) -> None:
+        # Windows' fsync (FlushFileBuffers) rejects handles opened read-only.
+        if fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE == os.O_RDONLY and not os.path.isdir(f"/proc/self/fd/{fd}"):
+            raise OSError(9, "Bad file descriptor")
+        real_fsync(fd)
+
+    def replace(src: object, dst: object) -> None:
+        if Path(src) == legacy:
+            raise OSError("cross-device link")
+        _REAL_REPLACE(src, dst)
+
+    monkeypatch.setattr(companion.os, "fsync", windows_like_fsync)
+    monkeypatch.setattr(companion.os, "replace", replace)
+    logger = _Logger()
+
+    assert _migrate_legacy_inbox(legacy, target, logger) == companion._MIGRATION_DONE
+
+    assert json.loads(target.read_text(encoding="utf-8")) == _legacy_payload()
+    assert [level for level, _msg, _args in logger.lines] == ["info"]

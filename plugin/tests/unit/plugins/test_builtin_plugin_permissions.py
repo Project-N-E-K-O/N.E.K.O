@@ -64,8 +64,9 @@ _ALLOWED_POSSIBLE = {
             ("__init__.py", "InboxQueue._save", "open"),
             ("__init__.py", "InboxQueue._save", "os.replace"),
             ("__init__.py", "_migrate_legacy_inbox", "os.replace"),
-            ("__init__.py", "_migrate_legacy_inbox", "shutil.copyfile"),
+            ("__init__.py", "_migrate_legacy_inbox", "open"),
             ("__init__.py", "_migrate_legacy_inbox", "os.replace"),
+            ("__init__.py", "_sync_directory", "os.open"),
         ],
     },
     "music_pusher": {
