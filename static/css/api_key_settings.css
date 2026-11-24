@@ -916,6 +916,9 @@ background: #ffffff;
     flex: 1;
     font-size: var(--button-text-size);
     background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
+    /* 每行重复完整渐变，避免换行后首行文字变淡。 */
+    background-size: 100% 1.2em;
+    background-repeat: repeat-y;
     -webkit-background-clip: text;
     background-clip: text;
     -webkit-text-fill-color: transparent;
@@ -1771,6 +1774,9 @@ input:checked + .slider:before {
     flex: 1;
     font-size: var(--button-text-size);
     background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
+    /* 与行高一致，让多行标题保持相同的文字亮度。 */
+    background-size: 100% 1.2em;
+    background-repeat: repeat-y;
     -webkit-background-clip: text;
     background-clip: text;
     -webkit-text-fill-color: transparent;
