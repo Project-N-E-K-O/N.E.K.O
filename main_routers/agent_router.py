@@ -116,11 +116,13 @@ class _AgentMutationRoute(APIRoute):
                         parsed_payload = decoded
 
                 is_emergency_stop = path == "/api/agent/builtin/stop"
+                is_json_emergency_stop = is_emergency_stop and media_type == "application/json"
                 rejected = _validate_local_mutation_request(
                     request,
                     payload=parsed_payload,
                     error_defaults={"success": False},
-                    require_csrf=not (is_emergency_stop and media_type == "application/json"),
+                    require_csrf=not is_json_emergency_stop,
+                    allow_stale_csrf=is_json_emergency_stop,
                 )
                 if rejected is not None:
                     return rejected

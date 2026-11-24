@@ -864,7 +864,7 @@ ensure_shared_instance_id() {
 
     local generated_id=""
     if [ -r /proc/sys/kernel/random/uuid ]; then
-        generated_id="$(tr -d '-\n\r' < /proc/sys/kernel/random/uuid 2>/dev/null || true)"
+        generated_id="$(tr -d '\n\r-' < /proc/sys/kernel/random/uuid 2>/dev/null || true)"
     fi
     if [ -z "$generated_id" ] && command -v "$py_bin" >/dev/null 2>&1; then
         generated_id="$("$py_bin" -c 'import uuid; print(uuid.uuid4().hex)' 2>/dev/null || true)"

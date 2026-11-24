@@ -603,7 +603,7 @@ async def update_core_config(request: Request):
                 raise TypeError("API Key必须是字符串类型")
             return value.strip()
 
-        # Allow missing coreApiKey only when custom APIs are enabled
+        # Allow missing coreApiKey only when custom APIs are enabled or toggling disableTts alone
         if enable_custom_api:
             # coreApiKey is optional with custom APIs enabled
             if 'coreApiKey' in data:
@@ -613,6 +613,9 @@ async def update_core_config(request: Request):
                     return {"success": False, "error": str(exc)}
                 if api_key is not None:
                     core_cfg['coreApiKey'] = api_key
+        elif is_legacy_disable_tts_toggle:
+            # Single-field disableTts toggle never edits provider/key fields; preserve stored credentials.
+            pass
         else:
             # Require coreApiKey when custom APIs are disabled
             if 'coreApiKey' not in data and not core_uses_free_provider:

@@ -36,6 +36,7 @@ from .preview_cards import (
     _assert_workshop_path,
     _cleanup_consumed_preview_staging,
     _is_path_inside_preview_staging,
+    _paths_overlap_by_samefile,
     _verify_preview_image_file,
     find_preview_image_in_folder,
 )
@@ -432,8 +433,12 @@ def _resolve_workshop_export_child(path: str, workshop_export_dir: str) -> tuple
     root = os.path.realpath(os.path.normpath(workshop_export_dir))
     norm_resolved = _normcase(resolved)
     norm_root = _normcase(root)
+    staging_literal = os.path.join(root, "_preview_staging")
+    staging_resolved = os.path.realpath(staging_literal)
     is_preview_staging = (
         os.path.basename(resolved).casefold() == "_preview_staging"
+        or norm_resolved in {_normcase(staging_literal), _normcase(staging_resolved)}
+        or _paths_overlap_by_samefile(resolved, staging_resolved)
         or _is_path_inside_preview_staging(
             resolved, os.path.dirname(root), normcase_fn=_normcase
         )

@@ -492,14 +492,13 @@ def test_the_stop_route_accepts_same_origin_json_without_csrf_token_and_rejects_
         assert r_no_origin.status_code == 403
         assert r_no_origin.json()["error_code"] == "csrf_validation_failed"
 
-        # Same-origin JSON with an explicitly wrong CSRF token -> 403, not forwarded.
-        r_bad_csrf = bare_client.post(
+        # Same-origin JSON with an explicitly stale/expired CSRF token still passes for emergency stop.
+        r_stale_csrf = bare_client.post(
             "/api/agent/builtin/stop",
             content='{"group": "keyboard_mouse"}',
             headers={**stop_headers, "X-CSRF-Token": "invalid-token"},
         )
-        assert r_bad_csrf.status_code == 403
-        assert r_bad_csrf.json()["error_code"] == "csrf_validation_failed"
+        assert (r_stale_csrf.status_code, r_stale_csrf.json()) == (200, {"success": True, "stopped": ["c1"]})
 
         # Same-origin JSON with cross-site browser metadata -> 403, not forwarded.
         r_cross_site = bare_client.post(
@@ -523,7 +522,7 @@ def test_the_stop_route_accepts_same_origin_json_without_csrf_token_and_rejects_
         r_cross_port = bare_client.post(
             "/api/agent/builtin/stop",
             content='{"group": "keyboard_mouse"}',
-            headers={**stop_headers, "Origin": "http://127.0.0.1:3000"},
+            headers={**stop_headers, "Origin": "http://testserver:3000"},
         )
         assert r_cross_port.status_code == 403
         assert r_cross_port.json()["error_code"] == "csrf_validation_failed"
@@ -560,7 +559,7 @@ def test_the_stop_route_accepts_same_origin_json_without_csrf_token_and_rejects_
         )
         assert r_remote.status_code == 501
 
-    assert len(agent.requests) == 2
+    assert len(agent.requests) == 3
 
 
 def test_the_browser_settings_are_read_from_the_agent_process(agent, client):

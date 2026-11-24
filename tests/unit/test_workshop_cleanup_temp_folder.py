@@ -257,3 +257,35 @@ async def test_symlinked_preview_staging_and_its_target_are_rejected(export_root
         assert staged_file.is_file()
 
     _assert_untouched(export_root)
+
+
+async def test_symlinked_workshop_export_and_symlinked_preview_staging_are_rejected(
+    tmp_path, monkeypatch
+):
+    """When WorkshopExport itself is a symlink, a symlinked _preview_staging target is still rejected."""
+    workshop_base = tmp_path / 'workshop_root'
+    workshop_base.mkdir()
+    exports_alias = tmp_path / 'exports_alias'
+    exports_alias.mkdir()
+    target_dir = exports_alias / 'staged_target'
+    staged_file = target_dir / 'job1' / 'preview.png'
+    staged_file.parent.mkdir(parents=True)
+    staged_file.write_bytes(b'png-bytes')
+
+    export_link = workshop_base / 'WorkshopExport'
+    staging_link = exports_alias / '_preview_staging'
+    try:
+        export_link.symlink_to(exports_alias, target_is_directory=True)
+        staging_link.symlink_to(target_dir, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip('symlinks not available on this platform')
+
+    async def _workshop_path():
+        return str(workshop_base)
+
+    monkeypatch.setattr(publish, 'get_workshop_path_async', _workshop_path)
+
+    for forbidden in (str(staging_link), str(target_dir)):
+        status, body = await _cleanup(forbidden)
+        assert status == 403, body
+        assert staged_file.is_file()

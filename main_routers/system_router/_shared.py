@@ -177,6 +177,7 @@ def _validate_local_mutation_request(
     payload: dict[str, Any] | None = None,
     error_defaults: dict[str, Any] | None = None,
     require_csrf: bool = True,
+    allow_stale_csrf: bool = False,
 ) -> JSONResponse | None:
     token_supplied, csrf_token = _extract_local_csrf_token(request, payload)
     has_valid_csrf = _is_valid_local_csrf_token(csrf_token)
@@ -186,7 +187,7 @@ def _validate_local_mutation_request(
     sec_fetch_site = request.headers.get("sec-fetch-site", "").strip().lower()
     allow_tokenless = (
         not require_csrf
-        and not token_supplied
+        and (not token_supplied or allow_stale_csrf)
         and sec_fetch_site not in {"cross-site", "same-site"}
     )
 

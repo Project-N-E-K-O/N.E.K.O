@@ -177,10 +177,14 @@ def test_entrypoint_exports_shared_instance_id_before_starting_services():
     script = entrypoint_path.read_text(encoding="utf-8")
 
     assert "ensure_shared_instance_id" in script
+    assert "tr -d '-" not in script, "tr -d option argument must not begin with a hyphen"
     start_block = script.split("start_services()", 1)[1].split("\n}\n", 1)[0]
     ensure_pos = start_block.index("ensure_shared_instance_id")
-    launch_pos = start_block.index("app.main_server")
-    assert ensure_pos < launch_pos, "entrypoint must export NEKO_INSTANCE_ID before launching servers"
+    for launch_marker in ("app.memory_server", "app.main_server", "app.agent_server"):
+        launch_pos = start_block.index(launch_marker)
+        assert ensure_pos < launch_pos, (
+            f"entrypoint must export NEKO_INSTANCE_ID before launching {launch_marker}"
+        )
 
     # Never echo or log the shared instance ID value (it seeds AUTOSTART_CSRF_TOKEN).
     for line in script.splitlines():
@@ -193,12 +197,15 @@ def test_entrypoint_exports_shared_instance_id_before_starting_services():
     if not bash_bin:
         return
 
-    # Extract only ensure_shared_instance_id and run it in a clean env.
+    # Extract only ensure_shared_instance_id and run it in a clean env without BASH_ENV.
     fn_start = script.index("ensure_shared_instance_id()")
     fn_end = script.index("\n}\n", fn_start) + 3
     fn_src = script[fn_start:fn_end]
 
+    import os
     import sys
+
+    probe_env = {k: v for k, v in os.environ.items() if k != "BASH_ENV"}
 
     probe_generated = subprocess.run(
         [
@@ -206,9 +213,12 @@ def test_entrypoint_exports_shared_instance_id_before_starting_services():
             "-euo",
             "pipefail",
             "-c",
-            f'{fn_src}\nunset NEKO_INSTANCE_ID\nensure_shared_instance_id "{sys.executable}"\n'
-            f'"{sys.executable}" -c "import os; print(os.environ[\'NEKO_INSTANCE_ID\'])"',
+            f'{fn_src}\nunset NEKO_INSTANCE_ID\nensure_shared_instance_id "$1"\n'
+            '"$1" -c "import os; print(os.environ[\'NEKO_INSTANCE_ID\'])"',
+            "bash",
+            sys.executable,
         ],
+        env=probe_env,
         capture_output=True,
         text=True,
         check=True,
@@ -224,9 +234,12 @@ def test_entrypoint_exports_shared_instance_id_before_starting_services():
             "pipefail",
             "-c",
             f'{fn_src}\nexport NEKO_INSTANCE_ID="custom-shared-id"\n'
-            f'ensure_shared_instance_id "{sys.executable}"\n'
-            f'"{sys.executable}" -c "import os; print(os.environ[\'NEKO_INSTANCE_ID\'])"',
+            'ensure_shared_instance_id "$1"\n'
+            '"$1" -c "import os; print(os.environ[\'NEKO_INSTANCE_ID\'])"',
+            "bash",
+            sys.executable,
         ],
+        env=probe_env,
         capture_output=True,
         text=True,
         check=True,

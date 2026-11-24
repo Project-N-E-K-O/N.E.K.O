@@ -406,7 +406,15 @@ def test_core_api_legacy_disable_tts_same_origin_compatibility(monkeypatch, tmp_
     manager.project_config_dir = tmp_path / "project-config"
     manager.config_dir.mkdir()
     manager.project_config_dir.mkdir()
-    manager.save_json_config("core_config.json", {"coreApi": "free", "disableTts": False})
+    manager.save_json_config(
+        "core_config.json",
+        {
+            "coreApi": "qwen",
+            "coreApiKey": "sk-paid-key",
+            "enableCustomApi": False,
+            "disableTts": False,
+        },
+    )
     manager._core_config_cache = None
 
     async def _noop(*_args, **_kwargs):
@@ -457,6 +465,19 @@ def test_core_api_legacy_disable_tts_same_origin_compatibility(monkeypatch, tmp_
         assert acquire_count == 1
         saved = json_mod.loads((manager.config_dir / "core_config.json").read_text(encoding="utf-8"))
         assert saved["disableTts"] is True
+        assert saved["coreApi"] == "qwen"
+        assert saved["coreApiKey"] == "sk-paid-key"
+
+        # Non-single-key paid-provider updates with valid CSRF must still enforce coreApiKey validation.
+        r_multi_paid = client.post(
+            "/api/config/core_api",
+            json={"disableTts": False, "coreApi": "qwen"},
+            headers={"Origin": "http://testserver", "X-CSRF-Token": _csrf_token()},
+        )
+        assert r_multi_paid.status_code == 200
+        assert r_multi_paid.json()["success"] is False
+        assert "coreApiKey" in r_multi_paid.json()["error"]
+        assert acquire_count == 2
 
         # Wrong CSRF token must still fail even on same-origin single-key disableTts.
         r_bad_tok = client.post(
@@ -480,7 +501,7 @@ def test_core_api_legacy_disable_tts_same_origin_compatibility(monkeypatch, tmp_
         for bad_payload, bad_headers, expected_status in (
             ({"disableTts": False}, {}, 403),
             ({"disableTts": False}, {"Origin": "https://evil.example"}, 403),
-            ({"disableTts": False}, {"Origin": "http://127.0.0.1:3000"}, 403),
+            ({"disableTts": False}, {"Origin": "http://testserver:3000"}, 403),
             ({"disableTts": False, "coreApi": "qwen"}, {"Origin": "http://testserver"}, 403),
             ({"disableTts": "false"}, {"Origin": "http://testserver"}, 403),
         ):
@@ -494,7 +515,7 @@ def test_core_api_legacy_disable_tts_same_origin_compatibility(monkeypatch, tmp_
         )
         assert r_plain.status_code == 415
 
-        assert acquire_count == 1
+        assert acquire_count == 2
         saved_after_rejections = json_mod.loads(
             (manager.config_dir / "core_config.json").read_text(encoding="utf-8")
         )
