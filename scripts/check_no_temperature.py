@@ -59,8 +59,12 @@ not inspected.
 
 Scope and exemptions
 --------------------
-The default scope is the whole repository, minus virtualenvs, dependency and
-build folders, caches and ``.claude`` (local worktrees). The only exemptions
+The default scope is the whole repository. For the repository root the file
+list comes from git: tracked files plus untracked ones that are not ignored,
+so gitignored local code (plugins installed but not committed, nested
+checkouts) is not scanned. Without git, or for any other path, folders are
+walked. Either way virtualenvs, dependency and build folders, caches and
+``.claude`` (local worktrees) are skipped. The only exemptions
 are the entries of ``EXEMPTIONS``, each with its reason. A run over the
 repository root (no arguments, ``.`` or its absolute path) also reports an
 exemption that no longer suppresses anything, so the list cannot go stale.
@@ -79,6 +83,7 @@ from __future__ import annotations
 import argparse
 import ast
 import os
+import subprocess
 import sys
 import tokenize
 import warnings
@@ -333,6 +338,43 @@ def _exemption_for(rel: str | None) -> str | None:
     return None
 
 
+def _git_listed_python_files(root: Path) -> list[Path] | None:
+    """Python files git tracks in ``root`` plus untracked ones it does not
+    ignore, or None when ``root`` is not the top of a git work tree or git is
+    unavailable.
+
+    Gitignored code (plugins installed locally but not committed, nested
+    checkouts) is not repository code and is left out; a new file is still
+    seen before it is ever ``git add``-ed.
+    """
+    try:
+        top = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=root, capture_output=True, text=True, timeout=60, check=False,
+        )
+        if top.returncode != 0 or Path(top.stdout.strip()).resolve() != root.resolve():
+            return None
+        listed = subprocess.run(
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*.py"],
+            cwd=root, capture_output=True, timeout=120, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if listed.returncode != 0:
+        return None
+    files: set[Path] = set()
+    for raw in listed.stdout.split(b"\0"):
+        if not raw:
+            continue
+        rel = raw.decode("utf-8", "surrogateescape")
+        if EXCLUDE_DIRS.intersection(rel.split("/")[:-1]):
+            continue
+        path = root / rel
+        if path.is_file():  # a tracked file may be deleted in the work tree
+            files.add(path)
+    return sorted(files)
+
+
 def _iter_python_files(paths: Iterable[Path]) -> Iterator[Path]:
     for root in paths:
         if root.is_file():
@@ -341,6 +383,11 @@ def _iter_python_files(paths: Iterable[Path]) -> Iterator[Path]:
             continue
         if not root.is_dir():
             continue
+        if _is_repo_root(root):
+            listed = _git_listed_python_files(root)
+            if listed is not None:
+                yield from listed
+                continue
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = sorted(d for d in dirnames if d not in EXCLUDE_DIRS)
             for filename in sorted(filenames):
