@@ -111,7 +111,8 @@
   //          失败后 15s 再试，不再每拍重发。
   //   1.6.41 自升级重载只在聊天 / 字幕 / 提示 / HUD 窗口进行，编辑器页面不再被自动刷新。
   //   1.6.42 窗口重新获得焦点 / 变为可见时清掉轮询退避，立即重新拉取。
-  var SCRIPT_VERSION = '1.6.42';
+  //   1.6.43 同源请求带会话 cookie（远程窗口不再 401）；新调色板直接应用时作废仍在预热的旧调色板。
+  var SCRIPT_VERSION = '1.6.43';
 
   // 允许的颜色值形态。刻意保守：只放行纯颜色，杜绝把任意 CSS 注进变量。
   var RE_HEX = /^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
@@ -1989,7 +1990,7 @@
     var probe = null;
     try { probe = new window.CSSStyleSheet(); } catch (e) { return; }
 
-    fetch(abs, { cache: 'reload', credentials: 'omit' }).then(function (res) {
+    fetch(abs, { cache: 'reload', credentials: 'same-origin' }).then(function (res) {
       if (!res || !res.ok) return null;
       return res.text();
     }).then(function (css) {
@@ -2142,7 +2143,7 @@
 
     selfUpgradeAt = now;
 
-    fetch(url, { cache: 'reload', credentials: 'omit' }).then(function (res) {
+    fetch(url, { cache: 'reload', credentials: 'same-origin' }).then(function (res) {
       if (!res || !res.ok) return null;
       return res.text();
     }).then(function (code) {
@@ -2729,6 +2730,15 @@
       }
     }
 
+    // 走到这里就是要直接应用 p。若还有一份更早的调色板在等预热，它已经被 p 取代：
+    // 作废它的票号，否则预热完成时会把旧调色板再应用一遍（甚至把刚关掉的主题重新打开）。
+    if (warmPending && warmPending !== p) {
+      warmSeq += 1;
+      warmPending = null;
+      warmingKey = null;
+      log('superseded a pending warm-up');
+    }
+
     if (p.enabled === false) {
       removeStyle();
       if (fadeTimer) { clearTimeout(fadeTimer); fadeTimer = 0; }
@@ -2977,7 +2987,9 @@
     if (!force && pollBackoffUntil && Date.now() < pollBackoffUntil) return;
     inflight = true;
     var url = themeUrl() + '?_=' + Date.now();
-    var opts = { cache: 'no-store', credentials: 'omit', mode: 'cors' };
+    // 内置后是同源请求：远程 / Docker / 反代窗口要带上实例访问的会话 cookie，
+    // 否则 InstanceAccessMiddleware 在路由之前就返回 401。
+    var opts = { cache: 'no-store', credentials: 'same-origin' };
     // v0.1.11 P0：无论成功、数据不合法、网络失败还是超时，都在链尾释放 inflight。
     // 旧实现只在 then/catch 里复位：端点假死（fetch 永远 pending）时轮询永久停摆。
     var release = function () { inflight = false; };

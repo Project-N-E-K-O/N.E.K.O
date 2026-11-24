@@ -34,7 +34,7 @@ import threading
 import time
 import unicodedata
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -556,6 +556,20 @@ def _zone_for_hour(hour: Any) -> str:
             # night 跨零点：(22, 6) → 22,23,0..5
             return zone
     return SCHEDULE_ZONES[-1]
+
+
+def _zone_occurrence_date(stamp: datetime, zone: str) -> str:
+    """ISO date of the occurrence of ``zone`` that ``stamp`` falls in.
+
+    A zone that wraps midnight (night, 22:00-06:00) belongs to the day it
+    started on, so 01:00 on Tuesday is still Monday's night.
+    """
+    start, end = SCHEDULE_ZONE_HOURS.get(zone, (0, 24))
+    day = stamp.date()
+    if start > end and stamp.hour < end:
+        day = day - timedelta(days=1)
+    return day.isoformat()
+
 
 #: 主题「风格族」：面板主题库按族分组浏览（v0.2.0）。
 #: 值必须与 ``plugin/static/app.js`` 的族表、``_work/FEATURE-CONTRACT-0.2.0.md`` §3
@@ -2501,6 +2515,20 @@ class ThemeStudioService(NekoPluginBase):
         try:
             with _WRITE_LOCK:
                 palette = default_palette()
+                # 自定义材质预设是用户的素材库，不是「当前外观」：恢复默认只清外观，
+                # 预设库照旧保留（与 apply_theme / apply_saved_theme 的合并规则一致）。
+                # 读不出当前文件时（重置常用来救坏文件）就没有可保留的，照常重置。
+                try:
+                    current = self._read_unlocked(strict=True)
+                except _ThemeUnreadable:
+                    current = None
+                if current is not None:
+                    kept = _materials.normalize_materials(current.get("materials"))[0]
+                    custom = kept.get("custom_presets") or {}
+                    if custom:
+                        materials = dict(palette.get("materials") or _materials.default_materials())
+                        materials["custom_presets"] = dict(custom)
+                        palette["materials"] = materials
                 palette["updated_at"] = _now_iso()
                 self._write_unlocked(palette)
             return Ok(self._with_material_vars(palette))
@@ -2876,6 +2904,11 @@ class ThemeStudioService(NekoPluginBase):
         last_day_kind = raw.get("last_day_kind")
         if isinstance(last_day_kind, str) and last_day_kind in SCHEDULE_DAY_KINDS:
             schedule["last_day_kind"] = last_day_kind
+        # 时段的「哪一天那一次」（夜间跨零点算开始那天）。只记时段名的话，只设了
+        # 早晨的排程在第二天早晨会被当成「已经切过」而跳过。
+        last_date = raw.get("last_date")
+        if isinstance(last_date, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", last_date):
+            schedule["last_date"] = last_date
         # 「上次因为主题不存在而跳过」的指纹（day_kind|zone|theme_id）。它唯一的
         # 作用是让 warning 只刷一次 —— 以前缺主题时每 30 秒写一条，一天 2880 条，
         # 真出问题时反而把有用的日志淹了。同样是运行时标记，坏值丢弃。
@@ -2991,13 +3024,18 @@ class ThemeStudioService(NekoPluginBase):
         theme_id = str(self._schedule_zone_map(schedule, day_kind).get(zone) or "")
         if not theme_id:
             return {"action": "unset", "zone": zone, "day_kind": day_kind}
+        occurrence = _zone_occurrence_date(stamp, zone)
         # 「上次已经按这套切过」才跳过。但主题可能已经被删掉了，所以必须再确认它
         # 还在 —— 否则用户把主题重新导入回来之后，unchanged 会永远短路，自动换主题
         # 再也恢复不了（这一条是 v0.4.22 修的）。
+        # 还要比「哪一天那一次时段」：只设了早晨时，周一早晨切过、晚上手动换了别的，
+        # 周二早晨仍要再切一次。老 schedule.json 没有 last_date 时按同一次处理，
+        # 不在升级后的第一次检查里突然改掉用户当前的主题。
         same_stamp = (
             schedule.get("last_zone") == zone
             and schedule.get("last_theme") == theme_id
             and schedule.get("last_day_kind", "weekday") == day_kind
+            and schedule.get("last_date", occurrence) == occurrence
         )
         if not force and same_stamp and self._theme_exists(theme_id):
             return {"action": "unchanged", "zone": zone, "day_kind": day_kind, "theme_id": theme_id}
@@ -3016,6 +3054,7 @@ class ThemeStudioService(NekoPluginBase):
                 last_zone=zone,
                 last_day_kind=day_kind,
                 last_theme=theme_id,
+                last_date=occurrence,
                 last_missing=fingerprint,
             )
             return {"action": "missing", "zone": zone, "day_kind": day_kind, "theme_id": theme_id}
@@ -3045,6 +3084,7 @@ class ThemeStudioService(NekoPluginBase):
             last_zone=zone,
             last_day_kind=day_kind,
             last_theme=theme_id,
+            last_date=occurrence,
             # 真的切成功了：清掉「缺主题」标记，下次再缺（换了主题又被删）还要能警告。
             last_missing=None,
         )

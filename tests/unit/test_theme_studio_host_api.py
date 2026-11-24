@@ -156,6 +156,56 @@ def test_motion_switches_stop_drift_animation(animation):
 
 
 @pytest.mark.unit
+def test_reset_theme_keeps_saved_material_presets(studio):
+    from theme_studio import materials as ts_materials
+
+    saved = theme_studio.run_entry_sync(
+        "save_material_preset",
+        {"name": "my-glass", "materials": ts_materials.default_materials()},
+    )
+    assert saved.ok, saved.error
+    before = theme_studio.run_entry_sync("get_theme", {}).value["materials"]["custom_presets"]
+    assert before, "precondition: a custom preset was stored"
+
+    reset = theme_studio.run_entry_sync("reset_theme", {})
+    assert reset.ok, reset.error
+    after = theme_studio.run_entry_sync("get_theme", {}).value["materials"]
+    assert set(after["custom_presets"]) == set(before)
+    assert after["enabled"] is False
+
+
+@pytest.mark.unit
+def test_daily_schedule_applies_again_on_the_next_day(tmp_path):
+    import json
+    from datetime import datetime
+
+    studio = ts_service.ThemeStudioService(data_dir=tmp_path / "data")
+    studio._ensure_dirs()
+    (studio.data_dir / "schedule.json").write_text(
+        json.dumps({"schema": 2, "enabled": True, "zones": {"morning": "amber-dusk"}}),
+        encoding="utf-8",
+    )
+    clock = {"now": datetime(2026, 11, 23, 8, 0)}  # Monday morning
+    studio._now = lambda: clock["now"]
+
+    assert studio._schedule_tick()["action"] == "applied"
+    clock["now"] = datetime(2026, 11, 23, 9, 30)
+    assert studio._schedule_tick()["action"] == "unchanged"
+    clock["now"] = datetime(2026, 11, 24, 8, 0)  # Tuesday morning
+    assert studio._schedule_tick()["action"] == "applied"
+
+
+@pytest.mark.unit
+def test_night_zone_occurrence_belongs_to_the_day_it_started():
+    from datetime import datetime
+
+    monday_late = ts_service._zone_occurrence_date(datetime(2026, 11, 23, 23, 0), "night")
+    tuesday_early = ts_service._zone_occurrence_date(datetime(2026, 11, 24, 1, 0), "night")
+    assert monday_late == tuesday_early == "2026-11-23"
+    assert ts_service._zone_occurrence_date(datetime(2026, 11, 24, 8, 0), "morning") == "2026-11-24"
+
+
+@pytest.mark.unit
 def test_huge_integer_material_value_falls_back_instead_of_raising():
     from theme_studio import materials as ts_materials
 
