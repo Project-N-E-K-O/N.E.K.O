@@ -88,4 +88,6 @@ const messages = {
   },
 }
 
+export type PluginConsentMessages = typeof messages
+
 export default { ...messages, capabilities: withPermissionLabels(messages.capabilities, labels) }

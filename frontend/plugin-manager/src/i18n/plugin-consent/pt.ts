@@ -1,7 +1,8 @@
 import labels from '../plugin-permissions/pt'
 import { withPermissionLabels } from '../plugin-permissions/shared'
+import type { PluginConsentMessages } from './en-US'
 
-const messages = {
+const messages: PluginConsentMessages = {
   title: 'Permissões',
   dialogTitle: 'Confirmar capacidades do plugin',
   introduction: 'Este plugin pode usar as capacidades abaixo enquanto estiver em execução. Confirme-as para iniciá-lo.',

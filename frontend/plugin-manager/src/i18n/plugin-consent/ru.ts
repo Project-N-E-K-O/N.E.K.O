@@ -1,7 +1,8 @@
 import labels from '../plugin-permissions/ru'
 import { withPermissionLabels } from '../plugin-permissions/shared'
+import type { PluginConsentMessages } from './en-US'
 
-const messages = {
+const messages: PluginConsentMessages = {
   title: 'Разрешения',
   dialogTitle: 'Подтверждение возможностей плагина',
   introduction: 'Во время работы плагин может использовать перечисленные возможности. Подтвердите их для запуска.',

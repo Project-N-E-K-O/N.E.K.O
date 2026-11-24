@@ -1,7 +1,8 @@
 import labels from '../plugin-permissions/ja'
 import { withPermissionLabels } from '../plugin-permissions/shared'
+import type { PluginConsentMessages } from './en-US'
 
-const messages = {
+const messages: PluginConsentMessages = {
   title: '権限',
   dialogTitle: 'プラグイン機能の確認',
   introduction: 'このプラグインは実行中に以下の機能を使用します。確認すると起動できます。',

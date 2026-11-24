@@ -1,7 +1,8 @@
 import labels from '../plugin-permissions/zh-CN'
 import { withPermissionLabels } from '../plugin-permissions/shared'
+import type { PluginConsentMessages } from './en-US'
 
-const messages = {
+const messages: PluginConsentMessages = {
   title: '权限',
   dialogTitle: '确认插件能力',
   introduction: '该插件运行时会调用以下能力，确认后即可启动。',

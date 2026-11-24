@@ -1,7 +1,8 @@
 import labels from '../plugin-permissions/zh-TW'
 import { withPermissionLabels } from '../plugin-permissions/shared'
+import type { PluginConsentMessages } from './en-US'
 
-const messages = {
+const messages: PluginConsentMessages = {
   title: '權限',
   dialogTitle: '確認外掛能力',
   introduction: '此外掛執行時會呼叫以下能力，確認後即可啟動。',

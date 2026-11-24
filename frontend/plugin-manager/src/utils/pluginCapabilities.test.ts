@@ -15,26 +15,8 @@ import {
   capabilityOrigin,
 } from './pluginCapabilities'
 import type { CapabilityAnalysis } from '@/api/pluginConsent'
-import zhCnConsent from '@/i18n/plugin-consent/zh-CN'
-import zhTwConsent from '@/i18n/plugin-consent/zh-TW'
-import enUsConsent from '@/i18n/plugin-consent/en-US'
-import jaConsent from '@/i18n/plugin-consent/ja'
-import koConsent from '@/i18n/plugin-consent/ko'
-import ruConsent from '@/i18n/plugin-consent/ru'
-import esConsent from '@/i18n/plugin-consent/es'
-import ptConsent from '@/i18n/plugin-consent/pt'
-
-// One module per language (see i18n/localeBundles.ts); the tests check all eight.
-const pluginConsentMessages = {
-  'zh-CN': zhCnConsent,
-  'zh-TW': zhTwConsent,
-  'en-US': enUsConsent,
-  ja: jaConsent,
-  ko: koConsent,
-  ru: ruConsent,
-  es: esConsent,
-  pt: ptConsent,
-}
+import { SUPPORTED_LOCALES } from '@/i18n'
+import { allPluginConsentMessages as pluginConsentMessages } from '@/i18n/plugin-consent/testing'
 
 // Mirrors PERMISSION_IDS in plugin/sdk/shared/permissions/catalog.py; a Python
 // test checks this list against the catalog.
@@ -219,6 +201,10 @@ describe('consentSaveErrorKey', () => {
 })
 
 describe('permission labels', () => {
+  it('checks every supported language', () => {
+    expect(Object.keys(pluginConsentMessages).sort()).toEqual([...SUPPORTED_LOCALES].sort())
+  })
+
   it.each(Object.entries(pluginConsentMessages))('%s labels system.network:listen', (_, messages) => {
     for (const field of ['title', 'description'] as const) {
       const key = capabilityMessageKey('system.network:listen', field).replace(/^pluginConsent\./, '')
