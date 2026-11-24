@@ -376,8 +376,8 @@ class TreeWork:
         """Whether a worktree's directory is not there any more (and not merely not to be opened this moment)."""
         return not await asyncio.to_thread(Path(row.path).is_dir)
 
-    async def _gone_from_runtime(self, commission_id: str, *, itself: bool = True, seconds: float = 15.0) -> None:
-        """Wait until no run is under way for the task agents a commission started, nor (``itself``) for the commission; no longer than ``seconds``.
+    async def _gone_from_runtime(self, commission_id: str, seconds: float = 15.0) -> None:
+        """Wait until no run is under way for a commission, nor for the task agents it started; no longer than ``seconds``.
 
         Before a worktree they work in is looked at for the last time:
         a tool of theirs that is finishing a write is through by then.
@@ -389,7 +389,7 @@ class TreeWork:
 
         deadline = time.monotonic() + seconds
         while not self._closed and time.monotonic() < deadline:
-            theirs = [commission_id] if itself else []
+            theirs = [commission_id]
             try:
                 theirs += [child.id for child in await self._ledger.select(parent_id=commission_id)]
             except asyncio.CancelledError:
@@ -850,7 +850,7 @@ class TreeWork:
         # commission says it is done: stopped, as when a commission is done anywhere, and gone
         # from its runtime before what was changed is read.
         await self._end_what_it_started(commission_id)
-        await self._gone_from_runtime(commission_id, itself=False)
+        await self._gone_from_runtime(commission_id)
         chosen = await self.landing.get()
         if chosen["inspect"] or (await self._chosen(commission_id)).get("inspect"):
             verdict, findings = await self._inspect(row, commission)
@@ -1860,6 +1860,16 @@ class TreeWork:
                         "tool": "start_team",
                         "title": "; ".join(members),
                         "members": members,
+                        # The same, apart: for a page that names a preset in its own words.
+                        "parts": [
+                            {
+                                "preset": part["preset"],
+                                "description": truncate_to_tokens(
+                                    part["description"], settings.TEAM_ASK_MEMBERS_MAX_TOKENS
+                                ),
+                            }
+                            for part in writers
+                        ],
                         "count": len(writers),
                         "tree": True,
                     },

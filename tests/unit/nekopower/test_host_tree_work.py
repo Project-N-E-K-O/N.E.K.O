@@ -100,6 +100,9 @@ class FakeTrees:
         self.create_gate: asyncio.Event | None = None
         # Whether a worktree that is there cannot be opened this moment (git does not answer).
         self.fail_open = False
+        # Set once a worktree is being opened, which waits for ``open_gate`` when there is one.
+        self.opening = asyncio.Event()
+        self.open_gate: asyncio.Event | None = None
         # What the next merges come to; one that is not said copies the files and says ``landed``.
         self.results: list[Any] = []
         self.gate: asyncio.Event | None = None
@@ -134,6 +137,9 @@ class FakeTrees:
     async def open(self, project_dir: Any, path: Any) -> Worktree:
         if not Path(path).is_dir():
             raise WorktreeError(f"{path} is not a worktree")
+        self.opening.set()
+        if self.open_gate is not None:
+            await self.open_gate.wait()
         if self.fail_open:
             raise WorktreeError("git did not answer")
         return Worktree(Path(path).name, Path(project_dir), Path(path), "", "start", "")
@@ -559,13 +565,15 @@ async def test_a_commission_whose_worktree_is_gone_when_it_is_taken_up_again_get
 # ---------------------------------------------------------------------------
 
 
-async def test_a_landing_waits_until_whoever_works_in_the_directory_is_between_two_steps(hosts, tmp_path):
+@pytest.mark.parametrize("tool", [("glob", {"pattern": "*.html"}), ("list_agents", {})], ids=["a file tool", "a tool nobody rules on"])
+async def test_a_landing_waits_until_whoever_works_in_the_directory_is_between_two_steps(hosts, tmp_path, tool):
     host, trees, workdir, one, two, members = await _two_members(
         hosts, tmp_path,
         second=[_write("links.txt", "repaired"), _report("links repaired")],
-        # (Its first request: it is in the middle of a step until it is let go on, and then looks for files.)
+        # (Its first request: it is in the middle of a step until it is let go on, and then uses a tool:
+        # one the host rules on, or one it is not asked about, which is held before the next request.)
         first=lambda wait: [
-            [wait, call("glob", {"pattern": "*.html"}), finish("tool_calls")], [say("going on"), finish("stop")],
+            [wait, call(*tool), finish("tool_calls")], [say("going on"), finish("stop")],
         ],
     )
     trees.gate = asyncio.Event()
@@ -654,6 +662,8 @@ async def test_after_three_tries_the_changes_stay_in_the_worktree_and_the_user_d
         await host.archive_project("Shop site")
     listed = await host.worktrees(project="Shop site")
     assert [(item["id"], item["state"], item["title"]) for item in listed] == [(tree.id, "unlanded", stuck.title)]
+    # What this process made is not gone through as something an earlier one left.
+    assert await host.task_agents.reconcile_trees() == {"removed": [], "kept": []}
     # What the user is shown is in the language of the dialogue.
     words = brain_texts.TREE_NOT_LANDED_TEXTS
     assert set(words) == {"zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"}
@@ -801,9 +811,15 @@ async def test_a_task_agent_stopped_at_work_leaves_what_it_changed_for_the_user(
 
 
 async def test_a_commission_taken_up_again_goes_on_in_the_worktree_it_left(hosts, tmp_path):
+    more = asyncio.Event()
+
+    async def wait() -> None:
+        await more.wait()
+
     host, trees, workdir, one, two, members = await _two_members(
         hosts, tmp_path,
-        second=[_write("links.txt", "half"), _report("which pages?", status="blocked"), _write("more.txt"), _report("all of them")],
+        second=[_write("links.txt", "half"), _report("which pages?", status="blocked"),
+                [wait, *_write("more.txt")], _report("all of them")],
     )
     host.release.set()
     await wait_status(host, two.commission_id, "blocked")
@@ -812,6 +828,13 @@ async def test_a_commission_taken_up_again_goes_on_in_the_worktree_it_left(hosts
     assert (tree.state, tree.reason) == ("unlanded", "stopped")
 
     assert await host.tell(two.commission_id, "every page")
+    await wait_until(lambda: len(members["broken links"].requests) == 3, what="it being at work again")
+    # At work in it again, and on record so: no longer the user's to decide on.
+    again = await host.ledger.get_tree(tree.id)
+    assert (again.state, again.reason, again.session_id) == ("active", "", tree.session_id)
+    with pytest.raises(ValueError, match="at_work"):
+        await host.land_worktree(tree.id)
+    more.set()
     done = await wait_status(host, two.commission_id, "done")
 
     # The same worktree, with what it had changed before: both files landed.
@@ -1097,11 +1120,16 @@ async def test_one_decision_on_a_worktree_at_a_time_and_none_on_one_that_is_gone
     (tree,) = await host.ledger.trees()
     trees.gate = asyncio.Event()
     trees.merging.clear()
+    # (As if an earlier process had made it.)
+    host.task_agents._trees_mine.clear()
     landing = asyncio.ensure_future(host.land_worktree(tree.id))
     await asyncio.wait_for(trees.merging.wait(), 10)
     for decide in (host.land_worktree, host.discard_worktree, host.keep_worktree):
         with pytest.raises(ValueError, match="busy"):
             await decide(tree.id)
+    # Nor is it gone through meanwhile as one that was left at work.
+    assert await host.task_agents.reconcile_trees() == {"removed": [], "kept": []}
+    assert (await host.ledger.get_tree(tree.id)).state == "landing"
     trees.results = [MergeResult("failed", detail="the disk is full")]
     trees.gate.set()
     answer = await landing
@@ -1911,3 +1939,47 @@ async def test_a_worktree_left_to_the_user_as_its_commission_was_about_to_go_on_
     # It went on in another, and the user's was not merged.
     assert len(trees.made) == 2 and (workdir / "more.txt").exists() and not (workdir / "links.txt").exists()
     assert [(item.id, item.state) for item in await host.ledger.trees()] == [(tree.id, "kept")]
+
+
+async def test_a_worktree_being_landed_at_the_users_word_keeps_its_commission_from_being_stopped_with_its_parent(hosts, tmp_path):
+    clash = MergeResult("conflict", conflicts=("links.txt",))
+    host, trees, workdir, two, _members, _stuck = await _not_landed(hosts, tmp_path, [clash] * 4, turns=4)
+    (tree,) = await host.ledger.trees()
+    manager = host.task_agents
+    trees.gate = asyncio.Event()
+    trees.merging.clear()
+    landing = asyncio.ensure_future(host.land_worktree(tree.id))
+    await asyncio.wait_for(trees.merging.wait(), 10)
+
+    # On record as being landed, which is not waiting for the user any more: still one of those
+    # that are not ended with what started them.
+    assert (await host.ledger.get_tree(tree.id)).state == "landing"
+    assert two.commission_id in await manager._waits_in_tree()
+    trees.gate.set()
+    assert (await landing)["status"] == "landed"
+    assert two.commission_id not in await manager._waits_in_tree()
+
+
+async def test_a_worktree_its_commission_is_finding_again_is_passed_by_as_the_host_starts(hosts, tmp_path):
+    host, trees, workdir, one, two, members = await _two_members(
+        hosts, tmp_path,
+        second=[_write("links.txt", "half"), _report("which pages?", status="blocked"), _write("more.txt"), _report("all of them")],
+    )
+    host.release.set()
+    await wait_status(host, two.commission_id, "blocked")
+    await wait_until(lambda: not host.task_agents._tree_tasks, what="its worktree being seen to")
+    (tree,) = await host.ledger.trees()
+    # As after the host was started anew: nothing of it is in hand, and git is slow to open it.
+    manager = host.task_agents
+    manager._trees_mine.clear()
+    manager._tree_handles.clear()
+    trees.open_gate = asyncio.Event()
+
+    telling = asyncio.ensure_future(host.tell(two.commission_id, "every page"))
+    await asyncio.wait_for(trees.opening.wait(), 10)
+    # Its commission took it and is still finding it again: not gone through as one that was left.
+    assert await asyncio.wait_for(manager.reconcile_trees(), 5) == {"removed": [], "kept": []}
+    trees.open_gate.set()
+    assert await telling
+    await wait_status(host, two.commission_id, "done")
+    assert (workdir / "links.txt").read_text() == "half" and (workdir / "more.txt").exists()

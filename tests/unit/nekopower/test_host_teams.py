@@ -130,6 +130,9 @@ async def test_a_leader_starts_a_team_once_the_user_allowed_it_and_reports_once(
     assert (question["kind"], question["category"]) == ("permission", "open_session")
     # Asked once, for those that change files, with who they are and what becomes of what they change.
     assert question["detail"]["members"] == ["worker: repairs the links", "worker: tidies the styles"]
+    assert question["detail"]["parts"] == [
+        {"preset": "worker", "description": "repairs the links"}, {"preset": "worker", "description": "tidies the styles"},
+    ]
     assert (question["detail"]["count"], question["detail"]["tree"], question["detail"]["tool"]) == (2, True, "start_team")
     asked = describe_permission(question, "en")
     assert asked.startswith("form a team for this task: 2 familiars change files at the same time")
