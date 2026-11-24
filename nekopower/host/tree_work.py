@@ -406,19 +406,24 @@ class TreeWork:
         live = self._sessions.get(commission_id)
         return live is not None and not live.idle
 
-    async def _gone_from_runtime(self, commission_id: str) -> bool:
-        """Wait until no run is under way for a commission, nor for the task agents it started; returns whether that is so.
+    async def _gone_from_runtime(self, commission_id: str, *, itself: bool = True) -> bool:
+        """Wait until no run is under way for the task agents a commission started, nor (``itself``) for the commission; returns whether that is so.
 
         Before a worktree they work in is looked at for the last time:
         a tool of theirs that is finishing a write is through by then.
         No longer than ``_GONE_SECONDS``: False when one is still at it
         by then, or when the task agents it started could not be read.
-        Whoever asks keeps the worktree as it is then.
+        Whoever asks keeps the worktree as it is then. (A landing
+        asks for the task agents alone: a run of the commission's own
+        that began meanwhile is more the user said to it, which the
+        landing waits for by itself, ``_stale``.)
         """
         deadline = time.monotonic() + _GONE_SECONDS
         while not self._closed:
             try:
-                theirs = [commission_id, *(child.id for child in await self._ledger.select(parent_id=commission_id))]
+                theirs = [child.id for child in await self._ledger.select(parent_id=commission_id)]
+                if itself:
+                    theirs.append(commission_id)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 - not known: asked again, and not taken for gone
@@ -918,7 +923,7 @@ class TreeWork:
         # commission says it is done: stopped, as when a commission is done anywhere, and gone
         # from its runtime before what was changed is read.
         await self._end_what_it_started(commission_id)
-        if not await self._gone_from_runtime(commission_id):
+        if not await self._gone_from_runtime(commission_id, itself=False):
             # One of them is still at it in the worktree: nothing is merged under it.
             self._dones.pop(commission_id, None)
             return await self._not_landed(
@@ -927,7 +932,7 @@ class TreeWork:
         chosen = await self.landing.get()
         if chosen["inspect"] or (await self._chosen(commission_id)).get("inspect"):
             verdict, findings = await self._inspect(row, commission)
-            if not await self._gone_from_runtime(commission_id):
+            if not await self._gone_from_runtime(commission_id, itself=False):
                 # The inspector (stopped, say) is still at it in the worktree: nothing is merged under it.
                 self._dones.pop(commission_id, None)
                 return await self._not_landed(

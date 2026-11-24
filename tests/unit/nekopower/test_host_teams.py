@@ -1046,3 +1046,38 @@ async def test_an_inspector_the_user_stops_is_out_of_the_worktree_before_anythin
     await wait_status(host, two.commission_id, "done")
     assert seen == [False] and (workdir / "links.txt").exists()
     hold.set()
+
+
+async def test_what_is_said_to_a_task_agent_while_its_changes_are_checked_is_not_taken_for_an_inspector_at_work(
+    hosts, tmp_path, monkeypatch
+):
+    from nekopower.host import tree_work
+
+    monkeypatch.setattr(tree_work, "_GONE_SECONDS", 0.3)
+    checking, more = asyncio.Event(), asyncio.Event()
+
+    async def until_checked() -> None:
+        await checking.wait()
+
+    async def wait() -> None:
+        await more.wait()
+
+    host, trees, workdir, two, members = await _inspected(
+        hosts, tmp_path,
+        member=[_write("links.txt", "repaired"), _report("links repaired"),
+                [wait, *_write("sitemap.txt", "new")], _report("the sitemap is there as well")],
+        inspector=[[until_checked, *_report("it holds")], _report("it holds, the sitemap too")],
+    )
+    await wait_until(lambda: len(members[CHECK].requests) == 1, what="the inspector being at work")
+    # The user says more to the member while its changes are checked: it is at work again.
+    assert await host.tell(two.commission_id, "write the sitemap anew as well")
+    await wait_until(lambda: len(members["broken links"].requests) == 3, what="it being at work again")
+    checking.set()
+    await asyncio.sleep(1.0)
+    # The inspector is gone, and the member's own run is no inspector that would not stop: nothing is given up.
+    assert (await host.ledger.get(two.commission_id)).status == "working"
+    assert await _events(host, two.commission_id, "not_landed") == []
+    more.set()
+    done = await wait_status(host, two.commission_id, "done")
+    assert done.result_summary.startswith("the sitemap is there as well")
+    assert (workdir / "links.txt").exists() and (workdir / "sitemap.txt").exists()
