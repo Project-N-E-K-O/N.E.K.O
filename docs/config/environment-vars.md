@@ -76,6 +76,13 @@ Keep multi-process mode for development, independent service supervision, or
 agent-failure isolation. `NEKO_MERGED=0` is the immediate rollback for packaged
 deployments.
 
+## Native math library threads
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OPENBLAS_NUM_THREADS` | `1`, applied when no thread count is set | Thread count for the OpenBLAS library bundled with numpy. OpenBLAS reserves a 32 MiB buffer per thread when numpy loads, so its CPU-count default commits several hundred MiB in every process that imports numpy without ever using it. A positive number set in the shell, `.env`, or the container through this variable, `OPENBLAS_DEFAULT_NUM_THREADS`, `GOTO_NUM_THREADS`, or `OMP_NUM_THREADS` is kept; a blank, zero, negative, or non-numeric value counts as unset, because OpenBLAS ignores it. Plugin processes inherit the setting, and so do programs that plugins start (the app launcher, stdio MCP servers). Commands the task agent runs for you, in the built-in runtime or in dsh, do not: the injected default is removed from their environment, and a thread count you set yourself is passed through. |
+| `NEKO_INJECTED_OPENBLAS_THREADS` | Set by N.E.K.O | Internal. Written next to an injected `OPENBLAS_NUM_THREADS` so the default can be told apart from a value you set. Do not set it by hand. |
+
 ## Plugin autostart concurrency
 
 | Variable | Default | Description |

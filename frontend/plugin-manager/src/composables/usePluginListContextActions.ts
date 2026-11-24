@@ -2,6 +2,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { deletePlugin } from '@/api/plugins'
+import { collectPluginDeleteWarnings } from '@/utils/pluginDeleteResult'
 import { buildPluginCli } from '@/api/pluginCli'
 import { usePluginStore } from '@/stores/plugin'
 import { usePluginConsentState } from '@/stores/pluginConsentState'
@@ -281,11 +282,9 @@ export function usePluginListContextActions() {
         {
           const result = await deletePlugin(plugin.id)
           usePluginConsentState().forget(plugin.id)
-          if (result.restored_builtin_restart_error) {
-            ElMessage.warning(t('messages.pluginDeletedBuiltinRestartFailed', {
-              plugin: plugin.name,
-              error: result.restored_builtin_restart_error.message,
-            }))
+          const warnings = collectPluginDeleteWarnings(result, plugin.name, t)
+          if (warnings.length > 0) {
+            warnings.forEach((warning) => ElMessage.warning(warning))
           } else {
             ElMessage.success(t('messages.pluginDeleted'))
           }

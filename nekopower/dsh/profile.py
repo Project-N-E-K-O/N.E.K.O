@@ -742,13 +742,21 @@ def child_environment(
 ) -> dict[str, str]:
     """Return the environment of a dsh process.
 
-    The host's environment, as the built-in runtime's commands get it,
-    without what would configure dsh or its vendor's services behind the
-    host's back, and with dsh's directories set to ours. ``path`` goes in
-    front of the PATH (``DshLaunch.path``).
+    The host's environment, as the built-in runtime's commands get it
+    (so without the BLAS thread default the backend gave itself: dsh hands
+    this environment on to the commands it runs for the user), without what
+    would configure dsh or its vendor's services behind the host's back, and
+    with dsh's directories set to ours. ``path`` goes in front of the PATH
+    (``DshLaunch.path``).
     """
+    # Imported here, as this package does with ``config`` everywhere: reading
+    # the profile should not load the whole configuration.
+    from config.native_runtime import env_for_user_programs
+
     environment = {
-        name: value for name, value in base.items() if not name.upper().startswith(("DSH_", "DEEPSEEK_"))
+        name: value
+        for name, value in env_for_user_programs(base).items()
+        if not name.upper().startswith(("DSH_", "DEEPSEEK_"))
     }
     environment.update(dsh_directories(home))
     environment[KEY_VARIABLE] = token
