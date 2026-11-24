@@ -78,6 +78,10 @@ TIER_COARSE = "coarse"
 # on the small tier, like the coarse screen.
 TIER_SIDE_QUESTION = "side_question"
 TIER_FINE = "fine"
+# Where a commission belongs (``LexicalDecisionModel.belongs``): one request
+# on the tier the settings name (``ORCHESTRATOR_MODEL_SLOT``), metered under
+# a name of its own.
+TIER_ORCHESTRATE = "orchestrate"
 # The turn check: the small model again, with a budget of its own.
 TIER_TURN_CHECK = "turn_check"
 # A short description for a plugin whose manifest has none: the small model,
@@ -100,6 +104,7 @@ _CALL_TYPES = {
     TIER_ARCHIVE: "task_agent_archive",
     TIER_CONSOLIDATE: "task_agent_consolidate",
     TIER_SESSION_DRAFT: "task_agent_session_draft",
+    TIER_ORCHESTRATE: "task_agent_orchestrate",
 }
 _FINE_ATTEMPTS = 3
 _FINE_RETRY_DELAYS = (1.0, 2.0)
@@ -201,7 +206,7 @@ class DecisionLLM(Protocol):
     """The model tiers the lexical decision model uses."""
 
     async def complete(self, tier: str, messages: list[dict[str, Any]]) -> str:
-        """Return the text of one completion of a tier (``TIER_COARSE``, ``TIER_FINE``, ``TIER_TURN_CHECK``, ``TIER_SHORT_DESCRIPTION``, ``TIER_REVIEW``, ``TIER_ARCHIVE``, ``TIER_CONSOLIDATE``, ``TIER_SESSION_DRAFT``)."""
+        """Return the text of one completion of a tier (``TIER_COARSE``, ``TIER_FINE``, ``TIER_TURN_CHECK``, ``TIER_SHORT_DESCRIPTION``, ``TIER_REVIEW``, ``TIER_ARCHIVE``, ``TIER_CONSOLIDATE``, ``TIER_SESSION_DRAFT``, ``TIER_ORCHESTRATE``)."""
 
 
 class DecisionModel(Protocol):
@@ -255,6 +260,7 @@ class ConfiguredDecisionLLM:
         from utils.llm_client import create_chat_llm_async
 
         from config.nekopower_settings import (
+            ORCHESTRATOR_MODEL_SLOT,
             SESSION_DRAFT_MODEL_SLOT,
             SPACE_ARCHIVE_MODEL_SLOT,
             SPACE_CONSOLIDATE_MODEL_SLOT,
@@ -268,6 +274,7 @@ class ConfiguredDecisionLLM:
             TIER_ARCHIVE: SPACE_ARCHIVE_MODEL_SLOT,
             TIER_CONSOLIDATE: SPACE_CONSOLIDATE_MODEL_SLOT,
             TIER_SESSION_DRAFT: SESSION_DRAFT_MODEL_SLOT,
+            TIER_ORCHESTRATE: ORCHESTRATOR_MODEL_SLOT,
         }.get(tier, "summary" if tier in _SUMMARY_TIERS else "emotion")
         config = await asyncio.to_thread(get_config_manager(migrate=False).get_model_api_config, slot)
         key = (slot, config.get("api_key"), config.get("base_url"), config.get("model"), config.get("provider_type"), budget)
@@ -301,7 +308,7 @@ class ConfiguredDecisionLLM:
             TURN_CHECK_OUTPUT_MAX_TOKENS,
         )
 
-        from config.nekopower_settings import SIDE_QUESTION_OUTPUT_MAX_TOKENS
+        from config.nekopower_settings import ORCHESTRATOR_OUTPUT_MAX_TOKENS, SIDE_QUESTION_OUTPUT_MAX_TOKENS
 
         budget = {
             TIER_COARSE: AGENT_PLUGIN_COARSE_MAX_TOKENS,
@@ -312,6 +319,7 @@ class ConfiguredDecisionLLM:
             TIER_ARCHIVE: SPACE_ARCHIVE_OUTPUT_MAX_TOKENS,
             TIER_CONSOLIDATE: SPACE_CONSOLIDATE_OUTPUT_MAX_TOKENS,
             TIER_SESSION_DRAFT: SESSION_DRAFT_OUTPUT_MAX_TOKENS,
+            TIER_ORCHESTRATE: ORCHESTRATOR_OUTPUT_MAX_TOKENS,
         }.get(tier, AGENT_PLUGIN_FULL_MAX_TOKENS)
         client = await self._client(tier, budget)
         response = await client.ainvoke(messages)
@@ -787,6 +795,23 @@ class LexicalDecisionModel:
         decision = parse_json_object(raw or "")
         verdict = decision.get("side_question") if decision is not None else None
         return verdict if isinstance(verdict, bool) else None
+
+    async def belongs(self, messages: list[dict[str, Any]]) -> str | None:
+        """Ask which of a few projects and task agents a new commission belongs with; returns the answer as it came, or None.
+
+        One request (``TIER_ORCHESTRATE``), with the messages
+        ``orchestrator.question`` put together. Asked only where the words
+        of the commission neither name nor clearly match or miss what is
+        there (``families.Families.decide``). None when the request
+        failed: the commission is then a new one of its own.
+        """
+        try:
+            return await self._llm.complete(TIER_ORCHESTRATE, messages)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - not told: a new loose commission
+            logger.warning("asking where a commission belongs failed: %s", type(exc).__name__)
+            return None
 
     # -- first round ------------------------------------------------------
 

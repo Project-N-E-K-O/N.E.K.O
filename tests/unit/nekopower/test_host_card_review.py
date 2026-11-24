@@ -252,6 +252,8 @@ async def test_what_a_project_is_for_is_not_written_for_a_commission_of_no_proje
 
 
 async def test_a_project_the_review_names_is_described_by_the_review(world):
+    # (One that is there and says nothing of itself yet: a review makes no project of one commission.)
+    await world.space.touch_project("Photo archive")
     world.llm.answers[TIER_REVIEW] = [
         {"review": "It was done.", "project": "Photo archive", "project_description": "The family's photos, sorted."}
     ]

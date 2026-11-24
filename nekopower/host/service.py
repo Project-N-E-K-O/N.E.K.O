@@ -49,7 +49,7 @@ import asyncio
 import contextlib
 import logging
 import os
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -66,7 +66,7 @@ from nekopower.host.task_agents import (
 )
 from nekopower.host.gateway import CapabilityGateway
 from nekopower.host.leases import ActivityListener, BuiltinLeases
-from nekopower.host.ledger import ENDED_STATUSES, Commission, Ledger, Listener
+from nekopower.host.ledger import ENDED_STATUSES, PRESET_OF_KIND, Commission, Ledger, Listener
 from nekopower.host.model_capabilities import ModelCapabilityStore
 from nekopower.host.outbox import OutboxSender, SendReport
 from nekopower.host.paths import DEFAULT_PROJECT, HostPaths
@@ -295,6 +295,11 @@ class NekoPowerHost:
         judge = getattr(decision, "side_question", None)
         if judge is not None:
             self.task_agents.set_side_question_judge(judge)
+        # Where a new commission belongs, when its words neither name nor
+        # clearly match what is there: one request of the small model.
+        belongs = getattr(decision, "belongs", None)
+        if belongs is not None:
+            self.task_agents.set_orchestrator_judge(belongs)
         self.brain = TaskBrain(
             ledger=self.ledger,
             preferences=self.preferences,
@@ -1443,17 +1448,48 @@ class NekoPowerHost:
                 project = await self.space.describe_project(name, description, by="user") or project
             if rules.strip():
                 await self.space.write_rules(rules, name)
-            session, _made = await self.ledger.project_session(
-                lanlan_name.strip(), name,
-                workdir=str(wanted) if wanted else None, preset=preset,
+            card = {
+                "workdir": str(wanted) if wanted else None, "preset": preset,
                 # The user's where the user wrote something. A line left empty in the form was not
                 # emptied by the user: it is nobody's, and the first review fills it in.
-                title=title, title_by="user" if title.strip() else None,
-                duty=duty, duty_by="user" if duty.strip() else None,
-            )
+                "title": title, "title_by": "user" if title.strip() else None,
+                "duty": duty, "duty_by": "user" if duty.strip() else None,
+            }
+            # (The preset of a project's leader: a task agent the user makes with it is one.)
+            if preset == PRESET_OF_KIND["project"]:
+                # The project's leader: its commissions come to it, and it hands them out.
+                session, _made = await self.task_agents.families.make_leader(lanlan_name.strip(), name, **card)
+            else:
+                # A member: it does the project's work itself.
+                session = await self.ledger.create_session(
+                    name=name, lanlan_name=lanlan_name.strip(), project=name, kind="line", **card
+                )
         # The model it is sent to, by its preset, as it is made.
         await self.task_agents.settle_model(session)
         return {"project": project.to_json(), "session_id": session.id}
+
+    async def derive_leader(self, project: str, lanlan_name: str) -> dict[str, Any]:
+        """Give a project a leader for one character, as the user asks; returns ``{"session_id", "made"}``.
+
+        From then on the project's commissions come to the leader, but
+        for those that plainly go on with a member's own work
+        (``orchestrator.settle``); it hands them out and does none of the
+        work. The task agents the project has are its members. It is told where the project stands
+        with the first commission that opens in it, from what is on
+        record: no model is asked. A project that has a leader keeps it
+        (``made`` is False). Raises ``ValueError("no_character")``, and
+        ``LookupError`` for a project that is not there (or is archived).
+        """
+        if not isinstance(lanlan_name, str) or not lanlan_name.strip():
+            raise ValueError("no_character")
+        # With the lock a project's record and its sessions are written under: none is made
+        # between a look at the project and the write of where it works.
+        async with self._project_lock:
+            session, made = await self.task_agents.families.derive_leader(lanlan_name.strip(), project)
+        if made:
+            # The model it is sent to, by its preset, as it is made.
+            await self.task_agents.settle_model(session)
+        return {"session_id": session.id, "made": made}
 
     async def set_project_workdir(self, project: str, workdir: str) -> dict[str, Any]:
         """Change where the task agents of a project work, as the user asks; returns the project as a page shows it.
@@ -1502,7 +1538,12 @@ class NekoPowerHost:
             # The project's own sessions of every character first, looked at once more and written in
             # one go: each starts from the directory it keeps, so a commission that begins from here
             # on begins in the new one, and one that began since the look above stops the change.
-            before = await self.ledger.move_project(project, str(wanted))
+            # (Where its leaders work, of every character: a member one of them handed work to works there.)
+            led = await self.ledger.find_sessions(project=project, kind="project", commissions_each=0)
+            leaders = [(row.session.id, row.session.workdir) for row in led]
+            before = await self.ledger.move_project(
+                project, str(wanted), moves=self._moves_with(project, kept.workdir, leaders)
+            )
             if before is None:
                 raise ProjectBusy("at_work")
             # The record is written second: not written, the sessions go back, so that nothing is half changed.
@@ -1515,6 +1556,44 @@ class NekoPowerHost:
                 await self._undo_project_move(project, before, str(wanted))
                 raise LookupError(project)
             return changed.to_json()
+
+    def _moves_with(
+        self, project: str, was: str | None, leaders: Sequence[tuple[str, str | None]] = ()
+    ) -> Callable[[str, str | None], bool]:
+        """Return what says whether a member of a project moves when the project is given another directory.
+
+        Given the member's id and where it works. It moves when it works
+        where the project did (``was``), in no directory of its own yet,
+        or in the one the host gave it as a session of this project,
+        having none to give it of the project's: its own, or that of
+        one of the project's ``leaders`` (each with where it works on
+        record), which is where a member works that a leader handed a
+        commission to while the project had no directory (and the
+        leader moves). Where the leader works on record counts as well
+        as what the host would give it now: the two differ once the
+        data root was moved by hand. It stays when it works
+        anywhere else: it was a session of its own before it became the
+        project's (a family is made of such), and its files are there.
+        """
+        import os
+
+        def same(first: str, second: str) -> bool:
+            return os.path.normcase(os.path.normpath(first)) == os.path.normcase(os.path.normpath(second))
+
+        def moves(session_id: str, workdir: str | None) -> bool:
+            if not workdir or (was and same(workdir, was)):
+                return True
+            if any(place and same(workdir, place) for _leader, place in leaders):
+                return True
+            for given_to in (session_id, *(leader for leader, _place in leaders)):
+                try:
+                    if same(workdir, str(self.paths.work_dir(given_to, project))):
+                        return True
+                except ValueError:
+                    continue
+            return False
+
+        return moves
 
     async def _undo_project_move(self, project: str, before: dict[str, str | None], wanted: str) -> None:
         """Put a project's sessions back where they worked, after its record could not be written.

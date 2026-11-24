@@ -16,7 +16,11 @@ const apiMocks = vi.hoisted(() => ({
 const routerMocks = vi.hoisted(() => ({
   push: vi.fn(),
   replace: vi.fn(),
-  route: { params: { id: 'study_companion' }, query: {} as Record<string, string> },
+  route: {
+    name: 'PluginDetail' as string,
+    params: { id: 'study_companion' } as Record<string, string>,
+    query: {} as Record<string, string>,
+  },
 }))
 
 vi.mock('@/api/plugins', () => ({

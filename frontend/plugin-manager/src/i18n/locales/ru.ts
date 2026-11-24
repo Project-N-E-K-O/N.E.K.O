@@ -1,8 +1,8 @@
 import pluginConsentMessages from '../plugin-consent/ru'
-import { modelApiMessages } from '../model-api'
-import { modelBindingsMessages } from '../model-bindings'
-import { marketFeedbackMessages } from '../market-feedback'
-import { authoringMessages } from '../authoring'
+import modelApiMessages from '../model-api/ru'
+import modelBindingsMessages from '../model-bindings/ru'
+import marketFeedbackMessages from '../market-feedback/ru'
+import authoringMessages from '../authoring/ru'
 import powerMessages from '../power/ru'
 
 /**
@@ -10,10 +10,10 @@ import powerMessages from '../power/ru'
  */
 export default {
   pluginConsent: pluginConsentMessages,
-  authoring: authoringMessages['ru'],
-  marketFeedback: marketFeedbackMessages['ru'],
-  modelApi: modelApiMessages['ru'],
-  modelBindings: modelBindingsMessages['ru'],
+  authoring: authoringMessages,
+  marketFeedback: marketFeedbackMessages,
+  modelApi: modelApiMessages,
+  modelBindings: modelBindingsMessages,
   power: powerMessages,
   common: {
     chooseLanguage: "Выбрать язык",

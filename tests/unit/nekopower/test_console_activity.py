@@ -470,7 +470,8 @@ async def test_the_commissions_are_listed_newest_first_with_what_each_asks_and_k
     done, waiting = rows[first.id], rows[second.id]
     assert (done["status"], done["result"], done["project"], done["ask"]) == ("done", "sorted", None, None)
     assert (done["session"]["kind"], done["session"]["preset"]) == ("single", "general")
-    assert (waiting["status"], waiting["project"], waiting["session"]["kind"]) == ("waiting_user", "Garden", "project")
+    # (In a member of its project, which does the work: a project has a leader only when there is work to hand out.)
+    assert (waiting["status"], waiting["project"], waiting["session"]["kind"]) == ("waiting_user", "Garden", "line")
     assert waiting["ask"]["question"] == "Beans or peas?"
     # The one that waits has its commission in hand, with what that may use.
     in_hand = (await console.get(f"/familiars/{waiting['session_id']}/usage")).json()["commission"]
