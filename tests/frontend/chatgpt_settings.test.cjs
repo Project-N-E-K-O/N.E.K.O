@@ -583,6 +583,33 @@ test('ordinary full-form saves omit unchanged dormant slots including inherited 
     assert.equal(fullForm.imageModelProvider, 'disabled', 'the original confirmation payload stays unchanged');
 });
 
+test('untouched dormant voice settings never block a save, whatever legacy voice fields are stored', async () => {
+    const cases = [
+        // Stored GPT-SoVITS without a legacy ttsProvider: the form sends ttsProvider="gptsovits".
+        {stored: {ttsVoiceId: 'gsv-voice'}, form: {ttsModelProvider: 'gptsovits', gptsovitsApiUrl: 'http://127.0.0.1:9881',
+            gptsovitsVoiceId: 'gsv-voice', ttsVoiceId: ''}, submitted: {ttsProvider: 'gptsovits', ttsVoiceId: 'gsv-voice'}},
+        // Custom TTS with a leftover ttsProvider="deepseek": the form sends ttsProvider="".
+        {stored: {ttsProvider: 'deepseek', ttsVoiceId: 'saved-voice'}, form: {ttsModelProvider: 'custom',
+            ttsVoiceId: 'saved-voice'}, submitted: {ttsProvider: '', ttsVoiceId: 'saved-voice'}},
+    ];
+    for (const {form, submitted} of cases) {
+        const values = {ttsModelUrl: '', ttsModelId: '', ttsModelApiKey: '', ...form};
+        const ui = independentSettingsSurface(values);
+        ui.context.rememberChatGPTIndependentSettings(['tts']);
+        const fullForm = {enableCustomApi: true, coreApi: 'qwen', conversationModelId: 'new-chat-model',
+            ttsModelProvider: form.ttsModelProvider, ttsModelUrl: '', ttsModelId: '', ttsModelApiKey: '', ...submitted};
+        if (form.ttsModelProvider === 'gptsovits') fullForm.ttsModelUrl = ui.context.getGptSovitsConfigForSave().url;
+        await ui.context.saveApiKey(fullForm);
+        assert.equal(ui.calls.length, 1, `untouched ${form.ttsModelProvider} voice settings must save`);
+        assert.equal(ui.calls[0].body.conversationModelId, 'new-chat-model');
+        // The stored legacy values stay as they are on the server.
+        assert.equal(Object.hasOwn(ui.calls[0].body, 'ttsProvider'), false);
+        assert.equal(Object.hasOwn(ui.calls[0].body, 'ttsVoiceId'), false);
+        await ui.context.saveApiKey({...fullForm, ttsVoiceId: 'edited-voice'});
+        assert.equal(ui.calls.length, 1, 'a real dormant voice edit is still rejected');
+    }
+});
+
 test('ordinary saves use the same GSV defaults and unknown image serialization as the form', async () => {
     const ui = independentSettingsSurface({
         ttsModelProvider: 'gptsovits', ttsModelUrl: '', ttsModelId: '', ttsModelApiKey: '',

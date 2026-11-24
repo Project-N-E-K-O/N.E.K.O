@@ -3204,7 +3204,7 @@ async function loadCurrentApiKey() {
             if (typeof data.disableTts === 'boolean' && document.getElementById('disableTts')) {
                 document.getElementById('disableTts').checked = data.disableTts;
             }
-            rememberChatGPTIndependentSettings(data.chatgptIndependentSlots, data);
+            rememberChatGPTIndependentSettings(data.chatgptIndependentSlots);
 
         } else {
             showCurrentApiKey(window.t ? window.t('api.getCurrentApiKeyFailed') : '获取当前API Key失败', '', false);
@@ -3981,7 +3981,7 @@ async function save_button_down(e) {
     let ttsModelUrl = getVal('ttsModelUrl');
     const ttsModelId = getVal('ttsModelId');
     const ttsModelApiKey = getKeyVal('ttsModelApiKey');
-    let ttsVoiceId = getVal('ttsVoiceId');
+    const ttsVoiceId = getTtsVoiceIdForSave();
 
     // 检查 GPT-SoVITS v3 配置
     // GSV「是否启用」收口到 ttsModelProvider 下拉单一真相：选中 gptsovits 即启用。
@@ -4003,7 +4003,6 @@ async function save_button_down(e) {
 
     if (gptsovitsEnabled && gptsovitsConfigForSave) {
         ttsModelUrl = gptsovitsConfigForSave.url;
-        ttsVoiceId = gptsovitsConfigForSave.voiceId;
     }
     // 退役 __gptsovits_disabled__| 占位符：下拉切走 gptsovits 即「未选」，ttsModelUrl/
     // ttsVoiceId 直接用标准字段值，不再把旧 GSV 配置冻进 voice_id（旧前缀仍由
@@ -4261,7 +4260,7 @@ function refreshAutoResolvedModelUrlsForSave(params) {
 }
 
 
-function rememberChatGPTIndependentSettings(slots, settings = {}) {
+function rememberChatGPTIndependentSettings(slots) {
     _chatgptIndependentSlots = Array.isArray(slots)
         ? slots.filter(slot => MODEL_TYPES.includes(slot) || slot === 'image') : [];
     _loadedChatGPTIndependentFields = {};
@@ -4277,11 +4276,10 @@ function rememberChatGPTIndependentSettings(slots, settings = {}) {
         Object.assign(_loadedChatGPTIndependentFields, imageSettingsPayload());
     }
     if (_chatgptIndependentSlots.includes('tts')) {
-        // These are separate legacy TTS fields, not ttsModel* settings. Snapshot
-        // their persisted values so a full-form save cannot overwrite dormant
-        // voice configuration with UI defaults while ChatGPT owns the slot.
-        _loadedChatGPTIndependentFields.ttsProvider = settings.ttsProvider ?? '';
-        _loadedChatGPTIndependentFields.ttsVoiceId = settings.ttsVoiceId ?? '';
+        // Snapshot what the form will submit, not the stored value: the form
+        // derives the voice from the dropdown, so a stored legacy value would
+        // make an untouched form look edited and block every save.
+        _loadedChatGPTIndependentFields.ttsVoiceId = getTtsVoiceIdForSave();
     }
     if (_loadedChatGPTIndependentFields.ttsModelProvider === 'gptsovits') {
         _loadedChatGPTIndependentFields.ttsModelUrl = getGptSovitsConfigForSave().url;
@@ -4290,13 +4288,24 @@ function rememberChatGPTIndependentSettings(slots, settings = {}) {
     if (note) note.hidden = !_chatgptIndependentSlots.length;
 }
 
+// 保存时提交的 ttsVoiceId：选中 GPT-SoVITS 时取它的音色，否则取标准字段。
+// 订阅期间的休眠语音档位按它快照，和整页保存发出的值同一套推导。
+function getTtsVoiceIdForSave() {
+    if ((document.getElementById('ttsModelProvider')?.value || '').trim() === 'gptsovits') {
+        return getGptSovitsConfigForSave().voiceId;
+    }
+    return (document.getElementById('ttsVoiceId')?.value || '').trim();
+}
+
 function prepareChatGPTIndependentSettingsForSave(params) {
     const payload = {...params};
     if (_chatgptIndependentSlots.includes('tts')) {
-        for (const field of ['ttsProvider', 'ttsVoiceId']) {
-            if (Object.hasOwn(params, field) && params[field] !== _loadedChatGPTIndependentFields[field]) return null;
-            delete payload[field];
-        }
+        // ttsProvider is derived from the ttsModelProvider dropdown, whose real
+        // edits the slot comparison below rejects; dropping it keeps the stored value.
+        delete payload.ttsProvider;
+        if (Object.hasOwn(params, 'ttsVoiceId')
+            && params.ttsVoiceId !== _loadedChatGPTIndependentFields.ttsVoiceId) return null;
+        delete payload.ttsVoiceId;
     }
     for (const slot of _chatgptIndependentSlots) {
         const providerField = `${slot}ModelProvider`;
