@@ -6648,6 +6648,10 @@ class TaskAgentManager(TreeWork):
                     # task agent or is at work there: said where it is now. (Only then: a session
                     # that went for another reason is told as it was before.)
                     return await self._wake_working(commission_id, text, reason=_WOKEN_REASON)
+            elif session.closing:
+                # Still the commission's, and on its way out meanwhile (closed to rest, say): what
+                # is steered in now is lost with it.
+                return False
             await self._send_text(self._runtime_of(session), session, "steer", text)
             return True
         return False

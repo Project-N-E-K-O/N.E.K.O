@@ -694,8 +694,10 @@ class TreeWork:
                 # Gone since, the user's to see to personally (and left alone, then), or discarded.
                 continue
             # Its own from here on, with nothing awaited since the look above: nothing else takes it in hand.
+            # (And no longer one that does without: at no moment both.)
             self._tree_of[commission.id] = row.id
             self._tree_sessions[kept.id] = row.id
+            self._direct_now.discard(kept.id)
             if row.state == "making":
                 # Left half made by a start that was cut off: made anew.
                 await self._remove_tree(row)
@@ -719,14 +721,12 @@ class TreeWork:
                 # along, and is taken up again by the result of another it started.)
                 self._forget_tree(row, kept.id)
                 raise RuntimeError("a task agent this commission started is still at work in the directory it is worked on in")
-            self._direct_now.discard(kept.id)
             await asyncio.to_thread(lambda found=row: Path(found.workdir).mkdir(parents=True, exist_ok=True))
             return row
         if kept.seat != "tree" or not changes or kept.kind not in ("line", "child"):
             return None
         row, why, detail = await self._make_tree(commission, kept, home)
         if row is not None:
-            self._direct_now.discard(kept.id)
             return row
         await self._note_tree_event(commission.id, "tree_not_made", {"reason": why, "detail": detail})
         if kept.kind == "child":
@@ -842,6 +842,7 @@ class TreeWork:
         ) or row
         self._tree_of[commission.id] = row.id
         self._tree_sessions[kept.id] = row.id
+        self._direct_now.discard(kept.id)
         await self._note_tree_event(
             commission.id,
             "tree_made",

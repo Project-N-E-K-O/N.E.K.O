@@ -3768,3 +3768,86 @@ async def test_nothing_is_handed_on_to_a_commission_that_is_over_while_its_sessi
         live.stands = was
     host.release.set()
     await wait_status(host, two.commission_id, "done")
+
+
+async def test_what_is_said_to_a_commission_whose_session_began_to_close_as_it_was_put_on_record_is_not_steered_into_it(hosts, tmp_path):
+    hold = asyncio.Event()
+
+    async def wait() -> None:
+        await hold.wait()
+
+    host, trees, _one, two, members, sent = await _said_as_its_end_is_written(
+        hosts, tmp_path, [[wait, *_write("links.txt", "repaired")], _report("links repaired")]
+    )
+    manager = host.task_agents
+    await wait_until(lambda: len(members["broken links"].requests) >= 1, what="the second one being at work")
+    live = manager._sessions[two.commission_id]
+    append = host.ledger.append_event
+
+    async def as_it_begins_to_close(commission_id: str, kind: str, payload: Any = None) -> int:
+        if commission_id == two.commission_id and kind == "told":
+            # Its session is on its way out by the time this is on record (it is being closed to rest, say).
+            live.closing = True
+            del sent[:]
+        return await append(commission_id, kind, payload)
+
+    host.ledger.append_event = as_it_begins_to_close
+    try:
+        assert await manager.tell(two.commission_id, "and the footer too") is False
+        assert (two.commission_id, "steer") not in sent
+    finally:
+        live.closing = False
+        host.ledger.append_event = append
+    host.release.set()
+    hold.set()
+    await wait_status(host, two.commission_id, "done")
+
+
+async def test_a_member_that_has_a_worktree_for_its_commission_is_no_longer_one_that_does_without(hosts, tmp_path):
+    release, go = asyncio.Event(), asyncio.Event()
+
+    async def wait() -> None:
+        await release.wait()
+
+    async def wait_to_go() -> None:
+        await go.wait()
+
+    leader_llm = ScriptedLLM([*_hand_over(), *_hand_over(description="second writer")])
+    members = {
+        "the header": ScriptedLLM([[wait, *_report("header fixed")]]),
+        "broken links": ScriptedLLM([
+            _write("links.txt", "half"), _report("which pages?", status="blocked"),
+            [wait_to_go, *_write("more.txt")], _report("all of them"),
+        ]),
+    }
+    host, trees, workdir = await _shop(hosts, tmp_path, _by_role(leader_llm, members))
+    manager = host.task_agents
+    make_tree = manager._make_tree
+    made: list[tuple[bool, bool]] = []
+
+    async def having_done_without(commission: Any, kept: Any, home: str) -> Any:
+        # (It did without one for the commission it was at before this, and counted as one that
+        # writes in the project's directory then.)
+        manager._direct_now.add(kept.id)
+        row = await make_tree(commission, kept, home)
+        made.append((kept.id in manager._direct_now, kept.id in manager._tree_sessions))
+        return row
+
+    manager._make_tree = having_done_without
+    await _dispatch(host, FIRST)
+    await wait_until(lambda: len(members["the header"].requests) >= 1, what="the first member being at work")
+    two = await _dispatch(host, SECOND)
+    release.set()
+    await wait_status(host, two.commission_id, "blocked")
+    # One was made for it: from the moment it is its own, it is not counted as writing in the directory.
+    assert made == [(False, True)]
+    await wait_until(lambda: not manager._tree_tasks, what="its worktree being seen to")
+    member = await _session_of(host, two.commission_id)
+    # Likewise where it goes on in the worktree its commission left.
+    manager._direct_now.add(member.id)
+    assert await host.tell(two.commission_id, "every page")
+    await wait_until(lambda: len(members["broken links"].requests) >= 3, what="its going on in its worktree")
+    assert member.id not in manager._direct_now and member.id in manager._tree_sessions
+    assert await manager._works_in_tree(member)
+    go.set()
+    await wait_status(host, two.commission_id, "done")
