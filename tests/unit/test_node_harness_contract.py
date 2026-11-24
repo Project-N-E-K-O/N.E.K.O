@@ -35,6 +35,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import tomllib
 from pathlib import Path
 
@@ -1455,6 +1456,60 @@ def test_a_binary_that_cannot_be_read_still_gets_spawned(monkeypatch):
     run_node_script("definitely-not-a-node-binary", "0;", timeout=3)
 
     assert events == [("spawn", "definitely-not-a-node-binary")]
+
+
+def test_a_second_thread_waits_for_the_binary_to_finish_warming(monkeypatch, tmp_path):
+    """The read happens under the lock, so a racing thread spawns warm, not cold.
+
+    Called one after the other, every entry point already finds the binary
+    warm; only two threads at once show whether the second one waits for the
+    read or slips past it while the first is still reading.  Releasing the lock
+    before the read, or dropping it, lets the second thread spawn a node that
+    pages itself in cold -- inside its budget, which is the stall this exists
+    to keep out.
+    """
+    binary = tmp_path / "node.exe"
+    binary.write_bytes(b"\0" * 16)
+    events = []
+    reading = threading.Event()
+    release = threading.Event()
+
+    def _slow_read(path):
+        events.append("read-start")
+        reading.set()
+        release.wait(10)
+        events.append("read-end")
+
+    def _fake_run(argv, **kwargs):
+        events.append("spawn")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(node_harness, "_prewarmed_binaries", set())
+    monkeypatch.setattr(node_harness, "_read_through", _slow_read)
+    monkeypatch.setattr(node_harness.subprocess, "run", _fake_run)
+
+    first = threading.Thread(
+        target=run_node_script, args=(str(binary), "0;"), kwargs={"timeout": 3}
+    )
+    second = threading.Thread(
+        target=run_node_stdin, args=(str(binary), "0;"), kwargs={"timeout": 3}
+    )
+    first.start()
+    try:
+        assert reading.wait(10), "first thread never started warming"
+        second.start()
+        second.join(0.5)
+        early = list(events)
+    finally:
+        release.set()
+        first.join(10)
+        if second.ident is not None:
+            second.join(10)
+
+    assert "spawn" not in early, (
+        f"第一条线程还在预读，第二条就启动了 node，冷盘开销又回到脚本预算里: {early}"
+    )
+    assert events == ["read-start", "read-end", "spawn", "spawn"], events
 
 
 def _stall_after_start(times):
