@@ -1304,7 +1304,7 @@
       "login": "Continue with ChatGPT",
       "add": "新增帳號",
       "logout": "登出所選帳號",
-      "instructions": "登入後，在下方「按功能單獨指定模型」裡把需要的檔位服務商選為「ChatGPT (subscription)」並選好模型，再儲存。核心 API、TTS 和 ASR 不受影響。",
+      "instructions": "登入後，在下方開啟「按功能單獨指定模型」，把需要的檔位服務商選為「ChatGPT (subscription)」並選好模型，再儲存。核心 API、TTS 和 ASR 不受影響。",
       "usage": "查看 ChatGPT 用量與權限",
       "managed": "透過 ChatGPT 登入管理",
       "noAccount": "尚未新增帳號",

@@ -1,6 +1,6 @@
 /* Copyright 2025-2026 Project N.E.K.O. Team; SPDX-License-Identifier: Apache-2.0 */
 // ChatGPT account panel: sign in, add, switch and sign out accounts. Which model
-// slots use ChatGPT is chosen per slot in the custom API section, like any provider.
+// slots use ChatGPT is chosen per slot under Per-Feature Models, like any provider.
 (() => {
     'use strict';
     const account = document.getElementById('chatgpt-account');
@@ -111,7 +111,7 @@
         logout.disabled = pending || busy || !account.value;
         status.textContent = data.error || (pending ? t('pending', 'Complete sign-in in your browser.') :
             data.login_status === 'expired' ? t('expired', 'Sign-in timed out. Please try again.') :
-            connected ? t('connected', 'ChatGPT connected. In the custom API section, choose ChatGPT (subscription) for the model slots that should use it.')
+            connected ? t('connected', 'ChatGPT connected. In Per-Feature Models below, choose ChatGPT (subscription) as the provider of the model slots that should use it.')
                 : t('signedOut', 'ChatGPT is not connected.'));
         if (pending) timer = setTimeout(() => refresh().catch(report), 1500);
         else {
