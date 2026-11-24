@@ -81,6 +81,17 @@ def test_export_to_file_returns_bytes_without_writing_user_dirs(studio, kind):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("raw", "suffix"),
+    [("a" * 38 + ".json", ".json"), ("樱花雾" * 20 + ".zip", ".zip"), ("plain-name", "")],
+)
+def test_download_filename_keeps_extension_when_truncating(raw, suffix):
+    name = ts_service.ThemeStudioService._download_filename(raw)
+    assert name.endswith(suffix)
+    assert len(name) <= 40 + len(suffix)
+
+
+@pytest.mark.unit
 def test_read_only_endpoints_are_open_but_run_stays_loopback_only(studio):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient

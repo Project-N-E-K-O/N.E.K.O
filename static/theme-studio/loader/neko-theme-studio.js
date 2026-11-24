@@ -109,7 +109,8 @@
   //        也不会把指针事件吞掉。
   //   1.6.40 调色板轮询连续失败时退避（上限 60s）；诊断上报遇 401/403 停止，
   //          失败后 15s 再试，不再每拍重发。
-  var SCRIPT_VERSION = '1.6.40';
+  //   1.6.41 自升级重载只在聊天 / 字幕 / 提示 / HUD 窗口进行，编辑器页面不再被自动刷新。
+  var SCRIPT_VERSION = '1.6.41';
 
   // 允许的颜色值形态。刻意保守：只放行纯颜色，杜绝把任意 CSS 注进变量。
   var RE_HEX = /^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
@@ -2048,7 +2049,26 @@
 
   // 升级重载的全部「让路」判断与守卫（从 selfUpgradeIfNeeded 里抽出来的，
   // 逻辑逐字未改 —— 两条路径都必须遵守：草稿不让路、流式输出让路、守卫最后落盘）。
+  // 内置之后加载器挂在 23 个页面上，其中大量是编辑器（情感映射、角色卡、记忆浏览…），
+  // 它们的未保存状态加载器无从得知。只有常驻的聊天 / 浮层窗口才自动重载：
+  // 这些窗口可能跨越一次后端升级一直开着，而它们的「草稿 / 流式输出」让路判断就在下面。
+  // 其余页面不自动重载，下次打开时模板里的 ?v= 自然换成新加载器。
+  var AUTO_RELOAD_PATHS = { '/subtitle': 1, '/toast': 1, '/agenthud': 1 };
+  function autoReloadAllowed() {
+    try {
+      var path = String(window.location.pathname || '').replace(/\/+$/, '');
+      if (AUTO_RELOAD_PATHS[path]) return true;
+      return !!document.querySelector('#react-chat-window-root, textarea.composer-input, #textInputBox');
+    } catch (e) {
+      return false;
+    }
+  }
+
   function reloadForUpgrade(remote, now) {
+      if (!autoReloadAllowed()) {
+        log('self-upgrade skipped: page may hold unsaved edits; new loader applies on next open');
+        return;
+      }
       // 不能把用户正在输入的草稿刷掉：输入框有内容就先不重载，等下一轮心跳
       // （节流 60s）再试。同理会话正在流式输出时也让路，避免打断回复。
       try {

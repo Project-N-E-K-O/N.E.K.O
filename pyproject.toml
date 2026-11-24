@@ -159,6 +159,7 @@ packages = [
   "plugin",
   "services",
   "steamworks",
+  "theme_studio",
   "utils",
 ]
 exclude = [
@@ -193,6 +194,7 @@ include = [
   "plugin",
   "services",
   "steamworks",
+  "theme_studio",
   "utils",
   "static",
   "templates",

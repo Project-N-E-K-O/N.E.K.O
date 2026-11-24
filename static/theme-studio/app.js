@@ -5528,6 +5528,7 @@ var externalSyncState = {
   pending: null,       // 已提示过、尚未跟随的外部改动签名
   failures: 0,
   warned: false,       // 连续失败提示只弹一次（恢复后重置）
+  materialsDeferred: false, // 上一次回读因材质草稿而没有同步材质
   lastCheckAt: 0
 };
 
@@ -5654,8 +5655,16 @@ async function checkExternalChange() {
       return false;
     }
     externalSyncState.pending = null;
-    var palette = await reloadPalette({ silent: true });
+    var palette = await reloadPalette({ silent: true, keepMaterialDrafts: true });
     if (!palette) return false;
+    if (externalSyncState.materialsDeferred) {
+      // 回读期间出现了材质草稿：保留草稿、不推进基线，按「有未应用改动」提示一次。
+      if (externalSyncState.pending !== signature) {
+        externalSyncState.pending = signature;
+        warnExternalChangeBlocked();
+      }
+      return false;
+    }
     // 用后端真值重新确立签名：GET theme.json 与 get_theme 之间可能又被改过，
     // 拿 GET 的签名当真会让下一轮立刻误报「又变了」。
     externalSyncState.lastSignature = paletteSignature(palette);
@@ -5706,9 +5715,14 @@ async function reloadPalette(options) {
   // dirtyCount 永远 > 0，外部同步被永久拦断且不再提示，面板看着像卡住了；
   // 更糟的是再点「应用」会把用户以为已放弃的值提交上去。
   var discardEdits = !!(options && options.discardEdits);
+  var keepMaterialDrafts = !!(options && options.keepMaterialDrafts);
   setLoading(true);
   try {
     var palette = await callPlugin('get_theme', {});
+    // 外部同步路径：等待 get_theme 期间用户可能刚改了材质（进度条不拦编辑）。
+    // 这时不能用磁盘值覆盖材质草稿，也不推进签名基线，下一轮轮询再试。
+    var materialsDeferred = keepMaterialDrafts && materialsDirtyCount() > 0;
+    externalSyncState.materialsDeferred = materialsDeferred;
     state.palette = palette;
     if (discardEdits) {
       state.edited = { light: {}, dark: {} };
@@ -5722,13 +5736,15 @@ async function reloadPalette(options) {
       updateUndoButtons();
     }
     // 基线签名跟着更新：否则刚读完就轮到外部同步，会把同一份数据误判成「又变了」。
-    externalSyncState.lastSignature = paletteSignature(palette);
-    externalSyncState.pending = null;
+    if (!materialsDeferred) {
+      externalSyncState.lastSignature = paletteSignature(palette);
+      externalSyncState.pending = null;
+    }
     renderMeta();
     renderPaletteHint();
     // 材质子树跟着磁盘刷新：导入/重置/应用之后，材质中心的「已保存」基线
     // 必须一起更新，否则它一直显示「N 项待应用」。
-    syncMaterials(palette);
+    if (!materialsDeferred) syncMaterials(palette);
     syncAll();
     applyFilters();
     renderAudit(true);

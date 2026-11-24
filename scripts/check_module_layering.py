@@ -184,6 +184,7 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
             "services",
             "main_routers",
             "plugin",
+            "theme_studio",
         )
     ),
     # The built-in tools (keyboard and mouse, browser) drive the desktop and
@@ -200,6 +201,7 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
             "services",
             "main_routers",
             "plugin",
+            "theme_studio",
         )
     ),
     # The NekoPower host (task brain, task agents, gateway) reaches plugins over
@@ -217,6 +219,7 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
             ("main_routers", "the NekoPower host reaches the main dialogue through its outbox only"),
             ("services", "the NekoPower host uses only config, utils, the plugin package and its runtime"),
             ("steamworks", "the NekoPower host uses only config, utils, the plugin package and its runtime"),
+            ("theme_studio", "the NekoPower host uses only config, utils, the plugin package and its runtime"),
         )
     ),
 ]

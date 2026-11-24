@@ -152,16 +152,14 @@ def entries() -> list[str]:
     return sorted(ENTRY_REGISTRY)
 
 
-def _resolve_entry(service: Any, entry_id: str) -> Any:
+def _resolve_entry(entry_id: str) -> Any:
     """Map an entry id to its implementation; unknown ids return ``None``.
 
     Only ids registered through ``@plugin_entry`` are dispatchable, so lifecycle
     and internal methods (``startup``, ``shutdown``, ``startup_sync``,
     ``enable_file_logging`` ...) can never be reached from ``/run/{entry_id}``.
-    The registered function is used as-is; it is unbound, so the caller passes
-    ``service`` explicitly.
+    The registered function is unbound; the caller passes ``service`` explicitly.
     """
-    del service  # kept in the signature for call-site symmetry
     return ENTRY_REGISTRY.get(entry_id)
 
 
@@ -188,11 +186,14 @@ def run_entry_sync(entry_id: str, args: dict[str, Any] | None = None) -> Ok | Er
     Blocking: call it from a worker thread (see :func:`run_entry`).
     """
     payload = args if isinstance(args, dict) else {}
-    service = startup_service()
-    fn = _resolve_entry(service, str(entry_id or ""))
+    fn = _resolve_entry(str(entry_id or ""))
     if fn is None:
         return Err(SdkError(f"未知的主题工坊操作：{entry_id}"))
     try:
+        # Inside the try: a failed first startup must reach the panel as
+        # ``{ok: false, error}``; ``_service_started`` stays False so the next
+        # call retries the startup.
+        service = startup_service()
         with _ENTRY_LOCK:
             result = _call_entry(fn, service, payload)
     except SdkError as exc:

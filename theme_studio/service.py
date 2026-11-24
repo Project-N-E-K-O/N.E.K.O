@@ -3077,12 +3077,17 @@ class ThemeStudioService(NekoPluginBase):
         """Start the schedule thread (idempotent; restartable after shutdown)."""
         with self._schedule_lock:
             thread = self._schedule_thread
-            if (
-                thread is not None
-                and thread.is_alive()
-                and not self._schedule_stop_event.is_set()
-            ):
-                return
+            if thread is not None and thread.is_alive():
+                if not self._schedule_stop_event.is_set():
+                    return
+                # Stopped but possibly still inside _schedule_tick(): wait for it
+                # so two threads never write theme.json at once. The old thread
+                # takes neither this lock nor the service lock, so this cannot
+                # deadlock; a thread idle in wait() wakes immediately.
+                thread.join(timeout=10.0)
+                if thread.is_alive():
+                    self._log("warning", "旧的自动换主题线程仍未退出，本次不重启排程线程")
+                    return
             stop = threading.Event()
             thread = threading.Thread(
                 target=self._run_schedule_worker,
@@ -4660,15 +4665,13 @@ class ThemeStudioService(NekoPluginBase):
     def _download_filename(filename: str) -> str:
         """Sanitised download name that keeps its extension.
 
-        ``_safe_archive_name`` clips names to 40 characters, which can cut the
-        ``.zip`` off long names such as ``neko-theme-studio-library-<stamp>.zip``;
-        a whitelisted extension is put back here.
+        The whitelisted extension is split off the raw name first and only the
+        stem goes through ``_safe_archive_name`` (which clips to 40 characters),
+        so a long name can never turn ``.json`` into ``.j``.
         """
-        stem, suffix = os.path.splitext(_safe_archive_name(filename))
-        if not suffix:
-            raw_suffix = os.path.splitext(str(filename))[1].lower()
-            if raw_suffix in (".zip", ".json"):
-                suffix = raw_suffix
+        raw_stem, raw_suffix = os.path.splitext(str(filename or ""))
+        suffix = raw_suffix.lower() if raw_suffix.lower() in (".zip", ".json") else ""
+        stem = _safe_archive_name(raw_stem if suffix else str(filename or ""))
         stem = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff._-]+", "-", stem).strip("-") or "theme"
         return stem + suffix
 
@@ -4808,7 +4811,7 @@ class ThemeStudioService(NekoPluginBase):
         name=tr("entries.export_to_file.name", default="导出到文件"),
         description=tr(
             "entries.export_to_file.description",
-            default="把当前主题、仓库条目或整个主题库打包成文件内容（base64）返回，由面板触发浏览器下载；服务端不写任何用户目录。",
+            default="把当前主题、仓库条目或整个主题库打包成文件内容（base64）返回，由面板触发浏览器下载；服务端不往桌面 / 下载 / 家目录等位置写导出文件。",
         ),
         input_schema={
             "type": "object",
@@ -4848,8 +4851,10 @@ class ThemeStudioService(NekoPluginBase):
                 SdkError(f"不支持的导出格式：{kind}（只能是 zip / json / library）。")
             )
         # 内置之后面板是普通顶层页面，浏览器下载可用：服务端只产出字节，由面板
-        # 触发下载。不再往桌面 / 下载 / 家目录 / 数据目录写文件（那是插件 iframe
+        # 触发下载。不再往桌面 / 下载 / 家目录 / exports/ 写导出文件（那是插件 iframe
         # 时代没有 allow-downloads 的权宜之计，内置后只会留下用户不知道的文件）。
+        # 导出内置主题时，_current_or_saved 仍可能把随包背景图按内容哈希缓存进
+        # backgrounds/：这是应用自己的数据目录，幂等且会被孤儿回收，不是导出产物。
         if kind == "library":
             # 库备份不需要「当前主题」：一个包里是仓库里所有自定义主题 + 共用图片。
             try:
