@@ -146,6 +146,16 @@ def _fail(*_args: object, **_kwargs: object) -> None:
     raise PermissionError("denied")
 
 
+_REAL_REPLACE = os.replace
+
+
+def _replace_failing_from_legacy(src: object, dst: object) -> None:
+    """os.replace that cannot move the legacy inbox but still saves the queue."""
+    if Path(src) == companion._LEGACY_INBOX_PATH:
+        raise PermissionError("denied")
+    _REAL_REPLACE(src, dst)
+
+
 def _migration_warnings(plugin: ClaudeCompanionPlugin) -> list[tuple[str, tuple]]:
     return [(msg, args) for level, msg, args in plugin.logger.lines if level == "warning"]
 
@@ -157,7 +167,7 @@ def test_failed_migration_keeps_legacy_messages(
     _write_legacy(legacy)
 
     with monkeypatch.context() as patched:
-        patched.setattr(companion.os, "replace", _fail)
+        patched.setattr(companion.os, "replace", _replace_failing_from_legacy)
         patched.setattr(companion.shutil, "copyfile", _fail)
         plugin._init_inbox()
 
@@ -189,7 +199,7 @@ def test_failed_migration_survives_ack_before_restart(
     _write_legacy(legacy)
 
     with monkeypatch.context() as patched:
-        patched.setattr(companion.os, "replace", _fail)
+        patched.setattr(companion.os, "replace", _replace_failing_from_legacy)
         patched.setattr(companion.shutil, "copyfile", _fail)
         plugin._init_inbox()
     assert plugin._on_inbox_ack({"message_ids": ["other"]}) == {"status": "ok", "acknowledged": 0}
@@ -207,7 +217,7 @@ def test_unreadable_legacy_inbox_disables_inbox_until_migrated(
     _write_legacy(legacy)
 
     with monkeypatch.context() as patched:
-        patched.setattr(companion.os, "replace", _fail)
+        patched.setattr(companion.os, "replace", _replace_failing_from_legacy)
         patched.setattr(companion.shutil, "copyfile", _fail)
         patched.setattr(companion, "_read_legacy_inbox", _fail)
         plugin._init_inbox()
@@ -239,7 +249,7 @@ def test_corrupt_legacy_inbox_counts_as_empty(
     legacy.write_text("{not json", encoding="utf-8")
 
     with monkeypatch.context() as patched:
-        patched.setattr(companion.os, "replace", _fail)
+        patched.setattr(companion.os, "replace", _replace_failing_from_legacy)
         patched.setattr(companion.shutil, "copyfile", _fail)
         plugin._init_inbox()
 
@@ -264,3 +274,49 @@ def test_inbox_send_log_omits_message_content(plugin: ClaudeCompanionPlugin) -> 
     logged = plugin.logger.text()
     assert _SECRET not in logged
     assert "private" not in logged
+
+
+def _interrupted_dump(obj: object, fp: object, **_kwargs: object) -> None:
+    fp.write("[{")  # part of the payload reaches the disk, then the write fails
+    raise OSError("No space left on device")
+
+
+def test_interrupted_first_save_leaves_migration_retryable(
+    plugin: ClaudeCompanionPlugin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    legacy = companion._LEGACY_INBOX_PATH
+    _write_legacy(legacy)
+    target = plugin.data_path("inbox.json")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(companion.os, "replace", _replace_failing_from_legacy)
+        patched.setattr(companion.shutil, "copyfile", _fail)
+        patched.setattr(companion.json, "dump", _interrupted_dump)
+        plugin._init_inbox()
+
+    # The seeded queue's first save failed half-way: no target, no temp file.
+    assert [m["id"] for m in plugin._inbox.pending()] == ["abc12345"]
+    assert not target.exists()
+    assert not target.with_name("inbox.json.tmp").exists()
+    assert legacy.is_file()
+
+    plugin._inbox = None
+    plugin._init_inbox()
+
+    assert not legacy.exists()
+    assert [m["id"] for m in plugin._inbox.pending()] == ["abc12345"]
+
+
+def test_interrupted_save_keeps_existing_inbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "data" / "inbox.json"
+    queue = InboxQueue(str(path))
+    queue.add("kept")
+    before = path.read_text(encoding="utf-8")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(companion.json, "dump", _interrupted_dump)
+        queue.add("lost")
+
+    assert path.read_text(encoding="utf-8") == before
+    assert not path.with_name("inbox.json.tmp").exists()
+    assert [m["content"] for m in InboxQueue(str(path)).pending()] == ["kept"]

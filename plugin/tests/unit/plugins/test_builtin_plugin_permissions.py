@@ -62,6 +62,7 @@ _ALLOWED_POSSIBLE = {
     "claude_companion": {
         _FS_WRITE: [
             ("__init__.py", "InboxQueue._save", "open"),
+            ("__init__.py", "InboxQueue._save", "os.replace"),
             ("__init__.py", "_migrate_legacy_inbox", "os.replace"),
             ("__init__.py", "_migrate_legacy_inbox", "shutil.copyfile"),
             ("__init__.py", "_migrate_legacy_inbox", "os.replace"),

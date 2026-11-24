@@ -125,13 +125,24 @@ class InboxQueue:
             self._messages = []
 
     def _save(self):
-        """Persist the queue to a file."""
+        """Persist the queue to a file.
+
+        Writes a temporary file next to the target and swaps it in, so a failed
+        or interrupted save never leaves the inbox empty or truncated (nor, on
+        the first save after a failed migration, creates a target that would
+        stop the next start from retrying).
+        """
+        tmp_path = self._path.with_name(self._path.name + ".tmp")
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self._path, "w", encoding="utf-8") as f:
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(self._messages, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, self._path)
         except OSError:
-            pass
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def add(self, content: str, source: str = "neko", msg_type: str = "message") -> Dict[str, Any]:
         """Add a message to the queue. Return the complete message object."""
