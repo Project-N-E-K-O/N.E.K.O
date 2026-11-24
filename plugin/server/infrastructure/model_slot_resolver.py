@@ -95,7 +95,7 @@ def _summary(slot_id: str, slot: ModelSlot, config_manager: Any) -> SlotSummary:
             free=is_free_host_key(slot.api_key), error_code=None,
         )
     try:
-        resolved = resolve_host_slot(slot, config_manager=config_manager)
+        resolved = resolve_host_slot(slot, config_manager=config_manager, for_task_agents=True)
     except ModelGatewayError as exc:
         return SlotSummary(
             **common, configured=False, model="", protocol=None, free=False, error_code=exc.code,
@@ -147,7 +147,10 @@ def resolve_model_slot(
             CAPABILITY_MISSING, slot_id, "The slot does not declare: " + ", ".join(missing),
         )
     try:
-        resolved = resolve_host_slot(slot, config_manager=config_manager) if slot.source == "host_follow" else slot
+        resolved = (
+            resolve_host_slot(slot, config_manager=config_manager, for_task_agents=True)
+            if slot.source == "host_follow" else slot
+        )
     except ModelGatewayError as exc:
         raise ModelSlotUnavailable(exc.code, slot_id, exc.message) from None
     protocol = resolved.protocol
