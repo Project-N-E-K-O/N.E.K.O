@@ -142,6 +142,18 @@ class _Quiet:
     go: asyncio.Event = dataclasses.field(default_factory=asyncio.Event)
 
 
+def _says_it_is(path: Path, name: str) -> bool:
+    """Whether a directory holds the ``.git`` file of the git worktree called ``name`` (``gitdir: .../worktrees/<name>``)."""
+    try:
+        said = (path / ".git").read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return False
+    if not said.startswith("gitdir:"):
+        return False
+    parts = Path(said[len("gitdir:") :].strip()).parts
+    return len(parts) >= 2 and parts[-2] == "worktrees" and parts[-1] == name
+
+
 def _same_dir(first: str | None, second: str | None) -> bool:
     if not first or not second:
         return False
@@ -243,6 +255,9 @@ class TreeWork:
         self._trees_in_hand: set[str] = set()
         # The commissions of the worktrees the user's decision is being carried out on, by worktree.
         self._decided_for: dict[str, str] = {}
+        # Commissions a landing is putting down as done this moment: an end that is the landing's
+        # own, and not one that left its worktree behind.
+        self._landing_ends: set[str] = set()
         # Held while a project's worktrees are counted and one more is put on record: two that
         # start at once do not both take the last room.
         self._tree_room = asyncio.Lock()
@@ -405,10 +420,19 @@ class TreeWork:
             return False
 
     async def _remove_what_is_left(self, row: Tree) -> bool:
-        """Remove the directory of a worktree git no longer knows (its repository is gone); returns whether it went."""
+        """Remove the directory of a worktree git no longer knows (its repository is gone); returns whether it went.
+
+        Only one that still says it is that worktree (the ``.git`` file
+        git put into it names it): another directory put in its place
+        since is not what the user discarded, and is left where it is.
+        """
         base, path = self._paths.worktrees_dir(), Path(row.path)
-        if _same_dir(str(path.parent), str(base)):
-            await asyncio.to_thread(shutil.rmtree, path, True)
+
+        def remove() -> None:
+            if _same_dir(str(path.parent), str(base)) and _says_it_is(path, row.id):
+                shutil.rmtree(path, True)
+
+        await asyncio.to_thread(remove)
         return await self._tree_is_gone(row)
 
     @staticmethod
@@ -514,9 +538,11 @@ class TreeWork:
             # A directory is there that git does not open as this worktree (half removed, or
             # another put in its place since): not known to be what was discarded, and left
             # alone, to be tried again when the host next starts. Unless the repository itself
-            # is gone: git never opens it again, and what the user discarded is removed.
-            if not (await self._repository_gone(row) and await self._remove_what_is_left(row)):
+            # is gone: git never opens it again. What still says it is that worktree is removed,
+            # and the record goes either way (anything else there is not the host's).
+            if not await self._repository_gone(row):
                 return False
+            await self._remove_what_is_left(row)
         self._forget_tree(row)
         await self._ledger.drop_tree(row.id)
         return True
@@ -1203,25 +1229,29 @@ class TreeWork:
                 return "again"
             told, shown = self._landed_texts(row, commission.lang, files, more, outside, result.skipped)
             text = "\n\n".join(part for part in (done.text, told) if part)
-            self._dones.pop(commission_id, None)
-            if result.skipped:
-                # What is never carried over (too large, or a repository of its own) is in the
-                # worktree alone: removed with it, it would be gone. Kept, for the user to see to.
-                await self._keep_for_skipped(row, result.skipped)
-            else:
-                # (No longer the commission's: its end is not taken for one that left its worktree.)
-                self._forget_tree(row)
+            # Done first, and its worktree seen to after: what the user says to it while its
+            # directory goes is a new commission's, and no run begins in it. Not done under a
+            # run that began while its end was being written (``unless``): that one goes on in
+            # the worktree, which stays.
+            self._landing_ends.add(commission_id)
             try:
-                await self._end(
+                ended = await self._end(
                     commission_id, "done", reason=done.reason, text=text,
                     shown="\n\n".join(part for part in (done.text, shown) if part) if shown else None,
                     suggested_delivery=done.delivery, result_summary=self._summary(text),
+                    unless=lambda: self._stale(commission_id, done),
                 )
+            except BaseException:
+                self._dones.pop(commission_id, None)
+                await self._seen_to_once_landed(row, handle, result)
+                raise
             finally:
-                if not result.skipped:
-                    # Removed once the commission is done, and not before: what the user says to
-                    # it while its directory goes is a new commission's, and no run begins in it.
-                    await self._remove_tree(row, handle)
+                self._landing_ends.discard(commission_id)
+            if not ended and self._stale(commission_id, done):
+                await self._ledger.update_tree(row.id, state="active")
+                return "again"
+            self._dones.pop(commission_id, None)
+            await self._seen_to_once_landed(row, handle, result)
             await self._wrap_up_in_tree(commission_id)
             return "landed"
         if result.status == "conflict" and row.rounds < settings.LANDING_CONFLICT_ROUNDS:
@@ -1268,6 +1298,15 @@ class TreeWork:
             row, commission, done, REASON_FAILED, detail=result.detail, left_changed=result.left_changed,
             kept_copies=result.kept_copies,
         )
+
+    async def _seen_to_once_landed(self, row: Tree, handle: Any, result: Any) -> None:
+        """Remove a worktree whose changes are landed, or keep it for what was never carried over."""
+        if result.skipped:
+            # What is never carried over (too large, or a repository of its own) is in the
+            # worktree alone: removed with it, it would be gone. Kept, for the user to see to.
+            await self._keep_for_skipped(row, result.skipped)
+        else:
+            await self._remove_tree(row, handle)
 
     @staticmethod
     def _landed_payload(row: Tree, result: Any, outside: list[str]) -> dict[str, Any]:
@@ -1457,7 +1496,7 @@ class TreeWork:
             if earlier is not None:
                 earlier.cancel()
             self._stall_watches[commission.parent_id] = self._tree_task(self._watch_stall(commission.parent_id))
-        if commission.id in self._tree_of:
+        if commission.id in self._tree_of and commission.id not in self._landing_ends:
             self._tree_task(self._tree_left(commission))
 
     async def _seen_to_after_its_run(self, row: Tree, commission: Commission) -> Tree | None:
@@ -1750,7 +1789,14 @@ class TreeWork:
         if project is None:
             # Put away (or gone), where its record was read; not known where it was not.
             return True if readable else None
-        return bool(project.workdir) and not _same_dir(project.workdir, row.project_dir)
+        if project.workdir and not _same_dir(project.workdir, row.project_dir):
+            return True
+        # A change of where it works writes its sessions first and its record second: one that is
+        # under way this moment shows in where its leader works already.
+        leaders = await self._ledger.find_sessions(project=row.project, kind="project", commissions_each=0)
+        return any(
+            item.session.workdir and not _same_dir(item.session.workdir, row.project_dir) for item in leaders
+        )
 
     @staticmethod
     def _stuck_over(row: Tree, commission: Commission | None) -> bool:
@@ -1789,15 +1835,17 @@ class TreeWork:
         the host next starts. Raises as ``land_tree``.
         """
         async with self._tree_in_hand(tree_id, TREE_STATES_LEFT) as row:
+            left = False
             handle = await self._handle_of(row)
             if handle is None and not await self._tree_is_gone(row):
                 if not await self._repository_gone(row):
                     # There, and not to be opened this moment: nothing of it could be removed.
                     raise ValueError("not_opened")
                 # Its repository is gone (moved, or removed): git never opens it again. What the
-                # user discards is the directory the host made for it.
-                await self._remove_what_is_left(row)
-            removed = await self._remove_tree(row, handle, discarded=True)
+                # user discards is the directory the host made for it, where it still says it is
+                # that; the record goes either way.
+                left = not await self._remove_what_is_left(row)
+            removed = await self._remove_tree(row, handle, discarded=True) and not left
             await self._note_tree_event(row.commission_id, "tree_discarded", {"tree": row.id, "path": row.workdir})
             # (Read as it is settled: its commission may have gone on in another worktree meanwhile.)
             stuck = self._stuck_over(row, await self._ledger.get(row.commission_id) if row.commission_id else None)

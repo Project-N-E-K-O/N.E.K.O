@@ -2633,3 +2633,121 @@ async def test_a_commission_is_done_before_its_worktree_is_removed(hosts, tmp_pa
     assert seen == [("done", False)]
     await wait_until(lambda: not host.task_agents._tree_tasks, what="that being through")
     assert await host.ledger.trees() == [] and (workdir / "links.txt").exists()
+
+
+async def test_a_worktree_whose_repository_is_gone_can_still_be_discarded(hosts, tmp_path):
+    clash = MergeResult("conflict", conflicts=("links.txt",))
+    host, trees, workdir, two, _members, _stuck = await _not_landed(hosts, tmp_path, [clash] * 4, turns=4)
+    (tree,) = await host.ledger.trees()
+    manager = host.task_agents
+    # (As git leaves a worktree: the file that says which one a directory is.)
+    (Path(tree.path) / ".git").write_text(f"gitdir: {workdir.as_posix()}/.git/worktrees/{tree.id}\n", encoding="utf-8")
+    # The user moved the repository elsewhere, and the host was started anew since: git opens the worktree no more.
+    elsewhere = tmp_path / "moved"
+    shutil.move(str(workdir), str(elsewhere))
+    manager._trees_mine.clear()
+    manager._tree_handles.clear()
+    trees.fail_open = True
+
+    # Gone through as the host starts, it stays for the user to decide on; it cannot be landed any more.
+    assert await manager.reconcile_trees() == {"removed": [], "kept": [tree.id]}
+    with pytest.raises(ValueError, match="gone"):
+        await host.land_worktree(tree.id)
+    with pytest.raises(ProjectBusy, match="tree_not_landed"):
+        await host.set_project_workdir("Shop site", str(elsewhere))
+    # Discarded, it goes with its record, and is in nobody's way.
+    assert await host.discard_worktree(tree.id) == {"removed": True}
+    assert await host.ledger.trees() == [] and not Path(tree.path).exists()
+    assert (await host.ledger.get(two.commission_id)).status == "cancelled"
+    await host.set_project_workdir("Shop site", str(elsewhere))
+
+
+def test_a_session_that_is_still_being_opened_has_no_run_under_way(hosts, tmp_path):
+    host, _trees = _host(hosts, tmp_path, ScriptedLLM([]))
+    manager = host.task_agents
+    manager._sessions["opening"] = types.SimpleNamespace(ready=False, idle=False)
+    manager._sessions["running"] = types.SimpleNamespace(ready=True, idle=False)
+    manager._sessions["between"] = types.SimpleNamespace(ready=True, idle=True)
+    try:
+        assert [manager._at_it(name) for name in ("opening", "running", "between", "nowhere")] == [False, True, False, False]
+    finally:
+        for name in ("opening", "running", "between"):
+            del manager._sessions[name]
+
+
+async def test_what_is_left_of_a_discarded_worktree_is_removed_only_where_it_still_says_it_is_that(hosts, tmp_path):
+    from nekopower.host.tree_work import _says_it_is
+
+    clash = MergeResult("conflict", conflicts=("links.txt",))
+    host, trees, workdir, two, _members, _stuck = await _not_landed(hosts, tmp_path, [clash] * 4, turns=4)
+    (tree,) = await host.ledger.trees()
+    manager = host.task_agents
+    path = Path(tree.path)
+    # (As git leaves it: the file that says which worktree a directory is.)
+    assert not _says_it_is(path, tree.id)
+    (path / ".git").write_text(f"gitdir: {workdir.as_posix()}/.git/worktrees/another\n", encoding="utf-8")
+    assert not _says_it_is(path, tree.id)
+    (path / ".git").write_text(f"gitdir: {workdir.as_posix()}/.git/worktrees/{tree.id}\n", encoding="utf-8")
+    assert _says_it_is(path, tree.id)
+    # The repository is gone, and so is the worktree: the user put another directory in its place.
+    shutil.rmtree(workdir)
+    shutil.rmtree(path)
+    path.mkdir()
+    (path / "notes.txt").write_text("the user's own")
+    manager._trees_mine.clear()
+    manager._tree_handles.clear()
+    trees.fail_open = True
+
+    # Discarded: off the record and in nobody's way, and what is there now is not touched.
+    assert await host.discard_worktree(tree.id) == {"removed": False}
+    assert await host.ledger.trees() == [] and (path / "notes.txt").read_text() == "the user's own"
+    assert (await host.ledger.get(two.commission_id)).status == "cancelled"
+
+
+async def test_a_worktree_the_user_kept_is_not_landed_while_its_project_is_being_given_another_directory(hosts, tmp_path):
+    clash = MergeResult("conflict", conflicts=("links.txt",))
+    host, trees, workdir, two, _members, _stuck = await _not_landed(hosts, tmp_path, [clash] * 4, turns=4)
+    (tree,) = await host.ledger.trees()
+    await host.keep_worktree(tree.id)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    # The change is half way: the project's sessions work in the new directory, and its record does not say so yet.
+    (leader,) = [row.session for row in await host.ledger.find_sessions(project="Shop site", kind="project", commissions_each=0)]
+    await host.ledger.update_session(leader.id, workdir=str(elsewhere))
+    assert (await host.space.get_project("Shop site")).workdir == str(workdir)
+    trees.merged.clear()
+
+    with pytest.raises(ValueError, match="moved"):
+        await host.land_worktree(tree.id)
+    assert trees.merged == [] and (await host.ledger.get_tree(tree.id)).state == "kept"
+
+
+async def test_a_commission_is_not_put_down_as_done_under_a_run_that_began_as_its_end_was_written(hosts, tmp_path):
+    host, trees, workdir, one, two, _members = await _two_members(
+        hosts, tmp_path, second=[_write("links.txt", "repaired"), _report("links repaired")]
+    )
+    manager = host.task_agents
+    end, stale = manager._end, manager._stale
+    ending: list[str] = []
+
+    async def as_more_is_said(commission_id: str, status: str, *args: Any, **kwargs: Any) -> Any:
+        if commission_id == two.commission_id and status == "done":
+            # More is said to it at this very moment (as what tells a landing of that says).
+            ending.append(status)
+        return await end(commission_id, status, *args, **kwargs)
+
+    manager._end = as_more_is_said
+    manager._stale = lambda commission_id, done: bool(ending) or stale(commission_id, done)
+    host.release.set()
+    await wait_until(lambda: ending, what="its end being written")
+    await asyncio.sleep(0.6)
+
+    # Landed, and neither done nor without its worktree: the run that began goes on in it.
+    (tree,) = await host.ledger.trees()
+    assert (await host.ledger.get(two.commission_id)).status == "working"
+    assert tree.state == "active" and trees.removed == [] and two.commission_id in manager._tree_of
+    assert (workdir / "links.txt").exists() and len(await _events(host, two.commission_id, "landed")) == 1
+    ending.clear()
+    manager._stale = stale
+    await wait_status(host, two.commission_id, "done")
+    assert await host.ledger.trees() == [] and trees.removed == [tree.id]
