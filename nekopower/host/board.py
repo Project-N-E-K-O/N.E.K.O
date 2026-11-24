@@ -261,7 +261,8 @@ def card_of(
         if tree.state in _TREE_AT_WORK and state == "working" and commission is not None and tree.commission_id == commission.id:
             # (One that waits for the user's answer meanwhile shows as waiting.)
             state = tree.state
-        elif tree.state in _TREE_WAITS and commission is None:
+        elif tree.state in _TREE_WAITS and commission is None and state in ("idle", "asleep"):
+            # (A session that is being summed up shows as that.)
             state = tree.state
     return {
         "id": session.id,

@@ -154,7 +154,12 @@ async def test_a_leader_starts_a_team_once_the_user_allowed_it_and_reports_once(
         [children["links"].id, children["styles"].id]
     )
     assert host.task_agents.queued == [] and host.task_agents._writes_in == {}
-    (formed,) = await _events(host, receipt.commission_id, "team_formed")
+
+    async def team_formed() -> list[dict[str, Any]]:
+        return await _events(host, receipt.commission_id, "team_formed")
+
+    await wait_until(team_formed, what="the team being put on record")
+    (formed,) = await team_formed()
     assert [(item["name"], item["preset"], item["writes"]) for item in formed["members"]] == [
         ("links", "worker", True), ("styles", "worker", True), ("fonts", "scout", False),
     ]
@@ -511,7 +516,9 @@ async def test_a_leader_is_not_reminded_while_its_team_or_itself_is_at_work(host
         await wait_until(lambda: len(lead.requests) == 2, what="the leader being in the middle of its turn")
     fonts = next(child for child in await host.ledger.select(parent_id=receipt.commission_id) if child.name == "fonts")
     assert await host.abort(fonts.id)
-    await asyncio.sleep(0.8)
+    # (The watch that its end started has looked, and is through.)
+    watches = host.task_agents._stall_watches
+    await wait_until(lambda: receipt.commission_id not in watches, what="the look at whether it stands still")
     # Nobody is reminded: the commission does not stand still.
     assert await _events(host, receipt.commission_id, "stall_reminded") == []
     assert (await host.ledger.get(receipt.commission_id)).status == "working"
@@ -547,7 +554,8 @@ async def test_a_leader_that_is_told_of_its_team_as_it_ends_is_not_reminded(host
     host, trees, workdir = await _shop(hosts, tmp_path, _by_role(lead, _team_scripts()))
     receipt = await _dispatch(host, TEAM)
     await wait_status(host, receipt.commission_id, "done")
-    await asyncio.sleep(0.4)
+    await wait_until(lambda: not host.task_agents._stall_watches, what="no watch being left")
+    await wait_until(lambda: not host.task_agents._tree_tasks, what="what was under way being through")
     assert await _events(host, receipt.commission_id, "stall_reminded") == []
     assert "Every task agent you started" not in _said_to(lead)
 
@@ -834,7 +842,7 @@ def _repository(tmp_path: Path, below: str = "") -> tuple[Path, Path]:
     (project / "a.txt").write_text("one\ntwo\nthree\n", encoding="utf-8", newline="\n")
     (repo / ".gitignore").write_text("node_modules/\n", encoding="utf-8", newline="\n")
     _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", "first")
+    _git(repo, "commit", "-q", "--no-gpg-sign", "-m", "first")
     return repo, project
 
 
@@ -890,7 +898,7 @@ async def test_with_git_itself_a_members_changes_land_as_uncommitted_changes(hos
     ]
     assert landed["outside"] == [] and (landed["lines_added"], landed["lines_deleted"]) == (2, 0)
     # Nothing was committed, staged or branched, and nothing of the host's is left in the repository.
-    status = _git(repo, "status", "--porcelain").splitlines()
+    status = _git(repo, "status", "--porcelain", "--untracked-files=all").splitlines()
     assert sorted(status) == [" M site/a.txt", "?? site/b.txt", "?? site/c.txt"]
     assert _git(repo, "rev-list", "--count", "HEAD").strip() == "1" and _git(repo, "branch", "--list").count("\n") == 1
     assert len(_git(repo, "worktree", "list").splitlines()) == 1

@@ -1100,7 +1100,7 @@ PERMISSION_CATEGORY_TEXTS = {
            "managed_delivery_arguments": "作業の入力を渡す {detail}", "managed_delivery_result": "作業の結果を渡す {detail}",
            "managed_delivery_value": "プログラムに結果を渡す {detail}", "managed_delivery_content": "モデルに内容を渡す {detail}",
            "usage_limit": "さらに約 {more} token を使って続けること（使い切ったらもう一度確認します。この用件はすでに {used} token を使い、1 件あたりの使用量の上限に達しました）",
-           "open_session": "ファイルを変更できる使い魔をもう一体呼んでこの件を任せること：{detail}", "open_session_tree": "ファイルを変更できる使い魔をもう一体呼ぶこと（専用のコピーで作業し終われば反映。作れなければ順番待ち）：{detail}",
+           "open_session": "ファイルを変更できる使い魔をもう一体呼んでこの件を任せること：{detail}", "open_session_tree": "ファイルを変更できる使い魔をもう一体呼ぶこと（専用のコピーで作業し終われば反映。作れなければプロジェクトのフォルダーで順番に変更）：{detail}",
            "open_session_team": "チームを組むこと：使い魔 {count} 体が各自のコピーで同時にファイルを変更し、終われば反映（{detail}）",
            "plugin_entry": "{detail} の呼び出し", "other": "{detail} の利用"},
     'ko': {"run_command": "명령 {detail} 실행", "outside_write": "작업 디렉터리 밖의 파일 {detail} 쓰기",

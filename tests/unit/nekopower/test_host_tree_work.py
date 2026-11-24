@@ -2252,3 +2252,65 @@ async def test_what_is_decided_on_a_worktree_the_user_kept_does_not_settle_a_com
     assert (await host.land_worktree(second.id))["status"] == "landed"
     await wait_status(host, two.commission_id, "done")
     assert (workdir / "more.txt").read_text() == "more"
+
+
+async def test_a_worktree_in_which_a_run_cannot_be_stopped_in_time_is_kept_as_it_is(hosts, tmp_path, monkeypatch):
+    from nekopower.host import tree_work
+
+    monkeypatch.setattr(tree_work, "_GONE_SECONDS", 0.3)
+    hold = asyncio.Event()
+    # (It changed nothing: looked at, the worktree would be removed.)
+    host, trees, workdir, one, two, members = await _two_members(
+        hosts, tmp_path, second=[[_slow_to_stop(hold), *_report("links repaired")]]
+    )
+    await wait_until(lambda: len(members["broken links"].requests) == 1, what="the second one at work")
+    assert await host.abort(two.commission_id)
+    await wait_until(lambda: two.commission_id not in host.task_agents._tree_of, what="its worktree being seen to")
+    await wait_until(lambda: not host.task_agents._tree_tasks, what="that being through")
+
+    # Still at it when the wait was over: not looked at, and kept for the user.
+    (tree,) = await host.ledger.trees()
+    assert (tree.state, tree.reason) == ("unlanded", "stopped") and trees.removed == [] and not trees.checking.is_set()
+    hold.set()
+    host.release.set()
+
+
+async def test_what_a_member_changed_is_not_merged_while_a_task_agent_it_started_cannot_be_stopped(hosts, tmp_path, monkeypatch):
+    from nekopower.host import tree_work
+
+    # (Not waited for at all: it is still at it when it is first looked at.)
+    monkeypatch.setattr(tree_work, "_GONE_SECONDS", 0.0)
+    hold = asyncio.Event()
+    helper = ScriptedLLM([[_slow_to_stop(hold), *_write("styles.css", "half")]])
+
+    async def until_it_works() -> None:
+        await wait_until(lambda: len(helper.requests) >= 1, what="the task agent it started being at work")
+
+    host, trees, workdir, one, two, members = await _two_members(
+        hosts, tmp_path,
+        second=[
+            [call("subagent", {"description": "styles", "prompt": "Tidy the stylesheet. PART-STYLES"}), finish("tool_calls")],
+            _write("links.txt", "repaired"),
+            [until_it_works, *_report("links repaired")],
+        ],
+        **{"PART-STYLES": helper},
+    )
+    host.release.set()
+    stuck = await wait_status(host, two.commission_id, "blocked")
+
+    (tree,) = await host.ledger.trees()
+    assert (tree.state, tree.reason) == ("unlanded", "failed") and trees.merged == [] and not (workdir / "links.txt").exists()
+    assert "could not be stopped in its worktree" in stuck.result_summary
+    hold.set()
+
+
+async def test_a_card_of_a_session_that_is_summed_up_says_so_though_a_worktree_of_its_waits(hosts, tmp_path):
+    from nekopower.host.board import card_of
+
+    clash = MergeResult("conflict", conflicts=("links.txt",))
+    host, trees, workdir, two, _members, _stuck = await _not_landed(hosts, tmp_path, [clash] * 4, turns=4)
+    (tree,) = await host.ledger.trees()
+    session = await host.ledger.get_session(tree.session_id)
+    assert card_of(session, None, (), None, None, tree=tree)["state"] == "unlanded"
+    summed_up = dataclasses.replace(session, status="compacting")
+    assert card_of(summed_up, None, (), None, None, tree=tree)["state"] == "compacting"

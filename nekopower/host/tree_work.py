@@ -81,6 +81,9 @@ CHECK_NONE = "none"
 _AT_WORK: frozenset[str] = frozenset({"making", "active", "landing", "resolving"})
 # How often what a landing waits for is looked at again, where nothing tells of it.
 _POLL_SECONDS = 0.2
+# How long the runs that work in a worktree are waited for to be over before it is looked at
+# for the last time; past that it is kept as it is.
+_GONE_SECONDS = 15.0
 # What a merge is said to have come to when files that clashed still hold conflict markers
 # (``MergeResult.detail``): nothing was merged, and nothing is put into the worktree anew.
 _MARKERS_LEFT = "conflict markers are left"
@@ -376,29 +379,35 @@ class TreeWork:
         """Whether a worktree's directory is not there any more (and not merely not to be opened this moment)."""
         return not await asyncio.to_thread(Path(row.path).is_dir)
 
-    async def _gone_from_runtime(self, commission_id: str, seconds: float = 15.0) -> None:
-        """Wait until no run is under way for a commission, nor for the task agents it started; no longer than ``seconds``.
+    async def _gone_from_runtime(self, commission_id: str) -> bool:
+        """Wait until no run is under way for a commission, nor for the task agents it started; returns whether that is so.
 
         Before a worktree they work in is looked at for the last time:
         a tool of theirs that is finishing a write is through by then.
+        No longer than ``_GONE_SECONDS``: False when one is still at it
+        by then, or when the task agents it started could not be read.
+        Whoever asks keeps the worktree as it is then.
         """
 
         def at_it(item: str) -> bool:
             live = self._sessions.get(item)
             return live is not None and not live.idle
 
-        deadline = time.monotonic() + seconds
-        while not self._closed and time.monotonic() < deadline:
-            theirs = [commission_id]
+        deadline = time.monotonic() + _GONE_SECONDS
+        while not self._closed:
             try:
-                theirs += [child.id for child in await self._ledger.select(parent_id=commission_id)]
+                theirs = [commission_id, *(child.id for child in await self._ledger.select(parent_id=commission_id))]
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001 - its own session is waited for all the same
+            except Exception:  # noqa: BLE001 - not known: asked again, and not taken for gone
                 logger.debug("the task agents a commission started could not be read", exc_info=True)
-            if not any(at_it(item) for item in theirs):
-                return
+                theirs = None
+            if theirs is not None and not any(at_it(item) for item in theirs):
+                return True
+            if time.monotonic() >= deadline:
+                break
             await asyncio.sleep(_POLL_SECONDS)
+        return False
 
     def _forget_tree(self, row: Tree, session_id: str | None = None) -> None:
         """Forget that a commission is worked on in a worktree: it is over there, or the worktree is gone.
@@ -864,7 +873,12 @@ class TreeWork:
         # commission says it is done: stopped, as when a commission is done anywhere, and gone
         # from its runtime before what was changed is read.
         await self._end_what_it_started(commission_id)
-        await self._gone_from_runtime(commission_id)
+        if not await self._gone_from_runtime(commission_id):
+            # One of them is still at it in the worktree: nothing is merged under it.
+            self._dones.pop(commission_id, None)
+            return await self._not_landed(
+                row, commission, done, REASON_FAILED, detail="a task agent it started could not be stopped in its worktree"
+            )
         chosen = await self.landing.get()
         if chosen["inspect"] or (await self._chosen(commission_id)).get("inspect"):
             verdict, findings = await self._inspect(row, commission)
@@ -1344,10 +1358,11 @@ class TreeWork:
     async def _seen_to_after_its_run(self, row: Tree, commission: Commission) -> Tree | None:
         """Remove a worktree a run left without changes, or put it on record as not landed; returns it, None when it is removed or stands otherwise by now."""
         # Its run is being stopped, and may be finishing a write: looked at once it is gone.
-        await self._gone_from_runtime(commission.id)
+        gone = await self._gone_from_runtime(commission.id)
         handle = await self._handle_of(row)
         try:
-            changed = handle is not None and await self.worktrees.has_changes(handle)
+            # (Still at it: kept, whatever it holds this moment.)
+            changed = not gone or (handle is not None and await self.worktrees.has_changes(handle))
             if handle is None and not await self._tree_is_gone(row):
                 changed = True  # there, and not to be opened this moment: kept
         except asyncio.CancelledError:
