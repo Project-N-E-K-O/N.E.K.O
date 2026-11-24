@@ -287,3 +287,25 @@ def test_light_dark_narrow_panel_preserves_manager_theme(page, tmp_path):
             original = page.locator('#upload-btn').bounding_box()
             assert entry['x'] == original['x'] and entry['width'] == original['width']
             page.screenshot(path=str(tmp_path / ('connected-' + theme + '-' + str(width) + '.png')))
+
+
+def test_rejected_csrf_token_is_reloaded_for_the_next_explicit_attempt(page):
+    network(page)
+    reads = []
+    def config(route):
+        reads.append(True)
+        route.fulfill(json={"autostart_csrf_token": "old-token" if len(reads) == 1 else "test-native-only"})
+    page.route("**/api/config/page_config", config)
+    def launch(route):
+        if route.request.method == "POST" and route.request.headers.get("x-csrf-token") == "old-token":
+            return route.fulfill(status=403, json={"success": False, "error_code": "csrf_validation_failed"})
+        route.fallback()
+    page.route("**/api/model-market/launch**", launch)
+    mounted(page)
+    button = page.locator('[data-workshop=start]')
+    button.click()
+    page.wait_for_function("!document.querySelector('[data-workshop=start]').disabled")
+    assert page.evaluate('testState.opened.length') == 0
+    button.click()
+    page.wait_for_function('testState.opened.length === 1')
+    assert len(reads) == 2

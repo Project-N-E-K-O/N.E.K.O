@@ -55,6 +55,35 @@ def test_missing_role_file_fails_closed_without_a_filesystem_error(config):
         row.check(config)
 
 
+def test_invalidated_idle_connections_release_launch_capacity(config):
+    launches = market.Launches()
+    for _ in range(market.MAX_LAUNCHES * 2):
+        row = launches.create(config)
+        row.connection.error = 'model_market_target_changed'
+    assert launches.create(config).phase == 'browsing'
+
+
+@pytest.mark.parametrize('change', ['logout', 'account', 'same_account_login'])
+def test_account_session_change_revokes_a_connection_before_role_save(config, tmp_path, monkeypatch, change):
+    path = tmp_path / 'account.json'
+    monkeypatch.setattr(market, '_ACCOUNT_FILE', path)
+    value = {'session_id': 'login-a', 'subject': 'account-a', 'client_id': 'desktop', 'auth_url': 'https://auth.test'}
+    path.write_text(json.dumps(value))
+    row = market.Launches().create(config)
+    value['access_token'] = 'refreshed-token'
+    path.write_text(json.dumps(value))
+    row.check(config)  # Ordinary refresh preserves the existing account session.
+    if change == 'logout':
+        path.unlink()
+    else:
+        value['session_id'] = 'login-b'
+        if change == 'account': value['subject'] = 'account-b'
+        path.write_text(json.dumps(value))
+    with pytest.raises(WorkshopError, match='market_auth_required'):
+        row.check(config)
+    assert row.connection.error == 'market_auth_required'
+
+
 def test_selection_is_idempotent_and_launch_cannot_be_retargeted(config):
     launches = market.Launches(); row = launches.create(config)
     assert launches.select(config, row.request_id, 1, "a" * 64, 100, OPERATION) == (row, True)
@@ -142,3 +171,18 @@ def test_stream_cancel_deadline_and_success(monkeypatch):
     cancelled.clear()
     patch_module_clock(monkeypatch, market, monotonic=lambda: stream.deadline + 1)
     with pytest.raises(WorkshopError, match="timeout"): stream.read(1024)
+
+
+def test_atomic_account_file_refresh_retries_without_revoking_the_connection(config, monkeypatch):
+    value = {"session_id": "a", "subject": "same-account"}
+    count = 0
+    def read(*args):
+        nonlocal count
+        count += 1
+        if count == 2:
+            raise WorkshopError("model_workshop_state_unreadable")
+        return value
+    monkeypatch.setattr(market, "read_json", read)
+    row = market.Launches().create(config)
+    row.check(config)
+    assert count == 3 and row.connection.error is None

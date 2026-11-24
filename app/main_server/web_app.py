@@ -22,7 +22,7 @@ import re
 import secrets
 import stat
 from pathlib import Path
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, unquote
 
 import httpx
 from fastapi import Request
@@ -703,10 +703,16 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
     # Model bytes go directly between backend services. Only exact command
     # paths may use this buffering proxy: checking a package prefix alone would
     # miss dot segments normalized by the outgoing HTTP client.
-    if path == "models" or path.startswith("models/"):
+    try:
+        decoded = unquote(path, errors="strict")
+    except (ValueError, UnicodeError):
+        return JSONResponse(status_code=403, content={"detail": "local service endpoint"})
+    if path and ("\\" in decoded or any(part in {"", ".", ".."} for part in decoded.split("/"))):
+        return JSONResponse(status_code=403, content={"detail": "local service endpoint"})
+    if decoded == "models" or decoded.startswith("models/"):
         from services.model_workshop.market import REQUEST as model_request
         parts = path.split("/")
-        if not (len(parts) in {3, 4} and parts[1] == "launch"
+        if not (path == decoded and len(parts) in {3, 4} and parts[1] == "launch"
                 and model_request.fullmatch(parts[2])
                 and (len(parts) == 3 or parts[3] in {"select", "cancel"})):
             return JSONResponse(status_code=403, content={"detail": "local service endpoint"})

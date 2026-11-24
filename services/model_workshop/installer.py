@@ -327,6 +327,16 @@ class Installer:
                     pass
                 return dict(record, status="installed", already_installed=False)
 
+    def _discard_unpublished(self, journal, rows, attempts):
+        """Release only this failed attempt, keeping recovery evidence until saved."""
+        record = journal["record"]
+        if record:
+            digest = record["package_sha256"]
+            if digest not in rows and attempts.get(digest) == journal["task_id"]:
+                attempts.pop(digest)
+                self.registry.save(rows, attempts)
+        self.cleanup_private_stage(journal)
+
     def recover(self, active=frozenset()):
         """Only the root owner recovers; each conflict preserves its log and target."""
         self._assert_owner()
@@ -376,13 +386,13 @@ class Installer:
                         results[path.stem] = "superseded"
                     elif journal["phase"] != "committing":
                         with self.mutation():
-                            self.cleanup_private_stage(journal)
+                            self._discard_unpublished(journal, rows, attempts)
                         results[path.stem] = "interrupted"
                     else:
                         target = self.paths.checked(record["target"])
                         if not os.path.lexists(target):
                             with self.mutation():
-                                self.cleanup_private_stage(journal)
+                                self._discard_unpublished(journal, rows, attempts)
                             results[path.stem] = "interrupted"
                             continue
                         if identity(target) != journal["object_identity"]:

@@ -354,3 +354,12 @@ def test_unknown_os_lock_failure_rejects_before_body_and_does_not_leak_paths(
     assert b"/private/sensitive" not in b"".join(
         message.get("body", b"") for message in sent
     )
+
+
+@pytest.mark.parametrize("suffix", ["", "/select", "/cancel", "/apply", "/ready", "/invalidate"])
+def test_connected_commands_preserve_preflight_error_codes_without_consuming_body(import_app, monkeypatch, suffix):
+    monkeypatch.setattr(api, "_preflight", lambda scope: api.JSONResponse({"error_code": "csrf_validation_failed"}, status_code=403))
+    path = "/api/model-market/launch" + (("/" + "r" * 32 + suffix) if suffix else "")
+    with local_client(import_app) as client:
+        response = client.post(path, content=b"malformed body", headers={"Content-Type": "application/json"})
+    assert response.status_code == 403 and response.json()["error_code"] == "csrf_validation_failed"

@@ -222,7 +222,7 @@ async def test_null_operation_never_targets_the_current_choice(flow, action):
     before = flow.config.get_runtime_config_path('characters.json').read_bytes()
     response = await flow.client.post('/api/model-market/launch/' + row['request_id'] + '/' + action,
                                      headers=AUTH, json={'operation_id': None})
-    assert response.status_code == 409 and response.json()['error_code'] == 'model_market_invalid_selection'
+    assert response.status_code == 400 and response.json()['error_code'] == 'model_market_invalid_selection'
     assert flow.driver.status(flow.config, row['request_id'])['phase'] == 'installed'
     assert not flow.driver.launches.get(row['request_id']).cancel.is_set()
     assert flow.config.get_runtime_config_path('characters.json').read_bytes() == before

@@ -135,7 +135,9 @@ def test_pair_select_stream_install_over_real_service_hops(owner, tmp_path, monk
 @pytest.mark.asyncio
 @pytest.mark.parametrize('path', ['models/package/7', 'models/descriptor/7',
     'models/launch/' + 'r' * 32 + '/../../package/7', 'models/launch/' + 'r' * 32 + '/apply',
-    'models/launch/' + 'r' * 32 + '/ready', 'models/launch/' + 'r' * 32 + '/invalidate'])
+    'models/launch/' + 'r' * 32 + '/ready', 'models/launch/' + 'r' * 32 + '/invalidate',
+    'x/../models/package/7', 'x/%2e%2e/models/package/7', 'x/./models/package/7',
+    'x//models/package/7'])
 async def test_generic_proxy_cannot_buffer_model_files_or_normalized_aliases(monkeypatch, path):
     monkeypatch.setattr(web_app, '_resolve_user_plugin_base', lambda: pytest.fail('must reject before any forwarding'))
     request = Request({'type': 'http', 'method': 'GET', 'path': '/market/' + path,

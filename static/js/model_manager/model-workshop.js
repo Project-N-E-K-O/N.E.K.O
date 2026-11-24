@@ -48,6 +48,7 @@
                 body: body === undefined ? undefined : JSON.stringify(body), headers, credentials: 'same-origin',
                 redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(15000) });
             const data = await response.json();
+            if (response.status === 403 && data.error_code === 'csrf_validation_failed') token = null;
             if (!response.ok || data.success !== true) throw Object.assign(new Error('model_command_failed'), { code: data.error_code });
             return data;
         }

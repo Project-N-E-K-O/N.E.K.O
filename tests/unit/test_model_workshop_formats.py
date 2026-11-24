@@ -630,6 +630,81 @@ def vrm_graph(data):
                            "channels": [{"sampler": 0, "target": {"node": 0, "path": "translation"}}]}]
 
 
+@pytest.mark.parametrize("reference", ["tool.vtube.json#x.json", "tool.vtube.json?x.json", "tool%2Evtube.json", "TOOL.vtube.json"])
+@pytest.mark.parametrize("valid_motion", [False, True])
+def test_optional_alias_checks_the_resource_the_loader_can_actually_open(tmp_path, reference, valid_motion):
+    files = live2d_files()
+    motion = json.loads(files["motions/test.motion3.json"])
+    if not valid_motion:
+        motion["Meta"]["TotalSegmentCount"] = 400_000_000
+    files["tool.vtube.json"] = json.dumps(motion).encode()
+    model = json.loads(files["Avatar.model3.json"])
+    model["FileReferences"]["Motions"] = {"Idle": [{"File": reference}]}
+    files["Avatar.model3.json"] = json.dumps(model).encode()
+    path = make_native_bundle(tmp_path, files=files)
+    if valid_motion:
+        assert validate_model_bundle(path).compatibility_warning_count == 1
+    else:
+        with pytest.raises(ModelFormatError):
+            validate_model_bundle(path)
+
+
+def test_emotion_mapping_cannot_disguise_an_unsafe_motion_as_tool_data(tmp_path):
+    files = live2d_files(mapping={"motions": {"happy": ["tool.vtube.json#x.motion3.json"]}})
+    motion = json.loads(files["motions/test.motion3.json"])
+    motion["Meta"]["TotalSegmentCount"] = 400_000_000
+    files["tool.vtube.json"] = json.dumps(motion).encode()
+    with pytest.raises(ModelFormatError):
+        validate_model_bundle(make_native_bundle(tmp_path, files=files))
+
+
+@pytest.mark.parametrize("count,events,accepted", [(300_000_000, [], False), (1, [], False),
+    (True, [], False), (-1, [], False), (1, [None], False), (1, [{"Time": 0, "Value": 1}], False),
+    (1, [{"Time": "0", "Value": "hello"}], False), (1, [{"Time": 0, "Value": "hello"}], True), (0, [], True)])
+def test_motion_events_bound_the_exact_array_the_loader_allocates(tmp_path, count, events, accepted):
+    files = live2d_files()
+    motion = json.loads(files["motions/test.motion3.json"])
+    motion["Meta"]["UserDataCount"] = count
+    motion["UserData"] = events
+    files["motions/test.motion3.json"] = json.dumps(motion).encode()
+    path = make_native_bundle(tmp_path, files=files)
+    if accepted:
+        validate_model_bundle(path)
+    else:
+        with pytest.raises(ModelFormatError):
+            validate_model_bundle(path)
+
+
+@pytest.mark.parametrize("change", ["material", "base_texture", "normal_texture", "mtoon_texture", "morph_count", "stride_tail", "sparse_indices", "sparse_values"])
+def test_vrm_rejects_resources_the_bundled_loader_cannot_read(tmp_path, change):
+    def graph(data):
+        vrm_graph(data)
+        data["meshes"] = [{"primitives": [{"attributes": {"POSITION": 1}, "material": 0}]}]
+        if change == "material":
+            data["meshes"][0]["primitives"][0]["material"] = 1
+        elif change == "base_texture":
+            data["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]["index"] = 1
+        elif change == "normal_texture":
+            data["materials"][0]["normalTexture"] = {"index": 1}
+        elif change == "mtoon_texture":
+            data["materials"][0]["extensions"] = {"VRMC_materials_mtoon": {"shadeMultiplyTexture": {"index": 1}}}
+        elif change == "morph_count":
+            data["meshes"][0]["primitives"].append({"attributes": {"POSITION": 1}, "targets": [{"POSITION": 1}]})
+            data.pop("animations")
+        elif change == "stride_tail":
+            data["bufferViews"][1].update(byteStride=16, byteLength=28)
+            data["accessors"] = [{"bufferView": 1, "componentType": 5126, "count": 2, "type": "VEC3"}]
+            data.pop("animations"); data.pop("skins"); data["nodes"][0].pop("skin")
+            data["meshes"][0]["primitives"][0]["attributes"]["POSITION"] = 0
+        else:
+            data["accessors"][1]["sparse"] = {"count": 1, "indices": {"bufferView": 1, "componentType": 5123}, "values": {"bufferView": 1}}
+            key = "indices" if change == "sparse_indices" else "values"
+            data["accessors"][1]["sparse"][key]["byteOffset"] = 1
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(change=graph)})
+    with pytest.raises(ModelFormatError):
+        validate_model_bundle(path)
+
+
 @pytest.mark.parametrize("change", [
     lambda d: d["textures"][0].update(source=1),
     lambda d: d["textures"][0].update(source=True),
@@ -1021,3 +1096,30 @@ def test_morph_dependencies_are_checked_without_weight_animations(tmp_path, targ
     path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(change=graph)})
     with pytest.raises(ModelFormatError):
         validate_vrm_bundle(path)
+
+
+@pytest.mark.parametrize("damage", ["vertex_null", "position_missing", "destination_missing", "normalization", "weight"])
+def test_damaged_optional_physics_warns_without_rewriting_the_model(tmp_path, damage):
+    files = live2d_files()
+    vertex = {"Mobility": 1, "Delay": 0.2, "Acceleration": 1, "Radius": 1, "Position": {"X": 0, "Y": 1}}
+    setting = {"Normalization": {key: {"Minimum": -1, "Maximum": 1, "Default": 0} for key in ("Position", "Angle")},
+               "Input": [{"Source": {"Id": "ParamAngleX"}, "Weight": 100, "Reflect": False, "Type": "Angle"}],
+               "Output": [{"Destination": {"Id": "ParamHair"}, "Weight": 100, "Reflect": False, "Type": "Angle", "Scale": 1, "VertexIndex": 1}],
+               "Vertices": [dict(vertex), dict(vertex)]}
+    data = {"Version": 3, "Meta": {"PhysicsSettingCount": 1, "EffectiveForces": {key: {"X": 0, "Y": 0} for key in ("Gravity", "Wind")}},
+            "PhysicsSettings": [setting]}
+    if damage == "vertex_null": setting["Vertices"][1] = None
+    elif damage == "position_missing": setting["Vertices"][1].pop("Position")
+    elif damage == "destination_missing": setting["Output"][0].pop("Destination")
+    elif damage == "normalization": setting.pop("Normalization")
+    else: setting["Input"][0]["Weight"] = "invalid"
+    files["Avatar.physics3.json"] = json.dumps(data).encode()
+    result = validate_model_bundle(make_native_bundle(tmp_path, files=files))
+    assert {"code": "live2d_optional_resource_unavailable", "path": "Avatar.physics3.json"} in result.compatibility_warnings
+
+
+def test_old_pmd_without_toon_table_cannot_invent_a_shared_toon(tmp_path):
+    main = "Models/Avatar.pmd"
+    with pytest.raises(ModelFormatError):
+        validate_model_bundle(make_native_bundle(tmp_path, kind="mmd", entry=main,
+            files={main: pmd_bytes("", toon=0)}))

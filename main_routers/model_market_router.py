@@ -84,6 +84,8 @@ def _error(exc):
         "model_workshop_closed",
     ):
         status = 409
+    elif code == "model_market_invalid_selection":
+        status = 400
     elif code.startswith("model_market_") or code.startswith("market_auth_"):
         status = 502 if code == "model_market_unavailable" else 409
     if isinstance(exc, MaintenanceModeError):
@@ -101,7 +103,7 @@ async def _command(request, keys):
     """Authenticate before consuming even a small selection body; reject extras."""
     rejected = _preflight(request.scope)
     if rejected is not None:
-        raise HTTPException(rejected.status_code, detail="local mutation refused")
+        return rejected
     if request.headers.get("content-type", "").split(";", 1)[0] != "application/json":
         raise HTTPException(415, detail="JSON model command required")
     raw = bytearray()
@@ -120,7 +122,9 @@ async def _command(request, keys):
 
 @router.post("/launch")
 async def launch_market(request: Request, response: Response):
-    await _command(request, set())
+    value = await _command(request, set())
+    if isinstance(value, Response):
+        return value
     # Pairing URLs and role/task results must not survive in HTTP caches.
     response.headers["Cache-Control"] = "no-store"
     try:
@@ -142,6 +146,8 @@ async def connected_status(request_id: str, response: Response, operation_id: st
 @router.post("/launch/{request_id}/select", status_code=202)
 async def select_market_model(request_id: str, request: Request, response: Response):
     value = await _command(request, {"model_id", "expected_sha256", "byte_size", "operation_id"})
+    if isinstance(value, Response):
+        return value
     response.headers["Cache-Control"] = "no-store"
     try:
         return {"success": True, **await connected_downloads.select(get_config_manager(), request_id,
@@ -153,6 +159,8 @@ async def select_market_model(request_id: str, request: Request, response: Respo
 @router.post("/launch/{request_id}/cancel")
 async def cancel_connected_download(request_id: str, request: Request, response: Response):
     value = await _command(request, {"operation_id"})
+    if isinstance(value, Response):
+        return value
     response.headers["Cache-Control"] = "no-store"
     try:
         return {"success": True, **connected_downloads.cancel(request_id, value["operation_id"])}
@@ -165,6 +173,8 @@ async def apply_connected_model(request_id: str, request: Request, response: Res
     # Deliberately absent from the remote bridge allowlist: only the native
     # manager can authorize this step after checking its own unsaved edits.
     value = await _command(request, {"operation_id"})
+    if isinstance(value, Response):
+        return value
     response.headers["Cache-Control"] = "no-store"
     try:
         return {"success": True, **await connected_downloads.apply(get_config_manager(), request_id, value["operation_id"])}
@@ -176,6 +186,8 @@ async def apply_connected_model(request_id: str, request: Request, response: Res
 async def ready_connected_model(request_id: str, request: Request, response: Response):
     # Like apply, this permission is local-only and absent from every remote allowlist.
     value = await _command(request, {"operation_id"})
+    if isinstance(value, Response):
+        return value
     response.headers["Cache-Control"] = "no-store"
     try:
         return {"success": True, **await connected_downloads.ready(get_config_manager(), request_id, value["operation_id"])}
@@ -186,7 +198,9 @@ async def ready_connected_model(request_id: str, request: Request, response: Res
 @router.post("/launch/{request_id}/invalidate")
 async def invalidate_model_connection(request_id: str, request: Request, response: Response):
     # Unsaved local edits revoke the pairing without granting the Market a save capability.
-    await _command(request, set())
+    value = await _command(request, set())
+    if isinstance(value, Response):
+        return value
     response.headers["Cache-Control"] = "no-store"
     try:
         return {"success": True, **connected_downloads.invalidate(request_id)}

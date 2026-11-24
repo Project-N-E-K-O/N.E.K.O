@@ -18,7 +18,7 @@ from pathlib import Path
 from utils.config_manager import get_reserved
 
 from .bundle import BundleLimits
-from .paths import WorkshopError, identity
+from .paths import WorkshopError, identity, read_json
 
 HASH = re.compile(r"[0-9a-f]{64}\Z")
 REQUEST = re.compile(r"[A-Za-z0-9_-]{32}\Z")
@@ -27,6 +27,24 @@ TTL = 30 * 60
 MAX_LAUNCHES = 32
 MAX_OPERATIONS = 64
 ACTIVE = {"downloading", "installing", "applying"}
+_ACCOUNT_FILE = Path.home() / ".neko" / "market_auth.json"
+
+
+def _account_witness():
+    """Reuse the persisted OAuth session identity; refreshes do not create a login."""
+    for attempt in range(3):
+        try:
+            data = read_json(_ACCOUNT_FILE, 64 * 1024)
+            if data is None:
+                return None
+            keys = ("session_id", "subject", "client_id", "auth_url")
+            if not isinstance(data, dict) or any(data.get(key) is not None and not isinstance(data[key], str) for key in keys):
+                raise WorkshopError("market_auth_required")
+            return tuple(data.get(key) for key in keys)
+        except (OSError, WorkshopError, ValueError) as error:
+            # Atomic token refresh can replace the file while it is being read.
+            if attempt == 2:
+                raise WorkshopError("market_auth_required") from error
 
 
 def _witness(config):
@@ -61,6 +79,7 @@ class Launch:
     character_id: str
     witness: tuple
     expires: float
+    account: tuple | None = None
     phase: str = "browsing"
     selection: tuple | None = None
     task_id: str | None = None
@@ -80,6 +99,12 @@ class Launch:
         """Cancellation ends an operation; role/edit conflicts revoke its whole pairing."""
         if self.connection.error:
             raise WorkshopError(self.connection.error)
+        try:
+            if _account_witness() != self.account:
+                raise WorkshopError("market_auth_required")
+        except WorkshopError:
+            self.connection.error = "market_auth_required"
+            raise
         if time.monotonic() >= self.expires:
             raise WorkshopError("model_market_expired")
         if self.operation_id != self.connection.current:
@@ -124,7 +149,8 @@ class Launches:
     def create(self, config):
         now = time.monotonic()
         self.items = {key: row for key, row in self.items.items()
-                      if row.expires > now or row.phase in ACTIVE or row.connection.running}
+                      if row.phase in ACTIVE or row.connection.running
+                      or (row.expires > now and not row.connection.error)}
         if len(self.items) >= MAX_LAUNCHES:
             raise WorkshopError("model_market_busy")
         # Authoritative loading refuses unpersisted IDs; a same-name replacement
@@ -136,7 +162,7 @@ class Launches:
         if not name or not character_id:
             raise WorkshopError("model_market_target_changed")
         row = Launch(secrets.token_urlsafe(24), name, character_id,
-                     _witness(config), now + TTL)
+                     _witness(config), now + TTL, account=_account_witness())
         self.items[row.request_id] = row
         return row
 
@@ -190,7 +216,7 @@ class Launches:
         if row.operation_id is not None:
             # Each worker keeps its own object; late completion cannot overwrite its successor.
             row = Launch(row.request_id, row.name, row.character_id, row.witness,
-                         row.expires, connection=row.connection)
+                         row.expires, account=row.account, connection=row.connection)
         row.operation_id = operation_id
         row.connection.current = operation_id
         row.connection.ready = False

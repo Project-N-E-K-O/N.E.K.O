@@ -122,7 +122,8 @@ class ConnectedDownloads:
                                "model_code": code})
             return {**row.public(), "url": web + "/#/models?" + query}
         except BaseException as error:
-            self.launches.items.pop(row.request_id, None)
+            async with character_config_mutation_lock:
+                self.launches.items.pop(row.request_id, None)
             if isinstance(error, (asyncio.CancelledError, WorkshopError)):
                 raise
             raise WorkshopError("model_market_unavailable") from None
