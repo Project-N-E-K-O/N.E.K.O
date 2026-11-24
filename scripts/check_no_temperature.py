@@ -139,6 +139,7 @@ EXEMPTIONS: dict[str, str] = {
         )
         for name in (
             "test_host_model_slots",
+            "test_model_execution",
             "test_model_config_routes",
             "test_model_config_service",
             "test_model_gateway_anthropic",

@@ -616,3 +616,66 @@ async def test_one_failed_record_does_not_abandon_the_accounting_queue(failure):
     await executor.aclose()
     assert recorder.calls == 2
     assert len(recorder.requests) == 1
+
+
+class _RecordingLogger:
+    def __init__(self):
+        self.warnings: list[tuple] = []
+
+    def warning(self, message, *args):
+        self.warnings.append((message, *args))
+
+
+@pytest.fixture
+def execution_log(monkeypatch):
+    import plugin.server.model_gateway.execution as execution_module
+
+    log = _RecordingLogger()
+    monkeypatch.setattr(execution_module, "logger", log)
+    monkeypatch.setattr(execution_module, "_warned_drops", set())
+    return log
+
+
+def plugin_call(plugin_id, usage_id="analysis", fallback=None):
+    return ResolvedModelCall(
+        plugin_id, usage_id, "slot_" + "a" * 32, slot(),
+        "slot_" + "b" * 32 if fallback is not None else None, fallback,
+    )
+
+
+async def test_dropped_temperature_warning_names_the_plugin_once_per_plugin_usage(execution_log):
+    executor = ModelExecutor(Gateway(), Recorder())
+    for _ in range(3):
+        await executor.complete(plugin_call("weather_bot"), body(temperature=0.3))
+    assert len(execution_log.warnings) == 1
+    assert "weather_bot" in execution_log.warnings[0] and "analysis" in execution_log.warnings[0]
+    # Usage ids are each plugin's own names: the same name in another plugin
+    # still gets its own warning, as does another usage of the first plugin.
+    await executor.complete(plugin_call("note_bot"), body(temperature=0.3))
+    await executor.complete(plugin_call("weather_bot", "summary"), body(model="summary", temperature=0.3))
+    assert [entry[1:] for entry in execution_log.warnings] == [
+        ("weather_bot", "temperature", "analysis"),
+        ("note_bot", "temperature", "analysis"),
+        ("weather_bot", "temperature", "summary"),
+    ]
+    # Streaming requests are reported the same way.
+    chunks = [chunk async for chunk in executor.stream(plugin_call("stream_bot"), body(stream=True, temperature=1))]
+    assert chunks
+    assert execution_log.warnings[-1][1] == "stream_bot"
+    await executor.aclose()
+
+
+async def test_no_warning_without_temperature_and_none_per_fallback_attempt(execution_log):
+    async def execute(model_slot, _request, observation):
+        if model_slot.model == "primary":
+            raise ModelGatewayError("upstream_error", "failure", 502)
+        return {"ok": True}
+
+    gateway = Gateway(complete=execute)
+    executor = ModelExecutor(gateway, Recorder())
+    assert await executor.complete(plugin_call("quiet_bot", fallback=slot("backup")), body()) == {"ok": True}
+    assert execution_log.warnings == []
+    assert await executor.complete(plugin_call("weather_bot", fallback=slot("backup")), body(temperature=0.3)) == {"ok": True}
+    assert gateway.calls[-2:] == ["primary", "backup"]
+    assert len(execution_log.warnings) == 1
+    await executor.aclose()

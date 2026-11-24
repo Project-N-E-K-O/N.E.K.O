@@ -16,6 +16,7 @@ from plugin.server.domain.model_config import ModelSlot
 
 from .errors import ModelGatewayError
 from .observation import AttemptObservation
+from .request import DROPPED_FIELDS
 
 _FALLBACK_ERRORS = frozenset({
     "upstream_connection_error", "upstream_timeout", "upstream_rate_limited", "upstream_error",
@@ -27,6 +28,27 @@ _FALLBACK_ERRORS = frozenset({
 # so a stalled primary still leaves time to switch within the same deadline.
 _PRIMARY_BUDGET_SHARE = 2 / 3
 logger = get_logger("server.model_gateway.execution")
+# (plugin, usage, field) already warned about. Usage ids are each plugin's own
+# names, so the plugin is part of the key: a plugin that sends a dropped field
+# on every call logs once per process, and another plugin with the same usage
+# name still gets its own warning.
+_warned_drops: set[tuple[str, str, str]] = set()
+
+
+def _warn_dropped_fields(call: ResolvedModelCall, body: object) -> None:
+    """Request preparation drops these fields; tell the user which plugin sent one."""
+    if not isinstance(body, dict):
+        return
+    for field_name in sorted(DROPPED_FIELDS & body.keys()):
+        key = (call.plugin_id, call.usage_id, field_name)
+        if key in _warned_drops:
+            continue
+        _warned_drops.add(key)
+        logger.warning(
+            "Plugin {} sent {} for model usage {}; it was dropped (plugin model requests carry "
+            "no temperature, the provider default applies). Reported once per process",
+            call.plugin_id, field_name, call.usage_id,
+        )
 
 
 @dataclass(frozen=True)
@@ -294,6 +316,8 @@ class ModelExecutor:
             "attempts": attempts,
         }
         admitted = False
+        # Once per logical request, before any fallback attempt.
+        _warn_dropped_fields(call, body)
         try:
             if self._closed:
                 raise ModelGatewayError("model_gateway_unavailable", "Plugin model gateway is shutting down", 503)

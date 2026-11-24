@@ -10,39 +10,23 @@ import re
 from typing import NoReturn
 from urllib.parse import urlsplit
 
-from plugin.logging_config import get_logger
 from plugin.server.domain.model_config import MAX_OUTPUT_TOKENS, ModelSlot
 
 from .errors import ModelGatewayError
 
-logger = get_logger("server.model_gateway.request")
 _NAME = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 _USAGE_ID = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _ASSISTANT_HISTORY_FIELDS = {"tool_calls", "refusal", "annotations", "audio", "function_call"}
 # Accepted so plugins written against the earlier gateway keep working, then
 # dropped before the request is sent: plugin model requests carry no
 # temperature and the provider default applies (scripts/check_no_temperature.py).
-_DROPPED_FIELDS = frozenset({"temperature"})
+# The execution layer, which knows the calling plugin, logs the warning.
+DROPPED_FIELDS = frozenset({"temperature"})
 _REQUEST_FIELDS = {
     "model", "messages", "stream", "stream_options", "tools", "tool_choice",
     "parallel_tool_calls", "max_tokens", "max_completion_tokens",
-    "top_p", "stop", "n", "response_format", *_DROPPED_FIELDS,
+    "top_p", "stop", "n", "response_format", *DROPPED_FIELDS,
 }
-# Plugin usages already warned about a dropped field, so a plugin that sends
-# it on every call logs once per process rather than on every request.
-_warned_drops: set[tuple[str, str]] = set()
-
-
-def _drop_ignored_fields(request: dict, usage_id: str) -> None:
-    for field in sorted(_DROPPED_FIELDS & request.keys()):
-        request.pop(field)
-        if (usage_id, field) not in _warned_drops:
-            _warned_drops.add((usage_id, field))
-            logger.warning(
-                "Plugin model usage {} sent {}; it was dropped (plugin model requests "
-                "carry no temperature, the provider default applies). Reported once per process",
-                usage_id, field,
-            )
 
 
 def _invalid(param: str, message: str, *, code: str = "invalid_request") -> NoReturn:
@@ -298,8 +282,8 @@ def prepare_chat_request(slot: ModelSlot, body: object) -> dict:
 
     The caller retains the original ``body['model']`` as the plugin's usage alias.
     No user message, content order, tool association or explicit budget is repaired.
-    A ``temperature`` the plugin sends is accepted whatever its value and dropped
-    with a warning (once per usage per process); the provider default applies.
+    A ``temperature`` the plugin sends is accepted whatever its value and dropped;
+    the provider default applies (ModelExecutor logs the warning).
     """
     source = _object(body, "body", _REQUEST_FIELDS)
     usage_id = _string(source.get("model"), "model", nonempty=True)
@@ -349,7 +333,8 @@ def prepare_chat_request(slot: ModelSlot, body: object) -> dict:
                 message.pop("tool_calls", None)
     request["model"] = slot.model
     request["stream"] = stream
-    _drop_ignored_fields(request, usage_id)
+    for field in DROPPED_FIELDS & request.keys():
+        request.pop(field)
     if not {"max_tokens", "max_completion_tokens"} & request.keys():
         budget = slot.defaults.max_output_tokens or 1024
         if budget > MAX_OUTPUT_TOKENS:
