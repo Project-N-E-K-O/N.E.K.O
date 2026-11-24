@@ -3542,7 +3542,9 @@ class TaskAgentManager:
             # Its work may have gone through before what came after it was
             # refused (what was passed on meanwhile): then it was at work.
             said = "run" if session.sent else "start"
-            await self._fail(commission_id, f"the task agent could not be started: {exc}", said=said, detail=str(exc))
+            await self._fail(
+                commission_id, f"the task agent could not be started: {exc}", said=said, detail=str(exc), free=session.free
+            )
             self._keep_unsent(session)
             return False
 
@@ -5670,7 +5672,9 @@ class TaskAgentManager:
                     {"wanted": RUNTIME_DSH, "runtime": RUNTIME_BUILTIN, "reason": message},
                 )
                 return
-            await self._fail(commission_id, f"the task agent could not be started: {message}", said="start", detail=stated)
+            await self._fail(
+                commission_id, f"the task agent could not be started: {message}", said="start", detail=stated, free=session.free
+            )
             self._keep_unsent(session)
             await self._release(commission_id)
         elif command == "prompt":
@@ -5678,7 +5682,9 @@ class TaskAgentManager:
             # Refused, so it is not in the transcript: what the user said
             # with it is kept, as when the start itself fails.
             # Counted back above: none taken means the work did not start.
-            await self._fail(commission_id, message, said="run" if session.sent else "start", detail=stated)
+            await self._fail(
+                commission_id, message, said="run" if session.sent else "start", detail=stated, free=session.free
+            )
             self._keep_unsent(session)
             await self._close_session(session)
         elif command == "close":

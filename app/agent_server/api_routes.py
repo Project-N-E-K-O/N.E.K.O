@@ -306,19 +306,19 @@ async def set_agent_flags(payload: Dict[str, Any]):
                 logger.error(f"[Agent] Cannot enable Computer Use: Check failed {failed}")
             else:
                 reasons = avail.get('reasons', []) if isinstance(avail, dict) else []
-                _set_capability(
-                    "computer_use",
-                    bool(avail.get("ready")) if isinstance(avail, dict) else False,
-                    reasons[0] if reasons else "",
-                    started=started,
-                )
-                if avail.get("ready"):
+                ready = bool(avail.get("ready")) if isinstance(avail, dict) else False
+                reason = reasons[0] if reasons else "unknown"
+                if not _set_capability("computer_use", ready, reasons[0] if reasons else "", started=started):
+                    # A check that started later (the configuration saved
+                    # meanwhile, say) has written its answer: that one decides.
+                    current = Modules.capability_cache.get("computer_use") or {}
+                    ready, reason = bool(current.get("ready")), current.get("reason") or "unknown"
+                if ready:
                     Modules.agent_flags["computer_use_enabled"] = True
                 else:
                     _put_switch_off("computer_use_enabled")
-                    reason = avail.get('reasons', [])[0] if avail.get('reasons') else 'unknown'
                     Modules.notification = json.dumps({"code": "AGENT_CU_UNAVAILABLE", "details": {"reason_code": reason}})
-                    logger.warning(f"[Agent] Cannot enable Computer Use: {avail.get('reasons')}")
+                    logger.warning(f"[Agent] Cannot enable Computer Use: {reason}")
         else: # Disabling
             _put_switch_off("computer_use_enabled")
 
@@ -331,13 +331,18 @@ async def set_agent_flags(payload: Dict[str, Any]):
                 # The switch was set anew while this one looked for a
                 # browser: that later setting stands.
                 logger.info("[Agent] Browser Use enable request overtaken by a later one; left as it is")
-            elif not dependency_ready:
-                _put_switch_off("browser_use_enabled")
-                _set_capability("browser_use", False, dependency_error, started=started)
-                Modules.notification = json.dumps({"code": "AGENT_BU_UNAVAILABLE", "details": {"reason_code": dependency_error}})
             else:
-                Modules.agent_flags["browser_use_enabled"] = True
-                _set_capability("browser_use", True, "", started=started)
+                ready, reason = dependency_ready, dependency_error
+                if not _set_capability("browser_use", ready, reason, started=started):
+                    # A check that started later (the configuration saved
+                    # meanwhile, say) has written its answer: that one decides.
+                    current = Modules.capability_cache.get("browser_use") or {}
+                    ready, reason = bool(current.get("ready")), current.get("reason") or "unknown"
+                if ready:
+                    Modules.agent_flags["browser_use_enabled"] = True
+                else:
+                    _put_switch_off("browser_use_enabled")
+                    Modules.notification = json.dumps({"code": "AGENT_BU_UNAVAILABLE", "details": {"reason_code": reason}})
         else:
             _put_switch_off("browser_use_enabled")
 

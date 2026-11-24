@@ -827,6 +827,51 @@ async def test_what_is_written_while_a_refresh_checks_is_not_written_over(module
     assert modules.capability_cache["computer_use"] == {"ready": False, "reason": "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE"}
 
 
+@pytest.mark.parametrize("group", ["keyboard_mouse", "browser"])
+async def test_a_switch_on_that_waited_goes_by_a_newer_check_the_saved_configuration_started(
+    modules, search, browser, checks, monkeypatch, scheduled, group
+):
+    import threading
+
+    asked = threading.Event()
+    release = threading.Event()
+    flag, capability = (
+        ("computer_use_enabled", "computer_use") if group == "keyboard_mouse" else ("browser_use_enabled", "browser_use")
+    )
+
+    def slow_keyboard() -> dict[str, Any]:
+        asked.set()
+        release.wait(5.0)
+        return {"enabled": True, "ready": True, "reasons": []}
+
+    def slow_search() -> tuple[bool, str]:
+        asked.set()
+        release.wait(5.0)
+        return True, ""
+
+    if group == "keyboard_mouse":
+        monkeypatch.setattr(api_routes, "_keyboard_mouse_availability", slow_keyboard)
+    else:
+        monkeypatch.setattr(api_routes, "_browser_dependency_status", slow_search)
+    switching_on = asyncio.ensure_future(api_routes.set_agent_flags({flag: True, "_persist_intent": False}))
+    try:
+        await asyncio.wait_for(asyncio.to_thread(asked.wait, 5.0), 6.0)
+        # The key is taken out of the configuration meanwhile: the refresh
+        # that saving starts says the tools cannot be used.
+        _gate(monkeypatch, {"ready": False, "reasons": ["Agent API Key 未配置或不可用"], "is_free_version": False})
+        monkeypatch.setattr(capabilities, "_keyboard_mouse_availability", lambda: {"ready": False, "reasons": ["AGENT_KEY_NOT_CONFIGURED"]})
+        await capabilities._refresh_tool_capabilities()
+    finally:
+        release.set()
+    await asyncio.wait_for(switching_on, 5.0)
+
+    # The earlier answer ("ready") is older than the refresh's: the switch stays off and says why.
+    assert modules.agent_flags[flag] is False
+    assert modules.capability_cache[capability] == {"ready": False, "reason": "AGENT_KEY_NOT_CONFIGURED"}
+    code = "AGENT_CU_UNAVAILABLE" if group == "keyboard_mouse" else "AGENT_BU_UNAVAILABLE"
+    assert json.loads(modules.notification) == {"code": code, "details": {"reason_code": "AGENT_KEY_NOT_CONFIGURED"}}
+
+
 async def test_without_a_browser_only_the_browser_tools_are_not_ready(modules, search, browser, checks, monkeypatch):
     _keyboard(monkeypatch, ready=True)
     search.found = []

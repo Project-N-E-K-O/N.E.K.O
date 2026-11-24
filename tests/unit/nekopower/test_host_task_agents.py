@@ -3201,17 +3201,23 @@ async def test_how_a_run_failed_is_told_to_her_in_english_shown_in_her_language_
 
 
 @pytest.mark.parametrize("error", [KEY_REFUSED, QUOTA_USED_UP])
-async def test_with_the_free_key_a_refused_key_or_empty_account_is_told_as_it_came(hosts, tmp_path, error):
+@pytest.mark.parametrize("how", ["the run ended", "the prompt was refused"])
+async def test_with_the_free_key_a_refused_key_or_empty_account_is_told_as_it_came(hosts, tmp_path, error, how):
     # The built-in free key (``fake_model``): there is no key or account of
-    # the user's to fix, so nothing tells them to.
+    # the user's to fix, so nothing tells them to, however the failure came.
     host, runtimes = _recording_host(hosts, tmp_path)
     commission = await _filed(host, "tidy the desktop", lang="zh")
     assert await host.task_agents.submit(commission)
 
-    runtimes[0].say(commission.id, "ended", reason="error", inputs=1, error=error)
+    if how == "the run ended":
+        runtimes[0].say(commission.id, "ended", reason="error", inputs=1, error=error)
+        said = "run"
+    else:
+        runtimes[0].say(commission.id, "error", command="prompt", message=error)
+        said = "start"
 
     await wait_status(host, commission.id, "failed")
-    told, shown = _failed("run", "zh", error)
+    told, shown = _failed(said, "zh", error)
     (report,) = await outbox(host, "task_result")
     assert (report.payload["summary"], report.payload["text"]) == (told, shown)
 
