@@ -1766,7 +1766,7 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
             if model_root_dir.resolve() == resolved_temp:
                 return JSONResponse(status_code=400, content={"success": False, "error": "模型文件必须位于模型子目录中"})
             model_name = model_root_dir.name
-            if not _is_valid_live2d_model_name(model_name, for_upload=True):
+            if not _is_valid_live2d_model_name(model_name):
                 return JSONResponse(status_code=400, content={"success": False, "error": "非法模型名称"})
             
             # Get user-documents live2d directory.

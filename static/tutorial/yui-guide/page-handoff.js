@@ -852,7 +852,12 @@
                 return response.clone().json().then(function (errPayload) {
                     return !!(errPayload && errPayload.error_code === 'csrf_validation_failed');
                 }).catch(function (parseErr) {
-                    if ((controller && controller.signal && controller.signal.aborted) || (parseErr && parseErr.name === 'AbortError')) {
+                    if (controller && controller.signal && controller.signal.aborted) {
+                        var abortErr = new Error('Aborted');
+                        abortErr.name = 'AbortError';
+                        throw abortErr;
+                    }
+                    if (parseErr && parseErr.name === 'AbortError') {
                         throw parseErr;
                     }
                     return false;

@@ -488,7 +488,12 @@ async function generateDefaultCardFaceFromModelManager(lanlanName, state = {}, o
                     const errPayload = await response.clone().json();
                     shouldRetryCsrf = Boolean(errPayload && errPayload.error_code === 'csrf_validation_failed');
                 } catch (parseErr) {
-                    if (controller.signal.aborted || (parseErr && parseErr.name === 'AbortError')) {
+                    if (controller.signal.aborted) {
+                        const abortErr = new Error('Aborted');
+                        abortErr.name = 'AbortError';
+                        throw abortErr;
+                    }
+                    if (parseErr && parseErr.name === 'AbortError') {
                         throw parseErr;
                     }
                     /* keep original 403 */

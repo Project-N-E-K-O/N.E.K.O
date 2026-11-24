@@ -549,8 +549,7 @@ def test_live2d_model_name_and_upload_relpath_respect_platform_chars(monkeypatch
 
     monkeypatch.setattr(frontend_utils, "_is_windows", lambda: False)
     monkeypatch.setattr(live2d_router, "_is_windows", lambda: False)
-    assert frontend_utils.is_valid_live2d_model_name("Blue:Night", for_upload=True) is True
-    assert live2d_router._is_valid_live2d_model_name("Blue:Night", for_upload=True) is True
+    assert frontend_utils.is_valid_live2d_model_name("Blue:Night") is True
     assert live2d_router._is_valid_live2d_model_name("Blue:Night") is True
     assert live2d_router._is_valid_live2d_model_name("../Blue:Night") is False
     assert live2d_router._is_valid_live2d_model_name("Blue/Night") is False
@@ -560,8 +559,7 @@ def test_live2d_model_name_and_upload_relpath_respect_platform_chars(monkeypatch
 
     monkeypatch.setattr(frontend_utils, "_is_windows", lambda: True)
     monkeypatch.setattr(live2d_router, "_is_windows", lambda: True)
-    assert frontend_utils.is_valid_live2d_model_name("Blue:Night", for_upload=True) is False
-    assert live2d_router._is_valid_live2d_model_name("Blue:Night", for_upload=True) is False
+    assert frontend_utils.is_valid_live2d_model_name("Blue:Night") is False
     assert live2d_router._is_valid_live2d_model_name("Blue:Night") is False
     assert live2d_router._sanitize_live2d_upload_relpath("Model:v2/tex?.png") is None
     assert live2d_router._sanitize_live2d_upload_relpath("Model/a<b|c>.json") is None
@@ -657,14 +655,14 @@ def test_cards_and_publish_live2d_name_validation_matches_posix_and_windows(monk
     from utils import frontend_utils
 
     monkeypatch.setattr(frontend_utils, "_is_windows", lambda: False)
-    assert live2d_router._is_valid_live2d_model_name("Blue:Night", for_upload=True) is True
+    assert live2d_router._is_valid_live2d_model_name("Blue:Night") is True
     assert cards._is_valid_live2d_model_name("Blue:Night") is True
     assert publish._is_valid_live2d_model_name("Blue:Night") is True
     assert cards._is_valid_live2d_model_name("../Blue:Night") is False
     assert publish._is_valid_live2d_model_name("Blue/Night") is False
 
     monkeypatch.setattr(frontend_utils, "_is_windows", lambda: True)
-    assert live2d_router._is_valid_live2d_model_name("Blue:Night", for_upload=True) is False
+    assert live2d_router._is_valid_live2d_model_name("Blue:Night") is False
     assert cards._is_valid_live2d_model_name("Blue:Night") is False
     assert publish._is_valid_live2d_model_name("Blue:Night") is False
 

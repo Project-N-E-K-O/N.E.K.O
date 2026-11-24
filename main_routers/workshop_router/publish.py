@@ -416,20 +416,30 @@ _normcase = os.path.normcase
 
 
 def _resolve_workshop_export_child(path: str, workshop_export_dir: str) -> tuple[str, str, bool]:
-    """Resolve ``path`` and check that it is a direct child of WorkshopExport.
+    """Resolve ``path`` and check that it is an ordinary direct child of WorkshopExport.
 
-    Returns ``(resolved_path, resolved_root, allowed)``. The root itself is
-    never allowed: a containment check alone (``commonpath == root``) accepts
-    the root, and deleting it would wipe every exported item. Comparison uses
-    ``normcase`` so that on Windows a different letter case still counts as the
-    same directory; ``realpath`` drops trailing separators and resolves
-    symlinks, so a link that points back at the root (or outside) is rejected.
+    Returns ``(resolved_path, resolved_root, allowed)``. The root itself and
+    the shared ``_preview_staging`` directory are never allowed: deleting the
+    root would wipe every exported item, and deleting ``_preview_staging`` would
+    wipe previews staged by other uploads. Comparison uses ``normcase`` so that
+    on Windows a different letter case still counts as the same directory;
+    ``realpath`` drops trailing separators and resolves symlinks, so a link
+    that points back at the root, at ``_preview_staging``, or outside is rejected.
     """
     resolved = os.path.realpath(os.path.normpath(path))
     root = os.path.realpath(os.path.normpath(workshop_export_dir))
+    norm_resolved = _normcase(resolved)
+    norm_root = _normcase(root)
+    staging_literal = os.path.join(root, "_preview_staging")
+    staging_resolved = os.path.realpath(staging_literal)
+    is_preview_staging = norm_resolved in {
+        _normcase(staging_literal),
+        _normcase(staging_resolved),
+    }
     allowed = (
-        _normcase(resolved) != _normcase(root)
-        and _normcase(os.path.dirname(resolved)) == _normcase(root)
+        norm_resolved != norm_root
+        and _normcase(os.path.dirname(resolved)) == norm_root
+        and not is_preview_staging
     )
     return resolved, root, allowed
 
