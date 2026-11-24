@@ -788,6 +788,16 @@ async def update_core_config(request: Request):
                     # it, however, masked/no-op saves preserve the legacy key
                     # stored only in ttsModelApiKey.
                     core_cfg['ttsModelApiKey'] = ''
+        elif (
+            stored_tts_model_provider in TTS_KEY_BOOK_FIELDS
+            and _incoming_tts_provider
+            and _incoming_tts_provider != stored_tts_model_provider
+            and not tts_model_key_was_explicitly_updated
+        ):
+            # The slot holds the previous provider's mirrored Key Book key. Leaving
+            # for another provider (e.g. custom with its own URL) without a new key
+            # must not carry that credential to the new endpoint.
+            core_cfg['ttsModelApiKey'] = ''
         if 'ttsVoiceId' in data:
             core_cfg['ttsVoiceId'] = data['ttsVoiceId']
 

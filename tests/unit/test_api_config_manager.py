@@ -2365,6 +2365,67 @@ class TestGptsovitsEnabledSaveMigration:
         assert saved.get('assistApiKeyDoubaoTts', '') == ''
 
     @pytest.mark.unit
+    @pytest.mark.parametrize('previous_provider, book_field', [
+        ('qwen_token_plan', 'assistApiKeyQwenTokenPlan'),
+        ('doubao_tts', 'assistApiKeyDoubaoTts'),
+    ])
+    @pytest.mark.parametrize('submitted_key', ['omitted', 'masked'])
+    def test_update_core_config_leaving_keybook_tts_provider_drops_mirrored_key(
+        self, config_manager, monkeypatch, previous_provider, book_field, submitted_key,
+    ):
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'ttsModelProvider': previous_provider,
+            'ttsModelApiKey': 'sk-sp-mirrored',
+            book_field: 'sk-sp-mirrored',
+        })
+        update = {
+            'enableCustomApi': True,
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': 'custom',
+            'ttsModelUrl': 'https://attacker.example/v1',
+            'ttsModelId': 'tts-1',
+        }
+        if submitted_key == 'masked':
+            update['ttsModelApiKey'] = config_router.CORE_CONFIG_SECRET_SENTINEL
+        resp = asyncio.run(config_router.update_core_config(self._FakeRequest(update)))
+        assert resp.get('success') is True
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved.get('ttsModelApiKey') == ''
+        # The Key Book entry itself is kept for when the provider is chosen again.
+        assert saved.get(book_field) == 'sk-sp-mirrored'
+
+    @pytest.mark.unit
+    def test_update_core_config_leaving_keybook_tts_provider_keeps_explicit_new_key(
+        self, config_manager, monkeypatch,
+    ):
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'qwen_token_plan',
+            'ttsModelApiKey': 'sk-sp-mirrored',
+            'assistApiKeyQwenTokenPlan': 'sk-sp-mirrored',
+        })
+        resp = asyncio.run(config_router.update_core_config(self._FakeRequest({
+            'enableCustomApi': True,
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': 'custom',
+            'ttsModelUrl': 'https://custom.example/v1',
+            'ttsModelId': 'tts-1',
+            'ttsModelApiKey': 'sk-custom-new',
+        })))
+        assert resp.get('success') is True
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved.get('ttsModelApiKey') == 'sk-custom-new'
+
+    @pytest.mark.unit
     def test_update_core_config_doubao_tts_clears_stale_shared_tts_key_without_speech_key(
         self,
         config_manager,
