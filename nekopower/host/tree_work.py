@@ -605,6 +605,11 @@ class TreeWork:
                 await self._ledger.drop_tree(row.id)
                 await self._note_tree_event(commission.id, "tree_lost", {"tree": row.id, "path": row.path})
                 continue
+            if not await self._gone_from_runtime(commission.id, itself=False):
+                # A task agent it started is still at it in there (it could not be stopped in
+                # time when the commission was): not gone on in under it.
+                self._forget_tree(row, kept.id)
+                raise RuntimeError("a task agent this commission started is still at work in the directory it is worked on in")
             self._direct_now.discard(kept.id)
             await asyncio.to_thread(lambda found=row: Path(found.workdir).mkdir(parents=True, exist_ok=True))
             return row
@@ -1182,7 +1187,12 @@ class TreeWork:
                     logger.warning("merging worktree %s back failed: %s", row.id, exc)
                     result = MergeResult("failed", detail=f"{exc}{'; ' + notes if notes else ''}")
                 if result.status == "landed":
-                    await self._tell_beside(row, result)
+                    try:
+                        await self._tell_beside(row, result)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:  # noqa: BLE001 - the files are merged, whoever was to hear of it
+                        logger.warning("telling who works beside worktree %s of its landing failed", row.id, exc_info=True)
                 return result
 
     async def _tell_beside(self, row: Tree, result: Any) -> None:
@@ -1261,6 +1271,10 @@ class TreeWork:
             await self._seen_to_once_landed(row, handle, result)
             await self._wrap_up_in_tree(commission_id)
             return "landed"
+        if self._stale(commission_id, done):
+            # More was said to it while the merge ran: what came of the merge is not acted on under
+            # the run that does that, and it is tried anew when that run is over.
+            return await self._at_work_again(row)
         if result.status == "conflict" and row.rounds < settings.LANDING_CONFLICT_ROUNDS:
             try:
                 if result.detail != _MARKERS_LEFT:
@@ -1735,6 +1749,8 @@ class TreeWork:
                 # that ended under it, or by a run that stopped on an error.)
                 and commission.status in ("blocked", "failed")
                 and self._stuck_over(row, commission)
+                # (Not one the user sees to personally: that one is the user's to merge.)
+                and not was_kept
                 and taker is not None
                 and await self._ledger.session_alive(taker)
             ):
@@ -1743,8 +1759,7 @@ class TreeWork:
                         handle = await self.worktrees.prepare_conflicts(handle, result)
                 except (WorktreeError, OSError) as exc:
                     await self._ledger.update_tree(
-                        row.id, state="kept" if was_kept else "unlanded", reason=REASON_FAILED,
-                        conflicts=result.conflicts,
+                        row.id, state="unlanded", reason=REASON_FAILED, conflicts=result.conflicts
                     )
                     answer.update(status="failed", detail=str(exc))
                     return answer
@@ -1793,9 +1808,12 @@ class TreeWork:
         except Exception:  # noqa: BLE001 - not known: nothing is merged on a guess
             logger.debug("where project %s works could not be read", row.project, exc_info=True)
             return None
+        if not readable:
+            # (What stands in for a record that could not be read names no directory.)
+            return None
         if project is None:
-            # Put away (or gone), where its record was read; not known where it was not.
-            return True if readable else None
+            # Put away (or gone).
+            return True
         if project.workdir and not _same_dir(project.workdir, row.project_dir):
             return True
         # A change of where it works writes its sessions first and its record second: one that is

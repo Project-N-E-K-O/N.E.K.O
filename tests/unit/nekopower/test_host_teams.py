@@ -172,6 +172,8 @@ async def test_a_leader_starts_a_team_once_the_user_allowed_it_and_reports_once(
 
     go.set()
     done = await wait_status(host, receipt.commission_id, "done")
+    # (Each of the team is done a moment before its worktree is removed.)
+    await wait_until(lambda: not host.task_agents._landings, what="what landed the team's changes being through")
     assert done.result_summary == "the footer is redone" and done.session_id == waiting.session_id
     assert (workdir / "links.txt").read_text() == "repaired" and (workdir / "styles.css").read_text() == "tidy"
     assert len(trees.made) == 2 and sorted(trees.removed) == sorted(path.name for path in trees.made)

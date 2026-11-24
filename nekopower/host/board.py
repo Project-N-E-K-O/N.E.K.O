@@ -325,8 +325,10 @@ def tree_of(trees: list[Tree], commission: Commission | None) -> Tree | None:
     The one its commission in hand is worked on in (before one of that
     commission the user sees to personally); else the oldest that
     waits for the user (held back, or not landed); else one the user
-    sees to personally.
+    sees to personally. Never one the user discarded, which is only
+    waiting to be removed.
     """
+    trees = [tree for tree in trees if tree.state != "discarding"]
     if commission is not None:
         mine = [tree for tree in trees if tree.commission_id == commission.id]
         for tree in sorted(mine, key=lambda tree: tree.state == "kept"):
@@ -510,8 +512,7 @@ class Board:
         trees: dict[str, list[Tree]] = {}
         try:
             for tree in await self._ledger.trees():
-                # (Not one the user discarded, which is only waiting to be removed.)
-                if tree.session_id and tree.state != "discarding":
+                if tree.session_id:
                     trees.setdefault(tree.session_id, []).append(tree)
         except asyncio.CancelledError:
             raise

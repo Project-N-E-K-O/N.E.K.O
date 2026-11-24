@@ -147,10 +147,11 @@ class FakeTrees:
     async def create(self, project_dir: Any, path: Any, start: Any = None) -> Worktree:
         del start
         self.creates += 1
+        mine = self.creates
         self.creating.set()
         if self.create_gate is not None:
             await self.create_gate.wait()
-        if self.fail_create is not None and (not self.fail_creates or self.creates in self.fail_creates):
+        if self.fail_create is not None and (not self.fail_creates or mine in self.fail_creates):
             raise self.fail_create
         Path(path).mkdir(parents=True)
         self.made.append(Path(path))
@@ -2373,6 +2374,10 @@ async def test_a_worktree_the_user_discards_that_cannot_be_removed_then_does_not
     assert await manager.tree_possible("Shop site", str(workdir))
     cards = [card for project in (await host.board())["projects"] for card in project["members"]]
     assert [card["tree"] for card in cards if card["tree"] is not None] == []
+    from nekopower.host.board import tree_of
+
+    discarded = await host.ledger.get_tree(tree.id)
+    assert tree_of([discarded], await host.ledger.get(two.commission_id)) is None and tree_of([discarded], None) is None
     for decide in (host.land_worktree, host.discard_worktree, host.keep_worktree):
         with pytest.raises(ValueError, match="at_work"):
             await decide(tree.id)
@@ -2406,6 +2411,14 @@ async def test_a_worktree_the_user_kept_is_not_landed_where_its_project_no_longe
 
     with pytest.raises(ValueError, match="moved"):
         await host.land_worktree(tree.id)
+    # (Told by the project's record where it has no leader whose session says so.)
+    solo, there = tmp_path / "solo", tmp_path / "solo-moved"
+    solo.mkdir()
+    there.mkdir()
+    await host.space.touch_project("Solo", workdir=str(there))
+    moved = host.task_agents._project_moved
+    assert await moved(types.SimpleNamespace(project="Solo", project_dir=str(solo))) is True
+    assert await moved(types.SimpleNamespace(project="Solo", project_dir=str(there))) is False
     # Nothing was merged into the directory the project left, and it can still be discarded.
     assert trees.merged == [] and not (workdir / "links.txt").exists() and not (elsewhere / "links.txt").exists()
     assert (await host.ledger.get_tree(tree.id)).state == "kept"
@@ -2573,8 +2586,8 @@ async def test_what_clashes_and_cannot_be_said_to_the_task_agent_is_left_for_the
 @pytest.mark.parametrize(
     "why",
     [
-        "the merge cannot be written", "what clashed cannot be put into it",
-        "where its project works cannot be read", "its project is put away",
+        "the merge cannot be written", "it clashes",
+        "where its project works cannot be read", "its project's record cannot be read", "its project is put away",
     ],
 )
 async def test_a_worktree_the_user_kept_stays_the_users_where_it_cannot_be_landed(hosts, tmp_path, monkeypatch, why):
@@ -2588,18 +2601,22 @@ async def test_a_worktree_the_user_kept_stays_the_users_where_it_cannot_be_lande
         answer = await host.land_worktree(tree.id)
         assert (answer["status"], answer["detail"]) == ("failed", "the project's files are in the middle of a rebase")
         reason = "failed"
-    elif why == "what clashed cannot be put into it":
+    elif why == "it clashes":
+        # Its commission is stuck over it, and is not handed it back all the same: the user's to merge.
         trees.results = [clash]
-        trees.fail_prepare = WorktreeError("the worktree is in the middle of something")
         answer = await host.land_worktree(tree.id)
-        assert (answer["status"], answer["resolving"]) == ("failed", False)
-        reason = "failed"
+        assert (answer["status"], answer["resolving"]) == ("conflict", False) and trees.prepared == [tree.id] * 3
+        assert (await host.ledger.get(two.commission_id)).status == "blocked"
+        reason = "conflict"
     else:
         read_project = host.space.read_project
 
         async def unread(name: str) -> Any:
             if why == "its project is put away":
                 return None, True
+            if why == "its project's record cannot be read":
+                # (What stands in for it names no directory.)
+                return types.SimpleNamespace(workdir=""), False
             raise OSError("the record cannot be read just now") if name == "Shop site" else await read_project(name)
 
         monkeypatch.setattr(host.space, "read_project", unread)
