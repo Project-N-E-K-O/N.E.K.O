@@ -1089,7 +1089,8 @@ async def _let_go_of(host: Any, session_id: str) -> None:
     await host.task_agents.settle()
 
 
-async def test_a_member_a_leader_handed_work_to_in_a_project_without_a_directory_moves_with_it(hosts, tmp_path):
+@pytest.mark.parametrize("by_hand", [False, True])
+async def test_a_member_a_leader_handed_work_to_in_a_project_without_a_directory_moves_with_it(hosts, tmp_path, by_hand):
     leader_llm = ScriptedLLM([*_hand_over(description="Fixes the pages"), *_hand_over(to="Shop site/worker")])
     member_llm = ScriptedLLM([_report("header fixed"), _report("footer fixed")])
     host = _host(hosts, tmp_path, _by_role(leader_llm, member_llm))
@@ -1106,6 +1107,13 @@ async def test_a_member_a_leader_handed_work_to_in_a_project_without_a_directory
     assert (member.kind, first.handed_by) == ("line", leader.id)
     assert Path(leader.workdir) == Path(str(host.paths.work_dir(leader.id, "Shop site"))) == Path(member.workdir)
 
+    # (Where the leader works on record is what tells, also where that is no more what the host
+    # would give it now: as after the data root was moved by hand.)
+    if by_hand:
+        elsewhere = tmp_path / "moved-by-hand"
+        elsewhere.mkdir()
+        for kept in (leader, member):
+            await host.ledger.update_session(kept.id, workdir=str(elsewhere))
     wanted = tmp_path / "new-place"
     wanted.mkdir()
     await host.set_project_workdir("Shop site", str(wanted))

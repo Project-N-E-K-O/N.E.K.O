@@ -1538,8 +1538,9 @@ class NekoPowerHost:
             # The project's own sessions of every character first, looked at once more and written in
             # one go: each starts from the directory it keeps, so a commission that begins from here
             # on begins in the new one, and one that began since the look above stops the change.
-            # (Its leaders, of every character: a member one of them handed work to works where it did.)
-            leaders = [row.session.id for row in await self.ledger.find_sessions(project=project, kind="project")]
+            # (Where its leaders work, of every character: a member one of them handed work to works there.)
+            led = await self.ledger.find_sessions(project=project, kind="project", commissions_each=0)
+            leaders = [(row.session.id, row.session.workdir) for row in led]
             before = await self.ledger.move_project(
                 project, str(wanted), moves=self._moves_with(project, kept.workdir, leaders)
             )
@@ -1557,7 +1558,7 @@ class NekoPowerHost:
             return changed.to_json()
 
     def _moves_with(
-        self, project: str, was: str | None, leaders: Sequence[str] = ()
+        self, project: str, was: str | None, leaders: Sequence[tuple[str, str | None]] = ()
     ) -> Callable[[str, str | None], bool]:
         """Return what says whether a member of a project moves when the project is given another directory.
 
@@ -1565,9 +1566,12 @@ class NekoPowerHost:
         where the project did (``was``), in no directory of its own yet,
         or in the one the host gave it as a session of this project,
         having none to give it of the project's: its own, or that of
-        one of the project's ``leaders``, which is where a member works
-        that a leader handed a commission to while the project had no
-        directory (and the leader moves). It stays when it works
+        one of the project's ``leaders`` (each with where it works on
+        record), which is where a member works that a leader handed a
+        commission to while the project had no directory (and the
+        leader moves). Where the leader works on record counts as well
+        as what the host would give it now: the two differ once the
+        data root was moved by hand. It stays when it works
         anywhere else: it was a session of its own before it became the
         project's (a family is made of such), and its files are there.
         """
@@ -1579,7 +1583,9 @@ class NekoPowerHost:
         def moves(session_id: str, workdir: str | None) -> bool:
             if not workdir or (was and same(workdir, was)):
                 return True
-            for given_to in (session_id, *leaders):
+            if any(place and same(workdir, place) for _leader, place in leaders):
+                return True
+            for given_to in (session_id, *(leader for leader, _place in leaders)):
                 try:
                     if same(workdir, str(self.paths.work_dir(given_to, project))):
                         return True
