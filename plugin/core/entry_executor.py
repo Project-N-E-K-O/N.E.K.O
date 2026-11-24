@@ -354,7 +354,7 @@ class EntryExecutor:
             self._refresh()
         except Exception as exc:
             self._warn_limited(
-                event_id[:64],
+                event_id,
                 f"collection_failed:{type(exc).__name__}",
                 f"Plugin entry collection failed while resolving entry={event_id[:64]!r}: "
                 f"error_type={type(exc).__name__}",

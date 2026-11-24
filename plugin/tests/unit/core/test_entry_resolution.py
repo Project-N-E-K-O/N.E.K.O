@@ -510,8 +510,9 @@ def test_data_descriptors_are_not_evaluated(tmp_path):
 
     instance = WithDescriptors(_ctx(tmp_path))
     executor, _instance, _logger = _runtime(tmp_path, instance=instance, manifest=["data", "cached"])
-    # Building the tables scans members, which also caches the cached
-    # property in the instance __dict__: it is still not resolved.
+    # Once read, a cached property's value sits in the instance __dict__:
+    # it is still not resolved.
+    _ = instance.cached
     assert "cached" in instance.__dict__
     evaluated.clear()
     assert _resolve(executor, "data") is None
@@ -595,6 +596,46 @@ async def test_a_method_decorated_by_a_callable_descriptor_still_resolves(tmp_pa
     assert await executor.invoke("plugin_entry", "lookup", {}) == "looked up"
 
 
+def test_a_callable_property_subclass_is_still_computed(tmp_path):
+    evaluated: list[str] = []
+
+    async def target(**_: Any) -> str:
+        return "ran"
+
+    class CallableProperty(property):
+        def __call__(self, *args: Any, **kwargs: Any) -> None:
+            return None
+
+    def getter(self):
+        evaluated.append("getter")
+        return target
+
+    @neko_plugin
+    class WithCallableProperty(NekoPluginBase):
+        lookup = CallableProperty(getter)
+
+    instance = WithCallableProperty(_ctx(tmp_path))
+    executor, _instance, _logger = _runtime(tmp_path, instance=instance, manifest=["lookup"])
+    evaluated.clear()
+    assert _resolve(executor, "lookup") is None
+    assert evaluated == []
+
+
+async def test_lru_cached_methods_still_resolve(tmp_path):
+    @neko_plugin
+    class Cached(NekoPluginBase):
+        @functools.lru_cache(maxsize=None)
+        def make(self):
+            async def made(**_: Any) -> str:
+                return "made"
+            return made
+
+    instance = Cached(_ctx(tmp_path))
+    executor, _instance, _logger = _runtime(tmp_path, instance=instance, manifest=["make"])
+    # lru_cache's wrapper is a callable non-data descriptor: a method lookup.
+    assert _resolve(executor, "make") is not None
+
+
 def test_a_singledispatchmethod_still_resolves(tmp_path):
     @neko_plugin
     class Dispatching(NekoPluginBase):
@@ -660,6 +701,22 @@ async def test_a_failing_collection_reports_an_unknown_id_as_not_found(tmp_path,
         "Plugin entry collection failed while resolving entry='other_missing': error_type=RuntimeError",
     ]
     assert await executor.invoke("plugin_entry", "registered", {}) == "registered"
+
+
+async def test_collection_failure_warnings_are_limited_by_the_full_id(tmp_path, monkeypatch):
+    instance = _Plugin(_ctx(tmp_path))
+
+    def broken(**_kwargs: object):
+        raise RuntimeError("collect failed")
+
+    monkeypatch.setattr(instance, "collect_entries", broken)
+    executor, _instance, logger = _runtime(tmp_path, instance=instance)
+    prefix = "x" * 64
+    for entry_id in (prefix + "_a", prefix + "_b"):
+        with pytest.raises(PluginEntryNotFoundError):
+            await executor.invoke("plugin_entry", entry_id, {})
+    # Two ids sharing their first 64 characters are still two records.
+    assert len([w for w in logger.warnings if "collection failed" in w]) == 2
 
 
 def test_a_failing_refresh_for_a_registered_id_is_not_found(tmp_path, monkeypatch):

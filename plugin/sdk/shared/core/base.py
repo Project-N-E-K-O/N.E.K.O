@@ -51,10 +51,11 @@ def is_computed_attribute(instance: object, name: str) -> bool:
     Judged on the class attribute, so a cached property whose value already
     sits in the instance ``__dict__`` still counts. Functions and the method
     wrappers in ``_METHOD_LOOKUPS`` are plain method lookups (a
-    ``partialmethod`` or ``classmethod`` is judged by what it wraps); any other
-    descriptor on the class (property, cached properties, lazy loaders, data
-    descriptors) is computed and is not evaluated just because its name was
-    called. Instance attributes and names a class ``__getattr__`` provides
+    ``partialmethod`` or ``classmethod`` is judged by what it wraps), and so
+    are callable non-data descriptors (class-based method decorators).
+    Properties, cached properties, data descriptors and other non-callable
+    descriptors (lazy loaders) are computed and are not evaluated just
+    because their name was called. Instance attributes and names a class ``__getattr__`` provides
     are not computed.
     """
     try:
@@ -72,11 +73,16 @@ def is_computed_attribute(instance: object, name: str) -> bool:
             static = static.__func__
         else:
             break
-    if isinstance(static, _METHOD_LOOKUPS) or callable(static):
-        # A callable descriptor is a method decorator implemented as a class
-        # (e.g. async_lru's alru_cache): a method lookup, not a computed value.
+    if isinstance(static, _METHOD_LOOKUPS):
         return False
-    return hasattr(type(static), "__get__")
+    kind = type(static)
+    if not hasattr(kind, "__get__"):
+        return False
+    if isinstance(static, (property, functools.cached_property)) or hasattr(kind, "__set__") or hasattr(kind, "__delete__"):
+        return True
+    # A callable non-data descriptor is a method decorator (lru_cache,
+    # alru_cache, wrapt, Cython): reading it binds, it computes nothing.
+    return not callable(static)
 
 
 @runtime_checkable
