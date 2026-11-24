@@ -2328,6 +2328,7 @@ class PluginLifecycleService:
                 "filesystem_rollback": result.filesystem_rollback,
                 "runtime_restart": result.runtime_restart,
                 "cleanup_pending": result.cleanup_pending,
+                "permission_warning": result.permission_warning,
             },
         )
         response: dict[str, object] = {
@@ -2342,6 +2343,7 @@ class PluginLifecycleService:
             "filesystem_rollback": result.filesystem_rollback,
             "runtime_restart": result.runtime_restart,
             "cleanup_pending": result.cleanup_pending,
+            "permission_warning": result.permission_warning,
             "message": "Plugin deleted successfully",
         }
         return response

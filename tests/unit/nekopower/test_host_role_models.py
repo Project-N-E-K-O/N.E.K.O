@@ -230,13 +230,24 @@ async def _run_all_kinds(host: Any, team: _Team, single: ScriptedLLM) -> list[An
 
 
 def _same(requests: Any, root: Path) -> str:
-    """Return requests as text with what differs from one host to another left out: its files, ids and markers."""
+    """Return requests as text with what differs from one host to another left out.
+
+    That is its files, its ids and markers, and the minute its sessions read
+    off the wall clock: the two hosts run one after the other, so a minute
+    boundary between them would otherwise show up as a difference.
+    """
     import re
 
     text = json.dumps(requests, ensure_ascii=False)
     for form in (str(root), root.as_posix()):
         text = text.replace(json.dumps(form)[1:-1], "<root>")
-    return re.sub(r"[0-9a-f]{32}|[0-9a-f]{16}", "<id>", text)
+    text = re.sub(r"[0-9a-f]{32}|[0-9a-f]{16}", "<id>", text)
+    # The runtime context notice: "2026-11-23 21:23 +0000 (Monday)".
+    text, stamps = re.subn(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} [+-][0-9]{4} [(][^)]+[)]", "<now>", text
+    )
+    assert stamps, "no runtime context time in the requests; the pattern above no longer matches"
+    return text
 
 
 @pytest.mark.parametrize("slots", ["seeded", "removed", "never"])
@@ -659,6 +670,11 @@ async def test_no_key_is_kept_on_record_shown_logged_or_told_in_an_exception(hos
     choice = await host.task_agents.session_model(await _session_of(host, done.id), record=False)
 
     shown = json.dumps([await host.board(), await host.role_models()], ensure_ascii=False)
+    # A commission is "done" on the board before its session has written its
+    # last entries. Shut the host down before reading what it stored: then all
+    # of it is on disk, and no session still holds a transcript lock (reading
+    # a locked file fails on Windows).
+    await host.shutdown()
     stored = b"".join(path.read_bytes() for path in (tmp_path / "nekopower").rglob("*") if path.is_file())
     for key in (OWN_KEY, AGENT_KEY):
         assert key not in shown

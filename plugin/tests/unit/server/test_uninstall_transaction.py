@@ -1176,6 +1176,7 @@ async def test_delete_plugin_cancellation_finishes_event_boundary(
             runtime_restart="not_needed",
             cleanup_pending=False,
             runtime_restart_error=None,
+            permission_warning=None,
         )
 
     monkeypatch.setattr(lifecycle_module, "uninstall_plugin", _gated_uninstall)
@@ -1384,35 +1385,341 @@ async def test_uninstall_aborts_when_permission_grants_cannot_be_saved(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("code", "status"),
-    [
-        ("PLUGIN_PERMISSIONS_READ_FAILED", 503),
-        ("PLUGIN_PERMISSIONS_CORRUPT", 500),
-        ("PLUGIN_PERMISSIONS_UNSUPPORTED_VERSION", 500),
-    ],
-)
-async def test_uninstall_aborts_when_permission_store_is_unreadable(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, code: str, status: int
+async def test_uninstall_aborts_when_permission_store_read_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """A possibly transient read error still aborts: a retry may clear the grants."""
     harness = _Harness(tmp_path)
     harness.running.add("demo")
     harness.install(monkeypatch)
 
     def _fail(_plugin_id: str) -> None:
-        raise ServerDomainError(code, "Plugin permission records cannot be read", status)
+        raise ServerDomainError(
+            "PLUGIN_PERMISSIONS_READ_FAILED", "Plugin permission records could not be read", 503
+        )
 
     monkeypatch.setattr(uninstall_module, "forget_permissions", _fail)
 
     with pytest.raises(UninstallPluginError) as captured:
         await uninstall_plugin("demo")
 
-    assert captured.value.code == code
-    assert captured.value.status_code == status
+    assert captured.value.code == "PLUGIN_PERMISSIONS_READ_FAILED"
+    assert captured.value.status_code == 503
     assert captured.value.stage == "forget_permissions"
     assert harness.stop_calls == []
     assert harness.manager.marked_removed == []
     assert harness.plugin_dir.is_dir()
+
+
+class _ErrorLog:
+    def __init__(self) -> None:
+        self.errors: list[tuple] = []
+
+    def error(self, *args, **_kwargs) -> None:
+        self.errors.append(args)
+
+    def __getattr__(self, _name: str):
+        return lambda *_args, **_kwargs: None
+
+
+def _write_permission_file(tmp_path: Path, content: str) -> Path:
+    # The shared conftest points the permission store at tmp_path / "consent".
+    path = tmp_path / "consent" / "plugin_permissions.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("content", "code"),
+    [
+        ("{not json", "PLUGIN_PERMISSIONS_CORRUPT"),
+        (
+            '{"schema_version": 99, "plugins": {"demo": {}}}',
+            "PLUGIN_PERMISSIONS_UNSUPPORTED_VERSION",
+        ),
+    ],
+)
+async def test_uninstall_proceeds_when_permission_store_is_unusable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, content: str, code: str
+) -> None:
+    """A damaged or newer-version store holds no usable grant: the uninstall
+    goes on, logs an error and reports a warning; the file is left as is."""
+    harness = _Harness(tmp_path)
+    harness.running.add("demo")
+    harness.install(monkeypatch)
+    path = _write_permission_file(tmp_path, content)
+    log = _ErrorLog()
+    monkeypatch.setattr(uninstall_module, "logger", log)
+
+    result = await uninstall_plugin("demo")
+
+    assert result.deleted_from_disk is True
+    assert not harness.plugin_dir.exists()
+    assert harness.stop_calls == ["demo"]
+    assert harness.manager.marked_removed
+    assert result.permission_warning is not None
+    assert result.permission_warning["code"] == code
+    assert result.permission_warning["message"]
+    assert any(code in args for args in log.errors)
+    assert any("demo" in args for args in log.errors)
+    assert path.read_text(encoding="utf-8") == content
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_uninstall_past_unusable_store_drops_remembered_grants(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The store was readable earlier in the session, so the process holds the
+    plugin's last read grants; after the store turns unusable and the uninstall
+    goes on, a read failure must not hand them to the next plugin with that id."""
+    from plugin.server.application.plugins import permission_service
+    from plugin.server.infrastructure.plugin_permissions import PluginPermissionStore
+
+    granted = "plugin_sdk.main_agent.memory:read"
+    harness = _Harness(tmp_path)
+    harness.install(monkeypatch)
+    _grant_demo()
+    before = permission_service.permission_snapshot("demo")
+    assert before["states"][granted]["status"] == "granted"
+
+    class _MovedManager:
+        # The runtime config path now points at an unusable file.
+        def get_runtime_config_path(self, name: str) -> Path:
+            return tmp_path / "moved" / name
+
+    moved = tmp_path / "moved" / "plugin_permissions.json"
+    moved.parent.mkdir()
+    moved.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(
+        permission_service, "permission_store", PluginPermissionStore(_MovedManager())
+    )
+    monkeypatch.setattr(uninstall_module, "logger", _ErrorLog())
+    # A failed read while the plugin still runs counts toward its log throttle.
+    assert permission_service.permission_snapshot("demo").get("read_failed") is True
+    assert permission_service._read_failures.get("demo") == 1
+
+    result = await uninstall_plugin("demo")
+
+    assert result.permission_warning is not None
+    # The next plugin under this id starts a fresh failure count.
+    assert "demo" not in permission_service._read_failures
+    after = permission_service.permission_snapshot("demo")
+    assert after.get("read_failed") is True
+    assert after["states"][granted]["status"] != "granted"
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_uninstall_rollback_leaves_unusable_permission_store_untouched(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Nothing was cleared from an unusable store, so a later failure has
+    nothing to restore and must not report an incomplete permission rollback."""
+    harness = _Harness(tmp_path)
+    harness.running.add("demo")
+    harness.stop_error = RuntimeError("stop failed")
+    harness.install(monkeypatch)
+    path = _write_permission_file(tmp_path, "{not json")
+    log = _ErrorLog()
+    monkeypatch.setattr(uninstall_module, "logger", log)
+
+    with pytest.raises(UninstallPluginError) as captured:
+        await uninstall_plugin("demo")
+
+    assert captured.value.stage == "stop"
+    assert "permission_rollback" not in _details_of(captured.value)
+    assert harness.plugin_dir.is_dir()
+    assert path.read_text(encoding="utf-8") == "{not json"
+    # The plugin stays, so nothing claims its grants were left behind.
+    assert log.errors == []
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_incomplete_uninstall_rollback_drops_remembered_grants_before_restart(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+) -> None:
+    """When the rollback cannot bring the original code back, whatever starts
+    under this id may be another copy (e.g. a shadowed built-in); it must not
+    start with the removed plugin's remembered grants."""
+    from plugin.server.application.plugins import permission_service
+    from plugin.server.infrastructure.plugin_permissions import PluginPermissionStore
+
+    granted = "plugin_sdk.main_agent.memory:read"
+    harness = _Harness(tmp_path)
+    harness.running.add("demo")
+    harness.install(monkeypatch)
+    _grant_demo()
+    assert permission_service.permission_snapshot("demo")["states"][granted]["status"] == "granted"
+
+    class _MovedManager:
+        def get_runtime_config_path(self, name: str) -> Path:
+            return tmp_path / "moved" / name
+
+    moved = tmp_path / "moved" / "plugin_permissions.json"
+    moved.parent.mkdir()
+    moved.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(
+        permission_service, "permission_store", PluginPermissionStore(_MovedManager())
+    )
+    monkeypatch.setattr(uninstall_module, "logger", _ErrorLog())
+
+    def _fail_clear(_plugin_id: str) -> None:
+        raise OSError("override disk full")
+
+    def _fail_restore(_staged) -> None:
+        raise OSError("rename back failed")
+
+    monkeypatch.setattr(uninstall_module, "clear_runtime_override", _fail_clear)
+    monkeypatch.setattr(uninstall_module, "_restore_staged_plugin_code_sync", _fail_restore)
+    seen_at_start: list[str] = []
+
+    async def _start(_self, plugin_id: str, **_kwargs: object) -> dict[str, object]:
+        snapshot = permission_service.permission_snapshot(plugin_id)
+        seen_at_start.append(snapshot["states"][granted]["status"])
+        return {"success": True}
+
+    monkeypatch.setattr(lifecycle_module.PluginLifecycleService, "start_plugin", _start)
+
+    with pytest.raises(UninstallPluginError) as captured:
+        await uninstall_plugin("demo")
+
+    assert captured.value.filesystem_rollback == "incomplete"
+    assert seen_at_start and "granted" not in seen_at_start
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_complete_uninstall_rollback_keeps_remembered_grants_after_restoring_code(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+) -> None:
+    """Counterpart of the incomplete case: the code was staged and the rollback
+    brought it back, so the original plugin restarts with its remembered grants."""
+    from plugin.server.application.plugins import permission_service
+    from plugin.server.infrastructure.plugin_permissions import PluginPermissionStore
+
+    granted = "plugin_sdk.main_agent.memory:read"
+    harness = _Harness(tmp_path)
+    harness.running.add("demo")
+    harness.install(monkeypatch)
+    _grant_demo()
+    assert permission_service.permission_snapshot("demo")["states"][granted]["status"] == "granted"
+
+    class _MovedManager:
+        def get_runtime_config_path(self, name: str) -> Path:
+            return tmp_path / "moved" / name
+
+    moved = tmp_path / "moved" / "plugin_permissions.json"
+    moved.parent.mkdir()
+    moved.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(
+        permission_service, "permission_store", PluginPermissionStore(_MovedManager())
+    )
+    monkeypatch.setattr(uninstall_module, "logger", _ErrorLog())
+
+    def _fail_clear(_plugin_id: str) -> None:
+        raise OSError("override disk full")
+
+    monkeypatch.setattr(uninstall_module, "clear_runtime_override", _fail_clear)
+    seen_at_start: list[str] = []
+
+    async def _start(_self, plugin_id: str, **_kwargs: object) -> dict[str, object]:
+        snapshot = permission_service.permission_snapshot(plugin_id)
+        seen_at_start.append(snapshot["states"][granted]["status"])
+        return {"success": True}
+
+    monkeypatch.setattr(lifecycle_module.PluginLifecycleService, "start_plugin", _start)
+
+    with pytest.raises(UninstallPluginError) as captured:
+        await uninstall_plugin("demo")
+
+    assert captured.value.filesystem_rollback == "completed"
+    assert harness.plugin_dir.is_dir()
+    assert seen_at_start == ["granted"]
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_uninstall_rollback_keeps_remembered_grants(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A rolled-back uninstall keeps the plugin, so its remembered grants stay
+    available for a later read failure."""
+    from plugin.server.application.plugins import permission_service
+    from plugin.server.infrastructure.plugin_permissions import PluginPermissionStore
+
+    granted = "plugin_sdk.main_agent.memory:read"
+    harness = _Harness(tmp_path)
+    harness.running.add("demo")
+    harness.install(monkeypatch)
+    _grant_demo()
+    assert permission_service.permission_snapshot("demo")["states"][granted]["status"] == "granted"
+
+    class _MovedManager:
+        def get_runtime_config_path(self, name: str) -> Path:
+            return tmp_path / "moved" / name
+
+    moved = tmp_path / "moved" / "plugin_permissions.json"
+    moved.parent.mkdir()
+    moved.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(
+        permission_service, "permission_store", PluginPermissionStore(_MovedManager())
+    )
+    harness.stop_error = RuntimeError("stop failed")
+    monkeypatch.setattr(uninstall_module, "logger", _ErrorLog())
+
+    with pytest.raises(UninstallPluginError):
+        await uninstall_plugin("demo")
+
+    after = permission_service.permission_snapshot("demo")
+    assert after.get("read_failed") is True
+    assert after["states"][granted]["status"] == "granted"
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_delete_plugin_response_carries_permission_warning(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    harness = _Harness(tmp_path)
+    harness.install(monkeypatch)
+    _write_permission_file(tmp_path, "{not json")
+    events: list[dict] = []
+    monkeypatch.setattr(
+        lifecycle_module,
+        "_emit_lifecycle_event",
+        lambda **kwargs: events.append(kwargs),
+    )
+
+    response = await lifecycle_module.PluginLifecycleService().delete_plugin("demo")
+
+    assert response["success"] is True
+    assert response["permission_warning"]["code"] == "PLUGIN_PERMISSIONS_CORRUPT"
+    deleted = [e for e in events if e.get("event_type") == "plugin_deleted"]
+    assert deleted[0]["data"]["permission_warning"]["code"] == "PLUGIN_PERMISSIONS_CORRUPT"
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_uninstall_reports_no_permission_warning_when_grants_are_cleared(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    harness = _Harness(tmp_path)
+    harness.install(monkeypatch)
+    _grant_demo()
+
+    result = await uninstall_plugin("demo")
+
+    assert result.permission_warning is None
+    assert _demo_grants() == {}
 
 
 @pytest.mark.plugin_unit
