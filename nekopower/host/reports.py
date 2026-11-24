@@ -133,6 +133,13 @@ def _wording(question: dict[str, Any]) -> str:
         # question says what a plugin may do, around the whole command.
         if adds_plugin(str(detail.get("command") or "")):
             return "dsh_plugin_add"
+    if category == "open_session":
+        # A team of several, or one that changes files in a git worktree of its own:
+        # said as that, with what becomes of what they change.
+        if detail.get("members"):
+            return "open_session_team"
+        if detail.get("tree"):
+            return "open_session_tree"
     return category
 
 
@@ -165,7 +172,8 @@ def _permission_subject_cut(question: dict[str, Any], lang: str, max_tokens: int
         specific = truncate_head_tail_tokens(specific, kept - kept // 2 + mark_tokens, kept // 2, separator=mark)
         cut = specific != whole
     # What a question about usage states: how much was used, and how much more is asked for.
-    amounts = {name: str(detail.get(name) or "") for name in ("used", "more")}
+    # (And how many a team has that is asked about.)
+    amounts = {name: str(detail.get(name) or "") for name in ("used", "more", "count")}
     action = categories.get(category, categories["other"]).format(detail=specific, **amounts).strip()
     if detail.get("content_to"):
         recipient = str(detail["content_to"])
