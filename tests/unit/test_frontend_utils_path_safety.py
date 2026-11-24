@@ -74,6 +74,32 @@ def test_delete_model_route_rejects_dot_and_preserves_live2d_dir(tmp_path: Path,
     assert (live2d_dir / "haru" / "haru.model3.json").exists()
 
 
+def test_delete_model_allows_embedded_double_dots_and_rejects_traversal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """F0528: DELETE /api/live2d/model/<name> must delete legitimate names with '..' substrings while blocking traversal."""
+    live2d_dir = _setup_live2d_env(tmp_path, monkeypatch)
+    for valid_name in ("a..b", "Hiyori..v2"):
+        model_dir = live2d_dir / valid_name
+        model_dir.mkdir()
+        (model_dir / f"{valid_name}.model3.json").write_text("{}", encoding="utf-8")
+
+    app = FastAPI()
+    app.include_router(live2d_router.router)
+    client = TestClient(app)
+
+    for valid_name in ("a..b", "Hiyori..v2"):
+        resp = client.delete(f"/api/live2d/model/{valid_name}")
+        assert resp.status_code == 200
+        assert resp.json().get("success") is True
+        assert not (live2d_dir / valid_name).exists()
+
+    assert (live2d_dir / "haru" / "haru.model3.json").exists()
+
+    for bad_name in (".", "..", " .. ", "../haru", "a/b", "a\\b", "a\x00b"):
+        bad_resp = live2d_router.delete_model(bad_name)
+        assert getattr(bad_resp, "status_code", 200) == 400
+    assert (live2d_dir / "haru" / "haru.model3.json").exists()
+
+
 @pytest.mark.parametrize("bad_id", ["", "   ", ".", "..", "../etc", "123/../../etc", "123\\evil", "C:\\Windows", "C:123", "123\x00"])
 def test_find_workshop_item_by_id_rejects_invalid_and_traversal_ids(
     tmp_path: Path,

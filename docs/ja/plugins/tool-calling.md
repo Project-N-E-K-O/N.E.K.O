@@ -134,7 +134,11 @@ main_server からの dispatch も同じ IPC trigger 配管（`@plugin_entry`
 
 すべてのエンドポイントは `MAIN_SERVER_PORT`（デフォルト `48911`）に
 マウントされ、`verify_local_access` が `127.0.0.1` / `::1` /
-`localhost` のみ許可します。
+`localhost` のみ許可します。`NEKO_BEHIND_PROXY` または
+`NEKO_ACTIVITY_TRACKER_REMOTE` が有効な場合は、ループバック上の外部連携でも
+有効なインスタンス認証情報（`NEKO_INSTANCE_ACCESS_KEY` または
+`instance_access.key` 由来の `Authorization: Bearer <instance_key>` など）を
+送信する必要があり、未認証のリクエストには HTTP `401` が返ります。
 
 ### `POST /api/tools/register`
 
@@ -256,14 +260,18 @@ LLM がツール呼び出しを発火すると、main_server が `callback_url` 
 
 ```python
 import asyncio
+import logging
+import os
 import httpx
 
 MAIN_SERVER = "http://127.0.0.1:48911"
 MY_PORT = 9876
 TOOL_NAME = "get_weather"
+# NEKO_BEHIND_PROXY または NEKO_ACTIVITY_TRACKER_REMOTE が有効な場合のみ必要
+INSTANCE_KEY = os.environ.get("NEKO_INSTANCE_ACCESS_KEY", "")
 
 async def register_with_retry():
-    """起動時に呼ぶ：main_server が立ち上がるまで無限リトライで登録。"""
+    """起動時に呼ぶ：main_server が立ち上がるまでリトライで登録（認証拒否時はログを出して終了）。"""
     payload = {
         "name": TOOL_NAME,
         "description": "指定都市の天気を検索する",
@@ -277,12 +285,16 @@ async def register_with_retry():
         "source": "my_plugin",
         "timeout_seconds": 30,
     }
+    headers = {"Authorization": f"Bearer {INSTANCE_KEY}"} if INSTANCE_KEY else {}
     async with httpx.AsyncClient() as client:
         while True:
             try:
                 r = await client.post(f"{MAIN_SERVER}/api/tools/register",
-                                       json=payload, timeout=5)
-                if r.json().get("ok"):
+                                       json=payload, headers=headers, timeout=5)
+                if r.status_code in (401, 403):
+                    logging.error("Tool registration rejected with HTTP %s: %s", r.status_code, r.text)
+                    return
+                if r.is_success and r.json().get("ok"):
                     return
             except (httpx.ConnectError, httpx.TimeoutException):
                 pass  # main_server がまだ起動していない、後で再試行
@@ -290,10 +302,12 @@ async def register_with_retry():
 
 async def unregister_on_shutdown():
     """終了前に呼ぶ：ツールを取り消し、LLM が死んだ callback_url に当たらないように。"""
+    headers = {"Authorization": f"Bearer {INSTANCE_KEY}"} if INSTANCE_KEY else {}
     try:
         async with httpx.AsyncClient(timeout=2) as client:
             await client.post(f"{MAIN_SERVER}/api/tools/unregister",
-                              json={"name": TOOL_NAME, "role": None})
+                              json={"name": TOOL_NAME, "role": None},
+                              headers=headers)
     except Exception:
         pass  # main_server も死んでいるなら諦める
 ```

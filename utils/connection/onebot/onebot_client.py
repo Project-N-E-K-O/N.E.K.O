@@ -75,6 +75,19 @@ def _is_loopback_host(host: str) -> bool:
         return False
 
 
+def _is_wildcard_host(host: str) -> bool:
+    """Return True if host is an unspecified wildcard bind address such as 0.0.0.0 or ::."""
+    normalized = str(host or "").strip().strip("[]")
+    if not normalized:
+        return False
+    try:
+        ip = ipaddress.ip_address(normalized)
+        mapped = getattr(ip, "ipv4_mapped", None)
+        return (mapped or ip).is_unspecified
+    except ValueError:
+        return False
+
+
 def _notice_seconds(value: Any) -> int:
     """A notice's ``duration`` as whole seconds; unparsable is 0, never an exception.
 
@@ -131,6 +144,7 @@ class OneBotClient(NapCatActionsMixin, ConnectionBase):
                 self._listen_host = parsed.hostname
                 if parsed.port:
                     self._listen_port = parsed.port
+        self._bound_listen_host: Optional[str] = None
 
         self._server: Optional[websockets.WebSocketServer] = None
         # Reverse mode holds the server-side protocols (many); forward mode holds the
@@ -171,6 +185,7 @@ class OneBotClient(NapCatActionsMixin, ConnectionBase):
             return
         self._listen_host = "127.0.0.1"
         self._listen_port = 6199
+        self._bound_listen_host = None
         parsed = urlparse(self._onebot_url) if self._onebot_url else None
         if parsed and parsed.hostname:
             self._listen_host = parsed.hostname
@@ -411,7 +426,20 @@ class OneBotClient(NapCatActionsMixin, ConnectionBase):
             return
         if self._server is not None:
             return
-        if not self.token and not _is_loopback_host(self._listen_host):
+        bind_host = self._listen_host
+        downgraded_wildcard = False
+        if not self.token and _is_wildcard_host(self._listen_host):
+            bind_host = "127.0.0.1"
+            downgraded_wildcard = True
+            warn_msg = (
+                f"Reverse WS server has empty token with wildcard host {self._listen_host!r}; "
+                f"downgrading listen host to {bind_host}:{self._listen_port} (loopback only). "
+                "Configure a token to accept remote or cross-container OneBot connections."
+            )
+            if self.logger:
+                self.logger.warning(warn_msg)
+            self._emit_log("WARN", warn_msg)
+        elif not self.token and not _is_loopback_host(self._listen_host):
             msg = (
                 f"Refusing to start unauthenticated reverse OneBot WebSocket server on "
                 f"non-loopback host {self._listen_host!r}; configure a token or bind to 127.0.0.1"
@@ -424,17 +452,18 @@ class OneBotClient(NapCatActionsMixin, ConnectionBase):
         self._message_queue = asyncio.Queue(maxsize=self._message_queue_maxsize)
         self._server = await websockets.serve(
             self._handle_client,
-            host=self._listen_host,
+            host=bind_host,
             port=self._listen_port,
             ping_interval=30,
             ping_timeout=10,
             close_timeout=5,
         )
+        self._bound_listen_host = bind_host
         if self.logger:
-            self.logger.info(f"Reverse WS server listening on {self._listen_host}:{self._listen_port}")
-        if not self.token:
+            self.logger.info(f"Reverse WS server listening on {bind_host}:{self._listen_port}")
+        if not self.token and not downgraded_wildcard:
             hint = (
-                f"Reverse WS server is listening on loopback {self._listen_host}:{self._listen_port} without a token; "
+                f"Reverse WS server is listening on loopback {bind_host}:{self._listen_port} without a token; "
                 "configure a token and non-loopback host to accept remote or cross-container OneBot connections."
             )
             if self.logger:
@@ -492,6 +521,7 @@ class OneBotClient(NapCatActionsMixin, ConnectionBase):
             except Exception:
                 pass
             self._server = None
+        self._bound_listen_host = None
 
         if self.logger:
             self.logger.info("Reverse WS server stopped")
@@ -633,9 +663,10 @@ class OneBotClient(NapCatActionsMixin, ConnectionBase):
     # ── Client connection handling ────────────────────────────────────────
 
     def _check_token(self, websocket: websockets.WebSocketServerProtocol) -> bool:
-        """Verify the client token; allow unauthenticated connections only on loopback."""
+        """Verify the client token; allow unauthenticated connections only from loopback peers on loopback/wildcard hosts."""
         if not self.token:
-            if not _is_loopback_host(self._listen_host):
+            effective_host = self._bound_listen_host or self._listen_host
+            if not (_is_loopback_host(effective_host) or _is_wildcard_host(effective_host)):
                 return False
             remote_addr = getattr(websocket, "remote_address", None)
             if isinstance(remote_addr, (tuple, list)) and remote_addr:

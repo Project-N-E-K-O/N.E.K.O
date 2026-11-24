@@ -181,6 +181,8 @@ async def _call_local_install(
 
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(180.0),
+            proxy=None,
+            trust_env=False,
             event_hooks=internal_service_event_hooks(),
         ) as client:
             # Trigger installation

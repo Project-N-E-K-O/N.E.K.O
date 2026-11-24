@@ -141,7 +141,11 @@ host-side and external integrations.
 
 All endpoints are mounted on `MAIN_SERVER_PORT` (default `48911`) and
 are guarded by `verify_local_access` (only `127.0.0.1` / `::1` /
-`localhost` are allowed).
+`localhost` are allowed). When `NEKO_BEHIND_PROXY` or
+`NEKO_ACTIVITY_TRACKER_REMOTE` is enabled, external loopback callers must
+also include valid instance credentials (such as
+`Authorization: Bearer <instance_key>` from `NEKO_INSTANCE_ACCESS_KEY` or
+`instance_access.key`), otherwise requests fail with HTTP `401`.
 
 ### `POST /api/tools/register`
 
@@ -272,15 +276,19 @@ does not retry.
 
 ```python
 import asyncio
+import logging
+import os
 import httpx
 
 MAIN_SERVER = "http://127.0.0.1:48911"
 MY_PORT = 9876
 TOOL_NAME = "get_weather"
+# Required only when NEKO_BEHIND_PROXY or NEKO_ACTIVITY_TRACKER_REMOTE is enabled
+INSTANCE_KEY = os.environ.get("NEKO_INSTANCE_ACCESS_KEY", "")
 
 async def register_with_retry():
     """Call on plugin startup: register the tool once main_server is up,
-    retrying indefinitely."""
+    retrying until accepted or rejected for missing/invalid credentials."""
     payload = {
         "name": TOOL_NAME,
         "description": "Look up the weather in a given city",
@@ -294,12 +302,16 @@ async def register_with_retry():
         "source": "my_plugin",
         "timeout_seconds": 30,
     }
+    headers = {"Authorization": f"Bearer {INSTANCE_KEY}"} if INSTANCE_KEY else {}
     async with httpx.AsyncClient() as client:
         while True:
             try:
                 r = await client.post(f"{MAIN_SERVER}/api/tools/register",
-                                       json=payload, timeout=5)
-                if r.json().get("ok"):
+                                       json=payload, headers=headers, timeout=5)
+                if r.status_code in (401, 403):
+                    logging.error("Tool registration rejected with HTTP %s: %s", r.status_code, r.text)
+                    return
+                if r.is_success and r.json().get("ok"):
                     return
             except (httpx.ConnectError, httpx.TimeoutException):
                 pass  # main_server isn't up yet, try again later
@@ -307,10 +319,12 @@ async def register_with_retry():
 
 async def unregister_on_shutdown():
     """Call before exit: unregister so the LLM doesn't hit a dead callback_url."""
+    headers = {"Authorization": f"Bearer {INSTANCE_KEY}"} if INSTANCE_KEY else {}
     try:
         async with httpx.AsyncClient(timeout=2) as client:
             await client.post(f"{MAIN_SERVER}/api/tools/unregister",
-                              json={"name": TOOL_NAME, "role": None})
+                              json={"name": TOOL_NAME, "role": None},
+                              headers=headers)
     except Exception:
         pass  # main_server is down too — nothing we can do
 ```

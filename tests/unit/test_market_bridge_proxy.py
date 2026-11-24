@@ -628,7 +628,7 @@ async def test_market_proxy_slow_internal_upload_survives_proof_expiry_and_revok
     assert rotated_resp.json() == {"detail": "instance_authorization_required"}
     assert plugin_hits == []
 
-    # 2b. Rotating the instance key after the monotonic recheck deadline aborts body read via http.disconnect.
+    # 2b. Rotating the instance key after the monotonic recheck deadline returns clean 401 (never 500) and never forwards.
     plugin_hits.clear()
     current_key[0] = key1
 
@@ -643,12 +643,54 @@ async def test_market_proxy_slow_internal_upload_survives_proof_expiry_and_revok
         base_url=f"http://127.0.0.1:{main_port}",
         event_hooks=internal_service_event_hooks(),
     ) as installer_client:
-        with pytest.raises(ClientDisconnect):
-            await installer_client.post(
-                f"http://127.0.0.1:{main_port}/market/install",
-                content=post_deadline_rotated_upload(),
-                headers={"content-type": "application/json"},
-            )
+        post_deadline_resp = await installer_client.post(
+            f"http://127.0.0.1:{main_port}/market/install",
+            content=post_deadline_rotated_upload(),
+            headers={"content-type": "application/json"},
+        )
+    assert post_deadline_resp.status_code == 401
+    assert post_deadline_resp.json() == {"detail": "instance_authorization_required"}
+    assert plugin_hits == []
+
+    # 2c. Genuine mid-upload client disconnect without key rotation must still propagate ClientDisconnect, never 401.
+    from utils.instance_access import internal_service_proof
+
+    plugin_hits.clear()
+    current_key[0] = key1
+    proof = internal_service_proof(key1, "POST", "/market/install", port=main_port)
+    raw_headers = [
+        (INTERNAL_SERVICE_HEADER.lower().encode("latin-1"), proof.encode("latin-1")),
+        (b"host", f"127.0.0.1:{main_port}".encode("latin-1")),
+        (b"content-type", b"application/json"),
+    ]
+    disconnect_scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/market/install",
+        "raw_path": b"/market/install",
+        "query_string": b"",
+        "headers": raw_headers,
+        "client": ("127.0.0.1", 50005),
+        "server": ("127.0.0.1", main_port),
+    }
+    incoming = [
+        {"type": "http.request", "body": b'{"plugin_id":', "more_body": True},
+        {"type": "http.disconnect"},
+    ]
+    sent_messages: list[dict] = []
+
+    async def disconnect_receive():
+        return incoming.pop(0)
+
+    async def capture_send(message):
+        sent_messages.append(message)
+
+    with pytest.raises(ClientDisconnect):
+        await main_hop(disconnect_scope, disconnect_receive, capture_send)
+    assert [m.get("status") for m in sent_messages if m.get("type") == "http.response.start"] == [500]
     assert plugin_hits == []
 
     # 3. Spoofed scope identity without a matching middleware digest fails closed.

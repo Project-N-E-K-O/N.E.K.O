@@ -116,7 +116,10 @@ HTTP 调用；main_server 的 dispatch 也走同一套 IPC trigger 管线（与
 :::
 
 所有端点都挂在 `MAIN_SERVER_PORT`（默认 `48911`），并强制 `verify_local_access`
-（仅允许 `127.0.0.1` / `::1` / `localhost`）。
+（仅允许 `127.0.0.1` / `::1` / `localhost`）。启用 `NEKO_BEHIND_PROXY` 或
+`NEKO_ACTIVITY_TRACKER_REMOTE` 时，本机回环外部调用方同样需要携带有效的实例凭据
+（例如来自 `NEKO_INSTANCE_ACCESS_KEY` 或 `instance_access.key` 的
+`Authorization: Bearer <instance_key>`），否则请求会返回 HTTP `401`。
 
 ### `POST /api/tools/register`
 
@@ -231,14 +234,18 @@ HTTP 注册的外部集成才需要自己起 server 接收。
 
 ```python
 import asyncio
+import logging
+import os
 import httpx
 
 MAIN_SERVER = "http://127.0.0.1:48911"
 MY_PORT = 9876
 TOOL_NAME = "get_weather"
+# 仅当启用 NEKO_BEHIND_PROXY 或 NEKO_ACTIVITY_TRACKER_REMOTE 时需要
+INSTANCE_KEY = os.environ.get("NEKO_INSTANCE_ACCESS_KEY", "")
 
 async def register_with_retry():
-    """启动时调用：等 main_server 起来后注册工具，最多无限重试。"""
+    """启动时调用：等 main_server 起来后注册工具，遇到凭据拒绝则记日志并停止。"""
     payload = {
         "name": TOOL_NAME,
         "description": "查询指定城市的天气",
@@ -252,12 +259,16 @@ async def register_with_retry():
         "source": "my_plugin",
         "timeout_seconds": 30,
     }
+    headers = {"Authorization": f"Bearer {INSTANCE_KEY}"} if INSTANCE_KEY else {}
     async with httpx.AsyncClient() as client:
         while True:
             try:
                 r = await client.post(f"{MAIN_SERVER}/api/tools/register",
-                                       json=payload, timeout=5)
-                if r.json().get("ok"):
+                                       json=payload, headers=headers, timeout=5)
+                if r.status_code in (401, 403):
+                    logging.error("Tool registration rejected with HTTP %s: %s", r.status_code, r.text)
+                    return
+                if r.is_success and r.json().get("ok"):
                     return
             except (httpx.ConnectError, httpx.TimeoutException):
                 pass  # main_server 还没起，等等再来
@@ -265,10 +276,12 @@ async def register_with_retry():
 
 async def unregister_on_shutdown():
     """退出前调用：撤销工具，避免 LLM 撞到死掉的 callback_url。"""
+    headers = {"Authorization": f"Bearer {INSTANCE_KEY}"} if INSTANCE_KEY else {}
     try:
         async with httpx.AsyncClient(timeout=2) as client:
             await client.post(f"{MAIN_SERVER}/api/tools/unregister",
-                              json={"name": TOOL_NAME, "role": None})
+                              json={"name": TOOL_NAME, "role": None},
+                              headers=headers)
     except Exception:
         pass  # main_server 也死了就算了
 ```

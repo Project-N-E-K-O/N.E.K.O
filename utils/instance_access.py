@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import parse_qs, urlsplit
 
-from starlette.requests import Request
+from starlette.requests import ClientDisconnect, Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 from filelock import FileLock, Timeout as FileLockTimeout
 
@@ -615,6 +615,7 @@ class InstanceAccessMiddleware:
                 elif started:
                     await send({"type": "http.response.body", "body": b"", "more_body": False})
                 else:
+                    started = True
                     await self._deny(scope, receive, send, "instance_authorization_required", 401)
                 raise OSError("instance authorization revoked")
             if message["type"] == "http.response.start":
@@ -641,6 +642,8 @@ class InstanceAccessMiddleware:
             if revoked:
                 return ({"type": "websocket.disconnect", "code": 4401}
                         if scope["type"] == "websocket" else {"type": "http.disconnect"})
+            if message.get("type") in ("http.disconnect", "websocket.disconnect"):
+                return message
             if not await still_authorized():
                 revoked = True
                 if scope["type"] == "websocket":
@@ -651,9 +654,12 @@ class InstanceAccessMiddleware:
 
         try:
             return await self.app(scope, private_receive, private_send)
-        except OSError:
+        except (OSError, ClientDisconnect):
             if not revoked:
                 raise
+        if revoked and scope["type"] == "http" and not started:
+            started = True
+            await self._deny(scope, receive, send, "instance_authorization_required", 401)
 
     def _warn_unlabelled_tls(self):
         # The browser is on https:// but nothing tells this server so: pairing

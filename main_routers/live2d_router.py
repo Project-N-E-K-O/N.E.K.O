@@ -1882,7 +1882,6 @@ def delete_model(model_name: str):
             not isinstance(model_name, str)
             or not model_name.strip()
             or model_name.strip() in {".", ".."}
-            or ".." in model_name
             or "/" in model_name
             or "\\" in model_name
             or "\x00" in model_name

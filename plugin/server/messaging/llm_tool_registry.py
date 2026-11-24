@@ -129,6 +129,8 @@ def _get_http_client() -> httpx.AsyncClient:
         _HTTP_CLIENT = httpx.AsyncClient(
             timeout=httpx.Timeout(10.0, connect=2.0),
             limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+            proxy=None,
+            trust_env=False,
             event_hooks=internal_service_event_hooks(),
         )
     return _HTTP_CLIENT
