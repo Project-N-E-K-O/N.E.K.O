@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib.util
+import locale
 import shutil
 import subprocess
 from pathlib import Path
@@ -303,16 +304,47 @@ def test_repository_root_with_non_ascii_path_still_uses_git(tmp_path: Path, monk
     monkeypatch.setattr(MOD, "EXEMPTIONS", {})
     real_run = subprocess.run
 
+    # A Chinese Windows without UTF-8 mode, whatever this machine uses: the
+    # locale reports GBK, and text mode without an explicit encoding decodes
+    # with it. Reading bytes, or decoding explicitly as UTF-8, still works.
+    monkeypatch.setattr(locale, "getpreferredencoding", lambda do_setlocale=True: "gbk")
+    if hasattr(locale, "getencoding"):
+        monkeypatch.setattr(locale, "getencoding", lambda: "gbk")
+
     def run_with_chinese_windows_locale(*args, **kwargs):
-        # Text mode decodes with the locale code page, GBK on a Chinese
-        # Windows without UTF-8 mode, whatever this machine uses.
-        if kwargs.get("text") and not kwargs.get("encoding"):
+        if (kwargs.get("text") or kwargs.get("universal_newlines")) and not kwargs.get("encoding"):
             kwargs["encoding"] = "gbk"
         return real_run(*args, **kwargs)
 
     monkeypatch.setattr(MOD.subprocess, "run", run_with_chinese_windows_locale)
 
+    assert MOD._git_listed_python_files(root) is not None
     assert MOD.main([]) == 0
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+def test_listed_file_in_a_folder_without_permission_is_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+):
+    root = _git_repo_with_ignored_plugin(tmp_path / "gitrepo")
+    _write(root / "locked" / "x.py", "make(temperature=0.2)\n")
+    _write(root / "app" / "bad.py", "make(temperature=0.2)\n")
+    monkeypatch.setattr(MOD, "REPO_ROOT", root)
+    monkeypatch.setattr(MOD, "EXEMPTIONS", {})
+    real_is_file = Path.is_file
+
+    def is_file(self: Path) -> bool:
+        if "locked" in self.parts:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", is_file)
+
+    assert MOD.main([]) == 1
+    captured = capsys.readouterr()
+    assert "app/bad.py:1:" in captured.out
+    assert "locked" in captured.err
 
 
 @pytest.mark.unit

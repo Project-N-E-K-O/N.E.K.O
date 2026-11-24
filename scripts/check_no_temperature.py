@@ -371,8 +371,10 @@ def _git_listed_python_files(root: Path) -> list[Path] | None:
     # code page (GBK, cp1252, ...) would mis-decode for a non-ASCII checkout path.
     env = _git_env()
     try:
-        # Empty exactly when ``root`` is the top of the work tree; no path
-        # comparison, so the checkout's own path never needs decoding.
+        # Empty when ``root`` is the top of the work tree; no path comparison,
+        # so the checkout's own path never needs decoding. It is also empty
+        # inside a ``.git`` folder or a bare repository, where the ls-files
+        # call below fails and the caller falls back to walking folders.
         cdup = subprocess.run(
             ["git", "rev-parse", "--show-cdup"],
             cwd=root, env=env, capture_output=True, timeout=60, check=False,
@@ -397,7 +399,12 @@ def _git_listed_python_files(root: Path) -> list[Path] | None:
         if EXCLUDE_DIRS.intersection(rel.split("/")[:-1]):
             continue
         path = root / rel
-        if path.is_file():  # a tracked file may be deleted in the work tree
+        try:
+            exists = path.is_file()  # a tracked file may be deleted in the work tree
+        except OSError as e:  # e.g. a folder this user may not enter
+            print(f"{path}: skipped — {e}", file=sys.stderr)
+            continue
+        if exists:
             files.add(path)
     return sorted(files)
 
