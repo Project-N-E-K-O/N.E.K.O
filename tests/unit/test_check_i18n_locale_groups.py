@@ -47,6 +47,10 @@ def _write(repo: Path, rel: str, text: str) -> None:
 
 @pytest.fixture
 def repo(tmp_path, monkeypatch):
+    # Inside a git hook these point at the outer repository; drop them so the
+    # throwaway repository below stays isolated.
+    for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        monkeypatch.delenv(var, raising=False)
     _git(tmp_path, "init", "-q")
     _git(tmp_path, "config", "user.email", "test@example.invalid")
     _git(tmp_path, "config", "user.name", "test")

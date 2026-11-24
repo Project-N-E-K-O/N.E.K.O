@@ -294,7 +294,8 @@ def _check_group(group: dict, base: str, changed: set[str]) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Verify all locale files in a group change in lockstep "
-                    "(same set of hunk ranges, no language left behind).",
+                    "(no language left behind; the plugin-manager locales/ "
+                    "must also touch the same hunk ranges).",
     )
     parser.add_argument(
         "--base",
@@ -328,8 +329,10 @@ def main(argv: list[str] | None = None) -> int:
             print(e)
         print(
             f"\n{len(all_errors)} i18n-sync violation(s) found.\n"
-            "Locale files within each group must move together — same set of "
-            "line ranges modified across all languages.",
+            "Locale files within each group must move together: every "
+            "language is changed; static/locales/ must keep one JSON "
+            "structure and the plugin-manager locales/ the same modified line "
+            "ranges (split message dirs are not line-aligned).",
             file=sys.stderr,
         )
         return 1
