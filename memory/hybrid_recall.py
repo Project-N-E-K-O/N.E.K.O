@@ -1487,16 +1487,28 @@ async def hybrid_recall(
         logger.debug("[hybrid_recall] collect_stop_names skipped: %s", exc)
         stop_names = []
 
-    # Score. BM25 is sync + cheap (≤ few-hundred docs, pure-Python loop);
-    # cosine is async (embed_batch). Run cosine first so the BM25 work
-    # can proceed while embedding model warms (if first call).
+    # Score. Cosine is async (embed_batch, then scoring in a worker thread);
+    # start it first so it runs while BM25 does.
     # Only the first HYBRID_RECALL_BUDGET_EACH cosine rows are ever read
     # (threshold filter keeps a prefix of a DESC ranking, then [:BUDGET_EACH]).
     cosine_stats: dict = {}
     cosine_scored_task = asyncio.create_task(_cosine_rank(
         query, embedding_pool, limit=HYBRID_RECALL_BUDGET_EACH, stats=cosine_stats,
     ))
-    bm25_scored = _bm25_rank(query, bm25_pool, stop_names=stop_names)
+    # BM25 is a pure-Python loop over the whole keyword pool (archive
+    # included): a few ms today, but ~0.2 s at 38k rows and over 1 s at 99k,
+    # so it runs in a worker thread like the passive path's ``_bm25_scores``
+    # does. The pool rows are ``_tag_tier``'s private copies and
+    # ``_TOKEN_CACHE`` is locked, so the worker shares nothing mutable.
+    try:
+        bm25_scored = await asyncio.to_thread(
+            _bm25_rank, query, bm25_pool, stop_names=stop_names,
+        )
+    except (Exception, asyncio.CancelledError):
+        # Cancelled or failed while BM25 ran: the cosine task is no longer
+        # awaited by anyone, so stop it instead of leaving it orphaned.
+        cosine_scored_task.cancel()
+        raise
     if budget_ms is None:
         cosine_scored = await cosine_scored_task
     else:

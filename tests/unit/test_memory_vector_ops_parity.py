@@ -7,6 +7,7 @@ index order, and the new code has to reproduce that order, not just the set.
 """
 from __future__ import annotations
 
+import asyncio
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -731,3 +732,87 @@ def test_strongest_internal_matches_naive_max_over_others(block):
     with patch.object(ranking, "_ROW_BLOCK", block):
         got = ranking._strongest_internal(sim, members)
     assert got.tolist() == expected
+
+
+# ── recall_memory keyword half ──────────────────────────────────────────
+
+
+def _keyword_stores(tmp_path, facts):
+    fact_store = MagicMock()
+    fact_store.aload_facts = AsyncMock(return_value=facts)
+    fact_store._facts_archive_path = MagicMock(return_value=str(tmp_path / "none.json"))
+    reflection_engine = MagicMock()
+    reflection_engine.aload_reflections = AsyncMock(return_value=[])
+    return fact_store, reflection_engine
+
+
+@pytest.mark.asyncio
+async def test_hybrid_recall_bm25_runs_off_the_event_loop_with_same_ranking(tmp_path):
+    facts = [
+        {"id": f"k{i}", "text": f"博士喜欢猫 第{i}条 记录", "score": 1.0}
+        for i in range(30)
+    ] + [{"id": "other", "text": "今天下雨了", "score": 1.0}]
+    fact_store, reflection_engine = _keyword_stores(tmp_path, facts)
+    loop_thread = threading.get_ident()
+    seen = {}
+    real = hr._bm25_rank
+
+    def spy(query, pool, **kwargs):
+        seen["thread"] = threading.get_ident()
+        ranked = real(query, pool, **kwargs)
+        seen["ranked"] = [d["id"] for d, _ in ranked]
+        return ranked
+
+    hr._invalidate_pool_cache()
+    with patch.object(hr, "_cosine_rank", AsyncMock(return_value=[])), \
+         patch.object(hr, "HYBRID_RECALL_BM25_THRESHOLD", 0.0), \
+         patch.object(hr, "_bm25_rank", spy):
+        result = await hr.hybrid_recall(
+            lanlan_name="parity", query="博士 猫", fact_store=fact_store,
+            reflection_engine=reflection_engine, config_manager=MagicMock(),
+        )
+    assert seen["thread"] != loop_thread
+    expected = [d["id"] for d, _ in real("博士 猫", hr._tag_tier(facts, "fact"), stop_names=[])]
+    assert seen["ranked"] == expected
+    assert [r["id"] for r in result["results"]][:hr.HYBRID_RECALL_BUDGET_EACH] == [
+        i for i in expected if i != "other"
+    ][:hr.HYBRID_RECALL_BUDGET_EACH]
+
+
+@pytest.mark.asyncio
+async def test_cancelling_recall_during_bm25_cancels_the_cosine_task(tmp_path):
+    facts = [{"id": "k1", "text": "博士喜欢猫", "score": 1.0}]
+    fact_store, reflection_engine = _keyword_stores(tmp_path, facts)
+    entered = threading.Event()
+    release = threading.Event()
+    cosine_cancelled = asyncio.Event()
+
+    def blocking_bm25(query, pool, **kwargs):
+        entered.set()
+        release.wait(10)
+        return []
+
+    async def slow_cosine(query, pool, **kwargs):
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cosine_cancelled.set()
+            raise
+        return []
+
+    hr._invalidate_pool_cache()
+    with patch.object(hr, "_cosine_rank", slow_cosine), \
+         patch.object(hr, "_bm25_rank", blocking_bm25):
+        task = asyncio.create_task(hr.hybrid_recall(
+            lanlan_name="parity", query="博士", fact_store=fact_store,
+            reflection_engine=reflection_engine, config_manager=MagicMock(),
+        ))
+        while not entered.is_set():
+            await asyncio.sleep(0.01)
+        task.cancel()
+        try:
+            await asyncio.wait_for(cosine_cancelled.wait(), 5)
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
