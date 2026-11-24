@@ -952,10 +952,11 @@ async def test_not_allowed_no_member_is_opened_and_the_leader_is_told(hosts, tmp
                 and event.payload.get("to") == "waiting_user"] == []
 
 
-async def test_whether_a_new_member_is_asked_about_goes_by_its_template_as_it_is_handed_over(hosts, tmp_path):
-    # What is settled (the design, 17.11): the user is asked by the template as it is when the
-    # leader hands over. A template the user changes after that is the user's own doing: nobody
-    # asks again, and the member counts as one that changes files from its start on.
+@pytest.mark.parametrize("answer", ["once", "deny"])
+async def test_a_member_made_as_a_reader_is_asked_about_when_it_starts_with_tools_that_change_files(hosts, tmp_path, answer):
+    # The user is asked by the template as it is when the leader hands over; a member made as one
+    # that only reads is not asked about then. Should its template say otherwise by the time it
+    # starts, it is asked about as it starts, once, for the commission it starts with (17.12).
     kept: dict[str, Any] = {}
 
     async def template_changes() -> None:
@@ -969,18 +970,26 @@ async def test_whether_a_new_member_is_asked_about_goes_by_its_template_as_it_is
     kept["host"] = host
 
     receipt = await _dispatch(host, "find out which fonts the pages of the shop site use")
-    done = await wait_status(host, receipt.commission_id, "done")
+    waiting = await wait_status(host, receipt.commission_id, "waiting_user")
+    question = waiting.question()
+    assert (question["kind"], question["category"]) == ("permission", "open_session")
+    # Asked for the member's own commission, which is the member's by now.
+    member = await host.ledger.get_session(waiting.session_id)
+    assert (member.kind, member.preset, waiting.handed_by is not None) == ("line", "scout", True)
+    assert await host.answer(receipt.commission_id, "", choice=answer)
+    if answer == "deny":
+        failed = await wait_status(host, receipt.commission_id, "failed")
+        assert "did not allow another task agent that can change files" in failed.status_reason
+        return
+    await wait_status(host, receipt.commission_id, "done")
     await _let_go(host)
-
     events = await host.ledger.events(receipt.commission_id)
-    assert [event for event in events if event.type == "status" and event.payload.get("to") == "waiting_user"] == []
+    assert len([event for event in events if event.type == "status" and event.payload.get("to") == "waiting_user"]) == 1
     assert await host.permission_store.mode("open_session") == "first_ask"
-    member = await host.ledger.get_session(done.session_id)
-    assert (member.kind, member.preset, done.handed_by is not None) == ("line", "scout", True)
-    # Opened with the tools its template gives it by then, and noted as one that changes files.
+    # On record as allowed: it is not asked about a second time.
+    assert [event.payload["changes_files"] for event in events if event.type == "member_made"] == [False, True]
     opened = [event.payload["tools"] for event in events if event.type == "started"]
-    assert "write" not in opened[0] and {"write", "edit"} <= set(opened[-1])
-    assert host.task_agents._writes_in[member.id] == ("Shop site", member.id)
+    assert {"write", "edit"} <= set(opened[-1])
 
 
 async def test_one_that_reads_only_and_a_member_that_is_there_are_not_asked_about(hosts, tmp_path):

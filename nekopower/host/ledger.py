@@ -185,8 +185,10 @@ HOST_ENDED_REASON = "the host process ended before this finished"
 
 # (5: the notes sessions write to one another and what a session asked to be
 # woken for have tables of their own, and a commission may rest. 7: a session
-# has a preset and a card. 8: a project has members, and a leader or none.)
-_SCHEMA_VERSION = 8
+# has a preset and a card. 8: a project has members, and a leader or none.
+# 9: a session has a seat, and the git worktrees task agents work in are on
+# record.)
+_SCHEMA_VERSION = 9
 # The first version in which the session of kind ``project`` is a project's
 # leader, which hands work out and does none. In a ledger of an earlier one
 # it was the project's one session, which did the work: those are members
@@ -298,7 +300,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     model_ident TEXT NOT NULL DEFAULT '',
     model_free INTEGER NOT NULL DEFAULT 0,
     model_fallback TEXT NOT NULL DEFAULT '',
-    model_tier TEXT NOT NULL DEFAULT ''
+    model_tier TEXT NOT NULL DEFAULT '',
+    seat TEXT NOT NULL DEFAULT ''
 );
 CREATE UNIQUE INDEX IF NOT EXISTS sessions_by_name ON sessions (lanlan_name, name);
 CREATE INDEX IF NOT EXISTS sessions_by_project ON sessions (lanlan_name, project, kind);
@@ -375,6 +378,26 @@ CREATE TABLE IF NOT EXISTS wake_requests (
 CREATE INDEX IF NOT EXISTS wakes_pending ON wake_requests (status, due_at);
 CREATE INDEX IF NOT EXISTS wakes_by_session ON wake_requests (session_id, status);
 CREATE INDEX IF NOT EXISTS wakes_by_commission ON wake_requests (commission_id, status);
+CREATE TABLE IF NOT EXISTS worktrees (
+    id TEXT PRIMARY KEY,
+    session_id TEXT,
+    commission_id TEXT,
+    lanlan_name TEXT NOT NULL DEFAULT '',
+    project TEXT,
+    project_dir TEXT NOT NULL,
+    path TEXT NOT NULL,
+    workdir TEXT NOT NULL,
+    token TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL,
+    rounds INTEGER NOT NULL DEFAULT 0,
+    checks INTEGER NOT NULL DEFAULT 0,
+    conflicts TEXT NOT NULL DEFAULT '[]',
+    reason TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS worktrees_by_commission ON worktrees (commission_id);
+CREATE INDEX IF NOT EXISTS worktrees_by_project ON worktrees (project, state);
 """
 
 
@@ -604,6 +627,14 @@ class Session:
     model_free: int = 0
     model_fallback: str = ""
     model_tier: str = ""
+    # Where it works, beyond what ``workdir`` says (``SEATS``): "" for
+    # wherever that is; ``tree`` for one that changes files beside others of
+    # its project, in a git worktree made for each commission where one can
+    # be made (``TaskAgentManager``; ``workdir`` is the last one's then, or
+    # the project's directory where none could be made); ``own`` for one
+    # that was a session of its own before it became a project's, whose
+    # directory stays where it is when the project is given another.
+    seat: str = ""
 
     @property
     def tokens(self) -> int:
@@ -611,6 +642,7 @@ class Session:
         return self.tokens_in + self.tokens_out + self.tokens_cache_read + self.tokens_cache_write
 
 
+SEATS: tuple[str, ...] = ("", "tree", "own")
 _SESSION_COLUMNS: tuple[str, ...] = tuple(item.name for item in fields(Session))
 # Columns of ``sessions`` that its first schema did not have; see ``_ADDED_COLUMNS``.
 _ADDED_SESSION_COLUMNS: tuple[tuple[str, str], ...] = (
@@ -634,6 +666,7 @@ _ADDED_SESSION_COLUMNS: tuple[tuple[str, str], ...] = (
     ("model_free", "INTEGER NOT NULL DEFAULT 0"),
     ("model_fallback", "TEXT NOT NULL DEFAULT ''"),
     ("model_tier", "TEXT NOT NULL DEFAULT ''"),
+    ("seat", "TEXT NOT NULL DEFAULT ''"),
 )
 # The columns that say which model a session's task agent is sent to, other than whether it goes free.
 _MODEL_TEXT_COLUMNS: tuple[str, ...] = ("model_slot", "model_name", "model_ident", "model_fallback", "model_tier")
@@ -874,6 +907,95 @@ def _session(row: sqlite3.Row | None) -> Session | None:
     if row is None:
         return None
     return Session(**{name: row[name] for name in _SESSION_COLUMNS})
+
+
+# How a git worktree a task agent works in stands (``Tree.state``):
+# ``making`` while it is being made (on record first, so that one a process
+# left half made is found); ``active`` while its commission is worked on in
+# it; ``landing`` once that reported done and what it changed is on its way
+# into the project's directory (checked first where that is asked for, then
+# waiting for its turn); ``resolving`` while the task agent merges what
+# clashed; ``held`` when it is done and the user is to say whether it lands
+# (the setting that asks first); ``unlanded`` when it could not be landed
+# and the user is to say what becomes of it; ``kept`` once the user said
+# they see to it themselves, and is not reminded of it again.
+TREE_STATES: tuple[str, ...] = ("making", "active", "landing", "resolving", "held", "unlanded", "kept")
+# Those that keep a project where it is (``Ledger.move_project``): what such
+# a worktree holds is landed in the directory it was made from.
+TREE_STATES_PENDING: frozenset[str] = frozenset(TREE_STATES) - {"kept"}
+# Those whose commission is over, and which wait for the user.
+TREE_STATES_LEFT: frozenset[str] = frozenset({"held", "unlanded", "kept"})
+
+
+@dataclass(frozen=True, slots=True)
+class Tree:
+    """One row of ``worktrees``: a git worktree made for a commission of a task agent that changes files beside others.
+
+    ``id`` is the name of its directory (``paths.worktree_name``);
+    ``project_dir`` the directory of the project it was made from, where
+    what it holds is landed; ``path`` the worktree and ``workdir`` the
+    directory in it that stands for the project's; ``token`` what tells
+    it from another made later at the same path (``worktrees.Worktree``).
+    ``rounds`` counts how often the task agent was sent back to merge
+    what clashed since landing was last begun, ``checks`` how often what
+    it did was checked and sent back; ``conflicts`` the files that
+    clashed last, ``reason`` why it was not landed.
+    """
+
+    id: str
+    session_id: str | None
+    commission_id: str | None
+    lanlan_name: str
+    project: str | None
+    project_dir: str
+    path: str
+    workdir: str
+    token: str
+    state: str
+    rounds: int
+    checks: int
+    conflicts: tuple[str, ...]
+    reason: str
+    created_at: float
+    updated_at: float
+
+    def to_json(self) -> dict[str, Any]:
+        """Return it as a page shows it."""
+        return {
+            "id": self.id,
+            "session_id": self.session_id,
+            "commission_id": self.commission_id,
+            "lanlan_name": self.lanlan_name,
+            "project": self.project,
+            "project_dir": self.project_dir,
+            "path": self.path,
+            "workdir": self.workdir,
+            "state": self.state,
+            "rounds": self.rounds,
+            "checks": self.checks,
+            "conflicts": list(self.conflicts),
+            "reason": self.reason,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+
+_TREE_COLUMNS: tuple[str, ...] = tuple(item.name for item in fields(Tree))
+_TREE_UPDATABLE: frozenset[str] = frozenset(
+    {"session_id", "commission_id", "path", "workdir", "token", "state", "rounds", "checks", "conflicts", "reason"}
+)
+
+
+def _tree(row: sqlite3.Row | None) -> Tree | None:
+    if row is None:
+        return None
+    values = {name: row[name] for name in _TREE_COLUMNS}
+    try:
+        listed = json.loads(values["conflicts"] or "[]")
+    except ValueError:
+        listed = []
+    values["conflicts"] = tuple(str(item) for item in listed) if isinstance(listed, list) else ()
+    return Tree(**values)
 
 
 _MESSAGE_COLUMNS: tuple[str, ...] = tuple(item.name for item in fields(Message))
@@ -1796,7 +1918,10 @@ class Ledger:
         row.update({name: 0 for name in (*_USAGE_COLUMNS, "context_tokens")})
         row.update({name: "" for name in ("preset", *_CARD_COLUMNS, *_MODEL_TEXT_COLUMNS)})
         row["model_free"] = 0
+        row["seat"] = ""
         row.update(values)
+        if row["seat"] not in SEATS:
+            raise ValueError(f"unknown seat of a session {row['seat']!r}")
         if row["status"] not in SESSION_STATUSES:
             raise ValueError(f"unknown session status {row['status']!r}")
         if row["kind"] not in SESSION_KINDS:
@@ -1935,12 +2060,13 @@ class Ledger:
         parent_id: str | None = None,
         preset: str | None = None,
         duty: Any = None,
+        seat: str | None = None,
     ) -> tuple[Commission, Session]:
         """Give a commission the session it is worked on in, and return both.
 
-        ``preset`` and ``duty`` (what it takes, the first line of its card,
-        put down as written by whoever made it) are for a session that is
-        made here; one that is there already keeps its own.
+        ``preset``, ``duty`` (what it takes, the first line of its card,
+        put down as written by whoever made it) and ``seat`` are for a
+        session that is made here; one that is there already keeps its own.
 
         One that has a session keeps it. Otherwise, for ``kind``
         ``"project"``, it gets the session of its project for its
@@ -1989,6 +2115,7 @@ class Ledger:
                         "parent_id": parent_id,
                         "preset": preset or "",
                         "duty": duty or "",
+                        "seat": seat or "",
                     },
                 )
             if commission.session_id != session.id:
@@ -2090,7 +2217,9 @@ class Ledger:
         """Make sessions of one commission (kind ``single``) members of a project; returns those that were.
 
         Where each works, what was said in it and its card stay as they
-        are: only whose it is changes. Its commissions that belong to no
+        are: only whose it is changes, and one that has a directory is
+        put down as working in its own (``seat``), which stays when the
+        project is given another. Its commissions that belong to no
         project are the project's with it, so that one of them taken up
         again, or followed up, is told the project's rules. One that is a
         project's already, or is no session of one commission, is left
@@ -2104,8 +2233,9 @@ class Ledger:
             made: list[Session] = []
             for session_id in wanted:
                 done = conn.execute(
-                    "UPDATE sessions SET kind = 'line', project = ? WHERE id = ? AND kind = 'single' "
-                    "AND (project IS NULL OR project = '' OR project = ?)",
+                    "UPDATE sessions SET kind = 'line', project = ?, "
+                    "seat = CASE WHEN workdir IS NULL OR workdir = '' THEN seat ELSE 'own' END "
+                    "WHERE id = ? AND kind = 'single' AND (project IS NULL OR project = '' OR project = ?)",
                     (project, session_id, DEFAULT_PROJECT),
                 )
                 if done.rowcount:
@@ -2204,13 +2334,21 @@ class Ledger:
         with it. A member does when ``moves`` says so, given its id and
         where it works: one that works where the project did does, one
         that was a session of its own before it became the project's
-        keeps its directory (``NekoPowerHost`` tells which is which).
-        Without ``moves`` no member is moved.
+        keeps its directory (``NekoPowerHost`` tells which is which; one
+        on record as such, ``seat`` ``own``, is never asked about).
+        Without ``moves`` no member is moved. Under way as well: a git
+        worktree of the project that holds work not landed in its
+        directory yet (``TREE_STATES_PENDING``): it is landed where it
+        was made from.
         """
 
         def work(conn: sqlite3.Connection) -> dict[str, str | None] | None:
-            rows = conn.execute("SELECT id, kind, status, workdir FROM sessions WHERE project = ?", (project,)).fetchall()
+            rows = conn.execute(
+                "SELECT id, kind, status, workdir, seat FROM sessions WHERE project = ?", (project,)
+            ).fetchall()
             if any(row["status"] in ("running", "waiting", "compacting") for row in rows):
+                return None
+            if self._trees_pending(conn, project):
                 return None
             ids = [row["id"] for row in rows]
             theirs = f" OR session_id IN ({', '.join('?' for _ in ids)})" if ids else ""
@@ -2225,7 +2363,12 @@ class Ledger:
                 row
                 for row in rows
                 if row["kind"] == "project"
-                or (row["kind"] == "line" and moves is not None and moves(row["id"], row["workdir"]))
+                or (
+                    row["kind"] == "line"
+                    and row["seat"] != "own"
+                    and moves is not None
+                    and moves(row["id"], row["workdir"])
+                )
             ]
             for row in moved:
                 conn.execute("UPDATE sessions SET workdir = ? WHERE id = ?", (workdir, row["id"]))
@@ -2271,6 +2414,8 @@ class Ledger:
             raise ValueError(f"session fields that cannot be updated: {sorted(unknown)}")
         if "status" in values and values["status"] not in SESSION_STATUSES:
             raise ValueError(f"unknown session status {values['status']!r}")
+        if "seat" in values and values["seat"] not in SEATS:
+            raise ValueError(f"unknown seat of a session {values['seat']!r}")
 
         def work(conn: sqlite3.Connection) -> Session | None:
             changes = dict(values)
@@ -2304,6 +2449,133 @@ class Ledger:
                 "UPDATE sessions SET project = ? WHERE id = ? AND (project IS NULL OR project = '' OR project = ?)",
                 (project, session_id, DEFAULT_PROJECT),
             )
+        )
+
+    # -- git worktrees ----------------------------------------------------
+
+    @staticmethod
+    def _trees_pending(conn: sqlite3.Connection, project: str) -> bool:
+        """Whether a project has a git worktree that holds work not landed in its directory yet."""
+        marks = ", ".join("?" for _ in TREE_STATES_PENDING)
+        return (
+            conn.execute(
+                f"SELECT 1 FROM worktrees WHERE project = ? AND state IN ({marks}) LIMIT 1",
+                (project, *sorted(TREE_STATES_PENDING)),
+            ).fetchone()
+            is not None
+        )
+
+    async def trees_pending(self, project: str) -> bool:
+        """Whether a project has a git worktree that holds work not landed in its directory yet (``TREE_STATES_PENDING``)."""
+        return await self.run(lambda conn: self._trees_pending(conn, project))
+
+    async def add_tree(self, **values: Any) -> Tree:
+        """Put a git worktree on record and return its row; raises for one whose id is on record already.
+
+        ``values`` are columns of ``Tree``; ``id``, ``project_dir``,
+        ``path`` and ``workdir`` are needed, the state is ``making``
+        unless one is given.
+        """
+        unknown = set(values) - set(_TREE_COLUMNS)
+        if unknown:
+            raise ValueError(f"unknown worktree fields: {sorted(unknown)}")
+        for needed in ("id", "project_dir", "path", "workdir"):
+            if not values.get(needed):
+                raise ValueError(f"a worktree on record has its {needed}")
+
+        def work(conn: sqlite3.Connection) -> Tree:
+            now = self._clock()
+            row: dict[str, Any] = {
+                "session_id": None, "commission_id": None, "lanlan_name": "", "project": None, "token": "",
+                "state": "making", "rounds": 0, "checks": 0, "conflicts": (), "reason": "",
+                "created_at": now, "updated_at": now,
+            }
+            row.update(values)
+            if row["state"] not in TREE_STATES:
+                raise ValueError(f"unknown state of a worktree {row['state']!r}")
+            row["conflicts"] = json.dumps([str(item) for item in row["conflicts"]], ensure_ascii=False)
+            columns = ", ".join(_TREE_COLUMNS)
+            marks = ", ".join("?" for _ in _TREE_COLUMNS)
+            try:
+                conn.execute(f"INSERT INTO worktrees ({columns}) VALUES ({marks})", [row[name] for name in _TREE_COLUMNS])
+            except sqlite3.IntegrityError:
+                raise ValueError(f"a worktree named {row['id']!r} is on record already") from None
+            made = _tree(conn.execute("SELECT * FROM worktrees WHERE id = ?", (row["id"],)).fetchone())
+            assert made is not None
+            return made
+
+        return await self.run(work)
+
+    async def get_tree(self, tree_id: str | None) -> Tree | None:
+        if not tree_id:
+            return None
+        return await self.run(lambda conn: _tree(conn.execute("SELECT * FROM worktrees WHERE id = ?", (tree_id,)).fetchone()))
+
+    async def trees(
+        self,
+        *,
+        project: str | None = None,
+        lanlan_name: str | None = None,
+        session_id: str | None = None,
+        commission_id: str | None = None,
+        states: Iterable[str] | None = None,
+    ) -> list[Tree]:
+        """Return the git worktrees on record that fit what is named, the oldest first."""
+        wanted = None if states is None else [str(item) for item in states]
+
+        def read(conn: sqlite3.Connection) -> list[Tree]:
+            where: list[str] = []
+            params: list[Any] = []
+            for column, value in (
+                ("project", project), ("lanlan_name", lanlan_name), ("session_id", session_id),
+                ("commission_id", commission_id),
+            ):
+                if value is not None:
+                    where.append(f"{column} = ?")
+                    params.append(value)
+            if wanted is not None:
+                if not wanted:
+                    return []
+                where.append(f"state IN ({', '.join('?' for _ in wanted)})")
+                params.extend(wanted)
+            sql = "SELECT * FROM worktrees" + (f" WHERE {' AND '.join(where)}" if where else "")
+            rows = conn.execute(f"{sql} ORDER BY created_at, rowid", params).fetchall()
+            return [item for item in (_tree(row) for row in rows) if item is not None]
+
+        return await self.run(read)
+
+    async def update_tree(self, tree_id: str, *, was: Iterable[str] | None = None, **values: Any) -> Tree | None:
+        """Write columns of a git worktree's row and return it; None when it is not on record.
+
+        With ``was``, only one that stands in one of those states is
+        written (looked at and written in one transaction): None when it
+        stands otherwise by now.
+        """
+        unknown = set(values) - _TREE_UPDATABLE
+        if unknown:
+            raise ValueError(f"worktree fields that cannot be updated: {sorted(unknown)}")
+        if "state" in values and values["state"] not in TREE_STATES:
+            raise ValueError(f"unknown state of a worktree {values['state']!r}")
+        expected = None if was is None else {str(item) for item in was}
+
+        def work(conn: sqlite3.Connection) -> Tree | None:
+            current = _tree(conn.execute("SELECT * FROM worktrees WHERE id = ?", (tree_id,)).fetchone())
+            if current is None or (expected is not None and current.state not in expected):
+                return None
+            changes = dict(values)
+            if "conflicts" in changes:
+                changes["conflicts"] = json.dumps([str(item) for item in changes["conflicts"]], ensure_ascii=False)
+            changes["updated_at"] = self._clock()
+            assignments = ", ".join(f"{name} = ?" for name in changes)
+            conn.execute(f"UPDATE worktrees SET {assignments} WHERE id = ?", [*changes.values(), tree_id])
+            return _tree(conn.execute("SELECT * FROM worktrees WHERE id = ?", (tree_id,)).fetchone())
+
+        return await self.run(work)
+
+    async def drop_tree(self, tree_id: str) -> bool:
+        """Take a git worktree off the record; returns whether it was there."""
+        return await self.run(
+            lambda conn: conn.execute("DELETE FROM worktrees WHERE id = ?", (tree_id,)).rowcount > 0
         )
 
     async def write_card(self, session_id: str, *, by: str, **lines: Any) -> tuple[Session | None, tuple[str, ...]]:

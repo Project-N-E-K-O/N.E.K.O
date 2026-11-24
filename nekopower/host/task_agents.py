@@ -112,6 +112,7 @@ from nekopower.host.plugin_runs import PluginRunner, audited_run_entry
 from nekopower.host.preferences import PreferenceStore, feedback_text
 from nekopower.host.reports import CHANNEL_TASK_AGENT, Reporter
 from nekopower.host.runtimes import RUNTIME_BUILTIN, RUNTIME_DSH, Runtimes
+from nekopower.host.tree_work import TreeWork
 from nekopower import TASK_CONTROL_TOOLS
 
 logger = logging.getLogger(__name__)
@@ -1006,8 +1007,12 @@ class _UsageCut:
         manager._usage_read_over()
 
 
-class TaskAgentManager:
-    """Runs task agents for commissions. See the module docstring."""
+class TaskAgentManager(TreeWork):
+    """Runs task agents for commissions. See the module docstring.
+
+    What it does about the git worktrees members of a project work in,
+    and about a leader's team, is in ``tree_work.py`` (``TreeWork``).
+    """
 
     def __init__(
         self,
@@ -1303,9 +1308,15 @@ class TaskAgentManager:
         from nekopower.host.families import Families
 
         self.families = Families(ledger, space, paths, clock=ledger._clock, changes_files=self._opened_to_change_files)
-        # By session: the project (for which character) it writes files in.
-        # One such session works in a project at a time (``_session_free_for``).
+        # By session: the project it writes files in, in the project's own
+        # directory, and the member it does so for. One such member works
+        # in a project at a time (``_session_free_for``); one that works in
+        # a git worktree of its own is not among them.
         self._writes_in: dict[str, tuple[str, str]] = {}
+        # The git worktrees members work in, and a leader's team (``tree_work.py``).
+        self._init_tree_work()
+        # (One manager of worktrees for the host: its locks are its own.)
+        self.families._worktrees = self.worktrees
         # What the user said to a commission while its leader was handing
         # it over, by commission: from the leader's call until the
         # commission is queued for the task agent it goes to, which is
@@ -1506,6 +1517,7 @@ class TaskAgentManager:
             wake_schedule=self._session_action("schedule_wake", self._cb_wake_schedule),
             session_ask=self._session_action("ask_session", self._cb_session_ask),
             hand_over=self._cb_hand_over,
+            start_team=self._cb_start_team,
             budget=self._cb_budget,
         )
 
@@ -1915,9 +1927,11 @@ class TaskAgentManager:
         holder = self._held_by.get(session_id)
         if holder is not None and holder != commission_id:
             return False
-        # One task agent that writes files works in a project at a time:
-        # another member that does waits until that one's commission is
-        # over. Those that read only do not wait, nor does the leader.
+        # One task agent that writes files works in a project's own
+        # directory at a time: another member that does waits until that
+        # one's commission is over. Those that read only do not wait, nor
+        # does the leader, nor one that works in a git worktree of its own
+        # (it is not noted as one that writes there, ``_note_writer``).
         where = self._writes_in.get(session_id)
         if where is not None:
             if where[0] in self._noting:
@@ -2061,6 +2075,8 @@ class TaskAgentManager:
                 # The one its starter named; a worker when it named none.
                 preset=await self._preset_chosen(commission.id),
                 duty=commission.title,
+                # One of a leader's team that changes files works in a git worktree (``start_team``).
+                seat="tree" if (await self._chosen(commission.id)).get("seat") == "tree" else None,
             )
         elif commission.project and commission.project != DEFAULT_PROJECT:
             commission, session = await self._project_home(commission)
@@ -2163,6 +2179,12 @@ class TaskAgentManager:
                 raise
             except Exception:  # noqa: BLE001 - not told: held to the rule
                 changes = True
+        if changes and await self._works_in_tree(member):
+            # It changes files in a git worktree of its own, and so does a task agent it
+            # started: neither waits for whoever works in the project's directory, nor is
+            # waited for there. (Known of where it works, not guessed: taken off at work too.)
+            self._unnote_writer(session_id, guessed=True, batch=batch)
+            return
         if changes:
             self._writes_in[session_id] = (member.project, member.id)
         else:
@@ -2848,6 +2870,15 @@ class TaskAgentManager:
         """
         self._handed_said.pop(commission.id, None)
         said = await self._copies_of_session(commission)
+        try:
+            # Of the git worktree it is worked on in, whoever started it.
+            tree = await self._tree_said(commission)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - it opens without it
+            logger.warning("what a commission is told of its worktree could not be put together", exc_info=True)
+            tree = ""
+        said = "\n\n".join(part for part in (said, tree) if part)
         if not commission.session_id or commission.parent_id is not None or commission.source == "ask":
             return said
         try:
@@ -3467,6 +3498,14 @@ class TaskAgentManager:
                 return str(session_dir), str(workdir), _begun_in(place, session_dir)
 
             session_path, workdir, begun_in = await asyncio.to_thread(prepare)
+            # Where its session works; the commission itself may be worked on
+            # in a git worktree of that directory, made now or found again
+            # (``tree_work.py``). The session keeps the directory it has on
+            # record: the next commission's worktree is made from there.
+            home = workdir
+            tree = await self._tree_to_work_in(commission, kept, home, bool(template.changes_files))
+            if tree is not None:
+                workdir = tree.workdir
             # Whether this commission was opened in its session before: the
             # message that says what it is was sent, and taken. And whether
             # it is the one its session is at: a commission that was stuck
@@ -3555,6 +3594,7 @@ class TaskAgentManager:
                 # as it was. What it was to be told goes with the stop.
                 self._notes.pop(commission.id, None)
                 self._discard(commission.id)
+                await self._tree_not_started(commission.id)
                 return False
             moved = await self._ledger.transition(
                 commission.id,
@@ -3568,6 +3608,7 @@ class TaskAgentManager:
             if not moved.applied:
                 # Stopped while it was being prepared.
                 self._discard(commission.id)
+                await self._tree_not_started(commission.id)
                 return False
             # Where its session works was read above, and a commission that
             # was stuck or failed is not under way until the line before
@@ -3578,12 +3619,15 @@ class TaskAgentManager:
             # by now starts there, and that is what is put on record, not
             # the directory this start began with.
             again = await self._ledger.get_session(session.session_id)
-            if again is not None and again.workdir and again.workdir != kept.workdir:
+            # (Not one that is worked on in a git worktree: that is on record from before the
+            # look, and keeps the project where the worktree was made from, ``Ledger.move_project``.)
+            if tree is None and again is not None and again.workdir and again.workdir != kept.workdir:
                 kept = again
                 place = dataclasses.replace(
                     kept, workdir=kept.workdir, project=kept.project or commission.project
                 )
                 session_path, workdir, begun_in = await asyncio.to_thread(prepare)
+                home = workdir
                 commission = await self._ledger.update(commission.id, workdir=workdir) or commission
             # (A session of one commission may have been made a project's member since it
             # was read, by a commission that came for the same matter: ``Ledger.adopt``. This
@@ -3599,18 +3643,23 @@ class TaskAgentManager:
                 template=template,
             )
             session.changes_files = not _CHANGING_TOOLS <= set(spec.disabled_tools)
-            if session.changes_files and kept.kind == "child" and kept.parent_id:
+            if session.changes_files and kept.kind == "child" and kept.parent_id and tree is None:
                 # One a leader started was looked at when it asked for it
                 # (``_leader_starts_readers``); its preset was read anew for
                 # these tools, and a template may have changed in between.
                 # It is not opened with tools its leader is without: nothing
                 # would make it wait for the member that changes files in
                 # the project (``_note_writer`` counts it as no member's).
+                # (One of the leader's team has a git worktree to change
+                # files in, ``start_team``: that one is opened.)
                 starter = await self._ledger.get_session(kept.parent_id)
                 if starter is not None and starter.kind == "project":
                     from config.prompts.prompts_nekopower_brain import LEADER_AGENT_CHANGES_FILES
 
                     raise RuntimeError(LEADER_AGENT_CHANGES_FILES)
+            if session.changes_files and kept.kind == "line" and kept.parent_id and commission.parent_id is None:
+                # A member a leader made as one that only reads can change files by now.
+                await self._ask_about_member(commission, kept)
             # Noted by the tools it is opened with: its preset was read anew for them, and may
             # say otherwise than when its session was looked at before (a template changed in
             # between). Others of its project wait for it from here on, or wait for it no more.
@@ -3621,7 +3670,8 @@ class TaskAgentManager:
             await self._ledger.update_session(
                 session.session_id,
                 runtime=runtime_name,
-                workdir=workdir,
+                # (Where the session works, not the worktree this commission has.)
+                workdir=home,
                 session_dir=session_path,
             )
             # Its project where it has none on record yet, and not over one it was made a
@@ -3927,8 +3977,8 @@ class TaskAgentManager:
             template = await self._template_of(kept)
         withheld.update(template.withheld())
         if kept.kind != "project":
-            # Only the leader of a project hands a commission over.
-            withheld.add("hand_over")
+            # Only the leader of a project hands a commission over, or starts a team for one.
+            withheld.update(("hand_over", "start_team"))
         # A copy that answers a question makes no more requests than this,
         # and no session more than its preset allows.
         most = [SESSION_ASK_MAX_REQUESTS] if commission.source == "ask" else []
@@ -4425,6 +4475,8 @@ class TaskAgentManager:
         live = self._sessions.get(commission.id)
         if live is not None:
             live.stands = commission
+        # What follows for the git worktree it was worked on in, and for a leader's team.
+        self._tree_commission_changed(commission, previous)
         if commission.status in ENDED_STATUSES:
             self._side_said.pop(commission.id, None)
         if (
@@ -4877,6 +4929,12 @@ class TaskAgentManager:
                 found = "".join(session.findings).strip()
                 await self._hand_back_or_later(session, said=f"{found}\n{text}".strip() if found else text)
             return
+        if target == "done" and await self._lands_first(
+            session, text=text, reason=f"the task agent reported {status}", delivery=event.get("delivery")
+        ):
+            # Worked on in a git worktree: what it changed is landed in its
+            # project's directory first, and the commission is done then.
+            return
         await self._end(
             commission_id,
             target,
@@ -5167,6 +5225,11 @@ class TaskAgentManager:
                     commission_id, "blocked", reason=_USAGE_REASON, text=text, result_summary=self._summary(text)
                 )
             elif commission.status == "working":
+                if self._run_over_in_tree(session, event):
+                    # It said it is done, in a git worktree, and what it
+                    # changed is being landed: that decides, and its session
+                    # stays for what a clash may send it back to.
+                    return
                 # A blocked child has reported already and its session is
                 # gone; it produces nothing more to wait for.
                 if await self._looked(lambda: self._ledger.select(parent_id=commission_id, statuses=_STILL_WORKING)):
@@ -5197,6 +5260,12 @@ class TaskAgentManager:
                 def went_on() -> bool:
                     return isinstance(inputs, int) and inputs < session.sent
 
+                if not went_on() and await self._lands_first(
+                    session, text=text, reason="the run completed", run_over=True
+                ):
+                    # Worked on in a git worktree: done once what it changed is landed.
+                    session.idle = True
+                    return
                 # (Writing it asks the ledger once more, and again where
                 # that fails: looked at there too, for what is said to the
                 # session in that while.)
@@ -5249,11 +5318,17 @@ class TaskAgentManager:
                 # twice in the transcript does less harm than not at all.)
                 error = str(event.get("error") or "")
                 await self._fail(commission_id, error or "the run failed", said="run", detail=error, free=session.free)
-        # It is over; what it started must not go on working for nobody.
-        # (How it ended is written by now. Should what it started not be
-        # readable, even asked again, its session is let go all the same:
-        # left open, it would keep its place for a commission that is over,
-        # and the senders of its notes would hear nothing.)
+        await self._end_what_it_started(commission_id)
+        await self._close_session(session)
+
+    async def _end_what_it_started(self, commission_id: str) -> None:
+        """End the task agents a commission that is over had started: they must not go on working for nobody.
+
+        (How it ended is written by now. Should what it started not be
+        readable, even asked again, its session is let go all the same:
+        left open, it would keep its place for a commission that is over,
+        and the senders of its notes would hear nothing.)
+        """
         try:
             started = await self._looked(lambda: self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES))
         except asyncio.CancelledError:
@@ -5275,7 +5350,6 @@ class TaskAgentManager:
                     raise
                 except Exception:  # noqa: BLE001 - the other step, and the others, are still done
                     logger.warning("%s a task agent whose parent is over failed", what, exc_info=True)
-        await self._close_session(session)
 
     @staticmethod
     async def _looked(look: Callable[[], Awaitable[Any]], *, what: str = "at the end of a run") -> Any:
@@ -6222,6 +6296,10 @@ class TaskAgentManager:
         from utils.tokenize import truncate_to_tokens
 
         parent_id = str(commission.parent_id)
+        if self._heard_of_inspection(commission, status, text):
+            # An inspector the host started before a landing: the host acts
+            # on what it found (``tree_work.py``), and nobody is told as such.
+            return
         # What another task agent wrote, like a note from another session:
         # the host says whose it is, and frames it so that nothing in it
         # reads as words of the host or of the user.
@@ -7234,6 +7312,12 @@ class TaskAgentManager:
             # What was kept for task agents is read like the files a task
             # agent works on: nobody is asked.
             category = "workdir_files"
+        if isinstance(path, str) and path and (writes or category == "outside_write"):
+            # A task agent in a git worktree writes there and not in its
+            # project's directory, and nobody writes in the worktree of another.
+            ruled = await self._rule_on_tree_write(session_id, path)
+            if ruled is not None:
+                return ruled
         if (
             isinstance(path, str)
             and path
@@ -7590,7 +7674,7 @@ class TaskAgentManager:
         duty = " ".join(str(payload.get("description") or "").split()) or commission.title
         members = await self._ledger.members(leader.lanlan_name, leader.project)
         named = payload.get("to")
-        made = False
+        made, changes = False, False
         if isinstance(named, str) and named.strip():
             wanted = named.strip()
             # By its id, else by its name. Members made here have names of their own
@@ -7610,6 +7694,8 @@ class TaskAgentManager:
             if target is None:
                 raise RuntimeError(texts.HAND_OVER_MEMBER_OVER.format(name=wanted))
         else:
+            from config.nekopower_settings import PROJECT_MEMBERS_MAX
+
             preset = await self._preset_wanted(commission, payload.get("preset")) or "worker"
             try:
                 template = (await asyncio.to_thread(self.templates.resolve, preset, leader.project)).under(
@@ -7617,13 +7703,24 @@ class TaskAgentManager:
                 )
             except TemplateError as exc:
                 raise RuntimeError(f"the preset {preset!r} cannot be used: {exc}") from exc
+            taking = [member for member in members if await self._ledger.session_alive(member)]
+            if len(taking) >= PROJECT_MEMBERS_MAX:
+                # As many as a leader is told of: one more would be started beside members it cannot see.
+                raise RuntimeError(
+                    texts.HAND_OVER_TOO_MANY_MEMBERS.format(
+                        most=PROJECT_MEMBERS_MAX, names=", ".join(member.name for member in taking)
+                    )
+                )
+            # Beside a member that works in the project's directory, one that changes files
+            # has a git worktree made for each commission, where one can be made.
+            seat = await self.seat_of_new_member(leader.project) if template.changes_files else ""
             if template.changes_files:
                 # Another task agent that can change files (through the shell as well): the user's to allow.
-                decision = await self._permissions.check(
-                    commission_id,
-                    OPEN_SESSION,
-                    detail={"tool": "hand_over", "title": f"{duty} <- {commission.title}", "preset": preset},
-                )
+                detail = {"tool": "hand_over", "title": f"{duty} <- {commission.title}", "preset": preset}
+                if seat == "tree" and await self.tree_possible(leader.project, leader.workdir):
+                    # Said in what is asked: it changes files in a copy of its own, merged back when it is done.
+                    detail["tree"] = True
+                decision = await self._permissions.check(commission_id, OPEN_SESSION, detail=detail)
                 if not decision.allow:
                     raise RuntimeError(texts.HAND_OVER_NOT_ALLOWED.format(reason=decision.reason or "declined"))
                 # The user may have taken a while: looked at once more.
@@ -7644,8 +7741,10 @@ class TaskAgentManager:
                 parent_id=leader.id,
                 preset=preset,
                 duty=duty,
+                seat=seat,
             )
             made = True
+            changes = bool(template.changes_files)
             # The model it is sent to, by its preset: the leader's unless the user set another.
             await self.settle_model(target)
         if self._sessions.get(commission_id) is not live or live.closing or live.handing_over is not None:
@@ -7653,9 +7752,40 @@ class TaskAgentManager:
             # and nothing awaited between this look and the mark. (A member made for it stays, idle.)
             raise RuntimeError("the commission is not at work any more; nothing is handed over")
         # (That it was handed over is put on record once the other task agent has it: ``_handed_over``.)
-        live.handing_over = (target.id, target.name, brief, target.preset, made)
+        # With whether a member made for it was made as one that changes files, which
+        # the user was asked about then: None for a member that was there.
+        live.handing_over = (target.id, target.name, brief, target.preset, made, changes if made else None)
         self._said_while_handed[commission_id] = []
         return {"message": texts.HAND_OVER_DONE.format(name=target.name)}
+
+    async def _ask_about_member(self, commission: Commission, member: Session) -> None:
+        """Ask the user about a member that starts with tools that change files and was made as one that only reads; raises when refused.
+
+        A leader's new member is asked about when it is made, if it can
+        change files then (``_hand_over``). One made as a reader is not;
+        should its template say otherwise by the time it starts (the
+        user changed it since), it is asked about now, for the
+        commission it starts with, and noted as allowed so that it is
+        asked about once. Refused, it does not start. A member made
+        before this was kept on record is not asked about.
+        """
+        from config.prompts import prompts_nekopower_brain as texts
+
+        made = await self._ledger.last_event_in(member.id, "member_made")
+        if made is None or made.get("changes_files") is not False:
+            return
+        decision = await self._permissions.check(
+            commission.id,
+            OPEN_SESSION,
+            detail={
+                "tool": "hand_over",
+                "title": f"{member.duty or member.name} <- {commission.title}",
+                "preset": member.preset,
+            },
+        )
+        if not decision.allow:
+            raise RuntimeError(texts.HAND_OVER_NOT_ALLOWED.format(reason=decision.reason or "declined"))
+        await self._ledger.append_event(commission.id, "member_made", {"session": member.id, "changes_files": True})
 
     async def _close_leader_later(self, session: _Session) -> None:
         """Ask again to close a leader that hands its commission over, as for a copy that hands one back.
@@ -7703,7 +7833,7 @@ class TaskAgentManager:
 
         commission_id, leader_id = session.commission_id, session.session_id
         assert session.handing_over is not None
-        to, name, brief, preset, made = session.handing_over
+        to, name, brief, preset, made, changes = session.handing_over
         said_meanwhile = self._said_while_handed.setdefault(commission_id, [])
         candidates = self._candidates.get(commission_id)
         excerpt = self._excerpts.get(commission_id)
@@ -7740,6 +7870,12 @@ class TaskAgentManager:
             )
             if stands is not None and stands.status == "working":
                 await self._ledger.update(commission_id, session_id=to, handed_by=leader_id)
+                if made:
+                    # How the member was made, on record before it starts: for where it starts
+                    # with other tools than it had then (``_ask_about_member``).
+                    await self._ledger.append_event(
+                        commission_id, "member_made", {"session": to, "changes_files": bool(changes)}
+                    )
                 self._session_of[commission_id] = to
                 await self._note_writer(to)
                 nonce = secrets.token_hex(8)
@@ -7809,7 +7945,44 @@ class TaskAgentManager:
         preset = await self._preset_wanted(parent, payload.get("preset"))
         place = await self._ledger.get_session(parent.session_id) if parent.session_id else None
         if place is not None and place.kind == "project":
+            from config.nekopower_settings import TEAM_MAX_WORKING
+            from config.prompts.prompts_nekopower_brain import START_TEAM_TOO_MANY
+
             await self._leader_starts_readers(place, preset)
+            # As many at work for one commission of a leader as a team has, however they were started.
+            working = len(await self._ledger.select(parent_id=parent.id, statuses=_STILL_WORKING))
+            if working >= TEAM_MAX_WORKING:
+                raise RuntimeError(START_TEAM_TOO_MANY.format(most=TEAM_MAX_WORKING, working=working))
+        name, _child = await self._start_child(
+            parent,
+            name=payload.get("name"),
+            description=str(payload.get("description") or ""),
+            prompt=str(payload.get("prompt") or ""),
+            preset=preset,
+            workdir=workdir,
+        )
+        return {"name": name}
+
+    async def _start_child(
+        self,
+        parent: Commission,
+        *,
+        name: Any,
+        description: str,
+        prompt: str,
+        preset: str | None,
+        workdir: str | None,
+        chosen: dict[str, Any] | None = None,
+    ) -> tuple[str, Commission]:
+        """File and start a task agent for a commission (``subagent``, ``start_team``); returns its name and its commission.
+
+        ``chosen`` is what goes on record with it beside its preset: for
+        one of a leader's team, that it is one, where it works
+        (``seat``) and whether what it changes is checked before it
+        lands. Raises when the parent was stopped meanwhile, or no place
+        is free for it.
+        """
+        session_id = parent.id
         async with self._naming_members:
             # Read and filed with no other member of the team named between
             # (a question it asks is named under the same hold): one started
@@ -7817,16 +7990,21 @@ class TaskAgentManager:
             # take the same.
             _lead, members = await self._team(session_id)
             taken = {member.name for member in members}
-            name = payload.get("name")
             if not isinstance(name, str) or not name or name in taken or name == LEAD_NAME:
                 number = len(members) + 1
                 while f"agent-{number}" in taken:
                     number += 1
                 name = f"agent-{number}"
+            # Which preset it is to be opened by, on record with it from
+            # the start: read when it is given its session, now or at a
+            # later try (``_preset_chosen``).
+            said: dict[str, Any] = dict(chosen or {})
+            if preset is not None:
+                said["preset"] = preset
             child, _created = await self._ledger.create(
                 lanlan_name=parent.lanlan_name,
-                title=str(payload.get("description") or name),
-                dispatch_text=str(payload.get("prompt") or ""),
+                title=str(description or name),
+                dispatch_text=prompt,
                 user_text=parent.user_text,
                 source="task_agent",
                 route="task_agent",
@@ -7836,10 +8014,7 @@ class TaskAgentManager:
                 workdir=workdir,
                 conversation_id=parent.conversation_id,
                 lang=parent.lang,
-                # Which preset it is to be opened by, on record with it from
-                # the start: read when it is given its session, now or at a
-                # later try (``_preset_chosen``).
-                events=[("preset", {"preset": preset})] if preset is not None else [],
+                events=[("preset", said)] if said else [],
             )
         # A stop of the parent sets its status before it looks for children,
         # so a child filed after that look is caught here, and one filed
@@ -7857,7 +8032,7 @@ class TaskAgentManager:
         # parent as a message.
         if not await self.submit(child, candidate_plugin_ids=self._candidates.get(parent.id, ()), wait=False):
             raise RuntimeError(f"{_NO_PLACE_REASON}; do this part yourself")
-        return {"name": name}
+        return name, child
 
     async def _leader_starts_readers(self, leader: Session, preset: str | None) -> None:
         """Raise unless the task agent a leader starts is of a preset that changes no file.
@@ -9222,6 +9397,11 @@ class TaskAgentManager:
 
         own = self._session_of.get(commission_id)
         places = [item for item in await self._ledger.session_places() if item[0] != own]
+        if not writes:
+            # What another task agent changed in its git worktree is read as
+            # what it left in any working directory. (Writes there are ruled
+            # on before this: ``_rule_on_tree_write``.)
+            places.extend(await self._tree_places(own))
         if not places:
             return None
         kept_files = (TRANSCRIPT_NAME, SYSTEM_FILE, DSH_SESSION_NAME)
@@ -9406,6 +9586,10 @@ class TaskAgentManager:
         from nekopower.host.reports import tokens_text
 
         del payload
+        # Nothing of the run is under way here: where what another task agent
+        # changed is being merged into the directory this one writes in, it
+        # waits until that is through (``tree_work.py``).
+        await self._pause_for_landing(session_id)
         limit = await self._usage_limit()
         commission_id = self._held_by.get(session_id)
         session = self._sessions.get(commission_id or "")
@@ -11117,6 +11301,9 @@ class TaskAgentManager:
         self._closed = True
         for session_id in list(self._idle_timers):
             self._drop_idle_timer(session_id)
+        # What is being landed, checked or watched for git worktrees: stopped (a landing cut off
+        # puts back what it began to write). The worktrees stay, for the next process to go through.
+        await self._stop_tree_work()
         for session_id, waiting in list(self._forks.items()):
             if not waiting.done():
                 # The runtime may write the copy all the same. Removed when

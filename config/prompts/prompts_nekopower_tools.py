@@ -897,6 +897,59 @@ NEKOPOWER_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             'required': ['description', 'brief'],
         },
     },
+    'start_team': {
+        'name': 'start_team',
+        'description': (
+            'Split the commission you are at into parts and start one task agent for each, all at '
+            'once. You keep the commission: wait for them with wait_agent, read what each hands '
+            'back, and report to the user once. Each one that changes files works in a directory of '
+            'its own, and the host merges its changes into the project when it is done; the user is '
+            'asked once before such a team starts. Only for work that is wide and splits cleanly: '
+            'parts that share no files and need nothing from each other. For one piece of work use '
+            'hand_over.'
+        ),
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'parts': {
+                    'type': 'array',
+                    'description': 'The parts, every one of them: whoever is asked to allow the team is shown this list.',
+                    'items': {
+                        'type': 'object',
+                        'properties': {
+                            'name': {'type': 'string', 'description': 'Short name to address this task agent by.'},
+                            'preset': {'type': 'string', 'description': 'Its preset; worker when left out.'},
+                            'description': {
+                                'type': 'string',
+                                'description': (
+                                    'One line on what this part covers, in the language the current '
+                                    'commission names for the user: the user reads it.'
+                                ),
+                            },
+                            'brief': {
+                                'type': 'string',
+                                'description': (
+                                    'All this task agent is told: what is wanted and why, which files '
+                                    'or directories are its own, what belongs to the other parts and '
+                                    'must be left alone, what you already found, how to tell that it '
+                                    'is done.'
+                                ),
+                            },
+                        },
+                        'required': ['description', 'brief'],
+                    },
+                },
+                'inspect': {
+                    'type': 'boolean',
+                    'description': (
+                        'true to have an inspector check what each task agent changed before it is '
+                        'merged; what it finds wrong goes back to that task agent.'
+                    ),
+                },
+            },
+            'required': ['parts'],
+        },
+    },
     'ask_session': {
         'name': 'ask_session',
         'description': (

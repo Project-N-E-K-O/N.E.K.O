@@ -381,7 +381,8 @@ async def test_a_copy_is_shown_under_its_session_and_a_copy_of_a_copy_is_not_on_
 
 
 async def test_the_five_states_a_session_is_shown_in(host):
-    assert STATES == ("working", "waiting_user", "idle", "asleep", "compacting")
+    # (Four more are of a session that changes files in a git worktree: ``test_host_tree_work.py``.)
+    assert STATES[:5] == ("working", "waiting_user", "idle", "asleep", "compacting")
     made: dict[str, Any] = {}
     for name in ("working", "waiting", "idle", "asleep", "compacting", "resting", "queued"):
         commission, session = await _single(host, f"errand {name}")

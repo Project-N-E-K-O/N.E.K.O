@@ -68,6 +68,7 @@ from nekopower.host.gateway import CapabilityGateway
 from nekopower.host.leases import ActivityListener, BuiltinLeases
 from nekopower.host.ledger import ENDED_STATUSES, PRESET_OF_KIND, Commission, Ledger, Listener
 from nekopower.host.model_capabilities import ModelCapabilityStore
+from nekopower.host.orchestrator import WORKING_PRESET
 from nekopower.host.outbox import OutboxSender, SendReport
 from nekopower.host.paths import DEFAULT_PROJECT, HostPaths
 from nekopower.host.runtimes import RUNTIME_DSH
@@ -324,6 +325,8 @@ class NekoPowerHost:
         self._model_window_lock = asyncio.Lock()
         # Set by the first call that does work; see ``_first_use``.
         self._used = False
+        # What goes through the git worktrees an earlier run left, once it was begun (``_first_use``).
+        self._trees_looked_at: asyncio.Future[None] | None = None
         self._shutdown_task: asyncio.Future[None] | None = None
 
     def _restart_report(self, commission: Commission) -> tuple[str, dict[str, Any]] | None:
@@ -403,6 +406,28 @@ class NekoPowerHost:
         self._used = True
         self.outbox.kick()
         self.wakes.kick()
+        # Likewise the git worktrees an earlier run left: gone through in the
+        # background (it runs git once for every repository a project is in),
+        # as a task the task agents stop with the rest when the host shuts down.
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return  # called with no loop running: looked at when the host next starts
+        self._trees_looked_at = self.task_agents._tree_task(self._look_at_trees_left())
+
+    async def _look_at_trees_left(self) -> None:
+        try:
+            found = await self.task_agents.reconcile_trees()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - they stay as they are, and are looked at when the host next starts
+            logger.warning("going through the git worktrees an earlier run left failed", exc_info=True)
+            return
+        if found["removed"] or found["kept"]:
+            logger.info(
+                "git worktrees an earlier run left: %d removed, %d kept for the user",
+                len(found["removed"]), len(found["kept"]),
+            )
 
     # -- what the main dialogue uses --------------------------------------
 
@@ -1341,7 +1366,9 @@ class NekoPowerHost:
         ``"at_work"`` while a session of the project is open in a runtime
         with a run under way, waiting for the user or being summed up, or
         has a commission that is queued, at work or waiting: what is under
-        way goes on where it began. Whoever adds another way for a project
+        way goes on where it began. ``"tree_not_landed"`` while a git
+        worktree of it holds work that waits for the user to decide on:
+        it is landed where it was made from. Whoever adds another way for a project
         to be in the middle of something (a session writing in a copy of
         the directory, a copy not brought back yet) adds it here.
         """
@@ -1354,6 +1381,10 @@ class NekoPowerHost:
         under_way = await self.ledger.select(statuses=("queued", "working", "waiting_user"))
         if any(commission.project == project or commission.session_id in sessions for commission in under_way):
             return "at_work"
+        if await self.ledger.trees_pending(project):
+            # A git worktree of it holds work that was not landed in its directory:
+            # landed, discarded or left to the user first (``worktrees``).
+            return "tree_not_landed"
         return None
 
     async def working_directory(self, workdir: Any) -> Path:
@@ -1393,17 +1424,20 @@ class NekoPowerHost:
         lanlan_name: str,
         name: str,
         *,
-        preset: str = "boss",
+        preset: str = WORKING_PRESET,
         title: str = "",
         duty: str = "",
         description: str = "",
         workdir: str | None = None,
         rules: str = "",
     ) -> dict[str, Any]:
-        """Make a task agent for something lasting, as the user asks: a new project and its own session.
+        """Make a task agent for something lasting, as the user asks: a new project and its first session.
 
         ``name`` is the project's and the session's; ``preset`` what kind
-        of task agent it is (one of ``templates()`` that is valid);
+        of task agent it is (one of ``templates()`` that is valid): a
+        member that does the project's work itself unless one is named
+        (``orchestrator.WORKING_PRESET``), and the project's leader, which
+        only hands work out, with the leader's preset;
         ``title`` and ``duty`` go on its card and ``description`` on the
         project, as the user's own words where the user wrote some, which
         nothing writes over (a line left empty is nobody's, and the first
@@ -1467,6 +1501,102 @@ class NekoPowerHost:
         # The model it is sent to, by its preset, as it is made.
         await self.task_agents.settle_model(session)
         return {"project": project.to_json(), "session_id": session.id}
+
+    async def open_member(
+        self, lanlan_name: str, project: str, *, preset: str = WORKING_PRESET, title: str = "", duty: str = ""
+    ) -> dict[str, Any]:
+        """Add a task agent to a project that is there, as the user asks: a member that does work of the project.
+
+        ``preset`` is what kind it is (one of ``templates()`` that is
+        valid, and not the leader's: a project gets its leader with
+        ``derive_leader``); ``title`` and ``duty`` go on its card, as the
+        user's words where the user wrote some. It works where the
+        project does. One that can change files, added beside a member
+        that works in the project's directory, has a git worktree made
+        for each of its commissions where one can be made, so that the
+        two do not wait for each other (``seat``): told by the host
+        here, and not for whoever calls this to work out. Nothing is
+        started: it takes commissions that name it, or that its leader
+        hands it.
+
+        Returns ``{"session_id", "seat"}``. Raises ``ValueError`` with a
+        code (``no_character``, ``bad_preset``) and ``LookupError`` for
+        a project that is not there (or is archived).
+        """
+        if not isinstance(lanlan_name, str) or not lanlan_name.strip():
+            raise ValueError("no_character")
+        if preset == PRESET_OF_KIND["project"] or not any(
+            item["valid"] and item["name"] == preset for item in await self.templates(project)
+        ):
+            raise ValueError("bad_preset")
+        from nekopower.host.templates import model_name
+
+        async with self._project_lock:
+            known = {item.name: item for item in await self.space.list_projects(include_archived=False)}
+            if project not in known or project == DEFAULT_PROJECT:
+                raise LookupError(project)
+            resolved = await asyncio.to_thread(self.task_agents.templates.resolve, preset, project)
+            seat = await self.task_agents.seat_of_new_member(project) if resolved.changes_files else ""
+            session = await self.ledger.create_session(
+                name=await self.ledger.member_name(
+                    lanlan_name.strip(), project, f"{project}/{model_name(preset)}"
+                ),
+                lanlan_name=lanlan_name.strip(),
+                project=project,
+                kind="line",
+                workdir=known[project].workdir,
+                preset=preset,
+                seat=seat,
+                title=title, title_by="user" if title.strip() else None,
+                duty=duty, duty_by="user" if duty.strip() else None,
+            )
+        await self.task_agents.settle_model(session)
+        return {"session_id": session.id, "seat": session.seat}
+
+    async def worktrees(self, project: str | None = None, lanlan_name: str | None = None) -> list[dict[str, Any]]:
+        """Return the git worktrees task agents work in, or left for the user to decide on, the oldest first.
+
+        Of one project, or one character, when named. Each as
+        ``ledger.Tree.to_json`` has it (``state`` is one of
+        ``ledger.TREE_STATES``, ``reason`` one of
+        ``tree_work.TREE_REASONS`` or empty), with ``title`` (its
+        commission's) and ``session_name``. Those whose ``state`` is
+        ``held``, ``unlanded`` or ``kept`` are the user's to decide on
+        (``land_worktree``, ``discard_worktree``, ``keep_worktree``).
+        """
+        self._first_use()
+        return await self.task_agents.trees_view(project=project, lanlan_name=lanlan_name)
+
+    async def land_worktree(self, tree_id: str) -> dict[str, Any]:
+        """Merge what a git worktree holds into its project's directory, as the user asks; see ``TreeWork.land_tree``."""
+        self._first_use()
+        return await self.task_agents.land_tree(tree_id)
+
+    async def discard_worktree(self, tree_id: str) -> dict[str, Any]:
+        """Remove a git worktree with what it holds, as the user asks; see ``TreeWork.discard_tree``."""
+        self._first_use()
+        return await self.task_agents.discard_tree(tree_id)
+
+    async def keep_worktree(self, tree_id: str) -> dict[str, Any]:
+        """Leave a git worktree to the user, who sees to it personally; see ``TreeWork.keep_tree``."""
+        self._first_use()
+        return await self.task_agents.keep_tree(tree_id)
+
+    async def landing_settings(self) -> dict[str, Any]:
+        """Return what the user set about landing: ``{"mode": "auto" | "ask", "inspect": bool}`` (``landing_settings.py``)."""
+        return await self.task_agents.landing.get()
+
+    async def set_landing_settings(self, *, mode: Any = None, inspect: Any = None) -> dict[str, Any]:
+        """Set what is given of the landing settings and return them as they stand.
+
+        ``mode``: ``auto`` (what a task agent changed in its git
+        worktree is merged into the project's directory when its
+        commission is done) or ``ask`` (it waits there for the user to
+        say so); ``inspect``: whether an inspector looks at what was
+        changed before every landing. Raises ``ValueError("bad_mode")``
+        or ``ValueError("bad_inspect")``.
+        """
+        return await self.task_agents.landing.put(mode=mode, inspect=inspect)
 
     async def derive_leader(self, project: str, lanlan_name: str) -> dict[str, Any]:
         """Give a project a leader for one character, as the user asks; returns ``{"session_id", "made"}``.

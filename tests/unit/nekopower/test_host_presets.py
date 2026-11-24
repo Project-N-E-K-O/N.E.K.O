@@ -34,8 +34,8 @@ from tests.unit.nekopower.fakes import ScriptedLLM, call, finish, say
 from tests.unit.nekopower.host_fakes import FakeDecisionLLM, fake_model, make_host, scripted_runtime, wait_status
 
 # What every session but the leader of a project is opened without: the tool that hands a commission over.
-NOT_A_LEADER = ["hand_over"]
-CHILD_WITHHELD = ["ask_session", "hand_over", "message_session", "schedule_wake", "subagent"]
+NOT_A_LEADER = ["hand_over", "start_team"]
+CHILD_WITHHELD = ["ask_session", "hand_over", "message_session", "schedule_wake", "start_team", "subagent"]
 # The tool that runs commands, as the runtime offers it here.
 SHELL = "pwsh" if sys.platform == "win32" else "bash"
 
@@ -601,7 +601,7 @@ async def test_a_template_of_the_users_narrows_a_built_in_preset(hosts, tmp_path
     done = await wait_status(host, (await _dispatch(host, "sort the photos")).commission_id, "done")
 
     assert (await host.ledger.get_session(done.session_id)).preset == "general"
-    assert sorted(specs[0].disabled_tools) == ["bash", "hand_over", "note_lesson", "pwsh"]
+    assert sorted(specs[0].disabled_tools) == ["bash", "hand_over", "note_lesson", "pwsh", "start_team"]
     assert _system(llm).count("Be brief.") == 1
 
 
@@ -972,7 +972,7 @@ async def test_the_sessions_of_a_ledger_made_before_presets_are_given_theirs_by_
         await second.close()
     conn = sqlite3.connect(path)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 9
     finally:
         conn.close()
     # Opened again nothing is left to do, and a preset that was named since stays.
