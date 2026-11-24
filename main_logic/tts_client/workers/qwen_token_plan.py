@@ -120,10 +120,19 @@ def qwen_token_plan_tts_worker(
             try:
                 async with client.stream("POST", api_url, headers=headers, json=payload) as resp:
                     if resp.status_code != 200:
-                        error_text = (await resp.aread()).decode("utf-8", errors="ignore")
+                        # Only the documented error fields; never echo the raw body.
+                        try:
+                            error = json.loads((await resp.aread()).decode("utf-8", errors="ignore"))
+                        except ValueError:
+                            error = {}
+                        if not isinstance(error, dict):
+                            error = {}
+                        detail = " ".join(
+                            str(error.get(field) or "")[:200] for field in ("code", "message")
+                        ).strip()
                         _enqueue_error(
                             response_queue,
-                            f"阿里百炼 Token Plan TTS API错误 ({resp.status_code}): {error_text[:300]}",
+                            f"阿里百炼 Token Plan TTS API错误 ({resp.status_code}) {detail}".rstrip(),
                         )
                         return
 
@@ -133,22 +142,28 @@ def qwen_token_plan_tts_worker(
                         handle_event(json.loads((await resp.aread()).decode("utf-8")))
                     else:
                         buffer = ""
+                        data_lines: list[str] = []
+
+                        def dispatch_frame() -> None:
+                            # One SSE event: its ``data:`` lines joined by newlines.
+                            data = "\n".join(data_lines).strip()
+                            data_lines.clear()
+                            if data and data != "[DONE]":
+                                handle_event(json.loads(data))
+
                         async for raw_chunk in resp.aiter_text():
                             buffer += raw_chunk
                             while "\n" in buffer:
                                 line, buffer = buffer.split("\n", 1)
-                                line = line.strip()
-                                # SSE comments, ``id:`` / ``event:`` fields and blank separators.
-                                if not line.startswith("data:"):
-                                    continue
-                                line = line[5:].strip()
-                                if line and line != "[DONE]":
-                                    handle_event(json.loads(line))
-                        residual = buffer.strip()
-                        if residual.startswith("data:"):
-                            residual = residual[5:].strip()
-                            if residual and residual != "[DONE]":
-                                handle_event(json.loads(residual))
+                                line = line.rstrip("\r")
+                                if not line:
+                                    dispatch_frame()
+                                elif line.startswith("data:"):
+                                    data_lines.append(line[5:].lstrip(" "))
+                                # ``id:`` / ``event:`` fields and ``:`` comments carry no audio.
+                        if buffer.rstrip("\r").startswith("data:"):
+                            data_lines.append(buffer.rstrip("\r")[5:].lstrip(" "))
+                        dispatch_frame()
 
                 # The last SSE event repeats the whole sentence as a signed URL; only
                 # fetch it when no streamed audio arrived (a non-streaming reply).
@@ -181,16 +196,26 @@ def qwen_token_plan_tts_worker(
     _run_sentence_tts_worker(request_queue, response_queue, setup, label="Token Plan TTS")
 
 
+def _qwen_token_plan_has_foreign_custom_voice(ctx) -> bool:
+    # Same rule as MiMo: a character using another provider's custom voice (e.g. a
+    # Doubao or GLM clone, ranked after this provider) keeps that provider.
+    if not (ctx.has_custom_voice and ctx.voice_id):
+        return False
+    provider = str((ctx.voice_meta or {}).get("provider") or "").strip().lower()
+    return bool(provider and provider != _PROVIDER_KEY)
+
+
 def _qwen_token_plan_is_selected(ctx) -> bool:
     cc = ctx.core_config
     tts_provider = str(cc.get("TTS_PROVIDER") or cc.get("ttsProvider") or "").strip().lower()
-    if tts_provider == _PROVIDER_KEY:
-        return True
-    try:
-        raw = ctx.cm.load_json_config("core_config.json", {})
-    except Exception:
-        raw = {}
-    return str(raw.get("ttsModelProvider") or "").strip().lower() == _PROVIDER_KEY
+    if tts_provider != _PROVIDER_KEY:
+        try:
+            raw = ctx.cm.load_json_config("core_config.json", {})
+        except Exception:
+            raw = {}
+        if str(raw.get("ttsModelProvider") or "").strip().lower() != _PROVIDER_KEY:
+            return False
+    return not _qwen_token_plan_has_foreign_custom_voice(ctx)
 
 
 def _qwen_token_plan_resolve(ctx):
@@ -208,8 +233,9 @@ def _qwen_token_plan_resolve(ctx):
     base_url = str(raw.get("ttsModelUrl") or "").strip() or QWEN_TOKEN_PLAN_TTS_DEFAULT_BASE_URL
     if not is_qwen_token_plan_url(base_url):
         # Never send a Token Plan key to a host outside the whitelist or over plain HTTP.
-        logger.warning("Token Plan TTS 地址不是 https 的 Token Plan 域名，改用 dummy TTS worker")
-        return dummy_tts_worker, None, None
+        # A URL left over from another provider is ignored rather than silencing TTS.
+        logger.warning("Token Plan TTS 地址不是 https 的 Token Plan 域名，改用默认地址")
+        base_url = QWEN_TOKEN_PLAN_TTS_DEFAULT_BASE_URL
     worker = partial(
         qwen_token_plan_tts_worker,
         base_url=base_url,

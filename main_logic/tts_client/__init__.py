@@ -774,7 +774,8 @@ _tts_providers.register(_tts_providers.TTSProvider(
 
 # Alibaba Bailian Token Plan TTS (qwen-audio-3.0-tts-plus): selected only by the TTS dropdown
 # (ttsModelProvider=='qwen_token_plan'). Priority 58: after clones, and ahead of MiMo's assistApi=mimo
-# default (60) so the explicit dropdown choice wins, like deepseek (59). Same slot layout as
+# default (60) so the explicit dropdown choice wins, like deepseek (59); a character whose voice is
+# another provider's custom voice (doubao / glm clones) keeps that provider, like MiMo. Same slot layout as
 # doubao_tts (ttsModelUrl / ttsModelId / ttsVoiceId, key from the dedicated Key Book entry
 # assistApiKeyQwenTokenPlan or the TTS slot), but visible in the TTS dropdown because it has preset
 # voices rather than clones. Token Plan keys only go to the whitelisted HTTPS hosts
@@ -792,6 +793,8 @@ _tts_providers.register(_tts_providers.TTSProvider(
     default_url=QWEN_TOKEN_PLAN_TTS_DEFAULT_BASE_URL,
     default_model=QWEN_TOKEN_PLAN_TTS_DEFAULT_MODEL,
     default_voice=QWEN_TOKEN_PLAN_TTS_DEFAULT_VOICE,
+    # The settings page shows the Key Book key read-only in the TTS slot.
+    api_key_field='assistApiKeyQwenTokenPlan',
     editable_endpoint=True,
     probe_kind='http_tts',
     probe_sub_type='qwen_token_plan',

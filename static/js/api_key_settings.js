@@ -1861,7 +1861,14 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
         if (voiceInput && (!_isLoadingSavedConfig || !voiceInput.value || !voiceInput.value.trim())) {
             voiceInput.value = pInfo.tts_default_voice || _spMeta.default_voice || '';
         }
-        setKeyEditable(keyInput);
+        const bookField = _spMeta.api_key_field || 'ttsModelApiKey';
+        if (bookField !== 'ttsModelApiKey' && _apiKeyRegistry[provider]) {
+            // The key lives in this provider's own Key Book entry (registry api_key_field);
+            // the shared TTS key input only mirrors it, so a save never clears it.
+            setKeyReadonly(keyInput, getEffectiveAssistKey(provider, null, { useTokenPlan: false }), provider);
+        } else {
+            setKeyEditable(keyInput);
+        }
     } else if (modelType === 'tts' && provider === 'gptsovits') {
         // GPT-SoVITS：用下方专属字段（#gptsovits-config-fields 的 URL + voice grid），
         // 标准 url/model/key/voice 不参与，故这里不动标准输入（它们会被隐藏）。

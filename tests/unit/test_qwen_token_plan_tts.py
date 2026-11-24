@@ -212,6 +212,21 @@ def test_worker_posts_documented_request_and_streams_audio(monkeypatch):
 
 
 @pytest.mark.unit
+def test_worker_parses_crlf_frames_and_multi_line_data(monkeypatch):
+    pcm = b"\x05\x00" * 240
+    event = json.dumps(_audio_event(pcm, finish="stop"), indent=1)  # JSON spread over lines
+    body = ":keepalive\r\n" + "".join(f"data:{line}\r\n" for line in event.split("\n")) + "\r\n"
+
+    def handler(request):
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body.encode())
+
+    _, items = _run_worker(monkeypatch, handler)
+
+    assert _audio_bytes(items)
+    assert not [item for item in items if isinstance(item, tuple) and item[0] == "__error__"]
+
+
+@pytest.mark.unit
 def test_worker_replaces_foreign_voice_without_logging_it(monkeypatch, caplog):
     def handler(request):
         return httpx.Response(200, headers={"content-type": "text/event-stream"},
@@ -277,7 +292,19 @@ def test_worker_reports_http_error(monkeypatch):
     _, items = _run_worker(monkeypatch, handler)
 
     errors = [item for item in items if isinstance(item, tuple) and item[0] == "__error__"]
-    assert errors and "401" in str(errors[0])
+    assert errors and "401" in str(errors[0]) and "InvalidApiKey" in str(errors[0])
+
+
+@pytest.mark.unit
+def test_worker_http_error_does_not_echo_the_raw_body(monkeypatch):
+    def handler(request):
+        return httpx.Response(500, text="upstream echo: 你好喵。")
+
+    _, items = _run_worker(monkeypatch, handler)
+
+    errors = [item for item in items if isinstance(item, tuple) and item[0] == "__error__"]
+    assert errors and "500" in str(errors[0])
+    assert "你好喵" not in str(errors[0])
 
 
 @pytest.mark.unit
@@ -340,13 +367,25 @@ def test_get_tts_worker_routes_explicit_token_plan_choice_ahead_of_mimo_assist(m
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("raw, key", [
-    ({**_RAW, "ttsModelUrl": "http://token-plan.cn-beijing.maas.aliyuncs.com"}, "sk-sp-test"),
-    ({**_RAW, "ttsModelUrl": "https://evil.test/v1"}, "sk-sp-test"),
-    (_RAW, ""),
+@pytest.mark.parametrize("url", [
+    "http://token-plan.cn-beijing.maas.aliyuncs.com",
+    "https://evil.test/v1",          # left over from the custom slot
 ])
-def test_get_tts_worker_never_sends_the_key_off_whitelist_or_without_key(monkeypatch, raw, key):
-    monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM(raw, key=key))
+def test_get_tts_worker_replaces_off_whitelist_url_with_the_default_host(monkeypatch, url):
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM({**_RAW, "ttsModelUrl": url}))
+
+    worker, api_key, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen", has_custom_voice=False, voice_id="",
+    )
+
+    assert worker.func is tts_client.qwen_token_plan_tts_worker
+    assert worker.keywords["base_url"] == "https://token-plan.cn-beijing.maas.aliyuncs.com"
+    assert (api_key, provider_key) == ("sk-sp-test", "qwen_token_plan")
+
+
+@pytest.mark.unit
+def test_get_tts_worker_without_key_uses_dummy(monkeypatch):
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM(_RAW, key=""))
 
     worker, api_key, provider_key = tts_client.get_tts_worker(
         core_api_type="qwen", has_custom_voice=False, voice_id="",
@@ -354,6 +393,23 @@ def test_get_tts_worker_never_sends_the_key_off_whitelist_or_without_key(monkeyp
 
     assert worker is tts_client.dummy_tts_worker
     assert api_key is None and provider_key is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("voice_meta, selected", [
+    ({"provider": "doubao_tts"}, False),   # another provider's clone keeps its provider
+    ({"provider": "glm_tts"}, False),
+    (None, True),                          # e.g. Cherry: no stored voice, fall back inside the worker
+])
+def test_foreign_custom_voice_keeps_its_provider(monkeypatch, voice_meta, selected):
+    from utils.tts.provider_registry import DispatchContext
+
+    ctx = DispatchContext(
+        core_config={"TTS_PROVIDER": ""}, cm=_CM(_RAW), voice_id="S_clone",
+        has_custom_voice=True, voice_meta_loader=lambda: voice_meta,
+    )
+
+    assert worker_module._qwen_token_plan_is_selected(ctx) is selected
 
 
 @pytest.mark.unit
@@ -452,6 +508,8 @@ def test_registry_and_settings_metadata_are_wired():
     provider = provider_registry.get("qwen_token_plan")
     assert provider is not None
     assert provider.tts_config_visible and provider.editable_endpoint
+    # The settings page reads this to show the Key Book key read-only in the TTS slot.
+    assert provider.api_key_field == "assistApiKeyQwenTokenPlan"
     assert (provider.probe_kind, provider.probe_sub_type) == ("http_tts", "qwen_token_plan")
     # Explicit dropdown choice must beat MiMo's assistApi default (priority 60).
     assert provider.priority < provider_registry.get("mimo").priority

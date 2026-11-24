@@ -1494,6 +1494,60 @@ def test_explicit_hosted_tts_provider_is_saved_for_runtime_routing(mock_page: Pa
 
 
 @pytest.mark.frontend
+def test_qwen_token_plan_tts_key_comes_from_key_book(mock_page: Page, running_server: str):
+    """The Token Plan TTS slot mirrors its Key Book entry, so saving never clears the key."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#ttsModelProvider option[value='qwen_token_plan']", state="attached", timeout=10000)
+
+    result = mock_page.evaluate("""
+        async () => {
+            document.getElementById('enableCustomApi').checked = true;
+            toggleCustomApi();
+            const provider = document.getElementById('ttsModelProvider');
+            provider.value = 'custom';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            setMaskedInput(document.getElementById('ttsModelApiKey'), 'sk-openai-custom');
+
+            syncKeyToBook('qwen_token_plan', 'sk-sp-book-key');
+            provider.value = 'qwen_token_plan';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            const keyInput = document.getElementById('ttsModelApiKey');
+            const selected = {
+                key: getRealKey(keyInput),
+                readonly: keyInput.hasAttribute('readonly'),
+                url: document.getElementById('ttsModelUrl').value,
+                model: document.getElementById('ttsModelId').value,
+                voice: document.getElementById('ttsVoiceId').value,
+            };
+
+            window.__captured = null;
+            window.saveApiKey = async (p) => { window.__captured = JSON.parse(JSON.stringify(p)); };
+            const div = document.getElementById('current-api-key');
+            if (div) div.dataset.hasKey = 'false';
+            await save_button_down({ preventDefault() {} });
+            const payload = window.__captured;
+
+            provider.value = 'custom';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            return { selected, payload, keyAfterLeaving: getRealKey(document.getElementById('ttsModelApiKey')) };
+        }
+    """)
+
+    assert result["selected"]["key"] == "sk-sp-book-key"
+    assert result["selected"]["readonly"] is True
+    assert result["selected"]["model"] == "qwen-audio-3.0-tts-plus"
+    assert result["selected"]["voice"] == "longanlingxin"
+    payload = result["payload"]
+    assert payload["ttsModelProvider"] == "qwen_token_plan"
+    assert payload["assistApiKeyQwenTokenPlan"] == "sk-sp-book-key"
+    assert payload["ttsModelApiKey"] == "sk-sp-book-key"
+    # The Token Plan key must not stay in the slot once another provider is chosen.
+    assert result["keyAfterLeaving"] != "sk-sp-book-key"
+
+
+@pytest.mark.frontend
 @pytest.mark.parametrize("intermediate_provider", [None, "gptsovits"])
 def test_deepseek_tts_preserves_saved_custom_slot_in_ui(
     mock_page: Page, running_server: str, intermediate_provider,
