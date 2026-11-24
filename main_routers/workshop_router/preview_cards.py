@@ -629,21 +629,26 @@ def _write_claimed_preview_image(
         atomic_write_bytes(preview_image_path, image_bytes)
 
 
-def _resolve_preview_staging_root(workshop_base: str) -> str | None:
+def _resolve_preview_staging_root(
+    workshop_base: str,
+    *,
+    normcase_fn=None,
+) -> str | None:
     """Return canonical WorkshopExport/_preview_staging only when neither segment is a redirect."""
     if not workshop_base:
         return None
+    norm = normcase_fn or os.path.normcase
     resolved_base = os.path.realpath(workshop_base)
     export_dir = os.path.join(resolved_base, "WorkshopExport")
     if os.path.islink(export_dir):
         return None
     if os.path.exists(export_dir):
-        if os.path.normcase(os.path.realpath(export_dir)) != os.path.normcase(export_dir):
+        if norm(os.path.realpath(export_dir)) != norm(export_dir):
             return None
     staging_root = os.path.join(export_dir, "_preview_staging")
     if os.path.islink(staging_root):
         return None
-    if os.path.normcase(os.path.realpath(staging_root)) != os.path.normcase(staging_root):
+    if norm(os.path.realpath(staging_root)) != norm(staging_root):
         return None
     try:
         return _assert_workshop_path(staging_root, resolved_base)
@@ -651,11 +656,40 @@ def _resolve_preview_staging_root(workshop_base: str) -> str | None:
         return None
 
 
-def _is_path_inside_preview_staging(path: str, workshop_base: str) -> bool:
+def _paths_overlap_by_samefile(resolved_path: str, candidate_root: str) -> bool:
+    """Detect containment or equality via inode identity on case-insensitive filesystems."""
+    def _has_samefile_ancestor(descendant: str, ancestor: str) -> bool:
+        if not os.path.exists(ancestor):
+            return False
+        current = descendant
+        while True:
+            try:
+                if os.path.exists(current) and os.path.samefile(current, ancestor):
+                    return True
+            except OSError:
+                pass
+            parent = os.path.dirname(current)
+            if not parent or parent == current:
+                return False
+            current = parent
+
+    return (
+        _has_samefile_ancestor(resolved_path, candidate_root)
+        or _has_samefile_ancestor(candidate_root, resolved_path)
+    )
+
+
+def _is_path_inside_preview_staging(
+    path: str,
+    workshop_base: str,
+    *,
+    normcase_fn=None,
+) -> bool:
     """Return True when ``path`` resolves inside or encloses ``WorkshopExport/_preview_staging``."""
     if not path or not workshop_base:
         return False
-    staging_root = _resolve_preview_staging_root(workshop_base)
+    norm = normcase_fn or os.path.normcase
+    staging_root = _resolve_preview_staging_root(workshop_base, normcase_fn=norm)
     if staging_root:
         candidate_roots = [staging_root]
     else:
@@ -666,20 +700,22 @@ def _is_path_inside_preview_staging(path: str, workshop_base: str) -> bool:
         )
         candidate_roots = [literal_staging]
         resolved_staging = os.path.realpath(literal_staging)
-        if os.path.normcase(resolved_staging) != os.path.normcase(literal_staging):
+        if norm(resolved_staging) != norm(literal_staging):
             candidate_roots.append(resolved_staging)
     try:
         resolved_path = os.path.realpath(path)
     except ValueError:
         return False
-    norm_path = os.path.normcase(resolved_path)
+    norm_path = norm(resolved_path)
     for root in candidate_roots:
         try:
-            norm_root = os.path.normcase(root)
+            norm_root = norm(root)
             if os.path.commonpath([norm_path, norm_root]) in {norm_path, norm_root}:
                 return True
         except ValueError:
-            continue
+            pass
+        if _paths_overlap_by_samefile(resolved_path, root):
+            return True
     return False
 
 

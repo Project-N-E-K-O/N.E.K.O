@@ -2909,6 +2909,7 @@ async function main() {
   {
     // 5a: slow initial page_config exhausts start({ timeoutMs: 25 }) before /route/start is ever posted.
     let slowConfigTimer = null;
+    let slowConfigResolved = false;
     let routeStartPosts5a = 0;
     const slowStartHost = createHost({
       gameType: 'example-game',
@@ -2917,7 +2918,10 @@ async function main() {
         const pathName = String(url);
         if (pathName.startsWith('/api/config/page_config')) {
           await new Promise((resolve) => {
-            slowConfigTimer = setTimeout(resolve, 180);
+            slowConfigTimer = setTimeout(() => {
+              slowConfigResolved = true;
+              resolve();
+            }, 500);
           });
           return jsonResponse({ autostart_csrf_token: 'tok-slow' });
         }
@@ -2943,11 +2947,13 @@ async function main() {
       slowStartHost.dispose();
     }
     assert(err5a?.code === 'timeout', `5a expected timeout error, got ${err5a?.code}`);
+    assert(slowConfigResolved === false, '5a expected start() to reject before the slow page_config timer resolved');
     assert(routeStartPosts5a === 0, `5a expected /route/start not posted after CSRF timeout, saw ${routeStartPosts5a}`);
 
     // 5b: slow 403 refresh page_config exhausts shared start({ timeoutMs: 35 }) before retry /route/start.
     let pageConfigCount5b = 0;
     let refreshTimer5b = null;
+    let refreshResolved5b = false;
     let routeStartPosts5b = 0;
     const refreshTimeoutHost = createHost({
       gameType: 'example-game',
@@ -2960,7 +2966,10 @@ async function main() {
             return jsonResponse({ autostart_csrf_token: 'tok-stale' });
           }
           await new Promise((resolve) => {
-            refreshTimer5b = setTimeout(resolve, 180);
+            refreshTimer5b = setTimeout(() => {
+              refreshResolved5b = true;
+              resolve();
+            }, 500);
           });
           return jsonResponse({ autostart_csrf_token: 'tok-refreshed' });
         }
@@ -2987,6 +2996,7 @@ async function main() {
       refreshTimeoutHost.dispose();
     }
     assert(err5b?.code === 'timeout', `5b expected timeout error, got ${err5b?.code}`);
+    assert(refreshResolved5b === false, '5b expected start() to reject before the slow refresh page_config timer resolved');
     assert(routeStartPosts5b === 1, `5b expected exactly 1 /route/start post before refresh timeout, saw ${routeStartPosts5b}`);
   }
 

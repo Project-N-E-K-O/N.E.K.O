@@ -217,6 +217,12 @@ async def test_shared_preview_staging_root_and_windows_case_alias_are_rejected(
     assert status == 403, body
     assert staged_file.is_file()
 
+    # Different-case _Preview_Staging must be rejected without patching _normcase
+    # (directly exercises macOS case-insensitive APFS and casefold name guard).
+    status_case, body_case = await _cleanup(str(export_root / '_Preview_Staging'))
+    assert status_case == 403, body_case
+    assert staged_file.is_file()
+
     monkeypatch.setattr(publish, '_normcase', lambda p: p.lower())
     upper_staging = os.path.join(
         str(export_root.parent), 'WORKSHOPEXPORT', '_PREVIEW_STAGING'
@@ -242,6 +248,12 @@ async def test_symlinked_preview_staging_and_its_target_are_rejected(export_root
     for forbidden in (str(staging_link), str(target_dir)):
         status, body = await _cleanup(forbidden)
         assert status == 403, body
+        assert staged_file.is_file()
+
+    case_target_alias = export_root / 'Staged_Target'
+    if case_target_alias.exists() and os.path.samefile(case_target_alias, target_dir):
+        status_alias, body_alias = await _cleanup(str(case_target_alias))
+        assert status_alias == 403, body_alias
         assert staged_file.is_file()
 
     _assert_untouched(export_root)

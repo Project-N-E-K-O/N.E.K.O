@@ -421,21 +421,23 @@ def _resolve_workshop_export_child(path: str, workshop_export_dir: str) -> tuple
     Returns ``(resolved_path, resolved_root, allowed)``. The root itself and
     the shared ``_preview_staging`` directory are never allowed: deleting the
     root would wipe every exported item, and deleting ``_preview_staging`` would
-    wipe previews staged by other uploads. Comparison uses ``normcase`` so that
-    on Windows a different letter case still counts as the same directory;
-    ``realpath`` drops trailing separators and resolves symlinks, so a link
-    that points back at the root, at ``_preview_staging``, or outside is rejected.
+    wipe previews staged by other uploads. Preview staging detection delegates
+    to ``_is_path_inside_preview_staging`` (with case-insensitive and
+    ``samefile`` checks for macOS/Windows, plus reserved-name ``casefold()``
+    rejection), and ``realpath`` drops trailing separators and resolves
+    symlinks so links targeting the root, ``_preview_staging``, or outside
+    paths are rejected.
     """
     resolved = os.path.realpath(os.path.normpath(path))
     root = os.path.realpath(os.path.normpath(workshop_export_dir))
     norm_resolved = _normcase(resolved)
     norm_root = _normcase(root)
-    staging_literal = os.path.join(root, "_preview_staging")
-    staging_resolved = os.path.realpath(staging_literal)
-    is_preview_staging = norm_resolved in {
-        _normcase(staging_literal),
-        _normcase(staging_resolved),
-    }
+    is_preview_staging = (
+        os.path.basename(resolved).casefold() == "_preview_staging"
+        or _is_path_inside_preview_staging(
+            resolved, os.path.dirname(root), normcase_fn=_normcase
+        )
+    )
     allowed = (
         norm_resolved != norm_root
         and _normcase(os.path.dirname(resolved)) == norm_root

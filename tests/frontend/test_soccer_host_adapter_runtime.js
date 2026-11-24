@@ -368,6 +368,43 @@ async function main() {
   assert(quickLinesResponse.ok, 'host-owned soccer quick-lines provider failed');
   assert(calls.some((call) => call.url === '/api/game/soccer/quick-lines'),
     'soccer quick-lines did not use its host-owned provider');
+  const prevFetchForQuickLinesAbort = windowMock.fetch;
+  const prevSecurityForQuickLinesAbort = windowMock.nekoLocalMutationSecurity;
+  let abortedQuickLinesPostCount = 0;
+  let quickLinesPageConfigAborted = false;
+  windowMock.nekoLocalMutationSecurity = undefined;
+  windowMock.fetch = async (url, opts = {}) => {
+    if (String(url) === '/api/config/page_config') {
+      return new Promise((_, reject) => {
+        const onAbort = () => {
+          quickLinesPageConfigAborted = true;
+          const err = new Error('aborted');
+          err.name = 'AbortError';
+          reject(err);
+        };
+        if (opts.signal?.aborted) onAbort();
+        else opts.signal?.addEventListener('abort', onAbort, { once: true });
+      });
+    }
+    if (String(url) === '/api/game/soccer/quick-lines') {
+      abortedQuickLinesPostCount += 1;
+    }
+    return prevFetchForQuickLinesAbort(url, opts);
+  };
+  const quickLinesAbortController = new AbortController();
+  const quickLinesAbortedPromise = adapter.getQuickLines(
+    { i18n_language: 'zh-CN' },
+    { signal: quickLinesAbortController.signal },
+  ).then(() => null, (error) => error);
+  await new Promise((resolve) => setImmediate(resolve));
+  quickLinesAbortController.abort();
+  const quickLinesAbortError = await quickLinesAbortedPromise;
+  windowMock.fetch = prevFetchForQuickLinesAbort;
+  windowMock.nekoLocalMutationSecurity = prevSecurityForQuickLinesAbort;
+  assert(quickLinesAbortError?.name === 'AbortError',
+    `expected quickLines abort to reject with AbortError, got ${quickLinesAbortError?.name}`);
+  assert(quickLinesPageConfigAborted, 'quickLines did not forward signal to /api/config/page_config');
+  assert(abortedQuickLinesPostCount === 0, 'aborted quickLines still posted to /api/game/soccer/quick-lines');
   const passiveGuardResponse = await adapter.evaluatePassiveGuard({ stage: 1 });
   assert(passiveGuardResponse.ok, 'soccer compatibility PassiveGuard request failed');
   assert(calls.some((call) => call.url.endsWith('/api/game/soccer/passive-guard')),
