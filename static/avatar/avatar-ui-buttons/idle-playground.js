@@ -415,7 +415,12 @@ function _removeNekoIdleCat1PlaygroundYarnBody(button) {
 }
 
 function _switchNekoIdleCat1PlaygroundToVisitMode() {
-    const button = _getNekoIdleCat1PlaygroundEntryButton();
+    let button = null;
+    _forEachNekoIdleReturnButton((candidate) => {
+        if (!button && (_isNekoIdleCat1PlaygroundEntryPending(candidate) ||
+            _isNekoIdleCat1PlaygroundDropActive(candidate))) button = candidate;
+    });
+    if (!button) button = _getNekoIdleCat1PlaygroundEntryButton();
     if (!button) return false;
     const pending = button.__nekoIdleCat1PlaygroundPendingEntry;
     if (pending) {

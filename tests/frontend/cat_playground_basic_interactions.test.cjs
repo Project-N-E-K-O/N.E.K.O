@@ -270,6 +270,61 @@ for (const tier of ['cat1', 'cat2', 'cat3']) {
   });
 }
 
+for (const tier of ['cat1', 'cat2', 'cat3']) for (const playground of [false, true]) {
+  test(`${tier}: rejected audio started stops only the Playground run (Playground: ${playground})`, async () => {
+    const r = runtime(tier, { playground }); r.sync();
+    assert.equal(r.play({ onStarted: () => false }), true); await r.flush();
+    assert.equal(r.audios[0].paused, playground);
+    assert.equal(r.button.classList.contains('is-thought-bubble-active'), !playground);
+    assert.equal(r.results().length, playground ? 1 : 0);
+    if (playground) assert.notEqual(r.results()[0].result, 'done');
+  });
+}
+
+for (const tier of ['cat1', 'cat2', 'cat3']) {
+  test(`${tier}: rejecting old audio started cannot stop a synchronous replacement run`, async () => {
+    const r = runtime(tier); r.sync();
+    assert.equal(r.play({ source: 'cat_mind', requestId: 'old-audio', onStarted() {
+      if (tier === 'cat1') r.context._stopNekoIdleCat1AmbientSoundAudio({ reason: 'replace-audio' });
+      else r.context._stopNekoIdleSleepSoundAudio({ reason: 'replace-audio' });
+      assert.equal(r.play({ source: 'cat_mind', requestId: 'new-audio' }), true);
+      return false;
+    } }), true);
+    await r.flush();
+    assert.equal(r.audios.length, 2);
+    assert.equal(r.audios[0].paused, true);
+    assert.equal(r.audios[1].paused, false);
+    assert.equal(r.soundState().audio, r.audios[1]);
+    assert.equal(r.soundState().catMindRequestId, 'new-audio');
+    assert.equal(r.button.classList.contains('is-thought-bubble-active'), true);
+    assert.deepEqual(r.results().map(result => result.detail.requestId), ['old-audio']);
+  });
+}
+
+for (const tier of ['cat1', 'cat2', 'cat3']) {
+  test(`${tier}: a real Cat Mind accepted-start lease expiry stops delayed Playground audio`, async () => {
+    const r = runtime(tier); r.sync(); r.controls.delayPlay = true;
+    const win = r.context.window;
+    r.context.Math = Object.create(Math); r.context.Math.random = () => .99;
+    vm.runInContext(fs.readFileSync(path.join(projectRoot, 'static/app/app-cat-mind.js'), 'utf8'), r.context);
+    win.dispatchEvent(new r.context.CustomEvent('neko:cat-local-active-change', {
+      detail: { active: true, tier, appearance: 'cat', timestamp: 1000 },
+    }));
+    r.advance(600000);
+    win.nekoCatMind.observe({ type: 'cat_elapsed', source: 'cat-mind-clock', tier,
+      timestamp: 601000, detail: { elapsedMs: 600000, inactiveElapsedMs: 600000, sinceLastActionMs: 600000 } });
+    r.advance(1); await r.flush();
+    assert.equal(win.nekoCatMind.getState().pendingActionRequest?.actionId, r.actionId);
+    assert.equal(r.audios.length, 1);
+    r.advance(12000);
+    assert.equal(win.nekoCatMind.getState().pendingActionRequest, null);
+    r.audios[0].resolvePlay(); await r.flush();
+    assert.equal(r.audios[0].paused, true);
+    assert.equal(r.button.classList.contains('is-thought-bubble-active'), false);
+    assert.equal(win.nekoCatMind.getState().activeAction, null);
+  });
+}
+
 for (const tier of ['cat1', 'cat2', 'cat3']) {
   test(`${tier}: a pending cat press rejects the first unconfirmed audio start`, async () => {
     const r = runtime(tier); r.sync(); r.controls.delayPlay = true;

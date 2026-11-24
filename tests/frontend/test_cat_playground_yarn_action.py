@@ -4,7 +4,7 @@ import pytest
 from playwright.sync_api import Page
 
 from .test_avatar_ui_buttons_split import playground_lifecycle_page
-from .test_cat_playground_basic_interactions import _cat_point, _enter, basic_interaction_page
+from .test_cat_playground_basic_interactions import _cat_point, _enter, _settle, basic_interaction_page
 
 
 @pytest.fixture
@@ -101,6 +101,27 @@ def test_switching_playing_yarn_to_visit_restores_chat_shell_before_removing_bod
     page.clock.run_for(10000)
     assert page.evaluate("playResults.length === 1 && !playState().active && !session.yarnEnabled")
     assert page.evaluate("({visibility: playYarn.element.style.visibility, pointerEvents: playYarn.element.style.pointerEvents})") == original_style
+
+
+@pytest.mark.parametrize("tier", ("cat1", "cat2", "cat3"))
+def test_visit_takes_over_existing_physics_session_in_current_tier(yarn_action_page: Page, tier):
+    page = yarn_action_page
+    page.evaluate("changeTestTier", tier)
+    _settle(page)
+    token = page.evaluate("session.token")
+    assert page.evaluate("nekoIdleCat1Playground.enterVisitMode()")
+    assert page.evaluate("session.active && !session.released && !session.yarnEnabled && session.bodies.size === 1 && session.bodies.get('cat') === catBody")
+    assert page.evaluate("session.token") == token
+    assert page.evaluate("cat.getAttribute('data-neko-idle-tier')") == tier
+    assert page.evaluate("!playState().active && returnClicks === 0")
+
+
+@pytest.mark.parametrize("tier", ("cat2", "cat3"))
+def test_visit_does_not_create_a_new_sleeping_physics_session(basic_interaction_page: Page, tier):
+    page = basic_interaction_page
+    _enter(page, "ordinary", tier)
+    assert not page.evaluate("nekoIdleCat1Playground.enterVisitMode()")
+    assert page.evaluate("!cat.__nekoIdleCat1PlaygroundDropState?.active && returnClicks === 0")
 
 
 @pytest.mark.browser_context_args(has_touch=True)

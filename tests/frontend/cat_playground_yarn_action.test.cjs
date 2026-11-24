@@ -93,6 +93,31 @@ for (const loaded of [false, true]) {
   });
 }
 
+for (const tier of ['cat1', 'cat2', 'cat3']) {
+  test(`${tier}: Visit takes over the existing Playground without recreating the cat body`, () => {
+    const r = setup(), body = r.body, token = r.state.token;
+    r.context.document.removeEventListener = () => {};
+    r.button.setAttribute('data-neko-idle-tier', tier);
+    r.container.setAttribute('data-neko-idle-tier', tier);
+    assert.equal(r.context._switchNekoIdleCat1PlaygroundToVisitMode(), true);
+    assert.equal(r.state.bodies.get('cat'), body);
+    assert.equal(r.state.token, token);
+    assert.equal(r.state.active, true);
+    assert.equal(r.state.yarnEnabled, false);
+    assert.equal(r.state.bodies.size, 1);
+    assert.equal(r.button.getAttribute('data-neko-idle-tier'), tier);
+  });
+}
+
+for (const tier of ['cat2', 'cat3']) {
+  test(`${tier}: Visit takeover does not open a new ordinary Playground entry`, () => {
+    const r = runtime(tier, { playground: false });
+    assert.equal(r.context._getNekoIdleCat1PlaygroundEntryButton(), null);
+    assert.equal(r.context._switchNekoIdleCat1PlaygroundToVisitMode(), false);
+    assert.equal(r.state.active, false);
+  });
+}
+
 for (const failure of ['error', 'timeout', 'started rejected']) {
   test(`PG play ${failure} restores its physical ball without a successful terminal`, async () => {
     const r = setup(), yarn = r.state.bodies.get('yarn'), phases = [];

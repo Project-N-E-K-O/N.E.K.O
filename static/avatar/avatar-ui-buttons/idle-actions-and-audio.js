@@ -2323,6 +2323,7 @@ function _playNekoIdleSleepSound(tier, token) {
         : _NEKO_CAT_MIND_ACTION_IDS.CAT2_NAP_FEEDBACK;
     if (!_isNekoCatActionResourceAvailable(actionId)) return false;
 
+    const playgroundRun = _isAnyNekoIdleCat1PlaygroundDropActive();
     const run = _beginNekoCatMindStateAction(_nekoIdleSleepSoundState, actionId, tier, {
         source: catMindRunOptions.source || 'sleep-feedback-runner', requestId: catMindRunOptions.requestId
     });
@@ -2361,9 +2362,13 @@ function _playNekoIdleSleepSound(tier, token) {
             _stopNekoIdleSleepSound({ reason: 'playground-unstable' });
             return;
         }
-        _notifyNekoCatMindRunnerStarted(catMindRunOptions, run);
+        const started = _notifyNekoCatMindRunnerStarted(catMindRunOptions, run);
         if (_nekoIdleSleepSoundState.audio !== audio ||
             !_isNekoCatMindStateActionRunCurrent(_nekoIdleSleepSoundState, run, audio)) return;
+        if (playgroundRun && started === false) {
+            _stopNekoIdleSleepSoundAudio({ reason: 'playground-sleep-start-rejected' });
+            return;
+        }
         _showNekoIdleThoughtBubbleForSound(tier, audio);
     });
     return true;
@@ -2428,6 +2433,7 @@ function _playNekoIdleCat1AmbientSound(token) {
 
     if (!_isNekoCatActionResourceAvailable(_NEKO_CAT_MIND_ACTION_IDS.CAT1_SOCIAL_PING)) return false;
 
+    const playgroundRun = _isAnyNekoIdleCat1PlaygroundDropActive();
     const run = _beginNekoCatMindStateAction(_nekoIdleCat1AmbientSoundState, _NEKO_CAT_MIND_ACTION_IDS.CAT1_SOCIAL_PING, _NEKO_IDLE_TIER_CAT1, {
         source: catMindRunOptions.source || 'cat1-social-ping-runner', requestId: catMindRunOptions.requestId
     });
@@ -2471,9 +2477,13 @@ function _playNekoIdleCat1AmbientSound(token) {
             _isAnyNekoIdleReturnDragActionActive()) {
             return;
         }
-        _notifyNekoCatMindRunnerStarted(catMindRunOptions, run);
+        const started = _notifyNekoCatMindRunnerStarted(catMindRunOptions, run);
         if (_nekoIdleCat1AmbientSoundState.audio !== audio ||
             !_isNekoCatMindStateActionRunCurrent(_nekoIdleCat1AmbientSoundState, run, audio)) return;
+        if (playgroundRun && started === false) {
+            _stopNekoIdleCat1AmbientSoundAudio({ reason: 'playground-ambient-start-rejected' });
+            return;
+        }
         _showNekoIdleThoughtBubbleForSound(_NEKO_IDLE_TIER_CAT1, audio);
         _playNekoIdleCat1SoundReaction();
     });
