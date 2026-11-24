@@ -167,19 +167,21 @@ def test_reopening_and_cached_restore_paths_require_acknowledgement(page, runnin
     assert downloads == []
 
 
-@pytest.mark.parametrize("choice", ["cancel", "select"])
-def test_startup_license_waits_for_resource_selection(page, running_server, choice):
-    pending = []
-    downloads = _builtin(page, deferred=pending)
-    page.goto(running_server + "/emote_maker", wait_until="domcontentloaded")
+def _multi_resource_zip():
     stream = io.BytesIO()
     with zipfile.ZipFile(io.BytesIO(spine_zip())) as old, zipfile.ZipFile(stream, "w") as new:
         for path in old.namelist():
             new.writestr(path, old.read(path))
         new.writestr("assets/second.json", old.read("assets/character.json"))
-    page.set_input_files("#template-archive-file", {
-        "name": "multiple.zip", "mimeType": "application/zip", "buffer": stream.getvalue(),
-    })
+    return {"name": "multiple.zip", "mimeType": "application/zip", "buffer": stream.getvalue()}
+
+
+@pytest.mark.parametrize("choice", ["cancel", "select"])
+def test_startup_license_waits_for_resource_selection(page, running_server, choice):
+    pending = []
+    downloads = _builtin(page, deferred=pending)
+    page.goto(running_server + "/emote_maker", wait_until="domcontentloaded")
+    page.set_input_files("#template-archive-file", _multi_resource_zip())
     resource = page.locator(".emote-template-resource-choice")
     expect(resource).to_be_visible()
     assert len(pending) == 1
@@ -197,6 +199,42 @@ def test_startup_license_waits_for_resource_selection(page, running_server, choi
     expect(page.locator("#builtin-license-acknowledge")).to_be_enabled()
     expect(dialog.locator("form button")).to_be_enabled()
     dialog.locator("form button").click()
+    expect(dialog).to_be_hidden()
+    assert downloads == []
+
+
+@pytest.mark.parametrize("acknowledge", [False, True])
+@pytest.mark.parametrize("choice", ["cancel", "select"])
+def test_file_picker_return_waits_for_open_license(page, running_server, acknowledge, choice):
+    pending = []
+    downloads = _builtin(page, deferred=pending)
+    page.goto(running_server + "/emote_maker", wait_until="domcontentloaded")
+    with page.expect_file_chooser() as opened:
+        page.locator("#select-template-archive-btn").click()
+    assert len(pending) == 1
+    pending[0]()
+    dialog = page.locator("#builtin-template-license")
+    expect(dialog).to_be_visible()
+    opened.value.set_files(_multi_resource_zip())
+    expect(page.locator("#builtin-license-acknowledge")).to_be_enabled()
+    expect(dialog.locator("form button")).to_be_enabled()
+    resource = page.locator(".emote-template-resource-choice")
+    expect(resource).to_have_count(0)
+    if acknowledge:
+        page.locator("#builtin-license-acknowledge").click()
+    else:
+        page.keyboard.press("Escape")
+    expect(dialog).to_be_hidden()
+    expect(resource).to_be_visible()
+    if choice == "select":
+        resource.locator("select").select_option("assets/second.json")
+        resource.locator(".emote-confirm-ok").click()
+        expect(page.locator("body")).to_have_class(re.compile(r"\beditor-has-template\b"))
+    else:
+        resource.locator(".emote-confirm-cancel").click()
+        expect(page.locator("body")).not_to_have_class(re.compile(r"\beditor-has-template\b"))
+    expect(resource).to_have_count(0)
+    expect(page.locator("#select-template-archive-btn")).to_be_enabled()
     expect(dialog).to_be_hidden()
     assert downloads == []
 

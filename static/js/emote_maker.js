@@ -7006,6 +7006,9 @@
     }
 
     async function queueTemplateChange(task) {
+        // A native file picker can return after the startup notice opened.
+        // Finish the notice before disabling its controls for the transaction.
+        if (builtinLicensePrompt) await builtinLicensePrompt;
         // Block export requests before they snapshot the old template. Use the
         // export priority so already queued exports finish before activation.
         const unlock = lockExportEditing();
