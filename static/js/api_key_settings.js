@@ -2722,6 +2722,8 @@ function initModelIdPickers() {
         ['ModelId', 'ModelUrl'].forEach(suffix => {
             const input = document.getElementById(`${modelType}${suffix}`);
             if (input) input.addEventListener('input', () => {
+                // Typed by the user (programmatic values fire no input event): no longer the cascade's clearing.
+                _followClearedModelIds.delete(`${modelType}${suffix}`);
                 const affected = [modelType];
                 [...new Set(Object.values(MODEL_FOLLOWERS_BY_SOURCE).flat())].forEach(followerType => {
                     if (effectiveFollowSource(followerType) === modelType) affected.push(followerType);

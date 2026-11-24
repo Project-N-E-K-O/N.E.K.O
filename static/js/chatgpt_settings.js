@@ -282,7 +282,12 @@
     }));
     window.addEventListener('localechange', () => refresh().catch(report));
     // Any successful settings reload (an ordinary save included) brings the form back in sync.
-    window.addEventListener('neko:api-settings-loaded', () => { formStale = false; });
+    window.addEventListener('neko:api-settings-loaded', () => {
+        if (!formStale) return;
+        formStale = false;
+        // Replace the shown warning now; with the subscription off no poll would.
+        if (!busy) refresh().catch(report);
+    });
     window.addEventListener('pagehide', () => {
         suspended = true;
         finishConfirmation?.(false);

@@ -396,8 +396,15 @@ test('a saved toggle whose settings reload fails says so instead of reporting a 
     assert.match(ui.nodes.status.textContent, /could not reload the settings/);
     // A successful reload from an ordinary save clears it too.
     ui.window.listeners['neko:api-settings-loaded']();
-    await ui.timer();
+    await flush();
     assert.match(ui.nodes.status.textContent, /available-model/);
+    ui.setReloadWork(async () => false);
+    await toggle(ui, false);
+    assert.match(ui.nodes.status.textContent, /could not reload the settings/);
+    // With the subscription off no poll is scheduled: the event itself replaces the warning.
+    ui.window.listeners['neko:api-settings-loaded']();
+    await flush();
+    assert.doesNotMatch(ui.nodes.status.textContent, /could not reload the settings/);
     ui.setReloadWork(async () => false);
     await toggle(ui, false);
     assert.match(ui.nodes.status.textContent, /could not reload the settings/);
@@ -679,6 +686,15 @@ test('a dormant slot that follows another tier is not edited when that tier chan
     // Picking another provider for the dormant slot is still refused.
     await ui.context.saveApiKey({...fullForm, decisionModelProvider: 'custom'});
     assert.equal(ui.calls.length, 1);
+    // Typing into a cascade-cleared ID (then clearing it again) is the user's edit: the
+    // model ID input listener drops the field from the cascade record.
+    const listenerStart = source.indexOf("        ['ModelId', 'ModelUrl'].forEach(suffix => {");
+    assert.ok(listenerStart > 0);
+    assert.match(source.slice(listenerStart, listenerStart + 400),
+        /_followClearedModelIds\.delete\(`\$\{modelType\}\$\{suffix\}`\)/);
+    ui.context._followClearedModelIds.delete('decisionModelId');
+    await ui.context.saveApiKey(fullForm);
+    assert.equal(ui.calls.length, 1, 'a hand-cleared ID is refused once the record is dropped');
     // So is a model ID typed into it: refused with the explanation, never silently dropped.
     const before = ui.messages.length;
     await ui.context.saveApiKey({...fullForm, decisionModelId: 'typed-decision-model'});
