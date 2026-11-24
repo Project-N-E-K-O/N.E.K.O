@@ -47,6 +47,7 @@ All of it is below the dsh root, which an uninstall removes
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 from collections.abc import Mapping
@@ -244,14 +245,16 @@ def render_powershell(*, root: Path, executable: Path, leading: tuple[str, ...],
         "    Expand-Package \"$staging\\main.tgz\" \"$staging\\program\"",
         "    Expand-Package \"$staging\\platform.tgz\" \"$staging\\platform\"",
         "    Copy-Item -LiteralPath \"$staging\\platform\\pnpm.exe\" -Destination \"$staging\\program\\pnpm.exe\"",
-        # A directory left without its program (taken away by a virus scanner, say) is
-        # replaced; one that another run has just put there whole is kept.
+        # A directory left without its program (taken away by a virus scanner, say) is moved
+        # aside in one step, a rename, and goes with the staging; never removed where another
+        # run may just have put a whole one. That one, put there meanwhile, is kept.
         "    if ((Test-Path -LiteralPath $PnpmDir) -and -not (Test-Path -LiteralPath (Join-Path $PnpmDir 'pnpm.exe'))) {",
-        "      Remove-Item -LiteralPath $PnpmDir -Recurse -Force",
+        "      try { Move-Item -LiteralPath $PnpmDir -Destination \"$staging\\broken\" -ErrorAction Stop } catch { }",
         "    }",
         "    if (-not (Test-Path -LiteralPath $PnpmDir)) {",
-        "      Move-Item -LiteralPath \"$staging\\program\" -Destination $PnpmDir",
+        "      try { Move-Item -LiteralPath \"$staging\\program\" -Destination $PnpmDir -ErrorAction Stop } catch { }",
         "    }",
+        "    if (-not (Test-Path -LiteralPath (Join-Path $PnpmDir 'pnpm.exe'))) { throw 'pnpm could not be put in place' }",
         "  } finally {",
         "    Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue",
         "  }",
@@ -432,11 +435,14 @@ def render_sh(*, root: Path, executable: Path, leading: tuple[str, ...], profile
         "    && (cd \"$staging/program\" && tar -xzf - --strip-components 1) < \"$staging/main.tgz\" \\",
         "    && (cd \"$staging/platform\" && tar -xzf - --strip-components 1) < \"$staging/platform.tgz\" \\",
         "    && cp \"$staging/platform/pnpm\" \"$staging/program/pnpm\" && chmod +x \"$staging/program/pnpm\"; then",
-        "    # Another run may have put it there meanwhile: then that one is kept.",
-        # A directory left without its program (taken away by a virus scanner, say) is
-        # replaced; one that another run has just put there whole is kept.
-        "    if [ -e \"$PNPM_DIR\" ] && [ ! -f \"$PNPM_DIR/pnpm\" ]; then rm -rf \"$PNPM_DIR\"; fi",
+        # A directory left without its program (taken away by a virus scanner, say) is moved
+        # aside in one step, a rename, and goes with the staging; never removed where another
+        # run may just have put a whole one.
+        "    if [ -e \"$PNPM_DIR\" ] && [ ! -f \"$PNPM_DIR/pnpm\" ]; then mv \"$PNPM_DIR\" \"$staging/broken\" 2>/dev/null; fi",
+        "    # Another run may put it there meanwhile: then that one is kept, and should mv have",
+        "    # moved this one into it, that is taken back out.",
         "    [ -e \"$PNPM_DIR\" ] || mv \"$staging/program\" \"$PNPM_DIR\"",
+        "    rm -rf \"$PNPM_DIR/program\"",
         "  fi",
         "  rm -rf \"$staging\"",
         "  staging=''",
@@ -563,6 +569,7 @@ def _write(path: Path, text: str, *, encoding: str) -> None:
         with os.fdopen(handle, "wb") as out:
             out.write(data)
         os.replace(temporary, path)
-    except OSError:
-        temporary.unlink(missing_ok=True)
-        raise
+    finally:
+        # Gone once it took the file's place; otherwise (an error, an interruption) not left behind.
+        with contextlib.suppress(OSError):
+            temporary.unlink(missing_ok=True)
