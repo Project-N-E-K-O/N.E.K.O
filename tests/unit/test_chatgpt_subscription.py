@@ -17,7 +17,15 @@ def manager(clean_user_data_dir):
     from utils.config_manager import get_config_manager
     result = get_config_manager('N.E.K.O')
     result.config_dir.mkdir(parents=True, exist_ok=True)
-    return result
+    # The data directory is shared by the whole session: put core_config.json
+    # back so a subscription left on here cannot reach later tests' servers.
+    path = result.config_dir / 'core_config.json'
+    saved = path.read_bytes() if path.exists() else None
+    yield result
+    if saved is None:
+        path.unlink(missing_ok=True)
+    else:
+        path.write_bytes(saved)
 
 
 @pytest.mark.parametrize('raw_value, expected', [
