@@ -374,6 +374,8 @@ def warmup_state(monkeypatch):
         module_warmup, "_spawn_gated_worker", lambda label, scope=None: spawned.append(label),
     )
     monkeypatch.setattr(module_warmup, "_gated_pending_scope", None)
+    monkeypatch.setattr(module_warmup, "_startup_pass_missing", False)
+    monkeypatch.setattr(module_warmup, "_failed_entries", set())
     return spawned
 
 
@@ -620,7 +622,9 @@ def test_recheck_retries_ungated_modules_the_startup_pass_missed(monkeypatch):
     assert "openai" in module_warmup._pending_gated_entries(True, "config")
 
 
-def test_pending_scopes_merge_and_widen_to_all(warmup_state):
+def test_pending_scopes_merge_and_widen_to_all(warmup_state, monkeypatch):
+    # Independent of what other tests in this process happened to import.
+    monkeypatch.setattr(module_warmup, "_unloaded_gates", lambda scope=None: {"x"})
     module_warmup._gated_started = True
     module_warmup._gated_running = True
     module_warmup.request_config_rewarm("characters", only={"cosyvoice_clone"})
@@ -629,3 +633,124 @@ def test_pending_scopes_merge_and_widen_to_all(warmup_state):
     assert module_warmup._gated_pending_scope == frozenset({"cosyvoice_clone", "proactive_bilibili"})
     module_warmup.request_config_rewarm("core_api")
     assert module_warmup._gated_pending_scope is None
+
+
+# --- review round 7 --------------------------------------------------------
+
+@pytest.mark.parametrize("core_api", ["qwen", "openai"])
+def test_free_preset_on_card_is_dropped_outside_free_mode(monkeypatch, core_api):
+    from utils.tts import native_voice_registry as registry
+
+    monkeypatch.setattr(registry, "is_free_preset_voice_id", lambda voice_id: voice_id == "yui-preset")
+    cfg = _voice_cfg(
+        {"CORE_API_TYPE": core_api, "TTS_VOICE_ID": "cosyvoice-v2-x", "ENABLE_CUSTOM_API": True},
+        characters={"当前猫娘": "A", "猫娘": {"A": {"voice_id": "yui-preset"}}},
+    )
+    # Like _apply_voice_id_for_route: the preset is cleared, then TTS_VOICE_ID applies.
+    assert cfg.current_voice_id == "cosyvoice-v2-x"
+    cfg._cm._voices = {"cosyvoice-v2-x": {"provider": "cosyvoice"}}
+    assert evaluate_gates(cfg, only={"cosyvoice_clone"}) == {"cosyvoice_clone": True}
+
+
+def test_free_preset_on_card_stays_in_free_mode(monkeypatch):
+    from utils.tts import native_voice_registry as registry
+
+    monkeypatch.setattr(registry, "is_free_preset_voice_id", lambda voice_id: voice_id == "yui-preset")
+    cfg = _voice_cfg(
+        {"CORE_API_TYPE": "free", "TTS_VOICE_ID": "cosyvoice-v2-x", "ENABLE_CUSTOM_API": True},
+        characters={"当前猫娘": "A", "猫娘": {"A": {"voice_id": "yui-preset"}}},
+    )
+    assert cfg.current_voice_id == "yui-preset"
+    assert evaluate_gates(cfg, only={"cosyvoice_clone"}) == {"cosyvoice_clone": False}
+
+
+def test_core_api_type_prefers_the_realtime_api_type():
+    cfg = _voice_cfg({"CORE_API_TYPE": "qwen"})
+    cfg.realtime_config = {"api_type": "free"}
+    assert cfg.core_api_type == "free"
+
+
+def test_failed_imports_are_not_retried_on_every_save(warmup_state, monkeypatch):
+    module_warmup._gated_started = True
+    loaded_or_failed = set(_ENTRY_GATES) | set(module_warmup._unloaded_plain_entries())
+    broken = "pyncm_async"
+    for entry in loaded_or_failed - {broken}:
+        monkeypatch.setitem(sys.modules, entry, object())
+    monkeypatch.delitem(sys.modules, broken, raising=False)
+
+    def _fail(name):
+        raise ImportError(name)
+
+    monkeypatch.setattr(module_warmup, "_warm_one", _fail)
+    module_warmup._warm_entries((broken,), "config")
+    assert broken in module_warmup._failed_entries
+    assert module_warmup.request_config_rewarm("characters") is False
+    assert warmup_state == []
+
+
+def test_first_recheck_after_failed_startup_is_full_scope(warmup_state, monkeypatch):
+    scopes: list = []
+
+    def _boom(label, scope=None):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(module_warmup, "_spawn_gated_worker", _boom)
+    assert module_warmup.start_main_server_warmup() is False
+    assert module_warmup._startup_pass_missing is True
+    monkeypatch.setattr(
+        module_warmup, "_spawn_gated_worker", lambda label, scope=None: scopes.append(scope),
+    )
+    # Even with every gated SDK loaded, the missing startup pass still has to run.
+    for entry in list(_ENTRY_GATES) + module_warmup._unloaded_plain_entries():
+        monkeypatch.setitem(sys.modules, entry, object())
+    assert module_warmup.request_config_rewarm("characters", only={"cosyvoice_clone"}) is True
+    assert scopes == [None]
+
+
+def test_missing_startup_pass_retries_attribute_entries(monkeypatch):
+    monkeypatch.setattr(module_warmup, "evaluate_gates", lambda cfg=None, only=None: {})
+    monkeypatch.setattr(module_warmup, "_startup_pass_missing", True)
+    entries = module_warmup._pending_gated_entries(True, "config")
+    assert "config.prompts.prompts_directives:DIRECTIVE_PATTERNS" in entries
+
+
+def test_full_recheck_clears_the_missing_startup_flag(monkeypatch):
+    monkeypatch.setattr(module_warmup, "_startup_pass_missing", True)
+    monkeypatch.setattr(module_warmup, "_gated_running", True)
+    monkeypatch.setattr(module_warmup, "_gated_pending", False)
+    monkeypatch.setattr(module_warmup, "_pending_gated_entries", lambda *a, **k: ())
+    module_warmup._run_gated_warmup("config", None)
+    assert module_warmup._startup_pass_missing is False
+
+
+def test_proactive_settings_save_rechecks_only_bilibili(monkeypatch, tmp_path):
+    import json as _json
+
+    from utils import preferences
+
+    class _Cm:
+        def __init__(self, path):
+            self.path = path
+
+        def ensure_config_directory(self):
+            pass
+
+        def get_runtime_config_path(self, _name):
+            return self.path
+
+        def get_config_path(self, _name):
+            return self.path
+
+    path = tmp_path / "user_preferences.json"
+    path.write_text(_json.dumps([]), encoding="utf-8")
+    monkeypatch.setattr(preferences, "_config_manager", _Cm(path))
+    monkeypatch.setattr(preferences, "PREFERENCES_FILE", str(path))
+    monkeypatch.setattr(preferences, "assert_cloudsave_writable", lambda *a, **k: None)
+    calls: list = []
+    monkeypatch.setattr(
+        module_warmup, "request_config_rewarm",
+        lambda reason, only=None: calls.append((reason, only)),
+    )
+    result = preferences.save_global_conversation_settings_versioned({"proactiveVideoChatEnabled": True})
+    assert result.success is True
+    assert calls == [("conversation_settings", {"proactive_bilibili"})]

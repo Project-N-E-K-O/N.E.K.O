@@ -1033,7 +1033,7 @@ def save_global_conversation_settings_versioned(
                 # A proactive source switched on may need an SDK startup warmup skipped
                 # (bilibili_api). Non-blocking; a no-op outside main_server.
                 from utils.module_warmup import request_config_rewarm
-                request_config_rewarm("conversation_settings")
+                request_config_rewarm("conversation_settings", only={"proactive_bilibili"})
             return ConversationSettingsWriteResult(
                 success=True, conflict=False, snapshot=snapshot, previous=current
             )

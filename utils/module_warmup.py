@@ -176,9 +176,23 @@ class WarmupConfig:
         return language_utils.is_china_region()
 
     @cached_property
+    def core_api_type(self) -> str:
+        """The session's core api type, as start_session resolves it."""
+        return str(
+            self.realtime_config.get("api_type") or self.core_config.get("CORE_API_TYPE") or ""
+        )
+
+    @cached_property
     def current_voice_id(self) -> str:
-        """The current character's voice, as the TTS routing reads it ('' for none)."""
+        """The voice a session would start with ('' for none), as start_session resolves it.
+
+        The current character's voice, minus a free preset outside free mode
+        (``_apply_voice_id_for_route``); when that leaves none, the custom-API
+        voice ``TTS_VOICE_ID`` under the same conditions as start_session. Reads
+        characters.json and core_config.
+        """
         from utils.config_manager.reserved_schema import get_reserved
+        from utils.tts.native_voice_registry import is_free_preset_voice_id
         from utils.voice_config import read_legacy_voice_id
 
         characters = self._cm.load_characters() or {}
@@ -188,6 +202,10 @@ class WarmupConfig:
             voice_id = read_legacy_voice_id(
                 get_reserved(profile, "voice_id", default="", legacy_keys=("voice_id",))
             )
+        # A free preset is not sent outside free mode (a YUI voice left from the
+        # free tier, say); start_session clears it before the fallback below.
+        if voice_id and is_free_preset_voice_id(voice_id) and self.core_api_type != "free":
+            voice_id = ""
         if voice_id:
             return voice_id
         # No voice on the card: start_session falls back to the custom-API voice
@@ -233,11 +251,8 @@ class WarmupConfig:
         voice_id = self.current_voice_id
         if is_free_preset_voice_id(voice_id):
             return True
-        core_api_type = str(
-            self.realtime_config.get("api_type") or self.core_config.get("CORE_API_TYPE") or ""
-        )
         _, native = resolve_native_voice_for_routing(
-            core_api_type,
+            self.core_api_type,
             voice_id,
             self._cm.voice_id_exists_in_any_storage,
             realtime_base_url=str(self.realtime_config.get("base_url") or ""),
@@ -382,6 +397,10 @@ _gated_running = False
 _gated_pending = False
 # Gates the pending re-check covers (None: all), merged across the requests it absorbs.
 _gated_pending_scope: frozenset[str] | None = None
+# The startup pass never ran (its thread did not start): re-check everything once.
+_startup_pass_missing = False
+# Entries whose import failed; not retried on later config saves.
+_failed_entries: set[str] = set()
 
 
 def _warm_one(name: str) -> None:
@@ -413,6 +432,9 @@ def _warm_entries(module_list: tuple[str, ...], label: str) -> None:
             )
         except Exception as exc:
             logger.debug("[warmup:%s] skip %s: %s", label, name, exc)
+            # Not installed or broken: retrying on every config save would only
+            # repeat the failure (the lazy import on first use still reports it).
+            _failed_entries.add(name)
         # Yield between modules, giving the running event loop a chance to reclaim the GIL.
         time.sleep(0)
     # Config re-checks run on every relevant settings save; keep them out of the
@@ -425,17 +447,21 @@ def _warm_entries(module_list: tuple[str, ...], label: str) -> None:
     )
 
 
+def _missing(entry: str) -> bool:
+    return entry not in sys.modules and entry not in _failed_entries
+
+
 def _unloaded_gates(scope: Iterable[str] | None = None) -> set[str]:
     """Gates (within ``scope``, all when None) that still have a module to import."""
-    gates = {gate for entry, gate in _ENTRY_GATES.items() if entry not in sys.modules}
+    gates = {gate for entry, gate in _ENTRY_GATES.items() if _missing(entry)}
     return gates if scope is None else gates & set(scope)
 
 
 def _unloaded_plain_entries() -> list[str]:
-    """Ungated module entries still missing: the startup pass never started, or an import failed."""
+    """Ungated module entries the startup pass never reached (its thread did not start)."""
     return [
         entry for entry in MAIN_SERVER_WARMUP
-        if entry not in _ENTRY_GATES and ":" not in entry and entry not in sys.modules
+        if entry not in _ENTRY_GATES and ":" not in entry and _missing(entry)
     ]
 
 
@@ -459,12 +485,15 @@ def _pending_gated_entries(
     # no config reads. Ungated modules still missing are retried too.
     results = evaluate_gates(only=_unloaded_gates(scope))
     plain = set(_unloaded_plain_entries())
+    if _startup_pass_missing:
+        # The startup pass never ran: the "module:attribute" entries need a pass too.
+        plain |= {entry for entry in MAIN_SERVER_WARMUP if ":" in entry}
     entries = tuple(
         entry for entry in MAIN_SERVER_WARMUP
         if entry in plain
         or (
             entry in _ENTRY_GATES
-            and entry not in sys.modules
+            and _missing(entry)
             and results.get(_ENTRY_GATES[entry], False)
         )
     )
@@ -478,15 +507,18 @@ def _merge_scope(a: frozenset[str] | None, b: frozenset[str] | None) -> frozense
 
 def _run_gated_warmup(label: str, scope: frozenset[str] | None = None) -> None:
     """Worker body: warm the gated selection, again while requests keep arriving."""
-    global _gated_running, _gated_pending, _gated_pending_scope
+    global _gated_running, _gated_pending, _gated_pending_scope, _startup_pass_missing
     # Only the startup pass walks the whole selection (the "module:attribute"
     # entries need it); a config re-check is about what is not loaded yet.
     skip_loaded = label != "main"
     while True:
+        full_pass = scope is None
         try:
             _warm_entries(_pending_gated_entries(skip_loaded, label, scope), label)
         except Exception as exc:  # best effort, like every other warmup failure
             logger.debug("[warmup:%s] gated warmup failed: %s", label, exc)
+        if full_pass:
+            _startup_pass_missing = False
         skip_loaded = True
         label = "config"
         with _warmup_lock:
@@ -515,7 +547,7 @@ def start_main_server_warmup() -> bool:
     if _under_pytest():
         return False
 
-    global _gated_started, _gated_running
+    global _gated_started, _gated_running, _startup_pass_missing
     with _warmup_lock:
         if _gated_started:
             return False
@@ -526,9 +558,11 @@ def start_main_server_warmup() -> bool:
     except Exception as exc:
         # Leave the re-check usable: a stuck "running" flag would park every
         # later request as pending with no worker to pick it up. The next
-        # re-check also imports the ungated entries this pass never reached.
+        # re-check runs over every gate and also warms what this pass never
+        # reached, including the "module:attribute" entries.
         with _warmup_lock:
             _gated_running = False
+            _startup_pass_missing = True
         logger.debug("[warmup] startup warmup not started: %s", exc)
         return False
     return True
@@ -547,9 +581,10 @@ def request_config_rewarm(reason: str = "config", only: Iterable[str] | None = N
     """
     if _under_pytest():
         return False
-    scope = None if only is None else frozenset(only)
+    # After a startup pass that never ran, the first re-check covers everything.
+    scope = None if only is None or _startup_pass_missing else frozenset(only)
     # Nothing left that this change could add: no thread, no config reads.
-    if not _unloaded_gates(scope) and not _unloaded_plain_entries():
+    if not _startup_pass_missing and not _unloaded_gates(scope) and not _unloaded_plain_entries():
         return False
 
     global _gated_running, _gated_pending, _gated_pending_scope
