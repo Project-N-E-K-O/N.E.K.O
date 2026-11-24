@@ -154,8 +154,10 @@ Each of these five is offered when its callback is there.
 ``start_team``  (tool ``start_team``)
     Payload: ``{"parts": [{"name": str | None, "preset": str | None,
     "description": str, "brief": str}], "inspect": bool}``. Result:
-    ``{"message": str, "started": [str]}``: the task agents started, one
-    for each part, by the names the session waits for them with. The
+    ``{"message": str, "started": [str]}``: the task agents that were
+    started, by the names the session waits for them with. Not always one
+    for each part: one for which no directory of its own could be made is
+    not started, and ``message`` names it. The
     session that called it keeps the commission. For the leader of a
     project only, as ``hand_over``. A team that is not started (the user
     did not allow task agents that write, nowhere for them to write side by
