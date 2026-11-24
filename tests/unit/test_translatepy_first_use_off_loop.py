@@ -93,3 +93,32 @@ def test_first_imports_from_two_threads_are_serialised(monkeypatch):
 
     assert results == [True, True]
     assert inside["max"] == 1, "two threads imported translatepy at the same time"
+
+
+@pytest.mark.asyncio
+async def test_direct_translatepy_call_also_imports_off_the_event_loop(monkeypatch):
+    loop_thread = threading.get_ident()
+    import_threads: list[int] = []
+
+    def _unavailable() -> bool:
+        import_threads.append(threading.get_ident())
+        return False
+
+    monkeypatch.setattr(language_utils, "_ensure_translatepy", _unavailable)
+    assert await language_utils.translate_with_translatepy("hello", "en", "zh") is None
+    assert import_threads and loop_thread not in import_threads
+
+
+def test_loaded_translatepy_answers_without_waiting_for_the_lock(monkeypatch):
+    monkeypatch.setattr(language_utils, "TRANSLATEPY_AVAILABLE", True)
+    monkeypatch.setattr(language_utils, "TranslatepyTranslator", object())
+    monkeypatch.setattr(language_utils, "CHINA_ACCESSIBLE_SERVICES", [object()])
+    results: list[bool] = []
+    with language_utils._translatepy_init_lock:  # another thread's first import, say
+        worker = threading.Thread(target=lambda: results.append(language_utils._ensure_translatepy()))
+        worker.start()
+        worker.join(2)
+        finished = not worker.is_alive()
+    worker.join(5)
+    assert finished, "a loaded translatepy must not wait on the init lock"
+    assert results == [True]

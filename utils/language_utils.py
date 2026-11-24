@@ -1242,6 +1242,14 @@ _translatepy_init_lock = threading.Lock()
 
 def _ensure_translatepy() -> bool:
     """Import translatepy and the translators reachable from mainland China on first call; cache the result."""
+    # Already loaded: answer without the lock, so a caller on the event loop never
+    # waits on another thread's first import once translatepy is in.
+    if (
+        TRANSLATEPY_AVAILABLE is True
+        and TranslatepyTranslator is not None
+        and CHINA_ACCESSIBLE_SERVICES is not None
+    ):
+        return True
     with _translatepy_init_lock:
         return _ensure_translatepy_unlocked()
 
@@ -1477,7 +1485,8 @@ async def translate_with_translatepy(text: str, source_lang: str, target_lang: s
     Returns:
         Translated text, or None on failure
     """
-    if not text or not text.strip() or not _ensure_translatepy():
+    # May be the first use (a direct caller, not translate_text): import off the loop.
+    if not text or not text.strip() or not await asyncio.to_thread(_ensure_translatepy):
         return None
 
     try:
