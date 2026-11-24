@@ -16,7 +16,8 @@
 
 A commission goes on in a task agent that did that work, or gets a new one;
 loose task agents that did the same job a third time become a project; a
-project gets a leader when it is in a git repository, when a third member
+project gets a leader when it is in a git repository (only where the settings
+say so, which is off as shipped and switched on for this file), when a third member
 would be opened, when its one member has too much waiting, or when the user
 asks; the leader hands commissions over and has no tool to do them with; one
 member that writes works in a project at a time.
