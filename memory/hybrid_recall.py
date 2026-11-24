@@ -1364,15 +1364,16 @@ def _prepare_recall_pools(
     in the same order, ``hybrid_recall`` used to run inline.
 
     Runs in a worker thread while the event loop keeps serving other
-    coroutines, and reads the stores' own rows (``aload_facts`` hands back
-    FactStore's live cached list). That is no new exposure: writers already
-    mutate those rows from worker threads (``amark_absorbed`` / ``asave_facts``
-    run under ``asyncio.to_thread``). Under the GIL each row is copied whole by
-    ``_tag_tier``'s single ``dict(row)``, appending to a list being iterated
-    cannot raise, and a writer that swaps in a new list leaves this reader a
-    consistent old one. The worst case is a writer's two-row update seen half
-    applied, so one recall answer carries both or neither row; the path is
-    read-only, so nothing of that persists past the answer.
+    coroutines. The four lists must be snapshots the caller took on the
+    event loop, never the stores' own lists: writers reshape FactStore's
+    cached list in place (``facts[:] = ...``) from the loop, and iterating it
+    here would skip rows. The rows inside are still the stores' own dicts.
+    That is no new exposure: writers already mutate those rows from worker
+    threads (``amark_absorbed`` / ``asave_facts`` run under
+    ``asyncio.to_thread``), and under the GIL ``_tag_tier``'s single
+    ``dict(row)`` copies each one whole. The worst case is a field update on
+    one row landing between two other rows' copies; the path is read-only,
+    so nothing of that persists past the answer.
     """
     archive_facts = _drop_archive_overlap(archive_facts, active_facts, lanlan_name)
 
@@ -1510,11 +1511,15 @@ async def hybrid_recall(
 
     # Everything between loading and scoring is synchronous and linear in the
     # pool (archive included): ~1 ms on a 1k-row keyword pool, ~130 ms at
-    # 100k rows. It runs in a worker thread; see ``_prepare_recall_pools`` for
-    # why reading the stores' own rows from there is safe.
+    # 100k rows. It runs in a worker thread on list snapshots taken here, in
+    # one synchronous step: some writers shrink FactStore's cached list in
+    # place from the event loop (``facts[:] = ...``), and a worker iterating
+    # the live list would silently skip untouched rows. Copying the pointers
+    # costs well under a millisecond even at 100k rows.
     bm25_pool, embedding_pool = await asyncio.to_thread(
         _prepare_recall_pools,
-        active_facts, active_reflections, archive_facts or [], persona_left_out,
+        list(active_facts), list(active_reflections),
+        list(archive_facts or []), list(persona_left_out),
         lanlan_name=lanlan_name,
         subjects=subjects,
         include_legacy_private=include_legacy_private,

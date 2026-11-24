@@ -950,3 +950,41 @@ async def test_hybrid_recall_prepares_pools_off_the_event_loop(tmp_path):
         )
     assert seen and all(t != loop_thread for t in seen)
     assert result["results"]
+
+
+@pytest.mark.asyncio
+async def test_pool_prep_reads_snapshots_not_the_stores_live_lists(tmp_path):
+    """Writers shrink FactStore's cached list in place from the event loop
+    (``facts[:] = ...``). The worker must iterate a snapshot taken before it
+    started, or such a write makes it skip rows nobody touched."""
+    facts = [{"id": f"k{i}", "text": f"博士喜欢猫 第{i}条", "score": 1.0} for i in range(30)]
+    original_ids = [f["id"] for f in facts]
+    fact_store, reflection_engine = _keyword_stores(tmp_path, facts)
+    real_drop = hr._drop_archive_overlap
+    real_prepare = hr._prepare_recall_pools
+    passed = {}
+
+    def drop_then_shrink(archive_rows, active_rows, name):
+        # The worker has started; a loop-side writer now reshapes the live list.
+        facts[:] = facts[5:]
+        return real_drop(archive_rows, active_rows, name)
+
+    def spy_prepare(active_facts, *args, **kwargs):
+        passed["is_live_list"] = active_facts is facts
+        return real_prepare(active_facts, *args, **kwargs)
+
+    hr._invalidate_pool_cache()
+    with patch.object(hr, "_drop_archive_overlap", drop_then_shrink), \
+         patch.object(hr, "_prepare_recall_pools", spy_prepare), \
+         patch.object(hr, "_cosine_rank", AsyncMock(return_value=[])), \
+         patch.object(hr, "HYBRID_RECALL_BM25_THRESHOLD", 0.0), \
+         patch.object(hr, "_bm25_rank", lambda q, pool, **kw: [(d, 1.0) for d in pool]), \
+         patch.object(hr, "HYBRID_RECALL_BUDGET_EACH", 100), \
+         patch.object(hr, "HYBRID_RECALL_BUDGET_TOTAL", 100):
+        result = await hr.hybrid_recall(
+            lanlan_name="parity", query="博士 猫", fact_store=fact_store,
+            reflection_engine=reflection_engine, config_manager=MagicMock(),
+        )
+    assert passed["is_live_list"] is False
+    assert len(facts) == 25  # the write did happen
+    assert sorted(r["id"] for r in result["results"]) == sorted(original_ids)
