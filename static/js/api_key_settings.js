@@ -5768,6 +5768,8 @@ const ConnectivityManager = {
         const enableCustomApi = document.getElementById('enableCustomApi');
         if (enableCustomApi && enableCustomApi.checked) {
             CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
+                // 订阅期间休眠的独立档位运行时不生效，不去打它们的服务商（与后端保存时的判断一致）。
+                if (_chatgptIndependentSlots.includes(mt)) return;
                 const customResult = this.resolveEffectiveKey({ type: 'custom', modelType: mt });
                 const customCacheId = customResult.cacheId;
                 if (!customResult.secretMasked && customCacheId && !keyConfigs[customCacheId]) {
@@ -5961,6 +5963,7 @@ const ConnectivityManager = {
 
         if (enableCustomApi && enableCustomApi.checked) {
             CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
+                if (_chatgptIndependentSlots.includes(mt)) return;
                 const customResult = this.resolveEffectiveKey({ type: 'custom', modelType: mt });
                 const cacheId = customResult.cacheId;
                 if (!customResult.secretMasked && cacheId && !keyConfigs[cacheId]) {

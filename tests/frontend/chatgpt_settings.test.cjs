@@ -247,6 +247,7 @@ test('account invalidation clears only subscription lights and rejects even succ
         AbortController, setTimeout, clearTimeout, console: {log() {}},
         document: {getElementById: id => nodes[id] || null},
         _assistApiProviders: {}, _coreApiProviders: {}, CONNECTIVITY_TESTABLE_TYPES: ['conversation'],
+        _chatgptIndependentSlots: [],
         getEffectiveAssistKey: () => '', getEffectiveAssistUrl: () => 'https://api.openai.com/v1',
         getProviderInfo: () => ({}), getProviderType: () => 'chatgpt', followedModelType: () => '',
         isMaskedSecretValue: () => false, rememberResolvedProviderUrl() {},
@@ -290,6 +291,43 @@ test('account invalidation clears only subscription lights and rejects even succ
     };
     await manager.testCustomOnly();
     assert.equal(manager.keyStatusMap[key], 'untested');
+});
+
+
+test('connectivity checks skip slots left dormant by the subscription', async () => {
+    const source = fs.readFileSync(path.join(__dirname, '../../static/js/api_key_settings.js'), 'utf8');
+    const snippet = source.slice(source.indexOf('function buildConnectivityCacheId('), source.indexOf('function showMaskedSecretConnectivityNotice('));
+    const nodes = {
+        enableCustomApi: {checked: true},
+        conversationModelProvider: {value: 'chatgpt'}, conversationModelId: {value: 'fixture-model'},
+        ttsModelProvider: {value: 'custom'}, ttsModelId: {value: 'dormant-tts'},
+        ttsModelUrl: {value: 'https://dormant-tts.test/v1'}, ttsModelApiKey: {value: 'dormant-key'},
+    };
+    const bodies = [];
+    const context = {
+        AbortController, setTimeout, clearTimeout, console: {log() {}},
+        document: {getElementById: id => nodes[id] || null},
+        _assistApiProviders: {}, _coreApiProviders: {}, CONNECTIVITY_TESTABLE_TYPES: ['conversation', 'tts'],
+        // The settings response lists the slots the subscription left dormant.
+        _chatgptIndependentSlots: ['tts'],
+        getEffectiveAssistKey: () => '', getEffectiveAssistUrl: () => 'https://api.openai.com/v1',
+        getProviderInfo: () => ({}), getProviderType: pk => (pk === 'chatgpt' ? 'chatgpt' : 'openai_compatible'),
+        followedModelType: () => '', getRealKey: input => input.value,
+        isMaskedSecretValue: () => false, rememberResolvedProviderUrl() {},
+        LightStatus: {UNTESTED: 'untested', CONNECTED: 'connected', TESTING: 'testing', FAILED: 'failed'},
+        updateLightStatus() {}, updateErrorMessage() {},
+        fetch: async (_, init) => {
+            bodies.push(JSON.parse(init.body));
+            return {ok: true, json: async () => ({success: true})};
+        },
+    };
+    vm.runInNewContext(snippet + '\nglobalThis.manager = ConnectivityManager;', context);
+    await context.manager.testCustomOnly();
+    assert.deepEqual(bodies.map(body => body.model), ['fixture-model']);
+    assert.equal(JSON.stringify(bodies).includes('dormant'), false);
+    // The pre-save check (testAll) collects custom slots with the same rule.
+    const testAll = source.slice(source.indexOf('    async testAll() {'), source.indexOf('    async testCustomOnly() {'));
+    assert.match(testAll, /if \(_chatgptIndependentSlots\.includes\(mt\)\) return;/);
 });
 
 
