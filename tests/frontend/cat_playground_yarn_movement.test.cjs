@@ -623,3 +623,63 @@ test('hover during the walking first-image load resumes the same approach with a
   assert.ok(walkFacts(r)[0].pathDistancePx > 200);
   assert.ok(walkFacts(r)[0].durationMs < 7000, 'the hover and both source waits are not walking effort');
 });
+
+function attachDesktopTestYarn(r, profile) {
+  r.window.__NEKO_MULTI_WINDOW__ = profile !== 'web';
+  r.window.__NEKO_DESKTOP_RUNTIME__ = {
+    isWayland: profile === 'wayland' || profile === 'niri', isNiriWayland: profile === 'niri',
+  };
+  r.document.removeEventListener = () => {};
+  assert.equal(r.context._attachNekoIdleCat1PlaygroundYarnBody(r.button, {
+    mode: 'desktop', rect: { left: 600, top: 800, width: 58, height: 58 },
+    screenRect: { left: 600, top: 800, width: 58, height: 58 },
+  }, { refresh: false }), true);
+  return settleYarn(r);
+}
+
+for (const profile of ['web', 'windows', 'wayland', 'niri']) {
+  for (const facingRight of [true, false]) {
+    test(`${profile}: physical desktop yarn has a reachable target from ${facingRight ? 'left' : 'right'}`, async () => {
+      const r = runtime(), yarn = attachDesktopTestYarn(r, profile);
+      r.context._setNekoIdleCat1PlaygroundBodyPosition(r.body, facingRight ? 100 : 800, r.body.floorY);
+      assert.ok(r.context._getNekoIdleCat1PlaygroundYarnContext(r.button));
+      const target = r.context._getNekoIdleCat1PlaygroundYarnTarget(r.button);
+      assert.ok(target, 'the ordinary native-ball calibration cannot push the target inside a physics hull');
+      assert.equal(target.facingRight, facingRight);
+      const allowed = r.context._getNekoIdleCat1PlaygroundMoveTarget(r.button, target);
+      assert.equal(allowed.left, target.left);
+      const originalBallX = yarn.x;
+      startJourney(r);
+      await r.enter(); r.random(.9); await r.runFrames(7000);
+      assert.equal(r.journey.playgroundJourney, null);
+      assert.ok(Math.abs(r.body.x - target.left) < .5);
+      assert.equal(yarn.x, originalBallX);
+      assert.equal(walkFacts(r).length, 1);
+    });
+
+    test(`${profile}: physical desktop yarn admits play and paired movement from ${facingRight ? 'left' : 'right'}`, () => {
+      const r = runtime(), yarn = attachDesktopTestYarn(r, profile);
+      r.context._setNekoIdleCat1PlaygroundBodyPosition(r.body, facingRight ? 100 : 800, r.body.floorY);
+      const target = r.context._getNekoIdleCat1PlaygroundYarnTarget(r.button);
+      assert.ok(target);
+      r.context._setNekoIdleCat1PlaygroundBodyPosition(r.body, target.left, target.top);
+      assert.ok(r.context._getNekoIdleCat1PlaygroundPairMoveTarget(r.button,
+        { left: r.body.x + 20, top: r.body.y }));
+      assert.equal(r.context._playNekoIdleCat1PlayAction(r.button), true);
+      assert.equal(r.context._getNekoIdleCat1PlayActionState(r.button).playgroundYarnControl.yarnBody, yarn);
+    });
+  }
+}
+
+for (const facingRight of [true, false]) {
+  test(`ordinary Wayland retains its native ball image calibration (right=${facingRight})`, () => {
+    const r = runtime(); attachDesktopTestYarn(r, 'wayland');
+    const cat = { left: facingRight ? 100 : 800, top: r.body.y, width: 96, height: 96 };
+    const ball = { left: 600, top: 842, right: 658, bottom: 900, width: 58, height: 58 };
+    assert.equal(r.context._usesNekoIdleCat1NativeYarnVisualAnchor(ball), true);
+    const calibrated = r.context._getNekoIdleCat1NativeYarnVisualTargetLeft(cat, ball, facingRight);
+    assert.equal(r.context._computeNekoIdleCat1SideTargetForLook(cat, ball, facingRight).left,
+      Math.round(calibrated));
+    if (facingRight) assert.equal(Math.round(calibrated), 563);
+  });
+}

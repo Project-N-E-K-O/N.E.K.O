@@ -1540,7 +1540,13 @@ function _getNekoIdleCat1PlaygroundYarnTarget(button, options = {}) {
     const yarnRect = { left: yarnBody.x, top: yarnBody.y, right: yarnBody.x + yarnBody.width,
         bottom: yarnBody.y + yarnBody.height, width: yarnBody.width, height: yarnBody.height };
     const facingRight = catBody.x + catBody.width / 2 <= yarnBody.x + yarnBody.width / 2;
-    const side = _computeNekoIdleCat1SideTargetForLook(catRect, yarnRect, facingRight);
+    // Playground owns a tail-free physical ball, not the ordinary native chat
+    // image. Reuse side-target bookkeeping without its platform image offsets.
+    const gap = _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW.target.gapPx;
+    const side = _makeNekoIdleCat1SideTarget(catRect, yarnRect, {
+        facingRight,
+        rawLeft: facingRight ? yarnRect.left - catRect.width - gap : yarnRect.right + gap
+    });
     if (!side) return null;
     const target = _getNekoIdleCat1PlaygroundMoveTarget(button,
         { left: side.left, top: catBody.y }, options);

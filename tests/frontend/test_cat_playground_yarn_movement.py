@@ -251,3 +251,32 @@ def test_loading_hover_resumes_owned_walking_image_and_cycle(yarn_movement_page:
     assert page.evaluate('walkResults[0].durationMs') < 10000
     assert page.evaluate("session.active && !session.released && session.bodies.get('cat') === catBody")
     _assert_synced(page)
+
+
+@pytest.mark.parametrize("facing_right", (True, False))
+def test_wayland_desktop_yarn_uses_physical_geometry(yarn_movement_page: Page, facing_right):
+    page = yarn_movement_page
+    facts = page.evaluate("""facingRight => {
+        window.__NEKO_MULTI_WINDOW__ = true;
+        window.__NEKO_DESKTOP_RUNTIME__ = {isWayland: true, isNiriWayland: false};
+        const attached = _attachNekoIdleCat1PlaygroundYarnBody(cat, {
+            mode: 'desktop', rect: {left: 600, top: 800, width: 58, height: 58},
+            screenRect: {left: 600, top: 800, width: 58, height: 58}
+        }, {refresh: false});
+        yarnBody = session.bodies.get('desktop-yarn');
+        placeYarn(600);
+        positionCat(facingRight ? 100 : 800);
+        const target = _getNekoIdleCat1PlaygroundYarnTarget(cat);
+        if (!target) return {attached, target: false};
+        const allowed = _getNekoIdleCat1PlaygroundMoveTarget(cat, target);
+        positionCat(target.left);
+        const pair = _getNekoIdleCat1PlaygroundPairMoveTarget(cat,
+            {left: catBody.x + 20, top: catBody.y});
+        const play = _playNekoIdleCat1PlayAction(cat);
+        return {attached, target: true, left: target.left, allowedLeft: allowed?.left,
+            pair: !!pair, play, sameBall:
+                _getNekoIdleCat1PlayActionState(cat).playgroundYarnControl?.yarnBody === yarnBody};
+    }""", facing_right)
+    assert facts["attached"] and facts["target"]
+    assert facts["left"] == pytest.approx(facts["allowedLeft"])
+    assert facts["pair"] and facts["play"] and facts["sameBall"]
