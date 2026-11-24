@@ -16,8 +16,9 @@ const SOURCE_FILE = /\.(?:[cm]?[jt]sx?|vue)$/
 const TEST_FILE = /\.(?:test|spec)\.[^/]+$/
 const TEST_DIRS = new Set(['__tests__', 'e2e', 'node_modules'])
 
-// `from '…'`, `import '…'`, `import('…')`, `import(`…`)`.
-const IMPORT_SPECIFIER = /\b(?:from|import)\s*\(?\s*(['"`])([^'"`\n]+)\1/g
+// `from '…'`, `import '…'`, `import('…')`, `import(`…`)`, and
+// `import(/* @vite-ignore */ '…')`.
+const IMPORT_SPECIFIER = /\b(?:from|import)\s*\(?(?:\s|\/\*[\s\S]*?\*\/)*(['"`])([^'"`\n]+)\1/g
 const CONSENT_TESTING = /(?:^|\/)plugin-consent\/testing(?:\.[cm]?[jt]s)?(?:\?.*)?$/
 const SIBLING_TESTING = /^\.\/testing(?:\.[cm]?[jt]s)?(?:\?.*)?$/
 
