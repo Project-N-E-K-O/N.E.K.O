@@ -378,6 +378,9 @@ def test_doing_it_over_from_the_start_is_not_asking_for_another_task_agent():
         "另开一只来写周报，不要 Report Writer", "重新开一只写周报，不用 Report Writer", "重新開一隻來寫週報",
         "重新开一个会话来写周报，不用 Report Writer", "重新開一個會話來寫週報，不用 Report Writer",
         "重新开一个新的使魔写周报，不用 Report Writer",
+        "重新开一个新会话来写周报，不用 Report Writer", "重新开一个对话写周报，不用 Report Writer",
+        "重新開一個新會話，不用 Report Writer", "重新再开一只使魔，不用 Report Writer",
+        "重新开个新会话写周报，不用 Report Writer",
     ):
         other = orch.by_rules(text, "", standing, bars)
         assert other is not None and (other.action, other.agent) == (orch.SUMMON_STRAY, None), text
