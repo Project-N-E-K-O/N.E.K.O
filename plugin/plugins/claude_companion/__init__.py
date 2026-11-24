@@ -146,6 +146,8 @@ class InboxQueue:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(self._messages, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())  # the data must be on disk before the rename
             os.replace(tmp_path, self._path)
         except OSError:
             try:
@@ -271,6 +273,8 @@ def _migrate_legacy_inbox(legacy_path: Path, target_path: Path, logger: Any) -> 
     tmp_path = target_path.with_name(target_path.name + ".migrating")
     try:
         shutil.copyfile(legacy_path, tmp_path)
+        with open(tmp_path, "rb") as f:
+            os.fsync(f.fileno())  # the copy must be on disk before the rename
         os.replace(tmp_path, target_path)
     except OSError as e:
         logger.warning("Legacy inbox migration failed: {}", type(e).__name__)
@@ -290,11 +294,28 @@ def _migrate_legacy_inbox(legacy_path: Path, target_path: Path, logger: Any) -> 
     return _MIGRATION_DONE
 
 
+def _is_message(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if not all(isinstance(item.get(key), str) for key in ("id", "status", "timestamp")):
+        return False
+    try:
+        datetime.fromisoformat(item["timestamp"])
+    except ValueError:
+        return False
+    return True
+
+
 def _message_list(data: Any) -> List[Dict[str, Any]]:
-    """The message entries of parsed inbox JSON; anything else counts as empty."""
+    """The usable message entries of parsed inbox JSON; anything else is dropped."""
     if not isinstance(data, list):
         return []
-    return [m for m in data if isinstance(m, dict) and "id" in m and "status" in m and "timestamp" in m]
+    return [m for m in data if _is_message(m)]
+
+
+def _log_label(value: Any, limit: int = 32) -> str:
+    """A request-supplied label (source, activity type) cut short for the log."""
+    return str(value)[:limit]
 
 
 def _read_legacy_inbox(legacy_path: Path) -> List[Dict[str, Any]]:
@@ -738,7 +759,10 @@ class ClaudeCompanionPlugin(NekoPluginBase):
             if migration == _MIGRATION_UNKNOWN:
                 # The target may exist with newer messages; any save could
                 # replace it, so keep the inbox closed until a later start.
-                self.logger.warning("Inbox disabled for this run, its files could not be inspected")
+                self.logger.warning(
+                    "Inbox disabled for this run, its files could not be inspected. "
+                    "Check the permissions of the plugin folder and the plugin data folder."
+                )
                 self._inbox = None
                 return
             if migration == _MIGRATION_PENDING:
@@ -974,7 +998,7 @@ class ClaudeCompanionPlugin(NekoPluginBase):
         assistant_msg = data.get("assistant_message", "")
         activity_type = data.get("activity_type", "general")
 
-        self.logger.debug("Received push-summary: activity_type={}", activity_type)
+        self.logger.debug("Received push-summary: activity_type={}", _log_label(activity_type))
 
         # Generate summary
         summary = ActivitySummarizer.summarize(
@@ -995,7 +1019,7 @@ class ClaudeCompanionPlugin(NekoPluginBase):
         # Record event log
         self._add_event_log(activity_type, summary, turn_info)
 
-        self.logger.info("Pushed summary from Claude: type={}", activity_type)
+        self.logger.info("Pushed summary from Claude: type={}", _log_label(activity_type))
 
     # ── Inbox processing ──
 
@@ -1010,7 +1034,7 @@ class ClaudeCompanionPlugin(NekoPluginBase):
         msg_type = data.get("type", "message")
         msg = self._inbox.add(content, source=source, msg_type=msg_type)
         # Message text is private: log its length only, never any of its content.
-        self.logger.info("Inbox: new message from {} ({} chars)", source, len(content))
+        self.logger.info("Inbox: new message from {} ({} chars)", _log_label(source), len(content))
         return {"status": "ok", "message": msg}
 
     def _on_inbox_pending(self) -> dict:
@@ -1033,7 +1057,7 @@ class ClaudeCompanionPlugin(NekoPluginBase):
 
     def _notify_companion(self, summary: str, activity_type: str, turn_info: dict) -> bool:
         """Send a summary to the NEKO companion using push_message. Return whether it succeeded."""
-        self.logger.info("Pushing companion message: type={}", activity_type)
+        self.logger.info("Pushing companion message: type={}", _log_label(activity_type))
         try:
             if not hasattr(self.ctx, 'push_message'):
                 self.logger.error("ctx has no push_message method")

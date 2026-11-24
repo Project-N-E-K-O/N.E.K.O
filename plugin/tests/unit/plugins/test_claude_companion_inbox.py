@@ -456,10 +456,10 @@ def test_pending_migration_without_legacy_file_opens_the_inbox(
 def test_init_failure_logs_error_type_only(
     plugin: ClaudeCompanionPlugin, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    target = plugin.data_path("inbox.json")
-    target.parent.mkdir(parents=True)
-    bad = [dict(_legacy_payload()[0], status="read", timestamp=_SECRET)]
-    target.write_text(json.dumps(bad), encoding="utf-8")
+    def cleanup(self: InboxQueue, max_age_hours: int = 48) -> None:
+        raise ValueError(f"Invalid isoformat string: {_SECRET!r}")
+
+    monkeypatch.setattr(InboxQueue, "cleanup", cleanup)
 
     plugin._init_inbox()
 
@@ -526,7 +526,17 @@ def test_legacy_check_error_keeps_existing_data_inbox(
     assert legacy.is_file()
 
 
-@pytest.mark.parametrize("payload", ["{}", '["x"]', '[{"id": "a"}]'])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "{}",
+        '["x"]',
+        '[{"id": "a"}]',
+        '[{"id": "a", "status": "read", "timestamp": ""}]',
+        '[{"id": "a", "status": "read", "timestamp": 1700000000}]',
+        '[{"id": 1, "status": "pending", "timestamp": "2026-11-23T10:00:00+08:00"}]',
+    ],
+)
 def test_data_inbox_that_is_not_a_message_list_counts_as_empty(
     plugin: ClaudeCompanionPlugin, payload: str
 ) -> None:
@@ -538,3 +548,24 @@ def test_data_inbox_that_is_not_a_message_list_counts_as_empty(
 
     assert plugin._inbox is not None
     assert plugin._inbox.pending() == []
+
+
+def test_unusable_entries_are_dropped_and_good_ones_kept(plugin: ClaudeCompanionPlugin) -> None:
+    target = plugin.data_path("inbox.json")
+    target.parent.mkdir(parents=True)
+    bad = dict(_legacy_payload()[0], id="bad00001", timestamp="not a time")
+    target.write_text(json.dumps([bad] + _legacy_payload()), encoding="utf-8")
+
+    plugin._init_inbox()
+
+    assert [m["id"] for m in plugin._inbox.pending()] == ["abc12345"]
+
+
+def test_request_labels_are_cut_short_in_the_log(plugin: ClaudeCompanionPlugin) -> None:
+    plugin._init_inbox()
+    plugin.logger.lines.clear()
+    source = "s" * 32 + _SECRET
+
+    assert plugin._on_inbox_send({"content": "hi", "source": source})["status"] == "ok"
+
+    assert plugin.logger.lines == [("info", "Inbox: new message from {} ({} chars)", ("s" * 32, 2))]
