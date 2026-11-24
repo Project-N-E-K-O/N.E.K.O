@@ -29,7 +29,8 @@ function surface(initial, respond = () => ({}), browser = false) {
         listeners: {}, addEventListener(name, fn) { this.listeners[name] = fn; },
         open: () => null, confirm: () => true,
         rebinds: 0, refreshCustomConnectivityLightBindings() { this.rebinds++; },
-        abandoned: 0, abandonApiSettingsLoad() { this.abandoned++; },
+        abandoned: [], abandonApiSettingsLoad(generation) { this.abandoned.push(generation); },
+        loadGeneration: 0, apiSettingsLoadGeneration() { return this.loadGeneration; },
         electronShell: { openExternal: async url => { opened = url; } }
     };
     if (browser) delete window.electronShell;
@@ -153,6 +154,16 @@ test('logout preserves the remote revocation warning and restores controls', asy
     assert.match(ui.nodes.status.textContent, /revocation/);
     assert.equal(ui.nodes.login.disabled, false);
     assert.equal(JSON.parse(ui.calls.find(c => c.url.endsWith('/logout')).options.body).account_id, signedIn.active);
+});
+
+test('an unconfirmed revocation and an out-of-date form are both reported on logout', async () => {
+    const ui = surface(signedIn, () => ({success: true, revocation_confirmed: false, subscription_restored: true}));
+    await flush();
+    ui.setReloadWork(async () => false);
+    ui.setState({...signedIn, active: null});
+    await ui.nodes.logout.listeners.click();
+    assert.match(ui.nodes.status.textContent, /revocation/);
+    assert.match(ui.nodes.status.textContent, /could not reload the settings/);
 });
 
 test('status failures retry and restore controls after login completes or expires', async () => {
@@ -451,7 +462,34 @@ test('a stalled settings reload after a toggle releases the controls and warns',
     assert.equal(ui.window.isChatGPTSettingsBusy(), false);
     assert.match(ui.nodes.status.textContent, /could not reload the settings/);
     // The timed-out read is abandoned, so its late answer cannot land on later edits.
-    assert.equal(ui.window.abandoned, 1);
+    assert.equal(ui.window.abandoned.length, 1);
+});
+
+test('a reload deadline abandons only its own unsettled read', async () => {
+    let ui;
+    ui = surface(signedIn, (url, body) => {
+        ui.setSubscription({enabled: body.enabled, model: 'available-model'});
+        return {success: true};
+    });
+    await flush();
+    // The read finishes in time: its deadline expiring later must not touch a newer read.
+    ui.window.loadGeneration = 7;
+    await toggle(ui, true);
+    ui.expireDeadlines();
+    await flush();
+    assert.deepEqual(ui.window.abandoned, []);
+    // A stalled read is abandoned by the generation it was given, not "whatever is current".
+    ui.window.loadGeneration = 8;
+    ui.setReloadWork(() => new Promise(() => {}));
+    ui.nodes.enabled.checked = false;
+    const action = ui.nodes.enabled.listeners.change();
+    await flush();
+    ui.nodes['confirm-accept'].listeners.click();
+    await flush();
+    ui.window.loadGeneration = 9; // a newer read has started meanwhile
+    ui.expireDeadlines();
+    await action;
+    assert.deepEqual(ui.window.abandoned, [8]);
 });
 
 test('the stale-form warning follows every other status it meets', async () => {

@@ -56,8 +56,11 @@ let _secretDisplayCache = null;
 // 每次 loadCurrentApiKey 递增；响应回来时已有更新的载入开始，旧响应就不再写表单，
 // 免得晚到的旧配置盖掉新的（订阅开关等待载入有期限，超时后可能再发起一次载入）。
 let _loadCurrentApiKeyGeneration = 0;
-// 订阅面板等待载入超时后调用：作废正在进行的那次载入，晚到的响应不再覆盖解锁后用户的修改。
-window.abandonApiSettingsLoad = () => {
+// 订阅面板等待载入超时后调用：作废它发起的那次载入（按代次核对，已有更新的载入就什么都不做），
+// 晚到的响应不再覆盖解锁后用户的修改。
+window.apiSettingsLoadGeneration = () => _loadCurrentApiKeyGeneration;
+window.abandonApiSettingsLoad = generation => {
+    if (generation !== undefined && generation !== _loadCurrentApiKeyGeneration) return;
     _loadCurrentApiKeyGeneration += 1;
     _isLoadingSavedConfig = false;
     _secretDisplayCache = null;

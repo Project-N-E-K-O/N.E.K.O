@@ -195,15 +195,19 @@
         }
     }
     // A stalled settings read must not hold busy (and with it ordinary saves) forever.
-    // The read keeps going; if it finishes later it announces neko:api-settings-loaded.
+    // On expiry the read is abandoned, so its late answer cannot land on edits made
+    // after the controls unlock. A deadline does nothing once its read has settled,
+    // and abandons only the read it was set for, never a newer one.
     const RELOAD_TIMEOUT_MS = 30000;
-    const withDeadline = promise => {
+    const withDeadline = (promise, onExpire) => {
         if (typeof AbortSignal === 'undefined' || typeof AbortSignal.timeout !== 'function') return promise;
         const deadline = AbortSignal.timeout(RELOAD_TIMEOUT_MS);
-        return Promise.race([promise, new Promise(resolve => {
+        let settled = false;
+        const tracked = promise.finally(() => { settled = true; });
+        return Promise.race([tracked, new Promise(resolve => {
             deadline.addEventListener('abort', () => {
-                // The late response must not land on edits made after the controls unlock.
-                if (typeof window.abandonApiSettingsLoad === 'function') window.abandonApiSettingsLoad();
+                if (settled) return;
+                onExpire();
                 resolve(false);
             }, { once: true });
         })]);
@@ -211,7 +215,13 @@
     // Returns whether the settings form now shows the saved configuration.
     const reloadSettings = async () => {
         if (typeof loadCurrentApiKey !== 'function') return true;
-        const loaded = await withDeadline(loadCurrentApiKey());
+        const read = loadCurrentApiKey();
+        // Taken right after the call: loadCurrentApiKey() numbers itself before its first await.
+        const generation = typeof window.apiSettingsLoadGeneration === 'function'
+            ? window.apiSettingsLoadGeneration() : undefined;
+        const loaded = await withDeadline(read, () => {
+            if (typeof window.abandonApiSettingsLoad === 'function') window.abandonApiSettingsLoad(generation);
+        });
         // Values were set without change events: point the lights at the new slot keys.
         if (typeof window.refreshCustomConnectivityLightBindings === 'function') {
             window.refreshCustomConnectivityLightBindings();
@@ -291,7 +301,10 @@
             if (failure || result.subscription_restored) await reloadSettings();
         } finally { await refresh(); }
         if (failure) throw failure;
-        if (!result.revocation_confirmed) status.textContent = t('revocationUnconfirmed', 'Signed out locally. Disconnect the app in ChatGPT Settings to confirm remote revocation.');
+        if (!result.revocation_confirmed) {
+            const revocation = t('revocationUnconfirmed', 'Signed out locally. Disconnect the app in ChatGPT Settings to confirm remote revocation.');
+            status.textContent = formStale ? `${revocation} ${staleFormText()}` : revocation;
+        }
     }));
     window.addEventListener('localechange', () => refresh().catch(report));
     // Any successful settings reload (an ordinary save included) brings the form back in sync.

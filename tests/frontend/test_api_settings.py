@@ -2394,6 +2394,15 @@ def test_a_late_settings_read_never_overwrites_a_newer_one(mock_page: Page, runn
     }""")
     assert abandoned == {"read": False, "customApi": True}, abandoned
 
+    # Abandoning by an old generation never discards a newer read.
+    newer = mock_page.evaluate("""async () => {
+        const stale = window.apiSettingsLoadGeneration();
+        const read = loadCurrentApiKey();
+        window.abandonApiSettingsLoad(stale);
+        return await read;
+    }""")
+    assert newer is True
+
 
 @pytest.mark.frontend
 def test_chat_model_card_says_it_must_read_images(mock_page: Page, running_server: str):
