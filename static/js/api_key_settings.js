@@ -1456,6 +1456,16 @@ function getTtsProviderMeta(pk) {
  * 两处都 fail-open：元数据没取到（/api_providers 失败）时不过滤，宁可多列几项，
  * 也不要把用户正在用的服务商从下拉里藏掉。
  */
+/**
+ * Whether a TTS provider keeps its key in its own Key Book entry (registry
+ * api_key_field other than the shared ttsModelApiKey slot).
+ */
+function isKeyBookBackedTtsProvider(providerKey) {
+    const meta = getTtsProviderMeta(providerKey);
+    const field = (meta && meta.api_key_field) || 'ttsModelApiKey';
+    return field !== 'ttsModelApiKey' && !!_apiKeyRegistry[providerKey];
+}
+
 function isProviderCapableForModelType(providerKey, modelType) {
     const pk = String(providerKey || '').trim();
     if (!pk || pk === 'custom' || pk.startsWith('follow_')) return true;
@@ -1844,13 +1854,17 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
         // 结构信号兜底）；预填默认值优先取 api_providers.json，缺失时回退注册表 default_*。
         const _spMeta = getTtsProviderMeta(provider);
         const pInfo = getProviderInfo(provider);
+        const keyBookBacked = isKeyBookBackedTtsProvider(provider);
         if (urlInput) {
             // 切换到该 provider 时：
             // - 若 URL 为空，或当前 URL 是从其他 provider 自动填充的 readonly 值（用户没主动编辑过），
             //   覆盖为默认 URL；
             // - 若 URL 是用户主动编辑过的地址（非 readonly），保留。
+            // - A provider whose key lives in its own Key Book entry always starts from its
+            //   own endpoint, so another provider's URL is never paired with that key.
             const wasReadonly = urlInput.hasAttribute('readonly');
-            if (!urlInput.value || !urlInput.value.trim() || wasReadonly) {
+            if (!urlInput.value || !urlInput.value.trim() || wasReadonly
+                || (keyBookBacked && !_isLoadingSavedConfig)) {
                 urlInput.value = getProviderOpenrouterUrl(provider, pInfo) || _spMeta.default_url || '';
             }
             urlInput.removeAttribute('readonly');
@@ -1861,8 +1875,7 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
         if (voiceInput && (!_isLoadingSavedConfig || !voiceInput.value || !voiceInput.value.trim())) {
             voiceInput.value = pInfo.tts_default_voice || _spMeta.default_voice || '';
         }
-        const bookField = _spMeta.api_key_field || 'ttsModelApiKey';
-        if (bookField !== 'ttsModelApiKey' && _apiKeyRegistry[provider]) {
+        if (keyBookBacked) {
             // The key lives in this provider's own Key Book entry (registry api_key_field);
             // the shared TTS key input only mirrors it, so a save never clears it.
             setKeyReadonly(keyInput, getEffectiveAssistKey(provider, null, { useTokenPlan: false }), provider);
@@ -4080,6 +4093,11 @@ async function save_button_down(e) {
     } else if (selectedTtsProvider) {
         payload.ttsProvider = '';
     }
+    if (isKeyBookBackedTtsProvider(selectedTtsProvider)) {
+        // The backend mirrors this provider's Key Book entry into the TTS slot;
+        // the read-only copy in the slot input may be older than the Key Book.
+        delete payload.ttsModelApiKey;
+    }
 
     const disableTtsEl = document.getElementById('disableTts');
     if (disableTtsEl) {
@@ -5329,7 +5347,11 @@ const ConnectivityManager = {
                     result.url = urlInput ? urlInput.value.trim() : '';
                     result.providerType = 'tts';
                     result.subType = _spProbe.probe_sub_type || provider;
-                    result.key = keyInput ? getRealKey(keyInput) : '';
+                    // A Key Book-backed provider probes with the current Key Book value,
+                    // not the read-only copy taken when it was selected.
+                    result.key = isKeyBookBackedTtsProvider(provider)
+                        ? getEffectiveAssistKey(provider, null, { useTokenPlan: false })
+                        : (keyInput ? getRealKey(keyInput) : '');
                     result.model = getResolvedCustomModelId(mt, provider);
                     result.voiceId = document.getElementById('ttsVoiceId')?.value?.trim() || '';
                 } else {

@@ -1509,12 +1509,17 @@ def test_qwen_token_plan_tts_key_comes_from_key_book(mock_page: Page, running_se
             provider.value = 'custom';
             provider.dispatchEvent(new Event('change', { bubbles: true }));
             setMaskedInput(document.getElementById('ttsModelApiKey'), 'sk-openai-custom');
+            document.getElementById('ttsModelUrl').value = 'https://my-custom.example/v1';
 
-            syncKeyToBook('qwen_token_plan', 'sk-sp-book-key');
+            syncKeyToBook('qwen_token_plan', 'sk-sp-old-key');
             provider.value = 'qwen_token_plan';
             provider.dispatchEvent(new Event('change', { bubbles: true }));
+            // A Key Book edit after selecting the provider still reaches the probe and the save.
+            syncKeyToBook('qwen_token_plan', 'sk-sp-book-key');
+            const probe = ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: 'tts' });
             const keyInput = document.getElementById('ttsModelApiKey');
             const selected = {
+                probe: { key: probe.key, url: probe.url, subType: probe.subType },
                 key: getRealKey(keyInput),
                 readonly: keyInput.hasAttribute('readonly'),
                 url: document.getElementById('ttsModelUrl').value,
@@ -1535,14 +1540,22 @@ def test_qwen_token_plan_tts_key_comes_from_key_book(mock_page: Page, running_se
         }
     """)
 
-    assert result["selected"]["key"] == "sk-sp-book-key"
+    assert result["selected"]["key"] == "sk-sp-old-key"
     assert result["selected"]["readonly"] is True
+    # Another provider's URL is not kept for the Token Plan key.
+    assert result["selected"]["url"] == "https://token-plan.cn-beijing.maas.aliyuncs.com"
+    assert result["selected"]["probe"] == {
+        "key": "sk-sp-book-key",
+        "url": "https://token-plan.cn-beijing.maas.aliyuncs.com",
+        "subType": "qwen_token_plan",
+    }
     assert result["selected"]["model"] == "qwen-audio-3.0-tts-plus"
     assert result["selected"]["voice"] == "longanlingxin"
     payload = result["payload"]
     assert payload["ttsModelProvider"] == "qwen_token_plan"
     assert payload["assistApiKeyQwenTokenPlan"] == "sk-sp-book-key"
-    assert payload["ttsModelApiKey"] == "sk-sp-book-key"
+    # The backend mirrors the Key Book entry into the slot (see update_core_config).
+    assert "ttsModelApiKey" not in payload
     # The Token Plan key must not stay in the slot once another provider is chosen.
     assert result["keyAfterLeaving"] != "sk-sp-book-key"
 
