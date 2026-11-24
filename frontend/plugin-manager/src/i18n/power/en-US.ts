@@ -130,7 +130,7 @@ const messages = {
       incomplete: 'What the model answered was incomplete. Try again, or fill it in yourself.',
       no_preset: 'The kinds of familiar cannot be read right now.',
     },
-    bossHint: 'A boss cat only hands out work and does none of it: what comes for this project goes to it first, and it passes each job on to another familiar.',
+    bossHint: 'A boss cat only hands out work and does none of it: whatever new comes to this project that no familiar there is already on, it passes on to another familiar.',
     presets: {
       boss: 'Boss cat', worker: 'Helper cat', scout: 'Scout cat', inspector: 'Inspector cat', planner: 'Planner cat',
       general: 'Working cat', shadow: 'Copy',
@@ -440,7 +440,7 @@ const messages = {
       asked_session: '{who} asked {peer}: {text}',
       orchestrated: 'This went to {peer} instead (where it was meant to go no longer worked)',
       family_formed: 'The familiars that did this before became the project "{text}"',
-      leader_derived: '"{text}" got a boss cat; its work goes there first from now on',
+      leader_derived: '"{text}" got a boss cat; from now on it hands out what comes there that no familiar is already on',
       leader_derived_git: '"{text}" is in a git repository, so it got a boss cat to hand out its work',
       leader_derived_third_member: '"{text}" needed a third familiar, so it got a boss cat to hand out its work',
       leader_derived_busy: 'The familiar of "{text}" had too much waiting, so the project got a boss cat to hand out its work',

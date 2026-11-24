@@ -123,7 +123,7 @@ const messages: PowerMessages = {
       incomplete: 'モデルの返事が不完全でした。もう一度試すか、ご自分で入力してください。',
       no_preset: 'いまは使い魔の役割一覧を読み取れません。',
     },
-    bossHint: 'ボス猫は仕事を振り分けるだけで、自分では作業しません。このプロジェクトの仕事はまずボス猫に届き、ほかの使い魔に任されます。',
+    bossHint: 'ボス猫は仕事を振り分けるだけで、自分では作業しません。このプロジェクトに来た新しい仕事のうち、いまの使い魔に当てはまらないものを、ほかの使い魔に任せます。',
     presets: {
       boss: 'ボス猫', worker: '子分猫', scout: '偵察猫', inspector: '監督猫', planner: '軍師猫',
       general: 'はたらき猫', shadow: '分身',
@@ -433,7 +433,7 @@ const messages: PowerMessages = {
       asked_session: '{who} が {peer} に質問しました：{text}',
       orchestrated: 'この件は {peer} に回されました（予定していた行き先が使えませんでした）',
       family_formed: '同じ仕事をしてきた使い魔たちがプロジェクト「{text}」になりました',
-      leader_derived: '「{text}」にボス猫がつきました。これからはここの仕事をボス猫が振り分けます',
+      leader_derived: '「{text}」にボス猫がつきました。これからは、いまの使い魔に当てはまらない新しい仕事をボス猫が振り分けます',
       leader_derived_git: '「{text}」は git リポジトリにあるので、仕事を振り分けるボス猫がつきました',
       leader_derived_third_member: '「{text}」に 3 匹目の使い魔が必要になったので、仕事を振り分けるボス猫がつきました',
       leader_derived_busy: '「{text}」の使い魔が抱える仕事が多すぎるので、仕事を振り分けるボス猫がつきました',

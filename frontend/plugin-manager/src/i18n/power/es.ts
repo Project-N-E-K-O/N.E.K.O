@@ -123,7 +123,7 @@ const messages: PowerMessages = {
       incomplete: 'La respuesta del modelo estaba incompleta. Inténtalo de nuevo o complétalo tú.',
       no_preset: 'Ahora mismo no se puede leer la lista de roles de los familiares.',
     },
-    bossHint: 'El gato jefe solo reparte el trabajo y no hace nada él mismo: lo que llega para este proyecto pasa primero por él, y él se lo encarga a otro familiar.',
+    bossHint: 'El gato jefe solo reparte el trabajo y no hace nada él mismo: lo nuevo que llegue a este proyecto y no siga el trabajo de ningún familiar se lo encarga a otro familiar.',
     presets: {
       boss: 'Gato jefe', worker: 'Gato ayudante', scout: 'Gato explorador', inspector: 'Gato capataz', planner: 'Gato estratega',
       general: 'Gato currante', shadow: 'Doble',
@@ -433,7 +433,7 @@ const messages: PowerMessages = {
       asked_session: 'Pregunta de {who} para {peer}: {text}',
       orchestrated: 'Esto pasó a {peer} (el destino previsto ya no servía)',
       family_formed: 'Los familiares que ya hicieron esto formaron el proyecto «{text}»',
-      leader_derived: '«{text}» tiene ahora un gato jefe; desde ahora su trabajo pasa primero por él',
+      leader_derived: '«{text}» tiene ahora un gato jefe; desde ahora reparte lo nuevo que no siga el trabajo de ningún familiar',
       leader_derived_git: '«{text}» está en un repositorio git, así que tiene un gato jefe que reparte el trabajo',
       leader_derived_third_member: '«{text}» necesitaba un tercer familiar, así que tiene un gato jefe que reparte el trabajo',
       leader_derived_busy: 'El familiar de «{text}» tenía demasiado pendiente, así que el proyecto tiene un gato jefe que reparte el trabajo',

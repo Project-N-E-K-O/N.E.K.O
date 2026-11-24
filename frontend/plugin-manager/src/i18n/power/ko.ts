@@ -123,7 +123,7 @@ const messages: PowerMessages = {
       incomplete: '모델이 보낸 내용이 완전하지 않아요. 다시 시도하거나 직접 입력해 주세요.',
       no_preset: '지금은 사역마 역할 목록을 읽을 수 없어요.',
     },
-    bossHint: '대장 고양이는 일을 나눠 주기만 하고 직접 하지는 않아요. 이 프로젝트의 일은 먼저 대장 고양이에게 가고, 대장 고양이가 다른 사역마에게 맡겨요.',
+    bossHint: '대장 고양이는 일을 나눠 주기만 하고 직접 하지는 않아요. 이 프로젝트에 새로 온 일 중 지금 있는 사역마가 맡던 일이 아닌 것을 다른 사역마에게 맡겨요.',
     presets: {
       boss: '대장 고양이', worker: '막내 고양이', scout: '정찰 고양이', inspector: '감독 고양이', planner: '책사 고양이',
       general: '일꾼 고양이', shadow: '분신',
@@ -433,7 +433,7 @@ const messages: PowerMessages = {
       asked_session: '{who} → {peer} 질문: {text}',
       orchestrated: '이 일은 {peer}에게 넘어갔어요 (처음 정한 곳으로는 갈 수 없었어요)',
       family_formed: '같은 일을 해 온 사역마들이 프로젝트가 되었어요: 「{text}」',
-      leader_derived: '「{text}」에 대장 고양이가 생겼어요. 앞으로 이곳의 일은 대장 고양이가 나눠 줘요',
+      leader_derived: '「{text}」에 대장 고양이가 생겼어요. 앞으로 지금 있는 사역마가 맡던 일이 아닌 새 일은 대장 고양이가 나눠 줘요',
       leader_derived_git: '「{text}」에 일을 나눠 줄 대장 고양이가 생겼어요 (git 저장소에 있는 프로젝트)',
       leader_derived_third_member: '「{text}」에 일을 나눠 줄 대장 고양이가 생겼어요 (세 번째 사역마가 필요했어요)',
       leader_derived_busy: '「{text}」에 일을 나눠 줄 대장 고양이가 생겼어요 (사역마에게 밀린 일이 너무 많았어요)',

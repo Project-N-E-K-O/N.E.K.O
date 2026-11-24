@@ -208,7 +208,7 @@ describe('how the familiars stood at a moment of what happened', () => {
         .toBe(words.activity.kinds[`leader_derived_${reason}`].replace('{text}', 'Blog'))
     }
     expect(say('leader_derived', { text: 'Blog', peer: lead, detail: { project: 'Blog', reason: 'later' } }))
-      .toBe('"Blog" got a boss cat; its work goes there first from now on')
+      .toBe('"Blog" got a boss cat; from now on it hands out what comes there that no familiar is already on')
     // The reason is a leader's only: of another kind it is not what is said.
     expect(say('ended', { text: 'moved', detail: { outcome: 'done', reason: 'git' } })).toBe('Blog is done')
     expect(say('ended', { text: 'moved', detail: { reason: 'done' } })).toBe('Blog ended: moved')

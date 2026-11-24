@@ -123,7 +123,7 @@ const messages: PowerMessages = {
       incomplete: '模型回的內容不完整，可以再試一次，或者自己填。',
       no_preset: '現在讀不到使魔的職能清單。',
     },
-    bossHint: '貓老大只派活、自己不幹活：這個專案的事先到它這裡，再由它分給別的使魔去辦。',
+    bossHint: '貓老大只派活、自己不幹活：這個專案裡新來的、對不上現成使魔的事，由它分給別的使魔去辦。',
     presets: {
       boss: '貓老大', worker: '貓小弟', scout: '偵察貓', inspector: '監工貓', planner: '軍師貓',
       general: '打工貓', shadow: '副本',
@@ -433,7 +433,7 @@ const messages: PowerMessages = {
       asked_session: '{who} 問 {peer}：{text}',
       orchestrated: '這件事改交給了 {peer}（原先定的去處行不通）',
       family_formed: '做過同一件事的使魔組成了專案「{text}」',
-      leader_derived: '「{text}」有了貓老大，之後這裡的事先交給它來派',
+      leader_derived: '「{text}」有了貓老大，之後這裡新來的、對不上現成使魔的事由它來派',
       leader_derived_git: '「{text}」在 git 儲存庫裡，有了貓老大來派活',
       leader_derived_third_member: '「{text}」要第三隻使魔了，有了貓老大來派活',
       leader_derived_busy: '「{text}」的使魔手上的事太多，有了貓老大來派活',
