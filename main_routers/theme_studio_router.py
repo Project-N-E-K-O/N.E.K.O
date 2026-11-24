@@ -46,9 +46,10 @@ import re
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
+from main_routers.config_router._shared import check_config_mutation_request
 from main_routers.cookies_login_router import verify_local_access
 from theme_studio import (
     backgrounds_dir,
@@ -112,13 +113,23 @@ async def get_palette() -> JSONResponse:
 @router.post("/run/{entry_id}", dependencies=[Depends(verify_local_access)])
 async def run_theme_entry(
     entry_id: str,
+    request: Request,
     args: dict[str, Any] | None = Body(default=None),
 ) -> JSONResponse:
     """Dispatch one registered entry; replies ``{ok, result}`` or ``{ok: false, error}``.
 
     Unlike the plugin run protocol this answers synchronously (no run id +
     polling); the work itself runs in a worker thread.
+
+    ``verify_local_access`` only checks the peer address, and a page from any
+    website open in a local browser is also a loopback peer. The same guard as
+    ``/api/config/*`` therefore rejects cross-site Origin / Fetch Metadata and
+    requires ``application/json`` (which forces a CORS preflight this server
+    never grants), so another site cannot fire a bodyless ``reset_theme``.
     """
+    rejection = check_config_mutation_request(request)
+    if rejection is not None:
+        return rejection
     if not _RE_ENTRY_ID.match(entry_id or ""):
         raise HTTPException(status_code=400, detail="invalid entry id")
     result = await run_entry(entry_id, args)

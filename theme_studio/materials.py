@@ -1013,6 +1013,9 @@ def compile_materials(materials: dict[str, Any]) -> tuple[dict[str, str], dict[s
         if not anim.get("animation") or anim.get("reducedMotion"):
             for dur_key in ("enterDuration", "exitDuration", "hoverDuration", "pressDuration", "expandDuration"):
                 target[var_name(PARAM_BY_KEY[dur_key])] = "0ms"
+            # 面板里的「关闭动画 / 减少动态效果」也要停掉无限循环的漂移动画，
+            # 不能只依赖系统级 prefers-reduced-motion。
+            target["--nts-mt-anim"] = "none"
         if anim.get("spotlight"):
             spot_a = float(anim.get("spotIntensity", 0.35)) * 0.5
             # spotSpeed 之前是死参数：它只写进 theme.json，没有任何规则消费。

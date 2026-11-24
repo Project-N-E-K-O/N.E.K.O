@@ -77,6 +77,11 @@ _service: ThemeStudioService | None = None
 _service_lock = threading.RLock()
 _service_started = False
 _data_dir_override: Path | None = None
+# Entries were written for a plugin host that ran them one at a time, and
+# several do read-modify-write outside ``_WRITE_LOCK`` (e.g. update_theme_meta
+# vs delete_theme). Worker threads must not change that, so dispatch is
+# serialised here. Entries finish in milliseconds; only the event loop is freed.
+_ENTRY_LOCK = threading.Lock()
 
 
 def set_data_dir_override(path: Path | str | None) -> None:
@@ -188,7 +193,8 @@ def run_entry_sync(entry_id: str, args: dict[str, Any] | None = None) -> Ok | Er
     if fn is None:
         return Err(SdkError(f"未知的主题工坊操作：{entry_id}"))
     try:
-        result = _call_entry(fn, service, payload)
+        with _ENTRY_LOCK:
+            result = _call_entry(fn, service, payload)
     except SdkError as exc:
         return Err(exc)
     except Exception as exc:  # noqa: BLE001 - every failure must become a readable error

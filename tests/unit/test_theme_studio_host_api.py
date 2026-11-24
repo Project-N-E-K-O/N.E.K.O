@@ -101,6 +101,50 @@ def test_read_only_endpoints_are_open_but_run_stays_loopback_only(studio):
 
 
 @pytest.mark.unit
+def test_run_rejects_cross_site_and_non_json_mutations(studio):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from main_routers.cookies_login_router import verify_local_access
+    from main_routers.theme_studio_router import router
+
+    app = FastAPI()
+    app.include_router(router)
+    # Simulate a loopback peer: the CSRF guard must hold even then.
+    app.dependency_overrides[verify_local_access] = lambda: None
+    with TestClient(app) as client:
+        bodyless = client.post("/api/theme_studio/run/reset_theme")
+        assert bodyless.status_code == 415
+        cross_site = client.post(
+            "/api/theme_studio/run/reset_theme",
+            json={},
+            headers={"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"},
+        )
+        assert cross_site.status_code == 403
+        same_origin = client.post(
+            "/api/theme_studio/run/get_theme",
+            json={},
+            headers={"Sec-Fetch-Site": "same-origin"},
+        )
+        assert same_origin.status_code == 200
+        assert same_origin.json()["ok"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("animation", [{"animation": False}, {"reducedMotion": True}])
+def test_motion_switches_stop_drift_animation(animation):
+    from theme_studio import materials as ts_materials
+
+    raw = ts_materials.default_materials()
+    raw["enabled"] = True
+    raw.setdefault("animation", {}).update(animation)
+    clean, _warnings = ts_materials.normalize_materials(raw)
+    light, dark = ts_materials.compile_materials(clean)
+    assert light["--nts-mt-anim"] == "none"
+    assert dark["--nts-mt-anim"] == "none"
+
+
+@pytest.mark.unit
 def test_schedule_thread_restarts_after_shutdown(studio):
     first = studio._schedule_thread
     assert first is not None and first.is_alive()

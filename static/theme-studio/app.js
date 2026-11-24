@@ -5559,8 +5559,22 @@ function paletteSignature(p) {
     String(p.name || ''),
     p.enabled === false ? '0' : '1',
     pairBlock(p.vars),
-    pairBlock(p.dark_vars)
+    pairBlock(p.dark_vars),
+    // 材质只在别的窗口里改动时，也要能被感知到。
+    materialsSignatureText(p.materials)
   ].join('\u0002'));
+}
+
+function materialsSignatureText(materials) {
+  if (!materials || typeof materials !== 'object') return '';
+  try { return JSON.stringify(materials); } catch (e) { return ''; }
+}
+
+/** 材质中心有未应用的改动时算 1 项待应用：外部同步不能把它覆盖掉。 */
+function materialsDirtyCount() {
+  var api = window.NekoMaterials;
+  if (!api || typeof api.isDirty !== 'function') return 0;
+  try { return api.isDirty() ? 1 : 0; } catch (e) { return 0; }
 }
 
 /** 是否应该自动跟随这次外部改动。纯函数，自测里直接断言。 */
@@ -5579,7 +5593,7 @@ function externalSyncBlockers() {
   var modal = $('modal');
   return {
     busy: !!state.busy,
-    dirty: pendingChangeCount(),
+    dirty: pendingChangeCount() + materialsDirtyCount(),
     modalOpen: !!(modal && !modal.hidden)
   };
 }
