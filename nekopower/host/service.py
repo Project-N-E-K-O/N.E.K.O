@@ -1706,7 +1706,7 @@ class NekoPowerHost:
             )
             if before is None:
                 # Something began in it since the look above: said by what it is.
-                raise ProjectBusy(await self._project_busy(project) or "at_work")
+                raise ProjectBusy("tree_not_landed" if await self.ledger.trees_pending(project) else "at_work")
             # The record is written second: not written, the sessions go back, so that nothing is half changed.
             try:
                 changed = await self.space.set_project_workdir(project, str(wanted))

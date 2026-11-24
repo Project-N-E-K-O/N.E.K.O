@@ -2375,22 +2375,19 @@ async def test_a_project_that_cannot_be_given_another_directory_after_all_says_w
     host, trees, workdir = await _shop(hosts, tmp_path, ScriptedLLM([]))
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    busy = host._project_busy
-    looks: list[str | None] = []
+    path = host.paths.worktrees_dir() / "since"
 
-    async def in_the_way_since(project: str) -> str | None:
-        # Nothing is in the way when it is first looked at; a worktree waits for the user by the time it is moved.
-        looks.append(None if not looks else "tree_not_landed")
-        return looks[-1] if looks[-1] is not None or len(looks) > 1 else await busy(project)
-
-    async def not_moved(*_args: Any, **_kwargs: Any) -> None:
+    async def nothing_in_the_way(_project: str) -> None:
+        # Nothing was in the way when it was looked at; a worktree waits for the user a moment later.
+        await host.ledger.add_tree(
+            id="since", project="Shop site", project_dir=str(workdir), path=str(path), workdir=str(path), state="unlanded"
+        )
         return None
 
-    monkeypatch.setattr(host, "_project_busy", in_the_way_since)
-    monkeypatch.setattr(host.ledger, "move_project", not_moved)
+    monkeypatch.setattr(host, "_project_busy", nothing_in_the_way)
     with pytest.raises(ProjectBusy, match="tree_not_landed"):
         await host.set_project_workdir("Shop site", str(elsewhere))
-    assert looks == [None, "tree_not_landed"]
+    assert (await host.space.get_project("Shop site")).workdir == str(workdir)
 
 
 async def test_a_member_made_as_one_that_only_reads_is_on_record_as_that_with_its_session(hosts, tmp_path, monkeypatch):
