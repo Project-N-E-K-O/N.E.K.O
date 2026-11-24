@@ -3058,12 +3058,18 @@ class ThemeStudioService(NekoPluginBase):
             "theme": outcome.get("theme"),
         }
 
-    def _run_schedule_worker(self, stop: threading.Event) -> None:
+    def _run_schedule_worker(
+        self, stop: threading.Event, previous: threading.Thread | None = None
+    ) -> None:
         """Background thread: check the time zone every SCHEDULE_TICK_SECONDS.
 
-        Each worker owns its own stop event, so a shutdown followed by a quick
-        restart can never leave the old thread running next to the new one.
+        Each worker owns its own stop event. A replacement started while the
+        stopped predecessor is still inside ``_schedule_tick()`` first waits for
+        it to exit, so two workers never tick at once and the restart never
+        blocks (or gives up on) the caller.
         """
+        if previous is not None:
+            previous.join()
         while not stop.is_set():
             try:
                 state = self._schedule_tick()
@@ -3076,22 +3082,18 @@ class ThemeStudioService(NekoPluginBase):
     def _start_schedule_worker(self) -> None:
         """Start the schedule thread (idempotent; restartable after shutdown)."""
         with self._schedule_lock:
-            thread = self._schedule_thread
-            if thread is not None and thread.is_alive():
+            previous = self._schedule_thread
+            if previous is not None and previous.is_alive():
                 if not self._schedule_stop_event.is_set():
                     return
-                # Stopped but possibly still inside _schedule_tick(): wait for it
-                # so two threads never write theme.json at once. The old thread
-                # takes neither this lock nor the service lock, so this cannot
-                # deadlock; a thread idle in wait() wakes immediately.
-                thread.join(timeout=10.0)
-                if thread.is_alive():
-                    self._log("warning", "旧的自动换主题线程仍未退出，本次不重启排程线程")
-                    return
+            else:
+                previous = None
+            # A stopped predecessor may still be finishing a tick: the new worker
+            # joins it before its first tick (see _run_schedule_worker).
             stop = threading.Event()
             thread = threading.Thread(
                 target=self._run_schedule_worker,
-                args=(stop,),
+                args=(stop, previous),
                 name="nts-schedule",
                 daemon=True,
             )

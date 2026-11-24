@@ -156,6 +156,17 @@ def test_motion_switches_stop_drift_animation(animation):
 
 
 @pytest.mark.unit
+def test_huge_integer_material_value_falls_back_instead_of_raising():
+    from theme_studio import materials as ts_materials
+
+    raw = ts_materials.default_materials()
+    raw["global"]["opacity"] = 10**400
+    clean, warnings = ts_materials.normalize_materials(raw)
+    assert clean["global"]["opacity"] == ts_materials.default_materials()["global"]["opacity"]
+    assert warnings
+
+
+@pytest.mark.unit
 def test_schedule_thread_restarts_after_shutdown(studio):
     first = studio._schedule_thread
     assert first is not None and first.is_alive()

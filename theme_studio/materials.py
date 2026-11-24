@@ -333,7 +333,9 @@ def _coerce_param(param: Param, value: Any) -> tuple[bool, Any]:
         return (False, None)
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: a huge integer in a hand-edited theme.json; it must fall
+        # back to the default like any bad value, not fail every palette read.
         return (False, None)
     if number != number or number in (float("inf"), float("-inf")):
         return (False, None)

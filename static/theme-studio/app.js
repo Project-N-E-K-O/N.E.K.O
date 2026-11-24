@@ -5739,6 +5739,10 @@ async function reloadPalette(options) {
     if (!materialsDeferred) {
       externalSyncState.lastSignature = paletteSignature(palette);
       externalSyncState.pending = null;
+    } else {
+      // 基线作废（而不是保留旧签名）：草稿被撤销或应用后，下一轮轮询无论磁盘
+      // 此时是新值还是又回到了旧值，都会被判为「需要同步」并把面板拉回磁盘。
+      externalSyncState.lastSignature = '';
     }
     renderMeta();
     renderPaletteHint();

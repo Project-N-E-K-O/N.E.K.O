@@ -109,7 +109,9 @@ def service_started() -> bool:
 def startup_service() -> ThemeStudioService:
     """Construct and initialise the service (synchronous, idempotent).
 
-    Does blocking disk IO: from async code use :func:`startup_service_async`.
+    Runs lazily on the first Theme Studio request (in practice the loader's
+    first palette poll); it is not hooked into app startup. Does blocking disk
+    IO: from async code use :func:`startup_service_async`.
     """
     global _service_started
     service = get_service()
@@ -130,7 +132,10 @@ async def startup_service_async() -> ThemeStudioService:
 
 
 def shutdown_service() -> None:
-    """Stop the schedule thread (best effort, called on app shutdown).
+    """Stop the schedule thread (best effort).
+
+    Not wired into the app shutdown hooks: the thread is a daemon and theme.json
+    writes are atomic (tmp + replace), so process exit is safe without it.
 
     Resets the started flag so a later :func:`startup_service` restarts the
     schedule thread instead of leaving it dead until the process restarts.

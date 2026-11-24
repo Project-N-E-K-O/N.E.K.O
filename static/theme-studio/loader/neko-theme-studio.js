@@ -110,7 +110,8 @@
   //   1.6.40 调色板轮询连续失败时退避（上限 60s）；诊断上报遇 401/403 停止，
   //          失败后 15s 再试，不再每拍重发。
   //   1.6.41 自升级重载只在聊天 / 字幕 / 提示 / HUD 窗口进行，编辑器页面不再被自动刷新。
-  var SCRIPT_VERSION = '1.6.41';
+  //   1.6.42 窗口重新获得焦点 / 变为可见时清掉轮询退避，立即重新拉取。
+  var SCRIPT_VERSION = '1.6.42';
 
   // 允许的颜色值形态。刻意保守：只放行纯颜色，杜绝把任意 CSS 注进变量。
   var RE_HEX = /^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
@@ -2960,6 +2961,16 @@
     var delay = Math.min(POLL_BACKOFF_MAX_MS, POLL_INTERVAL_MS * Math.pow(2, steps));
     pollBackoffUntil = Date.now() + delay;
   }
+
+  // 用户切回窗口时不要还等着最长 60s 的退避：服务多半已经重启好了。
+  function clearPollBackoff() {
+    if (document.visibilityState === 'hidden') return;
+    pollBackoffUntil = 0;
+  }
+  try {
+    window.addEventListener('focus', clearPollBackoff);
+    document.addEventListener('visibilitychange', clearPollBackoff);
+  } catch (eBackoff) { /* ignore */ }
 
   function fetchPalette(force) {
     if (inflight) return;
