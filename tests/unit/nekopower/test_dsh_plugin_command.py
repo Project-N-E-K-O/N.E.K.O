@@ -67,15 +67,21 @@ PLATFORM = _tgz({PROGRAM_NAME: b"not really pnpm\n" * 64, "package.json": b"{}"}
 class Registry:
     """A registry served on the loopback address: ``files`` by path, or a status for every path."""
 
-    def __init__(self, files: dict[str, bytes] | None = None, *, status: int = 200) -> None:
+    def __init__(self, files: dict[str, bytes] | None = None, *, status: int = 200, slow: str = "") -> None:
         self.files = files or {}
         self.status = status
+        # A path answered only after a few seconds: a download still under way.
+        self.slow = slow
         self.seen: list[str] = []
         registry = self
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802 - the name http.server calls
                 registry.seen.append(self.path)
+                if registry.slow and self.path.endswith(registry.slow):
+                    import time
+
+                    time.sleep(3)
                 data = registry.files.get(self.path, b"{}" if self.path == "/-/ping" else None)
                 if registry.status != 200 or data is None:
                     self.send_response(registry.status if registry.status != 200 else 404)
@@ -431,6 +437,29 @@ def test_a_dsh_that_is_not_there_is_no_success(tmp_path, registries):
     )
 
     assert _run(directory, "add", "x").returncode != 0
+
+
+@pytest.mark.skipif(WINDOWS or not shutil.which("tar"), reason="the sh script, with POSIX signals")
+def test_ending_the_script_while_it_fetches_pnpm_leaves_nothing_half_made(tmp_path, registries):
+    import signal
+    import time
+
+    packages = _packages()
+    registry = Registry(_files_of(packages), slow=str(packages[TAG]["file"]))
+    registries(registry, packages=packages)
+    directory = _write(tmp_path)
+    script = subprocess.Popen([str(directory / plugin_command.COMMAND), "add", "x"],
+                              env={**os.environ, "NO_PROXY": "127.0.0.1", "no_proxy": "127.0.0.1"})
+    deadline = time.monotonic() + 30
+    while not any(path.endswith(str(packages[TAG]["file"])) for path in registry.seen) and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+    script.send_signal(signal.SIGTERM)
+
+    assert script.wait(timeout=30) == 143
+    left = tmp_path / "dsh" / "pnpm"
+    assert not left.exists() or [path.name for path in left.iterdir()] == []
+    assert _calls(tmp_path) == []
 
 
 @pytest.mark.skipif(WINDOWS or not shutil.which("tar"), reason="the sh script, with POSIX signals")

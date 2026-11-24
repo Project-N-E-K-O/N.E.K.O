@@ -401,8 +401,23 @@ def render_sh(*, root: Path, executable: Path, leading: tuple[str, ...], profile
         "    [ -e \"$PNPM_DIR\" ] || mv \"$staging/program\" \"$PNPM_DIR\"",
         "  fi",
         "  rm -rf \"$staging\"",
+        "  staging=''",
         "  [ -f \"$PNPM_DIR/pnpm\" ]",
         "}",
+        "",
+        # Set before anything is fetched: a signal that ends this script also removes what a
+        # download left half done, and hands itself on to dsh while dsh runs, so that neither dsh
+        # nor its pnpm is left running when the command is given up.
+        "child=''",
+        "staging=''",
+        "stop() {",
+        "  if [ -n \"$child\" ]; then kill \"$child\" 2>/dev/null; fi",
+        "  if [ -n \"$staging\" ]; then rm -rf \"$staging\"; fi",
+        "  exit \"$1\"",
+        "}",
+        "trap 'stop 143' TERM",
+        "trap 'stop 130' INT",
+        "trap 'stop 129' HUP",
         "",
         "first=$(printf '%s' \"${1:-}\" | tr '[:upper:]' '[:lower:]')",
         f"case \"$first\" in {'|'.join(LOCAL_COMMANDS)}) offline=1 ;; *) offline=0 ;; esac",
@@ -429,15 +444,8 @@ def render_sh(*, root: Path, executable: Path, leading: tuple[str, ...], profile
         "    if [ \"$candidate\" = \"$registry\" ]; then after=1; fi",
         "  done",
         "fi",
-        # dsh runs as a child, waited for: a signal that ends this script is handed on to it, so
-        # that neither dsh nor its pnpm is left running when the command is given up.
-        # A command run in the background gets no standard input of its own: it is handed this
-        # script's, kept as descriptor 3.
-        "child=''",
-        "stop() { if [ -n \"$child\" ]; then kill \"$child\" 2>/dev/null; fi; exit \"$1\"; }",
-        "trap 'stop 143' TERM",
-        "trap 'stop 130' INT",
-        "trap 'stop 129' HUP",
+        # dsh runs as a child, waited for (see ``stop``). A command run in the background gets no
+        # standard input of its own: it is handed this script's, kept as descriptor 3.
         "exec 3<&0",
         "run() { "
         + " ".join(["\"$DSH\"", *(_sh(item) for item in leading), "plugin --profile", _sh(profile), "\"$@\""])
