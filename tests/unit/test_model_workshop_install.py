@@ -2,6 +2,7 @@
 
 import asyncio
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -144,6 +145,62 @@ def test_installs_existing_local_layout_and_preserves_resource_bytes(
     assert not list((service.paths.private / "staging").iterdir())
     assert not list((service.paths.private / "transactions").iterdir())
     assert service.installer.registry.unavailable() == set()
+
+
+@pytest.mark.parametrize("null_display_info", [False, True])
+def test_nonstandard_motion_installs_verbatim_and_remains_registered(service, tmp_path, null_display_info):
+    files = live2d_files()
+    if null_display_info:
+        model = json.loads(files["Avatar.model3.json"])
+        model["FileReferences"]["DisplayInfo"] = None
+        files["Avatar.model3.json"] = json.dumps(model).encode()
+    motion = json.loads(files["motions/test.motion3.json"])
+    motion["Curves"][0]["Target"] = "2422911982"
+    motion["Meta"].update(TotalSegmentCount=2, TotalPointCount=1)
+    files["motions/test.motion3.json"] = json.dumps(motion).encode()
+    result = install(service, make_native_bundle(tmp_path, files=files))
+    assert result["phase"] == "completed", result
+    assert service.installer.registry.installed()[0]["status"] == "installed"
+    for item in result["result"]["files"]:
+        assert (service.paths.root / item["local_path"]).read_bytes() == files[item["path"]]
+    assert service.installer.registry.unavailable() == set()
+
+
+@pytest.mark.parametrize("tool_effects", [False, True])
+def test_optional_effect_compatibility_does_not_block_installation(service, tmp_path, tool_effects):
+    files = live2d_files()
+    files["Motions_Idle#2.json"] = files.pop("motions/test.motion3.json")
+    files["Motions_Tap.json"] = files["Motions_Idle#2.json"]
+    files["voice.mp3"] = b'\xff\xfb\xb0\x04' + b'\x00' * 24
+    files["physics3.json"] = b'{"Version":3,"Meta":{"PhysicsSettingCount":0},"PhysicsSettings":[]}'
+    model = json.loads(files["Avatar.model3.json"])
+    model["FileReferences"].update(Physics="Physics.json", Motions={
+        "Idle": [{"File": "Motions_Idle#2.json"}], "Tap": [{"File": "Motions_Tap.json", "Sound": "voice.mp3"}],
+    })
+    if tool_effects:
+        model["FileReferences"]["PhysicsV2"] = {"File": "physics3.json"}
+        model["FileReferences"]["Motions"]["init"] = [{"PostCommand": "not executed"}, {"Name": "menu", "Choices": []}]
+    files["Avatar.model3.json"] = json.dumps(model).encode()
+    result = install(service, make_native_bundle(tmp_path, files=files))
+    assert result["phase"] == "completed", result
+    assert service.installer.registry.installed()[0]["status"] == "installed"
+    for item in result["result"]["files"]:
+        assert (service.paths.root / item["local_path"]).read_bytes() == files[item["path"]]
+
+
+def test_live2d_tool_settings_survive_installation_and_registry_verification(service, tmp_path):
+    """The native consumer retains the same companion bytes admitted by Market."""
+    files = live2d_files()
+    files.update({"Avatar.vtube.json": b'{ "ModelID": "fixture" }\n',
+                  "parameters.json": b'{"param_0":1,"ParamAngleX":-2.5}\n',
+                  "items_pinned_to_model.json": b'{"items": []}\n'})
+    result = install(service, make_native_bundle(tmp_path, files=files))
+    assert result["phase"] == "completed", result
+    record = result["result"]
+    assert {item["path"] for item in record["files"]} == set(files)
+    for item in record["files"]:
+        assert (service.paths.root / item["local_path"]).read_bytes() == files[item["path"]]
+    assert service.installer.registry.installed()[0]["status"] == "installed"
 
 
 def test_construction_and_read_only_queries_do_not_create_directories(config):

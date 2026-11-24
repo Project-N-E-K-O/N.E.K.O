@@ -84,7 +84,7 @@ def validate_record(record) -> dict:
                 for item in files
             ],
         )
-        raw = json.dumps(manifest, ensure_ascii=False).encode()
+        raw = json.dumps(manifest, ensure_ascii=False, separators=(",", ":")).encode()
         if len(raw) > BundleLimits().manifest_bytes:
             raise ValueError
         data, inventory = _manifest(raw, BundleLimits())
@@ -234,6 +234,7 @@ class Registry:
                 json.dumps(
                     dict(schema=REGISTRY_SCHEMA, installed=rows, attempts=attempts),
                     ensure_ascii=False,
+                    separators=(",", ":"),
                 ).encode()
             )
             > STATE_BYTES
@@ -247,17 +248,13 @@ class Registry:
         names = list(directory.iterdir())
         if len(names) > MAX_INSTALLED:
             raise WorkshopError("model_workshop_state_unreadable")
-        return [
-            validate_journal(
-                read_json(
-                    self.paths.checked("model_workshop/transactions/" + name.name),
-                    STATE_BYTES,
-                ),
-                name.name,
-            )
-            for name in sorted(names)
-            if name.suffix == ".json"
-        ]
+        journals = []
+        for name in sorted(names):
+            if name.suffix == ".json":
+                data = read_json(self.paths.checked("model_workshop/transactions/" + name.name), STATE_BYTES)
+                if data is not None:  # A concurrent completion may remove its journal.
+                    journals.append(validate_journal(data, name.name))
+        return journals
 
     def status(self, record: dict) -> str:
         """Completed models may be edited locally; existence never implies original hashes."""
@@ -296,7 +293,10 @@ class Registry:
             # journal scan so an older completion cannot expose a new attempt.
             for _ in range(3):
                 state = snapshot()
-                journals = self.journals()
+                try:
+                    journals = self.journals()
+                except (OSError, WorkshopError):
+                    continue  # Atomic journal replacement is a changing snapshot.
                 if state == snapshot():
                     break
             else:

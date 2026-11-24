@@ -55,6 +55,9 @@ class ValidatedBundle:
     files: tuple[BundleFile, ...]
     byte_size: int
     sha256: str
+    # Derived by native admission, never accepted from the package manifest.
+    compatibility_warnings: tuple[dict, ...] = ()
+    compatibility_warning_count: int = 0
 
 
 _RESERVED = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {
@@ -123,7 +126,7 @@ def _check_local_header(source, offset: int, directory_start: int, name: bytes, 
     source.seek(resume)
 
 
-def _directory_budget(source, size: int, limits: BundleLimits) -> None:
+def _directory_budget(source, size: int, limits: BundleLimits, *, allow_backslashes=False) -> None:
     """Bound and count the central directory before ZipFile allocates its entries.
 
     The v1 envelope uses ordinary single-disk ZIP, stored or deflated members.
@@ -162,7 +165,7 @@ def _directory_budget(source, size: int, limits: BundleLimits) -> None:
             raise BundleError("invalid_bundle_member")
         name = source.read(lengths[0])
         # ZipInfo truncates NUL names; inspect bytes before that information is lost.
-        if not name or b"\x00" in name:
+        if not name or b"\x00" in name or (not allow_backslashes and b"\\" in name):
             raise BundleError("invalid_bundle_member")
         _check_extra(source.read(lengths[1]))
         source.seek(lengths[2], 1)
@@ -313,6 +316,7 @@ def inspect_bundle(path: str | Path | BinaryIO, *, limits: BundleLimits = Bundle
                         or mode not in {0, stat.S_IFREG, stat.S_IFDIR}
                         or (mode == stat.S_IFDIR) != info.is_dir() and mode != 0
                         or info.compress_type not in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}
+                        or info.is_dir() and info.file_size != 0
                         or (name != "manifest.json" and name != "model" and not name.startswith("model/"))
                     ):
                         raise BundleError("invalid_bundle_member")
