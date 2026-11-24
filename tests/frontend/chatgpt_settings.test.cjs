@@ -193,6 +193,23 @@ test('a signed-out saved account stays chosen so it can sign in again', async ()
     assert.equal(JSON.parse(login.options.body).account_id, 'other-87654321');
 });
 
+test('choosing a signed-out account keeps the stale-form warning', async () => {
+    const accounts = [...signedIn.accounts, {id: 'other-87654321', email: 'b@example.test', connected: false}];
+    let ui;
+    ui = surface({...signedIn, accounts}, (url, body) => {
+        ui.setSubscription({enabled: body.enabled, model: 'available-model'});
+        return {success: true};
+    });
+    await flush();
+    ui.setReloadWork(async () => false);
+    await toggle(ui, true);
+    await toggle(ui, false); // subscription off: no poll will restore the warning
+    ui.nodes.account.value = 'other-87654321';
+    await ui.nodes.account.listeners.change();
+    assert.match(ui.nodes.status.textContent, /Sign in|signInRequired/);
+    assert.match(ui.nodes.status.textContent, /could not reload the settings/);
+});
+
 test('choosing a signed-out account keeps the subscription status checks running', async () => {
     const accounts = [...signedIn.accounts, {id: 'other-87654321', email: 'b@example.test', connected: false}];
     const ui = surface({...signedIn, accounts});
