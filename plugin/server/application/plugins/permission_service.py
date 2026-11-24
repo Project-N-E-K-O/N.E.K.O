@@ -389,9 +389,10 @@ def _uninstalled_plugin_cutoffs(manager) -> dict[str, datetime] | None:
     """Plugins the install-source lock proves uninstalled, with their removal time.
 
     A plugin counts only when it has a removed entry whose directory is gone
-    and no active entry in any root; absence from the lock is never evidence
-    (workbench projects and other sources outside the managed roots are not
-    in it). Returns ``None`` when the lock cannot be trusted for this.
+    and no entry in any root that is active or not provably gone. Absence
+    from the lock is never evidence (workbench projects and other sources
+    outside the managed roots are not in it). Returns ``None`` when the lock
+    cannot be trusted for this.
     """
     if manager is None or manager.is_degraded:
         return None
@@ -405,18 +406,30 @@ def _uninstalled_plugin_cutoffs(manager) -> dict[str, datetime] | None:
                 # plugin.toml was unreadable may be any of the removed
                 # plugins, so nothing is pruned this time.
                 root = roots.get(entry.root_id)
-                if root is None or (Path(root) / entry.directory_name / "plugin.toml").exists():
+                if root is None:
                     return None
-                continue
+                try:
+                    (Path(root) / entry.directory_name / "plugin.toml").lstat()
+                except FileNotFoundError:
+                    continue
+                except (OSError, ValueError):
+                    # Cannot tell whether a manifest is there.
+                    return None
+                # A manifest entry exists (possibly a dangling link).
+                return None
             active.add(entry.plugin_id)
             continue
-        when = _parse_time(entry.removed_at)
-        if not entry.plugin_id or when is None:
+        if not entry.plugin_id:
             continue
         if not _directory_gone(roots.get(entry.root_id), entry.directory_name):
             # The reconcile also tombstones directories the scan could not
-            # see (root unmounted, listing failed, symlinked); only a
-            # directory that is really gone proves the uninstall.
+            # see (root unmounted, listing failed, symlinked). Such a copy
+            # may still be installed, so it protects the id like an active
+            # entry; a removal in another root does not prove it gone.
+            active.add(entry.plugin_id)
+            continue
+        when = _parse_time(entry.removed_at)
+        if when is None:
             continue
         if entry.plugin_id not in removed_at or when > removed_at[entry.plugin_id]:
             removed_at[entry.plugin_id] = when

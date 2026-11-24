@@ -749,10 +749,13 @@ class PluginPermissionStore:
         """Drop the records of several plugins in one write.
 
         ``should_forget`` sees each existing record and may keep it. Returns
-        the dropped plugin ids; nothing is written when none is dropped.
+        the dropped plugin ids. When none is dropped nothing is saved here,
+        not even an import still held in memory; the drop itself is one save
+        of the whole document. (Loading a store that does not exist yet still
+        persists its first-use import, as every read does.)
         """
         with self._lock:
-            manager = self._load_for_write()
+            manager = self._load()
             document = copy.deepcopy(self._document)
             dropped = []
             for plugin_id in sorted(set(plugin_ids)):

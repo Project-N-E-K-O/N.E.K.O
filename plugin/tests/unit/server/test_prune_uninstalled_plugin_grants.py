@@ -478,3 +478,107 @@ async def test_http_lifespan_prunes_only_when_it_owns_the_lifecycle(
         pass
 
     assert seen == [manage_lifecycle]
+
+
+def test_copy_not_provably_gone_protects_the_id(tmp_path, removed_after_grants):
+    # Builtin copy really removed; the user copy was tombstoned only because
+    # its root is unavailable, so it may still be installed.
+    _grant("shared")
+    base = tmp_path / "roots"
+    lock = _Lock(
+        _entry("shared", root_id="builtin", removed_at=removed_after_grants),
+        _entry("shared", root_id="user", removed_at=removed_after_grants),
+        root=base,
+    )
+    (base / "user").rmdir()
+
+    assert permission_service.prune_uninstalled_plugin_grants(lock) == []
+    assert _grants_on_disk(tmp_path) == {"shared"}
+
+
+def test_dangling_manifest_link_in_unreadable_entry_skips_the_pass(
+    tmp_path, plugin_roots, removed_after_grants
+):
+    _grant("demo")
+    broken = plugin_roots / "user" / "renamed"
+    broken.mkdir()
+    (broken / "plugin.toml").symlink_to(tmp_path / "missing.toml")
+    lock = _Lock(
+        _entry("demo", removed_at=removed_after_grants),
+        _entry("", directory_name="renamed"),
+    )
+
+    assert permission_service.prune_uninstalled_plugin_grants(lock) == []
+    assert _grants_on_disk(tmp_path) == {"demo"}
+
+
+def test_forget_many_keeps_an_unsaved_import_unsaved_when_nothing_drops(monkeypatch):
+    store = permission_service.permission_store
+    _grant("kept")
+    store._unsaved = True  # as after a first-use import whose save failed
+    saves = []
+    monkeypatch.setattr(store, "_save", lambda *args: saves.append(1))
+
+    assert store.forget_many(["absent"]) == []
+    assert store.forget_many(["kept"], should_forget=lambda *_: False) == []
+    assert saves == []
+    assert store._unsaved is True
+
+
+def test_forget_many_drop_saves_the_whole_document_once(tmp_path, monkeypatch):
+    store = permission_service.permission_store
+    _grant("kept")
+    _grant("gone")
+    store._unsaved = True
+    saved = []
+    original = store._save
+    monkeypatch.setattr(
+        store, "_save", lambda manager, document: saved.append(document) or original(manager, document)
+    )
+
+    assert store.forget_many(["gone"]) == ["gone"]
+    assert len(saved) == 1 and set(saved[0]["plugins"]) == {"kept"}
+    assert store._unsaved is False
+    assert _grants_on_disk(tmp_path) == {"kept"}
+
+
+@pytest.mark.asyncio
+async def test_cancelled_startup_holds_the_lock_until_pruning_finishes(monkeypatch):
+    import threading
+
+    started, release = threading.Event(), threading.Event()
+    log: list[str] = []
+
+    def slow_prune(_manager):
+        started.set()
+        release.wait(5)
+        log.append("prune done")
+        return []
+
+    manager = type("Manager", (), {"load": lambda self: None, "reconcile": lambda self: None})()
+    monkeypatch.setattr(
+        operation_lock_module, "_reload_install_source_manager_sync", lambda: None
+    )
+    monkeypatch.setattr(permission_service, "prune_uninstalled_plugin_grants", slow_prune)
+
+    task = asyncio.create_task(
+        StartupReconciler(manager, prune_uninstalled_grants=True).run()
+    )
+    assert await asyncio.to_thread(started.wait, 5)
+    task.cancel()
+
+    async def other_operation():
+        async with plugin_operation_lock.hold():
+            log.append("other got lock")
+
+    other = asyncio.create_task(other_operation())
+    # Long enough for the other operation to take a released lock (its
+    # acquisition goes through a worker thread).
+    await asyncio.wait({other}, timeout=1.0)
+    assert log == []
+
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.wait_for(other, 5)
+    assert log == ["prune done", "other got lock"]

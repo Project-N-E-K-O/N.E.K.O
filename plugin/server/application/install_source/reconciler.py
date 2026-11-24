@@ -99,9 +99,17 @@ class StartupReconciler:
                         prune_uninstalled_plugin_grants,
                     )
 
-                    # Never raises; skipped when the lock is degraded.
-                    await asyncio.to_thread(
-                        prune_uninstalled_plugin_grants, self.manager
+                    from plugin.utils.asyncio_utils import await_cancellation_safe
+
+                    # Never raises; skipped when the lock is degraded. A
+                    # cancelled startup waits for the worker thread so the
+                    # store is never written after the lock is released.
+                    await await_cancellation_safe(
+                        asyncio.ensure_future(
+                            asyncio.to_thread(
+                                prune_uninstalled_plugin_grants, self.manager
+                            )
+                        )
                     )
         except asyncio.CancelledError:
             # A cancellation of the lifespan task is not a subsystem
