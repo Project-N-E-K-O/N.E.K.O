@@ -230,7 +230,7 @@ ORCHESTRATOR_REQUEST_MAX_TOKENS = 300
 model is shown each. With the fixed text (about 300 tokens) and the
 candidates, a request is some 1300 tokens at most."""
 
-ORCHESTRATOR_MODEL_SLOT = "emotion"
+ORCHESTRATOR_MODEL_SLOT = "recognition"
 """The model tier of the main app the orchestrator's one request goes to:
 the small, fast one (shown as the recognition model). Measured on the free
 tier, the summary tier was right more often (95% against 92% of the
