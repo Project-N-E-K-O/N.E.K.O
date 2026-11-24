@@ -171,6 +171,9 @@ def _capability_reason_code(raw_reason: str) -> str:
         return "AGENT_NO_PLUGINS_FOUND"
     if "plugin server" in lower or "插件服务" in text or "user_plugin server responded" in lower:
         return "AGENT_PLUGIN_SERVER_ERROR"
+    if "agent api check failed" in lower:
+        # ``_check_agent_api_gate`` could not read the configuration.
+        return "AGENT_CONFIG_CHECK_FAILED"
     # Anything else came from the configuration check failing as such
     # (``_check_agent_api_gate``): the model counts as not set up.
     return "AGENT_ENDPOINT_NOT_CONFIGURED"

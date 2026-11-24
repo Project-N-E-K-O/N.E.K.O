@@ -222,7 +222,7 @@ Manager と Agent Server は構築時にすべてオフです。ただし最初�
 | キーボード・マウスとブラウザーのツール | `nekopower/builtin/`、`config/prompts/prompts_nekopower_builtin.py` |
 | デスクトップとブラウザーの占有、画像を扱えるモデルの記録 | `nekopower/host/leases.py`、`model_capabilities.py` |
 | プラグインエントリの呼び出し（`/runs`） | `nekopower/host/plugin_runs.py` |
-| ホストのマウント、HUD 用の一覧、組み込みツールのスイッチとイベント、agent モデルの接続確認 | `app/agent_server/nekopower_mount.py`、`nekopower_builtins.py`、`model_probe.py` |
+| ホストのマウント、HUD 用の一覧、組み込みツールのスイッチとイベント、組み込みツールが使えるかどうか | `app/agent_server/nekopower_mount.py`、`nekopower_builtins.py`、`capabilities.py` |
 | Agent lifecycle / HTTP API | `app/agent_server/api_runtime.py`、`api_routes.py` |
 | チャットへの結果配信 | `main_logic/core/proactive.py` |
 

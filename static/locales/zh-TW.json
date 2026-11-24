@@ -4613,6 +4613,7 @@
             "AGENT_PYAUTOGUI_IMPORT_FAILED": "pyautogui 匯入失敗",
             "AGENT_INPUT_CHECK_FAILED": "鍵鼠控制檢查出錯",
             "AGENT_BROWSER_CHECK_FAILED": "尋找瀏覽器時出錯",
+            "AGENT_CONFIG_CHECK_FAILED": "讀取使魔模型設定時出錯",
             "AGENT_BROWSER_NOT_FOUND": "找不到可用的瀏覽器（Chrome、Edge 等）",
             "AGENT_MODEL_NOT_CONFIGURED": "使魔模型·通用的模型 ID 未設定",
             "AGENT_URL_NOT_CONFIGURED": "使魔模型·通用的 URL 未設定",

@@ -144,7 +144,7 @@ def test_both_reasons_are_given_and_the_models_comes_first(setup, desktop):
         ("未发现可用插件", "AGENT_NO_PLUGINS_FOUND"),
         ("user_plugin server responded 500", "AGENT_PLUGIN_SERVER_ERROR"),
         # The configuration check itself failed: the model counts as not set up.
-        ("Agent API check failed: disk gone", "AGENT_ENDPOINT_NOT_CONFIGURED"),
+        ("Agent API check failed: disk gone", "AGENT_CONFIG_CHECK_FAILED"),
     ],
 )
 def test_the_reasons_a_capability_is_not_ready_are_said_with_codes_that_have_words(said, code):
@@ -163,7 +163,7 @@ def test_every_code_a_reason_is_said_with_has_its_words_in_every_language():
         for said in ("Agent 模型未配置", "Agent API URL 未配置", "Agent API Key 未配置或不可用", "check failed")
     }
     # And the ones a check that broke is said with (``capabilities._refresh_tool_capabilities``).
-    codes |= {"AGENT_INPUT_CHECK_FAILED", "AGENT_BROWSER_CHECK_FAILED"}
+    codes |= {"AGENT_INPUT_CHECK_FAILED", "AGENT_BROWSER_CHECK_FAILED", "AGENT_CONFIG_CHECK_FAILED"}
     for locale in sorted(Path("static/locales").glob("*.json")):
         precheck = json.loads(locale.read_text(encoding="utf-8"))["agent"]["precheck"]
         assert codes <= set(precheck), (locale.name, sorted(codes - set(precheck)))

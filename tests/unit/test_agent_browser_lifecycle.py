@@ -84,6 +84,12 @@ class _EveryTask(set):
         self.ever.add(item)
         super().add(item)
 
+    def __eq__(self, other: object) -> bool:
+        # Compared as the tasks it holds now; ``ever`` is only looked at by ``_background_done``.
+        return set.__eq__(self, other)
+
+    __hash__ = None  # type: ignore[assignment]  # a set, so not hashable
+
 
 @pytest.fixture
 def modules(monkeypatch: pytest.MonkeyPatch) -> Any:
@@ -438,6 +444,15 @@ async def test_closing_settles_the_capability_from_the_browser_search_or_the_rea
     await capabilities._close_browser(update_capability=False)
     assert modules.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_ENDPOINT_NOT_CONFIGURED"}
     assert browser.closes == 3
+
+
+async def test_closing_with_the_agent_model_not_set_up_says_that_rather_than_the_browser(modules, search, browser, monkeypatch):
+    _gate(monkeypatch, GATE_NOT_CONFIGURED)
+
+    await capabilities._close_browser()
+
+    # A browser is found, and still the tools cannot be used: the model is what is missing.
+    assert modules.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_ENDPOINT_NOT_CONFIGURED"}
 
 
 async def test_closing_without_a_browser_on_this_computer_says_that(modules, search, browser):
@@ -934,7 +949,7 @@ async def test_input_that_cannot_be_sent_leaves_only_the_keyboard_not_ready(modu
         ("Agent API URL 未配置", "AGENT_URL_NOT_CONFIGURED"),
         ("Agent API Key 未配置或不可用", "AGENT_KEY_NOT_CONFIGURED"),
         # The check itself failed: the model counts as not set up.
-        ("Agent API check failed: disk gone", "AGENT_ENDPOINT_NOT_CONFIGURED"),
+        ("Agent API check failed: disk gone", "AGENT_CONFIG_CHECK_FAILED"),
     ],
 )
 async def test_a_model_not_set_up_leaves_neither_group_ready_and_says_what_is_missing(
@@ -1002,6 +1017,9 @@ async def test_switching_the_master_switch_on_waits_for_nothing_so_a_later_reque
             api_routes.agent_command({"command": "set_agent_enabled", "enabled": True, "_persist_intent": False}), 2.0
         )
         assert modules.agent_flags["user_plugin_enabled"] is True
+        # Until the check is done the tools show nothing kept from before.
+        assert modules.capability_cache["computer_use"] == {"ready": False, "reason": ""}
+        assert modules.capability_cache["browser_use"] == {"ready": False, "reason": ""}
         # The plugins are switched off while that is still under way: it stays off.
         await api_routes.set_agent_flags({"user_plugin_enabled": False, "_persist_intent": False})
     finally:

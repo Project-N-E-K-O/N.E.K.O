@@ -4613,6 +4613,7 @@
             "AGENT_PYAUTOGUI_IMPORT_FAILED": "pyautogui 가져오기에 실패했습니다",
             "AGENT_INPUT_CHECK_FAILED": "키보드·마우스 제어 확인에 실패했습니다",
             "AGENT_BROWSER_CHECK_FAILED": "브라우저를 찾는 중 오류가 발생했습니다",
+            "AGENT_CONFIG_CHECK_FAILED": "사역마 모델 설정을 읽는 중 오류가 발생했습니다",
             "AGENT_BROWSER_NOT_FOUND": "사용할 수 있는 브라우저를 찾을 수 없습니다 (Chrome, Edge 등)",
             "AGENT_MODEL_NOT_CONFIGURED": "사역마 모델·범용의 모델 ID가 구성되지 않았습니다",
             "AGENT_URL_NOT_CONFIGURED": "사역마 모델·범용의 URL이 구성되지 않았습니다",

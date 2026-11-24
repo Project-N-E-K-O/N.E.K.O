@@ -4613,6 +4613,7 @@
             "AGENT_PYAUTOGUI_IMPORT_FAILED": "Не удалось импортировать pyautogui",
             "AGENT_INPUT_CHECK_FAILED": "Не удалось проверить управление клавиатурой и мышью",
             "AGENT_BROWSER_CHECK_FAILED": "Ошибка при поиске браузера",
+            "AGENT_CONFIG_CHECK_FAILED": "Не удалось прочитать настройки модели фамильяра",
             "AGENT_BROWSER_NOT_FOUND": "подходящий браузер не найден (Chrome, Edge и т. п.)",
             "AGENT_MODEL_NOT_CONFIGURED": "ID модели фамильяра (общей) не настроен",
             "AGENT_URL_NOT_CONFIGURED": "URL модели фамильяра (общей) не настроен",

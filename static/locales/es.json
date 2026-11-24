@@ -4613,6 +4613,7 @@
             "AGENT_PYAUTOGUI_IMPORT_FAILED": "Error al importar pyautogui",
             "AGENT_INPUT_CHECK_FAILED": "No se pudo comprobar el control de teclado y ratón",
             "AGENT_BROWSER_CHECK_FAILED": "No se pudo buscar un navegador",
+            "AGENT_CONFIG_CHECK_FAILED": "No se pudo leer la configuración del modelo del familiar",
             "AGENT_BROWSER_NOT_FOUND": "no se encontró un navegador utilizable (Chrome, Edge o similar)",
             "AGENT_MODEL_NOT_CONFIGURED": "No se ha configurado el ID del Modelo del familiar (general)",
             "AGENT_URL_NOT_CONFIGURED": "URL del modelo del familiar (general) no configurada",

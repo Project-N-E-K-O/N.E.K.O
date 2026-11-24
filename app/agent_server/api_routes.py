@@ -535,6 +535,10 @@ async def agent_command(payload: Dict[str, Any]):
                 # last thing this request starts: nothing here waits on it,
                 # so no later request (the plugins switched off, the master
                 # switched off) can be overtaken by this one's writes.
+                # Until then "not ready" with no reason: what was kept from
+                # before the master switch went off may no longer hold.
+                _set_capability("computer_use", False, "")
+                _set_capability("browser_use", False, "")
                 refresh_tools = True
             else:
                 first_reason = (gate.get("reasons") or ["AGENT_ENDPOINT_NOT_CONFIGURED"])[0]

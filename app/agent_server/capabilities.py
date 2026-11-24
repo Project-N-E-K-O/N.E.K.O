@@ -228,9 +228,10 @@ async def _set_closed_browser_capability(capability_reason: Optional[str], still
         _set_capability("browser_use", False, capability_reason)
         return
     started = _capability_ticket_now()
-    dependency_ready, dependency_error = await asyncio.to_thread(_browser_dependency_status)
+    # As every other place says it: the agent model set up, and a browser to drive.
+    browser_ready, browser_reason = await asyncio.to_thread(_browser_availability)
     if still_current():
-        _set_capability("browser_use", dependency_ready, dependency_error, started=started)
+        _set_capability("browser_use", browser_ready, browser_reason, started=started)
 
 
 async def _close_browser(
