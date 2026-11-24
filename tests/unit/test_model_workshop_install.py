@@ -1140,3 +1140,46 @@ def test_object_replacement_during_final_verification_cannot_be_claimed(
         )
     assert service.installer.registry.load() == {}
     assert service.installer.journal_path(result["task_id"]).exists()
+
+
+@pytest.mark.parametrize("failure", ["publication", "intent"])
+def test_recovery_reclaims_only_proven_unpublished_attempts(service, tmp_path, monkeypatch, failure):
+    path, _ = bundle_path(tmp_path)
+    original_publish = service.installer._publish
+    original_journal = service.installer.save_journal
+
+    def fail(*args):
+        raise OSError("injected unpublished failure")
+
+    if failure == "publication":
+        monkeypatch.setattr(service.installer, "_publish", fail)
+    else:
+        def fail_intent(value):
+            if value["phase"] == "committing":
+                fail()
+            return original_journal(value)
+        monkeypatch.setattr(service.installer, "save_journal", fail_intent)
+    result = install(service, path)
+    assert result["phase"] == "failed"
+    assert service.installer.registry.read()["attempts"]
+    monkeypatch.setattr(service.installer, "_publish", original_publish)
+    monkeypatch.setattr(service.installer, "save_journal", original_journal)
+    assert service.recover()[result["task_id"]] == "interrupted"
+    assert service.installer.registry.read() == {"installed": {}, "attempts": {}}
+    assert install(service, path)["phase"] == "completed"
+
+
+def test_failed_reinstall_recovery_keeps_the_previous_record_readable(service, tmp_path, monkeypatch):
+    path, _ = bundle_path(tmp_path)
+    completed = install(service, path)
+    record = completed["result"]
+    shutil.rmtree(service.paths.root / record["target"])
+    def fail(*args):
+        raise OSError("injected failed reinstall")
+    monkeypatch.setattr(service.installer, "_publish", fail)
+    failed = install(service, path)
+    assert failed["phase"] == "failed"
+    assert service.recover()[failed["task_id"]] == "interrupted"
+    state = service.installer.registry.read()
+    assert state["installed"][record["package_sha256"]]["install_id"] == completed["task_id"]
+    assert state["attempts"][record["package_sha256"]] == failed["task_id"]

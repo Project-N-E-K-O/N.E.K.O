@@ -287,11 +287,16 @@ class WorkshopTasks:
             raise TimeoutError("model_workshop_task_pending")
         return self.status(attempt)
 
-    def cancel(self, attempt):
+    def request_cancel(self, attempt):
+        """A queued job acknowledges cancellation without waiting behind another install."""
         with self._condition:
             task = self._task(attempt)
             if task.phase not in TERMINAL and task.phase != "committing":
                 task.cancel.set()
+        return self.status(attempt)
+
+    def cancel(self, attempt):
+        self.request_cancel(attempt)
         return self.wait(attempt)
 
     def begin_upload(self):
@@ -424,7 +429,7 @@ class WorkshopTasks:
                 self._writer = None
 
     async def acancel(self, attempt):
-        return await _drain_sync(lambda: self.cancel(attempt))
+        return await _drain_sync(lambda: self.request_cancel(attempt))
 
     async def aclose(self):
         return await _drain_sync(self.close)
