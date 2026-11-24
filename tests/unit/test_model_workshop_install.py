@@ -1161,10 +1161,13 @@ def test_recovery_reclaims_only_proven_unpublished_attempts(service, tmp_path, m
         monkeypatch.setattr(service.installer, "save_journal", fail_intent)
     result = install(service, path)
     assert result["phase"] == "failed"
-    assert service.installer.registry.read()["attempts"]
+    assert bool(service.installer.registry.read()["attempts"]) == (failure == "intent")
     monkeypatch.setattr(service.installer, "_publish", original_publish)
     monkeypatch.setattr(service.installer, "save_journal", original_journal)
-    assert service.recover()[result["task_id"]] == "interrupted"
+    if failure == "intent":
+        assert service.recover()[result["task_id"]] == "interrupted"
+    else:
+        assert not service.installer.journal_path(result["task_id"]).exists()
     assert service.installer.registry.read() == {"installed": {}, "attempts": {}}
     assert install(service, path)["phase"] == "completed"
 
@@ -1179,7 +1182,18 @@ def test_failed_reinstall_recovery_keeps_the_previous_record_readable(service, t
     monkeypatch.setattr(service.installer, "_publish", fail)
     failed = install(service, path)
     assert failed["phase"] == "failed"
-    assert service.recover()[failed["task_id"]] == "interrupted"
+    assert not service.installer.journal_path(failed["task_id"]).exists()
     state = service.installer.registry.read()
     assert state["installed"][record["package_sha256"]]["install_id"] == completed["task_id"]
-    assert state["attempts"][record["package_sha256"]] == failed["task_id"]
+    assert state["attempts"][record["package_sha256"]] == completed["task_id"]
+
+
+def test_publication_failure_can_retry_same_package_without_restart(service, tmp_path, monkeypatch):
+    path, _ = bundle_path(tmp_path)
+    original = service.installer._publish
+    def fail(*args): raise PermissionError('injected publication failure')
+    monkeypatch.setattr(service.installer, '_publish', fail)
+    failed = install(service, path)
+    assert failed['phase'] == 'failed'
+    monkeypatch.setattr(service.installer, '_publish', original)
+    assert install(service, path)['phase'] == 'completed'
