@@ -840,6 +840,17 @@ async def test_startup_builds_the_probe_and_neither_looks_for_nor_starts_a_brows
             built.append(self)
 
     monkeypatch.setattr("app.agent_server.model_probe.AgentModelProbe", StartupProbe)
+    # Wherever startup would take the connectivity check from, it is counted
+    # here on the event loop, before anything goes to a worker thread.
+    fired: list[dict[str, Any]] = []
+
+    async def fire(**options: Any) -> None:
+        fired.append(options)
+
+    from app.agent_server import api_shared
+
+    for holder in (capabilities, api_shared, api_routes, api_runtime):
+        monkeypatch.setattr(holder, "_fire_agent_llm_connectivity_check", fire, raising=False)
     modules.model_probe = None
     ready = {"ready": True, "reason": ""}
     modules.capability_cache.update(computer_use=dict(ready), browser_use=dict(ready))
@@ -853,6 +864,7 @@ async def test_startup_builds_the_probe_and_neither_looks_for_nor_starts_a_brows
     assert built == [modules.model_probe]
     # Nothing is sent to the agent model at start: every way the tools come
     # on probes it first.
+    assert fired == []
     assert modules.model_probe.probes == 0
     # Not ready, and not "pending" either: with no check coming, that would
     # read as one under way for as long as the tools stay off.

@@ -78,9 +78,12 @@ class Modules:
     throttled_logger: "ThrottledLogger" = None  # Lazy initialization.
     agent_bridge: AgentServerEventBridge | None = None
     state_revision: int = 0
+    # The two LLM-driven groups start "not ready" with no reason, as
+    # ``startup`` leaves them: nothing probes the agent model at start, and
+    # "pending" would read as a check under way.
     capability_cache: Dict[str, Dict[str, Any]] = {
-        "computer_use": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
-        "browser_use": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
+        "computer_use": {"ready": False, "reason": ""},
+        "browser_use": {"ready": False, "reason": ""},
         "user_plugin": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
     }
     _background_tasks: ClassVar[set] = set()
