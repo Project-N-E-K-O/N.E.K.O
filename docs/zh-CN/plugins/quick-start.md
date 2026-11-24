@@ -155,17 +155,10 @@ uv run neko-plugin check hello_world
 新项目会显示：
 
 ```text
-[OK] hello_world: check found 0 error(s), 4 warning(s)
+[OK] hello_world: check found 0 error(s), ... warning(s)
 ```
 
-四条警告分别是：
-
-- 还没有 `startup` 生命周期钩子
-- 还没有 `shutdown` 生命周期钩子
-- 还没有配置 Git remote
-- Git 工作区中有尚未提交的文件
-
-这个 Hello World 插件不需要启动和关闭钩子；Git remote 和提交也只影响后续发布。四条警告都不会阻止它运行。以后出现 `[FAIL]` 或 error 时，才需要先停下来，按照命令给出的提示修复。
+这一步的警告都和 Git 有关（例如还没有配置 `origin` remote，或插件仓库里有尚未提交的文件）。它们只影响后续发布，不会阻止插件运行。出现 `[FAIL]` 或 error 时，先停下来，按照命令给出的提示修复。以后的检查也请逐条看 warning：结果是 `[OK]` 时，warning 也可能意味着某项设置被忽略了。
 
 ## CLI 已经为你准备了什么
 
@@ -174,6 +167,9 @@ plugin/plugins/hello_world/
 ├── .git/
 ├── .gitignore
 ├── .vscode/
+├── .agents/skills/neko-plugin/   ← 给编码 Agent 的指南
+├── AGENTS.md
+├── CLAUDE.md
 ├── plugin.toml
 ├── config.example.toml
 ├── __init__.py
@@ -215,7 +211,7 @@ supported = ">=0.1.0,<0.3.0"
 - `entry` 告诉 N.E.K.O 从哪个 Python 模块加载哪个类，格式是 `模块路径:类名`。
 - `[plugin.sdk]` 声明这个插件推荐和支持的 SDK 版本范围。
 
-给别人用之前，在 `[plugin]` 下补上 `description` 和一句话的 `short_description`（见[插件配置](/zh-CN/plugins/plugin-toml)）。猫爪靠它们给任务挑插件；没写 `short_description` 而 `description` 又长时，会让模型写一份，要多花一次请求。
+给别人用之前，在 `[plugin]` 下补上 `description` 和一句话的 `short_description`（见[插件配置](/zh-CN/plugins/plugin-toml)）。喵能力靠它们给任务挑插件；没写 `short_description` 而 `description` 又长时，会让模型写一份，要多花一次请求。
 
 脚手架还会在源码目录中生成 `config.example.toml`，为新用户提供初始运行设置：
 
@@ -257,7 +253,7 @@ class HelloWorldPlugin(NekoPluginBase):
 `plugin_id` 是 `hello_world`，这个功能自己的 `entry_id` 是 `hello`。前者用来找到插件，后者用来找到插件中的具体功能，两者不要互换。
 
 ::: tip 插件入口和 LLM 工具不是一回事
-`@plugin_entry` 声明的是插件运行时入口。`@llm_tool` 注册的是对话期间使用的工具。第一次运行插件时只需要使用 `@plugin_entry`，不需要先配置 LLM 工具。
+`@plugin_entry` 声明的是插件运行时入口。`@llm_tool` 注册的是对话期间使用的工具。第一次运行插件时只需要使用 `@plugin_entry`，不需要先配置 LLM 工具。两者怎么选，见[选择 `@plugin_entry` 还是 `@llm_tool`](/zh-CN/plugins/tool-calling#choosing-an-entry-type)。
 :::
 
 现在把最后一行改成：

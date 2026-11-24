@@ -158,6 +158,18 @@ class RpcRemoteError(RuntimeError):
         super().__init__(self.message)
 
 
+def remote_error_details(exc: BaseException) -> dict[str, object]:
+    """Details the peer attached to the remote error that caused ``exc``.
+
+    Callers merge these under their own identifying keys, so local values such
+    as ``plugin_id`` always win over what the peer reported.
+    """
+    cause = exc.__cause__
+    if isinstance(cause, RpcRemoteError) and isinstance(cause.details, Mapping):
+        return dict(cause.details)
+    return {}
+
+
 @dataclass
 class _CallScope:
     request_id: str
@@ -180,9 +192,21 @@ class RpcContext:
     deadline: float
     trace_id: str
     depth: int
+    # Plugin-supplied and untrusted: only a lookup key into the host's own
+    # call registry, scoped by ``from_plugin``. Never a source of identity.
+    parent_request_id: str | None = None
 
     def remaining(self) -> float:
         return max(0.0, self.deadline - time.monotonic())
+
+
+_MAX_PARENT_REQUEST_ID_LENGTH = 128
+
+
+def bounded_parent_request_id(value: object) -> str | None:
+    if isinstance(value, str) and 0 < len(value) <= _MAX_PARENT_REQUEST_ID_LENGTH:
+        return value
+    return None
 
 
 DEFAULT_HANDLER_TIMEOUT_SECONDS = 10.0
@@ -230,6 +254,29 @@ def request_deadline(request: Mapping[str, Any], timeout: float | None) -> float
     ):
         deadline = float(supplied) if deadline is None else min(deadline, supplied)
     return deadline
+
+
+def current_request_id() -> str | None:
+    """The active invocation's request id, as nested requests would report it."""
+    parent = _scope.get()
+    if parent is None or parent.closed:
+        return None
+    return parent.request_id
+
+
+def narrow_scope_deadline(deadline: float) -> None:
+    """Lower the active invocation's deadline to ``deadline`` if that is earlier.
+
+    Call it inside the ``request_scope`` opened for the invocation whose
+    deadline this is: the scope object is changed in place, so tasks that
+    already share it see the new deadline too. It only ever moves the deadline
+    earlier. A closed or missing scope is left alone.
+    """
+    current = _scope.get()
+    if current is None or current.closed:
+        return
+    if current.deadline is None or deadline < current.deadline:
+        current.deadline = deadline
 
 
 @contextmanager
@@ -702,6 +749,7 @@ class RpcDispatcher:
             deadline=deadline,
             trace_id=trace_id,
             depth=depth,
+            parent_request_id=bounded_parent_request_id(request.get("_rpc_parent_request_id")),
         )
         scope = _CallScope(request_id, trace_id, deadline, depth)
         token = _scope.set(scope)

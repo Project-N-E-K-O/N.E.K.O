@@ -90,12 +90,20 @@ function _getNekoIdleReturnAssetUrl(tier) {
     return src ? `${src}${versionSuffix}` : '';
 }
 
-function _getNekoIdleReturnClickAssetUrl(tier) {
+const _NEKO_IDLE_CAT1_HOVER_ASSET_SLOTS = Object.freeze([
+    'click.cat1', 'action.cat1.wag_1', 'action.cat1.wag_2'
+]);
+
+function _getNekoIdleReturnClickAssetUrl(tier, options = {}) {
     const normalizedTier = _normalizeNekoIdleReturnTier(tier);
     const versionSuffix = _getNekoIdleReturnAssetVersionSuffix();
 
-    const slot = normalizedTier === _NEKO_IDLE_TIER_CAT2 ? 'click.cat2' :
+    let slot = normalizedTier === _NEKO_IDLE_TIER_CAT2 ? 'click.cat2' :
         (normalizedTier === _NEKO_IDLE_TIER_CAT3 ? 'click.cat3' : 'click.cat1');
+    if (normalizedTier === _NEKO_IDLE_TIER_CAT1 && options.userInitiated === true) {
+        const slots = _NEKO_IDLE_CAT1_HOVER_ASSET_SLOTS;
+        slot = slots[Math.floor(Math.random() * slots.length)];
+    }
     const src = _getNekoCatAppearanceUrl(slot, { random: false });
     return src ? `${src}${versionSuffix}` : '';
 }
@@ -239,7 +247,7 @@ function _stopNekoIdleSoundAudio(state) {
     } catch (_) {}
 }
 
-function _fadeOutNekoIdleSoundAudio(state, durationMs) {
+function _fadeOutNekoIdleSoundAudio(state, durationMs, { stopAtEnd = true } = {}) {
     const audio = state && state.audio;
     if (!state || !audio) return;
 
@@ -256,7 +264,7 @@ function _fadeOutNekoIdleSoundAudio(state, durationMs) {
     const fadeMs = Math.max(0, Number(durationMs) || 0);
 
     if (fadeMs <= 0 || startVolume <= 0) {
-        _stopNekoIdleSoundAudio(state);
+        if (stopAtEnd) _stopNekoIdleSoundAudio(state);
         return;
     }
 
@@ -268,16 +276,24 @@ function _fadeOutNekoIdleSoundAudio(state, durationMs) {
             audio.volume = Math.max(0, startVolume * (1 - progress));
         } catch (_) {}
         if (progress >= 1 || audio.paused || audio.ended) {
-            _stopNekoIdleSoundAudio(state);
+            state.fadeFrame = 0;
+            if (stopAtEnd) _stopNekoIdleSoundAudio(state);
             return;
         }
         state.fadeFrame = requestAnimationFrame(step);
     };
 
     state.fadeFrame = requestAnimationFrame(step);
+    return () => {
+        if (state.fadeToken !== token) return;
+        if (state.fadeFrame) cancelAnimationFrame(state.fadeFrame);
+        state.fadeFrame = 0;
+        state.fadeToken += 1;
+        if (state.audio === audio) audio.volume = startVolume;
+    };
 }
 
-function _playNekoIdleSound(state, src, volume) {
+function _prepareNekoIdleSound(state, src, volume) {
     if (!state || !src) return null;
     if (!isNekoIdleCatAudioEnabled()) {
         _stopNekoIdleSoundAudio(state);
@@ -295,6 +311,16 @@ function _playNekoIdleSound(state, src, volume) {
                 state.audio = null;
             }
         }, { once: true });
+        return audio;
+    } catch (_) {
+        state.audio = null;
+        return null;
+    }
+}
+
+function _startNekoIdleSound(state, audio) {
+    if (!audio || state.audio !== audio) return null;
+    try {
         const playResult = audio.play();
         if (playResult && typeof playResult.then === 'function') {
             const playStarted = playResult.then(() => audio);
@@ -318,6 +344,10 @@ function _playNekoIdleSound(state, src, volume) {
         state.audio = null;
         return null;
     }
+}
+
+function _playNekoIdleSound(state, src, volume) {
+    return _startNekoIdleSound(state, _prepareNekoIdleSound(state, src, volume));
 }
 
 
@@ -900,8 +930,9 @@ function _dispatchNekoCatIdleObservationSource(type, detail = {}) {
         return true;
     } catch (_) { return false; }
 }
-function _clearNekoIdleThoughtBubbleForTier(tier) {
+function _clearNekoIdleThoughtBubbleForTier(tier, poppingAudio = null) {
     _forEachNekoIdleReturnButton((button) => {
+        if (poppingAudio && button.__nekoIdleThoughtBubblePop?.audio === poppingAudio) return;
         if (_normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier')) === _normalizeNekoIdleReturnTier(tier)) {
             _clearNekoIdleThoughtBubble(button);
         }
@@ -1324,7 +1355,8 @@ function _isNekoIdleCat1QuestionMarkKeyboardDefaultAsset(src) {
     const normalizedPath = _normalizeNekoIdleCat1QuestionMarkKeyboardAssetPath(src);
     if (!normalizedPath) return false;
     return normalizedPath === _normalizeNekoIdleCat1QuestionMarkKeyboardAssetPath(_getNekoIdleReturnAssetUrl(_NEKO_IDLE_TIER_CAT1)) ||
-        normalizedPath === _normalizeNekoIdleCat1QuestionMarkKeyboardAssetPath(_getNekoIdleReturnClickAssetUrl(_NEKO_IDLE_TIER_CAT1));
+        _NEKO_IDLE_CAT1_HOVER_ASSET_SLOTS.some((slot) => normalizedPath ===
+            _normalizeNekoIdleCat1QuestionMarkKeyboardAssetPath(_getNekoCatAppearanceUrl(slot, { random: false })));
 }
 
 function _syncNekoIdleCat1QuestionMarkKeyboardAvailabilityForButton(button) {

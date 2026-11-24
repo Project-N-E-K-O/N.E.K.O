@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
 import { pluginPackageSizeDetails, resolvePluginInstallErrorKey } from './pluginInstallError'
+import { PERMISSION_ERROR_KEYS, permissionErrorKey } from './pluginPermissionErrors'
+import { pluginConsentMessages } from '@/i18n/plugin-consent'
 
 describe('resolvePluginInstallErrorKey', () => {
   it.each([
@@ -60,5 +62,41 @@ describe('pluginPackageSizeDetails', () => {
     { actual_bytes: 600, maximum_bytes: 500, size_source: 'unknown' },
   ])('ignores missing or malformed details: %j', (details) => {
     expect(pluginPackageSizeDetails(details)).toBeNull()
+  })
+})
+
+describe('permission error codes', () => {
+  const codes = [
+    ['PLUGIN_PERMISSION_SOURCE_UNKNOWN', 'pluginConsent.errors.sourceUnknown'],
+    ['PLUGIN_PERMISSIONS_READ_FAILED', 'pluginConsent.errors.readFailed'],
+    ['PLUGIN_PERMISSIONS_CORRUPT', 'pluginConsent.errors.corrupt'],
+    ['PLUGIN_PERMISSIONS_UNSUPPORTED_VERSION', 'pluginConsent.errors.unsupportedVersion'],
+    ['PLUGIN_PERMISSIONS_WRITE_FAILED', 'pluginConsent.errors.writeFailed'],
+  ] as const
+
+  it('covers exactly the listed codes', () => {
+    expect(Object.keys(PERMISSION_ERROR_KEYS).sort()).toEqual(codes.map(([code]) => code.toLowerCase()).sort())
+  })
+
+  // Local installs report the server's code, Market tasks the lower-cased one.
+  it.each(codes.flatMap(([code, key]) => [[code, key], [code.toLowerCase(), key]]))(
+    'install errors map %s to %s',
+    (code, key) => {
+      expect(resolvePluginInstallErrorKey(code)).toBe(key)
+      expect(permissionErrorKey(code)).toBe(key)
+    },
+  )
+
+  it.each(Object.entries(pluginConsentMessages))('%s has a message for every code', (_, messages) => {
+    for (const [, key] of codes) {
+      const name = key.replace('pluginConsent.errors.', '') as keyof typeof messages.errors
+      expect(messages.errors[name]).toEqual(expect.any(String))
+    }
+  })
+
+  it('ignores other codes', () => {
+    expect(permissionErrorKey('PLUGIN_CONSENT_CHANGED')).toBeNull()
+    expect(permissionErrorKey('toString')).toBeNull()
+    expect(permissionErrorKey(undefined)).toBeNull()
   })
 })

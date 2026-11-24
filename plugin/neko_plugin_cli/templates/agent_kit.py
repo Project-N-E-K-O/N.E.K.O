@@ -19,9 +19,12 @@ stay self-contained without a second maintained skills directory.
 
 from __future__ import annotations
 
+import os
 import re
 from fnmatch import fnmatchcase
 from pathlib import Path
+
+from .. import __version__ as CLI_VERSION
 
 SKILL_NAME = "neko-plugin"
 SKILL_TARGET_DIR = Path(".agents") / "skills" / SKILL_NAME
@@ -34,6 +37,23 @@ CLAUDE_TEMPLATE_NAME = "CLAUDE.md.tmpl"
 # editor swap files.
 SKILL_IGNORE_PATTERNS = (".*", "__pycache__", "*.pyc", "*.pyo")
 
+# Official sources of the kit files, shown when setup-repo keeps a user's
+# existing copy. main, not a tag: the CLI version maps to no repository tag.
+SOURCE_URL_PREFIX = "https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/"
+_GUIDES_SOURCE = "plugin/neko_plugin_cli/templates/agent_guides"
+
+# Written into the snapshot's SKILL.md when it is rendered, never into the
+# authored file, so check can flag stale snapshots. Preferred form: an Agent
+# Skills ``metadata`` entry; if the frontmatter already has a ``metadata`` key
+# (or there is no frontmatter), a comment line right after it instead, so the
+# YAML is never edited in place.
+SNAPSHOT_VERSION_KEY = "neko-plugin-cli-version"
+_FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)^---[ \t]*\r?$", re.DOTALL | re.MULTILINE)
+_METADATA_KEY_RE = re.compile(r"^metadata[ \t]*:", re.MULTILINE)
+_METADATA_STAMP_RE = re.compile(
+    rf'^metadata:\r?\n  {SNAPSHOT_VERSION_KEY}: "([^"\r\n]*)"\r?$', re.MULTILINE
+)
+_COMMENT_STAMP_RE = re.compile(rf'<!-- {SNAPSHOT_VERSION_KEY}: "([^"\r\n]*)" -->[ \t]*\r?$', re.MULTILINE)
 _PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)\}")
 _MISSING_HINT = (
     f"Source checkouts keep it under .agent/skills/{SKILL_NAME}; desktop builds "
@@ -79,15 +99,19 @@ def render_agents_md(
     *,
     command_context: str,
     check_command: str,
-    build_command: str,
+    lint_command: str,
     sync_command: str,
+    precheck_command: str,
+    build_command: str,
 ) -> str:
     values = {
         "plugin_id": plugin_id,
         "command_context": command_context,
         "check_command": check_command,
-        "build_command": build_command,
+        "lint_command": lint_command,
         "sync_command": sync_command,
+        "precheck_command": precheck_command,
+        "build_command": build_command,
     }
     template = _read_guide(AGENTS_TEMPLATE_NAME)
     # One pass over the template: inserted values (e.g. a checkout path that
@@ -95,6 +119,77 @@ def render_agents_md(
     return _PLACEHOLDER_RE.sub(
         lambda match: values.get(match.group(1), match.group(0)), template
     )
+
+
+def _stamp_skill_entry(text: str) -> str:
+    stamp = f'{SNAPSHOT_VERSION_KEY}: "{CLI_VERSION}"'
+    frontmatter = _FRONTMATTER_RE.match(text)
+    if frontmatter is None:
+        return f"<!-- {stamp} -->\n{text}"
+    if _METADATA_KEY_RE.search(frontmatter.group(1)) is None:
+        insert_at = frontmatter.end(1)
+        return f"{text[:insert_at]}metadata:\n  {stamp}\n{text[insert_at:]}"
+    insert_at = frontmatter.end()
+    return f"{text[:insert_at]}\n<!-- {stamp} -->{text[insert_at:]}"
+
+
+def snapshot_cli_version(skill_entry: str) -> str | None:
+    """CLI version stamped into a snapshot's SKILL.md, or None if unstamped.
+
+    Only the two places _stamp_skill_entry writes are read, so the same text
+    elsewhere (a description, the body) is never mistaken for the stamp.
+    """
+    # A BOM (e.g. from a Windows editor) would hide the frontmatter.
+    skill_entry = skill_entry.removeprefix("\ufeff")
+    frontmatter = _FRONTMATTER_RE.match(skill_entry)
+    position = 0
+    if frontmatter is not None:
+        stamp = _METADATA_STAMP_RE.search(frontmatter.group(1))
+        if stamp is not None:
+            return stamp.group(1)
+        position = frontmatter.end()
+        for newline in ("\r\n", "\n"):
+            if skill_entry.startswith(newline, position):
+                position += len(newline)
+                break
+    comment = _COMMENT_STAMP_RE.match(skill_entry, position)
+    return comment.group(1) if comment else None
+
+
+def _is_link(path: Path) -> bool:
+    """Symlink, or a Windows junction (which is_symlink() misses on 3.11).
+
+    Same check as commands/deps_cmd._is_link; templates do not import commands.
+    """
+    if path.is_symlink():
+        return True
+    try:
+        os.readlink(path)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def passes_through_symlink(root: Path, relative: Path) -> bool:
+    """Whether root/relative, or any directory between root and it, is a link
+    (symlink or Windows junction)."""
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if _is_link(current):
+            return True
+    return False
+
+
+def source_url(relative: Path) -> str | None:
+    """GitHub URL of the authored file behind a kit target path, or None."""
+    guides = {Path("AGENTS.md"): AGENTS_TEMPLATE_NAME, Path("CLAUDE.md"): CLAUDE_TEMPLATE_NAME}
+    if relative in guides:
+        return f"{SOURCE_URL_PREFIX}{_GUIDES_SOURCE}/{guides[relative]}"
+    if relative.parts[: len(SKILL_TARGET_DIR.parts)] == SKILL_TARGET_DIR.parts:
+        authored = Path(".agent") / "skills" / SKILL_NAME / relative.relative_to(SKILL_TARGET_DIR)
+        return f"{SOURCE_URL_PREFIX}{authored.as_posix()}"
+    return None
 
 
 def render_claude_md() -> str:
@@ -124,4 +219,6 @@ def skill_files() -> dict[Path, str]:
         if any(is_ignored_skill_part(part) for part in relative.parts):
             continue
         files[SKILL_TARGET_DIR / relative] = _read_text(path, _MISSING_HINT)
+    entry = SKILL_TARGET_DIR / SKILL_ENTRY_NAME
+    files[entry] = _stamp_skill_entry(files[entry])
     return files

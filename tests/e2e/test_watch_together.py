@@ -11,8 +11,12 @@ def test_watch_together_discovery_buttons_with_windows_module_association(
     page: Page, running_server: str, monkeypatch
 ):
     # Windows may associate .mjs with a text editor. Static responses must still
-    # let Chromium execute the host and its relative imports.
-    mimetypes.init()
+    # let Chromium execute the host and its relative imports. Only init() when
+    # the table is not live yet: re-running it rebuilds the process-wide table
+    # from the host's MIME sources and drops types the app registered at import
+    # time (e.g. .webp from utils.static_asset_aliases).
+    if not mimetypes.inited:
+        mimetypes.init()
     monkeypatch.setitem(mimetypes.types_map, ".mjs", "text/plain")
     script_errors = []
     page.on("pageerror", lambda error: script_errors.append(str(error)))

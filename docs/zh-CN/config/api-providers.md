@@ -4,8 +4,8 @@ Provider 是数据驱动的。当前发行定义在 `config/api_providers.json`�
 
 不要依赖文档里的 Provider 数量或模型 ID 快照，它们都会随 revision 变化。
 
-- **Core** 驱动主对话/实时路径，字段为 `core_url(s)`、`core_model`、`core_api_key`。
-- **Assist** 支撑会话、摘要、纠错、情感、视觉、Agent 等角色，可包含 URL、token-plan URL、角色模型、Key 占位和 `provider_type`。
+- **Core**（设置页上叫「语音模型供应商」）驱动主对话/实时路径，字段为 `core_url(s)`、`core_model`、`core_api_key`。
+- **Assist**（设置页上叫「通用模型供应商」）支撑会话、摘要、纠错、情感、视觉、Agent 等角色，可包含 URL、token-plan URL、角色模型、Key 占位和 `provider_type`。
 
 `utils/api_config_loader.py` 读取并缓存 JSON、转换运行时字段；assist JSON 覆盖同名代码默认值；损坏/缺失时使用代码回退；`assist_api_key_fields` 映射凭据字段。
 

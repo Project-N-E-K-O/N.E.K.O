@@ -357,6 +357,30 @@ async def prepare_workshop_upload(request: Request):
         }, status_code=500)
 
 
+# Module-level alias so tests can simulate Windows' case-insensitive
+# comparison without patching the shared ``os.path`` module.
+_normcase = os.path.normcase
+
+
+def _resolve_workshop_export_child(path: str, workshop_export_dir: str) -> tuple[str, str, bool]:
+    """Resolve ``path`` and check that it is a direct child of WorkshopExport.
+
+    Returns ``(resolved_path, resolved_root, allowed)``. The root itself is
+    never allowed: a containment check alone (``commonpath == root``) accepts
+    the root, and deleting it would wipe every exported item. Comparison uses
+    ``normcase`` so that on Windows a different letter case still counts as the
+    same directory; ``realpath`` drops trailing separators and resolves
+    symlinks, so a link that points back at the root (or outside) is rejected.
+    """
+    resolved = os.path.realpath(os.path.normpath(path))
+    root = os.path.realpath(os.path.normpath(workshop_export_dir))
+    allowed = (
+        _normcase(resolved) != _normcase(root)
+        and _normcase(os.path.dirname(resolved)) == _normcase(root)
+    )
+    return resolved, root, allowed
+
+
 def _delete_content_folder(temp_folder: str) -> None:
     """Delete a temp folder only when no publisher or pair writer owns it."""
     import shutil
@@ -380,32 +404,32 @@ async def cleanup_temp_folder(request: Request):
                 "error": "缺少临时目录路径"
             }, status_code=400)
         
-        # Security: ensure the temporary directory is under WorkshopExport.
+        # Security: only a direct child of WorkshopExport (the item_xxx folder
+        # created by prepare-upload) may be deleted -- never the root itself.
         base_workshop_path = await get_workshop_path_async()
         workshop_export_dir = os.path.join(base_workshop_path, 'WorkshopExport')
-        
-        # Normalize with realpath to resolve symlinks and relative paths.
-        temp_folder = os.path.realpath(os.path.normpath(temp_folder))
-        workshop_export_dir = os.path.realpath(os.path.normpath(workshop_export_dir))
-        
-        # Verify containment under WorkshopExport using the more reliable commonpath.
-        try:
-            common_path = os.path.commonpath([temp_folder, workshop_export_dir])
-            if common_path != workshop_export_dir:
-                return JSONResponse({
-                    "success": False,
-                    "error": f"临时目录路径不在允许的范围内。临时目录: {temp_folder}, 允许路径: {workshop_export_dir}"
-                }, status_code=403)
-        except ValueError:
-            # commonpath raises ValueError for paths on different drives.
+        temp_folder, workshop_export_dir, allowed = _resolve_workshop_export_child(
+            temp_folder, workshop_export_dir
+        )
+        if not allowed:
+            # Keep server paths out of the response; the log has the details.
+            logger.warning(f"拒绝清理不在允许范围内的临时目录: {temp_folder}（允许: {workshop_export_dir} 下的子目录）")
             return JSONResponse({
                 "success": False,
-                "error": "临时目录路径不在允许的范围内（路径验证失败）"
+                "error": "临时目录路径不在允许的范围内"
             }, status_code=403)
         
         # Delete the temporary directory.
         if os.path.exists(temp_folder):
             await asyncio.to_thread(_delete_content_folder, temp_folder)
+            # rmtree runs with ignore_errors=True, so verify it actually went
+            # away (locked files on Windows, or a plain file instead of a dir).
+            if os.path.exists(temp_folder):
+                logger.warning(f"临时目录删除后仍然存在: {temp_folder}")
+                return JSONResponse({
+                    "success": False,
+                    "error": "临时目录删除失败"
+                }, status_code=500)
             logger.info(f"临时目录已删除: {temp_folder}")
             return JSONResponse({
                 "success": True,
@@ -462,7 +486,41 @@ async def publish_to_workshop(request: Request):
         tags = data.get('tags', [])
         change_note = data.get('change_note', '初始发布')
         character_card_name = data.get('character_card_name')  # Added: character-card name.
-        
+
+        # Validate Steam UTF-8 byte limits before touching the content folder or calling CreateItem.
+        from steamworks.interfaces.workshop import (
+            WORKSHOP_DESCRIPTION_MAX_BYTES,
+            WORKSHOP_TITLE_MAX_BYTES,
+        )
+        if isinstance(title, str):
+            title_byte_len = len(title.encode('utf-8'))
+            if title_byte_len > WORKSHOP_TITLE_MAX_BYTES:
+                return JSONResponse(
+                    content={
+                        "success": False,
+                        "error": "标题过长",
+                        "message": (
+                            f"创意工坊标题不能超过 {WORKSHOP_TITLE_MAX_BYTES} 字节"
+                            f"（约 42 个汉字），当前为 {title_byte_len} 字节"
+                        ),
+                    },
+                    status_code=400,
+                )
+        if isinstance(description, str):
+            desc_byte_len = len(description.encode('utf-8'))
+            if desc_byte_len > WORKSHOP_DESCRIPTION_MAX_BYTES:
+                return JSONResponse(
+                    content={
+                        "success": False,
+                        "error": "简介过长",
+                        "message": (
+                            f"创意工坊简介不能超过 {WORKSHOP_DESCRIPTION_MAX_BYTES} 字节"
+                            f"（约 2666 个汉字），当前为 {desc_byte_len} 字节"
+                        ),
+                    },
+                    status_code=400,
+                )
+
         # Improved path normalization handles paths correctly in all cases.
         content_folder = unquote(content_folder)
         # Security: verify content_folder is in the allowed area.
@@ -636,7 +694,7 @@ async def publish_to_workshop(request: Request):
             }, status_code=503)
         
         # Run blocking Steamworks API calls in the thread pool.
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             published_file_id = await loop.run_in_executor(
                 None,
@@ -751,7 +809,9 @@ def _preflight_and_publish(
     with claim_content_folder(content_folder, purpose=PUBLISH_PURPOSE):
         try:
             voice_ref = resolve_voice_reference_serialized(content_folder)
-        except (ValueError, FileNotFoundError) as e:
+        # PermissionError: reference_audio resolves outside content_folder
+        # (escape or another drive); the pair is invalid just like a bad manifest.
+        except (ValueError, FileNotFoundError, PermissionError) as e:
             raise _VoicePreflightError(str(e)) from e
         if voice_ref:
             logger.info(
@@ -778,7 +838,17 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
         try:
             # Import inside the function so enums are available in its scope.
             from steamworks.enums import EWorkshopFileType, ERemoteStoragePublishedFileVisibility, EItemUpdateStatus
-    
+            from steamworks.interfaces.workshop import (
+                WORKSHOP_DESCRIPTION_MAX_BYTES,
+                WORKSHOP_TITLE_MAX_BYTES,
+            )
+
+            # Guard direct non-HTTP callers as well so CreateItem is never invoked for oversized metadata.
+            if isinstance(title, str) and len(title.encode('utf-8')) > WORKSHOP_TITLE_MAX_BYTES:
+                raise AttributeError(f'title exceeds {WORKSHOP_TITLE_MAX_BYTES} UTF-8 bytes')
+            if isinstance(description, str) and description and len(description.encode('utf-8')) > WORKSHOP_DESCRIPTION_MAX_BYTES:
+                raise AttributeError(f'description exceeds {WORKSHOP_DESCRIPTION_MAX_BYTES} UTF-8 bytes')
+
             # Prefer the item ID from .workshop_meta.json.
             item_id = None
             if character_card_name:

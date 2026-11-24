@@ -7982,18 +7982,21 @@ async def test_project_speech_preload_rejects_non_object_manager_result(monkeypa
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_project_speech_preload_has_total_timeout_and_cleans_task(monkeypatch):
+    import inspect
+
     class BlockingPreloadManager(_FakeGameRouteManager):
         def __init__(self):
             super().__init__()
-            self.cancelled = False
+            self.preload = None
 
-        async def preload_game_speech_audio(self, _lines, *, render_language=""):
+        def preload_game_speech_audio(self, _lines, *, render_language=""):
             self.preload_render_languages.append(render_language)
-            try:
-                await asyncio.Event().wait()
-            except asyncio.CancelledError:
-                self.cancelled = True
-                raise
+            # Keep the coroutine the route wraps in its task, to see how it ended.
+            self.preload = self._block()
+            return self.preload
+
+        async def _block(self):
+            await asyncio.Event().wait()
 
     mgr = BlockingPreloadManager()
     _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
@@ -8007,7 +8010,12 @@ async def test_project_speech_preload_has_total_timeout_and_cleans_task(monkeypa
 
     assert result["ok"] is False
     assert result["reason"] == "timeout"
-    assert mgr.cancelled is True
+    # The preload never finishes on its own, so a closed coroutine means the
+    # route cancelled its task. Checking the coroutine rather than a flag set
+    # in its ``except CancelledError`` also covers a stalled runner where the
+    # 10 ms timeout cancels the task before its first step: then the body
+    # never runs, but the task is still cleaned up.
+    assert inspect.getcoroutinestate(mgr.preload) == inspect.CORO_CLOSED
 
 
 @pytest.mark.unit
@@ -9855,3 +9863,85 @@ async def test_sdk_pregame_metadata_is_scoped_bounded_and_keeps_context_shape(mo
         stale = await gr_runtime.game_sdk_context_read("example-game", _FakeRequest(body))
         assert stale["ok"] is False
         assert "scope_metadata" not in stale
+
+
+@pytest.mark.unit
+def test_soccer_pregame_opening_line_limits_match_all_locale_prompts():
+    from config.prompts.prompts_soccer import (
+        SOCCER_OPENING_LINE_MAX_CHARS_CJK,
+        SOCCER_OPENING_LINE_MAX_CHARS_NON_CJK,
+        SOCCER_PREGAME_CONTEXT_PROMPTS,
+    )
+
+    assert SOCCER_OPENING_LINE_MAX_CHARS_CJK == 15
+    assert SOCCER_OPENING_LINE_MAX_CHARS_NON_CJK == 50
+
+    for locale in ("zh", "zh-TW", "ja", "ko"):
+        assert "15" in SOCCER_PREGAME_CONTEXT_PROMPTS[locale]
+    for locale in ("en", "ru", "es", "pt"):
+        assert "50" in SOCCER_PREGAME_CONTEXT_PROMPTS[locale]
+
+    for locale in ("en", "ru", "es", "pt"):
+        issues: list[dict] = []
+        line = "Let us have a great match today!"  # 32 chars
+        ctx, invalid = gr_pregame._normalize_soccer_pregame_context(
+            {"openingLine": line},
+            prompt_locale=locale,
+            validation_issues=issues,
+        )
+        assert invalid is False
+        assert issues == []
+        assert ctx["openingLine"] == line
+
+        too_long_issues: list[dict] = []
+        ctx2, invalid2 = gr_pregame._normalize_soccer_pregame_context(
+            {"openingLine": "A" * 51},
+            prompt_locale=locale,
+            validation_issues=too_long_issues,
+        )
+        assert invalid2 is True
+        assert ctx2["openingLine"] == ""
+        assert too_long_issues == [
+            {"field": "openingLine", "reason": "too_long", "actual_length": 51, "maximum": 50}
+        ]
+
+    for locale in ("zh", "zh-TW", "ja", "ko"):
+        cjk_issues: list[dict] = []
+        ctx_cjk, invalid_cjk = gr_pregame._normalize_soccer_pregame_context(
+            {"openingLine": "一二三四五六七八九十甲乙丙丁戊己"},
+            prompt_locale=locale,
+            validation_issues=cjk_issues,
+        )
+        assert invalid_cjk is True
+        assert ctx_cjk["openingLine"] == ""
+        assert cjk_issues == [
+            {"field": "openingLine", "reason": "too_long", "actual_length": 16, "maximum": 15}
+        ]
+
+
+@pytest.mark.unit
+def test_soccer_pregame_opening_line_non_cjk_locale_allows_cjk_names():
+    mixed_line = "Let's play soccer, 小明!"
+    for locale in ("en", "ru", "es", "pt"):
+        issues: list[dict] = []
+        ctx, had_invalid = gr_pregame._normalize_soccer_pregame_context(
+            {"openingLine": mixed_line},
+            prompt_locale=locale,
+            validation_issues=issues,
+        )
+        assert had_invalid is False
+        assert issues == []
+        assert ctx["openingLine"] == mixed_line
+
+    for locale in ("ja", "ko", "zh", None):
+        issues = []
+        ctx, had_invalid = gr_pregame._normalize_soccer_pregame_context(
+            {"openingLine": mixed_line},
+            prompt_locale=locale,
+            validation_issues=issues,
+        )
+        assert had_invalid is True
+        assert ctx["openingLine"] == ""
+        assert issues == [
+            {"field": "openingLine", "reason": "too_long", "actual_length": len(mixed_line), "maximum": 15}
+        ]

@@ -1,0 +1,108 @@
+"""In-memory stand-in for ``ctx.permissions`` in plugin unit tests.
+
+    perms = FakePermissions({"plugin_sdk.main_agent.memory:read": "denied"})
+    perms.get("plugin_sdk.main_agent.memory:read").status  # "denied"
+
+Lets a plugin test its degraded paths instead of only the all-granted one.
+Nothing here talks to a host.
+"""
+
+from __future__ import annotations
+
+import inspect
+from collections.abc import Callable, Mapping
+from dataclasses import replace
+
+from ..models.exceptions import PermissionDeniedError
+from .catalog import PERMISSIONS
+from .state import PermissionState, PermissionSubscription, is_async_callable, known_permission
+
+StateLike = str | PermissionState | Mapping[str, object]
+ChangeCallback = Callable[[str, PermissionState], object]
+
+
+class FakePermissions:
+    """Settable ``get`` / ``on_change`` over a dict of states.
+
+    ``states`` maps a permission id to a status string, a ``PermissionState``
+    or a mapping with ``status`` / ``background`` / ``enforced``. Ids not
+    listed get ``default``. For a string, or a mapping without ``enforced``,
+    ``enforced`` comes from the vocabulary (False for disclosure-only ids); a
+    ``PermissionState`` is used as given. ``checks_disabled=True`` makes it
+    False for every id, as the host's master switch does. Unknown ids raise
+    ``ValueError`` so a typo fails the test.
+
+    The plugin-facing methods are exactly those of the real ``ctx.permissions``
+    (``get`` and ``on_change``); ``set`` and ``denial`` are test controls.
+    """
+
+    def __init__(
+        self,
+        states: Mapping[str, StateLike] | None = None,
+        *,
+        default: StateLike = "granted",
+        checks_disabled: bool = False,
+    ) -> None:
+        self._checks_disabled = checks_disabled
+        self._default = default
+        self._states: dict[str, PermissionState] = {}
+        self._callbacks: list[ChangeCallback] = []
+        self._coerce(next(iter(PERMISSIONS)), default)  # validate now
+        for permission, state in (states or {}).items():
+            self._states[_known(permission)] = self._coerce(permission, state)
+
+    def get(self, permission: str) -> PermissionState:
+        permission = _known(permission)
+        state = self._states.get(permission)
+        return state if state is not None else self._coerce(permission, self._default)
+
+    def on_change(self, callback: ChangeCallback) -> PermissionSubscription:
+        if is_async_callable(callback):
+            raise TypeError("FakePermissions.on_change callbacks must be synchronous")
+        self._callbacks.append(callback)
+        return PermissionSubscription(self._callbacks, callback)
+
+    def set(self, permission: str, state: StateLike) -> PermissionState:
+        """Change a state as the user would in the panel; notifies ``on_change``."""
+        permission = _known(permission)
+        new = self._coerce(permission, state)
+        old = self.get(permission)
+        self._states[permission] = new
+        if new != old:
+            for callback in list(self._callbacks):
+                result = callback(permission, new)
+                if inspect.iscoroutine(result):
+                    result.close()
+                    raise TypeError("FakePermissions.on_change callbacks must be synchronous")
+        return new
+
+    def denial(self, permission: str) -> PermissionDeniedError | None:
+        """The error a host would refuse ``permission`` with in its current state, if any."""
+        state = self.get(permission)
+        if state.status in ("granted", "once") or not state.enforced:
+            return None
+        return PermissionDeniedError(permission=_known(permission), reason=state.status)
+
+    def _coerce(self, permission: str, state: StateLike) -> PermissionState:
+        enforced = PERMISSIONS[_known(permission)].enforced and not self._checks_disabled
+        if isinstance(state, str):
+            return PermissionState(state, enforced=enforced)  # type: ignore[arg-type]
+        if isinstance(state, PermissionState):
+            return replace(state, enforced=False) if self._checks_disabled else state
+        if isinstance(state, Mapping):
+            unknown = set(state) - {"status", "background", "enforced"}
+            if unknown:
+                raise ValueError(f"unknown permission state fields: {sorted(unknown)}")
+            built = PermissionState(
+                state["status"],  # type: ignore[arg-type]
+                background=bool(state.get("background", False)),
+                enforced=bool(state.get("enforced", enforced)),
+            )
+            return replace(built, enforced=False) if self._checks_disabled else built
+        raise TypeError(f"unsupported permission state: {state!r}")
+
+
+_known = known_permission
+
+
+__all__ = ["FakePermissions"]

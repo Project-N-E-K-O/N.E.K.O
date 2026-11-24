@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import HTTPException
 from utils.chatgpt_subscription import (
-    enable, disable, preview, restricted_slots, revision, runtime_custom_api, supported_slots,
+    enable, disable, preview, restricted_slots, revision, runtime_custom_api, runtime_model_type, supported_slots,
 )
 from utils.llm_client.chatgpt_client import ChatChatGPT, ChatGPTResponseError
 
@@ -143,7 +143,7 @@ def test_exact_restore_and_speech_runtime_isolation(manager, custom, monkeypatch
     for slot in slots:
         assert config[f'{slot}ModelProvider'] == 'chatgpt'
         assert config[f'{slot}ModelApiKey'] == ''
-        resolved = manager.get_model_api_config({'gameMain': 'game_main', 'gameSummary': 'game_summary'}.get(slot, slot))
+        resolved = manager.get_model_api_config(runtime_model_type(slot))
         assert resolved['model'] == 'available-model'
         assert resolved['provider_type'] == 'chatgpt'
     public = json.dumps(preview(config, slots))
@@ -153,6 +153,16 @@ def test_exact_restore_and_speech_runtime_isolation(manager, custom, monkeypatch
     assert disable(config)
     assert config == {**original, 'disableTts': True}
     assert not disable(config)
+
+
+def test_subscription_slots_follow_current_tier_names():
+    slots = set(supported_slots())
+    # Renamed tiers and the whole-follow familiar/minigame tiers are enrolled.
+    assert {'memory', 'recognition', 'agentSmall', 'agentAdvanced', 'gameRecognition'} <= slots
+    # Old names, the retired vision slot and the dedicated decision protocol never are.
+    assert not slots & {'summary', 'emotion', 'correction', 'vision', 'decision', 'omni', 'tts', 'image'}
+    assert [runtime_model_type(slot) for slot in ('gameMain', 'agentSmall', 'gameRecognition', 'memory')] == [
+        'game_main', 'agent_small', 'game_recognition', 'memory']
 
 
 @pytest.mark.parametrize('custom', [False, True])
@@ -267,7 +277,6 @@ async def test_catalog_http_429_returns_structured_error_without_saving(manager,
             base_url='http://127.0.0.1:48999',
         ) as api:
             response = await api.post('/api/config/chatgpt/subscription',
-                                      headers={'x-neko-chatgpt': '1'},
                                       json={'enabled': True, 'revision': revision(original, supported_slots())})
         assert response.status_code == 429
         assert response.json() == {'detail': 'usageLimit'}
@@ -467,7 +476,7 @@ async def test_settings_response_exposes_only_restricted_slot_names(manager, rou
     manager.save_json_config('core_config.json', config)
     result = await core.get_core_config_api()
     assert result['success'], result
-    assert result['chatgptIndependentSlots'] == ([] if custom else ['omni', 'tts', 'image'])
+    assert result['chatgptIndependentSlots'] == ([] if custom else ['decision', 'vision', 'omni', 'tts', 'image'])
     assert 'private-before-subscription' not in json.dumps(result)
     assert 'chatgptSubscription' not in result
 

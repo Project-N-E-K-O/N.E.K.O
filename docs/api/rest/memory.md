@@ -2,7 +2,7 @@
 
 **Prefix:** `/api/memory`
 
-This is the main server's browser and settings API for memory. It exposes recent-memory editing, memory feature toggles, character-memory renaming, and user-initiated cleanup of legacy storage. It is not a generic proxy for the process-local [Memory Server API](/api/memory-server).
+This is the main server's browser and settings API for memory. It exposes recent-memory editing, memory feature toggles, character-memory renaming, local repetition insights, habitual-phrase avoid-list management, external memory import, and user-initiated cleanup of legacy storage. It is not a generic proxy for the process-local [Memory Server API](/api/memory-server).
 
 All routes are declared without a trailing slash. Write operations can return `409` while cloud storage is in maintenance or read-only mode.
 
@@ -18,6 +18,15 @@ All routes are declared without a trailing slash. Write operations can return `4
 | `POST` | `/api/memory/review_config` | Update the automatic recent-memory review toggle |
 | `GET` | `/api/memory/powerful_memory_config` | Read the powerful-memory toggle |
 | `POST` | `/api/memory/powerful_memory_config` | Update the powerful-memory toggle and run any required migration |
+| `GET` | `/api/memory/insight_characters` | List characters eligible for repetition-insight analysis |
+| `POST` | `/api/memory/repetition_insights` | Run local-only repetition analysis on persisted assistant replies |
+| `POST` | `/api/memory/repetition_effects/reset` | Clear local anti-repeat effect aggregates for one character |
+| `GET` | `/api/memory/habitual_phrases` | Read a character's habitual-phrase avoid list and panel state |
+| `POST` | `/api/memory/habitual_phrases/override` | Allow, suppress, or clear a user override on one habitual phrase |
+| `POST` | `/api/memory/habitual_phrases/recompute` | Recompute a character's habitual-phrase avoid list immediately |
+| `POST` | `/api/memory/external_import/preview` | Preview OpenClaw, Hermes, or Molili Markdown/ZIP imports without writing |
+| `POST` | `/api/memory/external_import/commit` | Commit a previewed external memory import into a character's stores |
+| `GET` | `/api/memory/external_import/progress` | Poll active external-import progress counters for a character |
 | `GET` | `/api/memory/farewell-summary` | Read-only memory summary for the desktop exit farewell card |
 | `GET` | `/api/memory/legacy/scan` | Scan user-visible legacy memory roots without changing them |
 | `POST` | `/api/memory/legacy/purge` | Delete explicitly selected entries from scanned legacy roots |
@@ -217,6 +226,136 @@ Migration or persistence failure:
 ```json
 { "success": false, "error": "migration HTTP 409" }
 ```
+
+## Repetition insights and anti-repeat effects
+
+### `GET /api/memory/insight_characters`
+
+No parameters.
+
+Returns the sorted list of character names accepted by `POST /api/memory/repetition_insights`. It combines configured characters with real, non-symlink, non-legacy-vector-store character memory directories and recent-memory files on disk.
+
+```json
+{
+  "characters": ["小天", "小夜"]
+}
+```
+
+### `POST /api/memory/repetition_insights`
+
+Runs a local-only analysis of persisted assistant replies without calling an LLM or sending data off-device. The route forwards to the memory server's `/internal/memory/{character_name}/repetition_insights`, strips internal `_anti_repeat_response_ids`, and enriches the report with local anti-repeat `effectiveness` and folded `associations`.
+
+**Request body**
+
+| Field | Type | Required | Default | Description |
+|---|---|---:|---|---|
+| `character_name` | string | yes | — | Target character name |
+| `language` | string | yes | — | One of `en`, `es`, `pt`, `ru`, `ja`, `ko`, `zh-CN`, `zh-TW` |
+| `assistant_message_limit` | integer | no | `100` | Number of latest assistant messages to inspect (`3`–`100`) |
+| `effect_days` | integer | no | `30` | Fallback effect window (`7`, `30`, or `90`); retained for older client compatibility |
+
+Returns `200` with `success: true`, `schema_version`, `artifact_type`, `character_name`, `language`, `parameters`, `summary`, `candidates`, `effectiveness`, and `associations`. Invalid character names, unsupported languages, or miner errors return `422`; missing characters return `404`; an unavailable memory server or active write fence returns `503`.
+
+### `POST /api/memory/repetition_effects/reset`
+
+Clears only the local anti-repeat effect aggregates for an existing character.
+
+**Request body**
+
+```json
+{
+  "character_name": "小天"
+}
+```
+
+Returns `{"success": true, "character_name": "小天", "cleared": true}` on success, `422` for an invalid character name, `404` when the character is not found, and `503` when the effect store is unavailable.
+
+## Habitual phrases avoid list
+
+### `GET /api/memory/habitual_phrases`
+
+Returns the character's habitual-phrase avoid-list panel as the next session start will apply it.
+
+**Query parameters**
+
+| Name | Type | Required | Description |
+|---|---|---:|---|
+| `character_name` | string | yes | Target character name |
+| `ui_language` | string | no | Browser UI language fallback when no durable character prompt locale is stored |
+
+Returns `200` with `success`, `character_name`, `switches` (`natural_expression`, `review`), `rules` (`min_sessions`, `session_gap_minutes`, `max_items`, `candidate_pool`, `prompt_max_tokens`, `refresh_interval_hours`, `max_age_days`), `next_refresh_at`, `computed_at`, `language`, `language_matches`, `stale`, `parameters`, `source`, `review`, `entries`, `injected`, and `overrides`. Invalid names return `422`, missing characters return `404`, and store unavailability returns `503`.
+
+### `POST /api/memory/habitual_phrases/override`
+
+Sets or clears a user override (`allow`, `suppress`, or `clear`) for one phrase, then returns the refreshed panel payload from `GET /api/memory/habitual_phrases`.
+
+**Request body**
+
+| Field | Type | Required | Description |
+|---|---|---:|---|
+| `character_name` | string | yes | Target character name |
+| `phrase` | string | yes | Phrase text (`1`–`200` characters) |
+| `action` | string | yes | `"allow"`, `"suppress"`, or `"clear"` |
+| `ui_language` | string | no | Optional UI language hint (up to `32` characters) |
+
+Invalid names or invalid phrases return `422`; missing characters return `404`; active restore/maintenance mode or store unavailability returns `503`.
+
+### `POST /api/memory/habitual_phrases/recompute`
+
+Triggers an immediate recomputation of the character's habitual-phrase avoid list via the memory server (130-second forwarding timeout) and returns the refreshed panel payload.
+
+**Request body**
+
+| Field | Type | Required | Description |
+|---|---|---:|---|
+| `character_name` | string | yes | Target character name |
+| `ui_language` | string | no | Optional UI language hint (up to `32` characters) |
+
+Returns `409` with `{"success": false, "error": "already recomputing"}` if a recomputation is already in progress for that character, `422` for an invalid name, `404` when not found, and `503` when recomputation is unavailable.
+
+## External memory import
+
+### `POST /api/memory/external_import/preview`
+
+Parses OpenClaw, Hermes, or Molili Markdown files or ZIP archives without writing memory files. Non-multipart requests that declare a valid integer `Content-Length` header exceeding `EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES` are capped by middleware; `multipart/*` requests and chunked or other requests without a valid integer `Content-Length` pass through.
+
+**Request body**
+
+| Field | Type | Required | Description |
+|---|---|---:|---|
+| `character_name` | string | yes | Target character name (allows dots; max `50` chars) |
+| `source_format` | string | no | `"auto"` (default), `"openclaw"`, `"hermes"`, or `"molili"` |
+| `files` | array | no | List of `{path/name, content}` objects; mutually exclusive with `archive_b64` |
+| `archive_b64` | string | no | Base64-encoded ZIP archive (optional `data:` prefix); mutually exclusive with `files` |
+
+Returns `success`, `character_name`, `source_format`, `files`, `counts` (`persona`, `facts`, `daily`), `candidate_count`, `persona_fusion_calls`, `persona_candidate_tokens`, `daily_extraction_calls`, `daily_candidate_tokens`, `warning_count`, `warnings` (at most 20), `candidates` (at most 100), and `truncated_preview`. Molili archives also include `character_card`, `master_profile`, `skipped`, and `snapshot_time`. Non-multipart requests whose valid integer `Content-Length` header exceeds `EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES` are rejected earlier by `InboundBodySizeLimitMiddleware` with HTTP `413` and `{"ok": false, "error_code": "payload_too_large", "max_bytes": ..., "error": ...}` (not `{success, error}`); `multipart/*` requests and chunked or other requests without a valid integer `Content-Length` pass through to the application without middleware `413` rejection. Import field/file validation and OpenClaw/Hermes Markdown/ZIP (`ExternalMemoryImportError`) parsing failures return `400`; malformed request-body JSON decoding failures (such as `{`), invalid ZIP container errors (`zipfile.BadZipFile`) under `source_format: "molili"` (currently not wrapped as `ExternalMemoryImportError`), and other unexpected errors return `500`.
+
+### `POST /api/memory/external_import/commit`
+
+Merges a previewed external memory import into the character's memory stores via `POST /internal/memory/import_external_markdown` (480-second forwarding timeout).
+
+**Request body**
+
+Accepts the same `character_name`, `source_format`, and `files` / `archive_b64` fields as `preview`, plus:
+
+| Field | Type | Required | Description |
+|---|---|---:|---|
+| `acknowledge_warnings` | boolean | conditional | Must be `true` when suspicious-instruction warnings are present; otherwise returns `409` |
+| `render_language` | string | no | Validated render-only locale fallback; never persists as a durable language preference |
+
+On success returns `success: true`, `need_refresh: true`, `memory_server_reloaded: true`, `status: "success"`, `character_name`, `source_format`, `imported_files`, `added_persona`, `added_facts`, `skipped_duplicates`, and `warning_count`. Non-multipart requests whose valid integer `Content-Length` header exceeds `EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES` are rejected earlier by `InboundBodySizeLimitMiddleware` with HTTP `413` and `{"ok": false, "error_code": "payload_too_large", "max_bytes": ..., "error": ...}` (not `{success, error}`); `multipart/*` requests and chunked or other requests without a valid integer `Content-Length` pass through to the application without middleware `413` rejection. Router/memory-server errors: `400` (import field/file validation or OpenClaw/Hermes Markdown/ZIP `ExternalMemoryImportError` parsing failure, or upstream rejection without a partial/too-large error code), `409` (unacknowledged warnings or cloud-storage maintenance), `413` (`error_code: "external_import_too_large"` with `partial_import`), `500` (`error_code: "external_import_partial"` with `partial_import`, malformed request-body JSON decoding failures such as `{`, invalid ZIP container errors `zipfile.BadZipFile` under `source_format: "molili"`, or other unexpected failures), and `504` (`error_code: "external_import_timeout"` on forwarding client timeout). On `504`, the import may still be running on the memory server (read timeout after dispatch) or may not have started (connect or pool timeout); callers can check `GET /api/memory/external_import/progress` (one in-memory entry per character, which may still reflect a prior run or be overwritten by an overlapping request) or retry the import (fused persona batches and already completed daily diary entries skip reprocessing via fingerprint deduplication, without guaranteeing whole-import or concurrent idempotency).
+
+### `GET /api/memory/external_import/progress`
+
+Polls the memory server's in-memory progress counters for an external import.
+
+**Query parameters**
+
+| Name | Type | Required | Description |
+|---|---|---:|---|
+| `character_name` | string | yes | Target character name (allows dots; max `50` chars) |
+
+Returns `{"success": true, "active": false}` when no progress entry is currently registered for that character in the current memory-server process (before any import reaches registration, or when an import request was rejected before registering progress), `{"success": true, "active": true, "stage": "persona"|"daily", "persona_total": ..., "persona_done": ..., "daily_total": ..., "daily_done": ..., "finished": false, "started_at": ...}` while active, or `{"success": true, "active": false, "finished": true, ...}` with the retained final stage and counters once the run exits (whether succeeded, failed, or partially completed). Progress is tracked as a single in-memory entry per character, so a new or overlapping import replaces any previous entry for that character. Invalid names return `400`; non-200 HTTP status codes from the memory server are forwarded verbatim, and forwarding failures return `502`.
 
 ## Farewell summary
 

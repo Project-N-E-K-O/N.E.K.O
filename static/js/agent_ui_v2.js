@@ -72,7 +72,7 @@
         const shouldStabilizeTutorialText = options
             && options.stabilizeTutorialText === true
             && isTutorialAgentStatusLocked();
-        const text = shouldStabilizeTutorialText ? 'NekoClaw server ready' : (msg || '');
+        const text = shouldStabilizeTutorialText ? 'NekoPower server ready' : (msg || '');
         status.forEach(s => { if (s) s.textContent = text; });
     };
     const currentLanlanName = () => {
@@ -225,7 +225,7 @@
         // Only fire the toast when the user actually opted into that capability —
         // otherwise background daemons (browser-use install / startup
         // LLM probe) flipping their own seeded PENDING → *_UNREACHABLE produce
-        // bogus "猫爪预检失败" popups even when the agent is working fine.
+        // bogus "喵能力预检失败" popups even when the agent is working fine.
         const CAP_TO_FLAG = {
             computer_use: 'computer_use_enabled',
             browser_use: 'browser_use_enabled',
@@ -265,6 +265,10 @@
         state.snapshot = snapshot;
         if (Number.isFinite(rev)) state.revision = rev;
         window._agentStatusSnapshot = snapshot;
+        // 悬浮窗显不显示：后端记着的值（喵能力界面里改），同步到本页。
+        if (window.AgentHUD && typeof window.AgentHUD.syncTaskHudPreference === 'function') {
+            window.AgentHUD.syncTaskHudPreference(snapshot.task_hud_visible);
+        }
         if (snapshot.notification && typeof window.showStatusToast === 'function') {
             const msg = window.translateStatusMessage ? window.translateStatusMessage(snapshot.notification) : snapshot.notification;
             window.showStatusToast(msg, 4000);
@@ -591,7 +595,7 @@
         applyLocalAgentOff('character-switch-local');
         try {
             const snapshot = await fetchSnapshotRaw();
-            // 用户已经手动打开猫爪时，不允许切换后的慢刷新覆盖乐观开关状态。
+            // 用户已经手动打开喵能力时，不允许切换后的慢刷新覆盖乐观开关状态。
             if (resetMasterSeq === state.masterOpSeq && state.pending.size === 0 && isSnapshotTokenCurrent(resetToken)) {
                 applySnapshot(snapshot, 'character-switch-refresh', resetToken);
             }

@@ -13,10 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import collections
 from dataclasses import replace
 from typing import Sequence
 
-from utils.image_history import replace_history_text
+from utils.image_history import image_count, replace_history_text
 
 from main_logic.agent_event_bus import conversation_reply_observation
 from main_logic.proactive_delivery import (
@@ -27,7 +28,9 @@ from main_logic.proactive_delivery import (
 from ._turn_context import _mark as _mark_turn_context
 from ._shared import (
     _cancelled_turn_end,
+    _chat_route_config,
     _find_by_identity,
+    _note_legacy_vision,
     _same_route,
     AIMessage,
     Any,
@@ -69,6 +72,14 @@ from ._media import (
     _FRAME_SOURCE_SCREEN,
     _FRAME_SOURCE_UNKNOWN,
     _FRAME_SOURCE_USER,
+    _HISTORY_IMAGE_KINDS_KEY,
+    _HISTORY_IMAGE_PREFIT_KINDS_KEY,
+    _IMAGE_KIND_AUTO_SCREENSHOT,
+    _IMAGE_KIND_LIVE,
+    _IMAGE_KIND_PLUGIN,
+    _IMAGE_KIND_USER,
+    _IMAGE_KIND_UNKNOWN,
+    _history_image_kinds,
 )
 
 from ._genai_support import (
@@ -537,22 +548,22 @@ class _StreamingMixin:
             return None
 
         # Each provider in config/api_providers.json has an emotion configuration
-        # `emotion_model` field; config_manager returns the current provider's
+        # `recognition_model` field; config_manager returns the current provider's
         # emotion subconfiguration (model/base_url/api_key).
         try:
             from utils.config_manager import get_config_manager  # Lazy import avoids circular dependencies.
             cfg_mgr = get_config_manager()
-            emotion_config = await cfg_mgr.aget_model_api_config('emotion') if cfg_mgr else None
+            emotion_config = await cfg_mgr.aget_model_api_config('recognition') if cfg_mgr else None
         except Exception as e:
             logger.warning("summary: 取 emotion 配置失败: %s", e)
             return None
         if not emotion_config:
             return None
         emotion_api_key = emotion_config.get('api_key')
-        emotion_model = emotion_config.get('model')
+        recognition_model = emotion_config.get('model')
         emotion_base_url = emotion_config.get('base_url')
         emotion_provider_type = emotion_config.get('provider_type')
-        if not emotion_model or (not emotion_api_key and emotion_provider_type != 'chatgpt'):
+        if not recognition_model or (not emotion_api_key and emotion_provider_type != 'chatgpt'):
             logger.info("summary: emotion 模型/Key 未配置，跳过长回复摘要")
             return None
 
@@ -599,7 +610,7 @@ class _StreamingMixin:
         # suitable temperature and need no caller intervention.
         try:
             llm = await create_chat_llm_async(
-                emotion_model, emotion_base_url, emotion_api_key,
+                recognition_model, emotion_base_url, emotion_api_key,
                 max_completion_tokens=120,
                 timeout=30,
                 provider_type=emotion_provider_type,
@@ -724,6 +735,13 @@ class _StreamingMixin:
         # user-dragged attachments after sampled frames (see _media.py ordering explanation); attachments
         # are user-provided and must not inherit this turn's capture channel.
         turn_source_count: Optional[int] = None,
+        # Per channelled turn image: True for a screenshot the user attached that
+        # independent ASR sampled with the live frames. History provenance only.
+        turn_image_user_flags: Sequence[bool] = (),
+        # Consent-revocation epoch (``_auto_capture_discard_epoch``) when the
+        # caller took this turn's frames; None: read on entry. A revocation
+        # since then strips the frames once the message is in history.
+        auto_capture_epoch: Optional[int] = None,
         turn_id: Optional[str] = None,
         on_turn_committed: Optional[Callable[[], None]] = None,
         thinking_on: bool = False,
@@ -738,6 +756,7 @@ class _StreamingMixin:
         # anchor after this turn's user message and survive the provider response in later session requests;
         # ephemeral corpus/memory blocks enter this request only. Neither enters history.
         turn_context: Any = None,
+        on_generation_started: Optional[Callable[[], Any]] = None,
     ) -> None:
         """
         Send a text message to the API and stream the response.
@@ -835,6 +854,7 @@ class _StreamingMixin:
         # does not clear via _notify_reasoning_done — core's inline finally clears
         # unconditionally — so it only needs the bump, not an owner token.
         self._begin_reasoning_stream()
+        self._notify_response_start()
         discard_callback = response_discarded_callback or self.on_response_discarded
 
         # Check if we need to switch to vision model. A staged proactive-vision
@@ -847,26 +867,51 @@ class _StreamingMixin:
         #    greeting / agent callback via prompt_ephemeral), so this reply isn't
         #    answering the screen-based talk anymore. History only grows by
         #    appends between staging and this read (the user hasn't been appended
-        #    yet), so a length change means an intervening AI turn (Codex P2).
+        #    yet), so a length change means an intervening AI turn (Codex P2); or
+        #  - revoked: the screen consent it was staged under no longer holds.
+        #    Checked again before each attempt / reroll of this turn
+        #    (``_withhold_revoked_proactive_image``): clearing the slot does not
+        #    reach the copy this turn already holds.
         # A few lightweight callers/tests intentionally construct the client via
         # ``__new__`` and wire only the fields needed for one streaming turn.
         # Treat an absent staging slot exactly like an empty slot so the optional
         # proactive-vision feature does not break those legacy construction paths.
         proactive_image = getattr(self, "_proactive_image_to_inject", None)
+        # A revocation during this turn's awaits (vision switch, image fit)
+        # cannot reach a message that does not exist yet; re-checked once the
+        # message is in history.
+        _auto_capture_epoch = (
+            auto_capture_epoch
+            if auto_capture_epoch is not None
+            else getattr(self, "_auto_capture_discard_epoch", 0)
+        )
+        _proactive_consent_check = getattr(self, "_proactive_image_consent_check", None)
+
+        def _proactive_consent_revoked() -> bool:
+            if _proactive_consent_check is None:
+                return False
+            try:
+                return not _proactive_consent_check()
+            except Exception:
+                # Unreadable consent must not let the screenshot through.
+                return True
+
+        # The screenshot's bytes as attached to this turn's message (the fit
+        # may re-encode it); None when it is not part of the message.
+        _proactive_attached_b64 = None
         if proactive_image:
             _expired = (
                 time.monotonic() - self._proactive_image_staged_at
                 > _PROACTIVE_SCREENSHOT_TTL_SECONDS
             )
             _superseded = len(self._conversation_history) != self._proactive_image_history_len
-            if _expired or _superseded:
+            _revoked = _proactive_consent_revoked()
+            if _expired or _superseded or _revoked:
                 logger.info(
-                    "Proactive screenshot dropped (expired=%s superseded=%s)",
-                    _expired, _superseded,
+                    "Proactive screenshot dropped (expired=%s superseded=%s revoked=%s)",
+                    _expired, _superseded, _revoked,
                 )
-                self._proactive_image_to_inject = None
-                self._proactive_image_staged_at = 0.0
-                self._proactive_image_history_len = 0
+                self.set_proactive_screenshot(None)
                 proactive_image = None
         # Plugin `read` frames sit in their own quota-bounded list. Instances
         # built via __new__ (tests, legacy callers) never ran __init__, so read
@@ -899,9 +944,12 @@ class _StreamingMixin:
             # vision URL/key must still switch; switch_model itself is a no-op
             # when both the id and the endpoint already match.
             if self.vision_model:
+                # Only a retired, separately configured vision model is set
+                # here; images otherwise stay on the chat model.
                 logger.info(f"🖼️ Temporarily switching to vision model: {self.vision_model} (from {self.model})")
                 try:
                     await self.switch_model(self.vision_model, use_vision_config=True)
+                    _note_legacy_vision(self, "offline chat")
                 except BaseException:
                     # Attachments were atomically dequeued above. This is the sole await between dequeue
                     # and message assembly: vision switching creates an LLM client, so network faults /
@@ -950,6 +998,13 @@ class _StreamingMixin:
                     else max(0, min(int(turn_source_count), len(own_images)))
                 )
             )
+            # History provenance does not depend on the optional bus channel:
+            # an explicit sampled-frame count marks the live prefix by itself.
+            _live_prefix = (
+                max(0, min(int(turn_source_count), len(own_images)))
+                if turn_source_count is not None
+                else _channelled
+            )
             _own_image_sources = (
                 [turn_source] * _channelled
                 + [_FRAME_SOURCE_USER] * (len(own_images) - _channelled)
@@ -963,6 +1018,23 @@ class _StreamingMixin:
                 # here instead of applying one channel to the entire section.
                 + _own_image_sources
                 + [_FRAME_SOURCE_USER] * len(attachment_images)
+            )
+            # History provenance, same positions. Channelled turn frames are
+            # live screen/camera frames (independent ASR samples them over the
+            # utterance); the frame-bus "screen" label cannot tell them apart
+            # from the proactive screenshot, so this is kept separately.
+            _ordered_kinds = (
+                ([_IMAGE_KIND_AUTO_SCREENSHOT] if proactive_image else [])
+                + [_IMAGE_KIND_PLUGIN] * len(plugin_images)
+                + [_IMAGE_KIND_PLUGIN] * len(prefix_images)
+                + [
+                    _IMAGE_KIND_USER
+                    if index < len(turn_image_user_flags) and turn_image_user_flags[index]
+                    else _IMAGE_KIND_LIVE
+                    for index in range(_live_prefix)
+                ]
+                + [_IMAGE_KIND_USER] * (len(own_images) - _live_prefix)
+                + [_IMAGE_KIND_USER] * len(attachment_images)
             )
             # Each source has separate image-count quotas (cannot spend another's allowance), but all enter
             # one HumanMessage, so the provider sees their sum: exceeding its per-request cap rejects
@@ -996,6 +1068,16 @@ class _StreamingMixin:
             except BaseException:
                 _restore_consumed_queues()
                 raise
+            # The screenshot leads the batch and the fit keeps order: sampling
+            # keeps the head, only the final trim drops it (oldest first). So it
+            # was attached exactly when nothing was trimmed, as the first image,
+            # possibly re-encoded.
+            if (
+                proactive_image
+                and _attached_images
+                and not (_budget_notice or {}).get("dropped")
+            ):
+                _proactive_attached_b64 = _attached_images[0]
             # Frame-bus labels correspond by index and remain valid only with unchanged counts: rung 0
             # normalization and recompression map images one-to-one; sampling/dropping change counts,
             # and outputs do not reveal their original indices. Fall back to unknown then: labeling
@@ -1059,18 +1141,20 @@ class _StreamingMixin:
                 "text": _user_text_with_prefix,
             })
 
+            _attached_kinds, _prefit_kinds = _history_image_kinds(
+                _ordered_kinds, len(_attached_images)
+            )
             user_message = HumanMessage(content=content)
+            user_message.metadata[_HISTORY_IMAGE_KINDS_KEY] = _attached_kinds
+            if _prefit_kinds:
+                user_message.metadata[_HISTORY_IMAGE_PREFIT_KINDS_KEY] = _prefit_kinds
             # Report what was ATTACHED, not what was staged. The trim above
             # takes a prefix, and the proactive screenshot is that prefix's
             # first element, so it survives exactly when nothing was dropped.
             _img_count = len(_attached_images)
-            # Directly test membership in the final attached batch. Previously checking whether anything
-            # was dropped approximated this only for dropping; the budget ladder now samples start/middle/end,
-            # which can also omit the queue head. Membership is the accurate test.
-            _proactive_attached = (
-                bool(proactive_image)
-                and proactive_image in _attached_images
-            )
+            # Sampling keeps the head, so only a trim can drop the screenshot; a byte
+            # membership test would miss a re-encoded one (see the fit above).
+            _proactive_attached = _proactive_attached_b64 is not None
             logger.info(
                 f"Sending multi-modal message with {_img_count} image(s)"
                 f"{' (incl. proactive screen)' if _proactive_attached else ''}"
@@ -1083,15 +1167,87 @@ class _StreamingMixin:
             # the entire queue again, which would consume arrivals during the model call (the race this PR fixes).
             # The plugin list was likewise atomically cleared when read above (no await allowed between
             # reading and clearing); do not repeat here.
-            # Clear the one-shot proactive screenshot here too.
-            self._proactive_image_to_inject = None
-            self._proactive_image_staged_at = 0.0
-            self._proactive_image_history_len = 0
+            # Clear the one-shot proactive screenshot here too, unless a newer
+            # round staged another one during the awaits above.
+            if getattr(self, "_proactive_image_to_inject", None) is proactive_image:
+                self.set_proactive_screenshot(None)
         else:
             # Text-only message (already includes system_prefix watermark when present).
             user_message = HumanMessage(content=_user_text_with_prefix)
 
+        # Live frames of earlier turns were answered there; keep only receipts
+        # so a frame of a share that has since ended is not resent every turn.
+        # A concurrent turn still heading to the provider keeps its own frames.
+        self._strip_answered_live_frames(skip_in_flight=True)
         self._conversation_history.append(user_message)
+        # Heading to the provider until this call returns (released by
+        # _tracked_reply_call); a proactive reply meanwhile leaves its frames.
+        in_flight_messages = getattr(self, "_in_flight_user_messages", None)
+        if in_flight_messages is None:
+            in_flight_messages = self._in_flight_user_messages = {}
+        in_flight_messages[asyncio.current_task()] = user_message
+        _in_flight_user_messages_owner = in_flight_messages
+
+        def _hold_in_flight_for_resend() -> None:
+            """Register the turn again before a retry / reroll resends it.
+
+            The registration ends at the first chunk; an attempt that fails
+            after it (or a reroll) sends the same message again, so another
+            turn starting during the backoff must not strip its live frames.
+            Released as before: at the next first chunk, or when the call ends.
+            """
+            nonlocal _in_flight_user_messages_owner
+            if _in_flight_user_messages_owner is not None:
+                return
+            registry = getattr(self, "_in_flight_user_messages", None)
+            if registry is None:
+                registry = self._in_flight_user_messages = {}
+            registry[asyncio.current_task()] = user_message
+            _in_flight_user_messages_owner = registry
+
+        def _release_in_flight() -> None:
+            """This turn's message is not heading to the provider anymore."""
+            nonlocal _in_flight_user_messages_owner
+            if _in_flight_user_messages_owner is not None:
+                _in_flight_user_messages_owner.pop(asyncio.current_task(), None)
+                _in_flight_user_messages_owner = None
+        if getattr(self, "_auto_capture_discard_epoch", 0) != _auto_capture_epoch:
+            # Consent was revoked while this turn was being assembled: its
+            # proactive screenshot must not go out (no await since append).
+            self._strip_auto_captures_missed_by_revocation(user_message)
+        if has_images and not (getattr(self, "vision_model", "") or ""):
+            from utils.legacy_vision import chat_refuses_images
+            if chat_refuses_images(_chat_route_config(self)):
+                # The chat model already rejected images this run: send the
+                # text (with image receipts) rather than another refused
+                # request. No await since append.
+                _dropped = self._drop_history_image_pixels(only=user_message)
+                if _dropped:
+                    logger.info(
+                        "🖼️ Not sending %d image(s): the chat model cannot read images",
+                        _dropped,
+                    )
+                    # Pictures the user supplied: the attachment queue, a
+                    # screenshot sampled with the live frames, or an attachment
+                    # appended after this turn's channelled frames.
+                    _user_supplied = bool(
+                        attachment_images
+                        or any(turn_image_user_flags or ())
+                        or (
+                            turn_source_count is not None
+                            and len(own_images) > turn_source_count
+                        )
+                    )
+                    if _user_supplied and self.on_status_message:
+                        # Pictures the user attached themselves must not vanish
+                        # silently (sampled live frames do, every voice turn).
+                        # Scheduled: nothing may await between append and here.
+                        _notice = asyncio.ensure_future(self.on_status_message(
+                            json.dumps({"code": "CHAT_MODEL_IMAGE_SKIPPED"})
+                        ))
+                        _notice.add_done_callback(
+                            lambda t: t.cancelled() or t.exception()
+                        )
         # The list this turn's user message went into: a cancelled reply is
         # dropped once history was replaced since (_commit_cancelled_reply).
         turn_history = self._conversation_history
@@ -1121,6 +1277,60 @@ class _StreamingMixin:
             # Store _attached_images: post-fit bytes, not original caller images.
             # Normalization re-encodes almost every turn; bus images must match what the model actually saw.
             _pending_bus_frames = (_attached_images, _attached_sources)
+            _auto_capture_epoch_at_snapshot = getattr(self, "_auto_capture_discard_epoch", 0)
+
+        def _withhold_revoked_proactive_image() -> None:
+            """Take the proactive screenshot out of this turn once consent is gone.
+
+            Runs synchronously right before each attempt / reroll opens its
+            stream, and before a failed Gemini request falls back to
+            OpenAI-compat inside one attempt, so no await separates the check
+            from that request. The
+            message already sits in history, so the image part is removed from
+            its content in place; the user's own images and the text stay.
+            Tool rounds inside one attempt are not re-checked: the first round
+            already carried the screenshot, and once sent it stays in history
+            like any other image of the conversation.
+            """
+            nonlocal _proactive_attached_b64, _pending_bus_frames
+            if _proactive_attached_b64 is None or not _proactive_consent_revoked():
+                return
+            _proactive_attached_b64 = None
+            # The screenshot is the first image of the message, unless the
+            # revocation already stripped it from history
+            # (discard_auto_captured_history_images): the recorded kinds then no
+            # longer lead with it, and the first image is someone else's.
+            parts = user_message.content
+            metadata = user_message.metadata if isinstance(user_message.metadata, dict) else {}
+            kinds = metadata.get(_HISTORY_IMAGE_KINDS_KEY)
+            count = image_count(parts)
+            if not count or (
+                isinstance(kinds, list)
+                and len(kinds) == count
+                and kinds[0] not in (_IMAGE_KIND_AUTO_SCREENSHOT, _IMAGE_KIND_UNKNOWN)
+            ):
+                # Gone already; the frame-bus publish filters by what the
+                # message still carries.
+                if getattr(self, "_proactive_image_to_inject", None) is proactive_image:
+                    self.set_proactive_screenshot(None)
+                return
+            logger.info("Proactive screenshot withheld: screen consent revoked")
+            for index, part in enumerate(parts):
+                if isinstance(part, dict) and part.get("type") == "image_url":
+                    del parts[index]
+                    break
+            if isinstance(kinds, list) and len(kinds) == count:
+                # Keep the recorded kinds aligned with the remaining images.
+                user_message.metadata = {**metadata, _HISTORY_IMAGE_KINDS_KEY: kinds[1:]}
+            if _pending_bus_frames is not None:
+                _bus_images, _bus_sources = _pending_bus_frames
+                # Nothing left to publish when the screenshot was the only image.
+                _pending_bus_frames = (
+                    (_bus_images[1:], _bus_sources[1:]) if len(_bus_images) > 1 else None
+                )
+            # Leave a screenshot staged by a newer round alone.
+            if getattr(self, "_proactive_image_to_inject", None) is proactive_image:
+                self.set_proactive_screenshot(None)
 
         # Callback for user input
         transcript_callback = input_transcript_callback or self.on_input_transcript
@@ -1213,6 +1423,14 @@ class _StreamingMixin:
                     await self.on_status_message(json.dumps({"code": "NO_USER_MESSAGE"}))
                     status_reported = True
                 return
+            if on_generation_started is not None:
+                try:
+                    on_generation_started()
+                except Exception as callback_err:
+                    logger.warning(
+                        "OmniOfflineClient.stream_text: on_generation_started failed: %s",
+                        callback_err,
+                    )
             for attempt in range(max_retries):
                 # close() alone sets self.llm to None. If it runs during retry sleep after an earlier
                 # APIConnectionError (user changes mode / disconnects / session circuit breaker trips),
@@ -1291,6 +1509,7 @@ class _StreamingMixin:
                         # TTS (otherwise it is never heard), then reset all states to idle.
                         summary_state = 'idle'
                         summary_prefix_for_history = ""  # assistant_message snapshot at cutover trigger.
+                        summary_prefix_persisted = False
                         summary_tail_buffer = ""        # Post-cutover UI-only text.
                         summary_next_gibberish_check = _SUMMARY_GIBBERISH_RECHECK_TOKENS
                         summary_trigger_tokens = 0     # _total when summary triggers (logging only).
@@ -1308,6 +1527,169 @@ class _StreamingMixin:
                             if not recovery_text.startswith(length_guard_persisted_prefix):
                                 return False
                             return bool(recovery_text[len(length_guard_persisted_prefix):].strip())
+
+                        def _check_summary_tail() -> None:
+                            nonlocal summary_state, summary_next_gibberish_check
+                            if summary_state != 'cutover_done' or not summary_tail_buffer:
+                                return
+                            tail_tokens = count_tokens(summary_tail_buffer)
+                            if tail_tokens < summary_next_gibberish_check:
+                                return
+                            if _is_gibberish_response(summary_tail_buffer):
+                                summary_state = 'gibberish_fallback'
+                                logger.warning(
+                                    "OmniOfflineClient summary: tail gibberish 命中 (%d tokens)，中止本轮生成",
+                                    tail_tokens,
+                                )
+                                self._pause_response_generation(response_generation)
+                            else:
+                                summary_next_gibberish_check = tail_tokens + _SUMMARY_GIBBERISH_RECHECK_TOKENS
+
+                        async def _flush_prefix_buffer() -> None:
+                            nonlocal prefix_buffer, prefix_checked, guard_triggered, discard_reason
+                            nonlocal pipe_count, fence_triggered, assistant_message, assistant_message_total
+                            nonlocal summary_state, summary_trigger_tokens, summary_overflow_offset
+                            nonlocal length_guard_original_tokens, length_guard_recovery_text
+                            nonlocal summary_prefix_for_history, summary_tail_buffer, is_first_chunk
+                            if not prefix_buffer or prefix_checked:
+                                return
+                            prefix_checked = True
+                            master_match = self._match_name_prefix(prefix_buffer, self.master_name)
+                            lanlan_match = self._match_name_prefix(prefix_buffer, self.lanlan_name)
+                            if master_match:
+                                guard_triggered = True
+                                discard_reason = "role_hallucination"
+                                logger.info(f"OmniOfflineClient: 流结束时检测到主人名前缀 '{prefix_buffer[:master_match]}'，触发重试")
+                                return
+                            flush_text = prefix_buffer
+                            if lanlan_match:
+                                logger.info(f"OmniOfflineClient: 流结束时剥离角色名前缀 '{prefix_buffer[:lanlan_match]}'")
+                                flush_text = prefix_buffer[lanlan_match:]
+                            # fence + length guard
+                            for idx, char in enumerate(flush_text):
+                                if char == '|':
+                                    pipe_count += 1
+                                    if pipe_count >= 2:
+                                        flush_text = flush_text[:idx]
+                                        fence_triggered = True
+                                        break
+                            if not flush_text or not flush_text.strip():
+                                return
+                            emit_flush_text = flush_text
+                            if self.enable_response_guard:
+                                # Length guard counts the whole turn (including pre-tool), symmetric with accumulation above.
+                                candidate_total = assistant_message_total + flush_text
+                                current_length = count_tokens(candidate_total)
+                                if current_length > self.max_response_length:
+                                    if summary_mode_enabled:
+                                        # Symmetric with main accumulation: summary mode does not abort;
+                                        # switch to pending_cutover for emit-split below.
+                                        if summary_state == 'idle':
+                                            summary_state = 'pending_cutover'
+                                            summary_trigger_tokens = current_length
+                                            # Compute crossing character offset in flush_text, symmetric with main accumulation.
+                                            _capped = truncate_to_tokens(
+                                                candidate_total, self.max_response_length,
+                                            )
+                                            summary_overflow_offset = max(
+                                                0, len(_capped) - len(assistant_message_total),
+                                            )
+                                            logger.info(
+                                                "OmniOfflineClient summary: 长回复触发于 flush "
+                                                "(%d tokens > %d，flush 内越界 offset=%d)",
+                                                current_length, self.max_response_length,
+                                                summary_overflow_offset,
+                                            )
+                                    else:
+                                        guard_triggered = True
+                                        discard_reason = f"length>{self.max_response_length}"
+                                        length_guard_original_tokens = current_length
+                                        emit_flush_text = ""
+                                        if not _is_gibberish_response(candidate_total):
+                                            capped = truncate_to_tokens(
+                                                candidate_total, self.max_response_length,
+                                            )
+                                            candidate_recovery = _truncate_to_last_sentence_end(capped)
+                                            if candidate_recovery:
+                                                if candidate_recovery.startswith(assistant_message_total):
+                                                    recovery_suffix = candidate_recovery[len(assistant_message_total):]
+                                                    if recovery_suffix.strip():
+                                                        emit_flush_text = recovery_suffix
+                                                        length_guard_recovery_text = candidate_recovery
+                                                elif (
+                                                    assistant_message_total
+                                                    and _has_unpersisted_recovery_suffix(assistant_message_total)
+                                                ):
+                                                    length_guard_recovery_text = assistant_message_total
+                            if not emit_flush_text or not emit_flush_text.strip():
+                                return
+                            # Emit fork (symmetric with main accumulation): summary mode splits UI/TTS at cutover.
+                            if (
+                                summary_mode_enabled
+                                and summary_state in ('pending_cutover', 'cutover_done')
+                            ):
+                                if summary_state == 'pending_cutover':
+                                    # Symmetric with main accumulation: consume crossing offset from trigger flush.
+                                    search_from = summary_overflow_offset
+                                    summary_overflow_offset = 0
+                                    term_pos_in_slice = _find_summary_terminator(
+                                        emit_flush_text[search_from:]
+                                    )
+                                    if term_pos_in_slice >= 0:
+                                        term_pos = search_from + term_pos_in_slice
+                                        pre = emit_flush_text[:term_pos + 1]
+                                        post = emit_flush_text[term_pos + 1:]
+                                        if pre:
+                                            assistant_message += pre
+                                            assistant_message_total += pre
+                                            if self.on_text_delta:
+                                                await self.on_text_delta(pre, is_first_chunk)
+                                            is_first_chunk = False
+                                        summary_prefix_for_history = assistant_message
+                                        summary_state = 'cutover_done'
+                                        # Symmetric with chunk-loop emit fork's cutover log:
+                                        # use summary_trigger_tokens (set at flush entry)
+                                        # to retain when the trigger occurred in logs.
+                                        logger.info(
+                                            "OmniOfflineClient summary: cutover 完成于 flush "
+                                            "(prefix_chars=%d, trigger=%d tokens)",
+                                            len(assistant_message), summary_trigger_tokens,
+                                        )
+                                        # The await before it may have cut the reply:
+                                        # its remaining half is never shown.
+                                        if post and self._active_response_generation == response_generation:
+                                            assistant_message += post
+                                            assistant_message_total += post
+                                            summary_tail_buffer += post
+                                            if self.on_text_delta:
+                                                await self.on_text_delta(
+                                                    post, is_first_chunk,
+                                                    ui_enabled=True, tts_enabled=False,
+                                                )
+                                            is_first_chunk = False
+                                    else:
+                                        assistant_message += emit_flush_text
+                                        assistant_message_total += emit_flush_text
+                                        if self.on_text_delta:
+                                            await self.on_text_delta(emit_flush_text, is_first_chunk)
+                                        is_first_chunk = False
+                                else:
+                                    assistant_message += emit_flush_text
+                                    assistant_message_total += emit_flush_text
+                                    summary_tail_buffer += emit_flush_text
+                                    if self.on_text_delta:
+                                        await self.on_text_delta(
+                                            emit_flush_text, is_first_chunk,
+                                            ui_enabled=True, tts_enabled=False,
+                                        )
+                                    is_first_chunk = False
+                                _check_summary_tail()
+                            else:
+                                assistant_message += emit_flush_text
+                                assistant_message_total += emit_flush_text
+                                if self.on_text_delta:
+                                    await self.on_text_delta(emit_flush_text, is_first_chunk)
+                                is_first_chunk = False
 
                         # Tool-aware streaming: ``_astream_with_tools`` runs
                         # the multi-turn tool loop inside (executing tools and
@@ -1350,6 +1732,7 @@ class _StreamingMixin:
                         # its user frames; ordinary text turns lack turn_id, so it is None there.
                         _focus_overrides["_tool_frames_turn_id"] = turn_id
                         cut_keeps_shown = True
+                        _withhold_revoked_proactive_image()
                         async for chunk in self._astream_visible_with_tools(
                             self._conversation_history,
                             _tool_image_slots=_turn_tool_image_slots,
@@ -1357,6 +1740,7 @@ class _StreamingMixin:
                             _tool_rounds=_turn_tool_rounds,
                             _response_generation=response_generation,
                             _instruction=_ephemeral_context,
+                            _before_fallback_request=_withhold_revoked_proactive_image,
                             **_focus_overrides,
                         ):
                             # The empty chunk a cancelled tool loop hands up is
@@ -1378,9 +1762,48 @@ class _StreamingMixin:
                             # blocks survive in subsequent requests of this session.
                             if _resident_entry is not None and not _resident_entry.delivered:
                                 self._settle_resident_context(_resident_entry, delivered=True)
+                            # The provider has this turn's request now: its user
+                            # message is no longer heading there (an interrupted
+                            # reply's cleanup may run long after this point).
+                            _release_in_flight()
                             if _pending_bus_frames is not None:
                                 _bus_images, _bus_sources = _pending_bus_frames
                                 _pending_bus_frames = None
+                                # Only images the message still carries: a consent
+                                # revocation since the snapshot (e.g. while the
+                                # transcript callback ran) stripped them from the
+                                # request, so plugins must not get them either.
+                                # Nothing was stripped since the snapshot in the common
+                                # case: skip building data URLs for every frame.
+                                if (
+                                    getattr(self, "_auto_capture_discard_epoch", 0)
+                                    != _auto_capture_epoch_at_snapshot
+                                    or image_count(user_message.content) != len(_bus_images)
+                                ):
+                                    # Counted, not a set: identical bytes may be both a
+                                    # stripped screenshot and a kept attachment. Other
+                                    # labels claim a carried copy before the screenshot.
+                                    _carried = collections.Counter(
+                                        part.get("image_url", {}).get("url")
+                                        for part in (
+                                            user_message.content
+                                            if isinstance(user_message.content, list)
+                                            else ()
+                                        )
+                                        if isinstance(part, dict) and part.get("type") == "image_url"
+                                    )
+                                    _kept = []
+                                    for _screen_pass in (False, True):
+                                        for index, image in enumerate(_bus_images):
+                                            if (_bus_sources[index] == _FRAME_SOURCE_SCREEN) != _screen_pass:
+                                                continue
+                                            url = f"data:image/jpeg;base64,{image}"
+                                            if _carried[url] > 0:
+                                                _carried[url] -= 1
+                                                _kept.append(index)
+                                    _kept.sort()
+                                    _bus_images = [_bus_images[i] for i in _kept]
+                                    _bus_sources = [_bus_sources[i] for i in _kept]
                                 # Publish without waiting. This hop may cross loops (see
                                 # _fire_bus_task), and this is the user's first response chunk:
                                 # a stalled bridge must not produce a silent turn.
@@ -1406,59 +1829,56 @@ class _StreamingMixin:
                             # to history twice. Do not reset ``_total``: repetition detection
                             # and token-length guard still need the full turn's actual text volume.
                             if getattr(chunk, "tool_round_persisted", False):
-                                # A cancelled round still reports what it kept
-                                # (see _settle_unfinished_tool_round); reset the
-                                # state below but emit nothing further, and keep
-                                # only the text that reached UI/TTS in it. A
-                                # round whose turn left history went with it,
-                                # its text included.
                                 _round_cancelled = (
                                     self._active_response_generation != response_generation
                                 )
-                                if _round_cancelled:
-                                    self._trim_cancelled_round_text(
-                                        assistant_message, _turn_tool_rounds,
-                                    )
-                                length_guard_persisted_prefix = assistant_message_total
-                                assistant_message = ""
-                                segment_round = self._last_tool_round_of(
-                                    _turn_tool_rounds,
-                                )
+                                if think_stripper is not None:
+                                    # Flush before reset: if this pre-tool segment
+                                    # never emitted </think>, the stripper is still
+                                    # holding real answer text it withheld from
+                                    # TTS/UI. Feed it back through prefix_buffer
+                                    # so it goes through prefix/fence/length-guard
+                                    # and accounting symmetrically with end-of-stream.
+                                    _pretool_residual = think_stripper.flush()
+                                    think_stripper.reset()
+                                    if not _round_cancelled and _pretool_residual:
+                                        prefix_buffer += _pretool_residual
+                                        prefix_checked = False
+                                if not _round_cancelled:
+                                    await _flush_prefix_buffer()
+                                # Always align the persisted tool-round message
+                                # with what actually reached UI/TTS (stripped,
+                                # fenced, guarded, or empty on cancellation).
+                                segment_round = self._last_tool_round_of(_turn_tool_rounds)
+                                if summary_state == 'gibberish_fallback' and segment_round is not None:
+                                    assistant_message = summary_prefix_for_history
+                                    summary_prefix_persisted = True
+                                self._trim_cancelled_round_text(assistant_message, _turn_tool_rounds)
                                 # Reset fence / prefix buffer: the next segment is a new semantic
                                 # unit (model text based on tool results) and must not
                                 # reuse the preceding fence / prefix state.
                                 pipe_count = 0
                                 prefix_buffer = ""
                                 prefix_checked = not bool(self._prefix_buffer_size)
-                                if think_stripper is not None:
-                                    # Flush before reset: if this pre-tool segment
-                                    # never emitted </think>, the stripper is still
-                                    # holding real answer text it withheld from
-                                    # TTS/UI. The inner generator already persisted
-                                    # that text to history (stripped), so emit it to
-                                    # TTS/UI only here — dropping it (a bare reset)
-                                    # would lose the pre-tool sentence. Then re-arm
-                                    # for the post-tool segment (new semantic unit).
-                                    _pretool_residual = think_stripper.flush()
-                                    if (
-                                        not _round_cancelled
-                                        and _pretool_residual and _pretool_residual.strip()
-                                        and self.on_text_delta
-                                    ):
-                                        await self.on_text_delta(_pretool_residual, is_first_chunk)
-                                        is_first_chunk = False
-                                    think_stripper.reset()
+                                if guard_triggered or summary_state == 'gibberish_fallback':
+                                    assistant_message = ""
+                                    self._pause_response_generation(response_generation)
+                                    break
+                                if self._active_response_generation != response_generation:
+                                    assistant_message = ""
+                                    cut_keeps_shown = False
+                                    break
+                                length_guard_persisted_prefix = assistant_message_total
+                                assistant_message = ""
                                 # Finalize summary state: post-cutover tail was emitted UI-only,
                                 # not yet heard by TTS. At a tool boundary, post-tool segment length
                                 # is unknown, so the "final < max+slack" decision
                                 # cannot apply. Always abandon, sending the tail to TTS
-                                # to finish reading the original. `_astream_*_with_tools` already persisted
-                                # full pre-tool text including tail in assistant.tool_calls.content
-                                # within _conversation_history, aligning UI/TTS/history.
+                                # to finish reading the original.
                                 # Then reset state so the post-tool segment
                                 # starts again from idle.
                                 if (
-                                    # Re-read: the residual send above may have cut it.
+                                    # Re-read: the flush above may have cut it.
                                     self._active_response_generation == response_generation
                                     and summary_mode_enabled
                                     and summary_state == 'cutover_done'
@@ -1480,6 +1900,8 @@ class _StreamingMixin:
                                 summary_next_gibberish_check = _SUMMARY_GIBBERISH_RECHECK_TOKENS
                                 summary_trigger_tokens = 0
                                 summary_overflow_offset = 0
+                                if fence_triggered:
+                                    break
                                 continue
                             if not self._response_generation_is_active(response_generation):
                                 break
@@ -1658,25 +2080,7 @@ class _StreamingMixin:
                                                     )
                                                 is_first_chunk = False
 
-                                            # Recheck gibberish after cutover_done (including pending→done
-                                            # within the same chunk): every _SUMMARY_GIBBERISH_RECHECK_TOKENS
-                                            # tail tokens, recheck; on detection switch to fallback for epilogue handling.
-                                            # RESPONSE_INVALID。
-                                            if summary_state == 'cutover_done' and summary_tail_buffer:
-                                                tail_tokens = count_tokens(summary_tail_buffer)
-                                                if tail_tokens >= summary_next_gibberish_check:
-                                                    if _is_gibberish_response(summary_tail_buffer):
-                                                        summary_state = 'gibberish_fallback'
-                                                        logger.warning(
-                                                            "OmniOfflineClient summary: tail gibberish "
-                                                            "命中 (%d tokens)，中止本轮生成",
-                                                            tail_tokens,
-                                                        )
-                                                        self._pause_response_generation(response_generation)
-                                                    else:
-                                                        summary_next_gibberish_check = (
-                                                            tail_tokens + _SUMMARY_GIBBERISH_RECHECK_TOKENS
-                                                        )
+                                            _check_summary_tail()
                                         else:
                                             assistant_message += emit_content
                                             assistant_message_total += emit_content
@@ -1724,141 +2128,7 @@ class _StreamingMixin:
                                 # path, so prefix_checked carried no completed state.
                                 prefix_checked = False
                         # After stream ends: flush unprocessed prefix buffer through generic emit/guard.
-                        if prefix_buffer and not prefix_checked:
-                            prefix_checked = True
-                            master_match = self._match_name_prefix(prefix_buffer, self.master_name)
-                            lanlan_match = self._match_name_prefix(prefix_buffer, self.lanlan_name)
-                            if master_match:
-                                guard_triggered = True
-                                discard_reason = "role_hallucination"
-                                logger.info(f"OmniOfflineClient: 流结束时检测到主人名前缀 '{prefix_buffer[:master_match]}'，触发重试")
-                            else:
-                                flush_text = prefix_buffer
-                                if lanlan_match:
-                                    logger.info(f"OmniOfflineClient: 流结束时剥离角色名前缀 '{prefix_buffer[:lanlan_match]}'")
-                                    flush_text = prefix_buffer[lanlan_match:]
-                                # fence + length guard
-                                for idx, char in enumerate(flush_text):
-                                    if char == '|':
-                                        pipe_count += 1
-                                        if pipe_count >= 2:
-                                            flush_text = flush_text[:idx]
-                                            fence_triggered = True
-                                            break
-                                if flush_text and flush_text.strip():
-                                    emit_flush_text = flush_text
-                                    if self.enable_response_guard:
-                                        # Length guard counts the whole turn (including pre-tool), symmetric with accumulation above.
-                                        candidate_total = assistant_message_total + flush_text
-                                        current_length = count_tokens(candidate_total)
-                                        if current_length > self.max_response_length:
-                                            if summary_mode_enabled:
-                                                # Symmetric with main accumulation: summary mode does not abort;
-                                                # switch to pending_cutover for emit-split below.
-                                                if summary_state == 'idle':
-                                                    summary_state = 'pending_cutover'
-                                                    summary_trigger_tokens = current_length
-                                                    # Compute crossing character offset in flush_text, symmetric with main accumulation.
-                                                    _capped = truncate_to_tokens(
-                                                        candidate_total, self.max_response_length,
-                                                    )
-                                                    summary_overflow_offset = max(
-                                                        0, len(_capped) - len(assistant_message_total),
-                                                    )
-                                                    logger.info(
-                                                        "OmniOfflineClient summary: 长回复触发于 flush "
-                                                        "(%d tokens > %d，flush 内越界 offset=%d)",
-                                                        current_length, self.max_response_length,
-                                                        summary_overflow_offset,
-                                                    )
-                                            else:
-                                                guard_triggered = True
-                                                discard_reason = f"length>{self.max_response_length}"
-                                                length_guard_original_tokens = current_length
-                                                emit_flush_text = ""
-                                                if not _is_gibberish_response(candidate_total):
-                                                    capped = truncate_to_tokens(
-                                                        candidate_total, self.max_response_length,
-                                                    )
-                                                    candidate_recovery = _truncate_to_last_sentence_end(capped)
-                                                    if candidate_recovery:
-                                                        if candidate_recovery.startswith(assistant_message_total):
-                                                            recovery_suffix = candidate_recovery[len(assistant_message_total):]
-                                                            if recovery_suffix.strip():
-                                                                emit_flush_text = recovery_suffix
-                                                                length_guard_recovery_text = candidate_recovery
-                                                        elif (
-                                                            assistant_message_total
-                                                            and _has_unpersisted_recovery_suffix(assistant_message_total)
-                                                        ):
-                                                            length_guard_recovery_text = assistant_message_total
-                                    if emit_flush_text and emit_flush_text.strip():
-                                        # Emit fork (symmetric with main accumulation): summary mode splits UI/TTS at cutover.
-                                        if (
-                                            summary_mode_enabled
-                                            and summary_state in ('pending_cutover', 'cutover_done')
-                                        ):
-                                            if summary_state == 'pending_cutover':
-                                                # Symmetric with main accumulation: consume crossing offset from trigger flush.
-                                                search_from = summary_overflow_offset
-                                                summary_overflow_offset = 0
-                                                term_pos_in_slice = _find_summary_terminator(
-                                                    emit_flush_text[search_from:]
-                                                )
-                                                if term_pos_in_slice >= 0:
-                                                    term_pos = search_from + term_pos_in_slice
-                                                    pre = emit_flush_text[:term_pos + 1]
-                                                    post = emit_flush_text[term_pos + 1:]
-                                                    if pre:
-                                                        assistant_message += pre
-                                                        assistant_message_total += pre
-                                                        if self.on_text_delta:
-                                                            await self.on_text_delta(pre, is_first_chunk)
-                                                        is_first_chunk = False
-                                                    summary_prefix_for_history = assistant_message
-                                                    summary_state = 'cutover_done'
-                                                    # Symmetric with chunk-loop emit fork's cutover log:
-                                                    # use summary_trigger_tokens (set at flush entry)
-                                                    # to retain when the trigger occurred in logs.
-                                                    logger.info(
-                                                        "OmniOfflineClient summary: cutover 完成于 flush "
-                                                        "(prefix_chars=%d, trigger=%d tokens)",
-                                                        len(assistant_message), summary_trigger_tokens,
-                                                    )
-                                                    # The await before it may have cut the reply:
-                                                    # its remaining half is never shown.
-                                                    if post and self._active_response_generation == response_generation:
-                                                        assistant_message += post
-                                                        assistant_message_total += post
-                                                        summary_tail_buffer += post
-                                                        if self.on_text_delta:
-                                                            await self.on_text_delta(
-                                                                post, is_first_chunk,
-                                                                ui_enabled=True, tts_enabled=False,
-                                                            )
-                                                        is_first_chunk = False
-                                                else:
-                                                    assistant_message += emit_flush_text
-                                                    assistant_message_total += emit_flush_text
-                                                    if self.on_text_delta:
-                                                        await self.on_text_delta(emit_flush_text, is_first_chunk)
-                                                    is_first_chunk = False
-                                            else:
-                                                assistant_message += emit_flush_text
-                                                assistant_message_total += emit_flush_text
-                                                summary_tail_buffer += emit_flush_text
-                                                if self.on_text_delta:
-                                                    await self.on_text_delta(
-                                                        emit_flush_text, is_first_chunk,
-                                                        ui_enabled=True, tts_enabled=False,
-                                                    )
-                                                is_first_chunk = False
-                                        else:
-                                            assistant_message += emit_flush_text
-                                            assistant_message_total += emit_flush_text
-                                            if self.on_text_delta:
-                                                await self.on_text_delta(emit_flush_text, is_first_chunk)
-                                            is_first_chunk = False
+                        await _flush_prefix_buffer()
 
                         # The flush's sends are cancellation points too: a reply
                         # cut there sends no tail or summary under the turn
@@ -1925,6 +2195,8 @@ class _StreamingMixin:
                             recovery_text = ""
 
                             if will_retry:
+                                # The reroll resends this turn's message.
+                                _hold_in_flight_for_resend()
                                 # Retry remains: notify will_retry and continue. Frontend receives
                                 # response_discarded(will_retry=True, message=None)
                                 # and takes the retry-toast path.
@@ -2061,7 +2333,8 @@ class _StreamingMixin:
                             # to _recent_responses, contaminating later repetition decisions.
                             cut_keeps_shown = False
                             _live_at_commit = self._commit_reply(
-                                user_message, summary_prefix_for_history, response_generation,
+                                user_message, "" if summary_prefix_persisted else summary_prefix_for_history,
+                                response_generation,
                                 turn_history=turn_history,
                             )
                             self._mark_reply_tail_completed(
@@ -2167,6 +2440,21 @@ class _StreamingMixin:
                         break
 
                 except _llm_retry_error_types() as e:
+                    # Synchronously, before any await below: a retry resends
+                    # this turn's message. Not when this error ends the turn
+                    # (last attempt, arrears, rejected key; same tests as below).
+                    _resend_error_lower = str(e).lower()
+                    if (
+                        attempt < max_retries - 1
+                        and '欠费' not in _resend_error_lower
+                        and 'standing' not in _resend_error_lower
+                        and not _is_api_key_rejected_error(e)
+                    ):
+                        _hold_in_flight_for_resend()
+                    else:
+                        # The turn ends here: not in flight during the status
+                        # and completion callbacks below.
+                        _release_in_flight()
                     if not observation_committed:
                         observation_failed = True
                     # A failed stream's text is discarded below, never kept.
@@ -2251,6 +2539,8 @@ class _StreamingMixin:
                             status_reported = True
                         break
                 except Exception as e:
+                    # This path always ends the turn (break below).
+                    _release_in_flight()
                     if not observation_committed:
                         observation_failed = True
                     cut_keeps_shown = False
@@ -2273,10 +2563,43 @@ class _StreamingMixin:
                     except Exception:
                         # Best-effort telemetry never masks/interrupts original LLM error handling.
                         pass
+                    from utils.legacy_vision import is_image_unsupported_error
                     if is_api_key_rejected:
                         status_error_payload = {"code": "API_KEY_REJECTED"}
                         discard_error_payload = status_error_payload
                         error_msg = f"💥 文本生成异常: 检测到 API Key 被拒绝: {type(e).__name__}: {e}"
+                    elif is_image_unsupported_error(e) and not (
+                        getattr(self, "vision_model", "")
+                        and self.model == self.vision_model
+                        and _same_route(
+                            getattr(self, "vision_base_url", None),
+                            getattr(self, "vision_api_key", None),
+                            getattr(self, "vision_provider_type", None),
+                            getattr(self, "base_url", None),
+                            getattr(self, "api_key", None),
+                            getattr(self, "provider_type", None),
+                        )
+                    ):
+                        # Images go to the chat model, and this one cannot read
+                        # them. A refusal from a retired vision config the session
+                        # switched to is not the chat model's: it keeps the raw error.
+                        # The rejected pictures leave history (text and receipts
+                        # stay), or every later text turn would carry them again.
+                        # Share it with the other image paths (screenshots,
+                        # proactive chat), which then skip or go text-only.
+                        from utils.legacy_vision import mark_chat_image_refused
+                        mark_chat_image_refused(_chat_route_config(self), "offline chat")
+                        _drop_pixels = getattr(self, "_drop_history_image_pixels", None)
+                        if _drop_pixels is not None:
+                            _dropped = _drop_pixels()
+                            if _dropped:
+                                logger.info(
+                                    "🖼️ Dropped %d image(s) from history: the chat model cannot read images",
+                                    _dropped,
+                                )
+                        status_error_payload = {"code": "CHAT_MODEL_IMAGE_UNSUPPORTED"}
+                        discard_error_payload = status_error_payload
+                        error_msg = f"💥 文本生成异常: 聊天模型不支持图片: {type(e).__name__}: {e}"
                     else:
                         status_error_payload = {
                             "code": "TEXT_GEN_ERROR",

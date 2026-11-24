@@ -279,11 +279,20 @@ export interface MarketPublicationReceipt {
   id: number
   release_url: string
   status: string
+  channel?: 'stable' | 'beta'
+  target_version?: string | null
 }
 
-export function listMarketPublicationReceipts(pluginId: number, requestId?: number) {
-  const query = requestId ? `?request_id=${requestId}` : ''
-  return call<MarketPublicationReceipt[]>(`/market/publication-requests/${pluginId}${query}`)
+export const PUBLICATION_RECEIPT_PAGE_SIZE = 20
+
+export function listMarketPublicationReceipts(pluginId: number, requestId?: number, offset?: number) {
+  const query = new URLSearchParams()
+  if (requestId !== undefined) query.set('request_id', String(requestId))
+  if (offset !== undefined) {
+    query.set('offset', String(offset))
+    query.set('limit', String(PUBLICATION_RECEIPT_PAGE_SIZE))
+  }
+  return call<MarketPublicationReceipt[]>(`/market/publication-requests/${pluginId}${query.size ? `?${query}` : ''}`)
 }
 
 /**

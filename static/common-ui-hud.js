@@ -62,6 +62,65 @@ function setAgentTaskHudVisiblePreferenceEnabled(enabled) {
     } catch (_) {}
 }
 
+// 悬浮窗显不显示由 agent 进程记着（喵能力界面「使魔运行时 → 内置能力」里改，app/agent_task_hud.py），
+// 跟着状态快照的 task_hud_visible 过来；本地存储只是它的镜像，让同步读偏好的老代码照旧工作。
+// options.ifUnset：后端还没存过值时才写（补交本页以前的设置用），不会盖掉用户在这期间做的选择。
+window.AgentHUD.saveTaskHudPreference = function (visible, options) {
+    try {
+        const command = { command: 'set_task_hud_visible', value: !!visible };
+        if (options && options.ifUnset === true) command.if_unset = true;
+        return fetch('/api/agent/command', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(command)
+        }).then(function (r) { return !!(r && r.ok); }).catch(function () { return false; });
+    } catch (_) {
+        return Promise.resolve(false);
+    }
+};
+
+let agentTaskHudPreferenceHandedIn = false;
+// 后端一直存不上（比如配置目录只读）时，不要每份快照都再发一次。
+const AGENT_TASK_HUD_HAND_IN_TRIES = 3;
+let agentTaskHudPreferenceHandInTries = 0;
+// 本页最后照着做的值。本地存储是同源页面共用的，另一页先写了同一个值，本页的复选框和悬浮窗也还得自己改。
+let agentTaskHudPreferenceApplied = null;
+
+// 返回 true 表示本页照着新值改了。
+window.AgentHUD.syncTaskHudPreference = function (value) {
+    if (typeof value !== 'boolean') {
+        // 后端还没记过：本地关过的（以前在小面板里关的）交给后端一次，喵能力界面上才看得到它是关的。
+        // 没交上（请求失败）就等下一份快照再交，最多交 AGENT_TASK_HUD_HAND_IN_TRIES 次。
+        if (value === null && !agentTaskHudPreferenceHandedIn
+            && agentTaskHudPreferenceHandInTries < AGENT_TASK_HUD_HAND_IN_TRIES
+            && !isAgentTaskHudVisiblePreferenceEnabled()) {
+            agentTaskHudPreferenceHandedIn = true;
+            agentTaskHudPreferenceHandInTries += 1;
+            window.AgentHUD.saveTaskHudPreference(false, { ifUnset: true }).then(function (ok) {
+                if (!ok) agentTaskHudPreferenceHandedIn = false;
+            });
+        }
+        return false;
+    }
+    // 复选框每次都对一遍：小面板里点了却没改动后端时，它可能和后端的值不一样。
+    ['live2d', 'vrm', 'mmd', 'pngtuber'].forEach(function (prefix) {
+        const checkbox = document.getElementById(`${prefix}-agent-taskhud`);
+        if (checkbox && checkbox.checked !== value) {
+            checkbox.checked = value;
+            if (typeof checkbox._updateStyle === 'function') checkbox._updateStyle();
+        }
+    });
+    if (agentTaskHudPreferenceApplied === value && isAgentTaskHudVisiblePreferenceEnabled() === value) return false;
+    agentTaskHudPreferenceApplied = value;
+    if (isAgentTaskHudVisiblePreferenceEnabled() !== value) setAgentTaskHudVisiblePreferenceEnabled(value);
+    if (typeof window.checkAndToggleTaskHUD === 'function') {
+        window.checkAndToggleTaskHUD();
+    } else if (!value && typeof window.AgentHUD.hideAgentTaskHUD === 'function') {
+        window.AgentHUD.hideAgentTaskHUD();
+    }
+    return true;
+};
+
 function appendPluginDashboardOpenerOrigin(url) {
     const target = new URL(url, document.baseURI || window.location.href);
     if (window.location && window.location.origin) {
@@ -73,6 +132,45 @@ function appendPluginDashboardOpenerOrigin(url) {
 function getPluginDashboardRedirectUrl() {
     return appendPluginDashboardOpenerOrigin(PLUGIN_DASHBOARD_REDIRECT_URL);
 }
+
+var PLUGIN_DASHBOARD_WINDOW_NAME = 'neko_plugin_dashboard';
+
+function buildPluginDashboardWindowFeatures() {
+    const width = Math.min(1280, Math.round(screen.width * 0.8));
+    const height = Math.min(900, Math.round(screen.height * 0.8));
+    const left = Math.max(0, Math.floor((screen.width - width) / 2));
+    const top = Math.max(0, Math.floor((screen.height - height) / 2));
+    return `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+}
+
+// 锤子按钮：打开喵能力界面（插件服务的 /ui/，和小面板里「管理面板」是同一个窗口）。
+// 窗口已经开着时只把它叫到前面：不重新载入、不改大小，用户可能正在里面看别的页。
+window.AgentHUD.openPowerWindow = function () {
+    const targetUrl = new URL(getPluginDashboardRedirectUrl(), document.baseURI || window.location.href).toString();
+    const features = buildPluginDashboardWindowFeatures();
+    const existingWindow = window._openedWindows && window._openedWindows[PLUGIN_DASHBOARD_WINDOW_NAME];
+    let openedWindow = null;
+    if (typeof window.openOrFocusWindow === 'function') {
+        openedWindow = window.openOrFocusWindow(targetUrl, PLUGIN_DASHBOARD_WINDOW_NAME, features, {
+            navigateOnReuse: false,
+            preserveGeometryOnReuse: true
+        });
+    } else if (existingWindow && !existingWindow.closed) {
+        openedWindow = existingWindow;
+    } else {
+        openedWindow = window.open(targetUrl, PLUGIN_DASHBOARD_WINDOW_NAME, features);
+    }
+    if (openedWindow) {
+        if (!window._openedWindows) {
+            window._openedWindows = {};
+        }
+        window._openedWindows[PLUGIN_DASHBOARD_WINDOW_NAME] = openedWindow;
+        try {
+            openedWindow.focus();
+        } catch (_) {}
+    }
+    return openedWindow;
+};
 
 function appendCacheBuster(url) {
     var separator = typeof url === 'string' && url.indexOf('?') >= 0 ? '&' : '?';
@@ -413,13 +511,20 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                 if (typeof taskHudCheckbox._updateStyle === 'function') {
                     taskHudCheckbox._updateStyle();
                 }
-                taskHudCheckbox.addEventListener('change', (event) => {
-                    setAgentTaskHudVisiblePreferenceEnabled(taskHudCheckbox.checked);
-                    if (typeof window.checkAndToggleTaskHUD === 'function') {
-                        window.checkAndToggleTaskHUD(event);
-                    } else if (!taskHudCheckbox.checked && typeof this.hideAgentTaskHUD === 'function') {
-                        this.hideAgentTaskHUD();
-                    }
+                // 本页不先改：只交给后端。存上以后后端推来的状态快照会把每个页面（包括这个复选框）
+                // 改过来（syncTaskHudPreference）。本地存储和悬浮窗只跟着快照变，请求的回复不碰它们，
+                // 所以连点几下、回复早到晚到都改不乱。
+                taskHudCheckbox.addEventListener('change', () => {
+                    window.AgentHUD.saveTaskHudPreference(taskHudCheckbox.checked).then((saved) => {
+                        if (saved) return;
+                        // 没存上：复选框退回本页现在生效的值。
+                        const inEffect = isAgentTaskHudVisiblePreferenceEnabled();
+                        if (taskHudCheckbox.checked === inEffect) return;
+                        taskHudCheckbox.checked = inEffect;
+                        if (typeof taskHudCheckbox._updateStyle === 'function') {
+                            taskHudCheckbox._updateStyle();
+                        }
+                    });
                 });
             }
         }
@@ -517,11 +622,7 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                 e.stopPropagation();
                 if (isOpening) return;
                 isOpening = true;
-                const width = Math.min(1280, Math.round(screen.width * 0.8));
-                const height = Math.min(900, Math.round(screen.height * 0.8));
-                const left = Math.max(0, Math.floor((screen.width - width) / 2));
-                const top = Math.max(0, Math.floor((screen.height - height) / 2));
-                const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+                const features = buildPluginDashboardWindowFeatures();
                 const rawUrl = typeof actionConfig.url === 'function'
                     ? actionConfig.url()
                     : actionConfig.url;
@@ -2094,7 +2195,7 @@ window.AgentHUD._setupDragging = function (hud) {
 // ===== i18n 就绪 / 语言切换后重译任务 HUD 外壳 =====
 // HUD 外壳文案（标题 / 统计 / 折叠·终止按钮 title / 空态文本）由 createAgentTaskHUD
 // 用 window.t 直接写入且没有 data-i18n 属性，因此 i18n 的 updatePageTexts() 不会重译它们。
-// 当 HUD 在 i18n 初始化完成前就抢先构建时（典型场景：启动时后端恢复了上次 NekoClaw 会话的
+// 当 HUD 在 i18n 初始化完成前就抢先构建时（典型场景：启动时后端恢复了上次 NekoPower 会话的
 // 任务，agenthud 页面拉到 active_tasks 后立即渲染 HUD），这些外壳文案会停留在初始兜底态，
 // 表现为「i18n 文字加载异常」。这里监听 localechange（i18n 初始化完成及语言切换时派发），
 // 补一次外壳重译，并用缓存快照刷新任务卡片状态/类型文案。

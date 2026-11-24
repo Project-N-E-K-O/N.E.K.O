@@ -12,7 +12,7 @@ dependencies = [
   "av==16.1.0",
   # Shared HTTP and document-parser security floors must survive lock refreshes.
   "anyio>=4.14.2,<5",
-  "pypdf>=6.19.0,<7",
+  "pypdf>=6.21.4,<7",
   "starlette>=1.3.1,<2",
   "fastapi>=0.141.1,<0.142.0",
   "websockets~=15.0.1",
@@ -22,10 +22,11 @@ dependencies = [
   "jinja2",
   "dashscope==1.27.7",
   "python-multipart",
-  "pillow",
+  # Image-decoder security floor (13.0.0 fixes the 12.x CVE batch).
+  "pillow>=13.0.0,<14",
   "regex",
   "pyautogui",
-  # Typing text beyond ASCII goes through the clipboard (nekoclaw/builtin/desktop.py).
+  # Typing text beyond ASCII goes through the clipboard (nekopower/builtin/desktop.py).
   # pyautogui pulls it in through mouseinfo; it is imported directly, so it is
   # declared.
   "pyperclip",
@@ -49,7 +50,7 @@ dependencies = [
   "aiotieba>=4.8.0",
   "beautifulsoup4>=4.12.0",
   # HTML to markdown for the task agent's web fetch tool
-  # (nekoclaw/runtime/tools/web.py) and the MCP adapter plugin, which imports
+  # (nekopower/runtime/tools/web.py) and the MCP adapter plugin, which imports
   # it at module load. Declared here because no other dependency pulls it in.
   "markdownify>=1.2.2",
   "bilibili-api-dev==18.0.0a2",
@@ -79,9 +80,17 @@ dependencies = [
   "httpx[socks]>=0.28.1",
   "psutil>=7.0.0",
   "portalocker>=2.10.1",
-  "filelock>=3.16",
+  "filelock>=4.2.1",
   "pyncm-async==1.8.1",
-  "tornado>=6.5.4",
+  # Never imported by name, but required at runtime: pyzmq's zmq.asyncio (used by
+  # plugin/core/zmq_transport.py, plugin/core/message_plane_transport.py and
+  # plugin/sdk/shared/transport/message_plane.py) borrows
+  # tornado's AddThreadSelectorEventLoop whenever the running loop is a Windows
+  # ProactorEventLoop -- the default for the embedded plugin server thread
+  # (app/agent_server/plugin_host.py) and for asyncio.run() in plugin child
+  # processes. Without it zmq.asyncio raises RuntimeError there. The floor is a
+  # security floor (6.6.1 fixes the 6.5.x CVEs).
+  "tornado>=6.6.1,<7",
   "jmespath>=1.1.0",
   "orjson>=3.11.8",
   # memory-evidence-rfc §3.6.6: tiktoken for persona/reflection render
@@ -147,7 +156,7 @@ packages = [
   "main_routers",
   "knowledge",
   "memory",
-  "nekoclaw",
+  "nekopower",
   "plugin",
   "services",
   "steamworks",
@@ -181,7 +190,7 @@ include = [
   "main_routers",
   "knowledge",
   "memory",
-  "nekoclaw",
+  "nekopower",
   "plugin",
   "services",
   "steamworks",
@@ -227,6 +236,10 @@ rapidocr-pillow = { path = "./deps/rapidocr_pillow" }
 constraint-dependencies = [
     "oauthlib>=4.0.0",
     "fsspec>=2026.6.0",
+    "brotli>=1.2.1",
+    "pyasn1>=0.6.5",
+    # Fixed soupsieve releases require Python >=3.11.5; 3.11.0-3.11.4 stay on 2.10.
+    "soupsieve>=4.1.1 ; python_full_version >= '3.11.5'",
 ]
 override-dependencies = [
     "python3-xlib ; sys_platform == 'never'",
@@ -262,6 +275,9 @@ dev = [
     # seed 跑（确定性），另有 .github/workflows/random-order-tests.yml 定时用
     # 随机 seed 单独跑、单独报，不挡任何人的 PR。
     "pytest-randomly>=4.1.0",
+    # 单条用例的时间上限（pytest.ini 里的 timeout）。卡死的用例到点就失败，并打印
+    # 所有线程卡在哪一行；否则它会一直耗到 job 的 30/75 分钟上限，日志里看不出卡在哪。
+    "pytest-timeout>=2.3.1",
     # tests/unit 是 24000+ 条用例的单进程串行跑，Windows CI 上要 19 分钟，逼近
     # 25 分钟的 job 上限。用 `-n auto --dist loadfile` 按文件分发到多个 worker：
     # 文件内顺序不变（loadfile 保证整个文件在同一个 worker 上按序跑），所以

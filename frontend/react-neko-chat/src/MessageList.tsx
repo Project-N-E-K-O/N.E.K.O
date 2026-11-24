@@ -169,7 +169,7 @@ export default function MessageList({
 
   if (displayMessages.length === 0 && !thinking && !footer) {
     return (
-      <div className="message-list-shell">
+      <div className="message-list-shell" data-neko-capture-mask="history">
         <div className="message-list" ref={containerRef} aria-label={ariaLabel}>
         </div>
         {scrollbarState.scrollable ? (
@@ -185,7 +185,7 @@ export default function MessageList({
   }
 
   return (
-    <div className="message-list-shell">
+    <div className="message-list-shell" data-neko-capture-mask="history">
       <div className="message-list" ref={containerRef} aria-label={ariaLabel} onScroll={handleScroll}>
         {displayMessages.map((message, index) => (
           <MessageBubble

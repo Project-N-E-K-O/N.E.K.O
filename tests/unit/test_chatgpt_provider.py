@@ -594,7 +594,7 @@ def test_successful_login_exchanges_exact_redirect_and_validates_identity(
 
 
 @pytest.mark.asyncio
-async def test_oauth_routes_require_loopback_origin_and_custom_header(
+async def test_oauth_routes_require_a_local_same_origin_connection(
     store, monkeypatch
 ):
     from fastapi import FastAPI
@@ -604,27 +604,32 @@ async def test_oauth_routes_require_loopback_origin_and_custom_header(
     monkeypatch.setattr(chatgpt, "_attempt", None)
     app = FastAPI()
     app.include_router(chatgpt.router)
+    path = "/api/config/chatgpt/status"
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 123)),
         base_url="http://127.0.0.1:48999",
     ) as client:
-        path = "/api/config/chatgpt/status"
-        assert (await client.get(path)).status_code == 403
-        headers = {"x-neko-chatgpt": "1", "origin": "https://evil.test"}
-        assert (await client.get(path, headers=headers)).status_code == 403
-        headers["origin"] = "http://127.0.0.1:48999"
-        response = await client.get(path, headers=headers)
+        response = await client.get(path)
         assert response.status_code == 200
         assert response.headers["cache-control"] == "no-store"
         assert (
             "test-access" not in response.text and "test-refresh" not in response.text
         )
         assert response.json()["active"] == "issued-1"
+        # A DNS-rebound host name reaches the loopback socket but is not local.
+        assert (await client.get(path, headers={"host": "evil.test"})).status_code == 403
+        # Cross-site writes are refused by the config router's mutation guard.
+        response = await client.post(
+            "/api/config/chatgpt/select", json={"account_id": "issued-1"},
+            headers={"origin": "https://evil.test"},
+        )
+        assert response.status_code == 403
+        assert response.json()["error_code"] == "cross_origin_request_rejected"
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app, client=("192.0.2.1", 123)),
         base_url="http://127.0.0.1:48999",
     ) as client:
-        assert (await client.get(path, headers=headers)).status_code == 403
+        assert (await client.get(path)).status_code == 403
 
 
 @pytest.mark.asyncio
@@ -756,7 +761,7 @@ async def test_account_mutations_reject_pending_login_and_clear_stale_login_erro
     app = FastAPI()
     app.include_router(chatgpt.router)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=('127.0.0.1', 123)),
-            base_url='http://127.0.0.1:48999', headers={'X-Neko-ChatGPT': '1'}) as client:
+            base_url='http://127.0.0.1:48999') as client:
         for action in ('select', 'logout', 'login'):
             response = await client.post('/api/config/chatgpt/' + action, json={'account_id': 'issued-1'})
             assert response.status_code == 400

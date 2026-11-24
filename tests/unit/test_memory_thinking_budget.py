@@ -123,6 +123,8 @@ def test_omni_streams_thinking_outside_content():
     ("https://dashscope-us.aliyuncs.com/compatible-mode/v1", "EXTRA_BODY_DASHSCOPE_MEMORY_THINKING"),
     ("https://api.siliconflow.cn/v1", "EXTRA_BODY_SILICON_MEMORY_THINKING"),
     ("https://api.siliconflow.com/v1", "EXTRA_BODY_SILICON_MEMORY_THINKING"),
+    # K3 defaults to max effort; low bounds the memory call's thinking.
+    ("https://api.moonshot.cn/v1", "EXTRA_BODY_KIMI_MEMORY_THINKING"),
     ("https://open.bigmodel.cn/api/paas/v4", None),
     ("https://llm.example.com/v1", None),
     (None, None),

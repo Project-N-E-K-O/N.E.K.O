@@ -595,7 +595,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
   async function handleBuild() {
     const targets = resolvedBuildTargets.value
     if (targets.length === 0) {
-      ElMessage.warning('请先选择要构建的插件')
+      ElMessage.warning(t('package.messages.selectPluginToBuild'))
       return
     }
 
@@ -605,7 +605,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
     try {
       if (buildMode.value === 'bundle') {
         if (targets.length < 2) {
-          ElMessage.warning('整合包至少需要选择两个插件')
+          ElMessage.warning(t('package.messages.bundleRequiresTwoPlugins'))
           return
         }
         let response: PluginCliBuildResponse
@@ -625,7 +625,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
         } catch (error) {
           response = failedBuildResponse(targets.map(targetLabel).join(', '), error)
           setResult('build', response)
-          ElMessage.error(`整合包构建失败：${buildErrorMessage(error)}`)
+          ElMessage.error(t('package.messages.bundleBuildFailedWithError', { error: buildErrorMessage(error) }))
           return
         }
         setResult('build', response)
@@ -635,7 +635,9 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
           focusPackageResult(latestBuilt.package_path)
         }
         ElMessage[response.ok ? 'success' : 'warning'](
-          response.ok ? '整合包构建完成' : `整合包构建失败 ${response.failed_count} 个`,
+          response.ok
+            ? t('package.messages.bundleBuildCompleted')
+            : t('package.messages.bundleBuildPartialFailed', { count: response.failed_count }),
         )
         return
       }
@@ -651,7 +653,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
         } catch (error) {
           response = failedBuildResponse('all', error)
           setResult('build', response)
-          ElMessage.error(`构建失败：${buildErrorMessage(error)}`)
+          ElMessage.error(t('package.messages.buildFailedWithError', { error: buildErrorMessage(error) }))
           return
         }
         setResult('build', response)
@@ -662,8 +664,8 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
         }
         ElMessage[response.failed_count > 0 ? 'warning' : 'success'](
           response.failed_count > 0
-            ? `构建完成，成功 ${response.built_count} 个，失败 ${response.failed_count} 个`
-            : `构建完成，成功 ${response.built_count} 个`,
+            ? t('package.messages.buildCompletedWithFailures', { built: response.built_count, failed: response.failed_count })
+            : t('package.messages.buildCompleted', { built: response.built_count }),
         )
         return
       }
@@ -702,7 +704,9 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
         focusPackageResult(latestBuilt.package_path)
       }
       ElMessage[failed.length > 0 ? 'warning' : 'success'](
-        failed.length > 0 ? `构建完成，成功 ${built.length} 个，失败 ${failed.length} 个` : `构建完成，成功 ${built.length} 个`,
+        failed.length > 0
+          ? t('package.messages.buildCompletedWithFailures', { built: built.length, failed: failed.length })
+          : t('package.messages.buildCompleted', { built: built.length }),
       )
     } finally {
       building.value = false
@@ -711,7 +715,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
 
   async function handleInspect() {
     if (!packageRef.value.package.trim()) {
-      ElMessage.warning('请先输入包路径')
+      ElMessage.warning(t('package.install.packageRequired'))
       return
     }
     inspecting.value = true
@@ -719,7 +723,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
       const response = await inspectPluginPackage({ package: packageRef.value.package.trim() })
       inspectResult.value = response
       setResult('inspect', response)
-      ElMessage.success('包检查完成')
+      ElMessage.success(t('package.messages.inspectCompleted'))
     } catch (error) {
       ElMessage.error(resolvePluginPackageErrorMessage(error, t, 'inspect'))
     } finally {
@@ -729,7 +733,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
 
   async function handleVerify() {
     if (!packageRef.value.package.trim()) {
-      ElMessage.warning('请先输入包路径')
+      ElMessage.warning(t('package.install.packageRequired'))
       return
     }
     verifying.value = true
@@ -737,7 +741,9 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
       const response = await verifyPluginPackage({ package: packageRef.value.package.trim() })
       inspectResult.value = response
       setResult('verify', response)
-      ElMessage[response.ok ? 'success' : 'warning'](response.ok ? '包校验通过' : '包未通过校验')
+      ElMessage[response.ok ? 'success' : 'warning'](
+        response.ok ? t('package.messages.verifyPassed') : t('package.messages.verifyFailed'),
+      )
     } catch (error) {
       ElMessage.error(resolvePluginPackageErrorMessage(error, t, 'verify'))
     } finally {
@@ -783,7 +789,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
 
   async function handleAnalyze() {
     if (analyzeForm.value.plugins.length === 0) {
-      ElMessage.warning('请至少选择一个插件')
+      ElMessage.warning(t('package.messages.selectAtLeastOnePlugin'))
       return
     }
     analyzing.value = true
@@ -796,9 +802,9 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
         current_sdk_version: analyzeForm.value.current_sdk_version.trim() || undefined,
       })
       setResult('analyze', response)
-      ElMessage.success('分析完成')
+      ElMessage.success(t('package.messages.analyzeCompleted'))
     } catch (error) {
-      ElMessage.error(`分析失败：${formatHttpError(error)}`)
+      ElMessage.error(t('package.messages.analyzeFailedWithError', { error: formatHttpError(error) }))
     } finally {
       analyzing.value = false
     }

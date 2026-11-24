@@ -38,7 +38,7 @@
     const api = async (path, body) => {
         const response = await fetch(`/api/config/chatgpt/${path}`, {
             method: body === undefined ? 'GET' : 'POST', cache: 'no-store',
-            headers: { 'Content-Type': 'application/json', 'X-Neko-ChatGPT': '1' },
+            headers: { 'Content-Type': 'application/json' },
             ...(body === undefined ? {} : { body: JSON.stringify(body) })
         });
         let data;
@@ -180,11 +180,10 @@
             let attempted = false;
             try {
                 const current = await api('subscription');
-                const slots = current.overwritten.map(slot => {
-                    const key = slot === 'agent' ? 'api.agentApiConfigTitle' : `api.${slot}ModelConfig`;
-                    const label = window.t ? window.t(key) : '';
-                    return label && label !== key ? label : slot;
-                }).join(', ');
+                // Same slot names as the connectivity lights (api_key_settings.js).
+                const slots = current.overwritten.map(slot => (
+                    typeof getCustomModelDisplayLabel === 'function' ? getCustomModelDisplayLabel(slot) : slot
+                )).join(', ');
                 const message = requested
                     ? t('confirmEnable', 'Enable ChatGPT subscription and save? Existing slots to replace: {{slots}}. Unsaved edits on this page will be discarded.').replace('{{slots}}', slots || t('none', 'None'))
                     : t('confirmDisable', 'Restore the configuration saved before enabling the subscription? Unsaved edits on this page will be discarded.');

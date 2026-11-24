@@ -68,6 +68,7 @@ def on_event(
     seconds: int | None = None,
     extra: dict[str, object] | None = None,
     metadata: dict[str, object] | None = None,
+    permissions: list[str] | None = None,
 ) -> Callable[[F], F]:
     return _on_event(
         event_type=event_type,
@@ -82,6 +83,7 @@ def on_event(
         seconds=seconds,
         extra=extra,
         metadata=metadata,
+        permissions=permissions,
     )
 
 
@@ -102,6 +104,9 @@ def plugin_entry(
     fields: type | None = None,
     metadata: dict[str, object] | None = None,
     quick_action: bool = False,
+    output_schema: dict[str, object] | None = None,
+    strict_output: bool = False,
+    permissions: list[str] | None = None,
     _localns: dict[str, object] | None = None,
 ) -> Callable[[F], F]:
     return _plugin_entry(
@@ -120,6 +125,9 @@ def plugin_entry(
         fields=fields,
         metadata=metadata,
         quick_action=quick_action,
+        output_schema=output_schema,
+        strict_output=strict_output,
+        permissions=permissions,
         _localns=_localns if _localns is not None else _capture_declaration_locals(),
     )
 
@@ -161,6 +169,7 @@ def timer_interval(
     description: str = "",
     auto_start: bool = True,
     metadata: dict[str, object] | None = None,
+    permissions: list[str] | None = None,
 ) -> Callable[[F], F]:
     return _timer_interval(
         id=id,
@@ -169,6 +178,7 @@ def timer_interval(
         description=description,
         auto_start=auto_start,
         metadata=metadata,
+        permissions=permissions,
     )
 
 
@@ -183,6 +193,7 @@ def custom_event(
     auto_start: bool = False,
     trigger_method: str = "message",
     metadata: dict[str, object] | None = None,
+    permissions: list[str] | None = None,
 ) -> Callable[[F], F]:
     return _custom_event(
         event_type=event_type,
@@ -194,6 +205,7 @@ def custom_event(
         auto_start=auto_start,
         trigger_method=trigger_method,
         metadata=metadata,
+        permissions=permissions,
     )
 
 
@@ -203,8 +215,9 @@ def hook(
     timing: str = "before",
     priority: int = 0,
     condition: str | None = None,
+    permissions: list[str] | None = None,
 ) -> Callable[[F], F]:
-    return _hook(target=target, timing=timing, priority=priority, condition=condition)
+    return _hook(target=target, timing=timing, priority=priority, condition=condition, permissions=permissions)
 
 
 def before_entry(
@@ -212,8 +225,9 @@ def before_entry(
     target: str = "*",
     priority: int = 0,
     condition: str | None = None,
+    permissions: list[str] | None = None,
 ) -> Callable[[F], F]:
-    return _before_entry(target=target, priority=priority, condition=condition)
+    return _before_entry(target=target, priority=priority, condition=condition, permissions=permissions)
 
 
 def after_entry(
@@ -221,8 +235,9 @@ def after_entry(
     target: str = "*",
     priority: int = 0,
     condition: str | None = None,
+    permissions: list[str] | None = None,
 ) -> Callable[[F], F]:
-    return _after_entry(target=target, priority=priority, condition=condition)
+    return _after_entry(target=target, priority=priority, condition=condition, permissions=permissions)
 
 
 def around_entry(
@@ -230,8 +245,9 @@ def around_entry(
     target: str = "*",
     priority: int = 0,
     condition: str | None = None,
+    permissions: list[str] | None = None,
 ) -> Callable[[F], F]:
-    return _around_entry(target=target, priority=priority, condition=condition)
+    return _around_entry(target=target, priority=priority, condition=condition, permissions=permissions)
 
 
 def replace_entry(
@@ -239,8 +255,9 @@ def replace_entry(
     target: str = "*",
     priority: int = 0,
     condition: str | None = None,
+    permissions: list[str] | None = None,
 ) -> Callable[[F], F]:
-    return _replace_entry(target=target, priority=priority, condition=condition)
+    return _replace_entry(target=target, priority=priority, condition=condition, permissions=permissions)
 
 
 def quick_action(
@@ -270,6 +287,9 @@ class _PluginDecorators:
         fields: type | None = None,
         metadata: dict[str, object] | None = None,
         quick_action: bool = False,
+        output_schema: dict[str, object] | None = None,
+        strict_output: bool = False,
+        permissions: list[str] | None = None,
     ) -> Callable[[F], F]:
         declaration_locals = _capture_declaration_locals()
         return plugin_entry(
@@ -288,6 +308,9 @@ class _PluginDecorators:
             fields=fields,
             metadata=metadata,
             quick_action=quick_action,
+            output_schema=output_schema,
+            strict_output=strict_output,
+            permissions=permissions,
             _localns=declaration_locals,
         )
 
@@ -306,6 +329,7 @@ class _PluginDecorators:
         seconds: int | None = None,
         extra: dict[str, object] | None = None,
         metadata: dict[str, object] | None = None,
+        permissions: list[str] | None = None,
     ) -> Callable[[F], F]:
         return on_event(
             event_type=event_type,
@@ -320,6 +344,7 @@ class _PluginDecorators:
             seconds=seconds,
             extra=extra,
             metadata=metadata,
+            permissions=permissions,
         )
 
     @staticmethod
@@ -329,8 +354,9 @@ class _PluginDecorators:
         timing: str = "before",
         priority: int = 0,
         condition: str | None = None,
+        permissions: list[str] | None = None,
     ) -> Callable[[F], F]:
-        return hook(target=target, timing=timing, priority=priority, condition=condition)
+        return hook(target=target, timing=timing, priority=priority, condition=condition, permissions=permissions)
 
     @staticmethod
     def lifecycle(
@@ -370,6 +396,7 @@ class _PluginDecorators:
         description: str = "",
         auto_start: bool = True,
         metadata: dict[str, object] | None = None,
+        permissions: list[str] | None = None,
     ) -> Callable[[F], F]:
         return timer_interval(
             id=id,
@@ -378,6 +405,7 @@ class _PluginDecorators:
             description=description,
             auto_start=auto_start,
             metadata=metadata,
+            permissions=permissions,
         )
 
     @staticmethod
@@ -392,6 +420,7 @@ class _PluginDecorators:
         auto_start: bool = False,
         trigger_method: str = "message",
         metadata: dict[str, object] | None = None,
+        permissions: list[str] | None = None,
     ) -> Callable[[F], F]:
         return custom_event(
             event_type=event_type,
@@ -403,6 +432,7 @@ class _PluginDecorators:
             auto_start=auto_start,
             trigger_method=trigger_method,
             metadata=metadata,
+            permissions=permissions,
         )
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from main_logic.voice_turn.admission import SpeechEvidence
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Hashable
@@ -12,6 +13,9 @@ from typing import Hashable
 from main_logic.voice_turn.contracts import VoiceTurnToken
 
 from .lifecycle import FinalKey
+
+
+logger = logging.getLogger(__name__)
 
 
 SegmentId = Hashable
@@ -210,6 +214,7 @@ class TranscriptDispatcher:
         self._active: TranscriptEnvelope | None = None
         self._idle = asyncio.Event()
         self._idle.set()
+        self._idle_callbacks: list[Callable[[], None]] = []
 
     @property
     def has_pending_delivery(self) -> bool:
@@ -289,6 +294,7 @@ class TranscriptDispatcher:
                 worker.cancel()
         self._active = None
         self._idle.set()
+        self._flush_idle_callbacks()
 
     async def wait_idle(self) -> None:
         """Await dispatch quiescence: no queued and no active envelope.
@@ -310,7 +316,16 @@ class TranscriptDispatcher:
         if self._idle.is_set():
             callback()
         else:
-            self._idle_callback = callback
+            self._idle_callbacks.append(callback)
+
+    def _flush_idle_callbacks(self) -> None:
+        callbacks = list(self._idle_callbacks)
+        self._idle_callbacks.clear()
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception:
+                logger.exception("TranscriptDispatcher idle callback failed")
 
     def _ensure_worker(self) -> None:
         if self._worker is not None and not self._worker.done():
@@ -360,7 +375,4 @@ class TranscriptDispatcher:
         # wait_idle() unsettleable for any back-to-back session.
         if self._queue.empty() and self._active is None and not self._pending_turns:
             self._idle.set()
-            callback = getattr(self, "_idle_callback", None)
-            self._idle_callback = None
-            if callback is not None:
-                callback()
+            self._flush_idle_callbacks()

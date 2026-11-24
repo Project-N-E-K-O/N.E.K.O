@@ -13,13 +13,19 @@
           <el-empty v-if="!loadingSlots && !slotsError && !slots.length" :description="t('modelApi.noSlots')" />
           <el-card v-for="slot in slots" :key="slot.id" shadow="never" class="slot-card" :data-slot-id="slot.id">
             <template #header>
-              <div class="slot-heading"><h2>{{ slot.name }}</h2><el-tag size="small" effect="plain">{{ protocolLabel(slot.protocol) }}</el-tag></div>
+              <div class="slot-heading"><h2>{{ slot.name }}</h2><el-tag size="small" effect="plain">{{ slot.source === 'host_follow' ? t(`modelApi.hostApi.${slot.host_api}`) : protocolLabel(slot.protocol) }}</el-tag></div>
             </template>
-            <div class="slot-model">{{ slot.model }}</div>
-            <p class="endpoint">{{ slot.base_url }}</p>
+            <template v-if="slot.source === 'host_follow'">
+              <div class="slot-model">{{ hostSlotModelLabel(slot) }}</div>
+              <p class="endpoint">{{ t('modelApi.hostManagedHint') }}</p>
+            </template>
+            <template v-else>
+              <div class="slot-model">{{ slot.model }}</div>
+              <p class="endpoint">{{ slot.base_url }}</p>
+            </template>
             <div class="capabilities"><el-tag v-for="capability in slot.capabilities" :key="capability" size="small" type="info">{{ t(`modelApi.capability.${capability}`) }}</el-tag></div>
             <dl class="slot-details">
-              <div><dt>{{ t('modelApi.key') }}</dt><dd>{{ t(slot.api_key ? 'modelApi.keySet' : 'modelApi.keyEmpty') }}</dd></div>
+              <div><dt>{{ t('modelApi.key') }}</dt><dd>{{ slot.source === 'host_follow' ? t('modelApi.hostManagedKey') : t(slot.api_key ? 'modelApi.keySet' : 'modelApi.keyEmpty') }}</dd></div>
               <div><dt>{{ t('modelApi.timeout') }}</dt><dd>{{ t('modelApi.seconds', { count: slot.timeout_seconds }) }}</dd></div>
               <div><dt>{{ t('modelApi.fallback') }}</dt><dd>{{ slot.fallback_slot_id ? slotName(slot.fallback_slot_id) : t('modelApi.noFallback') }}</dd></div>
             </dl>
@@ -83,6 +89,24 @@
       <el-form label-position="top" @submit.prevent="saveSlot">
         <el-alert v-if="formError" :title="formError" type="error" :closable="false" show-icon />
         <el-form-item :label="t('modelApi.name')" required><el-input v-model="form.name" data-testid="slot-name" maxlength="128" :disabled="saving" /></el-form-item>
+        <el-form-item :label="t('modelApi.source')" required>
+          <el-select v-model="form.source" data-testid="slot-source" :disabled="saving">
+            <el-option :label="t('modelApi.sourceManual')" value="manual" />
+            <el-option :label="t('modelApi.sourceHost')" value="host_follow" />
+          </el-select>
+          <p class="field-hint">{{ t('modelApi.sourceHint') }}</p>
+        </el-form-item>
+        <template v-if="form.source === 'host_follow'">
+          <el-form-item :label="t('modelApi.hostApiLabel')" required>
+            <el-select v-model="form.host_api" data-testid="slot-host-api" :disabled="saving">
+              <el-option :label="t('modelApi.hostApi.agent_advanced')" value="agent_advanced" />
+              <el-option :label="t('modelApi.hostApi.agent')" value="agent" />
+              <el-option :label="t('modelApi.hostApi.agent_small')" value="agent_small" />
+            </el-select>
+            <p class="field-hint">{{ t(`modelApi.hostHint.${form.host_api}`) }}</p>
+          </el-form-item>
+        </template>
+        <template v-else>
         <div class="form-pair">
           <el-form-item :label="t('modelApi.protocol')" required><el-select v-model="form.protocol" :disabled="saving"><el-option label="OpenAI Chat Completions" value="openai_chat" /><el-option label="Anthropic Messages" value="anthropic_messages" /></el-select></el-form-item>
           <el-form-item :label="t('modelApi.model')" required><el-input v-model="form.model" data-testid="slot-model" maxlength="256" :disabled="saving" /></el-form-item>
@@ -93,9 +117,10 @@
           <p class="field-hint">{{ t('modelApi.keyEditHint') }}</p>
           <p v-if="keyUpdateRequired" class="field-error">{{ t('modelApi.keyUpdateRequired') }}</p>
         </el-form-item>
+        </template>
         <el-form-item :label="t('modelApi.capabilities')"><el-checkbox-group v-model="form.capabilities" :disabled="saving"><el-checkbox v-for="capability in capabilities" :key="capability" :value="capability" :disabled="capability === 'text'">{{ t(`modelApi.capability.${capability}`) }}</el-checkbox></el-checkbox-group><p class="field-hint">{{ t('modelApi.capabilitiesHint') }}</p></el-form-item>
         <div class="form-pair">
-          <el-form-item :label="t('modelApi.temperature')"><el-input-number v-model="form.temperature" :min="0" :max="form.protocol === 'anthropic_messages' ? 1 : 2" :step="0.1" :precision="2" :disabled="saving" :placeholder="t('modelApi.providerDefault')" /></el-form-item>
+          <el-form-item :label="t('modelApi.temperature')"><el-input-number v-model="form.temperature" :min="0" :max="temperatureMax" :step="0.1" :precision="2" :disabled="saving" :placeholder="t('modelApi.providerDefault')" /></el-form-item>
           <el-form-item :label="t('modelApi.maxTokens')"><el-input-number v-model="form.max_output_tokens" :min="1" :max="1000000" :precision="0" :disabled="saving" placeholder="1024" /></el-form-item>
           <el-form-item :label="t('modelApi.timeout')"><el-input-number v-model="form.timeout_seconds" :min="1" :max="300" :disabled="saving" /><p class="field-hint">{{ t('modelApi.timeoutHint') }}</p></el-form-item>
           <el-form-item :label="t('modelApi.fallback')"><el-select v-model="form.fallback_slot_id" clearable :placeholder="t('modelApi.noFallback')" :disabled="saving"><el-option v-for="slot in fallbackSlots" :key="slot.id" :value="slot.id" :label="slot.name" /></el-select><p class="field-hint">{{ t('modelApi.fallbackHint') }}</p></el-form-item>
@@ -115,7 +140,7 @@ import { createModelSlot, deleteModelBinding, deleteModelSlot, getModelUsage, li
 import { bindingErrorKey } from '@/utils/model-binding-error'
 import { formatHttpError } from '@/utils/request'
 import type { ModelCapability, ModelSlot, ModelUsageAttempt, ModelUsageResult } from '@/types/model-api'
-import { maskedKeyCopy, modelSlotForm, modelSlotPayload, needsModelKeyUpdate } from './model-api-form'
+import { maskedKeyCopy, modelSlotForm, modelSlotPayload, needsModelKeyUpdate, temperatureLimit } from './model-api-form'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -130,15 +155,15 @@ const pluginFilter = ref(typeof route.query.plugin_id === 'string' ? route.query
 const slotFilter = ref(typeof route.query.slot_id === 'string' ? route.query.slot_id : '')
 const editorOpen = ref(false)
 const editingSlot = ref<ModelSlot | null>(null)
-const form = ref(modelSlotForm())
+const form = reactive(modelSlotForm())
 const saving = ref(false)
 const formError = ref('')
 const testingId = ref('')
 const unbindingId = ref('')
 const testResults = reactive<Record<string, { ok: boolean; message: string }>>({})
 const capabilities: ModelCapability[] = ['text', 'image_input', 'tool_calling', 'streaming']
-const keyUpdateRequired = computed(() => needsModelKeyUpdate(form.value, editingSlot.value))
-const fallbackSlots = computed(() => slots.value.filter(slot => slot.id !== editingSlot.value?.id && form.value.capabilities.every(capability => slot.capabilities.includes(capability))))
+const keyUpdateRequired = computed(() => needsModelKeyUpdate(form, editingSlot.value))
+const fallbackSlots = computed(() => slots.value.filter(slot => slot.id !== editingSlot.value?.id && form.capabilities.every(capability => slot.capabilities.includes(capability))))
 const knownTokens = computed(() => {
   const summary = usage.value?.summary
   // A partial snapshot may contain only input tokens; an absent total is not zero.
@@ -146,6 +171,18 @@ const knownTokens = computed(() => {
 })
 const errorMessage = (error: unknown) => formatHttpError(error) || t('messages.requestFailed')
 const protocolLabel = (protocol: string) => protocol === 'openai_chat' ? 'OpenAI Chat' : 'Anthropic'
+const hostSlotModelLabel = (slot: ModelSlot) => {
+  if (slot.host_status?.configured) return slot.host_status.model
+  const code = slot.host_status?.error_code
+  // Known states use translated labels; the server message is English and
+  // only serves as a fallback for codes this UI does not know yet.
+  if (code === 'host_api_unsupported') return t('modelApi.hostUnsupported')
+  if (!code || code === 'host_api_not_configured') return t('modelApi.hostNotConfigured')
+  return slot.host_status?.message || t('modelApi.hostNotConfigured')
+}
+// A host-follow slot may resolve to Anthropic at any time; its editor stays
+// within both protocols' shared range, matching the server-side save limit.
+const temperatureMax = computed(() => temperatureLimit(form, editingSlot.value))
 const slotName = (id: string) => slots.value.find(slot => slot.id === id)?.name ?? id
 const duration = (ms: number) => `${(ms / 1000).toFixed(1)} s`
 const tokenValue = (attempt: ModelUsageAttempt, field: 'prompt_tokens' | 'completion_tokens' | 'total_tokens') => attempt.usage_status === 'unknown' ? '—' : (attempt.usage?.[field]?.toLocaleString() ?? '—')
@@ -170,34 +207,35 @@ async function loadUsage() {
 }
 function editSlot(slot?: ModelSlot) {
   editingSlot.value = slot ?? null
-  Object.assign(form.value, modelSlotForm(slot))
+  Object.assign(form, modelSlotForm(slot))
   formError.value = ''
   editorOpen.value = true
 }
 function clearEditor() {
   // Drop the replacement key from component state as soon as the editor closes.
-  Object.assign(form.value, modelSlotForm())
+  Object.assign(form, modelSlotForm())
   editingSlot.value = null
   formError.value = ''
 }
 function selectMaskedKey(event: FocusEvent) {
-  if (form.value.api_key && !form.value.key_edited) (event.target as HTMLInputElement).select()
+  if (form.api_key && !form.key_edited) (event.target as HTMLInputElement).select()
 }
 function copyMaskedKey(event: ClipboardEvent) {
   event.preventDefault()
-  event.clipboardData?.setData('text/plain', form.value.key_edited ? maskedKeyCopy(form.value.api_key) : form.value.initial_api_key)
+  event.clipboardData?.setData('text/plain', form.key_edited ? maskedKeyCopy(form.api_key) : form.initial_api_key)
 }
 async function saveSlot() {
   if (saving.value || keyUpdateRequired.value) return
-  if (!form.value.name.trim() || !form.value.model.trim() || !form.value.base_url.trim()) { formError.value = t('modelApi.requiredFields'); return }
+  if (!form.name.trim() || (form.source === 'manual' && (!form.model.trim() || !form.base_url.trim()))) { formError.value = t('modelApi.requiredFields'); return }
+  if (form.temperature !== undefined && form.temperature > temperatureMax.value) { formError.value = t('modelApi.temperatureRange', { max: temperatureMax.value }); return }
   saving.value = true
   formError.value = ''
   try {
-    const payload = modelSlotPayload(form.value)
+    const payload = modelSlotPayload(form)
     const saved = editingSlot.value ? await updateModelSlot(editingSlot.value.id, payload) : await createModelSlot(payload)
     delete testResults[saved.id]
     editorOpen.value = false
-    form.value.api_key = ''
+    form.api_key = ''
     await loadSlots()
   } catch (error) { formError.value = errorMessage(error) }
   finally { saving.value = false }

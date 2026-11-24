@@ -8,7 +8,7 @@ from fastapi import HTTPException
 
 from plugin.logging_config import get_logger
 from plugin.server.infrastructure.config_locking import file_lock, get_plugin_update_lock, plugin_config_file_lock
-from plugin.server.infrastructure.config_merge import deep_merge
+from plugin.server.infrastructure.config_merge import deep_merge, strip_reserved_sections
 from plugin.server.infrastructure.config_paths import ensure_plugin_runtime_config
 from plugin.server.infrastructure.config_protected import validate_protected_fields_unchanged
 from plugin.server.infrastructure.config_queries import load_plugin_config
@@ -269,7 +269,10 @@ def update_plugin_config(
     *,
     commit_guard: ConfigCommitGuard | None = None,
 ) -> dict[str, object]:
-    normalized_updates = _ensure_string_key_mapping(updates, field="updates")
+    # Reserved tables are never part of the effective config; do not persist them.
+    normalized_updates = strip_reserved_sections(
+        _ensure_string_key_mapping(updates, field="updates")
+    )
     operation = "update"
     config_path = _resolve_config_path_for_update(operation=operation, plugin_id=plugin_id)
     lock = get_plugin_update_lock(plugin_id)

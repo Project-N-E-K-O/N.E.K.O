@@ -244,9 +244,8 @@ async def list_providers() -> dict[str, Any]:
             "base_url": profile.get("openrouter_url", ""),
             "suggested_models": {
                 "conversation": profile.get("conversation_model"),
-                "summary": profile.get("summary_model"),
-                "correction": profile.get("correction_model"),
-                "emotion": profile.get("emotion_model"),
+                "summary": profile.get("memory_model"),
+                "emotion": profile.get("recognition_model"),
                 "vision": profile.get("vision_model"),
                 "agent": profile.get("agent_model"),
             },

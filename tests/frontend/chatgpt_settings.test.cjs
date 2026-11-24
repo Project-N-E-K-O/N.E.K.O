@@ -81,7 +81,7 @@ test('active account labels use text content and status requests are local/no-st
     assert.match(ui.nodes.account.options[0].textContent, /<img.*12345678.*✓/);
     assert.equal(ui.nodes.account.value, signedIn.active);
     assert.equal(ui.calls[0].options.cache, 'no-store');
-    assert.equal(ui.calls[0].options.headers['X-Neko-ChatGPT'], '1');
+    assert.equal(ui.calls[0].options.headers['Content-Type'], 'application/json');
     assert.match(ui.nodes.status.textContent, /connected/);
 });
 
@@ -201,7 +201,7 @@ test('initial status request retries without requiring a page reload', async () 
 test('named subscription probes carry the model and separate model results', async () => {
     const source = fs.readFileSync(path.join(__dirname, '../../static/js/api_key_settings.js'), 'utf8');
     const snippet = source.slice(source.indexOf('function buildConnectivityCacheId('), source.indexOf('function showMaskedSecretConnectivityNotice('));
-    const nodes = Object.fromEntries(['conversation', 'vision'].flatMap(type => [
+    const nodes = Object.fromEntries(['conversation', 'recognition'].flatMap(type => [
         [`${type}ModelProvider`, {value: 'chatgpt'}],
         [`${type}ModelId`, {value: `${type}-model`}],
     ]));
@@ -211,7 +211,7 @@ test('named subscription probes carry the model and separate model results', asy
         document: {getElementById: id => nodes[id] || null},
         _assistApiProviders: {}, _coreApiProviders: {},
         getEffectiveAssistKey: () => '', getEffectiveAssistUrl: () => 'https://api.openai.com/v1',
-        getProviderInfo: () => ({}), getProviderType: () => 'chatgpt',
+        getProviderInfo: () => ({}), getProviderType: () => 'chatgpt', followedModelType: () => '',
         isMaskedSecretValue: () => false, rememberResolvedProviderUrl() {},
         fetch: async (_, init) => {
             calls.push(JSON.parse(init.body));
@@ -221,15 +221,15 @@ test('named subscription probes carry the model and separate model results', asy
     vm.runInNewContext(snippet + '\nglobalThis.manager = ConnectivityManager;', context);
     const manager = context.manager;
     const text = manager.resolveEffectiveKey({type: 'custom', modelType: 'conversation'});
-    const vision = manager.resolveEffectiveKey({type: 'custom', modelType: 'vision'});
-    assert.notEqual(text.cacheId, vision.cacheId);
-    for (const resolved of [text, vision]) {
-        assert.equal(resolved.model, resolved === text ? 'conversation-model' : 'vision-model');
+    const recognition = manager.resolveEffectiveKey({type: 'custom', modelType: 'recognition'});
+    assert.notEqual(text.cacheId, recognition.cacheId);
+    for (const resolved of [text, recognition]) {
+        assert.equal(resolved.model, resolved === text ? 'conversation-model' : 'recognition-model');
         const result = await manager.testKey({provider_key: resolved.providerKey, provider_scope: resolved.providerScope,
             model: resolved.model, api_key: '', provider_type: resolved.providerType});
         assert.equal(result.success, true);
     }
-    assert.deepEqual(calls.map(c => c.model), ['conversation-model', 'vision-model']);
+    assert.deepEqual(calls.map(c => c.model), ['conversation-model', 'recognition-model']);
     await manager.testKey({provider_key: 'openai', provider_scope: 'assist', model: 'ignored', api_key: 'test'});
     assert.equal('model' in calls[2], false);
 });
@@ -248,7 +248,7 @@ test('account invalidation clears only subscription lights and rejects even succ
         document: {getElementById: id => nodes[id] || null},
         _assistApiProviders: {}, _coreApiProviders: {}, CONNECTIVITY_TESTABLE_TYPES: ['conversation'],
         getEffectiveAssistKey: () => '', getEffectiveAssistUrl: () => 'https://api.openai.com/v1',
-        getProviderInfo: () => ({}), getProviderType: () => 'chatgpt',
+        getProviderInfo: () => ({}), getProviderType: () => 'chatgpt', followedModelType: () => '',
         isMaskedSecretValue: () => false, rememberResolvedProviderUrl() {},
         LightStatus: {UNTESTED: 'untested', CONNECTED: 'connected', TESTING: 'testing', FAILED: 'failed'},
         updateLightStatus: (light, status) => { light.status = status; },

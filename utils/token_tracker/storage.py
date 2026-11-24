@@ -14,12 +14,21 @@
 # limitations under the License.
 """Local token-usage storage and migration methods."""
 
+import copy
+import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
+from utils import file_utils as _file_utils
 from utils.file_utils import atomic_write_json
 
 from ._shared import _file_lock, _merge_day_stats, logger
+
+
+def _reject_non_finite_json_constant(token: str) -> None:
+    """Reject non-standard NaN/Infinity tokens when parsing legacy files."""
+    raise ValueError(f"non-finite JSON constant in legacy token_usage: {token}")
+
 
 class StorageMixin:
     """Local token-usage storage and migration methods."""
@@ -39,42 +48,142 @@ class StorageMixin:
     def _migrate_legacy_files(self):
         """Merge legacy token_usage_{instance_id}.json files into the new single file.
 
-        Runs only once at first instantiation. Old files are deleted after migration.
+        Runs only once per legacy file content. Old files are deleted only after
+        the merged snapshot (including migrated file digests) is written atomically.
         """
         try:
-            legacy_files = list(self._storage_dir.glob("token_usage_*.json"))
-            if not legacy_files:
+            if not any(self._storage_dir.glob("token_usage_*.json")):
                 return
 
-            logger.info(f"Token tracker: migrating {len(legacy_files)} legacy per-instance files")
-
             with _file_lock(self._lock_file_path):
+                legacy_files = sorted(self._storage_dir.glob("token_usage_*.json"))
+                if not legacy_files:
+                    return
+
+                logger.info(f"Token tracker: migrating {len(legacy_files)} legacy per-instance files")
+
                 # Read the existing merged file, if any.
                 existing = self._load_file(self._storage_path)
                 if not existing:
+                    if self._storage_path.exists():
+                        raise ValueError("cannot read migration target")
                     existing = self._empty_file_data()
 
+                raw_migrated = existing.get("migrated_legacy_files")
+                migrated_map: dict[str, str] = (
+                    {
+                        str(k): str(v)
+                        for k, v in raw_migrated.items()
+                        if isinstance(k, str) and isinstance(v, str)
+                    }
+                    if isinstance(raw_migrated, dict)
+                    else {}
+                )
+                present_names = {p.name for p in legacy_files}
+                stale_names = [k for k in migrated_map if k not in present_names]
+                if stale_names:
+                    # Only prune digests after confirming prior unlinks in this directory are durable.
+                    try:
+                        _file_utils._fsync_directory(self._storage_dir)
+                    except OSError as e:
+                        logger.debug(
+                            "Token tracker: failed to sync storage directory before pruning index: %s",
+                            e,
+                        )
+                        pruned_map = dict(migrated_map)
+                    else:
+                        pruned_map = {k: v for k, v in migrated_map.items() if k in present_names}
+                else:
+                    pruned_map = dict(migrated_map)
+                index_dirty = pruned_map != migrated_map
+                migrated_map = pruned_map
+
+                cleanup_files: list[Path] = []
+                merged_new = False
                 for p in legacy_files:
                     try:
-                        data = self._load_file(p)
-                        if data:
-                            for day_key, day_val in data.get("daily_stats", {}).items():
-                                if day_key not in existing["daily_stats"]:
-                                    existing["daily_stats"][day_key] = day_val
-                                else:
-                                    _merge_day_stats(existing["daily_stats"][day_key], day_val)
-                            existing["recent_records"].extend(data.get("recent_records", []))
-                        # Migration complete: delete the old file.
-                        p.unlink(missing_ok=True)
+                        raw = p.read_bytes()
+                        file_digest = hashlib.sha256(raw).hexdigest()
+                        if migrated_map.get(p.name) == file_digest:
+                            cleanup_files.append(p)
+                            continue
+                        data = json.loads(raw, parse_constant=_reject_non_finite_json_constant)
+                        if not isinstance(data, dict) or data.get("version") != 1:
+                            raise ValueError("unsupported legacy token_usage version")
+                        daily_stats = data["daily_stats"]
+                        records = data.get("recent_records", [])
+                        if not isinstance(daily_stats, dict) or not isinstance(records, list):
+                            raise TypeError("legacy token_usage schema invalid")
+
+                        # Stage only the affected days. A malformed later bucket or
+                        # record must not leave any contribution from this source.
+                        staged_days = {}
+                        for day, delta in daily_stats.items():
+                            staged = copy.deepcopy(existing["daily_stats"].get(day, {}))
+                            _merge_day_stats(staged, delta)
+                            staged_days[day] = staged
+                        staged_records = self._dedupe_records(existing["recent_records"] + records)
+                        # Reject overflow to inf/nan and lone surrogates using the writer's UTF-8 rules.
+                        json.dumps(
+                            {"daily_stats": staged_days, "recent_records": staged_records},
+                            ensure_ascii=False,
+                            allow_nan=False,
+                        ).encode("utf-8")
+                        existing["daily_stats"].update(staged_days)
+                        existing["recent_records"] = staged_records
+                        migrated_map[p.name] = file_digest
+                        cleanup_files.append(p)
+                        merged_new = True
+                        index_dirty = True
                     except Exception as e:
                         logger.debug(f"Token tracker: failed to migrate {p.name}: {e}")
 
-                # Deduplicate recent_records.
-                existing["recent_records"] = self._dedupe_records(existing["recent_records"])
-                existing["last_saved"] = datetime.now().isoformat()
+                if not merged_new and not index_dirty and not cleanup_files:
+                    return
 
+                # Even an existing digest can follow a replace whose directory
+                # sync failed. Re-establish durability before unlinking its source.
+                if merged_new:
+                    existing["last_saved"] = datetime.now().isoformat()
+                if migrated_map:
+                    existing["migrated_legacy_files"] = migrated_map
+                else:
+                    existing.pop("migrated_legacy_files", None)
                 self._storage_dir.mkdir(parents=True, exist_ok=True)
-                atomic_write_json(self._storage_path, existing)
+                atomic_write_json(self._storage_path, existing, strict_dir_sync=True)
+
+                # Migration complete: delete the old files only after atomic write succeeds.
+                unlinked_names: set[str] = set()
+                unlinked_dirs: set[Path] = set()
+                for p in cleanup_files:
+                    try:
+                        p.unlink(missing_ok=True)
+                        if not p.exists():
+                            unlinked_names.add(p.name)
+                            unlinked_dirs.add(p.parent)
+                    except Exception as e:
+                        logger.debug(f"Token tracker: failed to remove migrated file {p.name}: {e}")
+
+                if unlinked_names:
+                    try:
+                        for parent_dir in sorted(unlinked_dirs):
+                            _file_utils._fsync_directory(parent_dir)
+                    except OSError as e:
+                        logger.debug(
+                            "Token tracker: failed to sync migrated directory before pruning index: %s",
+                            e,
+                        )
+                    else:
+                        for name in unlinked_names:
+                            migrated_map.pop(name, None)
+                        if migrated_map:
+                            existing["migrated_legacy_files"] = migrated_map
+                        else:
+                            existing.pop("migrated_legacy_files", None)
+                        try:
+                            atomic_write_json(self._storage_path, existing)
+                        except Exception as e:
+                            logger.debug(f"Token tracker: failed to prune migrated file index: {e}")
 
             logger.info("Token tracker: legacy file migration complete")
         except Exception as e:

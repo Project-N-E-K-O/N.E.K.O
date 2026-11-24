@@ -15,7 +15,7 @@
 
 import asyncio
 from dataclasses import replace
-from typing import Sequence
+from typing import Callable, Sequence
 from uuid import uuid4
 
 from config import MAX_MULTIMODAL_TURN_IMAGES
@@ -62,6 +62,40 @@ _FRAME_SOURCE_PROACTIVE = "proactive"
 # image count and the mapping can no longer be trusted.
 _FRAME_SOURCE_UNKNOWN = "unknown"
 
+# Where each image of a history message came from, kept in the message's
+# internal ``metadata`` (never sent to a provider) as ``image_kinds``, aligned
+# with the message's image blocks. Separate from the frame-bus labels above,
+# where "screen" names both the proactive screenshot and a live screen frame.
+_HISTORY_IMAGE_KINDS_KEY = "image_kinds"
+# Pre-fit kinds of a turn whose image count the budget ladder changed (the
+# positional mapping is lost then); used to fail closed on consent revocation.
+_HISTORY_IMAGE_PREFIT_KINDS_KEY = "image_prefit_kinds"
+_IMAGE_KIND_LIVE = "live"                  # live share / voice vision frames of the turn
+_IMAGE_KIND_AUTO_SCREENSHOT = "auto_screenshot"  # the proactive-vision screenshot
+_IMAGE_KIND_USER = "user"                  # images the user attached
+_IMAGE_KIND_PLUGIN = "plugin"              # plugin frames and callback media
+_IMAGE_KIND_UNKNOWN = "unknown"
+# Captured automatically from the screen or camera rather than chosen by the user.
+_AUTO_CAPTURED_IMAGE_KINDS = frozenset({_IMAGE_KIND_LIVE, _IMAGE_KIND_AUTO_SCREENSHOT})
+
+
+def _is_auto_captured_history_image(kind: str, prefit_kinds) -> bool:
+    """Captured automatically, or unknown in a turn that held an automatic capture (fail closed)."""
+    return kind in _AUTO_CAPTURED_IMAGE_KINDS or (
+        kind == _IMAGE_KIND_UNKNOWN
+        and any(k in _AUTO_CAPTURED_IMAGE_KINDS for k in prefit_kinds)
+    )
+
+
+def _history_image_kinds(ordered_kinds: list, attached_count: int) -> tuple[list, list]:
+    """Kinds aligned with the attached images, and the pre-fit kinds when unaligned."""
+    if len(ordered_kinds) == attached_count:
+        return list(ordered_kinds), []
+    distinct = set(ordered_kinds)
+    if len(distinct) == 1:
+        return [next(iter(distinct))] * attached_count, []
+    return [_IMAGE_KIND_UNKNOWN] * attached_count, sorted(distinct)
+
 
 class _MediaMixin:
     class _ExternalVoiceSubmitCancelled(Exception):
@@ -81,6 +115,8 @@ class _MediaMixin:
         turn_images: tuple[str, ...] = (),
         turn_source: str | None = None,
         turn_source_count: int | None = None,
+        turn_image_user_flags: tuple[bool, ...] = (),
+        auto_capture_epoch: int | None = None,
         turn_id: str | None = None,
         on_turn_committed=None,
         turn_context=None,
@@ -102,6 +138,8 @@ class _MediaMixin:
                     turn_images=turn_images,
                     turn_source=turn_source,
                     turn_source_count=turn_source_count,
+                    turn_image_user_flags=turn_image_user_flags,
+                    auto_capture_epoch=auto_capture_epoch,
                     turn_id=turn_id,
                     on_turn_committed=on_turn_committed,
                     turn_context=turn_context,
@@ -392,8 +430,13 @@ class _MediaMixin:
         turn_id: str,
         source: str | None = None,
         turn_context=None,
+        image_request_ids: Sequence[str | None] = (),
     ) -> bool:
         """Submit one utterance's sampled raw frames with its transcript.
+
+        ``image_request_ids`` (aligned with ``images``) marks sampled frames
+        that are screenshots the user attached; history keeps those like any
+        other attachment instead of treating them as live frames.
 
         Core samples the utterance down to first/middle/last before it gets
         here; this holds the same per-turn cap so provider-side history can
@@ -406,7 +449,14 @@ class _MediaMixin:
 
         if isinstance(images, str):
             images = (images,)
-        staged_images = tuple(image for image in (images or ()) if image)
+        request_ids = tuple(image_request_ids or ())
+        staged_pairs = tuple(
+            (image, request_ids[index] if index < len(request_ids) else None)
+            for index, image in enumerate(images or ())
+            if image
+        )
+        staged_images = tuple(image for image, _ in staged_pairs)
+        frame_user_flags = tuple(rid is not None for _, rid in staged_pairs)
         if not staged_images or not str(text or "").strip():
             raise ValueError("MULTIMODAL_TURN_REQUIRES_IMAGE_AND_TEXT")
         if len(staged_images) > MAX_MULTIMODAL_TURN_IMAGES:
@@ -417,6 +467,11 @@ class _MediaMixin:
                 MAX_MULTIMODAL_TURN_IMAGES,
             )
             staged_images = staged_images[:MAX_MULTIMODAL_TURN_IMAGES]
+            frame_user_flags = frame_user_flags[:MAX_MULTIMODAL_TURN_IMAGES]
+        # The frames were captured before the lock wait below (a previous turn
+        # may hold it for a whole reply): a consent revocation meanwhile must
+        # still reach them, so stream_text compares against this epoch.
+        auto_capture_epoch = getattr(self, "_auto_capture_discard_epoch", 0)
         lock = getattr(self, "_multimodal_submit_lock", None)
         if lock is None:
             lock = asyncio.Lock()
@@ -464,6 +519,8 @@ class _MediaMixin:
                     # explicitly supplied user material.
                     turn_source=source,
                     turn_source_count=len(staged_images) - len(attachments),
+                    turn_image_user_flags=frame_user_flags,
+                    auto_capture_epoch=auto_capture_epoch,
                     # Standalone ASR supplies a stable turn_id for this utterance; carry it through to the frame bus
                     # so plugins can group frames sampled from the same utterance. Ordinary text turns have
                     # no such identity; leave it empty (omit turn_id from records).
@@ -522,7 +579,20 @@ class _MediaMixin:
         """Check if there are pending images waiting to be sent."""
         return len(self._pending_images) > 0
 
-    def set_proactive_screenshot(self, image_b64: str | None) -> None:
+    def discard_cached_visual_context(self) -> None:
+        """Forget the staged proactive screenshot after screen consent is revoked.
+
+        Same session API as the realtime client. Images the user attached to
+        their own next message (``_pending_images``) are left alone.
+        """
+        self.set_proactive_screenshot(None)
+
+    def set_proactive_screenshot(
+        self,
+        image_b64: str | None,
+        *,
+        consent_check: Callable[[], bool] | None = None,
+    ) -> None:
         """Stage (or clear) the proactive-vision screenshot for the user's next reply.
 
         When proactive chat used the screen as its material, the committed
@@ -540,15 +610,131 @@ class _MediaMixin:
         the history-length marker pins the screenshot to the AI turn it was staged
         on, so a later proactive talk delivered through another path (greeting /
         agent callback via ``prompt_ephemeral``) supersedes it.
+
+        ``consent_check`` is the screen consent this screenshot was staged
+        under. ``stream_text`` calls it again before the screenshot goes into a
+        request and drops the screenshot (only it) once it returns False.
         """
         if image_b64:
             self._proactive_image_to_inject = image_b64
             self._proactive_image_staged_at = time.monotonic()
             self._proactive_image_history_len = len(self._conversation_history)
+            self._proactive_image_consent_check = consent_check
         else:
             self._proactive_image_to_inject = None
             self._proactive_image_staged_at = 0.0
             self._proactive_image_history_len = 0
+            self._proactive_image_consent_check = None
+
+    def _strip_history_images(
+        self, should_strip, *, skip_in_flight: bool = False, only=None,
+    ) -> int:
+        """Drop the pixels of history images for which ``should_strip(kind, prefit_kinds)`` holds.
+
+        A receipt replaces them, like ``_evict_old_images``. Messages without
+        recorded kinds (older turns, text-only turns) are left alone.
+
+        Edited in place, unlike eviction: this runs at the start of the next
+        turn and on consent revocation, while the stripped turn may still be
+        replying, and its cancellation / history-replacement write-back finds
+        that message by identity.
+        """
+        stripped = 0
+        # skip_in_flight: leave the user messages whose stream_text call is
+        # still running (registered on append, released when the call
+        # returns): their request may not have reached the provider yet.
+        in_flight = (
+            {id(m) for m in (getattr(self, "_in_flight_user_messages", None) or {}).values()}
+            if skip_in_flight
+            else set()
+        )
+        history = getattr(self, "_conversation_history", None) or []
+        for msg in history if only is None else (only,):
+            if not isinstance(msg, HumanMessage) or id(msg) in in_flight:
+                continue
+            count = image_count(msg.content)
+            metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
+            kinds = metadata.get(_HISTORY_IMAGE_KINDS_KEY)
+            if not count or not isinstance(kinds, list):
+                continue
+            prefit = tuple(metadata.get(_HISTORY_IMAGE_PREFIT_KINDS_KEY) or ())
+            if len(kinds) != count:
+                kinds = [_IMAGE_KIND_UNKNOWN] * count
+            keep = [i for i, kind in enumerate(kinds) if not should_strip(kind, prefit)]
+            if len(keep) == count:
+                continue
+            msg.content = without_image_pixels(msg.content, keep=keep)
+            msg.metadata = {
+                **metadata,
+                _HISTORY_IMAGE_KINDS_KEY: [kinds[i] for i in keep],
+            }
+            stripped += count - len(keep)
+        return stripped
+
+    def _strip_answered_live_frames(self, *, skip_in_flight: bool = False) -> None:
+        """Live share frames serve the turn they rode; the next turn keeps only a receipt.
+
+        A turn whose mapping the budget ladder lost is stripped whole when it
+        held live frames: the user's attachment there loses its second turn
+        of pixels rather than a stale screen riding on.
+        """
+        stripped = self._strip_history_images(
+            lambda kind, prefit: kind == _IMAGE_KIND_LIVE
+            or (kind == _IMAGE_KIND_UNKNOWN and _IMAGE_KIND_LIVE in prefit),
+            skip_in_flight=skip_in_flight,
+        )
+        if stripped:
+            logger.info("🖼️ Stripped %d live frame(s) from history after their turn", stripped)
+
+    def discard_auto_captured_history_images(self) -> None:
+        """Screen consent was revoked: automatically captured images leave history.
+
+        Live share / voice vision frames and proactive screenshots keep only a
+        receipt; images the user attached are untouched. A turn whose image
+        mapping the budget ladder lost is stripped whole if it held any
+        automatically captured image (fail closed). A proactive screenshot
+        staged for the user's next reply is dropped too, and a turn being
+        assembled right now re-checks after committing its message.
+        """
+        self._auto_capture_discard_epoch = (
+            getattr(self, "_auto_capture_discard_epoch", 0) + 1
+        )
+        # The staged proactive screenshot: the same discard a realtime
+        # session runs on revocation.
+        self.discard_cached_visual_context()
+        stripped = self._strip_history_images(_is_auto_captured_history_image)
+        if stripped:
+            logger.info(
+                "🖼️ Stripped %d automatically captured image(s) from history after consent revocation",
+                stripped,
+            )
+
+    def _strip_auto_captures_missed_by_revocation(self, message) -> None:
+        """A turn assembled across a revocation strips its own automatic captures.
+
+        Only this message: the staged screenshot, other turns and the epoch
+        belong to the revocation itself, and consent may have been granted
+        again since.
+        """
+        self._strip_history_images(_is_auto_captured_history_image, only=message)
+
+    def _drop_history_image_pixels(self, only=None) -> int:
+        """Drop history images' pixels in place (all, or ``only`` that message), keeping text and receipts.
+
+        Used after the chat model rejected an image: left in history, the
+        picture would ride along with every later text-only request and be
+        rejected again. Edited in place, like ``_strip_history_images``, so a
+        write-back that finds a message by identity still finds it.
+        """
+        stripped = self._strip_history_images(lambda _kind, _prefit: True, only=only)
+        for msg in (getattr(self, "_conversation_history", None) or []) if only is None else (only,):
+            if isinstance(msg, HumanMessage):
+                count = image_count(msg.content)
+                if count:
+                    # Older turns carry no recorded image kinds.
+                    msg.content = without_image_pixels(msg.content)
+                    stripped += count
+        return stripped
 
     def _evict_old_images(self, keep_turns: int = 2) -> None:
         keep_turns = max(0, keep_turns)

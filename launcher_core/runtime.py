@@ -155,6 +155,10 @@ SHUTDOWN_MODULE_ORDER = (
 MERGED_SERVER_READY_TIMEOUT = 30.0
 MERGED_SERVER_READY_POLL_INTERVAL = 0.25
 MERGED_SERVER_SHUTDOWN_ORDER = ("Main", "Memory", "Agent")
+# Desktop-owned HTTP work can outlive its connection while the desktop waits
+# for us to exit. Bound transport draining before running application cleanup,
+# within (rather than instead of) each service's shutdown budget.
+MERGED_CONNECTION_DRAIN_TIMEOUT = 1.0
 
 #: Set by ``run_merged_servers`` while the in-process servers are running, so an
 #: owner-death teardown can drive the ordered shutdown instead of hard-exiting
@@ -1253,6 +1257,7 @@ def run_merged_servers() -> int:
     for _app, _port, _name in _apps:
         cfg = uvicorn.Config(
             app=_app, host="127.0.0.1", port=_port,
+            timeout_graceful_shutdown=MERGED_CONNECTION_DRAIN_TIMEOUT,
             log_level="error", **_proxy_kw,
         )
         servers.append(uvicorn.Server(cfg))
@@ -1270,6 +1275,8 @@ def run_merged_servers() -> int:
 
     _exiting = False
     _shutdown_watchdog_started = False
+    _merged_loop = None
+    _shutdown_wakeup = None
 
     def _begin_merged_shutdown(*, reason: str = "signal") -> bool:
         nonlocal _exiting, _shutdown_watchdog_started
@@ -1304,6 +1311,12 @@ def run_merged_servers() -> int:
                 target=_watchdog, daemon=True, name="merged-shutdown-watchdog",
             ).start()
             _shutdown_watchdog_started = True
+        # Owner-death requests may arrive on the monitor thread. Wake the
+        # coordinator even if no server has finished yet, so its ordered
+        # deadlines also cover a stuck first service. Pre-loop requests are
+        # picked up by _serve_all below.
+        if _merged_loop is not None:
+            _merged_loop.call_soon_threadsafe(_shutdown_wakeup.set)
         return True
 
     def _on_exit_signal(_sig, _frame):
@@ -1351,6 +1364,14 @@ def run_merged_servers() -> int:
     _merged_shutdown_request = _begin_merged_shutdown
 
     async def _serve_all() -> None:
+        nonlocal _merged_loop, _shutdown_wakeup
+        _shutdown_wakeup = asyncio.Event()
+        _merged_loop = asyncio.get_running_loop()
+        if _exiting:
+            _shutdown_wakeup.set()
+        shutdown_waiter = asyncio.create_task(
+            _shutdown_wakeup.wait(), name="merged-shutdown-request",
+        )
         # Start all uvicorn.Server instances concurrently.
         tasks = {
             name: asyncio.create_task(
@@ -1390,7 +1411,10 @@ def run_merged_servers() -> int:
 
                 # A single service returning is either an intentional coordinated
                 # shutdown or a topology-wide failure. Never leave two ports alive.
-                await asyncio.wait(tasks.values(), return_when=asyncio.FIRST_COMPLETED)
+                await asyncio.wait(
+                    [*tasks.values(), shutdown_waiter],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
                 if not _exiting:
                     unexpected_exit = _completed_merged_server(tasks) or "unknown server exit"
                     _begin_merged_shutdown(reason="server_exit")
@@ -1406,6 +1430,8 @@ def run_merged_servers() -> int:
             if failures:
                 raise RuntimeError("Merged shutdown failures: " + ", ".join(failures))
         finally:
+            shutdown_waiter.cancel()
+            await asyncio.gather(shutdown_waiter, return_exceptions=True)
             for server in servers:
                 server.should_exit = True
             for task in tasks.values():

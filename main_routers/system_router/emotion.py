@@ -937,15 +937,15 @@ async def emotion_analysis(request: Request):
         model = data.get('model')
         
         # Use parameters or defaults, reading safely with .get() to avoid KeyError.
-        emotion_config = await _config_manager.aget_model_api_config('emotion')
+        emotion_config = await _config_manager.aget_model_api_config('recognition')
         emotion_api_key = emotion_config.get('api_key')
-        emotion_model = emotion_config.get('model')
+        recognition_model = emotion_config.get('model')
         emotion_base_url = emotion_config.get('base_url')
         emotion_provider_type = emotion_config.get('provider_type')
         
         # Prefer request parameters, then configuration.
         api_key = api_key or emotion_api_key
-        model = model or emotion_model
+        model = model or recognition_model
         
         # Subscription authentication is resolved by the shared client factory.
         if not api_key and emotion_provider_type != 'chatgpt':

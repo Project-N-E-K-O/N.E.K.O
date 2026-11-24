@@ -34,7 +34,7 @@
     </section>
     <el-alert
       v-if="saveError"
-      :title="t('pluginConsent.saveFailed')"
+      :title="t(saveError)"
       type="error"
       :closable="false"
     />
@@ -51,11 +51,12 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { usePluginConsentState } from '@/stores/pluginConsentState'
-import { capabilityMessageKey, consentSnapshot, INCOMPLETE_STATUSES, isConsentChanged } from '@/utils/pluginCapabilities'
+import { capabilityMessageKey, consentSaveErrorKey, consentSnapshot, INCOMPLETE_STATUSES, isConsentChanged } from '@/utils/pluginCapabilities'
 const { t } = useI18n()
 const consentState = usePluginConsentState()
 const saving = ref(false)
-const saveError = ref(false)
+// i18n key of the failure shown above the actions, null when none.
+const saveError = ref<string | null>(null)
 
 // A plugin whose pending capabilities disappeared while the dialog was open
 // leaves the list; the store auto-resolves the request when none remain.
@@ -75,7 +76,7 @@ async function approve() {
   const request = consentState.activeRequest
   if (!request || saving.value) return
   saving.value = true
-  saveError.value = false
+  saveError.value = null
   const approvals = plugins.value.map(({ id }) => ({ id, detail: consentState.details[id] }))
   try {
     for (const { id, detail } of approvals) {
@@ -84,7 +85,7 @@ async function approve() {
         const updated = await consentState.approve(id, consentSnapshot(detail))
         if (consentState.activeRequest !== request) return
         if (updated.state === 'confirm') {
-          saveError.value = true
+          saveError.value = 'pluginConsent.saveFailed'
           return
         }
         if (updated.state === 'analyzing') {
@@ -98,8 +99,8 @@ async function approve() {
       }
     }
     if (consentState.activeRequest === request) consentState.resolveConfirmation(true)
-  } catch {
-    if (consentState.activeRequest === request) saveError.value = true
+  } catch (error) {
+    if (consentState.activeRequest === request) saveError.value = consentSaveErrorKey(error)
   } finally {
     saving.value = false
   }

@@ -14,8 +14,14 @@
 **第二层：帧率总闸（只在 Electron Pet 窗口）**
 
 - `static/frame-pacing.js` 只由 `templates/index.html` 加载，并且内部再判一次 `__LANLAN_IS_ELECTRON_PET__`。其它页面没有 `window.nekoFramePacing`，行为不变。
-- 它用 rAF 时间戳间隔的中位数量显示器刷新率（加载完 1.5 秒后量，收到 `electron-display-changed` 重量）。量不出来就当「未知」，留在 rAF。误差方向是保守的：卡顿只会让刷新率被低估。
+- 它用 rAF 时间戳间隔的中位数量显示器刷新率（加载完 1.5 秒后量，收到 `electron-display-changed` 重量）。量不出来（3 秒超时）就当「未知」，留在 rAF，并隔 5 秒重试，每块屏最多重试 2 次。卡顿只会让刷新率被低估：对 `activeTimerTickFps` 这是保守方向（更容易留在 rAF）；对 `rafCapFps` 会把上限抬高，由下面的 1.5 倍余量兜住。
 - `activeTimerTickFps()`：配置帧率低于「刷新率 × 0.9」时返回配置帧率，否则返回 null。含义是活动态也用定时器驱动、只是周期换成配置帧率。60 帧配置在 60Hz 屏上留在 rAF（和垂直同步对齐更顺，换定时器也省不了什么），在 120 / 144Hz 屏上切定时器。
+- `rafCapFps(fps)`：留在 rAF 时实际执行的软件上限。配置帧率 ≥「刷新率 × 0.9」（和 `activeTimerTickFps` 同一阈值，留在 rAF 就一定放宽，中间没有空档）时返回 `max(配置, round(刷新率 × 1.5))`，例如 60Hz 屏上是 90；其余情况原样返回。三个后端都经各自的 `_resolveRafCapFps` 用它：Live2D 写 `app.ticker` 和 Pet 下 `shared` / `system` 的 `maxFPS`（governor 每 300ms 按最新刷新率重判），MMD 算 `frameTime`，VRM 的 rAF 循环每帧重判（放宽时改走和 VMC 一样的累计截止时间，严格不超过放宽后的上限；原来非 VMC 分支 0.9 的间隔容差会让 90 的上限实际跑到 100）。
+  - 为什么要放宽：PIXI 7.4.3 的 `Ticker.update` 先把帧间隔截成整数毫秒（`(t - _lastFrame) | 0`）再和 `1000 / maxFPS` 比，60Hz 屏配 60 时 16.6ms 截成 16 < 16.667，整帧跳过、下一帧双倍 delta；MMD 的节流按精确间隔比较并对齐时间格，比格点早到的 vsync 同样被跳过。刷新率测准时显示器本身就是上限，放宽不会让帧率变高。
+  - 为什么不直接设 0：刷新率可能被低估（采样时 rAF 被降频、系统动态刷新率）。设 0 会让帧率一路跑到真实刷新率；放宽到 1.5 倍时，最多到「测得刷新率 × 1.5」。这时实际帧率仍可能超过配置值，属于有意的取舍。
+  - 0.9 阈值的边界：设置里只有 30/45/60/0。配置 60、测得 61～66Hz，或配置 45、测得 46～50Hz 时也会放宽（例如 45 配 50Hz 屏会按 50fps 跑，超过配置；放宽前 PIXI 隔帧跳、实际约 25fps）。这是有意的取舍。
+  - 换屏：`electron-display-changed` 一到就递增 epoch，新屏重测成功前 `rafCapFps` 不信旧刷新率、原样返回配置值；换屏前就开始的那轮采样即使结束在换屏后也不算数。`activeTimerTickFps` 没有这个判定，换屏后短时间内仍按旧值判断（只影响节奏，不会抬高上限）。
+  - 非 Pet 页面不测刷新率，`rafCapFps` 原样返回，浏览器主页面的跳帧没有覆盖。
 - 已经在定时器模式时，`_enterIdleTickMode(fps)` 只换周期，不经过 rAF。
 
 ## 为什么不能只调 maxFPS

@@ -882,10 +882,10 @@ def test_model_cat_transition_contract_is_present():
     assert "function playModelReturnEnter(container, rect)" in source
     assert "window._nekoModelReturnEnterRect = returnRect || savedRect || null" in source
     assert "consumeModelReturnEnterRect()" in source
-    assert "function ensureModelViewportReadyBeforeShowCurrentModel()" in source
+    assert "function ensureModelViewportReadyBeforeShowCurrentModel(options = {})" in source
     assert "function restoreReturnBallAfterBlockedModelViewport(event)" in source
     assert "function shouldBlockCatToModelTransitionForModelViewport(direction)" in source
-    assert "const modelViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();" in source
+    assert "const modelViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel({ isCurrent });" in source
     assert "blocked model display because Pet viewport is still return-ball sized" in source
     assert "function setPendingNativeModelViewportRestoreBounds(bounds)" in source
     assert "if (isNativeReturnBallViewportSize(width, height)) {" in source
@@ -991,7 +991,9 @@ def test_model_cat_transition_contract_is_present():
     assert "const commitReturn = () => {" in avatar_source
     assert "if (_guardNekoVisitCatReturn(commitReturn)) return true;" in avatar_source
     assert "returnButtonContainer.setAttribute('data-neko-model-cat-transitioning', 'cat-to-model');" not in avatar_source
-    assert "nekoModelCatRevealPlaybackToken = 0" in source
+    # Reveal restarts alternate two URLs so they stay in the HTTP cache.
+    assert "nekoModelCatRevealPlaybackToken" not in source
+    assert "function nextNekoModelCatRevealPlaybackUrl(src)" in source
     assert "function buildNekoModelCatRevealPlaybackUrl(src, playbackToken)" in source
     assert "url.searchParams.set('reveal'" in source
     assert "function restartNekoModelCatRevealArt(container)" in source
@@ -1009,7 +1011,7 @@ def test_model_cat_transition_contract_is_present():
         "if (nekoModelCatTransitionActive) {",
         "container.setAttribute('data-neko-model-cat-transitioning', direction);",
     )
-    viewport_guard_start = source.index("const modelViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();")
+    viewport_guard_start = source.index("const modelViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel({ isCurrent });")
     show_current_model_block = source[
         viewport_guard_start:
         source.index("try {", viewport_guard_start)
@@ -1017,31 +1019,31 @@ def test_model_cat_transition_contract_is_present():
     _assert_source_order(
         show_current_model_block,
         "showCurrentModel viewport guard ordering",
-        "const modelViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();",
+        "const modelViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel({ isCurrent });",
         "if (!modelViewportReady.ready) {",
-        "return false;",
+        "            return false;",
     )
     goodbye_reset_index = source.index("// 重置 goodbye 标志")
     assert viewport_guard_start < goodbye_reset_index
     return_handler_guard_start = source.index("let modelDisplayReady = true;")
     return_handler_block = source[
         return_handler_guard_start:
-        source.index("await settleReturnedModelBounds(returnModelWasMoved);", return_handler_guard_start)
+        source.index("await settleReturnedModelBounds(returnModelWasMoved,", return_handler_guard_start)
     ]
     _assert_source_order(
         return_handler_block,
         "return handler stops when model viewport is still shrunken",
         "let modelDisplayReady = true;",
-        "modelDisplayReady = await showCurrentModel();",
+        "modelDisplayReady = await showCurrentModel({ isCurrent: isCurrentReturn });",
         "if (modelDisplayReady === false) {",
-        "return;",
+        "                return;",
     )
     return_handler_start = source.index("const handleReturnClick = async (event) => {")
     return_handler_full_block = source[
         return_handler_start:
-        source.index("await settleReturnedModelBounds(returnModelWasMoved);", return_handler_start)
+        source.index("await settleReturnedModelBounds(returnModelWasMoved,", return_handler_start)
     ]
-    pre_return_guard_start = return_handler_full_block.index("const preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();")
+    pre_return_guard_start = return_handler_full_block.index("const preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel({ isCurrent: isCurrentReturn });")
     return_handler_start_block = return_handler_full_block[
         pre_return_guard_start:
         return_handler_full_block.index("const isReturningToPngtuber")
@@ -1049,10 +1051,10 @@ def test_model_cat_transition_contract_is_present():
     _assert_source_order(
         return_handler_start_block,
         "return handler preserves cat state until viewport can restore",
-        "const preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();",
+        "const preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel({ isCurrent: isCurrentReturn });",
         "if (!preReturnViewportReady.ready) {",
         "restoreReturnBallAfterBlockedModelViewport(event);",
-        "return;",
+        "                    return;",
     )
     assert "window._goodbyeResetClickTimerId = setTimeout(() => {" in source
     assert "const goodbyeStillActive = !!(" in source
@@ -1069,7 +1071,7 @@ def test_model_cat_transition_contract_is_present():
         "if (window._goodbyeHideTimerId) {",
         "clearTimeout(window._goodbyeHideTimerId);",
         "window._goodbyeHideTimerId = null;",
-        "const preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();",
+        "const preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel({ isCurrent: isCurrentReturn });",
     )
     return_handler_after_viewport_guard_block = return_handler_full_block[
         pre_return_guard_start:
@@ -1081,9 +1083,9 @@ def test_model_cat_transition_contract_is_present():
         "restoreReturnBallAfterBlockedModelViewport(event);",
         "if (hadPendingGoodbyeReset) {",
         "runGoodbyeResetClickIfActive('return-viewport-blocked');",
-        "return;",
+        "                    return;",
     )
-    assert return_handler_full_block.index("const preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();") < return_handler_full_block.index("window.live2dManager._goodbyeClicked = false;")
+    assert return_handler_full_block.index("const preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel({ isCurrent: isCurrentReturn });") < return_handler_full_block.index("window.live2dManager._goodbyeClicked = false;")
     restore_block = source[
         source.index("function restoreReturnBallAfterBlockedModelViewport(event)"):
         source.index("// 请她回来按钮（统一处理函数）")
@@ -1093,7 +1095,7 @@ def test_model_cat_transition_contract_is_present():
     assert "revealReturnBallContainer(container, 'return-ball-model-viewport-blocked')" in restore_block
     assert "showReturnBallContainer(container, returnRect)" in restore_block
     settle_block = source[
-        source.index("async function settleReturnedModelBounds(shouldSaveWhenUnchanged)"):
+        source.index("async function settleReturnedModelBounds(shouldSaveWhenUnchanged, options = {})"):
         source.index("function cancelReturnBallReveal(container)")
     ]
     _assert_source_order(
@@ -1103,10 +1105,10 @@ def test_model_cat_transition_contract_is_present():
         "await waitForAnimationFrames(2);",
         "if (window.mmdManager && window.mmdManager.currentModel",
         "if (window.vrmManager && window.vrmManager.currentModel",
-        "if (window.live2dManager) {",
+        "if (window.live2dManager && isModelContainerVisible('live2d-container')) {",
     )
     viewport_ready_block = source[
-        source.index("async function ensureModelViewportReadyBeforeShowCurrentModel()"):
+        source.index("async function ensureModelViewportReadyBeforeShowCurrentModel(options = {})"):
         source.index("// --- showCurrentModel ---")
     ]
     _assert_source_order(
@@ -1114,7 +1116,7 @@ def test_model_cat_transition_contract_is_present():
         "model viewport guard blocks raw return-ball viewport without trusting invalid target",
         "if (!restoreBounds) {",
         "isNativeReturnBallViewportSize(window.innerWidth, window.innerHeight)",
-        "ready: false",
+        "                    ready: false,",
         "return { ready: true, skipped: true };",
     )
 
@@ -1274,7 +1276,7 @@ def test_pngtuber_return_replays_model_enter_animation_after_preparing_container
 
     assert "const modelReturnEnterRect = pngtuberContainer ? consumeModelReturnEnterRect() : null;" in branch
     assert branch.count("consumeModelReturnEnterRect()") == 1
-    assert branch.index("await window.loadPNGTuberAvatar(pngtuberConfig);") < branch.index("const modelReturnEnterRect = pngtuberContainer ? consumeModelReturnEnterRect() : null;")
+    assert branch.index("await window.loadPNGTuberAvatar(pngtuberConfig, { isCurrent });") < branch.index("const modelReturnEnterRect = pngtuberContainer ? consumeModelReturnEnterRect() : null;")
     assert "prepareModelReturnContainer(pngtuberContainer, modelReturnEnterRect, { clearPointerEvents: true });" in branch
     assert "if (modelReturnEnterRect) {" in branch
     assert "playModelReturnEnter(pngtuberContainer, modelReturnEnterRect);" in branch
@@ -2424,7 +2426,10 @@ def test_return_button_hover_click_animation_finishes_before_restore():
     assert '_clearNekoIdleHoverPlayback' in source
     assert '__nekoIdleHoverToken' in source
     assert '__nekoIdleHoverTimer' in source
-    assert 'art.__nekoIdleHoverSrc === clickSrc' in source
+    # #3762 gates the repeat-hover branch on a completed CAT1 hover cycle, so the
+    # previous source is read from the tier-scoped snapshot instead of `art` directly.
+    assert "const previousHoverSrc = art.__nekoIdleHoverTier === normalizedTier ? art.__nekoIdleHoverSrc : '';" in source
+    assert '!hoverCycleEnded && previousHoverSrc === clickSrc' in source
     assert 'Math.max(0, durationMs - elapsedMs)' in source
     assert 'keepHoverPlayback' in source
 
@@ -2439,8 +2444,11 @@ def test_cat1_walk_hover_invalidates_pending_playback_rate_source():
 
     assert '_clearNekoIdleGifPlaybackSource(art)' in play_hover_block
     assert play_hover_block.index('_clearNekoIdleGifPlaybackSource(art)') < play_hover_block.index('art.src = clickSrc')
+    # #3762 replaced the unconditional `art.__nekoIdleHoverSrc === clickSrc` repeat
+    # branch with a cycle-gated one; the repeat path must still discard the pending
+    # GIF playback rate source before reusing the click source.
     repeat_hover_block = play_hover_block[
-        play_hover_block.index('if (art.__nekoIdleHoverSrc === clickSrc)'):
+        play_hover_block.index('if (!hoverCycleEnded && previousHoverSrc === clickSrc)'):
         play_hover_block.index('_clearNekoIdleHoverPlayback(art)')
     ]
     assert '_clearNekoIdleGifPlaybackSource(art)' in repeat_hover_block

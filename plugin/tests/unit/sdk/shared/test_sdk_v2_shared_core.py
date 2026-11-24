@@ -575,8 +575,15 @@ def test_core_plugin_entry_rejects_multiple_llm_result_contract_forms() -> None:
 def test_core_shortcuts_forward(monkeypatch: pytest.MonkeyPatch) -> None:
     called: list[str] = []
 
-    def fake_hook(*, target: str = "*", timing: str = "before", priority: int = 0, condition: str | None = None):
-        called.append(f"{timing}:{target}:{priority}:{condition}")
+    def fake_hook(
+        *,
+        target: str = "*",
+        timing: str = "before",
+        priority: int = 0,
+        condition: str | None = None,
+        permissions: list[str] | None = None,
+    ):
+        called.append(f"{timing}:{target}:{priority}:{condition}:{permissions}")
 
         def decorator(fn):
             return fn
@@ -591,13 +598,13 @@ def test_core_shortcuts_forward(monkeypatch: pytest.MonkeyPatch) -> None:
     assert core_decorators.before_entry(priority=1, condition="a")(fn) is fn
     assert core_decorators.after_entry(priority=2, condition="b")(fn) is fn
     assert core_decorators.around_entry(priority=3, condition="c")(fn) is fn
-    assert core_decorators.replace_entry(priority=4, condition="d")(fn) is fn
+    assert core_decorators.replace_entry(priority=4, condition="d", permissions=["system.fs:read"])(fn) is fn
 
     assert called == [
-        "before:*:1:a",
-        "after:*:2:b",
-        "around:*:3:c",
-        "replace:*:4:d",
+        "before:*:1:a:None",
+        "after:*:2:b:None",
+        "around:*:3:c:None",
+        "replace:*:4:d:['system.fs:read']",
     ]
 
 

@@ -11,7 +11,13 @@ async def generate(client, config, request):
     # which rejects this flag; the response parser also accepts default URL output.
     if config.model in ("dall-e-2", "dall-e-3"):
         body["response_format"] = "b64_json"
-    result = await request_json(client, "POST", config.base_url + "/images/generations", key=config.api_key, json=body)
+    if request.reference_images:
+        files = [("image[]", (f"reference-{index}.png", image, "image/png"))
+                 for index, image in enumerate(request.reference_images)]
+        result = await request_json(client, "POST", config.base_url + "/images/edits",
+                                    key=config.api_key, data=body, files=files)
+    else:
+        result = await request_json(client, "POST", config.base_url + "/images/generations", key=config.api_key, json=body)
     items = result.get("data")
     if not isinstance(items, list) or len(items) != 1:
         raise ImageGenerationError("invalid_response")

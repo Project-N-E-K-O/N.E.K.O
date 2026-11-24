@@ -121,7 +121,7 @@ class AgentModelProbe:
         """
         from config import LLM_PING_MAX_TOKENS, OPENAI_CONNECTIVITY_TEST_MAX_TOKENS, get_agent_extra_body
         from utils.llm_client import create_chat_llm
-        from utils.token_tracker import set_call_type
+        from utils.token_tracker import llm_call_context
 
         cfg = self.model_config()
         api_key = cfg.get("api_key") or "EMPTY"
@@ -148,18 +148,21 @@ class AgentModelProbe:
                     )
                     self._client_sig = current_sig
                 extra = get_agent_extra_body(model, base_url) or {}
-                set_call_type("agent")
                 # A reachable endpoint that answers with a well-formed response
                 # passes, whatever it says; some answer with an empty message.
-                self._client.invoke_raw(
-                    [{"role": "user", "content": "ok"}],
-                    max_completion_tokens=(
-                        OPENAI_CONNECTIVITY_TEST_MAX_TOKENS
-                        if provider_type == "chatgpt" else LLM_PING_MAX_TOKENS
-                    ),
-                    extra_body=extra or None,
-                    timeout=timeout_s,
-                )
+                # The call type is scoped to the request and put back after it:
+                # a caller running this on its own thread (tests do) must not
+                # be left tagged "agent" for every later LLM call.
+                with llm_call_context("agent"):
+                    self._client.invoke_raw(
+                        [{"role": "user", "content": "ok"}],
+                        max_completion_tokens=(
+                            OPENAI_CONNECTIVITY_TEST_MAX_TOKENS
+                            if provider_type == "chatgpt" else LLM_PING_MAX_TOKENS
+                        ),
+                        extra_body=extra or None,
+                        timeout=timeout_s,
+                    )
                 self.init_ok = True
                 self.last_error = None
                 logger.info("[Agent] agent model reachable (%s @ %s)", model, base_url)

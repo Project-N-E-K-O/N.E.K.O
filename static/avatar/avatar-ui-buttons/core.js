@@ -559,10 +559,13 @@ const _NEKO_IDLE_THOUGHT_BUBBLE_POPPING_CLASS = 'is-thought-bubble-popping';
 const _NEKO_IDLE_THOUGHT_BUBBLE_ASSET_URL = '/static/assets/neko-idle/thought-items/cloud-thought-bubble.gif';
 const _NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_ASSET_URL = '/static/assets/neko-idle/thought-items/sleeping-zzz.gif';
 const _NEKO_IDLE_THOUGHT_BUBBLE_POP_ASSET_URL = '/static/assets/neko-idle/thought-items/cloud-thought-bubble-pop.gif';
+const _NEKO_IDLE_THOUGHT_BUBBLE_CATNIP_POUCH_URL = '/static/assets/neko-idle/thought-items/catnip-pouch.png';
+const _NEKO_IDLE_THOUGHT_BUBBLE_FISH_COOKIE_URL = '/static/assets/neko-idle/thought-items/fish-cookie.png';
+const _NEKO_IDLE_THOUGHT_BUBBLE_TOY_MOUSE_URL = '/static/assets/neko-idle/thought-items/toy-mouse.png';
 const _NEKO_IDLE_THOUGHT_BUBBLE_ITEM_ASSET_URLS = Object.freeze([
-    '/static/assets/neko-idle/thought-items/catnip-pouch.png',
-    '/static/assets/neko-idle/thought-items/fish-cookie.png',
-    '/static/assets/neko-idle/thought-items/toy-mouse.png'
+    _NEKO_IDLE_THOUGHT_BUBBLE_CATNIP_POUCH_URL,
+    _NEKO_IDLE_THOUGHT_BUBBLE_FISH_COOKIE_URL,
+    _NEKO_IDLE_THOUGHT_BUBBLE_TOY_MOUSE_URL
 ]);
 const _NEKO_IDLE_CAT1_QUESTION_MARK_ASSET_URL = '/static/assets/neko-idle/cat1-question-mark.png';
 const _NEKO_IDLE_CAT1_QUESTION_MARK_VISIBLE_MS = 10 * 1000;
@@ -748,6 +751,9 @@ function _stopNekoIdleCat1ActionSounds() {
         _stopNekoIdleSoundAudio(button.__nekoIdleCat1EatActionState);
         _stopNekoIdleSoundAudio(button.__nekoIdleCat1PlayActionState);
         _stopNekoIdleSoundAudio(button.__nekoIdleCat1StretchActionState);
+        if (button.__nekoIdleCat1VisualActionState?.audio) {
+            _stopNekoIdleSoundAudio(button.__nekoIdleCat1VisualActionState);
+        }
     });
 }
 let _nekoIdleThoughtBubblePopPreloadImage = null;

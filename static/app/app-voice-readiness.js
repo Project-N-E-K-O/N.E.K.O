@@ -10,6 +10,7 @@
         let retiredSessions = new Set();
         const waiting = new Map();
         const children = new Set();
+        const closingChildren = new WeakSet();
         const bridge = root.nekoVoiceEnrollment;
         let panel = null;
         let label = null;
@@ -22,10 +23,21 @@
             if (owned.expiry !== null) root.clearTimeout(owned.expiry);
             owned.expiry = null;
             if (isolation === owned) isolation = null;
+            if (owned.releaseWaiters) {
+                owned.releaseWaiters.forEach(resolve => resolve());
+                owned.releaseWaiters.clear();
+            }
         }
         function boundIsolation(owned, milliseconds) {
             if (owned.expiry !== null) root.clearTimeout(owned.expiry);
             owned.expiry = root.setTimeout(() => clearIsolation(owned), milliseconds);
+        }
+        async function releasePreview(owned, token) {
+            if (owned && owned.releasePending) return owned.releasePending;
+            const releasing = control('preview_end', { token }).then(() => clearIsolation(owned));
+            if (owned) owned.releasePending = releasing;
+            try { await releasing; }
+            finally { if (owned && owned.releasePending === releasing) owned.releasePending = null; }
         }
         async function compensatePreview(details) {
             const owned = isolation && isolation.operationId === details.request_id ? isolation : null;
@@ -33,7 +45,7 @@
                 owned.token = details.token;
                 boundIsolation(owned, Math.max(1, Math.min(60, Number(details.ttl_seconds) || 60)) * 1000);
             }
-            try { await control('preview_end', { token: details.token }); clearIsolation(owned); }
+            try { await releasePreview(owned, details.token); }
             catch (_) { /* The matching ticket expiry bounds an uncertain release. */ }
         }
         function t(key, fallback) { const text = root.t && root.t(key); return text && text !== key ? text : fallback; }
@@ -108,6 +120,64 @@
             }
             return current;
         }
+        async function prepareCapture() {
+            const atSocket = S.socket;
+            if (bridge && typeof bridge.close === 'function') {
+                const result = await bridge.close();
+                if (!result || result.closed !== true) throw new Error('capture_owner_unavailable');
+            } else {
+                const closedPages = await Promise.allSettled([...children].map(async child => {
+                    if (!child.closed) {
+                        closingChildren.add(child);
+                        let timer;
+                        try {
+                            await Promise.race([
+                                typeof child.nekoBeforeWindowClose === 'function' ? child.nekoBeforeWindowClose() : Promise.resolve(),
+                                new Promise((_, reject) => {
+                                    timer = root.setTimeout(() => reject(new Error('voice_control_timeout')), 13000);
+                                })
+                            ]);
+                        } finally {
+                            root.clearTimeout(timer);
+                            child.close();
+                        }
+                    }
+                }));
+                let failure = closedPages.find(result => result.status === 'rejected');
+                // postMessage may have queued the token without the child ever
+                // receiving it. Only release after its bound page is closed,
+                // sharing any release already started by that page.
+                try {
+                    if (isolation && isolation.child && isolation.child.closed && isolation.token) {
+                        await releasePreview(isolation, isolation.token);
+                    }
+                    // Older desktop bridges close their bound page when an idle
+                    // registration advances the capture revision.
+                    if (bridge) await register(false);
+                } catch (error) {
+                    if (!failure) failure = { reason: error };
+                }
+                if (failure) throw failure.reason;
+            }
+            if (isolation) {
+                const owned = isolation;
+                const waiters = owned.releaseWaiters || (owned.releaseWaiters = new Set());
+                let releaseWaiter;
+                let timer;
+                try {
+                    await new Promise((resolve, reject) => {
+                        releaseWaiter = resolve;
+                        waiters.add(resolve);
+                        timer = root.setTimeout(() => reject(new Error('voice_control_timeout')), 13000);
+                    });
+                } finally {
+                    root.clearTimeout(timer);
+                    waiters.delete(releaseWaiter);
+                }
+            }
+            if (atSocket !== S.socket) throw new Error('capture_owner_unavailable');
+            for (const child of children) if (child.closed) children.delete(child);
+        }
         function control(event, extra, requestId) {
             const ownerSocket = S.socket;
             if (!ownerSocket || ownerSocket.readyState !== 1) return Promise.reject(new Error('capture_owner_unavailable'));
@@ -143,12 +213,13 @@
                 pending.reject(error);
             }
         }
-        async function prepare(request) {
+        async function prepare(request, child) {
             if (request.event === 'release') {
                 // Release owns its token even when a newer local operation has
                 // replaced it; the server matches the token without touching the
                 // successor. Never discard an old cleanup because a flag changed.
-                if (request.token) await control('preview_end', { token: request.token });
+                const owned = isolation && request.operationId === isolation.operationId && request.token === isolation.token ? isolation : null;
+                if (request.token) await releasePreview(owned, request.token);
                 if (isolation && request.operationId === isolation.operationId && request.token === isolation.token) {
                     clearIsolation(isolation);
                 }
@@ -158,7 +229,7 @@
             if (isolation) throw new Error('capture_owner_busy');
             const atSocket = S.socket;
             const identity = { sessionId: localSession, revision: String(revision) };
-            const owned = { operationId: request.operationId, token: null, expiry: null };
+            const owned = { operationId: request.operationId, token: null, expiry: null, child };
             isolation = owned;
             // A lost begin/release acknowledgement must never leave the client
             // permanently fenced. This includes the begin response budget and
@@ -187,8 +258,10 @@
                 const hasLiveTrack = S.stream && typeof S.stream.getAudioTracks === 'function' && S.stream.getAudioTracks().some(track => track.readyState === 'live');
                 if (physicalStopped && atSocket === S.socket && identity.sessionId === localSession && identity.revision === String(revision) && !S.isRecording && !hasLiveTrack) {
                     // Plain data survives contextBridge; custom Error fields do
-                    // not. This confirms capture only, never server isolation.
-                    return { ...identity, stopped: false, physicalStopped: true, reason: error.message };
+                    // not. A confirmed denial means this attempt received no
+                    // server ticket; a timeout must retain its uncertain fence.
+                    return { ...identity, stopped: false, physicalStopped: true,
+                        isolationDenied: error.voiceControlConfirmed === true, reason: error.message };
                 }
                 throw error;
             }
@@ -218,28 +291,40 @@
             bridge.onStopCapture(prepare);
             bridge.onOpen(request => {
                 if (request.sessionId !== localSession || request.revision !== String(revision)) return;
-                root.open(request.url, 'neko-voice-enrollment');
+                const child = root.open(request.url, 'neko-voice-enrollment');
+                if (child) children.add(child);
             });
             register(false).catch(() => {});
         }
         root.addEventListener('message', async event => {
             if (event.origin !== root.location.origin || !event.source || !event.data || typeof event.data.operationId !== 'string') return;
             if (event.data.type === 'neko-voice-enrollment-release' && children.has(event.source)) {
-                children.delete(event.source);
                 prepare({ ...event.data, event: 'release' }).catch(() => {});
                 return;
             }
+            if (event.data.type === 'neko-voice-enrollment-opened' && event.source.opener === root) {
+                children.add(event.source);
+                return;
+            }
             if (event.source.opener !== root || event.data.type !== 'neko-voice-enrollment-prepare') return;
+            if (event.source.closed || closingChildren.has(event.source)) return;
             children.add(event.source);
             if (children.size > 32) children.delete(children.values().next().value);
             let result;
-            try { result = await prepare(event.data); } catch (_) { result = { stopped: false }; }
+            try { result = await prepare(event.data, event.source); } catch (_) { result = { stopped: false }; }
+            // The page can close while preview_begin is still in flight. Its
+            // opener must release that late ticket instead of handing it to a
+            // page that can no longer acknowledge or clean it up.
+            if (event.source.closed || closingChildren.has(event.source)) {
+                if (result.token) await compensatePreview({ request_id: event.data.operationId, token: result.token, ttl_seconds: result.ttl_seconds });
+                return;
+            }
             event.source.postMessage({ type: 'neko-voice-enrollment-stopped', operationId: event.data.operationId, ...result }, root.location.origin);
         });
         root.addEventListener('localechange', render);
         if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mount, { once: true }); else mount();
         return {
-            register, reset, controlResult, activationStatus,
+            register, prepareCapture, reset, controlResult, activationStatus,
             blocked: () => !!isolation || restartRequired,
             disconnected: () => { reset(); waiting.forEach(p => { root.clearTimeout(p.timeout); p.reject(new Error('capture_owner_unavailable')); }); waiting.clear(); },
             stopped: () => { reset(); if (bridge && !isolation) register(false).catch(() => {}); }

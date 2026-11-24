@@ -12,10 +12,17 @@ from plugin.server.application.plugins.capability_analysis_service import (
     plugin_source,
     read_report,
 )
+from plugin.server.application.plugins.permission_service import (
+    mirror_consent_decision,
+)
 from plugin.server.application.plugins.operation_lock import (
     serialized_plugin_operation,
 )
-from plugin.server.domain.consent_policy import ANALYZING_STATUSES, derive_consent
+from plugin.server.domain.consent_policy import (
+    ANALYZING_STATUSES,
+    INCOMPLETE_STATUSES,
+    derive_consent,
+)
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.plugin_consent import consent_store
 
@@ -60,14 +67,27 @@ def consent_details(plugin_id: str, *, schedule_missing: bool = False) -> dict:
 
 def consent_summary(plugin_id: str, meta: dict | None = None) -> dict:
     try:
-        record, _, view, _ = _consent_view(plugin_id, meta, verify_revision=False)
+        record, report, view, _ = _consent_view(plugin_id, meta, verify_revision=False)
     except ServerDomainError:
         # A store or registry read failure must never force a confirmation.
-        return {"state": "analyzing", "decision": None, "upgraded": False}
+        return {
+            "state": "analyzing",
+            "decision": None,
+            "upgraded": False,
+            "blind_spots": 0,
+            "analysis_incomplete": False,
+        }
+    blind_spots = report.get("blind_spots")
     return {
         "state": view.state,
         "decision": record.get("decision"),
         "upgraded": view.upgraded,
+        # Places the static analysis could not see through; the list marks
+        # such plugins for review.
+        "blind_spots": len(blind_spots) if isinstance(blind_spots, list) else 0,
+        # A partial or failed analysis left code unchecked even when it lists
+        # no blind spot (a failed report has none); the list marks it the same way.
+        "analysis_incomplete": report.get("status") in INCOMPLETE_STATUSES,
     }
 
 
@@ -99,6 +119,52 @@ def consent_notices() -> list[dict]:
     return notices
 
 
+async def _decide_with_mirror(
+    plugin_id: str,
+    decision: str | None,
+    capabilities: list[str] | None = None,
+    version: str = "",
+    *,
+    newly_approved: list[str] | None = None,
+) -> None:
+    """Write a consent decision, keeping the permission store in step.
+
+    Transitional: the permission-store mirror goes with the consent dialog.
+    The mirror runs first; if the consent write then fails, the mirror is
+    undone, so a failed request leaves this plugin's records in both files
+    unchanged (a first-use import of the legacy file may still be saved).
+    """
+    undo = await asyncio.to_thread(
+        mirror_consent_decision,
+        plugin_id,
+        decision,
+        capabilities or [],
+        newly_approved=newly_approved,
+    )
+    try:
+        if decision is None:
+            await asyncio.to_thread(consent_store.delete, plugin_id)
+        else:
+            await asyncio.to_thread(
+                consent_store.decide, plugin_id, decision, capabilities or [], version
+            )
+    except BaseException as exc:
+        # serialized_plugin_operation already shields cancellation once the
+        # lock is held; BaseException keeps the undo even if that changes.
+        try:
+            await asyncio.to_thread(undo)
+        except Exception as undo_exc:
+            if isinstance(exc, ServerDomainError):
+                exc.details["permission_rollback"] = "incomplete"
+            logger.error(
+                "consent write failed and the permission store could not be "
+                "rolled back: plugin_id={}, error={}",
+                plugin_id,
+                type(undo_exc).__name__,
+            )
+        raise
+
+
 @serialized_plugin_operation
 async def approve_plugin(
     plugin_id: str, *, version: str, unconfirmed: list[str], analysis_status: str
@@ -116,12 +182,12 @@ async def approve_plugin(
         )
     capabilities = set(details["approved_capabilities"])
     capabilities.update(unconfirmed)
-    await asyncio.to_thread(
-        consent_store.decide,
+    await _decide_with_mirror(
         plugin_id,
         "approved",
         sorted(capabilities),
         details["version"],
+        newly_approved=sorted(unconfirmed),
     )
     return await asyncio.to_thread(consent_details, plugin_id)
 
@@ -133,9 +199,7 @@ async def deny_plugin(plugin_id: str) -> dict:
     )
 
     details = await asyncio.to_thread(consent_details, plugin_id)
-    await asyncio.to_thread(
-        consent_store.decide, plugin_id, "denied", [], details["version"]
-    )
+    await _decide_with_mirror(plugin_id, "denied", [], details["version"])
 
     try:
         await PluginLifecycleService().stop_plugin(plugin_id)
@@ -147,7 +211,7 @@ async def deny_plugin(plugin_id: str) -> dict:
 
 @serialized_plugin_operation
 async def revoke_plugin(plugin_id: str) -> dict:
-    await asyncio.to_thread(consent_store.delete, plugin_id)
+    await _decide_with_mirror(plugin_id, None)
     return await asyncio.to_thread(consent_details, plugin_id)
 
 

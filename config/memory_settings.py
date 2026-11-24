@@ -215,7 +215,7 @@ checks, but degrades such a decision instead of applying it (remove is
 dropped, replace / renew become add), so an older view never undoes a
 newer change."""
 
-PINNED_FACT_RESOLVE_MODEL_TIER = "correction"
+PINNED_FACT_RESOLVE_MODEL_TIER = "memory"
 """Model tier of the add / replace / renew / remove decision, the same tier and
 thinking mode as persona correction resolution. The same call may also retire
 entries that are over (fulfilled, no longer valid, or past their date)."""
@@ -225,7 +225,7 @@ PINNED_FACT_REVIEW_INTERVAL_HOURS = 24
 character, and only when the section is not empty and no model has looked at
 the whole section (an admission resolve or an earlier check) within it."""
 
-PINNED_FACT_REVIEW_MODEL_TIER = "summary"
+PINNED_FACT_REVIEW_MODEL_TIER = "memory"
 """Model tier of the idle-time check, called without thinking: it only answers
 retire or keep per entry, quoting the conversation as evidence."""
 
@@ -1087,7 +1087,7 @@ MEMORY_REFINE_CRON_INTERVAL_SECONDS = 1800
 
 # ---- Memory: weekly introspection ----
 # Reads the persona + reflection block exactly as /new_dialog injects it and
-# lets the correction-tier model (thinking on) suppress / rewrite / merge the
+# lets the summary-tier model (thinking on) suppress / rewrite / merge the
 # entries that are contradictory, redundant, hollow or stale. Gated on
 # powerful_memory like refine; runs only while the system is idle.
 
@@ -1129,7 +1129,7 @@ caps on character-card and do-not-mention lines); this only bites when a
 very large character card outgrows that sum."""
 
 # ---- Memory: weekly behavior review (memory/behavior_notes.py) ----
-# After a character's weekly introspection, one correction-tier call looks for what
+# After a character's weekly introspection, one summary-tier call looks for what
 # keeps recurring in her replies, against her card and the user's own words, and
 # leaves a few short notes ("less of X; try Y") at the end of the next /new_dialog.
 # Evidence is counted by code from the lines the model cites, never taken from its word.
@@ -1229,7 +1229,7 @@ inside the 1h _periodic_archive_sweep_loop."""
 # Scoped entries cannot enter the base MemoryRefineEngine's two cron jobs (entity whitelist
 # permits only master/neko/relationship), so semantic duplicates/conflicts coexist forever;
 # the 2000-token trim decides what enters prompts. This is the lightweight scoped counterpart:
-#   Base = correction tier + thinking + three clusters/turn + periodic full scans;
+#   Base = summary tier + thinking + three clusters/turn + periodic full scans;
 #   Scoped = summary tier + no thinking + one cluster per turn across all characters +
 #            triggers only when one subject reaches the entry-count threshold.
 # Bucket key must be (kind, subject_id, scope): all groups share entity='group_chat',
@@ -1323,11 +1323,11 @@ REFLECTION_SYNTHESIS_CONTEXT_ABSORBED_COUNT = 10   # Reference the latest N abso
 REFLECTION_SYNTHESIS_CONTEXT_ABSORBED_DAYS = 14    # Within N days as well.
 
 # Gate 3: LLM tier selection (candidates in RFC §6.5 Gate 3 table).
-# "summary" = qwen-plus class; "correction" = qwen-max class; "emotion" = qwen-flash class.
-EVIDENCE_EXTRACT_FACTS_MODEL_TIER = "summary"       # Stage-1 fact extraction.
-EVIDENCE_DETECT_SIGNALS_MODEL_TIER = "summary"      # Stage-2 signal mapping decisions.
-EVIDENCE_NEGATIVE_TARGET_MODEL_TIER = "emotion"     # Secondary keyword classification (latency-sensitive).
-EVIDENCE_PROMOTION_MERGE_MODEL_TIER = "correction"  # Promote merge decisions.
+# "memory" = large model (memory upkeep); "recognition" = small, latency-sensitive model.
+EVIDENCE_EXTRACT_FACTS_MODEL_TIER = "memory"       # Stage-1 fact extraction.
+EVIDENCE_DETECT_SIGNALS_MODEL_TIER = "memory"      # Stage-2 signal mapping decisions.
+EVIDENCE_NEGATIVE_TARGET_MODEL_TIER = "recognition"     # Secondary keyword classification (latency-sensitive).
+EVIDENCE_PROMOTION_MERGE_MODEL_TIER = "memory"     # Promote merge decisions (thinking on).
 
 
 # memory-enhancements P2: vector hybrid retrieval (memory/embeddings.py).
@@ -1350,3 +1350,35 @@ VECTORS_MODEL_PROFILE_ID = "local-text-retrieval-v1"  # anonymous profile id + l
 # event after startup. The warmup task waits up to this many seconds
 # after startup OR until first /process call, whichever comes first.
 VECTORS_WARMUP_DELAY_SECONDS = 30
+
+# ---- Memory: Imprint warm note (manual UI trigger, summary tier) ----
+IMPRINT_NOTE_INPUT_MAX_TOKENS = 2400
+"""手动生成「印记暖心总结/评语/寄语」时，拼装输入上下文的总 token 上限。"""
+IMPRINT_NOTE_MAX_TOKENS = 600
+"""「印记暖心总结/评语/寄语」LLM 输出的 max_completion_tokens 上限。"""
+IMPRINT_NOTE_TIMEOUT_SECONDS = 45
+"""「印记暖心总结/评语/寄语」LLM 单次请求超时（秒）。"""
+
+# ---- Memory: Star Map cluster theme labeling (ArchiveSweep weekly cache + manual UI) ----
+STAR_MAP_MIN_EMBEDDED_ENTRIES = 15
+"""记忆星图从冷启动进度态切换到星云图的最少已嵌入条目数。"""
+STAR_MAP_LABEL_REFRESH_DAYS = 7
+"""ArchiveSweep 后台低频刷新星云主题缓存的最小天数间隔。"""
+STAR_MAP_LABEL_INPUT_MAX_TOKENS = 2000
+"""星云主题批量命名 LLM 输入上下文总 token 上限。"""
+STAR_MAP_LABEL_MAX_TOKENS = 400
+"""星云主题批量命名 LLM 输出的 max_completion_tokens 上限。"""
+STAR_MAP_LABEL_TIMEOUT_SECONDS = 45
+"""星云主题批量命名 LLM 单次请求超时（秒）。"""
+
+# ---- Memory: Browser Phase 3 (Snapshots & Manual Deep Conflict Check) ----
+MEMORY_BROWSER_SNAPSHOT_MAX_KEEP = 10
+"""每个角色在记忆浏览器中最多保留的手动轻快照数量（滚动淘汰最旧）。"""
+MEMORY_BROWSER_AUTO_SNAPSHOT_MAX_KEEP = 3
+"""每个角色最多保留的自动快照（合并前/恢复前）数量，与手动快照分开滚动淘汰。"""
+DEEP_CONFLICT_CHECK_INPUT_MAX_TOKENS = 2800
+"""开发者模式手动深度矛盾裁决 LLM 输入总 token 上限。"""
+DEEP_CONFLICT_CHECK_MAX_TOKENS = 900
+"""开发者模式手动深度矛盾裁决 LLM 输出 max_completion_tokens 上限。"""
+DEEP_CONFLICT_CHECK_TIMEOUT_SECONDS = 60
+"""开发者模式手动深度矛盾裁决 LLM 单次请求超时（秒）。"""

@@ -81,7 +81,7 @@ Create a public, empty GitHub repository named:
 n.e.k.o_plugin_hello_world
 ```
 
-The required naming pattern is `n.e.k.o_plugin_<plugin ID>`. Do not ask GitHub to add a README, `.gitignore`, or license when creating the repository, because the plugin directory already contains the files you need to commit.
+The recommended naming pattern is `n.e.k.o_plugin_<plugin ID>`; `neko-plugin check -r --market-release` only warns when the repository name differs. Do not ask GitHub to add a README, `.gitignore`, or license when creating the repository, because the plugin directory already contains the files you need to commit.
 
 Then enter the plugin directory, commit the source, and push it:
 
@@ -219,7 +219,7 @@ cd ../../..
 uv run neko-plugin publish hello_world
 ```
 
-The Market makes the newly published stable version the latest version. It chooses `latest` by the time a version was published to the Market, not by comparing version numbers. Do not publish an older version after publishing a newer one.
+Anonymous publication requires a PEP 440 version higher than the current stable version. If the current version has a legacy label, open the Market link printed by the CLI and submit the Release once as its author. A superseded receipt exits with an error because this submission has been replaced. A platform_attention receipt also exits with an error and requires Market operator attention.
 
 ## 8. Publish a beta or add release notes
 
@@ -337,4 +337,4 @@ Edit the source
 
 This guide assumes that the plugin directory itself contains `.git/` and the standard `verify.yml` and `release.yml`. A plugin created with the current `neko-plugin init` command from the quick start already meets these requirements.
 
-If an existing plugin is tracked only by the outer N.E.K.O repository and has no `.git/` directory of its own, the current `publish` command stops. The CLI does not currently provide a command that converts such a directory into a publishable plugin repository. Do not use directory copies, package imports, or symbolic links to imitate the publication workflow.
+If an existing plugin is tracked only by the outer N.E.K.O repository and has no `.git/` directory of its own, the current `publish` command stops. Convert the directory with `neko-plugin setup-repo <plugin> --git --github-actions` (add `--remote <url>` to set `origin`), which creates the plugin's own Git repository and the standard workflows. An existing `.github/workflows/release.yml` is kept as is; if `publish` then reports that the release workflow is not current, preview the upgrade with `neko-plugin setup-repo <plugin> --upgrade-github-actions --dry-run` and run it without `--dry-run`; `neko-plugin create-repo <plugin>` can create the GitHub repository with `gh`. Do not use directory copies, package imports, or symbolic links to imitate the publication workflow.

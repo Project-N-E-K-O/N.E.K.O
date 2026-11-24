@@ -74,6 +74,29 @@ from utils.steam_state import get_steamworks
 
 from ._shared import _as_bool, logger
 from .json_update import update_json_config
+from .tier_renames import canonical_model_type, migrate_renamed_tier_fields
+
+# Slots that are another tier unless set up in full on their own. Following it,
+# or a custom / named setting missing its URL or model, hands the whole slot to
+# that tier at runtime (URL, model, key and protocol alike); nothing is patched
+# field by field. prefix -> (model_type, default followed tier, follow value ->
+# followed tier, snapshot model key).
+# Familiar-tier URLs keep the fixed CN text endpoint: free-agent-model is served only there
+# (see _normalize_agent_url), so they are never region-rewritten nor make a config need the
+# region probe. The advanced slot can resolve to free-agent-model too (follow_assist / follow_core
+# on the free provider), so it gets the same treatment.
+AGENT_TIER_URL_KEYS = ('AGENT_MODEL_URL', 'AGENT_ADVANCED_MODEL_URL')
+
+WHOLE_FOLLOW_SLOTS = {
+    'agentSmall': (
+        'agent_small', 'recognition',
+        {'follow_recognition': 'recognition', 'follow_agent': 'agent'}, 'AGENT_SMALL_MODEL',
+    ),
+    'agentAdvanced': ('agent_advanced', 'agent', {'follow_agent': 'agent'}, 'AGENT_ADVANCED_MODEL'),
+    'gameRecognition': (
+        'game_recognition', 'recognition', {'follow_recognition': 'recognition'}, 'GAME_RECOGNITION_MODEL',
+    ),
+}
 
 
 # Startup migration write retries: Windows os.replace can encounter transient antivirus sharing locks and raise
@@ -83,6 +106,17 @@ _OPENCLAW_MIGRATION_RETRY_DELAY_S = 0.1
 
 
 from utils.http.url import same_endpoint
+
+_warned_invalid_workspace_fields: set[str] = set()
+
+
+def _warn_invalid_workspace_id_once(field: str) -> None:
+    """Warn once per field about an invalid stored workspace ID (the config is re-read on every lookup)."""
+    if field in _warned_invalid_workspace_fields:
+        return
+    _warned_invalid_workspace_fields.add(field)
+    logger.warning("core_config.json 中 %s 格式无效，已忽略（按未填写处理）", field)
+
 
 class CoreConfigMixin:
     """Core config snapshot, geo checks and model API resolution."""
@@ -135,14 +169,20 @@ class CoreConfigMixin:
     # are not chat tiers; core API / TTS paths choose them independently.
     _SLOT_PROFILE_MODEL_KEYS = {
         'conversation': 'CONVERSATION_MODEL',
-        'summary': 'SUMMARY_MODEL',
+        'memory': 'MEMORY_MODEL',
         'gameMain': 'CONVERSATION_MODEL',
-        'gameSummary': 'SUMMARY_MODEL',
-        'correction': 'CORRECTION_MODEL',
-        'emotion': 'EMOTION_MODEL',
+        'gameSummary': 'MEMORY_MODEL',
+        'recognition': 'RECOGNITION_MODEL',
+        'decision': 'DECISION_MODEL',
         'vision': 'VISION_MODEL',
         'agent': 'AGENT_MODEL',
+        # The small familiar tier has no profile default of its own: a named
+        # provider's tier default is that provider's small (recognition) model.
+        'agentSmall': 'RECOGNITION_MODEL',
+        'agentAdvanced': 'AGENT_MODEL',
+        'gameRecognition': 'RECOGNITION_MODEL',
     }
+
 
     @staticmethod
     def _migrated_openclaw_url(raw_url: object) -> str:
@@ -234,6 +274,40 @@ class CoreConfigMixin:
             return True
         return False
 
+    def migrate_renamed_tiers(self) -> bool:
+        """Persist the emotion -> recognition / summary -> memory field rename, once, at startup.
+
+        Same shape as migrate_openclaw_url_port: one locked read-modify-write through
+        update_json_config, a short retry for Windows sharing locks, and the file left
+        untouched when it cannot be parsed or written. Readers migrate in memory too
+        (get_core_config, GET/POST /core_api), so a failure here only means the file
+        keeps the old names a little longer.
+        """
+        for attempt in range(_OPENCLAW_MIGRATION_ATTEMPTS):
+            try:
+                migrated = update_json_config(self, 'core_config.json', migrate_renamed_tier_fields)
+            except OSError as exc:
+                logger.warning(
+                    "自动迁移模型档位改名失败（第 %d/%d 次）: %s",
+                    attempt + 1, _OPENCLAW_MIGRATION_ATTEMPTS, exc,
+                )
+                if attempt == _OPENCLAW_MIGRATION_ATTEMPTS - 1:
+                    return False
+                time.sleep(_OPENCLAW_MIGRATION_RETRY_DELAY_S * (attempt + 1))
+                continue
+            except Exception as exc:
+                from utils.cloudsave_runtime import MaintenanceModeError
+
+                if isinstance(exc, MaintenanceModeError):
+                    logger.debug("维护模式下跳过模型档位改名迁移: %s", exc)
+                    return False
+                logger.warning("跳过模型档位改名迁移（core_config.json 不可改写）: %s", exc)
+                return False
+            if migrated:
+                logger.info("已把 core_config.json 里的 emotion / summary 档位字段迁移为 recognition / memory")
+            return bool(migrated)
+        return False
+
     @staticmethod
     def _any_free_provider(config) -> bool:
         """Whether any provider slot selects the free route.
@@ -293,7 +367,7 @@ class CoreConfigMixin:
             # see _normalize_agent_url and the rewrite-loop exemption), so region selection has no effect on it.
             # Including it as needing region would start probing an unrewritten URL when neither core nor assist is free,
             # exposing IP pointlessly (invariant #2).
-            if key == 'AGENT_MODEL_URL':
+            if key in AGENT_TIER_URL_KEYS:
                 continue
             try:
                 parsed = urlparse(value)
@@ -967,21 +1041,21 @@ class CoreConfigMixin:
             DEFAULT_CORE_MODEL,
             DEFAULT_OPENROUTER_URL,
             DEFAULT_CONVERSATION_MODEL,
-            DEFAULT_SUMMARY_MODEL,
-            DEFAULT_CORRECTION_MODEL,
-            DEFAULT_EMOTION_MODEL,
+            DEFAULT_MEMORY_MODEL,
+            DEFAULT_RECOGNITION_MODEL,
+            DEFAULT_DECISION_MODEL,
             DEFAULT_VISION_MODEL,
             DEFAULT_REALTIME_MODEL,
             DEFAULT_TTS_MODEL,
             DEFAULT_AGENT_MODEL,
             DEFAULT_CONVERSATION_MODEL_URL,
             DEFAULT_CONVERSATION_MODEL_API_KEY,
-            DEFAULT_SUMMARY_MODEL_URL,
-            DEFAULT_SUMMARY_MODEL_API_KEY,
-            DEFAULT_CORRECTION_MODEL_URL,
-            DEFAULT_CORRECTION_MODEL_API_KEY,
-            DEFAULT_EMOTION_MODEL_URL,
-            DEFAULT_EMOTION_MODEL_API_KEY,
+            DEFAULT_MEMORY_MODEL_URL,
+            DEFAULT_MEMORY_MODEL_API_KEY,
+            DEFAULT_RECOGNITION_MODEL_URL,
+            DEFAULT_RECOGNITION_MODEL_API_KEY,
+            DEFAULT_DECISION_MODEL_URL,
+            DEFAULT_DECISION_MODEL_API_KEY,
             DEFAULT_VISION_MODEL_URL,
             DEFAULT_VISION_MODEL_API_KEY,
             DEFAULT_AGENT_MODEL_URL,
@@ -1002,11 +1076,13 @@ class CoreConfigMixin:
             'CORE_API_TYPE': 'qwen',
             'OPENROUTER_URL': DEFAULT_OPENROUTER_URL,
             'CONVERSATION_MODEL': DEFAULT_CONVERSATION_MODEL,
-            'SUMMARY_MODEL': DEFAULT_SUMMARY_MODEL,
+            'MEMORY_MODEL': DEFAULT_MEMORY_MODEL,
             'GAME_MAIN_MODEL': DEFAULT_CONVERSATION_MODEL,
-            'GAME_SUMMARY_MODEL': DEFAULT_SUMMARY_MODEL,
-            'CORRECTION_MODEL': DEFAULT_CORRECTION_MODEL,
-            'EMOTION_MODEL': DEFAULT_EMOTION_MODEL,
+            'GAME_SUMMARY_MODEL': DEFAULT_MEMORY_MODEL,
+            'RECOGNITION_MODEL': DEFAULT_RECOGNITION_MODEL,
+            'DECISION_MODEL': DEFAULT_DECISION_MODEL,
+            'DECISION_PROTOCOL': '',
+            'DECISION_URL': '',
             'ASSIST_API_KEY_QWEN': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_OPENAI': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_GLM': DEFAULT_CORE_API_KEY,
@@ -1019,6 +1095,8 @@ class CoreConfigMixin:
             'ASSIST_API_KEY_DOUBAO': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_DOUBAO_TTS': '',
             'ASSIST_API_KEY_QWEN_INTL': '',
+            'ASSIST_WORKSPACE_ID_QWEN': '',
+            'ASSIST_WORKSPACE_ID_QWEN_INTL': '',
             'ASSIST_API_KEY_MINIMAX': '',
             'ASSIST_API_KEY_MINIMAX_INTL': '',
             'ASSIST_API_KEY_MIMO': '',
@@ -1027,24 +1105,33 @@ class CoreConfigMixin:
             'ASSIST_API_KEY_OPENROUTER': DEFAULT_CORE_API_KEY,
             'VISION_MODEL': DEFAULT_VISION_MODEL,
             'AGENT_MODEL': DEFAULT_AGENT_MODEL,
+            'AGENT_SMALL_MODEL': DEFAULT_RECOGNITION_MODEL,
+            'AGENT_ADVANCED_MODEL': '',
+            'GAME_RECOGNITION_MODEL': '',
             'REALTIME_MODEL': DEFAULT_REALTIME_MODEL,
             'TTS_MODEL': DEFAULT_TTS_MODEL,
             'CONVERSATION_MODEL_URL': DEFAULT_CONVERSATION_MODEL_URL,
             'CONVERSATION_MODEL_API_KEY': DEFAULT_CONVERSATION_MODEL_API_KEY,
-            'SUMMARY_MODEL_URL': DEFAULT_SUMMARY_MODEL_URL,
-            'SUMMARY_MODEL_API_KEY': DEFAULT_SUMMARY_MODEL_API_KEY,
+            'MEMORY_MODEL_URL': DEFAULT_MEMORY_MODEL_URL,
+            'MEMORY_MODEL_API_KEY': DEFAULT_MEMORY_MODEL_API_KEY,
             'GAME_MAIN_MODEL_URL': DEFAULT_CONVERSATION_MODEL_URL,
             'GAME_MAIN_MODEL_API_KEY': DEFAULT_CONVERSATION_MODEL_API_KEY,
-            'GAME_SUMMARY_MODEL_URL': DEFAULT_SUMMARY_MODEL_URL,
-            'GAME_SUMMARY_MODEL_API_KEY': DEFAULT_SUMMARY_MODEL_API_KEY,
-            'CORRECTION_MODEL_URL': DEFAULT_CORRECTION_MODEL_URL,
-            'CORRECTION_MODEL_API_KEY': DEFAULT_CORRECTION_MODEL_API_KEY,
-            'EMOTION_MODEL_URL': DEFAULT_EMOTION_MODEL_URL,
-            'EMOTION_MODEL_API_KEY': DEFAULT_EMOTION_MODEL_API_KEY,
+            'GAME_SUMMARY_MODEL_URL': DEFAULT_MEMORY_MODEL_URL,
+            'GAME_SUMMARY_MODEL_API_KEY': DEFAULT_MEMORY_MODEL_API_KEY,
+            'RECOGNITION_MODEL_URL': DEFAULT_RECOGNITION_MODEL_URL,
+            'RECOGNITION_MODEL_API_KEY': DEFAULT_RECOGNITION_MODEL_API_KEY,
+            'DECISION_MODEL_URL': DEFAULT_DECISION_MODEL_URL,
+            'DECISION_MODEL_API_KEY': DEFAULT_DECISION_MODEL_API_KEY,
             'VISION_MODEL_URL': DEFAULT_VISION_MODEL_URL,
             'VISION_MODEL_API_KEY': DEFAULT_VISION_MODEL_API_KEY,
             'AGENT_MODEL_URL': DEFAULT_AGENT_MODEL_URL,
             'AGENT_MODEL_API_KEY': DEFAULT_AGENT_MODEL_API_KEY,
+            'AGENT_SMALL_MODEL_URL': DEFAULT_RECOGNITION_MODEL_URL,
+            'AGENT_SMALL_MODEL_API_KEY': DEFAULT_RECOGNITION_MODEL_API_KEY,
+            'AGENT_ADVANCED_MODEL_URL': '',
+            'AGENT_ADVANCED_MODEL_API_KEY': '',
+            'GAME_RECOGNITION_MODEL_URL': '',
+            'GAME_RECOGNITION_MODEL_API_KEY': '',
             'REALTIME_MODEL_URL': DEFAULT_REALTIME_MODEL_URL,
             'REALTIME_MODEL_API_KEY': DEFAULT_REALTIME_MODEL_API_KEY,
             'TTS_MODEL_URL': DEFAULT_TTS_MODEL_URL,
@@ -1060,6 +1147,10 @@ class CoreConfigMixin:
             with open(str(self.get_config_path('core_config.json')), 'r', encoding='utf-8') as f:
                 file_data = json.load(f)
             if isinstance(file_data, dict):
+                # Old tier names (emotion / summary) are read under the new ones; startup
+                # persists this, but a file restored or edited later must read the same.
+                # Before merging defaults, so a template value can never shadow a saved one.
+                migrate_renamed_tier_fields(file_data)
                 core_cfg.update(file_data)
                 # Template default assistApi='qwen' fills a value never saved in the file,
                 # hiding absence from the following default-assist-to-free-when-core-is-free logic.
@@ -1130,6 +1221,19 @@ class CoreConfigMixin:
         config['ASSIST_API_KEY_REQUESTY'] = core_cfg.get('assistApiKeyRequesty', '')
         config['ASSIST_API_KEY_OPPER'] = core_cfg.get('assistApiKeyOpper', '')
         config['ASSIST_API_KEY_ATLASCLOUD'] = core_cfg.get('assistApiKeyAtlascloud', '')
+        # Bailian workspace IDs end up inside a hostname: a hand-edited invalid
+        # value is ignored (treated as unset) instead of being trusted here.
+        from config.api_profiles import ASSIST_WORKSPACE_ID_FIELDS
+        from utils.decision_client.workspace import (
+            InvalidWorkspaceIdError,
+            normalize_workspace_id,
+        )
+        for _ws_file_field, _ws_config_key in ASSIST_WORKSPACE_ID_FIELDS.values():
+            try:
+                config[_ws_config_key] = normalize_workspace_id(core_cfg.get(_ws_file_field, ''))
+            except InvalidWorkspaceIdError:
+                config[_ws_config_key] = ''
+                _warn_invalid_workspace_id_once(_ws_file_field)
 
         if core_cfg.get('mcpToken'):
             config['MCP_ROUTER_API_KEY'] = core_cfg['mcpToken']
@@ -1287,13 +1391,10 @@ class CoreConfigMixin:
             config['AGENT_MODEL_API_KEY'] = config.get('OPENROUTER_API_KEY', '')
 
         # Map custom API configuration using uppercase underscore internal keys, retaining existing defaults for omitted fields.
-        from utils.chatgpt_subscription import runtime_custom_api
+        from utils.chatgpt_subscription import runtime_custom_api, runtime_model_type
         enable_custom_api, subscription_slots = runtime_custom_api(core_cfg)
         config['ENABLE_CUSTOM_API'] = enable_custom_api
-        config['SUBSCRIPTION_MODEL_SLOTS'] = [
-            {'gameMain': 'game_main', 'gameSummary': 'game_summary'}.get(slot, slot)
-            for slot in subscription_slots
-        ]
+        config['SUBSCRIPTION_MODEL_SLOTS'] = [runtime_model_type(slot) for slot in subscription_slots]
 
         # GPT-SoVITS enablement uses ttsModelProvider as the single source of truth (see
         # docs/design/tts-voice-source-unification.md §3/§4). Derive it at this choke point;
@@ -1324,8 +1425,8 @@ class CoreConfigMixin:
         # Exclude credential ttsModelApiKey; tts_client.py still reads it from persisted
         # configuration, avoiding expanding sensitive fields in general configuration snapshots.
         for _model_provider_prefix in (
-            'conversation', 'summary', 'gameMain', 'gameSummary', 'correction',
-            'emotion', 'vision', 'agent', 'omni', 'tts',
+            'conversation', 'memory', 'gameMain', 'gameSummary', 'gameRecognition',
+            'recognition', 'decision', 'vision', 'agent', 'agentAdvanced', 'agentSmall', 'omni', 'tts',
         ):
             _raw_provider = str(
                 core_cfg.get(f'{_model_provider_prefix}ModelProvider', '') or ''
@@ -1372,8 +1473,8 @@ class CoreConfigMixin:
             assist_model_defaults = {
                 key: config.get(key, '') for key in self._SLOT_PROFILE_MODEL_KEYS.values()
             }
-            assist_model_defaults['SUMMARY_MODEL'] = (
-                assist_profile.get('SUMMARY_MODEL') or assist_profile.get('CONVERSATION_MODEL', '')
+            assist_model_defaults['MEMORY_MODEL'] = (
+                assist_profile.get('MEMORY_MODEL') or assist_profile.get('CONVERSATION_MODEL', '')
             )
             # URL / Model ID fields: empty values fall back to existing configuration.
             # API-key override policy depends on selected provider:
@@ -1385,8 +1486,8 @@ class CoreConfigMixin:
                     return config.get('OPENROUTER_URL', '')
                 if provider == 'follow_conversation':
                     return config.get('CONVERSATION_MODEL_URL', '') or config.get('OPENROUTER_URL', '')
-                if provider == 'follow_summary':
-                    return config.get('SUMMARY_MODEL_URL', '') or config.get('OPENROUTER_URL', '')
+                if provider == 'follow_memory':
+                    return config.get('MEMORY_MODEL_URL', '') or config.get('OPENROUTER_URL', '')
                 if provider != 'follow_core':
                     return ''
 
@@ -1422,14 +1523,16 @@ class CoreConfigMixin:
                 profile_key = self._SLOT_PROFILE_MODEL_KEYS.get(prefix)
                 if not profile_key:
                     return ''
-                is_game_slot = prefix in ('gameMain', 'gameSummary')
+                # Slots whose seed is another slot's resolved value: under follow_assist
+                # they must take the assist provider's tier default instead.
+                is_game_slot = prefix in ('gameMain', 'gameSummary', 'gameRecognition', 'agentSmall', 'agentAdvanced')
                 if provider == 'follow_core':
                     # URL and key now use the core provider, so the model must too; retaining the snapshot's
                     # assist model would send provider A's model name to provider B's endpoint.
                     follow_core_profile = assist_api_profiles.get(core_api_value)
                     if isinstance(follow_core_profile, dict):
                         return (follow_core_profile.get(profile_key, '')
-                                or (follow_core_profile.get('VISION_MODEL', '') if prefix == 'agent' else '')
+                                or (follow_core_profile.get('VISION_MODEL', '') if prefix in ('agent', 'agentAdvanced') else '')
                                 or follow_core_profile.get('CONVERSATION_MODEL', '')
                                 or config.get('CORE_MODEL', ''))
                     return config.get('CORE_MODEL', '')
@@ -1451,19 +1554,44 @@ class CoreConfigMixin:
                 if not slot_url or not any(same_endpoint(slot_url, c) for c in candidates):
                     return ''
                 return str(named_profile.get(profile_key)
-                           or (named_profile.get('VISION_MODEL') if prefix == 'agent' else '')
+                           or (named_profile.get('VISION_MODEL') if prefix in ('agent', 'agentAdvanced') else '')
                            or named_profile.get('CONVERSATION_MODEL') or '').strip()
+
+            def _resolve_named_provider_region_url(prefix: str, provider: str, slot_url: str) -> str:
+                """Candidate endpoint the save-time probe pinned for a named provider, '' to keep slot_url.
+
+                A named slot stores the URL the settings page filled in. A later save can re-probe the
+                provider with the stored key (the page cannot: keys come back masked) and pin another
+                of its candidates (e.g. qwen_intl on the US host) in resolvedProviderUrls only. Follow
+                that pin like the follow_* slots and the page do; a URL outside the candidates is kept.
+                """
+                if prefix in ('omni', 'tts') or not provider or provider == 'custom' or provider.startswith('follow_'):
+                    return ''
+                named_profile = assist_api_profiles.get(provider)
+                if not isinstance(named_profile, dict):
+                    return ''
+                candidates = self._provider_url_candidates(
+                    named_profile, 'OPENROUTER_URL', 'OPENROUTER_URLS'
+                )
+                if len(candidates) < 2 or not slot_url or not any(same_endpoint(slot_url, c) for c in candidates):
+                    return ''
+                return self._get_saved_provider_url(
+                    core_cfg, 'assist', provider, named_profile, 'OPENROUTER_URL', 'OPENROUTER_URLS'
+                )
 
             _custom_api_fields = [
                 # (frontend field prefix, model config key, URL config key, API-key config key)
                 ('conversation', 'CONVERSATION_MODEL', 'CONVERSATION_MODEL_URL', 'CONVERSATION_MODEL_API_KEY'),
-                ('summary',      'SUMMARY_MODEL',      'SUMMARY_MODEL_URL',      'SUMMARY_MODEL_API_KEY'),
+                ('memory',      'MEMORY_MODEL',      'MEMORY_MODEL_URL',      'MEMORY_MODEL_API_KEY'),
                 ('gameMain',     'GAME_MAIN_MODEL',    'GAME_MAIN_MODEL_URL',    'GAME_MAIN_MODEL_API_KEY'),
                 ('gameSummary',  'GAME_SUMMARY_MODEL', 'GAME_SUMMARY_MODEL_URL', 'GAME_SUMMARY_MODEL_API_KEY'),
-                ('correction',   'CORRECTION_MODEL',    'CORRECTION_MODEL_URL',   'CORRECTION_MODEL_API_KEY'),
-                ('emotion',      'EMOTION_MODEL',       'EMOTION_MODEL_URL',      'EMOTION_MODEL_API_KEY'),
+                ('recognition',      'RECOGNITION_MODEL',       'RECOGNITION_MODEL_URL',      'RECOGNITION_MODEL_API_KEY'),
+                ('gameRecognition', 'GAME_RECOGNITION_MODEL', 'GAME_RECOGNITION_MODEL_URL', 'GAME_RECOGNITION_MODEL_API_KEY'),
+                ('decision',     'DECISION_MODEL',      'DECISION_MODEL_URL',     'DECISION_MODEL_API_KEY'),
                 ('vision',       'VISION_MODEL',        'VISION_MODEL_URL',       'VISION_MODEL_API_KEY'),
                 ('agent',        'AGENT_MODEL',         'AGENT_MODEL_URL',        'AGENT_MODEL_API_KEY'),
+                ('agentSmall',   'AGENT_SMALL_MODEL',   'AGENT_SMALL_MODEL_URL',  'AGENT_SMALL_MODEL_API_KEY'),
+                ('agentAdvanced', 'AGENT_ADVANCED_MODEL', 'AGENT_ADVANCED_MODEL_URL', 'AGENT_ADVANCED_MODEL_API_KEY'),
                 ('omni',         'REALTIME_MODEL',      'REALTIME_MODEL_URL',     'REALTIME_MODEL_API_KEY'),
                 ('tts',          'TTS_MODEL',           'TTS_MODEL_URL',          'TTS_MODEL_API_KEY'),
             ]
@@ -1474,6 +1602,19 @@ class CoreConfigMixin:
                 # without realtime support, the snapshot already falls back to follow_core. URL/model/key
                 # overrides must follow that same path, avoiding leftover autofilled values.
                 provider = config.get(f'{prefix}ModelProvider', '')
+                whole_follow = WHOLE_FOLLOW_SLOTS.get(prefix)
+                # Stripped like the runtime dispatch, so " follow_recognition " clears the fields too.
+                if whole_follow and str(provider or '').strip() in ('', *whole_follow[2]):
+                    # Followed at runtime: get_model_api_config delegates to the followed tier.
+                    # Fields saved before switching must not linger in the snapshot; an old
+                    # free-route URL here would wake the region probe for nothing.
+                    config[model_key] = config[url_key] = config[apikey_key] = ''
+                    continue
+                if whole_follow:
+                    # Own settings start blank: only a URL and model the user (or the chosen
+                    # provider) actually supplies count. Anything incomplete is handed whole to
+                    # the followed tier at runtime, never patched field by field.
+                    config[model_key] = config[url_key] = config[apikey_key] = ''
                 if prefix == 'tts' and provider == 'deepseek':
                     # The hosted worker uses the DeepSeek key book and fixed endpoint.
                     # Retain a saved DashScope slot for existing CosyVoice clones,
@@ -1495,13 +1636,13 @@ class CoreConfigMixin:
                 #     forces api_type='local' (TODO unimplemented) -> core_api_type='local' ->
                 #     TTS dispatch reaches dummy_tts_worker -> silence
                 #   - tts: linked values pollute TTS_MODEL_URL and send tts_custom to the wrong provider
-                # Other model types (conversation/summary/correction/emotion/vision/agent)
+                # Other model types (conversation/summary/emotion/vision/agent)
                 # use chat-completion REST without a local branch; skipping URLs would alter their
                 # follow_* routing (see PR #1084 review thread), so skip only for omni/tts.
                 # Note: under follow_*, omni/tts cannot rely on get_model_api_config fallback
                 # to read user-entered modelId (fallback uses CORE_MODEL, not REALTIME_MODEL/TTS_MODEL),
                 # so these special prefixes retain existing follow resolution.
-                is_follow = provider in ('follow_core', 'follow_assist', 'follow_conversation', 'follow_summary')
+                is_follow = provider in ('follow_core', 'follow_assist', 'follow_conversation', 'follow_memory')
                 # With GSV enabled, ttsModelUrl is the GPT-SoVITS server URL, not a follow_*-linked
                 # LLM URL. Even with default ttsModelProvider=follow_assist,
                 # preserve the GSV URL first, or conversation TTS would connect to assist LLM endpoints.
@@ -1525,6 +1666,11 @@ class CoreConfigMixin:
                     else:
                         if cfg_url is not None:
                             config[url_key] = cfg_url or config.get(url_key, '')
+                        region_url = _resolve_named_provider_region_url(
+                            prefix, provider, str(config.get(url_key) or '').strip()
+                        )
+                        if region_url:
+                            config[url_key] = region_url
 
                 # Model ID: empty falls back to existing configuration.
                 cfg_model = core_cfg.get(f'{prefix}ModelId')
@@ -1533,8 +1679,8 @@ class CoreConfigMixin:
                 )
                 if provider == 'follow_conversation':
                     config[model_key] = config.get('CONVERSATION_MODEL', '')
-                elif provider == 'follow_summary':
-                    config[model_key] = config.get('SUMMARY_MODEL', '')
+                elif provider == 'follow_memory':
+                    config[model_key] = config.get('MEMORY_MODEL', '')
                 elif provider in ('follow_core', 'follow_assist'):
                     followed_provider = core_api_value if provider == 'follow_core' else assist_api_value
                     if (
@@ -1585,8 +1731,8 @@ class CoreConfigMixin:
                         config[apikey_key] = config.get('OPENROUTER_API_KEY', '')
                 elif provider == 'follow_conversation':
                     config[apikey_key] = config.get('CONVERSATION_MODEL_API_KEY', '')
-                elif provider == 'follow_summary':
-                    config[apikey_key] = config.get('SUMMARY_MODEL_API_KEY', '')
+                elif provider == 'follow_memory':
+                    config[apikey_key] = config.get('MEMORY_MODEL_API_KEY', '')
                 else:
                     # Named-provider slots: the API ledger (ASSIST_API_KEY_*) is authoritative for keys,
                     # not slot fields. Selecting a provider copies ledger values into a readonly slot input,
@@ -1672,6 +1818,17 @@ class CoreConfigMixin:
                     elif cfg_key is not None:
                         config[apikey_key] = cfg_key
 
+            # A whole-follow slot stands on its own only with both a URL and a model; anything
+            # less is the followed tier at runtime. Drop the unused fields here so a leftover
+            # free-route URL cannot wake the region probe (invariant #2).
+            for *_, slot_model_key in WHOLE_FOLLOW_SLOTS.values():
+                if not (
+                    str(config.get(slot_model_key) or '').strip()
+                    and str(config.get(f'{slot_model_key}_URL') or '').strip()
+                ):
+                    config[slot_model_key] = config[f'{slot_model_key}_URL'] = ''
+                    config[f'{slot_model_key}_API_KEY'] = ''
+
             # TTS Voice ID serves as fallback for character voice_id.
             if enable_custom_api and core_cfg.get('ttsVoiceId') is not None:
                 config['TTS_VOICE_ID'] = core_cfg.get('ttsVoiceId', '')
@@ -1721,12 +1878,13 @@ class CoreConfigMixin:
                     # non_mainland=False rather than skipping the call entirely: livestream-prefix derivation
                     # precedes region rewriting in _adjust_free_api_url. Exempt region selection,
                     # not local forwarding.
-                    non_mainland=False if key == 'AGENT_MODEL_URL' else snapshot_non_mainland,
+                    non_mainland=False if key in AGENT_TIER_URL_KEYS else snapshot_non_mainland,
                 )
 
         # Agent model always uses international API regardless of region
-        if isinstance(config.get('AGENT_MODEL_URL'), str):
-            config['AGENT_MODEL_URL'] = self._normalize_agent_url(config['AGENT_MODEL_URL'])
+        for agent_url_key in AGENT_TIER_URL_KEYS:
+            if isinstance(config.get(agent_url_key), str):
+                config[agent_url_key] = self._normalize_agent_url(config[agent_url_key])
 
         # Keep a raw, independent image slot: no chat fallback or implicit generation.
         config["IMAGE_GENERATION_CONFIG"] = {
@@ -1751,10 +1909,14 @@ class CoreConfigMixin:
 
         Args:
             model_type: model type, one of:
-                - 'summary': summary model (falls back to assist API)
-                - 'correction': correction model (falls back to assist API)
-                - 'emotion': emotion analysis model (falls back to assist API)
+                - 'memory': memory-upkeep (large) model (falls back to assist API)
+                  ('emotion' and 'summary', the names before the rename, are still accepted)
+                - 'recognition': recognition (small) model for light jobs (falls back to assist API)
                 - 'vision': vision model (falls back to assist API)
+                - 'agent': familiar (task agent) model; used even without custom API
+                - 'agent_small': small familiar model (follows 'recognition' unless configured)
+                - 'agent_advanced': advanced familiar model (follows 'agent' unless configured)
+                - 'game_recognition': minigame recognition model (follows 'recognition' unless configured)
                 - 'realtime': realtime speech model (falls back to core API)
                 - 'tts_default': default TTS (falls back to core API, used by OmniOfflineClient)
                 - 'tts_custom': custom TTS (falls back to assist API, used for voice_id scenarios)
@@ -1775,8 +1937,10 @@ class CoreConfigMixin:
         # resolvers and the tts_custom Qwen-profile fallback below).
         from utils.config_manager import get_assist_api_profiles, get_core_api_profiles
 
+        # The old names ('emotion', 'summary') keep working for callers not yet moved.
+        model_type = canonical_model_type(model_type)
         core_config = self.get_core_config() if _core_config is None else _core_config
-        enable_custom_api = (core_config.get('ENABLE_CUSTOM_API', False)
+        enable_custom_api = (_as_bool(core_config.get('ENABLE_CUSTOM_API', False))
                              or model_type in core_config.get('SUBSCRIPTION_MODEL_SLOTS', []))
         if model_type == "image":
             from utils.image_generation.config import resolve_image_config
@@ -1814,11 +1978,11 @@ class CoreConfigMixin:
                 'default_model': 'CONVERSATION_MODEL',
                 'fallback_type': 'assist',
             },
-            'summary': {
-                'custom_model': 'SUMMARY_MODEL',
-                'custom_url': 'SUMMARY_MODEL_URL',
-                'custom_key': 'SUMMARY_MODEL_API_KEY',
-                'default_model': 'SUMMARY_MODEL',
+            'memory': {
+                'custom_model': 'MEMORY_MODEL',
+                'custom_url': 'MEMORY_MODEL_URL',
+                'custom_key': 'MEMORY_MODEL_API_KEY',
+                'default_model': 'MEMORY_MODEL',
                 'fallback_type': 'assist',
             },
             'game_main': {
@@ -1833,20 +1997,20 @@ class CoreConfigMixin:
                 'custom_url': 'GAME_SUMMARY_MODEL_URL',
                 'custom_key': 'GAME_SUMMARY_MODEL_API_KEY',
                 'default_model': 'GAME_SUMMARY_MODEL',
-                'fallback_type': 'summary',
+                'fallback_type': 'memory',
             },
-            'correction': {
-                'custom_model': 'CORRECTION_MODEL',
-                'custom_url': 'CORRECTION_MODEL_URL',
-                'custom_key': 'CORRECTION_MODEL_API_KEY',
-                'default_model': 'CORRECTION_MODEL',
+            'recognition': {
+                'custom_model': 'RECOGNITION_MODEL',
+                'custom_url': 'RECOGNITION_MODEL_URL',
+                'custom_key': 'RECOGNITION_MODEL_API_KEY',
+                'default_model': 'RECOGNITION_MODEL',
                 'fallback_type': 'assist',
             },
-            'emotion': {
-                'custom_model': 'EMOTION_MODEL',
-                'custom_url': 'EMOTION_MODEL_URL',
-                'custom_key': 'EMOTION_MODEL_API_KEY',
-                'default_model': 'EMOTION_MODEL',
+            'decision': {
+                'custom_model': 'DECISION_MODEL',
+                'custom_url': 'DECISION_MODEL_URL',
+                'custom_key': 'DECISION_MODEL_API_KEY',
+                'default_model': 'DECISION_MODEL',
                 'fallback_type': 'assist',
             },
             'vision': {
@@ -1862,6 +2026,27 @@ class CoreConfigMixin:
                 'custom_key': 'AGENT_MODEL_API_KEY',
                 'default_model': 'AGENT_MODEL',
                 'fallback_type': 'assist',
+            },
+            'agent_small': {
+                'custom_model': 'AGENT_SMALL_MODEL',
+                'custom_url': 'AGENT_SMALL_MODEL_URL',
+                'custom_key': 'AGENT_SMALL_MODEL_API_KEY',
+                'default_model': 'AGENT_SMALL_MODEL',
+                'fallback_type': 'recognition',  # The small familiar model follows the recognition (small) model by default.
+            },
+            'agent_advanced': {
+                'custom_model': 'AGENT_ADVANCED_MODEL',
+                'custom_url': 'AGENT_ADVANCED_MODEL_URL',
+                'custom_key': 'AGENT_ADVANCED_MODEL_API_KEY',
+                'default_model': 'AGENT_ADVANCED_MODEL',
+                'fallback_type': 'agent',
+            },
+            'game_recognition': {
+                'custom_model': 'GAME_RECOGNITION_MODEL',
+                'custom_url': 'GAME_RECOGNITION_MODEL_URL',
+                'custom_key': 'GAME_RECOGNITION_MODEL_API_KEY',
+                'default_model': 'GAME_RECOGNITION_MODEL',
+                'fallback_type': 'recognition',
             },
             'realtime': {
                 'custom_model': 'REALTIME_MODEL',
@@ -1915,13 +2100,16 @@ class CoreConfigMixin:
             seen = _seen | frozenset((target_model_type,))
             prefix_by_type = {
                 'conversation': 'conversation',
-                'summary': 'summary',
+                'memory': 'memory',
                 'game_main': 'gameMain',
                 'game_summary': 'gameSummary',
-                'correction': 'correction',
-                'emotion': 'emotion',
+                'recognition': 'recognition',
+                'decision': 'decision',
                 'vision': 'vision',
                 'agent': 'agent',
+                'agent_small': 'agentSmall',
+                'agent_advanced': 'agentAdvanced',
+                'game_recognition': 'gameRecognition',
                 'realtime': 'omni',
                 'tts_default': 'tts',
                 'tts_custom': 'tts',
@@ -1934,10 +2122,10 @@ class CoreConfigMixin:
                 if target_model_type == 'conversation':
                     return _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
                 return _resolved_provider_type_for_model('conversation', seen)
-            if provider == 'follow_summary':
-                if target_model_type == 'summary':
+            if provider == 'follow_memory':
+                if target_model_type == 'memory':
                     return _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
-                return _resolved_provider_type_for_model('summary', seen)
+                return _resolved_provider_type_for_model('memory', seen)
             if provider == 'follow_core':
                 return _provider_type_from_core_key(core_config.get('CORE_API_TYPE', ''))
             if provider == 'follow_assist':
@@ -1949,8 +2137,12 @@ class CoreConfigMixin:
                     return _provider_type_from_core_key(core_config.get('CORE_API_TYPE', ''))
                 if fallback_type == 'conversation':
                     return _resolved_provider_type_for_model('conversation', seen)
-                if fallback_type == 'summary':
-                    return _resolved_provider_type_for_model('summary', seen)
+                if fallback_type == 'memory':
+                    return _resolved_provider_type_for_model('memory', seen)
+                if fallback_type == 'recognition':
+                    return _resolved_provider_type_for_model('recognition', seen)
+                if fallback_type == 'agent':
+                    return _resolved_provider_type_for_model('agent', seen)
                 return _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
 
             # Named-provider **protocols** likewise apply only when the slot URL truly belongs to that provider.
@@ -1984,8 +2176,12 @@ class CoreConfigMixin:
                     return _provider_type_from_core_key(core_config.get('CORE_API_TYPE', ''))
                 if fallback_type == 'conversation':
                     return _resolved_provider_type_for_model('conversation', seen)
-                if fallback_type == 'summary':
-                    return _resolved_provider_type_for_model('summary', seen)
+                if fallback_type == 'memory':
+                    return _resolved_provider_type_for_model('memory', seen)
+                if fallback_type == 'recognition':
+                    return _resolved_provider_type_for_model('recognition', seen)
+                if fallback_type == 'agent':
+                    return _resolved_provider_type_for_model('agent', seen)
                 return _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
             return _provider_type_from_assist_key(provider)
 
@@ -2023,14 +2219,155 @@ class CoreConfigMixin:
             if not treat_as_custom or provider == 'follow_conversation':
                 return self.get_model_api_config('conversation', _core_config=core_config)
         elif model_type == 'game_summary':
-            provider = str(core_config.get('gameSummaryModelProvider') or 'follow_summary').strip()
-            if not treat_as_custom or provider == 'follow_summary':
-                return self.get_model_api_config('summary', _core_config=core_config)
+            provider = str(core_config.get('gameSummaryModelProvider') or 'follow_memory').strip()
+            if not treat_as_custom or provider == 'follow_memory':
+                return self.get_model_api_config('memory', _core_config=core_config)
+        else:
+            whole_follow = next(
+                (
+                    (prefix, slot)
+                    for prefix, slot in WHOLE_FOLLOW_SLOTS.items()
+                    if slot[0] == model_type
+                ),
+                None,
+            )
+            if whole_follow:
+                # Unless set up in full on its own, the slot is the tier it follows (the small
+                # familiar model is the recognition model, or the familiar model on request).
+                # Delegating keeps each followed tier's own endpoint rules (region rewrite,
+                # pinned agent URL).
+                prefix, (_, default_tier, follows, slot_model_key) = whole_follow
+                provider = str(core_config.get(f'{prefix}ModelProvider') or '').strip()
+                if not treat_as_custom or not provider:
+                    return self.get_model_api_config(default_tier, _core_config=core_config)
+                if provider in follows:
+                    return self.get_model_api_config(follows[provider], _core_config=core_config)
+                if not (
+                    str(core_config.get(slot_model_key) or '').strip()
+                    and str(core_config.get(f'{slot_model_key}_URL') or '').strip()
+                ):
+                    # Its own settings count only when complete (URL and model); otherwise
+                    # the whole slot is the followed tier, key and protocol included.
+                    return self.get_model_api_config(default_tier, _core_config=core_config)
         
         # Agent always uses dedicated AGENT_MODEL_URL, but is_custom is True only with enableCustomApi.
         # AGENT_MODEL_URL does **not** undergo region rewriting: _normalize_agent_url
         # is an identity function because free-agent-model deliberately pins the CN text endpoint. The former comment
         # claimed lanlan.app normalization, contradicting implementation and already misleading a review.
+        def _finalize_model_config(result: dict) -> dict:
+            if model_type != 'decision':
+                return result
+            from utils.decision_client.schema import (
+                infer_decision_protocol,
+                resolve_decision_endpoint,
+            )
+
+            assist_profiles = get_assist_api_profiles()
+            selected_provider = str(core_config.get('decisionModelProvider') or '').strip()
+            if not treat_as_custom or selected_provider in ('', 'follow_assist'):
+                effective_provider = str(core_config.get('assistApi') or '').strip()
+            elif selected_provider == 'follow_core':
+                effective_provider = str(core_config.get('CORE_API_TYPE') or '').strip()
+            elif selected_provider == 'custom':
+                effective_provider = ''
+            else:
+                effective_provider = selected_provider
+
+            profile = assist_profiles.get(effective_provider, {}) if effective_provider else {}
+            if not isinstance(profile, dict):
+                profile = {}
+
+            model_name = str(result.get('model') or '').strip()
+            base_url = str(result.get('base_url') or '').strip()
+            profile_protocol = str(
+                profile.get('DECISION_PROTOCOL')
+                or (core_config.get('DECISION_PROTOCOL') if not treat_as_custom else '')
+                or ''
+            ).strip().lower()
+            profile_model = str(profile.get('DECISION_MODEL') or '').strip()
+            profile_decision_url = str(
+                profile.get('DECISION_URL')
+                or (core_config.get('DECISION_URL') if not treat_as_custom else '')
+                or ''
+            ).strip()
+
+            profile_url_candidates = self._provider_url_candidates(
+                profile, 'OPENROUTER_URL', 'OPENROUTER_URLS'
+            )
+            base_url_matches_profile = (
+                not base_url
+                or any(same_endpoint(base_url, c) for c in profile_url_candidates)
+                or (bool(profile_decision_url) and same_endpoint(base_url, profile_decision_url))
+            )
+
+            # Preserve custom/gateway base_url instead of forcing the profile's fixed
+            # DECISION_URL onto a different host; only apply profile_decision_url when
+            # base_url still targets the profile's default service.
+            decision_protocol = infer_decision_protocol(
+                model_name,
+                base_url,
+                profile_protocol=profile_protocol,
+                profile_model=profile_model,
+            )
+            # Workspace-only native endpoints (Bailian decision-model-preview): the
+            # profile carries a host template that needs the user's workspace ID.
+            # It applies only while the slot still targets the profile's primary
+            # service; a hand-entered URL (custom provider or gateway) wins, and a
+            # different regional host (e.g. DashScope US) has no documented
+            # decision endpoint and would reject that region's key anyway.
+            native_unavailable_reason = ''
+            decision_url_template = str(profile.get('DECISION_URL_TEMPLATE') or '').strip()
+            if (
+                decision_url_template
+                and decision_protocol != 'chat_fallback'
+                and base_url_matches_profile
+                and not profile_decision_url
+            ):
+                primary_url = str(profile.get('OPENROUTER_URL') or '').strip()
+                workspace_url = ''
+                if not base_url or not primary_url or same_endpoint(base_url, primary_url):
+                    from config.api_profiles import ASSIST_WORKSPACE_ID_FIELDS
+                    from utils.decision_client.workspace import build_workspace_decision_url
+
+                    workspace_fields = ASSIST_WORKSPACE_ID_FIELDS.get(effective_provider)
+                    workspace_id = core_config.get(workspace_fields[1], '') if workspace_fields else ''
+                    workspace_url = build_workspace_decision_url(decision_url_template, workspace_id)
+                    native_unavailable_reason = '' if workspace_url else 'workspace_missing'
+                else:
+                    native_unavailable_reason = 'region_unsupported'
+                profile_decision_url = workspace_url
+
+            decision_url = resolve_decision_endpoint(
+                decision_protocol,
+                base_url,
+                profile_decision_url if (decision_protocol != 'chat_fallback' and base_url_matches_profile) else '',
+            )
+            # Only pair fallback_model with the decision slot's own base_url/api_key
+            # when this slot targets a known profile's default service. For custom or
+            # gateway-overridden slots, keep fallback_model empty so DecisionClient
+            # resolves a complete emotion/summary chat slot instead of mixing provider
+            # A's model name with provider B's endpoint.
+            fallback_model = (
+                str(profile.get('RECOGNITION_MODEL') or profile.get('MEMORY_MODEL') or '').strip()
+                if (profile and base_url_matches_profile)
+                else ''
+            )
+
+            enriched = dict(result)
+            if native_unavailable_reason:
+                # No usable native host: run the slot as a plain chat decision with
+                # the profile's chat model instead of sending a request that can
+                # only 404 (the native model name is not a chat model either).
+                enriched['native_decision_model'] = model_name
+                if fallback_model:
+                    enriched['model'] = fallback_model
+                decision_protocol = 'chat_fallback'
+                decision_url = resolve_decision_endpoint(decision_protocol, base_url, '')
+            enriched['decision_protocol'] = decision_protocol
+            enriched['decision_url'] = decision_url
+            enriched['fallback_model'] = fallback_model
+            enriched['native_unavailable_reason'] = native_unavailable_reason
+            return enriched
         if treat_as_custom or model_type == 'agent':
             custom_model = core_config.get(mapping['custom_model'], '')
             custom_url = core_config.get(mapping['custom_url'], '')
@@ -2053,7 +2390,7 @@ class CoreConfigMixin:
                 # capability users had before enabling GSV.
                 if is_gsv_url and not resolved_api_key and model_type == 'tts_custom':
                     resolved_api_key = (core_config.get('ASSIST_API_KEY_QWEN') or '').strip()
-                return {
+                return _finalize_model_config({
                     'model': custom_model,
                     'api_key': resolved_api_key,
                     'base_url': custom_url,
@@ -2078,7 +2415,7 @@ class CoreConfigMixin:
                     'api_type': (
                         _resolved_realtime_api_type() if model_type == 'realtime' else None
                     ),
-                }
+                })
         
         # Custom CosyVoice voice fallback: prefer the user's saved Qwen CosyVoice API,
         # falling back to assist API only when absent (CosyVoice is currently the sole provider supporting voice cloning).
@@ -2147,11 +2484,11 @@ class CoreConfigMixin:
             }
         elif mapping['fallback_type'] == 'conversation':
             return self.get_model_api_config('conversation', _core_config=core_config)
-        elif mapping['fallback_type'] == 'summary':
-            return self.get_model_api_config('summary', _core_config=core_config)
+        elif mapping['fallback_type'] == 'memory':
+            return self.get_model_api_config('memory', _core_config=core_config)
         else:
             # Fall back to assist API configuration with matching protocol, as explained above.
-            return {
+            return _finalize_model_config({
                 'model': core_config.get(mapping['default_model'], ''),
                 'api_key': core_config.get('OPENROUTER_API_KEY', ''),
                 'base_url': core_config.get('OPENROUTER_URL', ''),
@@ -2159,7 +2496,7 @@ class CoreConfigMixin:
                 'provider_type': _normalize_provider_type_value(
                     core_config.get('PROVIDER_TYPE')
                 ),
-            }
+            })
 
     def is_agent_api_ready(self) -> tuple[bool, list[str]]:
         """

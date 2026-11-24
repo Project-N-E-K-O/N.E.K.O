@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from urllib.parse import quote
+from urllib.parse import quote, urljoin
 
 import httpx
 
@@ -25,6 +25,7 @@ from plugin.utils.github_release import (
 from ..core.build_rules import VENDOR_SYNC_GLOBS
 from ..core.lint import ruff_command
 from ..core.plugin_source import load_plugin_source
+from ..git_env import git_env
 from ..paths import CliDefaults
 from ..repo_action_migration import ActionFileStatus, migrate_github_actions
 from ..repo_state import git_output, worktree_dirty_paths
@@ -40,6 +41,7 @@ _RELEASE_RUFF_TIMEOUT_SECONDS = 120
 # Unauthenticated callers get 60 GitHub API requests per hour per IP.
 _RELEASE_POLL_SECONDS = 15.0
 _DIRTY_PATHS_SHOWN = 5
+_REFSPEC_PLACEHOLDER = '"<branch>:<remote-branch>"'
 # The Market answers these while its verification job is queued or running.
 _MARKET_RETRY_STATUSES = frozenset({429, 503})
 _MARKET_DEFAULT_RETRY_SECONDS = 5.0
@@ -327,6 +329,15 @@ def _report_market_response(status_code: int, payload: dict) -> int:
             f"{code}: {detail}",
             file=sys.stderr,
         )
+        issues = payload.get("issues")
+        if code == "release_version_not_newer" and isinstance(issues, list):
+            for issue in issues:
+                if isinstance(issue, dict) and issue.get("code") == "release_latest_unordered":
+                    plugin_id = issue.get("plugin_id")
+                    if type(plugin_id) is int and plugin_id > 0:
+                        page = urljoin(_MARKET_PUBLICATION_URL, f"/#/plugin/{plugin_id}?tab=versions&action=publish")
+                        print(page, file=sys.stderr)
+                        break
         return 1
 
     publication = parse_market_publication(status_code, payload)
@@ -386,15 +397,27 @@ def _report_market_response(status_code: int, payload: dict) -> int:
                 "Market のレビュアーはこの Release を承認済みです",
             )
         )
+    elif status == "platform_attention":
+        print(
+            "[FAIL] " + _tri(
+                "Market needs platform operator attention for this release",
+                "此 Release 需要 Market 平台人员处理",
+                "この Release は Market 運営者の対応が必要です",
+            ),
+            file=sys.stderr,
+        )
+        return 1
     elif status == "superseded":
         print(
-            "[OK] "
+            "[FAIL] "
             + _tri(
                 "a newer release of this version replaced this one in Market review",
                 "此版本的更新 Release 已在 Market 审核中取代了这一个",
                 "このバージョンの新しい Release が Market の審査でこれを置き換えました",
-            )
+            ),
+            file=sys.stderr,
         )
+        return 1
     else:
         print(f"[OK] Market accepted the notification / Market 已受理通知 / Market が通知を受理しました ({status})")
     return 0
@@ -490,14 +513,19 @@ def _ensure_standard_release_workflow(
         if change.relative_path == Path(".github/workflows/release.yml")
     )
     if release_change.status is not ActionFileStatus.CURRENT:
+        upgrade = (
+            f"neko-plugin setup-repo {release_cmd._plugin_dir_argument(plugin_dir, '')} "
+            "--upgrade-github-actions"
+        )
+        fill_in = release_cmd._placeholder_path(plugin_dir)
         raise RuntimeError(
             _tri(
-                "standard release workflow is not current; run "
-                f"neko-plugin setup-repo {plugin_dir} --upgrade-github-actions",
-                "标准发布工作流不是当前版本；请运行 "
-                f"neko-plugin setup-repo {plugin_dir} --upgrade-github-actions",
-                "標準リリースワークフローが最新ではありません。次を実行してください："
-                f"neko-plugin setup-repo {plugin_dir} --upgrade-github-actions",
+                f"standard release workflow is not current; run {upgrade}"
+                + (f" (plugin directory: {fill_in})" if fill_in else ""),
+                f"标准发布工作流不是当前版本；请运行 {upgrade}"
+                + (f"（插件目录：{fill_in}）" if fill_in else ""),
+                f"標準リリースワークフローが最新ではありません。次を実行してください：{upgrade}"
+                + (f"（プラグインディレクトリ：{fill_in}）" if fill_in else ""),
             )
         )
 
@@ -543,7 +571,19 @@ def _ensure_head_pushed(plugin_dir: Path, *, head: str) -> None:
                 "HEAD がデタッチ状態です。公開するブランチをチェックアウトしてください",
             )
         )
-    set_upstream = f"git push -u origin {branch}"
+    # Quoted like init's push step. The messages name the branch itself, but
+    # behind a placeholder a branch starting with + must be typed as its refspec.
+    branch_refspec = release_cmd._push_refspec(branch)
+    branch_argument = release_cmd._shell_argument(branch_refspec, release_cmd._BRANCH_PLACEHOLDER)
+    set_upstream = f"git push -u origin {branch_argument}"
+    if branch_argument == release_cmd._BRANCH_PLACEHOLDER and branch_refspec != branch:
+        up_en, up_zh, up_ja = (
+            f" (branch: {branch_refspec})",
+            f"（分支：{branch_refspec}）",
+            f"（ブランチ：{branch_refspec}）",
+        )
+    else:
+        up_en, up_zh, up_ja = ("", "", "")
     upstream = git_output(
         plugin_dir,
         "rev-parse",
@@ -554,33 +594,46 @@ def _ensure_head_pushed(plugin_dir: Path, *, head: str) -> None:
     if not upstream:
         raise RuntimeError(
             _tri(
-                f"branch {branch} has no upstream; run {set_upstream}",
-                f"分支 {branch} 没有上游分支；请运行 {set_upstream}",
-                f"ブランチ {branch} に上流ブランチがありません。{set_upstream} を実行してください",
+                f"branch {branch} has no upstream; run {set_upstream}{up_en}",
+                f"分支 {branch} 没有上游分支；请运行 {set_upstream}{up_zh}",
+                f"ブランチ {branch} に上流ブランチがありません。{set_upstream}{up_ja} を実行してください",
             )
         )
     remote, _, remote_branch = upstream.partition("/")
     if remote != "origin" or not remote_branch:
         raise RuntimeError(
             _tri(
-                f"branch {branch} tracks {upstream}, not an origin branch; run {set_upstream}",
-                f"分支 {branch} 跟踪的是 {upstream}，不是 origin 上的分支；请运行 {set_upstream}",
-                f"ブランチ {branch} は origin ではなく {upstream} を追跡しています。{set_upstream} を実行してください",
+                f"branch {branch} tracks {upstream}, not an origin branch; run {set_upstream}{up_en}",
+                f"分支 {branch} 跟踪的是 {upstream}，不是 origin 上的分支；请运行 {set_upstream}{up_zh}",
+                f"ブランチ {branch} は origin ではなく {upstream} を追跡しています。{set_upstream}{up_ja} を実行してください",
             )
         )
     output = _git(plugin_dir, "ls-remote", "origin", f"refs/heads/{remote_branch}")
     remote_head = output.split(maxsplit=1)[0] if output else None
     if remote_head != head:
-        push = (
-            f"git push origin {branch}"
-            if remote_branch == branch
-            else f"git push origin {branch}:{remote_branch}"
-        )
+        if remote_branch == branch:
+            refspec, placeholder = branch_refspec, release_cmd._BRANCH_PLACEHOLDER
+            notes = (f" (branch: {refspec})", f"（分支：{refspec}）", f"（ブランチ：{refspec}）")
+        else:
+            refspec = release_cmd._push_refspec(branch, remote_branch)
+            placeholder = _REFSPEC_PLACEHOLDER
+            # Named as typed into the refspec, so a leading + stays spelled out.
+            local, _, remote_side = refspec.partition(":")
+            notes = (
+                f" (branch: {local}, remote branch: {remote_side})",
+                f"（分支：{local}，远程分支：{remote_side}）",
+                f"（ブランチ：{local}、リモートブランチ：{remote_side}）",
+            )
+        # One argument even as <branch>:<remote-branch>, so PowerShell keeps it whole.
+        argument = release_cmd._shell_argument(refspec, placeholder)
+        push = f"git push origin {argument}"
+        # Name what the placeholder stands for, as init does.
+        en, zh, ja = notes if argument == placeholder else ("", "", "")
         raise RuntimeError(
             _tri(
-                f"HEAD is not pushed to origin/{remote_branch}; run {push}",
-                f"HEAD 尚未推送到 origin/{remote_branch}；请运行 {push}",
-                f"HEAD が origin/{remote_branch} に push されていません。{push} を実行してください",
+                f"HEAD is not pushed to origin/{remote_branch}; run {push}{en}",
+                f"HEAD 尚未推送到 origin/{remote_branch}；请运行 {push}{zh}",
+                f"HEAD が origin/{remote_branch} に push されていません。{push}{ja} を実行してください",
             )
         )
 
@@ -765,6 +818,7 @@ def _local_tag_commit(plugin_dir: Path, tag: str) -> str | None:
     completed = subprocess.run(
         ["git", "rev-parse", "--verify", "--quiet", f"refs/tags/{tag}^{{commit}}"],
         cwd=plugin_dir,
+        env=git_env(),
         encoding="utf-8",
         errors="replace",
         stdout=subprocess.PIPE,
@@ -1021,6 +1075,7 @@ def _git(plugin_dir: Path, *args: str) -> str:
     completed = subprocess.run(
         ["git", *args],
         cwd=plugin_dir,
+        env=git_env(),
         encoding="utf-8",
         errors="replace",
         stdout=subprocess.PIPE,
@@ -1043,6 +1098,7 @@ def _git_config_values(plugin_dir: Path, key: str) -> list[str]:
     completed = subprocess.run(
         ["git", "config", "--get-all", key],
         cwd=plugin_dir,
+        env=git_env(),
         encoding="utf-8",
         errors="replace",
         stdout=subprocess.PIPE,

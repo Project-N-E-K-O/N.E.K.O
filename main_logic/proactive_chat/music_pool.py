@@ -119,6 +119,7 @@ async def fetch_candidates(scope, request, fetch):
                 if result or not cached[1].get('success') or (available and cached[1].get('data')):
                     if result:
                         logger.info('[%s] 命中音乐候选缓存，本轮不重新搜索音乐源', scope)
+                        return {**result, '_source_decay_checked': True}
                     return result
             if was_music_request_recent(scope, request):
                 return None
@@ -141,4 +142,4 @@ async def fetch_candidates(scope, request, fetch):
             _pools.move_to_end(key)
             while len(_pools) > MAX_POOLS:
                 _pools.popitem(last=False)
-            return result
+            return {**result, '_source_decay_checked': True} if result else result

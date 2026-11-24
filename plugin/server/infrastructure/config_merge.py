@@ -4,6 +4,20 @@ from collections.abc import Mapping
 
 DELETE_MARKER = "__DELETE__"
 
+# Top-level plugin.toml tables that are manifest metadata rather than plugin
+# settings. They are read from plugin.toml directly and never belong to the
+# effective config, whatever the runtime config or a profile contains.
+RESERVED_TOP_LEVEL_SECTIONS: frozenset[str] = frozenset({"permissions"})
+
+
+def strip_reserved_sections(config: Mapping[str, object]) -> dict[str, object]:
+    """Return a shallow copy of ``config`` without the reserved top-level tables."""
+    return {
+        key: value
+        for key, value in config.items()
+        if key not in RESERVED_TOP_LEVEL_SECTIONS
+    }
+
 
 def _to_string_key_mapping(raw: Mapping[object, object]) -> dict[str, object]:
     normalized: dict[str, object] = {}

@@ -36,9 +36,11 @@ from __future__ import annotations
 
 import inspect
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypedDict
+
+from plugin.sdk.shared.permissions.narrowing import normalize_narrowing
 
 # Module-level attribute used by the decorator to mark methods. Pulling
 # this onto a constant lets ``NekoPluginBase`` discover decorated
@@ -91,6 +93,15 @@ class LlmToolMeta:
     timeout_seconds: float = 30.0
     role: str | None = None
     reply_tail: bool = False
+    # Set by register_llm_tool_async for each registration and sent to
+    # main_server, so that unregister (and the cleanup after a failed
+    # register) can remove exactly this registration and never a newer one
+    # of the same name. ``None`` on the decorator / sync paths.
+    registration_id: str | None = None
+    # Component narrowing (``permissions=``): checked when the tool is
+    # registered and recorded on its ``__llm_tool__{name}`` entry. Not sent
+    # to main_server.
+    permissions: tuple[str, ...] | None = None
 
     def to_ipc_payload(self, *, plugin_id: str) -> dict[str, Any]:
         """Build the LLM_TOOL_REGISTER IPC message payload.
@@ -107,6 +118,7 @@ class LlmToolMeta:
             "timeout_seconds": float(self.timeout_seconds),
             "role": self.role,
             **({"reply_tail": True} if self.reply_tail else {}),
+            **({"registration_id": self.registration_id} if self.registration_id else {}),
         }
 
 
@@ -118,6 +130,7 @@ def llm_tool(
     timeout: float = 30.0,
     role: str | None = None,
     reply_tail: bool = False,
+    permissions: list[str] | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator marking a plugin method as a model-callable LLM tool.
 
@@ -172,6 +185,11 @@ def llm_tool(
         Opt in to v1 original-reply image context under ``_ctx.host_reply``.
         The handler must accept ``_ctx`` or ``**kwargs``. False preserves the
         existing arguments. Realtime and old frontends receive no capability.
+    permissions:
+        Optional narrowing: the permission ids (a subset of what plugin.toml
+        declares) this tool needs. Left out, the tool inherits every declared
+        permission. A tool listing an undeclared permission is not registered
+        and the reason is logged.
 
     Notes
     -----
@@ -243,6 +261,7 @@ def llm_tool(
         timeout_seconds = float(timeout)
         if timeout_seconds <= 0:
             raise ValueError(f"@llm_tool timeout must be > 0, got {timeout_seconds}")
+        narrowed = normalize_narrowing(permissions, where="@llm_tool")
 
         meta = LlmToolMeta(
             name=resolved_name,
@@ -251,6 +270,7 @@ def llm_tool(
             timeout_seconds=timeout_seconds,
             role=role,
             reply_tail=reply_tail,
+            permissions=narrowed,
         )
         setattr(func, LLM_TOOL_META_ATTR, meta)
         return func
@@ -285,10 +305,149 @@ def collect_llm_tool_methods(instance: Any) -> list[tuple[LlmToolMeta, Callable[
     return out
 
 
+# ---------------------------------------------------------------------------
+# Results of register_llm_tool_async / unregister_llm_tool_async
+# ---------------------------------------------------------------------------
+#
+# Built on the host from what ``main_server`` actually answered (see
+# ``plugin/server/messaging/handlers/llm_tools.py``) and normalised again on
+# the SDK side, so both ends share one shape.
+#
+# ``ok`` is the one flag plugins should branch on; the SDK commits its local
+# state change (keep the tool after register, drop it after unregister) only
+# when ``ok`` is True.
+#
+# ``error`` codes:
+#   host side  -- "invalid_request", "main_server_unavailable" (the
+#                 request could not reach main_server: connect failure or
+#                 no pooled connection), "main_server_error" (HTTP status >= 400),
+#                 "rejected" (register: no role accepted the tool),
+#                 "partial_failure" (unregister: some roles failed).
+#   both       -- "timeout" (no usable answer: none from the host within
+#                 ``request_timeout``, or none from main_server after the
+#                 request was sent, or one that is not a JSON object; the
+#                 outcome on main_server is unknown).
+#   SDK side   -- "host_unavailable" (the request could not reach the host or
+#                 the host failed to handle it), "busy" (earlier calls for
+#                 the same name used up the budget; nothing was sent),
+#                 "not_registered"
+#                 (unregister: no local record and main_server removed
+#                 nothing of this plugin's under that name; with a local
+#                 record the same answer is ok=True, removed=False).
+
+
+class LlmToolRoleFailure(TypedDict, total=False):
+    role: str
+    error: str
+
+
+class LlmToolRoleRefusal(TypedDict, total=False):
+    role: str
+    owned_by: str
+    # "different registration": same owner, but not the registration this
+    # unregister targeted (e.g. a newer one); left untouched.
+    reason: str
+    # With that reason: the id of the registration holding the name.
+    registration_id: str
+
+
+class LlmToolUnregisterResult(TypedDict):
+    """``ok`` is True when no role still holds this plugin's tool.
+    ``removed`` says whether main_server actually removed anything;
+    ``refused_roles`` lists roles where the name belongs to another
+    source (left untouched, and not ours to remove), or, with
+    ``reason="different registration"``, to another registration of this
+    plugin than the one targeted. Such a registration is stale; the
+    cleanup after a failed register and ``unregister_llm_tool_async`` then
+    remove each one by the ``registration_id`` reported with it, and
+    ``ok`` requires all of them gone."""
+
+    ok: bool
+    removed: bool
+    affected_roles: list[str]
+    failed_roles: list[LlmToolRoleFailure]
+    refused_roles: list[LlmToolRoleRefusal]
+    error: str | None
+    message: str | None
+
+
+class LlmToolRegisterResult(TypedDict):
+    """``ok`` is True when at least one role accepted the tool;
+    ``failed_roles`` then lists the roles that did not.
+
+    ``cleanup`` is ``None`` unless the register failed after the request
+    was sent; it is then the result of the unregister the SDK issued so
+    that main_server does not keep a tool the plugin has no handler for
+    (main_server may have stored it before failing). If ``cleanup`` is
+    not ``ok``, call ``unregister_llm_tool_async(name)`` later to retry."""
+
+    ok: bool
+    affected_roles: list[str]
+    failed_roles: list[LlmToolRoleFailure]
+    error: str | None
+    message: str | None
+    cleanup: LlmToolUnregisterResult | None
+
+
+def _result_roles(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+def _result_role_records(value: object) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    return [
+        {str(k): str(v) for k, v in item.items() if v is not None}
+        for item in value
+        if isinstance(item, dict)
+    ]
+
+
+def _result_text(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def build_register_result(
+    body: Mapping[str, Any], *, ok: bool, error: str | None = None, message: str | None = None,
+) -> LlmToolRegisterResult:
+    """Normalise a register outcome (main_server body or host reply)."""
+    return {
+        "ok": ok,
+        "affected_roles": _result_roles(body.get("affected_roles")),
+        "failed_roles": _result_role_records(body.get("failed_roles")),  # type: ignore[typeddict-item]
+        "error": _result_text(error),
+        "message": _result_text(message),
+        "cleanup": None,
+    }
+
+
+def build_unregister_result(
+    body: Mapping[str, Any], *, ok: bool, error: str | None = None, message: str | None = None,
+) -> LlmToolUnregisterResult:
+    """Normalise an unregister outcome (main_server body or host reply)."""
+    return {
+        "ok": ok,
+        "removed": body.get("removed") is True,
+        "affected_roles": _result_roles(body.get("affected_roles")),
+        "failed_roles": _result_role_records(body.get("failed_roles")),  # type: ignore[typeddict-item]
+        "refused_roles": _result_role_records(body.get("refused_roles")),  # type: ignore[typeddict-item]
+        "error": _result_text(error),
+        "message": _result_text(message),
+    }
+
+
 __all__ = [
     "LLM_TOOL_ENTRY_PREFIX",
     "LLM_TOOL_META_ATTR",
     "LlmToolMeta",
+    "LlmToolRegisterResult",
+    "LlmToolRoleFailure",
+    "LlmToolRoleRefusal",
+    "LlmToolUnregisterResult",
+    "build_register_result",
+    "build_unregister_result",
     "collect_llm_tool_methods",
     "entry_id_for_tool",
     "llm_tool",

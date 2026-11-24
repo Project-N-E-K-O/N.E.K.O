@@ -746,6 +746,16 @@
     <script>
         const pluginId = 'claude_companion';
         let refreshTimer = null;
+        let nameDirty = false;
+        let cooldownDirty = false;
+        let nameEditSeq = 0;
+        let cooldownEditSeq = 0;
+        let pendingNameSaves = 0;
+        let pendingCooldownSaves = 0;
+        let loadStatusSeq = 0;
+        let appliedStatusSeq = 0;
+        let lastSyncedName = '';
+        let lastSyncedCooldown = '';
         let translations = {};
         let localeLoaded = false;
 
@@ -977,8 +987,11 @@
 
         // ── 加载状态 ──
         async function loadStatus() {
+            var reqSeq = ++loadStatusSeq;
             console.log('[ClaudeCompanion] Loading status...');
             var result = await callPlugin('get_status');
+            if (reqSeq <= appliedStatusSeq) return;
+            appliedStatusSeq = reqSeq;
             console.log('[ClaudeCompanion] Status result:', result);
             if (!result) {
                 document.getElementById('status-dot').classList.add('offline');
@@ -993,8 +1006,22 @@
             document.getElementById('user-name').textContent = result.user_name || '-';
             document.getElementById('port-num').textContent = result.port || '-';
             document.getElementById('cooldown-val').textContent = result.cooldown || '-';
-            document.getElementById('input-name').value = result.user_name || '';
-            document.getElementById('input-cooldown').value = result.cooldown || 60;
+            var serverName = result.user_name || '';
+            var serverCooldown = String(result.cooldown || 60);
+            if (pendingNameSaves === 0) {
+                lastSyncedName = serverName;
+            }
+            if (pendingCooldownSaves === 0) {
+                lastSyncedCooldown = serverCooldown;
+            }
+            var nameInput = document.getElementById('input-name');
+            if (nameInput && !nameDirty && pendingNameSaves === 0 && document.activeElement !== nameInput) {
+                nameInput.value = serverName;
+            }
+            var cooldownInput = document.getElementById('input-cooldown');
+            if (cooldownInput && !cooldownDirty && pendingCooldownSaves === 0 && document.activeElement !== cooldownInput) {
+                cooldownInput.value = serverCooldown;
+            }
         }
 
         // ── 加载事件时间线 ──
@@ -1057,11 +1084,26 @@
 
         // ── 设置操作 ──
         async function saveUserName() {
-            var name = document.getElementById('input-name').value.trim();
+            var nameInput = document.getElementById('input-name');
+            var submitted = nameInput ? nameInput.value : '';
+            var nameSeq = nameEditSeq;
+            var name = submitted.trim();
             if (!name) { showToast(t('ui.toast_username_empty', '请输入用户名')); return; }
-            var r = await callPlugin('set_user_name', { name: name });
+            var r;
+            pendingNameSaves++;
+            try {
+                r = await callPlugin('set_user_name', { name: name });
+            } finally {
+                pendingNameSaves--;
+            }
             if (r && r.user_name) {
-                showToast(t('ui.toast_username_updated', '用户名已更新为: ').replace('{name}', r.user_name) + r.user_name);
+                if (nameSeq === nameEditSeq && (!nameInput || nameInput.value === submitted)) {
+                    lastSyncedName = String(r.user_name);
+                    nameDirty = false;
+                }
+                var nameMsg = t('ui.toast_username_updated', '用户名已更新为: ');
+                showToast(nameMsg.includes('{name}') ? nameMsg.replace('{name}', () => r.user_name) : nameMsg + r.user_name);
+                appliedStatusSeq = loadStatusSeq;
                 loadStatus();
             } else {
                 showToast(t('ui.toast_fail', '更新失败'));
@@ -1069,11 +1111,26 @@
         }
 
         async function saveCooldown() {
-            var sec = parseInt(document.getElementById('input-cooldown').value);
+            var cooldownInput = document.getElementById('input-cooldown');
+            var submitted = cooldownInput ? cooldownInput.value : '';
+            var cooldownSeq = cooldownEditSeq;
+            var sec = parseInt(submitted);
             if (isNaN(sec) || sec < 10) { showToast(t('ui.toast_cooldown_invalid', '冷却时间至少 10 秒')); return; }
-            var r = await callPlugin('set_cooldown', { seconds: sec });
+            var r;
+            pendingCooldownSaves++;
+            try {
+                r = await callPlugin('set_cooldown', { seconds: sec });
+            } finally {
+                pendingCooldownSaves--;
+            }
             if (r && r.cooldown_seconds) {
-                showToast(t('ui.toast_cooldown_updated', '冷却时间已设为 ').replace('{sec}', r.cooldown_seconds) + r.cooldown_seconds + ' 秒');
+                if (cooldownSeq === cooldownEditSeq && (!cooldownInput || cooldownInput.value === submitted)) {
+                    lastSyncedCooldown = String(r.cooldown_seconds);
+                    cooldownDirty = false;
+                }
+                var cdMsg = t('ui.toast_cooldown_updated', '冷却时间已设为 ');
+                showToast(cdMsg.includes('{sec}') ? cdMsg.replace('{sec}', () => r.cooldown_seconds) : cdMsg + r.cooldown_seconds + ' 秒');
+                appliedStatusSeq = loadStatusSeq;
                 loadStatus();
             } else {
                 showToast(t('ui.toast_fail', '更新失败'));
@@ -1093,8 +1150,8 @@
             if (!confirm(t('ui.confirm_clear', '确定要清空所有事件日志吗？'))) return;
             var r = await callPlugin('clear_events');
             if (r && r.cleared !== undefined) {
-                var fmt = t('ui.toast_events_cleared', '已清空 ').replace('{count}', r.cleared);
-                showToast(fmt + r.cleared + ' 条事件');
+                var clearMsg = t('ui.toast_events_cleared', '已清空 ');
+                showToast(clearMsg.includes('{count}') ? clearMsg.replace('{count}', () => r.cleared) : clearMsg + r.cleared + ' 条事件');
                 loadEvents();
                 loadStatus();
             } else {
@@ -1104,6 +1161,20 @@
 
         // ── 初始化 ─
         document.addEventListener('DOMContentLoaded', async function() {
+            var nameInput = document.getElementById('input-name');
+            if (nameInput) {
+                nameInput.addEventListener('input', function() {
+                    nameEditSeq++;
+                    nameDirty = pendingNameSaves > 0 || nameInput.value !== lastSyncedName;
+                });
+            }
+            var cooldownInput = document.getElementById('input-cooldown');
+            if (cooldownInput) {
+                cooldownInput.addEventListener('input', function() {
+                    cooldownEditSeq++;
+                    cooldownDirty = pendingCooldownSaves > 0 || cooldownInput.value !== lastSyncedCooldown;
+                });
+            }
             await loadLocale();
             loadStatus();
             loadEvents();

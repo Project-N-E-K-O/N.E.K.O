@@ -201,8 +201,8 @@ async def _ocr_cycle(args: argparse.Namespace, cycle: int) -> dict[str, Any]:
 async def _browser_cycle(args: argparse.Namespace, cycle: int) -> dict[str, Any]:
     import tempfile
 
-    from nekoclaw.builtin.browser.session import BrowserError, BrowserSession
-    from nekoclaw.builtin.browser.settings import BrowserSettings, BrowserSettingsStore
+    from nekopower.builtin.browser.session import BrowserError, BrowserSession
+    from nekopower.builtin.browser.settings import BrowserSettings, BrowserSettingsStore
 
     # A browser installed on this machine, on a throwaway profile directory
     # that is removed once the browser is closed, whether it started or not:

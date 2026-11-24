@@ -66,6 +66,8 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-11-23-theater-market-recovery-main-merge",
+        "2026-11-19-chatgpt-review-feedback",
         "2026-11-17-chatgpt-independent-settings",
         "2026-11-16-chatgpt-subscription-toggle",
         "2026-11-15-nekoclaw-browser-custom-tts-merge",
@@ -74,12 +76,49 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-11-10-provider-cat-visit-merge",
         "2026-11-11-atlascloud-assist-provider-main-merge",
         "2026-11-10-cat-visit-sync-main-merge",
-
         "2026-11-11-air-basketball-main-merge",
         "2026-11-02-atlascloud-assist-provider-main-merge",
         "2026-11-10-air-basketball-shared-court",
         "2026-11-11-sync-evidence-notices",
-
+        "2026-11-23-emote-maker-frontend-sync",
+        "2026-11-19-theater-market-recovery",
+        "2026-11-22-emote-maker-model-memory-sync",
+        "2026-11-22-star-map-cooldown-after-key-cleanup",
+        "2026-11-22-emote-maker-bailian-sync",
+        "2026-11-23-agent-advanced-game-recognition-merge",
+        "2026-11-23-frontend-i18n-after-capture-mask-merge",
+        "2026-11-22-capture-mask-toggle-after-star-map-cooldown",
+        "2026-11-22-pr03-i18n-rebase",
+        "2026-11-23-agent-advanced-game-recognition",
+        "2026-11-22-frontend-i18n-sync",
+        "2026-11-22-emote-maker-star-map-sync",
+        "2026-11-23-frontend-i18n-after-agent-advanced-merge",
+        "2026-11-22-star-map-label-cooldown-hint",
+        "2026-11-22-drop-dead-api-keys",
+        "2026-11-22-chat-model-rename-after-vision",
+        "2026-11-22-chat-model-rename",
+        "2026-11-22-legacy-vision-chat-model",
+        "2026-11-22-agent-small-tier-memory-browser",
+        "2026-11-22-merge-memory-tier",
+        "2026-11-22-agent-small-tier",
+        "2026-11-22-memory-browser-imprint-merge",
+        "2026-11-21-memory-browser-imprint",
+        "2026-11-21-bailian-workspace-id",
+        "2026-11-21-decision-model-slot",
+        "2026-11-21-emote-maker-review-main-sync",
+        "2026-11-19-eight-locale-gap-fill",
+        "2026-11-21-emote-maker-upstream-sync",
+        "2026-11-18-emote-maker-restore-confirmations",
+        "2026-11-18-emote-maker-upstream-sync",
+        "2026-10-11-emote-group-export",
+        "2026-10-19-emote-dead-cleanup",
+        "2026-10-19-emote-stage-rename",
+        "2026-10-19-emote-copy-cleanup",
+        "2026-10-18-emote-stage-image-missing",
+        "2026-11-18-emote-maker-main-merge",
+        "2026-11-14-emote-wardrobe-dismissible-padding",
+        "2026-10-20-emote-copy-trim",
+        "2026-11-17-remote-pairing-key-help",
         "2026-11-15-nekoclaw-browser-deepseek-tts-merge",
         "2026-11-15-custom-tts-voice-fallback-hint",
         "2026-11-14-nekoclaw-browser-theater-market-merge",
@@ -252,6 +291,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-12-pr3140-gravity-main-merge",
         "2026-10-12-visit-frame-badges-main-merge-4",
         "2026-10-12-visit-frame-badges-main-merge-3",
+        "2026-10-12-visit-ambiguous-names-pr13-pr15-merge",
         "2026-10-12-gravity-cat-settings",
         "2026-10-12-pr14a-debrief-pr3398-merge",
         "2026-10-12-visit-frame-badges-main-merge-2",
@@ -259,7 +299,6 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-12-visit-frame-badges-merge",
         "2026-10-12-pr14a-debrief-ambiguous-names-merge",
         "2026-10-12-pr14a-debrief-main-merge",
-        "2026-10-12-visit-ambiguous-names-pr13-pr15-merge",
         "2026-10-11-vrm-emotion-recovery",
         "2026-10-11-vrm-emotion-load-state-main-rebase",
         "2026-10-11-pr3385-cloudsave-visit-data-busy",
@@ -595,8 +634,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "3721bf171d2ea71b84ff79e2624ff8730b5b69e5d9065faee0582dcb94f33e2f"
-
+LOCALE_KEY_SIGNATURE = "0ac6da80c66e3a847738a77f4e028786407bc293fd2706299d8c3d5c2aa2d639"
 
 
 _BUMP_INSTRUCTIONS = (

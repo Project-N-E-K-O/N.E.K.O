@@ -674,9 +674,9 @@
       "timeout": null
     }
   },
-  "schema_version": 4,
+  "schema_version": 5,
   "sdk_version": "0.1.0",
-  "source_bytes": 37728,
+  "source_bytes": 38370,
   "source_files": [
     "__init__.py",
     "config.schema.json",
@@ -690,5 +690,5 @@
     "i18n/zh-TW.json",
     "plugin.toml"
   ],
-  "source_sha256": "b14bcebb39c3808513d087a5ff09e3296ba1214cd95ed21af594887da643bb2e"
+  "source_sha256": "50e0fb45f1074383f36f67d38138c1bcaac5f03131e53a56c5f6b9df687eb1ef"
 }

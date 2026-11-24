@@ -785,6 +785,7 @@ appearanceTest.describe('filter bar layout and interaction', () => {
         await openDrawerFully(page, MARKET_TOGGLE, MARKET_PANEL)
         await page.setViewportSize({ width: 720, height: 1000 })
       } else {
+        // Narrowed after the page has loaded, so the live reflow is what gets checked.
         await page.goto(`${PREVIEW_ORIGIN}/ui/market`)
         await page.setViewportSize({ width: 320, height: 1000 })
       }
@@ -793,8 +794,8 @@ appearanceTest.describe('filter bar layout and interaction', () => {
       const input = bar.getByRole('textbox')
       await expect(market.getByText('Fixture One', { exact: true })).toBeVisible()
       await expect(market.getByText('Fixture Two', { exact: true })).toBeVisible()
-      // Resizing starts the shared reflow animation. This case checks the
-      // settled wrapping; the frame-by-frame motion cases above cover transit.
+      // Measured until the bar has settled after the resize: one early read caught the
+      // input still at its pre-wrap width (right edge at the viewport, past the controls).
       await expect(async () => {
         const layout = await bar.evaluate(element => {
           const controls = element.querySelector('.wb-filter-bar__controls')!.getBoundingClientRect()
@@ -805,7 +806,7 @@ appearanceTest.describe('filter bar layout and interaction', () => {
         expect(layout.input.top).toBeGreaterThanOrEqual(layout.rules.bottom)
         expect(layout.input.width).toBeGreaterThanOrEqual(200)
         expect(layout.input.right).toBeLessThanOrEqual(layout.controls.right + TOLERANCE)
-      }).toPass({ timeout: 5000 })
+      }).toPass({ timeout: 5_000 })
       await input.fill('Fixture One')
       await expect(market.getByText('Fixture Two', { exact: true })).toHaveCount(0)
       await input.hover()

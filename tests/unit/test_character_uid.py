@@ -492,3 +492,104 @@ def test_backfill_writes_back_what_it_parsed_not_a_second_read(tmp_path, monkeyp
     on_disk = json.loads(path.read_text(encoding="utf-8"))
     assert set(on_disk["猫娘"]) == {"Mine"}
     assert is_valid_character_uid(get_character_uid(on_disk["猫娘"]["Mine"]))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_catgirls", ["corrupt", ["list"], 123, True])
+async def test_get_character_data_falls_back_on_non_dict_catgirls_without_overwriting_disk(
+    tmp_path, bad_catgirls
+):
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    path = Path(cm.get_runtime_config_path("characters.json"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = json.dumps({"当前猫娘": "Other", "猫娘": bad_catgirls}, ensure_ascii=False)
+    path.write_text(raw, encoding="utf-8")
+
+    master_name, her_name, _, catgirls, _, _, _, _, _ = cm.get_character_data()
+    assert master_name
+    assert her_name
+    assert isinstance(catgirls, dict) and catgirls
+    assert path.read_text(encoding="utf-8") == raw
+
+    async_res = await cm.aget_character_data()
+    assert async_res[1] == her_name
+    assert path.read_text(encoding="utf-8") == raw
+
+
+@pytest.mark.asyncio
+async def test_get_character_data_falls_back_on_empty_catgirls_dict_without_overwriting_disk(
+    tmp_path,
+):
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    path = Path(cm.get_runtime_config_path("characters.json"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = json.dumps({"当前猫娘": "Other", "猫娘": {}}, ensure_ascii=False)
+    path.write_text(raw, encoding="utf-8")
+
+    master_name, her_name, _, catgirls, _, _, _, _, _ = cm.get_character_data()
+    assert master_name
+    assert her_name
+    assert isinstance(catgirls, dict) and catgirls
+    assert path.read_text(encoding="utf-8") == raw
+
+    async_res = await cm.aget_character_data()
+    assert async_res[1] == her_name
+    assert path.read_text(encoding="utf-8") == raw
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"当前猫娘": "Other"},
+        {"当前猫娘": "Other", "猫娘": None},
+    ],
+)
+async def test_get_character_data_falls_back_on_missing_or_null_catgirls_without_overwriting_disk(
+    tmp_path, payload
+):
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    path = Path(cm.get_runtime_config_path("characters.json"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = json.dumps(payload, ensure_ascii=False)
+    path.write_text(raw, encoding="utf-8")
+
+    master_name, her_name, _, catgirls, _, _, _, _, _ = cm.get_character_data()
+    assert master_name
+    assert her_name
+    assert isinstance(catgirls, dict) and catgirls
+    assert path.read_text(encoding="utf-8") == raw
+
+    async_res = await cm.aget_character_data()
+    assert async_res[1] == her_name
+    assert path.read_text(encoding="utf-8") == raw
+
+
+@pytest.mark.asyncio
+async def test_get_character_data_persists_current_catgirl_repair_when_catgirls_valid(tmp_path):
+    cm = _make_config_manager(tmp_path / "sync")
+    bootstrap_local_cloudsave_environment(cm)
+    path = _write_characters(cm, {"Alice": {"档案名": "Alice", "昵称": "Alice"}})
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["当前猫娘"] = "Deleted"
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    _master, her_name, *_ = cm.get_character_data()
+    assert her_name == "Alice"
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert on_disk["当前猫娘"] == "Alice"
+
+    cm_async = _make_config_manager(tmp_path / "async")
+    bootstrap_local_cloudsave_environment(cm_async)
+    path_async = _write_characters(cm_async, {"Alice": {"档案名": "Alice", "昵称": "Alice"}})
+    data_async = json.loads(path_async.read_text(encoding="utf-8"))
+    data_async["当前猫娘"] = "DeletedAgain"
+    path_async.write_text(json.dumps(data_async, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    async_res = await cm_async.aget_character_data()
+    assert async_res[1] == "Alice"
+    on_disk_after_async = json.loads(path_async.read_text(encoding="utf-8"))
+    assert on_disk_after_async["当前猫娘"] == "Alice"

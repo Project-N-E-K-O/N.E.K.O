@@ -8,8 +8,27 @@ import secrets
 
 STATE_KEY = 'chatgptSubscription'
 _REVISION_KEY = secrets.token_bytes(32)
-TEXT_SLOTS = frozenset(('conversation', 'summary', 'gameMain', 'gameSummary',
-                        'correction', 'emotion', 'vision', 'agent'))
+# Chat-completion slots only. The decision slot speaks its own protocol, and the
+# vision slot is retired (images go to the chat model).
+TEXT_SLOTS = frozenset(('conversation', 'memory', 'gameMain', 'gameSummary', 'recognition',
+                        'gameRecognition', 'agent', 'agentSmall', 'agentAdvanced'))
+# Provider value an absent ``<slot>ModelProvider`` field stands for; the settings
+# page's MODEL_DEFAULT_PROVIDER table.
+_DEFAULT_SLOT_PROVIDERS = {
+    'image': 'disabled', 'omni': 'follow_core',
+    'gameMain': 'follow_conversation', 'gameSummary': 'follow_memory',
+    'gameRecognition': 'follow_recognition', 'agentSmall': 'follow_recognition',
+    'agentAdvanced': 'follow_agent',
+}
+
+
+def default_slot_provider(slot):
+    return _DEFAULT_SLOT_PROVIDERS.get(slot, 'follow_assist')
+
+
+def runtime_model_type(slot):
+    """Map a settings slot prefix (``gameMain``) to its runtime model type (``game_main``)."""
+    return ''.join(f'_{char.lower()}' if char.isupper() else char for char in slot)
 
 
 def supported_slots():

@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from functools import partial
 from unittest.mock import AsyncMock
 
@@ -30,13 +31,27 @@ pytestmark = pytest.mark.runtime
 
 async def _output(ingress):
     scorer = CandidateScorer()
-    selector = make_selector(scorer)
+    # The candidate selector's and the runtime's own 1 s scoring and prefix
+    # deadlines are pushed out for the same reason as the bridge allowances
+    # below.
+    selector = make_selector(scorer, deadline_seconds=30.0)
+    config = replace(
+        _config(), scoring_deadline_seconds=30.0, scoring_close_timeout_seconds=30.0,
+        prefix_deadline_seconds=30.0,
+    )
     factory = PrewireInterceptionFactory(
-        _config(), score_backend=RawScorerMustNotRun(), classifier=_Classifier(),
+        config, score_backend=RawScorerMustNotRun(), classifier=_Classifier(),
         tse_factory=lambda _: _Tse(), candidate_factory=lambda _: selector,
         candidate_source_factory=lambda _: WindowSource(lambda start: (100,)),
     )
-    bridge = ActiveSessionInterceptionBridge(factory, terminal_on_unavailable=True)
+    # These cases are about who gets told what after a handover, not about
+    # how long scoring may take. ``output(long=True)`` runs a dozen of these
+    # bridges back to back, each scoring in a worker thread, so the bridge's
+    # 1 s production process/close allowances can run out on a stalled
+    # runner and turn the setup itself into ``interception_process_timeout``.
+    bridge = ActiveSessionInterceptionBridge(
+        factory, terminal_on_unavailable=True, process_timeout_s=30.0, close_timeout_s=30.0,
+    )
     try:
         generation = object()
         await bridge.process(bytes([1, 0]) * 1600, sample_rate_hz=16000,

@@ -81,7 +81,7 @@ GitHub で、次の名前の空の公開リポジトリを作成します：
 n.e.k.o_plugin_hello_world
 ```
 
-命名規則は `n.e.k.o_plugin_<プラグイン ID>` です。プラグインディレクトリにはすでに必要なファイルがあるため、リポジトリ作成時に GitHub で README、`.gitignore`、License を追加しないでください。
+推奨される命名規則は `n.e.k.o_plugin_<プラグイン ID>` です。名前が異なる場合、`neko-plugin check -r --market-release` は warning を出すだけです。プラグインディレクトリにはすでに必要なファイルがあるため、リポジトリ作成時に GitHub で README、`.gitignore`、License を追加しないでください。
 
 次にプラグインディレクトリに移動し、ソースを commit して push します：
 
@@ -219,7 +219,7 @@ cd ../../..
 uv run neko-plugin publish hello_world
 ```
 
-Market は新しく公開された stable バージョンを最新バージョンにします。`latest` はバージョン番号の大小ではなく、Market での公開時刻によって決まります。新しいバージョンを公開した後に、古いバージョンを追加で公開しないでください。
+匿名公開では PEP 440 に従い、現在の stable より新しいバージョンを指定してください。現在のバージョンが旧形式の場合、CLI が表示する Market のリンクを開き、作者として一度 Release を提出してください。提出が置き換えられていた場合はエラーで終了します。 `platform_attention` もエラーで終了し、Market 運営者の対応が必要です。
 
 ## 8. beta を公開する、または更新内容を書く
 
@@ -337,4 +337,4 @@ check
 
 このチュートリアルでは、プラグインディレクトリ自体に `.git/` があり、標準の `verify.yml` と `release.yml` があることを前提にしています。現在のクイックスタートにある `neko-plugin init` で作成したプラグインは、すでにこの条件を満たしています。
 
-既存のプラグインが外側の N.E.K.O リポジトリだけで管理され、プラグインディレクトリ自身に `.git/` がない場合、現在の `publish` は停止します。このようなディレクトリを公開可能なプラグインリポジトリへ自動変換するコマンドは、現在の CLI にはありません。ディレクトリのコピー、パッケージの import、シンボリックリンクで公開フローを代用しないでください。
+既存のプラグインが外側の N.E.K.O リポジトリだけで管理され、プラグインディレクトリ自身に `.git/` がない場合、現在の `publish` は停止します。このディレクトリは `neko-plugin setup-repo <plugin> --git --github-actions` で変換できます（`--remote <url>` を付けると `origin` も設定します）。プラグイン専用の Git リポジトリと標準ワークフローが作成されます。既存の `.github/workflows/release.yml` はそのまま残ります。その後 `publish` がリリースワークフローが最新でないと報告した場合は、`neko-plugin setup-repo <plugin> --upgrade-github-actions --dry-run` で確認してから、`--dry-run` を外して実行してください。`neko-plugin create-repo <plugin>` を使うと `gh` で GitHub リポジトリを作成できます。ディレクトリのコピー、パッケージの import、シンボリックリンクで公開フローを代用しないでください。

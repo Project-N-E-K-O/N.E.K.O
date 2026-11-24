@@ -319,3 +319,34 @@ async def test_invalid_character_status_is_invalid_argument(monkeypatch):
         assert failure.value.code == 'INVALID_ARGUMENT'
     finally:
         await http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_reserved_route_character_allowed_while_unsafe_targets_rejected(monkeypatch):
+    """Existing characters named after reserved routes remain queryable in plugin memory operations."""
+    fetched = []
+
+    async def fake_fetch(_ctx, method, path, body=None):
+        fetched.append((method, path, body))
+        if '/query_memory/' in path:
+            return {'results': [], 'query': '', 'candidates_total': 0, 'elapsed_ms': 1.0}
+        return {'sections': []}
+
+    monkeypatch.setattr(adapter, '_fetch', fake_fetch)
+
+    for name in ('focus', 'market'):
+        persona = await adapter.get_persona(Context(), {'target': MemoryTarget.private(name).to_wire()})
+        search = await adapter.search(Context(), {'target': MemoryTarget.private(name).to_wire(), 'query': 'tea'})
+        assert persona == {'target': {'kind': 'private', 'character': name}, 'sections': []}
+        assert search['items'] == []
+    assert fetched == [
+        ('GET', '/internal/memory/focus/persona', None),
+        ('POST', '/query_memory/focus', {'query': 'tea'}),
+        ('GET', '/internal/memory/market/persona', None),
+        ('POST', '/query_memory/market', {'query': 'tea'}),
+    ]
+
+    for bad_name in ('../focus', 'CON', 'x' * 51):
+        with pytest.raises(ServerDomainError) as failure:
+            await adapter.search(Context(), {'target': MemoryTarget.private(bad_name).to_wire(), 'query': 'tea'})
+        assert failure.value.code == 'INVALID_ARGUMENT'

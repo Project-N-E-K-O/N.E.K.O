@@ -461,7 +461,7 @@ async def _invoke_emotion_tier(prompt: str, *, timeout: float, label: str) -> st
 
     try:
         cfg_mgr = get_config_manager()
-        cfg = await cfg_mgr.aget_model_api_config('emotion')
+        cfg = await cfg_mgr.aget_model_api_config('recognition')
     except Exception as e:
         _report_failure(label, 'emotion_config_unavailable', _failure_detail(e))
         return None
@@ -505,7 +505,7 @@ async def _invoke_capable_tier(prompt: str, *, timeout: float, label: str) -> st
 
     Deep-search query derivation is a step up from the emotion-tier candidate
     pass: it runs once, at open time, off the user hot path, so it uses the
-    heavier ``summary`` tier (the same tier the window search summarizer uses).
+    heavier ``memory`` tier (the same tier the window search summarizer uses).
     Returns raw response text or None on any failure.
     """
     from utils.config_manager import get_config_manager
@@ -514,7 +514,7 @@ async def _invoke_capable_tier(prompt: str, *, timeout: float, label: str) -> st
 
     try:
         cfg_mgr = get_config_manager()
-        cfg = await cfg_mgr.aget_model_api_config('summary')
+        cfg = await cfg_mgr.aget_model_api_config('memory')
     except Exception as e:
         _report_failure(label, 'summary_config_unavailable', _failure_detail(e))
         return None

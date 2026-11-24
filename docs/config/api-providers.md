@@ -6,8 +6,8 @@ Do not depend on a provider count or model-ID snapshot in documentation. Both ch
 
 ## Core and assist profiles
 
-- **Core** drives the primary conversation/realtime path. Loader fields are `core_url` or `core_urls`, `core_model`, and `core_api_key`.
-- **Assist** supports role-specific text/vision work. Loader fields include `openrouter_url(s)`, optional token-plan URLs, conversation/summary/correction/emotion/vision/agent models, credential placeholders, and `provider_type`.
+- **Core** (shown in the settings page as *Voice Model Provider*) drives the primary conversation/realtime path. Loader fields are `core_url` or `core_urls`, `core_model`, and `core_api_key`.
+- **Assist** (shown in the settings page as *General Model Provider*) supports role-specific text/vision work. Loader fields include `openrouter_url(s)`, optional token-plan URLs, conversation/summary/correction/emotion/vision/agent models, credential placeholders, and `provider_type`.
 
 Not every provider implements every role.
 

@@ -695,6 +695,23 @@ if _sync_policy not in ("warn", "reject"):
     _sync_policy = "warn"
 SYNC_CALL_IN_HANDLER_POLICY = _sync_policy
 
+# Plugin permission checks master switch. Off by default: checks are in force.
+# Switched on, the host still judges and records every use but refuses none.
+# Only the host's own configuration can set it; plugins cannot.
+# Env: NEKO_PLUGIN_PERMISSION_CHECKS_DISABLED, default=false
+PLUGIN_PERMISSION_CHECKS_DISABLED = _get_bool_env("NEKO_PLUGIN_PERMISSION_CHECKS_DISABLED", False)
+
+# Deprecated alias of the master switch, read only when set and kept for one
+# release: "off" / "observe" switch checks off, "enforce" leaves them on. Any
+# other value is ignored. None when unset. See plugin.core.capability_policy.
+# Env: NEKO_PLUGIN_CAPABILITY_POLICY
+def _get_optional_lower_env(name: str) -> str | None:
+    value = os.getenv(name)
+    return value.strip().lower() if value is not None else None
+
+
+PLUGIN_CAPABILITY_POLICY = _get_optional_lower_env("NEKO_PLUGIN_CAPABILITY_POLICY")
+
 # ========== Plugin-state persistence ==========
 
 # Shared plugin-state persistence backend for freeze and autosave.
@@ -975,6 +992,8 @@ __all__ = [
     "PLUGIN_MESSAGE_FORWARD_LOG_DEDUP_WINDOW_SECONDS",
     "PLUGIN_BUS_CHANGE_LOG_DEDUP_WINDOW_SECONDS",
     "SYNC_CALL_IN_HANDLER_POLICY",
+    "PLUGIN_PERMISSION_CHECKS_DISABLED",
+    "PLUGIN_CAPABILITY_POLICY",
 
     # Message plane
     "MESSAGE_PLANE_ZMQ_RPC_ENDPOINT",

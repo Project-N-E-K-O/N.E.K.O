@@ -5,7 +5,6 @@
 import asyncio
 import ipaddress
 import threading
-from urllib.parse import urlsplit
 
 import httpx
 from fastapi import Depends, HTTPException, Request, Response
@@ -20,6 +19,12 @@ _lock = threading.Lock()
 
 
 def local_settings(request: Request, response: Response):
+    """Keep account controls on this machine: the OAuth callback is a loopback port.
+
+    Cross-site writes are already rejected by the config router's mutation
+    guard (same origin, JSON body); this adds the loopback-only rule, which
+    also refuses remote instance sessions and DNS-rebound host names.
+    """
     response.headers["Cache-Control"] = "no-store"
     try:
         local = request.client and ipaddress.ip_address(request.client.host).is_loopback
@@ -28,22 +33,8 @@ def local_settings(request: Request, response: Response):
     except ValueError:
         local_host = False
         local = False
-    origin = request.headers.get("origin")
-    if (
-        not local
-        or not local_host
-        or request.headers.get("x-neko-chatgpt") != "1"
-        or (
-            origin
-            and (
-                urlsplit(origin).netloc != request.url.netloc
-                or urlsplit(origin).scheme != request.url.scheme
-            )
-        )
-    ):
-        raise HTTPException(
-            403, "ChatGPT account settings require a same-origin local connection."
-        )
+    if not local or not local_host:
+        raise HTTPException(403, "ChatGPT account settings require a local connection.")
 
 
 class AccountRequest(BaseModel):

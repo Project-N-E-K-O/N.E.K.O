@@ -34,7 +34,9 @@ let _loadedChatGPTIndependentFields = {};
 const _aliyunUsApiWarningShownKeys = new Set();
 
 // 所有模型类型
-const MODEL_TYPES = ['conversation', 'vision', 'summary', 'correction', 'emotion', 'omni', 'agent', 'tts', 'gameMain', 'gameSummary'];
+// A follower slot comes after the slot it follows: loading a saved config walks this list, and a
+// follower copies its source's fields when its own provider is applied.
+const MODEL_TYPES = ['conversation', 'memory', 'recognition', 'omni', 'agent', 'agentAdvanced', 'agentSmall', 'tts', 'gameMain', 'gameSummary', 'gameRecognition', 'decision'];
 // Model types that support connectivity testing.
 // All model types including TTS are testable — TTS follows the same
 // provider resolution logic (follow_core/follow_assist/custom).
@@ -57,29 +59,91 @@ const MIMO_TOKEN_PLAN_OPENROUTER_URLS = [
 const MODEL_DEFAULT_PROVIDER = {
     omni: 'follow_core',
     gameMain: 'follow_conversation',
-    gameSummary: 'follow_summary',
+    gameSummary: 'follow_memory',
+    gameRecognition: 'follow_recognition',
+    agentSmall: 'follow_recognition',
+    agentAdvanced: 'follow_agent',
 };
+// follow_<source> 下拉值 → 被跟随的槽位；照搬后端 get_core_config 的 follow_* 规则。
+const FOLLOW_SOURCE_BY_PROVIDER = Object.freeze({
+    follow_conversation: 'conversation',
+    follow_memory: 'memory',
+    follow_recognition: 'recognition',
+    follow_agent: 'agent',
+});
+// 没单独配全（地址和模型名）就整格等于另一档的格子 → 那一档；和后端 core_config.py 的 WHOLE_FOLLOW_SLOTS 一致。
+const WHOLE_FOLLOW_SOURCE = Object.freeze({
+    agentSmall: 'recognition',
+    agentAdvanced: 'agent',
+    gameRecognition: 'recognition',
+});
+// 每格下拉里排在最前面的跟随选项。
+const FOLLOW_OPTIONS_BY_TYPE = Object.freeze({
+    gameMain: ['follow_conversation'],
+    gameSummary: ['follow_memory'],
+    gameRecognition: ['follow_recognition'],
+    agentSmall: ['follow_recognition', 'follow_agent'],
+    agentAdvanced: ['follow_agent'],
+});
+const FOLLOW_OPTION_LABELS = Object.freeze({
+    follow_conversation: ['api.customModelProviderFollowConversation', '跟随聊天模型'],
+    follow_memory: ['api.customModelProviderFollowSummary', '跟随记忆整理模型'],
+    follow_recognition: ['api.customModelProviderFollowEmotion', '跟随识别模型'],
+    follow_agent: ['api.customModelProviderFollowAgent', '跟随使魔模型·通用'],
+});
+// 被跟随的槽位 → 可以跟随它的槽位（源槽位改动时要同步刷新）。
+const MODEL_FOLLOWERS_BY_SOURCE = Object.freeze({
+    conversation: ['gameMain'],
+    memory: ['gameSummary'],
+    recognition: ['agentSmall', 'gameRecognition'],
+    agent: ['agentSmall', 'agentAdvanced'],
+});
+function followedModelType(provider) {
+    return FOLLOW_SOURCE_BY_PROVIDER[provider] || '';
+}
+// 这一格现在实际跟随哪一格：跟随选项之外，整格跟随的格子选「自定义」但地址、模型名没填全时，
+// 后端整格用它跟随的那一档，设置页的检测、指示灯和占位文字也都跟着那一档。
+function effectiveFollowSource(modelType) {
+    const select = document.getElementById(`${modelType}ModelProvider`);
+    if (!select) return '';
+    const followed = followedModelType(select.value);
+    if (followed) return followed;
+    const wholeSource = WHOLE_FOLLOW_SOURCE[modelType];
+    if (wholeSource && select.value === 'custom') {
+        const url = document.getElementById(`${modelType}ModelUrl`);
+        const id = document.getElementById(`${modelType}ModelId`);
+        if (!(url && url.value.trim() && id && id.value.trim())) return wholeSource;
+    }
+    return '';
+}
 const MODEL_CONFIG_EXPANSION_PATHS = {
     conversation: ['conversation'],
-    summary: ['summary'],
+    memory: ['memory'],
     gameMain: ['game', 'game-main'],
     gameSummary: ['game', 'game-summary'],
-    correction: ['correction'],
-    emotion: ['emotion'],
-    vision: ['vision'],
+    gameRecognition: ['game', 'game-recognition'],
+    recognition: ['recognition'],
+    decision: ['decision'],
     agent: ['agent'],
+    agentSmall: ['agent-small'],
+    agentAdvanced: ['agent-advanced'],
     omni: ['omni'],
     tts: ['tts'],
 };
 const MODEL_PROVIDER_FIELD_BY_TYPE = {
     conversation: 'conversation_model',
-    summary: 'summary_model',
+    memory: 'memory_model',
     gameMain: 'conversation_model',
-    gameSummary: 'summary_model',
-    correction: 'correction_model',
-    emotion: 'emotion_model',
+    gameSummary: 'memory_model',
+    recognition: 'recognition_model',
+    decision: 'decision_model',
+    // No vision card any more; kept for getAssistDefaultTierModelId(), whose
+    // agent default falls back to the provider's vision model (as the backend does).
     vision: 'vision_model',
     agent: 'agent_model',
+    agentSmall: 'recognition_model',
+    agentAdvanced: 'agent_model',
+    gameRecognition: 'recognition_model',
     omni: 'core_model',
 };
 // 当前加载到页面中的 GPT-SoVITS 状态：none | enabled | disabled
@@ -87,6 +151,8 @@ let _loadedGptSovitsState = 'none';
 // 上方普通 TTS 配置是否被用户在本页改动过
 let _ttsConfigDirty = false;
 let _customTtsDraft = null;
+// 看图档已从设置页隐藏：老用户存的看图配置保存时原样保留，只有「清空」时才一并清掉。
+let _clearLegacyVisionOnSave = false;
 function markTtsConfigDirty() {
     if (_isLoadingSavedConfig) return;
     _ttsConfigDirty = true;
@@ -329,6 +395,127 @@ function updateMimoTokenPlanControls() {
     }
 
     keepApiSettingsBottomIfNeeded(wasAtBottom);
+}
+
+// ==================== 百炼业务空间 ID（决策模型原生接口） ====================
+// 百炼的原生决策接口只挂在带业务空间 ID 的专属域名上；没填时后端用普通聊天模型代替。
+// 北京（qwen）和新加坡（qwen_intl）各存一份，输入框只编辑决策模型当前实际用的那一份。
+const BAILIAN_WORKSPACE_ID_FIELDS = {
+    qwen: 'assistWorkspaceIdQwen',
+    qwen_intl: 'assistWorkspaceIdQwenIntl',
+};
+// 与后端 utils/decision_client/workspace.py 一致：单个 DNS 标签，字母数字和 -，最长 63。
+const BAILIAN_WORKSPACE_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const _bailianWorkspaceIds = { assistWorkspaceIdQwen: '', assistWorkspaceIdQwenIntl: '' };
+// 决定决策模型实际服务商的控件；任一变化都要刷新业务空间 ID 行。
+const BAILIAN_WORKSPACE_PROVIDER_SELECTS = ['assistApiSelect', 'coreApiSelect', 'decisionModelProvider', 'enableCustomApi'];
+let _bailianWorkspaceActiveField = '';
+
+// 用户常直接粘贴整个 API Host（llm-xxx.cn-beijing.maas.aliyuncs.com，可带 https:// 和路径），取最前面那段。
+const BAILIAN_API_HOST_PATTERN = /^(?:https:\/\/)?([^./:\s]+)\.[a-z0-9-]+\.maas\.aliyuncs\.com(?:[/:?#].*)?$/i;
+
+function normalizeBailianWorkspaceId(value) {
+    let raw = String(value || '').trim();
+    if (!raw) return { value: '', valid: true };
+    const hostMatch = BAILIAN_API_HOST_PATTERN.exec(raw);
+    if (hostMatch) raw = hostMatch[1];
+    const lowered = raw.toLowerCase();
+    // eslint-disable-next-line no-control-regex
+    const ascii = /^[\x00-\x7f]*$/.test(raw);
+    return { value: lowered, valid: ascii && BAILIAN_WORKSPACE_ID_PATTERN.test(lowered) };
+}
+
+function getDecisionEffectiveProviderKey() {
+    const assistSel = document.getElementById('assistApiSelect');
+    const assistApi = assistSel ? assistSel.value : '';
+    const enableCustomApi = document.getElementById('enableCustomApi');
+    if (!enableCustomApi || !enableCustomApi.checked) return assistApi;
+    const decisionSel = document.getElementById('decisionModelProvider');
+    const selected = decisionSel ? decisionSel.value : '';
+    if (!selected || selected === 'follow_assist') return assistApi;
+    if (selected === 'follow_core') {
+        const coreSel = document.getElementById('coreApiSelect');
+        return coreSel ? coreSel.value : '';
+    }
+    if (selected === 'custom') return '';
+    return selected;
+}
+
+function getBailianWorkspaceIdForProvider(providerKey) {
+    const field = BAILIAN_WORKSPACE_ID_FIELDS[providerKey];
+    if (!field) return '';
+    const raw = String(_bailianWorkspaceIds[field] || '').trim();
+    const { value, valid } = normalizeBailianWorkspaceId(raw);
+    // 非法值原样交给后端，由后端返回 invalid_workspace_id，不在前端悄悄改写。
+    return valid ? value : raw;
+}
+
+function getBailianWorkspaceDocUrl(providerKey) {
+    // 「迁移至业务空间专属域名」一节说明了在哪里复制 API Host（即业务空间专属域名）。
+    if (providerKey === 'qwen') {
+        return 'https://help.aliyun.com/zh/model-studio/regions#h2_migrate_domain';
+    }
+    const lang = String((window.i18next && window.i18next.language) || document.documentElement.lang || '').toLowerCase();
+    const docLang = lang.startsWith('zh') ? 'zh' : 'en';
+    return `https://www.alibabacloud.com/help/${docLang}/model-studio/regions#h2_migrate_domain`;
+}
+
+function updateBailianWorkspaceControls() {
+    const row = document.getElementById('bailianWorkspaceRow');
+    const input = document.getElementById('bailianWorkspaceIdInput');
+    if (!row || !input) return;
+    const providerKey = getDecisionEffectiveProviderKey();
+    const field = BAILIAN_WORKSPACE_ID_FIELDS[providerKey] || '';
+    if (field !== _bailianWorkspaceActiveField) {
+        input.value = field ? (_bailianWorkspaceIds[field] || '') : '';
+        _bailianWorkspaceActiveField = field;
+    }
+    row.style.display = field ? 'flex' : 'none';
+    const link = document.getElementById('bailianWorkspaceIdDocLink');
+    if (link && field) link.href = getBailianWorkspaceDocUrl(providerKey);
+    updateBailianWorkspaceValidity();
+}
+
+function updateBailianWorkspaceValidity() {
+    const input = document.getElementById('bailianWorkspaceIdInput');
+    const errorEl = document.getElementById('bailianWorkspaceIdError');
+    if (!input) return true;
+    const { valid } = normalizeBailianWorkspaceId(input.value);
+    if (errorEl) errorEl.style.display = valid ? 'none' : 'block';
+    input.setAttribute('aria-invalid', valid ? 'false' : 'true');
+    return valid;
+}
+
+function onBailianWorkspaceInput() {
+    const input = document.getElementById('bailianWorkspaceIdInput');
+    if (!input || !_bailianWorkspaceActiveField) return;
+    _bailianWorkspaceIds[_bailianWorkspaceActiveField] = input.value.trim();
+    updateBailianWorkspaceValidity();
+}
+
+function applyLoadedBailianWorkspaceIds(data) {
+    Object.values(BAILIAN_WORKSPACE_ID_FIELDS).forEach(field => {
+        _bailianWorkspaceIds[field] = typeof data[field] === 'string' ? data[field] : '';
+    });
+    _bailianWorkspaceActiveField = '';
+    updateBailianWorkspaceControls();
+}
+
+/**
+ * 保存用：提交合法的业务空间 ID。当前显示的那份非法时返回 null 让保存中止；
+ * 切走后看不到的那份非法值不提交（服务端保留原值），免得用户看不到原因却存不了。
+ */
+function bailianWorkspacePayload() {
+    const payload = {};
+    for (const field of Object.values(BAILIAN_WORKSPACE_ID_FIELDS)) {
+        const { value, valid } = normalizeBailianWorkspaceId(_bailianWorkspaceIds[field]);
+        if (valid) {
+            payload[field] = value;
+        } else if (field === _bailianWorkspaceActiveField) {
+            return null;
+        }
+    }
+    return payload;
 }
 
 function isAliyunUsApiUrl(url) {
@@ -845,6 +1032,10 @@ function buildProviderSelectDropdownMenu(select) {
 }
 
 function syncProviderSelectDropdowns(targetSelect = null, { rebuild = false } = {}) {
+    // 下拉框被程序改值（加载配置、联动）时不会触发 change，这里顺手刷新业务空间 ID 行。
+    if (!targetSelect || BAILIAN_WORKSPACE_PROVIDER_SELECTS.includes(targetSelect.id)) {
+        updateBailianWorkspaceControls();
+    }
     const selects = targetSelect
         ? [targetSelect]
         : Array.from(document.querySelectorAll('.api-provider-select[data-dropdown-enhanced="true"]'));
@@ -1215,7 +1406,7 @@ function isStructuralTtsOnlyProvider(pk) {
     const p = _assistApiProviders[pk] || _keyBookApiProviders[pk];
     if (!p || typeof p !== 'object') return false;
     if (!p.tts_default_model && !p.tts_default_voice) return false;
-    // 任意 LLM 模型字段（conversation_model / summary_model / ...）非空 → 不是纯 TTS。
+    // 任意 LLM 模型字段（conversation_model / memory_model / ...）非空 → 不是纯 TTS。
     return !MODEL_TYPES.some(mt => {
         if (mt === 'tts' || mt === 'omni') return false;
         const v = p[`${mt}_model`];
@@ -1347,7 +1538,7 @@ function getProviderDefaultModelId(providerKey, modelType) {
     const field = MODEL_PROVIDER_FIELD_BY_TYPE[modelType];
     if (field && profile[field]) return String(profile[field]).trim();
     if (modelType === 'gameMain' && profile.conversation_model) return String(profile.conversation_model).trim();
-    if (modelType === 'gameSummary' && profile.summary_model) return String(profile.summary_model).trim();
+    if (modelType === 'gameSummary' && profile.memory_model) return String(profile.memory_model).trim();
     return '';
 }
 
@@ -1356,13 +1547,10 @@ function getProviderModeSourceKey(modelType, providerMode, visited = new Set()) 
     const visitKey = `${modelType}:${providerMode}`;
     if (visited.has(visitKey)) return '';
     visited.add(visitKey);
-    if (providerMode === 'follow_conversation') {
-        const sourceSelect = document.getElementById('conversationModelProvider');
-        return getProviderModeSourceKey('conversation', sourceSelect ? sourceSelect.value : '', visited);
-    }
-    if (providerMode === 'follow_summary') {
-        const sourceSelect = document.getElementById('summaryModelProvider');
-        return getProviderModeSourceKey('summary', sourceSelect ? sourceSelect.value : '', visited);
+    const followedType = followedModelType(providerMode);
+    if (followedType) {
+        const sourceSelect = document.getElementById(`${followedType}ModelProvider`);
+        return getProviderModeSourceKey(followedType, sourceSelect ? sourceSelect.value : '', visited);
     }
     if (providerMode === 'follow_core') {
         const coreSelect = document.getElementById('coreApiSelect');
@@ -1386,8 +1574,10 @@ function setModelIdFieldHidden(modelType, hidden) {
 
 function applyFixedModelProviderUi(modelType, providerMode) {
     const providerKey = getProviderModeSourceKey(modelType, providerMode);
+    // 跟随另一格时按被跟随那一格的档位取固定模型（使魔模型·小跟随使魔模型时取 agent_model）
+    const tierType = followedModelType(providerMode) || modelType;
     const fixedModel = isFixedModelProvider(providerKey)
-        ? getProviderDefaultModelId(providerKey, modelType)
+        ? getProviderDefaultModelId(providerKey, tierType)
         : '';
     const input = document.getElementById(`${modelType}ModelId`);
     if (fixedModel && input) {
@@ -1403,12 +1593,16 @@ function applyFixedModelProviderUi(modelType, providerMode) {
 function getResolvedCustomModelId(modelType, providerMode) {
     if (!modelType) return '';
     const providerKey = getProviderModeSourceKey(modelType, providerMode);
+    const tierType = followedModelType(providerMode) || modelType;
     const fixedModel = isFixedModelProvider(providerKey)
-        ? getProviderDefaultModelId(providerKey, modelType)
+        ? getProviderDefaultModelId(providerKey, tierType)
         : '';
     if (fixedModel) return fixedModel;
     const input = document.getElementById(`${modelType}ModelId`);
-    return input ? input.value.trim() : '';
+    const typed = input ? input.value.trim() : '';
+    // 整格跟随的格子留空时用它跟随的那一档：连通性测试要测的就是占位文字里那个模型
+    if (!typed && WHOLE_FOLLOW_SOURCE[modelType]) return resolveSlotModelState(modelType).defaultModelId;
+    return typed;
 }
 
 function populateModelProviderDropdowns() {
@@ -1417,34 +1611,23 @@ function populateModelProviderDropdowns() {
         if (!sel) return;
         sel.innerHTML = '';
 
-        if (mt === 'gameMain') {
-            appendModelProviderOption(
-                sel,
-                'follow_conversation',
-                'api.customModelProviderFollowConversation',
-                '跟随文本对话模型'
-            );
-        } else if (mt === 'gameSummary') {
-            appendModelProviderOption(
-                sel,
-                'follow_summary',
-                'api.customModelProviderFollowSummary',
-                '跟随摘要模型'
-            );
-        }
+        (FOLLOW_OPTIONS_BY_TYPE[mt] || []).forEach(value => {
+            const [labelKey, fallback] = FOLLOW_OPTION_LABELS[value];
+            appendModelProviderOption(sel, value, labelKey, fallback);
+        });
 
         // follow_core
-        appendModelProviderOption(sel, 'follow_core', 'api.customModelProviderFollowCore', '跟随核心API');
+        appendModelProviderOption(sel, 'follow_core', 'api.customModelProviderFollowCore', '跟随语音模型供应商');
 
         // follow_assist
-        appendModelProviderOption(sel, 'follow_assist', 'api.customModelProviderFollowAssist', '跟随辅助API');
+        appendModelProviderOption(sel, 'follow_assist', 'api.customModelProviderFollowAssist', '跟随通用模型供应商');
 
         // Each non-free provider from _assistApiProviders
         Object.keys(_assistApiProviders).forEach(pk => {
             if (pk === 'free') return;
             if (isProviderRestricted(pk)) return;
             // 特异 TTS provider（tts_dropdown_only）仅在 TTS 下拉里出现，不污染
-            // conversation/summary/correction/emotion/vision/agent/omni 的下拉。
+            // conversation/summary/emotion/agent/omni 的下拉。
             // 成员由后端 tts_provider_registry 驱动；注册表元数据缺失时 getTtsProviderMeta
             // 用结构信号兜底，前端始终不硬编码 provider key。
             const _spFilter = getTtsProviderMeta(pk);
@@ -1583,8 +1766,8 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
         removeKeyBookLink(input);
     };
 
-    if (provider === 'follow_conversation' || provider === 'follow_summary') {
-        const sourceType = provider === 'follow_conversation' ? 'conversation' : 'summary';
+    if (followedModelType(provider)) {
+        const sourceType = followedModelType(provider);
         const sourceUrl = document.getElementById(`${sourceType}ModelUrl`);
         const sourceModel = document.getElementById(`${sourceType}ModelId`);
         const sourceKey = document.getElementById(`${sourceType}ModelApiKey`);
@@ -1775,7 +1958,7 @@ function updateTtsVoiceFallbackHint() {
     const translated = window.t ? window.t(key) : '';
     hint.textContent = translated && translated !== key
         ? translated
-        : 'Voice ID 未填写时，没有设置音色的角色将使用核心 API 自带的声音。';
+        : 'Voice ID 未填写时，没有设置音色的角色将使用语音模型自带的声音。';
     hint.style.display = 'block';
 }
 
@@ -1819,6 +2002,7 @@ function updateGptSovitsTutorialLink() {
 
 // 语言切换时同步更新教程文档链接（中文↔其它语言走不同文档）
 window.addEventListener('localechange', updateGptSovitsTutorialLink);
+window.addEventListener('localechange', () => updateLegacyVisionNotice());
 window.addEventListener('localechange', () => {
     updateTtsProtocolHint(document.getElementById('ttsModelProvider')?.value || '');
     updateTtsVoiceFallbackHint();
@@ -1874,13 +2058,15 @@ function removeKeyBookLink(input) {
 
 const MODEL_TIER_BY_TYPE = {
     conversation: 'conversation',
-    summary: 'summary',
+    memory: 'memory',
     gameMain: 'conversation',
-    gameSummary: 'summary',
-    correction: 'correction',
-    emotion: 'emotion',
-    vision: 'vision',
+    gameSummary: 'memory',
+    gameRecognition: 'recognition',
+    recognition: 'recognition',
+    decision: 'decision',
     agent: 'agent',
+    agentSmall: 'recognition',
+    agentAdvanced: 'agent',
 };
 const MODEL_PICKER_UNAVAILABLE_TEXT = {
     noProvider: ['api.modelPicker.unavailable.noProvider', '请先选择服务商'],
@@ -2028,8 +2214,8 @@ function resolveSlotModelState(modelType, visited = new Set()) {
     const provider = providerSel ? providerSel.value : '';
     const followsApi = provider === 'follow_core' || provider === 'follow_assist';
 
-    if (provider === 'follow_conversation' || provider === 'follow_summary') {
-        return mirrorSlotModelState(provider === 'follow_conversation' ? 'conversation' : 'summary', visited);
+    if (followedModelType(provider)) {
+        return mirrorSlotModelState(followedModelType(provider), visited);
     }
 
     if (modelType === 'omni') {
@@ -2071,7 +2257,7 @@ function resolveSlotModelState(modelType, visited = new Set()) {
         // 小游戏槽跟随 API 时不采用输入值，直接取对应 API 的档位默认。
         if (provider === 'follow_assist') return {
             defaultModelId: getAssistTierModelId(tier)
-                || (tier === 'summary' ? getAssistTierModelId('conversation') : ''),
+                || (tier === 'memory' ? getAssistTierModelId('conversation') : ''),
             acceptsTypedModelId: false,
             fixedModelProvider: '',
         };
@@ -2101,7 +2287,12 @@ function resolveSlotModelState(modelType, visited = new Set()) {
         };
     }
 
-    // custom 留空时后端沿用快照里的值；小游戏槽那份是内置常量，不展示
+    // custom 留空时后端沿用快照里的值；小游戏槽那份是内置常量，不展示；
+    // 整格跟随的格子没填全时就是它跟随的那一档
+    if (WHOLE_FOLLOW_SOURCE[modelType]) {
+        // 只镜像默认模型名：这一格是自定义输入框，不显示「免费版使用固定模型」这类提示
+        return { ...mirrorSlotModelState(WHOLE_FOLLOW_SOURCE[modelType], visited), acceptsTypedModelId: true, fixedModelProvider: '' };
+    }
     return {
         defaultModelId: isGameSlot ? '' : getAssistTierModelId(tier),
         acceptsTypedModelId: true,
@@ -2526,9 +2717,8 @@ function initModelIdPickers() {
             const input = document.getElementById(`${modelType}${suffix}`);
             if (input) input.addEventListener('input', () => {
                 const affected = [modelType];
-                ['gameMain', 'gameSummary'].forEach(gameType => {
-                    const select = document.getElementById(`${gameType}ModelProvider`);
-                    if (select && select.value === `follow_${modelType}`) affected.push(gameType);
+                [...new Set(Object.values(MODEL_FOLLOWERS_BY_SOURCE).flat())].forEach(followerType => {
+                    if (effectiveFollowSource(followerType) === modelType) affected.push(followerType);
                 });
                 scheduleModelIdHintsRefresh(affected);
             });
@@ -2722,7 +2912,7 @@ async function loadCurrentApiKey() {
                 : {};
             // 设置API Key显示
             if (data.enableCustomApi) {
-                showCurrentApiKey(window.t ? window.t('api.currentUsingCustomApi') : '当前使用：自定义API模式', '', true);
+                showCurrentApiKey(window.t ? window.t('api.currentUsingCustomApi') : '当前使用：按功能单独指定模型', '', true);
             } else if (data.api_key) {
                 // 免费判定只看 core：assist=free 配付费 core 时 coreApiKey 是真实付费 Key。
                 if (data.api_key === 'free-access' || data.coreApi === 'free') {
@@ -2805,6 +2995,7 @@ async function loadCurrentApiKey() {
                 setSecretInputValue('mimoTokenPlanKeyInput', data.assistApiKeyMimoTokenPlan);
             }
             updateMimoTokenPlanControls();
+            applyLoadedBailianWorkspaceIds(data);
 
             // Sync the core API key into the Key Book for the selected core provider
             // so autoFillCoreApiKey() can find it later
@@ -2875,13 +3066,17 @@ async function loadCurrentApiKey() {
             }
 
             // 加载用户自定义API配置
+            // 表单回到已保存的状态：未保存成功的「清空」不再生效，
+            // 否则下一次无关的保存会把隐藏的旧看图配置删掉。
+            _clearLegacyVisionOnSave = false;
+            renderLegacyVisionNotice(data);
             setInputValue('conversationModelUrl', data.conversationModelUrl);
             setInputValue('conversationModelId', data.conversationModelId);
             setSecretInputValue('conversationModelApiKey', data.conversationModelApiKey);
 
-            setInputValue('summaryModelUrl', data.summaryModelUrl);
-            setInputValue('summaryModelId', data.summaryModelId);
-            setSecretInputValue('summaryModelApiKey', data.summaryModelApiKey);
+            setInputValue('memoryModelUrl', data.memoryModelUrl);
+            setInputValue('memoryModelId', data.memoryModelId);
+            setSecretInputValue('memoryModelApiKey', data.memoryModelApiKey);
 
             setInputValue('gameMainModelUrl', data.gameMainModelUrl);
             setInputValue('gameMainModelId', data.gameMainModelId);
@@ -2890,22 +3085,28 @@ async function loadCurrentApiKey() {
             setInputValue('gameSummaryModelUrl', data.gameSummaryModelUrl);
             setInputValue('gameSummaryModelId', data.gameSummaryModelId);
             setSecretInputValue('gameSummaryModelApiKey', data.gameSummaryModelApiKey);
+            setInputValue('gameRecognitionModelUrl', data.gameRecognitionModelUrl);
+            setInputValue('gameRecognitionModelId', data.gameRecognitionModelId);
+            setSecretInputValue('gameRecognitionModelApiKey', data.gameRecognitionModelApiKey);
 
-            setInputValue('correctionModelUrl', data.correctionModelUrl);
-            setInputValue('correctionModelId', data.correctionModelId);
-            setSecretInputValue('correctionModelApiKey', data.correctionModelApiKey);
-
-            setInputValue('emotionModelUrl', data.emotionModelUrl);
-            setInputValue('emotionModelId', data.emotionModelId);
-            setSecretInputValue('emotionModelApiKey', data.emotionModelApiKey);
+            setInputValue('recognitionModelUrl', data.recognitionModelUrl);
+            setInputValue('recognitionModelId', data.recognitionModelId);
+            setSecretInputValue('recognitionModelApiKey', data.recognitionModelApiKey);
 
             loadImageSettings(data);
-            setInputValue('visionModelUrl', data.visionModelUrl);
-            setInputValue('visionModelId', data.visionModelId);
-            setSecretInputValue('visionModelApiKey', data.visionModelApiKey);
+
+            setInputValue('decisionModelUrl', data.decisionModelUrl);
+            setInputValue('decisionModelId', data.decisionModelId);
+            setSecretInputValue('decisionModelApiKey', data.decisionModelApiKey);
             setInputValue('agentModelUrl', data.agentModelUrl);
             setInputValue('agentModelId', data.agentModelId);
             setSecretInputValue('agentModelApiKey', data.agentModelApiKey);
+            setInputValue('agentSmallModelUrl', data.agentSmallModelUrl);
+            setInputValue('agentSmallModelId', data.agentSmallModelId);
+            setSecretInputValue('agentSmallModelApiKey', data.agentSmallModelApiKey);
+            setInputValue('agentAdvancedModelUrl', data.agentAdvancedModelUrl);
+            setInputValue('agentAdvancedModelId', data.agentAdvancedModelId);
+            setSecretInputValue('agentAdvancedModelApiKey', data.agentAdvancedModelApiKey);
 
             setInputValue('omniModelUrl', data.omniModelUrl);
             setInputValue('omniModelId', data.omniModelId);
@@ -3288,6 +3489,7 @@ function updateAssistApiKeyInputAvailability() {
 
 // 切换自定义API启用状态
 function toggleCustomApi(skipAutoFill) {
+    updateLegacyVisionNotice();
     const enableCustomApi = document.getElementById('enableCustomApi');
     const coreApiSelect = document.getElementById('coreApiSelect');
     const assistApiSelect = document.getElementById('assistApiSelect');
@@ -3327,7 +3529,7 @@ function toggleCustomApi(skipAutoFill) {
     const freeVersionHint = document.getElementById('freeVersionHint');
     if (freeVersionHint) {
         if (isCustomEnabled) {
-            freeVersionHint.textContent = window.t ? window.t('api.customApiEnabledHint') : '（自定义API已启用）';
+            freeVersionHint.textContent = window.t ? window.t('api.customApiEnabledHint') : '（已开启按功能单独指定模型）';
             freeVersionHint.style.color = '#ff6b35';
             freeVersionHint.style.display = 'inline';
         } else if (isFreeVersion) {
@@ -3372,6 +3574,61 @@ function clearCustomApi() {
 
 function closeClearCustomApiModal() {
     document.getElementById('clear-custom-api-modal').style.display = 'none';
+}
+
+// 与后端 utils/legacy_vision.legacy_vision_differs 同一口径：开着自定义 API、
+// 看图档自己选了服务商（不是「跟随……」）并填过地址或模型。
+const LEGACY_VISION_FOLLOW_PROVIDERS = ['follow_assist', 'follow_core', 'follow_conversation', 'follow_memory'];
+let _legacyVisionRoute = null;
+
+function legacyVisionRoute(data) {
+    // The saved destination is kept even while custom models are off: turning
+    // them on makes it live again (see updateLegacyVisionNotice).
+    if (!data) return null;
+    const provider = String(data.visionModelProvider || '').trim();
+    if (LEGACY_VISION_FOLLOW_PROVIDERS.includes(provider)) return null;
+    const model = String(data.visionModelId || '').trim();
+    const url = String(data.visionModelUrl || '').trim();
+    if (!model && !url) return null;
+    // A named provider with the model ID left empty uses that provider's
+    // default vision model: name the provider instead of showing "?".
+    return { model: model || provider, url };
+}
+
+function renderLegacyVisionNotice(data) {
+    _legacyVisionRoute = legacyVisionRoute(data);
+    updateLegacyVisionNotice();
+}
+
+function updateLegacyVisionNotice() {
+    const box = document.getElementById('legacyVisionNotice');
+    const text = document.getElementById('legacyVisionNoticeText');
+    const button = document.getElementById('legacyVisionStopBtn');
+    if (!box || !text) return;
+    const enableCustomApi = document.getElementById('enableCustomApi');
+    const route = enableCustomApi && enableCustomApi.checked ? _legacyVisionRoute : null;
+    box.hidden = !route;
+    // .field-row sets display:flex, which would override the hidden attribute.
+    box.style.display = route ? '' : 'none';
+    if (!route) return;
+    const params = { model: route.model || '?', url: route.url || '?' };
+    if (_clearLegacyVisionOnSave) {
+        text.textContent = window.t
+            ? window.t('api.legacyVisionStopPending', params)
+            : '保存后图片改由聊天模型处理，旧的看图配置会被清除。';
+        if (button) button.hidden = true;
+    } else {
+        text.textContent = window.t
+            ? window.t('api.legacyVisionNotice', params)
+            : `图片目前仍发给你以前单独配置的看图模型 ${params.model}（${params.url}）。单独的看图模型已不再支持，正式版会移除。`;
+        if (button) button.hidden = false;
+    }
+}
+
+function stopLegacyVision() {
+    // 隐藏的旧看图配置没有输入框：随下一次保存一起清掉。
+    _clearLegacyVisionOnSave = true;
+    updateLegacyVisionNotice();
 }
 
 function confirmClearCustomApi() {
@@ -3434,7 +3691,10 @@ function confirmClearCustomApi() {
     const customApiToggleBtn = document.getElementById('custom-api-toggle-btn');
     if (customApiToggleBtn) customApiToggleBtn.classList.remove('rotated');
 
-    showStatus(window.t ? window.t('api.clearCustomApiSuccess') : '自定义API配置已清空，请点击「保存设置」按钮以保存更改', 'success');
+    // 隐藏的旧看图配置没有输入框，清空时随这次保存一起清掉。
+    _clearLegacyVisionOnSave = true;
+    updateLegacyVisionNotice();
+    showStatus(window.t ? window.t('api.clearCustomApiSuccess') : '单独指定的模型已清空，请点击「保存设置」保存更改', 'success');
 }
 
 // 打开插件面板的 Plugin API 页：与 HUD「管理面板」同一套应用内窗口逻辑。
@@ -3485,6 +3745,25 @@ document.addEventListener('DOMContentLoaded', function () {
     const enableCustomApi = document.getElementById('enableCustomApi');
     if (enableCustomApi) {
         enableCustomApi.addEventListener('change', () => toggleCustomApi());
+    }
+    document.addEventListener('change', (event) => {
+        const target = event.target;
+        if (target && BAILIAN_WORKSPACE_PROVIDER_SELECTS.includes(target.id)) {
+            updateBailianWorkspaceControls();
+        }
+    });
+    const bailianWorkspaceInput = document.getElementById('bailianWorkspaceIdInput');
+    if (bailianWorkspaceInput) {
+        bailianWorkspaceInput.addEventListener('input', onBailianWorkspaceInput);
+        // 失焦时把粘贴的 API Host 等写法收成规范 ID，让用户看到实际会保存的值。
+        bailianWorkspaceInput.addEventListener('blur', () => {
+            const { value, valid } = normalizeBailianWorkspaceId(bailianWorkspaceInput.value);
+            if (valid && value !== bailianWorkspaceInput.value) {
+                bailianWorkspaceInput.value = value;
+                onBailianWorkspaceInput();
+                bailianWorkspaceInput.dispatchEvent(new Event('change'));
+            }
+        });
     }
     ['ttsModelProvider', 'ttsModelUrl', 'ttsModelId', 'ttsModelApiKey', 'ttsVoiceId'].forEach(id => {
         const el = document.getElementById(id);
@@ -3549,6 +3828,18 @@ async function save_button_down(e) {
 
     if (e && e.preventDefault) e.preventDefault();
     if (_apiSaveInProgress || window.isChatGPTSettingsBusy?.()) return;
+
+    const workspacePayload = bailianWorkspacePayload();
+    if (!workspacePayload) {
+        updateBailianWorkspaceControls();
+        const workspaceInput = document.getElementById('bailianWorkspaceIdInput');
+        if (workspaceInput) {
+            workspaceInput.scrollIntoView({ block: 'center' });
+            workspaceInput.focus();
+        }
+        showStatus(window.t ? window.t('api.bailianWorkspaceIdInvalid') : '百炼业务空间 ID 格式不对：只能包含字母、数字和 -，最长 63 个字符', 'error');
+        return;
+    }
 
     const apiKeyInput = document.getElementById('apiKeyInput');
 
@@ -3649,9 +3940,9 @@ async function save_button_down(e) {
     const conversationModelId = getVal('conversationModelId');
     const conversationModelApiKey = getKeyVal('conversationModelApiKey');
 
-    const summaryModelUrl = getVal('summaryModelUrl');
-    const summaryModelId = getVal('summaryModelId');
-    const summaryModelApiKey = getKeyVal('summaryModelApiKey');
+    const memoryModelUrl = getVal('memoryModelUrl');
+    const memoryModelId = getVal('memoryModelId');
+    const memoryModelApiKey = getKeyVal('memoryModelApiKey');
 
     const gameMainModelUrl = getVal('gameMainModelUrl');
     const gameMainModelId = getVal('gameMainModelId');
@@ -3661,20 +3952,27 @@ async function save_button_down(e) {
     const gameSummaryModelId = getVal('gameSummaryModelId');
     const gameSummaryModelApiKey = getKeyVal('gameSummaryModelApiKey');
 
-    const correctionModelUrl = getVal('correctionModelUrl');
-    const correctionModelId = getVal('correctionModelId');
-    const correctionModelApiKey = getKeyVal('correctionModelApiKey');
+    const gameRecognitionModelUrl = getVal('gameRecognitionModelUrl');
+    const gameRecognitionModelId = getVal('gameRecognitionModelId');
+    const gameRecognitionModelApiKey = getKeyVal('gameRecognitionModelApiKey');
 
-    const emotionModelUrl = getVal('emotionModelUrl');
-    const emotionModelId = getVal('emotionModelId');
-    const emotionModelApiKey = getKeyVal('emotionModelApiKey');
+    const recognitionModelUrl = getVal('recognitionModelUrl');
+    const recognitionModelId = getVal('recognitionModelId');
+    const recognitionModelApiKey = getKeyVal('recognitionModelApiKey');
 
-    const visionModelUrl = getVal('visionModelUrl');
-    const visionModelId = getVal('visionModelId');
-    const visionModelApiKey = getKeyVal('visionModelApiKey');
+    const decisionModelUrl = getVal('decisionModelUrl');
+    const decisionModelId = getVal('decisionModelId');
+    const decisionModelApiKey = getKeyVal('decisionModelApiKey');
+
     const agentModelUrl = getVal('agentModelUrl');
     const agentModelId = getVal('agentModelId');
     const agentModelApiKey = getKeyVal('agentModelApiKey');
+    const agentSmallModelUrl = getVal('agentSmallModelUrl');
+    const agentSmallModelId = getVal('agentSmallModelId');
+    const agentSmallModelApiKey = getKeyVal('agentSmallModelApiKey');
+    const agentAdvancedModelUrl = getVal('agentAdvancedModelUrl');
+    const agentAdvancedModelId = getVal('agentAdvancedModelId');
+    const agentAdvancedModelApiKey = getKeyVal('agentAdvancedModelApiKey');
 
     const omniModelUrl = getVal('omniModelUrl');
     const omniModelId = getVal('omniModelId');
@@ -3743,21 +4041,31 @@ async function save_button_down(e) {
         ...doubaoVoiceManagementSettingsPayload(),
         ...imageSettingsPayload(),
         conversationModelUrl, conversationModelId, conversationModelApiKey,
-        summaryModelUrl, summaryModelId, summaryModelApiKey,
+        memoryModelUrl, memoryModelId, memoryModelApiKey,
         gameMainModelUrl, gameMainModelId, gameMainModelApiKey,
         gameSummaryModelUrl, gameSummaryModelId, gameSummaryModelApiKey,
-        correctionModelUrl, correctionModelId, correctionModelApiKey,
-        emotionModelUrl, emotionModelId, emotionModelApiKey,
-        visionModelUrl, visionModelId, visionModelApiKey,
+        gameRecognitionModelUrl, gameRecognitionModelId, gameRecognitionModelApiKey,
+        recognitionModelUrl, recognitionModelId, recognitionModelApiKey,
+        decisionModelUrl, decisionModelId, decisionModelApiKey,
         agentModelUrl, agentModelId, agentModelApiKey,
+        agentSmallModelUrl, agentSmallModelId, agentSmallModelApiKey,
+        agentAdvancedModelUrl, agentAdvancedModelId, agentAdvancedModelApiKey,
         omniModelUrl, omniModelId, omniModelApiKey,
         ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId,
         mcpToken, enableCustomApi,
         useMimoTokenPlan,
         assistApiKeyMimoTokenPlan: mimoTokenPlanKey,
+        ...workspacePayload,
         resolvedProviderUrls: _resolvedProviderUrls,
         ...modelProviders
     };
+    if (_clearLegacyVisionOnSave) {
+        Object.assign(payload, {
+            // Same as any other cleared slot: back to its default (follow the assist provider).
+            visionModelProvider: getDefaultProviderForModelType('vision'),
+            visionModelUrl: '', visionModelId: '', visionModelApiKey: '',
+        });
+    }
     if (gptsovitsEnabled) {
         payload.ttsProvider = 'gptsovits';
     } else if (selectedTtsProvider === 'mimo' || selectedTtsProvider === 'deepseek') {
@@ -3852,8 +4160,14 @@ function refreshAutoResolvedModelUrlsForSave(params) {
         if (providerMode === 'follow_conversation') {
             return params.conversationModelUrl || resolveUrl('conversation', params.conversationModelProvider, visited);
         }
-        if (providerMode === 'follow_summary') {
-            return params.summaryModelUrl || resolveUrl('summary', params.summaryModelProvider, visited);
+        if (providerMode === 'follow_memory') {
+            return params.memoryModelUrl || resolveUrl('memory', params.memoryModelProvider, visited);
+        }
+        if (providerMode === 'follow_recognition') {
+            return params.recognitionModelUrl || resolveUrl('recognition', params.recognitionModelProvider, visited);
+        }
+        if (providerMode === 'follow_agent') {
+            return params.agentModelUrl || resolveUrl('agent', params.agentModelProvider, visited);
         }
 
         let providerKey = providerMode;
@@ -3889,11 +4203,23 @@ function refreshAutoResolvedModelUrlsForSave(params) {
                 ? inherited
                 : resolveModel('conversation', params.conversationModelProvider, visited);
         }
-        if (providerMode === 'follow_summary') {
-            const inherited = snapshotModelId('summary');
+        if (providerMode === 'follow_memory') {
+            const inherited = snapshotModelId('memory');
             return inherited !== undefined && inherited !== null
                 ? inherited
-                : resolveModel('summary', params.summaryModelProvider, visited);
+                : resolveModel('memory', params.memoryModelProvider, visited);
+        }
+        if (providerMode === 'follow_recognition') {
+            const inherited = snapshotModelId('recognition');
+            return inherited !== undefined && inherited !== null
+                ? inherited
+                : resolveModel('recognition', params.recognitionModelProvider, visited);
+        }
+        if (providerMode === 'follow_agent') {
+            const inherited = snapshotModelId('agent');
+            return inherited !== undefined && inherited !== null
+                ? inherited
+                : resolveModel('agent', params.agentModelProvider, visited);
         }
 
         let providerKey = providerMode;
@@ -4047,6 +4373,7 @@ async function saveApiKey(params) {
         if (response.ok) {
             const result = await response.json();
             if (result.success) {
+                _clearLegacyVisionOnSave = false;
                 invalidateModelLists();
                 // 后端的 GET 响应不会回传密钥明文。先保留当前页面已有值，供下面
                 // loadCurrentApiKey() 在收到哨兵时显示为“前后部分可见”的遮蔽形式；
@@ -4385,16 +4712,16 @@ function positionTooltip(iconElement, tooltipElement) {
 }
 
 const MODEL_CONFIG_ROW_PAIRS = Object.freeze({
-    conversation: 'vision',
-    vision: 'conversation',
-    summary: 'correction',
-    correction: 'summary',
-    emotion: 'omni',
-    omni: 'emotion',
-    agent: 'tts',
-    tts: 'agent',
-    game: 'image',
-    image: 'game',
+    conversation: 'memory',
+    memory: 'conversation',
+    recognition: 'decision',
+    decision: 'recognition',
+    omni: 'tts',
+    tts: 'omni',
+    'agent-advanced': 'agent',
+    agent: 'agent-advanced',
+    'agent-small': 'game',
+    game: 'agent-small',
 });
 
 function finishModelConfigCollapse(content, pairedContent, transitionId) {
@@ -4518,7 +4845,7 @@ function navigateToCustomModelConfig(modelType) {
 // 页面加载完成后初始化折叠状态
 document.addEventListener('DOMContentLoaded', function () {
     // 初始化所有模型配置为折叠状态
-    const modelTypes = ["conversation", 'summary', 'game', 'game-main', 'game-summary', 'correction', 'emotion', 'vision', 'image', 'agent', 'omni', 'tts', 'gptsovits'];
+    const modelTypes = ["conversation", 'memory', 'game', 'game-main', 'game-summary', 'game-recognition', 'recognition', 'decision', 'image', 'agent-advanced', 'agent', 'agent-small', 'omni', 'tts', 'gptsovits'];
     modelTypes.forEach(modelType => {
         const content = document.getElementById(`${modelType}-model-content`);
         if (content) {
@@ -4623,16 +4950,18 @@ const LightStatus = {
 
 function getCustomModelDisplayLabel(modelType) {
     const labelMap = {
-        conversation: ['api.conversationModelConfig', '文本聊天模型'],
-        summary: ['api.summaryModelConfig', '摘要模型'],
-        gameMain: ['api.gameMainModelConfig', '小游戏主模型配置'],
-        gameSummary: ['api.gameSummaryModelConfig', '小游戏摘要模型配置'],
-        correction: ['api.correctionModelConfig', '纠错模型'],
-        emotion: ['api.emotionModelConfig', '情感模型'],
-        vision: ['api.visionModelConfig', '视觉聊天模型'],
-        agent: ['api.agentApiConfigTitle', 'Agent API（需支持视觉功能）'],
-        omni: ['api.realtimeModelConfig', '实时全模态模型（Local模式）'],
-        tts: ['api.ttsModelConfig', 'TTS模型'],
+        conversation: ['api.conversationModelConfig', '聊天模型'],
+        memory: ['api.summaryModelConfig', '记忆整理（大模型）'],
+        gameMain: ['api.gameMainModelConfig', '小游戏聊天模型'],
+        gameSummary: ['api.gameSummaryModelConfig', '小游戏记忆模型'],
+        gameRecognition: ['api.gameRecognitionModelConfig', '小游戏识别模型'],
+        recognition: ['api.emotionModelConfig', '识别模型（小模型）'],
+        decision: ['api.decisionModelConfig', '决策模型（专用接口）'],
+        agent: ['api.agentApiConfigTitle', '使魔模型·通用'],
+        omni: ['api.realtimeModelConfig', '实时语音（本地）'],
+        tts: ['api.ttsModelConfig', '语音合成'],
+        agentSmall: ['api.agentSmallApiConfigTitle', '使魔模型·小型'],
+        agentAdvanced: ['api.agentAdvancedApiConfigTitle', '使魔模型·高级'],
     };
     const [key, fallback] = labelMap[modelType] || ['', modelType];
     if (!key || !window.t) return fallback;
@@ -4729,6 +5058,21 @@ function updateLightStatus(lightElement, status) {
     }
 }
 
+/** 决策槽位检测走了聊天回退时，指示灯提示里追加的说明；其他情况返回空串。 */
+function getDecisionFallbackNote(reason) {
+    if (reason === 'workspace_missing') {
+        return window.t
+            ? window.t('connectivity.decisionFallback.workspace_missing')
+            : '未填百炼业务空间 ID，决策模型暂用聊天模型';
+    }
+    if (reason === 'region_unsupported') {
+        return window.t
+            ? window.t('connectivity.decisionFallback.region_unsupported')
+            : '当前地域没有原生决策接口，决策模型用聊天模型';
+    }
+    return '';
+}
+
 // ==================== 连通性测试：错误信息展示 UI 组件 ====================
 
 /**
@@ -4784,14 +5128,20 @@ function updateErrorMessage(errorDisplayElement, errorCode, errorDetail) {
     errorDisplayElement.style.display = 'inline';
 }
 
-function buildConnectivityCacheId(scope, providerKey, key, url) {
+function buildConnectivityCacheId(scope, providerKey, key, url, model = '') {
     // 内置 provider 的 cacheId 故意不带 url：URL 会在第一次 testKey 成功后从
     // 候选值翻成 rememberResolvedProviderUrl 写入的 resolved_url，
     // 把 url 带进 cacheId 会让指示灯/错误面板的注册 key 凭空换一份，
     // 导致后续刷新打不到原 DOM，表现成检测灯卡住或丢状态。
     // 同一组 scope+providerKey 在 key 也是空（free 端点专用）时退到空字符串占位，
     // 也不要回退到 url，保持 cacheId 在 URL 翻新时稳定。
+    // decision 槽位使用独立 scope + model 维度的缓存键，避免与普通聊天 assist 灯混用。
     if (scope && providerKey) {
+        if (scope === 'decision') {
+            // 百炼的决策地址由业务空间 ID 决定，换 ID 必须换一份检测结果。
+            const workspaceId = getBailianWorkspaceIdForProvider(providerKey);
+            return `${scope}|${providerKey}|${key || ''}|${model || ''}|${workspaceId}`;
+        }
         return `${scope}|${providerKey}|${key || ''}`;
     }
     return key || url || '';
@@ -4827,6 +5177,8 @@ const ConnectivityManager = {
 
     /** Key → 错误信息映射 { error_code, error } */
     keyErrorMap: {},
+    /** Key → 决策槽位聊天回退说明（workspace_missing / region_unsupported），没有则为 null */
+    keyNoteMap: {},
 
     /** Key → 指示灯 DOM 元素列表映射 */
     keyLightsMap: {},
@@ -4952,12 +5304,21 @@ const ConnectivityManager = {
             if (!providerSel) return result;
 
             const provider = providerSel.value;
+            const wholeSource = provider === 'custom' ? effectiveFollowSource(mt) : '';
+            if (wholeSource) {
+                // 与后端一致：整格跟随的格子自定义时地址和模型名没填全，整格用它跟随的那一档
+                return this.resolveEffectiveKey({ type: 'custom', modelType: wholeSource });
+            }
             result.url = urlInput ? urlInput.value.trim() : '';
 
-            if (provider === 'follow_conversation' || provider === 'follow_summary') {
-                const sourceType = provider === 'follow_conversation' ? 'conversation' : 'summary';
+            // 跟随槽测的就是来源那一格的连接，缓存身份沿用来源算好的（如 MiMo Token Plan），
+            // 不按跟随槽自己的下拉值重算，否则同一连接会被当成两个、检测两次。
+            let followedCacheProviderKey = '';
+            if (followedModelType(provider)) {
+                const sourceType = followedModelType(provider);
                 const sourceResult = this.resolveEffectiveKey({ type: 'custom', modelType: sourceType });
                 Object.assign(result, sourceResult);
+                followedCacheProviderKey = sourceResult.cacheProviderKey || '';
                 if (modelIdInput) {
                     const sourceModel = document.getElementById(`${sourceType}ModelId`);
                     result.model = sourceModel ? sourceModel.value.trim() : '';
@@ -4982,7 +5343,10 @@ const ConnectivityManager = {
                     result.secretMasked = coreResult.secretMasked;
                     result.providerType = getProviderType(coreProvider);
                     result.providerKey = coreProvider;
-                    result.providerScope = 'assist';
+                    result.providerScope = (mt === 'decision') ? 'decision' : 'assist';
+                    if (mt === 'decision') {
+                        result.model = getResolvedCustomModelId(mt, provider);
+                    }
                 }
             } else if (provider === 'follow_assist') {
                 // 跟随辅助 API
@@ -4992,13 +5356,16 @@ const ConnectivityManager = {
                 result.url = assistResult.url;
                 result.providerType = assistResult.providerType;
                 result.providerKey = assistResult.providerKey;
-                result.providerScope = assistResult.providerScope;
+                result.providerScope = (mt === 'decision') ? 'decision' : assistResult.providerScope;
+                if (mt === 'decision') {
+                    result.model = getResolvedCustomModelId(mt, provider);
+                }
             } else if (provider === 'custom') {
                 // 自定义：直接从输入框读取，不设 providerKey（走自定义模式）
                 result.key = keyInput ? getRealKey(keyInput) : '';
                 result.providerType = (mt === 'omni')
                     ? 'websocket'
-                    : (mt === 'tts' ? 'tts' : 'openai_compatible');
+                    : (mt === 'tts' ? 'tts' : (mt === 'decision' ? 'decision' : 'openai_compatible'));
                 if (mt === 'tts') {
                     result.subType = 'openai_tts';
                     result.voiceId = document.getElementById('ttsVoiceId')?.value?.trim() || '';
@@ -5087,7 +5454,10 @@ const ConnectivityManager = {
                     result.url = getEffectiveAssistUrl(provider, pInfo, { useTokenPlan: false }) || getProviderCoreUrl(provider, pInfo);
                     result.providerType = getProviderType(provider);
                     result.providerKey = provider;
-                    result.providerScope = 'assist';
+                    result.providerScope = (mt === 'decision') ? 'decision' : 'assist';
+                    if (mt === 'decision') {
+                        result.model = getResolvedCustomModelId(mt, provider);
+                    }
                 }
             }
 
@@ -5097,7 +5467,12 @@ const ConnectivityManager = {
             omitMaskedSecretFromConnectivity(result);
             if (result.key || result.url || result.secretMasked) {
                 if (result.providerKey && result.providerScope) {
-                    result.cacheId = buildConnectivityCacheId(result.providerScope, result.providerKey, result.key, result.url);
+                    const cacheProviderKey = followedCacheProviderKey || ((provider === 'follow_assist')
+                        ? getEffectiveAssistProviderKey(result.providerKey)
+                        : result.providerKey);
+                    result.cacheProviderKey = cacheProviderKey;
+                    result.cacheId = buildConnectivityCacheId(result.providerScope, cacheProviderKey, result.key, result.url, result.model || '');
+                    // 订阅账号的模型目录因账号而异，按模型分开记检测结果。
                     if (result.providerType === 'chatgpt') result.cacheId += `|model:${result.model}`;
                 } else {
                     result.cacheId = buildCustomConnectivityCacheId(
@@ -5225,7 +5600,19 @@ const ConnectivityManager = {
                     body.provider_key = provider_key;
                     body.provider_scope = provider_scope;
                     if (provider_key === 'chatgpt') body.model = model || '';
-                    if (provider_scope === 'assist' && provider_key === 'mimo' && isMimoTokenPlanUrl(overrideUrl)) {
+                    if (provider_scope === 'decision' && model) {
+                        body.model = model;
+                    }
+                    if (provider_scope === 'decision' && BAILIAN_WORKSPACE_ID_FIELDS[provider_key]) {
+                        // 批量检测在收集配置时已记下 ID 快照（与缓存键一致）；单独检测时取当前值。
+                        body.workspace_id = typeof params.workspace_id === 'string'
+                            ? params.workspace_id
+                            : getBailianWorkspaceIdForProvider(provider_key);
+                        // 带上 Key 实际解析到的聊天端点（如国际版落在美国地域），
+                        // 后端按运行时同一规则判断能否走业务空间专属域名。
+                        if (url) body.url = url;
+                    }
+                    if ((provider_scope === 'assist' || provider_scope === 'decision') && provider_key === 'mimo' && isMimoTokenPlanUrl(overrideUrl)) {
                         body.url = overrideUrl;
                     }
                 } else {
@@ -5263,6 +5650,10 @@ const ConnectivityManager = {
                 }
 
                 const data = await response.json();
+                if (cacheId) {
+                    // 决策槽位按聊天模型检测通过时，灯的提示里注明「聊天模型代替」。
+                    this.keyNoteMap[cacheId] = data.success ? (data.decision_fallback || null) : null;
+                }
                 return {
                     success: !!data.success,
                     error: data.error || null,
@@ -5270,7 +5661,7 @@ const ConnectivityManager = {
                     resolved_url: data.resolved_url || (data.success ? overrideUrl : null) || null
                 };
             };
-            const shouldProbeMimoTokenPlan = provider_scope === 'assist' && provider_key === 'mimo' && isMimoTokenPlanUrl(url);
+            const shouldProbeMimoTokenPlan = (provider_scope === 'assist' || provider_scope === 'decision') && provider_key === 'mimo' && isMimoTokenPlanUrl(url);
             if (shouldProbeMimoTokenPlan) {
                 const seenUrls = new Set();
                 const candidates = [url, ...getMimoTokenPlanUrlCandidates()]
@@ -5285,7 +5676,9 @@ const ConnectivityManager = {
                     const result = await sendRequest(candidateUrl);
                     lastResult = result;
                     if (result.success) {
-                        rememberResolvedProviderUrl(provider_scope, MIMO_TOKEN_PLAN_PROVIDER_KEY, result.resolved_url || candidateUrl);
+                        if (provider_scope === 'assist') {
+                            rememberResolvedProviderUrl(provider_scope, MIMO_TOKEN_PLAN_PROVIDER_KEY, result.resolved_url || candidateUrl);
+                        }
                         cleanupRequest();
                         return result;
                     }
@@ -5302,7 +5695,7 @@ const ConnectivityManager = {
             const result = await sendRequest(url);
             cleanupRequest();
             if (accountChanged()) return {success: false, cancelled: true};
-            if (result.success && result.resolved_url && provider_key && provider_scope) {
+            if (result.success && result.resolved_url && provider_key && (provider_scope === 'core' || provider_scope === 'assist')) {
                 rememberResolvedProviderUrl(provider_scope, provider_key, result.resolved_url);
             }
             return result;
@@ -5383,7 +5776,7 @@ const ConnectivityManager = {
                     let isFree = false;
                     if (provider === 'follow_core' && coreSelect && coreSelect.value === 'free') isFree = true;
                     else if (provider === 'follow_assist' && assistSelect && assistSelect.value === 'free') isFree = true;
-                    // For custom provider, also pass model from the input
+                    // For custom/decision slots, prefer resolved model ID from resolveEffectiveKey
                     const modelInput = document.getElementById(`${mt}ModelId`);
                     const model = customResult.model || (modelInput ? modelInput.value.trim() : '');
                     keyConfigs[customCacheId] = {
@@ -5392,6 +5785,10 @@ const ConnectivityManager = {
                         voice_id: customResult.voiceId || '',
                         provider_type: customResult.providerType, sub_type: customResult.subType || '', is_free: isFree
                     };
+                    if (customResult.providerScope === 'decision' && BAILIAN_WORKSPACE_ID_FIELDS[customResult.providerKey]) {
+                        // 与 cacheId 里的业务空间 ID 同一份快照，检测期间改了输入框也不会串到别的缓存。
+                        keyConfigs[customCacheId].workspace_id = getBailianWorkspaceIdForProvider(customResult.providerKey);
+                    }
                 }
             });
         }
@@ -5413,8 +5810,11 @@ const ConnectivityManager = {
             results: {}
         };
 
-        // 并发测试所有唯一配置
-        const testPromises = Object.entries(keyConfigs).map(async ([cacheId, config]) => {
+        // 并发测试所有唯一配置。百炼决策检测要用辅助 API 实际解析到的地域端点
+        // （国际版可能落在美国），所以等第一批检测跑完、解析结果记下来之后再测。
+        const isBailianDecision = (config) => config.provider_scope === 'decision'
+            && !!BAILIAN_WORKSPACE_ID_FIELDS[config.provider_key];
+        const runOne = async ([cacheId, config]) => {
             const accountGeneration = this._chatgptAccountGeneration;
             const result = await this.testKey({ ...config, cache_id: cacheId });
             if (result.cancelled || !this.isCurrentTestAccount(config, accountGeneration)) {
@@ -5450,7 +5850,27 @@ const ConnectivityManager = {
                 provider_scope: config.provider_scope || '',
                 resolved_url: result.resolved_url || ''
             };
+        };
+        const entries = Object.entries(keyConfigs);
+        const firstWaveEntries = entries.filter(([, config]) => !isBailianDecision(config));
+        const firstWave = firstWaveEntries.map(runOne);
+        // 只需等辅助 API 那一项（地域结果来自它），不必等第一批里其他可能很慢的检测。
+        const assistIndex = firstWaveEntries.findIndex(([, config]) => config.provider_scope === 'assist');
+        const assistDone = assistIndex >= 0 ? Promise.allSettled([firstWave[assistIndex]]) : Promise.resolve();
+        // 地域按 Key 定：只有和辅助 API 用同一把 Key 时，才沿用它刚解析出的地域端点。
+        const assistProbeKey = assistResult.providerKey && !assistResult.secretMasked ? (assistResult.key || '') : null;
+        const deferredWave = entries.filter(([, config]) => isBailianDecision(config)).map(async ([cacheId, config]) => {
+            await assistDone;
+            const sameKeyAsAssist = assistProbeKey !== null
+                && assistResult.providerKey === config.provider_key
+                && assistProbeKey === (config.api_key || '');
+            // Key 不同：不借用辅助 API 这一轮刚解析出的地域，保留决策槽位开测前自己的端点。
+            if (!sameKeyAsAssist) return runOne([cacheId, config]);
+            const pInfo = getProviderInfo(config.provider_key);
+            const resolvedUrl = getProviderOpenrouterUrl(config.provider_key, pInfo);
+            return runOne([cacheId, resolvedUrl ? { ...config, url: resolvedUrl } : config]);
         });
+        const testPromises = [...firstWave, ...deferredWave];
 
         const settledResults = await Promise.allSettled(testPromises);
         settledResults.forEach(item => {
@@ -5461,7 +5881,7 @@ const ConnectivityManager = {
                     return;
                 } else if (value.success) {
                     summary.succeeded += 1;
-                    if (value.provider_key && value.provider_scope && value.resolved_url) {
+                    if (value.provider_key && (value.provider_scope === 'core' || value.provider_scope === 'assist') && value.resolved_url) {
                         summary.resolvedProviderUrls[`${value.provider_scope}:${value.provider_key}`] = value.resolved_url;
                     }
                 } else {
@@ -5483,8 +5903,22 @@ const ConnectivityManager = {
         const lights = this.keyLightsMap[key] || [];
         console.log(`[ConnectivityManager] syncLightsForKey: status=${status}, lights=${lights.length}`);
         lights.forEach(light => {
-            updateLightStatus(light, status);
+            this.applyStatusToLight(light, key, status);
         });
+    },
+
+    /**
+     * 设置指示灯状态；决策槽位按聊天模型检测通过时在提示里追加说明。
+     * 同步、从缓存恢复、汇总灯都走这里，说明不会在切换后丢失。
+     */
+    applyStatusToLight(light, key, status) {
+        updateLightStatus(light, status);
+        const note = status === LightStatus.CONNECTED ? getDecisionFallbackNote(this.keyNoteMap[key]) : '';
+        if (!note) return;
+        light.title = `${light.title} · ${note}`;
+        if (light.classList.contains('connectivity-summary-light')) {
+            light.setAttribute('aria-label', light.title);
+        }
     },
 
     /**
@@ -5654,7 +6088,7 @@ function initConnectivityLights() {
             // 有 key 或有 URL → 检查缓存，有缓存用缓存，无缓存显示黄色
             const cachedStatus = ConnectivityManager.keyStatusMap[cacheId];
             if (cachedStatus) {
-                updateLightStatus(light, cachedStatus);
+                ConnectivityManager.applyStatusToLight(light, cacheId, cachedStatus);
                 const errorInfo = ConnectivityManager.keyErrorMap[cacheId];
                 if (errorInfo) {
                     updateErrorMessage(errorDisplay, errorInfo.error_code, errorInfo.error);
@@ -5697,7 +6131,7 @@ function initConnectivityLights() {
         // Re-register summary light to the new key
         if (summaryLight && newKey) {
             ConnectivityManager.registerLight(newKey, summaryLight);
-            summaryLight.dataset.status = light.dataset.status;
+            ConnectivityManager.applyStatusToLight(summaryLight, newKey, light.dataset.status || LightStatus.NOT_CONFIGURED);
         } else if (summaryLight) {
             summaryLight.dataset.status = LightStatus.NOT_CONFIGURED;
         }
@@ -5718,7 +6152,7 @@ function initConnectivityLights() {
         coreTestBtn.type = 'button';
         coreTestBtn.className = 'connectivity-mini-test-btn';
         coreTestBtn.textContent = window.t ? window.t('connectivity.testCore', '测试') : '测试';
-        coreTestBtn.title = window.t ? window.t('connectivity.testCoreTooltip', '测试核心 API 连通性') : '测试核心 API 连通性';
+        coreTestBtn.title = window.t ? window.t('connectivity.testCoreTooltip', '测试语音模型供应商连通性') : '测试语音模型供应商连通性';
         coreTestBtn.addEventListener('click', async () => {
             coreTestBtn.disabled = true;
             coreTestBtn.classList.add('testing');
@@ -5782,7 +6216,7 @@ function initConnectivityLights() {
         assistTestBtn.type = 'button';
         assistTestBtn.className = 'connectivity-mini-test-btn';
         assistTestBtn.textContent = window.t ? window.t('connectivity.testAssist', '测试') : '测试';
-        assistTestBtn.title = window.t ? window.t('connectivity.testAssistTooltip', '测试辅助 API 连通性') : '测试辅助 API 连通性';
+        assistTestBtn.title = window.t ? window.t('connectivity.testAssistTooltip', '测试通用模型供应商连通性') : '测试通用模型供应商连通性';
         assistTestBtn.addEventListener('click', async () => {
             assistTestBtn.disabled = true;
             assistTestBtn.classList.add('testing');
@@ -5848,7 +6282,7 @@ function initConnectivityLights() {
         testButton.appendChild(btnLight);
 
         const btnText = document.createElement('span');
-        btnText.textContent = window.t ? window.t('connectivity.testCustom', '测试自定义 API 连通性') : '测试自定义 API 连通性';
+        btnText.textContent = window.t ? window.t('connectivity.testCustom', '测试单独指定的模型') : '测试单独指定的模型';
         btnText.setAttribute('data-i18n', 'connectivity.testCustom');
         testButton.appendChild(btnText);
 
@@ -5919,12 +6353,18 @@ function initConnectivityLights() {
     }
 
     function syncModelFollowers(sourceType) {
-        const followerType = sourceType === 'conversation' ? 'gameMain' : 'gameSummary';
-        const providerSel = document.getElementById(`${followerType}ModelProvider`);
-        const expectedProvider = sourceType === 'conversation' ? 'follow_conversation' : 'follow_summary';
-        if (!providerSel || providerSel.value !== expectedProvider) return;
-        onCustomModelProviderChange(followerType);
-        reRegisterModelSlot(followerType);
+        (MODEL_FOLLOWERS_BY_SOURCE[sourceType] || []).forEach(followerType => {
+            const providerSel = document.getElementById(`${followerType}ModelProvider`);
+            if (!providerSel || effectiveFollowSource(followerType) !== sourceType) return;
+            // An incomplete custom whole-follow slot also tracks its source slot, but only
+            // its light moves: a provider refresh would wipe the drafted custom fields.
+            if (followedModelType(providerSel.value)) onCustomModelProviderChange(followerType);
+            reRegisterModelSlot(followerType);
+        });
+    }
+
+    function syncAllModelFollowers() {
+        Object.keys(MODEL_FOLLOWERS_BY_SOURCE).forEach(syncModelFollowers);
     }
 
     function refreshFollowModelSlot(modelType) {
@@ -5950,7 +6390,7 @@ function initConnectivityLights() {
             // Set initial status to match the main light
             summaryLight.dataset.status = light.dataset.status;
             summaryLight.dataset.tooltipLabel = getCustomModelDisplayLabel(mt);
-            updateLightStatus(summaryLight, light.dataset.status || LightStatus.NOT_CONFIGURED);
+            ConnectivityManager.applyStatusToLight(summaryLight, key, light.dataset.status || LightStatus.NOT_CONFIGURED);
         }
         if (summaryLight) {
             lightRefs.custom[mt].summaryLight = summaryLight;
@@ -6002,8 +6442,7 @@ function initConnectivityLights() {
                     refreshFollowModelSlot(mt);
                 }
             });
-            syncModelFollowers('conversation');
-            syncModelFollowers('summary');
+            syncAllModelFollowers();
         }, 300);
 
         apiKeyInput.addEventListener('input', handleCoreKeyChange);
@@ -6029,8 +6468,7 @@ function initConnectivityLights() {
                     refreshFollowModelSlot(mt);
                 }
             });
-            syncModelFollowers('conversation');
-            syncModelFollowers('summary');
+            syncAllModelFollowers();
         }, 300);
 
         assistApiKeyInput.addEventListener('input', handleAssistKeyChange);
@@ -6058,7 +6496,7 @@ function initConnectivityLights() {
             if (oldKey && oldKey !== customCurrentKeys[mt]) {
                 cascadeResetForKey(oldKey);
             }
-            if (mt === 'conversation' || mt === 'summary') {
+            if (MODEL_FOLLOWERS_BY_SOURCE[mt]) {
                 syncModelFollowers(mt);
             }
             // 新 key 不需要 cascadeReset — reRegister 已经从缓存正确恢复了状态
@@ -6076,7 +6514,7 @@ function initConnectivityLights() {
 
             const handleCustomEndpointChange = debounce(() => {
                 reRegisterModelSlot(mt);
-                if (mt === 'conversation' || mt === 'summary') {
+                if (MODEL_FOLLOWERS_BY_SOURCE[mt]) {
                     syncModelFollowers(mt);
                 }
             }, 300);
@@ -6085,6 +6523,16 @@ function initConnectivityLights() {
             input.addEventListener('change', handleCustomEndpointChange);
         });
     });
+
+    // 百炼业务空间 ID 决定决策模型的检测地址：改 ID 后重新登记决策槽位的灯。
+    const bailianWorkspaceInput = document.getElementById('bailianWorkspaceIdInput');
+    if (bailianWorkspaceInput) {
+        const handleBailianWorkspaceChange = debounce(() => {
+            if (lightRefs.custom.decision) reRegisterModelSlot('decision');
+        }, 300);
+        bailianWorkspaceInput.addEventListener('input', handleBailianWorkspaceChange);
+        bailianWorkspaceInput.addEventListener('change', handleBailianWorkspaceChange);
+    }
 
     // ===== Task 8.2: Provider switch event binding =====
 
@@ -6112,8 +6560,7 @@ function initConnectivityLights() {
                     refreshFollowModelSlot(mt);
                 }
             });
-            syncModelFollowers('conversation');
-            syncModelFollowers('summary');
+            syncAllModelFollowers();
         });
     }
 
@@ -6133,8 +6580,7 @@ function initConnectivityLights() {
                     refreshFollowModelSlot(mt);
                 }
             });
-            syncModelFollowers('conversation');
-            syncModelFollowers('summary');
+            syncAllModelFollowers();
         });
     }
 
@@ -6156,8 +6602,7 @@ function initConnectivityLights() {
                     refreshFollowModelSlot(mt);
                 }
             });
-            syncModelFollowers('conversation');
-            syncModelFollowers('summary');
+            syncAllModelFollowers();
         });
     }
 
@@ -6168,7 +6613,7 @@ function initConnectivityLights() {
 
         providerSel.addEventListener('change', () => {
             reRegisterModelSlot(mt);
-            if (mt === 'conversation' || mt === 'summary') {
+            if (MODEL_FOLLOWERS_BY_SOURCE[mt]) {
                 syncModelFollowers(mt);
             }
         });

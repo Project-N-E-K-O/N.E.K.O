@@ -312,8 +312,8 @@ async def test_call_topic_candidates_uses_localized_prompt_for_supported_languag
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tier,method", [
-    ("emotion", "_invoke_emotion_tier"),
-    ("summary", "_invoke_capable_tier"),
+    ("recognition", "_invoke_emotion_tier"),
+    ("memory", "_invoke_capable_tier"),
 ])
 @pytest.mark.parametrize("provider_type,api_key,model,expected_call", [
     ("openai_compatible", "fake-key", "fake-model", True),

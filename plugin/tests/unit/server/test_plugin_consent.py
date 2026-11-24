@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import threading
 from pathlib import Path
@@ -682,6 +683,117 @@ async def test_source_reads_wait_for_plugin_directory_mutation(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
+async def test_source_revision_walks_wait_for_plugin_directory_mutation(
+    monkeypatch, tmp_path, reports
+):
+    # The revision check walks and stats the plugin tree before and after the
+    # scan, and the scan reads the sources in between. Unlocked, a read still
+    # in progress keeps handles open while an update renames the plugin
+    # directory (Windows: WinError 5). Each read is recorded separately: the
+    # first lock wait alone cannot tell whether the later reads are locked.
+    from plugin.server.application.plugins.operation_lock import plugin_operation_lock
+
+    root = tmp_path / "demo"
+    manifest(root)
+    (root / "main.py").write_text("self.ctx.push_message()", encoding="utf-8")
+    held = threading.local()
+    pending = threading.Event()
+    walks: list[tuple[str, bool]] = []
+    original_lock = analysis.hold_plugin_operation_file_lock
+    original_revision = analysis.source_revision
+    original_read = analysis.read_capability_sources
+
+    @contextlib.contextmanager
+    def tracked_lock(stop):
+        pending.set()
+        with original_lock(stop):
+            held.depth = getattr(held, "depth", 0) + 1
+            try:
+                yield
+            finally:
+                held.depth -= 1
+
+    def tracked_revision(*args, **kwargs):
+        walks.append(("revision", getattr(held, "depth", 0) > 0))
+        return original_revision(*args, **kwargs)
+
+    def tracked_read(*args, **kwargs):
+        walks.append(("sources", getattr(held, "depth", 0) > 0))
+        return original_read(*args, **kwargs)
+
+    monkeypatch.setattr(analysis, "hold_plugin_operation_file_lock", tracked_lock)
+    monkeypatch.setattr(analysis, "source_revision", tracked_revision)
+    monkeypatch.setattr(analysis, "read_capability_sources", tracked_read)
+    runner = analysis.CapabilityAnalysisService(reports)
+    try:
+        async with plugin_operation_lock.hold():
+            runner.reanalyze("demo", root, "1")
+            assert await asyncio.to_thread(pending.wait, 2)
+            # The worker is waiting for the lock and has not walked the tree.
+            assert walks == []
+            moved = root.rename(tmp_path / "moved")
+            moved.rename(root)
+        with runner._lock:
+            job = runner._jobs.get("demo", (None, None))[1]
+        if job is not None:
+            await asyncio.wrap_future(job)
+        # Both revision walks and the source read in between ran under the lock.
+        assert walks == [("revision", True), ("sources", True), ("revision", True)]
+        assert reports.read("demo")["capabilities"] == ["messages.push"]
+    finally:
+        await runner.close()
+
+
+@pytest.mark.asyncio
+async def test_job_forgotten_while_waiting_for_the_lock_reads_nothing(
+    monkeypatch, tmp_path, reports
+):
+    # Uninstall forgets the job and removes the directory under the lock; the
+    # waiting job must stop once it gets the lock, not stat the removed tree.
+    import shutil
+
+    from plugin.server.application.plugins.operation_lock import plugin_operation_lock
+
+    root = tmp_path / "demo"
+    manifest(root)
+    pending = threading.Event()
+    walks: list[str] = []
+    failures: list[str] = []
+    original_lock = analysis.hold_plugin_operation_file_lock
+
+    def wait_for_source_lock(stop):
+        pending.set()
+        return original_lock(stop)
+
+    def revision(*_args, **_kwargs):
+        walks.append("revision")
+        raise AssertionError("forgotten job read the plugin tree")
+
+    monkeypatch.setattr(analysis, "hold_plugin_operation_file_lock", wait_for_source_lock)
+    monkeypatch.setattr(analysis, "source_revision", revision)
+    monkeypatch.setattr(
+        analysis,
+        "logger",
+        SimpleNamespace(warning=lambda message, *_a, **_k: failures.append(message)),
+    )
+    runner = analysis.CapabilityAnalysisService(reports)
+    try:
+        async with plugin_operation_lock.hold():
+            runner.reanalyze("demo", root, "1")
+            assert await asyncio.to_thread(pending.wait, 2)
+            with runner._lock:
+                job = runner._jobs["demo"][1]
+            runner.forget("demo")
+            shutil.rmtree(root)
+        await asyncio.wrap_future(job)
+        assert walks == []
+        assert failures == []
+        assert reports.read("demo") is None
+    finally:
+        await runner.close()
+
+
+@pytest.mark.asyncio
 async def test_stale_scan_cannot_replace_new_install_report(
     monkeypatch, store, reports, tmp_path
 ):
@@ -1175,6 +1287,7 @@ async def test_market_replacement_notifies_only_after_real_transaction_commit(
         channel="market",
         removed=False,
         root_id="user",
+        source_detail=None,
     )
     manager = SimpleNamespace(find_active_user_entry=lambda _: entry)
 
@@ -1376,3 +1489,69 @@ async def test_deny_stops_a_running_plugin_without_deadlock(
     assert details["decision"] == "denied"
     assert stopped == ["demo"]
     assert store.read("demo")["decision"] == "denied"
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [("pass", 0), ("import importlib\nimportlib.import_module(name)\n", 1)],
+)
+def test_summary_counts_blind_spots_of_the_cached_report(tmp_path, reports, monkeypatch, code, expected):
+    root = tmp_path / "demo"
+    manifest(root)
+    (root / "main.py").write_text(code)
+    meta = {"config_path": str(root / "plugin.toml"), "version": "1"}
+    reports.save(
+        "demo",
+        {
+            **analyze_capabilities(root),
+            "_analyzer_version": analysis.ANALYZER_VERSION,
+            "_source": analysis.source_revision(root, "1"),
+            "_source_root": str(root),
+            "version": "1",
+        },
+    )
+    runner = analysis.CapabilityAnalysisService(reports)
+    monkeypatch.setattr(analysis, "analysis_service", runner)
+
+    assert service.consent_summary("demo", meta)["blind_spots"] == expected
+
+
+@pytest.mark.parametrize(
+    ("status", "incomplete"),
+    [("completed", False), ("partial", True), ("failed", True)],
+)
+def test_summary_flags_an_incomplete_analysis(tmp_path, reports, monkeypatch, status, incomplete):
+    root = tmp_path / "demo"
+    manifest(root)
+    (root / "main.py").write_text("pass")
+    meta = {"config_path": str(root / "plugin.toml"), "version": "1"}
+    report = {
+        **analyze_capabilities(root),
+        "_analyzer_version": analysis.ANALYZER_VERSION,
+        "_source": analysis.source_revision(root, "1"),
+        "_source_root": str(root),
+        "version": "1",
+        "status": status,
+    }
+    if status == "failed":
+        # A failed report carries no permissions and no blind spots.
+        report.pop("permissions", None)
+        report.pop("blind_spots", None)
+    reports.save("demo", report)
+    runner = analysis.CapabilityAnalysisService(reports)
+    monkeypatch.setattr(analysis, "analysis_service", runner)
+
+    summary = service.consent_summary("demo", meta)
+    assert summary["blind_spots"] == 0
+    assert summary["analysis_incomplete"] is incomplete
+
+
+def test_summary_without_a_readable_store_reports_no_blind_spots(monkeypatch):
+    def broken(*_args, **_kwargs):
+        raise ServerDomainError("PLUGIN_NOT_FOUND", "Plugin not found", 404)
+
+    monkeypatch.setattr(service, "_consent_view", broken)
+
+    summary = service.consent_summary("demo", {})
+    assert summary["blind_spots"] == 0
+    assert summary["analysis_incomplete"] is False

@@ -187,6 +187,122 @@ def _source_tag(plugin_id: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Request parsing + typed failures (shared by the IPC notification handlers in
+# ``plugin/core/communication.py`` and the request-response handlers in
+# ``plugin/server/messaging/handlers/llm_tools.py``)
+# ---------------------------------------------------------------------------
+
+
+class RemoteToolError(RuntimeError):
+    """``main_server`` answered, but the request did not (fully) succeed.
+
+    ``code`` is one of:
+
+    * ``"main_server_error"`` -- HTTP status >= 400 (e.g. unknown role).
+    * ``"rejected"`` -- register: no role accepted the tool (``ok: false``).
+    * ``"partial_failure"`` -- unregister: some roles reported ``failed_roles``.
+    * ``"timeout"`` -- the answer is not a JSON object: main_server may have
+      applied the change, so the outcome is unknown (the SDK then cleans up
+      after a register, as for a timeout).
+
+    ``body`` is the parsed JSON body when there is one, so callers can report
+    the per-role outcome instead of a flattened message. Subclasses
+    ``RuntimeError`` so existing ``except RuntimeError`` callers keep working.
+    """
+
+    def __init__(self, message: str, *, code: str, body: Optional[Dict[str, Any]] = None):
+        super().__init__(message)
+        self.code = code
+        self.body: Dict[str, Any] = body if isinstance(body, dict) else {}
+
+
+def _valid_tool_name(name: object) -> bool:
+    """Same rule the SDK enforces in the plugin process. Checked again here
+    because the name is inlined into the callback URL path (``/`` and other
+    separators are refused, so it stays one segment under this plugin's own
+    prefix), and the plugin process is not trusted to have run the SDK check."""
+    from plugin.sdk.plugin.llm_tool import validate_tool_name
+
+    if not isinstance(name, str):
+        return False
+    try:
+        validate_tool_name(name)
+    except ValueError:
+        return False
+    return True
+
+
+_REGISTRATION_ID_MAX_LENGTH = 64
+
+
+def _registration_id(value: object) -> Optional[str]:
+    """A caller-supplied registration id, or ``None`` when absent/unusable
+    (main_server then generates one / applies no registration filter)."""
+    if isinstance(value, str) and 0 < len(value) <= _REGISTRATION_ID_MAX_LENGTH:
+        return value
+    return None
+
+
+def parse_register_request(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Normalise an ``LLM_TOOL_REGISTER`` payload into ``register_remote_tool``
+    keyword arguments (minus ``plugin_id``). Returns ``None`` when the tool
+    name or a given ``registration_id`` is missing or invalid."""
+    name = msg.get("name")
+    if not _valid_tool_name(name):
+        return None
+    raw_id = msg.get("registration_id")
+    if raw_id is not None and _registration_id(raw_id) is None:
+        # Refuse, like an invalid expected_registration_id: dropping it would
+        # store a generated id the caller does not know, so its later
+        # targeted unregister / cleanup could never match.
+        return None
+    parameters = msg.get("parameters")
+    if not isinstance(parameters, dict):
+        parameters = {"type": "object", "properties": {}}
+    timeout_seconds = msg.get("timeout_seconds")
+    if not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0:
+        timeout_seconds = 30.0
+    role = msg.get("role")
+    if role is not None and not isinstance(role, str):
+        role = None
+    return {
+        "name": name,
+        "description": str(msg.get("description") or ""),
+        "parameters": parameters,
+        "timeout_seconds": float(timeout_seconds),
+        "role": role,
+        **({"reply_tail": True} if msg.get("reply_tail") is True else {}),
+        **({"registration_id": rid} if (rid := _registration_id(msg.get("registration_id"))) else {}),
+    }
+
+
+def parse_unregister_request(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Normalise an ``LLM_TOOL_UNREGISTER`` payload into
+    ``unregister_remote_tool`` keyword arguments (minus ``plugin_id``).
+    Returns ``None`` when the tool name or a given
+    ``expected_registration_id`` is missing or invalid."""
+    name = msg.get("name")
+    if not _valid_tool_name(name):
+        return None
+    raw_expected = msg.get("expected_registration_id")
+    if raw_expected is not None and _registration_id(raw_expected) is None:
+        # Refuse rather than drop it: without the filter the unregister
+        # would remove any registration of the plugin (fail-open).
+        return None
+    role = msg.get("role")
+    if role is not None and not isinstance(role, str):
+        role = None
+    return {
+        "name": name,
+        "role": role,
+        **(
+            {"expected_registration_id": rid}
+            if (rid := _registration_id(msg.get("expected_registration_id"))) else {}
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
 # main_server API wrappers
 # ---------------------------------------------------------------------------
 
@@ -200,6 +316,7 @@ async def register_remote_tool(
     timeout_seconds: float,
     role: Optional[str] = None,
     reply_tail: bool = False,
+    registration_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Register a plugin-owned LLM tool with ``main_server``.
 
@@ -209,8 +326,9 @@ async def register_remote_tool(
     ``register_tool_and_sync``) and overwrites the first.
 
     Returns the parsed JSON body from ``main_server``. Raises any
-    httpx error so the caller can surface it back to the plugin via
-    IPC.
+    httpx error (main_server unreachable) and :class:`RemoteToolError`
+    when main_server answered with an error status or ``ok: false``, so
+    the caller can surface the outcome back to the plugin via IPC.
     """
     callback_url = build_callback_url(plugin_id, name)
     httpx = await ensure_httpx()
@@ -224,6 +342,7 @@ async def register_remote_tool(
         "source": _source_tag(plugin_id),
         "timeout_seconds": float(timeout_seconds),
         **({"reply_tail": True} if reply_tail else {}),
+        **({"registration_id": registration_id} if registration_id else {}),
     }
 
     client = _get_http_client()
@@ -252,11 +371,24 @@ async def register_remote_tool(
             "register_remote_tool failed: plugin_id={}, name={}, status={}, body={}",
             plugin_id, name, resp.status_code, text[:500],
         )
-        raise RuntimeError(
-            f"main_server /api/tools/register returned {resp.status_code}: {text[:500]}"
+        raise RemoteToolError(
+            f"main_server /api/tools/register returned {resp.status_code}: {text[:500]}",
+            code="main_server_error",
         )
 
-    body = resp.json()
+    # An unreadable answer is not an acceptance: report it without tracking.
+    try:
+        body = resp.json()
+    except ValueError as exc:
+        raise RemoteToolError(
+            f"main_server /api/tools/register returned an unreadable body: {exc}",
+            code="timeout",  # answered, but unreadable: outcome unknown
+        ) from exc
+    if not isinstance(body, dict):
+        raise RemoteToolError(
+            "main_server /api/tools/register returned a non-object body",
+            code="timeout",  # answered, but unreadable: outcome unknown
+        )
     # ``main_server`` distinguishes HTTP-level failures (caught above as
     # status >= 400) from per-role logic failures — the latter come back
     # as 200 with ``{"ok": false, "failed_roles": [...]}`` when *no* role
@@ -264,7 +396,7 @@ async def register_remote_tool(
     # local tracking so a later ``has_plugin_tool`` doesn't lie, and
     # raise so the IPC handler logs and the caller can see what
     # happened.
-    if isinstance(body, dict) and body.get("ok") is False:
+    if body.get("ok") is False:
         affected = body.get("affected_roles") or []
         failed = body.get("failed_roles") or []
         logger.warning(
@@ -272,11 +404,18 @@ async def register_remote_tool(
             "affected_roles={}, failed_roles={}",
             plugin_id, name, affected, failed,
         )
-        raise RuntimeError(
-            f"main_server rejected register for '{name}': affected={affected}, failed={failed}"
+        raise RemoteToolError(
+            f"main_server rejected register for '{name}': affected={affected}, failed={failed}",
+            code="rejected",
+            body=body,
         )
     async with _lock:
-        _plugin_tools[plugin_id][name] = {"timeout_seconds": float(timeout_seconds)}
+        _plugin_tools[plugin_id][name] = {
+            "timeout_seconds": float(timeout_seconds),
+            # Which registration we track; an unregister aimed at an older
+            # one must not drop it (see unregister_remote_tool).
+            "registration_id": body.get("registration_id") or registration_id,
+        }
     logger.info(
         "Registered LLM tool '{}' for plugin '{}' (callback={})",
         name, plugin_id, callback_url,
@@ -289,6 +428,7 @@ async def unregister_remote_tool(
     plugin_id: str,
     name: str,
     role: Optional[str] = None,
+    expected_registration_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Unregister a single LLM tool from ``main_server``.
 
@@ -306,6 +446,9 @@ async def unregister_remote_tool(
     another plugin's tool by name collision.
     """
     payload = {"name": name, "role": role, "expected_source": _source_tag(plugin_id)}
+    if expected_registration_id is not None:
+        # Remove only that registration; a newer one of the same name stays.
+        payload["expected_registration_id"] = expected_registration_id
     host_id = tool_host_instance_id()
     if host_id is not None:
         payload["expected_host_instance_id"] = host_id
@@ -327,11 +470,25 @@ async def unregister_remote_tool(
             "unregister_remote_tool failed: plugin_id={}, name={}, status={}, body={}",
             plugin_id, name, resp.status_code, text[:500],
         )
-        raise RuntimeError(
-            f"main_server /api/tools/unregister returned {resp.status_code}: {text[:500]}"
+        raise RemoteToolError(
+            f"main_server /api/tools/unregister returned {resp.status_code}: {text[:500]}",
+            code="main_server_error",
         )
-    body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
-    refused_roles = body.get("refused_roles") if isinstance(body, dict) else None
+    # An unreadable answer is not a removal: keep tracking and report it,
+    # the same way register_remote_tool treats one.
+    try:
+        body = resp.json()
+    except ValueError as exc:
+        raise RemoteToolError(
+            f"main_server /api/tools/unregister returned an unreadable body: {exc}",
+            code="timeout",  # answered, but unreadable: outcome unknown
+        ) from exc
+    if not isinstance(body, dict):
+        raise RemoteToolError(
+            "main_server /api/tools/unregister returned a non-object body",
+            code="timeout",  # answered, but unreadable: outcome unknown
+        )
+    refused_roles = body.get("refused_roles")
     if refused_roles:
         # Another source owns the name: our registration never took effect on main_server (cross-source
         # guard rejection, cache races, etc.). Discard local tracking without touching others' tools.
@@ -339,7 +496,7 @@ async def unregister_remote_tool(
             "unregister_remote_tool refused foreign-owned name: plugin_id={}, name={}, refused_roles={}",
             plugin_id, name, refused_roles,
         )
-    failed_roles = body.get("failed_roles") if isinstance(body, dict) else None
+    failed_roles = body.get("failed_roles")
     if failed_roles:
         logger.warning(
             "unregister_remote_tool partial failure — keeping local tracking: "
@@ -349,16 +506,27 @@ async def unregister_remote_tool(
         # Local tracking stays so ``clear_plugin_tools`` on shutdown
         # still attempts to wipe the orphaned roles. Surface as an
         # error so the IPC handler logs visibly.
-        raise RuntimeError(
-            f"main_server reported failed_roles={failed_roles} for unregister of '{name}'"
+        raise RemoteToolError(
+            f"main_server reported failed_roles={failed_roles} for unregister of '{name}'",
+            code="partial_failure",
+            body=body,
         )
     async with _lock:
         owned = _plugin_tools.get(plugin_id)
-        if owned is not None:
+        tracked = owned.get(name) if owned is not None else None
+        other_registration = any(
+            isinstance(r, dict) and r.get("reason") == "different registration"
+            for r in (refused_roles or [])
+        )
+        if tracked is not None and not other_registration:
+            # A refusal for "different registration" means main_server still
+            # holds another registration of this plugin under the name (e.g.
+            # a timed-out register that landed late): model calls still come
+            # here, so keep tracking until that one is removed too.
             owned.pop(name, None)
             if not owned:
                 _plugin_tools.pop(plugin_id, None)
-    return body if isinstance(body, dict) else {"ok": True}
+    return body
 
 
 # Remote-tool cleanup timeout on plugin stop: much shorter than the default 2.0s connect timeout,
