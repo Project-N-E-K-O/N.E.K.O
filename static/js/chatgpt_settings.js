@@ -138,9 +138,9 @@
             option.textContent = t('noAccount', 'No saved account');
             account.appendChild(option);
         }
-        // A sign-in that just finished with another account active (e.g. "Add account")
-        // ends the pending re-authorization: show what is actually in use.
-        if (pending && data.login_status !== 'pending' && data.active && data.active !== reauthorizeAccount) {
+        // A sign-in that just succeeded with another account active (e.g. "Add account")
+        // ends the pending re-authorization. A failed or expired retry keeps the choice.
+        if (pending && data.login_status === 'connected' && data.active && data.active !== reauthorizeAccount) {
             reauthorizeAccount = '';
         }
         const reauthorizable = data.accounts.some(a => a.id === reauthorizeAccount && a.connected === false);

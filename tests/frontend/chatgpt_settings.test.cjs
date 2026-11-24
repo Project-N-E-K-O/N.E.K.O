@@ -211,6 +211,24 @@ test('adding another account after choosing a signed-out one shows the new accou
     assert.equal(ui.nodes.account.value, z.id);
 });
 
+test('a failed or expired re-authorization keeps the signed-out account chosen', async () => {
+    for (const outcome of ['failed', 'expired']) {
+        const b = {id: 'signed-out-b-33333333', email: 'b@example.test', connected: false};
+        const ui = surface({...signedIn, accounts: [...signedIn.accounts, b]},
+            () => ({url: 'https://auth.openai.com/api/accounts/authorize?state=retry'}));
+        await flush();
+        ui.nodes.account.value = b.id;
+        await ui.nodes.account.listeners.change();
+        ui.setState({...signedIn, accounts: [...signedIn.accounts, b], login_status: 'pending'});
+        await ui.nodes.login.listeners.click();
+        // The attempt ends without signing B in; A is still the active account.
+        ui.setState({...signedIn, accounts: [...signedIn.accounts, b], login_status: outcome,
+            error: outcome === 'failed' ? 'declined' : ''});
+        await ui.timer();
+        assert.equal(ui.nodes.account.value, b.id, `${outcome}: the retry still targets B`);
+    }
+});
+
 test('choosing a signed-out account keeps the stale-form warning', async () => {
     const accounts = [...signedIn.accounts, {id: 'other-87654321', email: 'b@example.test', connected: false}];
     let ui;
