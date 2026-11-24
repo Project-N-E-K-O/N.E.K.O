@@ -817,7 +817,6 @@ def process(modules, monkeypatch: pytest.MonkeyPatch) -> list[str]:
     monkeypatch.setattr(api_runtime, "_start_embedded_user_plugin_server", record("plugin server"))
     monkeypatch.setattr(api_runtime, "_stop_embedded_user_plugin_server", record("plugin server stopped"))
     monkeypatch.setattr(api_runtime, "_ensure_plugin_lifecycle_stopped", record("plugins stopped"))
-    monkeypatch.setattr(api_runtime, "_fire_agent_llm_connectivity_check", record("probe"))
     monkeypatch.setattr(api_runtime, "_emit_agent_status_update", record("status"))
     monkeypatch.setattr(api_runtime, "shutdown_nekopower_host", record("host"))
     monkeypatch.setattr(api_runtime, "mount_nekopower_host", lambda change_token=None: calls.append("mount"))
@@ -841,19 +840,38 @@ async def test_startup_builds_the_probe_and_neither_looks_for_nor_starts_a_brows
             built.append(self)
 
     monkeypatch.setattr("app.agent_server.model_probe.AgentModelProbe", StartupProbe)
+    # Wherever startup would take the connectivity check from, it is counted
+    # here on the event loop, before anything goes to a worker thread.
+    fired: list[dict[str, Any]] = []
+
+    async def fire(**options: Any) -> None:
+        fired.append(options)
+
+    from app.agent_server import api_shared
+
+    for holder in (capabilities, api_shared, api_routes, api_runtime):
+        monkeypatch.setattr(holder, "_fire_agent_llm_connectivity_check", fire, raising=False)
     modules.model_probe = None
     ready = {"ready": True, "reason": ""}
     modules.capability_cache.update(computer_use=dict(ready), browser_use=dict(ready))
 
     await api_runtime.startup()
     await asyncio.gather(*modules._persistent_tasks)
+    # Whatever startup set going in the background has had its turn too.
+    for _ in range(5):
+        await asyncio.sleep(0)
 
     assert built == [modules.model_probe]
-    # Not ready until the probe, which runs in the background, has answered.
-    pending = {"ready": False, "reason": "AGENT_PRECHECK_PENDING"}
-    assert modules.capability_cache["computer_use"] == pending
-    assert modules.capability_cache["browser_use"] == pending
-    assert process.count("probe") == 1 and "mount" in process
+    # Nothing is sent to the agent model at start: every way the tools come
+    # on probes it first.
+    assert fired == []
+    assert modules.model_probe.probes == 0
+    # Not ready, and not "pending" either: with no check coming, that would
+    # read as one under way for as long as the tools stay off.
+    not_checked = {"ready": False, "reason": ""}
+    assert modules.capability_cache["computer_use"] == not_checked
+    assert modules.capability_cache["browser_use"] == not_checked
+    assert "mount" in process
     # Startup stays free of file checks and processes: the browser is the
     # business of the first browser tool call.
     assert search.searches == 0

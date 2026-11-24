@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // ChatGPT 订阅：保存后设置页未能重新载入时的提示（八语言）。
-    const LOCALE_VERSION = '2026-11-24-chatgpt-subscription-reload-failed';
+    // 合并 main：ChatGPT 订阅提示与主线内置模板许可文案一起刷新语言包缓存。
+    const LOCALE_VERSION = '2026-11-24-chatgpt-subscription-emote-license-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

@@ -94,22 +94,21 @@ def _detect_scoped_refine_prompt_language(text: str) -> str:
 
 try:
     from memory.embeddings import (
-        decode_embedding,
+        decode_valid_cached_embedding,
         get_embedding_service,
-        is_cached_embedding_valid,
         parse_dim_from_model_id,
     )
 except ImportError:
     # Match memory/refine.py: use a stub if embeddings are unavailable; clustering stays empty, making the entire
     # pass a no-op without changing the behavior contract.
     from memory.embeddings_fallback import (
-        decode_embedding,
+        decode_valid_cached_embedding,
         get_embedding_service,
-        is_cached_embedding_valid,
         parse_dim_from_model_id,
         _warn_once,
     )
     _warn_once(__name__)
+from memory._embeddings.ranking import cosine_clusters, run_clusters_off_loop
 from memory._reflection.schema import normalize_reflection, refine_reflection_id
 from memory.introspection import is_permanently_suppressed
 from memory.scopes import MemorySubject, entry_matches_subject, subject_from_entry
@@ -438,7 +437,10 @@ class ScopedLiteRefineEngine:
         rotation = ordered[start:] + ordered[:start]
 
         for bucket in rotation:
-            clusters = self._compute_clusters(bucket.entries)
+            # Off the event loop; see ``run_clusters_off_loop``.
+            clusters = await run_clusters_off_loop(
+                self._compute_clusters, bucket.entries,
+            )
             if not clusters:
                 continue
             result['clusters_seen'] += len(clusters)
@@ -519,11 +521,9 @@ class ScopedLiteRefineEngine:
         valid: list[dict] = []
         vecs: list = []
         for e in entries:
-            text = e.get('text', '')
-            if not is_cached_embedding_valid(e, text, model_id):
-                continue
-            v = decode_embedding(e.get('embedding'))
-            if v is None or v.size == 0:
+            # One decode per entry (the validity check's own vector).
+            v = decode_valid_cached_embedding(e, e.get('text', ''), model_id)
+            if v is None:
                 continue
             if target_dim is None:
                 target_dim = int(v.size)
@@ -535,61 +535,13 @@ class ScopedLiteRefineEngine:
         if len(valid) < 2:
             return []
 
-        matrix = np.stack(vecs)
-        sim_matrix = matrix @ matrix.T
-        np.fill_diagonal(sim_matrix, -1.0)
-
-        threshold = SCOPED_REFINE_COSINE_THRESHOLD
-        topk = SCOPED_REFINE_TOPK_PER_ENTRY
-        n = len(valid)
-
-        adj: list[list[int]] = [[] for _ in range(n)]
-        for i in range(n):
-            row = sim_matrix[i]
-            cand = [
-                (int(j), float(row[j]))
-                for j in range(n) if float(row[j]) >= threshold
-            ]
-            cand.sort(key=lambda x: -x[1])
-            adj[i] = [j for j, _ in cand[:topk]]
-
-        parent = list(range(n))
-
-        def find(x: int) -> int:
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
-
-        def union(a: int, b: int) -> None:
-            ra, rb = find(a), find(b)
-            if ra != rb:
-                parent[ra] = rb
-
-        for i in range(n):
-            for j in adj[i]:
-                union(i, j)
-
-        groups: dict[int, list[int]] = {}
-        for i in range(n):
-            groups.setdefault(find(i), []).append(i)
-
-        clusters: list[list[dict]] = []
-        for indices in groups.values():
-            if len(indices) < 2:
-                continue
-            if len(indices) > SCOPED_REFINE_CLUSTER_SIZE_MAX:
-                strengths = []
-                for i in indices:
-                    others = [j for j in indices if j != i]
-                    max_sim = max(
-                        (float(sim_matrix[i][j]) for j in others), default=-1.0,
-                    )
-                    strengths.append((i, max_sim))
-                strengths.sort(key=lambda x: -x[1])
-                indices = [s[0] for s in strengths[:SCOPED_REFINE_CLUSTER_SIZE_MAX]]
-            clusters.append([valid[i] for i in indices])
-        return clusters
+        groups = cosine_clusters(
+            np.stack(vecs),
+            threshold=SCOPED_REFINE_COSINE_THRESHOLD,
+            topk=SCOPED_REFINE_TOPK_PER_ENTRY,
+            size_max=SCOPED_REFINE_CLUSTER_SIZE_MAX,
+        )
+        return [[valid[i] for i in indices] for indices in groups]
 
     # ── Hash skip + starvation (full-engine semantics; no facts in pool, so count all entries) ──
 

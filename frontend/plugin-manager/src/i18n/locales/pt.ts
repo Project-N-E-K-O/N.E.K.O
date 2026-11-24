@@ -1,19 +1,19 @@
-import { pluginConsentMessages } from '../plugin-consent'
-import { modelApiMessages } from '../model-api'
-import { modelBindingsMessages } from '../model-bindings'
-import { marketFeedbackMessages } from '../market-feedback'
-import { authoringMessages } from '../authoring'
+import pluginConsentMessages from '../plugin-consent/pt'
+import modelApiMessages from '../model-api/pt'
+import modelBindingsMessages from '../model-bindings/pt'
+import marketFeedbackMessages from '../market-feedback/pt'
+import authoringMessages from '../authoring/pt'
 import powerMessages from '../power/pt'
 
 /**
  * Pacote de idioma português
  */
 export default {
-  pluginConsent: pluginConsentMessages['pt'],
-  authoring: authoringMessages['pt'],
-  marketFeedback: marketFeedbackMessages['pt'],
-  modelApi: modelApiMessages['pt'],
-  modelBindings: modelBindingsMessages['pt'],
+  pluginConsent: pluginConsentMessages,
+  authoring: authoringMessages,
+  marketFeedback: marketFeedbackMessages,
+  modelApi: modelApiMessages,
+  modelBindings: modelBindingsMessages,
   power: powerMessages,
   common: {
     chooseLanguage: "Escolher idioma",

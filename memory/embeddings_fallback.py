@@ -135,6 +135,13 @@ def is_cached_embedding_valid(
     return False
 
 
+def decode_valid_cached_embedding(
+    entry: dict, current_text: str, current_model_id: str | None,
+):
+    """Always ``None``: no cache is ever valid without the real service."""
+    return None
+
+
 # ── decode helpers ────────────────────────────────────────────────────
 
 

@@ -245,7 +245,7 @@ async def test_recall_memory_finds_persona_entries_the_prompt_left_out(tmp_path)
 async def test_recall_memory_answers_with_keywords_when_vectors_run_over_budget(tmp_path):
     fact_store, reflection_engine, _pm = _stores(tmp_path, facts=[_fact("f1", "用户最爱吃海底捞")])
 
-    async def slow_cosine(query, pool):
+    async def slow_cosine(query, pool, **_kwargs):
         await asyncio.sleep(5)
         return []
 
