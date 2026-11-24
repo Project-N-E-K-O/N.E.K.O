@@ -160,4 +160,79 @@ def test_audit_job_runs_after_merge_with_the_shard_dependencies():
         assert pin in runs, pin
 
 
+FULL = {
+    "tests/unit/test_a.py::test_marked": ["runtime"],
+    "tests/unit/test_a.py::test_plain": [],
+    "tests/unit/test_b.py::test_both": ["runtime", "unit_fast"],
+    "tests/unit/test_c.py::test_fast": ["unit_fast"],
+}
+
+
+def _fake_audit(monkeypatch, *, full=FULL, full_exit=0, picked=None, picked_exit=None, files=None):
+    """Run ``audit`` with collections and file selection replaced; return (exit, calls)."""
+    picked = picked or {}
+    picked_exit = picked_exit or {}
+    files = files if files is not None else {"runtime": ["tests/unit/test_a.py", "tests/unit/test_b.py"]}
+    calls = []
+
+    def fake_collect(pytest_args, workdir, name):
+        if name == "full":
+            calls.append(("full", list(pytest_args), None))
+            return full_exit, dict(full)
+        args_file = Path(pytest_args[0][1:])
+        calls.append((name, list(pytest_args), args_file.read_bytes().decode("utf-8").split()))
+        return picked_exit.get(name, 0), {nodeid: [name] for nodeid in picked.get(name, [])}
+
+    monkeypatch.setattr(sel, "_collect", fake_collect)
+    monkeypatch.setattr(sel, "select_files", lambda marker: files.get(marker, []))
+    return sel.main(["audit", "--markers", "runtime"]), calls
+
+
+RUNTIME_IDS = ["tests/unit/test_a.py::test_marked", "tests/unit/test_b.py::test_both"]
+
+
+def test_audit_passes_when_the_selection_collects_exactly_the_marked_tests(monkeypatch, capsys):
+    code, calls = _fake_audit(monkeypatch, picked={"runtime": RUNTIME_IDS})
+    assert code == 0
+    assert calls[0] == ("full", ["tests/unit"], None)
+    # The selection is collected through its argument file, still filtered by -m.
+    name, pytest_args, listed = calls[1]
+    assert name == "runtime" and pytest_args[0].startswith("@") and pytest_args[1:] == ["-m", "runtime"]
+    assert listed == ["tests/unit/test_a.py", "tests/unit/test_b.py"]
+    assert "runtime: ok" in capsys.readouterr().out
+
+
+def test_audit_fails_on_a_marked_test_the_selection_misses(monkeypatch, capsys):
+    code, _ = _fake_audit(monkeypatch, picked={"runtime": RUNTIME_IDS[:1]})
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "runtime: MISMATCH" in out and "missing=1" in out
+    assert f"missing (marked, but its file is not selected): {RUNTIME_IDS[1]}" in out
+
+
+def test_audit_fails_on_tests_only_the_selection_collects(monkeypatch, capsys):
+    # e.g. an explicit path bypassing a conftest's collect_ignore.
+    code, _ = _fake_audit(monkeypatch, picked={"runtime": [*RUNTIME_IDS, "tests/unit/test_x.py::test_extra"]})
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "extra=1" in out and "extra: tests/unit/test_x.py::test_extra" in out
+
+
+def test_audit_fails_when_a_collection_fails(monkeypatch, capsys):
+    code, calls = _fake_audit(monkeypatch, full_exit=2)
+    assert code == 1
+    assert [c[0] for c in calls] == ["full"]
+    assert "cannot audit" in capsys.readouterr().out
+    code, _ = _fake_audit(monkeypatch, picked={"runtime": RUNTIME_IDS}, picked_exit={"runtime": 2})
+    assert code == 1
+    assert "runtime: MISMATCH" in capsys.readouterr().out
+
+
+def test_audit_fails_when_nothing_is_selected_for_a_marker_that_has_tests(monkeypatch, capsys):
+    code, calls = _fake_audit(monkeypatch, files={})
+    assert code == 1
+    assert [c[0] for c in calls] == ["full"]
+    assert "runtime: no file selected; full collection has 2 tests" in capsys.readouterr().out
+
+
 pytestmark = pytest.mark.unit_fast
