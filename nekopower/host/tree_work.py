@@ -400,12 +400,18 @@ class TreeWork:
                 return
             await asyncio.sleep(_POLL_SECONDS)
 
-    def _forget_tree(self, row: Tree) -> None:
-        """Forget that a commission is worked on in a worktree: it is over there, or the worktree is gone."""
+    def _forget_tree(self, row: Tree, session_id: str | None = None) -> None:
+        """Forget that a commission is worked on in a worktree: it is over there, or the worktree is gone.
+
+        ``session_id`` is a session that took the worktree as its own
+        and is not the one on its record (the commission went on to
+        another session since): forgotten for that one as well.
+        """
         if row.commission_id and self._tree_of.get(row.commission_id) == row.id:
             del self._tree_of[row.commission_id]
-        if row.session_id and self._tree_sessions.get(row.session_id) == row.id:
-            del self._tree_sessions[row.session_id]
+        for session in (row.session_id, session_id):
+            if session and self._tree_sessions.get(session) == row.id:
+                del self._tree_sessions[session]
 
     async def _remove_tree(self, row: Tree, handle: Any = None) -> bool:
         """Remove a worktree and take it off the record; returns whether its directory went.
@@ -471,15 +477,16 @@ class TreeWork:
             if row.state == "making":
                 # Left half made by a start that was cut off: made anew.
                 await self._remove_tree(row)
+                self._forget_tree(row, kept.id)
                 continue
             handle = await self._handle_of(row)
             if handle is None and not await self._tree_is_gone(row):
                 # There, and not to be opened this moment (git did not answer): it holds what the
                 # commission changed, and is not given up for a new one.
-                self._forget_tree(row)
+                self._forget_tree(row, kept.id)
                 raise RuntimeError(f"the directory this commission is worked on in cannot be opened just now: {row.path}")
             if handle is None:
-                self._forget_tree(row)
+                self._forget_tree(row, kept.id)
                 await self._ledger.drop_tree(row.id)
                 await self._note_tree_event(commission.id, "tree_lost", {"tree": row.id, "path": row.path})
                 continue
@@ -876,6 +883,9 @@ class TreeWork:
                 await self._send_back(commission_id, row, findings)
                 return "sent back"
         if chosen["mode"] == "ask":
+            if self._stale(commission_id, done):
+                # More was said to it meanwhile: not held back under the run that does that.
+                return "again"
             return await self._not_landed(row, commission, done, REASON_ASK)
         result = await self._merge_or_markers(row, handle, unless=lambda: self._stale(commission_id, done))
         if result is None:
@@ -1241,8 +1251,25 @@ class TreeWork:
 
         The worktree stays as it is. The commission is told as stuck
         with why it was not landed, where the changes are and which
-        files clashed, after what its task agent said of the work.
+        files clashed, after what its task agent said of the work. In
+        hand until the commission stands so: a decision of the user's
+        that came in between would find a commission still at work.
         """
+        tree_id, mine = row.id, row.id not in self._trees_in_hand
+        self._trees_in_hand.add(tree_id)
+        try:
+            return await self._left_for_the_user(
+                row, commission, done, reason, rounds=rounds, detail=detail, conflicts=conflicts,
+                left_changed=left_changed, kept_copies=kept_copies, findings=findings,
+            )
+        finally:
+            if mine:
+                self._trees_in_hand.discard(tree_id)
+
+    async def _left_for_the_user(
+        self, row: Tree, commission: Commission, done: _Done, reason: str, *, rounds: int = 0, detail: str = "",
+        conflicts: Any = (), left_changed: Any = (), kept_copies: str = "", findings: str = "",
+    ) -> str:
         from config import nekopower_settings as settings
 
         state = "held" if reason == REASON_ASK else "unlanded"
@@ -1315,7 +1342,7 @@ class TreeWork:
             self._tree_task(self._tree_left(commission))
 
     async def _seen_to_after_its_run(self, row: Tree, commission: Commission) -> Tree | None:
-        """Remove a worktree a run left without changes, or put it on record as not landed; returns it, None when it is removed."""
+        """Remove a worktree a run left without changes, or put it on record as not landed; returns it, None when it is removed or stands otherwise by now."""
         # Its run is being stopped, and may be finishing a write: looked at once it is gone.
         await self._gone_from_runtime(commission.id)
         handle = await self._handle_of(row)
@@ -1331,7 +1358,8 @@ class TreeWork:
         if not changed:
             await self._remove_tree(row, handle)
             return None
-        return await self._ledger.update_tree(row.id, state="unlanded", reason=REASON_STOPPED) or row
+        # (As it was left at work: one that stands otherwise by now is not written over.)
+        return await self._ledger.update_tree(row.id, was=sorted(_AT_WORK), state="unlanded", reason=REASON_STOPPED)
 
     async def _tree_left(self, commission: Commission) -> None:
         """A commission ended otherwise than by its changes being landed: its worktree is removed, or kept for the user.
@@ -1482,7 +1510,7 @@ class TreeWork:
                 await self._keep_for_skipped(row, result.skipped)
             else:
                 await self._remove_tree(row, handle)
-            if commission is not None and commission.status == "blocked":
+            if commission is not None and commission.status == "blocked" and self._stuck_over(row, commission):
                 text = (
                     texts.TREE_LANDED_LATER.format(files=files_text(files, more, settings.LANDED_NOTE_MAX_TOKENS))
                     if files
@@ -1512,6 +1540,7 @@ class TreeWork:
                 # (One that failed is taken up again as one that is stuck is: left by a host
                 # that ended under it, or by a run that stopped on an error.)
                 and commission.status in ("blocked", "failed")
+                and self._stuck_over(row, commission)
                 and taker is not None
                 and await self._ledger.session_alive(taker)
             ):
@@ -1554,6 +1583,17 @@ class TreeWork:
             answer["kept_copies"] = result.kept_copies
         return answer
 
+    @staticmethod
+    def _stuck_over(row: Tree, commission: Commission | None) -> bool:
+        """Whether a commission is stuck over this worktree of its own, and not over another.
+
+        A commission that went on after the user took one of its
+        worktrees to see to personally has another: what the user
+        decides on the first settles that worktree alone. Told by where
+        the commission was last worked on.
+        """
+        return commission is not None and _same_dir(commission.workdir, row.workdir)
+
     async def _settle_after_decision(self, commission: Commission) -> None:
         """Write where the session of a commission stands that the user's decision on its worktree ended.
 
@@ -1573,15 +1613,21 @@ class TreeWork:
     async def discard_tree(self, tree_id: str) -> dict[str, Any]:
         """Remove a worktree the user decides on, with what it holds, as the user asks; returns ``{"removed": bool}``.
 
-        Its commission, where it was stuck over it, is put down as
-        stopped. ``removed`` is False when its directory could not be
-        removed (a file of it is in use): it is off the record, and
-        removed when the host next starts. Raises as ``land_tree``.
+        Its commission, where it was stuck over it (and not over
+        another worktree of its own), is put down as stopped.
+        ``removed`` is False when its directory could not be removed (a
+        file of it is in use): it is off the record, and removed when
+        the host next starts. Raises as ``land_tree``.
         """
         async with self._tree_in_hand(tree_id, TREE_STATES_LEFT) as row:
-            removed = await self._remove_tree(row)
+            handle = await self._handle_of(row)
+            if handle is None and not await self._tree_is_gone(row):
+                # There, and not to be opened this moment: nothing of it could be removed.
+                raise ValueError("not_opened")
+            stuck = self._stuck_over(row, await self._ledger.get(row.commission_id) if row.commission_id else None)
+            removed = await self._remove_tree(row, handle)
             await self._note_tree_event(row.commission_id, "tree_discarded", {"tree": row.id, "path": row.workdir})
-            if row.commission_id:
+            if row.commission_id and stuck:
                 moved = await self._ledger.transition(
                     row.commission_id, "cancelled", reason="the user discarded what it changed", only_from=("blocked",)
                 )

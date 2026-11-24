@@ -3916,6 +3916,9 @@ class TaskAgentManager(TreeWork):
             await self._fail(
                 commission_id, f"the task agent could not be started: {exc}", said=said, detail=str(exc), free=session.free
             )
+            # A git worktree this start took as its commission's is let go of (one that was
+            # stuck before ends as it was, which nothing else acts on): the user decides on it.
+            await self._tree_not_started(commission_id)
             self._keep_unsent(session)
             return False
 
@@ -7796,12 +7799,20 @@ class TaskAgentManager(TreeWork):
         user changed it since), it is asked about now, for the
         commission it starts with, and noted as allowed so that it is
         asked about once. Refused, it does not start. A member made
-        before this was kept on record is not asked about.
+        before this was kept on record is not asked about; one that
+        nothing is on record of and that never worked is (the hand-over
+        that made it was cut off before it was put on record).
         """
         from config.prompts import prompts_nekopower_brain as texts
 
         made = await self._ledger.last_event_in(member.id, "member_made")
-        if made is None or made.get("changes_files") is not False:
+        if made is None:
+            # Nothing on record: made before this was kept, and it has worked since; or made by
+            # a hand-over that was cut off before it was put on record, and this is its first.
+            worked = await self._ledger.select(session_id=member.id, limit=2)
+            if any(item.id != commission.id for item in worked):
+                return
+        elif made.get("changes_files") is not False:
             return
         decision = await self._permissions.check(
             commission.id,

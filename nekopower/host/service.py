@@ -401,18 +401,21 @@ class NekoPowerHost:
         notes that were not handed over. Looked for here, in the
         background, and not at startup.
         """
-        if self._used or self._shut_down:
+        if self._shut_down:
             return
-        self._used = True
-        self.outbox.kick()
-        self.wakes.kick()
+        if not self._used:
+            self._used = True
+            self.outbox.kick()
+            self.wakes.kick()
+        if self._trees_looked_at is not None:
+            return
         # Likewise the git worktrees an earlier run left: gone through in the
         # background (it runs git once for every repository a project is in),
         # as a task the task agents stop with the rest when the host shuts down.
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            return  # called with no loop running: looked at when the host next starts
+            return  # called with no loop running: looked at the next time the host is used with one
         self._trees_looked_at = self.task_agents._tree_task(self._look_at_trees_left())
 
     async def _look_at_trees_left(self) -> None:
