@@ -953,7 +953,8 @@ class ClaudeCompanionPlugin(NekoPluginBase):
         source = data.get("source", "neko")
         msg_type = data.get("type", "message")
         msg = self._inbox.add(content, source=source, msg_type=msg_type)
-        self.logger.info("Inbox: new message from {}: {}", source, content[:80])
+        # Message text is private: log its length only, never any of its content.
+        self.logger.info("Inbox: new message from {} ({} chars)", source, len(content))
         return {"status": "ok", "message": msg}
 
     def _on_inbox_pending(self) -> dict:

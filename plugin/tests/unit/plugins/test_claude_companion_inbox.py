@@ -252,3 +252,15 @@ def test_inbox_queue_creates_missing_data_directory(tmp_path: Path) -> None:
     queue = InboxQueue(str(path))
     queue.add("hi")
     assert json.loads(path.read_text(encoding="utf-8"))[0]["content"] == "hi"
+
+
+def test_inbox_send_log_omits_message_content(plugin: ClaudeCompanionPlugin) -> None:
+    plugin._init_inbox()
+    plugin.logger.lines.clear()
+
+    assert plugin._on_inbox_send({"content": _SECRET, "source": "neko"})["status"] == "ok"
+
+    assert plugin.logger.lines == [("info", "Inbox: new message from {} ({} chars)", ("neko", len(_SECRET)))]
+    logged = plugin.logger.text()
+    assert _SECRET not in logged
+    assert "private" not in logged
