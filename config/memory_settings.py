@@ -588,20 +588,22 @@ HYBRID_RECALL_POOL_CACHE_MAX_FILES = 6
 # residency, and actual growth is vector + bookkeeping (~2.4KB measured at 512d versus conservative
 # ~3.9KB). Do not read this cap as actual expected memory consumption.
 #
-# 32MB aims to restore typical actual growth to 20MB: conservative 512d accounting holds
-# ~8300 entries, which add 8300 × 2.4KB ≈ 19MB with shared strings, matching
-# the count cap's intended 20MB. Sizing capacity for worst-case usage needlessly halves
-# typical hit rate, so accounting is conservative but capacity targets typical usage. Vector pools contain active facts +
-# reflections only (archive embeddings are projected out before pooling), normally far below this gate;
-# it protects extreme multi-character × large-corpus residency, like the file-count gate above.
+# Sizing: accounting is conservative but capacity targets typical usage — sizing for the
+# worst case would needlessly halve the typical hit rate. Vector pools contain active facts +
+# reflections + persona only (archive embeddings are projected out before pooling), normally
+# far below this gate; it protects extreme multi-character × large-corpus residency, like the
+# file-count gate above.
 #
-# 64MB (raised from 32MB): the cache is an OrderedDict filled one row at a time as recalls
-# touch rows, never preallocated, so the cap costs nothing until a corpus actually grows
-# into it (a 2026-11 desktop corpus of six characters, 482 vector-pool rows in all, uses
-# ~3.6MB). It does stay resident once filled. At 100x that corpus the largest character's
-# pool is ~17.6k rows ≈ 38.5MB of accounting: 32MB kept ~3k of them permanently cold
-# (cosine 44ms per recall), 64MB holds them all (27ms). Two such characters alternating
-# still exceed it; that is the archive-sharding question again (#2716).
+# 64MB (raised from 32MB, whose target was ~20MB of typical growth at 512d). The cache is an
+# OrderedDict filled one row at a time as recalls touch rows, never preallocated, so the cap
+# costs nothing until a corpus actually grows into it (a 2026-11 desktop corpus of six
+# characters, 482 vector-pool rows in all, uses ~3.6MB). It does stay resident once filled.
+# Measured at the current default 256d model (local-text-retrieval-v1-256d), where this
+# accounting comes to ~2.3KB per row: at 100x that corpus the largest character's pool is
+# ~17.6k rows ≈ 38.5MB, so 32MB kept ~3k of them permanently cold (cosine 44ms per recall)
+# and 64MB holds them all (27ms). A 512d model accounts ~3.9KB per row (see above), so the
+# same pool would need ~68MB and again only partly fit. Two such characters alternating
+# exceed the cap either way; that is the archive-sharding question again (#2716).
 HYBRID_RECALL_VEC_CACHE_MAX_BYTES = 64 * 1024 * 1024
 
 # Resident byte limit for the BM25 token cache (memory.hybrid_recall._TOKEN_CACHE).

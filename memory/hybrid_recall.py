@@ -231,9 +231,9 @@ def _tokenize(text: str, stop_names: list[str] | None) -> list[str]:
 #
 # Same scan-aware admission as ``_VEC_CACHE`` (a scan never evicts what it
 # touched itself), bounded by ``HYBRID_RECALL_TOKEN_CACHE_MAX_BYTES``.
-# Unlike ``_VEC_CACHE`` this one takes a lock: the passive path scores in a
-# worker thread while ``recall_memory`` scores on the event loop. The lock
-# covers only the dict operations, never the tokenizing.
+# Like ``_VEC_CACHE`` it takes a lock: the passive path and ``hybrid_recall``
+# both run BM25 in worker threads, so two scans can tokenize concurrently.
+# The lock covers only the dict operations, never the tokenizing.
 _TOKEN_SEP = "\x00"
 _TOKEN_CACHE: OrderedDict[tuple[tuple[str, ...], str], tuple[str, int]] = OrderedDict()
 _TOKEN_CACHE_BYTES = 0
@@ -1500,13 +1500,16 @@ async def hybrid_recall(
     # so it runs in a worker thread like the passive path's ``_bm25_scores``
     # does. The pool rows are ``_tag_tier``'s private copies and
     # ``_TOKEN_CACHE`` is locked, so the worker shares nothing mutable.
+    # A thread cannot be interrupted: if this call is cancelled (only when the
+    # client goes away), the BM25 scan still runs to completion in the default
+    # executor and its result is dropped.
     try:
         bm25_scored = await asyncio.to_thread(
             _bm25_rank, query, bm25_pool, stop_names=stop_names,
         )
-    except (Exception, asyncio.CancelledError):
-        # Cancelled or failed while BM25 ran: the cosine task is no longer
-        # awaited by anyone, so stop it instead of leaving it orphaned.
+    except BaseException:
+        # However this call leaves (cancelled, failed, interrupted), the cosine
+        # task is no longer awaited by anyone: stop it instead of orphaning it.
         cosine_scored_task.cancel()
         raise
     if budget_ms is None:

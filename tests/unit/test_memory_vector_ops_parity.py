@@ -774,9 +774,10 @@ async def test_hybrid_recall_bm25_runs_off_the_event_loop_with_same_ranking(tmp_
     assert seen["thread"] != loop_thread
     expected = [d["id"] for d, _ in real("博士 猫", hr._tag_tier(facts, "fact"), stop_names=[])]
     assert seen["ranked"] == expected
-    assert [r["id"] for r in result["results"]][:hr.HYBRID_RECALL_BUDGET_EACH] == [
-        i for i in expected if i != "other"
-    ][:hr.HYBRID_RECALL_BUDGET_EACH]
+    assert "other" not in expected  # no shared term, so BM25 drops it
+    assert [r["id"] for r in result["results"]][:hr.HYBRID_RECALL_BUDGET_EACH] == (
+        expected[:hr.HYBRID_RECALL_BUDGET_EACH]
+    )
 
 
 @pytest.mark.asyncio
