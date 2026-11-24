@@ -1,4 +1,4 @@
-import { pluginConsentMessages } from '../plugin-consent'
+import pluginConsentMessages from '../plugin-consent/ru'
 import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
 import { marketFeedbackMessages } from '../market-feedback'
@@ -9,7 +9,7 @@ import powerMessages from '../power/ru'
  * Русский языковой пакет
  */
 export default {
-  pluginConsent: pluginConsentMessages['ru'],
+  pluginConsent: pluginConsentMessages,
   authoring: authoringMessages['ru'],
   marketFeedback: marketFeedbackMessages['ru'],
   modelApi: modelApiMessages['ru'],

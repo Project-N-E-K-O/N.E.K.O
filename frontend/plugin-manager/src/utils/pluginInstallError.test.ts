@@ -2,7 +2,26 @@ import { describe, expect, it } from 'vitest'
 
 import { pluginPackageSizeDetails, resolvePluginInstallErrorKey } from './pluginInstallError'
 import { PERMISSION_ERROR_KEYS, permissionErrorKey } from './pluginPermissionErrors'
-import { pluginConsentMessages } from '@/i18n/plugin-consent'
+import zhCnConsent from '@/i18n/plugin-consent/zh-CN'
+import zhTwConsent from '@/i18n/plugin-consent/zh-TW'
+import enUsConsent from '@/i18n/plugin-consent/en-US'
+import jaConsent from '@/i18n/plugin-consent/ja'
+import koConsent from '@/i18n/plugin-consent/ko'
+import ruConsent from '@/i18n/plugin-consent/ru'
+import esConsent from '@/i18n/plugin-consent/es'
+import ptConsent from '@/i18n/plugin-consent/pt'
+
+// One module per language (see i18n/localeBundles.ts); the tests check all eight.
+const pluginConsentMessages = {
+  'zh-CN': zhCnConsent,
+  'zh-TW': zhTwConsent,
+  'en-US': enUsConsent,
+  ja: jaConsent,
+  ko: koConsent,
+  ru: ruConsent,
+  es: esConsent,
+  pt: ptConsent,
+}
 
 describe('resolvePluginInstallErrorKey', () => {
   it.each([

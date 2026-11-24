@@ -15,7 +15,26 @@ import {
   capabilityOrigin,
 } from './pluginCapabilities'
 import type { CapabilityAnalysis } from '@/api/pluginConsent'
-import { pluginConsentMessages } from '@/i18n/plugin-consent'
+import zhCnConsent from '@/i18n/plugin-consent/zh-CN'
+import zhTwConsent from '@/i18n/plugin-consent/zh-TW'
+import enUsConsent from '@/i18n/plugin-consent/en-US'
+import jaConsent from '@/i18n/plugin-consent/ja'
+import koConsent from '@/i18n/plugin-consent/ko'
+import ruConsent from '@/i18n/plugin-consent/ru'
+import esConsent from '@/i18n/plugin-consent/es'
+import ptConsent from '@/i18n/plugin-consent/pt'
+
+// One module per language (see i18n/localeBundles.ts); the tests check all eight.
+const pluginConsentMessages = {
+  'zh-CN': zhCnConsent,
+  'zh-TW': zhTwConsent,
+  'en-US': enUsConsent,
+  ja: jaConsent,
+  ko: koConsent,
+  ru: ruConsent,
+  es: esConsent,
+  pt: ptConsent,
+}
 
 // Mirrors PERMISSION_IDS in plugin/sdk/shared/permissions/catalog.py; a Python
 // test checks this list against the catalog.

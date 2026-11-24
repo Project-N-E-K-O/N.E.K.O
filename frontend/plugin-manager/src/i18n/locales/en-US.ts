@@ -1,4 +1,4 @@
-import { pluginConsentMessages } from '../plugin-consent'
+import pluginConsentMessages from '../plugin-consent/en-US'
 import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
 import { marketFeedbackMessages } from '../market-feedback'
@@ -9,7 +9,7 @@ import powerMessages from '../power/en-US'
  * English language pack
  */
 export default {
-  pluginConsent: pluginConsentMessages['en-US'],
+  pluginConsent: pluginConsentMessages,
   authoring: authoringMessages['en-US'],
   marketFeedback: marketFeedbackMessages['en-US'],
   modelApi: modelApiMessages['en-US'],
