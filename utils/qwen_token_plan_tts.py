@@ -92,6 +92,28 @@ def qwen_token_plan_tts_url(base_url: str | None) -> str:
     return f"https://{host}{QWEN_TOKEN_PLAN_TTS_PATH}"
 
 
+def qwen_token_plan_audio_download_url(url: str | None) -> str:
+    """The signed result URL to download, or "" when it must not be fetched.
+
+    The API documentation shows ``http://dashscope-result-*.aliyuncs.com`` OSS
+    links; those are upgraded to HTTPS (the OSS signature does not cover the
+    scheme). Any other non-HTTPS URL is refused.
+    """
+    try:
+        parts = urllib.parse.urlsplit((url or "").strip())
+        port = parts.port
+    except ValueError:
+        return ""
+    scheme = parts.scheme.lower()
+    host = (parts.hostname or "").lower()
+    if scheme == "https" and host:
+        return urllib.parse.urlunsplit(parts)
+    if scheme == "http" and host.startswith("dashscope-result") and host.endswith(".aliyuncs.com") \
+            and not parts.username and not parts.password and port in (None, 80):
+        return urllib.parse.urlunsplit(("https", host, parts.path, parts.query, ""))
+    return ""
+
+
 def qwen_token_plan_api_headers(api_key: str, *, stream: bool = True) -> dict[str, str]:
     headers = {
         "Content-Type": "application/json",

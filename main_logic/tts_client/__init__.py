@@ -37,6 +37,7 @@ from utils.qwen_token_plan_tts import (
     QWEN_TOKEN_PLAN_TTS_DEFAULT_BASE_URL,
     QWEN_TOKEN_PLAN_TTS_DEFAULT_MODEL,
     QWEN_TOKEN_PLAN_TTS_DEFAULT_VOICE,
+    QWEN_TOKEN_PLAN_TTS_PRESET_CATALOG,
 )
 from utils.tts import provider_registry as _tts_providers
 from utils.logger_config import get_module_logger
@@ -788,6 +789,7 @@ _tts_providers.register(_tts_providers.TTSProvider(
     capabilities=frozenset({'preset'}),
     is_selected=_qwen_token_plan_is_selected,
     resolve=_qwen_token_plan_resolve,
+    preset_catalog=QWEN_TOKEN_PLAN_TTS_PRESET_CATALOG,
     realtime_output_override=True,
     uses_configured_default_voice=True,
     default_url=QWEN_TOKEN_PLAN_TTS_DEFAULT_BASE_URL,

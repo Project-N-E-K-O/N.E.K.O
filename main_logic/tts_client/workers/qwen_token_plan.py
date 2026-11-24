@@ -32,6 +32,7 @@ from utils.qwen_token_plan_tts import (
     extract_qwen_token_plan_audio,
     is_qwen_token_plan_url,
     qwen_token_plan_api_headers,
+    qwen_token_plan_audio_download_url,
     qwen_token_plan_tts_url,
     select_qwen_token_plan_tts_voice,
 )
@@ -168,10 +169,11 @@ def qwen_token_plan_tts_worker(
                 # The last SSE event repeats the whole sentence as a signed URL; only
                 # fetch it when no streamed audio arrived (a non-streaming reply).
                 if not received_audio and audio_url:
-                    if not audio_url.lower().startswith("https://"):
+                    download_url = qwen_token_plan_audio_download_url(audio_url)
+                    if not download_url:
                         raise QwenTokenPlanTtsError("audio URL is not HTTPS")
                     # Signed URL: never attach the API key.
-                    audio_resp = await client.get(audio_url)
+                    audio_resp = await client.get(download_url)
                     if audio_resp.status_code != 200:
                         raise QwenTokenPlanTtsError(f"audio download HTTP {audio_resp.status_code}")
                     emit(audio_resp.content)

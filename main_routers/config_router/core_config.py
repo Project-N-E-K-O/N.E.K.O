@@ -695,8 +695,12 @@ async def update_core_config(request: Request):
         stored_tts_model_provider = str(
             core_cfg.get('ttsModelProvider') or ''
         ).strip()
+        # The slot key as stored, before the submitted model fields overwrite it.
+        stored_tts_slot_key = str(core_cfg.get('ttsModelApiKey') or '').strip()
         _incoming_tts_provider = str(data.get('ttsModelProvider', '') or '').strip()
-        _tts_book_field = TTS_KEY_BOOK_FIELDS.get(_incoming_tts_provider, '')
+        # A partial update that omits ttsModelProvider keeps the stored provider.
+        _effective_tts_provider = str(data.get('ttsModelProvider', stored_tts_model_provider) or '').strip()
+        _tts_book_field = TTS_KEY_BOOK_FIELDS.get(_effective_tts_provider, '')
         tts_book_key_was_explicitly_updated = bool(_tts_book_field) and (
             _tts_book_field in data
             and not is_core_config_secret_placeholder(data[_tts_book_field])
@@ -750,8 +754,6 @@ async def update_core_config(request: Request):
                 except ValueError as exc:
                     return {"success": False, "error": str(exc)}
 
-        _effective_tts_provider = str(data.get('ttsModelProvider', stored_tts_model_provider) or '').strip()
-
         # Custom API configuration: Provider / Url / Id / ApiKey per model type
         for mt in CORE_CONFIG_MODEL_TYPES:
             for suffix in ['Provider', 'Url', 'Id', 'ApiKey']:
@@ -773,6 +775,26 @@ async def update_core_config(request: Request):
         # disable GSV. Partial updates omitting ttsModelProvider retain the flag for legacy users who never resave.
         if _incoming_tts_provider and _incoming_tts_provider != 'gptsovits':
             core_cfg['gptsovitsEnabled'] = False
+        if (
+            stored_tts_model_provider in TTS_KEY_BOOK_FIELDS
+            and _effective_tts_provider != stored_tts_model_provider
+        ):
+            # Leaving a Key Book-backed provider: older configs kept its only key in
+            # the shared slot. Move it to that provider's own Key Book field before
+            # the slot is cleared or replaced, so switching back still works.
+            previous_book_field = TTS_KEY_BOOK_FIELDS[stored_tts_model_provider]
+            slot_key = stored_tts_slot_key
+            previous_book_explicitly_updated = (
+                previous_book_field in data
+                and not is_core_config_secret_placeholder(data[previous_book_field])
+            )
+            if (
+                slot_key
+                and not is_core_config_secret_placeholder(slot_key)
+                and not str(core_cfg.get(previous_book_field) or '').strip()
+                and not previous_book_explicitly_updated
+            ):
+                core_cfg[previous_book_field] = slot_key
         if _tts_book_field:
             book_key = str(core_cfg.get(_tts_book_field) or '').strip()
             if tts_book_key_was_explicitly_updated:
@@ -782,7 +804,7 @@ async def update_core_config(request: Request):
             elif not tts_model_key_was_explicitly_updated:
                 if book_key and not is_core_config_secret_placeholder(book_key):
                     core_cfg['ttsModelApiKey'] = book_key
-                elif stored_tts_model_provider != _incoming_tts_provider:
+                elif stored_tts_model_provider != _effective_tts_provider:
                     # Switching from another provider must not reuse its shared
                     # model key as this provider's credential. When already on
                     # it, however, masked/no-op saves preserve the legacy key
@@ -790,13 +812,15 @@ async def update_core_config(request: Request):
                     core_cfg['ttsModelApiKey'] = ''
         elif (
             stored_tts_model_provider in TTS_KEY_BOOK_FIELDS
-            and _incoming_tts_provider
-            and _incoming_tts_provider != stored_tts_model_provider
-            and not tts_model_key_was_explicitly_updated
+            and _effective_tts_provider != stored_tts_model_provider
+            # Still the stored value: omitted, masked, or ignored by the new provider
+            # (DeepSeek drops submitted slot fields). A new key the user typed stays.
+            and str(core_cfg.get('ttsModelApiKey') or '').strip() == stored_tts_slot_key
         ):
-            # The slot holds the previous provider's mirrored Key Book key. Leaving
-            # for another provider (e.g. custom with its own URL) without a new key
-            # must not carry that credential to the new endpoint.
+            # The slot holds the previous provider's mirrored Key Book key (already
+            # moved to its Key Book above when it was the only copy). Leaving for
+            # another provider (e.g. custom with its own URL) without a new key must
+            # not carry that credential to the new endpoint.
             core_cfg['ttsModelApiKey'] = ''
         if 'ttsVoiceId' in data:
             core_cfg['ttsVoiceId'] = data['ttsVoiceId']

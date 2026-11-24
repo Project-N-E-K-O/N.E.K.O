@@ -2400,6 +2400,114 @@ class TestGptsovitsEnabledSaveMigration:
         assert saved.get(book_field) == 'sk-sp-mirrored'
 
     @pytest.mark.unit
+    @pytest.mark.parametrize('target_provider', ['deepseek', 'custom', 'qwen_token_plan'])
+    @pytest.mark.parametrize('submitted_key', ['omitted', 'masked', 'new'])
+    def test_update_core_config_leaving_legacy_doubao_moves_slot_only_key_to_key_book(
+        self, config_manager, monkeypatch, target_provider, submitted_key,
+    ):
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'doubao_tts',
+            'ttsModelApiKey': 'legacy-doubao-only-copy',
+        })
+        update = {
+            'enableCustomApi': True,
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': target_provider,
+            # The settings page submits the masked Key Book value it displayed.
+            'assistApiKeyDoubaoTts': config_router.CORE_CONFIG_SECRET_SENTINEL,
+        }
+        if submitted_key == 'masked':
+            update['ttsModelApiKey'] = config_router.CORE_CONFIG_SECRET_SENTINEL
+        elif submitted_key == 'new':
+            update['ttsModelApiKey'] = 'sk-new-endpoint-key'
+        resp = asyncio.run(config_router.update_core_config(self._FakeRequest(update)))
+        assert resp.get('success') is True
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved.get('assistApiKeyDoubaoTts') == 'legacy-doubao-only-copy'
+        assert saved.get('ttsModelApiKey') != 'legacy-doubao-only-copy'
+
+    @pytest.mark.unit
+    def test_update_core_config_leaving_doubao_respects_explicit_key_book_clear(self, config_manager, monkeypatch):
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'doubao_tts',
+            'ttsModelApiKey': 'legacy-doubao-only-copy',
+        })
+        resp = asyncio.run(config_router.update_core_config(self._FakeRequest({
+            'enableCustomApi': True,
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': 'custom',
+            'assistApiKeyDoubaoTts': '',
+        })))
+        assert resp.get('success') is True
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved.get('assistApiKeyDoubaoTts', '') == ''
+        assert saved.get('ttsModelApiKey') == ''
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('book_value, expected_slot', [
+        ('sk-sp-rotated', 'sk-sp-rotated'),
+        ('', ''),
+    ])
+    def test_update_core_config_partial_key_book_update_syncs_stored_provider_slot(
+        self, config_manager, monkeypatch, book_value, expected_slot,
+    ):
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'qwen_token_plan',
+            'ttsModelApiKey': 'sk-sp-old',
+            'assistApiKeyQwenTokenPlan': 'sk-sp-old',
+        })
+        # No ttsModelProvider in the request: the stored provider applies.
+        resp = asyncio.run(config_router.update_core_config(self._FakeRequest({
+            'enableCustomApi': True,
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyQwenTokenPlan': book_value,
+        })))
+        assert resp.get('success') is True
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved.get('ttsModelProvider') == 'qwen_token_plan'
+        assert saved.get('ttsModelApiKey') == expected_slot
+        assert config_manager.get_tts_api_key('qwen_token_plan') == (expected_slot or None)
+
+    @pytest.mark.unit
+    def test_token_plan_slot_is_not_tts_custom_credentials_for_cosyvoice(self, config_manager):
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': '',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'qwen_token_plan',
+            'ttsModelUrl': 'https://token-plan.cn-beijing.maas.aliyuncs.com',
+            'ttsModelId': 'qwen-audio-3.0-tts-plus',
+            'ttsModelApiKey': 'sk-sp-token-plan',
+            'assistApiKeyQwenTokenPlan': 'sk-sp-token-plan',
+        })
+        tts_custom = config_manager.get_model_api_config('tts_custom')
+        assert 'token-plan' not in str(tts_custom.get('base_url') or '')
+        assert tts_custom.get('api_key') != 'sk-sp-token-plan'
+        runtime = config_manager.get_cosyvoice_clone_runtime('cosyvoice')
+        assert runtime.get('api_key') != 'sk-sp-token-plan'
+        assert 'token-plan' not in str(runtime.get('base_url') or '')
+        assert config_manager.get_tts_api_key('cosyvoice') != 'sk-sp-token-plan'
+        # The Token Plan worker still gets its own key.
+        assert config_manager.get_tts_api_key('qwen_token_plan') == 'sk-sp-token-plan'
+
+    @pytest.mark.unit
     def test_update_core_config_leaving_keybook_tts_provider_keeps_explicit_new_key(
         self, config_manager, monkeypatch,
     ):

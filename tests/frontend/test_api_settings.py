@@ -1567,7 +1567,7 @@ def test_qwen_token_plan_tts_key_comes_from_key_book(mock_page: Page, running_se
     # The backend mirrors the Key Book entry into the slot (see update_core_config).
     assert "ttsModelApiKey" not in payload
     # The Token Plan key must not stay in the slot once another provider is chosen.
-    assert result["keyAfterLeaving"] != "sk-sp-book-key"
+    assert result["keyAfterLeaving"] not in ("sk-sp-book-key", "sk-sp-old-key")
 
 
 @pytest.mark.frontend

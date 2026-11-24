@@ -19,6 +19,7 @@ from utils.qwen_token_plan_tts import (
     extract_qwen_token_plan_audio,
     is_qwen_token_plan_url,
     normalize_qwen_token_plan_tts_voice,
+    qwen_token_plan_audio_download_url,
     qwen_token_plan_tts_url,
     select_qwen_token_plan_tts_voice,
     QwenTokenPlanTtsError,
@@ -62,6 +63,22 @@ def test_endpoint_keeps_only_the_host():
     assert qwen_token_plan_tts_url("") == _ENDPOINT
     with pytest.raises(ValueError):
         qwen_token_plan_tts_url("http://token-plan.cn-beijing.maas.aliyuncs.com")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("url, expected", [
+    ("https://oss.example/a.pcm?Signature=x", "https://oss.example/a.pcm?Signature=x"),
+    # The documented non-streaming example uses an http OSS link.
+    ("http://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/a/b.pcm?Expires=1&Signature=s%2B",
+     "https://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/a/b.pcm?Expires=1&Signature=s%2B"),
+    ("http://evil.test/a.pcm", ""),
+    ("http://dashscope-result-bj.oss-cn-beijing.aliyuncs.com.evil.test/a.pcm", ""),
+    ("http://user:pw@dashscope-result-bj.oss-cn-beijing.aliyuncs.com/a.pcm", ""),
+    ("ftp://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/a.pcm", ""),
+    ("http://dashscope-result-bj.oss-cn-beijing.aliyuncs.com:abc/a.pcm", ""),
+])
+def test_signed_audio_url_download_rules(url, expected):
+    assert qwen_token_plan_audio_download_url(url) == expected
 
 
 # ─── voice fallback (paired cases) ───────────────────────────────────────────
@@ -260,13 +277,13 @@ def test_worker_downloads_signed_url_without_the_key_for_a_non_streaming_reply(m
     def handler(request):
         if request.method == "GET":
             return httpx.Response(200, content=pcm)
-        return httpx.Response(200, json={"output": {"finish_reason": "stop",
-                                                    "audio": {"data": "", "url": "https://oss.example/a.pcm?sig=1"}}})
+        return httpx.Response(200, json={"output": {"finish_reason": "stop", "audio": {
+            "data": "", "url": "http://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/a.pcm?sig=1"}}})
 
     requests, items = _run_worker(monkeypatch, handler)
 
     assert [r.method for r in requests] == ["POST", "GET"]
-    assert str(requests[1].url) == "https://oss.example/a.pcm?sig=1"
+    assert str(requests[1].url) == "https://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/a.pcm?sig=1"
     assert "authorization" not in requests[1].headers
     assert _audio_bytes(items)
 
@@ -511,6 +528,10 @@ def test_registry_and_settings_metadata_are_wired():
     # The settings page reads this to show the Key Book key read-only in the TTS slot.
     assert provider.api_key_field == "assistApiKeyQwenTokenPlan"
     assert (provider.probe_kind, provider.probe_sub_type) == ("http_tts", "qwen_token_plan")
+    # The two named voices are presets of the registry entry (character voice validation).
+    assert provider.preset_catalog is not None
+    assert provider_registry.is_preset_voice("qwen_token_plan", "longanlufeng")
+    assert not provider_registry.is_preset_voice("qwen_token_plan", "Cherry")
     # Explicit dropdown choice must beat MiMo's assistApi default (priority 60).
     assert provider.priority < provider_registry.get("mimo").priority
 
