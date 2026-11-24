@@ -852,10 +852,14 @@ async def computer_use_availability():
     status = await asyncio.to_thread(_keyboard_mouse_availability)
     reasons = status.get("reasons", []) if isinstance(status, dict) else []
     ready = bool(status.get("ready")) if isinstance(status, dict) else False
-    _set_capability("computer_use", ready, reasons[0] if reasons else "", started=started)
-
+    if not _set_capability("computer_use", ready, reasons[0] if reasons else "", started=started):
+        # A check that started later has written its answer: that one is
+        # told, and nothing is switched off for this older one.
+        current = Modules.capability_cache.get("computer_use") or {}
+        status["ready"] = bool(current.get("ready"))
+        status["reasons"] = [current["reason"]] if current.get("reason") else []
     # Auto-update flag if capability lost
-    if not status.get("ready") and Modules.agent_flags.get("computer_use_enabled"):
+    elif not status.get("ready") and Modules.agent_flags.get("computer_use_enabled"):
         logger.info("[Agent] Computer Use capability lost, disabling flag")
         _put_switch_off("computer_use_enabled")
         Modules.notification = json.dumps({"code": "AGENT_CU_CAPABILITY_LOST", "details": {"reason_code": status.get('reasons', [])[0] if status.get('reasons') else 'unknown'}})
@@ -891,7 +895,10 @@ async def browser_use_availability():
     started = _capability_ticket_now()
     ready, reason = await asyncio.to_thread(_browser_availability)
     # No browser comes with the application; one the user has is used.
-    _set_capability("browser_use", ready, reason, started=started)
+    if not _set_capability("browser_use", ready, reason, started=started):
+        # A check that started later has written its answer: that one is told.
+        current = Modules.capability_cache.get("browser_use") or {}
+        ready, reason = bool(current.get("ready")), current.get("reason") or ""
     return {"enabled": True, "ready": ready, "reasons": [reason] if reason else [], "provider": "nekopower"}
 
 

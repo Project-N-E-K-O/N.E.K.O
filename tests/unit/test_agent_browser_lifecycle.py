@@ -872,6 +872,41 @@ async def test_a_switch_on_that_waited_goes_by_a_newer_check_the_saved_configura
     assert json.loads(modules.notification) == {"code": code, "details": {"reason_code": "AGENT_KEY_NOT_CONFIGURED"}}
 
 
+async def test_an_older_availability_check_switches_nothing_off_over_a_newer_enable(
+    modules, search, browser, checks, monkeypatch
+):
+    import threading
+
+    asked = threading.Event()
+    release = threading.Event()
+
+    def stale_check() -> dict[str, Any]:
+        asked.set()
+        release.wait(5.0)
+        return {"enabled": True, "ready": False, "reasons": ["AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE"]}
+
+    async def no_pictures_asked() -> dict[str, Any]:
+        return {"sees": True}
+
+    monkeypatch.setattr(api_routes, "_keyboard_mouse_availability", stale_check)
+    monkeypatch.setattr(api_routes, "_model_images_status", no_pictures_asked)
+    older = asyncio.ensure_future(api_routes.computer_use_availability())
+    try:
+        await asyncio.wait_for(asyncio.to_thread(asked.wait, 5.0), 6.0)
+        # Switched on meanwhile, from a check that started later and found input works.
+        modules.agent_flags["computer_use_enabled"] = True
+        api_routes._set_capability("computer_use", True, "")
+    finally:
+        release.set()
+    status = await asyncio.wait_for(older, 5.0)
+
+    assert modules.agent_flags["computer_use_enabled"] is True
+    assert modules.notification is None
+    assert modules.capability_cache["computer_use"] == {"ready": True, "reason": ""}
+    # What it answers is the newer word too.
+    assert (status["ready"], status["reasons"]) == (True, [])
+
+
 async def test_without_a_browser_only_the_browser_tools_are_not_ready(modules, search, browser, checks, monkeypatch):
     _keyboard(monkeypatch, ready=True)
     search.found = []
