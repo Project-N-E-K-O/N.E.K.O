@@ -432,13 +432,24 @@ def _initial_entry_tables(instance: Any, logger: Any) -> tuple[Dict[str, Any], D
                     if key not in kept:
                         continue
                     event_meta = kept[key].meta
-                entry_map[eid] = member
-                entry_meta_map[eid] = event_meta  # Store EventMeta for custom settings.
                 etype = getattr(event_meta, "event_type", "plugin_entry")
                 events_by_type.setdefault(etype, {})
                 events_by_type[etype][eid] = member
-            else:
-                entry_map[name] = member
+                # The id-keyed maps hold one handler and its metadata per id:
+                # a plugin_entry keeps them when another event type shares the
+                # id (that one stays in events_by_type). Same type: later wins.
+                current = entry_meta_map.get(eid)
+                if (
+                    current is not None
+                    and (getattr(current, "event_type", None) or "plugin_entry") == "plugin_entry"
+                    and (etype or "plugin_entry") != "plugin_entry"
+                ):
+                    continue
+                entry_map[eid] = member
+                entry_meta_map[eid] = event_meta  # Store EventMeta for custom settings.
+            # Members without event metadata are not mapped: they are not
+            # declared entries. Plain methods the manifest declares are
+            # reached through the executor's attribute fallback.
         logger.info("Plugin instance created. Mapped entries: {}", list(entry_map.keys()))
     return entry_map, entry_meta_map, events_by_type
 
@@ -1656,6 +1667,7 @@ def _plugin_process_runner(
             metadata=entry_meta_map, events=events_by_type, default_timeout=PLUGIN_TRIGGER_TIMEOUT,
             refresh=_rebuild_entry_map, should_persist=_should_persist, persist=_save_plugin_state, logger=logger,
             maps_generation=initial_maps_generation,
+            manifest_entry_ids=(startup_options or {}).get("manifest_entry_ids"),
         )
 
         async def _execute_command(msg: dict):
@@ -2476,6 +2488,11 @@ class PluginHost:
         """Permission snapshot handed to the child with its launch options,
         so ``ctx.permissions`` is filled before plugin code runs."""
         self._startup_options["permissions"] = snapshot
+
+    def set_manifest_entry_ids(self, entry_ids: list[str]) -> None:
+        """Entry ids the effective manifest's ``entries`` table declares,
+        handed to the child with its launch options (see ``EntryExecutor``)."""
+        self._startup_options["manifest_entry_ids"] = [str(eid) for eid in entry_ids]
 
     async def push_permissions(self, snapshot: Dict[str, Any]) -> None:
         """Send a newer permission snapshot to the running child."""
