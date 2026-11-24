@@ -160,11 +160,17 @@ const isOver = (item: CommissionRow) => OVER.has(item.status)
 const saysWhy = (item: CommissionRow) => isOver(item) || item.status === 'blocked'
 function doer(item: CommissionRow): string {
   if (item.session) {
-    // The title it earned; the name of a project's own familiar; else what kind it is
+    // The title it earned; the name of a project's leader (the project's); else what kind it is
     // (the name of any other is the commission's title, or its starter's with a number).
-    const key = `power.home.presets.${item.session.preset}`
-    const kind = te(key) ? t(key) : item.session.preset
-    return item.session.title || (item.session.kind === 'project' && item.session.name) || kind
+    const { kind: sessionKind, name, preset, title } = item.session
+    const key = `power.home.presets.${preset}`
+    const kind = te(key) ? t(key) : preset
+    if (sessionKind === 'line') {
+      // A member of a project: the project, then the member as its card names it, by its title or its kind
+      // (its own name is the host's, made of the project's and its kind's).
+      return `${item.project || name} · ${title || kind}`
+    }
+    return title || (sessionKind === 'project' && name) || kind
   }
   return item.plugin_id ? t('power.commissions.byPlugin', { plugin: item.plugin_id }) : ''
 }

@@ -223,6 +223,15 @@ describe('the permissions tab', () => {
     expect(row).toContain(words.runtime.permissions.notes.other)
   })
 
+  it('names a boss summoning a familiar that changes files, with when that is asked about', async () => {
+    api.getPermissions.mockResolvedValue({ ...permissions(), categories: [{ category: 'open_session', mode: 'auto', auto: 'first_ask' }] })
+    const page = await mount(PermissionsTab)
+    const row = page.querySelector('[data-category="open_session"]')?.textContent ?? ''
+    expect(row).toContain(words.runtime.permissions.categories.open_session)
+    expect(row).toContain(words.runtime.permissions.notes.open_session)
+    expect(row).not.toContain('open_session')
+  })
+
   it('reloads what is there when the setting was changed elsewhere meanwhile', async () => {
     api.getPermissions.mockResolvedValueOnce(permissions(3))
     const page = await mount(PermissionsTab)
