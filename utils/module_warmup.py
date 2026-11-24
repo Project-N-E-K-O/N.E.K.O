@@ -124,7 +124,8 @@ class WarmupConfig:
 
     Every read happens on first access, in the warmup thread. A read that raises
     makes each gate depending on it raise too, which ``evaluate_gates`` counts as
-    "needed".
+    "needed" -- with one exception: ``core_api_type`` falls back to
+    ``CORE_API_TYPE`` when the realtime slot cannot be read.
     """
 
     @cached_property
@@ -177,10 +178,18 @@ class WarmupConfig:
 
     @cached_property
     def core_api_type(self) -> str:
-        """The session's core api type, as start_session resolves it."""
-        return str(
-            self.realtime_config.get("api_type") or self.core_config.get("CORE_API_TYPE") or ""
-        )
+        """The session's core api type, as start_session resolves it.
+
+        The realtime slot's ``api_type`` first; when that slot cannot be read,
+        ``CORE_API_TYPE`` alone. Only this value falls back: other reads of the
+        realtime slot (its base_url, the Gemini check) still raise, so the gates
+        using them count as "needed".
+        """
+        try:
+            realtime_type = self.realtime_config.get("api_type")
+        except Exception:
+            realtime_type = None
+        return str(realtime_type or self.core_config.get("CORE_API_TYPE") or "")
 
     @cached_property
     def current_voice_id(self) -> str:
@@ -189,7 +198,7 @@ class WarmupConfig:
         The current character's voice, minus a free preset outside free mode
         (``_apply_voice_id_for_route``); when that leaves none, the custom-API
         voice ``TTS_VOICE_ID`` under the same conditions as start_session. Reads
-        characters.json and core_config.
+        characters.json, core_config and (for the core api type) the realtime slot.
         """
         from utils.config_manager.reserved_schema import get_reserved
         from utils.tts.native_voice_registry import is_free_preset_voice_id
@@ -401,6 +410,9 @@ _gated_pending_scope: frozenset[str] | None = None
 _startup_pass_missing = False
 # Entries whose import failed; not retried on later config saves.
 _failed_entries: set[str] = set()
+# Failed imports per entry for errors other than "not installed".
+_failure_counts: dict[str, int] = {}
+_MAX_IMPORT_FAILURES = 2
 
 
 def _warm_one(name: str) -> None:
@@ -426,15 +438,25 @@ def _warm_entries(module_list: tuple[str, ...], label: str) -> None:
         try:
             _warm_one(name)
             loaded += 1
+            # A success closes any retry it was owed.
+            _failure_counts.pop(name, None)
             logger.debug(
                 "[warmup:%s] %s (%.0f ms)",
                 label, name, (time.monotonic() - start) * 1000,
             )
-        except Exception as exc:
+        except ModuleNotFoundError as exc:
             logger.debug("[warmup:%s] skip %s: %s", label, name, exc)
-            # Not installed or broken: retrying on every config save would only
-            # repeat the failure (the lazy import on first use still reports it).
+            # Not installed: retrying on every config save would only repeat the
+            # failure (the lazy import on first use still reports it).
             _failed_entries.add(name)
+        except Exception as exc:
+            # Possibly transient (an antivirus briefly locking a DLL, say): leave
+            # it to a later pass -- but not forever: one that keeps failing (a
+            # missing VC++ runtime, say) stops being retried after a couple of tries.
+            logger.debug("[warmup:%s] skip %s: %s", label, name, exc)
+            _failure_counts[name] = _failure_counts.get(name, 0) + 1
+            if _failure_counts[name] >= _MAX_IMPORT_FAILURES:
+                _failed_entries.add(name)
         # Yield between modules, giving the running event loop a chance to reclaim the GIL.
         time.sleep(0)
     # Config re-checks run on every relevant settings save; keep them out of the
@@ -458,10 +480,19 @@ def _unloaded_gates(scope: Iterable[str] | None = None) -> set[str]:
 
 
 def _unloaded_plain_entries() -> list[str]:
-    """Ungated module entries the startup pass never reached (its thread did not start)."""
+    """Ungated entries still owed a pass.
+
+    Module entries the startup pass never reached (its thread did not start),
+    and "module:attribute" entries whose evaluation failed but has a retry left:
+    those cannot be judged by ``sys.modules``, so their failure count says it.
+    """
     return [
         entry for entry in MAIN_SERVER_WARMUP
-        if entry not in _ENTRY_GATES and ":" not in entry and _missing(entry)
+        if entry not in _ENTRY_GATES
+        and (
+            _missing(entry) if ":" not in entry
+            else _failure_counts.get(entry, 0) > 0 and entry not in _failed_entries
+        )
     ]
 
 
@@ -515,10 +546,15 @@ def _run_gated_warmup(label: str, scope: frozenset[str] | None = None) -> None:
         full_pass = scope is None
         try:
             _warm_entries(_pending_gated_entries(skip_loaded, label, scope), label)
+            if full_pass:
+                # Only once a full pass got through; a failed one leaves it for the next.
+                _startup_pass_missing = False
         except Exception as exc:  # best effort, like every other warmup failure
             logger.debug("[warmup:%s] gated warmup failed: %s", label, exc)
-        if full_pass:
-            _startup_pass_missing = False
+            if full_pass:
+                # A full pass that failed as a whole (the startup one included)
+                # leaves the next re-check to cover everything, attribute entries too.
+                _startup_pass_missing = True
         skip_loaded = True
         label = "config"
         with _warmup_lock:
@@ -584,18 +620,19 @@ def request_config_rewarm(reason: str = "config", only: Iterable[str] | None = N
     global _gated_running, _gated_pending, _gated_pending_scope
     # After a startup pass that never ran, the first re-check covers everything.
     scope = None if only is None or _startup_pass_missing else frozenset(only)
-    # Nothing left that this change could add, and no earlier request kept waiting
-    # after its thread failed to start: no thread, no config reads.
-    if (
+    # Nothing left that this change could add: no thread, no config reads --
+    # unless an earlier request was kept waiting after its thread failed to
+    # start, which is checked under the lock below.
+    nothing_new = (
         not _startup_pass_missing
-        and not _gated_pending
         and not _unloaded_gates(scope)
         and not _unloaded_plain_entries()
-    ):
-        return False
+    )
 
     with _warmup_lock:
         if not _gated_started:
+            return False
+        if nothing_new and not _gated_pending:
             return False
         if _gated_running:
             _gated_pending_scope = scope if not _gated_pending else _merge_scope(_gated_pending_scope, scope)

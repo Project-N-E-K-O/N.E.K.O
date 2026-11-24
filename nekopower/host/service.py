@@ -401,18 +401,21 @@ class NekoPowerHost:
         notes that were not handed over. Looked for here, in the
         background, and not at startup.
         """
-        if self._used or self._shut_down:
+        if self._shut_down:
             return
-        self._used = True
-        self.outbox.kick()
-        self.wakes.kick()
+        if not self._used:
+            self._used = True
+            self.outbox.kick()
+            self.wakes.kick()
+        if self._trees_looked_at is not None:
+            return
         # Likewise the git worktrees an earlier run left: gone through in the
         # background (it runs git once for every repository a project is in),
         # as a task the task agents stop with the rest when the host shuts down.
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            return  # called with no loop running: looked at when the host next starts
+            return  # called with no loop running: looked at the next time the host is used with one
         self._trees_looked_at = self.task_agents._tree_task(self._look_at_trees_left())
 
     async def _look_at_trees_left(self) -> None:
@@ -1722,8 +1725,9 @@ class NekoPowerHost:
     async def _change_project_workdir(self, project: str, wanted: Path) -> dict[str, Any]:
         """Write what ``set_project_workdir`` was asked for; see there."""
         # One change at a time, and none while a task agent is being made for the user: the
-        # sessions and the project's record end up saying the same directory.
-        async with self._project_lock:
+        # sessions and the project's record end up saying the same directory. (And none of its
+        # worktrees the user sees to personally is landed while it is half way.)
+        async with self._project_lock, self.task_agents.project_changing(project):
             # Before anything is moved: a record that cannot be read cannot be written either
             # (``_project_to_change`` refuses), and the sessions would be moved for nothing.
             kept, readable = await self.space.read_project(project)
@@ -1744,7 +1748,8 @@ class NekoPowerHost:
                 project, str(wanted), moves=self._moves_with(project, kept.workdir, leaders)
             )
             if before is None:
-                raise ProjectBusy("at_work")
+                # Something began in it since the look above: said by what it is.
+                raise ProjectBusy("tree_not_landed" if await self.ledger.trees_pending(project) else "at_work")
             # The record is written second: not written, the sessions go back, so that nothing is half changed.
             try:
                 changed = await self.space.set_project_workdir(project, str(wanted))

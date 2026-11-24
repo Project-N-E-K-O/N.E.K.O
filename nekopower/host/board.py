@@ -261,7 +261,8 @@ def card_of(
         if tree.state in _TREE_AT_WORK and state == "working" and commission is not None and tree.commission_id == commission.id:
             # (One that waits for the user's answer meanwhile shows as waiting.)
             state = tree.state
-        elif tree.state in _TREE_WAITS and commission is None:
+        elif tree.state in _TREE_WAITS and commission is None and state in ("idle", "asleep"):
+            # (A session that is being summed up shows as that.)
             state = tree.state
     return {
         "id": session.id,
@@ -324,8 +325,10 @@ def tree_of(trees: list[Tree], commission: Commission | None) -> Tree | None:
     The one its commission in hand is worked on in (before one of that
     commission the user sees to personally); else the oldest that
     waits for the user (held back, or not landed); else one the user
-    sees to personally.
+    sees to personally. Never one the user discarded, which is only
+    waiting to be removed.
     """
+    trees = [tree for tree in trees if tree.state != "discarding"]
     if commission is not None:
         mine = [tree for tree in trees if tree.commission_id == commission.id]
         for tree in sorted(mine, key=lambda tree: tree.state == "kept"):

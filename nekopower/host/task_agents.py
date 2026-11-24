@@ -422,8 +422,11 @@ class _Session:
     # The end of a run is being looked at this moment: whether the commission
     # is done with it, rests, or waits on. What waits to be handed to the
     # session is kept back meanwhile (``_hand_to``): steered in now, it would
-    # start a run in a session that is about to be closed.
-    settling: bool = False
+    # start a run in a session that is about to be closed. Counted: a
+    # landing that puts the commission down as done keeps it back the same
+    # way (``tree_work.py``), and may do so while the end of the run before
+    # is still being looked at.
+    settling: int = 0
     # The session is open with no run under way and none to come by itself
     # soon: its commission waits for task agents it started, or for
     # background jobs. What is handed to it then starts a turn.
@@ -3916,6 +3919,9 @@ class TaskAgentManager(TreeWork):
             await self._fail(
                 commission_id, f"the task agent could not be started: {exc}", said=said, detail=str(exc), free=session.free
             )
+            # A git worktree this start took as its commission's is let go of (one that was
+            # stuck before ends as it was, which nothing else acts on): the user decides on it.
+            await self._tree_not_started(commission_id)
             self._keep_unsent(session)
             return False
 
@@ -5047,7 +5053,7 @@ class TaskAgentManager(TreeWork):
         ``sent``) is read first thing, before anything is awaited, and
         from then until this returns ``_hand_to`` keeps back what waits.
         """
-        session.settling = True
+        session.settling += 1
         try:
             # Whoever wrote to the session and asked to hear back is told
             # that the turn is over, and what came of it: once, by the host,
@@ -5093,7 +5099,7 @@ class TaskAgentManager(TreeWork):
                 raise
             await told()
         finally:
-            session.settling = False
+            session.settling -= 1
 
     def _end_kept(self, session: _Session, event: dict[str, Any]) -> None:
         """Keep what the senders of a run's notes are told of it, for a text that is said to be taken after it.
@@ -6352,6 +6358,12 @@ class TaskAgentManager(TreeWork):
             # commission that is over. (Nothing is awaited from here to
             # where it would be handed on.)
             return
+        if parent_id in self._landing_ends:
+            # A landing is putting the parent down as done this moment: looked at again once
+            # that is written, as what the user says to it is (``tell``).
+            await self._landing_end_written(parent_id)
+            await self._tell_parent(commission, status, text)
+            return
         parent = self._sessions.get(parent_id)
         if parent is None:
             await self._wake_closed_parent(parent_id, message)
@@ -6495,8 +6507,14 @@ class TaskAgentManager(TreeWork):
         # Closing stops the run, kills its background jobs and frees the place.
         await self._close_session(session)
 
-    async def tell(self, commission_id: str, text: str, *, still_wanted: Callable[[], bool] | None = None) -> bool:
+    async def tell(
+        self, commission_id: str, text: str, *, still_wanted: Callable[[], bool] | None = None, recorded: bool = False
+    ) -> bool:
         """Pass a sentence on to a commission's task agent. Returns whether it was delivered.
+
+        ``recorded``: it is on record as said already (it was being
+        passed on as the commission came to be stuck, and takes it up
+        again now), and is not put on record a second time.
 
         ``still_wanted``, when given, is asked before a commission that is
         blocked or failed is taken up again, after whatever that had to
@@ -6542,13 +6560,14 @@ class TaskAgentManager(TreeWork):
                 # back what it was to bring: this is said once that is
                 # through, and brings that itself (``_back_from_copy``).
                 await asyncio.wait([called_off])
-                return await self.tell(commission_id, text, still_wanted=still_wanted)
+                return await self.tell(commission_id, text, still_wanted=still_wanted, recorded=recorded)
             # One that ended in a copy carried it on in is taken up in the
             # session itself, told what came of it in the copy.
             from_copy = await self._back_from_copy(commission)
             if still_wanted is not None and not still_wanted():
                 return False
-            await self._ledger.append_event(commission_id, "told", {"text": text, "resumed": True})
+            if not recorded:
+                await self._ledger.append_event(commission_id, "told", {"text": text, "resumed": True})
             # Should it open a session with nothing said in it (its start
             # failed before, or what was said was removed, being old), it is
             # handed what was said in the main dialogue just before this:
@@ -6597,11 +6616,31 @@ class TaskAgentManager(TreeWork):
         if session is not None and self._runtime_of(session) is not None:
             if session.closing or commission.status not in ("working", "waiting_user"):
                 return False
+            if commission_id in self._landing_ends:
+                # What it changed is landed, and it is being put down as done this moment: whether
+                # more was said to it was looked at just before (``_landed_or_not``), and steered
+                # in now this would start a run of a commission that is done. Said to it as it
+                # stands once that is written (done, this is work of its own).
+                await self._landing_end_written(commission_id)
+                return await self.tell(commission_id, text, still_wanted=still_wanted)
             await self._ledger.append_event(commission_id, "told", {"text": text})
             if commission_id in self._said_while_handed:
                 # Its leader handed it over while that was written.
                 self._said_while_handed[commission_id].append(text)
                 return True
+            # A landing may be writing how it ends this moment (as above), or the commission may
+            # have come to an end while that was put on record, its session not yet on its way
+            # out: gone by how it stands now, with nothing awaited between this look and the text
+            # being sent.
+            await self._landing_end_written(commission_id)
+            stands = session.stands
+            if stands is not None and stands.status in ("blocked", "failed"):
+                # Stuck meanwhile (what it changed was left for the user, say): taken up again
+                # with this, as what is said to any that is stuck. It is on record already.
+                return await self.tell(commission_id, text, still_wanted=still_wanted, recorded=True)
+            if stands is not None and stands.status in ENDED_STATUSES:
+                # Over: steered in, it would start a run in a session that is about to be closed.
+                return False
             if self._sessions.get(commission_id) is not session:
                 moved = await self._ledger.get(commission_id)
                 if moved is not None and moved.handed_by and moved.session_id != session.session_id:
@@ -6609,6 +6648,10 @@ class TaskAgentManager(TreeWork):
                     # task agent or is at work there: said where it is now. (Only then: a session
                     # that went for another reason is told as it was before.)
                     return await self._wake_working(commission_id, text, reason=_WOKEN_REASON)
+            elif session.closing:
+                # Still the commission's, and on its way out meanwhile (closed to rest, say): what
+                # is steered in now is lost with it.
+                return False
             await self._send_text(self._runtime_of(session), session, "steer", text)
             return True
         return False
@@ -7742,7 +7785,9 @@ class TaskAgentManager(TreeWork):
                 )
             # Beside a member that works in the project's directory, one that changes files
             # has a git worktree made for each commission, where one can be made.
-            seat = await self.seat_of_new_member(leader.project) if template.changes_files else ""
+            # (One that only reads is put on record as that with the session itself: what the
+            # user is asked when it changes files later does not hang on this hand-over going through.)
+            seat = await self.seat_of_new_member(leader.project) if template.changes_files else "reads"
             if template.changes_files:
                 # Another task agent that can change files (through the shell as well): the user's to allow.
                 detail = {"tool": "hand_over", "title": f"{duty} <- {commission.title}", "preset": preset}
@@ -7795,13 +7840,14 @@ class TaskAgentManager(TreeWork):
         should its template say otherwise by the time it starts (the
         user changed it since), it is asked about now, for the
         commission it starts with, and noted as allowed so that it is
-        asked about once. Refused, it does not start. A member made
-        before this was kept on record is not asked about.
+        asked about once. Refused, it does not start, and is asked
+        about again the next time. What it was made as is on record
+        with the session (``seat``, ``reads``), from when it is made:
+        a member made before that was kept is not asked about.
         """
         from config.prompts import prompts_nekopower_brain as texts
 
-        made = await self._ledger.last_event_in(member.id, "member_made")
-        if made is None or made.get("changes_files") is not False:
+        if member.seat != "reads":
             return
         decision = await self._permissions.check(
             commission.id,
@@ -7814,6 +7860,8 @@ class TaskAgentManager(TreeWork):
         )
         if not decision.allow:
             raise RuntimeError(texts.HAND_OVER_NOT_ALLOWED.format(reason=decision.reason or "declined"))
+        # One that changes files in the project's directory from here on, and not asked about again.
+        await self._ledger.update_session(member.id, seat="")
         await self._ledger.append_event(commission.id, "member_made", {"session": member.id, "changes_files": True})
 
     async def _close_leader_later(self, session: _Session) -> None:
@@ -8420,9 +8468,11 @@ class TaskAgentManager(TreeWork):
             # Its runtime session is on its way out, the end of its run is
             # being looked at (it may be closed to rest this moment), or it
             # has come to wait for the user. What is sent now would be
-            # lost, or would set it to work with its question open.
+            # lost, or would set it to work with its question open. So it
+            # is while a landing writes how the commission ends, whether
+            # or not a session of it is open in a runtime just then.
             live = self._sessions.get(commission_id)
-            return live is not None and (
+            return commission_id in self._landing_ends or live is not None and (
                 live.closing
                 or live.settling
                 or live.awaiting_prompt
@@ -8434,6 +8484,9 @@ class TaskAgentManager(TreeWork):
                 # sender be told what it stopped with. Once it is over, a
                 # commission of its own is filed for the note.
                 or live.wind_up_left is not None
+                # Its commission is over on record, and its session is
+                # about to be closed (a moment before that is begun).
+                or (live.stands is not None and live.stands.status in ENDED_STATUSES)
             )
 
         def way() -> str:

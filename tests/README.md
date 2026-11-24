@@ -45,6 +45,9 @@ contracts stay separate from runtime/subprocess tests to preserve their CI marke
     ```bash
     uv run playwright install
     ```
+    `tests/conftest.py` also tries to install Chromium when it is missing, except
+    when pytest is given only `tests/unit` files that never mention Playwright
+    (that install takes minutes on a fresh CI runner).
 
 3.  **Prepare API Keys**:
     -   Copy `tests/api_keys.json.template` to `tests/api_keys.json`.
@@ -202,6 +205,16 @@ Pull requests run the four behavior markers in `unit-test-shards.yml`, while
 Node frontend contract test. The same shard job also runs the root-level
 `tests/unit/*.test.js` node:test suites, which pytest never collects. Each
 Python shard fails if its marker selects no tests (pytest exit code 5).
+
+A shard does not collect all of `tests/unit`:
+`scripts/ci/select_shard_files.py` passes pytest only the test files whose
+source contains `mark.<marker>`, and the shard still filters with `-m`. Write
+the marker in the test file itself (module `pytestmark`, a class or function
+decorator, or `pytest.param(..., marks=...)`). A marker that only arrives
+through another module (an imported base class or decorator, a conftest hook)
+is invisible to the selector; the `shard selection audit` job compares every
+selection with a full collection on each push to `main` and fails when the
+test ids differ.
 
 The unmarked remainder of `tests/unit` is too slow (30+ minutes) for every
 pull request. `unit-tests.yml` runs all of it only on pushes to `main` and on
