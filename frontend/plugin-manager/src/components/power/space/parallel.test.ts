@@ -110,6 +110,12 @@ describe('what a familiar changed in a worktree of its own', () => {
     for (const id of ['tree-discard', 'tree-open', 'tree-keep']) expect(byTest(id)).toBeTruthy()
   })
 
+  it('that an inspector did not pass is merged, not tried again: the host merges it without another inspection', async () => {
+    await mount(TreeActions, { tree: tree({ reason: 'inspection', conflicts: [] }) })
+    expect(byTest('tree-land')?.textContent?.trim()).toBe(words.trees.land)
+    expect(byTest('tree-actions')?.textContent).toContain(words.trees.reasons.inspection)
+  })
+
   it('that waits for the user to say so offers to merge it, and one the user sees to is not offered to them again', async () => {
     await mount(TreeActions, { tree: tree({ state: 'held', reason: 'ask', conflicts: [] }) })
     expect(byTest('tree-land')?.textContent?.trim()).toBe(words.trees.land)

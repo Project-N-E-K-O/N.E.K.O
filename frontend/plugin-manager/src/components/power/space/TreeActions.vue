@@ -13,7 +13,7 @@
 
     <div v-if="decides" class="buttons">
       <el-button type="primary" size="small" :loading="busy === 'land'" :disabled="busy !== ''" data-testid="tree-land" @click="land">
-        {{ tree.state === 'unlanded' ? t('power.trees.retry') : t('power.trees.land') }}
+        {{ retries ? t('power.trees.retry') : t('power.trees.land') }}
       </el-button>
       <el-button size="small" :disabled="busy !== ''" data-testid="tree-discard" @click="discarding = true">{{ t('power.trees.discard') }}</el-button>
       <el-button size="small" :loading="busy === 'open'" :disabled="busy !== ''" data-testid="tree-open" @click="open">{{ t('power.trees.open') }}</el-button>
@@ -57,6 +57,9 @@ const error = ref('')
 const discarding = ref(false)
 const CONFLICTS_SHOWN = 5
 
+// Merging once more is trying again, but for one an inspector did not pass: the host merges that
+// one without another inspection, which is merging it as the user says.
+const retries = computed(() => props.tree.state === 'unlanded' && props.tree.reason !== 'inspection')
 /** The states the user decides on; in the others it is at work. */
 const decides = computed(() => ['held', 'unlanded', 'kept'].includes(props.tree.state))
 const stateWords = computed(() => {
