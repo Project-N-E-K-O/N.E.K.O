@@ -422,8 +422,11 @@ class _Session:
     # The end of a run is being looked at this moment: whether the commission
     # is done with it, rests, or waits on. What waits to be handed to the
     # session is kept back meanwhile (``_hand_to``): steered in now, it would
-    # start a run in a session that is about to be closed.
-    settling: bool = False
+    # start a run in a session that is about to be closed. Counted: a
+    # landing that puts the commission down as done keeps it back the same
+    # way (``tree_work.py``), and may do so while the end of the run before
+    # is still being looked at.
+    settling: int = 0
     # The session is open with no run under way and none to come by itself
     # soon: its commission waits for task agents it started, or for
     # background jobs. What is handed to it then starts a turn.
@@ -5050,7 +5053,7 @@ class TaskAgentManager(TreeWork):
         ``sent``) is read first thing, before anything is awaited, and
         from then until this returns ``_hand_to`` keeps back what waits.
         """
-        session.settling = True
+        session.settling += 1
         try:
             # Whoever wrote to the session and asked to hear back is told
             # that the turn is over, and what came of it: once, by the host,
@@ -5096,7 +5099,7 @@ class TaskAgentManager(TreeWork):
                 raise
             await told()
         finally:
-            session.settling = False
+            session.settling -= 1
 
     def _end_kept(self, session: _Session, event: dict[str, Any]) -> None:
         """Keep what the senders of a run's notes are told of it, for a text that is said to be taken after it.
@@ -6355,6 +6358,12 @@ class TaskAgentManager(TreeWork):
             # commission that is over. (Nothing is awaited from here to
             # where it would be handed on.)
             return
+        if parent_id in self._landing_ends:
+            # A landing is putting the parent down as done this moment: looked at again once
+            # that is written, as what the user says to it is (``tell``).
+            await self._landing_end_written(parent_id)
+            await self._tell_parent(commission, status, text)
+            return
         parent = self._sessions.get(parent_id)
         if parent is None:
             await self._wake_closed_parent(parent_id, message)
@@ -6600,11 +6609,25 @@ class TaskAgentManager(TreeWork):
         if session is not None and self._runtime_of(session) is not None:
             if session.closing or commission.status not in ("working", "waiting_user"):
                 return False
+            if commission_id in self._landing_ends:
+                # What it changed is landed, and it is being put down as done this moment: whether
+                # more was said to it was looked at just before (``_landed_or_not``), and steered
+                # in now this would start a run of a commission that is done. Said to it as it
+                # stands once that is written (done, this is work of its own).
+                await self._landing_end_written(commission_id)
+                return await self.tell(commission_id, text, still_wanted=still_wanted)
             await self._ledger.append_event(commission_id, "told", {"text": text})
             if commission_id in self._said_while_handed:
                 # Its leader handed it over while that was written.
                 self._said_while_handed[commission_id].append(text)
                 return True
+            while commission_id in self._landing_ends:
+                # A landing began to put it down as done while that was written: as above, and
+                # nothing is awaited between the last look and the text being sent.
+                await self._landing_end_written(commission_id)
+                now = await self._ledger.get(commission_id)
+                if now is None or now.status != "working" or self._sessions.get(commission_id) is not session or session.closing:
+                    return False
             if self._sessions.get(commission_id) is not session:
                 moved = await self._ledger.get(commission_id)
                 if moved is not None and moved.handed_by and moved.session_id != session.session_id:

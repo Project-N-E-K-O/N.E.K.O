@@ -1683,8 +1683,9 @@ class NekoPowerHost:
     async def _change_project_workdir(self, project: str, wanted: Path) -> dict[str, Any]:
         """Write what ``set_project_workdir`` was asked for; see there."""
         # One change at a time, and none while a task agent is being made for the user: the
-        # sessions and the project's record end up saying the same directory.
-        async with self._project_lock:
+        # sessions and the project's record end up saying the same directory. (And none of its
+        # worktrees the user sees to personally is landed while it is half way.)
+        async with self._project_lock, self.task_agents.project_changing(project):
             # Before anything is moved: a record that cannot be read cannot be written either
             # (``_project_to_change`` refuses), and the sessions would be moved for nothing.
             kept, readable = await self.space.read_project(project)

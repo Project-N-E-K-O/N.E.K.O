@@ -52,6 +52,7 @@ import os
 import shutil
 import time
 from pathlib import Path
+from collections.abc import AsyncIterator
 from typing import Any
 
 from nekopower.host.ledger import ENDED_STATUSES, TREE_STATES, TREE_STATES_LEFT, Commission, Session, Tree
@@ -144,8 +145,14 @@ class _Quiet:
     go: asyncio.Event = dataclasses.field(default_factory=asyncio.Event)
 
 
-def _says_it_is(path: Path, name: str) -> bool:
-    """Whether a directory holds the ``.git`` file of the git worktree called ``name`` (``gitdir: .../worktrees/<name>``)."""
+def _says_it_is(path: Path, name: str, project_dir: str) -> bool:
+    """Whether a directory holds the ``.git`` file of the git worktree called ``name`` of the repository ``project_dir`` is in.
+
+    Git writes ``gitdir: <repository>/.git/worktrees/<name>`` into a
+    worktree. One of the same name of another repository is not it; nor
+    is one whose repository that line does not tell (it keeps its git
+    directory elsewhere): not known to be it, it is left alone.
+    """
     try:
         said = (path / ".git").read_text(encoding="utf-8", errors="replace").strip()
     except OSError:
@@ -153,7 +160,26 @@ def _says_it_is(path: Path, name: str) -> bool:
     if not said.startswith("gitdir:"):
         return False
     parts = Path(said[len("gitdir:") :].strip()).parts
-    return len(parts) >= 2 and parts[-2] == "worktrees" and parts[-1] == name
+    if len(parts) < 4 or parts[-3:] != (".git", "worktrees", name):
+        return False
+    repository, project = (os.path.normcase(os.path.realpath(found)) for found in (Path(*parts[:-3]), project_dir))
+    try:
+        return os.path.commonpath([repository, project]) == repository
+    except ValueError:  # on different drives
+        return False
+
+
+def _remove_entry(entry: Path) -> None:
+    """Remove a file, a link, or a directory with all in it; what cannot be removed (it is in use) is left."""
+    try:
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry, True)
+            if os.path.lexists(entry):
+                os.rmdir(entry)  # a junction, which is not gone into, or a directory left empty
+        else:
+            entry.unlink()
+    except OSError:
+        pass
 
 
 def _same_dir(first: str | None, second: str | None) -> bool:
@@ -259,7 +285,10 @@ class TreeWork:
         self._decided_for: dict[str, str] = {}
         # Commissions a landing is putting down as done this moment: an end that is the landing's
         # own, and not one that left its worktree behind.
-        self._landing_ends: set[str] = set()
+        # What is said to one of them meanwhile waits until that is written (``_landing_end_written``).
+        self._landing_ends: dict[str, asyncio.Future[None]] = {}
+        # Projects that are being given another directory this moment (``project_changing``).
+        self._projects_changing: set[str] = set()
         # Held while a project's worktrees are counted and one more is put on record: two that
         # start at once do not both take the last room.
         self._tree_room = asyncio.Lock()
@@ -427,15 +456,25 @@ class TreeWork:
         Returns whether it went; None for a directory that is not the
         worktree's any more, which is left where it is. Only one that
         still says it is that worktree is removed (the ``.git`` file git
-        put into it names it): another directory put in its place since
-        is not what the user discarded.
+        put into it names it, and the repository it is of): another
+        directory put in its place since is not what the user discarded.
         """
         base, path = self._paths.worktrees_dir(), Path(row.path)
 
         def remove() -> bool:
-            if not (_same_dir(str(path.parent), str(base)) and _says_it_is(path, row.id)):
+            if not (_same_dir(str(path.parent), str(base)) and _says_it_is(path, row.id, row.project_dir)):
                 return False
-            shutil.rmtree(path, True)
+            # The file that says whose the directory is goes last, with the directory: where
+            # something of it is in use and stays, what is left still says so when this is
+            # tried again (as the host next starts).
+            try:
+                for entry in list(path.iterdir()):
+                    if entry.name != ".git":
+                        _remove_entry(entry)
+                if all(entry.name == ".git" for entry in path.iterdir()):
+                    shutil.rmtree(path, True)
+            except OSError:
+                pass
             return True
 
         if not await asyncio.to_thread(remove):
@@ -955,6 +994,11 @@ class TreeWork:
                 await self._fail(commission_id, "what came of it could not be put on record", said="run")
                 await self._wrap_up_in_tree(commission_id)
 
+    async def _landing_end_written(self, commission_id: str) -> None:
+        """Wait until no landing is putting a commission down as done this moment (``_landing_ends``)."""
+        while (written := self._landing_ends.get(commission_id)) is not None:
+            await asyncio.wait([written])
+
     def _stale(self, commission_id: str, done: _Done) -> bool:
         """Whether a commission went on working since it said it is done: what it changed is not landed under it."""
         if self._dones.get(commission_id) is not done:
@@ -1260,11 +1304,18 @@ class TreeWork:
             # directory goes is a new commission's, and no run begins in it. Not done under a
             # run that began while its end was being written (``unless``): that one goes on in
             # the worktree, which stays.
-            self._landing_ends.add(commission_id)
             if not result.skipped:
                 # On record as one to remove from here on (what it held is landed): shown nowhere,
                 # in nobody's way, and removed as the host next starts should it end this moment.
                 await self._ledger.update_tree(row.id, state="discarding")
+            # Whether more was said to it is looked at once, as its end is about to be written
+            # (``unless``); from here until it is written nothing more is said to its session:
+            # what the user says waits (``tell``), and so does what is handed on to it, as while
+            # the end of a run is looked at (``settling``).
+            written = self._landing_ends[commission_id] = asyncio.get_running_loop().create_future()
+            live = self._sessions.get(commission_id)
+            if live is not None:
+                live.settling += 1
             try:
                 ended = await self._end(
                     commission_id, "done", reason=done.reason, text=text,
@@ -1277,7 +1328,10 @@ class TreeWork:
                 await self._seen_to_once_landed(row, handle, result)
                 raise
             finally:
-                self._landing_ends.discard(commission_id)
+                if live is not None:
+                    live.settling -= 1
+                del self._landing_ends[commission_id]
+                written.set_result(None)
             if not ended and self._stale(commission_id, done):
                 await self._ledger.update_tree(row.id, state="active")
                 return "again"
@@ -1816,10 +1870,29 @@ class TreeWork:
             answer["kept_copies"] = result.kept_copies
         return answer
 
+    @contextlib.asynccontextmanager
+    async def project_changing(self, project: str) -> AsyncIterator[None]:
+        """Entered by whoever gives a project another directory, for as long as that takes.
+
+        Its sessions are written first and its record second. A worktree
+        of it the user sees to personally is not landed in between
+        (``_project_moved``): where the project has no leader on record,
+        nothing else tells of a change that is half way.
+        """
+        self._projects_changing.add(project)
+        try:
+            yield
+        finally:
+            self._projects_changing.discard(project)
+
     async def _project_moved(self, row: Tree) -> bool | None:
         """Whether the project a worktree was made for works in another directory by now (or is put away); None where that cannot be told."""
         if self._space is None or not row.project:
             return False
+        if row.project in self._projects_changing:
+            # Being given another directory this moment (which began before this worktree was put
+            # on record as being landed, or it would have been refused): not known where it ends up.
+            return None
         try:
             project, readable = await self._space.read_project(row.project)
         except asyncio.CancelledError:
