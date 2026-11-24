@@ -69,6 +69,22 @@ class Search:
         return self.found
 
 
+class _EveryTask(set):
+    """The process's set of background tasks, remembering every task ever added.
+
+    A task takes itself off the set when it is over; ``ever`` still has it,
+    so that how it ended can be looked at however early it ended.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ever: set[asyncio.Task] = set()
+
+    def add(self, item: Any) -> None:
+        self.ever.add(item)
+        super().add(item)
+
+
 @pytest.fixture
 def modules(monkeypatch: pytest.MonkeyPatch) -> Any:
     """The process's switches and caches, put back as they were after the test."""
@@ -91,6 +107,7 @@ def modules(monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setattr(state, "notification", None)
     monkeypatch.setattr(state, "browser_use_lifecycle_seq", state.browser_use_lifecycle_seq)
     monkeypatch.setattr(state, "state_revision", state.state_revision)
+    monkeypatch.setattr(state, "_background_tasks", _EveryTask())
     monkeypatch.setattr(nekopower_builtins, "_in_use", {})
     # A shutdown sets it for good, on the provider every test of this process shares.
     monkeypatch.setattr(nekopower_builtins.provider, "_shut_down", False)
@@ -502,12 +519,16 @@ async def _background_done(modules: Any, timeout: float = 10.0) -> None:
     """Let what a request left to the background run to its end; one that fails or hangs fails the test."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
-    # A task that is over takes itself off ``_background_tasks``: every one
-    # seen is kept here, so that how it ended is still looked at.
-    seen: set[asyncio.Task] = set(modules._background_tasks)
+    # A task that is over takes itself off ``_background_tasks``; the set the
+    # ``modules`` fixture puts in its place remembers every task ever added,
+    # so one that ended before this was called is looked at as well.
+    def every() -> set[asyncio.Task]:
+        return set(getattr(modules._background_tasks, "ever", modules._background_tasks))
+
+    seen: set[asyncio.Task] = every()
     while True:
         await asyncio.sleep(0)
-        seen |= set(modules._background_tasks)
+        seen |= every()
         pending = [task for task in seen if not task.done()]
         if not pending:
             break
@@ -523,14 +544,18 @@ async def _background_done(modules: Any, timeout: float = 10.0) -> None:
             raise task.exception()
 
 
-async def test_a_background_task_that_fails_fails_the_wait_for_it(modules, monkeypatch):
-    monkeypatch.setattr(modules, "_background_tasks", set())
-
+@pytest.mark.parametrize("ended_before_the_wait", [False, True])
+async def test_a_background_task_that_fails_fails_the_wait_for_it(modules, ended_before_the_wait):
     async def breaks() -> None:
         await asyncio.sleep(0)
         raise RuntimeError("the status could not be sent")
 
-    capabilities._shared._create_tracked_task(breaks())
+    task = capabilities._shared._create_tracked_task(breaks())
+    if ended_before_the_wait:
+        # Over, and off the set, before anything waits for it.
+        await asyncio.wait({task})
+        await asyncio.sleep(0)
+        assert task not in modules._background_tasks
 
     with pytest.raises(RuntimeError, match="the status could not be sent"):
         await _background_done(modules)
@@ -572,8 +597,19 @@ async def test_a_keyboard_check_that_breaks_still_lets_the_browser_be_said(modul
 
     await capabilities._refresh_tool_capabilities()
 
-    assert modules.capability_cache["computer_use"] == {"ready": False, "reason": ""}
+    # Not usable, and why is said with a code that has its words.
+    assert modules.capability_cache["computer_use"] == {"ready": False, "reason": "AGENT_INPUT_CHECK_FAILED"}
     assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
+
+
+async def test_a_browser_search_that_breaks_says_so(modules, search, browser, checks, monkeypatch):
+    _keyboard(monkeypatch, ready=True)
+    monkeypatch.setattr(capabilities, "_browser_dependency_status", lambda: (_ for _ in ()).throw(RuntimeError("the disk went away")))
+
+    await capabilities._refresh_tool_capabilities()
+
+    assert modules.capability_cache["computer_use"] == {"ready": True, "reason": ""}
+    assert modules.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_BROWSER_CHECK_FAILED"}
 
 
 async def test_a_keyboard_switched_off_while_an_earlier_request_waited_for_its_check_stays_off(

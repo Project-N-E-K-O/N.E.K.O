@@ -153,7 +153,7 @@ async def _refresh_tool_capabilities() -> None:
         keyboard = await asyncio.to_thread(_keyboard_mouse_availability)
     except Exception as exc:  # noqa: BLE001 - not usable then; the browser is still looked at
         logger.warning("[Agent] Checking the keyboard and mouse failed: %s", exc)
-        keyboard = {"ready": False, "reasons": []}
+        keyboard = {"ready": False, "reasons": ["AGENT_INPUT_CHECK_FAILED"]}
     keyboard_reasons = keyboard.get("reasons") or []
     if mine == _tool_refresh_seq:
         _set_capability("computer_use", bool(keyboard.get("ready")), keyboard_reasons[0] if keyboard_reasons else "")
@@ -161,7 +161,7 @@ async def _refresh_tool_capabilities() -> None:
         browser_ready, browser_reason = await asyncio.to_thread(_browser_availability)
     except Exception as exc:  # noqa: BLE001 - not usable then
         logger.warning("[Agent] Checking for a browser failed: %s", exc)
-        browser_ready, browser_reason = False, ""
+        browser_ready, browser_reason = False, "AGENT_BROWSER_CHECK_FAILED"
     if mine == _tool_refresh_seq:
         _set_capability("browser_use", browser_ready, browser_reason)
 

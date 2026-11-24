@@ -4611,6 +4611,8 @@
             "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE": "Desktop display session unavailable",
             "AGENT_PYAUTOGUI_MACOS_PYOBJC_MISSING": "macOS PyAutoGUI bridge unavailable (PyObjC/Quartz/AppKit missing)",
             "AGENT_PYAUTOGUI_IMPORT_FAILED": "pyautogui import failed",
+            "AGENT_INPUT_CHECK_FAILED": "Checking keyboard and mouse control failed",
+            "AGENT_BROWSER_CHECK_FAILED": "Looking for a browser failed",
             "AGENT_BROWSER_NOT_FOUND": "no usable browser found (Chrome, Edge or similar)",
             "AGENT_MODEL_NOT_CONFIGURED": "Familiar Model (general) ID is not configured",
             "AGENT_URL_NOT_CONFIGURED": "Familiar Model (general) URL is not configured",

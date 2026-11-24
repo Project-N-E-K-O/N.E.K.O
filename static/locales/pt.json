@@ -4611,6 +4611,8 @@
             "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE": "Sessão de exibição da área de trabalho indisponível",
             "AGENT_PYAUTOGUI_MACOS_PYOBJC_MISSING": "Ponte do PyAutoGUI no macOS indisponível (faltando PyObjC/Quartz/AppKit)",
             "AGENT_PYAUTOGUI_IMPORT_FAILED": "Falha ao importar pyautogui",
+            "AGENT_INPUT_CHECK_FAILED": "Falha ao verificar o controle de teclado e mouse",
+            "AGENT_BROWSER_CHECK_FAILED": "Falha ao procurar um navegador",
             "AGENT_BROWSER_NOT_FOUND": "nenhum navegador utilizável encontrado (Chrome, Edge ou similar)",
             "AGENT_MODEL_NOT_CONFIGURED": "O ID do Modelo do familiar (geral) não está configurado",
             "AGENT_URL_NOT_CONFIGURED": "URL do modelo do familiar (geral) não configurado",
