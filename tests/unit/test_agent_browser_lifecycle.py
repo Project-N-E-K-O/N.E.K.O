@@ -968,6 +968,62 @@ async def test_a_switch_on_waiting_for_its_check_is_not_held_back_by_the_master_
     assert (_notification(modules) or {}).get("code") not in ("AGENT_CU_UNAVAILABLE", "AGENT_BU_UNAVAILABLE")
 
 
+async def test_an_older_switch_on_goes_by_the_newer_real_answer_not_a_stand_in_written_since(
+    modules, search, browser, checks, monkeypatch, scheduled
+):
+    import threading
+
+    asked = threading.Event()
+    release = threading.Event()
+
+    def slow_keyboard() -> dict[str, Any]:
+        asked.set()
+        release.wait(5.0)
+        # What this older check found: not usable.
+        return {"enabled": True, "ready": False, "reasons": ["AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE"]}
+
+    monkeypatch.setattr(api_routes, "_keyboard_mouse_availability", slow_keyboard)
+    switching_on = asyncio.ensure_future(
+        api_routes.set_agent_flags({"computer_use_enabled": True, "_persist_intent": False})
+    )
+    try:
+        await asyncio.wait_for(asyncio.to_thread(asked.wait, 5.0), 6.0)
+        # A check that started later answers "usable"...
+        capabilities._set_capability("computer_use", True, "")
+        # ...and then a stand-in is written over it ("not checked yet").
+        capabilities._set_capability("computer_use", False, "", provisional=True)
+    finally:
+        release.set()
+    await asyncio.wait_for(switching_on, 5.0)
+
+    # The older answer is refused, and the newer real one decides, not the stand-in.
+    assert modules.agent_flags["computer_use_enabled"] is True
+    assert modules.notification is None
+
+
+async def test_the_model_no_longer_set_up_during_an_availability_check_switches_nothing_off(
+    modules, search, browser, checks, monkeypatch
+):
+    async def no_pictures_asked() -> dict[str, Any]:
+        return {"sees": True}
+
+    monkeypatch.setattr(
+        api_routes,
+        "_keyboard_mouse_availability",
+        lambda: {"enabled": True, "ready": False, "reasons": ["AGENT_KEY_NOT_CONFIGURED"]},
+    )
+    monkeypatch.setattr(api_routes, "_model_images_status", no_pictures_asked)
+    modules.agent_flags["computer_use_enabled"] = True
+
+    status = await api_routes.computer_use_availability()
+
+    # Said unusable, and why; but a configuration that changed puts no switch off.
+    assert status["ready"] is False
+    assert modules.capability_cache["computer_use"] == {"ready": False, "reason": "AGENT_KEY_NOT_CONFIGURED"}
+    assert modules.agent_flags["computer_use_enabled"] is True
+    assert modules.notification is None
+
+
 async def test_without_a_browser_only_the_browser_tools_are_not_ready(modules, search, browser, checks, monkeypatch):
     _keyboard(monkeypatch, ready=True)
     search.found = []

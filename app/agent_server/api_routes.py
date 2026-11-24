@@ -40,6 +40,8 @@ from .api_shared import (  # noqa: F401
     _refresh_tool_capabilities_and_tell,
     _set_capability,
     _capability_ticket_now,
+    _capability_latest_answer,
+    MODEL_SETUP_REASONS,
     app,
     asyncio,
     builtin_provider,
@@ -311,7 +313,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
                 if not _set_capability("computer_use", ready, reasons[0] if reasons else "", started=started):
                     # A check that started later (the configuration saved
                     # meanwhile, say) has written its answer: that one decides.
-                    current = Modules.capability_cache.get("computer_use") or {}
+                    current = _capability_latest_answer("computer_use")
                     ready, reason = bool(current.get("ready")), current.get("reason") or "unknown"
                 if ready:
                     Modules.agent_flags["computer_use_enabled"] = True
@@ -336,7 +338,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
                 if not _set_capability("browser_use", ready, reason, started=started):
                     # A check that started later (the configuration saved
                     # meanwhile, say) has written its answer: that one decides.
-                    current = Modules.capability_cache.get("browser_use") or {}
+                    current = _capability_latest_answer("browser_use")
                     ready, reason = bool(current.get("ready")), current.get("reason") or "unknown"
                 if ready:
                     Modules.agent_flags["browser_use_enabled"] = True
@@ -861,11 +863,17 @@ async def computer_use_availability():
     if not _set_capability("computer_use", ready, reasons[0] if reasons else "", started=started):
         # A check that started later has written its answer: that one is
         # told, and nothing is switched off for this older one.
-        current = Modules.capability_cache.get("computer_use") or {}
+        current = _capability_latest_answer("computer_use")
         status["ready"] = bool(current.get("ready"))
         status["reasons"] = [current["reason"]] if current.get("reason") else []
-    # Auto-update flag if capability lost
-    elif not status.get("ready") and Modules.agent_flags.get("computer_use_enabled"):
+    # Auto-update flag if capability lost. Not for the agent model not being
+    # set up (the configuration changed meanwhile): that does not put a
+    # switch off, it only says the tools cannot be used.
+    elif (
+        not status.get("ready")
+        and Modules.agent_flags.get("computer_use_enabled")
+        and not (reasons and reasons[0] in MODEL_SETUP_REASONS)
+    ):
         logger.info("[Agent] Computer Use capability lost, disabling flag")
         _put_switch_off("computer_use_enabled")
         Modules.notification = json.dumps({"code": "AGENT_CU_CAPABILITY_LOST", "details": {"reason_code": status.get('reasons', [])[0] if status.get('reasons') else 'unknown'}})
@@ -903,7 +911,7 @@ async def browser_use_availability():
     # No browser comes with the application; one the user has is used.
     if not _set_capability("browser_use", ready, reason, started=started):
         # A check that started later has written its answer: that one is told.
-        current = Modules.capability_cache.get("browser_use") or {}
+        current = _capability_latest_answer("browser_use")
         ready, reason = bool(current.get("ready")), current.get("reason") or ""
     return {"enabled": True, "ready": ready, "reasons": [reason] if reason else [], "provider": "nekopower"}
 

@@ -187,6 +187,20 @@ def _capability_reason_code(raw_reason: str) -> str:
 # not wait take a ticket as they write.
 _capability_ticket = 0
 _capability_ticket_written: Dict[str, int] = {}
+# The last answer a check gave, provisional stand-ins aside: what a request
+# whose own answer turned out older goes by (``_capability_latest_answer``).
+_capability_last_answer: Dict[str, Dict[str, Any]] = {}
+
+# The reasons that say the agent model is not set up. A configuration that
+# changes does not put a switch off (only a switch asked to come on without
+# one is refused): with these the tools are only said to be unusable.
+MODEL_SETUP_REASONS = frozenset({
+    "AGENT_ENDPOINT_NOT_CONFIGURED",
+    "AGENT_MODEL_NOT_CONFIGURED",
+    "AGENT_URL_NOT_CONFIGURED",
+    "AGENT_KEY_NOT_CONFIGURED",
+    "AGENT_CONFIG_CHECK_FAILED",
+})
 
 
 def _capability_ticket_now() -> int:
@@ -215,9 +229,19 @@ def _set_capability(
     prev = Modules.capability_cache.get(name, {})
     normalized_reason = _capability_reason_code(reason)
     Modules.capability_cache[name] = {"ready": bool(ready), "reason": normalized_reason}
+    if not provisional:
+        _capability_last_answer[name] = {"ready": bool(ready), "reason": normalized_reason}
     if prev.get("ready") != bool(ready) or prev.get("reason", "") != normalized_reason:
         _bump_state_revision()
     return True
+
+
+def _capability_latest_answer(name: str) -> Dict[str, Any]:
+    """Return the answer the newest check gave of a capability, not a provisional stand-in written since.
+
+    For a request whose own answer was refused as older: it goes by this.
+    """
+    return dict(_capability_last_answer.get(name) or Modules.capability_cache.get(name) or {})
 
 
 def _track_background_task(task: asyncio.Task) -> asyncio.Task:
