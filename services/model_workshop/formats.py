@@ -15,7 +15,7 @@ import unicodedata
 from dataclasses import dataclass, replace
 from urllib.parse import quote, unquote, urljoin, urlsplit
 
-from .bundle import BundleError, BundleLimits, inspect_bundle
+from .bundle import BundleError, BundleLimits, inspect_bundle, _key
 
 
 class ModelFormatError(BundleError):
@@ -97,6 +97,7 @@ class _Resources:
     def __init__(self, bundle, archive, limits: FormatLimits):
         self.bundle, self.archive, self.limits = bundle, archive, limits
         self.files = {item.path: item for item in bundle.files}
+        self.file_keys = {_key(name): name for name in self.files}
         self.warnings = []
         self.warning_count = 0
 
@@ -150,6 +151,11 @@ class _Resources:
                      and runtime_path.startswith("/__root__/"), reference, "external_model_reference")
             if not compatible or target not in self.files:
                 self.warn("live2d_optional_resource_unavailable", reference)
+            # The browser strips fragments/queries and decodes URL spelling.
+            # Case-insensitive filesystems can also open an inventory alias.
+            # Validate that actual object's role, not just the literal reference.
+            runtime_target = runtime_path.removeprefix("/__root__/")
+            target = self.file_keys.get(_key(runtime_target), target)
         else:
             _require(compatible, reference, "incompatible_model_reference")
             _require(target in self.files, reference, "missing_model_resource")
@@ -178,6 +184,13 @@ def _motion(data: dict, path: str) -> tuple[str, ...]:
     _require(_number(meta.get("Duration")) and meta["Duration"] >= 0, path)
     _require(_number(meta.get("Fps")) and meta["Fps"] > 0, path)
     _require("Loop" not in meta or type(meta["Loop"]) is bool, path)
+    event_count = meta.get("UserDataCount", 0)
+    events = data.get("UserData", [])
+    if events is None and event_count == 0:
+        events = []
+    _require(type(event_count) is int and isinstance(events, list) and 0 <= event_count <= len(events), path)
+    for event in events[:event_count]:
+        _require(isinstance(event, dict) and _number(event.get("Time")) and isinstance(event.get("Value"), str), path)
     segments = points = slots = 0
     warnings = set()
     for curve in curves:
@@ -208,7 +221,9 @@ def _motion(data: dict, path: str) -> tuple[str, ...]:
         _require(points > 0, path)
     _require(type(meta.get("CurveCount")) is int and meta["CurveCount"] == len(curves), path)
     for key, expected in (("TotalSegmentCount", segments), ("TotalPointCount", points)):
-        # NEKO's bundled JS parser grows points dynamically, but preallocates
+        # static/libs/index.min.js: CubismMotion.parse writes points[index] into
+        # a plain JS array; segments use Array.from({length: TotalSegmentCount}).
+        # The bundled JS parser grows points dynamically, but preallocates
         # segments using Meta. Reject underallocation and bound both declarations
         # by the actual numeric input rather than trusting claimed allocation sizes.
         _require(type(meta.get(key)) is int and 0 <= meta[key] <= slots, path)
@@ -227,7 +242,42 @@ def _expression(data: dict, path: str) -> None:
         _require(_number(parameter.get("Value")) and parameter.get("Blend", "Add") in ("Add", "Multiply", "Overwrite"), path)
 
 
-def _auxiliary(data: dict, path: str, *, kind: str = "") -> None:
+def _physics_entries_compatible(data: dict) -> bool:
+    """Malformed optional effects warn; the model's original bytes stay intact."""
+    def vector(value):
+        return isinstance(value, dict) and all(_number(value.get(key)) for key in ("X", "Y"))
+
+    forces = data["Meta"].get("EffectiveForces", {})
+    if not isinstance(forces, dict) or not all(vector(forces.get(key)) for key in ("Gravity", "Wind")):
+        return False
+    for setting in data["PhysicsSettings"]:
+        normalization = setting.get("Normalization", {})
+        if not isinstance(normalization, dict):
+            return False
+        for key in ("Position", "Angle"):
+            bounds = normalization.get(key)
+            if not isinstance(bounds, dict) or not all(_number(bounds.get(field)) for field in ("Minimum", "Maximum", "Default")):
+                return False
+        for key, destination in (("Input", "Source"), ("Output", "Destination")):
+            for item in setting[key]:
+                if not isinstance(item, dict) or not isinstance(item.get(destination), dict):
+                    return False
+                if not isinstance(item[destination].get("Id"), str) or not item[destination]["Id"]:
+                    return False
+                if not _number(item.get("Weight")) or type(item.get("Reflect")) is not bool or item.get("Type") not in ("X", "Y", "Angle"):
+                    return False
+                if key == "Output" and (not _number(item.get("Scale")) or type(item.get("VertexIndex")) is not int
+                                        or not 1 <= item["VertexIndex"] < len(setting["Vertices"])):
+                    return False
+        for vertex in setting["Vertices"]:
+            if not isinstance(vertex, dict) or not vector(vertex.get("Position")):
+                return False
+            if not all(_number(vertex.get(key)) for key in ("Mobility", "Delay", "Acceleration", "Radius")):
+                return False
+    return True
+
+
+def _auxiliary(data: dict, path: str, *, kind: str = "") -> bool:
     """Check required containers of non-animation Cubism JSON resources."""
     lower = kind or "." + posixpath.basename(path).lower()
     # NEKO's bundled mao_pro pose uses Type instead of Version; its loader accepts it.
@@ -241,6 +291,9 @@ def _auxiliary(data: dict, path: str, *, kind: str = "") -> None:
             _require(isinstance(setting, dict), path)
             for key in ("Input", "Output", "Vertices"):
                 _require(isinstance(setting.get(key), list), path)
+        # CubismPhysics.parse iterates the actual Input/Output/Vertices arrays;
+        # PhysicsSettingCount above bounds its only metadata-driven loop.
+        return _physics_entries_compatible(data)
     elif lower.endswith(".pose3.json"):
         _require(isinstance(data.get("Groups"), list), path)
         for group in data["Groups"]:
@@ -255,6 +308,7 @@ def _auxiliary(data: dict, path: str, *, kind: str = "") -> None:
                 _require(isinstance(item, dict) and isinstance(item.get("Id"), str), path)
     else:
         _require(isinstance(data.get("Meta"), dict) and isinstance(data.get("UserData"), list), path)
+    return True
 
 
 def _image(resources: _Resources, path: str) -> None:
@@ -342,7 +396,8 @@ def _live2d(resources: _Resources) -> None:
         for group in groups.values():
             _require(isinstance(group, list), entry)
             for ref in group:
-                resources.dependency(ref, suffixes=(suffix,), manager=True, optional=True)
+                target = resources.dependency(ref, suffixes=(suffix,), manager=True, optional=True)
+                roles.setdefault(target, set()).add(suffix)
     allowed = (".model3.json", ".moc3", ".png", ".jpg", ".jpeg", ".webp", ".motion3.json",
                ".exp3.json", ".physics3.json", ".pose3.json", ".cdi3.json", ".userdata3.json", ".vtube.json", ".xyplugin.json")
     _allowed_files(resources, allowed, filenames=("items_pinned_to_model.json", "parameters.json",
@@ -363,8 +418,8 @@ def _live2d(resources: _Resources) -> None:
                         resources.warn(code, name)
                 elif kind == ".exp3.json":
                     _expression(contents, name)
-                elif kind != "PhysicsV2":
-                    _auxiliary(contents, name, kind=kind)
+                elif kind != "PhysicsV2" and not _auxiliary(contents, name, kind=kind):
+                    resources.warn("live2d_optional_resource_unavailable", name)
         if posixpath.basename(lower) == "parameters.json":
             # NEKO's parameter editor saves finite numeric overrides keyed by
             # model ID or legacy param_N. Keys never become paths or commands.
@@ -559,7 +614,12 @@ def _vrm(resources: _Resources) -> None:
             offset = _uint(accessor.get("byteOffset", 0), entry)
             stride = view.get("byteStride", element_size)
             _require(offset % component == 0 and stride >= element_size, entry)
-            _require(offset + (count - 1) * stride + element_size <= view["byteLength"] if count else offset <= view["byteLength"], entry)
+            # GLTFLoader.loadAccessor constructs count complete interleaved
+            # strides, including padding after the last logical element.
+            if stride != element_size:
+                _require((offset // stride) * stride + count * stride <= view["byteLength"], entry)
+            else:
+                _require(offset + count * element_size <= view["byteLength"], entry)
         else:
             # glTF and the bundled loader allow pure zero-initialized accessors.
             _require(_uint(accessor.get("byteOffset", 0), entry) == 0, entry)
@@ -582,9 +642,23 @@ def _vrm(resources: _Resources) -> None:
                 view = views[_index(part.get("bufferView"), views, entry)]
                 width = {5121: 1, 5123: 2, 5125: 4}.get(_uint(part.get("componentType"), entry)) if key == "indices" else element_size
                 _require(width is not None, entry)
-                _require(_uint(part.get("byteOffset", 0), entry) + sparse_count * width <= view["byteLength"], entry)
+                offset = _uint(part.get("byteOffset", 0), entry)
+                _require(offset % (width if key == "indices" else component) == 0, entry)
+                _require(offset + sparse_count * width <= view["byteLength"], entry)
     # Mesh dependencies are loaded regardless of animation. Validate once per
     # mesh, then reuse cardinalities instead of rescanning for each channel.
+    materials = data.get("materials", [])
+    _require(isinstance(materials, list), entry)
+    for material in materials:
+        _require(isinstance(material, dict), entry)
+        blocks = [material, material.get("pbrMetallicRoughness", {})]
+        blocks.extend(material.get("extensions", {}).values())
+        for block in blocks:
+            _require(isinstance(block, dict), entry)
+            for key, value in block.items():
+                if key.endswith("Texture"):
+                    _require(isinstance(value, dict), entry)
+                    _index(value.get("index"), textures, entry)
     mesh_morph_counts = []
     for mesh in meshes:
         _require(isinstance(mesh, dict) and isinstance(mesh.get("primitives"), list), entry)
@@ -595,6 +669,8 @@ def _vrm(resources: _Resources) -> None:
                 _index(accessor, accessors, entry)
             if "indices" in primitive:
                 _index(primitive["indices"], accessors, entry)
+            if "material" in primitive:
+                _index(primitive["material"], materials, entry)
             morphs = primitive.get("targets", [])
             if "targets" in primitive:
                 _require(isinstance(morphs, list) and bool(morphs), entry)
@@ -603,6 +679,7 @@ def _vrm(resources: _Resources) -> None:
                     for index in morph.values():
                         _index(index, accessors, entry)
             counts.append(len(morphs))
+        _require(len(set(counts)) <= 1, entry)
         mesh_morph_counts.append(tuple(set(counts)))
     for animation in animations:
         _require(isinstance(animation, dict), entry)
@@ -939,7 +1016,9 @@ def _pmd(resources: _Resources, reader: _MmdReader) -> None:
         if reader.offset < reader.size:
             reader.skip(reader.count("I", 83) * 83)
             reader.skip(reader.count("I", 124) * 124)
-    # PMD resolves toon indices before appending diffuse/sphere paths to its table.
+    # static/libs/three-mmd.module.js PmdReader.ParseAsync/_ConvertMaterials leaves a
+    # missing toon table empty; it supplies no implicit shared-toon fallback.
+    # Resolve toon indices before appending diffuse/sphere paths, as it does.
     shared = []
     for toon, _diffuse, _sphere in materials:
         normalized = _pmd_normalized(textures[toon]) if 0 <= toon < len(textures) else ""
