@@ -1650,7 +1650,7 @@ def test_default_flags_mark_only_the_last_attempt_as_started():
 def test_every_attempt_is_reported_even_with_short_flags():
     attempts = [subprocess.TimeoutExpired(["node"], 3, output="", stderr="") for _ in range(3)]
     error = NodeHarnessSpawnTimeout(["node"], 3, attempts, started=True, attempts_started=[True])
-    assert len(error.attempts_started) == 3
+    assert error.attempts_started == [False, False, True], "aligned on the last attempt"
     text = str(error)
     for index in (1, 2, 3):
         assert f"attempt {index} (" in text, text

@@ -245,8 +245,9 @@ class NodeHarnessSpawnTimeout(subprocess.TimeoutExpired):
         if attempts_started is None:
             flags = [False] * max(count - 1, 0) + [started] * bool(count)
         else:
-            flags = list(attempts_started)[:count]
-            flags += [False] * (count - len(flags))
+            # Aligned on the last attempt, the one ``started`` describes.
+            flags = list(attempts_started)[-count:] if count else []
+            flags = [False] * (count - len(flags)) + flags
         self.attempts_started = flags
 
     def __str__(self) -> str:
