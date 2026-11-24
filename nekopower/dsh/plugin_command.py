@@ -154,8 +154,10 @@ def render_powershell(*, root: Path, executable: Path, leading: tuple[str, ...],
     lines += [
         "$ErrorActionPreference = 'Stop'",
         "$ProgressPreference = 'SilentlyContinue'",
-        "[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor "
-        "[Net.SecurityProtocolType]::Tls12",
+        (
+            "[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor "
+            "[Net.SecurityProtocolType]::Tls12"
+        ),
         f"$Dsh = {_ps(executable)}",
         f"$Leading = @({', '.join(_ps(item) for item in leading)})",
         f"$PnpmDir = {_ps(pnpm_root(root) / DSH_PNPM_VERSION)}",
@@ -173,8 +175,10 @@ def render_powershell(*, root: Path, executable: Path, leading: tuple[str, ...],
         "",
         "function Find-Registry {",
         "  foreach ($registry in $Registries) {",
-        "    try { Invoke-WebRequest -Uri \"$registry/-/ping\" -UseBasicParsing -TimeoutSec 15 | Out-Null; "
-        "return $registry } catch { }",
+        (
+            "    try { Invoke-WebRequest -Uri \"$registry/-/ping\" -UseBasicParsing -TimeoutSec 15 | Out-Null; "
+            "return $registry } catch { }"
+        ),
         "  }",
         "  return $null",
         "}",
@@ -184,8 +188,10 @@ def render_powershell(*, root: Path, executable: Path, leading: tuple[str, ...],
         "function Get-Checked($first, $item, $target) {",
         "  foreach ($registry in @($first) + $Registries) {",
         "    try {",
-        "      Invoke-WebRequest -Uri \"$registry/$($item.Name)/-/$($item.File)\" -OutFile $target "
-        "-UseBasicParsing -TimeoutSec 600",
+        (
+            "      Invoke-WebRequest -Uri \"$registry/$($item.Name)/-/$($item.File)\" -OutFile $target "
+            "-UseBasicParsing -TimeoutSec 600"
+        ),
         "      $hash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant()",
         "      if ((Get-Item -LiteralPath $target).Length -eq $item.Size -and $hash -eq $item.Sha256) {",
         "        return $registry",
@@ -399,8 +405,10 @@ def render_sh(*, root: Path, executable: Path, leading: tuple[str, ...], profile
         "# ``delivered``; never keep a file that differs.",
         "get_checked() {  # first name file size sha256 target",
         "  for source in \"$1\" $REGISTRIES; do",
-        "    if fetch \"$source/$2/-/$3\" \"$6\" && [ \"$(wc -c < \"$6\" | tr -d ' ')\" = \"$4\" ] "
-        "&& [ \"$(digest \"$6\")\" = \"$5\" ]; then delivered=$source; return 0; fi",
+        (
+            "    if fetch \"$source/$2/-/$3\" \"$6\" && [ \"$(wc -c < \"$6\" | tr -d ' ')\" = \"$4\" ] "
+            "&& [ \"$(digest \"$6\")\" = \"$5\" ]; then delivered=$source; return 0; fi"
+        ),
         "    say \"$3 could not be fetched whole from $source\"",
         "    rm -f \"$6\"",
         "  done",
@@ -544,6 +552,7 @@ def _write(path: Path, text: str, *, encoding: str) -> None:
         if path.read_bytes() == data:
             return
     except OSError:
+        # Not there yet, or not readable: it is written below either way.
         pass
     import tempfile
 
