@@ -424,10 +424,18 @@ async def update_core_config(request: Request):
             return JSONResponse({"success": False, "error": "无效的JSON数据"}, status_code=400)
         if not isinstance(data, dict):
             return JSONResponse({"success": False, "error": "无效的数据"}, status_code=400)
+        # Legacy desktop shell (N.E.K.O.-PC pet-preference-actions.js) posts
+        # {"disableTts": bool} via same-origin JSON fetch without X-CSRF-Token (#4019 P2).
+        is_legacy_disable_tts_toggle = (
+            len(data) == 1
+            and "disableTts" in data
+            and isinstance(data["disableTts"], bool)
+        )
         validation_error = _validate_local_mutation_request(
             request,
             payload=data,
             error_defaults={"success": False},
+            require_csrf=not is_legacy_disable_tts_toggle,
         )
         if validation_error is not None:
             return validation_error

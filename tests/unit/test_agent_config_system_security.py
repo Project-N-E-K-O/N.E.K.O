@@ -389,6 +389,198 @@ def test_core_api_and_proxy_mode_reject_deeply_nested_json_with_400(monkeypatch)
         assert os.environ.get(k) == env_before.get(k)
 
 
+def test_core_api_legacy_disable_tts_same_origin_compatibility(monkeypatch, tmp_path):
+    """Legacy desktop shell sends same-origin JSON {disableTts: bool} without X-CSRF-Token (#4019 P2)."""
+    import asyncio
+    import json as json_mod
+    from main_routers import config_router
+    from main_routers.config_router import core_config
+    from utils import config_manager as config_manager_module
+    from utils.config_manager.storage_roots import StorageRootsMixin
+
+    manager = StorageRootsMixin.__new__(StorageRootsMixin)
+    manager.docs_dir = tmp_path
+    manager.app_docs_dir = tmp_path
+    manager.load_root_state = lambda: {"mode": "normal"}
+    manager.config_dir = tmp_path / "config"
+    manager.project_config_dir = tmp_path / "project-config"
+    manager.config_dir.mkdir()
+    manager.project_config_dir.mkdir()
+    manager.save_json_config("core_config.json", {"coreApi": "free", "disableTts": False})
+    manager._core_config_cache = None
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    class _FakeAsyncClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr(config_manager_module, "get_config_manager", lambda *_a, **_k: manager)
+    monkeypatch.setattr(core_config, "get_session_manager", lambda: {})
+    monkeypatch.setattr(core_config, "get_initialize_character_data", lambda: _noop)
+    monkeypatch.setattr(core_config, "ensure_default_yui_voice_for_free_api", _noop)
+    monkeypatch.setattr(core_config, "_auto_resolve_provider_urls_for_save", _noop)
+    save_lock = asyncio.Lock()
+    acquire_count = 0
+    orig_acquire = save_lock.acquire
+
+    async def spy_acquire():
+        nonlocal acquire_count
+        acquire_count += 1
+        return await orig_acquire()
+
+    monkeypatch.setattr(save_lock, "acquire", spy_acquire)
+    monkeypatch.setattr(core_config, "_core_api_save_lock", save_lock)
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+
+    app = FastAPI()
+    app.include_router(config_router.router)
+
+    with TestClient(app) as client:
+        r_ok = client.post(
+            "/api/config/core_api",
+            json={"disableTts": True},
+            headers={"Origin": "http://testserver"},
+        )
+        assert r_ok.status_code == 200
+        assert r_ok.json()["success"] is True
+        assert acquire_count == 1
+        saved = json_mod.loads((manager.config_dir / "core_config.json").read_text(encoding="utf-8"))
+        assert saved["disableTts"] is True
+
+        # Wrong CSRF token must still fail even on same-origin single-key disableTts.
+        r_bad_tok = client.post(
+            "/api/config/core_api",
+            json={"disableTts": False},
+            headers={"Origin": "http://testserver", "X-CSRF-Token": "wrong-token"},
+        )
+        assert r_bad_tok.status_code == 403
+        assert r_bad_tok.json()["error_code"] == "csrf_validation_failed"
+
+        # Cross-site / same-site browser metadata without CSRF must fail.
+        for site_val in ("cross-site", "same-site"):
+            r_site = client.post(
+                "/api/config/core_api",
+                json={"disableTts": False},
+                headers={"Origin": "http://testserver", "Sec-Fetch-Site": site_val},
+            )
+            assert r_site.status_code == 403
+
+        # Missing/cross-origin/cross-port Origin, extra keys, non-bool values, or non-JSON must fail.
+        for bad_payload, bad_headers, expected_status in (
+            ({"disableTts": False}, {}, 403),
+            ({"disableTts": False}, {"Origin": "https://evil.example"}, 403),
+            ({"disableTts": False}, {"Origin": "http://127.0.0.1:3000"}, 403),
+            ({"disableTts": False, "coreApi": "qwen"}, {"Origin": "http://testserver"}, 403),
+            ({"disableTts": "false"}, {"Origin": "http://testserver"}, 403),
+        ):
+            r_bad = client.post("/api/config/core_api", json=bad_payload, headers=bad_headers)
+            assert r_bad.status_code == expected_status
+
+        r_plain = client.post(
+            "/api/config/core_api",
+            content='{"disableTts": false}',
+            headers={"Content-Type": "text/plain", "Origin": "http://testserver"},
+        )
+        assert r_plain.status_code == 415
+
+        assert acquire_count == 1
+        saved_after_rejections = json_mod.loads(
+            (manager.config_dir / "core_config.json").read_text(encoding="utf-8")
+        )
+        assert saved_after_rejections["disableTts"] is True
+
+
+def test_proxy_mode_legacy_native_loopback_compatibility(monkeypatch):
+    """Legacy Electron main-process native loopback HTTP POST {direct: bool} works without CSRF (#4019 P3)."""
+    from main_routers import config_router
+    from main_routers.config_router import proxy
+
+    app = FastAPI()
+    app.include_router(config_router.router)
+
+    env_before = dict(os.environ)
+    snap_before = dict(proxy._proxy_snapshot)
+    monkeypatch.delenv("NEKO_BEHIND_PROXY", raising=False)
+    monkeypatch.delenv("NEKO_ACTIVITY_TRACKER_REMOTE", raising=False)
+    monkeypatch.delenv("ACTIVITY_TRACKER_REMOTE", raising=False)
+
+    try:
+        with TestClient(app, client=("127.0.0.1", 50000)) as local_client:
+            # Native Electron main process: loopback peer, no browser headers, JSON single-key bool.
+            r_direct = local_client.post("/api/config/set_proxy_mode", json={"direct": True})
+            assert r_direct.status_code == 200
+            assert r_direct.json()["success"] is True
+            assert r_direct.json()["direct"] is True
+
+            r_restore = local_client.post("/api/config/set_proxy_mode", json={"direct": False})
+            assert r_restore.status_code == 200
+            assert r_restore.json()["direct"] is False
+
+            # Explicit invalid CSRF token on native loopback must still fail.
+            r_bad_tok = local_client.post(
+                "/api/config/set_proxy_mode",
+                json={"direct": True},
+                headers={"X-CSRF-Token": "wrong-token"},
+            )
+            assert r_bad_tok.status_code == 403
+            assert r_bad_tok.json()["error_code"] == "csrf_validation_failed"
+
+            # Browser metadata or forwarding headers without valid CSRF must still fail.
+            for bad_headers in (
+                {"Origin": "http://testserver"},
+                {"Referer": "http://testserver/"},
+                {"Sec-Fetch-Site": "same-origin"},
+                {"X-Forwarded-For": "127.0.0.1"},
+            ):
+                r_browser_like = local_client.post(
+                    "/api/config/set_proxy_mode",
+                    json={"direct": True},
+                    headers=bad_headers,
+                )
+                assert r_browser_like.status_code == 403
+
+            # Non-bool or extra payload fields without CSRF must fail.
+            for bad_payload in ({"direct": "true"}, {"direct": 1}, {"direct": True, "extra": 1}):
+                r_bad_payload = local_client.post("/api/config/set_proxy_mode", json=bad_payload)
+                assert r_bad_payload.status_code == 403
+
+            # Behind proxy or remote backend deployment disables native tokenless exemption.
+            monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+            assert local_client.post("/api/config/set_proxy_mode", json={"direct": True}).status_code == 403
+            monkeypatch.delenv("NEKO_BEHIND_PROXY", raising=False)
+
+            monkeypatch.setenv("NEKO_ACTIVITY_TRACKER_REMOTE", "1")
+            assert local_client.post("/api/config/set_proxy_mode", json={"direct": True}).status_code == 403
+            monkeypatch.delenv("NEKO_ACTIVITY_TRACKER_REMOTE", raising=False)
+
+        # Non-loopback peer without CSRF must fail.
+        with TestClient(app, client=("192.168.1.50", 50000)) as lan_client:
+            r_lan = lan_client.post("/api/config/set_proxy_mode", json={"direct": True})
+            assert r_lan.status_code == 403
+    finally:
+        proxy._proxy_snapshot.clear()
+        proxy._proxy_snapshot.update(snap_before)
+        for key in (
+            "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+            "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+        ):
+            if key in env_before:
+                os.environ[key] = env_before[key]
+            else:
+                os.environ.pop(key, None)
+
+
 # ---------------------------------------------------------------------------
 # F0201: _sanitize_proxies credential redaction
 # ---------------------------------------------------------------------------

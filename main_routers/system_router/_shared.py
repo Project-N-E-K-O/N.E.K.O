@@ -145,6 +145,32 @@ def _get_allowed_local_origins(request: Request) -> set[str]:
     return allowed_origins
 
 
+def _extract_local_csrf_token(
+    request: Request,
+    payload: dict[str, Any] | None = None,
+) -> tuple[bool, str]:
+    """Return ``(token_supplied, token_value)`` from headers or JSON body."""
+    if _AUTOSTART_CSRF_HEADER in request.headers:
+        header_token = request.headers.get(_AUTOSTART_CSRF_HEADER, "")
+        if header_token or not (payload is not None and "_csrf_token" in payload):
+            return True, header_token
+    if payload is not None and "_csrf_token" in payload:
+        body_token = payload.get("_csrf_token")
+        return True, body_token if isinstance(body_token, str) else ""
+    return False, ""
+
+
+def _is_valid_local_csrf_token(token: str) -> bool:
+    """Validate ``token`` against ``AUTOSTART_CSRF_TOKEN`` in constant time."""
+    return bool(
+        token
+        and AUTOSTART_CSRF_TOKEN
+        and token.isascii()
+        and AUTOSTART_CSRF_TOKEN.isascii()
+        and secrets.compare_digest(token, AUTOSTART_CSRF_TOKEN)
+    )
+
+
 def _validate_local_mutation_request(
     request: Request,
     *,
@@ -152,22 +178,19 @@ def _validate_local_mutation_request(
     error_defaults: dict[str, Any] | None = None,
     require_csrf: bool = True,
 ) -> JSONResponse | None:
-    csrf_token = request.headers.get(_AUTOSTART_CSRF_HEADER, "")
-    if not csrf_token and payload:
-        body_token = payload.get("_csrf_token")
-        csrf_token = body_token if isinstance(body_token, str) else ""
-    has_valid_csrf = bool(
-        csrf_token
-        and AUTOSTART_CSRF_TOKEN
-        and csrf_token.isascii()
-        and AUTOSTART_CSRF_TOKEN.isascii()
-        and secrets.compare_digest(csrf_token, AUTOSTART_CSRF_TOKEN)
-    )
+    token_supplied, csrf_token = _extract_local_csrf_token(request, payload)
+    has_valid_csrf = _is_valid_local_csrf_token(csrf_token)
     request_origin = _get_request_origin(request)
     allowed_origins = _get_allowed_local_origins(request)
     has_valid_origin = bool(request_origin and request_origin in allowed_origins)
+    sec_fetch_site = request.headers.get("sec-fetch-site", "").strip().lower()
+    allow_tokenless = (
+        not require_csrf
+        and not token_supplied
+        and sec_fetch_site not in {"cross-site", "same-site"}
+    )
 
-    if has_valid_origin and (has_valid_csrf or not require_csrf):
+    if has_valid_origin and (has_valid_csrf or allow_tokenless):
         return None
 
     # Port-independent hostname fallback: Docker's internal port (such as 48911) may differ

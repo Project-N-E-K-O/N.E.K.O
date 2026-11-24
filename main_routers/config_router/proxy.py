@@ -19,7 +19,14 @@ Split out of the former monolithic ``main_routers/config_router.py``.
 """
 
 from ._shared import logger, router
-from ..system_router._shared import _validate_local_mutation_request
+from ..local_access import is_direct_loopback_request
+from ..system_router._shared import (
+    _extract_local_csrf_token,
+    _is_valid_local_csrf_token,
+    _validate_local_mutation_request,
+)
+from main_logic.activity.system_signals import is_remote_backend_deployment
+from utils.deployment import has_forwarding_metadata, is_behind_proxy
 
 import os
 import threading
@@ -81,6 +88,34 @@ def _sanitize_proxies(proxies: dict[str, str]) -> dict[str, str]:
     return sanitized
 
 
+_BROWSER_REQUEST_HEADERS = (
+    "origin",
+    "referer",
+    "sec-fetch-site",
+    "sec-fetch-mode",
+    "sec-fetch-dest",
+    "sec-fetch-user",
+)
+
+
+def _is_allowed_native_loopback_proxy_toggle(request: Request, payload: dict) -> bool:
+    """Allow legacy Electron main-process proxy toggles on direct loopback without browser metadata."""
+    if is_behind_proxy() or is_remote_backend_deployment():
+        return False
+    if not is_direct_loopback_request(request):
+        return False
+    if any(header in request.headers for header in _BROWSER_REQUEST_HEADERS):
+        return False
+    if has_forwarding_metadata(request.headers):
+        return False
+    if len(payload) != 1 or "direct" not in payload or not isinstance(payload["direct"], bool):
+        return False
+    token_supplied, csrf_token = _extract_local_csrf_token(request, payload)
+    if token_supplied and not _is_valid_local_csrf_token(csrf_token):
+        return False
+    return True
+
+
 @router.post("/set_proxy_mode")
 async def set_proxy_mode(request: Request):
     """Hot-switch the proxy mode at runtime.
@@ -101,13 +136,14 @@ async def set_proxy_mode(request: Request):
             return JSONResponse({"success": False, "error": "无效的JSON数据"}, status_code=400)
         if not isinstance(data, dict):
             return JSONResponse({"success": False, "error": "无效的数据"}, status_code=400)
-        validation_error = _validate_local_mutation_request(
-            request,
-            payload=data,
-            error_defaults={"success": False},
-        )
-        if validation_error is not None:
-            return validation_error
+        if not _is_allowed_native_loopback_proxy_toggle(request, data):
+            validation_error = _validate_local_mutation_request(
+                request,
+                payload=data,
+                error_defaults={"success": False},
+            )
+            if validation_error is not None:
+                return validation_error
         raw_direct = data.get("direct", False)
         if isinstance(raw_direct, bool):
             direct = raw_direct

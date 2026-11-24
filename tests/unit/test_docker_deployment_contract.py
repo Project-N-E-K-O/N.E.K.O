@@ -17,6 +17,8 @@ See docker/README_Docker.md for the deployment contract itself.
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -167,3 +169,66 @@ def test_dockerignore_does_not_hide_the_docs_the_runtime_reads():
             f".dockerignore 排除了 {pattern}：运行时要读的指南与 readiness 文档"
             "会静默变成内置短桩"
         )
+
+
+def test_entrypoint_exports_shared_instance_id_before_starting_services():
+    """Ensure Docker three-process launches share one NEKO_INSTANCE_ID for internal CSRF tokens (#4019 P4/R04)."""
+    entrypoint_path = ROOT / "docker" / "entrypoint.sh"
+    script = entrypoint_path.read_text(encoding="utf-8")
+
+    assert "ensure_shared_instance_id" in script
+    start_block = script.split("start_services()", 1)[1].split("\n}\n", 1)[0]
+    ensure_pos = start_block.index("ensure_shared_instance_id")
+    launch_pos = start_block.index("app.main_server")
+    assert ensure_pos < launch_pos, "entrypoint must export NEKO_INSTANCE_ID before launching servers"
+
+    # Never echo or log the shared instance ID value (it seeds AUTOSTART_CSRF_TOKEN).
+    for line in script.splitlines():
+        if "echo" in line:
+            assert "$NEKO_INSTANCE_ID" not in line and "${NEKO_INSTANCE_ID" not in line, (
+                f"entrypoint must not expand NEKO_INSTANCE_ID in logs: {line}"
+            )
+
+    bash_bin = shutil.which("bash")
+    if not bash_bin:
+        return
+
+    # Extract only ensure_shared_instance_id and run it in a clean env.
+    fn_start = script.index("ensure_shared_instance_id()")
+    fn_end = script.index("\n}\n", fn_start) + 3
+    fn_src = script[fn_start:fn_end]
+
+    import sys
+
+    probe_generated = subprocess.run(
+        [
+            bash_bin,
+            "-euo",
+            "pipefail",
+            "-c",
+            f'{fn_src}\nunset NEKO_INSTANCE_ID\nensure_shared_instance_id "{sys.executable}"\n'
+            f'"{sys.executable}" -c "import os; print(os.environ[\'NEKO_INSTANCE_ID\'])"',
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    generated_lines = probe_generated.stdout.strip().splitlines()
+    assert len(generated_lines) == 1
+    assert re.fullmatch(r"[0-9a-f]{32}", generated_lines[0]), generated_lines
+
+    probe_preserved = subprocess.run(
+        [
+            bash_bin,
+            "-euo",
+            "pipefail",
+            "-c",
+            f'{fn_src}\nexport NEKO_INSTANCE_ID="custom-shared-id"\n'
+            f'ensure_shared_instance_id "{sys.executable}"\n'
+            f'"{sys.executable}" -c "import os; print(os.environ[\'NEKO_INSTANCE_ID\'])"',
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert probe_preserved.stdout.strip() == "custom-shared-id"

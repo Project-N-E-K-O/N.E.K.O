@@ -853,6 +853,32 @@ setup_dependencies() {
     echo "✅ Dependencies installed successfully"
 }
 
+ensure_shared_instance_id() {
+    local py_bin="${1:-python3}"
+    local raw_id="${NEKO_INSTANCE_ID:-}"
+    local trimmed_id="${raw_id//[[:space:]]/}"
+    if [ -n "$trimmed_id" ]; then
+        export NEKO_INSTANCE_ID
+        return 0
+    fi
+
+    local generated_id=""
+    if [ -r /proc/sys/kernel/random/uuid ]; then
+        generated_id="$(tr -d '-\n\r' < /proc/sys/kernel/random/uuid 2>/dev/null || true)"
+    fi
+    if [ -z "$generated_id" ] && command -v "$py_bin" >/dev/null 2>&1; then
+        generated_id="$("$py_bin" -c 'import uuid; print(uuid.uuid4().hex)' 2>/dev/null || true)"
+    fi
+    if [ -z "$generated_id" ] && command -v openssl >/dev/null 2>&1; then
+        generated_id="$(openssl rand -hex 16 2>/dev/null || true)"
+    fi
+    if [ -z "$generated_id" ]; then
+        echo "❌ Failed to generate shared NEKO_INSTANCE_ID" >&2
+        return 1
+    fi
+    export NEKO_INSTANCE_ID="$generated_id"
+}
+
 # 7. 服务启动优化
 start_services() {
     echo "🚀 Starting N.E.K.O. services..."
@@ -867,6 +893,11 @@ start_services() {
         echo "   Attempting to use system python3 as fallback..."
         VENV_PYTHON="python3"
     fi
+
+    # 三个独立进程必须在启动前拿到同一个 NEKO_INSTANCE_ID，否则各自随机生成
+    # AUTOSTART_CSRF_TOKEN，导致 plugin server 的 console_proxy 与知识/剧场桥接
+    # 转发给主服务的写请求全部因 CSRF 不匹配被 403/502 拒绝 (#4019 P4/R04)。
+    ensure_shared_instance_id "$VENV_PYTHON" || return 1
     
     # PR #1265: 4 个 server 入口搬进 app/ 子包；这里跟着改成 app/<name>.py
     # PR #2265: agent_server 拆成包（app/agent_server/），存在性检查落在包的

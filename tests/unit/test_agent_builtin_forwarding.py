@@ -492,6 +492,24 @@ def test_the_stop_route_accepts_same_origin_json_without_csrf_token_and_rejects_
         assert r_no_origin.status_code == 403
         assert r_no_origin.json()["error_code"] == "csrf_validation_failed"
 
+        # Same-origin JSON with an explicitly wrong CSRF token -> 403, not forwarded.
+        r_bad_csrf = bare_client.post(
+            "/api/agent/builtin/stop",
+            content='{"group": "keyboard_mouse"}',
+            headers={**stop_headers, "X-CSRF-Token": "invalid-token"},
+        )
+        assert r_bad_csrf.status_code == 403
+        assert r_bad_csrf.json()["error_code"] == "csrf_validation_failed"
+
+        # Same-origin JSON with cross-site browser metadata -> 403, not forwarded.
+        r_cross_site = bare_client.post(
+            "/api/agent/builtin/stop",
+            content='{"group": "keyboard_mouse"}',
+            headers={**stop_headers, "Sec-Fetch-Site": "cross-site"},
+        )
+        assert r_cross_site.status_code == 403
+        assert r_cross_site.json()["error_code"] == "csrf_validation_failed"
+
         # Cross-origin -> 403, not forwarded.
         r_evil_origin = bare_client.post(
             "/api/agent/builtin/stop",
