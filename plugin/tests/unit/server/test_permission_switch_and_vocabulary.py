@@ -294,11 +294,16 @@ def test_rights_go_out_with_ids_and_earlier_names(gate):
 
 
 def test_plugin_manager_labels_every_permission_id():
-    labels = (REPO / "frontend/plugin-manager/src/i18n/plugin-permissions.ts").read_text(encoding="utf-8")
+    label_dir = REPO / "frontend/plugin-manager/src/i18n/plugin-permissions"
+    locales = ("en-US", "zh-CN", "zh-TW", "ja", "ko", "ru", "es", "pt")
+    # Ids that reuse an earlier capability's label are aliased in shared.ts for every locale.
+    shared = (label_dir / "shared.ts").read_text(encoding="utf-8")
+    labels = {locale: (label_dir / f"{locale}.ts").read_text(encoding="utf-8") + shared for locale in locales}
     spec = (REPO / "frontend/plugin-manager/src/utils/pluginCapabilities.test.ts").read_text(encoding="utf-8")
     block = spec[spec.index("const PERMISSION_IDS = ["):]
     listed = tuple(re.findall(r"'([^']+)'", block[: block.index("]")]))
     assert listed == PERMISSION_IDS  # the vitest checks every locale for these
     for permission in PERMISSION_IDS:
         key = re.sub(r"[.:]", "_", permission)
-        assert key in labels, permission
+        for locale, text in labels.items():
+            assert key in text, (locale, permission)
