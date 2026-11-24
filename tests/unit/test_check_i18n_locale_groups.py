@@ -47,9 +47,14 @@ def _write(repo: Path, rel: str, text: str) -> None:
 
 @pytest.fixture
 def repo(tmp_path, monkeypatch):
-    # Inside a git hook these point at the outer repository; drop them so the
-    # throwaway repository below stays isolated.
-    for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+    # Inside a git hook these point at the outer repository; drop every
+    # repository-local variable git knows of (GIT_DIR, GIT_COMMON_DIR,
+    # GIT_INDEX_FILE ...) so the throwaway repository below stays isolated.
+    local_vars = subprocess.run(
+        ["git", "rev-parse", "--local-env-vars"],
+        cwd=tmp_path, check=True, capture_output=True, text=True,
+    ).stdout.split()
+    for var in {*local_vars, "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"}:
         monkeypatch.delenv(var, raising=False)
     _git(tmp_path, "init", "-q")
     _git(tmp_path, "config", "user.email", "test@example.invalid")
