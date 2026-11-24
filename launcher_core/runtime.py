@@ -2581,12 +2581,14 @@ def _request_server_shutdown(server_name: str, proc, shutdown_evt, timeout: floa
     if timeout is None:
         timeout = SHUTDOWN_REQUEST_ACK_SECONDS
     done = threading.Event()
-    errors: list[BaseException] = []
+    errors: list[Exception] = []
 
     def _set() -> None:
+        # done is set in finally either way, so anything not caught here only
+        # costs the error message, never the bounded wait below.
         try:
             shutdown_evt.set()
-        except BaseException as exc:  # reported by the caller's thread below
+        except Exception as exc:  # reported by the caller's thread below
             errors.append(exc)
         finally:
             done.set()
