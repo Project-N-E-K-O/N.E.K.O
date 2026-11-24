@@ -438,6 +438,8 @@ def _warm_entries(module_list: tuple[str, ...], label: str) -> None:
         try:
             _warm_one(name)
             loaded += 1
+            # A success closes any retry it was owed.
+            _failure_counts.pop(name, None)
             logger.debug(
                 "[warmup:%s] %s (%.0f ms)",
                 label, name, (time.monotonic() - start) * 1000,
@@ -478,10 +480,19 @@ def _unloaded_gates(scope: Iterable[str] | None = None) -> set[str]:
 
 
 def _unloaded_plain_entries() -> list[str]:
-    """Ungated module entries the startup pass never reached (its thread did not start)."""
+    """Ungated entries still owed a pass.
+
+    Module entries the startup pass never reached (its thread did not start),
+    and "module:attribute" entries whose evaluation failed but has a retry left:
+    those cannot be judged by ``sys.modules``, so their failure count says it.
+    """
     return [
         entry for entry in MAIN_SERVER_WARMUP
-        if entry not in _ENTRY_GATES and ":" not in entry and _missing(entry)
+        if entry not in _ENTRY_GATES
+        and (
+            _missing(entry) if ":" not in entry
+            else _failure_counts.get(entry, 0) > 0 and entry not in _failed_entries
+        )
     ]
 
 

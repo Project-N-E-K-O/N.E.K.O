@@ -899,3 +899,42 @@ def test_an_import_that_keeps_failing_stops_being_retried(warmup_state):
     finally:
         module_warmup._warm_one = original
     assert "pyncm_async" in module_warmup._failed_entries
+
+
+_DIRECTIVES = "config.prompts.prompts_directives:DIRECTIVE_PATTERNS"
+
+
+def test_an_attribute_entry_that_failed_once_gets_its_retry_on_the_next_save(warmup_state, monkeypatch):
+    monkeypatch.setattr(module_warmup, "_unloaded_gates", lambda scope=None: set())
+    for entry in [e for e in MAIN_SERVER_WARMUP if ":" not in e]:
+        monkeypatch.setitem(sys.modules, entry, object())
+    module_warmup._gated_started = True
+
+    def _fail_once(name):
+        raise OSError("transient")
+
+    monkeypatch.setattr(module_warmup, "_warm_one", _fail_once)
+    module_warmup._warm_entries((_DIRECTIVES,), "main")
+    assert _DIRECTIVES not in module_warmup._failed_entries
+    # A narrow save with nothing else to add still starts a re-check for it.
+    assert _DIRECTIVES in module_warmup._unloaded_plain_entries()
+    assert module_warmup.request_config_rewarm("characters", only={"cosyvoice_clone"}) is True
+    monkeypatch.setattr(module_warmup, "evaluate_gates", lambda cfg=None, only=None: {})
+    assert _DIRECTIVES in module_warmup._pending_gated_entries(True, "config")
+
+
+def test_a_successful_retry_closes_the_attribute_entry(warmup_state, monkeypatch):
+    calls = []
+
+    def _fail_then_ok(name):
+        calls.append(name)
+        if len(calls) == 1:
+            raise OSError("transient")
+
+    monkeypatch.setattr(module_warmup, "_warm_one", _fail_then_ok)
+    module_warmup._warm_entries((_DIRECTIVES,), "main")
+    module_warmup._warm_entries((_DIRECTIVES,), "config")
+    assert _DIRECTIVES not in module_warmup._failure_counts
+    assert _DIRECTIVES not in module_warmup._unloaded_plain_entries(), (
+        "a succeeded attribute entry must not be re-evaluated on every save"
+    )
