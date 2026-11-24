@@ -516,6 +516,9 @@ class DshLaunch:
     home: Path
     # Arguments in front of dsh's own; see ``launch_arguments``.
     leading: tuple[str, ...] = ()
+    # Directories put in front of the PATH of the process, and so of the
+    # commands it runs: where ``neko-dsh-plugin`` is (``plugin_command``).
+    path: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -734,14 +737,17 @@ def launch_arguments(executable: Path, patch: Path, leading: tuple[str, ...] = (
     return [str(executable), *leading, "--profile", PROFILE, "--patch", str(patch)]
 
 
-def child_environment(base: Mapping[str, str], *, home: Path, token: str) -> dict[str, str]:
+def child_environment(
+    base: Mapping[str, str], *, home: Path, token: str, path: tuple[Path, ...] = ()
+) -> dict[str, str]:
     """Return the environment of a dsh process.
 
     The host's environment, as the built-in runtime's commands get it
     (so without the BLAS thread default the backend gave itself: dsh hands
     this environment on to the commands it runs for the user), without what
     would configure dsh or its vendor's services behind the host's back, and
-    with dsh's directories set to ours.
+    with dsh's directories set to ours. ``path`` goes in front of the PATH
+    (``DshLaunch.path``).
     """
     # Imported here, as this package does with ``config`` everywhere: reading
     # the profile should not load the whole configuration.
@@ -752,17 +758,35 @@ def child_environment(base: Mapping[str, str], *, home: Path, token: str) -> dic
         for name, value in env_for_user_programs(base).items()
         if not name.upper().startswith(("DSH_", "DEEPSEEK_"))
     }
-    environment["DSH_HOME"] = str(home)
-    # The user's own ``~/.agents`` (rules and skills for other tools) is not
-    # read: a task agent gets its rules from the host.
-    environment["DSH_AGENTS_HOME"] = str(home / "agents")
-    environment["DSH_TELEMETRY_DISABLED"] = "1"
-    # What dsh downloads for its plugins, and what its executable unpacks of
-    # itself, stay below the directory an uninstall removes.
-    environment["DSH_RESOURCE_CACHE"] = str(home.parent / "resources")
-    environment["PKG_NATIVE_CACHE_PATH"] = str(home.parent / "cache")
+    environment.update(dsh_directories(home))
     environment[KEY_VARIABLE] = token
+    if path:
+        # Windows names the variable in any case, and a copy of its
+        # environment keeps the case it was given in.
+        name = next((key for key in environment if key.upper() == "PATH"), "PATH")
+        environment[name] = os.pathsep.join([*(str(entry) for entry in path), environment.get(name, "")]).rstrip(
+            os.pathsep
+        )
     return environment
+
+
+def dsh_directories(home: Path) -> dict[str, str]:
+    """Return the variables that point dsh at the data root's directories, ``home`` being its home.
+
+    ``neko-dsh-plugin`` (``plugin_command``) sets them as well: dsh takes
+    every ``DSH_`` variable out of the environment of the commands it runs.
+    """
+    return {
+        "DSH_HOME": str(home),
+        # The user's own ``~/.agents`` (rules and skills for other tools) is
+        # not read: a task agent gets its rules from the host.
+        "DSH_AGENTS_HOME": str(home / "agents"),
+        "DSH_TELEMETRY_DISABLED": "1",
+        # What dsh downloads for its plugins, and what its executable unpacks
+        # of itself, stay below the directory an uninstall removes.
+        "DSH_RESOURCE_CACHE": str(home.parent / "resources"),
+        "PKG_NATIVE_CACHE_PATH": str(home.parent / "cache"),
+    }
 
 
 def start_directory(home: Path) -> Path:

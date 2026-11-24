@@ -65,7 +65,7 @@ task agent 用的模型在它的会话建起来时按职能预设定下（`nekop
 
 每个会话还有一张**卡片**，存在台账的 `sessions` 表里：头衔、负责什么、摘要，每一项记着是谁写的（建它的一方、复盘、会话自己、用户）。建的时候只有「负责什么」：项目会话用项目简介（没有就用第一件委托的标题），单件会话用那件委托的标题，task agent 用起它时的那句描述。之后由收工后的复盘在同一次模型调用里重写（见下文使魔空间一节），不多调模型；「负责什么」这一句，项目会话和单件会话还可以在 `report` 里用可选的 `duty` 自己改，它自己说过的复盘不再盖；用户改过的项谁也不盖。项目简介是项目记录里的 `description`，同样记着谁写的。`list_sessions` 的每一行带上这个会话的预设和负责什么。
 
-宿主给界面准备了三个方法（界面经 `/console/board`、`/console/templates`、`/console/familiars/draft` 读）：`board()` 按项目分组给出每个会话的卡片、状态（干活中、等用户回话、开着没活、收起来了、在整理）和「正在做什么」（手上那件委托的标题、它待办清单里进行中的那一条、最近一步用的工具，从台账拼出来，不调模型），带一个变化标记，页面拿着标记来问、没变时只回「没变」；不是所有会话都在上面（很久没动的单件会话、起它的委托早就结束的 task agent、没在用的副本不列）。`templates()` 列出可用的预设，写错的模板带着原因。`draft_session()` 在用户新建使魔时用一次 summary 模型调用把表单填好（名字、头衔、预设、负责什么、项目简介、守则草稿），只看用户写的话和所选目录里的文件名与大小，不建任何东西。
+宿主给界面准备了三个方法（界面经 `/console/board`、`/console/templates`、`/console/familiars/draft` 读）：`board()` 按项目分组给出每个会话的卡片、状态（干活中、等用户回话、开着没活、收起来了、在整理）和「正在做什么」（手上那件委托的标题、它待办清单里进行中的那一条、最近一步用的工具，从台账拼出来，不调模型），带一个变化标记，页面拿着标记来问、没变时只回「没变」；不是所有会话都在上面（很久没动的单件会话、起它的委托早就结束的 task agent、没在用的副本不列）。`templates()` 列出可用的预设，写错的模板带着原因。`draft_session()` 在用户召唤使魔时用一次 summary 模型调用把表单填好（名字、头衔、预设、负责什么、项目简介、守则草稿），只看用户写的话和所选目录里的文件名与大小，不建任何东西。
 
 ### 会话之间的消息和唤醒
 
@@ -103,6 +103,7 @@ dsh（DeepSeek Harness）是用户可以另外下载的第二个 agent runtime�
 - **权限**（`profile.py`）。dsh 自己的沙箱关闭；随配置带上的一个守卫让 dsh 在每次工具调用之前先问，问到的都交给宿主同一段权限代码判断。经能力网关的调用在发出之前判权限、问用户，调用到达网关时不再问。
 - **宿主的工具**（`host_tools.py`）。汇报、记经验、网页搜索和抓取、子 task agent 以一个 MCP 服务的形式提供给 dsh，定义和内置 runtime 用的是同一份；dsh 自带的网页搜索和抓取关掉了，所以抓网页和内置 runtime 一样只到公网地址。能力网关按 MCP 直接挂给 dsh。
 - **装在哪**（`install.py`）。`<数据根>/nekopower/dsh/`：程序、dsh 自己的配置和对话记录都在这里，不随存储位置迁移。下载的版本固定，文件按 sha256 和大小校验。
+- **装 dsh 插件**（`plugin_command.py`）。`dsh plugin add` 只是把参数转给电脑上的 `pnpm`，dsh 自己不带。宿主每次启动 dsh 时在 `<数据根>/nekopower/dsh/bin/` 写一条 `neko-dsh-plugin` 命令（Windows 上 PATH 里只有 `.cmd`，它调用的 PowerShell 脚本在 `bin/lib/`），并把这个目录放进 dsh 进程的 PATH，task agent 在 dsh 里跑 `neko-dsh-plugin add <包名>` 就能装。第一次用时下载不依赖 Node.js 的 pnpm：先 npm 官方源，不通换 npmmirror，按大小和 sha256 校验。插件从实际送达 pnpm 的那个源装；装不成时，再依次换后面的源。`list`、`remove` 这类本地命令在 pnpm 已就位时不探测任何源。pnpm 的仓库和缓存也放在 `nekopower/dsh/pnpm/` 下，卸载 dsh 时一起删。插件和 dsh 同进程、全权限、没有沙箱，所以装之前要说清并得到同意：提示词里有这条规矩；需要问用户时，这条命令的权限问话和界面上的回答框也会写明。但如果用户之前对「运行命令」答过「这次会话都允许」或「总是允许」，装插件时就不会再弹问话，只靠提示词。装好以后，插件带来的工具归「其它」这一类，是否要问看「其它」的权限设置，默认放行。插件在 dsh 进程启动时加载，下一个 dsh 进程起才有。macOS Intel 上没有对应的 pnpm，装不了。
 
 在 dsh 上有几处和内置 runtime 不同：途中插话要等当前一段结束才送达；回复整条到达，不是逐字；经能力网关的一次调用最长 60 秒；没有「提问并原地等回答」的工具，改用汇报里的等回话；dsh 自己压缩对话、不告诉宿主，所以压缩之后不会重新告诉会话开头说过的那些话，内置工具组也不会重新交一遍。
 
@@ -212,7 +213,7 @@ Manager 和智能体服务器构造时这些开关均为关闭。首次真实 `g
 | 派发、查询、事后检查 | `nekopower/host/task_brain.py` |
 | 插件筛选和决策模型 | `nekopower/host/selection.py`、`decision.py` |
 | 台账、outbox、汇报 | `nekopower/host/ledger.py`、`outbox.py`、`reports.py` |
-| 职能预设和模板、卡片、看板、新建使魔的表单 | `nekopower/host/templates.py`、`board.py`、`drafts.py`、`config/prompts/prompts_nekopower_presets.py` |
+| 职能预设和模板、卡片、看板、召唤使魔的表单 | `nekopower/host/templates.py`、`board.py`、`drafts.py`、`config/prompts/prompts_nekopower_presets.py` |
 | 会话之间的消息、唤醒、读别的会话的记录 | `nekopower/host/wakes.py`、`records.py`、`task_agents.py`、`config/prompts/prompts_nekopower_sessions.py` |
 | 会话之间发生了什么、谁在等谁（只读） | `nekopower/host/timeline.py` |
 | task agent 和 agent runtime | `nekopower/host/task_agents.py`、`nekopower/runtime/` |

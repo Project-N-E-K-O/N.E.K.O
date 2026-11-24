@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import functools
 import inspect
+import types
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -32,6 +34,55 @@ from .types import InputSchema, PluginContextProtocol, RouterProtocol
 
 
 DEFAULT_PLUGIN_VERSION = "0.0.0"
+
+
+_METHOD_LOOKUPS = (
+    types.FunctionType,
+    functools.partialmethod,
+    functools.singledispatchmethod,
+    staticmethod,
+    classmethod,
+)
+
+
+def is_computed_attribute(instance: object, name: str) -> bool:
+    """Whether reading ``name`` would run descriptor code.
+
+    Judged on the class attribute, so a cached property whose value already
+    sits in the instance ``__dict__`` still counts. Functions and the method
+    wrappers in ``_METHOD_LOOKUPS`` are plain method lookups (a
+    ``partialmethod`` or ``classmethod`` is judged by what it wraps), and so
+    are callable non-data descriptors (class-based method decorators).
+    Properties, cached properties, data descriptors and other non-callable
+    descriptors (lazy loaders) are computed and are not evaluated just
+    because their name was called. Instance attributes and names a class ``__getattr__`` provides
+    are not computed.
+    """
+    try:
+        static = inspect.getattr_static(type(instance), name)
+    except AttributeError:
+        return False
+    seen: set[int] = set()
+    while id(static) not in seen:
+        seen.add(id(static))
+        # partialmethod and classmethod hand the attribute lookup on to what
+        # they wrap (a property inside one would be evaluated): look inside.
+        if isinstance(static, functools.partialmethod):
+            static = static.func
+        elif isinstance(static, classmethod):
+            static = static.__func__
+        else:
+            break
+    if isinstance(static, _METHOD_LOOKUPS):
+        return False
+    kind = type(static)
+    if not hasattr(kind, "__get__"):
+        return False
+    if isinstance(static, (property, functools.cached_property)) or hasattr(kind, "__set__") or hasattr(kind, "__delete__"):
+        return True
+    # A callable non-data descriptor is a method decorator (lru_cache,
+    # alru_cache, wrapt, Cython): reading it binds, it computes nothing.
+    return not callable(static)
 
 
 @runtime_checkable
@@ -209,9 +260,13 @@ class NekoPluginBase:
             return "closed"
         # The executor's attribute fallback resolves a method by its name,
         # which need not be its entry id: a refused component stays refused
-        # under its method name too. Same selection as the executor
-        # (``getattr(id) or getattr(entry_<id>)``): the first truthy one.
+        # under its method name too. The executor resolves ``getattr(id)``
+        # only; ``entry_<id>`` is still checked here (the first truthy one
+        # closes), which only ever closes more.
         for name in (entry_id, f"entry_{entry_id}"):
+            # A property is not evaluated here (nor resolved by the executor).
+            if is_computed_attribute(self, name):
+                continue
             candidate = getattr(self, name, None)
             if not candidate:
                 continue
@@ -234,7 +289,10 @@ class NekoPluginBase:
             return "unchecked"
         # Logged once, and only for an id that names something callable: a
         # "*" hook would otherwise log every unknown id a caller tries.
-        has_target = callable(getattr(self, entry_id, None)) or callable(getattr(self, f"entry_{entry_id}", None))
+        has_target = any(
+            not is_computed_attribute(self, name) and callable(getattr(self, name, None))
+            for name in (entry_id, f"entry_{entry_id}")
+        )
         reported: set[object] = self.__dict__.setdefault("_narrowing_reported", set())
         if has_target and (PLUGIN_ENTRY, entry_id, "unlisted") not in reported:
             reported.add((PLUGIN_ENTRY, entry_id, "unlisted"))
