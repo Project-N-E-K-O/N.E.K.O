@@ -245,6 +245,15 @@ describe('PluginDetail surface selection', () => {
       expect(apiMocks.getPlugins).not.toHaveBeenCalled()
       expect(apiMocks.getPluginStatus).not.toHaveBeenCalled()
       expect(apiMocks.getPluginUiSurfaceInfo).not.toHaveBeenCalled()
+
+      // A locale change while the id is empty must not reach the API either.
+      localeRef.value = 'zh-CN'
+      for (let index = 0; index < 10; index += 1) {
+        await Promise.resolve()
+        await nextTick()
+      }
+      expect(apiMocks.getPlugin).not.toHaveBeenCalled()
+      expect(apiMocks.getPluginUiSurfaceInfo).not.toHaveBeenCalled()
       mounted.unmount()
     } finally {
       routerMocks.route = originalRoute

@@ -81,6 +81,7 @@ describe('switching language', () => {
   }
 
   it('keeps the current words until the new language has loaded', async () => {
+    await expect(setLocale('zh-CN')).resolves.toBe(true)
     const t = i18n.global.t as (key: string) => string
     const before = t('authoring.title')
     expect(before).toBe(piece('authoring', 'zh-CN').title)

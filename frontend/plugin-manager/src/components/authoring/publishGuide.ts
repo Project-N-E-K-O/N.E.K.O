@@ -1,7 +1,7 @@
 /**
  * The beginner guide of the publish tab: one guide per page, and how to
  * install each tool of step 0. It is long-form documentation, so it lives
- * here rather than in the short-message table of `i18n/authoring.ts`.
+ * here rather than in the short-message tables of `i18n/authoring/`.
  *
  * Written in full in Simplified Chinese and English; every other locale shows
  * the English guide. Text may hold `{repo}`, `{tag}`, `{version}`, `{branch}`,
