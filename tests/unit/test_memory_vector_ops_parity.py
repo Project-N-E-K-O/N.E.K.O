@@ -13,12 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 import pytest
 
-from memory._embeddings.ranking import (
-    cosine_clusters,
-    run_clusters_off_loop,
-    stable_top_indices,
-    threshold_top_k,
-)
+import memory._embeddings.ranking as ranking
 from memory._embeddings.schema import stamp_embedding_fields
 
 import memory.embeddings as emb
@@ -139,9 +134,9 @@ def test_stable_top_indices_matches_stable_sort(seed):
     n = int(rng.integers(1, 60))
     values = rng.integers(-3, 4, size=n).astype(np.float32)  # heavy ties
     expected_full = sorted(range(n), key=lambda i: -float(values[i]))
-    assert stable_top_indices(values).tolist() == expected_full
+    assert ranking.stable_top_indices(values).tolist() == expected_full
     for k in range(0, n + 3):
-        assert stable_top_indices(values, k).tolist() == expected_full[:k], k
+        assert ranking.stable_top_indices(values, k).tolist() == expected_full[:k], k
 
 
 def test_threshold_top_k_rounding_down_threshold_is_exact():
@@ -150,7 +145,7 @@ def test_threshold_top_k_rounding_down_threshold_is_exact():
     above = np.nextafter(at, np.float32(np.inf))
     row = np.array([at, above, 0.0, at, above], dtype=np.float32)
     assert _legacy_threshold_top_k(row, t, 5) == [1, 4]
-    assert threshold_top_k(row, t, 5) == [1, 4]
+    assert ranking.threshold_top_k(row, t, 5) == [1, 4]
     # The naive float32 comparison is the bug this guards against.
     assert np.flatnonzero(row >= t).tolist() != [1, 4]
 
@@ -162,7 +157,7 @@ def test_threshold_top_k_matches_legacy_with_ties(seed):
     row = (rng.integers(-4, 5, size=n) / 4.0).astype(np.float32)
     for threshold in (-1.0, 0.0, 0.25, 0.5, 1.0, 2.0, _threshold_rounding_down()):
         for k in (-2, 0, 1, 2, 3, 5, n, n + 4):
-            assert threshold_top_k(row, threshold, k) == _legacy_threshold_top_k(
+            assert ranking.threshold_top_k(row, threshold, k) == _legacy_threshold_top_k(
                 row, threshold, k,
             ), (threshold, k)
 
@@ -177,7 +172,7 @@ def test_cosine_clusters_matches_legacy_on_discrete_ties(seed):
     for threshold, topk, size_max in (
         (1.0, 2, 3), (2.0, 5, 8), (3.0, 1, 2), (0.0, 3, 4), (2.0, 5, 1000),
     ):
-        assert cosine_clusters(
+        assert ranking.cosine_clusters(
             matrix, threshold=threshold, topk=topk, size_max=size_max,
         ) == _legacy_clusters(matrix, threshold, topk, size_max), (
             threshold, topk, size_max,
@@ -191,7 +186,7 @@ def test_cosine_clusters_matches_legacy_on_unit_vectors(seed):
     for threshold, topk, size_max in (
         (0.85, 5, 8), (_threshold_rounding_down(), 5, 8), (0.5, 3, 6), (0.95, 2, 4),
     ):
-        assert cosine_clusters(
+        assert ranking.cosine_clusters(
             matrix, threshold=threshold, topk=topk, size_max=size_max,
         ) == _legacy_clusters(matrix, threshold, topk, size_max)
 
@@ -204,7 +199,7 @@ def test_cosine_clusters_truncation_ties_keep_ascending_index():
     matrix = np.stack([weak, base, base, base, base, base])
     expected = _legacy_clusters(matrix, 1.0, 5, 3)
     assert expected == [[1, 2, 3]]
-    assert cosine_clusters(matrix, threshold=1.0, topk=5, size_max=3) == expected
+    assert ranking.cosine_clusters(matrix, threshold=1.0, topk=5, size_max=3) == expected
 
 
 # ── refine engines end to end ───────────────────────────────────────────
@@ -300,7 +295,7 @@ async def test_clusters_run_off_loop_on_snapshots_and_return_originals():
         seen["copies"] = all(s is not e and s == e for s, e in zip(snapshot, entries))
         return [[snapshot[2], snapshot[0]], [snapshot[3], snapshot[1]]]
 
-    clusters = await run_clusters_off_loop(compute, entries)
+    clusters = await ranking.run_clusters_off_loop(compute, entries)
     assert seen["thread"] != loop_thread
     assert seen["copies"]
     assert clusters[0][0] is entries[2] and clusters[0][1] is entries[0]
@@ -586,7 +581,7 @@ def test_vec_cache_byte_accounting_survives_concurrent_scans(fresh_vec_cache):
                         hr.embedding_views(pool, lambda o: o.get('text', '')), MODEL_ID, None,
                     )
                     admitted.append(sum(v is not None for v in vectors))
-            except BaseException as exc:  # surfaced below; a thread would swallow it
+            except Exception as exc:  # surfaced below; a thread would swallow it
                 errors.append(exc)
 
         threads = [threading.Thread(target=scan, args=(p,)) for p in pools]
@@ -715,12 +710,10 @@ def test_reflection_scores_skip_empty_text_even_with_a_valid_stamp(fresh_vec_cac
 def test_cosine_clusters_blocked_truncation_matches_legacy(block):
     """Truncation takes in-component maxima in row blocks; small blocks force
     many block boundaries inside one large component."""
-    import memory._embeddings.ranking as ranking
-
     rng = np.random.default_rng(42)
     matrix = _discrete_vectors(rng, 80)
     with patch.object(ranking, "_ROW_BLOCK", block):
-        got = cosine_clusters(matrix, threshold=1.0, topk=3, size_max=5)
+        got = ranking.cosine_clusters(matrix, threshold=1.0, topk=3, size_max=5)
     expected = _legacy_clusters(matrix, 1.0, 3, 5)
     assert got == expected
     assert any(len(c) == 5 for c in expected), "fixture should truncate"
@@ -728,8 +721,6 @@ def test_cosine_clusters_blocked_truncation_matches_legacy(block):
 
 @pytest.mark.parametrize("block", [1, 3, 7, 256])
 def test_strongest_internal_matches_naive_max_over_others(block):
-    import memory._embeddings.ranking as ranking
-
     rng = np.random.default_rng(9)
     sim = rng.standard_normal((60, 60)).astype(np.float32)  # no ties
     np.fill_diagonal(sim, -1.0)
