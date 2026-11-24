@@ -171,6 +171,9 @@ const LIVE2D_PEEK_SIDE_ROTATION_MIN_DEGREES = 28;
 const LIVE2D_PEEK_SIDE_ROTATION_RATIO_START = 0.20;
 const LIVE2D_PEEK_SIDE_ROTATION_RATIO_END = 0.80;
 const LIVE2D_PEEK_CORNER_ROTATION_DEGREES = 45;
+// 脚碰到底边时，头也要落进工作区最下面这一段才算下角，否则按侧边探身处理。
+// 侧边探身的头高比例本来就覆盖到 RATIO_END，两段在这里接上。
+const LIVE2D_PEEK_BOTTOM_CORNER_HEAD_RATIO = LIVE2D_PEEK_SIDE_ROTATION_RATIO_END;
 // live2d-core.js performs its final cross-display renderer resize after 120ms.
 // Restore the semantic edge anchor only after that pass can no longer clear it.
 const LIVE2D_PEEK_DISPLAY_RESIZE_SETTLE_MS = 160;
@@ -525,6 +528,16 @@ function getLive2DPeekDragEdgeIntent(options, workArea) {
     };
 }
 
+function isLive2DPeekHeadInBottomCornerZone(manager, geometry, workArea) {
+    if (!geometry || !workArea || !(workArea.height > 0)) return true;
+    const head = getLive2DPeekReliableHeadAnchor(manager) || getLive2DPeekHeadAnchor(manager);
+    const headY = head
+        ? head.y
+        : geometry.top + geometry.height * LIVE2D_PEEK_HEAD_Y_RATIO;
+    if (!Number.isFinite(headY)) return true;
+    return headY >= workArea.top + workArea.height * LIVE2D_PEEK_BOTTOM_CORNER_HEAD_RATIO;
+}
+
 function getLive2DPeekEdgeContact(manager, model, viewport = null, options = null) {
     const geometry = getLive2DModelGeometryBounds(manager, model);
     const fullViewport = getLive2DPeekViewport(geometry, manager);
@@ -555,6 +568,7 @@ function getLive2DPeekEdgeContact(manager, model, viewport = null, options = nul
     const nearTop = geometry.bottom >= workArea.top && geometry.top <= workArea.top + tolerance;
     const nearBottom = geometry.top <= workArea.bottom && geometry.bottom >= workArea.bottom - tolerance;
     let verticalEdge = '';
+    let allowBottomOverflow = false;
     if (nearTop && nearBottom) {
         const exactlyTop = Math.abs(geometry.top - workArea.top) <= tolerance;
         const exactlyBottom = Math.abs(geometry.bottom - workArea.bottom) <= tolerance;
@@ -566,12 +580,19 @@ function getLive2DPeekEdgeContact(manager, model, viewport = null, options = nul
     } else if (nearTop) {
         verticalEdge = 'top';
     } else if (nearBottom) {
-        verticalEdge = 'bottom';
+        // 模型比头高得多：只看外框的话，头还在屏幕中下部时脚就已经碰到底边，
+        // 侧边探身会被误判成下角。头在中下部时保留侧边，并让身体留在底边外。
+        if (isLive2DPeekHeadInBottomCornerZone(manager, geometry, workArea)) {
+            verticalEdge = 'bottom';
+        } else {
+            allowBottomOverflow = true;
+        }
     }
     return {
         edge: verticalEdge ? `${verticalEdge}-${side}` : side,
         side,
         verticalEdge,
+        allowBottomOverflow,
         geometry,
         workArea,
         displayRevision: live2DPeekDisplayContext ? live2DPeekDisplayContext.revision : 0,
@@ -626,7 +647,7 @@ function settleLive2DBaseAtEdgeContact(model, contact) {
     } else if (geometry.height <= workArea.height) {
         if (geometry.top < workArea.top) {
             dy = workArea.top - geometry.top;
-        } else if (geometry.bottom > workArea.bottom) {
+        } else if (geometry.bottom > workArea.bottom && !contact.allowBottomOverflow) {
             dy = workArea.bottom - geometry.bottom;
         }
     }
