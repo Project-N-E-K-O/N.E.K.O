@@ -95,6 +95,7 @@ class Families:
         *,
         clock: Callable[[], float] = time.time,
         in_git: Callable[[str], Awaitable[bool]] | None = None,
+        changes_files: Callable[[Session], Awaitable[bool]] | None = None,
     ) -> None:
         self._ledger = ledger
         self._space = space
@@ -102,6 +103,8 @@ class Families:
         self._clock = clock
         self._judge: Judge | None = None
         self._probe = in_git
+        # Whether a session can change files, by the template it is opened by; without it, by its preset.
+        self._changes = changes_files
         self._worktrees: Any = None
         # By directory: when it was looked at, and whether it is in a git repository.
         self._git: dict[str, tuple[float, bool]] = {}
@@ -175,6 +178,12 @@ class Families:
                     summary=session.summary,
                     idle_seconds=0.0 if under_way else max(0.0, now - session.last_active_at),
                     came_up=came_up.get(session.id, 0),
+                    # (Asked of the members of projects that have a leader only: nothing else goes by it.)
+                    changes_files=(
+                        await self._changes_files(session)
+                        if in_project and session.kind == "line" and session.project in leaders
+                        else True
+                    ),
                     done=tuple(
                         Done(
                             title=item.title,
@@ -282,6 +291,21 @@ class Families:
             verdict = replace(verdict, action=orch.TO_LEADER, agent=None, preset=None, reason=LEADER_GIT)
         verdict.seconds = round(time.perf_counter() - started, 4)
         return verdict
+
+    async def _changes_files(self, session: Session) -> bool:
+        """Whether a member can change files, by the template it is opened by; False when that cannot be told.
+
+        (Nothing is sent to a member beside its leader on a guess: the
+        leader hands it out.)
+        """
+        if self._changes is None:
+            return session.preset in _WORKING_PRESETS
+        try:
+            return bool(await self._changes(session))
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - its template cannot be used: it is not sent work so
+            return False
 
     async def _all_compared(self, commission: Commission, project: str, standing: Standing) -> bool:
         """Whether every member of a project that still takes work was among the task agents a sentence was held against.
@@ -512,11 +536,12 @@ class Families:
         return found.description if found is not None else ""
 
     async def _busy(self, session: Session) -> bool:
-        """Whether a member of a project without a leader has enough under way for the project to get one.
+        """Whether a member of a project has enough under way for a commission not to be put behind it.
 
-        (Asked of a member a commission would go on in, which is one of a
-        project without a leader: one that has a leader gets its
-        commissions itself.)
+        Asked of a member a commission would go on in. In a project
+        without a leader the project gets one then; in one that has a
+        leader (the commission was sent to the member beside it,
+        ``Verdict.direct``) the commission is the leader's to hand out.
         """
         under_way = await self._ledger.select(session_id=session.id, statuses=UNDER_WAY_STATUSES)
         return family_is_busy(len(under_way))

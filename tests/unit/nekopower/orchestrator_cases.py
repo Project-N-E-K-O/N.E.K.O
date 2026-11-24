@@ -12,6 +12,7 @@ from typing import Any
 
 from nekopower.host import orchestrator
 from nekopower.host.orchestrator import Agent, Done, ProjectView, Standing, Verdict
+from nekopower.host.templates import builtin_templates
 
 SCENARIOS = Path(__file__).parent / "fixtures" / "orchestrator_scenarios.json"
 
@@ -46,6 +47,8 @@ def load() -> tuple[dict[str, Standing], list[dict[str, Any]]]:
                 duty=item["duty"],
                 summary=item["summary"],
                 idle_seconds=item["idle_hours"] * 3600.0,
+                # As the built-in templates of these presets have it (``Template.changes_files``).
+                changes_files=builtin_templates()[item["preset"]].changes_files,
                 done=tuple(
                     Done(title=one["title"], result=one["result"], age_seconds=one["hours_ago"] * 3600.0, filed=one["filed"])
                     for one in item["done"]

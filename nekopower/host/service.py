@@ -1473,9 +1473,10 @@ class NekoPowerHost:
     async def derive_leader(self, project: str, lanlan_name: str) -> dict[str, Any]:
         """Give a project a leader for one character, as the user asks; returns ``{"session_id", "made"}``.
 
-        From then on the project's commissions come to the leader, which
-        hands them out and does none of the work; the task agents the
-        project has are its members. It is told where the project stands
+        From then on the project's commissions come to the leader, but
+        for those that plainly go on with a member's own work
+        (``orchestrator.settle``); it hands them out and does none of the
+        work. The task agents the project has are its members. It is told where the project stands
         with the first commission that opens in it, from what is on
         record: no model is asked. A project that has a leader keeps it
         (``made`` is False). Raises ``ValueError("no_character")``, and

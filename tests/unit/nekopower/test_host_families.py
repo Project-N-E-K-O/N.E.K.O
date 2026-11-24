@@ -1219,7 +1219,7 @@ async def test_the_timeline_tells_where_a_commission_went_and_what_was_made_for_
     assert (decided["text"], decided["peer"]) == ("", None)
     assert decided["detail"] == {
         "action": "to_leader", "project": "Shop site", "relation": "follow_up", "layer": "rules", "model_calls": 0,
-        "seconds": decided["detail"]["seconds"],
+        "seconds": decided["detail"]["seconds"], "direct": False,
     }
     derived = by_kind["leader_derived"]
     assert (derived["text"], derived["detail"]) == ("Shop site", {"project": "Shop site", "reason": "git"})
@@ -3073,6 +3073,12 @@ async def test_what_goes_on_with_a_members_work_goes_to_it_and_its_leader_is_tol
     assert "placed" not in decided and await _events(host, first.commission_id, "handed_over") == []
     # One at a time changes files in the project all the same.
     assert host.task_agents._writes_in[stylist.id] == ("Shop site", stylist.id)
+    # The timeline says that it went beside the leader.
+    (shown,) = [
+        entry for entry in (await host.timeline(project="Shop site"))["entries"]
+        if entry["kind"] == "orchestrated" and entry["commission_id"] == first.commission_id
+    ]
+    assert shown["detail"]["direct"] is True and shown["peer"]["session_id"] == stylist.id
 
     # What is nobody's in particular comes to the leader, which is told then what came of the other.
     second = await _dispatch(host, "add a newsletter sign-up form to the shop site")
@@ -3090,6 +3096,47 @@ async def test_what_goes_on_with_a_members_work_goes_to_it_and_its_leader_is_tol
     assert [item for item, _ending in await host.ledger.handed_work(leader, limit=9)] == [
         await host.ledger.get(second.commission_id)
     ]
+
+
+async def test_what_goes_on_with_what_a_member_that_cannot_change_files_looked_at_is_the_leaders(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    await _project(host, "Shop site", tmp_path)
+    leader = (await host.derive_leader("Shop site", "Lan"))["session_id"]
+    duty = "Which colours the dark mode of the header on the home page uses"
+    scout = await host.ledger.create_session(
+        lanlan_name="Lan", name="Shop site/scout", kind="line", project="Shop site", preset="scout", parent_id=leader,
+        title="Colour finder", duty=duty,
+    )
+    families = host.task_agents.families
+
+    async def decided(text: str) -> Any:
+        commission, _made = await host.ledger.create(
+            lanlan_name="Lan", title=text, dispatch_text=text, source="dispatch", route="task_agent"
+        )
+        return await families.decide(commission), commission
+
+    text = "make the colours of the dark mode of the header on the home page of the shop site warmer"
+    verdict, commission = await decided(text)
+
+    # The scout the leader started to look that up cannot make the change: by its template, not its name.
+    (seen,) = [agent for agent in (await families.standing(commission)).agents if agent.id == scout.id]
+    assert seen.changes_files is False
+    assert (verdict.action, verdict.agent, verdict.direct) == (orch.TO_LEADER, None, False)
+    # Named by its title it has the commission: the user chose it.
+    named, _commission = await decided("ask Colour finder of the shop site which colours the footer uses")
+    assert (named.action, named.agent, named.direct) == (orch.CONTINUE, scout.id, True)
+    # A template of the user's that gives the preset the tools to write makes it one that can.
+    templates = host.paths.space().templates_dir()
+    templates.mkdir(parents=True, exist_ok=True)
+    (templates / "scout.md").write_text("---\nname: scout\ndescription: Looks things up and fixes them.\n---\n", encoding="utf-8")
+    verdict, commission = await decided(text)
+    (seen,) = [agent for agent in (await families.standing(commission)).agents if agent.id == scout.id]
+    assert seen.changes_files is True
+    assert (verdict.action, verdict.agent, verdict.direct) == (orch.CONTINUE, scout.id, True)
+    # One whose template cannot be used is sent nothing so.
+    (templates / "scout.md").write_text("---\nname: scout\ndescription: x\nnope: 1\n---\n", encoding="utf-8")
+    verdict, _commission = await decided(text)
+    assert (verdict.action, verdict.direct) == (orch.TO_LEADER, False)
 
 
 async def test_nothing_goes_to_a_member_beside_the_leader_while_not_every_member_was_looked_at(hosts, tmp_path, monkeypatch):

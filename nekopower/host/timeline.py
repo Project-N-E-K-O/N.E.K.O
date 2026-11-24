@@ -370,6 +370,8 @@ def _event_entry(
             "layer": _text(payload.get("layer")),
             "model_calls": _number(payload.get("model_calls")),
             "seconds": payload.get("seconds") if isinstance(payload.get("seconds"), (int, float)) else None,
+            # Sent to a member of a project beside its leader.
+            "direct": payload.get("direct") is True,
         }
         if placed is not None:
             detail["placed"] = _text(placed.get("action"))

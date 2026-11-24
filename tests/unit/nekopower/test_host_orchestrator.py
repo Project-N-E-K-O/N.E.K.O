@@ -463,6 +463,29 @@ def test_what_plainly_goes_on_with_a_members_work_goes_to_it_beside_the_leader()
     assert goes("ask Page painter in shop for an update", standing=orch.Standing(projects=(project,), agents=(lead, left)))[0] == orch.TO_LEADER
     keeper = orch.Agent(id="keeper", project="shop", preset="worker", title="shop", duty="The pictures")
     assert goes("ask the shop for an update", standing=orch.Standing(projects=(project,), agents=(lead, keeper)))[0] == orch.TO_LEADER
+    # A member that cannot change files (a scout the leader started to look something up) does not
+    # get what goes on with its work by the words alone: what is asked next may be to change the
+    # thing it looked at. The leader says who does it.
+    scout = orch.Agent(
+        id="scout", project="shop", preset="scout", title="Colour finder", changes_files=False,
+        duty="Which colours the dark mode of the header on the home page uses",
+        done=(orch.Done(title="look up which colours the dark mode of the header uses", result="three greys"),),
+    )
+    looked = orch.Standing(projects=(project,), agents=(lead, scout, detail))
+    warmer = "make the colours of the dark mode of the header warmer"
+    assert orch.clear_member(warmer, [scout, detail], bars, "shop") is scout
+    assert goes(warmer, standing=looked) == (orch.TO_LEADER, None, False)
+    # Not by a match the retrieval or the small model found with it either.
+    assert goes(warmer, standing=looked, layer=orch.LAYER_RETRIEVAL)[0] == orch.TO_LEADER
+    found = orch.settle(orch.AGENT_KEY + "scout", orch.FOLLOW_UP, looked, bars, layer=orch.LAYER_MODEL, sentence=warmer)
+    assert (found.action, found.direct) == (orch.TO_LEADER, False)
+    # Nor does the member that can change files and fits less well get it in its place.
+    writer = orch.Agent(id="writer", project="shop", preset="worker", duty="The dark mode of the header and its colours")
+    assert goes(warmer, standing=orch.Standing(projects=(project,), agents=(lead, scout, writer)))[0] == orch.TO_LEADER
+    # Named by its title, it has it: the user chose it.
+    assert goes("ask Colour finder in shop which colours the footer uses", standing=looked) == (orch.CONTINUE, "scout", True)
+    by_title = orch.by_rules("ask Colour finder which colours the footer uses", "", looked, bars)
+    assert (by_title.action, by_title.agent, by_title.direct) == (orch.CONTINUE, "scout", True)
     # The words of the project's own name are no sign of a member's work: every sentence that
     # names the project shares them with every member that worked on it.
     budget = orch.ProjectView(name="记账小程序", leader="L")

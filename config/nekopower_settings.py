@@ -251,7 +251,10 @@ ORCHESTRATOR_MEMBER_HITS = 4
 coming to the leader when it shares this many words with that member's card
 and what the member did lately, the words of the project's own name left
 out (every sentence that names the project shares those with every member),
-and more than with any other member by ``ORCHESTRATOR_MIN_HITS``. Set where
+and more than with any other member by ``ORCHESTRATOR_MIN_HITS``. Words as
+the retrieval counts them: a word of Latin letters is one, and so is every
+two characters of Chinese that stand together, so one phrase of five
+characters makes four. Set where
 ten scenarios and four sentences of the measurements fall apart: those that
 go on with a member's work share four to eight, the others none or one."""
 

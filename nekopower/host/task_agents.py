@@ -1301,7 +1301,7 @@ class TaskAgentManager:
         # Where her commissions go, and the members and leaders of projects.
         from nekopower.host.families import Families
 
-        self.families = Families(ledger, space, paths, clock=ledger._clock)
+        self.families = Families(ledger, space, paths, clock=ledger._clock, changes_files=self._opened_to_change_files)
         # By session: the project (for which character) it writes files in.
         # One such session works in a project at a time (``_session_free_for``).
         self._writes_in: dict[str, tuple[str, str]] = {}
@@ -2233,6 +2233,10 @@ class TaskAgentManager:
             logger.warning("reading what a project is for failed", exc_info=True)
             return ""
         return found.description if found is not None else ""
+
+    async def _opened_to_change_files(self, kept: Session) -> bool:
+        """Whether a session can change files by the template it is opened by (``Template.changes_files``); raises as ``_template_of``."""
+        return bool((await self._template_of(kept)).changes_files)
 
     async def _template_of(self, kept: Session) -> Any:
         """Return the template a session is opened by (``templates.Template``); raises when its preset cannot be used.

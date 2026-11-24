@@ -111,6 +111,10 @@ class Agent:
     done: tuple[Done, ...] = ()
     # How often its matter came up over all it did (``Ledger.came_up``); None where only ``done`` tells.
     came_up: int | None = None
+    # Whether it can change files, by the template it is opened by (``Template.changes_files``).
+    # Looked at for a member of a project that has a leader only: what goes on with the work of
+    # one that cannot is the leader's to hand out, since it may be something that member cannot do.
+    changes_files: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -587,9 +591,9 @@ def settle(
     """Turn the project or task agent a sentence belongs with into where the commission goes.
 
     ``sentence`` is what was said, for a project that has a leader: what
-    names a member (``named_member``) or plainly goes on with a member's
-    own work (``clear_member``) is that member's, and the rest the
-    leader's.
+    names a member (``named_member``) or plainly goes on with the work of
+    a member that can change files (``clear_member``,
+    ``Agent.changes_files``) is that member's, and the rest the leader's.
     """
     shown = list(matches)
 
@@ -611,11 +615,19 @@ def settle(
             # A leader is not the only one a project's work comes to: what plainly goes on with a
             # member's own work (it was named, or the words say so) is that member's, with no
             # round through the leader. Whatever else is the project's, its leader says who does.
-            at = target if target is not None and target in working else None
+            # A member the user names by its title is their choice, whatever it can do.
+            at = target if target is not None and target in working and layer == LAYER_RULES else None
             if at is None:
-                at = named_member(sentence, working, bars, project.name) or clear_member(
+                at = named_member(sentence, working, bars, project.name)
+            if at is None:
+                # By its words: the member they fit best, of all that take work. One that cannot
+                # change files (a scout the leader started to look something up) does not get it
+                # so: what is asked next of the thing it looked at is often to change it.
+                at = target if target is not None and target in working else clear_member(
                     sentence, working, bars, project.name
                 )
+                if at is not None and not at.changes_files:
+                    at = None
             if at is not None:
                 return verdict(CONTINUE, agent=at.id, project=project.name, relation=relation, direct=True)
             return verdict(TO_LEADER, project=project.name, relation=relation)
