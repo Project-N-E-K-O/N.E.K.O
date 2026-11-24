@@ -33,6 +33,11 @@ from utils.config_manager import get_config_manager
 from utils.tts.native_voice_registry import get_native_tts_worker
 from utils.tts.providers.deepseek import DEEPSEEK_PRESET_CATALOG, DEEPSEEK_TTS_URL
 from utils.tts.providers.mimo import MIMO_PRESET_CATALOG
+from utils.qwen_token_plan_tts import (
+    QWEN_TOKEN_PLAN_TTS_DEFAULT_BASE_URL,
+    QWEN_TOKEN_PLAN_TTS_DEFAULT_MODEL,
+    QWEN_TOKEN_PLAN_TTS_DEFAULT_VOICE,
+)
 from utils.tts import provider_registry as _tts_providers
 from utils.logger_config import get_module_logger
 
@@ -114,6 +119,11 @@ from .workers.doubao import (
     _doubao_is_selected,
     _doubao_resolve,
 )
+from .workers.qwen_token_plan import (
+    qwen_token_plan_tts_worker,
+    _qwen_token_plan_is_selected,
+    _qwen_token_plan_resolve,
+)
 from .workers.gptsovits import (
     gptsovits_tts_worker,
     get_custom_tts_voices,
@@ -167,7 +177,7 @@ __all__ = [
     "grok_streaming_tts_worker", "qwen_realtime_tts_worker",
     "cosyvoice_vc_tts_worker", "cogtts_tts_worker", "gemini_tts_worker",
     "openai_tts_worker", "vllm_omni_tts_worker", "mimo_tts_worker", "deepseek_tts_worker",
-    "doubao_tts_worker",
+    "doubao_tts_worker", "qwen_token_plan_tts_worker",
     "gptsovits_tts_worker", "minimax_tts_worker", "elevenlabs_tts_worker",
     "local_cosyvoice_worker", "dummy_tts_worker",
     # provider constants
@@ -199,6 +209,7 @@ __all__ = [
     "_cosyvoice_clone_is_selected", "_cosyvoice_clone_resolve",
     "_mimo_is_selected", "_mimo_resolve",
     "_doubao_is_selected", "_doubao_resolve",
+    "_qwen_token_plan_is_selected", "_qwen_token_plan_resolve",
     "_glm_clone_is_selected", "_glm_clone_resolve",
 ]
 
@@ -759,6 +770,32 @@ _tts_providers.register(_tts_providers.TTSProvider(
     probe_sub_type='doubao_tts',
     tts_dropdown_only=True,
     tts_config_visible=False,
+))
+
+# Alibaba Bailian Token Plan TTS (qwen-audio-3.0-tts-plus): selected only by the TTS dropdown
+# (ttsModelProvider=='qwen_token_plan'). Priority 58: after clones, and ahead of MiMo's assistApi=mimo
+# default (60) so the explicit dropdown choice wins, like deepseek (59). Same slot layout as
+# doubao_tts (ttsModelUrl / ttsModelId / ttsVoiceId, key from the dedicated Key Book entry
+# assistApiKeyQwenTokenPlan or the TTS slot), but visible in the TTS dropdown because it has preset
+# voices rather than clones. Token Plan keys only go to the whitelisted HTTPS hosts
+# (utils.qwen_token_plan_tts.is_qwen_token_plan_url); voices other than this model's fall back to
+# its default voice inside the worker.
+_tts_providers.register(_tts_providers.TTSProvider(
+    key='qwen_token_plan',
+    kind='hosted',
+    priority=58,
+    capabilities=frozenset({'preset'}),
+    is_selected=_qwen_token_plan_is_selected,
+    resolve=_qwen_token_plan_resolve,
+    realtime_output_override=True,
+    uses_configured_default_voice=True,
+    default_url=QWEN_TOKEN_PLAN_TTS_DEFAULT_BASE_URL,
+    default_model=QWEN_TOKEN_PLAN_TTS_DEFAULT_MODEL,
+    default_voice=QWEN_TOKEN_PLAN_TTS_DEFAULT_VOICE,
+    editable_endpoint=True,
+    probe_kind='http_tts',
+    probe_sub_type='qwen_token_plan',
+    tts_dropdown_only=True,
 ))
 
 # GLM cloned voices (selected by voice_meta.provider=='glm_tts', priority 66 immediately after doubao).

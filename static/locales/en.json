@@ -1383,6 +1383,7 @@
             "deepseek": "DeepSeek",
             "doubao": "Doubao LLM (Volcengine Ark)",
             "doubao_tts": "Doubao Speech (Volcengine)",
+            "qwen_token_plan": "Alibaba Bailian Token Plan",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Intl)",
             "elevenlabs": "ElevenLabs (Voice Cloning)",
@@ -1455,6 +1456,7 @@
             "kimi_code": "Moonshot Kimi Code",
             "doubao": "Doubao LLM (Volcengine Ark)",
             "doubao_tts": "Doubao Speech (Volcengine)",
+            "qwen_token_plan": "Alibaba Bailian Token Plan",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Intl)",
             "mimo": "MiMo (Xiaomi)",
@@ -1522,6 +1524,7 @@
         "ttsVoiceId": "Voice ID",
         "ttsProtocolHintOpenAI": "OpenAI-compatible: HTTP(S) POST /v1/audio/speech with complete text input and a streamed audio response.",
         "ttsProtocolHintVllmOmni": "vLLM-Omni: WS(S) /v1/audio/speech/stream with bidirectional text and audio streaming.",
+        "ttsProtocolHintQwenTokenPlan": "Alibaba Bailian Token Plan: HTTPS POST /api/v1/services/audio/tts/SpeechSynthesizer with a streamed audio response. Requires a Token Plan key starting with sk-sp-.",
         "ttsVoiceIdHint": "(Optional, fallback voice when character has none)",
         "ttsCustomVoiceFallbackHint": "If Voice ID is left empty, characters without a voice will use the Voice Model's built-in voice.",
         "agentModelUrlPlaceholder": "Leave empty to use the General Model Provider's URL",
@@ -6214,7 +6217,9 @@
             "unknown": "Unknown error",
             "backend_unavailable": "Backend service unavailable",
             "invalid_response": "Invalid response format",
-            "invalid_workspace_id": "Invalid Bailian workspace ID"
+            "invalid_workspace_id": "Invalid Bailian workspace ID",
+            "token_plan_key_mismatch": "This looks like a regular Bailian key. Token Plan needs its dedicated key starting with sk-sp-",
+            "token_plan_url_invalid": "The Token Plan URL must be an https address on an official Token Plan domain"
         },
         "decisionFallback": {
             "workspace_missing": "No Bailian workspace ID yet; a chat model stands in for the decision model",

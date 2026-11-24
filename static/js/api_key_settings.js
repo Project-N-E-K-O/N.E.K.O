@@ -1959,10 +1959,12 @@ function updateTtsProtocolHint(provider) {
     const keyByProvider = {
         custom: 'api.ttsProtocolHintOpenAI',
         vllm_omni: 'api.ttsProtocolHintVllmOmni',
+        qwen_token_plan: 'api.ttsProtocolHintQwenTokenPlan',
     };
     const fallbackByProvider = {
         custom: 'OpenAI-compatible: HTTP(S) POST /v1/audio/speech，完整文本请求、流式音频响应。',
         vllm_omni: 'vLLM-Omni: WS(S) /v1/audio/speech/stream，文本与音频双向流式传输。',
+        qwen_token_plan: '阿里百炼 Token Plan：HTTPS POST /api/v1/services/audio/tts/SpeechSynthesizer，流式音频响应。需要 sk-sp- 开头的 Token Plan 专属 Key。',
     };
     const key = keyByProvider[provider];
     if (!key) {

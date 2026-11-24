@@ -1383,6 +1383,7 @@
             "deepseek": "DeepSeek",
             "doubao": "Doubao LLM (Volcengine Ark)",
             "doubao_tts": "Doubao Speech (Volcengine)",
+            "qwen_token_plan": "Alibaba Bailian Token Plan",
             "minimax": "MiniMax (Китай)",
             "minimax_intl": "MiniMax (международный)",
             "elevenlabs": "ElevenLabs (клонирование голоса)",
@@ -1455,6 +1456,7 @@
             "kimi_code": "Moonshot Kimi Code",
             "doubao": "Doubao LLM (Volcengine Ark)",
             "doubao_tts": "Doubao Speech (Volcengine)",
+            "qwen_token_plan": "Alibaba Bailian Token Plan",
             "minimax": "MiniMax (Китай)",
             "minimax_intl": "MiniMax (международный)",
             "mimo": "MiMo (Xiaomi)",
@@ -1522,6 +1524,7 @@
         "ttsVoiceId": "Voice ID",
         "ttsProtocolHintOpenAI": "OpenAI-совместимый API: HTTP(S) POST /v1/audio/speech с полной текстовой фразой и потоковым аудиоответом.",
         "ttsProtocolHintVllmOmni": "vLLM-Omni: WS(S) /v1/audio/speech/stream с двунаправленной потоковой передачей текста и аудио.",
+        "ttsProtocolHintQwenTokenPlan": "Alibaba Bailian Token Plan: HTTPS POST /api/v1/services/audio/tts/SpeechSynthesizer с потоковым аудиоответом. Нужен ключ Token Plan, начинающийся с sk-sp-.",
         "ttsVoiceIdHint": "(Необязательно, запасной голос)",
         "ttsCustomVoiceFallbackHint": "Если Voice ID не указан, персонажи без собственного голоса используют встроенный голос самой голосовой модели.",
         "agentModelUrlPlaceholder": "Оставьте пустым, чтобы использовать URL провайдера универсальной модели",
@@ -6214,7 +6217,9 @@
             "unknown": "Неизвестная ошибка",
             "backend_unavailable": "Бэкенд-сервис недоступен",
             "invalid_response": "Неверный формат ответа",
-            "invalid_workspace_id": "Неверный формат ID рабочего пространства Bailian"
+            "invalid_workspace_id": "Неверный формат ID рабочего пространства Bailian",
+            "token_plan_key_mismatch": "Похоже на обычный ключ Bailian. Для Token Plan нужен отдельный ключ, начинающийся с sk-sp-",
+            "token_plan_url_invalid": "Адрес Token Plan должен быть https-адресом на официальном домене Token Plan"
         },
         "decisionFallback": {
             "workspace_missing": "ID рабочего пространства Bailian не указан: вместо модели решений используется чат-модель",

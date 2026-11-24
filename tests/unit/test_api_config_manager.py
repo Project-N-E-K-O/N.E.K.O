@@ -55,6 +55,7 @@ class TestKeybookSaveLoad:
         'assistApiKeyDeepseek': 'ASSIST_API_KEY_DEEPSEEK',
         'assistApiKeyDoubao': 'ASSIST_API_KEY_DOUBAO',
         'assistApiKeyDoubaoTts': 'ASSIST_API_KEY_DOUBAO_TTS',
+        'assistApiKeyQwenTokenPlan': 'ASSIST_API_KEY_QWEN_TOKEN_PLAN',
         'assistApiKeyMinimax': 'ASSIST_API_KEY_MINIMAX',
         'assistApiKeyMinimaxIntl': 'ASSIST_API_KEY_MINIMAX_INTL',
         'assistApiKeyMimo': 'ASSIST_API_KEY_MIMO',
@@ -1517,6 +1518,38 @@ class TestVoiceCloneKeyResolution:
         assert key == 'ark-doubao-speech-key'
 
     @pytest.mark.unit
+    def test_qwen_token_plan_key_prefers_selected_slot_then_keybook(self, config_manager):
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': 'sk-bailian',
+            'ttsModelProvider': 'qwen_token_plan',
+            'ttsModelApiKey': 'sk-sp-slot',
+            'assistApiKeyQwenTokenPlan': 'sk-sp-book',
+        })
+        assert config_manager.get_tts_api_key('qwen_token_plan') == 'sk-sp-slot'
+
+    @pytest.mark.unit
+    def test_qwen_token_plan_key_ignores_foreign_slot_and_never_borrows_qwen_key(self, config_manager):
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': 'sk-bailian',
+            'ttsModelProvider': 'custom',
+            'ttsModelApiKey': 'sk-openai-should-not-leak',
+            'assistApiKeyQwenTokenPlan': '',
+        })
+        assert config_manager.get_tts_api_key('qwen_token_plan') is None
+        _write_core_config(config_manager, {
+            'ttsModelProvider': 'custom',
+            'ttsModelApiKey': 'sk-openai-should-not-leak',
+            'assistApiKeyQwenTokenPlan': 'sk-sp-book',
+        })
+        assert config_manager.get_tts_api_key('qwen_token_plan') == 'sk-sp-book'
+
+    @pytest.mark.unit
     def test_cosyvoice_tts_key_from_custom_config(self, config_manager):
         """get_tts_api_key('cosyvoice') reads from tts_custom model config."""
         _write_core_config(config_manager, {
@@ -2294,6 +2327,42 @@ class TestGptsovitsEnabledSaveMigration:
 
         saved = config_manager.load_json_config('core_config.json', {})
         assert saved.get('ttsModelApiKey') == 'ark-doubao-speech-key'
+
+    @pytest.mark.unit
+    def test_update_core_config_qwen_token_plan_mirrors_keybook_and_drops_foreign_key(
+        self, config_manager, monkeypatch,
+    ):
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'custom',
+            'ttsModelApiKey': 'sk-openai-should-not-leak',
+        })
+        resp = asyncio.run(config_router.update_core_config(self._FakeRequest({
+            'enableCustomApi': True,
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': 'qwen_token_plan',
+        })))
+        assert resp.get('success') is True
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved.get('ttsModelApiKey') == ''
+
+        resp = asyncio.run(config_router.update_core_config(self._FakeRequest({
+            'enableCustomApi': True,
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': 'qwen_token_plan',
+            'assistApiKeyQwenTokenPlan': 'sk-sp-book',
+        })))
+        assert resp.get('success') is True
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved.get('assistApiKeyQwenTokenPlan') == 'sk-sp-book'
+        assert saved.get('ttsModelApiKey') == 'sk-sp-book'
+        # The Doubao Key Book entry is not touched by the Token Plan choice.
+        assert saved.get('assistApiKeyDoubaoTts', '') == ''
 
     @pytest.mark.unit
     def test_update_core_config_doubao_tts_clears_stale_shared_tts_key_without_speech_key(

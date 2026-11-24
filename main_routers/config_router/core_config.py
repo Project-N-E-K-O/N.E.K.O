@@ -35,7 +35,7 @@ from utils.decision_client.workspace import (
     normalize_workspace_id,
     safe_workspace_id,
 )
-from config.api_profiles import ASSIST_WORKSPACE_ID_FIELDS
+from config.api_profiles import ASSIST_WORKSPACE_ID_FIELDS, TTS_KEY_BOOK_FIELDS
 
 
 CORE_CONFIG_SECRET_SENTINEL = "__NEKO_SECRET_MASKED__"
@@ -73,7 +73,8 @@ CORE_CONFIG_ASSIST_API_KEY_FIELDS = (
     'assistApiKeyQwen', 'assistApiKeyQwenIntl', 'assistApiKeyOpenai',
     'assistApiKeyDeepseek', 'assistApiKeyGlm', 'assistApiKeyStep',
     'assistApiKeySilicon', 'assistApiKeyGemini', 'assistApiKeyKimi',
-    'assistApiKeyDoubao', 'assistApiKeyDoubaoTts', 'assistApiKeyMinimax',
+    'assistApiKeyDoubao', 'assistApiKeyDoubaoTts', 'assistApiKeyQwenTokenPlan',
+    'assistApiKeyMinimax',
     'assistApiKeyMinimaxIntl', 'assistApiKeyMimo',
     'assistApiKeyMimoTokenPlan', 'assistApiKeyElevenlabs', 'assistApiKeyGrok',
     'assistApiKeyClaude', 'assistApiKeyKimiCode', 'assistApiKeyOpenrouter',
@@ -273,9 +274,11 @@ async def get_core_config_api():
         _fallback_providers = (
             {_core_api_provider, _assist_api_provider} & _core_capable_providers
         )
-        _doubao_tts_shared_key = ''
-        if str(core_cfg.get('ttsModelProvider') or '').strip() == 'doubao_tts':
-            _doubao_tts_shared_key = core_cfg.get('ttsModelApiKey', '')
+        # A TTS-only provider with its own Key Book entry shares the TTS slot key while selected.
+        _tts_slot_provider = str(core_cfg.get('ttsModelProvider') or '').strip()
+
+        def _tts_shared_key(provider: str) -> str:
+            return core_cfg.get('ttsModelApiKey', '') if _tts_slot_provider == provider else ''
 
         def _fb(provider: str) -> str:
             """Fall back to coreApiKey only when the provider matches the user-selected coreApi/assistApi."""
@@ -305,7 +308,8 @@ async def get_core_config_api():
             "assistApiKeyKimiCode": core_cfg.get('assistApiKeyKimiCode', '') or _fb('kimi_code'),
             "assistApiKeyDeepseek": core_cfg.get('assistApiKeyDeepseek', '') or _fb('deepseek'),
             "assistApiKeyDoubao": core_cfg.get('assistApiKeyDoubao', '') or _fb('doubao'),
-            "assistApiKeyDoubaoTts": core_cfg.get('assistApiKeyDoubaoTts', '') or _doubao_tts_shared_key,
+            "assistApiKeyDoubaoTts": core_cfg.get('assistApiKeyDoubaoTts', '') or _tts_shared_key('doubao_tts'),
+            "assistApiKeyQwenTokenPlan": core_cfg.get('assistApiKeyQwenTokenPlan', '') or _tts_shared_key('qwen_token_plan'),
             # MiniMax/MiMo are assist-only TTS providers, so coreApiKey may be incompatible;
             # do not fall back and inject an invalid TTS credential causing 401.
             "assistApiKeyMinimax": core_cfg.get('assistApiKeyMinimax', ''),
@@ -683,16 +687,19 @@ async def update_core_config(request: Request):
                 return {"success": False, "error": "disableTts must be a boolean"}
             core_cfg['disableTts'] = data['disableTts']
 
-        # Capture the stored provider and whether either Doubao TTS credential
+        # Capture the stored provider and whether either credential of a TTS
+        # provider with its own Key Book entry (Doubao Speech, Bailian Token Plan)
         # was explicitly changed before applying the submitted model fields.
         # A masked value means "keep existing"; an empty string is an explicit
         # clear and must remain distinguishable from that no-op.
         stored_tts_model_provider = str(
             core_cfg.get('ttsModelProvider') or ''
         ).strip()
-        doubao_tts_key_was_explicitly_updated = (
-            'assistApiKeyDoubaoTts' in data
-            and not is_core_config_secret_placeholder(data['assistApiKeyDoubaoTts'])
+        _incoming_tts_provider = str(data.get('ttsModelProvider', '') or '').strip()
+        _tts_book_field = TTS_KEY_BOOK_FIELDS.get(_incoming_tts_provider, '')
+        tts_book_key_was_explicitly_updated = bool(_tts_book_field) and (
+            _tts_book_field in data
+            and not is_core_config_secret_placeholder(data[_tts_book_field])
         )
         tts_model_key_was_explicitly_updated = (
             'ttsModelApiKey' in data
@@ -743,7 +750,6 @@ async def update_core_config(request: Request):
                 except ValueError as exc:
                     return {"success": False, "error": str(exc)}
 
-        _incoming_tts_provider = str(data.get('ttsModelProvider', '') or '').strip()
         _effective_tts_provider = str(data.get('ttsModelProvider', stored_tts_model_provider) or '').strip()
 
         # Custom API configuration: Provider / Url / Id / ApiKey per model type
@@ -767,20 +773,20 @@ async def update_core_config(request: Request):
         # disable GSV. Partial updates omitting ttsModelProvider retain the flag for legacy users who never resave.
         if _incoming_tts_provider and _incoming_tts_provider != 'gptsovits':
             core_cfg['gptsovitsEnabled'] = False
-        if _incoming_tts_provider == 'doubao_tts':
-            doubao_key = str(core_cfg.get('assistApiKeyDoubaoTts') or '').strip()
-            if doubao_tts_key_was_explicitly_updated:
+        if _tts_book_field:
+            book_key = str(core_cfg.get(_tts_book_field) or '').strip()
+            if tts_book_key_was_explicitly_updated:
                 # The dedicated Key Book field is authoritative when the user
                 # explicitly edits it, including an explicit empty-string clear.
-                core_cfg['ttsModelApiKey'] = doubao_key
+                core_cfg['ttsModelApiKey'] = book_key
             elif not tts_model_key_was_explicitly_updated:
-                if doubao_key and not is_core_config_secret_placeholder(doubao_key):
-                    core_cfg['ttsModelApiKey'] = doubao_key
-                elif stored_tts_model_provider != 'doubao_tts':
+                if book_key and not is_core_config_secret_placeholder(book_key):
+                    core_cfg['ttsModelApiKey'] = book_key
+                elif stored_tts_model_provider != _incoming_tts_provider:
                     # Switching from another provider must not reuse its shared
-                    # model key as a Doubao credential. When already on Doubao,
-                    # however, masked/no-op saves preserve the legacy key stored
-                    # only in ttsModelApiKey.
+                    # model key as this provider's credential. When already on
+                    # it, however, masked/no-op saves preserve the legacy key
+                    # stored only in ttsModelApiKey.
                     core_cfg['ttsModelApiKey'] = ''
         if 'ttsVoiceId' in data:
             core_cfg['ttsVoiceId'] = data['ttsVoiceId']

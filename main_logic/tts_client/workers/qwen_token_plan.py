@@ -1,0 +1,219 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Alibaba Bailian Token Plan TTS worker (qwen-audio-3.0-tts-plus, SSE streaming)."""
+
+from __future__ import annotations
+
+import json
+from functools import partial
+
+import numpy as np
+import soxr
+
+from utils.logger_config import get_module_logger
+from utils.qwen_token_plan_tts import (
+    QWEN_TOKEN_PLAN_TTS_DEFAULT_BASE_URL,
+    QWEN_TOKEN_PLAN_TTS_DEFAULT_MODEL,
+    QWEN_TOKEN_PLAN_TTS_SAMPLE_RATE,
+    QwenTokenPlanTtsError,
+    build_qwen_token_plan_tts_payload,
+    extract_qwen_token_plan_audio,
+    is_qwen_token_plan_url,
+    qwen_token_plan_api_headers,
+    qwen_token_plan_tts_url,
+    select_qwen_token_plan_tts_voice,
+)
+
+from .._http_pool import make_tts_http_client
+from .._infra import _enqueue_error, _resample_audio, _run_sentence_tts_worker
+from .._telemetry import _record_tts_telemetry
+from .dummy import dummy_tts_worker
+
+logger = get_module_logger(__name__, "Main")
+
+_PROVIDER_KEY = "qwen_token_plan"
+
+
+def qwen_token_plan_tts_worker(
+    request_queue,
+    response_queue,
+    audio_api_key,
+    voice_id,
+    *,
+    base_url=None,
+    model=None,
+    configured_voice=None,
+):
+    import httpx
+
+    tts_model = (model or QWEN_TOKEN_PLAN_TTS_DEFAULT_MODEL).strip()
+    # The character's voice first, then the configured fallback voice. Voices of
+    # other providers would be rejected upstream, so they fall back to the default.
+    voice, fell_back = select_qwen_token_plan_tts_voice(voice_id, configured_voice)
+    if fell_back:
+        logger.warning("Token Plan TTS: voice not supported by this model, fell back to the default voice")
+
+    async def setup(response_queue):
+        if not audio_api_key:
+            _enqueue_error(response_queue, {
+                "code": "QWEN_TOKEN_PLAN_TTS_API_KEY_MISSING",
+                "provider": _PROVIDER_KEY,
+                "message": "阿里百炼 Token Plan API Key 未配置",
+            })
+            raise RuntimeError("Token Plan TTS API key is not configured")
+        try:
+            api_url = qwen_token_plan_tts_url(base_url or QWEN_TOKEN_PLAN_TTS_DEFAULT_BASE_URL)
+        except ValueError:
+            _enqueue_error(response_queue, {
+                "code": "QWEN_TOKEN_PLAN_TTS_URL_INVALID",
+                "provider": _PROVIDER_KEY,
+                "message": "阿里百炼 Token Plan TTS 地址必须是 https 的 Token Plan 域名",
+            })
+            raise RuntimeError("Token Plan TTS URL is not an HTTPS Token Plan host")
+
+        headers = qwen_token_plan_api_headers(audio_api_key, stream=True)
+        client = make_tts_http_client(
+            timeout=httpx.Timeout(connect=10, read=60, write=10, pool=10),
+        )
+
+        async def synthesize(text: str, speech_id: str) -> None:
+            payload = build_qwen_token_plan_tts_payload(text, voice, model=tts_model)
+            resampler = soxr.ResampleStream(QWEN_TOKEN_PLAN_TTS_SAMPLE_RATE, 48000, 1, dtype="float32")
+            pending_byte = b""
+            received_audio = False
+            audio_url = ""
+
+            def emit(chunk: bytes) -> None:
+                nonlocal pending_byte, received_audio
+                if not chunk:
+                    return
+                chunk = pending_byte + chunk
+                aligned = len(chunk) & ~1
+                pending_byte = chunk[aligned:]
+                if not aligned:
+                    return
+                received_audio = True
+                pcm = np.frombuffer(chunk[:aligned], dtype="<i2")
+                response_queue.put(
+                    _resample_audio(pcm, QWEN_TOKEN_PLAN_TTS_SAMPLE_RATE, 48000, resampler)
+                )
+
+            def handle_event(event: object) -> None:
+                nonlocal audio_url
+                chunk, url, _finished = extract_qwen_token_plan_audio(event)
+                emit(chunk)
+                if url:
+                    audio_url = url
+
+            try:
+                async with client.stream("POST", api_url, headers=headers, json=payload) as resp:
+                    if resp.status_code != 200:
+                        error_text = (await resp.aread()).decode("utf-8", errors="ignore")
+                        _enqueue_error(
+                            response_queue,
+                            f"阿里百炼 Token Plan TTS API错误 ({resp.status_code}): {error_text[:300]}",
+                        )
+                        return
+
+                    _record_tts_telemetry(tts_model, len(text))
+                    content_type = resp.headers.get("content-type", "").lower()
+                    if "text/event-stream" not in content_type:
+                        handle_event(json.loads((await resp.aread()).decode("utf-8")))
+                    else:
+                        buffer = ""
+                        async for raw_chunk in resp.aiter_text():
+                            buffer += raw_chunk
+                            while "\n" in buffer:
+                                line, buffer = buffer.split("\n", 1)
+                                line = line.strip()
+                                # SSE comments, ``id:`` / ``event:`` fields and blank separators.
+                                if not line.startswith("data:"):
+                                    continue
+                                line = line[5:].strip()
+                                if line and line != "[DONE]":
+                                    handle_event(json.loads(line))
+                        residual = buffer.strip()
+                        if residual.startswith("data:"):
+                            residual = residual[5:].strip()
+                            if residual and residual != "[DONE]":
+                                handle_event(json.loads(residual))
+
+                # The last SSE event repeats the whole sentence as a signed URL; only
+                # fetch it when no streamed audio arrived (a non-streaming reply).
+                if not received_audio and audio_url:
+                    if not audio_url.lower().startswith("https://"):
+                        raise QwenTokenPlanTtsError("audio URL is not HTTPS")
+                    # Signed URL: never attach the API key.
+                    audio_resp = await client.get(audio_url)
+                    if audio_resp.status_code != 200:
+                        raise QwenTokenPlanTtsError(f"audio download HTTP {audio_resp.status_code}")
+                    emit(audio_resp.content)
+                if not received_audio:
+                    _enqueue_error(response_queue, "阿里百炼 Token Plan TTS 响应未包含音频")
+                    return
+                # Flush the resampler tail so the end of the sentence is not cut off.
+                tail = _resample_audio(
+                    np.empty(0, dtype="<i2"), QWEN_TOKEN_PLAN_TTS_SAMPLE_RATE, 48000, resampler, last=True,
+                )
+                if tail:
+                    response_queue.put(tail)
+            except json.JSONDecodeError:
+                _enqueue_error(response_queue, "阿里百炼 Token Plan TTS 响应 JSON 解析失败")
+            except QwenTokenPlanTtsError as exc:
+                _enqueue_error(response_queue, f"阿里百炼 Token Plan TTS 返回错误: {exc}")
+            except Exception as exc:
+                _enqueue_error(response_queue, f"阿里百炼 Token Plan TTS 请求失败: {exc}")
+
+        return synthesize, client.aclose
+
+    _run_sentence_tts_worker(request_queue, response_queue, setup, label="Token Plan TTS")
+
+
+def _qwen_token_plan_is_selected(ctx) -> bool:
+    cc = ctx.core_config
+    tts_provider = str(cc.get("TTS_PROVIDER") or cc.get("ttsProvider") or "").strip().lower()
+    if tts_provider == _PROVIDER_KEY:
+        return True
+    try:
+        raw = ctx.cm.load_json_config("core_config.json", {})
+    except Exception:
+        raw = {}
+    return str(raw.get("ttsModelProvider") or "").strip().lower() == _PROVIDER_KEY
+
+
+def _qwen_token_plan_resolve(ctx):
+    try:
+        raw = ctx.cm.load_json_config("core_config.json", {})
+    except Exception:
+        raw = {}
+    api_key = (ctx.cm.get_tts_api_key(_PROVIDER_KEY) or "").strip()
+    if "***" in api_key:
+        api_key = ""
+    if not api_key:
+        logger.warning("Token Plan TTS 已选中但 API Key 缺失，改用 dummy TTS worker")
+        return dummy_tts_worker, None, None
+
+    base_url = str(raw.get("ttsModelUrl") or "").strip() or QWEN_TOKEN_PLAN_TTS_DEFAULT_BASE_URL
+    if not is_qwen_token_plan_url(base_url):
+        # Never send a Token Plan key to a host outside the whitelist or over plain HTTP.
+        logger.warning("Token Plan TTS 地址不是 https 的 Token Plan 域名，改用 dummy TTS worker")
+        return dummy_tts_worker, None, None
+    worker = partial(
+        qwen_token_plan_tts_worker,
+        base_url=base_url,
+        model=str(raw.get("ttsModelId") or "").strip() or QWEN_TOKEN_PLAN_TTS_DEFAULT_MODEL,
+        configured_voice=str(raw.get("ttsVoiceId") or "").strip(),
+    )
+    return worker, api_key, _PROVIDER_KEY

@@ -1383,6 +1383,7 @@
             "deepseek": "DeepSeek",
             "doubao": "Doubao LLM (Volcengine Ark)",
             "doubao_tts": "Doubao Speech (Volcengine)",
+            "qwen_token_plan": "Alibaba百炼 Token Plan",
             "minimax": "MiniMax（中国版）",
             "minimax_intl": "MiniMax（国際版）",
             "elevenlabs": "ElevenLabs（音声クローン）",
@@ -1455,6 +1456,7 @@
             "kimi_code": "Moonshot Kimi Code",
             "doubao": "Doubao LLM (Volcengine Ark)",
             "doubao_tts": "Doubao Speech (Volcengine)",
+            "qwen_token_plan": "Alibaba百炼 Token Plan",
             "minimax": "MiniMax（中国版）",
             "minimax_intl": "MiniMax（国際版）",
             "mimo": "MiMo（Xiaomi）",
@@ -1522,6 +1524,7 @@
         "ttsVoiceId": "ボイスID",
         "ttsProtocolHintOpenAI": "OpenAI互換：HTTP(S) POST /v1/audio/speech。テキストを一括送信し、音声レスポンスをストリーミングします。",
         "ttsProtocolHintVllmOmni": "vLLM-Omni：WS(S) /v1/audio/speech/stream。テキストと音声を双方向ストリーミングします。",
+        "ttsProtocolHintQwenTokenPlan": "Alibaba百炼 Token Plan：HTTPS POST /api/v1/services/audio/tts/SpeechSynthesizer。音声はストリーミングで返されます。sk-sp- で始まる Token Plan 専用キーが必要です。",
         "ttsVoiceIdHint": "（任意、キャラクター音声がない場合のフォールバック）",
         "ttsCustomVoiceFallbackHint": "Voice ID が空の場合、音声を設定していないキャラクターは音声モデル標準の声を使います。",
         "agentModelUrlPlaceholder": "空欄の場合、汎用モデルのプロバイダーの URL を使用します",
@@ -6214,7 +6217,9 @@
             "unknown": "不明なエラー",
             "backend_unavailable": "バックエンドサービスが利用できません",
             "invalid_response": "レスポンス形式が不正です",
-            "invalid_workspace_id": "Bailian ワークスペース ID の形式が無効です"
+            "invalid_workspace_id": "Bailian ワークスペース ID の形式が無効です",
+            "token_plan_key_mismatch": "百炼の通常キーのようです。Token Plan には sk-sp- で始まる専用キーが必要です",
+            "token_plan_url_invalid": "Token Plan の URL は公式 Token Plan ドメインの https アドレスである必要があります"
         },
         "decisionFallback": {
             "workspace_missing": "Bailian ワークスペース ID が未入力のため、意思決定モデルの代わりにチャットモデルを使用中",

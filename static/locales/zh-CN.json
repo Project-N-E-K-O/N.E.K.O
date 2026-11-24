@@ -1383,6 +1383,7 @@
             "deepseek": "DeepSeek",
             "doubao": "豆包大模型(火山方舟)",
             "doubao_tts": "豆包语音(火山引擎)",
+            "qwen_token_plan": "阿里百炼 Token Plan",
             "minimax": "MiniMax（国服）",
             "minimax_intl": "MiniMax（国际服）",
             "elevenlabs": "ElevenLabs（语音克隆，国内无法使用）",
@@ -1455,6 +1456,7 @@
             "kimi_code": "Moonshot Kimi Code",
             "doubao": "豆包大模型(火山方舟)",
             "doubao_tts": "豆包语音(火山引擎)",
+            "qwen_token_plan": "阿里百炼 Token Plan",
             "minimax": "MiniMax（国服）",
             "minimax_intl": "MiniMax（国际服）",
             "mimo": "MiMo（小米）",
@@ -1522,6 +1524,7 @@
         "ttsVoiceId": "Voice ID",
         "ttsProtocolHintOpenAI": "OpenAI 兼容：HTTP(S) POST /v1/audio/speech，完整文本请求、流式音频响应。",
         "ttsProtocolHintVllmOmni": "vLLM-Omni：WS(S) /v1/audio/speech/stream，文本与音频双向流式传输。",
+        "ttsProtocolHintQwenTokenPlan": "阿里百炼 Token Plan：HTTPS POST /api/v1/services/audio/tts/SpeechSynthesizer，流式音频响应。需要 sk-sp- 开头的 Token Plan 专属 Key。",
         "ttsVoiceIdHint": "（可选，角色未设置时的回退音色）",
         "ttsCustomVoiceFallbackHint": "Voice ID 未填写时，没有设置音色的角色将使用语音模型自带的声音。",
         "agentModelUrlPlaceholder": "留空则使用通用模型供应商的 URL",
@@ -6214,7 +6217,9 @@
             "unknown": "未知错误",
             "backend_unavailable": "后端服务不可用",
             "invalid_response": "响应格式错误",
-            "invalid_workspace_id": "百炼业务空间 ID 格式无效"
+            "invalid_workspace_id": "百炼业务空间 ID 格式无效",
+            "token_plan_key_mismatch": "这像是百炼普通 Key，Token Plan 需要 sk-sp- 开头的专属 Key",
+            "token_plan_url_invalid": "Token Plan 地址必须是 https 的 Token Plan 官方域名"
         },
         "decisionFallback": {
             "workspace_missing": "未填百炼业务空间 ID，决策模型暂用聊天模型",
