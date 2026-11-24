@@ -8,7 +8,6 @@ deprecation grace, with a rate-limited warning.
 """
 from __future__ import annotations
 
-import asyncio
 import functools
 import queue
 from contextlib import nullcontext
