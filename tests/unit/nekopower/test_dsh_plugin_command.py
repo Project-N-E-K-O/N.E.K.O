@@ -81,7 +81,7 @@ class Registry:
                 if registry.slow and self.path.endswith(registry.slow):
                     import time
 
-                    time.sleep(3)
+                    time.sleep(30)
                 data = registry.files.get(self.path, b"{}" if self.path == "/-/ping" else None)
                 if registry.status != 200 or data is None:
                     self.send_response(registry.status if registry.status != 200 else 404)
@@ -96,6 +96,9 @@ class Registry:
                 pass
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        # A held-back answer is not waited for when the test ends.
+        self.server.daemon_threads = True
+        self.server.block_on_close = False
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
@@ -439,6 +442,30 @@ def test_a_dsh_that_is_not_there_is_no_success(tmp_path, registries):
     assert _run(directory, "add", "x").returncode != 0
 
 
+@needs_shell
+def test_what_a_run_killed_outright_left_is_removed_by_the_next(tmp_path, registries):
+    registries(Registry(_files_of(_packages())))
+    directory = _write(tmp_path)
+    pnpm = tmp_path / "dsh" / "pnpm"
+    version = plugin_command_version()
+    # Left by a process that is gone, and by one that still runs (this one): only the first goes.
+    gone = pnpm / f"{version}.partial-999999"
+    alive = pnpm / f"{version}.partial-{os.getpid()}"
+    for left in (gone, alive):
+        (left / "program").mkdir(parents=True)
+
+    assert _run(directory, "add", "x").returncode == 0
+
+    assert not gone.exists() and alive.exists()
+    assert (pnpm / version / PROGRAM_NAME).is_file()
+
+
+def plugin_command_version() -> str:
+    from config.nekopower_settings import DSH_PNPM_VERSION
+
+    return DSH_PNPM_VERSION
+
+
 @pytest.mark.skipif(WINDOWS or not shutil.which("tar"), reason="the sh script, with POSIX signals")
 def test_ending_the_script_while_it_fetches_pnpm_leaves_nothing_half_made(tmp_path, registries):
     import signal
@@ -454,9 +481,12 @@ def test_ending_the_script_while_it_fetches_pnpm_leaves_nothing_half_made(tmp_pa
     while not any(path.endswith(str(packages[TAG]["file"])) for path in registry.seen) and time.monotonic() < deadline:
         time.sleep(0.05)
 
+    started = time.monotonic()
     script.send_signal(signal.SIGTERM)
 
-    assert script.wait(timeout=30) == 143
+    # At once, not when the download (held back for 30 s) would be over.
+    assert script.wait(timeout=20) == 143
+    assert time.monotonic() - started < 10
     left = tmp_path / "dsh" / "pnpm"
     assert not left.exists() or [path.name for path in left.iterdir()] == []
     assert _calls(tmp_path) == []
