@@ -23,6 +23,24 @@
     );
     const selectedVoiceGroupId = selectedAppearanceGroupId;
 
+    function defineCatStateAppearance({ cat1, cat2, cat3 } = {}) {
+        const defineTier = (overrides) => Object.freeze({ idle: null, hover: null, ...overrides });
+        return Object.freeze({
+            cat1: defineTier(cat1),
+            cat2: defineTier(cat2),
+            cat3: defineTier(cat3)
+        });
+    }
+
+    const defaultCatState = 'normal';
+    const stateAppearances = Object.freeze({
+        [defaultCatState]: defineCatStateAppearance(),
+        happy: defineCatStateAppearance(),
+        angry: defineCatStateAppearance(),
+        sad: defineCatStateAppearance(),
+        tired: defineCatStateAppearance()
+    });
+
     // Union of opaque pixels across each animation's frames. Keep collision geometry
     // stable during playback, but select it by the actual asset, not cat tier.
     const appearanceBounds = {
@@ -371,6 +389,16 @@
         return getAppearanceForGroup(selectedAppearanceGroupId, slot, options);
     }
 
+    function resolveStateAppearanceUrl(state, tier, pose, getNormalUrl, options) {
+        const slot = stateAppearances[state]?.[tier]?.[pose];
+        if (typeof slot === 'string' && slot) {
+            const appearance = getAppearance(slot, options);
+            if (appearance.available) return appearance.url;
+        }
+        // The caller keeps ownership of the regular idle or hover selection.
+        return getNormalUrl();
+    }
+
     function normalizeResourcePath(value) {
         if (typeof value !== 'string' || !value) return '';
         try {
@@ -447,6 +475,9 @@
     global.NekoCatResourceRegistry = Object.freeze({
         selectedAppearanceGroupId,
         selectedVoiceGroupId,
+        defaultCatState,
+        stateAppearances,
+        resolveStateAppearanceUrl,
         getAppearanceForGroup,
         getAppearanceSlotForUrl,
         getAppearance,

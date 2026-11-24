@@ -1235,8 +1235,9 @@ def _ensure_googletrans() -> bool:
 
 
 # translate_text runs the first import in a worker thread, so two first translations can
-# race. Check, import and record under one lock: otherwise a transient failure in one
-# thread could overwrite another thread's success and pin TRANSLATEPY_AVAILABLE to False.
+# race. Check, import and record under one lock so the import runs once and the cached
+# globals are never half written. (A failed import still pins TRANSLATEPY_AVAILABLE to
+# False for the process, as before; translation then falls back to the LLM.)
 _translatepy_init_lock = threading.Lock()
 
 

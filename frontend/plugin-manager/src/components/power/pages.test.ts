@@ -115,6 +115,14 @@ describe('what a familiar asks the user', () => {
       words.ask.facts.used, words.ask.facts.more,
     ])
     expect(askLines({ category: 'brand_new' }, t, te)).toEqual(['brand_new'])
+    // A boss asking to summon a familiar that changes files: the kind of familiar by its name.
+    const summon = { category: 'open_session', detail: { tool: 'hand_over', title: 'general', preset: 'worker' } }
+    expect(askLines(summon, t, te)).toEqual([`${words.runtime.permissions.categories.open_session} · hand_over`])
+    expect(askFacts(summon, t, te)).toEqual([
+      { name: 'title', label: words.ask.facts.title, value: 'general' },
+      { name: 'preset', label: words.ask.facts.preset, value: words.home.presets.worker },
+    ])
+    expect(askFacts({ category: 'open_session', detail: { preset: 'translator' } }, t, te)[0].value).toBe('translator')
     expect(askFacts({ detail: { odd: 3, nested: { a: 1 }, empty: '' } }, t, te)).toEqual([{ name: 'odd', label: 'odd', value: '3' }])
     // In a list it is one short line.
     expect(askSummary(permission(), t, te).length).toBeLessThanOrEqual(80)
@@ -698,6 +706,21 @@ describe('the commissions', () => {
     expect(rows[1].textContent).toContain('310k')
     // Only the projects that are not put away are offered to keep to.
     expect([...byTest('commissions-project')!.querySelectorAll('option')].map(option => option.value)).toEqual(['', 'loose', 'p:Blog'])
+  })
+
+  it('names a member of a project by the project, then by its title or its kind', async () => {
+    const member = (id: string, name: string, preset: string, title = '') =>
+      row({ id, session_id: id, session: { name, kind: 'line', preset, title } })
+    api.listCommissions.mockResolvedValue({ commissions: [
+      member('m1', 'Blog', 'general'), member('m2', 'Blog/scout', 'scout'), member('m3', 'Blog', 'general', 'Keeper'),
+      row({ id: 'm4', project: null, session_id: 'm4', session: { name: 'Garden', kind: 'line', preset: 'general', title: '' } }),
+      row({ id: 'm5', session_id: 'm5' }),
+    ], more: false })
+    await mount(Commissions)
+    const doer = (id: string) => document.querySelector(`tr.row[data-commission="${id}"]`)!.querySelectorAll('td')[2].textContent
+    expect(['m1', 'm2', 'm3', 'm4', 'm5'].map(doer)).toEqual([
+      `Blog · ${words.home.presets.general}`, `Blog · ${words.home.presets.scout}`, 'Blog · Keeper', `Garden · ${words.home.presets.general}`, 'Blog',
+    ])
   })
 
   it('keeps to what is chosen', async () => {

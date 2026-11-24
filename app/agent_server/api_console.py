@@ -55,7 +55,7 @@ _SIZE_BUDGET_SECONDS = 1.5
 # MCP servers is not among them: it is shown with the servers (``/mcp``).
 _SHOWN_CATEGORIES: tuple[str, ...] = (
     "workdir_files", "outside_read", "outside_write", "run_command",
-    "keyboard_mouse", "browser", "plugin_entry", "managed_delivery", "other",
+    "keyboard_mouse", "browser", "plugin_entry", "managed_delivery", "other", "open_session",
 )
 _UNSET = object()
 # No setting of a page is a number beyond this; the largest number a row of the ledger is counted by.
@@ -696,8 +696,9 @@ def build_console_router(
             lanlan_name = await character() if character is not None else None
         host = await get_host()
         try:
+            # With no preset named, one that does the work: a boss only hands work on to the others.
             made = await host.open_session(
-                lanlan_name or "", fields["name"], preset=fields["preset"] or "boss", title=fields["title"],
+                lanlan_name or "", fields["name"], preset=fields["preset"] or "general", title=fields["title"],
                 duty=fields["duty"], description=fields["description"], workdir=workdir or None, rules=fields["rules"],
             )
         except ValueError as exc:
