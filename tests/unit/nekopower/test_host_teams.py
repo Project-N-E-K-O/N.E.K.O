@@ -1175,3 +1175,40 @@ async def test_an_inspector_that_cannot_be_stopped_keeps_the_changes_from_landin
         gone.set()
     assert await stopping
     hold.set()
+
+
+async def test_a_leader_is_told_which_of_its_team_came_to_nothing_before_a_worktree_was_made_for_it(hosts, tmp_path):
+    go = asyncio.Event()
+    lead = TeamLead(PARTS[:2])
+    host, trees, workdir = await _shop(hosts, tmp_path, _by_role(lead, _team_scripts(go)))
+    manager = host.task_agents
+    tree_to_work_in = manager._tree_to_work_in
+    started: list[str] = []
+
+    async def not_for_the_second(commission: Any, kept: Any, home: str, changes: bool) -> Any:
+        if commission.parent_id and commission.id not in started:
+            started.append(commission.id)
+        if started[1:] == [commission.id]:
+            # Its start comes to nothing before any worktree is tried for it (its model is not set up, say).
+            raise RuntimeError("its model is not set up")
+        return await tree_to_work_in(commission, kept, home, changes)
+
+    manager._tree_to_work_in = not_for_the_second
+    receipt = await _dispatch(host, TEAM)
+
+    async def formed() -> list[dict[str, Any]]:
+        return await _events(host, receipt.commission_id, "team_formed")
+
+    await wait_until(formed, what="the team being formed")
+    ((team,),) = (await formed(),)
+    # The one that never started is not of the team, though no worktree was ever tried and failed for it.
+    (member,) = team["members"]
+    assert member["commission_id"] == started[0] and await _events(host, started[1], "tree_not_made") == []
+    await wait_until(lambda: len(lead.requests) >= 2, what="the leader reading what start_team answered")
+    answered = [
+        message["content"] for request in lead.requests for message in request
+        if message.get("role") == "tool" and "Started: " in str(message.get("content"))
+    ]
+    assert answered and f"Started: {member['name']}." in answered[0] and " Not started: " in answered[0]
+    go.set()
+    await wait_status(host, receipt.commission_id, "done")

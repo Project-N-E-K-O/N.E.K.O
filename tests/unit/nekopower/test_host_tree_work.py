@@ -2840,14 +2840,16 @@ async def test_a_commission_is_not_put_down_as_done_under_a_run_that_began_as_it
     update_tree = host.ledger.update_tree
     began: list[Any] = []
     asking: list[Any] = []
+    held_until: list[bool] = []
     waiting = _waiting_for_its_end(manager)
 
     async def as_a_run_begins(tree_id: str, **values: Any) -> Any:
         if values.get("state") == "discarding" and not began:
             # Landed, and about to be put down as done: its runtime begins a run by itself at this very
             # moment (as when a command it left running ends), which nothing the host holds back stops.
+            # (Word of its start comes another way, and has not been taken in: the host has it as idle.)
             began.append(manager._sessions[two.commission_id])
-            began[0].idle = False
+            assert began[0].idle
             # It asks before its first request, as every run does, and is held there until the write is
             # through: it changes nothing in a worktree that is on record as one to remove.
             session_id = began[0].session_id
@@ -2855,6 +2857,10 @@ async def test_a_commission_is_not_put_down_as_done_under_a_run_that_began_as_it
             asking.append(asyncio.ensure_future(manager._pause_for_landing(session_id)))
             await wait_until(lambda: waiting, timeout=5, what="the run that began being held")
             assert not asking[0].done()
+        elif values.get("state") == "active" and asking and not held_until:
+            # Its worktree is put back on record as one it is at work in: the run is held until that is written.
+            await asyncio.sleep(0.05)
+            held_until.append(not asking[0].done())
         return await update_tree(tree_id, **values)
 
     host.ledger.update_tree = as_a_run_begins
@@ -2866,6 +2872,7 @@ async def test_a_commission_is_not_put_down_as_done_under_a_run_that_began_as_it
 
     await wait_until(at_work_again, what="the landing giving way")
     await asyncio.wait_for(asking[0], 5)
+    assert held_until == [True]
     # Landed, and neither done nor without its worktree: the run that began goes on in it.
     (tree,) = await host.ledger.trees()
     assert (await host.ledger.get(two.commission_id)).status == "working"
@@ -3503,7 +3510,8 @@ async def test_what_is_said_to_a_commission_while_its_changes_are_left_for_the_u
     await wait_until(lambda: len(stuck) == 2, what="it being done with what was said, and left for the user again")
     assert "and the footer too" in _said_to(members["broken links"])
     left = await wait_status(host, two.commission_id, "blocked")
-    assert "the footer too" in left.result_summary and manager._landing_ends == {}
+    await wait_until(lambda: not manager._landing_ends, what="what keeps back what is said to it being lifted")
+    assert "the footer too" in left.result_summary
     (tree,) = await host.ledger.trees()
     assert tree.state == "held" and len(await _events(host, two.commission_id, "landing_held")) == 2
 
@@ -3679,5 +3687,84 @@ async def test_what_was_being_said_to_a_commission_as_its_changes_began_to_be_le
     await wait_until(lambda: "and the footer too" in _said_to(members["broken links"]), what="its being told so")
     left = await wait_status(host, two.commission_id, "blocked")
     await wait_until(lambda: len(members["broken links"].requests) >= 3, what="its having gone on")
-    assert len(await _events(host, two.commission_id, "told")) == 2 and manager._landing_ends == {}
+    await wait_until(lambda: not manager._landing_ends, what="what keeps back what is said to it being lifted")
+    # (On record as said once: taken up again, it is not put on record a second time.)
+    assert len(await _events(host, two.commission_id, "told")) == 1
     del left
+
+
+async def test_what_is_said_to_a_commission_that_came_to_be_stuck_while_it_was_put_on_record_takes_it_up_again(hosts, tmp_path):
+    start, reached, go = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def wait_to_start() -> None:
+        await start.wait()
+
+    host, trees, _one, two, members, sent = await _said_as_its_end_is_written(
+        hosts, tmp_path,
+        [[wait_to_start, *_write("links.txt", "repaired")], _report("links repaired"), _report("the footer too")],
+    )
+    manager = host.task_agents
+    await host.set_landing_settings(mode="ask")
+    append, chosen, wrap_up = host.ledger.append_event, manager.landing.get, manager._wrap_up_in_tree
+    hold, writing = asyncio.Event(), asyncio.Event()
+    steered: list[bool] = []
+
+    async def before_it_is_left() -> Any:
+        reached.set()
+        await go.wait()
+        return await chosen()
+
+    async def slow_to_write(commission_id: str, kind: str, payload: Any = None) -> int:
+        if commission_id == two.commission_id and kind == "told" and not hold.is_set():
+            writing.set()
+            await hold.wait()
+        return await append(commission_id, kind, payload)
+
+    async def before_its_session_is_closed(commission_id: str) -> None:
+        if commission_id == two.commission_id and not hold.is_set():
+            # Stuck on record, and nothing keeps what is said back any more; its session is still open,
+            # a moment before it is closed. What was being said is on record now.
+            assert manager._landing_ends == {} and (await host.ledger.get(commission_id)).status == "blocked"
+            del sent[:]
+            hold.set()
+            await asyncio.sleep(0.05)
+            steered.append((two.commission_id, "steer") in sent)
+        await wrap_up(commission_id)
+
+    manager.landing.get = before_it_is_left
+    host.ledger.append_event = slow_to_write
+    manager._wrap_up_in_tree = before_its_session_is_closed
+    host.release.set()
+    start.set()
+    await asyncio.wait_for(reached.wait(), 15)
+    saying = asyncio.ensure_future(manager.tell(two.commission_id, "and the footer too"))
+    await asyncio.wait_for(writing.wait(), 5)
+    go.set()
+
+    # Not steered into the session that is about to be closed: it takes the commission up again, said once.
+    assert await asyncio.wait_for(saying, 15) is True
+    await wait_until(lambda: steered, what="its session being seen to")
+    assert steered == [False]
+    await wait_until(lambda: "and the footer too" in _said_to(members["broken links"]), what="its being told so")
+    await wait_until(lambda: len(members["broken links"].requests) >= 3, what="its having gone on")
+    await wait_status(host, two.commission_id, "blocked")
+    assert len(await _events(host, two.commission_id, "told")) == 1
+
+
+async def test_nothing_is_handed_on_to_a_commission_that_is_over_while_its_session_is_still_open(hosts, tmp_path):
+    host, trees, workdir, one, two, _members = await _two_members(
+        hosts, tmp_path, second=[_write("links.txt", "repaired"), _report("links repaired")]
+    )
+    manager = host.task_agents
+    await wait_until(lambda: two.commission_id in manager._tree_of, what="it having its worktree")
+    live = manager._sessions[two.commission_id]
+    stands, place = await host.ledger.get(two.commission_id), await host.ledger.get_session(live.session_id)
+    was = live.stands
+    # As a landing leaves it once its changes are left for the user: stuck on record, its session not closed yet.
+    live.stands = dataclasses.replace(stands, status="blocked")
+    try:
+        assert (await manager._hand_to(stands, place, [])).outcome == "held"
+    finally:
+        live.stands = was
+    host.release.set()
+    await wait_status(host, two.commission_id, "done")

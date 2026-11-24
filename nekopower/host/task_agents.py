@@ -6507,8 +6507,14 @@ class TaskAgentManager(TreeWork):
         # Closing stops the run, kills its background jobs and frees the place.
         await self._close_session(session)
 
-    async def tell(self, commission_id: str, text: str, *, still_wanted: Callable[[], bool] | None = None) -> bool:
+    async def tell(
+        self, commission_id: str, text: str, *, still_wanted: Callable[[], bool] | None = None, recorded: bool = False
+    ) -> bool:
         """Pass a sentence on to a commission's task agent. Returns whether it was delivered.
+
+        ``recorded``: it is on record as said already (it was being
+        passed on as the commission came to be stuck, and takes it up
+        again now), and is not put on record a second time.
 
         ``still_wanted``, when given, is asked before a commission that is
         blocked or failed is taken up again, after whatever that had to
@@ -6554,13 +6560,14 @@ class TaskAgentManager(TreeWork):
                 # back what it was to bring: this is said once that is
                 # through, and brings that itself (``_back_from_copy``).
                 await asyncio.wait([called_off])
-                return await self.tell(commission_id, text, still_wanted=still_wanted)
+                return await self.tell(commission_id, text, still_wanted=still_wanted, recorded=recorded)
             # One that ended in a copy carried it on in is taken up in the
             # session itself, told what came of it in the copy.
             from_copy = await self._back_from_copy(commission)
             if still_wanted is not None and not still_wanted():
                 return False
-            await self._ledger.append_event(commission_id, "told", {"text": text, "resumed": True})
+            if not recorded:
+                await self._ledger.append_event(commission_id, "told", {"text": text, "resumed": True})
             # Should it open a session with nothing said in it (its start
             # failed before, or what was said was removed, being old), it is
             # handed what was said in the main dialogue just before this:
@@ -6621,18 +6628,19 @@ class TaskAgentManager(TreeWork):
                 # Its leader handed it over while that was written.
                 self._said_while_handed[commission_id].append(text)
                 return True
-            while commission_id in self._landing_ends:
-                # A landing began to put it down as done while that was written: as above, and
-                # nothing is awaited between the last look and the text being sent.
-                await self._landing_end_written(commission_id)
-                now = await self._ledger.get(commission_id)
-                if now is not None and now.status in ("blocked", "failed"):
-                    # What it changed was left for the user meanwhile, and it is stuck over that:
-                    # taken up again with this, as what is said to any that is stuck (and on
-                    # record once more as said).
-                    return await self.tell(commission_id, text, still_wanted=still_wanted)
-                if now is None or now.status != "working" or self._sessions.get(commission_id) is not session or session.closing:
-                    return False
+            # A landing may be writing how it ends this moment (as above), or the commission may
+            # have come to an end while that was put on record, its session not yet on its way
+            # out: gone by how it stands now, with nothing awaited between this look and the text
+            # being sent.
+            await self._landing_end_written(commission_id)
+            stands = session.stands
+            if stands is not None and stands.status in ("blocked", "failed"):
+                # Stuck meanwhile (what it changed was left for the user, say): taken up again
+                # with this, as what is said to any that is stuck. It is on record already.
+                return await self.tell(commission_id, text, still_wanted=still_wanted, recorded=True)
+            if stands is not None and stands.status in ENDED_STATUSES:
+                # Over: steered in, it would start a run in a session that is about to be closed.
+                return False
             if self._sessions.get(commission_id) is not session:
                 moved = await self._ledger.get(commission_id)
                 if moved is not None and moved.handed_by and moved.session_id != session.session_id:
@@ -8472,6 +8480,9 @@ class TaskAgentManager(TreeWork):
                 # sender be told what it stopped with. Once it is over, a
                 # commission of its own is filed for the note.
                 or live.wind_up_left is not None
+                # Its commission is over on record, and its session is
+                # about to be closed (a moment before that is begun).
+                or (live.stands is not None and live.stands.status in ENDED_STATUSES)
             )
 
         def way() -> str:

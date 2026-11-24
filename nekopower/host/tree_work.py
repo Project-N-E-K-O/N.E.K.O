@@ -1269,7 +1269,15 @@ class TreeWork:
         # A landing is writing how its commission ends this moment, and this is a run its runtime
         # began by itself meanwhile (nothing else of the host's begins one then): asked on once
         # that is written, so that it changes nothing in a worktree on record as one to remove.
-        await self._landing_end_written(self._at_work_in(session_id))
+        commission_id = self._at_work_in(session_id)
+        if commission_id in self._landing_ends:
+            live = self._sessions.get(commission_id)
+            if live is not None:
+                # A run that asks is under way, whether or not word of its start has been taken in
+                # (that comes another way, and may come after): the landing sees it as more that
+                # began (``_stale``), keeps the worktree, and lets it go on.
+                live.idle = False
+            await self._landing_end_written(commission_id)
         where = self._writes_in.get(session_id)
         quiet = self._quiet.get(where[0]) if where is not None else None
         if quiet is None or quiet.go.is_set():
@@ -1403,8 +1411,8 @@ class TreeWork:
             # awaited since), and nothing more is from here until its end is written
             # (``_nothing_more_said``). Its worktree is put down as one to remove only with that
             # in place: no run begins, or goes on, in one that a host that starts would remove.
-            try:
-                with self._nothing_more_said(commission_id):
+            with self._nothing_more_said(commission_id):
+                try:
                     if not result.skipped:
                         # On record as one to remove from here on (what it held is landed): shown nowhere,
                         # in nobody's way, and removed as the host next starts should it end this moment.
@@ -1417,13 +1425,15 @@ class TreeWork:
                         suggested_delivery=done.delivery, result_summary=self._summary(text),
                         unless=lambda: self._stale(commission_id, done),
                     )
-            except BaseException:
-                self._dones.pop(commission_id, None)
-                await self._seen_to_once_landed(row, handle, result)
-                raise
-            if not ended and self._stale(commission_id, done):
-                await self._ledger.update_tree(row.id, state="active")
-                return "again"
+                except BaseException:
+                    self._dones.pop(commission_id, None)
+                    await self._seen_to_once_landed(row, handle, result)
+                    raise
+                if not ended and self._stale(commission_id, done):
+                    # Back on record as one it is at work in before whoever waits goes on: that run
+                    # changes nothing in a worktree that is still on record as one to remove.
+                    await self._ledger.update_tree(row.id, state="active")
+                    return "again"
             self._dones.pop(commission_id, None)
             await self._seen_to_once_landed(row, handle, result)
             await self._wrap_up_in_tree(commission_id)
@@ -2459,7 +2469,7 @@ class TreeWork:
         return {"message": message, "started": [item["name"] for item in started]}
 
     async def _got_no_tree(self, commission_ids: list[str], seconds: float) -> dict[str, str]:
-        """Wait until each of a team's task agents has its worktree or is over; return why, for those that got none.
+        """Wait until each of a team's task agents that change files has its worktree or is over; return why, for those that got none.
 
         No longer than ``seconds``: one still being started by then
         counts as started, and its parent hears of it as of any that
@@ -2476,7 +2486,9 @@ class TreeWork:
                 stands = await self._ledger.get(item)
                 if stands is None or stands.status in ENDED_STATUSES:
                     waiting.remove(item)
-                    if stands is not None and await self._ledger.has_event(item, "tree_not_made"):
+                    if stands is not None and not await self._ledger.has_event(item, "tree_made"):
+                        # Over with no worktree ever made for it: none could be made, or its start
+                        # came to nothing before that. (One that was at work and is done has had one.)
                         without[item] = stands.status_reason or "no worktree could be made for it"
             if not waiting or time.monotonic() >= deadline:
                 break
