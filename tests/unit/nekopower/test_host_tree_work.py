@@ -2751,3 +2751,33 @@ async def test_a_commission_is_not_put_down_as_done_under_a_run_that_began_as_it
     manager._stale = stale
     await wait_status(host, two.commission_id, "done")
     assert await host.ledger.trees() == [] and trees.removed == [tree.id]
+
+
+async def test_what_is_left_of_a_discarded_worktree_and_cannot_be_removed_now_is_removed_later(hosts, tmp_path, monkeypatch):
+    from nekopower.host import tree_work
+
+    clash = MergeResult("conflict", conflicts=("links.txt",))
+    host, trees, workdir, two, _members, _stuck = await _not_landed(hosts, tmp_path, [clash] * 4, turns=4)
+    (tree,) = await host.ledger.trees()
+    manager = host.task_agents
+    path = Path(tree.path)
+    (path / ".git").write_text(f"gitdir: {workdir.as_posix()}/.git/worktrees/{tree.id}\n", encoding="utf-8")
+    shutil.rmtree(workdir)
+    manager._trees_mine.clear()
+    manager._tree_handles.clear()
+    trees.fail_open = True
+    # A file of it is in use: nothing of it goes this time.
+    rmtree = shutil.rmtree
+    monkeypatch.setattr(tree_work.shutil, "rmtree", lambda *_args, **_kwargs: None)
+
+    assert await host.discard_worktree(tree.id) == {"removed": False}
+    # Still the worktree's own directory: on record as one to remove, shown nowhere.
+    assert (await host.ledger.get_tree(tree.id)).state == "discarding" and path.is_dir()
+    assert await host.worktrees() == [] and (await host.ledger.get(two.commission_id)).status == "cancelled"
+    assert await manager.reconcile_trees() == {"removed": [], "kept": []}
+    assert (await host.ledger.get_tree(tree.id)).state == "discarding"
+
+    # As the host next starts, with the file let go of: removed, with its record.
+    monkeypatch.setattr(tree_work.shutil, "rmtree", rmtree)
+    assert await manager.reconcile_trees() == {"removed": [tree.id], "kept": []}
+    assert await host.ledger.trees() == [] and not path.exists()

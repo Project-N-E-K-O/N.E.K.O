@@ -419,20 +419,25 @@ class TreeWork:
         except Exception:  # noqa: BLE001 - not known: taken for one that is there
             return False
 
-    async def _remove_what_is_left(self, row: Tree) -> bool:
-        """Remove the directory of a worktree git no longer knows (its repository is gone); returns whether it went.
+    async def _remove_what_is_left(self, row: Tree) -> bool | None:
+        """Remove the directory of a worktree git no longer knows (its repository is gone).
 
-        Only one that still says it is that worktree (the ``.git`` file
-        git put into it names it): another directory put in its place
-        since is not what the user discarded, and is left where it is.
+        Returns whether it went; None for a directory that is not the
+        worktree's any more, which is left where it is. Only one that
+        still says it is that worktree is removed (the ``.git`` file git
+        put into it names it): another directory put in its place since
+        is not what the user discarded.
         """
         base, path = self._paths.worktrees_dir(), Path(row.path)
 
-        def remove() -> None:
-            if _same_dir(str(path.parent), str(base)) and _says_it_is(path, row.id):
-                shutil.rmtree(path, True)
+        def remove() -> bool:
+            if not (_same_dir(str(path.parent), str(base)) and _says_it_is(path, row.id)):
+                return False
+            shutil.rmtree(path, True)
+            return True
 
-        await asyncio.to_thread(remove)
+        if not await asyncio.to_thread(remove):
+            return None
         return await self._tree_is_gone(row)
 
     @staticmethod
@@ -538,11 +543,13 @@ class TreeWork:
             # A directory is there that git does not open as this worktree (half removed, or
             # another put in its place since): not known to be what was discarded, and left
             # alone, to be tried again when the host next starts. Unless the repository itself
-            # is gone: git never opens it again. What still says it is that worktree is removed,
-            # and the record goes either way (anything else there is not the host's).
+            # is gone: git never opens it again. What still says it is that worktree is removed
+            # (tried again the next time where a file of it is in use); anything else there is
+            # not the host's, and only the record goes.
             if not await self._repository_gone(row):
                 return False
-            await self._remove_what_is_left(row)
+            if await self._remove_what_is_left(row) is False:
+                return False
         self._forget_tree(row)
         await self._ledger.drop_tree(row.id)
         return True
@@ -1835,7 +1842,6 @@ class TreeWork:
         the host next starts. Raises as ``land_tree``.
         """
         async with self._tree_in_hand(tree_id, TREE_STATES_LEFT) as row:
-            left = False
             handle = await self._handle_of(row)
             if handle is None and not await self._tree_is_gone(row):
                 if not await self._repository_gone(row):
@@ -1843,9 +1849,20 @@ class TreeWork:
                     raise ValueError("not_opened")
                 # Its repository is gone (moved, or removed): git never opens it again. What the
                 # user discards is the directory the host made for it, where it still says it is
-                # that; the record goes either way.
-                left = not await self._remove_what_is_left(row)
-            removed = await self._remove_tree(row, handle, discarded=True) and not left
+                # that. One that could not be removed now (a file of it is in use) stays on record
+                # as one to remove; a directory that is not the worktree's any more is left alone,
+                # and only the record goes.
+                went = await self._remove_what_is_left(row)
+                self._forget_tree(row)
+                self._tree_handles.pop(row.id, None)
+                self._trees_mine.discard(row.id)
+                if went is False:
+                    await self._ledger.update_tree(row.id, state="discarding", reason="")
+                else:
+                    await self._ledger.drop_tree(row.id)
+                removed = went is True
+            else:
+                removed = await self._remove_tree(row, handle, discarded=True)
             await self._note_tree_event(row.commission_id, "tree_discarded", {"tree": row.id, "path": row.workdir})
             # (Read as it is settled: its commission may have gone on in another worktree meanwhile.)
             stuck = self._stuck_over(row, await self._ledger.get(row.commission_id) if row.commission_id else None)
