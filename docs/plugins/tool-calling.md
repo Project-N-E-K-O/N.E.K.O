@@ -145,7 +145,10 @@ are guarded by `verify_local_access` (only `127.0.0.1` / `::1` /
 `NEKO_ACTIVITY_TRACKER_REMOTE` is enabled, external loopback callers must
 also include valid instance credentials (such as
 `Authorization: Bearer <instance_key>` from `NEKO_INSTANCE_ACCESS_KEY` or
-`instance_access.key`), otherwise requests fail with HTTP `401`.
+`instance_access.key`), otherwise requests fail with HTTP `401`. If
+`NEKO_REQUIRE_HTTPS` is also enabled, plaintext `http://` requests fail with
+HTTP `401` even with a valid key unless sent over HTTPS (or behind a proxy
+whose `Host` matches an `https://` `NEKO_INSTANCE_PUBLIC_ORIGIN`).
 
 ### `POST /api/tools/register`
 
@@ -280,6 +283,7 @@ import logging
 import os
 import httpx
 
+# Use https:// when NEKO_REQUIRE_HTTPS is enabled without a matching https:// NEKO_INSTANCE_PUBLIC_ORIGIN
 MAIN_SERVER = "http://127.0.0.1:48911"
 MY_PORT = 9876
 TOOL_NAME = "get_weather"
@@ -303,7 +307,7 @@ async def register_with_retry():
         "timeout_seconds": 30,
     }
     headers = {"Authorization": f"Bearer {INSTANCE_KEY}"} if INSTANCE_KEY else {}
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(trust_env=False) as client:
         while True:
             try:
                 r = await client.post(f"{MAIN_SERVER}/api/tools/register",
@@ -317,16 +321,20 @@ async def register_with_retry():
                 pass  # main_server isn't up yet, try again later
             await asyncio.sleep(2)
 
-async def unregister_on_shutdown():
+async def unregister_on_shutdown() -> bool:
     """Call before exit: unregister so the LLM doesn't hit a dead callback_url."""
     headers = {"Authorization": f"Bearer {INSTANCE_KEY}"} if INSTANCE_KEY else {}
     try:
-        async with httpx.AsyncClient(timeout=2) as client:
-            await client.post(f"{MAIN_SERVER}/api/tools/unregister",
-                              json={"name": TOOL_NAME, "role": None},
-                              headers=headers)
+        async with httpx.AsyncClient(timeout=2, trust_env=False) as client:
+            r = await client.post(f"{MAIN_SERVER}/api/tools/unregister",
+                                  json={"name": TOOL_NAME, "role": None},
+                                  headers=headers)
+            if r.status_code in (401, 403):
+                logging.error("Tool unregistration rejected with HTTP %s: %s", r.status_code, r.text)
+                return False
+            return r.is_success
     except Exception:
-        pass  # main_server is down too — nothing we can do
+        return False  # main_server is down too — nothing we can do
 ```
 
 Do not wire this into a `NekoPluginBase` plugin. Lifecycle methods run

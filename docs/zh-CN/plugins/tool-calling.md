@@ -119,7 +119,10 @@ HTTP 调用；main_server 的 dispatch 也走同一套 IPC trigger 管线（与
 （仅允许 `127.0.0.1` / `::1` / `localhost`）。启用 `NEKO_BEHIND_PROXY` 或
 `NEKO_ACTIVITY_TRACKER_REMOTE` 时，本机回环外部调用方同样需要携带有效的实例凭据
 （例如来自 `NEKO_INSTANCE_ACCESS_KEY` 或 `instance_access.key` 的
-`Authorization: Bearer <instance_key>`），否则请求会返回 HTTP `401`。
+`Authorization: Bearer <instance_key>`），否则请求会返回 HTTP `401`。如果同时启用了
+`NEKO_REQUIRE_HTTPS`，即使密钥有效，明文 `http://` 请求也会被 HTTP `401`
+拒绝，必须通过 HTTPS 连接（或在反代后且 `Host` 匹配 `https://` 的
+`NEKO_INSTANCE_PUBLIC_ORIGIN`）。
 
 ### `POST /api/tools/register`
 
@@ -238,6 +241,7 @@ import logging
 import os
 import httpx
 
+# 若启用了 NEKO_REQUIRE_HTTPS 且没有匹配的 https:// NEKO_INSTANCE_PUBLIC_ORIGIN，请改用 https://
 MAIN_SERVER = "http://127.0.0.1:48911"
 MY_PORT = 9876
 TOOL_NAME = "get_weather"
@@ -260,7 +264,7 @@ async def register_with_retry():
         "timeout_seconds": 30,
     }
     headers = {"Authorization": f"Bearer {INSTANCE_KEY}"} if INSTANCE_KEY else {}
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(trust_env=False) as client:
         while True:
             try:
                 r = await client.post(f"{MAIN_SERVER}/api/tools/register",
@@ -274,16 +278,20 @@ async def register_with_retry():
                 pass  # main_server 还没起，等等再来
             await asyncio.sleep(2)
 
-async def unregister_on_shutdown():
+async def unregister_on_shutdown() -> bool:
     """退出前调用：撤销工具，避免 LLM 撞到死掉的 callback_url。"""
     headers = {"Authorization": f"Bearer {INSTANCE_KEY}"} if INSTANCE_KEY else {}
     try:
-        async with httpx.AsyncClient(timeout=2) as client:
-            await client.post(f"{MAIN_SERVER}/api/tools/unregister",
-                              json={"name": TOOL_NAME, "role": None},
-                              headers=headers)
+        async with httpx.AsyncClient(timeout=2, trust_env=False) as client:
+            r = await client.post(f"{MAIN_SERVER}/api/tools/unregister",
+                                  json={"name": TOOL_NAME, "role": None},
+                                  headers=headers)
+            if r.status_code in (401, 403):
+                logging.error("Tool unregistration rejected with HTTP %s: %s", r.status_code, r.text)
+                return False
+            return r.is_success
     except Exception:
-        pass  # main_server 也死了就算了
+        return False  # main_server 也死了就算了
 ```
 
 不要把它接到 `NekoPluginBase` 插件里。生命周期方法只有加了 `@lifecycle(id=...)`
