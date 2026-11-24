@@ -824,3 +824,129 @@ async def test_cancelling_recall_during_bm25_cancels_the_cosine_task(tmp_path):
             task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+
+# ── recall pool preparation ─────────────────────────────────────────────
+
+
+def _legacy_prepare_pools(active_facts, active_reflections, archive_facts, persona_left_out,
+                          *, lanlan_name, subjects, include_legacy_private, time_window):
+    """``hybrid_recall``'s inline pool preparation before it moved off-loop, verbatim."""
+    from memory.recall import MemoryRecallReranker
+    from memory.scopes import filter_entries_for_subjects
+
+    archive_facts = hr._drop_archive_overlap(archive_facts or [], active_facts, lanlan_name)
+    facts_tagged = hr._tag_tier(active_facts, 'fact')
+    refl_tagged = hr._tag_tier(active_reflections, 'reflection')
+    arch_tagged = hr._tag_tier(archive_facts, 'fact_archive')
+    persona_tagged = hr._tag_tier(persona_left_out, 'persona')
+    facts_tagged = filter_entries_for_subjects(facts_tagged, subjects, include_legacy_private=include_legacy_private)
+    refl_tagged = filter_entries_for_subjects(refl_tagged, subjects, include_legacy_private=include_legacy_private)
+    arch_tagged = filter_entries_for_subjects(arch_tagged, subjects, include_legacy_private=include_legacy_private)
+    persona_tagged = filter_entries_for_subjects(persona_tagged, subjects, include_legacy_private=include_legacy_private)
+    if time_window is not None:
+        ws, we = time_window
+        facts_tagged = [d for d in facts_tagged if hr._overlaps_window(d, ws, we)]
+        refl_tagged = [d for d in refl_tagged if hr._overlaps_window(d, ws, we)]
+        arch_tagged = [d for d in arch_tagged if hr._overlaps_window(d, ws, we)]
+        persona_tagged = [d for d in persona_tagged if hr._overlaps_window(d, ws, we)]
+    bm25_pool_raw = facts_tagged + refl_tagged + arch_tagged + persona_tagged
+    embedding_pool_raw = facts_tagged + refl_tagged + persona_tagged
+    return (
+        MemoryRecallReranker._hard_filter(bm25_pool_raw),
+        MemoryRecallReranker._hard_filter(embedding_pool_raw),
+    )
+
+
+def _pool_rows(seed):
+    """Facts / reflections / archive / persona rows mixing every branch the
+    preparation takes: scopes, archive overlap, time stamps, hard-filter drops."""
+    from datetime import datetime, timedelta
+
+    from memory.scopes import MemorySubject
+
+    rng = np.random.default_rng(seed)
+    group = MemorySubject.group_chat("qq", "7788").as_entry_fields()
+    member = MemorySubject.participant("discord", "alice").as_entry_fields()
+    base = datetime(2026, 11, 1)
+
+    def row(prefix, i):
+        r = {"id": f"{prefix}{i}", "text": f"{prefix} 记忆 {i}", "score": 1.0}
+        pick = int(rng.integers(0, 9))
+        if pick == 0:
+            r.update(group)
+        elif pick == 1:
+            r.update(member)
+        elif pick == 2:
+            r["subject_kind"] = "group_chat"  # malformed partial scope
+        elif pick == 3:
+            r["score"] = -1.0
+        elif pick == 4:
+            r["suppressed"] = True
+        elif pick == 5:
+            r["protected"] = True
+        elif pick == 6:
+            r["text"] = "   "
+        if rng.random() < 0.7:
+            start = base + timedelta(days=int(rng.integers(0, 30)))
+            r["event_start_at"] = start.isoformat()
+            r["event_end_at"] = (start + timedelta(days=int(rng.integers(0, 3)))).isoformat()
+        return r
+
+    facts = [row("f", i) for i in range(40)]
+    reflections = [dict(row("r", i), status=s) for i, s in zip(range(20), ["pending", "denied", "confirmed", "merged"] * 5)]
+    archive = [row("a", i) for i in range(30)] + [dict(facts[i]) for i in range(0, 40, 7)]
+    persona = [row("p", i) for i in range(15)]
+    return facts, reflections, archive, persona, group, member
+
+
+@pytest.mark.parametrize("seed", range(4))
+@pytest.mark.parametrize("scenario", ["private", "group", "group+legacy", "window", "group+window"])
+def test_prepare_recall_pools_matches_inline_preparation(seed, scenario):
+    from datetime import datetime
+
+    from memory.scopes import MemorySubject
+
+    facts, reflections, archive, persona, _g, _m = _pool_rows(seed)
+    subjects = None
+    include_legacy = None
+    window = None
+    if "group" in scenario:
+        subjects = [MemorySubject.group_chat("qq", "7788")]
+    if "legacy" in scenario:
+        include_legacy = True
+    if "window" in scenario:
+        window = (datetime(2026, 11, 8), datetime(2026, 11, 20))
+    kwargs = dict(lanlan_name="parity", subjects=subjects,
+                  include_legacy_private=include_legacy, time_window=window)
+    expected = _legacy_prepare_pools(facts, reflections, archive, persona, **kwargs)
+    got = hr._prepare_recall_pools(facts, reflections, archive, persona, **kwargs)
+    assert got == expected
+    assert expected[0], "fixture should leave a keyword pool"
+    # Rows handed onward are private copies, never the stores' own dicts.
+    store_ids = {id(r) for r in facts + reflections + archive + persona}
+    assert not any(id(r) in store_ids for pool in got for r in pool)
+
+
+@pytest.mark.asyncio
+async def test_hybrid_recall_prepares_pools_off_the_event_loop(tmp_path):
+    facts = [{"id": f"k{i}", "text": f"博士喜欢猫 第{i}条", "score": 1.0} for i in range(5)]
+    fact_store, reflection_engine = _keyword_stores(tmp_path, facts)
+    loop_thread = threading.get_ident()
+    seen = []
+    real = hr._prepare_recall_pools
+
+    def spy(*args, **kwargs):
+        seen.append(threading.get_ident())
+        return real(*args, **kwargs)
+
+    hr._invalidate_pool_cache()
+    with patch.object(hr, "_cosine_rank", AsyncMock(return_value=[])), \
+         patch.object(hr, "HYBRID_RECALL_BM25_THRESHOLD", 0.0), \
+         patch.object(hr, "_prepare_recall_pools", spy):
+        result = await hr.hybrid_recall(
+            lanlan_name="parity", query="博士 猫", fact_store=fact_store,
+            reflection_engine=reflection_engine, config_manager=MagicMock(),
+        )
+    assert seen and all(t != loop_thread for t in seen)
+    assert result["results"]
