@@ -34,6 +34,7 @@ from .api_shared import (  # noqa: F401
     _browser_dependency_status,
     _browser_availability,
     _refresh_tool_capabilities,
+    _refresh_tool_capabilities_and_tell,
     _keyboard_mouse_availability,
     _model_images_status,
     _bump_state_revision,

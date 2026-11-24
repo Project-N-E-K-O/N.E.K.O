@@ -2378,8 +2378,10 @@ def test_agent_command_set_agent_enabled_reports_free_version_and_refreshes_capa
     assert 'command == "set_agent_enabled"' in func_src
     assert "gate = _check_agent_api_gate()" in func_src
     # Whether the tools can be used is worked out from the configuration and
-    # this computer; nothing is sent to the agent model to find it out.
-    assert "await _refresh_tool_capabilities()" in func_src
+    # this computer, in the background after the request's own writes;
+    # nothing is sent to the agent model to find it out.
+    assert "_create_tracked_task(_refresh_tool_capabilities_and_tell(lanlan_name))" in func_src
+    assert "await _refresh_tool_capabilities()" not in func_src
     assert "model_probe" not in func_src and "connectivity_check" not in func_src
     assert 'first_reason = (gate.get("reasons") or ["AGENT_ENDPOINT_NOT_CONFIGURED"])[0]' in func_src
     assert '_set_capability("computer_use", False, first_reason)' in func_src

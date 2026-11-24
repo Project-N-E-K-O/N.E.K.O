@@ -37,6 +37,7 @@ from .api_shared import (  # noqa: F401
     _model_images_status,
     _put_switch_off,
     _refresh_tool_capabilities,
+    _refresh_tool_capabilities_and_tell,
     _set_capability,
     app,
     asyncio,
@@ -493,16 +494,17 @@ async def agent_command(payload: Dict[str, Any]):
         # reading.
         persist_intent = bool((payload or {}).get("_persist_intent", True))
         gate = _check_agent_api_gate()
+        refresh_tools = False
         if enabled:
             Modules.analyzer_enabled = True
             Modules.analyzer_profile = (payload or {}).get("profile", {}) or {}
             if gate.get("ready") is True:
                 # From the configuration and this computer alone: the agent
-                # model is not asked anything.
-                try:
-                    await _refresh_tool_capabilities()
-                except Exception as exc:  # noqa: BLE001 - the tools stay as they were; the switch still comes on
-                    logger.warning("[Agent] Working out whether the tools can be used failed: %s", exc)
+                # model is not asked anything. In the background, as the
+                # last thing this request starts: nothing here waits on it,
+                # so no later request (the plugins switched off, the master
+                # switched off) can be overtaken by this one's writes.
+                refresh_tools = True
             else:
                 first_reason = (gate.get("reasons") or ["AGENT_ENDPOINT_NOT_CONFIGURED"])[0]
                 _set_capability("computer_use", False, first_reason)
@@ -556,6 +558,8 @@ async def agent_command(payload: Dict[str, Any]):
                 logger.warning("[Agent] Failed to persist analyzer_enabled intent: %s", exc)
         _bump_state_revision()
         await _emit_agent_status_update(lanlan_name=lanlan_name)
+        if refresh_tools:
+            _create_tracked_task(_refresh_tool_capabilities_and_tell(lanlan_name))
         total_ms = round((time.perf_counter() - t0) * 1000, 2)
         logger.info("[AgentTiming] request_id=%s command=%s total_ms=%s", request_id, command, total_ms)
         return {

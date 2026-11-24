@@ -146,6 +146,17 @@ async def _refresh_tool_capabilities() -> None:
     _set_capability("browser_use", browser_ready, browser_reason)
 
 
+async def _refresh_tool_capabilities_and_tell(lanlan_name: Optional[str] = None) -> None:
+    """``_refresh_tool_capabilities`` in the background, then the status is sent; never raises."""
+    try:
+        await _refresh_tool_capabilities()
+    except Exception as exc:  # noqa: BLE001 - the tools stay as they were
+        logger.warning("[Agent] Working out whether the tools can be used failed: %s", exc)
+        return
+    _bump_state_revision()
+    await _emit_agent_status_update(lanlan_name=lanlan_name)
+
+
 async def _model_images_status() -> Dict[str, Any]:
     """Return whether the agent model is sent pictures and, if it is not, why and until when.
 

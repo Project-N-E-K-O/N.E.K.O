@@ -979,8 +979,13 @@ async def test_an_input_that_is_too_long_is_not_taken_for_a_refusal_of_its_pictu
         ("APIStatusError: Error code: 403 - {'code': 'Arrearage', 'message': 'Access denied, please make sure your account is in good standing.'}", "model_quota"),
         ("RateLimitError: Error code: 429 - {'error': {'type': 'exceeded_current_quota_error'}}", "model_quota"),
         ("APIStatusError: Error code: 429 - {'error': {'code': '1113', 'message': '余额不足或无可用资源包,请充值。'}}", "model_quota"),
+        ("APIStatusError: Error code: 403 - {'error': {'message': 'Quota exceeded for this project.'}}", "model_quota"),
         # A rate limit is not a quota used up: trying again shortly helps.
         ("RateLimitError: Error code: 429 - {'error': {'message': 'Rate limit reached for requests, try again in 20s'}}", None),
+        # Nor is a short-term limit worded as a quota.
+        ("RateLimitError: Error code: 429 - quota exceeded for this minute", None),
+        ("RateLimitError: Error code: 429 - RESOURCE_EXHAUSTED: Quota exceeded for metric 'requests per minute'", None),
+        ("RateLimitError: Error code: 429 - TPM quota exceeded, retry after 3s", None),
         # A refusal for where the request came from is not about the key.
         ("PermissionDeniedError: Error code: 403 - {'error': {'code': 'unsupported_country_region_territory'}}", None),
         ("APIConnectionError: Connection error.", None),

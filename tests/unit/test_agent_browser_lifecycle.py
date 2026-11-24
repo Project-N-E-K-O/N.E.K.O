@@ -498,6 +498,15 @@ async def test_a_cancelled_close_settles_nothing_and_the_browser_can_be_closed_a
 # ---------------------------------------------------------------------------
 
 
+async def _background_done(modules: Any) -> None:
+    """Let what a request left to the background run to its end."""
+    for _ in range(3):
+        pending = [task for task in list(modules._background_tasks) if not task.done()]
+        if pending:
+            await asyncio.wait(pending, timeout=10.0)
+        await asyncio.sleep(0)
+
+
 def _keyboard(monkeypatch: pytest.MonkeyPatch, *, ready: bool, reasons: list[str] | None = None) -> list[int]:
     asked: list[int] = []
 
@@ -582,13 +591,50 @@ async def test_switching_the_master_switch_on_says_at_once_whether_the_tools_can
     modules.analyzer_enabled = False
 
     result = await api_routes.agent_command({"command": "set_agent_enabled", "enabled": True, "_persist_intent": False})
+    await _background_done(modules)
 
     assert result["success"] is True and modules.analyzer_enabled is True
-    # Worked out before the answer, from what is filled in and what is on this computer.
+    # Worked out right after, from what is filled in and what is on this computer.
     assert modules.capability_cache["computer_use"] == {"ready": True, "reason": ""}
     assert modules.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_BROWSER_NOT_FOUND"}
     # The agent model was asked nothing.
     assert checks == []
+
+
+async def test_switching_the_master_switch_on_waits_for_nothing_so_a_later_request_is_not_overtaken(
+    modules, search, browser, checks, monkeypatch
+):
+    import threading
+
+    release = threading.Event()
+
+    def slow_keyboard() -> dict[str, Any]:
+        # Importing pyautogui the first time can take a while.
+        release.wait(5.0)
+        return {"enabled": True, "ready": True, "reasons": [], "provider": "nekopower", "model": "m"}
+
+    async def started_ok(*_args: Any, **_kwargs: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(capabilities, "_keyboard_mouse_availability", slow_keyboard)
+    monkeypatch.setattr(api_routes, "_ensure_plugin_lifecycle_started", started_ok)
+    monkeypatch.setattr(api_routes, "_ensure_plugin_lifecycle_stopped", started_ok)
+    monkeypatch.setattr(modules, "user_plugin_lifecycle_seq", modules.user_plugin_lifecycle_seq)
+    modules.analyzer_enabled = False
+    try:
+        # The answer does not wait for the tools to be worked out.
+        await asyncio.wait_for(
+            api_routes.agent_command({"command": "set_agent_enabled", "enabled": True, "_persist_intent": False}), 2.0
+        )
+        assert modules.agent_flags["user_plugin_enabled"] is True
+        # The plugins are switched off while that is still under way: it stays off.
+        await api_routes.set_agent_flags({"user_plugin_enabled": False, "_persist_intent": False})
+    finally:
+        release.set()
+    await _background_done(modules)
+
+    assert modules.agent_flags["user_plugin_enabled"] is False
+    assert modules.capability_cache["computer_use"] == {"ready": True, "reason": ""}
 
 
 async def test_switching_the_master_switch_on_without_a_configured_model_says_so(modules, search, browser, checks, monkeypatch):
@@ -596,6 +642,7 @@ async def test_switching_the_master_switch_on_without_a_configured_model_says_so
     modules.analyzer_enabled = False
 
     await api_routes.agent_command({"command": "set_agent_enabled", "enabled": True, "_persist_intent": False})
+    await _background_done(modules)
 
     not_configured = {"ready": False, "reason": "AGENT_ENDPOINT_NOT_CONFIGURED"}
     assert modules.capability_cache["computer_use"] == not_configured

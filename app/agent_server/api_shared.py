@@ -96,6 +96,7 @@ from .capabilities import (  # noqa: F401
     _model_images_status,
     _close_browser,
     _refresh_tool_capabilities,
+    _refresh_tool_capabilities_and_tell,
     _agent_flags_snapshot,
     _collect_agent_status_snapshot,
     _emit_agent_status_update,

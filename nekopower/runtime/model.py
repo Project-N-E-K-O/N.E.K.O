@@ -179,12 +179,25 @@ _KEY_REFUSED_PATTERNS = re.compile(
     r"(?:error code|status code|status|http)[:= ]*(?:401|403)\b",
     re.IGNORECASE,
 )
-# What it says when the account behind the key has no quota or balance left.
-# A plain rate limit (too many requests, try again shortly) is not this.
-_QUOTA_USED_UP_PATTERNS = re.compile(
-    r"insufficient[_ ](?:quota|balance|credits?|funds)|exceeded[_ ](?:your[_ ])?current[_ ]quota|quota (?:has been )?exceeded|"
-    r"out of (?:quota|credits?)|credit balance is too low|"
-    r"\barrearage\b|\boverdue\b|余额不足|欠费|额度(?:已)?(?:用尽|用完|不足)",
+# What it says when the account behind the key has no quota or balance left:
+# words that only an account with nothing left is answered with.
+_ACCOUNT_EMPTY_PATTERNS = re.compile(
+    r"insufficient[_ ](?:quota|balance|credits?|funds)|exceeded[_ ](?:your[_ ])?current[_ ]quota|"
+    r"out of credits?|credit balance is too low|"
+    r"\barrearage\b|\boverdue\b|余额不足|欠费",
+    re.IGNORECASE,
+)
+# Wordings that may be either: a quota used up, or one of the short-term
+# limits below. Taken for an account with nothing left only without them.
+_QUOTA_WORDS_PATTERNS = re.compile(
+    r"quota (?:has been )?exceeded|exceeded (?:the )?quota|out of quota|额度(?:已)?(?:用尽|用完|不足)",
+    re.IGNORECASE,
+)
+# A limit that waiting lifts: per second, minute or hour, a rate limit, a
+# wait the provider names. Not a reason to pay or to change the API.
+_SHORT_TERM_LIMIT_PATTERNS = re.compile(
+    r"per (?:second|minute|hour)|for this (?:second|minute|hour)|\b(?:rpm|tpm|rps)\b|"
+    r"rate[_ ]limit|try again in|retry after|每秒|每分钟|每小时|限流|频率",
     re.IGNORECASE,
 )
 
@@ -206,7 +219,9 @@ def model_failure_kind(said: str) -> str | None:
     the text is all that reaches the host.
     """
     text = str(said or "")
-    if _QUOTA_USED_UP_PATTERNS.search(text):
+    if _ACCOUNT_EMPTY_PATTERNS.search(text):
+        return MODEL_QUOTA_USED_UP
+    if _QUOTA_WORDS_PATTERNS.search(text) and not _SHORT_TERM_LIMIT_PATTERNS.search(text):
         return MODEL_QUOTA_USED_UP
     if _KEY_REFUSED_PATTERNS.search(text) and not _REGION_REFUSAL_PATTERNS.search(text):
         return MODEL_KEY_REFUSED
