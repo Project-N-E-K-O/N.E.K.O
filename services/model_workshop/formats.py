@@ -15,7 +15,7 @@ import unicodedata
 from dataclasses import dataclass, replace
 from urllib.parse import quote, unquote, urljoin, urlsplit
 
-from .bundle import BundleError, BundleLimits, inspect_bundle, _key
+from .bundle import BundleError, BundleLimits, CompatibilityWarning, inspect_bundle, _key
 
 
 class ModelFormatError(BundleError):
@@ -104,7 +104,7 @@ class _Resources:
     def warn(self, code: str, path: str) -> None:
         self.warning_count += 1
         if len(self.warnings) < 100:
-            self.warnings.append({"code": code, "path": path})
+            self.warnings.append(CompatibilityWarning(code, path))
 
     def admitted(self):
         return replace(self.bundle, compatibility_warnings=tuple(self.warnings),
@@ -251,6 +251,8 @@ def _physics_entries_compatible(data: dict) -> bool:
     if not isinstance(forces, dict) or not all(vector(forces.get(key)) for key in ("Gravity", "Wind")):
         return False
     for setting in data["PhysicsSettings"]:
+        if not setting["Vertices"]:
+            return False
         normalization = setting.get("Normalization", {})
         if not isinstance(normalization, dict):
             return False
@@ -264,7 +266,7 @@ def _physics_entries_compatible(data: dict) -> bool:
                     return False
                 if not isinstance(item[destination].get("Id"), str) or not item[destination]["Id"]:
                     return False
-                if not _number(item.get("Weight")) or type(item.get("Reflect")) is not bool or item.get("Type") not in ("X", "Y", "Angle"):
+                if not _number(item.get("Weight")) or type(item.get("Reflect", False)) is not bool or item.get("Type") not in ("X", "Y", "Angle"):
                     return False
                 if key == "Output" and (not _number(item.get("Scale")) or type(item.get("VertexIndex")) is not int
                                         or not 1 <= item["VertexIndex"] < len(setting["Vertices"])):
@@ -287,12 +289,18 @@ def _auxiliary(data: dict, path: str, *, kind: str = "") -> bool:
         meta, settings = data.get("Meta"), data.get("PhysicsSettings")
         _require(isinstance(meta, dict) and isinstance(settings, list), path)
         _require(type(meta.get("PhysicsSettingCount")) is int and meta["PhysicsSettingCount"] == len(settings), path)
+        # CubismPhysics.evaluate in static/libs/index.min.js catches up at most
+        # five seconds. Admission caps this at 1200 simulation steps (240 Hz).
+        fps = meta.get("Fps") or 0
+        _require(_number(fps) and 0 <= fps <= 240, path, "model_physics_budget_exceeded")
         for setting in settings:
             _require(isinstance(setting, dict), path)
             for key in ("Input", "Output", "Vertices"):
                 _require(isinstance(setting.get(key), list), path)
-        # CubismPhysics.parse iterates the actual Input/Output/Vertices arrays;
-        # PhysicsSettingCount above bounds its only metadata-driven loop.
+        # static/libs/index.min.js: CubismPhysics.parse walks the actual arrays;
+        # inputs/particles use push, outputs use plain array indexing. The
+        # TotalInputCount, TotalOutputCount and VertexCount getters are never called;
+        # PhysicsSettingCount above bounds its only metadata-driven parse loop.
         return _physics_entries_compatible(data)
     elif lower.endswith(".pose3.json"):
         _require(isinstance(data.get("Groups"), list), path)
@@ -569,6 +577,7 @@ def _vrm(resources: _Resources) -> None:
         else:
             _index(image["bufferView"], views, entry)
             _require(image.get("mimeType") in ("image/png", "image/jpeg", "image/webp", "image/avif"), entry)
+    texture_sources = []
     for texture in textures:
         _require(isinstance(texture, dict), entry)
         if "source" in texture:
@@ -579,6 +588,8 @@ def _vrm(resources: _Resources) -> None:
                 extension = texture["extensions"][name]
                 _require(isinstance(extension, dict), entry)
                 _index(extension.get("source"), images, entry)
+        texture_sources.append("source" in texture or any(name in texture.get("extensions", {})
+                                                        for name in ("EXT_texture_webp", "EXT_texture_avif")))
     humanoid, meta = vrm.get("humanoid"), vrm.get("meta")
     _require(isinstance(humanoid, dict) and isinstance(meta, dict), entry)
     bones = humanoid.get("humanBones")
@@ -618,6 +629,7 @@ def _vrm(resources: _Resources) -> None:
             # strides, including padding after the last logical element.
             if stride != element_size:
                 _require((offset // stride) * stride + count * stride <= view["byteLength"], entry)
+                _require(offset + (count - 1) * stride + element_size <= view["byteLength"], entry)
             else:
                 _require(offset + count * element_size <= view["byteLength"], entry)
         else:
@@ -658,7 +670,15 @@ def _vrm(resources: _Resources) -> None:
             for key, value in block.items():
                 if key.endswith("Texture"):
                     _require(isinstance(value, dict), entry)
-                    _index(value.get("index"), textures, entry)
+                    _require(texture_sources[_index(value.get("index"), textures, entry)], entry)
+    if kinds[0] == "VRM":
+        properties = vrm.get("materialProperties", [])
+        _require(isinstance(properties, list), entry)
+        for material in properties:
+            _require(isinstance(material, dict) and isinstance(material.get("textureProperties", {}), dict), entry)
+            for value in material.get("textureProperties", {}).values():
+                if value is not None:
+                    _require(texture_sources[_index(value, textures, entry)], entry)
     mesh_morph_counts = []
     for mesh in meshes:
         _require(isinstance(mesh, dict) and isinstance(mesh.get("primitives"), list), entry)
@@ -736,6 +756,21 @@ def _vrm(resources: _Resources) -> None:
         for field, table in (("mesh", meshes), ("skin", skins)):
             if field in node:
                 _index(node[field], table, entry)
+        instancing = node.get("extensions", {}).get("EXT_mesh_gpu_instancing")
+        if instancing is not None and "mesh" in node:
+            _require(isinstance(instancing, dict) and isinstance(instancing.get("attributes"), dict), entry)
+            instance_counts = set()
+            for name, index in instancing["attributes"].items():
+                accessor = accessors[_index(index, accessors, entry)]
+                shape = {"TRANSLATION": "VEC3", "ROTATION": "VEC4", "SCALE": "VEC3"}.get(name)
+                _require(shape is None or accessor["type"] == shape, entry)
+                instance_counts.add(accessor["count"])
+            _require(len(instance_counts) <= 1, entry)
+            if instance_counts:
+                # GLTFMeshGpuInstancing creates count*16 Float32 values per
+                # node and primitive, even when all nodes share one accessor.
+                allocated += next(iter(instance_counts)) * 64 * len(meshes[node["mesh"]]["primitives"])
+                _require(allocated <= resources.limits.vrm_accessor_bytes, entry, "model_accessor_budget_exceeded")
     # A cyclic child graph cannot become a scene tree in the current loader.
     colors = [0] * len(nodes)
     for start in range(len(nodes)):

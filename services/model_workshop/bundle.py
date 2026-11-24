@@ -44,6 +44,17 @@ class BundleFile:
 
 
 @dataclass(frozen=True)
+class CompatibilityWarning:
+    """Immutable admission evidence; dictionaries are created only for transport."""
+
+    code: str
+    path: str
+
+    def as_dict(self):
+        return {"code": self.code, "path": self.path}
+
+
+@dataclass(frozen=True)
 class ValidatedBundle:
     """Identity and resource inventory from one stable, fully verified input."""
 
@@ -56,7 +67,7 @@ class ValidatedBundle:
     byte_size: int
     sha256: str
     # Derived by native admission, never accepted from the package manifest.
-    compatibility_warnings: tuple[dict, ...] = ()
+    compatibility_warnings: tuple[CompatibilityWarning, ...] = ()
     compatibility_warning_count: int = 0
 
 
