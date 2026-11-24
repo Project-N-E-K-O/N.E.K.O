@@ -632,7 +632,9 @@ def test_a_spawn_that_keeps_stalling_reports_every_attempt():
     assert isinstance(excinfo.value, NodeHarnessSpawnTimeout)
     message = str(excinfo.value)
     for index in range(1, attempts + 1):
-        assert f"attempt {index}:" in message, f"每次尝试都得各自列出来：{message}"
+        assert f"attempt {index} (never reached the script):" in message, (
+            f"每次尝试都得各自列出来，并写明有没有跑到脚本：{message}"
+        )
     assert message.count("stdout=") == attempts and message.count("stderr=") == attempts, (
         f"每次尝试各自吐了什么必须跟着错误一起报出来：{message}"
     )
@@ -1558,14 +1560,36 @@ def test_a_script_not_marked_rerun_safe_is_still_not_retried_after_starting(monk
     assert excinfo.value.started is True
 
 
-def test_a_rerun_safe_script_that_always_stalls_reports_every_attempt(monkeypatch):
+def test_a_rerun_safe_script_that_keeps_stalling_after_starting_gets_one_rerun(monkeypatch):
+    """A real top-level hang stalls every run; each costs a full ceiling, so stop after one rerun."""
     calls, _ok, fake = _stall_after_start(times=99)
     monkeypatch.setattr(node_harness.subprocess, "run", fake)
     with pytest.raises(NodeHarnessSpawnTimeout) as excinfo:
         run_node_script("node", "process.stdout.write('ok');", timeout=3, rerun_safe=True)
-    assert len(calls) == node_harness._SPAWN_ATTEMPTS
-    assert len(excinfo.value.attempts) == node_harness._SPAWN_ATTEMPTS
-    assert "stalled on every attempt" in str(excinfo.value), str(excinfo.value)
+    assert len(calls) == 1 + node_harness._STARTED_RERUNS
+    assert excinfo.value.attempts_started == [True] * len(calls)
+    assert "stalled again after it was re-run" in str(excinfo.value), str(excinfo.value)
+
+
+def test_each_attempt_reports_whether_it_reached_the_script(monkeypatch):
+    calls = []
+
+    def _fake_run(argv, **kwargs):
+        calls.append(argv)
+        if len(calls) >= 2:  # the first never reaches the script, the rest do
+            marker = kwargs["env"][node_harness._MARKER_ENV]
+            with open(marker, "w", encoding="utf-8"):
+                pass
+        raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
+
+    monkeypatch.setattr(node_harness.subprocess, "run", _fake_run)
+    with pytest.raises(NodeHarnessSpawnTimeout) as excinfo:
+        run_node_script("node", "process.stdout.write('ok');", timeout=3, rerun_safe=True)
+    error = excinfo.value
+    assert error.attempts_started == [False, True, True]
+    text = str(error)
+    assert "attempt 1 (never reached the script)" in text, text
+    assert "attempt 2 (reached the script)" in text, text
 
 
 def test_the_in_memory_settings_harness_is_marked_rerun_safe(monkeypatch):
@@ -1581,3 +1605,52 @@ def test_the_in_memory_settings_harness_is_marked_rerun_safe(monkeypatch):
     monkeypatch.setattr(websocket_source_harness, "run_node_script", _record)
     websocket_source_harness._run_settings_node_harness("process.stdout.write('ok');")
     assert seen.get("rerun_safe") is True
+
+
+
+@pytest.mark.parametrize(("flags", "expected"), [
+    ([False, False, True], "1 of 3 attempts reached the harness script"),
+    ([True, False, False], "1 of 3 attempts reached the harness script"),
+    ([False, True], "1 of 2 attempts reached the harness script"),
+    ([True, True], "stalled again after it was re-run"),
+    ([True, False, True], "2 of 3 attempts reached the harness script"),
+    ([False, False, False], "never reached the harness script"),
+])
+def test_the_diagnosis_looks_at_every_attempt(flags, expected):
+    attempts = [subprocess.TimeoutExpired(["node"], 3, output="", stderr="") for _ in flags]
+    error = NodeHarnessSpawnTimeout(
+        ["node"], 3, attempts, started=flags[-1], rerun_safe=True, attempts_started=flags,
+    )
+    text = str(error)
+    assert expected in text, text
+    if expected != "stalled again after it was re-run":
+        assert "stalled again after it was re-run" not in text, text
+
+
+
+def test_a_non_rerun_safe_start_after_spawn_stalls_keeps_the_not_retried_explanation():
+    attempts = [subprocess.TimeoutExpired(["node"], 3, output="", stderr="") for _ in range(2)]
+    error = NodeHarnessSpawnTimeout(
+        ["node"], 3, attempts, started=True, rerun_safe=False, attempts_started=[False, True],
+    )
+    text = str(error)
+    assert "After 1 attempt(s) that never reached it" in text, text
+    assert "Not retried" in text, text
+    assert "point at the runner" not in text, text
+
+
+def test_default_flags_mark_only_the_last_attempt_as_started():
+    attempts = [subprocess.TimeoutExpired(["node"], 3, output="", stderr="") for _ in range(3)]
+    error = NodeHarnessSpawnTimeout(["node"], 3, attempts, started=True)
+    assert error.attempts_started == [False, False, True]
+    assert "3 of 3" not in str(error)
+
+
+
+def test_every_attempt_is_reported_even_with_short_flags():
+    attempts = [subprocess.TimeoutExpired(["node"], 3, output="", stderr="") for _ in range(3)]
+    error = NodeHarnessSpawnTimeout(["node"], 3, attempts, started=True, attempts_started=[True])
+    assert error.attempts_started == [False, False, True], "aligned on the last attempt"
+    text = str(error)
+    for index in (1, 2, 3):
+        assert f"attempt {index} (" in text, text
