@@ -19,14 +19,15 @@ function classes() {
 // Run the complete dock controller and its actual tier/appearance listeners.
 // DOM layout, animation delivery and the existing surface-mode API are the
 // controlled host boundaries; dock admission and restoration stay production.
-function runtime({ minimized = true, avatarGate = false } = {}) {
+function runtime({ minimized = true, avatarGate = false, recording = false } = {}) {
   const listeners = new Map(), timers = new Map(), observers = [], requests = [];
   const cat = {}, icon = {}, container = {
     getBoundingClientRect: () => ({ left: 500, top: 400, width: 96, height: 96 }),
   };
   const shell = {
     style: { left: '100px', top: '200px', removeProperty(name) { delete this[name]; } },
-    classList: classes(), querySelector: () => icon,
+    classList: classes(),
+    querySelector: selector => (selector.includes('audio-message-composer') ? (recording ? {} : null) : icon),
     getBoundingClientRect() {
       return { left: parseFloat(this.style.left), top: parseFloat(this.style.top), width: 51, height: 51 };
     },
@@ -114,6 +115,28 @@ test('late dock observer and fallback cannot move or overwrite a Playground mini
   assert.deepEqual(r.requests, ['minimized']);
   assert.equal(r.I.idleDockActive, false);
   assert.equal(r.I.idleDockTriggeredMinimize, false);
+});
+
+test('an active voice message keeps the open chat out of idle dock', () => {
+  const r = runtime({ minimized: false, recording: true });
+  const position = r.position();
+  r.I.enterIdleDock();
+  r.emit('neko:auto-goodbye:state-change', { type: 'visual-tier', tier: 'cat3' });
+  assert.deepEqual(r.requests, []);
+  assert.equal(r.observers.length, 0);
+  assert.equal(r.timers.size, 0, 'no minimize fallback is armed');
+  r.runTimers();
+  assert.equal(r.I.minimized, false);
+  assert.equal(r.shell.classList.contains('is-minimized'), false);
+  assert.deepEqual(r.position(), position);
+  assert.ok(!r.I.idleDockTriggeredMinimize);
+  assert.ok(!r.I.idleDockActive);
+});
+
+test('a chat folded during a voice message can still idle dock', () => {
+  const r = runtime({ recording: true });
+  r.I.enterIdleDock();
+  assert.equal(r.I.idleDockActive, true);
 });
 
 test('Playground takeover discards old dock restore coordinates without expanding or moving chat', () => {
