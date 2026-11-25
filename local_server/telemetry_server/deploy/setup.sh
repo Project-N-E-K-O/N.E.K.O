@@ -179,23 +179,6 @@ sudo systemctl daemon-reload
 sudo systemctl enable "$SERVICE_NAME"
 sudo systemctl restart "$SERVICE_NAME"
 
-# 服务重启后再清理旧版本环境
-if [ -n "${INSTALL_DIR:-}" ] && [ -n "${ACTIVE_VENV:-}" ]; then
-    for legacy_venv in "$INSTALL_DIR"/venv.legacy.*; do
-        [ -e "$legacy_venv" ] || continue
-        sudo rm -rf "$legacy_venv"
-    done
-    ACTIVE_VENV_NAME="$(basename "$ACTIVE_VENV")"
-    LIVE_VENV_TARGET="$(readlink -f "$INSTALL_DIR/venv" 2>/dev/null || printf '%s' "$ACTIVE_VENV")"
-    for old_venv in "$INSTALL_DIR/venvs"/venv-*; do
-        [ -e "$old_venv" ] || continue
-        old_venv_real="$(readlink -f "$old_venv" 2>/dev/null || printf '%s' "$old_venv")"
-        if [ "$(basename "$old_venv")" != "$ACTIVE_VENV_NAME" ] && [ "$old_venv_real" != "$LIVE_VENV_TARGET" ]; then
-            sudo rm -rf "$old_venv"
-        fi
-    done
-fi
-
 echo ""
 
 # 验证
@@ -209,9 +192,25 @@ for _ in $(seq 1 10); do
 done
 
 if [ "$HEALTH_OK" -eq 1 ]; then
+    # 健康检查通过后再清理旧版本环境，避免启动失败时丢失可回滚环境
+    if [ -n "${INSTALL_DIR:-}" ] && [ -n "${ACTIVE_VENV:-}" ]; then
+        for legacy_venv in "$INSTALL_DIR"/venv.legacy.*; do
+            [ -e "$legacy_venv" ] || continue
+            sudo rm -rf "$legacy_venv"
+        done
+        ACTIVE_VENV_NAME="$(basename "$ACTIVE_VENV")"
+        LIVE_VENV_TARGET="$(readlink -f "$INSTALL_DIR/venv" 2>/dev/null || printf '%s' "$ACTIVE_VENV")"
+        for old_venv in "$INSTALL_DIR/venvs"/venv-*; do
+            [ -e "$old_venv" ] || continue
+            old_venv_real="$(readlink -f "$old_venv" 2>/dev/null || printf '%s' "$old_venv")"
+            if [ "$(basename "$old_venv")" != "$ACTIVE_VENV_NAME" ] && [ "$old_venv_real" != "$LIVE_VENV_TARGET" ]; then
+                sudo rm -rf "$old_venv"
+            fi
+        done
+    fi
     echo "✅ Server is running on port $PORT"
 else
-    echo "⚠  Server may still be starting, check: systemctl status $SERVICE_NAME"
+    echo "⚠  Server may still be starting, check: systemctl status $SERVICE_NAME (previous environments retained for rollback)"
 fi
 
 echo ""
