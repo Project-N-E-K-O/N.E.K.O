@@ -19,7 +19,6 @@ import random
 import re
 import shutil
 import socket
-import tempfile
 import threading
 import time
 from contextlib import suppress
@@ -29,6 +28,8 @@ from typing import Any
 from urllib.parse import urlparse
 from urllib.parse import ParseResult
 from uuid import uuid4
+
+from utils.file_utils import atomic_write_json as _utils_atomic_write_json
 
 try:
     import av  # type: ignore
@@ -138,28 +139,7 @@ def _utc_now() -> datetime:
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    raw = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        dir=str(path.parent),
-    )
-    tmp_path = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "wb") as stream:
-            fd = -1
-            stream.write(raw)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(tmp_path, path)
-    except BaseException:
-        if fd >= 0:
-            with suppress(OSError):
-                os.close(fd)
-        with suppress(OSError):
-            tmp_path.unlink()
-        raise
+    _utils_atomic_write_json(path, payload, ensure_ascii=False, indent=2)
 
 
 def _iso(dt: datetime | None = None) -> str:
@@ -1203,7 +1183,16 @@ class MusicPusherPlugin(NekoPluginBase):
                 return _safe_text(track.get("title"), stored_filename)
         return ""
 
+    def _should_skip_startup_overwrite_locked(self, path: Path) -> bool:
+        info = getattr(self, "_degraded_state", {}).get(path.name)
+        return isinstance(info, dict) and not info.get("backup_path")
+
     def _gc_tombstoned_uploads_locked(self) -> bool:
+        if self._state_file.name in getattr(self, "_degraded_state", {}):
+            self.logger.warning(
+                "Skipping tombstoned upload GC while scheduler state is degraded"
+            )
+            return False
         removed = False
         for stored_filename, meta in list(self._upload_name_map.items()):
             if not _coerce_bool((meta or {}).get("deleted"), False):
@@ -1274,9 +1263,8 @@ class MusicPusherPlugin(NekoPluginBase):
         ) or (
             data.get("tasks") is not None and not isinstance(data.get("tasks"), list)
         ):
-            self.logger.warning("读取调度状态失败，将重置为空状态: 状态文件集合字段类型无效")
+            self.logger.warning("读取调度状态失败，将进入降级状态并尽力恢复有效字段: 状态文件集合字段类型无效")
             self._backup_corrupt_file_locked(path, "invalid_collection_type")
-            return
 
         raw_items = data.get("music_items")
         if isinstance(raw_items, list):
@@ -1816,9 +1804,18 @@ class MusicPusherPlugin(NekoPluginBase):
             self._refresh_upload_urls_in_tasks_locked()
             self._rebuild_music_items_from_uploads_locked()
             self._refresh_upload_urls_in_tasks_locked()
-            self._save_upload_name_map_locked()
-            self._save_lyrics_map_locked()
-            self._save_state_locked()
+            for target_file, save_fn in (
+                (self._upload_name_map_file, self._save_upload_name_map_locked),
+                (self._lyrics_map_file, self._save_lyrics_map_locked),
+                (self._state_file, self._save_state_locked),
+            ):
+                if self._should_skip_startup_overwrite_locked(target_file):
+                    self.logger.error(
+                        "Skipping startup overwrite for {} because corrupt backup failed",
+                        target_file,
+                    )
+                    continue
+                save_fn()
         if self._degraded_state:
             self.logger.error(
                 "MusicPusher started in degraded state; backed up corrupt files: {}",

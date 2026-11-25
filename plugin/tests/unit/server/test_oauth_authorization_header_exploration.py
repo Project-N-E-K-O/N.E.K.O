@@ -478,3 +478,203 @@ async def test_ensure_valid_oauth_token_refreshes_off_event_loop_and_recovers_fr
     saved = json.loads(token_file.read_text(encoding="utf-8"))
     assert saved["refresh_token"] == "rt-new"
     assert saved["state_revision"] == 1
+
+
+@pytest.mark.asyncio
+async def test_oauth_complete_does_not_undo_concurrent_logout_or_clobber_new_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    import json
+    import time
+
+    from fastapi import FastAPI
+    import httpx
+
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    pending_file = tmp_path / "market_oauth_pending.json"
+    callback_file = tmp_path / "oauth_callback.json"
+    token_file = tmp_path / "market_auth.json"
+    monkeypatch.setattr(market_bridge_module, "_OAUTH_PENDING_FILE", pending_file)
+    monkeypatch.setattr(market_bridge_module, "_OAUTH_CALLBACK_FILE", callback_file)
+    monkeypatch.setattr(market_bridge_module, "_OAUTH_TOKEN_FILE", token_file)
+    monkeypatch.setattr(market_bridge_module, "NEKO_AUTH_URL", "https://auth.test")
+    monkeypatch.setattr(market_bridge_module, "MARKET_API_URL", "https://market.test")
+    monkeypatch.setattr(market_bridge_module, "MARKET_WEB_URL", "https://web.market.test")
+
+    market_bridge_module._write_private_json(
+        pending_file,
+        {
+            "state": "state-A",
+            "code_verifier": "verifier-A",
+            "redirect_uri": "http://127.0.0.1:48916/market/oauth/callback",
+            "expires_at": time.time() + 300,
+        },
+    )
+    market_bridge_module._write_private_json(
+        callback_file,
+        {"code": "code-A", "state": "state-A", "timestamp": time.time()},
+    )
+
+    revoked: list[dict[str, Any]] = []
+    exchange_entered = asyncio.Event()
+    exchange_release = asyncio.Event()
+
+    async def _paused_exchange(_code: str, _verifier: str, _redirect: str) -> dict[str, Any]:
+        exchange_entered.set()
+        await exchange_release.wait()
+        return {"access_token": "at-A", "refresh_token": "rt-A", "expires_in": 3600}
+
+    async def _fake_userinfo(_access_token: str | None) -> dict[str, Any]:
+        return {"sub": "user-A"}
+
+    async def _fake_probe(_access_token: str | None) -> Any:
+        return market_bridge_module._MarketUserProbe(
+            state="ready",
+            user={"id": "u1"},
+            retryable=False,
+        )
+
+    async def _fake_revoke(payload: dict[str, Any]) -> None:
+        revoked.append(dict(payload))
+
+    monkeypatch.setattr(market_bridge_module, "_exchange_oauth_code", _paused_exchange)
+    monkeypatch.setattr(market_bridge_module, "_fetch_auth_userinfo", _fake_userinfo)
+    monkeypatch.setattr(market_bridge_module, "_probe_market_user", _fake_probe)
+    monkeypatch.setattr(market_bridge_module, "_revoke_oauth_token_best_effort", _fake_revoke)
+
+    app = FastAPI(title="oauth-race")
+    app.include_router(market_bridge_module.router)
+    transport = httpx.ASGITransport(app=app)
+    headers = {"Authorization": f"Bearer {market_bridge_module._BRIDGE_TOKEN}"}
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        # Case 1: Logout runs before complete's atomic check-and-write -> complete returns 409, no token on disk.
+        complete_task = asyncio.create_task(client.post("/market/oauth/complete", headers=headers))
+        await exchange_entered.wait()
+        logout_resp = await client.post("/market/oauth/logout", headers=headers)
+        assert logout_resp.status_code == 200
+        exchange_release.set()
+        complete_resp = await complete_task
+        assert complete_resp.status_code == 409
+        assert not token_file.exists()
+        assert revoked and revoked[-1]["access_token"] == "at-A"
+
+        # Case 2: Replacement login B starts while A is completing -> B's pending file survives!
+        market_bridge_module._write_private_json(
+            pending_file,
+            {
+                "state": "state-A",
+                "code_verifier": "verifier-A",
+                "redirect_uri": "http://127.0.0.1:48916/market/oauth/callback",
+                "expires_at": time.time() + 300,
+            },
+        )
+        market_bridge_module._write_private_json(
+            callback_file,
+            {"code": "code-A", "state": "state-A", "timestamp": time.time()},
+        )
+        exchange_entered.clear()
+        exchange_release.clear()
+        complete_task2 = asyncio.create_task(client.post("/market/oauth/complete", headers=headers))
+        await exchange_entered.wait()
+        start_resp = await client.post("/market/oauth/start", headers=headers)
+        assert start_resp.status_code == 200
+        state_b = start_resp.json()["state"]
+        exchange_release.set()
+        complete_resp2 = await complete_task2
+        assert complete_resp2.status_code == 409
+        assert not token_file.exists()
+        assert json.loads(pending_file.read_text(encoding="utf-8"))["state"] == state_b
+
+        # Case 3: Stale callback for session A cannot overwrite session B's callback after /oauth/start.
+        cb_b = await client.get(
+            "/market/oauth/callback",
+            params={"code": "code-B", "state": state_b},
+        )
+        assert cb_b.status_code == 200
+        cb_stale = await client.get(
+            "/market/oauth/callback",
+            params={"code": "code-A", "state": "state-A"},
+        )
+        assert cb_stale.status_code == 400
+        assert json.loads(pending_file.read_text(encoding="utf-8"))["state"] == state_b
+        assert json.loads(callback_file.read_text(encoding="utf-8"))["state"] == state_b
+
+
+@pytest.mark.asyncio
+async def test_oauth_write_lock_serializes_status_write_against_logout_and_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    import json
+    import threading
+    import time
+
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    token_file = tmp_path / "market_auth.json"
+    pending_file = tmp_path / "market_oauth_pending.json"
+    callback_file = tmp_path / "oauth_callback.json"
+    monkeypatch.setattr(market_bridge_module, "_OAUTH_TOKEN_FILE", token_file)
+    monkeypatch.setattr(market_bridge_module, "_OAUTH_PENDING_FILE", pending_file)
+    monkeypatch.setattr(market_bridge_module, "_OAUTH_CALLBACK_FILE", callback_file)
+    monkeypatch.setattr(market_bridge_module, "NEKO_AUTH_URL", "https://auth.test")
+    monkeypatch.setattr(market_bridge_module, "MARKET_API_URL", "https://market.test")
+
+    snapshot = {
+        "access_token": "at-1",
+        "refresh_token": "rt-1",
+        "expires_at": time.time() + 3600,
+        "auth_url": "https://auth.test",
+        "issuer": "https://auth.test/",
+        "client_id": market_bridge_module._OAUTH_CLIENT_ID,
+        "session_id": "sess-1",
+        "refresh_generation": 0,
+        "state_revision": 0,
+    }
+    market_bridge_module._write_private_json(token_file, snapshot)
+
+    entered_lock = threading.Event()
+    release_lock = threading.Event()
+    real_write_private = market_bridge_module._write_private_json
+
+    def _slow_first_write(path: Path, payload: dict[str, Any]) -> None:
+        if payload.get("state_revision") == 1:
+            entered_lock.set()
+            release_lock.wait(timeout=5.0)
+        real_write_private(path, payload)
+
+    monkeypatch.setattr(market_bridge_module, "_write_private_json", _slow_first_write)
+
+    updated = dict(snapshot, market_state="ready")
+    writer_task = asyncio.create_task(
+        asyncio.to_thread(
+            market_bridge_module._write_oauth_token_if_matches, snapshot, updated
+        )
+    )
+    await asyncio.to_thread(entered_lock.wait, 5.0)
+    # Logout queued behind _OAUTH_STATE_FILE_LOCK must not run until writer releases lock,
+    # and once released, logout deletes the file instead of writer resurrecting it.
+    logout_task = asyncio.create_task(asyncio.to_thread(market_bridge_module._logout_oauth_sync))
+    await asyncio.sleep(0.05)
+    assert not logout_task.done()
+    release_lock.set()
+    assert await writer_task is True
+    await logout_task
+    assert not token_file.exists()
+
+    # Now verify stale snapshot cannot overwrite newer revision.
+    market_bridge_module._write_private_json(
+        token_file, dict(snapshot, access_token="at-2", refresh_generation=1, state_revision=0)
+    )
+    assert (
+        await asyncio.to_thread(
+            market_bridge_module._write_oauth_token_if_matches, snapshot, dict(snapshot, market_state="ready")
+        )
+        is False
+    )
+    assert json.loads(token_file.read_text(encoding="utf-8"))["access_token"] == "at-2"

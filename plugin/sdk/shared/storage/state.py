@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import os
-import tempfile
 import threading
 import time
-from contextlib import suppress
 from datetime import date, datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from typing import Any
+
+from utils.file_utils import atomic_write_bytes
 
 from plugin.sdk.shared.core.types import JsonObject, LoggerLike
 from plugin.sdk.shared.logging import get_plugin_logger
@@ -122,35 +121,7 @@ class PluginStatePersistence(StorageResultTemplate):
 
     @staticmethod
     def _atomic_write_bytes(target: Path, data: bytes) -> None:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(
-            prefix=f".{target.name}.",
-            suffix=".tmp",
-            dir=str(target.parent),
-        )
-        tmp_path = Path(tmp_name)
-        try:
-            with os.fdopen(fd, "wb") as stream:
-                fd = -1
-                stream.write(data)
-                stream.flush()
-                os.fsync(stream.fileno())
-            for attempt, delay in enumerate((0.0, 0.05, 0.1, 0.2)):
-                if delay > 0:
-                    time.sleep(delay)
-                try:
-                    os.replace(tmp_path, target)
-                    break
-                except PermissionError:
-                    if attempt == 3:
-                        raise
-        except BaseException:
-            if fd >= 0:
-                with suppress(OSError):
-                    os.close(fd)
-            with suppress(OSError):
-                tmp_path.unlink()
-            raise
+        atomic_write_bytes(target, data)
 
     def _serialize_value(self, key: str, value: Any, instance: object) -> Any:
         if hasattr(instance, "__freeze_serialize__"):

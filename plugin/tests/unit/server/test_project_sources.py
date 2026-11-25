@@ -598,7 +598,9 @@ async def test_refresh_registry_and_remove_project_never_resurrect_removed_proje
 
     assert "ghost_proj" not in state.plugins
     # Subsequent refresh must also keep ghost_proj evicted even though plugin.toml stays on disk.
-    monkeypatch.undo()
+    monkeypatch.setattr(
+        registry_service, "_discover_registry_snapshot_sync", real_discover
+    )
     await registry_service.PluginRegistryService().refresh_registry()
     assert "ghost_proj" not in state.plugins
     assert (project_dir / "plugin.toml").is_file()
@@ -679,3 +681,110 @@ def test_apply_discovery_record_sync_with_default_none_snapshot_and_concurrent_r
     assert err_info.value.code == "PLUGIN_CONFIG_NOT_FOUND"
     assert "ghost_none_snap" not in state.plugins
     assert store.list_records() == []
+
+
+def test_source_replacement_concurrent_project_removal_restores_non_project_entry(
+    isolated, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user_dir = tmp_path / "user_plugins" / "shared_id"
+    user_dir.mkdir(parents=True)
+    user_cfg = user_dir / "plugin.toml"
+    user_cfg.write_text(
+        '[plugin]\nid = "shared_id"\nname = "User"\nversion = "0.1.0"\n'
+        'entry = "plugins.shared_id:Plugin"\n',
+        encoding="utf-8",
+    )
+    with state.acquire_plugins_write_lock():
+        state.plugins["shared_id"] = {
+            "id": "shared_id",
+            "name": "User",
+            "source": "user",
+            "config_path": str(user_cfg.resolve()),
+            "entry_point": "plugins.shared_id:Plugin",
+        }
+    existing_snapshot = state.get_plugins_snapshot()
+
+    project_dir = scaffold(tmp_path / "projects", "shared_id")
+    record = store.add_record(project_dir)
+    snapshot = registry_service._discover_registry_snapshot_sync((isolated,))
+    disc = next(rec for rec in snapshot.records if rec.plugin_id == "shared_id")
+    # Force source_replacement onto the pre-existing non-project ID.
+    disc.meta_payload["source"] = registry_service.PROJECT_SOURCE
+    disc.meta_payload["project_id"] = record.project_id
+
+    calls = {"count": 0}
+    real_list_records = store.list_records
+
+    def _list_records_remove_on_second():
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return real_list_records()
+        return []
+
+    monkeypatch.setattr(store, "list_records", _list_records_remove_on_second)
+    # Exercise source_replacement restoring a non-project entry left in state.plugins
+    # when the project is concurrently removed before the second check.
+    existing_snapshot["shared_id"] = {
+        **existing_snapshot["shared_id"],
+        "source": registry_service.PROJECT_SOURCE,
+    }
+    with pytest.raises(ServerDomainError) as err_info:
+        registry_service._apply_discovery_record_sync(
+            disc,
+            existing_snapshot=existing_snapshot,
+            preferred_runtime_plugin_id="shared_id",
+        )
+
+    assert err_info.value.code == "PLUGIN_CONFIG_NOT_FOUND"
+    assert state.plugins["shared_id"]["config_path"] == str(user_cfg.resolve())
+    assert state.plugins["shared_id"]["source"] == "user"
+
+
+def test_apply_discovery_record_sync_second_project_read_error_restores_prior_entry(
+    isolated, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = scaffold(tmp_path / "projects", "err_restore_proj")
+    record = store.add_record(project_dir)
+    snapshot = registry_service._discover_registry_snapshot_sync((isolated,))
+    disc = next(rec for rec in snapshot.records if rec.plugin_id == "err_restore_proj")
+
+    old_cfg = tmp_path / "old" / "plugin.toml"
+    prior_entry = {
+        "id": "err_restore_proj",
+        "name": "Prior",
+        "source": registry_service.PROJECT_SOURCE,
+        "project_id": record.project_id,
+        "config_path": str(old_cfg.resolve()),
+        "entry_point": "plugins.err_restore_proj:Plugin",
+    }
+    with state.acquire_plugins_write_lock():
+        state.plugins["err_restore_proj"] = dict(prior_entry)
+    existing_snapshot = state.get_plugins_snapshot()
+
+    # Case 1: Error during second read restores prior_meta.
+    real_list = store.list_records
+    count = {"n": 0}
+
+    def _raise_on_second():
+        count["n"] += 1
+        if count["n"] == 1:
+            return real_list()
+        raise ServerDomainError(code="STORE_UNAVAILABLE", message="io error", status_code=500)
+
+    monkeypatch.setattr(store, "list_records", _raise_on_second)
+    with pytest.raises(ServerDomainError, match="io error"):
+        registry_service._apply_discovery_record_sync(
+            disc,
+            existing_snapshot=existing_snapshot,
+            preferred_runtime_plugin_id="err_restore_proj",
+        )
+    assert state.plugins["err_restore_proj"]["config_path"] == prior_entry["config_path"]
+
+    # Case 2: Error during second read with no prior entry removes newly written base entry.
+    with state.acquire_plugins_write_lock():
+        state.plugins.clear()
+    count["n"] = 0
+    with pytest.raises(ServerDomainError, match="io error"):
+        registry_service._apply_discovery_record_sync(disc)
+    assert "err_restore_proj" not in state.plugins
+    store.remove_record(record.project_id)

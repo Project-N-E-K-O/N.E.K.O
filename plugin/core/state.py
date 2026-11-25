@@ -708,7 +708,7 @@ class GlobalState:
     def append_message_record(self, record: Dict[str, Any]) -> None:
         if not isinstance(record, dict):
             return
-        mid = record.get("message_id")
+        mid = self._extract_message_id(record)
         with self._bus_store_lock:
             if isinstance(mid, str) and mid in self._deleted_message_ids:
                 return
@@ -749,7 +749,7 @@ class GlobalState:
         kept: List[Dict[str, Any]] = []
         with self._bus_store_lock:
             for rec in candidates:
-                mid = rec.get("message_id")
+                mid = self._extract_message_id(rec)
                 if isinstance(mid, str) and mid in self._deleted_message_ids:
                     continue
                 self._message_store.append(rec)
@@ -761,7 +761,7 @@ class GlobalState:
         for rec in kept:
             try:
                 rev = self._bump_bus_rev("messages")
-                mid = rec.get("message_id")
+                mid = self._extract_message_id(rec)
                 payload: Dict[str, Any] = {"rev": rev}
                 if isinstance(mid, str) and mid:
                     payload["message_id"] = mid
@@ -796,7 +796,7 @@ class GlobalState:
                 if not kept_fast:
                     return 0
                 for rec in kept_fast:
-                    mid = rec.get("message_id")
+                    mid = self._extract_message_id(rec)
                     if isinstance(mid, str) and mid:
                         last_mid_fast = mid
                     try:
@@ -846,7 +846,7 @@ class GlobalState:
         last_source: Optional[str] = None
         with self._bus_store_lock:
             for rec in candidates:
-                mid = rec.get("message_id")
+                mid = self._extract_message_id(rec)
                 if isinstance(mid, str) and mid in self._deleted_message_ids:
                     continue
                 kept.append(rec)

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+import os
 from dataclasses import fields
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -446,13 +448,14 @@ async def test_state_persistence_concurrent_file_saves_and_atomic_replace_failur
     def _boom(_src: Path, _dst: Path) -> None:
         raise OSError("disk full")
 
-    monkeypatch.setattr(state.os, "replace", _boom)
+    monkeypatch.setattr(os, "replace", _boom)
     failed = await persistence.save(_Obj("broken-v2"))
     assert failed.is_err()
     assert (plugin_dir / ".plugin_state").read_bytes() == expected_bytes
     assert not list(plugin_dir.glob("*.tmp"))
 
     monkeypatch.undo()
+    assert "mkstemp" not in inspect.getsource(state)
     check_obj = _Obj("")
     assert (await persistence.load(check_obj)).unwrap() is True
     assert check_obj.blob == "stable-v1"

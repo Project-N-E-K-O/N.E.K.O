@@ -67,6 +67,15 @@ def _parse_iso_datetime(raw: object) -> Optional[datetime]:
     return dt
 
 
+_UNRECOVERABLE_PUSH_REASONS = frozenset({
+    "payload_too_large",
+    "invalid_payload",
+    "invalid_message",
+    "invalid_context",
+})
+_MAX_DELIVERY_RETRIES = 20
+
+
 def _is_push_submitted(receipt: object) -> bool:
     if not isinstance(receipt, Mapping):
         return False
@@ -382,15 +391,18 @@ class MemoReminderPlugin(NekoPluginBase):
                 continue
             fired_ids.append(rid)
             if not was_delivered:
-                with self._reminders_lock:
-                    current = self._load_reminders_unlocked()
-                    changed = False
-                    for item in current:
-                        if item.get("id") == rid:
-                            item["delivered"] = True
-                            changed = True
-                    if changed:
-                        self._save_reminders_unlocked(current)
+                try:
+                    with self._reminders_lock:
+                        current = self._load_reminders_unlocked()
+                        changed = False
+                        for item in current:
+                            if item.get("id") == rid:
+                                item["delivered"] = True
+                                changed = True
+                        if changed:
+                            self._save_reminders_unlocked(current)
+                except Exception:
+                    self.logger.exception("Failed to persist delivered flag for reminder {}", rid)
 
         # Phase 3 - under lock: merge results back (handles concurrent add/delete).
         with self._reminders_lock:
@@ -401,6 +413,7 @@ class MemoReminderPlugin(NekoPluginBase):
             final: List[Dict[str, Any]] = []
             for r in to_push:
                 rid = r.get("id", "?")
+                last_reason = r.pop("_last_push_reason", None)
                 if rid not in current_ids:
                     continue
                 if rid in fired_ids:
@@ -410,12 +423,26 @@ class MemoReminderPlugin(NekoPluginBase):
                 else:
                     failed_item = dict(r)
                     retry_count = int(failed_item.get("delivery_retry_count") or 0) + 1
-                    delay_sec = min(60.0, 2.0 ** min(retry_count, 6))
-                    failed_item["delivery_retry_count"] = retry_count
-                    failed_item["next_retry_at"] = (
-                        now_phase3 + timedelta(seconds=delay_sec)
-                    ).isoformat()
-                    final.append(failed_item)
+                    if (
+                        last_reason in _UNRECOVERABLE_PUSH_REASONS
+                        or retry_count > _MAX_DELIVERY_RETRIES
+                    ):
+                        self.logger.error(
+                            "Abandoning reminder {} delivery after {} attempt(s) (reason={})",
+                            rid,
+                            retry_count,
+                            last_reason,
+                        )
+                        rescheduled = self._reschedule(failed_item, now_phase3)
+                        if rescheduled:
+                            final.append(rescheduled)
+                    else:
+                        delay_sec = min(60.0, 2.0 ** min(retry_count, 6))
+                        failed_item["delivery_retry_count"] = retry_count
+                        failed_item["next_retry_at"] = (
+                            now_phase3 + timedelta(seconds=delay_sec)
+                        ).isoformat()
+                        final.append(failed_item)
             merged = [r for r in current if r.get("id") not in processed_ids] + final
             self._save_reminders_unlocked(merged)
             if fired_ids:
@@ -448,6 +475,7 @@ class MemoReminderPlugin(NekoPluginBase):
             )
             if not _is_push_submitted(receipt):
                 reason = receipt.get("reason") if isinstance(receipt, Mapping) else None
+                r["_last_push_reason"] = reason
                 self.logger.warning(
                     "Push reminder {} rejected (reason={}); will retry",
                     rid,
@@ -455,6 +483,7 @@ class MemoReminderPlugin(NekoPluginBase):
                 )
                 return False
             # Mark the message as sent.
+            r.pop("_last_push_reason", None)
             r["delivered"] = True
         return True
 
@@ -472,7 +501,9 @@ class MemoReminderPlugin(NekoPluginBase):
             r = dict(r)
             r["fire_count"] = fire_count
 
-        trigger_dt = datetime.fromisoformat(r["trigger_at"])
+        trigger_dt = _parse_iso_datetime(r.get("trigger_at"))
+        if trigger_dt is None:
+            return None
 
         if repeat == "daily":
             next_dt = trigger_dt + timedelta(days=1)

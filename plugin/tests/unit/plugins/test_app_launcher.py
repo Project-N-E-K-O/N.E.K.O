@@ -234,3 +234,109 @@ async def test_add_app_rolls_back_autostart_registry_if_secondary_persist_fails(
     assert "持久化失败" in result.value["message"]
     assert calls == [True, False]
     assert plugin.store.data[app_launcher_mod._STORE_KEY][0]["autostart"] is False
+
+
+@pytest.mark.asyncio
+async def test_set_autostart_enable_restores_prior_registry_value_when_already_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_calls: list[tuple[str, bool]] = []
+    restored_values: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        app_launcher_mod,
+        "_get_autostart_value_windows",
+        lambda app_id: (True, '"C:/Previous.exe"'),
+    )
+    monkeypatch.setattr(
+        app_launcher_mod,
+        "_set_autostart_windows",
+        lambda app_id, name, path, enabled: (set_calls.append((app_id, enabled)) or (True, "ok")),
+    )
+    monkeypatch.setattr(
+        app_launcher_mod,
+        "_restore_autostart_value_windows",
+        lambda app_id, value: (restored_values.append((app_id, value)) or (True, "")),
+    )
+    plugin = _make_plugin(
+        [{"id": "app1", "name": "Demo", "path": "C:/Demo.exe", "autostart": True}]
+    )
+    plugin.store.fail_writes = True
+
+    result = await plugin.set_autostart(app_id="app1", enabled=True)
+
+    assert result.is_err()
+    assert set_calls == [("app1", True)]
+    assert restored_values == [("app1", '"C:/Previous.exe"')]
+
+
+@pytest.mark.asyncio
+async def test_remove_app_allows_delete_when_no_autostart_exists_and_registry_unwritable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(app_launcher_mod, "_get_autostart_status_windows", lambda _app_id: False)
+    monkeypatch.setattr(
+        app_launcher_mod,
+        "_set_autostart_windows",
+        lambda *args: (False, "PermissionError"),
+    )
+    plugin = _make_plugin(
+        [{"id": "app1", "name": "Demo", "path": "C:/Demo.exe", "autostart": False}]
+    )
+
+    result = await plugin.remove_app(app_id="app1")
+
+    assert result.is_ok()
+    assert plugin.store.data[app_launcher_mod._STORE_KEY] == []
+
+
+@pytest.mark.asyncio
+async def test_remove_app_aborts_when_orphan_registry_entry_exists_and_cleanup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(app_launcher_mod, "_get_autostart_status_windows", lambda _app_id: True)
+    monkeypatch.setattr(
+        app_launcher_mod,
+        "_set_autostart_windows",
+        lambda *args: (False, "PermissionError"),
+    )
+    initial = [{"id": "app1", "name": "Demo", "path": "C:/Demo.exe", "autostart": False}]
+    plugin = _make_plugin(initial)
+
+    result = await plugin.remove_app(app_id="app1")
+
+    assert result.is_err()
+    assert "PermissionError" in str(result.error)
+    assert plugin.store.data[app_launcher_mod._STORE_KEY] == initial
+
+
+@pytest.mark.asyncio
+async def test_update_app_syncs_autostart_flag_for_orphan_registry_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old_exe = tmp_path / "old.exe"
+    new_exe = tmp_path / "new.exe"
+    old_exe.write_bytes(b"MZ")
+    new_exe.write_bytes(b"MZ")
+
+    monkeypatch.setattr(app_launcher_mod, "_get_autostart_status_windows", lambda _app_id: True)
+    monkeypatch.setattr(
+        app_launcher_mod,
+        "_set_autostart_windows",
+        lambda app_id, name, path, enabled: (True, "ok"),
+    )
+    plugin = _make_plugin(
+        [{
+            "id": "app1",
+            "name": "Demo",
+            "path": str(old_exe),
+            "resolved_path": str(old_exe),
+            "type": "exe",
+            "autostart": False,
+        }]
+    )
+
+    result = await plugin.update_app(app_id="app1", path=str(new_exe))
+
+    assert result.is_ok()
+    assert plugin.store.data[app_launcher_mod._STORE_KEY][0]["autostart"] is True

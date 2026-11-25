@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import threading
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -19,6 +20,9 @@ class _Logger:
     def exception(self, *args, **kwargs) -> None:
         pass
 
+    def error(self, *args, **kwargs) -> None:
+        pass
+
 
 class _Store:
     enabled = True
@@ -28,10 +32,10 @@ class _Store:
         self.data: dict[str, object] = {}
 
     def _read_value(self, key: str, default: object = None) -> object:
-        return self.data.get(key, default)
+        return copy.deepcopy(self.data.get(key, default))
 
     def _write_value(self, key: str, value: object) -> None:
-        self.data[key] = value
+        self.data[key] = copy.deepcopy(value)
 
 
 class _Context:
@@ -372,5 +376,70 @@ def test_phase2_persists_delivered_immediately_and_phase3_respects_concurrent_de
         return {"submitted": True}
 
     plugin.ctx.push_message = _push_and_delete  # type: ignore[method-assign]
+    plugin._fire_due_reminders()
+    assert plugin.store.data[_STORE_KEY] == []
+
+
+@pytest.mark.plugin_unit
+def test_reschedule_handles_naive_iso_trigger_at_and_unrecoverable_rejection() -> None:
+    plugin = _plugin()
+    naive_due = (datetime.now(timezone.utc) - timedelta(hours=1)).replace(tzinfo=None).isoformat()
+    plugin._save_reminders([
+        {
+            "id": "naive-daily",
+            "message": "喝水",
+            "trigger_at": naive_due,
+            "created_at": naive_due,
+            "repeat": "daily",
+        }
+    ])
+    plugin.ctx.push_message = lambda **kwargs: (plugin.ctx.pushed.append(kwargs) or {"submitted": True})  # type: ignore[method-assign]
+    plugin._fire_due_reminders()
+    rem = plugin.store.data[_STORE_KEY][0]
+    assert datetime.fromisoformat(rem["trigger_at"]) > datetime.now(timezone.utc)
+
+    # Unrecoverable push rejection should advance repeating reminder instead of retrying forever.
+    due2 = _due_iso()
+    plugin._save_reminders([
+        {
+            "id": "too-large",
+            "message": "x" * 100,
+            "trigger_at": due2,
+            "created_at": due2,
+            "repeat": "daily",
+        }
+    ])
+    plugin.ctx.push_message = lambda **kwargs: {"submitted": False, "reason": "payload_too_large"}  # type: ignore[method-assign]
+    plugin._fire_due_reminders()
+    rem2 = plugin.store.data[_STORE_KEY][0]
+    assert rem2["trigger_at"] != due2
+    assert "delivery_retry_count" not in rem2
+
+
+@pytest.mark.plugin_unit
+def test_phase2_save_error_does_not_skip_phase3(monkeypatch: pytest.MonkeyPatch) -> None:
+    plugin = _plugin()
+    due = _due_iso()
+    plugin._save_reminders([
+        {
+            "id": "p2err",
+            "message": "喝水",
+            "trigger_at": due,
+            "created_at": due,
+            "repeat": "once",
+        }
+    ])
+    plugin.ctx.push_message = lambda **kwargs: {"submitted": True}  # type: ignore[method-assign]
+
+    real_save = plugin._save_reminders_unlocked
+    calls = {"n": 0}
+
+    def _fail_phase2_save(items):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("transient phase2 store error")
+        real_save(items)
+
+    monkeypatch.setattr(plugin, "_save_reminders_unlocked", _fail_phase2_save)
     plugin._fire_due_reminders()
     assert plugin.store.data[_STORE_KEY] == []

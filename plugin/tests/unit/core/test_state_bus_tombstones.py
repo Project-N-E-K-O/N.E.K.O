@@ -150,3 +150,23 @@ def test_event_delete_replays_cleanly_into_topic_store() -> None:
 
     recent = store.get_recent("all", 10)
     assert [item["payload"]["event_id"] for item in recent] == ["e2"]
+
+
+def test_append_and_extend_filter_tombstoned_nested_message_ids() -> None:
+    gs = _new_state()
+    with patch("plugin.server.messaging.plane_bridge.publish_snapshot"):
+        gs.append_message_record({"payload": {"message_id": "nested-1"}, "source": "s"})
+        gs.append_message_record({"index": {"id": "index-1"}, "source": "s"})
+        assert gs.delete_message("nested-1") is True
+        assert gs.delete_message("index-1") is True
+
+    gs.append_message_record({"payload": {"message_id": "nested-1"}, "source": "s"})
+    assert gs.extend_message_records([{"index": {"id": "index-1"}, "source": "s"}]) == 0
+    assert gs.extend_message_records_coalesced(
+        [
+            {"payload": {"message_id": "nested-1"}, "source": "s"},
+            {"index": {"id": "index-1"}, "source": "s"},
+            {"message_id": "keep-1", "source": "s"},
+        ]
+    ) == 1
+    assert [gs._extract_message_id(m) for m in gs.list_message_records()] == ["keep-1"]

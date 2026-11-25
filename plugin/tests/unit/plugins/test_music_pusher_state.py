@@ -167,3 +167,94 @@ async def test_clean_startup_reports_not_degraded_and_preserves_state(
     assert snap["degraded"] is False
     assert snap["degraded_files"] == {}
     assert len(plugin._music_items) == 1
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_degraded_scheduler_state_preserves_valid_tasks_and_blocks_upload_gc(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin = _make_plugin(tmp_path)
+    monkeypatch.setattr(plugin, "_ensure_scheduler_task", lambda: None)
+    plugin._upload_dir.mkdir(parents=True, exist_ok=True)
+    audio_file = plugin._upload_dir / "keep_me.mp3"
+    audio_file.write_bytes(b"ID3")
+    plugin._upload_name_map = {
+        "keep_me.mp3": {
+            "stored_filename": "keep_me.mp3",
+            "original_filename": "keep_me.mp3",
+            "title": "Keep Me",
+            "artist": "Artist",
+            "duration_sec": 30,
+            "deleted": True,
+        }
+    }
+    plugin._save_upload_name_map_locked()
+
+    # Mixed-validity scheduler_state.json: invalid music_items type ({}) alongside valid task referencing keep_me.mp3.
+    plugin._state_file.parent.mkdir(parents=True, exist_ok=True)
+    plugin._state_file.write_text(
+        json.dumps(
+            {
+                "music_items": {},
+                "tasks": [
+                    {
+                        "task_id": "task-1",
+                        "name": "Scheduled",
+                        "status": "pending",
+                        "queue": [
+                            {
+                                "url": "http://127.0.0.1:48916/plugin/music_pusher/ui/uploads/keep_me.mp3",
+                                "title": "Keep Me",
+                                "artist": "Artist",
+                                "duration_sec": 30,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    res = await plugin.on_start()
+    assert res.is_ok()
+    assert audio_file.is_file()
+    assert "task-1" in plugin._tasks
+    assert "scheduler_state.json" in plugin._degraded_state
+
+    # After cleanly fixing scheduler_state.json and deleting the task, unreferenced tombstoned upload is GC'd.
+    plugin._tasks.clear()
+    plugin._degraded_state.clear()
+    plugin._save_state_locked()
+    res2 = await plugin.on_start()
+    assert res2.is_ok()
+    assert not audio_file.exists()
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_corrupt_backup_failure_skips_startup_overwrite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin = _make_plugin(tmp_path)
+    monkeypatch.setattr(plugin, "_ensure_scheduler_task", lambda: None)
+    plugin._state_file.parent.mkdir(parents=True, exist_ok=True)
+    corrupt_bytes = "{broken json"
+    plugin._state_file.write_text(corrupt_bytes, encoding="utf-8")
+
+    real_replace = music_pusher_mod.os.replace
+
+    def _fail_backup_replace(src: Path, dst: Path) -> None:
+        if ".corrupt." in dst.name:
+            raise PermissionError("file in use")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(music_pusher_mod.os, "replace", _fail_backup_replace)
+    res = await plugin.on_start()
+
+    assert res.is_ok()
+    assert plugin._state_file.read_text(encoding="utf-8") == corrupt_bytes
+    assert plugin._degraded_state["scheduler_state.json"]["backup_path"] == ""

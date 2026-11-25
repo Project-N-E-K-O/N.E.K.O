@@ -4306,3 +4306,104 @@ async def test_set_plugin_auto_start_leaves_approval_pending_when_preference_wri
         assert calls == []
     finally:
         _restore_lifecycle_state(*backup)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_start_plugins_batch_with_refresh_registry_uses_borrowed_lock_without_deadlock(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+) -> None:
+    from plugin.server.application.plugins import registry_service as registry_service_module
+
+    cfg_a = tmp_path / "alpha" / "plugin.toml"
+    cfg_b = tmp_path / "beta" / "plugin.toml"
+    for pid, cfg in (("alpha", cfg_a), ("beta", cfg_b)):
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_text(
+            "\n".join(
+                [
+                    "[plugin]",
+                    f"id = '{pid}'",
+                    f"name = '{pid}'",
+                    "version = '0.1.0'",
+                    "type = 'tool'",
+                    "description = 'demo'",
+                    "entry = 'tests.fake:Plugin'",
+                    "",
+                    "[plugin_runtime]",
+                    "enabled = true",
+                    "auto_start = true",
+                ]
+            ),
+            encoding="utf-8",
+        )
+    backup = _backup_lifecycle_state()
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            for pid, cfg in (("alpha", cfg_a), ("beta", cfg_b)):
+                module.state.plugins[pid] = {
+                    "id": pid,
+                    "name": pid,
+                    "type": "tool",
+                    "description": "demo",
+                    "entry": "tests.fake:Plugin",
+                    "entry_point": "tests.fake:Plugin",
+                    "config_path": str(cfg),
+                    "runtime_enabled": True,
+                    "runtime_auto_start": True,
+                }
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+
+        refreshed: list[str] = []
+
+        def _fake_refresh_sync(self, plugin_id: str) -> dict[str, object]:
+            refreshed.append(plugin_id)
+            return {"success": True, "plugin_id": plugin_id, "status": "ok"}
+
+        monkeypatch.setattr(
+            registry_service_module.PluginRegistryService,
+            "_refresh_plugin_sync",
+            _fake_refresh_sync,
+        )
+        monkeypatch.setattr(
+            module,
+            "_get_plugin_config_path",
+            lambda pid: cfg_a if pid == "alpha" else cfg_b,
+        )
+        monkeypatch.setattr(
+            module,
+            "resolve_plugin_config_from_path",
+            lambda *args, **kwargs: {
+                "effective_config": kwargs["base_config"],
+                "warnings": [],
+            },
+        )
+        monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
+        monkeypatch.setattr(module, "_find_missing_python_requirements", lambda *args, **kwargs: [])
+        monkeypatch.setattr(module, "create_plugin_host", _FakeProcessHost)
+        monkeypatch.setattr(module, "scan_plugin_metadata_isolated", _metadata_scan_for(_FakeAdapterPlugin))
+        monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+        monkeypatch.setattr(module, "reconcile_permission_source", lambda _pid: None)
+        monkeypatch.setattr(module, "permission_snapshot", lambda _pid: {})
+        monkeypatch.setattr(module, "denied_plugin_ids", lambda _ids: set())
+
+        result = await asyncio.wait_for(
+            module.PluginLifecycleService().start_plugins_batch(
+                ["alpha", "beta"],
+                concurrency=2,
+                refresh_registry=True,
+            ),
+            timeout=5.0,
+        )
+
+        assert set(result["started"]) == {"alpha", "beta"}
+        assert result["failed"] == []
+        assert set(refreshed) == {"alpha", "beta"}
+    finally:
+        _restore_lifecycle_state(*backup)

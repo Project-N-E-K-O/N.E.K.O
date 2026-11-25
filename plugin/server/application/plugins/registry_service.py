@@ -42,7 +42,11 @@ from plugin.utils.path_resolution import PathResolutionCache, canonical_read_pat
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.domain.normalization import is_valid_plugin_id
 from plugin.settings import BUILTIN_PLUGIN_CONFIG_ROOT, PLUGIN_CONFIG_ROOTS
-from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
+from plugin.server.application.plugins.operation_lock import (
+    _HeldPluginOperationLock,
+    _operation_lock_is_held_by_current_task,
+    serialized_plugin_operation,
+)
 from plugin.server.application.plugins.project_sources import (
     PROJECT_SOURCE,
     ProjectSource,
@@ -1080,15 +1084,26 @@ def _apply_discovery_record_sync(
                 status_code=404,
                 details={"plugin_id": record.plugin_id},
             )
+    prior_meta: dict[str, object] | None = None
     if source_replacement:
         resolved_id = runtime_plugin_id
         with state.acquire_plugins_write_lock():
+            existing_live = state.plugins.get(resolved_id)
+            if isinstance(existing_live, dict):
+                prior_meta = dict(existing_live)
+            elif isinstance((existing_snapshot or {}).get(resolved_id), dict):
+                prior_meta = dict((existing_snapshot or {})[resolved_id])
             replacement_dump = plugin_meta.model_dump(mode="python")
             replacement_dump["config_path"] = str(record.config_path)
             replacement_dump["entry_point"] = record.entry_point
             state.plugins[resolved_id] = replacement_dump
         state.invalidate_snapshot_cache("plugins")
     else:
+        pre_register_snapshot = (
+            existing_snapshot
+            if existing_snapshot is not None
+            else state.get_plugins_snapshot()
+        )
         resolved_id = register_plugin(
             plugin_meta,
             logger,
@@ -1096,6 +1111,10 @@ def _apply_discovery_record_sync(
             entry_point=record.entry_point,
             read_cache=read_cache,
         )
+        if resolved_id is not None:
+            prior_entry = pre_register_snapshot.get(resolved_id)
+            if isinstance(prior_entry, dict):
+                prior_meta = dict(prior_entry)
     if resolved_id is None:
         raise ServerDomainError(
             code="PLUGIN_REGISTRY_CONFLICT",
@@ -1115,39 +1134,54 @@ def _apply_discovery_record_sync(
             )
 
     removed_project_concurrently = False
-    with state.acquire_plugins_write_lock():
-        if is_project_source and isinstance(project_id, str) and project_id:
-            from plugin.server.infrastructure import authoring_project_store
+    read_error: Exception | None = None
+    try:
+        with state.acquire_plugins_write_lock():
+            if is_project_source and isinstance(project_id, str) and project_id:
+                from plugin.server.infrastructure import authoring_project_store
 
-            if not any(
-                item.project_id == project_id
-                for item in authoring_project_store.list_records()
-            ):
-                prior_meta = (existing_snapshot or {}).get(resolved_id)
-                if not (
-                    isinstance(prior_meta, dict)
-                    and prior_meta.get("source") != PROJECT_SOURCE
-                ):
-                    state.plugins.pop(resolved_id, None)
-                removed_project_concurrently = True
-        if not removed_project_concurrently:
-            current_meta = state.plugins.get(resolved_id)
-            merged = dict(current_meta) if isinstance(current_meta, dict) else {}
-            if (
-                is_project_source
-                and isinstance(existing_target_meta, dict)
-                and existing_target_meta.get("project_id") == project_id
-            ):
-                for runtime_key in ("runtime_startup_state", "runtime_startup_error"):
-                    if runtime_key in existing_target_meta:
-                        merged[runtime_key] = existing_target_meta[runtime_key]
-            for key in _MANAGED_META_KEYS:
-                if key in payload:
-                    merged[key] = payload[key]
+                try:
+                    records = authoring_project_store.list_records()
+                except Exception as exc:
+                    if isinstance(prior_meta, dict):
+                        state.plugins[resolved_id] = dict(prior_meta)
+                    else:
+                        state.plugins.pop(resolved_id, None)
+                    read_error = exc
                 else:
-                    merged.pop(key, None)
-            state.plugins[resolved_id] = merged
-    state.invalidate_snapshot_cache("plugins")
+                    if not any(
+                        item.project_id == project_id
+                        for item in records
+                    ):
+                        if (
+                            isinstance(prior_meta, dict)
+                            and prior_meta.get("source") != PROJECT_SOURCE
+                        ):
+                            state.plugins[resolved_id] = dict(prior_meta)
+                        else:
+                            state.plugins.pop(resolved_id, None)
+                        removed_project_concurrently = True
+            if read_error is None and not removed_project_concurrently:
+                current_meta = state.plugins.get(resolved_id)
+                merged = dict(current_meta) if isinstance(current_meta, dict) else {}
+                if (
+                    is_project_source
+                    and isinstance(existing_target_meta, dict)
+                    and existing_target_meta.get("project_id") == project_id
+                ):
+                    for runtime_key in ("runtime_startup_state", "runtime_startup_error"):
+                        if runtime_key in existing_target_meta:
+                            merged[runtime_key] = existing_target_meta[runtime_key]
+                for key in _MANAGED_META_KEYS:
+                    if key in payload:
+                        merged[key] = payload[key]
+                    else:
+                        merged.pop(key, None)
+                state.plugins[resolved_id] = merged
+    finally:
+        state.invalidate_snapshot_cache("plugins")
+    if read_error is not None:
+        raise read_error
     if removed_project_concurrently:
         raise ServerDomainError(
             code="PLUGIN_CONFIG_NOT_FOUND",
@@ -1375,6 +1409,19 @@ class PluginRegistryService:
     @serialized_plugin_operation
     async def refresh_plugin(self, plugin_id: str) -> dict[str, object]:
         """Rebuild one plugin's registry entry from what is on disk."""
+        return await asyncio.to_thread(self._refresh_plugin_sync, plugin_id)
+
+    async def refresh_plugin_under_lock(
+        self,
+        plugin_id: str,
+        *,
+        operation_scope: _HeldPluginOperationLock | None = None,
+    ) -> dict[str, object]:
+        """Rebuild one plugin's registry entry within an active operation lock scope."""
+        if operation_scope is not None:
+            operation_scope.require_active()
+        elif not _operation_lock_is_held_by_current_task():
+            return await self.refresh_plugin(plugin_id)
         return await asyncio.to_thread(self._refresh_plugin_sync, plugin_id)
 
     async def validate_plugin_runtime_source(

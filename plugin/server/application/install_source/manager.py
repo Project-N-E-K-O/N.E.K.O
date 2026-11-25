@@ -1235,9 +1235,22 @@ class InstallSourceManager:
                         return
                 if legacy_path is None:
                     if self._current.entries:
-                        self._enter_read_only_degrade(
-                            reason=f"lock_file_missing: {self.lock_path}",
-                            missing_lock=True,
+                        try:
+                            _atomic_write(
+                                self.lock_path, _serialize_lock(self._current)
+                            )
+                        except OSError as exc:
+                            self._enter_read_only_degrade(
+                                reason=f"lock_file_missing: {self.lock_path} ({exc})",
+                                missing_lock=True,
+                            )
+                            return
+                        self._clear_degrade()
+                        logger.warning(
+                            "InstallSourceManager: runtime lock file missing; self-healed from "
+                            "in-memory snapshot (%d entries) path=%s",
+                            len(self._current.entries),
+                            self.lock_path,
                         )
                         return
                     # First_Startup: empty snapshot with created_at stamped.
@@ -1394,85 +1407,99 @@ class InstallSourceManager:
         """
 
         with self._lock:
-            old_lock = self._current
-            disc = self.scanner.scan()
-            disc_by_key: dict[tuple[str, str], "DiscoveredPlugin"] = {
-                (d.root_id, d.directory_name): d for d in disc
-            }
-            entries_by_key: dict[tuple[str, str], LockEntry] = {
-                e.primary_key: e for e in old_lock.entries
-            }
-            now = self._now_iso()
-            new_entries: dict[tuple[str, str], LockEntry] = {}
+            for attempt in range(2):
+                if self._missing_lock_degraded and self.lock_path.exists():
+                    self.load()
+                if self._read_only and not self._missing_lock_degraded:
+                    return
 
-            # —— Branch A: disk exists ——
-            for key, d in disc_by_key.items():
-                prev = entries_by_key.get(key)
-                if prev is None:
-                    # Brand-new directory — seed channel from root_id.
-                    new_entries[key] = self._seed_entry(d, now)
-                elif prev.removed:
-                    # Resurrect: preserve channel / source / reason /
-                    # installed_at / bundle_ref; clear removed flags and
-                    # refresh seen + updated.
-                    new_entries[key] = dataclasses.replace(
-                        prev,
-                        removed=False,
-                        removed_at=None,
-                        last_seen_at=now,
-                        updated_at=now,
-                    )
-                elif not prev.plugin_id and d.plugin_id:
-                    # Scanner just learned the plugin's real id — patch it.
-                    new_entries[key] = dataclasses.replace(
-                        prev,
-                        plugin_id=d.plugin_id,
-                        last_seen_at=now,
-                        updated_at=now,
-                    )
-                else:
-                    # Stable: refresh last_seen_at so we have a
-                    # "still present" heartbeat.
-                    new_entries[key] = dataclasses.replace(
-                        prev,
-                        last_seen_at=now,
-                    )
+                old_lock = self._current
+                disc = self.scanner.scan()
+                disc_by_key: dict[tuple[str, str], "DiscoveredPlugin"] = {
+                    (d.root_id, d.directory_name): d for d in disc
+                }
+                entries_by_key: dict[tuple[str, str], LockEntry] = {
+                    e.primary_key: e for e in old_lock.entries
+                }
+                now = self._now_iso()
+                new_entries: dict[tuple[str, str], LockEntry] = {}
 
-            # —— Branch B: lock has entry, disk doesn't ——
-            for key, prev in entries_by_key.items():
-                if key in new_entries:
-                    continue
-                if prev.removed:
-                    # Already soft-deleted — preserve as-is (idempotent).
-                    new_entries[key] = prev
-                else:
-                    # Directory just disappeared — soft delete.
-                    new_entries[key] = dataclasses.replace(
-                        prev,
-                        removed=True,
-                        removed_at=now,
-                        updated_at=now,
-                    )
+                # —— Branch A: disk exists ——
+                for key, d in disc_by_key.items():
+                    prev = entries_by_key.get(key)
+                    if prev is None:
+                        # Brand-new directory — seed channel from root_id.
+                        new_entries[key] = self._seed_entry(d, now)
+                    elif prev.removed:
+                        # Resurrect: preserve channel / source / reason /
+                        # installed_at / bundle_ref; clear removed flags and
+                        # refresh seen + updated.
+                        new_entries[key] = dataclasses.replace(
+                            prev,
+                            removed=False,
+                            removed_at=None,
+                            last_seen_at=now,
+                            updated_at=now,
+                        )
+                    elif not prev.plugin_id and d.plugin_id:
+                        # Scanner just learned the plugin's real id — patch it.
+                        new_entries[key] = dataclasses.replace(
+                            prev,
+                            plugin_id=d.plugin_id,
+                            last_seen_at=now,
+                            updated_at=now,
+                        )
+                    else:
+                        # Stable: refresh last_seen_at so we have a
+                        # "still present" heartbeat.
+                        new_entries[key] = dataclasses.replace(
+                            prev,
+                            last_seen_at=now,
+                        )
 
-            new_lock = dataclasses.replace(
-                old_lock,
-                entries=tuple(new_entries.values()),
-                updated_at=now,
-            )
-            self._current = new_lock
-            was_missing_lock_degraded = self._missing_lock_degraded
-            if was_missing_lock_degraded:
-                self._clear_degrade()
-            try:
-                self.save()
-            except Exception:
-                self._current = old_lock
+                # —— Branch B: lock has entry, disk doesn't ——
+                for key, prev in entries_by_key.items():
+                    if key in new_entries:
+                        continue
+                    if prev.removed:
+                        # Already soft-deleted — preserve as-is (idempotent).
+                        new_entries[key] = prev
+                    else:
+                        # Directory just disappeared — soft delete.
+                        new_entries[key] = dataclasses.replace(
+                            prev,
+                            removed=True,
+                            removed_at=now,
+                            updated_at=now,
+                        )
+
+                new_lock = dataclasses.replace(
+                    old_lock,
+                    entries=tuple(new_entries.values()),
+                    updated_at=now,
+                )
+                was_missing_lock_degraded = self._missing_lock_degraded
+                if was_missing_lock_degraded and self.lock_path.exists():
+                    self._current = old_lock
+                    self.load()
+                    if attempt == 0 and not self.is_degraded:
+                        continue
+                    return
+
+                self._current = new_lock
                 if was_missing_lock_degraded:
-                    self._enter_read_only_degrade(
-                        reason=f"lock_file_missing: {self.lock_path}",
-                        missing_lock=True,
-                    )
-                raise
+                    self._clear_degrade()
+                try:
+                    self.save()
+                except Exception:
+                    self._current = old_lock
+                    if was_missing_lock_degraded:
+                        self._enter_read_only_degrade(
+                            reason=f"lock_file_missing: {self.lock_path}",
+                            missing_lock=True,
+                        )
+                    raise
+                return
 
     # ------------------------------------------------------------------
     # Write-path helpers (tasks 2.4 / 2.5)
@@ -1487,7 +1514,18 @@ class InstallSourceManager:
         manager writes nothing (see ``save``) and still publishes.
         """
 
-        if self._read_only:
+        if self._missing_lock_degraded:
+            if self.lock_path.exists():
+                logger.debug("InstallSourceManager: save skipped (missing-lock degraded, file reappeared)")
+            else:
+                _atomic_write(self.lock_path, _serialize_lock(new_lock))
+                self._clear_degrade()
+                logger.warning(
+                    "InstallSourceManager: self-healed missing lock on write (%d entries) path=%s",
+                    len(new_lock.entries),
+                    self.lock_path,
+                )
+        elif self._read_only:
             logger.debug("InstallSourceManager: save skipped (degraded)")
         else:
             _atomic_write(self.lock_path, _serialize_lock(new_lock))
