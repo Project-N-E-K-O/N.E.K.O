@@ -52,6 +52,10 @@ _REQUEST_ID_RE = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 
 _CACHE_TTL_SECONDS = 600.0
 _CACHE_MAX_ENTRIES = 64
+# Transcriptions running at once, across all callers. A running one is not
+# cancelled when its caller disconnects (a retry may join it), so without a
+# shared cap fresh request IDs could pile up paid provider calls.
+_MAX_RUNNING_TRANSCRIPTIONS = 4
 
 _STATUS_BY_CODE = {
     "ASR_OFFLINE_INVALID_AUDIO": 400,
@@ -112,6 +116,13 @@ class _TranscriptCache:
             self._settle(key, value)
             if key in self._entries:
                 return self._entries[key][1]  # type: ignore[return-value]
+        running = sum(
+            1 for _, value in self._entries.values()
+            if isinstance(value, asyncio.Task) and not value.done()
+        )
+        if running >= _MAX_RUNNING_TRANSCRIPTIONS:
+            # Retryable: the host maps this to "busy" and keeps the draft.
+            raise AsrOfflineError("ASR_RATE_LIMITED", "too many transcriptions in flight")
         task: asyncio.Task[str] = asyncio.ensure_future(start())
         self._entries[key] = (now, task)
         task.add_done_callback(lambda done: self._settle(key, done))
