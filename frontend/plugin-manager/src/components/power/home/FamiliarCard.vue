@@ -62,7 +62,10 @@ const line = computed(() => props.card.doing || props.card.duty)
 .familiar--working .cat { display: inline-block; animation: bob 1s ease-in-out infinite; }
 .familiar--waiting_user { border-color: var(--el-color-warning); background: var(--el-color-warning-light-9); }
 .familiar--waiting_user .state { color: var(--el-color-warning); font-weight: 700; }
-.familiar--compacting .state { color: var(--el-color-primary); }
+.familiar--compacting .state, .familiar--landing .state, .familiar--resolving .state { color: var(--el-color-primary); }
+.familiar--landing, .familiar--resolving { border-color: var(--el-color-primary-light-5); }
+.familiar--held, .familiar--unlanded { border-color: var(--el-color-warning); }
+.familiar--held .state, .familiar--unlanded .state { color: var(--el-color-warning); font-weight: 700; }
 .familiar--idle .face, .familiar--asleep .face, .familiar--resting .face, .familiar--queued .face { opacity: 0.55; }
 .familiar--asleep, .familiar--resting, .familiar--queued { border-style: dashed; }
 @keyframes bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }

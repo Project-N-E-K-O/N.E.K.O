@@ -12,7 +12,7 @@ export interface ModelSlotInput {
   model: string
   api_key?: string
   capabilities: ModelCapability[]
-  defaults: { temperature: number | null; max_output_tokens: number | null }
+  defaults: { max_output_tokens: number | null }
   timeout_seconds: number
   fallback_slot_id: string | null
 }

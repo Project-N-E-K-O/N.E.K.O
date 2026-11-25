@@ -904,6 +904,11 @@ async def notify_config_changed():
     asked anything: a key that is wrong shows when a task agent first uses
     it, and is reported with its reason.
     """
+    # The main server just wrote the configuration; this process may hold the old
+    # text in its read cache for up to two seconds, and the refresh below reads it now.
+    from utils.config_manager import read_cache
+
+    read_cache.invalidate()
     if not Modules.analyzer_enabled:
         return {"success": True, "message": "agent idle; nothing to refresh"}
     # In the background: the main server waits a few seconds for the answer,

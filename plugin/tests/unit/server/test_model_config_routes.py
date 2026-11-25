@@ -395,35 +395,28 @@ async def test_confirmation_fences_a_write_that_has_not_committed(model_client):
     assert late.status_code == 409
 
 
-@pytest.mark.parametrize("temperature", [1.01, 1.5, 2])
-async def test_anthropic_default_temperature_is_rejected_before_writing(model_client, model_setup, temperature):
+@pytest.mark.parametrize("protocol", ["openai_chat", "anthropic_messages"])
+@pytest.mark.parametrize("temperature", [None, 0.7, 1.5, 2, 3])
+async def test_default_temperature_from_an_older_client_is_accepted_and_not_stored(
+    model_client, model_setup, protocol, temperature
+):
+    # Values once rejected (above 1 for Anthropic, above 2 anywhere) are no
+    # longer judged: the field is dropped, so nothing about it can fail a save.
+    from plugin.server.model_gateway.anthropic import prepare_request
+    from plugin.server.model_gateway.request import prepare_chat_request
+
     _, cm, _ = model_setup
     path = cm.root / CONFIG_FILENAME
-    rejected = await model_client.post(f"{PREFIX}/slots", json={**SLOT, "protocol": "anthropic_messages", "defaults": {"temperature": temperature}})
-    assert rejected.status_code == 422
-    assert not path.exists()
-    created = await create_slot(model_client, protocol="anthropic_messages", defaults={"temperature": 1})
-    before = path.read_bytes()
-    rejected = await model_client.patch(f"{PREFIX}/slots/{created['id']}", json={"defaults": {"temperature": temperature}})
-    assert rejected.status_code == 422
-    assert path.read_bytes() == before
-
-
-async def test_protocol_switch_validates_stored_temperature_and_accepts_boundary(model_client, model_setup):
-    from plugin.server.model_gateway.request import prepare_chat_request
-    from plugin.server.model_gateway.anthropic import prepare_request
-
-    created = await create_slot(model_client, defaults={"temperature": 2})
-    url = f"{PREFIX}/slots/{created['id']}"
-    _, cm, _ = model_setup
-    before = (cm.root / CONFIG_FILENAME).read_bytes()
-    rejected = await model_client.patch(url, json={"protocol": "anthropic_messages", "api_key": SECRET})
-    assert rejected.status_code == 422
-    assert (cm.root / CONFIG_FILENAME).read_bytes() == before
-    accepted = await model_client.patch(url, json={"protocol": "anthropic_messages", "api_key": SECRET, "defaults": {"temperature": 1}})
-    assert accepted.status_code == 200
-    slot = ModelConfigStore(cm).read().slots[created['id']]
+    created = await model_client.post(
+        f"{PREFIX}/slots", json={**SLOT, "protocol": protocol, "defaults": {"temperature": temperature}}
+    )
+    assert created.status_code == 201, created.text
+    slot_id = created.json()["id"]
+    assert created.json()["defaults"] == {"max_output_tokens": None}
+    patched = await model_client.patch(f"{PREFIX}/slots/{slot_id}", json={"defaults": {"temperature": temperature}})
+    assert patched.status_code == 200, patched.text
+    assert "temperature" not in json.loads(path.read_text(encoding="utf-8"))["slots"][slot_id]["defaults"]
+    slot = ModelConfigStore(cm).read().slots[slot_id]
     request = prepare_chat_request(slot, {"model": "analysis", "messages": [{"role": "user", "content": "hello"}]})
-    assert prepare_request(request)["temperature"] == 1
-    accepted = await model_client.patch(url, json={"defaults": {"temperature": None}})
-    assert accepted.status_code == 200
+    sent = prepare_request(request) if protocol == "anthropic_messages" else request
+    assert "temperature" not in sent

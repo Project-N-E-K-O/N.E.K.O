@@ -51,7 +51,7 @@ monkeypatch.setattr(
 ## 4. 拆文件时要同步改的地方
 
 - 启动入口：`docker/entrypoint.sh`、`CONTRIBUTING.md` 等文档里的启动命令。包要用 `python -m` 启动。
-- ⚠️ 静态检查脚本的默认扫描路径：`scripts/check_api_trailing_slash.py`、`scripts/check_async_blocking.py`、`scripts/check_no_temperature.py` 的 `DEFAULT_PATHS`。这些脚本对不存在的路径是直接跳过的，路径没跟着改不会报错，只是那部分代码从此不再被检查。
+- ⚠️ 静态检查脚本的默认扫描路径：`scripts/check_api_trailing_slash.py`、`scripts/check_async_blocking.py` 的 `DEFAULT_PATHS`（`scripts/check_no_temperature.py` 扫全仓库，不用改）。这些脚本对不存在的路径是直接跳过的，路径没跟着改不会报错，只是那部分代码从此不再被检查。
 - 打包相关的登记见 `docs/contributing/nuitka-packaging.md`。
 
 ## 5. 验证拆分没有改行为的办法

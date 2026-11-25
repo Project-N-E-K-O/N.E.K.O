@@ -117,11 +117,31 @@ describe('what a familiar asks the user', () => {
     expect(askLines({ category: 'brand_new' }, t, te)).toEqual(['brand_new'])
     // A boss asking to summon a familiar that changes files: the kind of familiar by its name.
     const summon = { category: 'open_session', detail: { tool: 'hand_over', title: 'general', preset: 'worker' } }
-    expect(askLines(summon, t, te)).toEqual([`${words.runtime.permissions.categories.open_session} · hand_over`])
+    expect(askLines(summon, t, te)).toEqual([`${words.runtime.permissions.categories.open_session} · ${words.ask.tools.hand_over}`])
     expect(askFacts(summon, t, te)).toEqual([
       { name: 'title', label: words.ask.facts.title, value: 'general' },
       { name: 'preset', label: words.ask.facts.preset, value: words.home.presets.worker },
     ])
+    // One that will work in a copy of its own is said to.
+    const inTree = askFacts({ category: 'open_session', detail: { tool: 'hand_over', preset: 'worker', tree: true } }, t, te)
+    expect(inTree.find(fact => fact.name === 'tree')).toEqual({ name: 'tree', label: words.ask.facts.tree, value: words.ask.treeNote })
+    expect(askFacts({ detail: { tree: false } }, t, te)).toEqual([])
+    // A team: how many, one familiar a line, and not the same again as one line.
+    const team = {
+      category: 'open_session',
+      detail: { tool: 'start_team', title: 'worker: a; scout: b', members: ['worker: a', 'scout: b'], count: 2, tree: true },
+    }
+    expect(askLines(team, t, te)).toEqual([`${words.runtime.permissions.categories.open_session} · ${words.ask.tools.start_team}`])
+    expect(askFacts(team, t, te)).toEqual([
+      { name: 'members', label: words.ask.facts.members, value: '· worker: a\n· scout: b' },
+      { name: 'count', label: words.ask.facts.count, value: '2' },
+      { name: 'tree', label: words.ask.facts.tree, value: words.ask.treeNote },
+    ])
+    // Where the kind of each is given apart, it is said by its name.
+    const named = { ...team, detail: { ...team.detail, parts: [{ preset: 'worker', description: 'a' }, { preset: 'translator', description: 'b' }] } }
+    expect(askFacts(named, t, te)[0]).toEqual({ name: 'members', label: words.ask.facts.members, value: `· ${words.home.presets.worker}: a\n· translator: b` })
+    // A tool the pages have no words for is named as it is.
+    expect(askLines({ category: 'open_session', detail: { tool: 'brand_new' } }, t, te)[0]).toContain('brand_new')
     expect(askFacts({ category: 'open_session', detail: { preset: 'translator' } }, t, te)[0].value).toBe('translator')
     expect(askFacts({ detail: { odd: 3, nested: { a: 1 }, empty: '' } }, t, te)).toEqual([{ name: 'odd', label: 'odd', value: '3' }])
     // In a list it is one short line.

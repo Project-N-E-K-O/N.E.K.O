@@ -41,11 +41,28 @@ def secret_preview(value: str) -> str:
     return ("••••••" if value == "******" else "******") if preview == value else preview
 
 
+# Fields a slot's defaults no longer have. Plugin model requests carry no
+# temperature (scripts/check_no_temperature.py), so a saved document or
+# an older client may still carry one: it is dropped here instead of failing
+# validation. The store and the service log a warning when they see it.
+RETIRED_DEFAULT_FIELDS = frozenset({"temperature"})
+
+
+def has_retired_defaults(defaults: object) -> bool:
+    return isinstance(defaults, dict) and not RETIRED_DEFAULT_FIELDS.isdisjoint(defaults)
+
+
 class ModelDefaults(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
 
-    temperature: float | None = Field(default=None, ge=0, le=2)
     max_output_tokens: int | None = Field(default=None, ge=1, le=MAX_OUTPUT_TOKENS)
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_retired_fields(cls, value: object) -> object:
+        if has_retired_defaults(value):
+            return {key: item for key, item in value.items() if key not in RETIRED_DEFAULT_FIELDS}
+        return value
 
 
 class ModelSlot(BaseModel):
@@ -74,17 +91,6 @@ class ModelSlot(BaseModel):
             raise ValueError("Only a host-follow slot may set host_api")
         elif not self.base_url or not self.model:
             raise ValueError("A manual slot requires base_url and model")
-        return self
-
-    @model_validator(mode="after")
-    def validate_protocol_defaults(self) -> ModelSlot:
-        # Read compatibility: a legacy host-follow document may carry a default
-        # above the protocol intersection; it must stay readable (and updatable)
-        # so explicit request overrides keep working. The save paths in
-        # ModelConfigService enforce the intersection for new/changed values.
-        temperature = self.defaults.temperature
-        if self.source != "host_follow" and self.protocol == "anthropic_messages" and temperature is not None and temperature > 1:
-            raise ValueError("Anthropic default temperature must not exceed 1")
         return self
 
     @field_validator("name", "model", "api_key", mode="before")

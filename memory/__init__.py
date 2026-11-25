@@ -19,14 +19,21 @@
 **Any call in memory/ and utils/ going through ``utils.llm_client.create_chat_llm`` /
 ``ChatOpenAI``:**
 
-1. **Do not pass ``temperature=...``**. Both default to ``None`` (not written into the
-   request body), letting the model endpoint respond with its own default behavior. The
-   same rule applies to any wrapper helper (e.g. ``FactStore._allm_call_with_retries``
-   historically accepted ``temperature=``; it has been removed).
+1. **Do not set a temperature**. Repository code does not set one (the few exceptions,
+   such as realtime voice sessions that take one, are listed with reasons in ``EXEMPTIONS``
+   of the gatekeeper below): the clients have
+   no ``temperature`` parameter and never write the field into the request body, so the
+   model endpoint uses its own default. The plugin model gateway follows the same
+   rule: a temperature a plugin sends is accepted, dropped with a warning and never
+   forwarded, and model slots have no default temperature. The same rule applies to any
+   wrapper helper
+   (e.g. ``FactStore._allm_call_with_retries`` historically accepted ``temperature=``;
+   it has been removed).
    Rationale: (1) compatibility with models that reject the parameter, such as
    o1/o3/gpt-5-thinking/Claude extended-thinking; (2) per-task custom temperatures
    (0.1/0.2/0.3/0.5/1.0) introduce hard-to-reproduce regressions.
-   Gatekeeper: ``scripts/check_no_temperature.py`` (CI: ``.github/workflows/analyze.yml``).
+   Gatekeeper: ``scripts/check_no_temperature.py`` over the whole repository
+   (CI: ``.github/workflows/analyze.yml``).
 
 2. **Models come from tiers; no hardcoded fallbacks**. Every LLM call goes through
    ``self._config_manager.get_model_api_config('memory'|'recognition'|'vision'|...)``
@@ -43,9 +50,9 @@
    persona.correction + promotion merge → ``correction``). Do not introduce new
    hardcoded model names.
 
-If you have a very specific reason to bypass this, delete
-``scripts/check_no_temperature.py`` first and explain it in the PR description for the
-reviewer to judge.
+If you have a very specific reason to bypass rule 1, add an entry with its reason to
+``EXEMPTIONS`` in ``scripts/check_no_temperature.py`` and explain it in the PR
+description for the reviewer to judge.
 """
 import os
 import shutil

@@ -1262,6 +1262,11 @@ class StorageRootsMixin:
         except Exception as e:
             print(f"Error saving {filename}: {e}", file=sys.stderr)
             raise
+        finally:
+            # Hot-path readers (get_core_config) see this write on their next read.
+            from utils.config_manager.read_cache import invalidate
+
+            invalidate(config_path)
     
     def assert_json_config_writable(self, filename):
         """Run the same write fence as ``save_json_config`` without writing.

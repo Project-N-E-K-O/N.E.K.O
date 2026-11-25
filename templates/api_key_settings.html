@@ -214,6 +214,7 @@
                                 </label>
                             </div>
                         </div>
+                        <p id="subscription-summary" class="subscription-summary" role="status" hidden></p>
                         <div class="field-row">
                             <label for="assistApiKeyInput">
                                 <span data-i18n="api.assistApiKeyLabel">通用模型 API Key</span>
@@ -280,26 +281,34 @@
                         </div>
                     </div>
 
-                    <section id="chatgpt-settings" class="section" aria-labelledby="chatgpt-toggle-btn">
-                        <button type="button" id="chatgpt-toggle-btn" aria-expanded="false" aria-controls="chatgpt-options">
+                    <section id="subscriptions-settings" class="section" aria-labelledby="subscriptions-toggle-btn">
+                        <button type="button" id="subscriptions-toggle-btn" aria-expanded="false" aria-controls="subscriptions-options">
                             <img src="/static/icons/dropdown_arrow.png" alt="" class="dropdown-icon">
-                            <span data-i18n="api.chatgpt.title">ChatGPT 订阅</span>
+                            <span data-i18n="api.subscriptions.title">订阅与套餐</span>
                         </button>
-                        <div id="chatgpt-options" hidden>
-                            <p data-i18n="api.chatgpt.description">使用 ChatGPT 订阅额度进行文字对话和图像理解。语音识别与语音合成继续使用各自的服务商。</p>
-                            <div class="field-row">
-                                <label for="chatgpt-account" data-i18n="api.chatgpt.account">ChatGPT 账号</label>
-                                <select id="chatgpt-account"></select>
+                        <div id="subscriptions-options" hidden>
+                            <p data-i18n="api.subscriptions.description">登录或填好一个订阅后，勾选要交给它的功能并打开开关，这些功能就改用订阅额度；关掉就回到原来的设置。原来的设置不会被改动。「按功能单独指定模型」里单独指定好的功能优先于订阅。</p>
+                            <p id="subscriptions-load-error" class="subscription-message" role="status" hidden></p>
+                            <div id="subscription-cards">
+                                <div id="chatgpt-settings" class="subscription-card" data-plan="chatgpt">
+                                    <div class="subscription-card-header" data-role="header"></div>
+                                    <p data-i18n="api.chatgpt.description">使用 ChatGPT 订阅额度进行文字对话和图像理解。语音识别与语音合成继续使用各自的服务商。</p>
+                                    <div class="field-row">
+                                        <label for="chatgpt-account" data-i18n="api.chatgpt.account">ChatGPT 账号</label>
+                                        <select id="chatgpt-account"></select>
+                                    </div>
+                                    <div class="chatgpt-actions">
+                                        <button type="button" class="gsv-tutorial-link" id="chatgpt-login" data-oai-siwc-button data-i18n="api.chatgpt.login">Continue with ChatGPT</button>
+                                        <button type="button" class="gsv-tutorial-link" id="chatgpt-add" data-i18n="api.chatgpt.add">添加账号</button>
+                                        <button type="button" class="gsv-tutorial-link" id="chatgpt-logout" data-i18n="api.chatgpt.logout">退出所选账号</button>
+                                    </div>
+                                    <p id="chatgpt-status" role="status" aria-live="polite"></p>
+                                    <a id="chatgpt-authorization" hidden target="_blank" rel="noopener noreferrer" data-i18n="api.chatgpt.login">Continue with ChatGPT</a>
+                                    <p id="chatgpt-instructions" data-i18n="api.chatgpt.instructions">登录后，在下面勾选要交给 ChatGPT 的功能、选好模型，再打开「使用这个订阅」。核心 API、TTS 和 ASR 不受影响。</p>
+                                    <div class="subscription-card-body" data-role="body"></div>
+                                    <a class="gsv-tutorial-link" href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener noreferrer" data-i18n="api.chatgpt.usage">查看 ChatGPT 用量与权限</a>
+                                </div>
                             </div>
-                            <div class="chatgpt-actions">
-                                <button type="button" class="gsv-tutorial-link" id="chatgpt-login" data-oai-siwc-button data-i18n="api.chatgpt.login">Continue with ChatGPT</button>
-                                <button type="button" class="gsv-tutorial-link" id="chatgpt-add" data-i18n="api.chatgpt.add">添加账号</button>
-                                <button type="button" class="gsv-tutorial-link" id="chatgpt-logout" data-i18n="api.chatgpt.logout">退出所选账号</button>
-                            </div>
-                            <p id="chatgpt-status" role="status" aria-live="polite"></p>
-                            <a id="chatgpt-authorization" hidden target="_blank" rel="noopener noreferrer" data-i18n="api.chatgpt.login">Continue with ChatGPT</a>
-                            <p id="chatgpt-instructions" data-i18n="api.chatgpt.instructions">登录后，在下方开启「按功能单独指定模型」，把需要的档位服务商选为「ChatGPT (subscription)」并选好模型，再保存。核心 API、TTS 和 ASR 不受影响。</p>
-                            <a class="gsv-tutorial-link" href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener noreferrer" data-i18n="api.chatgpt.usage">查看 ChatGPT 用量与权限</a>
                         </div>
                     </section>
 
@@ -1097,6 +1106,7 @@
         });
     </script>
     <script src="/static/js/chatgpt_settings.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/subscription_settings.js?v={{ static_asset_version }}"></script>
 </body>
 
 </html>
