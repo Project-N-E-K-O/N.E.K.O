@@ -639,9 +639,16 @@ class _StubUploadFile:
         self.filename = filename
         self.content_type = content_type
         self._data = data
+        self._offset = 0
 
-    async def read(self) -> bytes:
-        return self._data
+    async def read(self, size: int = -1) -> bytes:
+        if size is None or size < 0:
+            chunk = self._data[self._offset:]
+            self._offset = len(self._data)
+            return chunk
+        chunk = self._data[self._offset:self._offset + size]
+        self._offset += len(chunk)
+        return chunk
 
 
 class _FormRequest:
@@ -655,7 +662,7 @@ class _FormRequest:
 @pytest.fixture
 def export_folder(tmp_path, monkeypatch):
     """A content folder under WorkshopExport, which is all the routes accept."""
-    from main_routers.workshop_router import voice_refs
+    from main_routers.workshop_router import preview_cards, voice_refs
 
     folder = tmp_path / 'WorkshopExport' / 'item_abc123'
     folder.mkdir(parents=True)
@@ -665,6 +672,7 @@ def export_folder(tmp_path, monkeypatch):
 
     monkeypatch.setattr(voice_refs, 'get_workshop_path_async', _workshop_path)
     monkeypatch.setattr(publish, 'get_workshop_path_async', _workshop_path)
+    monkeypatch.setattr(preview_cards, 'get_workshop_path_async', _workshop_path)
     return folder
 
 
@@ -688,12 +696,18 @@ async def test_uploading_during_a_publish_answers_409(export_folder):
 async def test_uploading_a_preview_image_during_a_publish_answers_409(
     export_folder,
 ):
+    import io
+    from PIL import Image
     from main_routers.workshop_router import preview_cards
+
+    buf = io.BytesIO()
+    Image.new('RGB', (2, 2), color=(1, 2, 3)).save(buf, format='PNG')
+    png_bytes = buf.getvalue()
 
     with claim_content_folder(str(export_folder), purpose=PUBLISH_PURPOSE):
         response = await preview_cards.upload_preview_image(_FormRequest({
             'file': _StubUploadFile(
-                'cover.png', b'png-bytes', content_type='image/png'
+                'cover.png', png_bytes, content_type='image/png'
             ),
             'content_folder': str(export_folder),
         }))
@@ -4336,8 +4350,8 @@ def _is_allowed_unclaimed(
 # worker-local partial claim + atomic write after #2627 and is no longer debt.
 _KNOWN_GAPS = {
     # Bind to exact source locations, not same-name operation counts within a function; fixing old sites and adding new ones are not interchangeable.
-    ('publish', 'publish_to_workshop', 645, 'copy2'),
-    ('publish', 'publish_to_workshop', 669, 'copy2'),
+    ('publish', 'publish_to_workshop', 762, 'copy2'),
+    ('publish', 'publish_to_workshop', 849, 'copy2'),
 }
 
 

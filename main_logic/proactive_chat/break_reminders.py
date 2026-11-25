@@ -304,7 +304,7 @@ async def _deliver_break_reminder_via_llm(
         chat_base_url = chat_config.get("base_url")
         chat_api_key = chat_config.get("api_key")
         chat_provider_type = chat_config.get("provider_type")
-        if not chat_model or not chat_api_key:
+        if not chat_model or (not chat_api_key and chat_provider_type != 'chatgpt'):
             logger.warning(
                 "[%s] break reminder skipped: conversation model misconfigured",
                 lanlan_name,

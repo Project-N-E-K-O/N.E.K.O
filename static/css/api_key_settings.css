@@ -944,7 +944,7 @@ opacity: 0.95 !important;
 
 /* Rotated state for collapsible buttons */
 #custom-api-toggle-btn.rotated .dropdown-icon,
-#key-book-toggle-btn.rotated .dropdown-icon {
+:is(#key-book-toggle-btn, #chatgpt-toggle-btn).rotated .dropdown-icon {
     transform: translateY(-50%) rotate(180deg);
 }
 
@@ -1726,7 +1726,7 @@ input:checked + .slider:before {
     margin-top: 0;
 }
 
-#key-book-toggle-btn {
+:is(#key-book-toggle-btn, #chatgpt-toggle-btn) {
     background: linear-gradient(to right, #40d3f9, #17a7ff) !important;
     background-color: transparent !important;
     border: 3px solid #d8f6ff !important;
@@ -1751,7 +1751,7 @@ input:checked + .slider:before {
     box-sizing: border-box;
 }
 
-#key-book-toggle-btn .dropdown-icon {
+:is(#key-book-toggle-btn, #chatgpt-toggle-btn) .dropdown-icon {
     display: block !important;
     position: absolute;
     left: 12px;
@@ -1766,7 +1766,7 @@ input:checked + .slider:before {
     transition: transform 0.2s;
 }
 
-#key-book-toggle-btn span {
+:is(#key-book-toggle-btn, #chatgpt-toggle-btn) span {
     position: relative;
     z-index: 20;
     margin: 0 !important;
@@ -1788,13 +1788,13 @@ input:checked + .slider:before {
     line-height: 1.2;
 }
 
-#key-book-toggle-btn:hover:not(:disabled) {
+:is(#key-book-toggle-btn, #chatgpt-toggle-btn):hover:not(:disabled) {
     opacity: 0.9;
     transform: translateY(-1px);
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1) !important;
 }
 
-#key-book-toggle-btn:active:not(:disabled) {
+:is(#key-book-toggle-btn, #chatgpt-toggle-btn):active:not(:disabled) {
     transform: translateY(1px) scale(0.98) !important;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
     opacity: 0.95 !important;
@@ -2187,3 +2187,10 @@ font-size: 0.8em;
         box-shadow: 0 0 6px rgba(64, 197, 241, 0.5);
     }
 }
+
+#chatgpt-settings { margin-top: 0; }
+#chatgpt-options { padding: 16px; background: #f0f9ff; border: 1px solid #d0e8ff; border-radius: 12px; }
+.chatgpt-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+#chatgpt-options .gsv-tutorial-link { cursor: pointer; white-space: normal; }
+#chatgpt-options button:disabled { opacity: .5; cursor: default; }
+#chatgpt-status { overflow-wrap: anywhere; }

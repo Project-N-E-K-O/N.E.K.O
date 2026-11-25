@@ -1015,9 +1015,13 @@ def test_paid_core_key_not_overwritten_by_free_assist_on_save(mock_page: Page, r
     # Establish a clean baseline: free-service configuration plus cleared qwen auxiliary key, isolating residual session-server state.
     baseline = mock_page.evaluate("""
         async () => {
+            const cfg = await (await fetch('/api/config/page_config', { cache: 'no-store' })).json();
             const r = await fetch('/api/config/core_api', {
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-Token': cfg.autostart_csrf_token || '',
+                },
                 body: JSON.stringify({
                     coreApiKey: 'free-access', coreApi: 'free',
                     assistApi: 'free', assistApiKeyQwen: '', enableCustomApi: false,

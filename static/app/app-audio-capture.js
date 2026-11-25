@@ -875,19 +875,58 @@
         }
         const requestId = gameVoiceRequestId();
         console.log(`[GameVoiceSTT] 最终转写 | game=${gameType} request=${requestId} text="${text}"`);
+        async function getGameVoiceSttMutationHeaders(forceRefresh) {
+            try {
+                const security = window.nekoLocalMutationSecurity;
+                if (security && typeof security.getMutationHeaders === 'function') {
+                    if (forceRefresh && typeof security.refreshToken === 'function') {
+                        await security.refreshToken();
+                    }
+                    const headers = await security.getMutationHeaders();
+                    if (headers && typeof headers === 'object') {
+                        return headers;
+                    }
+                }
+            } catch (_) { /* fall back to page_config */ }
+            try {
+                const cfgResp = await fetch('/api/config/page_config', { cache: 'no-store' });
+                const cfg = cfgResp && cfgResp.ok ? await cfgResp.json() : null;
+                const token = cfg && cfg.autostart_csrf_token;
+                if (typeof token === 'string' && token) {
+                    return { 'X-CSRF-Token': token };
+                }
+            } catch (_) { /* guarded POST will surface rejection */ }
+            return {};
+        }
         try {
-            const response = await fetch(`/api/game/${encodeURIComponent(gameType)}/route/voice-transcript`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    lanlan_name: lanlanName,
-                    session_id: sessionId,
-                    sdk_route_instance_id: routeInstanceId,
-                    transcript: text,
-                    request_id: requestId,
-                    source: 'main_voice_stt_gate'
-                })
+            const url = `/api/game/${encodeURIComponent(gameType)}/route/voice-transcript`;
+            const bodyJson = JSON.stringify({
+                lanlan_name: lanlanName,
+                session_id: sessionId,
+                sdk_route_instance_id: routeInstanceId,
+                transcript: text,
+                request_id: requestId,
+                source: 'main_voice_stt_gate'
             });
+            async function sendOnce(forceRefresh) {
+                const csrfHeaders = await getGameVoiceSttMutationHeaders(forceRefresh);
+                return fetch(url, {
+                    method: 'POST',
+                    headers: Object.assign({ 'Content-Type': 'application/json' }, csrfHeaders),
+                    body: bodyJson
+                });
+            }
+            let response = await sendOnce(false);
+            if (response.status === 403 && typeof response.clone === 'function') {
+                let shouldRetryCsrf = false;
+                try {
+                    const errPayload = await response.clone().json();
+                    shouldRetryCsrf = Boolean(errPayload && errPayload.error_code === 'csrf_validation_failed');
+                } catch (_) { /* keep original 403 */ }
+                if (shouldRetryCsrf) {
+                    response = await sendOnce(true);
+                }
+            }
             const result = await response.json().catch(() => null);
             if (!response.ok) {
                 console.warn('[GameVoiceSTT] transcript route failed:', response.status, result);
