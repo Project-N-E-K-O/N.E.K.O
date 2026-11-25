@@ -407,6 +407,7 @@ from main_routers.tool_router import router as tool_router  # noqa
 from main_routers.vrm_router import router as vrm_router  # noqa
 from main_routers.vmc_router import router as vmc_router  # noqa
 from main_routers.voice_identity_router import router as voice_identity_router  # noqa
+from main_routers.audio_message_router import router as audio_message_router  # noqa
 from main_routers.websocket_router import router as websocket_router  # noqa
 from main_routers.workshop_router import router as workshop_router  # noqa
 from main_routers.cookies_login_router import router as cookies_login_router  # noqa
@@ -1046,6 +1047,7 @@ app.include_router(community_oauth_callback_router)  # Exact /oauth/callback bef
 # WebSocket data plane at /api/vmc/ws (kept off the chat/session channel).
 app.include_router(vmc_router)
 app.include_router(voice_identity_router)
+app.include_router(audio_message_router)
 app.include_router(
     cookies_login_router
 )  # Cookie-login routes go last to avoid conflicts with other API routes.

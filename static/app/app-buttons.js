@@ -1949,6 +1949,158 @@
     mod.normalizeAvatarInteractionPayload = normalizeAvatarInteractionPayload;
     mod.sendAvatarInteractionPayload = sendAvatarInteractionPayload;
 
+    // ===== 语音消息：录音 -> 离线 ASR 转写 -> 按普通文字消息发送（不保存原音） =====
+    var AUDIO_MESSAGE_API = '/api/audio-message';
+    // 后端返回这些错误码时，当前线路在用户改配置前都不会成功：收起麦克风按钮
+    var AUDIO_MESSAGE_ROUTE_ERRORS = {
+        ASR_OFFLINE_NOT_SUPPORTED: true,
+        ASR_CREDENTIALS_MISSING: true,
+        ASR_CREDENTIALS_REJECTED: true,
+        ASR_DEPENDENCY_MISSING: true,
+        ASR_BACKEND_BLOCKED: true,
+        ASR_UNKNOWN_CORE: true,
+        ASR_INVALID_CONFIG: true
+    };
+    var audioMessageAvailabilitySeq = 0;
+    var audioMessageCheckedTarget = null;
+
+    function audioMessageRejection(message) {
+        var error = new Error(message || 'failed');
+        error.name = 'AudioMessageRejected';
+        return error;
+    }
+
+    function currentAudioMessageTarget() {
+        var config = window.lanlan_config;
+        return config && typeof config.lanlan_name === 'string' ? config.lanlan_name.trim() : '';
+    }
+
+    async function audioMessageMutationHeaders(forceRefresh) {
+        var headers = { 'Content-Type': 'application/json' };
+        var security = window.nekoLocalMutationSecurity;
+        if (security && typeof security.getMutationHeaders === 'function') {
+            try {
+                if (forceRefresh && typeof security.refreshToken === 'function') {
+                    await security.refreshToken();
+                }
+                Object.assign(headers, await security.getMutationHeaders());
+            } catch (_) { /* 被拒时后端返回 csrf_validation_failed，下面重试一次 */ }
+        }
+        return headers;
+    }
+
+    async function requestAudioMessageTranscript(payload) {
+        var body = JSON.stringify({
+            requestId: payload.requestId,
+            target: payload.target,
+            audio: payload.audio,
+            sampleRateHz: payload.sampleRateHz
+        });
+        for (var attempt = 0; attempt < 2; attempt++) {
+            var response = await fetch(AUDIO_MESSAGE_API + '/transcribe', {
+                method: 'POST',
+                headers: await audioMessageMutationHeaders(attempt > 0),
+                body: body
+            });
+            var data = null;
+            try { data = await response.json(); } catch (_) { data = null; }
+            if (attempt === 0 && data && data.error_code === 'csrf_validation_failed') continue;
+            return { ok: !!(response.ok && data && data.ok === true), data: data || {} };
+        }
+        return { ok: false, data: { error_code: 'csrf_validation_failed' } };
+    }
+
+    // 聊天窗 onComposerAudioMessage 的实现。成功（含"没识别到语音"）时 resolve，草稿随之清除；
+    // 拒绝时 message 为 'busy' 提示稍后重试，其余为一般失败。重试沿用同一 requestId，
+    // 后端据此合并进行中的转写、复用已出的转写结果，不会重复计费。
+    async function sendAudioMessagePayload(payload) {
+        if (!payload || typeof payload.requestId !== 'string' || typeof payload.audio !== 'string') {
+            throw audioMessageRejection('invalid');
+        }
+        if (payload.target !== currentAudioMessageTarget()) {
+            refreshAudioMessageAvailability();
+            throw audioMessageRejection('stale_target');
+        }
+        var result;
+        try {
+            result = await requestAudioMessageTranscript(payload);
+        } catch (error) {
+            console.warn('[AudioMessage] 转写请求失败:', error);
+            throw audioMessageRejection('network');
+        }
+        if (!result.ok) {
+            var code = String(result.data.error_code || 'failed');
+            console.warn('[AudioMessage] 转写失败:', code);
+            if (code === 'ASR_RATE_LIMITED') throw audioMessageRejection('busy');
+            if (AUDIO_MESSAGE_ROUTE_ERRORS[code]) refreshAudioMessageAvailability();
+            throw audioMessageRejection(code);
+        }
+        var text = typeof result.data.text === 'string' ? result.data.text.trim() : '';
+        if (!text) {
+            window.showStatusToast(
+                window.t ? window.t('chat.audioMessageNoSpeech') : 'No speech was recognised in the recording.',
+                4000
+            );
+            return true;
+        }
+        var accepted = await mod.sendTextPayload(text, {
+            source: 'react-chat-window',
+            requestId: payload.requestId,
+            // 语音消息只发转写文本，不带走输入框里待发送的图片
+            ignoreComposerAttachments: true
+        });
+        if (accepted === false) throw audioMessageRejection('busy');
+        return true;
+    }
+
+    // 只有当前线路能离线转写时才把目标角色交给聊天窗（聊天窗据此显示麦克风按钮）
+    async function refreshAudioMessageAvailability() {
+        var host = window.reactChatWindowHost;
+        if (!host || typeof host.setAudioMessageTarget !== 'function') return;
+        var target = currentAudioMessageTarget();
+        var seq = ++audioMessageAvailabilitySeq;
+        audioMessageCheckedTarget = target;
+        var supported = false;
+        if (target) {
+            try {
+                var response = await fetch(
+                    AUDIO_MESSAGE_API + '/status?target=' + encodeURIComponent(target),
+                    { cache: 'no-store' }
+                );
+                var data = response.ok ? await response.json() : null;
+                supported = !!(data && data.supported === true);
+            } catch (error) {
+                console.warn('[AudioMessage] 查询可用性失败:', error);
+            }
+        }
+        if (seq !== audioMessageAvailabilitySeq) return;
+        host.setAudioMessageTarget(supported ? target : '');
+    }
+
+    function bindAudioMessageHost(host) {
+        if (typeof host.setOnComposerAudioMessage !== 'function'
+                || typeof host.setAudioMessageTarget !== 'function') {
+            return;
+        }
+        host.setOnComposerAudioMessage(sendAudioMessagePayload);
+        refreshAudioMessageAvailability();
+        if (mod._audioMessageWatchBound) return;
+        mod._audioMessageWatchBound = true;
+        // 切换角色不发事件：每秒本地比对一次角色名，变了才去查状态；
+        // 回到窗口时也查一次，覆盖在设置页刚填好 key 的情况
+        window.setInterval(function () {
+            if (currentAudioMessageTarget() !== audioMessageCheckedTarget) {
+                refreshAudioMessageAvailability();
+            }
+        }, 1000);
+        window.addEventListener('focus', function () {
+            refreshAudioMessageAvailability();
+        });
+    }
+
+    mod.sendAudioMessagePayload = sendAudioMessagePayload;
+    mod.refreshAudioMessageAvailability = refreshAudioMessageAvailability;
+
     function clearReactChatWindowHostBindingPoll() {
         if (!mod._reactChatWindowHostBindingPollId) {
             return;
@@ -2005,6 +2157,8 @@
         host.setOnAvatarInteraction(function (payload) {
             return mod.sendAvatarInteractionPayload(payload);
         });
+
+        bindAudioMessageHost(host);
 
         mod._boundReactChatWindowHost = host;
         mod.syncPendingComposerAttachments();

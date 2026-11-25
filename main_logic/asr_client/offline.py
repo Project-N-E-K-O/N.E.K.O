@@ -47,6 +47,7 @@ from dataclasses import dataclass, field
 from typing import Any, Final
 
 import httpx
+import numpy as np
 
 from . import (
     _CORE_ASR_ROUTES,
@@ -199,6 +200,28 @@ async def _close_client(client: Any) -> None:
             return
 
 
+# A segment is sent only if it has some speech-level energy. Model-audio
+# providers (Gemini in live tests) invent text for silence, e.g. two seconds
+# of digital silence came back as an English sentence, so an empty or
+# noise-only voice message must never reach them. 20 ms frames; speech peaks
+# around 7,000-14,000 RMS, a quiet room stays well below 200 (about -44 dBFS).
+_SILENCE_FRAME_SAMPLES = 320
+_SILENCE_FRAME_RMS = 200.0
+_MIN_VOICED_FRAMES = 5  # 100 ms
+
+
+def is_silent_pcm16(pcm16: bytes) -> bool:
+    """Whether 16 kHz PCM16 holds less than 100 ms above the speech floor."""
+
+    samples = np.frombuffer(pcm16, dtype="<i2").astype(np.float32)
+    usable = len(samples) - len(samples) % _SILENCE_FRAME_SAMPLES
+    if usable == 0:
+        return True
+    frames = samples[:usable].reshape(-1, _SILENCE_FRAME_SAMPLES)
+    rms = np.sqrt(np.mean(frames * frames, axis=1))
+    return int(np.count_nonzero(rms >= _SILENCE_FRAME_RMS)) < _MIN_VOICED_FRAMES
+
+
 def split_pcm16_segments(pcm16: bytes, max_segment_ms: int) -> list[bytes]:
     """Split 16 kHz PCM16 into the fewest equal segments within the limit.
 
@@ -315,12 +338,12 @@ async def _request_grok(
 async def _request_gemini(
     transcriber: "OfflineAsrTranscriber", pcm16: bytes, language: str, client: Any
 ) -> str:
-    _ = language  # The shared prompt preserves the spoken language.
     return await _gemini_worker.request_gemini_transcript(
         client,
         encode_pcm16_wav(pcm16),
         model=transcriber.spec.model or _gemini_worker._GEMINI_MODEL,
         timeout_seconds=transcriber.spec.request_timeout_ms / 1000,
+        language=language,
     )
 
 
@@ -389,7 +412,8 @@ class OfflineAsrTranscriber:
 
         ``language`` is a hint ("zh", "en-US", "auto", ...); values the
         provider cannot take fall back to automatic detection, exactly like
-        realtime sessions. Silence yields ``""``.
+        realtime sessions. Silence yields ``""`` without contacting the
+        provider; silent segments of a longer recording are skipped.
         """
 
         if not isinstance(pcm16, (bytes, bytearray, memoryview)):
@@ -412,7 +436,13 @@ class OfflineAsrTranscriber:
                 provider_key=self.provider_key,
             )
         assert self.spec.max_segment_ms is not None
-        segments = split_pcm16_segments(audio, self.spec.max_segment_ms)
+        segments = [
+            segment
+            for segment in split_pcm16_segments(audio, self.spec.max_segment_ms)
+            if not is_silent_pcm16(segment)
+        ]
+        if not segments:
+            return ""
         session_language = _resolve_session_language(self.provider_key, language)
         if self.spec.mode == "session":
             texts = await self._transcribe_with_session(segments, session_language)

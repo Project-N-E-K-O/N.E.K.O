@@ -994,6 +994,16 @@
         setOnComposerSubmit: function (handler) {
             I.state.onComposerSubmit = typeof handler === 'function' ? handler : null;
         },
+        setOnComposerAudioMessage: function (handler) {
+            I.state.onComposerAudioMessage = typeof handler === 'function' ? handler : null;
+            I.renderWindow();
+        },
+        setAudioMessageTarget: function (target) {
+            var next = typeof target === 'string' ? target.trim() : '';
+            if (I.state.audioMessageTarget === next) return;
+            I.state.audioMessageTarget = next;
+            I.renderWindow();
+        },
         setOnTheaterSubmit: function (handler) {
             I.state.onTheaterSubmit = typeof handler === 'function' ? handler : null;
             I.renderWindow();

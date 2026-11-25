@@ -32,7 +32,13 @@ BYTES_PER_SECOND = SAMPLE_RATE * 2
 
 
 def _pcm(seconds: float) -> bytes:
-    return b"\x01\x00" * int(SAMPLE_RATE * seconds)
+    # A +/-3000 square wave: well above the offline silence gate.
+    samples = int(SAMPLE_RATE * seconds)
+    return (b"\xb8\x0b\x48\xf4" * (samples // 2 + 1))[: samples * 2]
+
+
+def _silence(seconds: float) -> bytes:
+    return b"\x00\x00" * int(SAMPLE_RATE * seconds)
 
 
 def _selection(provider_key: str, *, api_key: str = "key", worker_fn: Any = None):
@@ -192,7 +198,7 @@ def test_split_keeps_short_recordings_whole() -> None:
 
 
 def test_split_long_recording_into_equal_segments_without_losing_samples() -> None:
-    audio = _pcm(30) + b"\x02\x00"  # one extra sample: uneven total
+    audio = _pcm(30) + b"\xb8\x0b"  # one extra sample: uneven total
     segments = offline.split_pcm16_segments(audio, 27_000)
     assert len(segments) == 2
     assert b"".join(segments) == audio
@@ -223,6 +229,39 @@ async def test_invalid_audio_is_rejected_before_any_request(http_client, audio, 
         await _transcriber("glm").transcribe(audio, sample_rate_hz=rate)
     assert caught.value.code == "ASR_OFFLINE_INVALID_AUDIO"
     assert client.calls == []
+
+
+# --------------------------------------------------------------------------
+# Silence gate
+
+
+def test_silence_gate() -> None:
+    assert offline.is_silent_pcm16(_silence(2))
+    assert offline.is_silent_pcm16(b"")
+    # Low room noise (+/-100, about -50 dBFS) stays below the speech floor.
+    assert offline.is_silent_pcm16(b"\x64\x00\x9c\xff" * 16_000)
+    # 60 ms of speech-level signal is a click, not speech; 120 ms counts.
+    assert offline.is_silent_pcm16(_silence(1) + _pcm(0.06) + _silence(1))
+    assert not offline.is_silent_pcm16(_silence(1) + _pcm(0.12) + _silence(1))
+
+
+async def test_silent_recording_returns_empty_without_a_request(http_client) -> None:
+    client = http_client()
+    assert await _transcriber("glm").transcribe(_silence(5)) == ""
+    assert client.calls == []
+
+
+async def test_silent_segments_of_a_long_recording_are_skipped(http_client) -> None:
+    client = http_client(_FakeResponse({"text": "后半"}))
+    assert await _transcriber("glm").transcribe(_silence(15) + _pcm(15)) == "后半"
+    assert len(client.calls) == 1
+
+
+async def test_session_route_skips_silence_too() -> None:
+    seen: list[Any] = []
+    transcriber = _transcriber("qwen", worker_fn=_fake_stream_worker(seen=seen))
+    assert await transcriber.transcribe(_silence(3)) == ""
+    assert seen == []  # no session was opened
 
 
 # --------------------------------------------------------------------------
@@ -257,7 +296,8 @@ async def test_glm_splits_thirty_seconds_and_joins_in_order(http_client) -> None
         (_FakeResponse({}, status_code=401), "ASR_CREDENTIALS_REJECTED", "ASR_CREDENTIALS_REJECTED"),
         (_FakeResponse({}, status_code=429), "ASR_RATE_LIMITED", "ASR_GLM_ERROR"),
         (_FakeResponse({}, status_code=400), "ASR_OFFLINE_PROVIDER_REJECTED", "ASR_GLM_ERROR"),
-        (_FakeResponse({}, status_code=503), "ASR_OFFLINE_PROVIDER_FAILED", "ASR_GLM_ERROR"),
+        (_FakeResponse({}, status_code=503), "ASR_RATE_LIMITED", "ASR_GLM_ERROR"),
+        (_FakeResponse({}, status_code=500), "ASR_OFFLINE_PROVIDER_FAILED", "ASR_GLM_ERROR"),
         (httpx.ReadTimeout("slow"), "ASR_OFFLINE_TIMEOUT", "ASR_GLM_TIMEOUT"),
         (_FakeResponse({"no_text": 1}), "ASR_OFFLINE_INVALID_RESPONSE", "ASR_GLM_PROTOCOL_ERROR"),
         (_FakeResponse(ValueError("not json")), "ASR_OFFLINE_INVALID_RESPONSE", "ASR_GLM_PROTOCOL_ERROR"),
@@ -408,6 +448,10 @@ class _GeminiAuthError(Exception):
     code = 401
 
 
+class _GeminiOverloaded(Exception):
+    code = 503
+
+
 async def test_gemini_success_and_split(monkeypatch) -> None:
     client = _FakeGeminiClient("第一段", "第二段")
     monkeypatch.setattr(offline, "_create_gemini_client", lambda key: client)
@@ -425,6 +469,7 @@ async def test_gemini_success_and_split(monkeypatch) -> None:
     [
         (_GeminiAuthError("bad key"), "ASR_CREDENTIALS_REJECTED"),
         (RuntimeError("boom"), "ASR_OFFLINE_PROVIDER_FAILED"),
+        (_GeminiOverloaded("high demand"), "ASR_RATE_LIMITED"),
         (ValueError("bad json"), "ASR_OFFLINE_INVALID_RESPONSE"),
     ],
 )

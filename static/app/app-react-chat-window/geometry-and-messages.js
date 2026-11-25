@@ -1633,6 +1633,11 @@
             onComposerScreenshot: I.handleComposerScreenshot,
             onComposerRemoveAttachment: I.handleComposerRemoveAttachment,
             onComposerSubmit: I.handleComposerSubmit,
+            // 两者都有时聊天窗才显示语音消息按钮
+            audioMessageTarget: typeof I.state.onComposerAudioMessage === 'function'
+                ? (I.state.audioMessageTarget || undefined) : undefined,
+            onComposerAudioMessage: typeof I.state.onComposerAudioMessage === 'function'
+                ? I.handleComposerAudioMessage : undefined,
             onTheaterSubmit: typeof I.state.onTheaterSubmit === 'function'
                 ? I.handleTheaterSubmit : undefined,
             onAvatarInteraction: I.handleAvatarInteraction,

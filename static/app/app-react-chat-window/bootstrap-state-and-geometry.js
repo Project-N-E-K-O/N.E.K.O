@@ -152,6 +152,9 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
         onComposerScreenshot: null,
         onComposerRemoveAttachment: null,
         onComposerSubmit: null,
+        // 语音消息：宿主给出发送回调和目标角色后，聊天窗才显示麦克风按钮
+        onComposerAudioMessage: null,
+        audioMessageTarget: '',
         onTheaterSubmit: null,
         onTheaterSuggestedInputSelect: null,
         onTheaterEnd: null,

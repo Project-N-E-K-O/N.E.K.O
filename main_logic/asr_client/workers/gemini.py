@@ -32,6 +32,7 @@ from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
 from ..delivery import begin_transport_write, complete_transport_write, interval_delivery_spans, retire_interval_deliveries
 from ._shared import (
     MAX_SEGMENT_PCM_BYTES,
+    RETRY_LATER_STATUSES,
     AsrRequestFailure,
     encode_pcm16_wav,
     is_auth_rejection,
@@ -139,6 +140,32 @@ def _is_auth_rejection(exc: BaseException) -> bool:
     return _has_google_api_key_rejection(getattr(exc, "details", None))
 
 
+_TRADITIONAL_CHINESE_HINTS = ("zh-tw", "zh-hk", "zh-mo", "zh-hant")
+
+
+def _language_hint(language: str | None) -> str:
+    """One prompt line naming the expected language, or "" for detection.
+
+    Without it Gemini picks the Chinese script on its own (live tests returned
+    Traditional characters for Mandarin from a zh-CN user).
+    """
+
+    normalized = str(language or "").strip().lower().replace("_", "-")
+    if not normalized or normalized == "auto":
+        return ""
+    if normalized.startswith("zh"):
+        if normalized.startswith(_TRADITIONAL_CHINESE_HINTS):
+            return (
+                "\nThe user reads Traditional Chinese: write all Chinese text in "
+                "Traditional characters only, never Simplified."
+            )
+        return (
+            "\nThe user reads Simplified Chinese: write all Chinese text in "
+            "Simplified characters only, never Traditional."
+        )
+    return f"\nThe speech is most likely in the language with BCP-47 code {normalized}."
+
+
 async def request_gemini_transcript(
     client: Any,
     wav_audio: bytes,
@@ -147,13 +174,15 @@ async def request_gemini_transcript(
     timeout_seconds: float | None = None,
     single_attempt: bool = False,
     on_sent: Callable[[], None] | None = None,
+    language: str | None = None,
 ) -> str:
     """Transcribe one WAV file with Gemini; shared with the offline layer.
 
     Raises :class:`AsrRequestFailure` (``ASR_GEMINI_TIMEOUT``,
     ``ASR_GEMINI_INVALID_RESPONSE``, ``ASR_CREDENTIALS_REJECTED`` or
     ``ASR_GEMINI_REQUEST_FAILED``). ``single_attempt`` disables SDK retries,
-    which protected-delivery audio requires.
+    which protected-delivery audio requires. ``language`` (offline only; the
+    realtime worker never passes it) adds a script/language hint.
     """
 
     try:
@@ -164,7 +193,7 @@ async def request_gemini_transcript(
                     {
                         "role": "user",
                         "parts": [
-                            {"text": _GEMINI_TRANSCRIPTION_PROMPT},
+                            {"text": _GEMINI_TRANSCRIPTION_PROMPT + _language_hint(language)},
                             {
                                 "inline_data": {
                                     "mime_type": "audio/wav",
@@ -224,7 +253,7 @@ async def request_gemini_transcript(
             "Gemini ASR request failed",
             kind=(
                 "rate_limited"
-                if status == 429
+                if status in RETRY_LATER_STATUSES
                 else "rejected"
                 if isinstance(status, int) and 400 <= status < 500
                 else "failed"

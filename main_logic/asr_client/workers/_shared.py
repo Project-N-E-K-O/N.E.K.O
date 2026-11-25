@@ -66,6 +66,12 @@ AsrRequestFailureKind = Literal[
 ]
 
 
+# Statuses that mean "try again shortly" rather than "this request is wrong":
+# throttling and a provider's temporary overload (Gemini answers 503
+# UNAVAILABLE under high demand).
+RETRY_LATER_STATUSES = frozenset({429, 503})
+
+
 class AsrRequestFailure(Exception):
     """One failed provider request with a machine code and a coarse kind.
 
