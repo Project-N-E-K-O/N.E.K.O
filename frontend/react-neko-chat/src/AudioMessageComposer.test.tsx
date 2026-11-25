@@ -65,13 +65,13 @@ describe('recording draft submission', () => {
     const onAudioMessageActiveChange = vi.fn();
     const props = { audioMessageTarget: 'YUI', onComposerAudioMessage: vi.fn(), onAudioMessageActiveChange };
     const view = render(<App {...props} chatSurfaceMode="compact" />);
-    expect(onAudioMessageActiveChange).toHaveBeenLastCalledWith(false);
+    expect(onAudioMessageActiveChange).toHaveBeenLastCalledWith(false, 'idle');
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Record a voice message' })); });
-    expect(onAudioMessageActiveChange).toHaveBeenLastCalledWith(true);
+    expect(onAudioMessageActiveChange).toHaveBeenLastCalledWith(true, 'recording');
     view.rerender(<App {...props} chatSurfaceMode="minimized" />);
     // The control is gone, but the recording is still held by the root.
     expect(screen.queryByRole('button', { name: 'Stop and send' })).toBeNull();
-    expect(onAudioMessageActiveChange).toHaveBeenLastCalledWith(true);
+    expect(onAudioMessageActiveChange).toHaveBeenLastCalledWith(true, 'recording');
   });
 
   it('discards a draft when its character changes', async () => {

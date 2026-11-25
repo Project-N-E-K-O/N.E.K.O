@@ -2025,11 +2025,11 @@
         if (!host || typeof host.setAudioMessageTarget !== 'function') return;
         audioMessageDesiredTarget = target;
         // 角色没变、只是线路不可用时保留草稿：用户改好设置后可以直接重发这条录音。
-        // 实时语音开始时不保留：正在进行的录音必须停下
-        var keepDraft = !target && !!audioMessageAppliedTarget
-            && audioMessageAppliedTarget === currentAudioMessageTarget()
-            && !(options && options.discardDraft);
-        if (host.setAudioMessageTarget(target, { keepDraft: keepDraft }) !== false) {
+        // 实时语音开始时只停掉正在采集的录音（stopCapture），试听 / 发送中的草稿留到请求结束
+        var stopCapture = !!(options && options.stopCapture);
+        var keepDraft = !target && !stopCapture && !!audioMessageAppliedTarget
+            && audioMessageAppliedTarget === currentAudioMessageTarget();
+        if (host.setAudioMessageTarget(target, { keepDraft: keepDraft, stopCapture: stopCapture }) !== false) {
             audioMessageAppliedTarget = target;
         }
     }
@@ -2038,7 +2038,7 @@
         audioMessageRealtimeBusy = isRealtimeVoiceBusy();
         applyAudioMessageTarget(
             audioMessageRealtimeBusy ? '' : audioMessageSupportedTarget,
-            { discardDraft: audioMessageRealtimeBusy }
+            { stopCapture: audioMessageRealtimeBusy }
         );
     }
 
@@ -2225,7 +2225,9 @@
             } else if (audioMessageDesiredTarget !== null
                     && audioMessageDesiredTarget !== audioMessageAppliedTarget) {
                 // 被推迟的收起：草稿结束后再试
-                applyAudioMessageTarget(audioMessageDesiredTarget);
+                applyAudioMessageTarget(audioMessageDesiredTarget, {
+                    stopCapture: audioMessageRealtimeBusy && !audioMessageDesiredTarget
+                });
             }
         }, 1000);
         window.addEventListener('focus', function () {
