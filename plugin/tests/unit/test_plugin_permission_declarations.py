@@ -1944,6 +1944,11 @@ def test_not_analyzed_parts_are_never_counted(tmp_path):
             "    def go(self):\n        self.sp.run(['ls'])\n",
             "resolved_call",
         ),
+        (
+            "import importlib\nclass P:\n    def __init__(self):\n        self.load = importlib.import_module\n"
+            "    def go(self):\n        self.load('subprocess').run(['ls'])\n",
+            "resolved_call",
+        ),
         ("import importlib\nsp = importlib.import_module('subprocess')\n", "import_only"),
         ("import importlib\nimportlib.import_module('subprocess')\n", "import_only"),
     ],
@@ -1962,12 +1967,17 @@ def test_literal_import_module_is_followed_like_an_import(tmp_path, source, basi
         "__import__('subprocess', fromlist=['run'])\n",
         "import builtins\nbuiltins.__import__('subprocess')\n",
         "import importlib\nimportlib.import_module('not a module')\n",
+        # The import function's name is rebound: the module loaded is unknown.
+        "import importlib\nfor importlib in loaders:\n    importlib.import_module('subprocess')\n",
+        "from importlib import import_module\nwith opener() as import_module:\n    import_module('subprocess')\n",
         "__import__('subprocess.')\n",
         "__import__('.sub')\n",
     ],
 )
 def test_non_literal_dynamic_imports_stay_blind_spots(tmp_path, source):
-    assert [spot["type"] for spot in _scan(tmp_path, source)["blind_spots"]] == ["dynamic_import"]
+    report = _scan(tmp_path, source)
+    assert [spot["type"] for spot in report["blind_spots"]] == ["dynamic_import"]
+    assert "system.process:spawn" not in report["permissions"]
 
 
 def test_a_plugin_defined_import_module_is_not_followed(tmp_path):

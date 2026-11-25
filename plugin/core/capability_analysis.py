@@ -272,12 +272,17 @@ def _literal_import(node: ast.AST, bindings) -> tuple[str, str] | None:
     if not isinstance(node, ast.Call):
         return None
     func = node.func
-    # Only a plain name or name.attr can resolve to these functions; a cheap
-    # test first, as this runs at every level of every call chain.
+    # Only a plain name or name.attr (module.import_module, or an alias such
+    # as self.load) can resolve to these functions; a cheap test first, as
+    # this runs at every level of every call chain.
     if isinstance(func, ast.Name):
         if func.id != "__import__" and func.id not in bindings:
             return None
-    elif not (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and func.attr == "import_module"):
+    elif not (
+        isinstance(func, ast.Attribute)
+        and isinstance(func.value, ast.Name)
+        and (func.attr == "import_module" or f"{func.value.id}.{func.attr}" in bindings)
+    ):
         return None
     resolved, external, bound = _resolve_with_origin(_name(func), bindings)
     if bound and external and resolved == "importlib.import_module":
@@ -1241,8 +1246,9 @@ def _reference_blind_spot(reference: _Reference) -> str | None:
         # A non-literal target is not followed by the scan, so it is a blind
         # spot; so is reaching modules through sys.modules.
         if reference.is_call and name in _DYNAMIC_IMPORT_CALLS:
-            # A literal module is followed like an import (see _literal_import).
-            return None if reference.imported else "dynamic_import"
+            # A literal module is followed like an import (see _literal_import),
+            # unless the import function's name is also rebound in this scope.
+            return None if reference.imported and not reference.rebound else "dynamic_import"
         # Reaching modules through sys.modules (lookups, copies, views,
         # aliases) is dynamic; only a membership test ("x" in sys.modules) is not.
         if _matches(name, ("sys.modules",)) and not reference.membership:
@@ -1523,7 +1529,7 @@ class _PermissionCollector:
                 self.add_blind_spot("dynamic_import", relative, node.lineno, method="import *")
             self._add_import_hints(relative, reference, _import_hints(node))
             return
-        if reference.imported:
+        if reference.imported and not reference.rebound:
             self._add_import_hints(relative, reference, _import_hints(reference.imported))
         row = {
             "file": relative,
