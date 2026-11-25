@@ -250,22 +250,83 @@ def _run_first_peek_notice_harness(
     legacy_local_value: str | None = None,
     storage_throws: bool = False,
     drop_first_toast: bool = False,
+    drop_toasts: int = 0,
     i18n_echoes_key: bool = False,
     toast_kind: str = "dom",
+    bridge_receipt: str = "ack",
 ) -> dict:
     # toast_kind="dom": the page's own toast (bootstrap-goodbye-and-toasts.js),
     # marked and rendering into #status-toast-text.
     # toast_kind="bridge": the desktop shell's IPC bridge, which replaces
     # window.showStatusToast, carries no page marker and never touches this DOM.
+    # bridge_receipt="ack": the toast window (templates/toast.html) posts each
+    # shown notice on the receipt channel; "none": no BroadcastChannel at all.
     assert toast_kind in ("dom", "bridge")
+    assert bridge_receipt in ("ack", "none")
+    if drop_first_toast:
+        drop_toasts = max(drop_toasts, 1)
     script = textwrap.dedent(
         f"""
         const fs = require('fs');
         const vm = require('vm');
         const source = fs.readFileSync({json.dumps(str(APP_WIDGET_MODE_PATH))}, 'utf8');
 
-        let dropNextToast = {json.dumps(drop_first_toast)};
+        let dropToasts = {json.dumps(drop_toasts)};
         const toastKind = {json.dumps(toast_kind)};
+        const bridgeReceipt = {json.dumps(bridge_receipt)};
+
+        // Fake clock: the page's receipt timeout only fires when settle() runs it.
+        const timers = [];
+        let nextTimerId = 1;
+        function fakeSetTimeout(fn, ms) {{
+          const id = nextTimerId++;
+          timers.push({{ id, fn, ms }});
+          return id;
+        }}
+        function fakeClearTimeout(id) {{
+          const index = timers.findIndex((timer) => timer.id === id);
+          if (index >= 0) timers.splice(index, 1);
+        }}
+        const flushMicrotasks = async () => {{
+          for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+        }};
+        async function settle() {{
+          await flushMicrotasks();
+          while (timers.length) {{
+            timers.sort((a, b) => a.ms - b.ms);
+            const timer = timers.shift();
+            timer.fn();
+            await flushMicrotasks();
+          }}
+        }}
+
+        // Same-origin BroadcastChannel shared by the pet page and the toast window.
+        const openChannels = new Set();
+        class FakeBroadcastChannel {{
+          constructor(name) {{
+            this.name = name;
+            this.onmessage = null;
+            openChannels.add(this);
+          }}
+          postMessage() {{}}
+          close() {{ openChannels.delete(this); }}
+        }}
+        function postReceipt(message) {{
+          // What templates/toast.html does after it renders a status notice.
+          for (const channel of Array.from(openChannels)) {{
+            if (channel.name !== 'neko-status-toast-shown') continue;
+            queueMicrotask(() => {{
+              if (openChannels.has(channel) && channel.onmessage) {{
+                channel.onmessage({{ data: {{ message }} }});
+              }}
+            }});
+          }}
+        }}
+        function takeDrop() {{
+          if (dropToasts === 0) return false;
+          if (dropToasts > 0) dropToasts -= 1;
+          return true;
+        }}
         const storageThrows = {json.dumps(storage_throws)};
 
         function makeStorage(data) {{
@@ -307,20 +368,20 @@ def _run_first_peek_notice_harness(
             showStatusToast(message, durationMs) {{
               if (toastKind === 'bridge') {{
                 // ipcRenderer.send('neko:show-toast', ...): shown in another window.
-                // The toast window may still drop it for a higher-priority one,
-                // and the send returns no delivery result to this page.
-                if (dropNextToast) {{
-                  dropNextToast = false;
+                // The shell may still lose it (a higher-priority notice, or the
+                // first notice into a freshly rebuilt toast window), and the send
+                // returns no delivery result to this page.
+                if (takeDrop()) {{
                   notices.push({{ message, durationMs, dropped: true }});
                   return;
                 }}
                 notices.push({{ message, durationMs }});
+                if (bridgeReceipt === 'ack') postReceipt(message);
                 return;
               }}
               // Mirrors the real toast: a higher-priority notice on screen
               // makes it drop this one without rendering anything.
-              if (dropNextToast) {{
-                dropNextToast = false;
+              if (takeDrop()) {{
                 notices.push({{ message, durationMs, dropped: true }});
                 return;
               }}
@@ -340,15 +401,19 @@ def _run_first_peek_notice_harness(
             console,
             CustomEvent: CustomEventLike,
             fetch: async () => ({{ ok: false, status: 503, async json() {{ return {{}}; }} }}),
+            setTimeout: fakeSetTimeout,
+            clearTimeout: fakeClearTimeout,
             Promise,
             Object,
             JSON,
           }};
           vm.createContext(context);
+          if (bridgeReceipt === 'ack') context.BroadcastChannel = FakeBroadcastChannel;
           vm.runInContext(source, context, {{ filename: 'app-widget-mode.js' }});
-          const peek = (detail) => win.dispatchEvent(
-            new CustomEventLike('neko:live2d-peek-changed', {{ detail }})
-          );
+          const peek = async (detail) => {{
+            win.dispatchEvent(new CustomEventLike('neko:live2d-peek-changed', {{ detail }}));
+            await settle();
+          }};
           return {{ notices, peek }};
         }}
 
@@ -363,26 +428,27 @@ def _run_first_peek_notice_harness(
         const localStorage = makeStorage(localData);
         const launch1Session = new Map();
 
+        (async () => {{
         const first = load(localStorage, makeStorage(launch1Session));
         // Visibility toggles of an existing anchor and peek clears are not a new peek.
-        first.peek({{ active: true, visible: false, phase: 'hidden', reason: 'interaction-state' }});
-        first.peek({{ active: false, phase: 'unanchored', reason: 'drag-away-from-edge' }});
+        await first.peek({{ active: true, visible: false, phase: 'hidden', reason: 'interaction-state' }});
+        await first.peek({{ active: false, phase: 'unanchored', reason: 'drag-away-from-edge' }});
         const beforeAnchor = first.notices.length;
-        first.peek(anchor());
-        first.peek({{ active: false, phase: 'unanchored', reason: 'drag-away-from-edge' }});
-        first.peek(anchor());
+        await first.peek(anchor());
+        await first.peek({{ active: false, phase: 'unanchored', reason: 'drag-away-from-edge' }});
+        await first.peek(anchor());
         const legacyAfterLoad = localData.has({json.dumps(LEGACY_FIRST_PEEK_KEY)})
           ? localData.get({json.dumps(LEGACY_FIRST_PEEK_KEY)})
           : null;
 
         // Reloading the same pet window in the same launch keeps sessionStorage.
         const reloaded = load(localStorage, makeStorage(launch1Session));
-        reloaded.peek(anchor(false));
+        await reloaded.peek(anchor(false));
 
         // An app restart creates a new pet window with empty sessionStorage.
         const restarted = load(localStorage, makeStorage(new Map()));
-        restarted.peek(anchor());
-        restarted.peek(anchor());
+        await restarted.peek(anchor());
+        await restarted.peek(anchor());
 
         console.log(JSON.stringify({{
           beforeAnchor,
@@ -392,7 +458,12 @@ def _run_first_peek_notice_harness(
           sessionShown: launch1Session.get({json.dumps(FIRST_PEEK_SESSION_KEY)}) || null,
           legacyAfterLoad,
           localKeys: Array.from(localData.keys()),
+          openChannels: openChannels.size,
         }}));
+        }})().catch((error) => {{
+          console.error(error && error.stack ? error.stack : error);
+          process.exit(1);
+        }});
         """
     )
     result = _run_node_harness(script)
@@ -482,18 +553,55 @@ def test_first_edge_peek_notice_via_desktop_toast_bridge_shows_once_per_launch()
     assert outcome["restartedNotices"] == ONE_NOTICE
 
 
-def test_first_edge_peek_notice_dropped_behind_desktop_bridge_counts_as_shown() -> None:
-    # Intended trade-off: the bridge is a one-way IPC send, so the page cannot
-    # tell when the toast window drops the notice. It counts as shown for this
-    # launch rather than retrying on every peek, and the next launch shows it.
+def test_first_edge_peek_notice_lost_behind_desktop_bridge_is_resent() -> None:
+    # The first notice into a freshly rebuilt toast window can be lost by the
+    # shell. No receipt arrives, so the page resends it once.
     outcome = _run_first_peek_notice_harness(toast_kind="bridge", drop_first_toast=True)
 
     assert outcome["firstNotices"] == [
         {"message": FIRST_PEEK_MESSAGE, "durationMs": 10000, "dropped": True},
+        {"message": FIRST_PEEK_MESSAGE, "durationMs": 10000},
     ]
     assert outcome["sessionShown"] == "1"
     assert outcome["reloadedNotices"] == []
     assert outcome["restartedNotices"] == ONE_NOTICE
+    assert outcome["openChannels"] == 0
+
+
+def test_first_edge_peek_notice_never_confirmed_by_bridge_gives_up_for_the_launch() -> None:
+    # A toast window that keeps dropping the notice must not bring it back on
+    # every peek: one resend per peek, then give up after two peeks.
+    outcome = _run_first_peek_notice_harness(toast_kind="bridge", drop_toasts=-1)
+
+    dropped = {"message": FIRST_PEEK_MESSAGE, "durationMs": 10000, "dropped": True}
+    assert outcome["firstNotices"] == [dropped] * 4
+    assert outcome["sessionShown"] == "1"
+    assert outcome["reloadedNotices"] == []
+    assert outcome["openChannels"] == 0
+
+
+def test_first_edge_peek_notice_without_receipt_channel_counts_hand_off_as_shown() -> None:
+    # Without BroadcastChannel nothing can confirm the bridge; the hand-off
+    # counts as shown rather than retrying on every peek.
+    outcome = _run_first_peek_notice_harness(toast_kind="bridge", bridge_receipt="none")
+
+    assert outcome["firstNotices"] == ONE_NOTICE
+    assert outcome["sessionShown"] == "1"
+    assert outcome["reloadedNotices"] == []
+    assert outcome["restartedNotices"] == ONE_NOTICE
+
+
+def test_toast_window_posts_a_receipt_for_each_shown_status_notice() -> None:
+    toast_source = (PROJECT_ROOT / "templates" / "toast.html").read_text(encoding="utf-8")
+    client_source = APP_WIDGET_MODE_PATH.read_text(encoding="utf-8")
+    channel = "'neko-status-toast-shown'"
+    assert channel in toast_source
+    assert channel in client_source
+    handler = toast_source[toast_source.index("api.onShowStatusToast(function(data) {"):]
+    handler = handler[: handler.index("});")]
+    assert handler.index("showStatusToast(data.message, data.duration);") < handler.index(
+        "announceStatusToastShown(data.message);"
+    )
 
 
 def test_page_status_toast_is_marked_as_the_dom_implementation() -> None:

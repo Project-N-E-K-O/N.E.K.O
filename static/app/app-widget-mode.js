@@ -19,6 +19,15 @@
     // must no longer suppress it.
     const LEGACY_FIRST_PEEK_NOTICE_STORAGE_KEY = 'neko_widget_mode_first_peek_notice_seen';
     const FIRST_PEEK_NOTICE_DURATION_MS = 10000;
+    // The desktop shell's toast window (templates/toast.html) posts the text of
+    // each status notice it shows on this same-origin channel. Behind the shell's
+    // one-way IPC bridge that receipt is the only proof the notice was shown.
+    const STATUS_TOAST_SHOWN_CHANNEL = 'neko-status-toast-shown';
+    const FIRST_PEEK_NOTICE_ACK_TIMEOUT_MS = 1500;
+    // Peeks that may try (send, then resend once) before giving up for this
+    // launch, so a toast window that never confirms (or keeps dropping the
+    // notice) cannot bring back a notice on every peek.
+    const FIRST_PEEK_NOTICE_MAX_ATTEMPTS = 2;
 
     const clientState = {
         enabled: false,
@@ -178,16 +187,24 @@
         }
     }
 
-    function isStatusToastShowing(message) {
+    let firstPeekNoticePending = false;
+    let firstPeekNoticeAttempts = 0;
+
+    function markFirstPeekNoticeShown() {
+        firstPeekNoticeShown = true;
+        try { window.sessionStorage.setItem(FIRST_PEEK_NOTICE_SESSION_KEY, '1'); } catch (_) {}
+    }
+
+    // Only the page's own DOM toast renders into #status-toast-text. A
+    // replacement (the desktop shell's IPC bridge) shows the notice in another
+    // window, so this page's DOM can never confirm it.
+    function isDesktopToastBridge() {
         const showStatusToast = window.showStatusToast;
-        if (typeof showStatusToast !== 'function') return true;
-        // Only the page's own DOM toast renders into #status-toast-text. A
-        // replacement (the desktop shell's IPC bridge) shows the notice in
-        // another window, so this page's DOM can never confirm it; treat the
-        // hand-off as shown instead of retrying on every peek. The bridge is a
-        // one-way IPC send with no delivery result, so a notice the toast window
-        // drops for a higher-priority one also counts as shown this launch.
-        if (showStatusToast.__nekoDomStatusToast !== true) return true;
+        return typeof showStatusToast === 'function' && showStatusToast.__nekoDomStatusToast !== true;
+    }
+
+    function isStatusToastShowing(message) {
+        if (typeof window.showStatusToast !== 'function') return true;
         try {
             const textEl = document.getElementById('status-toast-text');
             return !!(textEl && textEl.textContent === message);
@@ -196,23 +213,81 @@
         }
     }
 
+    // Sends the notice through the bridge and waits for the toast window's
+    // receipt. Resolves true once confirmed, false on timeout, and null when the
+    // receipt channel is unavailable (nothing can confirm the hand-off).
+    function showBridgeNoticeAndAwaitReceipt(message) {
+        let channel = null;
+        try {
+            if (typeof BroadcastChannel === 'function') {
+                channel = new BroadcastChannel(STATUS_TOAST_SHOWN_CHANNEL);
+            }
+        } catch (_) {
+            channel = null;
+        }
+        if (!channel) {
+            showNotice(message, FIRST_PEEK_NOTICE_DURATION_MS);
+            return Promise.resolve(null);
+        }
+        return new Promise((resolve) => {
+            let timer = null;
+            const finish = (value) => {
+                if (timer !== null) clearTimeout(timer);
+                timer = null;
+                try { channel.close(); } catch (_) {}
+                resolve(value);
+            };
+            // Listen before sending: the receipt can arrive right after the send.
+            channel.onmessage = (event) => {
+                const data = event && event.data;
+                if (data && data.message === message) finish(true);
+            };
+            // Some Linux shells draw the notice inline in this pet window instead,
+            // where this page's DOM can confirm it.
+            timer = setTimeout(() => {
+                timer = null;
+                finish(isStatusToastShowing(message));
+            }, FIRST_PEEK_NOTICE_ACK_TIMEOUT_MS);
+            showNotice(message, FIRST_PEEK_NOTICE_DURATION_MS);
+        });
+    }
+
+    async function showFirstPeekNoticeViaBridge(message) {
+        firstPeekNoticePending = true;
+        firstPeekNoticeAttempts += 1;
+        try {
+            let receipt = await showBridgeNoticeAndAwaitReceipt(message);
+            // No receipt: the toast window lost or dropped it (for example the
+            // first notice into a freshly rebuilt toast window). Resend once.
+            if (receipt === false) receipt = await showBridgeNoticeAndAwaitReceipt(message);
+            if (receipt !== false || firstPeekNoticeAttempts >= FIRST_PEEK_NOTICE_MAX_ATTEMPTS) {
+                markFirstPeekNoticeShown();
+            }
+        } finally {
+            firstPeekNoticePending = false;
+        }
+    }
+
     function showFirstPeekNotice(event) {
         const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
         // Only a freshly created anchor is a real peek; visibility toggles of an
         // existing anchor (stealth, interaction) are not.
         if (!detail || detail.active !== true || detail.reason !== 'anchor-created') return;
-        if (firstPeekNoticeShown || hasShownFirstPeekNoticeThisLaunch()) return;
+        if (firstPeekNoticeShown || firstPeekNoticePending || hasShownFirstPeekNoticeThisLaunch()) return;
         const message = t(
             'settings.widgetMode.firstPeekNotice',
             '她躲到屏幕边上了，把她拖回来就能恢复。不需要的话，可以在托盘菜单的“设置”里关闭“启用贴边探身”。'
         );
+        if (isDesktopToastBridge()) {
+            void showFirstPeekNoticeViaBridge(message);
+            return;
+        }
         showNotice(message, FIRST_PEEK_NOTICE_DURATION_MS);
         // showStatusToast silently drops a notice while a higher-priority one is
         // on screen; only count it as shown once it actually rendered, otherwise
         // the next peek tries again.
         if (!isStatusToastShowing(message)) return;
-        firstPeekNoticeShown = true;
-        try { window.sessionStorage.setItem(FIRST_PEEK_NOTICE_SESSION_KEY, '1'); } catch (_) {}
+        markFirstPeekNoticeShown();
     }
 
     window.addEventListener('neko:live2d-peek-changed', showFirstPeekNotice);
