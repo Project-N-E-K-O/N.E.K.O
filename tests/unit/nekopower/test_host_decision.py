@@ -1170,6 +1170,32 @@ def test_what_an_answer_to_a_leader_says_of_the_choice_is_set_aside_in_the_langu
     assert read_answer(said, [waiting]).choice == choice
 
 
+@pytest.mark.parametrize("tool", ["hand_over", "beside"])
+def test_new_work_said_while_another_member_is_asked_about_answers_no_other_question_waiting_beside_it(tool):
+    asked = _asked_by_the_leader("Rebuilds the header and its menu <- redo the header of the shop site", tool=tool)
+    command = {
+        "kind": "permission", "category": "shell", "key": None, "detail": {"tool": "bash", "command": "npm run build"},
+        "options": ["always", "session", "once", "deny"], "id": "q2",
+    }
+    other = commission("c2", "build the shop site", status="waiting_user", pending_question=json.dumps(command))
+    said = "yes, start the new familiar to rebuild the header because mobile navigation is broken"
+
+    # Alone, the other question is read as it was: its yes.
+    assert (read_answer(said, [other]).targets, read_answer(said, [other]).choice) == (["c2"], "once")
+    # Beside a question about another member, which takes it for new work, it is new work: the yes it says
+    # in passing allows no command.
+    assert read_answer(said, [asked, other]) is None
+    # A plain yes is still for the user to say which.
+    plain = read_answer("yes", [asked, other])
+    assert (plain.kind, sorted(plain.targets)) == ("ambiguous", ["c1", "c2"])
+    # What says no yes or no is held against the other question by its words, as it was.
+    unclear = read_answer("the npm run build one", [asked, other])
+    assert (unclear.kind, unclear.targets, unclear.choice) == ("answer", ["c2"], None)
+    # And what says it answers is an answer, however much it says.
+    answered = read_answer(f"answer: {said}", [asked])
+    assert (answered.kind, answered.targets, answered.choice) == ("answer", ["c1"], "once")
+
+
 def test_new_work_said_while_a_leader_asks_is_not_taken_for_its_answer():
     waiting = _asked_by_the_leader(
         "Rebuilds the header and its menu <- redo the header of the shop site so the menu fits on phones"

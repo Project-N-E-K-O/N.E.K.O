@@ -571,6 +571,18 @@ def read_answer(text: str, active: list[Commission]) -> Triage | None:
     explicit = has_cue("answer", text)
     choice = parse_permission_choice(text)
 
+    def new_work_beside(commission: Commission) -> bool:
+        question = commission.question() or {}
+        return _quotes_its_commission(question) and _says_more_than_an_answer(
+            text, question, token_set(_question_text(commission))
+        )
+
+    if choice is not None and not explicit and any(new_work_beside(commission) for commission in waiting):
+        # New work that says a yes or a no in passing, while a question that quotes its commission
+        # waits: no answer to it, nor to any other question waiting beside it, which it would
+        # answer by that yes or no alone (and allow, say, a command).
+        return None
+
     def bears_on(commission: Commission) -> float:
         score = 0.0
         # A question that quotes its own commission is held against the sentence only where the
@@ -582,9 +594,6 @@ def read_answer(text: str, active: list[Commission]) -> Triage | None:
         quotes = _quotes_its_commission(question)
         says_no_answer = choice is None and not explicit
         question_tokens = token_set(_question_text(commission))
-        if quotes and choice is not None and not explicit and _says_more_than_an_answer(text, question, question_tokens):
-            # New work that says a yes or a no in passing, while this waits: no answer to it.
-            return 0.0
         if tokens and not (says_no_answer and quotes):
             score = len(tokens & question_tokens) / len(tokens)
         # A plain yes or no shares no word with the question it answers. It
