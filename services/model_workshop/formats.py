@@ -38,6 +38,8 @@ class FormatLimits:
     binary_text_bytes: int = 1024 * 1024
     # Bound copied bufferViews plus zero/sparse arrays independently of encoded GLB size.
     vrm_accessor_bytes: int = 256 * 1024 * 1024
+    vrm_instanced_vertices: int = 5000000
+    live2d_physics_work: int = 200000
 
 
 def _require(condition, path: str, code: str = "invalid_model_structure") -> None:
@@ -279,7 +281,7 @@ def _physics_entries_compatible(data: dict) -> bool:
     return True
 
 
-def _auxiliary(data: dict, path: str, *, kind: str = "") -> bool:
+def _auxiliary(data: dict, path: str, *, kind: str = "", limits: FormatLimits) -> bool:
     """Check required containers of non-animation Cubism JSON resources."""
     lower = kind or "." + posixpath.basename(path).lower()
     # NEKO's bundled mao_pro pose uses Type instead of Version; its loader accepts it.
@@ -297,6 +299,11 @@ def _auxiliary(data: dict, path: str, *, kind: str = "") -> bool:
             _require(isinstance(setting, dict), path)
             for key in ("Input", "Output", "Vertices"):
                 _require(isinstance(setting.get(key), list), path)
+        # evaluate() slices each setting's remaining input/output/particle arrays
+        # on every step. Bound that quadratic work as well as the step frequency.
+        entries = sum(len(setting["Input"]) + 2 * len(setting["Output"]) + len(setting["Vertices"]) for setting in settings)
+        _require(len(settings) * entries * max(1, fps / 60) <= limits.live2d_physics_work,
+                 path, "model_physics_budget_exceeded")
         # static/libs/index.min.js: CubismPhysics.parse walks the actual arrays;
         # inputs/particles use push, outputs use plain array indexing. The
         # TotalInputCount, TotalOutputCount and VertexCount getters are never called;
@@ -426,7 +433,7 @@ def _live2d(resources: _Resources) -> None:
                         resources.warn(code, name)
                 elif kind == ".exp3.json":
                     _expression(contents, name)
-                elif kind != "PhysicsV2" and not _auxiliary(contents, name, kind=kind):
+                elif kind != "PhysicsV2" and not _auxiliary(contents, name, kind=kind, limits=resources.limits):
                     resources.warn("live2d_optional_resource_unavailable", name)
         if posixpath.basename(lower) == "parameters.json":
             # NEKO's parameter editor saves finite numeric overrides keyed by
@@ -629,7 +636,7 @@ def _vrm(resources: _Resources) -> None:
             # strides, including padding after the last logical element.
             if stride != element_size:
                 _require((offset // stride) * stride + count * stride <= view["byteLength"], entry)
-                _require(offset + (count - 1) * stride + element_size <= view["byteLength"], entry)
+                _require(offset % stride + element_size <= stride, entry)
             else:
                 _require(offset + count * element_size <= view["byteLength"], entry)
         else:
@@ -679,16 +686,20 @@ def _vrm(resources: _Resources) -> None:
             for value in material.get("textureProperties", {}).values():
                 if value is not None:
                     _require(texture_sources[_index(value, textures, entry)], entry)
-    mesh_morph_counts = []
+    mesh_morph_counts, mesh_draw_counts = [], []
     for mesh in meshes:
         _require(isinstance(mesh, dict) and isinstance(mesh.get("primitives"), list), entry)
         counts = []
+        draw_count = 0
         for primitive in mesh["primitives"]:
             _require(isinstance(primitive, dict) and isinstance(primitive.get("attributes"), dict), entry)
             for accessor in primitive["attributes"].values():
                 _index(accessor, accessors, entry)
             if "indices" in primitive:
                 _index(primitive["indices"], accessors, entry)
+                draw_count += accessors[primitive["indices"]]["count"]
+            else:
+                draw_count += max((accessors[index]["count"] for index in primitive["attributes"].values()), default=0)
             if "material" in primitive:
                 _index(primitive["material"], materials, entry)
             morphs = primitive.get("targets", [])
@@ -701,6 +712,7 @@ def _vrm(resources: _Resources) -> None:
             counts.append(len(morphs))
         _require(len(set(counts)) <= 1, entry)
         mesh_morph_counts.append(tuple(set(counts)))
+        mesh_draw_counts.append(draw_count)
     for animation in animations:
         _require(isinstance(animation, dict), entry)
         samplers, channels = animation.get("samplers"), animation.get("channels")
@@ -749,6 +761,7 @@ def _vrm(resources: _Resources) -> None:
                 _require(len(counts) == 1 and counts[0] > 0, entry)
                 expected *= counts[0]
             _require(output["count"] == expected, entry)
+    instanced_vertices = 0
     for node in nodes:
         _require(isinstance(node, dict) and isinstance(node.get("children", []), list), entry)
         for child in node.get("children", []):
@@ -767,6 +780,8 @@ def _vrm(resources: _Resources) -> None:
                 instance_counts.add(accessor["count"])
             _require(len(instance_counts) <= 1, entry)
             if instance_counts:
+                instanced_vertices += next(iter(instance_counts)) * mesh_draw_counts[node["mesh"]]
+                _require(instanced_vertices <= resources.limits.vrm_instanced_vertices, entry, "model_accessor_budget_exceeded")
                 # GLTFMeshGpuInstancing creates count*16 Float32 values per
                 # node and primitive, even when all nodes share one accessor.
                 allocated += next(iter(instance_counts)) * 64 * len(meshes[node["mesh"]]["primitives"])

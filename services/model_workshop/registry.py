@@ -263,7 +263,12 @@ class Registry:
                 if identity(self.paths.checked(item["local_path"]))[2] != stat.S_IFREG:
                     return "missing"
             return "installed"
-        except FileNotFoundError:
+        except (FileNotFoundError, NotADirectoryError):
+            return "missing"
+        except WorkshopError as error:
+            if str(error) not in {"model_workshop_unsafe_path", "model_workshop_identity_unavailable"}:
+                raise
+            self.paths.checked("model_workshop")  # Root/private metadata faults still fail globally.
             return "missing"
 
     def installed(self) -> list[dict]:

@@ -33,14 +33,17 @@ def identity(path: Path) -> list[int]:
 def regular(path: Path, flags: int = os.O_RDONLY):
     """Open without following a link; verify the opened object and pathname agree."""
     before = identity(path) if not flags & os.O_EXCL else None
-    fd = os.open(
-        path,
-        flags
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_NONBLOCK", 0)
-        | getattr(os, "O_BINARY", 0),
-        0o600,
-    )
+    try:
+        fd = os.open(
+            path,
+            flags
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_BINARY", 0),
+            0o600,
+        )
+    except FileNotFoundError as error:
+        raise WorkshopError("model_workshop_state_unreadable") from error
     try:
         info = os.fstat(fd)
         actual = [info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode)]
@@ -53,8 +56,10 @@ def regular(path: Path, flags: int = os.O_RDONLY):
         return os.fdopen(
             fd, "r+b" if flags & (os.O_WRONLY | os.O_RDWR) else "rb", buffering=0
         )
-    except BaseException:
+    except BaseException as error:
         os.close(fd)
+        if isinstance(error, FileNotFoundError):
+            raise WorkshopError("model_workshop_state_unreadable") from error
         raise
 
 
@@ -226,7 +231,7 @@ class WorkshopPaths:
                 path.mkdir(mode=0o700)
                 sync_directory(path.parent)
             except FileExistsError:
-                pass
+                pass  # Existing directories still undergo the same identity and device checks.
             if (
                 identity(path)[2] != stat.S_IFDIR
                 or path.stat().st_dev != self.root_identity[0]

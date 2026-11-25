@@ -1125,11 +1125,12 @@ def test_old_pmd_without_toon_table_cannot_invent_a_shared_toon(tmp_path):
             files={main: pmd_bytes("", toon=0)}))
 
 
+@pytest.mark.parametrize("length", [32, 48, 64])
 @pytest.mark.parametrize("offset,valid", [(0, True), (4, True), (8, False), (12, False)])
-def test_interleaved_accessor_checks_allocation_and_last_element(tmp_path, offset, valid):
+def test_interleaved_accessor_checks_allocation_and_last_element(tmp_path, offset, valid, length):
     def graph(data):
         vrm_graph(data)
-        data['bufferViews'][1].update(byteStride=16, byteLength=32)
+        data['bufferViews'][1].update(byteStride=16, byteLength=length)
         data['accessors'] = [{'bufferView': 1, 'componentType': 5126, 'type': 'VEC3', 'byteOffset': offset, 'count': 2}]
         data['animations'] = []; data['skins'] = []; data['nodes'][0].pop('skin')
         data['meshes'] = [{'primitives': [{'attributes': {'POSITION': 0}}]}]
@@ -1188,3 +1189,61 @@ def test_compatibility_warnings_are_frozen_and_bundle_remains_hashable(tmp_path)
     assert hash(bundle) == hash(bundle)
     warning = bundle.compatibility_warnings[0]
     with pytest.raises(FrozenInstanceError): warning.code = 'changed'
+
+
+@pytest.mark.parametrize("instances,vertices,valid", [(10, 50000, True), (2000000, 50000, False)])
+def test_gpu_instance_draw_work_is_bounded_below_the_memory_budget(tmp_path, instances, vertices, valid):
+    def graph(data):
+        vrm_graph(data)
+        data['animations'] = []; data['skins'] = []; data['nodes'][0].pop('skin')
+        data['accessors'] = [{'componentType': 5126, 'type': 'VEC3', 'count': vertices},
+                             {'componentType': 5126, 'type': 'VEC3', 'count': instances}]
+        data['meshes'] = [{'primitives': [{'attributes': {'POSITION': 0}}]}]
+        data['nodes'][0].update(mesh=0, extensions={'EXT_mesh_gpu_instancing': {'attributes': {'TRANSLATION': 1}}})
+        data['extensionsUsed'].append('EXT_mesh_gpu_instancing')
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
+    if valid:
+        assert validate_model_bundle(path).model_format == 'vrm'
+    else:
+        with pytest.raises(ModelFormatError, match='model_accessor_budget_exceeded'): validate_model_bundle(path)
+
+
+@pytest.mark.parametrize("settings,fps,valid", [(30, 60, True), (1000, 240, False)])
+def test_physics_budget_counts_per_step_rig_work(tmp_path, settings, fps, valid):
+    files = live2d_files()
+    setting = {"Normalization": {key: {"Minimum": -1, "Maximum": 1, "Default": 0} for key in ("Position", "Angle")},
+               "Input": [{"Source": {"Id": "ParamAngleX"}, "Weight": 100, "Type": "Angle"}] * 3,
+               "Output": [{"Destination": {"Id": "ParamHair"}, "Weight": 100, "Type": "Angle", "Scale": 1, "VertexIndex": 1}] * 3,
+               "Vertices": [{"Mobility": 1, "Delay": 0.2, "Acceleration": 1, "Radius": 1, "Position": {"X": 0, "Y": 1}}] * 3}
+    files['Avatar.physics3.json'] = json.dumps({"Version": 3, "Meta": {"Fps": fps, "PhysicsSettingCount": settings,
+        "EffectiveForces": {key: {"X": 0, "Y": 0} for key in ("Gravity", "Wind")}}, "PhysicsSettings": [setting] * settings}).encode()
+    path = make_native_bundle(tmp_path, files=files)
+    if valid:
+        assert not validate_model_bundle(path).compatibility_warnings
+    else:
+        with pytest.raises(ModelFormatError, match='model_physics_budget_exceeded'): validate_model_bundle(path)
+
+
+@pytest.mark.parametrize('channels', [1, 100])
+def test_shared_morph_dependencies_are_checked_once_across_animations(tmp_path, monkeypatch, channels):
+    import importlib
+    formats = importlib.import_module(validate_model_bundle.__module__)
+    def graph(data):
+        vrm_graph(data)
+        data['accessors'] = [{'componentType': 5126, 'type': 'SCALAR', 'count': 1},
+                             {'componentType': 5126, 'type': 'SCALAR', 'count': 50},
+                             {'componentType': 5126, 'type': 'VEC3', 'count': 3}]
+        data['skins'] = []; data['nodes'][0].pop('skin')
+        data['meshes'] = [{'primitives': [{'attributes': {'POSITION': 2}, 'targets': [{'POSITION': 2}] * 50}]}]
+        data['nodes'][0]['mesh'] = 0
+        animation = {'samplers': [{'input': 0, 'output': 1}],
+                     'channels': [{'sampler': 0, 'target': {'node': 0, 'path': 'weights'}}] * channels}
+        data['animations'] = [animation, animation]
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
+    original = formats._index; checked = []
+    def counted(value, table, entry):
+        if value == 2 and table and isinstance(table[0], dict) and 'componentType' in table[0]: checked.append(value)
+        return original(value, table, entry)
+    monkeypatch.setattr(formats, '_index', counted)
+    validate_model_bundle(path)
+    assert len(checked) == 51  # POSITION plus each of its 50 morphs, independent of channels.

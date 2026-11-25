@@ -461,7 +461,12 @@ def test_forged_recovery_path_is_rejected_without_touching_external_file(
     attempt = uuid.uuid4().hex
     data = service.installer.begin(attempt)
     data["phase"] = "committing"
-    data["record"] = {"target": "../../foreign"}
+    path, _ = bundle_path(tmp_path)
+    data["record"] = make_record(installer_module.validate_model_bundle(path), attempt)
+    data["object_identity"] = data["stage_identity"]
+    from services.model_workshop.registry import validate_journal
+    validate_journal(data, attempt + '.json')
+    data["record"]["target"] = "../../foreign"
     service.installer.save_journal(data)
     external = tmp_path / "foreign"
     external.write_text("keep")
@@ -568,6 +573,7 @@ def test_cancel_during_validation_waits_for_the_actual_worker(
                 attempt = service.receive(source)
             assert entered.wait(5)
             cancelling = pool.submit(service.cancel, attempt)
+            assert service._task(attempt).cancel.wait(5)
             with pytest.raises(TimeoutError):
                 cancelling.result(0.05)
             with pytest.raises(WorkshopError, match="busy"):
@@ -1197,3 +1203,120 @@ def test_publication_failure_can_retry_same_package_without_restart(service, tmp
     assert failed['phase'] == 'failed'
     monkeypatch.setattr(service.installer, '_publish', original)
     assert install(service, path)['phase'] == 'completed'
+
+def test_first_journal_failure_removes_only_its_empty_stage(service, monkeypatch):
+    attempt = uuid.uuid4().hex
+    monkeypatch.setattr(service.installer, 'save_journal', lambda data: (_ for _ in ()).throw(OSError('journal write failed')))
+    with pytest.raises(OSError, match='journal write failed'): service.installer.begin(attempt)
+    assert not service.installer.stage(attempt).exists()
+
+
+def test_directory_change_during_walk_cannot_be_recorded(service, tmp_path, monkeypatch):
+    path, _ = bundle_path(tmp_path)
+    result = install(service, path)['result']; target = service.paths.root / result['target']
+    original = installer_module.os.walk
+    def changed(*args, **kwargs):
+        for row in original(*args, **kwargs):
+            if Path(row[0]) == target: (target / 'unexpected.txt').write_text('late file')
+            yield row
+    monkeypatch.setattr(installer_module.os, 'walk', changed)
+    with pytest.raises(WorkshopError, match='recovery_conflict'): service.installer.verify_resources(result, target)
+
+
+def test_committed_install_survives_private_cleanup_conflict(service, tmp_path, monkeypatch):
+    path, _ = bundle_path(tmp_path)
+    monkeypatch.setattr(service.installer, 'cleanup_private_stage', lambda data: (_ for _ in ()).throw(WorkshopError('model_workshop_recovery_conflict')))
+    result = install(service, path)
+    assert result['phase'] == 'completed'
+    assert service.installer.registry.installed()[0]['status'] == 'installed'
+    assert service.installer.journal_path(result['task_id']).exists()
+
+
+def test_opened_registry_disappearing_is_not_an_empty_registry(tmp_path, monkeypatch):
+    from services.model_workshop import paths
+    path = tmp_path / 'installed.json'; path.write_text('{"installed":{}}')
+    original = paths.identity; calls = 0
+    def removed(candidate):
+        nonlocal calls
+        calls += 1
+        if candidate == path and calls == 2: path.unlink()
+        return original(candidate)
+    monkeypatch.setattr(paths, 'identity', removed)
+    with pytest.raises(WorkshopError, match='state_unreadable'): paths.read_json(path, STATE_BYTES)
+
+
+@pytest.mark.parametrize('kind', ['wait', 'cancel'])
+def test_acquired_task_survives_eviction_before_return(service, monkeypatch, kind):
+    from services.model_workshop.tasks import _Task
+    task = _Task(uuid.uuid4().hex, phase='completed', result={'kept': True}); task.done.set()
+    service._tasks[task.task_id] = task
+    if kind == 'request_cancel':
+        original = service._task
+        def acquired(attempt):
+            result = original(attempt); service._tasks.pop(attempt); return result
+        monkeypatch.setattr(service, '_task', acquired)
+    else:
+        def waited(timeout=None):
+            service._tasks.pop(task.task_id); return True
+        monkeypatch.setattr(task.done, 'wait', waited)
+    result = getattr(service, kind)(task.task_id)
+    assert result['phase'] == 'completed' and result['result'] == {'kept': True}
+
+
+def test_one_modified_local_installation_does_not_hide_other_models(service, tmp_path):
+    path, _ = bundle_path(tmp_path)
+    first = install(service, path)['result']
+    files = live2d_files(); files['LICENSE.txt'] = b'Another fixture'
+    second = install(service, make_native_bundle(tmp_path, files=files))['result']
+    resource = service.paths.root / first['files'][0]['local_path']
+    outside = tmp_path / 'outside'; outside.write_bytes(resource.read_bytes()); resource.unlink()
+    try: resource.symlink_to(outside)
+    except (OSError, NotImplementedError): pytest.skip('symlink creation is unavailable')
+    rows = {row['package_sha256']: row for row in service.installer.registry.installed()}
+    assert rows[first['package_sha256']]['status'] == 'missing'
+    assert rows[second['package_sha256']]['status'] == 'installed'
+    assert outside.exists()
+
+
+def test_task_reports_compatibility_warnings_without_extending_registry(service, tmp_path):
+    files = live2d_files(); model = json.loads(files['Avatar.model3.json'])
+    model['FileReferences']['Physics'] = 'missing.physics3.json'; files['Avatar.model3.json'] = json.dumps(model).encode()
+    result = install(service, make_native_bundle(tmp_path, files=files))['result']
+    assert result['compatibility_warning_count'] == 1
+    assert result['compatibility_warnings'] == [{'code': 'live2d_optional_resource_unavailable', 'path': 'missing.physics3.json'}]
+    stored = service.installer.registry.load()[result['package_sha256']]
+    assert 'compatibility_warnings' not in stored
+
+
+def test_unregistered_publication_keeps_capacity_for_recovery(service, tmp_path, monkeypatch):
+    from services.model_workshop import registry as registry_module
+    path, _ = bundle_path(tmp_path)
+    original = fail_registration(service, monkeypatch)
+    first = install(service, path); pending = journal(service, first['task_id'])['record']
+    monkeypatch.setattr(service.installer.registry, 'save', original)
+    files = live2d_files(); files['LICENSE.txt'] = b'B package'
+    other_path = make_native_bundle(tmp_path, files=files)
+    other = make_record(installer_module.validate_model_bundle(other_path), uuid.uuid4().hex)
+    attempts = {row['package_sha256']: row['install_id'] for row in (pending, other)}
+    def size(rows):
+        return len(json.dumps(dict(schema=registry_module.REGISTRY_SCHEMA, installed=rows, attempts=attempts), ensure_ascii=False, separators=(',', ':')).encode())
+    capacity = max(size({row['package_sha256']: row}) for row in (pending, other)) + 32
+    monkeypatch.setattr(registry_module, 'STATE_BYTES', capacity)
+    rejected = install(service, other_path)
+    assert rejected['phase'] == 'failed' and rejected['error'] == 'model_workshop_state_too_large'
+    assert not (service.paths.root / other['target']).exists()
+    assert service.recover()[first['task_id']] == 'completed'
+
+
+def test_root_redirection_is_not_a_missing_model_status(service, tmp_path):
+    path, _ = bundle_path(tmp_path)
+    record = install(service, path)['result']
+    root = service.paths.root; saved = root.with_name('original-runtime')
+    root.rename(saved)
+    try:
+        try: root.symlink_to(saved, target_is_directory=True)
+        except (OSError, NotImplementedError): pytest.skip('directory symlink creation is unavailable')
+        with pytest.raises(WorkshopError): service.installer.registry.status(record)
+    finally:
+        if root.is_symlink(): root.unlink()
+        saved.rename(root)
