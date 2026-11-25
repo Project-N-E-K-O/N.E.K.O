@@ -294,7 +294,7 @@ test('R1111-P3-06: subscriptions-and-scan escapes errors, tags, status, and prev
 
   const escapeHtmlSrc = extractFunction(coreUploadSource, 'function escapeHtml(', '\n\n// 加载状态管理器');
   const preamble = [
-    extractFunction(subscriptionsSource, 'function safeAuthorName(', '\nfunction renderSubscriptionsEmptyState('),
+    extractFunction(subscriptionsSource, 'function normalizeSubscriptionText(', '\nfunction renderSubscriptionsEmptyState('),
     extractFunction(subscriptionsSource, 'function renderSubscriptionsEmptyState(', '\nfunction sanitizeWorkshopPreviewUrl('),
     extractFunction(subscriptionsSource, 'function sanitizeWorkshopPreviewUrl(', '\n// 加载订阅物品'),
     extractFunction(subscriptionsSource, 'function loadSubscriptions(', '\n// 渲染当前页的订阅物品'),
@@ -390,4 +390,48 @@ test('R1111-P3-06: subscriptions-and-scan escapes errors, tags, status, and prev
   assert.ok(detailContent.innerHTML.includes('&lt;img src=x onerror=alert(1)&gt;'));
   assert.ok(detailContent.innerHTML.includes('&lt;img src=x onerror=status&gt;'));
   assert.ok(detailContent.innerHTML.includes('alt="&quot; onclick=&quot;alert(1)"'));
+
+  // Non-string inputs to escapeHtml and non-string JSON array payloads
+  assert.equal(context.escapeHtml(null), '');
+  assert.equal(context.escapeHtml(undefined), '');
+  assert.equal(context.escapeHtml(123), '123');
+  assert.equal(context.escapeHtml(['<b>x</b>']), '&lt;b&gt;x&lt;/b&gt;');
+
+  context.allSubscriptions = [
+    {
+      publishedFileId: 2,
+      title: ['<img src=x onerror="window.__xss_title_arr=1">'],
+      authorName: ['<b>Auth</b>'],
+      description: ['<svg onload="window.__xss_desc_arr=1">'],
+      voiceReferenceAvailable: true,
+      voiceReference: { displayName: ['"><img src=x onerror="window.__xss=97">'] },
+      state: { installed: true },
+    },
+  ];
+  context.renderSubscriptionsPage();
+  assert.ok(!listEl.innerHTML.includes('<img src=x onerror="window.__xss_title_arr=1">'));
+  assert.ok(!listEl.innerHTML.includes('"><img src=x onerror="window.__xss=97">'));
+  assert.ok(listEl.innerHTML.includes('&lt;img src=x onerror=&quot;window.__xss_title_arr=1&quot;&gt;'));
+  assert.ok(listEl.innerHTML.includes('&quot;&gt;&lt;img src=x onerror=&quot;window.__xss=97&quot;&gt;'));
+  assert.ok(listEl.innerHTML.includes('&lt;b&gt;Auth&lt;/b&gt;'));
+
+  fetchImpl = async () => ({
+    ok: true,
+    json: async () => ({
+      success: true,
+      item: {
+        publishedFileId: 9,
+        title: ['<img src=x onerror="window.__xss_detail_title=1">'],
+        description: ['<script>alert(1)</script>'],
+        tags: [['<img src=x onerror="window.__xss_tag_arr=1">']],
+        state: { installed: true },
+      },
+    }),
+  });
+  context.viewItemDetails('9');
+  await new Promise((r) => setTimeout(r, 20));
+  assert.ok(!detailContent.innerHTML.includes('<img src=x onerror="window.__xss_tag_arr=1">'));
+  assert.ok(detailContent.innerHTML.includes('&lt;img src=x onerror=&quot;window.__xss_tag_arr=1&quot;&gt;'));
+  assert.ok(detailContent.innerHTML.includes('&lt;img src=x onerror=&quot;window.__xss_detail_title=1&quot;&gt;'));
+  assert.ok(detailContent.innerHTML.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
 });

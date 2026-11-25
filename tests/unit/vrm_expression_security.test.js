@@ -85,3 +85,83 @@ test('F0499: VRMExpression rejects prototype-chain keys and invalid types withou
   assert.equal(customHarness.expression.currentMood, 'custom_expr');
   assert.equal(customHarness.expression.autoChangeMood, false);
 });
+
+test('F0499: loadMoodMap and setMoodMap reject all Object.prototype shadowing keys', async () => {
+  const { expression } = createExpressionHarness(['neutral', 'happy', 'sad', 'angry']);
+  expression.autoReturnToNeutral = false;
+
+  const prototypeKeys = [
+    ...Object.getOwnPropertyNames(Object.prototype),
+    'prototype',
+  ];
+
+  const payload = {
+    toString: ['happy'],
+    valueOf: 'sad',
+    hasOwnProperty: 'angry',
+    isPrototypeOf: 'happy',
+    propertyIsEnumerable: 'sad',
+    toLocaleString: 'angry',
+    __defineGetter__: 'happy',
+    __defineSetter__: 'sad',
+    __lookupGetter__: 'angry',
+    __lookupSetter__: 'happy',
+    constructor: 'sad',
+    prototype: 'angry',
+    happy: ['happy'],
+  };
+
+  // setMoodMap must ignore all Object.prototype keys
+  expression.setMoodMap(payload);
+  for (const key of prototypeKeys) {
+    assert.equal(Object.prototype.hasOwnProperty.call(expression.moodMap, key), false, `setMoodMap leaked ${key}`);
+    assert.equal(expression.customMoodKeys.has(key), false);
+  }
+  assert.doesNotThrow(() => String(expression.moodMap));
+  assert.equal(String(expression.moodMap), '[object Object]');
+  assert.equal(expression.moodMap.hasOwnProperty('happy'), true);
+  expression.setMood('toString');
+  assert.equal(expression.currentMood, 'neutral');
+  expression.setBaseExpression('toString');
+  assert.equal(expression.currentMood, 'neutral');
+
+  // loadMoodMap must also reject all Object.prototype keys (including JSON-parsed __proto__)
+  const rawJson = JSON.stringify(payload).replace('{', '{"__proto__":["happy"],');
+  const parsedPayload = JSON.parse(rawJson);
+  const fetchSandbox = {
+    window: {},
+    console: { log() {}, warn() {}, error() {} },
+    setTimeout,
+    clearTimeout,
+    fetch: async () => ({
+      ok: true,
+      status: 200,
+      async json() {
+        return { success: true, config: parsedPayload };
+      },
+    }),
+  };
+  const fetchCtx = vm.createContext(fetchSandbox);
+  vm.runInContext(vrmExpressionSource, fetchCtx);
+  const exprFromFetch = new fetchCtx.window.VRMExpression({
+    currentModel: {
+      vrm: {
+        expressionManager: {
+          expressions: [{ name: 'neutral' }, { name: 'happy' }],
+          setValue() {},
+        },
+      },
+    },
+  });
+  exprFromFetch.autoReturnToNeutral = false;
+
+  await exprFromFetch.loadMoodMap('test-model');
+  for (const key of prototypeKeys) {
+    assert.equal(Object.prototype.hasOwnProperty.call(exprFromFetch.moodMap, key), false, `loadMoodMap leaked ${key}`);
+    assert.equal(exprFromFetch.customMoodKeys.has(key), false);
+  }
+  assert.doesNotThrow(() => String(exprFromFetch.moodMap));
+  assert.equal(String(exprFromFetch.moodMap), '[object Object]');
+  exprFromFetch.setMood('toString');
+  assert.equal(exprFromFetch.currentMood, 'neutral');
+});

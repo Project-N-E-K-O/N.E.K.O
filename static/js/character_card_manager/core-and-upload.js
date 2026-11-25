@@ -1544,10 +1544,10 @@ function showMessage(message, type = 'info', duration = 3000) {
 
 // HTML转义函数
 function escapeHtml(text) {
-    if (typeof text !== 'string') {
-        return String(text);
+    if (text === null || text === undefined) {
+        return '';
     }
-    return text
+    return String(text)
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')

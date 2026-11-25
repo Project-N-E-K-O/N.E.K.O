@@ -4,7 +4,10 @@
  * 支持从后端动态加载情感映射配置
  */
 
-const FORBIDDEN_EXPRESSION_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+const FORBIDDEN_EXPRESSION_KEYS = new Set([
+    ...Object.getOwnPropertyNames(Object.prototype),
+    'prototype',
+]);
 
 function hasOwnExpressionKey(obj, key) {
     return Boolean(obj)
