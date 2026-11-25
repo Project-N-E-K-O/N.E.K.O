@@ -139,6 +139,7 @@ _EVENT_TYPES: tuple[str, ...] = (
     "team_formed",
     "inspected",
     "stall_reminded",
+    "tool_answered",
 )
 _MESSAGE_KINDS: dict[str, str] = {"note": "message", "done": "done_notice", "ask": "asked_session"}
 _UNDER_WAY: tuple[str, ...] = ("queued", "working", "waiting_user")
@@ -228,6 +229,24 @@ def _filters(project: str | None, lanlan_name: str | None, project_col: str, own
     return "".join(f" AND {clause}" for clause in clauses), values
 
 
+# Which rows of ``events`` are entries, besides their type being one of ``_EVENT_TYPES``.
+_SHOWN_EVENTS = (
+    # A question one session asks another is told by its message.
+    "AND NOT (e.type = 'subagent_started' AND "
+    "CASE WHEN json_valid(e.payload) THEN json_extract(e.payload, '$.asks') END IS NOT NULL) "
+    # Back to waiting for the user with nothing asked: an answer that was
+    # not taken is being handed over again (``_answer_untaken``).
+    "AND NOT COALESCE(e.type = 'status' AND CASE WHEN json_valid(e.payload) THEN "
+    "json_extract(e.payload, '$.to') = 'waiting_user' AND json_type(e.payload, '$.question') IS NULL END, 0) "
+    # What the user answered a copy through a tool is noted for the copy's commission
+    # (``_cb_ask_user``); the answer itself is the entry of ``tool_answered``.
+    "AND NOT COALESCE(e.type = 'answered' AND CASE WHEN json_valid(e.payload) THEN "
+    "json_extract(e.payload, '$.asked_by_tool') END = 1, 0)"
+)
+# Which rows of ``messages`` are entries.
+_SHOWN_MESSAGES = "AND NOT (m.kind = 'ask' AND m.status = 'void')"
+
+
 def _event_rows(
     conn: sqlite3.Connection, after: int, count: int, project: str | None, lanlan_name: str | None
 ) -> list[sqlite3.Row]:
@@ -237,14 +256,7 @@ def _event_rows(
         "SELECT e.rowid AS number, e.commission_id, e.seq, e.ts, e.type, e.payload, "
         "c.session_id, c.project, c.lanlan_name, c.parent_id, c.source, c.title "
         "FROM events e JOIN commissions c ON c.id = e.commission_id "
-        f"WHERE e.rowid > ? AND e.type IN ({types}) "
-        # A question one session asks another is told by its message.
-        "AND NOT (e.type = 'subagent_started' AND "
-        "CASE WHEN json_valid(e.payload) THEN json_extract(e.payload, '$.asks') END IS NOT NULL) "
-        # Back to waiting for the user with nothing asked: an answer that was
-        # not taken is being handed over again (``_answer_untaken``).
-        "AND NOT COALESCE(e.type = 'status' AND CASE WHEN json_valid(e.payload) THEN "
-        "json_extract(e.payload, '$.to') = 'waiting_user' AND json_type(e.payload, '$.question') IS NULL END, 0)"
+        f"WHERE e.rowid > ? AND e.type IN ({types}) {_SHOWN_EVENTS}"
         f"{where} ORDER BY e.rowid LIMIT ?",
         [after, *_EVENT_TYPES, *values, count],
     ).fetchall()
@@ -269,7 +281,7 @@ def _message_rows(
         "FROM messages m LEFT JOIN sessions sf ON sf.id = m.from_session "
         "LEFT JOIN sessions st ON st.id = m.to_session WHERE m.id > ? "
         # A question that was not asked after all (its copy could not be made).
-        f"AND NOT (m.kind = 'ask' AND m.status = 'void'){where} ORDER BY m.id LIMIT ?",
+        f"{_SHOWN_MESSAGES}{where} ORDER BY m.id LIMIT ?",
         [after, *values, count],
     ).fetchall()
 
@@ -352,6 +364,16 @@ def _event_entry(
                 peer = _session(sessions.get(row["parent_id"]), row["parent_id"])
     elif kind in ("answered", "told"):
         text, peer = _text(payload.get("text")), dict(_USER)
+    elif kind == "tool_answered":
+        # What a tool asked (a request for approval, going on past the usage limit, a
+        # question put with a tool) was answered: the words of a question's answer, the
+        # choice of the others.
+        kind, text, peer = "answered", _text(payload.get("text")), dict(_USER)
+        detail = {
+            "asked_by_tool": True,
+            "question_kind": _text(payload.get("question_kind")),
+            "choice": _text(payload.get("choice")) or None,
+        }
     elif kind == "report":
         kind, text, detail = "reported", _text(payload.get("summary")), {"status": _text(payload.get("status"))}
     elif kind == "subagent_started":
@@ -573,6 +595,122 @@ def read_timeline(
         "more": used_events < len(events) or used_messages < len(messages),
         "latest": cursor(*latest),
     }
+
+
+# How a commission under way at a moment stood then, by its status; the first wins where a
+# session had several (a commission at work, another queued behind it).
+_STANDING: dict[str, str] = {"working": "working", "waiting_user": "waiting_user", "queued": "queued"}
+_STANDING_ORDER: tuple[str, ...] = ("waiting_user", "working", "resting", "queued")
+
+
+# The events that put a commission in a session, with the field of each that names the session:
+# opened in it, gone on in a copy, handed back from a copy, called off from one, taken back from one.
+_IN_SESSION: dict[str, str] = {
+    "opened": "session_id",
+    "carried_on_in_copy": "session_id",
+    "handed_back": "to",
+    "not_carried_on": "of",
+    "back_from_copy": "to",
+}
+
+# How long before a place in the timeline a commission may have ended by the clock and still have
+# been under way there: the clock may have been set back meanwhile.
+_CLOCK_SLACK_SECONDS = 3600.0
+
+
+def read_before(conn: sqlite3.Connection, *, after: str, limit: int, count_most: int) -> dict[str, Any]:
+    """Return what lies before a place in the timeline: how many entries, and who was at what there.
+
+    ``{"before": n, "scene": [...]}``. ``before`` counts the entries of
+    the whole timeline up to the cursor ``after`` (none filtered out by a
+    project or a character), as far as ``count_most``: counted back from
+    the place, it stops there. ``scene`` is how the sessions stood once
+    those entries had happened, for a page that replays what follows
+    from there: one ``{"session_id", "commission_id", "look", "since"}``
+    for each session a commission was under way in, ``look`` being
+    ``working``, ``waiting_user``, ``resting`` or ``queued`` (where a
+    session had several, the first of these), ``since`` when it came to
+    stand so. At most ``limit`` sessions, those that stood so the
+    longest left out first. A session nothing was under way in is not in it.
+    """
+    events, messages = parse_cursor(after)
+    types = ", ".join("?" for _ in _EVENT_TYPES)
+    most = max(0, count_most)
+    # Counted back from the place, as far as is wanted: not every row before it.
+    counted = conn.execute(
+        "SELECT COUNT(*) FROM (SELECT 1 FROM events e WHERE e.rowid <= ? "
+        f"AND e.type IN ({types}) {_SHOWN_EVENTS} ORDER BY e.rowid DESC LIMIT ?)",
+        [events, *_EVENT_TYPES, most],
+    ).fetchone()[0]
+    counted += conn.execute(
+        f"SELECT COUNT(*) FROM (SELECT 1 FROM messages m WHERE m.id <= ? {_SHOWN_MESSAGES} ORDER BY m.id DESC LIMIT ?)",
+        [messages, max(0, most - counted)],
+    ).fetchone()[0]
+    # Those that may have been under way there: filed by then, and not over before it by the
+    # clock. Of each, its last move up to there, found by its own events; one that never moved
+    # was filed waiting for its turn.
+    at = conn.execute("SELECT ts FROM events WHERE rowid = ?", (events,)).fetchone()
+    candidates = (
+        conn.execute(
+            "SELECT id FROM commissions WHERE created_at <= ? AND (ended_at IS NULL OR ended_at >= ?)",
+            (float(at["ts"]) + _CLOCK_SLACK_SECONDS, float(at["ts"]) - _CLOCK_SLACK_SECONDS),
+        ).fetchall()
+        if at is not None
+        else []
+    )
+    moves = []
+    for row in candidates:
+        found = conn.execute(
+            "SELECT e.commission_id, e.rowid AS number, e.ts, e.type, e.payload, c.session_id FROM events e "
+            "JOIN commissions c ON c.id = e.commission_id WHERE e.commission_id = ? AND e.type IN ('created', 'status') "
+            "AND e.rowid <= ? ORDER BY e.seq DESC LIMIT 1",
+            (row["id"], events),
+        ).fetchone()
+        if found is None:
+            continue
+        # The session it was in by then: the last of the events that put it in one (it may have
+        # gone on in a copy, or come back from one, since); the one on record now is that of now.
+        types = ", ".join("?" for _ in _IN_SESSION)
+        moved = conn.execute(
+            f"SELECT type, payload FROM events WHERE commission_id = ? AND type IN ({types}) AND rowid <= ? "
+            "ORDER BY seq DESC LIMIT 1",
+            (row["id"], *_IN_SESSION, events),
+        ).fetchone()
+        then = _load(moved["payload"]).get(_IN_SESSION[moved["type"]]) if moved is not None else None
+        moves.append((found, then if isinstance(then, str) and then else found["session_id"]))
+    standing: dict[str, tuple[str, float, str, int]] = {}
+    for row, session_id in moves:
+        payload = _load(row["payload"])
+        look = "queued" if row["type"] == "created" else _STANDING.get(_text(payload.get("to")))
+        if look == "waiting_user" and payload.get("question") is None:
+            # Nothing asked: an answer that was not taken being handed over again (as ``_event_rows``).
+            look = "working"
+        if look is None or not session_id:
+            continue
+        standing[row["commission_id"]] = (look, float(row["ts"]), session_id, int(row["number"]))
+    if standing:
+        # Resting since its last move, as far as the place: the last of its rests and wakings says.
+        ids = sorted(standing)
+        marks = ", ".join("?" for _ in ids)
+        rests = conn.execute(
+            "SELECT commission_id, type, MAX(rowid) AS number, ts FROM events "
+            f"WHERE type IN ('resting', 'rest_over') AND rowid <= ? AND commission_id IN ({marks}) GROUP BY commission_id",
+            [events, *ids],
+        ).fetchall()
+        for row in rests:
+            look, since, session_id, moved = standing[row["commission_id"]]
+            if int(row["number"]) > moved and look == "working":
+                # Resting since then; or at work again since it was woken.
+                standing[row["commission_id"]] = (
+                    "resting" if row["type"] == "resting" else "working", float(row["ts"]), session_id, moved,
+                )
+    by_session: dict[str, dict[str, Any]] = {}
+    for commission_id, (look, since, session_id, _moved) in standing.items():
+        known = by_session.get(session_id)
+        if known is None or _STANDING_ORDER.index(look) < _STANDING_ORDER.index(known["look"]):
+            by_session[session_id] = {"session_id": session_id, "commission_id": commission_id, "look": look, "since": since}
+    scene = sorted(by_session.values(), key=lambda item: (-item["since"], item["session_id"]))[: max(0, limit)]
+    return {"before": int(counted), "scene": sorted(scene, key=lambda item: (item["since"], item["session_id"]))}
 
 
 def _last_of(conn: sqlite3.Connection, ids: list[str], kind: str) -> dict[str, tuple[int, float]]:

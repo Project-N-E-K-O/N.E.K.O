@@ -1233,3 +1233,220 @@ async def test_the_host_cuts_the_texts_of_waits(tmp_path, monkeypatch):
         assert (await host.ledger.waits(limit=5))["waits"][0]["text"] == " ".join(["word"] * 50)
     finally:
         await host.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# What lies before a place: how many entries, and who was at what there
+# ---------------------------------------------------------------------------
+
+
+async def _before(ledger: Ledger, after: str, limit: int = 500, count_most: int = 10_000) -> dict[str, Any]:
+    return await ledger.timeline_before(after, limit=limit, count_most=count_most)
+
+
+def _looks(found: dict[str, Any]) -> dict[str, tuple[str, str]]:
+    return {item["session_id"]: (item["look"], item["commission_id"]) for item in found["scene"]}
+
+
+async def test_what_lies_before_a_place_is_counted_and_how_each_session_stood_there(ledger):
+    at_work, asking, resting, waiting, over = [await _session(ledger, name) for name in ("a", "b", "c", "d", "e")]
+    one = await _working(ledger, at_work)
+    tick(ledger)
+    two = await _working(ledger, asking)
+    assert (await ledger.transition(two.id, "waiting_user", pending_question=json.dumps({"kind": "questions", "question": "which?"}))).applied
+    tick(ledger)
+    three = await _working(ledger, resting)
+    wake, refusal = await ledger.wake_add(
+        session_id=resting.id, commission_id=three.id, note="later", due_at=9000.0, pending_max=5, daily_max=5,
+    )
+    assert refusal == ""
+    await ledger.rest(three.id)
+    tick(ledger)
+    # Filed, and never moved since: waiting for its turn.
+    four = await _file(ledger, waiting)
+    five = await _working(ledger, over)
+    assert (await ledger.transition(five.id, "done")).applied
+    await _note(ledger, one, asking.id)
+    place = (await ledger.timeline(limit=0))["latest"]
+    entries = await _all(ledger)
+
+    found = await _before(ledger, place)
+    # Every entry up to the place, messages among them.
+    assert found["before"] == len(entries)
+    assert _looks(found) == {
+        at_work.id: ("working", one.id), asking.id: ("waiting_user", two.id), resting.id: ("resting", three.id),
+        waiting.id: ("queued", four.id),
+    }
+    # In the order they came to stand so.
+    assert [item["session_id"] for item in found["scene"]] == [at_work.id, asking.id, resting.id, waiting.id]
+    assert found["scene"][0]["since"] == 1000.0
+
+    # What happens after the place changes nothing of it; at a later place it is there.
+    tick(ledger)
+    assert (await ledger.transition(one.id, "done")).applied
+    assert await _before(ledger, place) == found
+    later = await _before(ledger, (await ledger.timeline(limit=0))["latest"])
+    assert at_work.id not in _looks(later) and later["before"] == len(entries) + 1
+    # Woken: at work again from there on.
+    assert await ledger.rest_over(three.id, (await ledger.get(three.id)).resting_since)
+    assert _looks(await _before(ledger, (await ledger.timeline(limit=0))["latest"]))[resting.id] == ("working", three.id)
+    del wake
+
+
+async def test_a_place_partway_counts_and_shows_only_what_came_before_it(ledger):
+    main = await _session(ledger, "main")
+    first = await _working(ledger, main, "first")
+    partway = (await ledger.timeline(limit=0))["latest"]
+    assert (await ledger.transition(first.id, "done")).applied
+    second = await _working(ledger, main, "second")
+    # A note after the place is not counted before it.
+    await _note(ledger, second, main.id, "after the place")
+    found = await _before(ledger, partway)
+    page = await ledger.timeline(after=partway, limit=10_000)
+    assert found["before"] + len(page["entries"]) == len(await _all(ledger))
+    assert _looks(found) == {main.id: ("working", first.id)}
+    assert _looks(await _before(ledger, page["latest"])) == {main.id: ("working", second.id)}
+
+
+async def test_a_rest_before_its_last_move_is_over(ledger):
+    main = await _session(ledger, "main")
+    commission = await _working(ledger, main)
+    wake, refusal = await ledger.wake_add(
+        session_id=main.id, commission_id=commission.id, note="later", due_at=9000.0, pending_max=5, daily_max=5,
+    )
+    assert refusal == "" and wake is not None
+    await ledger.rest(commission.id)
+    tick(ledger)
+    # Asked, and answered: at work, though no waking was written.
+    assert (await ledger.transition(commission.id, "waiting_user", pending_question=json.dumps({"kind": "questions", "question": "?"}))).applied
+    assert (await ledger.transition(commission.id, "working")).applied
+    assert _looks(await _before(ledger, (await ledger.timeline(limit=0))["latest"])) == {main.id: ("working", commission.id)}
+
+
+async def test_one_woken_is_at_work_from_when_it_was_woken(ledger):
+    main = await _session(ledger, "main")
+    commission = await _working(ledger, main)
+    wake, refusal = await ledger.wake_add(
+        session_id=main.id, commission_id=commission.id, note="later", due_at=9000.0, pending_max=5, daily_max=5,
+    )
+    assert refusal == "" and wake is not None
+    tick(ledger, 10)
+    resting = await ledger.rest(commission.id)
+    tick(ledger, 10)
+    assert await ledger.rest_over(commission.id, resting.since)
+    [found] = (await _before(ledger, (await ledger.timeline(limit=0))["latest"]))["scene"]
+    assert (found["look"], found["since"]) == ("working", 1020.0)
+
+
+async def test_one_is_where_it_was_opened_by_then_not_where_it_is_now(ledger):
+    main, copy = await _session(ledger, "main"), await _session(ledger, "copy")
+    commission = await _working(ledger, main)
+    await ledger.append_event(commission.id, "opened", {"session_id": copy.id})
+    place = (await ledger.timeline(limit=0))["latest"]
+
+    def back(conn: Any) -> None:
+        # Taken back from the copy into the session it was copied from, as the host does.
+        conn.execute("UPDATE commissions SET session_id = ? WHERE id = ?", (main.id, commission.id))
+
+    await ledger.run(back)
+    assert _looks(await _before(ledger, place)) == {copy.id: ("working", commission.id)}
+    # Opened in it again later: there from then on.
+    await ledger.append_event(commission.id, "opened", {"session_id": main.id})
+    assert _looks(await _before(ledger, (await ledger.timeline(limit=0))["latest"])) == {main.id: ("working", commission.id)}
+    # And at the place before that, still where it was then.
+    assert _looks(await _before(ledger, place)) == {copy.id: ("working", commission.id)}
+    # Taken back into the session it was copied from, and waiting there for its turn, with no
+    # opening written: in that session, not in the copy that is closed.
+    await ledger.append_event(commission.id, "carried_on_in_copy", {"session_id": copy.id, "of": main.id})
+    in_copy = (await ledger.timeline(limit=0))["latest"]
+    await ledger.append_event(commission.id, "back_from_copy", {"to": main.id, "copy": copy.id})
+    assert (await ledger.transition(commission.id, "queued")).applied
+    assert _looks(await _before(ledger, in_copy)) == {copy.id: ("working", commission.id)}
+    assert _looks(await _before(ledger, (await ledger.timeline(limit=0))["latest"])) == {main.id: ("queued", commission.id)}
+    for kind, payload, where in (
+        ("carried_on_in_copy", {"session_id": copy.id, "of": main.id}, copy.id),
+        ("handed_back", {"to": main.id, "copy": copy.id}, main.id),
+        ("carried_on_in_copy", {"session_id": copy.id, "of": main.id}, copy.id),
+        ("not_carried_on", {"of": main.id, "copy": copy.id}, main.id),
+    ):
+        await ledger.append_event(commission.id, kind, payload)
+        assert _looks(await _before(ledger, (await ledger.timeline(limit=0))["latest"])) == {where: ("queued", commission.id)}
+    # One never opened anywhere: where it is on record.
+    other = await _working(ledger, await _session(ledger, "other"), "other")
+    assert _looks(await _before(ledger, (await ledger.timeline(limit=0))["latest"]))[other.session_id] == ("working", other.id)
+
+
+async def test_of_several_in_a_session_the_one_at_work_is_how_it_stood(ledger):
+    main = await _session(ledger, "main")
+    await _file(ledger, main, "behind")
+    tick(ledger)
+    at_work = await _working(ledger, main, "first")
+    assert _looks(await _before(ledger, (await ledger.timeline(limit=0))["latest"])) == {main.id: ("working", at_work.id)}
+
+
+async def test_waiting_for_the_user_with_nothing_asked_stands_as_at_work(ledger):
+    main = await _session(ledger, "main")
+    commission = await _working(ledger, main)
+    assert (await ledger.transition(commission.id, "waiting_user")).applied
+    assert _looks(await _before(ledger, (await ledger.timeline(limit=0))["latest"])) == {main.id: ("working", commission.id)}
+
+
+async def test_from_the_beginning_nothing_lies_before_and_so_many_sessions_at_most(ledger):
+    sessions = [await _session(ledger, f"s{n}") for n in range(3)]
+    for session in sessions:
+        await _working(ledger, session)
+        tick(ledger)
+    assert await _before(ledger, "") == {"before": 0, "scene": []}
+    latest = (await ledger.timeline(limit=0))["latest"]
+    # Those that stood so the longest are left out first.
+    assert [item["session_id"] for item in (await _before(ledger, latest, limit=2))["scene"]] == [sessions[1].id, sessions[2].id]
+    assert (await _before(ledger, latest, limit=0))["scene"] == []
+    with pytest.raises(ValueError):
+        await _before(ledger, "not a cursor")
+
+
+async def test_what_the_user_answered_a_tool_is_an_answer_and_noted_once(ledger):
+    main = await _session(ledger, "main")
+    commission = await _working(ledger, main)
+    await ledger.append_event(commission.id, "tool_answered", {"question_kind": "permission", "choice": "once"})
+    await ledger.append_event(commission.id, "tool_answered", {"question_kind": "questions", "choice": "", "text": "the blue one"})
+    # What a copy noted of the same answer for its commission is no entry of its own.
+    await ledger.append_event(commission.id, "answered", {"text": "the blue one", "asked_by_tool": True})
+    await ledger.append_event(commission.id, "answered", {"text": "yes, go on"})
+    answers = _of(await _all(ledger), "answered")
+    assert [(item["text"], item["detail"]) for item in answers] == [
+        ("", {"asked_by_tool": True, "question_kind": "permission", "choice": "once"}),
+        ("the blue one", {"asked_by_tool": True, "question_kind": "questions", "choice": None}),
+        ("yes, go on", {}),
+    ]
+    assert all(item["peer"]["type"] == "user" for item in answers)
+    # Counted as they are listed.
+    assert (await _before(ledger, (await ledger.timeline(limit=0))["latest"]))["before"] == len(await _all(ledger))
+
+
+async def test_entries_before_a_place_are_counted_back_only_so_far(ledger):
+    main = await _session(ledger, "main")
+    first = await _working(ledger, main, "first")
+    await _note(ledger, first, main.id, "one")
+    await _note(ledger, first, main.id, "two")
+    latest = (await ledger.timeline(limit=0))["latest"]
+    every = len(await _all(ledger))
+    assert (await _before(ledger, latest))["before"] == every
+    # As far as is wanted: events counted back first, then messages for what is left.
+    assert (await _before(ledger, latest, count_most=every - 1))["before"] == every - 1
+    assert (await _before(ledger, latest, count_most=1))["before"] == 1
+    assert (await _before(ledger, latest, count_most=0))["before"] == 0
+
+
+async def test_one_over_long_before_a_place_is_not_looked_at_and_one_over_after_it_is(ledger):
+    main, other = await _session(ledger, "main"), await _session(ledger, "other")
+    done_long_ago = await _working(ledger, main, "long ago")
+    assert (await ledger.transition(done_long_ago.id, "done")).applied
+    tick(ledger, 10_000)
+    at_work = await _working(ledger, other, "now")
+    place = (await ledger.timeline(limit=0))["latest"]
+    tick(ledger)
+    assert (await ledger.transition(at_work.id, "done")).applied
+    # Over after the place: under way there all the same.
+    assert _looks(await _before(ledger, place)) == {other.id: ("working", at_work.id)}
+

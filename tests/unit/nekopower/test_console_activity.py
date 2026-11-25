@@ -222,6 +222,107 @@ async def test_a_page_that_opens_begins_reading_a_stretch_before_the_end_and_mis
     assert (await console.get("/timeline/start")).json()["after"] == ""
 
 
+async def test_where_a_page_begins_it_is_told_how_many_came_before_and_who_was_at_what(consoles, tmp_path, monkeypatch):
+    llm = ScriptedLLM([_report("waiting", "Which folder?", "call-w")])
+    console = consoles(tmp_path, llm)
+    first = await console.dispatch("sort the photos")
+    waiting = await wait_status(console.host, first.id, "waiting_user")
+    # Read from where nothing is left to read: all of it came before.
+    monkeypatch.setattr(settings, "CONSOLE_TIMELINE_RECENT_EVENT_ROWS", 0)
+    monkeypatch.setattr(settings, "CONSOLE_TIMELINE_RECENT_MESSAGE_ROWS", 0)
+    start = (await console.get("/timeline/start")).json()
+    assert start["after"] == start["latest"]
+    # What is on record up to there (the session may still write the end of its turn after it).
+    from nekopower.host.timeline import parse_cursor
+
+    events, messages = parse_cursor(start["after"])
+    entries = (await console.get("/timeline")).json()["entries"]
+    before = [item for item in entries if all(a <= b for a, b in zip(parse_cursor(item["cursor"]), (events, messages)))]
+    assert before and start["before"] == len(before)
+    assert [(item["session_id"], item["commission_id"], item["look"]) for item in start["scene"]] == [
+        (waiting.session_id, first.id, "waiting_user")
+    ]
+    monkeypatch.setattr(settings, "CONSOLE_TIMELINE_SCENE_MAX_ROWS", 0)
+    assert (await console.get("/timeline/start")).json()["scene"] == []
+    monkeypatch.setattr(settings, "CONSOLE_TIMELINE_BEFORE_COUNT_MAX", 2)
+    assert (await console.get("/timeline/start")).json()["before"] == 2
+    # From the beginning: nothing before it.
+    monkeypatch.setattr(settings, "CONSOLE_TIMELINE_RECENT_EVENT_ROWS", 10_000)
+    assert (await console.get("/timeline/start")).json() | {"latest": ""} == {
+        "success": True, "after": "", "latest": "", "before": 0, "scene": [],
+    }
+
+
+async def test_what_the_user_answered_a_tool_is_on_the_timeline_before_it_goes_on(consoles, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_MIN_TOKENS", 500)
+    llm = ScriptedLLM(
+        [
+            [call("glob", {"pattern": "*.none"}), _used(900, 200), finish("tool_calls")],
+            [*_report("ready", "nothing to sort", "call-2")[:1], _used(950, 100), finish("tool_calls")],
+        ]
+    )
+    console = consoles(tmp_path, llm)
+    assert (await console.post("/usage-limit", {"tokens": 1_000})).status_code == 200
+    first = await console.dispatch("sort the photos")
+    await wait_status(console.host, first.id, "waiting_user")
+    assert (await console.post("/usage-limit", {"tokens": None})).status_code == 200
+    assert (await console.post(f"/commissions/{first.id}/answer", {"text": "go on", "choice": "once"})).status_code == 200
+    await _over(console, first.id)
+    entries = (await console.get("/timeline")).json()["entries"]
+    kinds = [item["kind"] for item in entries]
+    asked = kinds.index("asked_user")
+    # Asked, answered with a choice and nothing of what was typed, then at work again.
+    assert kinds[asked + 1 : asked + 3] == ["answered", "started"]
+    answer = entries[asked + 1]
+    assert (answer["text"], answer["detail"]) == ("", {"asked_by_tool": True, "question_kind": "permission", "choice": "once"})
+    assert answer["commission_id"] == first.id and answer["peer"]["type"] == "user"
+
+
+async def test_what_the_user_answered_a_question_put_with_a_tool_is_on_the_timeline_with_its_words(consoles, tmp_path):
+    questions = [{"id": "q1", "question": "Which folder?", "options": [{"label": "Desktop"}, {"label": "Downloads"}]}]
+    llm = ScriptedLLM(
+        [
+            [call("ask_user_question", {"questions": questions}, "call-q"), finish("tool_calls")],
+            _report("ready", "sorted", "call-2"),
+        ]
+    )
+    console = consoles(tmp_path, llm)
+    first = await console.dispatch("sort the photos")
+    await wait_status(console.host, first.id, "waiting_user")
+    assert (await console.post(f"/commissions/{first.id}/answer", {"text": "Downloads"})).status_code == 200
+    await _over(console, first.id)
+    answers = [item for item in (await console.get("/timeline")).json()["entries"] if item["kind"] == "answered"]
+    assert [(item["text"], item["detail"]["question_kind"]) for item in answers] == [("Downloads", "questions")]
+
+
+async def test_a_note_of_an_answer_that_could_not_be_written_does_not_keep_the_tool_from_its_answer(consoles, tmp_path, monkeypatch):
+    questions = [{"id": "q1", "question": "Which folder?", "options": [{"label": "Desktop"}]}]
+    llm = ScriptedLLM(
+        [
+            [call("ask_user_question", {"questions": questions}, "call-q"), finish("tool_calls")],
+            _report("ready", "sorted", "call-2"),
+        ]
+    )
+    console = consoles(tmp_path, llm)
+    append = console.host.ledger.append_event
+
+    async def failing(commission_id: str, kind: str, payload: Any = None) -> int:
+        if kind == "tool_answered":
+            raise RuntimeError("the disk is full")
+        return await append(commission_id, kind, payload)
+
+    monkeypatch.setattr(console.host.ledger, "append_event", failing)
+    first = await console.dispatch("sort the photos")
+    await wait_status(console.host, first.id, "waiting_user")
+    assert (await console.post(f"/commissions/{first.id}/answer", {"text": "Desktop"})).status_code == 200
+    done = await _over(console, first.id)
+    assert done.result_summary == "sorted"
+    # The tool had its answer: no error came back from it.
+    [asked] = [event.payload for event in await console.host.ledger.events(first.id) if event.type == "tool_end"
+               and event.payload.get("tool_name") == "ask_user_question"]
+    assert asked["is_error"] is False
+
+
 @pytest.mark.parametrize(
     ("path", "params", "code"),
     [
@@ -1145,3 +1246,98 @@ async def test_a_project_whose_directory_cannot_be_moved_stays_and_the_page_is_t
     monkeypatch.setattr(console.host.space, "read_project", unreadable_at_the_second_look)
     refused = await console.post("/space/projects/archive", {"project": "Garden"})
     assert refused.status_code != 200 and refused.json()["detail"]["code"] not in ("archive_failed", "no_project")
+
+
+# ---------------------------------------------------------------------------
+# Reading at once what was read one at a time
+# ---------------------------------------------------------------------------
+
+
+async def test_the_sessions_of_a_page_of_commissions_are_read_at_once(consoles, tmp_path, monkeypatch):
+    from tests.unit.nekopower.test_host_timeline import _file, _session
+
+    console = consoles(tmp_path)
+    ledger = console.host.ledger
+    sessions = [await _session(ledger, f"s{n}", project=None, kind="single") for n in range(3)]
+    for session in sessions:
+        await _file(ledger, session, f"job of {session.name}")
+
+    async def one_at_a_time(session_id: Any) -> Any:
+        raise AssertionError("a session read one at a time")
+
+    monkeypatch.setattr(ledger, "get_session", one_at_a_time)
+    listed = (await console.get("/commissions")).json()["commissions"]
+    assert sorted(item["session"]["name"] for item in listed) == ["s0", "s1", "s2"]
+
+
+async def test_sessions_are_read_by_their_ids_those_not_on_record_left_out(consoles, tmp_path):
+    from tests.unit.nekopower.test_host_timeline import _session
+
+    console = consoles(tmp_path)
+    ledger = console.host.ledger
+    one, two = await _session(ledger, "one"), await _session(ledger, "two")
+    # More than one statement takes at once: read in parts, each once.
+    # Those not on record sort before them: the two are in the second part.
+    wanted = [one.id, "!nobody", two.id, one.id, *(f"!missing-{n:03}" for n in range(600))]
+    found = await ledger.get_sessions(wanted)
+    assert sorted(found) == sorted([one.id, two.id]) and found[two.id].name == "two"
+    assert await ledger.get_sessions([]) == {}
+    assert await ledger.get_sessions(["", None]) == {}
+
+
+async def test_what_a_task_agent_has_in_hand_and_what_it_used_are_read_at_one_moment(consoles, tmp_path, monkeypatch):
+    from tests.unit.nekopower.test_host_timeline import _file, _session
+
+    console = consoles(tmp_path)
+    ledger = console.host.ledger
+    session = await _session(ledger, "Blog", project=None, kind="single")
+    at_work = await _file(ledger, session, "move the blog")
+    assert (await ledger.transition(at_work.id, "working")).applied
+
+    async def apart(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("read apart from what it has in hand")
+
+    # Neither what is under way nor what it used is read by itself.
+    monkeypatch.setattr(ledger, "select", apart)
+    monkeypatch.setattr(ledger, "usage_standing", apart)
+    monkeypatch.setattr(ledger, "get_session", apart)
+    usage = (await console.get(f"/familiars/{session.id}/usage")).json()
+    assert (usage["commission"]["id"], usage["commission"]["status"]) == (at_work.id, "working")
+    assert usage["session"]["tokens"] == 0
+    # One filed before it that waits for its turn is not what it has in hand.
+    other = await _session(ledger, "Notes", project=None, kind="single")
+    waiting = await _file(ledger, other, "first, and waiting")
+    later = await _file(ledger, other, "later, and at work")
+    assert (await ledger.transition(later.id, "working")).applied
+    found = await ledger.usage_in_hand(other.id)
+    assert (found[1].id, found[2].id) == (later.id, later.id) and waiting.id != later.id
+    # What the user allowed the work it has in hand is what it may use.
+    await ledger.allow_usage(later.id, 700)
+    assert (await console.get(f"/familiars/{other.id}/usage")).json()["commission"]["limit"] == 700
+    assert await ledger.usage_in_hand("nobody") is None
+    assert _code(await console.get("/familiars/nobody/usage")) == (404, "no_familiar")
+
+
+async def test_those_waiting_their_turn_are_all_listed_unless_a_most_is_set(consoles, tmp_path, monkeypatch):
+    from tests.unit.nekopower.test_host_timeline import _file, _session
+
+    console = consoles(tmp_path)
+    ledger = console.host.ledger
+    session = await _session(ledger, "Blog", project=None, kind="single")
+    at_work = await _file(ledger, session, "move the blog")
+    assert (await ledger.transition(at_work.id, "working")).applied
+    queued = [await _file(ledger, session, f"then {n}") for n in range(3)]
+
+    def apart(conn: Any) -> None:
+        for n, item in enumerate(queued):
+            conn.execute("UPDATE commissions SET created_at = created_at + ? WHERE id = ?", (10 + n, item.id))
+
+    await ledger.run(apart)
+    every = (await console.get("/commissions")).json()
+    assert len(every["commissions"]) == 4 and every["more"] is False
+    monkeypatch.setattr(settings, "CONSOLE_COMMISSIONS_QUEUED_MAX", 1)
+    cut = (await console.get("/commissions")).json()
+    # The newest of those waiting, and the one at work whatever the most.
+    assert [item["id"] for item in cut["commissions"]] == [queued[2].id, at_work.id] and cut["more"] is True
+    monkeypatch.setattr(settings, "CONSOLE_COMMISSIONS_QUEUED_MAX", 3)
+    assert (await console.get("/commissions")).json()["more"] is False

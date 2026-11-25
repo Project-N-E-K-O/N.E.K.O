@@ -7096,7 +7096,9 @@ class TaskAgentManager(TreeWork):
             session.question, session.at_answer, session.question_id = future, at_answer, question["id"]
             try:
                 await self._reporter.question(moved.commission, question)
-                return await future
+                answer = await future
+                await self._note_tool_answer(commission_id, question, answer)
+                return answer
             finally:
                 session.question, session.at_answer = None, None
                 if session.question_id == question["id"]:
@@ -7109,6 +7111,26 @@ class TaskAgentManager(TreeWork):
                         commission_id, "working", reason="the user answered", only_from=("waiting_user",)
                     )
                 )
+
+    async def _note_tool_answer(self, commission_id: str, question: dict[str, Any], answer: dict[str, Any]) -> None:
+        """Put on record that the user answered what a tool asked (``tool_answered``), for the timeline.
+
+        The words of the answer to a question put with a tool; of a
+        request for approval, or for going on past the usage limit, the
+        choice and nothing else. The answer is the tool's all the same
+        when this cannot be written.
+        """
+        kind = str(question.get("kind") or "")
+        choice = answer.get("choice")
+        payload: dict[str, Any] = {"question_kind": kind, "choice": choice if isinstance(choice, str) else ""}
+        if kind == "questions":
+            payload["text"] = str(answer.get("text") or "")
+        try:
+            await self._ledger.append_event(commission_id, "tool_answered", payload)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - it is for the timeline only
+            logger.warning("noting that the user answered failed", exc_info=True)
 
     async def ask_user(self, commission_id: str, question: dict[str, Any]) -> dict[str, Any]:
         """Put a question to the user for a commission and wait; returns ``{"text", "choice"}``.
@@ -9860,6 +9882,30 @@ class TaskAgentManager(TreeWork):
                 return int(chosen)
         return int(TASK_AGENT_USAGE_LIMIT_TOKENS or 0)
 
+    async def usage_view(self, commission: Any, standing: Any, kept: Any) -> dict[str, Any]:
+        """Return ``usage_of`` from what was read of the ledger: the commission, ``Ledger.usage_standing`` of it, its session."""
+
+        def counted(row: Any) -> dict[str, int]:
+            return {
+                "requests": row.requests,
+                "input": row.tokens_in,
+                "output": row.tokens_out,
+                "cache_read": row.tokens_cache_read,
+                "cache_write": row.tokens_cache_write,
+                "tokens": row.tokens,
+            }
+
+        limit = await self._usage_limit()
+        allowed = standing.allowed if standing is not None and standing.allowed is not None else limit
+        return {
+            "commission": counted(commission),
+            # For a commission no task agent started, its own count as it
+            # was read: one reading, so the two numbers agree.
+            "used": standing.used if standing is not None and standing.root != commission.id else commission.tokens,
+            "limit": allowed if limit > 0 else None,
+            "session": ({**counted(kept), "context_tokens": kept.context_tokens} if kept is not None else None),
+        }
+
     async def usage_of(self, commission_id: str) -> dict[str, Any] | None:
         """Return what a commission has used and what it may, for a display; None for an unknown one.
 
@@ -9877,27 +9923,7 @@ class TaskAgentManager(TreeWork):
             return None
         standing = await self._ledger.usage_standing(commission_id)
         kept = await self._ledger.get_session(commission.session_id)
-
-        def counted(row: Any) -> dict[str, int]:
-            return {
-                "requests": row.requests,
-                "input": row.tokens_in,
-                "output": row.tokens_out,
-                "cache_read": row.tokens_cache_read,
-                "cache_write": row.tokens_cache_write,
-                "tokens": row.tokens,
-            }
-
-        limit = await self._usage_limit()
-        allowed = standing.allowed if standing is not None and standing.allowed is not None else limit
-        return {
-            "commission": counted(commission),
-            # For a commission no task agent started, its own count as it
-            # was read above: one reading, so the two numbers agree.
-            "used": standing.used if standing is not None and standing.root != commission.id else commission.tokens,
-            "limit": allowed if limit > 0 else None,
-            "session": ({**counted(kept), "context_tokens": kept.context_tokens} if kept is not None else None),
-        }
+        return await self.usage_view(commission, standing, kept)
 
     # -- carrying on in a copy of a project's session ---------------------
 
