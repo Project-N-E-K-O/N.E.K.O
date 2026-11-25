@@ -35,7 +35,7 @@ the SDK / host code makes itself (reply channel, model gateway client and so
 on). Who made a use is read from the Python stack: the innermost frame that
 is plugin code (records) or host code (exempt) decides; library frames in
 between are transparent. A use with neither on the stack (a thread a library
-started) is recorded and flagged ``unattributed``.
+started) is recorded and flagged ``unattributed``, and never refused.
 
 Like the rest of the permission checks this only constrains honest plugins:
 ctypes or a C extension can do all of the above without an audit event.
@@ -52,6 +52,7 @@ Nothing is refused while ``REFUSES_SYSTEM_USES`` is False.
 from __future__ import annotations
 
 import collections
+import ipaddress
 import os
 import sys
 import threading
@@ -116,7 +117,7 @@ _SPAWN_EVENTS = frozenset({
 _LOOKUP_EVENTS = frozenset({"socket.getaddrinfo", "socket.gethostbyname", "socket.gethostbyname_ex"})
 _CONNECT_EVENTS = frozenset({"socket.connect", "socket.sendto"})
 _SERVICE_PORTS = {"http": 80, "https": 443}
-_THIS_FILE = __file__
+_FROZEN = bool(getattr(sys, "frozen", False)) or "__compiled__" in globals()
 
 
 def _norm(path: str) -> str:
@@ -149,7 +150,8 @@ def interpreter_directories() -> list[str]:
         directories.append(site.getusersitepackages())
     except Exception:
         pass
-    if getattr(sys, "frozen", False) or "__compiled__" in globals():
+    if _FROZEN:
+        # The standard library and dependencies ship next to the launcher.
         directories.append(os.path.dirname(sys.executable))
     return [directory for directory in directories if directory]
 
@@ -251,8 +253,6 @@ def _port(value: object) -> int | None:
 
 
 def _is_ip_literal(host: str) -> bool:
-    import ipaddress
-
     try:
         ipaddress.ip_address(host.split("%", 1)[0])
     except ValueError:
@@ -338,7 +338,9 @@ class SystemAuditor:
 
     def _handle(self, event: str, args: tuple, ident: int) -> SystemPermissionDeniedError | None:
         if event in _LOOKUP_EVENTS:
-            self._remember_lookup(event, args, ident)
+            # A host lookup must not lend its name to a plugin's connect.
+            if self._attribution() != _HOST:
+                self._remember_lookup(event, args, ident)
             return None
         uses = self._uses(event, args, ident)
         if not uses:
@@ -352,7 +354,9 @@ class SystemAuditor:
             if attribution is None:
                 flags = (*flags, "unattributed")
             self._record(permission, event, target, would_deny, reason, flags)
-            if REFUSES_SYSTEM_USES and would_deny and refusal is None:
+            # Only a use made by plugin code is refused: with no plugin frame
+            # on the stack it may be the SDK's own work on a library thread.
+            if REFUSES_SYSTEM_USES and would_deny and attribution == _PLUGIN and refusal is None:
                 refusal = SystemPermissionDeniedError(permission=permission, reason=reason)
         return refusal
 
@@ -462,8 +466,6 @@ class SystemAuditor:
             return [(NETWORK_CONNECT, "<address>", ())]
         flags: tuple[str, ...] = ()
         try:
-            import ipaddress
-
             if ipaddress.ip_address(ip.split("%", 1)[0]).is_loopback:
                 flags = ("loopback",)
         except ValueError:
@@ -481,7 +483,9 @@ class SystemAuditor:
         filename = code.co_filename
         if code.co_name == "socketpair" and frame.f_globals.get("__name__") == "socket":
             return _HOST  # asyncio's self-pipe on Windows connects over loopback
-        kind = self._frame_kinds.get(filename)
+        # Only real files are cached: every exec()/eval() shares "<string>".
+        cacheable = not filename.startswith("<") or filename.startswith("<frozen ")
+        kind = self._frame_kinds.get(filename) if cacheable else None
         if kind is not None:
             return kind
         module = frame.f_globals.get("__name__") or ""
@@ -495,21 +499,26 @@ class SystemAuditor:
             kind = _PLUGIN
         elif module.split(".", 1)[0] in _HOST_PACKAGES and (
             self._project_root is None
-            or filename.startswith("<")
+            or _FROZEN
+            or filename.startswith("<")  # exec()/eval() and generated code: the module decides
             or _under(_norm(filename), (self._project_root,))
         ):
+            # A frozen build compiles every module in; its file names need
+            # not lie under the project root, so the module name decides.
             kind = _HOST
         else:
             kind = _OTHER
-        if len(self._frame_kinds) > 8192:
-            self._frame_kinds.clear()
-        self._frame_kinds[filename] = kind
+        if cacheable:
+            if len(self._frame_kinds) > 8192:
+                self._frame_kinds.clear()
+            self._frame_kinds[filename] = kind
         return kind
 
     def _attribution(self) -> int | None:
         """``_PLUGIN``, ``_HOST``, or None when neither is on the stack."""
         frame = sys._getframe(1)
-        while frame is not None and frame.f_code.co_filename == _THIS_FILE:
+        own = globals()
+        while frame is not None and frame.f_globals is own:
             frame = frame.f_back  # this module's own frames
         for _ in range(_MAX_FRAMES):
             if frame is None:
@@ -554,7 +563,7 @@ class SystemAuditor:
             "target": target,
             "verdict": "would_deny" if would_deny else "allow",
             "reason": reason,
-            "enforcing": REFUSES_SYSTEM_USES and would_deny,
+            "enforcing": REFUSES_SYSTEM_USES and would_deny and "unattributed" not in flags,
             "flags": list(flags),
         })
         if len(self._queue) >= BATCH_SIZE:
@@ -594,14 +603,18 @@ class SystemAuditor:
                 return
 
     def _run(self) -> None:
-        self._internal_threads.add(threading.get_ident())
-        while not self._stop.is_set():
-            self._wake.wait(FLUSH_INTERVAL)
-            self._wake.clear()
-            try:
-                self.flush()
-            except Exception:
-                self.errors += 1
+        ident = threading.get_ident()
+        self._internal_threads.add(ident)
+        try:
+            while not self._stop.is_set():
+                self._wake.wait(FLUSH_INTERVAL)
+                self._wake.clear()
+                try:
+                    self.flush()
+                except Exception:
+                    self.errors += 1
+        finally:
+            self._internal_threads.discard(ident)
 
     def start(self) -> None:
         if self._thread is None:

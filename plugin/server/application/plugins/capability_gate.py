@@ -269,8 +269,10 @@ def capability_checked(capability: str, handler):
 
 
 # What a plugin process may report about its own system.* uses. The report is
-# the plugin's own word (its process could also stay silent); it is bounded
-# and reduced to fixed vocabularies before it reaches the audit file.
+# the plugin's own word (its process could also stay silent, and it can write
+# files anyway): it is bounded and reduced to fixed vocabularies before it
+# reaches the audit file, but the privacy reduction of a path target is the
+# SDK's (system_audit.redact_path) and is not redone here.
 SYSTEM_USE_PERMISSIONS = frozenset({
     PERMISSIONS["system.network:connect"].id,
     PERMISSIONS["system.process:spawn"].id,

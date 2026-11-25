@@ -99,18 +99,23 @@ def test_batch_size_is_capped(written, monkeypatch):
     assert capability_gate.record_system_uses("demo", {"items": [_item()] * 5}) == 2
 
 
-def test_system_use_entries_share_the_decision_ring(monkeypatch, tmp_path):
+def test_system_use_entries_cannot_evict_decisions(monkeypatch, tmp_path):
     monkeypatch.setattr(call_audit, "audit_directory", lambda: tmp_path)
     monkeypatch.setattr(call_audit, "_ring", call_audit.deque(maxlen=1000))
     monkeypatch.setattr(call_audit, "_decision_ring", call_audit.deque(maxlen=500))
+    monkeypatch.setattr(call_audit, "_system_use_ring", call_audit.deque(maxlen=3))
     monkeypatch.setattr(call_audit, "_listener", None)
     monkeypatch.setattr(call_audit, "_abandoned", None)
     call_audit.close()
     call_audit.reopen()
     try:
-        call_audit.record({"kind": "system_use", "plugin": "demo"})
+        call_audit.record({"kind": "decision", "plugin": "demo"})
         call_audit.record({"kind": "forward"})
-        assert len(call_audit._decision_ring) == 1 and len(call_audit._ring) == 1
+        for index in range(10):
+            call_audit.record({"kind": "system_use", "plugin": "demo", "n": index})
+        kinds = [entry["kind"] for entry in call_audit.entries()]
+        assert kinds.count("decision") == 1 and kinds.count("forward") == 1
+        assert kinds.count("system_use") == 3 and kinds[0] == "system_use"
     finally:
         call_audit.close()
         call_audit.reopen()

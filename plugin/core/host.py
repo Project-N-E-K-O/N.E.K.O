@@ -1119,6 +1119,16 @@ def _install_system_audit(
         return None
 
 
+def _close_system_audit(auditor: Any | None) -> None:
+    """Send the records still queued while the uplink is open; never raises."""
+    if auditor is None:
+        return
+    try:
+        auditor.close()
+    except Exception:
+        pass
+
+
 def _plugin_process_runner(
     plugin_id: str,
     entry_point: str,
@@ -2034,6 +2044,7 @@ def _plugin_process_runner(
             except Exception as e:
                 logger.exception("Error in lifecycle.shutdown: {}", e)
 
+        _close_system_audit(system_auditor)
         try:
             ctx.close()
         except Exception as e:
@@ -2060,11 +2071,7 @@ def _plugin_process_runner(
                         asyncio.run(_run_with_model_client_cleanup(ctx, _run_with_downlink(result)))
         except BaseException:
             pass
-        if system_auditor is not None:
-            try:
-                system_auditor.close()
-            except Exception:
-                pass
+        _close_system_audit(system_auditor)
         try:
             ctx.close()
         except Exception:
@@ -2076,6 +2083,7 @@ def _plugin_process_runner(
     except Exception as e:
         # Process crash: record details.
         logger.exception("Plugin process {} crashed", plugin_id)
+        _close_system_audit(system_auditor)
         # Try reporting errors through the result queue.
         try:
             res_sender.put({

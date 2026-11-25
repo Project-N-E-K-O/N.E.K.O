@@ -271,6 +271,26 @@ def test_library_frames_are_transparent_and_unknown_is_flagged(env):
     assert record["flags"] == ["unattributed"]
 
 
+def test_exec_code_is_judged_by_its_module_not_a_shared_file_name(env):
+    # Every exec()/eval() frame is "<string>": host code compiled that way
+    # (dataclass __init__ and the like) must not make plugin exec() code exempt.
+    hook = env.auditor.hook
+    exec(compile("hook('open', (path, 'r', 0))", "<string>", "exec"),
+         {"__name__": "plugin.sdk.generated", "hook": hook, "path": str(env.outside / "host.txt")})
+    assert env.records() == []
+    code = compile("hook('open', (path, 'r', 0))", "<string>", "exec")
+    namespace = {"__name__": "mine", "hook": hook, "path": str(env.outside / "mine.txt")}
+    env.plugin.call(lambda *_: exec(code, namespace), None, None)
+    assert len(env.records()) == 1
+
+
+def test_host_lookups_do_not_name_plugin_connects(env):
+    env.from_host("socket.getaddrinfo", ("internal.example.invalid", 443, 0, 1, 0))
+    env.from_plugin("socket.connect", (None, ("192.0.2.9", 443)))
+    (record,) = env.records()
+    assert record["target"] == "192.0.2.9:443"
+
+
 # ---------------------------------------------------------------- judging
 
 
@@ -327,6 +347,25 @@ def test_refusal_switch_on_raises_for_unauthorised_uses_only(tmp_path, monkeypat
 
 
 # ---------------------------------------------------------------- hook rules
+
+
+def test_unattributed_uses_are_recorded_but_never_refused(env, monkeypatch):
+    monkeypatch.setattr(system_audit, "REFUSES_SYSTEM_USES", True)
+    raised = []
+
+    def use():
+        try:
+            env.other.call(env.auditor.hook, "open", (str(env.outside / "a"), "w", os.O_WRONLY))
+        except Exception as exc:
+            raised.append(exc)
+
+    worker = threading.Thread(target=use)
+    worker.start()
+    worker.join()
+    assert raised == []
+    (record,) = env.records()
+    assert record["verdict"] == "would_deny" and record["enforcing"] is False
+    assert env.auditor.errors == 0
 
 
 def test_hook_never_sends_and_a_thread_flushes(env):

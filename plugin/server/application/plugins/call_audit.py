@@ -29,7 +29,9 @@ _ring: deque[tuple[int, dict]] = deque(maxlen=1000)
 _write_order = itertools.count()  # shared by both rings; timestamps can tie
 # Decisions get their own ring so frequent forward entries cannot evict them.
 _decision_ring: deque[tuple[int, dict]] = deque(maxlen=500)
-_DECISION_KINDS = frozenset({"decision", "system_use"})
+# A plugin process reports its own system.* uses; they get a third ring so a
+# busy (or misbehaving) plugin cannot evict the host's decisions either.
+_system_use_ring: deque[tuple[int, dict]] = deque(maxlen=500)
 _listener: logging.handlers.QueueListener | None = None
 _lock = threading.Lock()
 _closed = False
@@ -114,7 +116,9 @@ def _audit_logger_locked() -> logging.Logger | None:
 def record(entry: dict) -> None:
     """Keep ``entry`` in the ring and queue it for the file; never raises."""
     item = {"ts": datetime.now(timezone.utc).isoformat(), **entry}
-    (_decision_ring if entry.get("kind") in _DECISION_KINDS else _ring).append((next(_write_order), item))
+    kind = entry.get("kind")
+    ring = _decision_ring if kind == "decision" else _system_use_ring if kind == "system_use" else _ring
+    ring.append((next(_write_order), item))
     try:
         # Check and enqueue (non-blocking) under the lock close() takes, so
         # everything accepted before a close is queued ahead of its sentinel.
@@ -131,7 +135,8 @@ def record(entry: dict) -> None:
 
 def entries() -> list[dict]:
     """Newest first."""
-    return [item for _, item in sorted([*_ring, *_decision_ring], key=lambda pair: pair[0], reverse=True)]
+    rings = [*_ring, *_decision_ring, *_system_use_ring]
+    return [item for _, item in sorted(rings, key=lambda pair: pair[0], reverse=True)]
 
 
 def generation() -> int:
