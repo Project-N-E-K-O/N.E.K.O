@@ -33,7 +33,7 @@ const glueStart = buttonsSource.indexOf('    // ===== 语音消息：录音 -> �
 const glue = buttonsSource.slice(
   glueStart, buttonsSource.indexOf('    function clearReactChatWindowHostBindingPoll() {', glueStart));
 
-function glueHarness({ visitActive = true, outcomes = ['sent'], text = '你好', sendResult = true } = {}) {
+function glueHarness({ visitActive = true, outcomes = ['sent'], text = '你好', sendResult = true, transcribeGate = null } = {}) {
   const calls = { fetch: [], sent: [], visit: [], toasts: [] };
   const queue = outcomes.slice();
   const flags = { visitActive };
@@ -61,6 +61,8 @@ function glueHarness({ visitActive = true, outcomes = ['sent'], text = '你好',
   };
   async function fetch(url, init) {
     calls.fetch.push({ url, body: init && init.body ? JSON.parse(init.body) : null });
+    // Optionally hold the transcription response until the test releases it.
+    if (transcribeGate && url.endsWith('/transcribe')) await transcribeGate;
     return { ok: true, status: 200, async json() { return { ok: true, text }; } };
   }
   const context = vm.createContext({
@@ -152,9 +154,16 @@ test('a visit line refused after a character switch rejects as stale_target', as
 test('realtime voice started during transcription: nothing is sent and the draft is kept', async () => {
   for (const visitActive of [false, true]) {
     for (const state of [{ voiceChatActive: true }, { voiceStartPending: true }, { isRecording: true }]) {
-      const { api, calls, window } = glueHarness({ visitActive });
+      let release;
+      const transcribeGate = new Promise((resolve) => { release = resolve; });
+      const { api, calls, window } = glueHarness({ visitActive, transcribeGate });
+      const pending = api.sendAudioMessagePayload(payload);
+      await new Promise((resolve) => setImmediate(resolve));
+      // The upload is in flight and realtime voice was idle when it started.
+      assert.equal(calls.fetch.length, 1);
       window.appState = state;
-      const error = await rejection(api.sendAudioMessagePayload(payload));
+      release();
+      const error = await rejection(pending);
       assert.equal(error.message, 'busy');
       assert.equal(calls.sent.length, 0);
       assert.equal(calls.visit.length, 0);
