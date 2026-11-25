@@ -104,11 +104,12 @@ class VoiceConfig:
             return cls(ref=value.strip())
         if isinstance(value, dict):
             # Tolerate a dict that is actually a stored object.
+            raw_config = value.get("config")
             return cls(
                 source=str(value.get("source") or ""),
                 provider=str(value.get("provider") or ""),
                 ref=str(value.get("ref") or ""),
-                config=dict(value.get("config") or {}),
+                config=dict(raw_config) if isinstance(raw_config, dict) else {},
             )
         return cls()
 

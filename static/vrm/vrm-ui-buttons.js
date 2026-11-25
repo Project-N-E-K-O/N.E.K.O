@@ -949,7 +949,7 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
         dragRAFId = null;
         const deltaX = pendingClientX - dragStartX;
         const deltaY = pendingClientY - dragStartY;
-        if (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5) {
+        if (_isNekoIdleReturnCatDragMovement(deltaX, deltaY)) {
             returnButtonContainer.setAttribute('data-dragging', 'true');
             if (!dragActiveDispatched) {
                 dragActiveDispatched = true;
@@ -976,7 +976,7 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
     const commitDragPosition = () => {
         const deltaX = pendingClientX - dragStartX;
         const deltaY = pendingClientY - dragStartY;
-        if (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5) {
+        if (_isNekoIdleReturnCatDragMovement(deltaX, deltaY)) {
             returnButtonContainer.setAttribute('data-dragging', 'true');
             if (!dragActiveDispatched) {
                 dragActiveDispatched = true;
@@ -1002,7 +1002,7 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
         if (!isDragging) return;
         pendingClientX = clientX;
         pendingClientY = clientY;
-        if (dragActiveDispatched || Math.abs(clientX - dragStartX) > 5 || Math.abs(clientY - dragStartY) > 5) {
+        if (dragActiveDispatched || _isNekoIdleReturnCatDragMovement(clientX - dragStartX, clientY - dragStartY)) {
             window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
                 detail: {
                     reason: 'return-ball-drag-motion',

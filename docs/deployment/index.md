@@ -15,7 +15,7 @@ Maintainers publishing a stable desktop release should follow [Manual stable des
 
 ## Requirements
 
-Source development requires Python 3.11 exactly, `uv`, and Node compatible with the lockfiles (the plugin manager requires `^20.19.0 || >=22.12.0`). Docker requires a current Docker Engine with Compose.
+Source development requires Python 3.11 exactly, `uv`, and Node compatible with the lockfiles (the plugin manager requires `>=22.12.0`). Docker requires a current Docker Engine with Compose.
 
 Local vector recall is optional and CPU-only. See [Local Embedding Model Assets](./embedding-models) for gates and asset layout; BM25 remains available when vectors are disabled.
 

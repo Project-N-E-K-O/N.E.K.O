@@ -25,13 +25,17 @@ WORKDIR /src
 COPY frontend/plugin-manager /src/frontend/plugin-manager
 COPY frontend/react-neko-chat /src/frontend/react-neko-chat
 
-# Shared static assets bundled into plugin-manager at build time.
-# yui-guide-runtime.ts imports tutorial PNGs and shared icons via
-# `../../../static/...`; keep these COPY paths in sync with that file
-# (currently: static/assets/tutorial/{ghost-cursor,highlight}, static/icons).
+# Repo paths outside the frontend projects that the builds below read:
+#  - static/assets/tutorial: PNGs imported by plugin-manager's yui-guide-runtime.ts
+#  - static/locales: JSON read by react-neko-chat tests, which `tsc -b` checks
+#  - static/plugin-ui-sdk: display.js inlined by hosted/uiKitBundle.ts via `?raw`
+#  - static/icons: no build-time import today (only runtime /static/icons/ URLs)
+# tests/unit/test_docker_frontend_builder_context.py fails when a frontend
+# imports a repo path that is not copied here.
 COPY static/assets/tutorial /src/static/assets/tutorial
 COPY static/icons /src/static/icons
 COPY static/locales /src/static/locales
+COPY static/plugin-ui-sdk /src/static/plugin-ui-sdk
 
 WORKDIR /src/frontend/plugin-manager
 RUN npm ci && npm run build-only
@@ -74,7 +78,7 @@ RUN echo "deb https://mirrors.aliyun.com/debian/ bookworm main non-free non-free
 # N.E.K.O. 完整组件系统依赖清单
 # ============================================================================
 #
-# [1] Agent / Browser tools (nekoclaw/builtin/browser, Debian chromium)
+# [1] Agent / Browser tools (nekopower/builtin/browser, Debian chromium)
 #     - chromium, chromium-sandbox: the browser itself, see the note below
 #     - Chromium 浏览器运行时依赖
 #     - libx11-xcb1, libxcomposite1, libxcursor1, libxdamage1
@@ -119,7 +123,7 @@ RUN echo "deb https://mirrors.aliyun.com/debian/ bookworm main non-free non-free
 # Browser for the browser tools
 # -----------------------------
 # The application ships no browser. Its browser tools start a Chromium-based
-# browser found on PATH (nekoclaw/builtin/browser/launcher.py looks for
+# browser found on PATH (nekopower/builtin/browser/launcher.py looks for
 # `chromium` among others) and talk to it over the debugging protocol. A
 # container has no browser of the user's, so this image installs Debian's
 # `chromium` package; apt resolves the libraries it depends on.
@@ -138,7 +142,7 @@ RUN echo "deb https://mirrors.aliyun.com/debian/ bookworm main non-free non-free
 #     and the browser tools report that the browser could not be started.
 #   * There is no display. Nothing has to be set for that: the browser tools
 #     start the browser without a window when neither DISPLAY nor
-#     WAYLAND_DISPLAY is set, whatever <data root>/nekoclaw/browser.json says.
+#     WAYLAND_DISPLAY is set, whatever <data root>/nekopower/browser.json says.
 RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
     if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
     apt-get update && \
@@ -302,7 +306,7 @@ COPY --from=frontend-builder /src/static/react/neko-chat /app/static/react/neko-
 
 # 7b. 解压内置 Live2D 模型（assets/<name>.tar.gz → static/<name>/）
 #     dev 用 build_frontend.{sh,bat} 解压；docker 路径绕过那两个脚本，单独解压一次
-RUN cd /app && for model in yui-origin yui-lolita; do \
+RUN cd /app && for model in yui-origin yui-lolita yui-sister; do \
         tar -xzmf "assets/$model.tar.gz" -C static/ || exit 1; \
         test -f "static/$model/$model.moc3" || exit 1; \
     done

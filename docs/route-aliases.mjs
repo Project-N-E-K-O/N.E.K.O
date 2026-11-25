@@ -18,6 +18,7 @@ export const LEGACY_REDIRECTS = Object.freeze({
   '/plugins/safe-local-upgrades': '/plugins/plugin-toml',
   '/plugins/host-capability-gaps': '/plugins/sdk-reference',
   '/plugins/use-claw': '/architecture/agent-system',
+  '/design/nekoclaw-rewrite': '/design/nekopower-rewrite',
   '/zh-CN/plugins/plugin-base': '/zh-CN/plugins/sdk-reference',
   '/zh-CN/plugins/lifecycle-config': '/zh-CN/plugins/decorators',
   '/zh-CN/plugins/safe-local-upgrades': '/zh-CN/plugins/plugin-toml',

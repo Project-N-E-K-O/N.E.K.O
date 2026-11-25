@@ -89,6 +89,7 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
     I.suppressDragReleaseClick = false;
     I.resizeState = null;
     I.minimized = false;
+    I.idleCatPlaygroundActive = false;
     I.idleCatPlaygroundYarnSkinActive = false;
     I.savedShellSize = null;
     I.savedShellPosition = null; // {left, top} before minimize – used to fly back on expand
@@ -101,9 +102,13 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
     I.idleDockSavedPosition = null;
     I.idleDockTriggeredMinimize = false;
     I.idleDockMinimizeObserver = null;
+    // Set when the cat wakes up on its own while the chat is idle-docked: the
+    // chat stays minimized, but reopens once the user actually brings her back.
+    I.idleDockParkedRestore = null;
     I.electronIdleDockActive = false;
     I.electronIdleDockTriggeredCollapse = false;
     I.electronIdleDockSavedBounds = null;
+    I.electronIdleDockParkedRestoreBounds = null;
     I.electronIdleDockLastScreenRect = null;
     I.electronIdleDockEntering = false;
     I.electronIdleDockRetryTimer = 0;

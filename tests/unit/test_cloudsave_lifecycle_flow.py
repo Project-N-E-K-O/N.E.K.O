@@ -2,6 +2,7 @@ import contextlib
 import json
 import shutil
 import asyncio
+from concurrent.futures import Future
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -411,12 +412,23 @@ async def test_main_server_manual_startup_performs_fallback_import_and_continues
         assert main_server._preload_task is not None
 
 
+def _shutdown_tracker_stub(on_submit=lambda: None):
+    """Model synchronous submission and a separately awaitable save result."""
+    def submit(**kwargs):
+        on_submit()
+        result = Future()
+        result.set_result(None)
+        return result
+
+    return SimpleNamespace(submit_save=Mock(side_effect=submit))
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_main_server_shutdown_does_not_reexport_runtime_into_cloudsave_snapshot():
     from app import main_server
 
-    fake_tracker = SimpleNamespace(save=Mock())
+    fake_tracker = _shutdown_tracker_stub()
 
     with patch.object(main_server, "_IS_MAIN_PROCESS", True), \
          patch.object(main_server, "_preload_task", None), \
@@ -428,7 +440,7 @@ async def test_main_server_shutdown_does_not_reexport_runtime_into_cloudsave_sna
          patch("utils.token_tracker.TokenTracker.get_instance", return_value=fake_tracker):
         await main_server.on_shutdown()
 
-    fake_tracker.save.assert_called_once_with()
+    fake_tracker.submit_save.assert_called_once_with(report_timeout=1.0)
     run_cloudsave_action.assert_awaited_once_with(
         "upload_existing_snapshot",
         reason="main_server_shutdown_remote_upload",
@@ -456,9 +468,7 @@ def _patched_shutdown_steps(cleanup_order: list[str], step_factory):
     """Patch every on_shutdown cleanup with a recorder built by ``step_factory``."""
     from app import main_server
 
-    fake_tracker = SimpleNamespace(
-        save=Mock(side_effect=lambda: cleanup_order.append("token"))
-    )
+    fake_tracker = _shutdown_tracker_stub(lambda: cleanup_order.append("token"))
     with contextlib.ExitStack() as stack:
         stack.enter_context(patch.object(main_server, "_IS_MAIN_PROCESS", True))
         stack.enter_context(patch.object(main_server, "_preload_task", None))
@@ -680,10 +690,13 @@ async def test_main_server_shutdown_waits_for_cloudsave_upload_without_deadline(
 
     assert deadlines["Steam Auto-Cloud shutdown staged snapshot upload"] is None
     assert deadlines["voice identity cleanup"] is None
+    # Token persistence now also runs in an independent worker. Normal exit
+    # waits for its terminal state; cancellation is bounded by the shared budget.
+    assert deadlines["token usage save"] is None
     assert all(
         deadline is not None
         for what, deadline in deadlines.items()
-        if what not in ("Steam Auto-Cloud shutdown staged snapshot upload", "voice identity cleanup")
+        if what not in ("Steam Auto-Cloud shutdown staged snapshot upload", "voice identity cleanup", "token usage save")
     )
 
 
@@ -1161,6 +1174,61 @@ async def test_memory_server_startup_stays_limited_when_storage_barrier_is_block
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_memory_server_startup_logs_identity_even_in_limited_mode(tmp_path):
+    from app import memory_server
+    from config import APP_VERSION
+
+    cm = SimpleNamespace(app_docs_dir=tmp_path, memory_dir=tmp_path / "memory")
+    with patch.object(memory_server.runtime, "_config_manager", cm), \
+         patch.object(memory_server.runtime, "get_storage_startup_blocking_reason", Mock(return_value="selection_required")), \
+         patch.object(memory_server.runtime, "ensure_memory_server_runtime_initialized", AsyncMock()), \
+         patch.object(memory_server.runtime, "logger") as mock_logger:
+        await memory_server.startup_event_handler()
+
+    identity_calls = [
+        c for c in mock_logger.info.call_args_list
+        if c.args and str(c.args[0]).startswith("[Memory] N.E.K.O ")
+    ]
+    assert len(identity_calls) == 1
+    args = identity_calls[0].args
+    assert args[1] == APP_VERSION
+    assert args[2] == "startup"
+    assert isinstance(args[3], bool)
+    assert args[5] == tmp_path
+    assert args[6] == tmp_path / "memory"
+    mock_logger.warning.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("initialized, expected_lines", [(True, 1), (False, 0)])
+async def test_memory_server_continue_startup_relogs_identity_after_init(tmp_path, initialized, expected_lines):
+    """When a limited-mode boot is released, the identity line is logged again
+    with stage=continue to mark the release moment — but only when this call
+    actually initialized the runtime."""
+    from app import memory_server
+
+    cm = SimpleNamespace(app_docs_dir=tmp_path, memory_dir=tmp_path / "memory")
+    with patch.object(memory_server.runtime, "_config_manager", cm), \
+         patch.object(memory_server.runtime, "_memory_storage_blocked_after_init", False), \
+         patch.object(memory_server.runtime, "get_storage_startup_blocking_reason", Mock(return_value=None)), \
+         patch.object(memory_server.runtime, "ensure_memory_server_runtime_initialized", AsyncMock(return_value=initialized)), \
+         patch.object(memory_server.runtime, "logger") as mock_logger:
+        result = await memory_server.continue_storage_startup(None)
+
+    assert result == {"ok": True, "initialized": initialized}
+    identity_calls = [
+        c for c in mock_logger.info.call_args_list
+        if c.args and str(c.args[0]).startswith("[Memory] N.E.K.O ")
+    ]
+    assert len(identity_calls) == expected_lines
+    if identity_calls:
+        args = identity_calls[0].args
+        assert args[2] == "continue"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_memory_server_continue_startup_refuses_active_storage_barrier():
     from app import memory_server
 
@@ -1280,7 +1348,7 @@ def test_main_server_resets_sync_shutdown_events_after_startup_rollback():
 async def test_main_server_shutdown_releases_live_sessions_then_uploads_existing_snapshot():
     from app import main_server
 
-    fake_tracker = SimpleNamespace(save=Mock())
+    fake_tracker = _shutdown_tracker_stub()
     run_cloudsave_action = AsyncMock(return_value={"success": True, "action": "uploaded"})
     manager_with_resampler = SimpleNamespace(audio_resampler=object())
     existing_steamworks = SimpleNamespace()
@@ -1307,7 +1375,7 @@ async def test_main_server_shutdown_releases_live_sessions_then_uploads_existing
     assert mock_release.await_count == 2
     mock_release.assert_any_await("角色A", reason="Steam Auto-Cloud pre-shutdown release: 角色A")
     mock_release.assert_any_await("角色B", reason="Steam Auto-Cloud pre-shutdown release: 角色B")
-    fake_tracker.save.assert_called_once_with()
+    fake_tracker.submit_save.assert_called_once_with(report_timeout=1.0)
 
 
 @pytest.mark.unit
@@ -1315,7 +1383,7 @@ async def test_main_server_shutdown_releases_live_sessions_then_uploads_existing
 async def test_main_server_shutdown_continues_when_memory_release_returns_false():
     from app import main_server
 
-    fake_tracker = SimpleNamespace(save=Mock())
+    fake_tracker = _shutdown_tracker_stub()
     with patch.object(main_server, "_IS_MAIN_PROCESS", True), \
          patch.object(main_server, "_preload_task", None), \
          patch.object(main_server, "agent_event_bridge", None), \
@@ -1339,7 +1407,7 @@ async def test_main_server_shutdown_continues_when_memory_release_returns_false(
         "Steam Auto-Cloud shutdown staged snapshot upload skipped because pre-shutdown release failed for: %s",
         "角色B",
     )
-    fake_tracker.save.assert_called_once_with()
+    fake_tracker.submit_save.assert_called_once_with(report_timeout=1.0)
 
 
 @pytest.mark.unit
@@ -1370,7 +1438,7 @@ async def test_shutdown_server_async_defers_memory_server_stop_until_main_shutdo
 async def test_main_server_shutdown_requests_memory_server_stop_after_snapshot_upload_when_deferred():
     from app import main_server
 
-    fake_tracker = SimpleNamespace(save=Mock())
+    fake_tracker = _shutdown_tracker_stub()
     call_order = []
     start_config = {
         "browser_mode_enabled": True,
@@ -1438,6 +1506,65 @@ async def test_main_shutdown_uses_one_cancel_budget_for_all_steps(monkeypatch):
             await asyncio.gather(
                 caller, *list(main_server._SHUTDOWN_STEP_TASKS), return_exceptions=True
             )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_main_shutdown_submits_real_save_after_cancel_budget_expires(tmp_path, monkeypatch):
+    """No wait budget must still enqueue the final delta without blocking exit."""
+    import atexit
+    import threading
+
+    from app import main_server
+    from utils import token_tracker
+    from utils.token_tracker import reporting
+
+    monkeypatch.setattr(main_server, "_SHUTDOWN_CANCELLED_BUDGET_SECONDS", 0.05)
+    monkeypatch.setattr(token_tracker, "get_config_manager", lambda: SimpleNamespace(config_dir=tmp_path))
+    monkeypatch.setattr(reporting, "_DO_NOT_TRACK", True)
+    tracker = token_tracker.TokenTracker()
+    atexit.unregister(tracker._atexit_save)
+    tracker.record("test-model", 2, 1, 3)
+    entered, release_voice = asyncio.Event(), asyncio.Event()
+    release_worker = threading.Event()
+    blocker = reporting._SAVE_EXECUTOR.submit(release_worker.wait, 5)
+    submitted = []
+    original_submit = tracker.submit_save
+
+    def submit(**kwargs):
+        future = original_submit(**kwargs)
+        submitted.append(future)
+        return future
+
+    monkeypatch.setattr(tracker, "submit_save", submit)
+
+    def record(name):
+        async def step(*args, **kwargs):
+            if name == "voice":
+                entered.set()
+                await release_voice.wait()
+        return step
+
+    with _patched_shutdown_steps([], record), patch.object(token_tracker.TokenTracker, "get_instance", return_value=tracker):
+        caller = asyncio.create_task(main_server.on_shutdown())
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            caller.cancel("exit")
+            done, _ = await asyncio.wait({caller}, timeout=0.5)
+            assert done, "saving must not extend the shared shutdown budget"
+            with pytest.raises(asyncio.CancelledError, match="exit"):
+                caller.result()
+            assert len(submitted) == 1
+            assert not submitted[0].done(), "the save worker is still occupied"
+        finally:
+            release_voice.set()
+            release_worker.set()
+            caller.cancel()
+            await asyncio.gather(caller, *list(main_server._SHUTDOWN_STEP_TASKS), return_exceptions=True)
+            await asyncio.wrap_future(blocker)
+            if submitted:
+                await asyncio.wrap_future(submitted[0])
+    assert json.loads(tracker._storage_path.read_text())["recent_records"][0]["tt"] == 3
 
 
 @pytest.mark.unit

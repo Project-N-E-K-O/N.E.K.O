@@ -9,6 +9,7 @@ from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.config_queries import load_plugin_config
 from plugin.server.infrastructure.config_access import get_config_access
+from plugin.server.infrastructure.config_merge import strip_reserved_sections
 from plugin.server.infrastructure.config_updates import update_plugin_config
 
 logger = get_logger("server.application.config.hot_update")
@@ -68,7 +69,9 @@ async def hot_update_plugin_config(
     profile: str | None = None,
     timeout: float = 10.0,
 ) -> dict[str, object]:
-    normalized_updates = _ensure_mapping(updates, field="updates")
+    # Reserved tables are never part of the effective config, so a temporary
+    # update must not push them into the running plugin either.
+    normalized_updates = strip_reserved_sections(_ensure_mapping(updates, field="updates"))
     host = await asyncio.to_thread(_get_host_sync, plugin_id)
 
     if host is None:

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { authoringMessages } from '@/i18n/authoring'
+import authoringEnUs from '@/i18n/authoring/en-US'
 
 const get = vi.hoisted(() => vi.fn())
 const post = vi.hoisted(() => vi.fn())
@@ -22,6 +22,8 @@ import {
   updatePluginProjectMetadata,
 } from './pluginProjects'
 import { errorMessageKey, PROJECT_ERROR_MESSAGES } from '@/composables/useAuthoringProjects'
+
+const authoringMessages = { 'en-US': authoringEnUs }
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..')
 const readSource = (path: string) => readFileSync(resolve(repoRoot, path), 'utf8')

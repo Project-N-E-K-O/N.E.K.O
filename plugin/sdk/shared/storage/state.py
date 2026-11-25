@@ -88,6 +88,9 @@ class PluginStatePersistence(StorageResultTemplate):
 
     STATE_VERSION = 1
     VALID_BACKENDS = {"file", "memory", "off"}
+    # [plugin_state].persist_mode values the host applies; anything else is ignored.
+    # A tuple, not a set: the host tests raw config values, which may be unhashable.
+    VALID_PERSIST_MODES = ("auto", "manual", "off")
 
     @classmethod
     def normalize_backend(cls, backend: str | None) -> str:

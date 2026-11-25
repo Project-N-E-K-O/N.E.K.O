@@ -398,3 +398,233 @@ class EvidenceFlowMixin:
             self._normalize_reflection(item)
             for item in data if isinstance(item, dict) and 'id' in item
         ]
+
+    async def amanual_review_reflection(
+        self,
+        lanlan_name: str,
+        reflection_id: str,
+        decision: str,
+        *,
+        edited_text: str | None = None,
+    ) -> dict | None:
+        """Manually confirm, edit, or forget (archive) a reflection from the UI."""
+        from memory.event_log import (
+            EVIDENCE_SOURCE_USER_CONFIRM,
+            EVT_REFLECTION_STATE_CHANGED,
+        )
+
+        if decision not in ("confirm", "edit", "forget"):
+            raise ValueError(f"Unsupported reflection review decision: {decision}")
+
+        if decision == "forget":
+            ok = await self.aarchive_reflection(lanlan_name, reflection_id)
+            return {"id": reflection_id, "decision": "forget", "archived": ok} if ok else None
+
+        cleaned = str(edited_text).strip() if edited_text is not None else None
+        if decision == "edit" and not cleaned:
+            raise ValueError("edited_text is required when decision='edit'")
+        if cleaned is not None and len(cleaned) > 1000:
+            raise ValueError("Reflection text too long")
+
+        async with self._get_alock(lanlan_name):
+            reflections_full = await self._aload_reflections_full(lanlan_name)
+            entry = self._find_reflection_in_list(reflections_full, reflection_id)
+            if entry is None:
+                return None
+            prev_status = str(entry.get("status") or "pending")
+            now_iso = datetime.now().isoformat()
+            text_changed = bool(cleaned and cleaned != entry.get("text"))
+
+            def _apply_text_edit(target: dict) -> None:
+                if not text_changed or cleaned is None:
+                    return
+                from memory._embeddings.schema import clear_embedding_fields
+                target["text"] = cleaned
+                clear_embedding_fields(target)
+                target.pop("embedding_model", None)
+                target.pop("embedding_text_hash", None)
+
+            if decision == "confirm" and prev_status == "pending":
+                if self._event_log is not None:
+                    payload = {
+                        "reflection_id": reflection_id,
+                        "from": prev_status,
+                        "to": "confirmed",
+                        "source": EVIDENCE_SOURCE_USER_CONFIRM,
+                        # Same value the save writes to confirmed_at; replay
+                        # uses it to tell a lost save from a later edit.
+                        "ts": now_iso,
+                    }
+                    if text_changed and cleaned is not None:
+                        import hashlib
+                        payload["rewrite_text_sha256"] = hashlib.sha256(cleaned.encode("utf-8")).hexdigest()
+                        payload["rewrite_text"] = cleaned
+                        payload["previous_text_sha256"] = hashlib.sha256(
+                            str(entry.get("text") or "").encode("utf-8"),
+                        ).hexdigest()
+
+                    def _sync_load(_n: str):
+                        return reflections_full
+
+                    def _sync_mutate(_view):
+                        _apply_text_edit(entry)
+                        entry["status"] = "confirmed"
+                        entry["confirmed_at"] = now_iso
+
+                    def _sync_save(n: str, view):
+                        assert_cloudsave_writable(
+                            self._config_manager,
+                            operation="save",
+                            target=f"memory/{n}/reflections.json",
+                        )
+                        atomic_write_json(
+                            self._reflections_path(n), view, indent=2, ensure_ascii=False,
+                        )
+
+                    await self._event_log.arecord_and_save(
+                        lanlan_name, EVT_REFLECTION_STATE_CHANGED, payload,
+                        sync_load_view=_sync_load,
+                        sync_mutate_view=_sync_mutate,
+                        sync_save_view=_sync_save,
+                    )
+                else:
+                    _apply_text_edit(entry)
+                    entry["status"] = "confirmed"
+                    entry["confirmed_at"] = now_iso
+                    await self.asave_reflections(lanlan_name, reflections_full)
+            else:
+                _apply_text_edit(entry)
+                await self.asave_reflections(lanlan_name, reflections_full)
+
+        if decision == "confirm" and self._event_log is not None:
+            await self.aapply_signal(
+                lanlan_name,
+                reflection_id,
+                {"reinforcement": 1.5, "disputation": 0.0},
+                source=EVIDENCE_SOURCE_USER_CONFIRM,
+            )
+
+        return {
+            "id": reflection_id,
+            "decision": decision,
+            "status": "confirmed" if decision == "confirm" and prev_status == "pending" else prev_status,
+            "text": cleaned or entry.get("text"),
+        }
+
+    async def amerge_reflections(
+        self,
+        lanlan_name: str,
+        keep_id: str,
+        drop_id: str,
+        merged_text: str,
+    ) -> dict:
+        """Atomically update ``keep_id`` with ``merged_text`` and archive ``drop_id`` under one lock."""
+        from memory._embeddings.schema import clear_embedding_fields
+        from memory.archive_shards import aappend_to_shard, apick_today_shard_path
+        from memory.event_log import EVT_REFLECTION_STATE_CHANGED
+        from memory.introspection import is_permanently_suppressed
+
+        cleaned = str(merged_text or "").strip()
+        if not cleaned or len(cleaned) > 1000:
+            raise ValueError("Reflection text must be 1..1000 chars")
+        if keep_id == drop_id:
+            raise ValueError("keep_id and drop_id must differ")
+        if self._event_log is None:
+            raise RuntimeError(
+                "[Reflection.amerge_reflections] event_log 未注入"
+            )
+
+        _INELIGIBLE_STATUSES = ("archived", "merged", "denied")
+
+        async with self._get_alock(lanlan_name):
+            reflections_full = await self._aload_reflections_full(lanlan_name)
+            keep_entry = self._find_reflection_in_list(reflections_full, keep_id)
+            drop_entry = self._find_reflection_in_list(reflections_full, drop_id)
+            if (
+                keep_entry is None
+                or str(keep_entry.get("status") or "pending") in _INELIGIBLE_STATUSES
+                or is_permanently_suppressed(keep_entry)
+            ):
+                raise LookupError("keep_id not found")
+            if (
+                drop_entry is None
+                or str(drop_entry.get("status") or "pending") in _INELIGIBLE_STATUSES
+                or is_permanently_suppressed(drop_entry)
+            ):
+                raise LookupError("drop_id not found")
+            if keep_entry.get("protected") or drop_entry.get("protected"):
+                raise PermissionError("Protected reflection cannot be merged")
+            from memory.scopes import subject_from_entry
+            if (
+                str(keep_entry.get("entity") or "master") != str(drop_entry.get("entity") or "master")
+                or subject_from_entry(keep_entry) != subject_from_entry(drop_entry)
+                or str(keep_entry.get("scope") or "") != str(drop_entry.get("scope") or "")
+            ):
+                raise ValueError("Cannot merge reflections from different subjects or scopes")
+
+            now = datetime.now()
+            now_iso = now.isoformat()
+
+            # Prepare archive shard BEFORE mutating reflections.json, then commit both
+            # the keep_entry rewrite and drop_id removal in a single atomic record_and_save.
+            prev_status = str(drop_entry.get("status") or "pending")
+            archive_dir = self._reflections_archive_dir(lanlan_name)
+            shard_path = await apick_today_shard_path(archive_dir, now=now)
+            shard_basename = os.path.basename(shard_path)
+            archive_entry = dict(drop_entry)
+            archive_entry["archived_at"] = now_iso
+            archive_entry["status"] = "archived"
+            archive_entry["archive_shard_path"] = shard_basename
+            archive_entry["merged_into"] = keep_id
+
+            import hashlib
+            payload = {
+                "reflection_id": drop_id,
+                "from": prev_status,
+                "to": "archived",
+                "archive_shard_path": shard_basename,
+                "archived_at": now_iso,
+                "entry_snapshot": archive_entry,
+                "merged_keep_id": keep_id,
+                "merged_keep_text_sha256": hashlib.sha256(cleaned.encode("utf-8")).hexdigest(),
+                "merged_keep_text": cleaned,
+                "merged_keep_status": str(keep_entry.get("status") or "pending"),
+                "merged_keep_previous_text_sha256": hashlib.sha256(
+                    str(keep_entry.get("text") or "").encode("utf-8"),
+                ).hexdigest(),
+            }
+
+            def _sync_load(_n: str):
+                return reflections_full
+
+            def _sync_mutate(view):
+                if cleaned != str(keep_entry.get("text") or ""):
+                    keep_entry["text"] = cleaned
+                    clear_embedding_fields(keep_entry)
+                    keep_entry.pop("embedding_model", None)
+                    keep_entry.pop("embedding_text_hash", None)
+                view[:] = [r for r in view if r.get("id") != drop_id]
+
+            def _sync_save(n: str, view):
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="save",
+                    target=f"memory/{n}/reflections.json",
+                )
+                atomic_write_json(
+                    self._reflections_path(n), view, indent=2, ensure_ascii=False,
+                )
+
+            await self._event_log.arecord_and_save(
+                lanlan_name, EVT_REFLECTION_STATE_CHANGED, payload,
+                sync_load_view=_sync_load,
+                sync_mutate_view=_sync_mutate,
+                sync_save_view=_sync_save,
+            )
+            await aappend_to_shard(archive_dir, [archive_entry], now=now)
+            return {
+                "id": keep_id,
+                "decision": "edit",
+                "status": str(keep_entry.get("status") or "pending"),
+                "text": keep_entry.get("text"),
+            }

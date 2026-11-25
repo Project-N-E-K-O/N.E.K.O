@@ -706,6 +706,15 @@
             || reason === 'missing_session_id';
     }
 
+    function deactivateInactiveIcebreakerSession(session) {
+        if (!session || activeSession !== session) return;
+        session.choiceInFlight = false;
+        session.freeTextInFlight = false;
+        clearChoicePrompt();
+        clearFreeTextRuntimeStateForSession(session);
+        activeSession = null;
+    }
+
     function resolveAssistantAvatarUrl() {
         try {
             if (window.appChatAvatar && typeof window.appChatAvatar.getCurrentAvatarDataUrl === 'function') {
@@ -860,6 +869,9 @@
         function parseContextResponse(response) {
             if (!response.ok) throw new Error('HTTP ' + response.status);
             return response.json().then(function (data) {
+                if (data && data.skipped === 'stale_session') {
+                    throw makeIcebreakerApiError('stale_session', data);
+                }
                 return !!(data && data.ok);
             });
         }
@@ -891,10 +903,16 @@
             return getLocalMutationHeaders().then(function (headers) {
                 return postContextWithHeaders(headers, true);
             }).catch(function (error) {
+                if (isIcebreakerRouteInactiveError(error)) {
+                    throw error;
+                }
                 console.warn('[NewUserIcebreaker] append LLM context failed:', error);
                 return false;
             });
         }).catch(function (error) {
+            if (isIcebreakerRouteInactiveError(error)) {
+                throw error;
+            }
             console.warn('[NewUserIcebreaker] append LLM context failed:', error);
             return false;
         });
@@ -928,6 +946,9 @@
         function parseChoiceResponse(response) {
             if (!response.ok) throw new Error('HTTP ' + response.status);
             return response.json().then(function (data) {
+                if (data && data.skipped === 'stale_session') {
+                    throw makeIcebreakerApiError('stale_session', data);
+                }
                 return !!(data && data.ok);
             });
         }
@@ -964,6 +985,9 @@
         return getLocalMutationHeaders().then(function (headers) {
             return postChoiceWithHeaders(headers, true);
         }).catch(function (error) {
+            if (isIcebreakerRouteInactiveError(error)) {
+                throw error;
+            }
             console.warn('[NewUserIcebreaker] record choice to pool failed:', error);
             return false;
         });
@@ -1120,6 +1144,9 @@
                 });
             });
         }).catch(function (error) {
+            if (isIcebreakerRouteInactiveError(error)) {
+                throw error;
+            }
             console.warn('[NewUserIcebreaker] append message failed:', error);
             return null;
         });
@@ -1128,9 +1155,10 @@
     function speakViaProjectTts(text, voiceKey, signal) {
         var line = String(text || '').trim();
         if (!line) return Promise.resolve(false);
-        var sessionId = activeSession && activeSession.sessionId ? activeSession.sessionId : '';
+        var requestSession = activeSession;
+        var sessionId = requestSession && requestSession.sessionId ? requestSession.sessionId : '';
         var body = Object.assign({
-            lanlan_name: resolveSessionLanlanName(activeSession),
+            lanlan_name: resolveSessionLanlanName(requestSession),
             line: line,
             request_id: makeMessageId('icebreaker-tts'),
             session_id: sessionId,
@@ -1142,7 +1170,7 @@
                 source: SOURCE,
                 voice_key: String(voiceKey || '')
             }
-        }, conversationLanguagePayload(activeSession));
+        }, conversationLanguagePayload(requestSession));
         return getLocalMutationHeaders().then(function (headers) {
             var requestOptions = {
                 method: 'POST',
@@ -1156,6 +1184,9 @@
             if (!response.ok) throw new Error('HTTP ' + response.status);
             return response.json();
         }).then(function (data) {
+            if (data && data.skipped === 'stale_session') {
+                return false;
+            }
             return !!(data && data.ok);
         }).catch(function (error) {
             if (error && error.name === 'AbortError') return false;
@@ -1616,6 +1647,10 @@
             return result;
         }).catch(function (error) {
             console.warn('[NewUserIcebreaker] choice handling failed:', error);
+            if (isIcebreakerRouteInactiveError(error)) {
+                deactivateInactiveIcebreakerSession(session);
+                return null;
+            }
             if (activeSession === session) {
                 session.choiceInFlight = false;
                 setChoicePrompt(node, session.localeData);
@@ -1657,6 +1692,9 @@
                     }
                     return result;
                 }).catch(function (error) {
+                    if (isIcebreakerRouteInactiveError(error)) {
+                        throw error;
+                    }
                     console.warn('[NewUserIcebreaker] interpreted choice failed:', error);
                     if (activeSession === session) {
                         session.choiceInFlight = false;
@@ -1844,13 +1882,11 @@
         }).catch(function (error) {
             console.warn('[NewUserIcebreaker] free-text handling failed:', error);
             if (activeSession === session) {
-                session.freeTextInFlight = false;
                 if (isIcebreakerRouteInactiveError(error)) {
-                    clearChoicePrompt();
-                    clearFreeTextRuntimeStateForSession(session);
-                    activeSession = null;
+                    deactivateInactiveIcebreakerSession(session);
                     return null;
                 }
+                session.freeTextInFlight = false;
                 var currentNode = session.dayConfig && session.dayConfig.nodes
                     ? session.dayConfig.nodes[nodeId]
                     : null;
@@ -1924,6 +1960,7 @@
                 return startForDay(dayKey, options);
             });
         }
+        var createdSession = null;
         pendingStartDay = dayKey;
         return Promise.all([loadScripts(), loadLocale(currentLocale())]).then(function (results) {
             if (activeSession && !force) return false;
@@ -1941,6 +1978,7 @@
                 lanlanName: resolveLanlanName(),
                 sessionId: makeIcebreakerSessionId(dayKey)
             };
+            createdSession = nextSession;
             return startIcebreakerRoute(nextSession).then(function (started) {
                 if (!started) return false;
                 activeSession = nextSession;
@@ -1960,6 +1998,9 @@
             return result;
         }).catch(function (error) {
             console.warn('[NewUserIcebreaker] start failed:', error);
+            if (isIcebreakerRouteInactiveError(error) && createdSession) {
+                deactivateInactiveIcebreakerSession(createdSession);
+            }
             clearPendingStartDay(dayKey);
             return false;
         });

@@ -4,16 +4,25 @@
 LLM 在用户问"北京天气怎么样"时会自动调用，等待返回结果，再用返回值生成
 最终回复。
 
-::: warning 它不同于插件入口
-`@llm_tool(name="get_weather")` 把对话期工具注册到 main_server 的 `/api/tools` registry。`@plugin_entry(id="get_weather")` 声明的是供插件管理器、跨插件调用和独立的 Agent（猫爪，NekoClaw）路由使用的运行时入口。SDK 内部为了复用 IPC，会把 LLM tool handler 存成保留前缀的动态入口（`__llm_tool__...`），但这项实现细节不会把两套公开 API 合并成一套：带这个前缀的入口只由主对话模型调用，不会进入 Agent 的插件筛选，也不会提供给 task agent。
-:::
+## 选择 `@plugin_entry` 还是 `@llm_tool` {#choosing-an-entry-type}
+
+| | `@plugin_entry` | `@llm_tool` |
+|---|---|---|
+| 是什么 | 插件的运行时入口 | 主对话模型工具表里的工具（main_server 的 `/api/tools` registry） |
+| 谁来用 | 插件管理器、其他插件、Hosted UI 动作，以及 Agent（喵能力，NekoPower）的插件选择：由 Agent 侧的模型挑选后调用 | 主对话模型，在聊天当下直接调用 |
+| 什么时候用 | **默认、推荐的形式**，插件对外提供能力都用它 | **克制使用**，只用于少数必须让主对话模型直接调用的能力 |
+
+每个已注册 LLM 工具的 schema 都会随请求发给模型，多一个工具，模型的工具列表就长一截。
+一个插件通常只需要很少几个 LLM 工具；能用 `@plugin_entry` 表达的，就保持为插件入口。
+SDK 内部为了复用 IPC，会把 LLM 工具的 handler 存成保留前缀的动态入口（`__llm_tool__...`）；
+带这个前缀的入口不会进入 Agent 的插件选择，也不会提供给 task agent，两套 API 不会混在一起。
 
 本机制由 `main_logic/tool_calling.py` 的 `ToolRegistry` 支撑，对所有支持工具
 调用的 provider（OpenAI / Gemini / GLM / Qwen Omni / StepFun 等）统一抽象。
 
-## TL;DR —— 推荐路径：`@llm_tool`
+## 需要把工具暴露给模型时：用 `@llm_tool`（不要走原生 HTTP 注册）
 
-如果你写的就是常规 `NekoPluginBase` 插件，**直接用 SDK 的 `@llm_tool` 装饰器**。
+常规 `NekoPluginBase` 插件需要把工具暴露给对话模型时，**直接用 SDK 的 `@llm_tool` 装饰器**。
 注册、注销、回调路由、shutdown 清理它全都帮你做了，零样板：
 
 ```python
@@ -46,8 +55,8 @@ class WeatherPlugin(NekoPluginBase):
 
 helper **不**做的事：`main_server` 重启后或首启竞态后的自动重注册。注册仅在
 插件启动时触发一次；如果当时 `main_server` 不可达，工具会对模型不可见，需要
-插件 reload 或 imperative 调用 `register_llm_tool` 来恢复。本页末尾的
-"What Happens When main_server Restarts" 段落讲了 resilience 模式。
+插件 reload 或重新注册工具才能恢复，安全的做法见本页末尾的
+「main_server 重启会发生什么」一节。
 
 下文讲底层 HTTP 协议本身，以及什么时候你需要直接走它。
 
@@ -70,8 +79,8 @@ helper **不**做的事：`main_server` 重启后或首启竞态后的自动重�
 - LLM 触发工具调用时，main_server **POST 到插件的 `callback_url`**
 - 插件返回 JSON 结果，main_server 把结果喂回 LLM 继续生成
 
-直接走这一层只在 SDK helper 覆盖不到的场景才必要 —— 比如插件进程之外另起一个
-HTTP server，或者从非 NekoPluginBase 上下文（如外部脚本）注册。
+这一层是宿主内部的契约，插件代码不应使用。只有宿主侧代码或运行在插件进程之外的
+集成（例如从非 NekoPluginBase 上下文注册工具的外部服务）才直接走这一层。
 
 ### 第二层 —— `@llm_tool` SDK helper（插件首选）
 
@@ -98,6 +107,13 @@ HTTP 调用；main_server 的 dispatch 也走同一套 IPC trigger 管线（与
 `@plugin_entry` 完全一致）回到插件。
 
 ## 注册接口
+
+::: warning 不供插件代码使用
+插件进程不能直接调用 `main_server`（或 localhost 上任何 N.E.K.O 服务），也不能
+自己起 HTTP server 接收回调：端口和地址随安装和开发实例而不同，这些端点是内部
+接口、可能随时变化，而且会绕过 SDK 的权限检查。插件里请用 `@llm_tool` 或
+`self.register_llm_tool(...)`。下面的端点说明供宿主侧和外部集成参考。
+:::
 
 所有端点都挂在 `MAIN_SERVER_PORT`（默认 `48911`），并强制 `verify_local_access`
 （仅允许 `127.0.0.1` / `::1` / `localhost`）。
@@ -145,6 +161,11 @@ HTTP 调用；main_server 的 dispatch 也走同一套 IPC trigger 管线（与
 ```json
 { "name": "get_weather", "role": null }
 ```
+
+可选字段：`expected_source`（只删这个 source 的工具，其他归属的放进 `refused_roles`）和
+`expected_registration_id`（只删 `/register` 返回的那个 `registration_id` 对应的那次注册；同名的其他注册放进
+`refused_roles`，带 `"reason": "different registration"` 和那次注册的 `registration_id`；只有传了 `expected_source` 且与工具的 source 一致、并且传了的 `expected_host_instance_id` 也一致时，才会带这两个字段）。`/register` 接受可选的 `registration_id`，并总是返回
+实际存下的那个。不带这些字段时行为不变。
 
 ### `POST /api/tools/clear`
 
@@ -199,10 +220,14 @@ main_server 在 LLM 触发工具调用时会向 `callback_url` 发 `POST`：
 `output` 自身可以是任意 JSON（dict / list / 字符串 / 数字）。
 `is_error: true` 时 LLM 会感知到工具调用失败，会选择跳过或换工具。
 
-`callback_url` 可以是 `127.0.0.1:<plugin_port>` 上任意 path，由插件自己
-开 HTTP server 接收。
+`callback_url` 可以是回环地址上的任意 path。使用 `@llm_tool` 时，这个路由由
+插件服务器提供（`/api/llm-tools/callback/{plugin_id}/{tool_name}`）；只有通过原始
+HTTP 注册的外部集成才需要自己起 server 接收。
 
-## 完整生命周期 pattern
+## 完整生命周期 pattern（原始 HTTP，外部集成）
+
+这个 pattern 适用于运行在插件进程之外的集成。重试循环是这个示例自己实现的：`@llm_tool`
+为插件提供注册、回调路由和清理，但只注册一次，不会重试。
 
 ```python
 import asyncio
@@ -248,35 +273,40 @@ async def unregister_on_shutdown():
         pass  # main_server 也死了就算了
 ```
 
-绑定到 plugin lifecycle hook：
-
-```python
-from plugin.sdk.plugin import NekoPluginBase, neko_plugin
-
-@neko_plugin
-class WeatherPlugin(NekoPluginBase):
-    async def on_start(self):
-        # plugin 进程起来后异步注册，不阻塞 plugin 启动主流程
-        asyncio.create_task(register_with_retry())
-        # 同时起一个 HTTP server 接收 callback（FastAPI / aiohttp 都行）
-        ...
-
-    async def on_shutdown(self):
-        await unregister_on_shutdown()
-```
+不要把它接到 `NekoPluginBase` 插件里。生命周期方法只有加了 `@lifecycle(id=...)`
+才会运行（普通的 `on_start` / `on_shutdown` 方法永远不会被调用）；`startup` 在独立的
+`asyncio.run` 里运行，在里面用 `asyncio.create_task` 创建的任务会在 `startup` 返回时
+被取消；插件进程也不能调用 `main_server` 或自己起 HTTP server（见「注册接口」开头的
+警告）。插件里用 `@llm_tool` 就能完成注册、回调路由和清理。
 
 ## main_server 重启会发生什么
 
 ⚠️ **重要**：`tool_registry` 是 `LLMSessionManager` 的内存属性，**main_server
-重启会全部丢失**。需要 plugin 自己应对：
+重启会全部丢失**。
 
-- **plugin 比 main_server 长寿**（更常见）：plugin 需要监听 main_server
-  心跳/连接断开事件，重连后**重新调 register**。最简单的做法是 plugin 内
-  起一个后台任务，定期 `GET /api/tools?role=...` 检查自己的工具是否还在，
-  不在就重新 register
-- **plugin 跟 main_server 同生死**：只要 plugin 启动 hook 里调了
-  `register_with_retry`，main_server 重启时 plugin 也会被重启，自然会重新
-  注册
+用 `@llm_tool` 的插件，恢复要由用户触发（或由用户调用的某个入口触发）：插件没有
+合规的办法探测 main_server 是否重启过，也不能自己去轮询 main_server。
+
+- 首选：重载插件。新进程会重新注册所有 `@llm_tool`。
+- 不重载时：先调用 `self.unregister_llm_tool(name)`，再调用
+  `self.register_llm_tool(...)`（本地仍登记着同名工具时直接注册，会在通知宿主
+  前抛 `EntryConflictError`）。原来注册时的参数都要重新传一遍，尤其是 `role`
+  和 `reply_tail`：默认值是 `role=None`（对所有角色可见）和 `reply_tail=False`。
+
+无论哪种做法，只有注册到达时至少有一个匹配角色的会话管理器（`role=None` 时
+匹配任意角色，否则匹配 `role` 指定的角色），宿主才会记录这次注册；之后它会生效
+到这些角色上，并在之后新建的匹配角色上自动恢复。如果当时还没有匹配的角色（还没有
+加载任何角色，或 `role` 指定的角色不可用），这次注册不会被记录，之后也不会自动
+出现：等角色可用后再恢复。
+
+运行在插件进程之外的原始 HTTP 集成需要自己应对：
+
+- **集成比 main_server 长寿**（更常见）：外部进程需要监听 main_server
+  心跳/连接断开事件，重连后**重新调 register**。最简单的做法是在这个外部
+  进程里起一个后台任务，定期 `GET /api/tools?role=...` 检查自己的工具是否
+  还在，不在就重新 register
+- **集成跟 main_server 同生死**：只要外部进程启动时调了
+  `register_with_retry`，并且会随 main_server 一起重启，自然会重新注册
 
 ## 切换猫娘
 
@@ -347,8 +377,13 @@ mgr.register_tool(ToolDefinition(
     parameters: dict | None = None, # JSON Schema；默认无参数
     timeout: float = 30.0,          # 单次调用超时（秒，≤ 300）
     role: str | None = None,        # None = 全局，或指定猫娘名
+    reply_tail: bool = False,       # 选择接收原回复的图片上下文（_ctx.host_reply）
 )
 ```
+
+`reply_tail=True` 会把原回复的图片上下文作为 `_ctx.host_reply` 传给处理函数，
+所以处理函数必须接受 `_ctx` 或 `**kwargs`。实时语音和旧版前端不会提供它。见
+[原回复尾图接口](/plugin-reply-tail)。
 
 被装饰的方法以 kwargs 形式接收解析后的 JSON 参数。建议在签名里用 `*` 强制
 keyword-only，万一传进位置参数会立刻报错：
@@ -374,11 +409,86 @@ self.register_llm_tool(
     handler=my_async_callable,
     timeout=30.0,
     role=None,
+    reply_tail=False,
 )
 ```
 
 `unregister_llm_tool(name)` 反向，`list_llm_tools()` 以 dict list 返回当前已
 注册的工具集合。重名会抛 `EntryConflictError`。
+
+这两个同步调用都是发出去就不管：返回 `True` 只表示插件本地已登记、已通知 host，
+不代表 `main_server` 真的接受了。需要真实结果时用 async 版本：
+
+```python
+result = await self.register_llm_tool_async(
+    name="custom_tool",
+    description="...",
+    parameters={"type": "object", "properties": {...}},
+    handler=my_async_callable,
+    request_timeout=40.0,  # 最多等多少秒，不超过 60（默认 40）
+)
+if not result["ok"]:
+    self.logger.warning("tool not registered: {} {}", result["error"], result["failed_roles"])
+
+result = await self.unregister_llm_tool_async("custom_tool")
+```
+
+host 走和通知相同的 `main_server` 调用，把 `main_server` 的答复带回来：
+
+| 字段 | `register_llm_tool_async` | `unregister_llm_tool_async` |
+|---|---|---|
+| `ok` | 至少一个 role 接受了这个工具 | 已经没有 role 还挂着本插件的这个工具 |
+| `removed` | — | `main_server` 确实删掉了东西 |
+| `affected_roles` | 现在有这个工具的 role | 从中删掉了的 role |
+| `failed_roles` | `[{"role", "error"}]` 没接受的 role（部分成功时也会有） | `[{"role", "error"}]` 删除失败的 role |
+| `refused_roles` | — | `[{"role", "owned_by"}]` 同名工具属于其他 source 的 role，或（带 `"reason": "different registration"`）属于本插件另一次注册的 role，不会动它 |
+| `error` | `None` 或下面的错误码 | `None` 或下面的错误码 |
+| `message` | 可读的说明，或 `None` | 可读的说明，或 `None` |
+| `cleanup` | `None`，或注册失败后清理用的那次注销的结果（见下） | — |
+
+`error` 错误码：`rejected`（注册：没有 role 接受，例如名字已被其他 source 占用）、
+`partial_failure`（注销：部分 role 失败）、`main_server_unavailable`（请求没能送到 `main_server`，什么都没生效）、
+`main_server_error`（HTTP 状态码 >= 400，例如 role 不存在）、`timeout`（没拿到能用的回复：`request_timeout` 内 host 没回复、请求已发出后
+`main_server` 没回复，或回复不是 JSON 对象；结果未知）、`host_unavailable`（请求没送到 host）、`busy`（同名前面的调用用掉了预算，这次来不及发出；什么都没发，`cleanup` 为 `None`）、`not_registered`（注销：插件本地没有这个名字的记录，
+`main_server` 上也没删到本插件的这个名字；本地有记录时同样的答复是 `ok=True, removed=False`，并删掉本地 handler）、`invalid_request`。
+
+本地状态跟着 `ok` 走，插件和 host 两边一致：
+
+- `register_llm_tool_async` 先装好 handler 再问 host（`main_server` 一登记模型就可能调用），
+  `ok` 为假或调用被取消时回滚，之后同名可以再注册。
+- 注册失败不一定代表 `main_server` 上什么都没发生：它先存下工具再逐个 role 同步，所有 role 同步都
+  失败时工具仍然留着；`timeout` 也说明不了到底生效没有。所以注册以 `rejected`、`timeout` 或
+  `host_unavailable` 失败后，SDK 会对这个名字补发一次注销，和这个名字的其他 async 调用按顺序排队，
+  结果放在 `cleanup` 里（最多让这次调用多花 15 秒）。其他错误说明什么都没存下，`cleanup` 为 `None`。
+  `cleanup["ok"]` 为假时，之后再调 `unregister_llm_tool_async(name)`。`timeout` 之后的清理只能尽力：
+  `main_server` 可能还在处理那次注册、在清理之后才存下工具，所以 `removed=False` 不能证明什么都没留下；
+  在意的话过一会儿再调一次 `unregister_llm_tool_async(name)`。被取消的注册只回滚本地，不补发注销。
+- 每次 `register_llm_tool_async` 都带一个自己的注册 ID，它的补发清理和之后的 `unregister_llm_tool_async`
+  只删这一次注册。所以超时了、但还在 `main_server` 上执行的清理或注销，删不掉同名的新注册；那个 role 会出现在
+  `refused_roles` 里，带 `"reason": "different registration"`。这样的注册已经过期（比如超时的注册后来才落地），
+  所以补发清理和 `unregister_llm_tool_async` 都会按 `main_server` 报告的 ID 把它也删掉（不会发不带 ID 的宽泛注销），
+  报告的注册全部删掉后才返回 `ok`。通过同步接口或 `@llm_tool` 注册的工具，以及本地已经
+  没有的名字，注销时不带 ID（删本插件的任何一次注册），和以前一样。
+- `unregister_llm_tool_async` 只在 `ok` 为真时删掉 handler；否则工具在插件里照旧登记，
+  和 host 一致，还挂着它的 role 照常能用，再调一次就是重试。
+- host 注销时总带上 `expected_source=plugin:{plugin_id}`（plugin_id 取自插件连接本身），
+  插件不可能删掉其他 source 的同名工具。
+- `unregister_llm_tool_async(name)` 对本地已经没有的名字也有效：照样发给 host、按全部 role 注销，
+  `main_server` 上的残留会被删掉。插件停止时也会尝试清掉本插件的所有工具，但只是尽力而为：
+  那一刻 `main_server` 连不上的话，工具可能还留着，等它恢复后要确认（或手动清掉）。
+- 同一个名字的 async 调用按调用顺序逐个执行，每个都等上一个的答复；来自不同事件循环（例如入口和定时器）的调用也一样。例如
+  `gather(register_llm_tool_async("t", ...), unregister_llm_tool_async("t"))` 里，注销要等注册拿到答复后才发出。
+  这里只保证顺序：每个调用的结果要各自检查（注销返回 `ok=False` 时本地 handler 会保留）。
+  不同名字之间互不等待。`request_timeout` 管整次调用，包括排在同名前面调用后面等待的时间；剩下的不够发请求时（少于 5 秒，预算很小时少于一半），返回 `busy`，这时什么都没发给 host。
+  从有截止时间的入口里调用时，每个请求（包括补发的注销）实际可用的时间取它自己的预算和入口剩余时间中较小的那个；
+  入口时间用完时补发的注销发不出去（`cleanup` 里是 `timeout`）。
+
+参数错误和同步版本一样抛异常（`ValueError`、`TypeError`、`EntryConflictError`）。async 版本
+另外在 `request_timeout` 不在 (0, 60] 内（host 的上限）、名字全是点、或注册时 `timeout` 不在 (0, 300]
+内（`main_server` 的上限）时抛 `ValueError`；同步版本保持原有行为。host 和 `main_server` 的失败不抛异常。
+同一个工具名只用一种写法：同步调用不参与按名字的排队，且走不同的 IPC 通道，混用没有顺序保证。
+`@llm_tool` 装饰的方法在启动时走的就是这条通知通道；如果插件可能在启动后马上用
+`unregister_llm_tool_async` 注销它，就改用 `register_llm_tool_async` 注册，不要用装饰器。
 
 ### 错误返回
 
@@ -400,7 +510,7 @@ error），插件本身不会崩溃 —— 只有那一次工具调用算失败�
   字典、service client 等都在 handler 第一次被调用前已经就位）。
 - IPC 通知（`LLM_TOOL_REGISTER`）会缓存在插件 host 的 message queue 上。
   如果通知到达时 `main_server` 还没起来，注册调用会失败、host 会打 warning
-  —— 等 `main_server` 起来后通过 reload 插件或 imperative API 再注册一次。
+  —— 等 `main_server` 起来后，按「main_server 重启会发生什么」一节的做法恢复。
 - 插件停止时，`lifecycle_service.stop_plugin` 会调
   `plugin/server/messaging/llm_tool_registry.py::clear_plugin_tools`，发
   `POST /api/tools/clear`，body 为
@@ -412,9 +522,10 @@ error），插件本身不会崩溃 —— 只有那一次工具调用算失败�
 
 | 文件 | 作用 |
 |---|---|
-| `plugin/sdk/plugin/llm_tool.py` | `@llm_tool` 装饰器、`LlmToolMeta`、name 校验、方法收集器 |
-| `plugin/sdk/plugin/base.py` | `NekoPluginBase.register_llm_tool` / `unregister_llm_tool` / `list_llm_tools` 实例方法 + `__init__` 末尾自动注册 |
+| `plugin/sdk/plugin/llm_tool.py` | `@llm_tool` 装饰器、`LlmToolMeta`、name 校验、方法收集器、async 结果类型（`LlmToolRegisterResult` / `LlmToolUnregisterResult`） |
+| `plugin/sdk/plugin/base.py` | `NekoPluginBase.register_llm_tool` / `unregister_llm_tool` / `list_llm_tools` 实例方法及其 `_async` 版本 + `__init__` 末尾自动注册 |
 | `plugin/core/communication.py` | host 端 IPC handler `_handle_llm_tool_register` / `_handle_llm_tool_unregister`（在 `_MESSAGE_ROUTING` 里按 type 路由） |
+| `plugin/server/messaging/handlers/llm_tools.py` | `_async` 版本背后的 host 端请求-响应 handler `LLM_TOOL_REGISTER_REQUEST` / `LLM_TOOL_UNREGISTER_REQUEST` |
 | `plugin/server/messaging/llm_tool_registry.py` | 进程级 (plugin_id → tool 名集合) 索引 + httpx 包装 main_server 的 `/api/tools/{register,unregister,clear}` |
 | `plugin/server/routes/llm_tools.py` | `/api/llm-tools/callback/{plugin_id}/{tool_name}` 路由，接收 main_server dispatch、走 `host.trigger` 转发到对应插件 |
 | `plugin/server/application/plugins/lifecycle_service.py` | 插件停止时调 `clear_plugin_tools` |

@@ -973,7 +973,7 @@ async def _handle_agent_event(event: dict):
         # A task agent began or stopped using the keyboard and mouse or the
         # browser. The banner that shows it is drawn over the desktop or the
         # browser window, whichever character's page is open, so every
-        # connected session is told (docs/design/nekoclaw-rewrite.md, 11.8).
+        # connected session is told (docs/design/nekopower-rewrite.md, 11.8).
         if event_type == "builtin_activity":
             activity = event.get("activity")
             if isinstance(activity, dict):

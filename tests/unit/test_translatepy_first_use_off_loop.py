@@ -1,0 +1,156 @@
+# -*- coding: utf-8 -*-
+"""translatepy is imported on the first translation, not by the startup warmup.
+
+The first China-region subtitle translation pays the import (~0.12-0.25 s); it
+must happen in a worker thread so the event loop, which serves every other
+request, is not held for that time. Nothing here imports translatepy itself.
+"""
+from __future__ import annotations
+
+import threading
+
+import pytest
+
+from utils import language_utils
+from utils.module_warmup import MAIN_SERVER_WARMUP, _ENTRY_GATES
+
+pytestmark = pytest.mark.unit
+
+
+def test_translatepy_is_not_warmed_at_startup():
+    for entry in MAIN_SERVER_WARMUP + tuple(_ENTRY_GATES):
+        assert not entry.partition(":")[0].startswith("translatepy"), entry
+
+
+@pytest.mark.asyncio
+async def test_first_china_translation_imports_translatepy_off_the_event_loop(monkeypatch):
+    loop_thread = threading.get_ident()
+    import_threads: list[int] = []
+
+    def _fake_ensure() -> bool:
+        import_threads.append(threading.get_ident())
+        return True
+
+    async def _fake_translate(text, source_lang, target_lang):
+        return "你好"
+
+    monkeypatch.setattr(language_utils, "is_china_region", lambda: True)
+    monkeypatch.setattr(language_utils, "_ensure_translatepy", _fake_ensure)
+    monkeypatch.setattr(language_utils, "translate_with_translatepy", _fake_translate)
+
+    translated, _ = await language_utils.translate_text("hello there", "zh", "en")
+
+    assert translated == "你好"
+    assert import_threads, "translatepy availability was never checked"
+    assert loop_thread not in import_threads, "translatepy import ran on the event loop"
+
+
+def test_first_imports_from_two_threads_are_serialised(monkeypatch):
+    """Two first translations can call _ensure_translatepy from worker threads at once.
+
+    Check, import and record must run as one, so the import happens once and the
+    cached globals are never seen half written. The first import is held until
+    the second caller is actually trying to take the init lock -- a signal, not a
+    pause -- so the test fails outright if that lock is no longer taken.
+    """
+    import sys
+    import types
+
+    inside = {"now": 0, "max": 0}
+    counter = threading.Lock()
+    first_inside = threading.Event()
+    second_at_lock = threading.Event()
+    held_for_second = {"ok": None}
+    second_thread = {}
+
+    class _ReportingLock:
+        """The init lock, reporting when the second caller tries to take it."""
+
+        def __init__(self):
+            self._inner = threading.Lock()
+
+        def __enter__(self):
+            if threading.current_thread() is second_thread.get("t"):
+                second_at_lock.set()
+            self._inner.acquire()
+            return self
+
+        def __exit__(self, *exc):
+            self._inner.release()
+            return False
+
+    class _SlowModule(types.ModuleType):
+        def __getattr__(self, name):
+            with counter:
+                inside["now"] += 1
+                inside["max"] = max(inside["max"], inside["now"])
+                is_first = not first_inside.is_set()
+            if is_first:
+                first_inside.set()
+                held_for_second["ok"] = second_at_lock.wait(5)
+            with counter:
+                inside["now"] -= 1
+            return type(name, (), {})
+
+    names = [
+        "translatepy",
+        "translatepy.translators",
+        "translatepy.translators.microsoft",
+        "translatepy.translators.bing",
+        "translatepy.translators.reverso",
+        "translatepy.translators.libre",
+        "translatepy.translators.mymemory",
+        "translatepy.translators.translatecom",
+    ]
+    for name in names:
+        monkeypatch.setitem(sys.modules, name, _SlowModule(name))
+    monkeypatch.setattr(language_utils, "TranslatepyTranslator", None)
+    monkeypatch.setattr(language_utils, "CHINA_ACCESSIBLE_SERVICES", None)
+    monkeypatch.setattr(language_utils, "TRANSLATEPY_AVAILABLE", None)
+    monkeypatch.setattr(language_utils, "_translatepy_init_lock", _ReportingLock())
+
+    results: list[bool] = []
+    first = threading.Thread(target=lambda: results.append(language_utils._ensure_translatepy()))
+    first.start()
+    assert first_inside.wait(5), "the first import never started"
+    second = threading.Thread(target=lambda: results.append(language_utils._ensure_translatepy()))
+    second_thread["t"] = second
+    second.start()
+    for thread in (first, second):
+        thread.join(10)
+
+    assert not first.is_alive() and not second.is_alive(), "first import hung"
+    assert held_for_second["ok"] is True, (
+        "the second caller never tried the init lock while the first was importing"
+    )
+    assert results == [True, True]
+    assert inside["max"] == 1, "two threads imported translatepy at the same time"
+
+
+@pytest.mark.asyncio
+async def test_direct_translatepy_call_also_imports_off_the_event_loop(monkeypatch):
+    loop_thread = threading.get_ident()
+    import_threads: list[int] = []
+
+    def _unavailable() -> bool:
+        import_threads.append(threading.get_ident())
+        return False
+
+    monkeypatch.setattr(language_utils, "_ensure_translatepy", _unavailable)
+    assert await language_utils.translate_with_translatepy("hello", "en", "zh") is None
+    assert import_threads and loop_thread not in import_threads
+
+
+def test_loaded_translatepy_answers_without_waiting_for_the_lock(monkeypatch):
+    monkeypatch.setattr(language_utils, "TRANSLATEPY_AVAILABLE", True)
+    monkeypatch.setattr(language_utils, "TranslatepyTranslator", object())
+    monkeypatch.setattr(language_utils, "CHINA_ACCESSIBLE_SERVICES", [object()])
+    results: list[bool] = []
+    with language_utils._translatepy_init_lock:  # another thread's first import, say
+        worker = threading.Thread(target=lambda: results.append(language_utils._ensure_translatepy()))
+        worker.start()
+        worker.join(2)
+        finished = not worker.is_alive()
+    worker.join(5)
+    assert finished, "a loaded translatepy must not wait on the init lock"
+    assert results == [True]

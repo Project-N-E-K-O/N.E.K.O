@@ -1079,3 +1079,144 @@ async def test_run_rollback_reports_missing_backup_as_not_restored(tmp_path: Pat
     )
 
     assert restored is False
+
+
+def _permission_sources(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    """Route permission source lookups to a value the test controls."""
+    from plugin.server.application.plugins import permission_service
+
+    holder: dict[str, object] = {"source": None}
+    monkeypatch.setattr(
+        permission_service, "current_source", lambda _plugin_id: holder["source"]
+    )
+    return holder
+
+
+@pytest.mark.asyncio
+async def test_committed_installs_persist_each_source_so_old_grants_stay_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from plugin.server.application.plugins import permission_service
+    from plugin.server.infrastructure.plugin_permissions import PluginSource
+
+    source_a = PluginSource("market", "a")
+    source_b = PluginSource("imported", "b" * 64)
+    holder = _permission_sources(monkeypatch)
+    store = permission_service.permission_store
+    store.decide("demo", "plugin_sdk.main_agent.memory:read", "granted", source=source_a)
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text(OLD_PLUGIN_MANIFEST, encoding="utf-8")
+
+    def installer(source: PluginSource, manifest: str):
+        async def install_new() -> dict[str, object]:
+            target.mkdir()
+            (target / "plugin.toml").write_text(manifest, encoding="utf-8")
+            holder["source"] = source
+            return {"installed": True}
+
+        return install_new
+
+    from plugin.server.application.plugins.capability_analysis_service import (
+        notify_install_committed_async,
+    )
+    from plugin.server.application.plugins.operation_lock import plugin_operation_lock
+
+    monkeypatch.setenv("NEKO_PLUGIN_OPERATION_LOCK_PATH", str(tmp_path / "operation.lock"))
+
+    # The plugin stays stopped through A -> B -> A. As in the real callers,
+    # the owner replaces and notifies the committed install under the plugin
+    # operation lock: the capability analysis queued by the first notify reads
+    # the plugin tree in the background and must not overlap the next rename.
+    for source, manifest in ((source_b, NEW_PLUGIN_MANIFEST), (source_a, OLD_PLUGIN_MANIFEST)):
+        async with plugin_operation_lock.hold():
+            await replace_plugin(
+                layout=resolve_plugin_layout("demo", target),
+                install_new=installer(source, manifest),
+                validate_channel_specific=_async_none,
+            )
+            await notify_install_committed_async(
+                {"installed_plugins": [{"target_plugin_id": "demo", "target_dir": str(target)}]}
+            )
+        assert store.read("demo")["source"] == source.to_dict()
+
+    assert store.read("demo")["permissions"] == {}
+
+
+@pytest.mark.asyncio
+async def test_replace_rollback_after_a_failed_restart_restores_permission_grants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from plugin.server.application.plugins import permission_service
+    from plugin.server.infrastructure.plugin_permissions import PluginSource
+
+    source_a = PluginSource("market", "a")
+    holder = _permission_sources(monkeypatch)
+    holder["source"] = source_a
+    store = permission_service.permission_store
+    store.decide("demo", "plugin_sdk.main_agent.memory:read", "granted", source=source_a)
+    before = store.read("demo")
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text(OLD_PLUGIN_MANIFEST, encoding="utf-8")
+    attempts = 0
+
+    async def install_new() -> dict[str, object]:
+        target.mkdir()
+        (target / "plugin.toml").write_text(NEW_PLUGIN_MANIFEST, encoding="utf-8")
+        holder["source"] = PluginSource("imported", "b" * 64)
+        return {"installed": True}
+
+    async def start(plugin_id: str) -> None:
+        # Like the real start: reconcile first, then fail the first attempt.
+        nonlocal attempts
+        attempts += 1
+        permission_service.reconcile_permission_source(plugin_id)
+        if attempts == 1:
+            holder["source"] = source_a  # rollback brings the old code back
+            raise RuntimeError("replacement failed to start")
+
+    monkeypatch.setattr(replace_transaction, "_plugin_is_running", lambda _pid: _async_true())
+    monkeypatch.setattr(replace_transaction, "_start_plugin", start)
+
+    with pytest.raises(ReplacePluginError, match="restart"):
+        await replace_plugin(
+            layout=resolve_plugin_layout("demo", target),
+            install_new=install_new,
+            validate_channel_specific=_async_none,
+        )
+
+    assert store.read("demo") == before
+
+
+
+@pytest.mark.asyncio
+async def test_committed_install_reconciles_by_manifest_id_not_directory_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from plugin.server.application.plugins import permission_service
+    from plugin.server.application.plugins.capability_analysis_service import (
+        notify_install_committed_async,
+    )
+    seen: list[str] = []
+    monkeypatch.setattr(
+        permission_service, "current_source", lambda plugin_id: seen.append(plugin_id)
+    )
+    target = tmp_path / "plugins" / "renamed_folder"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text(OLD_PLUGIN_MANIFEST, encoding="utf-8")
+    broken = tmp_path / "plugins" / "broken"
+    broken.mkdir()
+    (broken / "plugin.toml").write_text("not toml [", encoding="utf-8")
+
+    await notify_install_committed_async(
+        {
+            "installed_plugins": [
+                {"target_plugin_id": "renamed_folder", "target_dir": str(target)},
+                {"target_plugin_id": "broken", "target_dir": str(broken)},
+            ]
+        }
+    )
+
+    # Grants are keyed by the manifest id; an unreadable manifest is skipped.
+    assert seen == ["demo"]

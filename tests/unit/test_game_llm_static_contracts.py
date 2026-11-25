@@ -757,6 +757,12 @@ def test_soccer_voice_chat_uses_official_host_microphone_bridge():
     assert "soccerGame.session" not in script
     assert "soccerGame.voice.onState" in script
     assert "soccerGame.voice.toggle()" in script
+    # #3003: a reply for a route that ended mid-command describes that route,
+    # so it must not be rendered over the current one.
+    toggle_reply = script.split("const state = await soccerGame.voice.toggle();", 1)[1]
+    assert toggle_reply.index("state.reason === 'route_superseded') return;") < toggle_reply.index(
+        "_renderGameVoiceChatControl(state);"
+    )
     assert "game_voice_control_toggle" in script
     assert "new BroadcastChannel(" not in script
     assert "document.getElementById('micButton')" not in script
@@ -917,8 +923,8 @@ def test_soccer_passive_guard_writes_structured_debug_events():
     assert "_showExternalUserVoiceBubble(output)" in external_route_input_block
     assert "const playerBubbleEl = document.getElementById('player-speech-bubble')" in script
     assert "positionSpeechBubble(playerBubbleEl, playerEl" in script
-    assert "_get_game_route_summary_llm_info(lanlan_name)" in passive_guard_ai_block
-    assert "_get_game_route_summary_llm_info," in router_source
+    assert "_get_game_route_recognition_llm_info(lanlan_name)" in passive_guard_ai_block
+    assert "_get_game_route_recognition_llm_info," in router_source
     assert "rest_streak_below_stage" in script
     assert "ordinary_candidate_below_stage" in script
     assert "passiveGuard.sidecarGeneration = Number(passiveGuard.sidecarGeneration || 0) + 1" in script
@@ -968,6 +974,32 @@ def test_build_game_prompt_uses_requested_language():
     assert "Output only the spoken line" in prompt
     assert "你正在和玩家踢一场足球比赛" not in prompt
     assert "======以上为足球游戏会话系统提示======" in prompt
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("locale", ("zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"))
+def test_soccer_system_prompts_all_locales_format_and_include_control_contract(locale):
+    from config.prompts.prompts_soccer import SOCCER_SYSTEM_PROMPTS
+
+    assert locale in SOCCER_SYSTEM_PROMPTS
+    formatted = get_soccer_system_prompt(locale).format(name="Lan", personality="likes soccer")
+    assert "Lan" in formatted
+    assert "likes soccer" in formatted
+    for token in (
+        '"mood"',
+        '"difficulty"',
+        "max",
+        "lv2",
+        "lv3",
+        "lv4",
+        "requestControlReason",
+        "score.ai",
+        "score.player",
+        "scoreDiff",
+        "balanceHint",
+        "angerPressureCap",
+    ):
+        assert token in formatted, f"{locale} soccer system prompt missing {token!r}"
 
 
 @pytest.mark.unit

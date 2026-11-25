@@ -501,3 +501,54 @@ def test_runtime_paths_use_current_storage_after_migration(tmp_path, monkeypatch
     assert not old_layout.config_path.exists()
     if operation != "lookup":
         assert new_layout.config_path.read_bytes() == manifest.read_bytes()
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize("resolver", ["discovery", "initialized"])
+def test_reserved_permissions_table_stays_out_of_effective_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, resolver: str
+) -> None:
+    from plugin.core.plugin_layout import resolve_plugin_layout
+
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "storage"))
+    installed = tmp_path / "demo"
+    installed.mkdir()
+    manifest = installed / "plugin.toml"
+    manifest.write_text(
+        "[plugin]\nid='demo'\nname='Demo'\nentry='demo:Plugin'\n"
+        "[plugin.config_profiles]\nactive='dev'\n"
+        "[plugin.config_profiles.files]\ndev='profiles/dev.toml'\n"
+        "[permissions.require.'system.network:connect']\nreason='sync'\n"
+        "[runtime]\nlevel=1\n",
+        encoding="utf-8",
+    )
+    (installed / "profiles").mkdir()
+    (installed / "profiles/dev.toml").write_text(
+        "[runtime]\nlevel=2\n[permissions]\nfrom_profile=true\n", encoding="utf-8"
+    )
+    # The runtime config is seeded from plugin.toml, so it may carry the table
+    # (or a user-edited copy of it) as well.
+    layout = resolve_plugin_layout("demo", installed)
+    layout.config_path.parent.mkdir(parents=True)
+    layout.config_path.write_text(
+        "[runtime]\nlevel=1\nregion='user'\n[permissions]\nfrom_user=true\n",
+        encoding="utf-8",
+    )
+
+    resolve = (
+        module.read_plugin_config_from_path
+        if resolver == "discovery"
+        else module.resolve_plugin_config_from_path
+    )
+    payload = resolve("demo", config_path=manifest)
+
+    effective = payload["effective_config"]
+    assert "permissions" not in effective
+    assert effective["plugin"]["id"] == "demo"
+    assert effective["plugin"]["entry"] == "demo:Plugin"
+    assert effective["runtime"] == {"level": 2, "region": "user"}
+    assert payload["config_fingerprint"] == fingerprint_config(effective)
+
+    base_only = resolve("demo", config_path=manifest, include_effective_config=False)
+    assert "permissions" not in base_only["effective_config"]
+    assert base_only["effective_config"]["runtime"] == {"level": 1, "region": "user"}

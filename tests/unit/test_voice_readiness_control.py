@@ -98,21 +98,50 @@ def trial_api(monkeypatch):
 
 
 PROTOCOL_HARNESS = Path(__file__).parents[1] / "frontend" / "voice_preview_protocol.cjs"
+_HARNESS_WARMED = False
+
+
+async def _warm_harness(node):
+    """Run the harness once, unattended, before the first start a test watches.
+
+    On CI the first Node start of a run, and its first read of the frontend
+    scripts, can take well over ten seconds on a cold Windows runner; later
+    starts take a fraction of a second. Every recorded stall was one of the
+    first two starts of the run. With stdin closed the harness loads those
+    scripts, writes its first request and exits on its own, which pays that
+    cost here, under a generous budget, instead of inside a test's deadline.
+    How it ends is not checked: the tests below check the harness itself.
+    """
+    global _HARNESS_WARMED
+    if _HARNESS_WARMED:
+        return
+    _HARNESS_WARMED = True
+    process = await asyncio.create_subprocess_exec(node, str(PROTOCOL_HARNESS),
+        stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL)
+    try:
+        await asyncio.wait_for(process.wait(), 60)
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.wait()
 
 
 async def start_protocol(args):
     """Spawn the Node harness and return it with its first request line.
 
-    The harness writes that line about 0.1s after startup. Windows runners
-    occasionally leave a fresh Node child silent with no output at all, so a
-    stalled start is retried once; a protocol regression fails both attempts.
+    The harness writes that line about 0.1s after startup once Node is warm
+    (``_warm_harness``). A start that stays silent anyway is retried once; a
+    protocol regression fails both attempts. The first attempt has the longer
+    budget, so a start that is merely slow is not killed and started again
+    from scratch.
     """
+    await _warm_harness(args[0])
     errors = b""
-    for _attempt in range(2):
+    for attempt in range(2):
         process = await asyncio.create_subprocess_exec(*args, stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         try:
-            line = await asyncio.wait_for(process.stdout.readline(), 10)
+            line = await asyncio.wait_for(process.stdout.readline(), 30 if attempt == 0 else 10)
             if not line:
                 # Exiting before the first request is a crash, not a stall.
                 _output, errors = await process.communicate()

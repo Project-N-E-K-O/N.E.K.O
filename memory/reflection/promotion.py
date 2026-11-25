@@ -785,7 +785,7 @@ class PromotionMixin:
         try:
             from utils.llm_client import create_chat_llm_async
             set_call_type("memory_recheck_reflection")
-            api_config = await self._config_manager.aget_model_api_config('summary')
+            api_config = await self._config_manager.aget_model_api_config('memory')
             from config import LLM_OUTPUT_GUARD_MAX_TOKENS
             # Disable thinking, like memory_recheck_fact: annotate two fields on one legacy entry.
             # New reflections get identical temporal_scope/event_when during synthesis;

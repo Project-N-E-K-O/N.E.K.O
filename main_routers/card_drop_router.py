@@ -33,6 +33,7 @@ from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from main_logic import client_registration
+from utils import community_device_hold
 from services.chat_sync import host as _chat_sync_host
 
 logger = logging.getLogger("neko.card_drop")
@@ -70,12 +71,6 @@ _native_sync_tickets_lock = threading.Lock()
 _native_delegates_lock = threading.Lock()
 _session_path_warning_lock = threading.Lock()
 _session_path_expand_warning_emitted = False
-
-
-class _ClientBindingConflict(Exception):
-    """The local client belongs to another cloud user; do not publish new JWTs."""
-
-    detail = _BIND_OWNERSHIP_CONFLICT
 
 
 class _InvalidIdentityResponse(Exception):
@@ -755,9 +750,49 @@ def _social_session_locks(paths: list[Path]):
 # Chat sync (services layer) observes the saved session and fences its local
 # commits with the same locks the logout/refresh/login writers hold. The lambdas
 # look up this module's attributes on every call, so patches here reach it too.
+def signed_in_account_state() -> tuple[str, str | None]:
+    """Who is signed in, read the way the saved session is resolved.
+
+    ``("signed_in", id)``; ``("signed_in", "")`` for a pre-v2 session that
+    carries a token but no account id; ``("signed_out", None)`` when no
+    credential holds a token; ``("unknown", None)`` when the file that would
+    decide cannot be read. Files are consulted in the snapshot's order
+    (social session, its legacy path, then the auth mirror), but a file that
+    exists and cannot be read stops the walk: falling through to an older
+    file could name an account that is no longer signed in.
+    """
+
+    def read(path: Path) -> tuple[str, dict | None]:
+        try:
+            if not path.exists():
+                return "missing", None
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return "unreadable", None
+        return ("ok", data) if isinstance(data, dict) else ("unreadable", None)
+
+    sources = [(path, "token") for path in _social_session_paths()]
+    auth_path = _auth_path()
+    if auth_path is not None:
+        sources.append((auth_path, "access_token"))
+    for path, token_key in sources:
+        status, data = read(path)
+        if status == "missing":
+            continue
+        if status == "unreadable":
+            return "unknown", None
+        token = data.get(token_key)
+        if not isinstance(token, str) or not token.strip():
+            # Electron leaves a tokenless file behind on logout.
+            continue
+        return "signed_in", _normalize_local_user_id(data.get("local_user_id"))
+    return "signed_out", None
+
+
 _chat_sync_host.install_saved_session_store(
     saved_session_snapshot=lambda: _desktop_session_snapshot(),
     saved_session_writer_fence=lambda: _social_session_locks(_social_session_paths()),
+    signed_in_account_state=signed_in_account_state,
 )
 
 
@@ -786,48 +821,210 @@ def _save_auth(data: dict) -> bool:
         return False
 
 
-def _persist_repaired_bind(access_token: str, bind: dict) -> None:
+def _public_bind_state(auth: dict | None) -> dict:
+    """The bind outcome safe to show to local UI: ``{"bound", "error"}`` only.
+
+    Older sessions have no bind field and are treated as bound, which matches
+    the normal single-account case. Internal markers such as ``skipped`` and
+    ``local_save_failed`` stay in the saved record; no UI reads them.
+    """
+    bind = (auth or {}).get("bind")
+    if not isinstance(bind, dict):
+        return {"bound": True, "error": None}
+    error = bind.get("error")
+    return {
+        "bound": bool(bind.get("bound")),
+        "error": str(error) if error else None,
+    }
+
+
+def _persist_repaired_bind(
+    access_token: str,
+    bind: dict,
+    *,
+    same_account: tuple[str, str] | None = None,
+) -> bool:
     """Record a repaired bind without clobbering a concurrent refresh.
 
     Serialized on the social-session lock rather than one keyed to the auth
     file: ``_persist_refreshed_oauth_tokens`` rewrites ``community_auth.json``
     while holding that lock, so it is the only lock both writers share.
+
+    ``same_account`` (``local_user_id``, ``auth_source``) is for callers that
+    hold the account-change locks for the whole bind: a token that rotated in
+    the meantime can then only be a refresh of that account, so the bind is
+    still recorded for it. Returns whether the bind outcome was written.
     """
     path = _auth_path()
     social_path = _social_session_path()
     if path is None or social_path is None:
-        return
+        return False
     try:
         with _social_session_lock(social_path):
             current = _read_json_dict(path)
             if not current:
-                return
-            if str(current.get("access_token") or "").strip() != access_token:
+                return False
+            mirror_token = str(current.get("access_token") or "").strip()
+            if mirror_token != access_token:
                 # A mirror token that differs from this bind's token can mean either a newer login or
                 # refresh won (do not touch it), or refresh wrote the authoritative social_session.json
                 # while the best-effort write to the community_auth.json mirror failed (record the failure, or
                 # /auth-status will remain stuck on an old transient error). Decide from the authoritative snapshot.
-                social = _desktop_session_snapshot()
-                authoritative = str((social or {}).get("access_token") or "").strip()
-                if authoritative != access_token:
-                    return
+                social = _desktop_session_snapshot() or {}
+                authoritative = str(social.get("access_token") or "").strip()
+                mirror_user = _normalize_local_user_id(current.get("local_user_id"))
+                mirror_source = _normalize_auth_source(current.get("auth_source"))
+                if authoritative != access_token and not (
+                    same_account is not None
+                    and mirror_user == same_account[0] == social.get("local_user_id")
+                    and mirror_source == same_account[1] == social.get("auth_source")
+                ):
+                    return False
                 # A two-file account switch can leave a *newer* auth mirror
                 # beside the old social file. Only a matching identity proves
                 # that this is a lagging refresh mirror for the same account.
-                mirror_user = _normalize_local_user_id(current.get("local_user_id"))
-                if not mirror_user or mirror_user != (social or {}).get("local_user_id"):
-                    return
-                if _normalize_auth_source(current.get("auth_source")) != social.get("auth_source"):
-                    return
-                # Persist the validated bind's session separately: the mirror
-                # may contain either lagging or ahead-of-social credentials.
-                # Rewriting its tokens here could roll back a newer refresh.
-                current["bind_session_fingerprint"] = _desktop_session_fingerprint(social)
+                if not mirror_user or mirror_user != social.get("local_user_id"):
+                    return False
+                if mirror_source != social.get("auth_source"):
+                    return False
+                if mirror_token == authoritative:
+                    current.pop("bind_session_fingerprint", None)
+                else:
+                    # Persist the validated bind's session separately: the mirror
+                    # may contain either lagging or ahead-of-social credentials.
+                    # Rewriting its tokens here could roll back a newer refresh.
+                    current["bind_session_fingerprint"] = _desktop_session_fingerprint(social)
             else:
+                if same_account is not None:
+                    # The mirror may still hold this token after the desktop
+                    # host switched accounts in the social session; only
+                    # record the bind while the same account is signed in.
+                    social = _desktop_session_snapshot() or {}
+                    if social.get("local_user_id") != same_account[0]:
+                        return False
                 current.pop("bind_session_fingerprint", None)
             _write_private_json(path, {**current, "bind": bind})
+            return True
     except (OSError, TimeoutError) as exc:
         logger.warning("card_drop: persist repaired bind failed: %s", exc)
+        return False
+
+
+def _credential_dir() -> Path | None:
+    path = _auth_path()
+    return path.parent if path is not None else None
+
+
+def _remember_confirmed_owner() -> bool:
+    """Carry what the saved login proved about the owner into the device record.
+
+    Runs before that login is replaced or cleared, since its bind outcome goes
+    with it. Installs that bound before the device record existed have no
+    owner on file; a confirmed bind seeds it. A refused bind is written again
+    if the device record never got it (a write that failed at the time), so a
+    later login whose bind is inconclusive still finds the conflict.
+    """
+    directory = _credential_dir()
+    # Read the saved login and write what it proved as one step against the
+    # device record: a newer login's outcome, recorded under the same lock,
+    # either lands first (and this reads the newer login) or after.
+    with community_device_hold.record_lock:
+        # A hold this process could not write (for example a conflict a
+        # rebind found while the login's own bind still says bound) must reach
+        # disk before the login goes, or a restart would forget it.
+        latched_saved = community_device_hold.persist_latched_hold(directory)
+        return _remember_saved_login(directory) and latched_saved
+
+
+def _remember_saved_login(directory: Path | None) -> bool:
+    auth = _load_auth() or {}
+    account = _normalize_local_user_id(auth.get("local_user_id"))
+    if auth.get(DEVICE_HOLD_PENDING):
+        # A logout tombstone is the only copy of a hold the device record could
+        # not take. Move it there first; while that fails, keep the tombstone.
+        return community_device_hold.record_bind_outcome(
+            directory, {"bound": False, "error": _BIND_OWNERSHIP_CONFLICT}, account,
+        )
+    # The social session is authoritative and can be ahead of the mirror (its
+    # write can succeed when the mirror's fails). An account signed in there
+    # that the mirror does not describe never proved it owns the device.
+    social = _desktop_session_snapshot() or {}
+    social_account = _normalize_local_user_id(social.get("local_user_id"))
+    if social_account and social_account != account:
+        if not community_device_hold.record_session_account(directory, social_account):
+            return False
+    bind = auth.get("bind")
+    if bind is None and account and auth.get("access_token"):
+        # Sessions saved before bind outcomes were recorded count as bound,
+        # the same compatibility rule /auth-status applies.
+        community_device_hold.remember_owner(directory, account)
+        return True
+    if not isinstance(bind, dict):
+        return True
+    if bind.get("bound") is True:
+        community_device_hold.remember_owner(directory, account)
+        return True
+    recorded = True
+    if bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
+        # record_bind_outcome latches the hold in memory if the write fails,
+        # so the conflict survives this login being replaced or cleared.
+        recorded = community_device_hold.record_bind_outcome(directory, bind, account)
+    # This login never proved it owns the device. Note that it used it, even
+    # if the process stopped between saving the login and recording that, so
+    # its unsynced memories stay held once it is replaced or logged out.
+    return community_device_hold.record_session_account(directory, account) and recorded
+
+
+def _carry_unwritten_hold(bind: dict) -> dict:
+    """Keep a hold that only lives in memory in the bind a new login saves.
+
+    Run after ``_remember_confirmed_owner`` for the login being replaced: if
+    the device record still could not take the hold, the new login's saved
+    bind becomes the copy on disk. An inconclusive bind (cloud unreachable,
+    skipped) is replaced by the conflict; a successful bind is kept, since it
+    proves ownership and clears the hold once recorded.
+    """
+    if not community_device_hold.hold_latched() or bind.get("bound") is True:
+        return bind
+    return {**bind, "error": _BIND_OWNERSHIP_CONFLICT, "bound": False}
+
+
+def _record_device_hold(bind: dict, local_user_id: str) -> bool:
+    """Record what a login or bind as ``local_user_id`` proved about the device owner.
+
+    See utils.community_device_hold: header-only uploads wait while a
+    refused bind is on record, and once an account other than the confirmed
+    owner has used this device, until a bind confirms who owns it. A hold
+    that cannot be written is latched in memory instead of opening uploads.
+    """
+    directory = _credential_dir()
+    with community_device_hold.record_lock:
+        recorded = community_device_hold.record_bind_outcome(directory, bind, local_user_id)
+        if not (isinstance(bind, dict) and bind.get("bound") is True):
+            recorded = community_device_hold.record_session_account(directory, local_user_id) and recorded
+    if not recorded:
+        logger.warning("card_drop: device hold record not written; holding uploads in memory")
+    return recorded
+
+
+def _settle_bind_check(
+    check: bool | None, cloud_bind: dict, local_user_id: str, saved_bind: dict | None,
+) -> bool:
+    """Record a login's bind answer, then release the hold its check put on disk.
+
+    ``saved_bind`` is the outcome the saved login carries, or None when the
+    login was not saved. While the answer is not on disk, or leaves the owner
+    unknown, the check keeps holding, so a restart cannot forget it.
+    """
+    directory = _credential_dir()
+    with community_device_hold.record_lock:
+        if saved_bind is not None:
+            recorded = _record_device_hold(saved_bind, local_user_id)
+        else:
+            recorded = community_device_hold.record_unsaved_bind(directory, cloud_bind, local_user_id)
+        if recorded:
+            recorded = community_device_hold.end_bind_check(directory, check, cloud_bind)
+    return recorded
 
 
 def _save_social_session_unlocked(
@@ -909,8 +1106,8 @@ def _persist_session_credentials(
     *,
     local_user_id: str,
     auth_source: str,
-) -> None:
-    """Persist both desktop credential files from a worker thread."""
+) -> bool:
+    """Persist both desktop credential files; return whether either was written."""
     auth_saved = _save_auth(auth_payload)
     social_saved = _save_social_session(
         base,
@@ -929,6 +1126,7 @@ def _persist_session_credentials(
         # Any credential publication can represent an account switch or token
         # rotation. Existing browser delegates must be reissued for that session.
         _clear_native_delegates()
+    return auth_saved or social_saved
 
 
 def _persist_session_identity_metadata(
@@ -1007,6 +1205,25 @@ def _persist_session_identity_metadata(
         return False
 
 
+DEVICE_HOLD_PENDING = community_device_hold.DEVICE_HOLD_PENDING
+
+
+def _tombstone_auth_mirror(auth_path: Path) -> bool:
+    """Strip every credential from the auth mirror but keep its bind and hold."""
+    auth = _read_json_dict(auth_path) or {}
+    tombstone = {
+        "local_user_id": auth.get("local_user_id"),
+        "bind": auth.get("bind"),
+        DEVICE_HOLD_PENDING: True,
+    }
+    try:
+        _write_private_json(auth_path, tombstone)
+        return True
+    except OSError as exc:
+        logger.warning("card_drop: cannot keep the device hold through logout: %s", exc)
+        return False
+
+
 def _unlink_credentials(paths: list[Path]) -> bool:
     success = True
     for path in paths:
@@ -1020,7 +1237,9 @@ def _unlink_credentials(paths: list[Path]) -> bool:
 
 def _clear_auth() -> bool:
     auth_path = _auth_path()
-    paths = ([auth_path] if auth_path is not None else []) + _social_session_paths()
+    # The auth mirror is handled under the lock below: deleted, or turned into
+    # a tombstone if its hold could not reach the device record.
+    paths = [path for path in _social_session_paths() if path != auth_path]
     if auth_path is not None:
         # Cancel in-flight OAuth before its credential commit under this same lock.
         paths.append(auth_path.parent / "community_oauth_pending.json")
@@ -1033,6 +1252,20 @@ def _clear_auth() -> bool:
     # logout would clear only the social file while the mirror returns, and clear would incorrectly report failure.
     try:
         with _social_session_locks(_social_session_paths()):
+            # Read the login and record what it knew about the device owner
+            # under the same lock every login writer takes, so a newer login
+            # cannot change the hold between this read and its write.
+            hold_saved = _remember_confirmed_owner()
+            if auth_path is not None:
+                if hold_saved:
+                    paths.append(auth_path)
+                elif not _tombstone_auth_mirror(auth_path):
+                    # The device record could not take this login's hold. The
+                    # mirror becomes a tombstone that drops every credential
+                    # but keeps the hold across a restart. If even that fails,
+                    # keep the mirror and report the logout as failed (callers
+                    # retry) rather than let uploads resume.
+                    success = False
             success = _unlink_credentials(paths) and success
             for path in paths:
                 try:
@@ -1192,17 +1425,24 @@ async def _store_session(
     if not access or not local_user_id or not normalized_source:
         raise _InvalidIdentityResponse()
 
-    # Bind before publishing either local credential file.  A client that belongs to another
-    # user is a non-recoverable identity conflict: publishing the new JWT even briefly would let
-    # Electron observe and use the wrong account before this request reports the conflict.
-    # Other historical bind failures remain recoverable and still persist the cloud-validated
-    # login below, together with their bind status.
+    # Bind before publishing either local credential file, so the saved login
+    # carries its bind outcome. Every bind failure, including a device that is
+    # still bound to another account, leaves the cloud-validated login usable:
+    # device ownership only decides where guest assets migrate, never which
+    # account may sign in on this machine.
     bind: dict = {"bound": False, "error": None}
+    await asyncio.to_thread(_remember_confirmed_owner)
     cid = await asyncio.to_thread(_get_client_id) if bind_client else None
+    check = None
+    if bind_client and cid:
+        check = await asyncio.to_thread(community_device_hold.begin_bind_check, _credential_dir())
     if not bind_client:
         bind["skipped"] = "native_session_sync"
     elif not cid:
         bind["error"] = "client_not_registered"
+    elif check is None:
+        # The answer could not be kept across a restart; do not ask.
+        bind["error"] = "local_bind_state_not_saved"
     elif access:
         try:
             async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
@@ -1213,6 +1453,11 @@ async def _store_session(
                 )
             if r.status_code < 400:
                 bind["bound"] = True
+            elif r.status_code >= 500:
+                # A server or proxy error does not prove the bind was not
+                # committed; treat it like a request that got no answer.
+                bind["error"] = community_device_hold.CLOUD_UNREACHABLE
+                logger.info("card_drop: bind-client returned %s", r.status_code)
             else:
                 try:
                     bind["error"] = r.json().get("detail") or f"http_{r.status_code}"
@@ -1220,14 +1465,13 @@ async def _store_session(
                     bind["error"] = f"http_{r.status_code}"
                 logger.info("card_drop: bind-client returned %s: %s", r.status_code, bind["error"])
         except (httpx.HTTPError, OSError) as exc:
-            bind["error"] = "cloud_unreachable"
+            bind["error"] = community_device_hold.CLOUD_UNREACHABLE
             logger.info("card_drop: bind-client after login failed: %s", exc)
-
-    if bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
-        raise _ClientBindingConflict()
 
     from main_routers import community_oauth
 
+    cloud_bind = bind
+    bind = _carry_unwritten_hold(bind)
     auth_payload = {
         "schema_version": _SOCIAL_SESSION_SCHEMA_VERSION,
         "access_token": access,
@@ -1237,7 +1481,7 @@ async def _store_session(
         "user": community_oauth._persisted_user_profile(user, local_user_id),
         "bind": bind,
     }
-    await asyncio.to_thread(
+    published = await asyncio.to_thread(
         _persist_session_credentials,
         auth_payload,
         bind,
@@ -1247,6 +1491,12 @@ async def _store_session(
         local_user_id=local_user_id,
         auth_source=normalized_source,
     )
+    # A login that saved nothing never used this device; it must not leave a
+    # hold behind that pauses the owner's uploads, unless its answer shows the
+    # login left in place would upload to another account.
+    await asyncio.to_thread(
+        _settle_bind_check, check, cloud_bind, local_user_id, bind if published else None,
+    )
     return bind
 
 
@@ -1254,16 +1504,17 @@ async def _finish_login(base: str, login_out: dict) -> tuple[dict, dict]:
     """Complete email/password login by storing JWTs and binding the client."""
     tokens = login_out.get("tokens") or {}
     user = login_out.get("user") or {}
+
     try:
-        bind = await _store_session(
-            base,
-            tokens.get("access_token"),
-            tokens.get("refresh_token"),
-            user,
-            auth_source="legacy",
-        )
-    except _ClientBindingConflict as exc:
-        raise HTTPException(status_code=409, detail=exc.detail) from exc
+        # Device checks run one at a time; see community_device_hold.begin_bind_check.
+        async with community_device_hold.ownership_lock:
+            bind = await _store_session(
+                base,
+                tokens.get("access_token"),
+                tokens.get("refresh_token"),
+                user,
+                auth_source="legacy",
+            )
     except _InvalidIdentityResponse as exc:
         raise HTTPException(status_code=502, detail=exc.detail) from exc
     return user, bind
@@ -1393,12 +1644,10 @@ async def auth_status_endpoint(request: Request):
     if status["logged_in"]:
         a = status["auth"]
         u = a.get("user") if isinstance(a.get("user"), dict) else {}
-        # Older sessions have no bind field → treat them as bound (backward compatible; valid for the normal single-account case)
-        bind = a.get("bind") or {"bound": True, "error": None}
         return {
             "logged_in": True,
             "user": community_oauth._public_user_profile(u),
-            "bind": bind,
+            "bind": _public_bind_state(a),
         }
     # If cloud validation is temporarily unavailable, the local session still exists; the frontend uses this to distinguish "explicitly logged out" from "status unknown",
     # so do not tell the user to log in for the latter.
@@ -1766,7 +2015,8 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
     ):
         return JSONResponse({"detail": "invalid_sync_ticket"}, status_code=403, headers=cors)
     snapshot_base = str(snapshot.get("base_url") or "").strip().rstrip("/")
-    if snapshot_base and not _same_originish(snapshot_base, _social_base_url()):
+    social_base = _social_base_url()
+    if snapshot_base and not _same_originish(snapshot_base, social_base):
         # The saved login belongs to another community; refuse rather than ship
         # its bearer to the currently configured one. The session stays on disk
         # so pointing NEKO_SOCIAL_BASE_URL back restores it.
@@ -1812,12 +2062,17 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
         # here before it is spent — but only after the session revalidation
         # above, so a superseded account never reaches the cloud bind.
         bind_retried = True
-        bind = await _co._oauth_guest_bind(_social_base_url(), access_token)
-        if bind.get("bound") or bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
-            # Persist repaired binds and terminal conflicts alike, or
-            # /auth-status keeps reporting the stale transient failure and
-            # every later handoff repeats the bind round trip.
-            await asyncio.to_thread(_persist_repaired_bind, access_token, bind)
+        async with community_device_hold.ownership_lock:
+            # A login may have replaced this session while the lock was busy;
+            # never bind the device with a token that is no longer signed in.
+            current = await asyncio.to_thread(_desktop_session_snapshot) or {}
+            if str(current.get("access_token") or "").strip() != access_token:
+                return JSONResponse(
+                    {"detail": "desktop_login_required"}, status_code=409, headers=cors
+                )
+            # None: the hold could not be written first, so the cloud was not
+            # asked and the bind stays as it was.
+            bind = await _co._bind_signed_in_login(social_base, access_token, local_user_id) or bind
     if bind_retried:
         # Binding may involve multiple cloud round trips, each up to 30 seconds; the token may be revoked in the cloud
         # while the local file remains unchanged, which a lock-held reread of the local token cannot detect. Run another
@@ -2097,17 +2352,19 @@ async def sync_session_endpoint(request: Request, payload: dict = Body(...)):
 
     try:
         # When switching to another community account, finish active peer sessions and archive uploaded files; do not admit new sessions while writing
-        async with community_oauth.visit_account_change(_normalize_local_user_id(user.get("id"))):
-            bind = await _store_session(
-                base,
-                access,
-                refresh,
-                user,
-                auth_source=lookup.identity.auth_source,
-                bind_client=False,
-            )
-    except _ClientBindingConflict as exc:
-        return JSONResponse({"detail": exc.detail}, status_code=409, headers=cors)
+        # Same device-bind lock as the login callback, rebind and handoff
+        # bind retry: a retry for the previous account must not record its
+        # owner after this session switch noted another account on the device.
+        async with community_device_hold.ownership_lock:
+            async with community_oauth.visit_account_change(_normalize_local_user_id(user.get("id"))):
+                bind = await _store_session(
+                    base,
+                    access,
+                    refresh,
+                    user,
+                    auth_source=lookup.identity.auth_source,
+                    bind_client=False,
+                )
     except _InvalidIdentityResponse as exc:
         return JSONResponse({"detail": exc.detail}, status_code=502, headers=cors)
     from main_routers import community_oauth

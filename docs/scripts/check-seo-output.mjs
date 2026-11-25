@@ -5,6 +5,7 @@ import {
   SITE_ORIGIN,
 } from '../.vitepress/seo-shared.mjs'
 import { LEGACY_REDIRECTS } from '../route-aliases.mjs'
+import { isNoindexRoute } from '../.vitepress/indexing-policy.mjs'
 
 const DIST_DIR = resolve('.vitepress/dist')
 const PUBLIC_DIR = resolve('public')
@@ -158,7 +159,15 @@ for (const htmlPath of filesRecursively(DIST_DIR, '.html')) {
     ) {
       fail(file, `legacy redirect refresh must target ${legacyRedirectTarget}`)
     }
-    if (!sitemapUrls.has(expectedCanonical)) {
+    // A noindex target (design notes) is never in the sitemap, so check that it was built instead.
+    if (isNoindexRoute(legacyRedirectTarget)) {
+      if (!existsSync(resolve(DIST_DIR, `${legacyRedirectTarget.slice(1)}.html`))) {
+        fail(file, `legacy redirect target page was not built: ${legacyRedirectTarget}`)
+      }
+      if (sitemapUrls.has(expectedCanonical)) {
+        fail(file, `legacy redirect target is noindex but present in sitemap: ${expectedCanonical}`)
+      }
+    } else if (!sitemapUrls.has(expectedCanonical)) {
       fail(file, `legacy redirect target is missing from sitemap: ${expectedCanonical}`)
     }
     if (titleMatches.length !== 1 || !titleMatches[0][1].trim()) {

@@ -15,7 +15,7 @@ from plugin.config.plugin_toml_semantics import (
 from plugin.core.plugin_layout import resolve_plugin_layout
 from plugin.logging_config import get_logger
 from plugin.server.infrastructure.config_locking import get_plugin_update_lock
-from plugin.server.infrastructure.config_merge import deep_merge
+from plugin.server.infrastructure.config_merge import deep_merge, strip_reserved_sections
 from plugin.server.infrastructure.config_paths import (
     ensure_plugin_runtime_config,
     get_plugin_manifest_path,
@@ -101,7 +101,7 @@ def _resolve_plugin_config_core(
     last_modified: float | None = None,
 ) -> dict[str, object]:
     manifest_plugin = manifest_config.get("plugin")
-    effective_config = deep_merge(manifest_config, base_config)
+    effective_config = strip_reserved_sections(deep_merge(manifest_config, base_config))
     if isinstance(manifest_plugin, Mapping):
         effective_config["plugin"] = dict(manifest_plugin)
     if include_effective_config:

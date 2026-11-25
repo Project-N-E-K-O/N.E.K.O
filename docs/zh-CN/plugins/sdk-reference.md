@@ -49,7 +49,7 @@ class MyPlugin(NekoPluginBase):
 | `self.config_dir` | `Path` | `self.plugin_dir` 的兼容别名 |
 | `self.storage_dir` | `Path` | 分配给插件的用户存储根目录 |
 | `self.runtime_config_path` | `Path` | 外部运行配置文件路径 |
-| `self.metadata` | `dict` | 来自 `plugin.toml` 的插件元数据 |
+| `self.metadata` | `dict` | 目前在插件进程里恒为 `{}`（`plugin.toml` 的内容不会传进来）。读取配置用 `await self.config.dump()` |
 | `self.bus` | `SdkBusContext` | 宿主状态的 read/watch 门面；没有 publish/emit API |
 | `self.plugins` | `Plugins` | 跨插件调用辅助工具 |
 | `self.system_info` | `SystemInfo` | 宿主系统元数据 |
@@ -59,7 +59,7 @@ class MyPlugin(NekoPluginBase):
 `NekoPluginBase` 无需额外设置即可提供日志和配置：
 
 ```python
-self.logger.info("Processing request: {}", request_id)
+self.logger.info("Processing request: %s", request_id)
 timeout = await self.config.get_int("my_settings.timeout", default=30)
 ```
 
@@ -68,6 +68,7 @@ timeout = await self.config.get_int("my_settings.timeout", default=30)
 `await self.ctx.reply_tail.subscribe("after_reply")` 可以订阅普通文字回复的完成通知。
 `after_reply` 是插件自行声明的 `@plugin_entry(id="after_reply", kind="hook")` 入口，
 收到 `text`、`user_text`、`has_attachments` 和 `_ctx.host_reply`。
+订阅的入口必须是宿主为该插件登记过的入口，且入口 id 不以 `_` 开头。符合条件的有：插件类上的 `@plugin_entry` 方法、列在 `__routers__` 里的 router 的入口（router 类不要配 `prefix`；router 实例的入口 id 已含实例上设好的前缀）、`plugin.toml` 里指向插件类方法的 `[[plugin.entries]]` 条目、用 `register_dynamic_entry()` 添加的入口。只传给 `include_router()` 的 router，以及列在 `__routers__` 里、又带 `prefix` 引入的 router 类，它们的入口不符合条件（见 [PluginRouter](./router)）。宿主只把完成通知分派给符合条件的入口；`subscribe` 不检查这一点，订阅其他入口也会被接受（仍要通过常规的 id 和容量检查），但每次回调都返回 HTTP 404（`detail.code="ENTRY_NOT_REGISTERED"`），不调用插件。
 插件可以按规则、检索或辅助模型自行决定是否配图，无需主聊天模型调用发图工具。
 选好图片后，在入口返回前调用 `self.ctx.reply_tail.register(...)`，由宿主排在原回复末尾。
 
@@ -86,6 +87,8 @@ timeout = await self.config.get_int("my_settings.timeout", default=30)
 | 结构化 SQLite 数据 | 启用 `[plugin.database]` 后使用 `self.db` |
 | 任意持久文件 | `self.data_path(...)` |
 | 可重新生成的文件 | `self.cache_path(...)` |
+| 给别的插件读的文件 | `self.shared_path(...)` |
+| 别的插件发布的文件 | 在 `[plugin.shared]` 里声明后使用 `self.shared_path_of("<plugin_id>", ...)` |
 
 ```python
 from plugin.sdk.plugin import unwrap
@@ -104,6 +107,8 @@ async with unwrap(await self.db.session()) as session:
 ```python
 message = self.i18n.t("greeting", name="Alice")
 ```
+
+`self.i18n.t(...)` 不跟随用户语言：不传 `locale=` 时，依次查插件的 `default_locale`、它的基础语言（例如 `fr-CA` 的 `fr`）、`en`，最后退回 `default` 参数或键名。宿主登记的面向用户的字符串（插件和入口名称、描述、schema 标签、UI 动作标签）请用 `tr("key", default="...")`，由宿主按每个用户的语言解析。
 
 ### 方法
 
@@ -155,18 +160,44 @@ preview_path = self.cache_path("preview.png")
 # → <storage-root>/plugins/<plugin_id>/cache/preview.png
 ```
 
+#### `shared_path(*parts) -> Path`
+
+获取本插件共享目录下的路径，这个目录里的文件是发布给别的插件读的。目录不会自动创建；插件被删除后目录会保留。目录以插件 id 命名；id 里小写字母、数字、`_`、`-` 以外的字符在目录名里会被转义，所以路径请始终从这个方法取。
+
+```python
+cities = self.shared_path("cities.json")
+# → <storage-root>/plugin_shared/<plugin_id>/cities.json
+cities.parent.mkdir(parents=True, exist_ok=True)
+```
+
+#### `shared_path_of(plugin_id, *parts) -> Path`
+
+获取另一个插件共享目录下的路径，用来读取。那个插件的 id 必须写在 `plugin.toml` 的 `[plugin.shared] reads` 里，否则抛 `ValidationError`（`code="shared_not_declared"`）。会跑出共享目录的路径同样会被拒绝（`code="shared_bad_path"`）。
+
+```python
+cities = self.shared_path_of("weather", "cities.json")
+# → <storage-root>/plugin_shared/weather/cities.json
+```
+
+这是插件之间的约定，不是安全边界：插件之间没有沙箱。拿到的文件请只读不写。
+
 #### `register_dynamic_entry(entry_id, handler, ...) -> bool`
 
 在运行时注册入口点（非通过装饰器）。
 
 ```python
+async def greet(name: str = "World", **_):
+    return Ok({"msg": f"Hi {name}"})
+
 self.register_dynamic_entry(
     entry_id="dynamic_greet",
-    handler=lambda name="World", **_: Ok({"msg": f"Hi {name}"}),
+    handler=greet,
     name="Dynamic Greet",
     description="A dynamically registered greeting",
 )
 ```
+
+handler 必须是 `async def` 函数：注册时只检查是否可调用，但调用 handler 不是协程函数的入口会失败，报 `Entry must be 'async def'`。
 
 #### `unregister_dynamic_entry(entry_id) -> bool`
 
@@ -192,7 +223,7 @@ self.register_static_ui("static")  # 提供 <plugin_dir>/static/index.html 服�
 
 挂载一个 `PluginRouter`，用于组织大型或按功能拆分的普通 Plugin。
 
-相关方法还有 `exclude_router(router_or_name) -> bool`、`get_router(name)` 和 `list_routers()`。Router 不能作为 manifest 的 `[plugin].entry`，而且这条挂载路径不会自动调用 `on_mount` / `on_unmount`。
+还要把每个 router 类列进插件类属性 `__routers__`：宿主的静态入口扫描只读这个列表（见 [PluginRouter](./router)）。列进去的 router 类不要再配 `prefix`，否则列表里的 ID 调不通（见[带前缀的 Router](./router#prefixed-routers)）。相关方法还有 `exclude_router(router_or_name) -> bool`、`get_router(name)` 和 `list_routers()`。Router 不能作为 manifest 的 `[plugin].entry`。`on_mount` / `on_unmount` 不会被宿主调用，不要覆盖它们。
 
 #### Hosted/静态 UI 与列表操作
 
@@ -200,7 +231,7 @@ Hosted TSX 使用导出的 `ui` namespace 和 manifest surface，详见 [Hosted 
 
 #### LLM 工具方法
 
-`register_llm_tool(...)`、`unregister_llm_tool(name)` 和 `list_llm_tools()` 是 `@llm_tool` 的命令式对应接口。它们注册对话期工具，不是用户插件 Agent 入口。详见 [LLM Tool Calling](./tool-calling)。
+`register_llm_tool(...)`、`unregister_llm_tool(name)` 和 `list_llm_tools()` 是 `@llm_tool` 的命令式对应接口。它们注册对话期工具，不是用户插件 Agent 入口。同步调用发出去就不管；`await register_llm_tool_async(...)` 和 `await unregister_llm_tool_async(name)` 返回 `main_server` 的真实答复（`ok`、各 role 的结果、`error`），并让插件本地登记与之保持一致。详见 [LLM Tool Calling](./tool-calling)。
 
 #### `run_update(**kwargs) -> object`（异步）
 
@@ -243,6 +274,18 @@ self.register_dynamic_entry(
     entry_id="my-tool",
     handler=handler,
     llm_result_fields=["summary"],
+)
+```
+
+### 输出契约
+
+`@plugin_entry` 或 `register_dynamic_entry()` 的 `output_schema` 声明返回值的 JSON Schema。和入参对称：静态入口的返回注解是 Pydantic 模型时会自动推导，运行时由模型校验返回的数据（和 `params` 一样）；显式写的 `output_schema` 字典（动态入口都是这种）只发布、不校验（和 `input_schema` 一样）。默认不符合时只在插件日志里告警（有限流）；`strict_output=True` 时调用失败，错误码 `PLUGIN_OUTPUT_SCHEMA_VIOLATION`。日志和错误里只有字段路径和错误类型。详见[入口与参数](./entries)的「输出契约」一节。
+
+```python
+self.register_dynamic_entry(
+    entry_id="my-tool-described",
+    handler=handler,
+    output_schema={"type": "object", "required": ["summary"]},  # 只发布，不校验
 )
 ```
 
@@ -305,11 +348,35 @@ result = await self.plugins.require_enabled("dependency_plugin")
 
 所有方法返回 `Result` 类型 — 在使用 `.value` 之前，请先用 `isinstance(result, Ok)` 检查。
 
+### 谁调了你：`ctx.call_chain`
+
+`self.ctx.call_chain` 是当前这次调用「从哪来」的只读视图。它由宿主按自己的记录生成；插件只能读，改了也不影响宿主。
+
+```python
+chain = self.ctx.call_chain
+chain.callers        # 一路调到这里的插件 id，根在前；宿主直接调你时是 ()
+chain.origin.kind    # "run"、"chat_tool"、"chat_hook"、"ui_action"、"plugin_self" 或 "system"
+chain.origin.ref     # run id 这类编号，不含消息原文
+chain.hops           # 每一步 (plugin_id, event_type, event_id)
+chain.rights         # 链上每个插件都被用户确认过的权限
+chain.rights_known   # 宿主没给出时为 False（见下）
+chain.allows("plugin_sdk.main_agent.memory:read")
+```
+
+- 永远不是 `None`。不在调用里（定时器、入口返回后还在跑的后台任务）时，它是只含你自己的链，`rights_known=False`。
+- `rights` 里是权限 id，例如 `plugin_sdk.main_agent.memory:read`。在一个版本内它同时带着旧名字（`memory.read`、`conversations.read`、`messages.push`），`allows()` 两种写法都接受。
+- `allows()` 只是参考。权限未知时它一律回答 `False`，所以「没有」和「不知道」读出来都是 `False`，要区分就看 `rights_known`。每次使用由宿主自己判定：这里是 `False` 不代表宿主一定拒绝，是 `True` 也只是投递那一刻的快照。
+- 交给裸 `threading.Thread`、自建线程池，或交给带自建 executor 的 `loop.run_in_executor` 的工作会丢掉调用上下文，宿主会把这些请求当成插件自发的。`asyncio.to_thread` 会保留；自己开线程时，用 `contextvars.copy_context().run(...)` 包住要做的事。
+- `loop.run_in_executor(None, ...)` 也会保留，但只限插件运行时执行你代码的那个事件循环：运行时把它的默认 executor 换成了会复制上下文的版本。在自己新建的事件循环上，或者换掉默认 executor 之后，就会丢掉上下文。`neko-plugin check` 分辨不出 `run_in_executor(None, ...)` 跑在哪个事件循环上，所以不把这个调用列为盲区，改为列出 `asyncio.new_event_loop`、`asyncio.Runner` 和 `set_default_executor`。其他自己弄出事件循环的写法（比如在你的代码里调用 `asyncio.run`）不会列出。
+- 它和旧的 `plugin.sdk.shared.runtime.call_chain`（只在一个插件进程内部记调用）是两回事。
+
+宿主会记录插件互调和能力使用，用于审计（只记编号和能力名，不记参数、返回值和消息原文）。设计见 [`docs/design/plugin-call-chain.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docs/design/plugin-call-chain.md)。
+
 ---
 
 ## PluginStore（持久化存储）
 
-通过 `self.store` 访问（由宿主在插件构造时预先创建并注入，无需自己实例化）。
+通过 `self.store` 访问（由宿主在插件构造时预先创建并注入，无需自己实例化）。`plugin.toml` 里没有 `[plugin.store]` 且 `enabled = true` 时它是关闭的：关闭时 `set()` 不保存任何内容，`get()` 返回默认值。
 
 `PluginStore` 的所有方法都返回 `Result`，需用 `unwrap_or(...)` 解包。
 
@@ -342,7 +409,7 @@ python_env = unwrap_or(await self.system_info.get_python_env(), {})
 | `ctx.config_path` | `Path` | `plugin.toml` 的路径 |
 | `ctx.logger` | `Logger` | 日志记录器实例 |
 | `ctx.bus` | `SdkBusContext` | 宿主状态的 read/watch 门面 |
-| `ctx.metadata` | `dict` | 插件元数据 |
+| `ctx.metadata` | `dict` | 传给 `__init__` 的原始 `ctx` 没有 `metadata` 属性（读取会抛 `AttributeError`）；包装后的 `self.ctx.metadata` 返回 `{}`。读取配置用 `await self.config.dump()` |
 
 ### Bus 与 Memory
 
@@ -359,7 +426,7 @@ records = await self.bus.memory.get(bucket_id="default", limit=20)
 
 【访问范围】这几个 store 是共享的，读取不按插件做权限隔离：任何已启用的插件都能读 `conversations` 和 `frames`，包括来自用户、以及来自别的插件的轮次与画面。这不会扩大宿主**已经发给模型**的内容——会话没发过的帧不会出现在这里——但确实扩大了**谁能看到**：从模型服务方扩大到用户启用的每一个插件。安装一个插件就等于授予它这份可见性；你的插件如果读这两条总线，请在自己的说明里写明。
 
-`bus.memory` 保存的是有容量上限、只驻留内存的近期用户话语事件（TTL 为一小时），与角色持久化的事实、反思和人格相互独立。`ctx.query_memory(...)` 只为兼容而保留，它调用已弃用的占位端点，不执行语义召回。
+`bus.memory` 保存的是有容量上限、只驻留内存的近期用户话语事件（TTL 为一小时），与角色持久化的事实、反思和人格相互独立。`ctx.query_memory(...)` 对角色的私聊记忆执行与内置 `recall_memory` 工具相同的混合召回，返回 `{"result": text}`；`text` 是按角色提示词语言渲染、带编号并受 token 预算限制的命中列表，没有相关记忆时为空字符串。
 
 ### Frames
 

@@ -35,13 +35,18 @@ from .notify import (
     release_memory_server_character,
     send_reload_page_notice,
 )
+from config import CHARACTER_GENDER_FIELD_KEYS, CHARACTER_NICKNAME_FIELD_KEYS
 from .voice_registry import _is_current_catgirl_voice_session_starting, _voice_session_starting_response
 
 import functools
+import inspect
 import json
+import os
 import shutil
+import stat
 import asyncio
 import copy
+import errno
 import tempfile
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass
@@ -63,6 +68,8 @@ from ..workshop_router import _ugc_sync_lock
 from ..agent_router import force_disable_agent_for_character_switch
 from services.chat_audio_history import prepare_character_audio_retirement, retire_character_audio
 from utils.character_memory import (
+    LEGACY_CHARACTER_MEMORY_EXTRA_ENTRIES,
+    LEGACY_CHARACTER_MEMORY_FILE_MAP,
     asave_characters_with_recent_activation,
     begin_character_recent_transaction,
     character_config_mutation_lock,
@@ -73,11 +80,20 @@ from utils.character_memory import (
     unfence_character_runtime_writes,
     finalize_character_recent_delete,
     finalize_character_recent_rename,
+    find_character_name_collision,
+    find_character_shared_memory_owner,
+    find_co_owner_for_memory_path,
+    iter_authoritative_catgirl_names,
+    iter_character_memory_roots,
     list_character_memory_paths,
+    paths_refer_to_same_directory_entry,
+    paths_refer_to_same_entry,
     rename_character_memory_storage,
     release_character_recent_transaction,
     rollback_character_recent_delete,
     rollback_character_recent_rename,
+    symlink_chain_reaches_path,
+    two_step_samefile_rename,
 )
 from utils.config_manager import (
     ensure_catgirl_character_id,
@@ -90,7 +106,7 @@ from utils.config_manager import (
 from utils.api_config_loader import (  # noqa: F401 - re-exported by the characters_router facade
     DEFAULT_NEW_CHARACTER_FREE_VOICE_ID as DEFAULT_NEW_CATGIRL_FREE_VOICE_ID,
 )
-from utils.asyncio_retirement import await_retirement
+from utils.asyncio_retirement import await_completion_with_cancel, await_retirement
 from utils.chat_avatar_store import ChatAvatarError, remove_record as remove_chat_avatar_record
 from utils.config_manager.storage_roots import chat_avatar_directory
 from utils.voice_config import read_legacy_voice_id
@@ -429,24 +445,51 @@ def _flatten_catgirl_for_response(catgirl_data: dict) -> dict:
     return flatten_reserved(data)
 
 
+def _snapshot_target_key(path: Path) -> str:
+    """Return a normalized key for matching snapshot record targets."""
+    return os.path.normcase(os.path.abspath(os.fspath(path)))
+
+
+def _remove_snapshot_record(snapshot_records: list[dict] | None, target_path: Path) -> None:
+    """Remove any snapshot record matching ``target_path`` in place."""
+    if snapshot_records is None:
+        return
+    target_key = _snapshot_target_key(target_path)
+    snapshot_records[:] = [
+        record
+        for record in snapshot_records
+        if _snapshot_target_key(record["target"]) != target_key
+    ]
+
+
+def _copy_path_to_backup_sync(source_path: Path, backup_path: Path) -> None:
+    """Copy a file, symlink, or directory tree into ``backup_path`` without dereferencing symlinks."""
+    if os.path.lexists(backup_path):
+        if backup_path.is_dir() and not backup_path.is_symlink():
+            shutil.rmtree(backup_path)
+        else:
+            backup_path.unlink()
+    backup_path.parent.mkdir(parents=True, exist_ok=True)
+    if source_path.is_dir() and not source_path.is_symlink():
+        shutil.copytree(source_path, backup_path, symlinks=True, dirs_exist_ok=True)
+    else:
+        shutil.copy2(source_path, backup_path, follow_symlinks=False)
+
+
 def _snapshot_existing_paths(targets: list[Path], backup_root: Path):
     records = []
     seen: set[str] = set()
 
     for index, target_path in enumerate(sorted(targets, key=lambda item: (len(item.parts), str(item)))):
-        normalized_path = str(target_path)
+        normalized_path = _snapshot_target_key(target_path)
         if normalized_path in seen:
             continue
         seen.add(normalized_path)
 
         backup_path = None
-        if target_path.exists():
+        if os.path.lexists(target_path):
             backup_path = backup_root / f"{index:02d}" / target_path.name
-            backup_path.parent.mkdir(parents=True, exist_ok=True)
-            if target_path.is_dir():
-                shutil.copytree(target_path, backup_path, dirs_exist_ok=True)
-            else:
-                shutil.copy2(target_path, backup_path)
+            _copy_path_to_backup_sync(target_path, backup_path)
 
         records.append({
             "target": target_path,
@@ -841,20 +884,20 @@ def _restore_snapshot_paths(records) -> None:
         target_path = record["target"]
         backup_path = record.get("backup")
 
-        if target_path.exists():
-            if target_path.is_dir():
+        if os.path.lexists(target_path):
+            if target_path.is_dir() and not target_path.is_symlink():
                 shutil.rmtree(target_path)
             else:
                 target_path.unlink()
 
-        if backup_path is None or not backup_path.exists():
+        if backup_path is None or not os.path.lexists(backup_path):
             continue
 
-        if backup_path.is_dir():
-            shutil.copytree(backup_path, target_path, dirs_exist_ok=True)
+        if backup_path.is_dir() and not backup_path.is_symlink():
+            shutil.copytree(backup_path, target_path, symlinks=True, dirs_exist_ok=True)
         else:
             target_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(backup_path, target_path)
+            shutil.copy2(backup_path, target_path, follow_symlinks=False)
 
 
 def _build_character_tombstones_state(config_manager, character_name: str) -> dict:
@@ -906,7 +949,7 @@ def _build_character_tombstones_state(config_manager, character_name: str) -> di
 async def _rollback_character_operation(
     config_manager,
     *,
-    characters_snapshot: dict,
+    characters_snapshot: dict | None = None,
     memory_snapshot_records,
     tombstone_snapshot: dict | None = None,
     recent_delete_result: dict | None = None,
@@ -960,15 +1003,18 @@ async def _rollback_character_operation(
         except Exception as exc:
             rollback_errors.append(f"memory restore failed: {exc}")
 
-        try:
-            await asyncio.to_thread(
-                config_manager.save_characters,
-                characters_snapshot,
-                bypass_write_fence=True,
-            )
-        except Exception as exc:
-            rollback_errors.append(f"characters restore failed: {exc}")
-        else:
+        config_restored = True
+        if characters_snapshot is not None:
+            try:
+                await asyncio.to_thread(
+                    config_manager.save_characters,
+                    characters_snapshot,
+                    bypass_write_fence=True,
+                )
+            except Exception as exc:
+                config_restored = False
+                rollback_errors.append(f"characters restore failed: {exc}")
+        if config_restored:
             # The name is back in characters.json, so it is a LIVE identity again.
             # The delete path retired it in every sidecar store before removing
             # anything, and this restore goes through save_characters rather than
@@ -1070,7 +1116,7 @@ async def get_characters(request: Request):
             characters_data['主人'] = await translation_service.translate_dict(
                 characters_data['主人'],
                 user_language,
-                fields_to_translate=['昵称']
+                fields_to_translate=list(CHARACTER_NICKNAME_FIELD_KEYS)
             )
 
         # Translate neko data concurrently for performance.
@@ -1079,7 +1125,7 @@ async def get_characters(request: Request):
                 if isinstance(data, dict):
                     return name, await translation_service.translate_dict(
                         data, user_language,
-                        fields_to_translate=['昵称', '性别']  # Do not translate profile names or system_prompt.
+                        fields_to_translate=list(CHARACTER_NICKNAME_FIELD_KEYS + CHARACTER_GENDER_FIELD_KEYS)  # Do not translate profile names or system_prompt.
                     )
                 return name, data
 
@@ -1118,14 +1164,297 @@ async def rename_catgirl(old_name: str, request: Request):
             end_character_mutation(old_name, new_name)
 
 
+async def _aload_authoritative_characters(config_manager) -> dict:
+    """Load authoritative persisted character config, pinned to runtime characters.json when available."""
+    aload_characters = getattr(config_manager, "aload_characters", None)
+    if not callable(aload_characters):
+        raise ValueError("character_config_not_authoritative: missing aload_characters")
+    accepts_authoritative = False
+    accepts_path = False
+    accepts_allow_missing_default = False
+    try:
+        params = inspect.signature(aload_characters).parameters.values()
+        accepts_authoritative = any(
+            param.name == "require_authoritative"
+            or param.kind is inspect.Parameter.VAR_KEYWORD
+            for param in params
+        )
+        accepts_path = any(
+            param.name == "character_json_path"
+            or param.kind is inspect.Parameter.VAR_KEYWORD
+            for param in params
+        )
+        accepts_allow_missing_default = any(
+            param.name == "allow_missing_default"
+            or param.kind is inspect.Parameter.VAR_KEYWORD
+            for param in params
+        )
+    except (TypeError, ValueError):
+        accepts_authoritative = False
+        accepts_path = False
+        accepts_allow_missing_default = False
+
+    runtime_path: str | None = None
+    get_runtime_path = getattr(config_manager, "get_runtime_config_path", None)
+    if callable(get_runtime_path):
+        candidate = get_runtime_path("characters.json")
+        if isinstance(candidate, (str, os.PathLike)):
+            runtime_path = os.fspath(candidate)
+
+    kwargs: dict[str, object] = {}
+    if accepts_authoritative:
+        kwargs["require_authoritative"] = True
+    else:
+        logger.warning(
+            "[CharacterCRUD] %s.aload_characters does not accept require_authoritative; "
+            "falling back to plain aload_characters()",
+            type(config_manager).__name__,
+        )
+    if accepts_allow_missing_default:
+        kwargs["allow_missing_default"] = False
+    if runtime_path is not None and accepts_path:
+        kwargs["character_json_path"] = runtime_path
+
+    characters = await aload_characters(**kwargs)
+    if not isinstance(characters, dict) or not isinstance(characters.get("猫娘"), dict):
+        raise ValueError("character_config_not_authoritative: invalid catgirl registry")
+    return characters
+
+
+def _find_self_referential_card_symlink(
+    config_manager,
+    old_name: str,
+    new_name: str,
+) -> Path | None:
+    """Return source cover/meta path if it is a symlink resolving to its own rename target."""
+    card_faces_dir = getattr(config_manager, "card_faces_dir", None)
+    if isinstance(card_faces_dir, (str, os.PathLike)):
+        faces_root = Path(card_faces_dir)
+        old_face = faces_root / f"{old_name}.png"
+        new_face = faces_root / f"{new_name}.png"
+        if symlink_chain_reaches_path(old_face, new_face):
+            return old_face
+    card_face_meta_path = getattr(config_manager, "card_face_meta_path", None)
+    if callable(card_face_meta_path):
+        old_meta = card_face_meta_path(old_name)
+        new_meta = card_face_meta_path(new_name)
+        if isinstance(old_meta, (str, os.PathLike)) and isinstance(
+            new_meta, (str, os.PathLike)
+        ):
+            old_meta_path = Path(old_meta)
+            if symlink_chain_reaches_path(old_meta_path, Path(new_meta)):
+                return old_meta_path
+    return None
+
+
+def _is_symlink_or_junction(path: Path) -> bool:
+    """Return True when ``path`` is a symbolic link or a Windows directory junction."""
+    try:
+        if path.is_symlink():
+            return True
+        isjunction = getattr(os.path, "isjunction", None)
+        if callable(isjunction) and isjunction(path):
+            return True
+        if os.name == "nt":
+            lstat_result = os.lstat(path)
+            file_attrs = getattr(lstat_result, "st_file_attributes", 0)
+            reparse_attr = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            reparse_tag = getattr(lstat_result, "st_reparse_tag", 0)
+            mount_tag = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
+            if (file_attrs & reparse_attr) and reparse_tag == mount_tag:
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def _find_symlinked_memory_path(
+    config_manager,
+    old_name: str,
+    new_name: str | None = None,
+) -> Path | None:
+    """Return any symlinked memory root or child entry for the rename endpoints."""
+    names = (old_name, new_name) if new_name and new_name != old_name else (old_name,)
+    for char_name in names:
+        legacy_patterns = (
+            *LEGACY_CHARACTER_MEMORY_FILE_MAP,
+            *LEGACY_CHARACTER_MEMORY_EXTRA_ENTRIES,
+        )
+        for base_dir in iter_character_memory_roots(config_manager):
+            direct_root = base_dir / char_name
+            if _is_symlink_or_junction(direct_root):
+                return direct_root
+            for pattern in legacy_patterns:
+                legacy_entry = base_dir / pattern.format(name=char_name)
+                if _is_symlink_or_junction(legacy_entry):
+                    return legacy_entry
+        for entry_path in list_character_memory_paths(config_manager, char_name):
+            if _is_symlink_or_junction(entry_path):
+                return entry_path
+            if entry_path.is_dir():
+                for root, dirnames, filenames in os.walk(entry_path, followlinks=False):
+                    root_path = Path(root)
+                    for child_name in (*dirnames, *filenames):
+                        child_path = root_path / child_name
+                        if _is_symlink_or_junction(child_path):
+                            return child_path
+    return None
+
+
+def _find_card_asset_co_owner_sync(
+    config_manager,
+    character_name: str,
+    asset_path: Path,
+    *,
+    is_meta: bool,
+    existing_names=None,
+) -> str | None:
+    """Return another registered character name whose card asset refers to ``asset_path``."""
+    if not (asset_path.exists() or asset_path.is_symlink()):
+        return None
+    names = (
+        [str(name) for name in existing_names if isinstance(name, str) and name]
+        if existing_names is not None
+        else iter_authoritative_catgirl_names(config_manager)
+    )
+    faces_dir = getattr(config_manager, "card_faces_dir", None)
+    meta_fn = getattr(config_manager, "card_face_meta_path", None)
+    for other_name in names:
+        if other_name == character_name:
+            continue
+        other_path: Path | None = None
+        if is_meta:
+            if callable(meta_fn):
+                candidate = meta_fn(other_name)
+                if isinstance(candidate, (str, os.PathLike)):
+                    other_path = Path(candidate)
+        elif isinstance(faces_dir, (str, os.PathLike)):
+            other_path = Path(faces_dir) / f"{other_name}.png"
+        if other_path is not None and paths_refer_to_same_entry(other_path, asset_path):
+            return other_name
+    return None
+
+
+def _unlink_unshared_card_asset_sync(
+    config_manager,
+    character_name: str,
+    asset_path: Path,
+    *,
+    is_meta: bool,
+    backup_root: Path | None = None,
+    snapshot_records: list[dict] | None = None,
+) -> str | None:
+    """Remove ``asset_path`` unless shared with another registered character.
+
+    When ``backup_root`` and ``snapshot_records`` are provided, atomically moves
+    the removed entry into ``backup_root`` (falling back to copy + unlink across
+    filesystems) so rollback always restores the exact removed file or symlink.
+    """
+    if not os.path.lexists(asset_path):
+        return None
+    co_owner = _find_card_asset_co_owner_sync(
+        config_manager,
+        character_name,
+        asset_path,
+        is_meta=is_meta,
+    )
+    if co_owner is not None:
+        _remove_snapshot_record(snapshot_records, asset_path)
+        return co_owner
+    if asset_path.is_dir() and not asset_path.is_symlink():
+        raise IsADirectoryError(
+            errno.EISDIR,
+            f"Refusing to remove directory at card asset path: {asset_path}",
+            os.fspath(asset_path),
+        )
+    if backup_root is not None and snapshot_records is not None:
+        label = "late_meta" if is_meta else "late_face"
+        backup_path = backup_root / label / asset_path.name
+        if os.path.lexists(backup_path):
+            if backup_path.is_dir() and not backup_path.is_symlink():
+                shutil.rmtree(backup_path)
+            else:
+                backup_path.unlink()
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.replace(asset_path, backup_path)
+        except OSError as exc:
+            if exc.errno != errno.EXDEV:
+                raise
+            _copy_path_to_backup_sync(asset_path, backup_path)
+            asset_path.unlink()
+        target_key = _snapshot_target_key(asset_path)
+        existing_record = next(
+            (
+                record
+                for record in snapshot_records
+                if _snapshot_target_key(record["target"]) == target_key
+            ),
+            None,
+        )
+        if existing_record is None:
+            snapshot_records.append({
+                "target": asset_path,
+                "backup": backup_path,
+            })
+        else:
+            existing_record["backup"] = backup_path
+        return None
+    asset_path.unlink()
+    return None
+
+
 async def _rename_catgirl_serialized(old_name: str, new_name: str, *, sync_commit=None):
     _config_manager = get_config_manager()
     session_manager = get_session_manager()
-    characters = await _config_manager.aload_characters()
+    try:
+        characters = await _aload_authoritative_characters(_config_manager)
+    except MaintenanceModeError:
+        raise
+    except Exception as exc:
+        logger.warning("角色重命名前权威读取 characters.json 失败: %r", exc)
+        return JSONResponse(
+            {'success': False, 'error': f'无法读取角色配置，已阻止重命名: {exc}'},
+            status_code=500,
+        )
     if old_name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '原猫娘不存在'}, status_code=404)
-    if new_name in characters['猫娘']:
+    if old_name == new_name or await asyncio.to_thread(
+        find_character_name_collision, _config_manager, new_name,
+        exclude_names=(old_name,), existing_names=characters['猫娘'],
+    ):
         return JSONResponse({'success': False, 'error': '新档案名已存在'}, status_code=400)
+    shared_owner = await asyncio.to_thread(
+        find_character_shared_memory_owner, _config_manager, old_name,
+        existing_names=characters['猫娘'],
+    )
+    if shared_owner is not None:
+        return JSONResponse(
+            {'success': False, 'error': f'原档案的记忆存储与现有角色「{shared_owner}」共享，无法直接重命名'},
+            status_code=400,
+        )
+    symlinked_memory_path = await asyncio.to_thread(
+        _find_symlinked_memory_path, _config_manager, old_name, new_name,
+    )
+    if symlinked_memory_path is not None:
+        return JSONResponse(
+            {
+                'success': False,
+                'error': f'角色记忆路径「{symlinked_memory_path.name}」包含符号链接，无法安全重命名',
+            },
+            status_code=400,
+        )
+    unsafe_card_asset = await asyncio.to_thread(
+        _find_self_referential_card_symlink, _config_manager, old_name, new_name,
+    )
+    if unsafe_card_asset is not None:
+        return JSONResponse(
+            {
+                'success': False,
+                'error': f'角色卡面资源「{unsafe_card_asset.name}」是指向目标路径的符号链接，无法安全重命名',
+            },
+            status_code=400,
+        )
 
     # If renaming the active neko, cache its WebSocket first;
     # notify only after all persistence and reload succeeds, preventing frontend switches to uncommitted state.
@@ -1207,6 +1536,31 @@ async def _visit_name_refusal(config_manager, name: str, label: str):
                          'error': f'这个名字的串门数据还在整理（同名角色刚被删除或改名），请稍后再使用这个{label}'}, status_code=409)
 
 
+def _migrate_renamed_card_file_sync(
+    old_path: Path,
+    new_path: Path,
+    backup_path: Path,
+) -> str:
+    """Migrate a character cover or metadata file without self-backing-up same-entry case renames."""
+    if symlink_chain_reaches_path(old_path, new_path):
+        raise ValueError(
+            f"Refusing to rename symlink {old_path} onto its own target {new_path}"
+        )
+    if not old_path.exists():
+        return "none"
+    if paths_refer_to_same_directory_entry(old_path, new_path):
+        if old_path.name != new_path.name:
+            two_step_samefile_rename(old_path, new_path)
+            return "samefile"
+        return "none"
+    if new_path.exists() or new_path.is_symlink():
+        new_path.rename(backup_path)
+        old_path.rename(new_path)
+        return "backup_and_rename"
+    old_path.rename(new_path)
+    return "rename"
+
+
 async def _rename_catgirl_transaction(
     _config_manager, session_manager, characters, old_name: str, new_name: str, is_current_catgirl: bool,
     *, sync_commit=None,
@@ -1286,6 +1640,7 @@ async def _rename_catgirl_transaction(
     # delaying it.
     retired_names: tuple[str, ...] = ()
     reretire_names: tuple[str, ...] = ()
+    characters_save_attempted = False
     rename_committed = False
     released_memory_handle = False
     release_claim_token = create_derived_task_claim_token()
@@ -1385,6 +1740,7 @@ async def _rename_catgirl_transaction(
             # Update the current neko too if it is the renamed character.
             if is_current_catgirl:
                 characters['当前猫娘'] = new_name
+            characters_save_attempted = True
             if sync_commit is None:
                 await _await_thread_mutation(_config_manager.save_characters, characters)
             else:
@@ -1422,19 +1778,22 @@ async def _rename_catgirl_transaction(
             # Migrate cover PNG and sidecar JSON within the same transaction.
             from datetime import datetime as _dt
             _ts = _dt.now().strftime('%Y%m%d%H%M%S')
-            if old_face.exists():
-                if new_face.exists():
-                    backup_face = _config_manager.card_faces_dir / f"{new_name}.png.conflict-{_ts}.bak"
-                    await _await_thread_mutation(new_face.rename, backup_face)
-                    logger.info(f"[重命名卡面] 冲突备份: {new_face} -> {backup_face}")
-                await _await_thread_mutation(old_face.rename, new_face)
+            backup_face = _config_manager.card_faces_dir / f"{new_name}.png.conflict-{_ts}.bak"
+            face_outcome = await _await_thread_mutation(
+                _migrate_renamed_card_file_sync, old_face, new_face, backup_face,
+            )
+            if face_outcome == "backup_and_rename":
+                logger.info(f"[重命名卡面] 冲突备份: {new_face} -> {backup_face}")
+            if face_outcome != "none":
                 logger.info(f"[重命名卡面] 已迁移: {old_face} -> {new_face}")
-            if old_meta.exists():
-                if new_meta.exists():
-                    backup_meta = _config_manager.card_face_meta_path(f"{new_name}.conflict-{_ts}.bak")
-                    await _await_thread_mutation(new_meta.rename, backup_meta)
-                    logger.info(f"[重命名卡面元数据] 冲突备份: {new_meta} -> {backup_meta}")
-                await _await_thread_mutation(old_meta.rename, new_meta)
+
+            backup_meta = _config_manager.card_face_meta_path(f"{new_name}.conflict-{_ts}.bak")
+            meta_outcome = await _await_thread_mutation(
+                _migrate_renamed_card_file_sync, old_meta, new_meta, backup_meta,
+            )
+            if meta_outcome == "backup_and_rename":
+                logger.info(f"[重命名卡面元数据] 冲突备份: {new_meta} -> {backup_meta}")
+            if meta_outcome != "none":
                 logger.info(f"[重命名卡面元数据] 已迁移: {old_meta} -> {new_meta}")
 
             memory_server_reloaded = await notify_memory_server_reload(
@@ -1444,7 +1803,7 @@ async def _rename_catgirl_transaction(
             if not memory_server_reloaded:
                 rollback_error = await _rollback_character_operation(
                     _config_manager,
-                    characters_snapshot=characters_snapshot,
+                    characters_snapshot=characters_snapshot if characters_save_attempted else None,
                     memory_snapshot_records=memory_snapshot_records,
                     recent_rename_result=memory_rename_result,
                     recent_transaction=recent_transaction,
@@ -1495,7 +1854,7 @@ async def _rename_catgirl_transaction(
                 await _await_cleanup_to_completion(
                     _rollback_character_operation(
                         _config_manager,
-                        characters_snapshot=characters_snapshot,
+                        characters_snapshot=characters_snapshot if characters_save_attempted else None,
                         memory_snapshot_records=memory_snapshot_records,
                         recent_rename_result=memory_rename_result,
                         recent_transaction=recent_transaction,
@@ -1514,7 +1873,7 @@ async def _rename_catgirl_transaction(
                 await _await_coroutine_to_completion(
                     _rollback_character_operation(
                         _config_manager,
-                        characters_snapshot=characters_snapshot,
+                        characters_snapshot=characters_snapshot if characters_save_attempted else None,
                         memory_snapshot_records=memory_snapshot_records,
                         recent_rename_result=memory_rename_result,
                         recent_transaction=recent_transaction,
@@ -1538,7 +1897,7 @@ async def _rename_catgirl_transaction(
                 await _await_coroutine_to_completion(
                     _rollback_character_operation(
                         _config_manager,
-                        characters_snapshot=characters_snapshot,
+                        characters_snapshot=characters_snapshot if characters_save_attempted else None,
                         memory_snapshot_records=memory_snapshot_records,
                         recent_rename_result=memory_rename_result,
                         recent_transaction=recent_transaction,
@@ -1746,39 +2105,51 @@ async def update_master(request: Request):
         return JSONResponse({'success': False, 'error': '请求体必须是JSON对象'}, status_code=400)
     _config_manager = get_config_manager()
     initialize_character_data = get_initialize_character_data()
-    characters = await _config_manager.aload_characters()
-    previous_master = characters.get('主人') if isinstance(characters.get('主人'), dict) else {}
-    previous_profile_name = ""
-    if isinstance(previous_master, dict):
-        previous_profile_name = str(previous_master.get('档案名') or '').strip()
-    requested_profile_name = str(data.get('档案名') or '').strip()
-    profile_name = previous_profile_name or requested_profile_name
-    renamed_via_body_fallback = False
-    if (
-        previous_profile_name
-        and requested_profile_name
-        and requested_profile_name != previous_profile_name
-        and _profile_name_contains_path_separator(previous_profile_name)
-    ):
-        profile_name = requested_profile_name
-        renamed_via_body_fallback = True
-    err = _validate_profile_name(profile_name)
-    if err:
-        return JSONResponse({'success': False, 'error': err}, status_code=400)
-    next_master = {
-        k: v
-        for k, v in data.items()
-        if v and k not in CHARACTER_RESERVED_FIELD_SET and k != '档案名'
-    }
-    next_master['档案名'] = profile_name
-    if isinstance(previous_master, dict) and isinstance(previous_master.get('_reserved'), dict):
-        next_master['_reserved'] = copy.deepcopy(previous_master['_reserved'])
-    if renamed_via_body_fallback:
-        _append_profile_rename_event(next_master, previous_profile_name, profile_name)
-    characters['主人'] = next_master
-    await _config_manager.asave_characters(characters)
+    async with character_config_mutation_lock:
+        characters = await _config_manager.aload_characters()
+        previous_master = characters.get('主人') if isinstance(characters.get('主人'), dict) else {}
+        previous_profile_name = ""
+        if isinstance(previous_master, dict):
+            previous_profile_name = str(previous_master.get('档案名') or '').strip()
+        requested_profile_name = str(data.get('档案名') or '').strip()
+        profile_name = previous_profile_name or requested_profile_name
+        renamed_via_body_fallback = False
+        if (
+            previous_profile_name
+            and requested_profile_name
+            and requested_profile_name != previous_profile_name
+            and _profile_name_contains_path_separator(previous_profile_name)
+        ):
+            profile_name = requested_profile_name
+            renamed_via_body_fallback = True
+        err = _validate_profile_name(
+            profile_name,
+            allow_reserved_route=bool(previous_profile_name and not renamed_via_body_fallback),
+        )
+        if err:
+            return JSONResponse({'success': False, 'error': err}, status_code=400)
+        next_master = {
+            k: v
+            for k, v in data.items()
+            if v and k not in CHARACTER_RESERVED_FIELD_SET and k != '档案名'
+        }
+        next_master['档案名'] = profile_name
+        if isinstance(previous_master, dict) and isinstance(previous_master.get('_reserved'), dict):
+            next_master['_reserved'] = copy.deepcopy(previous_master['_reserved'])
+        if renamed_via_body_fallback:
+            _append_profile_rename_event(next_master, previous_profile_name, profile_name)
+        characters['主人'] = next_master
+        _, cancelled = await await_completion_with_cancel(_config_manager.asave_characters(characters))
     # Automatically reload configuration.
-    await initialize_character_data()
+    try:
+        await await_retirement(initialize_character_data())
+    except Exception as exc:
+        if cancelled:
+            logger.warning("取消后重载主人配置失败: %s", exc, exc_info=exc)
+            raise asyncio.CancelledError from exc
+        raise
+    if cancelled:
+        raise asyncio.CancelledError
     return {"success": True}
 
 
@@ -1850,7 +2221,13 @@ async def add_catgirl(request: Request):
     _config_manager = get_config_manager()
     async with character_config_mutation_lock:
         characters = await _config_manager.aload_characters()
-        key = _available_character_name(characters, requested_name)
+        key = await asyncio.to_thread(
+            _available_character_name, _config_manager, characters, requested_name,
+        )
+        if key != requested_name:
+            err = _validate_profile_name(key)
+            if err:
+                return JSONResponse({'success': False, 'error': err}, status_code=400)
         refusal = await _visit_name_refusal(_config_manager, key, "档案名")
         if refusal is not None:
             return refusal
@@ -1906,16 +2283,18 @@ async def add_catgirl(request: Request):
         return response
 
 
-def _available_character_name(characters: dict, requested_name: str) -> str:
+def _available_character_name(config_manager, characters: dict, requested_name: str) -> str:
     """Select the existing Windows-style collision suffix for a new profile."""
     catgirls = characters.get('猫娘', {}) if isinstance(characters, dict) else {}
     catgirls = catgirls if isinstance(catgirls, dict) else {}
-    if requested_name not in catgirls:
-        return requested_name
-    counter = 1
-    while f"{requested_name}({counter})" in catgirls:
+    candidate = requested_name
+    counter = 0
+    while candidate in catgirls or find_character_name_collision(
+        config_manager, candidate, existing_names=catgirls,
+    ):
         counter += 1
-    return f"{requested_name}({counter})"
+        candidate = f"{requested_name}({counter})"
+    return candidate
 
 
 @router.put('/catgirl/{name}')
@@ -2209,7 +2588,16 @@ async def _cleanup_deleted_chat_resources(avatar_directory, uid):
 
 async def _delete_catgirl_by_name_serialized(name: str):
     _config_manager = get_config_manager()
-    characters = await _config_manager.aload_characters()
+    try:
+        characters = await _aload_authoritative_characters(_config_manager)
+    except MaintenanceModeError:
+        raise
+    except Exception as exc:
+        logger.warning("角色删除前权威读取 characters.json 失败: %r", exc)
+        return JSONResponse(
+            {'success': False, 'error': f'无法读取角色配置，已阻止删除: {exc}'},
+            status_code=500,
+        )
     if name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
 
@@ -2302,11 +2690,13 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
                 unsafe_targets,
                 Path(temp_dir),
             )
+            unsafe_config_save_attempted = False
             unsafe_config_deleted = False
             try:
                 # Invalid-name recovery must still delete character-owned theater data; those files already enter the transaction snapshot.
                 await purge_numeric_v2_character_data(numeric_purge)
                 del characters['猫娘'][name]
+                unsafe_config_save_attempted = True
                 _, save_cancelled = await _await_coroutine_to_completion(
                     _config_manager.asave_characters(characters)
                 )
@@ -2329,7 +2719,7 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
             except MaintenanceModeError as exc:
                 rollback_error = await _rollback_character_operation(
                     _config_manager,
-                    characters_snapshot=characters_snapshot,
+                    characters_snapshot=characters_snapshot if unsafe_config_save_attempted else None,
                     memory_snapshot_records=memory_snapshot_records,
                     reason=f"维护模式：救援删除非法角色名回滚 {name}",
                 )
@@ -2339,7 +2729,7 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
             except Exception as exc:
                 rollback_error = await _rollback_character_operation(
                     _config_manager,
-                    characters_snapshot=characters_snapshot,
+                    characters_snapshot=characters_snapshot if unsafe_config_save_attempted else None,
                     memory_snapshot_records=memory_snapshot_records,
                     reason=f"救援删除非法角色名回滚: {name}",
                 )
@@ -2375,12 +2765,25 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
         }
 
     characters_snapshot = copy.deepcopy(characters)
-    memory_targets = list_character_memory_paths(_config_manager, name)
-    memory_targets.extend(numeric_purge.snapshot_targets())
     face_path = _config_manager.card_faces_dir / f"{name}.png"
     meta_path = _config_manager.card_face_meta_path(name)
-    memory_targets.append(face_path)
-    memory_targets.append(meta_path)
+
+    def _collect_delete_snapshot_targets_sync() -> list[Path]:
+        existing_names = list((characters.get("猫娘") or {}).keys())
+        targets = [
+            entry_path
+            for entry_path in list_character_memory_paths(_config_manager, name)
+            if find_co_owner_for_memory_path(
+                _config_manager,
+                name,
+                entry_path,
+                existing_names=existing_names,
+            ) is None
+        ]
+        targets.extend(numeric_purge.snapshot_targets())
+        return targets
+
+    memory_targets = await asyncio.to_thread(_collect_delete_snapshot_targets_sync)
 
     with _create_character_operation_backup_dir(_config_manager, "neko-delete-character-") as temp_dir:
         memory_snapshot_records = []
@@ -2393,6 +2796,7 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
         # fence, destroying a concurrently recorded decision.
         retired_names: tuple[str, ...] = ()
         memory_server_reloaded = False
+        characters_save_attempted = False
         delete_committed = False
         released_memory_handle = False
         release_claim_token = create_derived_task_claim_token()
@@ -2465,6 +2869,39 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
             if not is_cloudsave_disabled_due_to_local_state_unavailable():
                 tombstone_snapshot = copy.deepcopy(_config_manager.load_character_tombstones_state())
 
+            late_memory_index = 0
+
+            def _backup_late_memory_entry_sync(entry_path: Path) -> None:
+                nonlocal late_memory_index
+                if not os.path.lexists(entry_path):
+                    return
+                target_key = _snapshot_target_key(entry_path)
+                existing_record = next(
+                    (
+                        record
+                        for record in memory_snapshot_records
+                        if _snapshot_target_key(record["target"]) == target_key
+                    ),
+                    None,
+                )
+                if existing_record is not None and existing_record.get("backup") is not None:
+                    return
+                backup_path = (
+                    Path(temp_dir) / "late_memory" / f"{late_memory_index:02d}" / entry_path.name
+                )
+                late_memory_index += 1
+                _copy_path_to_backup_sync(entry_path, backup_path)
+                if existing_record is None:
+                    memory_snapshot_records.append({
+                        "target": entry_path,
+                        "backup": backup_path,
+                    })
+                else:
+                    existing_record["backup"] = backup_path
+
+            def _drop_shared_memory_snapshot_sync(entry_path: Path, _co_owner: str) -> None:
+                _remove_snapshot_record(memory_snapshot_records, entry_path)
+
             try:
                 delete_result, delete_cancelled = await _await_thread_call_to_completion(
                     delete_character_memory_storage,
@@ -2473,6 +2910,8 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
                     capture_pending=True,
                     keep_recent_locks=True,
                     recent_transaction=recent_transaction,
+                    before_remove=_backup_late_memory_entry_sync,
+                    on_skip_shared=_drop_shared_memory_snapshot_sync,
                 )
             except BaseException:
                 # It retires the name as its first act, so a raise partway
@@ -2492,11 +2931,38 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
             for entry_path in removed_memory_paths:
                 logger.info(f"已删除: {entry_path}")
 
-            # Delete cover PNG and sidecar JSON in the same rollback-capable transaction.
-            if face_path.exists():
-                await _await_thread_mutation(face_path.unlink)
-            if meta_path.exists():
-                await _await_thread_mutation(meta_path.unlink)
+            # Delete cover PNG and sidecar JSON in the same rollback-capable transaction,
+            # skipping assets shared with another registered character.
+            face_co_owner = await _await_thread_mutation(
+                _unlink_unshared_card_asset_sync,
+                _config_manager,
+                name,
+                face_path,
+                is_meta=False,
+                backup_root=Path(temp_dir),
+                snapshot_records=memory_snapshot_records,
+            )
+            if face_co_owner is not None:
+                logger.warning(
+                    "[删除角色] 跳过删除卡面 %s，因与现有角色 %r 共享",
+                    face_path,
+                    face_co_owner,
+                )
+            meta_co_owner = await _await_thread_mutation(
+                _unlink_unshared_card_asset_sync,
+                _config_manager,
+                name,
+                meta_path,
+                is_meta=True,
+                backup_root=Path(temp_dir),
+                snapshot_records=memory_snapshot_records,
+            )
+            if meta_co_owner is not None:
+                logger.warning(
+                    "[删除角色] 跳过删除卡面元数据 %s，因与现有角色 %r 共享",
+                    meta_path,
+                    meta_co_owner,
+                )
 
             # Theater Sessions, receipts, public cold archives, forget intents, and quarantine are all snapshotted above.
             await purge_numeric_v2_character_data(numeric_purge)
@@ -2509,6 +2975,7 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
 
             # Delete character configuration.
             del characters['猫娘'][name]
+            characters_save_attempted = True
             await _await_thread_mutation(
                 _config_manager.save_characters, characters,
             )
@@ -2538,7 +3005,7 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
                 await _await_cleanup_to_completion(
                     _rollback_character_operation(
                         _config_manager,
-                        characters_snapshot=characters_snapshot,
+                        characters_snapshot=characters_snapshot if characters_save_attempted else None,
                         memory_snapshot_records=memory_snapshot_records,
                         tombstone_snapshot=tombstone_snapshot,
                         recent_delete_result=recent_delete_result,
@@ -2560,7 +3027,7 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
                 await _await_coroutine_to_completion(
                     _rollback_character_operation(
                         _config_manager,
-                        characters_snapshot=characters_snapshot,
+                        characters_snapshot=characters_snapshot if characters_save_attempted else None,
                         memory_snapshot_records=memory_snapshot_records,
                         tombstone_snapshot=tombstone_snapshot,
                         recent_delete_result=recent_delete_result,
@@ -2585,7 +3052,7 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
                 await _await_coroutine_to_completion(
                     _rollback_character_operation(
                         _config_manager,
-                        characters_snapshot=characters_snapshot,
+                        characters_snapshot=characters_snapshot if characters_save_attempted else None,
                         memory_snapshot_records=memory_snapshot_records,
                         tombstone_snapshot=tombstone_snapshot,
                         recent_delete_result=recent_delete_result,
@@ -2644,17 +3111,20 @@ async def set_microphone(request: Request):
 
         # Use standard load/save helpers.
         _config_manager = get_config_manager()
-        characters_data = await _config_manager.aload_characters()
+        async with character_config_mutation_lock:
+            characters_data = await _config_manager.aload_characters()
 
-        # Add or update microphone selection.
-        characters_data['当前麦克风'] = microphone_id
+            # Add or update microphone selection.
+            characters_data['当前麦克风'] = microphone_id
 
-        # Save configuration
-        await _config_manager.asave_characters(characters_data)
+            # Save configuration
+            await await_retirement(_config_manager.asave_characters(characters_data))
         # Microphone ID is frontend-only (read solely by get_microphone), affecting no neko prompt /
         # voice_id / session_manager, so no initialization is needed.
 
         return {"success": True}
+    except MaintenanceModeError:
+        raise
     except Exception as e:
         logger.error(f"保存麦克风选择失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})

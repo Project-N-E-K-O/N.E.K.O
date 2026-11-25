@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 import anyio
@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     import httpx
 
 from plugin.server.domain.model_config import ModelSlot
+from plugin.server.infrastructure.host_model_slots import adapt_host_follow_request, client_headers
 from plugin.server.model_gateway import anthropic, openai
 from plugin.server.model_gateway.errors import ModelGatewayError, upstream_error
 from plugin.server.model_gateway.observation import AttemptObservation
@@ -47,6 +48,7 @@ def _headers(slot: ModelSlot) -> dict[str, str]:
     headers = ensure_user_agent({"Accept": "application/json, text/event-stream", "Content-Type": "application/json"})
     if slot.protocol == "anthropic_messages":
         headers["anthropic-version"] = "2023-06-01"
+        headers.update(client_headers(slot.protocol, slot.base_url))
         if slot.api_key:
             headers["x-api-key"] = slot.api_key
     elif slot.api_key:
@@ -96,6 +98,8 @@ def _prepare(
     """Validate, convert and encode once, off the HTTP event loop."""
     httpx = load_httpx()
     request = prepare_chat_request(slot, body)
+    # Host-follow slots send what the main app sends for the same model.
+    request, provider_headers = adapt_host_follow_request(slot, request)
     try:
         httpx.URL(_endpoint(slot))
     except (httpx.InvalidURL, ValueError, UnicodeError) as exc:
@@ -117,7 +121,12 @@ def _prepare(
         raise ModelGatewayError("invalid_request", "Request is not valid UTF-8 JSON") from exc
     if len(encoded) > MAX_REQUEST_BYTES:
         raise ModelGatewayError("request_too_large", "Model request exceeded the size limit", 413)
-    return body["model"], encoded, _headers(slot), include_usage
+    headers = _headers(slot)
+    for name, value in provider_headers.items():
+        # Provider headers never replace credentials or the content headers.
+        if name.lower() not in {key.lower() for key in headers}:
+            headers[name] = value
+    return body["model"], encoded, headers, include_usage
 
 
 class ModelGatewayService:
@@ -156,10 +165,17 @@ class ModelGatewayService:
                 finally:
                     await client.aclose()
 
-    async def complete(self, slot: ModelSlot, body: object, *, observation: AttemptObservation | None = None) -> dict:
+    async def complete(
+        self, slot: ModelSlot, body: object, *, observation: AttemptObservation | None = None,
+        before_send: Callable[[], Awaitable[None]] | None = None,
+    ) -> dict:
         httpx = await ensure_httpx()
         slot = slot.model_copy(deep=True)
         model_alias, payload, headers, _ = await asyncio.to_thread(_prepare, slot, body, streaming=False)
+        if before_send is not None:
+            # Only a validated request that is about to be sent reserves quota;
+            # locally rejected requests must not consume the shared allowance.
+            await before_send()
         try:
             async with self._request(slot, payload, headers, observation) as response:
                 result = await read_json_response(response)
@@ -172,7 +188,10 @@ class ModelGatewayService:
         except httpx.HTTPError as exc:
             raise ModelGatewayError("upstream_connection_error", "Could not complete the model provider request", 502) from exc
 
-    async def stream(self, slot: ModelSlot, body: object, *, observation: AttemptObservation | None = None) -> AsyncIterator[bytes]:
+    async def stream(
+        self, slot: ModelSlot, body: object, *, observation: AttemptObservation | None = None,
+        before_send: Callable[[], Awaitable[None]] | None = None,
+    ) -> AsyncIterator[bytes]:
         httpx = await ensure_httpx()
         slot = slot.model_copy(deep=True)
         endpoint = _endpoint(slot)
@@ -190,6 +209,9 @@ class ModelGatewayService:
         can_retry_without_options = not is_anthropic and not include_usage and not options_unsupported
         saw_done = False
         completed = False
+        if before_send is not None:
+            # Reserve only after validation succeeded, right before the send.
+            await before_send()
         try:
             for retrying in (False, True):
                 connected = False
@@ -232,6 +254,10 @@ class ModelGatewayService:
                 _, payload, headers, _ = await asyncio.to_thread(
                     _prepare, slot, body, streaming=True, inject_stream_usage=False,
                 )
+                if before_send is not None:
+                    # The retry is a second real upstream send with the same
+                    # free credentials; it must reserve quota again or fail.
+                    await before_send()
             yield b"data: [DONE]\n\n"
         except httpx.TimeoutException as exc:
             raise ModelGatewayError("upstream_timeout", "Model provider stream timed out", 504) from exc

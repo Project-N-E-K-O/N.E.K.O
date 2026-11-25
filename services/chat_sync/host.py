@@ -42,6 +42,7 @@ class CapabilityNotInstalled(RuntimeError):
 
 _saved_session_snapshot: Callable[[], dict | None] | None = None
 _saved_session_writer_fence: Callable[[], AbstractContextManager] | None = None
+_signed_in_account_state: Callable[[], tuple[str, str | None]] | None = None
 _resolve_saved_oauth_status: Callable[[], Awaitable[dict]] | None = None
 _get_session_manager: Callable[[], Any] | None = None
 _get_init_one_catgirl: Callable[[], Callable[..., Awaitable[Any]]] | None = None
@@ -78,12 +79,20 @@ def _installed(value, name: str):
     return value
 
 
-def install_saved_session_store(*, saved_session_snapshot, saved_session_writer_fence) -> None:
+def install_saved_session_store(
+    *, saved_session_snapshot, saved_session_writer_fence, signed_in_account_state=None,
+) -> None:
     """Installed by the credential store owner (card_drop_router)."""
-    global _saved_session_snapshot, _saved_session_writer_fence
+    global _saved_session_snapshot, _saved_session_writer_fence, _signed_in_account_state
     snapshot = _callable(saved_session_snapshot, "saved_session_snapshot")
     fence = _callable(saved_session_writer_fence, "saved_session_writer_fence")
+    state = (
+        _callable(signed_in_account_state, "signed_in_account_state")
+        if signed_in_account_state is not None
+        else None
+    )
     _saved_session_snapshot, _saved_session_writer_fence = snapshot, fence
+    _signed_in_account_state = state
 
 
 def install_oauth_status_resolver(*, resolve_saved_oauth_status) -> None:
@@ -116,6 +125,11 @@ def install_delete_transaction(*, delete_character) -> None:
 def saved_session_snapshot() -> dict | None:
     """Read the normalized saved desktop session; None when nobody is logged in."""
     return _installed(_saved_session_snapshot, "saved_session_snapshot")()
+
+
+def signed_in_account_state() -> tuple[str, str | None]:
+    """``("signed_in", id)``, ``("signed_out", None)`` or ``("unknown", None)``."""
+    return _installed(_signed_in_account_state, "signed_in_account_state")()
 
 
 def saved_session_writer_fence() -> AbstractContextManager:

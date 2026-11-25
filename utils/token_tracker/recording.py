@@ -15,13 +15,214 @@
 """In-memory usage and application-lifecycle recording methods."""
 
 import time
+from collections import deque
 from datetime import date, timedelta
 
-from ._shared import _deep_copy_day, _merge_day_stats
+from ._shared import _deep_copy_day, _merge_day_stats, logger
 from .reporting import record_avatar_state, record_settings_state
 
 class RecordingMixin:
     """In-memory usage and application-lifecycle recording methods."""
+
+    @staticmethod
+    def _compute_bucket_update(
+        bucket: dict,
+        prompt_tokens: int,
+        completion_tokens: int,
+        total_tokens: int,
+        cached_tokens: int,
+        prompt_chars: int,
+    ) -> tuple[int, int, int, int, int, int]:
+        return (
+            bucket["prompt_tokens"] + prompt_tokens,
+            bucket["completion_tokens"] + completion_tokens,
+            bucket["total_tokens"] + total_tokens,
+            bucket["cached_tokens"] + cached_tokens,
+            bucket["prompt_chars"] + prompt_chars,
+            bucket["call_count"] + 1,
+        )
+
+    @staticmethod
+    def _write_bucket(bucket: dict, values: tuple[int, int, int, int, int, int]) -> None:
+        (
+            bucket["prompt_tokens"],
+            bucket["completion_tokens"],
+            bucket["total_tokens"],
+            bucket["cached_tokens"],
+            bucket["prompt_chars"],
+            bucket["call_count"],
+        ) = values
+
+    def _apply_record_locked(
+        self,
+        today: str,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        total_tokens: int,
+        cached_tokens: int,
+        call_type: str,
+        success: bool,
+        rec: dict,
+        prompt_chars: int = 0,
+    ) -> None:
+        # Precompute all lookups and arithmetic before mutating shared state so
+        # a malformed entry never leaves partial increments in delta stats.
+        existing_day = self._delta_daily.get(today)
+        day = existing_day if existing_day is not None else self._empty_day()
+
+        new_day_prompt = day["total_prompt_tokens"] + prompt_tokens
+        new_day_completion = day["total_completion_tokens"] + completion_tokens
+        new_day_total = day["total_tokens"] + total_tokens
+        new_day_cached = day["cached_tokens"] + cached_tokens
+        new_day_chars = day["total_prompt_chars"] + prompt_chars
+        new_day_calls = day["call_count"] + 1
+        new_day_errors = day["error_count"] + (0 if success else 1)
+
+        bm = day["by_model"]
+        existing_b = bm.get(model)
+        b = existing_b if existing_b is not None else self._empty_bucket()
+        b_values = self._compute_bucket_update(
+            b, prompt_tokens, completion_tokens, total_tokens, cached_tokens, prompt_chars
+        )
+
+        bt = day["by_call_type"]
+        existing_c = bt.get(call_type)
+        c = existing_c if existing_c is not None else self._empty_bucket()
+        c_values = self._compute_bucket_update(
+            c, prompt_tokens, completion_tokens, total_tokens, cached_tokens, prompt_chars
+        )
+
+        if existing_day is None:
+            self._delta_daily[today] = day
+        day["total_prompt_tokens"] = new_day_prompt
+        day["total_completion_tokens"] = new_day_completion
+        day["total_tokens"] = new_day_total
+        day["cached_tokens"] = new_day_cached
+        day["total_prompt_chars"] = new_day_chars
+        day["call_count"] = new_day_calls
+        day["error_count"] = new_day_errors
+
+        if existing_b is None:
+            bm[model] = b
+        self._write_bucket(b, b_values)
+
+        if existing_c is None:
+            bt[call_type] = c
+        self._write_bucket(c, c_values)
+
+        self._delta_records.append(rec)
+        self._dirty = True
+
+    def _drain_pending_locked(self) -> None:
+        """Apply deferred usage records queued while ``self._lock`` was held."""
+        pending = getattr(self, "_pending_records", None)
+        if not pending:
+            return
+        while True:
+            try:
+                entry = pending.popleft()
+            except IndexError:
+                break
+            try:
+                self._apply_record_locked(*entry)
+            except Exception as exc:
+                logger.warning("Token tracker: failed to apply deferred record (dropping entry): %s", exc)
+
+    def _record_impl(
+        self,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        total_tokens: int,
+        cached_tokens: int = 0,
+        call_type: str = "unknown",
+        source: str = "",
+        success: bool = True,
+        prompt_chars: int = 0,
+        *,
+        defer_if_locked: bool = False,
+    ) -> None:
+        model = model or "unknown"
+        prompt_tokens = prompt_tokens or 0
+        completion_tokens = completion_tokens or 0
+        total_tokens = total_tokens or 0
+        cached_tokens = cached_tokens or 0
+        prompt_chars = prompt_chars or 0
+
+        today = date.today().isoformat()
+
+        rec = {
+            "ts": time.time(),
+            "model": model,
+            "pt": prompt_tokens,
+            "ct": completion_tokens,
+            "tt": total_tokens,
+            "cch": cached_tokens,
+            "pch": prompt_chars,
+            "type": call_type,
+            "src": source,
+            "ok": success,
+        }
+
+        entry = (
+            today,
+            model,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            cached_tokens,
+            call_type,
+            success,
+            rec,
+            prompt_chars,
+        )
+
+        if defer_if_locked:
+            pending = getattr(self, "_pending_records", None)
+            if pending is None:
+                pending = deque()
+                self._pending_records = pending
+            pending.append(entry)
+            # Generator-exit cleanup can run synchronously on a thread already holding
+            # ``self._lock``; avoid self-deadlock on the non-reentrant lock and leave
+            # the queued entry to be drained by the next lock holder / reader / save.
+            if self._lock.acquire(blocking=False):
+                try:
+                    self._drain_pending_locked()
+                finally:
+                    self._lock.release()
+            return
+
+        with self._lock:
+            self._drain_pending_locked()
+            self._apply_record_locked(*entry)
+
+    def _record_deferrable(
+        self,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        total_tokens: int,
+        cached_tokens: int = 0,
+        call_type: str = "unknown",
+        source: str = "",
+        success: bool = True,
+        prompt_chars: int = 0,
+    ) -> None:
+        """Record usage without blocking if ``self._lock`` is already held."""
+        self._record_impl(
+            model=model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            cached_tokens=cached_tokens,
+            call_type=call_type,
+            source=source,
+            success=success,
+            prompt_chars=prompt_chars,
+            defer_if_locked=True,
+        )
 
     def record(
         self,
@@ -48,68 +249,18 @@ class RecordingMixin:
                 embedding-by-char endpoints whose pricing unit is characters,
                 not tokens — keeps the token aggregates clean.
         """
-        model = model or "unknown"
-        prompt_tokens = prompt_tokens or 0
-        completion_tokens = completion_tokens or 0
-        total_tokens = total_tokens or 0
-        cached_tokens = cached_tokens or 0
-        prompt_chars = prompt_chars or 0
-
-        today = date.today().isoformat()
-
-        rec = {
-            "ts": time.time(),
-            "model": model,
-            "pt": prompt_tokens,
-            "ct": completion_tokens,
-            "tt": total_tokens,
-            "cch": cached_tokens,
-            "pch": prompt_chars,
-            "type": call_type,
-            "src": source,
-            "ok": success,
-        }
-
-        with self._lock:
-            if today not in self._delta_daily:
-                self._delta_daily[today] = self._empty_day()
-
-            day = self._delta_daily[today]
-            day["total_prompt_tokens"] += prompt_tokens
-            day["total_completion_tokens"] += completion_tokens
-            day["total_tokens"] += total_tokens
-            day["cached_tokens"] += cached_tokens
-            day["total_prompt_chars"] += prompt_chars
-            day["call_count"] += 1
-            if not success:
-                day["error_count"] += 1
-
-            # by_model
-            bm = day["by_model"]
-            if model not in bm:
-                bm[model] = self._empty_bucket()
-            b = bm[model]
-            b["prompt_tokens"] += prompt_tokens
-            b["completion_tokens"] += completion_tokens
-            b["total_tokens"] += total_tokens
-            b["cached_tokens"] += cached_tokens
-            b["prompt_chars"] += prompt_chars
-            b["call_count"] += 1
-
-            # by_call_type
-            bt = day["by_call_type"]
-            if call_type not in bt:
-                bt[call_type] = self._empty_bucket()
-            c = bt[call_type]
-            c["prompt_tokens"] += prompt_tokens
-            c["completion_tokens"] += completion_tokens
-            c["total_tokens"] += total_tokens
-            c["cached_tokens"] += cached_tokens
-            c["prompt_chars"] += prompt_chars
-            c["call_count"] += 1
-
-            self._delta_records.append(rec)
-            self._dirty = True
+        self._record_impl(
+            model=model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            cached_tokens=cached_tokens,
+            call_type=call_type,
+            source=source,
+            success=success,
+            prompt_chars=prompt_chars,
+            defer_if_locked=False,
+        )
 
     def get_stats(self, days: int = 7) -> dict:
         """Return usage statistics for the last N days.
@@ -126,6 +277,7 @@ class RecordingMixin:
 
         # Merge in-memory deltas not yet persisted
         with self._lock:
+            self._drain_pending_locked()
             for day_key, day_delta in self._delta_daily.items():
                 if day_key not in merged_daily:
                     merged_daily[day_key] = _deep_copy_day(day_delta)
@@ -160,6 +312,7 @@ class RecordingMixin:
 
         # Merge in-memory deltas
         with self._lock:
+            self._drain_pending_locked()
             if today in self._delta_daily:
                 _merge_day_stats(merged, self._delta_daily[today])
 

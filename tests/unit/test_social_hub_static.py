@@ -208,9 +208,16 @@ def test_invite_code_join_is_a_public_visit_chat_capability():
 
 def test_standalone_hub_page_uses_the_same_production_assets():
     page = (ROOT / "templates" / "social_hub.html").read_text(encoding="utf-8")
+    source = (ROOT / "static" / "social-hub.js").read_text(encoding="utf-8")
     assert "__NEKO_SOCIAL_HUB_STANDALONE__" in page
     assert "/static/css/social-hub.css" in page
+    assert "/static/i18n-i18next.js" in page
+    assert "/static/theme-manager.js" in page
+    assert 'data-i18n="visit.socialHub.windowTitle"' in page
     assert "/static/social-hub.js" in page
+    assert "tr('visit.socialHub.windowTitle'" in source
+    assert "window.addEventListener('localechange'" in source
+    assert "(window.i18n && window.i18n.language)" in source
 
 
 def test_hub_styles_include_dark_responsive_and_reduced_motion_states():

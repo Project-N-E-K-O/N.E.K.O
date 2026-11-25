@@ -2425,6 +2425,86 @@
         I.renderWindow();
     }
 
+    function cloneChoicePrompt(prompt) {
+        if (!prompt || typeof prompt !== 'object') return null;
+        return Object.assign({}, prompt, {
+            options: Array.isArray(prompt.options)
+                ? prompt.options.map(function (opt) {
+                    return opt && typeof opt === 'object' ? Object.assign({}, opt) : opt;
+                })
+                : []
+        });
+    }
+
+    I.captureSwitchSnapshot = function captureSwitchSnapshot() {
+        return {
+            messages: I.state.messages.map(I.cloneMessage),
+            choicePrompt: cloneChoicePrompt(I.state.choicePrompt),
+            launchedMiniGameSessionIds: Object.keys(I.state._launchedMiniGameSessionIds || {}),
+            pendingIcebreakerGalgameHandoffMessageId: String(I.state.pendingIcebreakerGalgameHandoffMessageId || '')
+        };
+    }
+
+    I.restoreSwitchSnapshot = function restoreSwitchSnapshot(snapshot) {
+        if (!snapshot || typeof snapshot !== 'object') return;
+        var snapshotMessages = Array.isArray(snapshot.messages)
+            ? snapshot.messages.map(I.cloneMessage).filter(Boolean)
+            : [];
+        var seenIds = Object.create(null);
+        var maxSnapshotSortKey = -1;
+        snapshotMessages.forEach(function (msg, idx) {
+            if (msg.id !== undefined && msg.id !== null && msg.id !== '') {
+                seenIds[String(msg.id)] = true;
+            }
+            if (typeof msg.sortKey !== 'number' || !Number.isFinite(msg.sortKey)) {
+                msg.sortKey = idx;
+            }
+            if (msg.sortKey > maxSnapshotSortKey) {
+                maxSnapshotSortKey = msg.sortKey;
+            }
+        });
+        var nextPostClearSortKey = maxSnapshotSortKey + 1;
+        var liveMessages = Array.isArray(I.state.messages) ? I.state.messages : [];
+        var postClearMessages = [];
+        liveMessages.forEach(function (msg) {
+            if (!msg) return;
+            var msgId = (msg.id !== undefined && msg.id !== null && msg.id !== '') ? String(msg.id) : '';
+            if (msgId && seenIds[msgId]) return;
+            if (msgId) seenIds[msgId] = true;
+            var cloned = I.cloneMessage(msg);
+            if (!cloned) return;
+            cloned.sortKey = nextPostClearSortKey++;
+            postClearMessages.push(cloned);
+        });
+        I.setMessages(snapshotMessages.concat(postClearMessages));
+
+        if (!I.state.choicePrompt && snapshot.choicePrompt) {
+            I.state.choicePrompt = cloneChoicePrompt(snapshot.choicePrompt);
+            scheduleChoicePromptReveal();
+        }
+
+        if (Array.isArray(snapshot.launchedMiniGameSessionIds) && snapshot.launchedMiniGameSessionIds.length > 0) {
+            if (!I.state._launchedMiniGameSessionIds || typeof I.state._launchedMiniGameSessionIds !== 'object') {
+                I.state._launchedMiniGameSessionIds = Object.create(null);
+            }
+            snapshot.launchedMiniGameSessionIds.forEach(function (sessionId) {
+                var normalizedId = String(sessionId || '');
+                if (normalizedId) {
+                    I.state._launchedMiniGameSessionIds[normalizedId] = true;
+                }
+            });
+        }
+
+        var restoredHandoffId = String(snapshot.pendingIcebreakerGalgameHandoffMessageId || '');
+        if (!I.state.pendingIcebreakerGalgameHandoffMessageId
+                && restoredHandoffId
+                && I.state.messages.some(function (msg) { return String(msg.id || '') === restoredHandoffId; })) {
+            I.state.pendingIcebreakerGalgameHandoffMessageId = restoredHandoffId;
+        }
+
+        I.renderWindow();
+    }
+
     I.getStateSnapshot = function getStateSnapshot() {
         return {
             mounted: I.mounted,

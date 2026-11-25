@@ -72,7 +72,7 @@ version = "1.2.0"
 entry = "plugin.plugins.smart_notes:SmartNotesPlugin"
 ```
 
-These four fields are **required** by the supported check and release workflow. `id` must match `^[A-Za-z0-9_-]+$` and must be unique. Legacy source discovery can still load some incomplete manifests or folder/ID mismatches, but package build and production installation require the declared ID, archive directory, executable destination, and entry package to stay aligned; no suffixed executable copy is created. `entry` must use `module.path:ClassName` and resolve to a `NekoPluginBase` subclass; a `PluginRouter` cannot be launched directly.
+These four fields are **required** by the supported check and release workflow. `id` must be unique. The host loads any `id` matching `^[A-Za-z0-9_-]+$`, but `neko-plugin init` and the release check (`neko-plugin check -r`) require a Market ID: a lowercase letter first, then only `a-z`, `0-9`, and `_` (`^[a-z][a-z0-9_]*$`); `check -r` also limits it to 100 characters. Use that stricter form for any plugin you plan to publish. Legacy source discovery can still load some incomplete manifests or folder/ID mismatches, but package build and production installation require the declared ID, archive directory, executable destination, and entry package to stay aligned; no suffixed executable copy is created. `entry` must use `module.path:ClassName` and resolve to a `NekoPluginBase` subclass; a `PluginRouter` cannot be launched directly.
 
 For a normal plugin, `type = "plugin"` is optional because it is the default. Use `type = "adapter"` only for an Adapter package. The removed `extension` type and `[plugin.host]` table are rejected.
 
@@ -84,10 +84,10 @@ short_description = "Note management with AI-powered organization."
 keywords = ["note", "笔记", "memo", "record", "メモ"]
 ```
 
-These fields decide how the Agent (NekoClaw) selects the plugin once the host has loaded it:
+These fields decide how the Agent (NekoPower) selects the plugin once the host has loaded it:
 
 - `description` — Full description used in plugin metadata and in the fine selection.
-- `short_description` — Compact description read by the coarse screen, which uses at most 150 tokens of it. **Write one.** If it is absent and `description` is longer than those 150 tokens, the host has the small model write one from `description` in the background, and keeps it in `nekoclaw/plugin_short_descriptions.json` under the data directory: one model request per plugin and description when it succeeds. An answer longer than 150 tokens is kept cut to 150. A request that fails is not kept and is tried again after 10 minutes, each try another request, at most 3 times a day for one version of `description` (restarts included); a changed `description` starts again. Until one is kept, the start of `description` is used instead.
+- `short_description` — Compact description read by the coarse screen, which uses at most 150 tokens of it. **Write one.** If it is absent and `description` is longer than those 150 tokens, the host has the small model write one from `description` in the background, and keeps it in `nekopower/plugin_short_descriptions.json` under the data directory: one model request per plugin and description when it succeeds. An answer longer than 150 tokens is kept cut to 150. A request that fails is not kept and is tried again after 10 minutes, each try another request, at most 3 times a day for one version of `description` (restarts included); a changed `description` starts again. Until one is kept, the start of `description` is used instead.
 - `keywords` — Regular-expression patterns. A match puts the plugin among the coarse stage's candidates and marks it as a keyword match for the fine selection; it does not bypass the fine selection or guarantee execution.
 
 Selection has two stages. When the descriptions of all selectable plugins and their visible entries together exceed 3000 tokens, a coarse stage keeps the union of three sets: plugins whose keywords match, the ten best BM25 text matches (over the plugin's ID, name, descriptions, and its entries' IDs and descriptions), and the plugins a small model picks from the short descriptions. The fine selection then chooses a `plugin_id` and a runtime `entry_id` and fills in the arguments. At or below 3000 tokens the coarse stage is skipped and every selectable plugin goes to the fine selection.
@@ -204,6 +204,49 @@ Don't need storage? Just don't include this section (disabled by default).
 
 ---
 
+### `[plugin.database]` — SQLite database
+
+```toml
+[plugin.database]
+enabled = true
+name = "plugin.db"   # File name in the plugin's data directory (default: plugin.db)
+```
+
+When enabled, `self.db` uses a SQLite database file in the plugin's data directory: `async with unwrap(await self.db.session()) as session:` for SQL (`session()` returns a `Result`), or `self.db.kv` for key-value data. Disabled by default.
+
+---
+
+### `[plugin_state]` — Save and restore instance attributes
+
+```toml
+[plugin_state]
+backend = "file"        # Where the state is kept
+persist_mode = "auto"   # When it is saved
+```
+
+The runtime saves the plugin instance attributes named in the class's `__freezable__` list and restores them when the plugin next starts; the saved state is cleared after a successful restore. `backend` is the switch: `"file"` keeps the state in a file in the plugin's data directory, so only it survives a restart of the plugin process; `"memory"` keeps it only while the plugin process runs. Without `backend` (or without this table) nothing is saved, as with `"off"` (or an empty string); a value other than `file` / `memory` / `off` (for example `sqlite`) makes the plugin fail to start. What counts is the effective configuration: the manifest merged with the runtime copy (`config/plugin.toml` in the plugin's user data directory, created on first use from `config.example.toml`, or from the manifest if there is none) and the active profile, so if the runtime copy also sets `backend`, removing it from the manifest alone does not turn saving off. To turn saving off, set `backend = "off"` where it takes effect: the runtime copy and the active profile override the manifest. `persist_mode` decides which entry calls save it: `"auto"` after every entry call that returns normally (an `Err` result counts; an exception or a strict output-contract failure does not; only calls dispatched by the runtime count, so calling an entry method directly inside the plugin, for example from a timer, does not save), `"manual"` only after entries declared with `@plugin_entry(persist=True)`, and `"off"` not after entry calls; an entry's `persist=True` / `persist=False` overrides `"auto"` / `"manual"`. The mode is resolved in this order: the class attribute `__persist_mode__` (default `"off"`), then `[plugin_state].persist_mode` if it is one of `auto` / `manual` / `off` (the runtime ignores other values; `neko-plugin check` reports `always` / `disabled` as errors and suggests `auto` / `off`). If the result is `"off"`, including an explicit `persist_mode = "off"`, a legacy `[plugin_checkpoint] freeze_mode` of `"auto"` or `"manual"` still overrides it. Independently of `persist_mode`, the state is also saved when the plugin is frozen.
+
+---
+
+### `[plugin.shared]` — Reading another plugin's shared files
+
+```toml
+[plugin.shared]
+reads = ["weather"]
+```
+
+Every plugin has a shared directory, `<user data root>/plugin_shared/<plugin id>/`, for files it wants other plugins to be able to read. The plugin that owns it writes there through `self.shared_path(...)`. To read what another plugin published, list that plugin's id under `reads` and call `self.shared_path_of("weather", ...)`; without the declaration the call raises `ValidationError`.
+
+Three things to know:
+
+- **It is an agreement, not a security boundary.** Plugins are not sandboxed from each other, so nothing stops a plugin from writing into another plugin's directory. The declaration only keeps the dependency visible in the manifest. Treat another plugin's files as read-only, and never put secrets in your shared directory.
+- **It is not part of the plugin's private state.** The shared directory stays when the plugin that published it is removed, and it moves with the user's data when the storage location is changed.
+- **Keep links out of it.** Because the directory moves with the user's data, a symbolic link or junction anywhere inside it (a virtual environment, a git checkout, `node_modules`) makes a change of the storage location fail as a whole. Publish plain files and directories only.
+
+Publishing needs no declaration. If your plugin neither publishes nor reads shared files, leave this section out.
+
+---
+
 ### `[plugin.ui]` — Custom UI
 
 ```toml
@@ -235,6 +278,73 @@ Don't need UI? Just don't include this section. See [Hosted UI](./hosted-ui) for
 
 ---
 
+### `[permissions]` — What the plugin needs from the user
+
+```toml
+[permissions.require]
+"system.network:connect" = { reason = "Look up the weather service", hosts = ["api.example.com"] }
+
+[permissions.ask]
+"plugin_sdk.main_agent.memory:read" = { reason = { en = "Use your home city for the forecast", zh-CN = "按你常住的城市给出天气" } }
+"plugin_sdk.models:invoke" = { reason = "Turn the forecast into one sentence" }
+```
+
+> **Current status:** declarations are currently used only by `neko-plugin check` / `check -r`, which compare them with the code. Confirming `require` permissions at install time and asking for `ask` permissions on first use are planned for a later release and are not active yet.
+
+- `require`: the plugin cannot work without it; the user will be asked to agree when installing.
+- `ask`: the user will be asked the first time the plugin really uses it.
+- Every entry needs a `reason`. Users see it next to the permission, so write it for them. It is either one string or a table of language codes; languages you leave out fall back to one you wrote.
+- An `ask` entry may add `background = true` together with a `background_reason` when the plugin also needs it while the user is not using it.
+- `hosts` (only for `system.network:connect`) is shown to the user for reference.
+
+Choosing between `require` and `ask`:
+
+- A `require` permission covers background use as well, so `require` entries have no `background` key.
+- An `ask` entry the plugin also uses without the user triggering it (from a timer, at startup, in a listener or event callback, or on a background thread) must set `background = true` and a `background_reason`.
+- Reading environment variables for configuration, and starting programs that inherit the plugin's environment variables, are always `system.env:read` under `require`.
+- `system.network:listen` is always `require`.
+
+Permission ids:
+
+| Id | Meaning |
+|---|---|
+| `plugin_sdk.main_agent.memory:read` | Read memory |
+| `plugin_sdk.main_agent.conversations:read` | Read conversations |
+| `plugin_sdk.main_agent.messages:push` | Send messages, cards or reply attachments to N.E.K.O |
+| `plugin_sdk.models:invoke` | Call AI models |
+| `system.network:connect` | Connect to the network |
+| `system.network:listen` | Open a network port on this computer so other programs can connect to it |
+| `system.fs:read` / `system.fs:write` | Read / write files outside the plugin's own data directory |
+| `system.process:spawn` | Start other programs |
+| `system.env:read` | Read environment variables |
+
+`neko-plugin check` and `check -r` compare the declarations with a scan of the plugin's Python code:
+
+- Code that clearly uses a permission the plugin does not declare is an error and fails `check -r` (and therefore Market CI). Add the declaration with a reason. For now, a plugin with no `[permissions]` table at all gets a warning instead; this will become an error in a later release.
+- A possible use the scan cannot be sure about (an unresolved receiver, an import only, a file path that may be the plugin's own data) is a warning.
+- A declaration the scan found no use for is a warning; it is fine when the use is dynamic.
+- Code the scan cannot see through (dynamic imports, `getattr` with a computed name, `eval`/`exec`, `ctypes`, threads, `vendor/`, non-Python files) is listed as info. "No findings" never means the plugin was proven harmless.
+
+This top-level table is unrelated to the `permissions` list of `[[plugin.ui.panel]]` / `[[plugin.ui.guide]]`.
+
+#### Narrowing per component
+
+A component can say it needs only part of what the table declares, with `permissions=[...]` on its decorator: `@plugin_entry`, `@llm_tool`, the entry hooks (`@hook`, `@before_entry`, `@after_entry`, `@around_entry`, `@replace_entry`), `@on_event`, `@custom_event`, `@timer_interval`, and their `plugin.entry` / `plugin.event` / `plugin.hook` / `plugin.timer` / `plugin.custom_event` forms. `register_llm_tool`, `register_dynamic_entry` and `PluginRouter.add_entry` take the same argument.
+
+```python
+@llm_tool(name="weather", permissions=["plugin_sdk.main_agent.memory:read"])
+async def weather(self, **_): ...
+```
+
+- Leaving it out is the default: the component inherits every declared permission. Narrowing is only used to show which features stop working when the user turns a permission off; it does not restrict what the component can do.
+- When the plugin registers its components, every narrowing must be a subset of `[permissions.require]` + `[permissions.ask]`. A component that lists anything else is not registered (an entry is not callable, an event handler is not subscribed) and the plugin log says which one and why. `neko-plugin check` reports the same thing before you publish.
+- An entry hook's permissions are added to every entry its `target` matches. A hook that lists an undeclared permission closes those entries.
+  - Careful: a hook without `permissions=` needs everything declared, so every entry it targets inherits everything too. One such hook on `target="*"` cancels the narrowing of every entry; give the hook its own `permissions=` if the entries narrow.
+- A `PluginRouter` can narrow all of its entries with a `permissions = [...]` class attribute (or `PluginRouter(permissions=[...])`); an entry or `add_entry(..., permissions=...)` that names its own overrides it. `add_entry` on an included router returns `Err(PermissionDeniedError)` for an undeclared permission.
+- `@neko_plugin`, `@lifecycle`, `@message` and other non-component decorators do not take `permissions=`.
+
+---
+
 ### Custom sections — Your business config
 
 ```toml
@@ -251,7 +361,7 @@ notes_cfg = cfg.get("notes", {})
 max_per_page = notes_cfg.get("max_per_page", 20)
 ```
 
-You can define as many custom sections as you want, named however you like.
+You can define as many custom sections as you want, named however you like, except `permissions`: the top-level `[permissions]` table is reserved for permission declarations (see above). A plugin that already uses `[permissions]` for its own settings should rename that section, otherwise `neko-plugin check` reports it as an invalid declaration.
 
 ---
 
@@ -274,9 +384,11 @@ Writable state is separate from the source or installed executable directory:
 
 ```text
 <user data root>/plugins/smart_notes/
-├── config/plugin.toml      ← effective runtime configuration
+├── config/plugin.toml      ← runtime copy of the configuration
 ├── data/                   ← self.data_path()
 └── cache/                  ← self.cache_path()
+
+<user data root>/plugin_shared/smart_notes/   ← self.shared_path(), for plugins that declare they read it
 ```
 
 Only `plugin.toml` and the importable Python module named by `[plugin].entry` are required. The module does not have to be `__init__.py`, although that is the common layout. Installed package code remains separate from this writable state.

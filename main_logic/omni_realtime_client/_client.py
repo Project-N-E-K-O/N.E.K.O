@@ -35,7 +35,10 @@ from ._shared import (
 
 
 
-from ._shared import canonical_realtime_dialect
+from ._shared import (
+    resolve_effective_realtime_api_type,
+    resolve_realtime_dialect,
+)
 from ._shared import logger as _transport_logger
 from ._wire_trace import RealtimeWireTrace
 from ._tools import _ToolingMixin
@@ -136,18 +139,18 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self.model = model
         self._model_lower = model.lower() if model else ''
         _base_url_lower = (base_url or '').lower()
-        _known_lanlan_free_route = (
-            'lanlan.tech' in _base_url_lower
-            or 'lanlan.app' in _base_url_lower
-            or bool(livestream_mode)
+        _effective_api_type = resolve_effective_realtime_api_type(
+            api_type,
+            model,
+            base_url=base_url,
+            livestream_mode=bool(livestream_mode),
         )
-        _effective_api_type = api_type or ""
-        if (
-            not _effective_api_type
-            and 'free' in self._model_lower
-            and _known_lanlan_free_route
-        ):
-            _effective_api_type = "free"
+        self._realtime_dialect = resolve_realtime_dialect(
+            _effective_api_type,
+            self.model,
+            base_url=base_url,
+            livestream_mode=bool(livestream_mode),
+        )
         self.voice = voice
         self.ws = None
         self.instructions = None
@@ -365,6 +368,8 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._latest_image_source = "unknown"
         self._latest_image_request_id = None
         self._proactive_image_consumed = True  # Whether the cached image has been used by a proactive nudge
+        self._visual_context_discard_epoch = 0  # Bumped by discard_cached_visual_context
+        self._visual_context_discard_at = 0.0  # Monotonic time of the last discard
         # Native is the backwards-compatible session default. Independent ASR
         # explicitly switches this to EXTERNAL_DESCRIPTION through the neutral
         # session API; provider capability remains a separate concern.
@@ -386,7 +391,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # also counts as free, matching other free checks in this class.
         # Livestream mode with long streamer sessions bypasses this entire path.
         self._enable_silence_timeout = (
-            _effective_api_type.lower() in ['glm', 'free']
+            _effective_api_type.strip().lower() in ['glm', 'free']
             and not self._livestream_mode
             and turn_detection_mode != TurnDetectionMode.MANUAL
         )
@@ -411,7 +416,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # Therefore upsample 16k→24k only for GPT at the final moment before sending; other providers retain
         # _uplink_sample_rate=16000 and _uplink_resampler=None, bypassing
         # resampling completely and preserving prior behavior.
-        self._uplink_sample_rate = 24000 if 'gpt' in self._model_lower else 16000
+        self._uplink_sample_rate = 24000 if self._realtime_dialect == "gpt" else 16000
         # Stateful streaming resampler: continuous microphone streams must retain FIR state, or every chunk
         # boundary introduces artifacts, just like AudioProcessor's downsample stream.
         self._uplink_resampler = (
@@ -495,13 +500,13 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._audio_processing_lock = asyncio.Lock()
 
         # Gemini Live API specific attributes
-        self._is_gemini = self._api_type.lower() == 'gemini'
+        self._is_gemini = self._api_type.strip().lower() == 'gemini'
         # ``api_type`` is the provider-ownership signal. The model name is
         # user-configurable, so an arbitrary local model such as
         # ``freeform-realtime`` must not inherit Lanlan's image wire protocol.
         # Keep a narrow compatibility fallback only for old callers that omit
         # api_type while targeting a known Lanlan/livestream route.
-        self._is_free_provider = _effective_api_type.lower() == 'free'
+        self._is_free_provider = _effective_api_type.strip().lower() == 'free'
 
         # Only the international/livestream free routes proxy Gemini. This flag
         # remains about VAD/lifecycle behaviour, not image capability: every
@@ -527,7 +532,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # Standard StepFun is the sole realtime provider that still needs the
         # external VISION_MODEL description path.
         self._supports_native_image = (
-            any(m in self._model_lower for m in ['qwen', 'glm', 'gpt'])
+            self._realtime_dialect in ("qwen", "glm", "gpt")
             or self._is_gemini
             or self._is_free_provider
         )
@@ -559,7 +564,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # Share apply_tools_to_session's dialect vocabulary: this previously compared api_type directly,
         # but 'gpt' was never valid (the real value is 'openai'), and 'qwen_intl'
         # never matched 'qwen'. The field has no readers currently, but retaining a wrong criterion invites future misuse.
-        self._supports_tools_wire = canonical_realtime_dialect(self._api_type) in (
+        self._supports_tools_wire = self._realtime_dialect in (
             'gpt', 'glm', 'qwen', 'step', 'free', 'gemini', 'grok'
         )
         # Per-call accumulator for OpenAI-Realtime / StepFun delta arguments

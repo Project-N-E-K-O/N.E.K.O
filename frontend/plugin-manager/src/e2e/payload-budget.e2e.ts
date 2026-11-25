@@ -24,10 +24,11 @@ test('keeps the initial plugin manager payload within the cold-start budget', as
     stylesheetResponse.body(),
   ])
 
-  // Every locale's messages ship eagerly in the entry chunk, so new UI copy
-  // grows it eightfold. Raised from 750_000 for the plugin update check's copy
-  // (~7.6 KB across 8 locales); the feature's code itself is loaded lazily.
-  expect(entryBody.byteLength).toBeLessThan(760_000)
+  // The entry chunk is only the bootstrap: the messages, the libraries and
+  // the views live in other chunks, which the route-wide budget below bounds.
+  // Lowered from 760_000, a limit from when every locale shipped in the
+  // entry; measured ~35.2 KB, +8%.
+  expect(entryBody.byteLength).toBeLessThan(38_000)
   expect(stylesheetBody.byteLength).toBeLessThan(80_000)
 })
 
@@ -44,7 +45,7 @@ test('keeps the complete initial route script and stylesheet payload bounded', a
 
   await page.goto(`${PREVIEW_ORIGIN}/ui/`)
   await expect(page.locator('.app-root')).toBeVisible()
-  await expect(page.locator('.dashboard')).toBeVisible()
+  await expect(page.locator('.power-home')).toBeVisible()
 
   for (const response of [...scriptResponses, ...stylesheetResponses]) {
     expect(response.ok(), `${response.status()} ${response.url()}`).toBe(true)
@@ -57,6 +58,8 @@ test('keeps the complete initial route script and stylesheet payload bounded', a
   const scriptBytes = scripts.reduce((total, body) => total + body.byteLength, 0)
   const stylesheetBytes = stylesheets.reduce((total, body) => total + body.byteLength, 0)
 
-  expect(scriptBytes).toBeLessThan(1_000_000)
+  // Lowered from 1_000_000 once the authoring, model API, model binding and
+  // Market feedback words were split per language (~763 KB measured, +7.5%).
+  expect(scriptBytes).toBeLessThan(820_000)
   expect(stylesheetBytes).toBeLessThan(120_000)
 })

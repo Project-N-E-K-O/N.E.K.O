@@ -40,8 +40,30 @@ async function main() {
     gameVoiceTranscriptionReady: false,
     gameVoiceTranscriptionReason: 'voice_inactive',
     voiceInputRouteBlocked: false,
+    voiceSessionStartEpoch: 0,
   };
   let holdMicStart = false;
+  // Host-side start attribution, modelled on app-buttons.js /
+  // app-audio-capture.js: the handler takes the offered receipt synchronously,
+  // accepts it with its epoch, and the capture records its own commit.
+  let receiptSlot = null;
+  let liveCaptureToken = 0;
+  let nextCaptureToken = 0;
+  let lastClickReceipt = null;
+  let clickBehavior = null;
+  // A device switch: the old graph is gone, S.isRecording stays true until the
+  // replacement commits.
+  let pipelineReopening = false;
+  // The device went away (track ended) or the route failed closed: the flag
+  // still says recording, nothing is live, and nothing is reopening it.
+  let pipelineGone = false;
+  function commitReceipt(receipt) {
+    nextCaptureToken += 1;
+    receipt.captureToken = nextCaptureToken;
+    receipt.committed = true;
+    liveCaptureToken = nextCaptureToken;
+    appState.isRecording = true;
+  }
   let socketOpen = true;
   const sentWsMessages = [];
   const stopMicCaptureCalls = [];
@@ -51,8 +73,26 @@ async function main() {
     clickCount: 0,
     click() {
       this.clickCount += 1;
-      if (holdMicStart) appState.voiceStartPending = true;
-      else appState.isRecording = true;
+      if (clickBehavior === 'no-listener') return;
+      const receipt = windowMock.takeVoiceStartReceipt();
+      lastClickReceipt = receipt;
+      if (clickBehavior) {
+        clickBehavior(receipt);
+        return;
+      }
+      appState.voiceSessionStartEpoch += 1;
+      if (receipt) {
+        receipt.accepted = true;
+        receipt.voiceStartEpoch = appState.voiceSessionStartEpoch;
+      }
+      if (holdMicStart) {
+        appState.voiceStartPending = true;
+      } else if (receipt) {
+        commitReceipt(receipt);
+        receipt.outcome = 'started';
+      } else {
+        appState.isRecording = true;
+      }
     },
   };
   const documentMock = {
@@ -81,6 +121,21 @@ async function main() {
     document: documentMock,
     console: { log() {}, warn() {} },
     isMicStarting: false,
+    offerVoiceStartReceipt(receipt) { receiptSlot = receipt || null; },
+    takeVoiceStartReceipt() {
+      const receipt = receiptSlot;
+      receiptSlot = null;
+      return receipt;
+    },
+    hostMicrophoneCaptureLive() {
+      return appState.isRecording === true && !pipelineReopening && !pipelineGone;
+    },
+    hostMicrophoneCaptureReopening() {
+      return appState.isRecording === true && pipelineReopening;
+    },
+    micStartTokenOwnsLiveCapture(token) {
+      return token > 0 && token === liveCaptureToken && appState.isRecording === true;
+    },
     stopMicCapture: async () => {
       stopMicCaptureCalls.push(Date.now());
       appState.isRecording = false;
@@ -227,6 +282,15 @@ async function main() {
   assert(posted.filter((message) => message.request_id === 'start-1'
     && message.reason === 'started').length === 1,
   'dual voice transports emitted duplicate command completion states');
+  assert(posted.some((message) => message.request_id === 'start-1'
+    && message.reason === 'started'
+    && message.start_attribution === 'command'
+    && message.start_outcome === 'started'
+    && message.start_committed === true
+    && message.start_capture_live === true
+    && message.host_capture_active === true),
+  'a normal start did not report its own committed capture');
+  assert(receiptSlot === null, 'the bridge left an offered start receipt behind after clicking');
 
   appState.gameVoiceTranscriptionMode = 'native_core';
   appState.gameVoiceTranscriptionProvider = 'free';
@@ -326,6 +390,16 @@ async function main() {
     && message.reason === 'route_superseded'
     && message.sdk_route_instance_id === 'route-instance-b'),
   'a voice command crossing route generations did not return the frozen route identity');
+  // The capture that is live belongs to route C, not to this command: the
+  // report must not claim it.
+  assert(posted.some((message) => message.request_id === 'superseded-start'
+    && message.reason === 'route_superseded'
+    && message.active === false
+    && message.start_attribution === 'command'
+    && message.start_committed === false
+    && message.start_capture_live === false
+    && message.host_capture_active === true),
+  'a superseded command claimed a capture that something else committed');
 
   // Same rule when the route does not hand over but simply ENDS. Route exit
   // resumes ordinary chat capture (startMicCapture in app-websocket.js), so
@@ -375,6 +449,279 @@ async function main() {
   'the ended-route command never reached its post-await route check');
   assert(appState.isRecording === true,
     'a command whose route ended tore down the resumed ordinary chat microphone');
+  assert(posted.some((message) => message.request_id === 'ended-start'
+    && message.reason === 'route_superseded'
+    && message.start_committed === false
+    && message.start_capture_live === false
+    && message.host_capture_active === true),
+  'the resumed ordinary chat capture was reported as the ended command\'s own');
+
+  // Wait until a command has produced its final (non-working) reply and its
+  // cleanup broadcast, so the next command is not answered `busy`.
+  async function finalReply(requestId) {
+    for (let i = 0; i < 200; i += 1) {
+      const reply = posted.find((message) => message.request_id === requestId
+        && message.reason !== 'working');
+      if (reply) {
+        await flush();
+        return reply;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error(`no final reply for ${requestId}`);
+  }
+  function sendStart(requestId, routeInstanceId) {
+    channel.onmessage({ data: {
+      type: 'game_voice_control_request',
+      sender_id: 'soccer-window',
+      request_id: requestId,
+      action: 'start',
+      game_type: 'soccer',
+      session_id: 'soccer-runtime',
+      sdk_route_instance_id: routeInstanceId,
+    } });
+  }
+  function openRoute(routeInstanceId) {
+    routeWindowListener({ detail: {
+      action: 'opened', gameType: 'soccer', sessionId: 'soccer-runtime', routeInstanceId,
+    } });
+  }
+  function closeRoute(routeInstanceId) {
+    routeWindowListener({ detail: {
+      action: 'closed', gameType: 'soccer', sessionId: 'soccer-runtime', routeInstanceId,
+    } });
+  }
+  function resetMicrophone() {
+    appState.isRecording = false;
+    appState.voiceStartPending = false;
+    windowMock.isMicStarting = false;
+    liveCaptureToken = 0;
+    holdMicStart = false;
+    clickBehavior = null;
+  }
+
+  // #3003 itself. The command's own start is parked (inside getUserMedia)
+  // when its route ends; nothing on the exit path cancels it, so it commits
+  // afterwards. The old route stays unavailable, but the reply must say that
+  // THIS command's capture committed and is live -- not that it failed.
+  resetMicrophone();
+  openRoute('route-instance-e');
+  holdMicStart = true;
+  const clicksBeforeOwnCommit = micButton.clickCount;
+  sendStart('own-commit-after-exit', 'route-instance-e');
+  await flush();
+  assert(micButton.clickCount === clicksBeforeOwnCommit + 1 && lastClickReceipt?.accepted === true,
+    'the game-issued start did not hand its receipt to the host start');
+  const ownReceipt = lastClickReceipt;
+  closeRoute('route-instance-e');
+  commitReceipt(ownReceipt);
+  ownReceipt.outcome = 'started';
+  appState.voiceStartPending = false;
+  const ownCommitReply = await finalReply('own-commit-after-exit');
+  assert(ownCommitReply.reason === 'route_superseded'
+    && ownCommitReply.ok === false
+    && ownCommitReply.available === false
+    && ownCommitReply.active === false
+    && ownCommitReply.starting === false,
+  `the ended route was reported as usable: ${JSON.stringify(ownCommitReply)}`);
+  assert(ownCommitReply.start_attribution === 'command'
+    && ownCommitReply.start_outcome === 'started'
+    && ownCommitReply.start_committed === true
+    && ownCommitReply.start_capture_live === true
+    && ownCommitReply.host_capture_active === true,
+  `a command whose own capture committed after its route ended was reported as not started: ${JSON.stringify(ownCommitReply)}`);
+  assert(appState.isRecording === true, 'the bridge tore down the capture it reports on');
+
+  // Same window, but the route has not just ended -- the host's wait runs
+  // out while the start is still in flight. That is unknown, not failed: the
+  // host may still commit after the reply.
+  resetMicrophone();
+  openRoute('route-instance-f');
+  holdMicStart = true;
+  const realDateNow = Date.now;
+  let skewMs = 0;
+  Date.now = () => realDateNow() + skewMs;
+  try {
+    sendStart('deadline-start', 'route-instance-f');
+    await flush();
+    skewMs = 13000;
+    const deadlineReply = await finalReply('deadline-start');
+    assert(deadlineReply.reason === 'start_pending'
+      && deadlineReply.ok === false
+      && deadlineReply.start_outcome === 'pending'
+      && deadlineReply.start_committed === false
+      && deadlineReply.host_capture_starting === true
+      && deadlineReply.starting === true,
+    `a start still in flight at the deadline was reported as final: ${JSON.stringify(deadlineReply)}`);
+  } finally {
+    Date.now = realDateNow;
+  }
+  resetMicrophone();
+
+  // Observed, not issued: the user's own press is already in flight. The
+  // command must not click, and must not claim that start.
+  openRoute('route-instance-g');
+  appState.voiceStartPending = true;
+  const clicksBeforeObserved = micButton.clickCount;
+  sendStart('observed-start', 'route-instance-g');
+  await flush();
+  closeRoute('route-instance-g');
+  appState.voiceStartPending = false;
+  appState.isRecording = true;
+  const observedReply = await finalReply('observed-start');
+  assert(micButton.clickCount === clicksBeforeObserved, 'the bridge clicked over a start already in flight');
+  assert(observedReply.reason === 'route_superseded'
+    && observedReply.start_attribution === 'observed'
+    && observedReply.start_outcome === 'not_applicable'
+    && observedReply.start_committed === false
+    && observedReply.start_capture_live === false
+    && observedReply.host_capture_active === true,
+  `an observed start was attributed to the command: ${JSON.stringify(observedReply)}`);
+
+  // Real failures keep reporting as failures on a live route.
+  resetMicrophone();
+  openRoute('route-instance-h');
+  clickBehavior = () => {};  // the handler took the receipt and refused the press
+  sendStart('refused-start', 'route-instance-h');
+  const refusedReply = await finalReply('refused-start');
+  assert(refusedReply.reason === 'start_failed'
+    && refusedReply.ok === false
+    && refusedReply.start_attribution === 'none'
+    && refusedReply.start_outcome === 'not_started'
+    && refusedReply.start_committed === false,
+  `a press the host refused was not reported as a failed start: ${JSON.stringify(refusedReply)}`);
+  clickBehavior = (receipt) => {
+    appState.voiceSessionStartEpoch += 1;
+    receipt.accepted = true;
+    receipt.voiceStartEpoch = appState.voiceSessionStartEpoch;
+    receipt.outcome = 'failed';  // e.g. getUserMedia denied
+  };
+  sendStart('failed-start', 'route-instance-h');
+  const failedReply = await finalReply('failed-start');
+  assert(failedReply.reason === 'start_failed'
+    && failedReply.ok === false
+    && failedReply.active === false
+    && failedReply.start_attribution === 'command'
+    && failedReply.start_outcome === 'failed'
+    && failedReply.start_committed === false
+    && failedReply.host_capture_active === false,
+  `a failed start was not reported as failed: ${JSON.stringify(failedReply)}`);
+  // Device switch on the host while a command observes capture: the flag says
+  // recording, but no pipeline is live. The host snapshot must read starting.
+  resetMicrophone();
+  appState.isRecording = true;
+  pipelineReopening = true;
+  sendStart('reopening-start', 'route-instance-h');
+  const reopeningReply = await finalReply('reopening-start');
+  pipelineReopening = false;
+  assert(reopeningReply.start_attribution === 'already_active'
+    && reopeningReply.host_capture_active === false
+    && reopeningReply.host_capture_starting === true,
+  `a host reopening its capture was reported as live: ${JSON.stringify(reopeningReply)}`);
+  // A dead capture nobody is reopening is neither live nor starting.
+  resetMicrophone();
+  appState.isRecording = true;
+  pipelineGone = true;
+  sendStart('gone-start', 'route-instance-h');
+  const goneReply = await finalReply('gone-start');
+  pipelineGone = false;
+  assert(goneReply.host_capture_active === false && goneReply.host_capture_starting === false,
+    `a dead capture was reported as starting forever: ${JSON.stringify(goneReply)}`);
+  resetMicrophone();
+
+  // The handler still awaits after its capture commits (proactive vision, the
+  // stand-down checks). The reply must wait for the command's own start to
+  // settle, not answer 'started' on the commit with start_outcome 'pending'.
+  let postCommitReceipt = null;
+  const commitThenKeepAwaiting = (receipt) => {
+    appState.voiceSessionStartEpoch += 1;
+    receipt.accepted = true;
+    receipt.voiceStartEpoch = appState.voiceSessionStartEpoch;
+    windowMock.isMicStarting = true;
+    commitReceipt(receipt);
+    postCommitReceipt = receipt;
+  };
+  clickBehavior = commitThenKeepAwaiting;
+  sendStart('post-commit-start', 'route-instance-h');
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert(!posted.some((message) => message.request_id === 'post-commit-start'
+    && message.reason !== 'working'),
+  'the bridge answered on the commit while its own start was still running');
+  postCommitReceipt.outcome = 'started';
+  windowMock.isMicStarting = false;
+  const postCommitReply = await finalReply('post-commit-start');
+  assert(postCommitReply.reason === 'started'
+    && postCommitReply.start_outcome === 'started'
+    && postCommitReply.start_committed === true,
+  `a settled start was not reported as started: ${JSON.stringify(postCommitReply)}`);
+  // Same window, but the handler stands down after the commit (a text send
+  // inside proactive vision): it stops the capture and settles 'cancelled'.
+  resetMicrophone();
+  clickBehavior = commitThenKeepAwaiting;
+  sendStart('post-commit-stand-down', 'route-instance-h');
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  assert(!posted.some((message) => message.request_id === 'post-commit-stand-down'
+    && message.reason !== 'working'),
+  'the bridge answered on the commit while its own start was still running');
+  appState.isRecording = false;
+  liveCaptureToken = 0;
+  postCommitReceipt.outcome = 'cancelled';
+  windowMock.isMicStarting = false;
+  const standDownAfterCommitReply = await finalReply('post-commit-stand-down');
+  assert(standDownAfterCommitReply.reason === 'start_failed'
+    && standDownAfterCommitReply.start_outcome === 'cancelled'
+    && standDownAfterCommitReply.start_committed === true
+    && standDownAfterCommitReply.start_capture_live === false,
+  `a start that stood down after committing was reported as started: ${JSON.stringify(standDownAfterCommitReply)}`);
+  resetMicrophone();
+
+  // A host page without receipt support: the start is attributed but not
+  // tracked, and one still in flight at the deadline is pending, not failed.
+  const offerVoiceStartReceipt = windowMock.offerVoiceStartReceipt;
+  delete windowMock.offerVoiceStartReceipt;
+  holdMicStart = true;
+  const untrackedDateNow = Date.now;
+  let untrackedSkewMs = 0;
+  Date.now = () => untrackedDateNow() + untrackedSkewMs;
+  try {
+    sendStart('untracked-deadline-start', 'route-instance-h');
+    await flush();
+    untrackedSkewMs = 13000;
+    const untrackedReply = await finalReply('untracked-deadline-start');
+    assert(untrackedReply.reason === 'start_pending'
+      && untrackedReply.start_attribution === 'command'
+      && untrackedReply.start_outcome === 'unknown',
+    `an untracked start in flight at the deadline was reported as failed: ${JSON.stringify(untrackedReply)}`);
+  } finally {
+    Date.now = untrackedDateNow;
+    windowMock.offerVoiceStartReceipt = offerVoiceStartReceipt;
+  }
+  resetMicrophone();
+
+  // A start the handler accepted but then stood down from (text takeover,
+  // blocked route, goodbye) settles nothing itself; once its lifecycle has
+  // closed the bridge reports it as cancelled, not pending.
+  clickBehavior = (receipt) => {
+    appState.voiceSessionStartEpoch += 1;
+    receipt.accepted = true;
+    receipt.voiceStartEpoch = appState.voiceSessionStartEpoch;
+  };
+  sendStart('stood-down-start', 'route-instance-h');
+  const stoodDownReply = await finalReply('stood-down-start');
+  assert(stoodDownReply.reason === 'start_failed'
+    && stoodDownReply.start_attribution === 'command'
+    && stoodDownReply.start_outcome === 'cancelled',
+  `a start that stood down was not reported as cancelled: ${JSON.stringify(stoodDownReply)}`);
+  // A click nothing handles leaves the receipt untaken; it must not stay
+  // offered for the next, unrelated press.
+  clickBehavior = 'no-listener';
+  sendStart('unhandled-click', 'route-instance-h');
+  const unhandledReply = await finalReply('unhandled-click');
+  assert(receiptSlot === null, 'an untaken start receipt stayed offered after the click');
+  assert(unhandledReply.reason === 'start_failed' && unhandledReply.start_outcome === 'not_started',
+    `an unhandled click was not reported as not started: ${JSON.stringify(unhandledReply)}`);
+  resetMicrophone();
+  openRoute('route-instance-c');
 
   channel.onmessage({ data: {
     type: 'game_voice_control_request',

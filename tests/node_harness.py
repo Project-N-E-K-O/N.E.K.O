@@ -103,7 +103,29 @@ can never show any, and an inherited ``NODE_OPTIONS`` preload that prints before
 stalling shows some without the harness being reached at all.  The preload drops
 a marker file the moment node compiles the script, and that file is the whole
 signal: an attempt that never got that far is repeated, and one that did is
-reported as it stands, because a second run would stall in the same place.
+reported as it stands, because a second run would stall in the same place --
+unless the caller declares the script ``rerun_safe`` (it touches nothing
+outside node), in which case it gets one more run (``_STARTED_RERUNS``).
+
+A cold node binary stalls a process on both sides of that line, and neither
+the marker nor the watchdog can see it for what it is.  On a freshly
+provisioned Windows runner the first node process of the job pages its own
+executable in from a disk nothing has read yet, one fault at a time, wherever
+execution first touches a page.  Traced on eight fresh runners, that first
+process took 1.4-1.8s to reach the preload (about 20ms for every process after
+it) and 0.77-1.0s for its first ``vm.runInContext`` (16ms after it): the cost
+lands before the script, where it reads as a spawn stall, and well inside it,
+where it reads as the script's own.  A page fault blocks the thread
+synchronously, so the watchdog cannot fire through it.  The frontend-contract
+shard's first test once spent its entire 65s ceiling this way -- marker
+written, nothing printed, no watchdog -- and was reported as a script that
+blocked itself.  Reading the binary through once, front to back, before the
+first spawn turns those faults into a few dozen large reads and leaves the
+pages in the file cache, so no attempt's budget is charged for a cold disk.
+``_prewarm_binary`` does that once per process, outside every ceiling.  On
+three more fresh runners the read took 0.72-1.0s for the 87 MB binary, after
+which the first process reached the preload in 36ms and ran that first
+``vm.runInContext`` in 27ms -- what every later process already got.
 """
 
 import atexit
@@ -133,7 +155,50 @@ _WATCHDOG_EXIT_CODE = 87
 # gives a passing stall on the runner the time to clear.  Bounded all the same,
 # so a node that never starts on this machine still comes back red.
 _SPAWN_ATTEMPTS = 3
+# Read size for warming the node binary.  Large enough that the whole binary
+# (about 87 MB on the runners) goes through in a few dozen reads instead of the
+# thousands of page-sized faults a cold first process would take.
+_PREWARM_CHUNK_BYTES = 1 << 20
 
+# For a ``rerun_safe`` script, how many more runs a stall *after* reaching the
+# script gets.  One: a runner hiccup clears on the next run, while a script that
+# really blocks at its top level stalls every time, and each stall costs a full
+# ceiling (65s for the settings harnesses) -- spending all three on it would let
+# a genuine hang push a shard toward its own timeout.
+_STARTED_RERUNS = 1
+
+_prewarm_guard = threading.Lock()
+_prewarmed_binaries: set[str] = set()
+
+
+def _read_through(path: str) -> None:
+    """Read ``path`` front to back and discard it; only the cache effect counts."""
+    with open(path, "rb", buffering=0) as handle:
+        while handle.read(_PREWARM_CHUNK_BYTES):
+            pass
+
+
+def _prewarm_binary(node_path: str) -> None:
+    """Get the node binary into the file cache before this process first runs it.
+
+    Once per binary per process, and outside every attempt's ceiling, so a cold
+    disk is paid for here rather than by whichever harness happens to run first.
+    The lock is held for the read itself: a second thread arriving meanwhile
+    waits for a warm binary instead of racing a cold one.  A path that cannot be
+    opened -- a bare ``"node"``, a missing file -- is left to ``subprocess`` to
+    report the way it always has; warming is an optimisation, never a new way
+    to fail.
+    """
+    key = os.path.normcase(os.path.abspath(node_path))
+    with _prewarm_guard:
+        if key in _prewarmed_binaries:
+            return
+        _prewarmed_binaries.add(key)
+        try:
+            _read_through(node_path)
+        except OSError:
+            # Deliberate: see the docstring -- spawning reports a bad path.
+            pass
 
 
 def _excerpt(blob, limit: int = 400) -> str:
@@ -151,12 +216,13 @@ class NodeHarnessSpawnTimeout(subprocess.TimeoutExpired):
     """The run hit the ceiling without node exiting.
 
     Subclasses ``TimeoutExpired`` so existing ``except`` clauses keep working,
-    and carries what each attempt managed to emit.  One attempt means node had
-    reached the script and the stall was not worth repeating; more than one
-    means every attempt stalled before getting that far.
+    and carries what each attempt managed to emit and whether it reached the
+    script (``attempts_started``, one flag per attempt).  ``started`` is the
+    last attempt's flag.
     """
 
-    def __init__(self, cmd, timeout, attempts, started=False):
+    def __init__(self, cmd, timeout, attempts, started=False, rerun_safe=False,
+                 attempts_started=None):
         # Carry the last attempt's output on the exception the way
         # ``subprocess.run`` would have: a caller that catches
         # ``TimeoutExpired`` and reads ``.stdout``/``.stderr`` (or ``.output``)
@@ -170,27 +236,68 @@ class NodeHarnessSpawnTimeout(subprocess.TimeoutExpired):
         )
         self.attempts = list(attempts)
         self.started = started
+        self.rerun_safe = rerun_safe
+        # Without per-attempt flags only the last one is known, and earlier ones
+        # are assumed not to have reached the script (true without rerun_safe,
+        # where the loop never continues past a start). Flags are kept one per
+        # attempt so no attempt goes unreported.
+        count = len(self.attempts)
+        if attempts_started is None:
+            flags = [False] * max(count - 1, 0) + [started] * bool(count)
+        else:
+            # Aligned on the last attempt, the one ``started`` describes.
+            flags = list(attempts_started)[-count:] if count else []
+            flags = [False] * (count - len(flags)) + flags
+        self.attempts_started = flags
 
     def __str__(self) -> str:
-        if self.started:
-            diagnosis = (
-                "node reached the harness script and then stalled without "
-                "the watchdog firing. Either the script's top level blocked "
-                "the event loop or compiling it did -- a timer cannot "
-                "interrupt either, and from out here they look the same. Not "
-                "retried: a second run stalls the same way, and repeating a "
-                "script that may already have run is the worse mistake."
-            )
-        else:
+        # Judged on every attempt, not the last one: attempts can disagree.
+        reached = sum(self.attempts_started)
+        total = len(self.attempts_started)
+        if reached == 0:
             diagnosis = (
                 "node never reached the harness script -- process creation, "
                 "reading it off disk, or V8 bootstrap stalled. Nothing was "
                 "under test, so the attempt was repeated."
             )
+        elif self.rerun_safe and total >= 2 and all(self.attempts_started[-2:]):
+            diagnosis = (
+                "node reached the harness script and stalled again after it was "
+                "re-run, without the watchdog firing. The caller marked the "
+                "script safe to re-run, so a stall after it started got one more "
+                "run; one that repeats points at the script itself (a "
+                "synchronous block), not at the runner."
+            )
+        elif total == 1 or (self.started and not self.rerun_safe):
+            earlier = (
+                f"After {total - 1} attempt(s) that never reached it, "
+                if total > 1 else ""
+            )
+            diagnosis = earlier + (
+                "node reached the harness script and then stalled without "
+                "the watchdog firing. Either the script's top level blocked "
+                "the event loop or compiling it did -- a timer cannot "
+                "interrupt either, and from out here they look the same. So "
+                "does the machine stalling node mid-script, e.g. paging in a "
+                "cold node binary -- the launcher reads the binary through "
+                "before the first spawn to keep that out. Not retried: a "
+                "script that blocks stalls the same way again, and repeating "
+                "a script that may already have run is the worse mistake."
+            )
+        else:
+            diagnosis = (
+                f"{reached} of {total} attempts reached the harness script and "
+                "stalled there; the others stalled before reaching it. Stalls "
+                "that vary from run to run point at the runner rather than at "
+                "the script."
+            )
         lines = [super().__str__(), "", diagnosis]
-        for index, attempt in enumerate(self.attempts, 1):
+        for index, (attempt, reached) in enumerate(
+            zip(self.attempts, self.attempts_started), 1
+        ):
+            where = "reached the script" if reached else "never reached the script"
             lines.append(
-                f"  attempt {index}: stdout={_excerpt(attempt.stdout)} "
+                f"  attempt {index} ({where}): stdout={_excerpt(attempt.stdout)} "
                 f"stderr={_excerpt(attempt.stderr)}"
             )
         return "\n".join(lines)
@@ -475,17 +582,24 @@ def _guarded(merged: dict, deadline_seconds: float, marker: str) -> tuple[list[s
     return ["--require", _preload_path()], dict(merged, env=environment)
 
 
-def _run_retrying_spawn_stalls(next_attempt, cmd_for_error):
+def _run_retrying_spawn_stalls(next_attempt, cmd_for_error, *, rerun_safe=False):
     """Run, and run again while node stalls without ever reaching the script.
 
     At most ``_SPAWN_ATTEMPTS`` runs in all; an attempt that reached the script
-    is reported as it stands, however many are left.
+    is reported as it stands, however many are left -- unless the caller passed
+    ``rerun_safe``: its script only simulates in memory, so running it again
+    repeats nothing outside the process. Then a stall after the script started
+    gets ``_STARTED_RERUNS`` more runs (one). On a Windows runner node has reached a pure in-memory
+    settings harness and sat 60s without the watchdog firing, while the same
+    script finishes in ~0.1s locally and passed 1216 runs under 16-way load:
+    the runner stalled the synchronous file reads or compilation at the top.
 
     ``next_attempt`` is called per attempt so a caller that stages a temp file
     gets a fresh one, rather than a second attempt inheriting whatever state
     the killed first attempt left behind.
     """
     attempts = []
+    attempts_started = []
     for attempt in range(1, _SPAWN_ATTEMPTS + 1):
         argv, run_kwargs, marker = next_attempt()
         try:
@@ -493,9 +607,16 @@ def _run_retrying_spawn_stalls(next_attempt, cmd_for_error):
         except subprocess.TimeoutExpired as exc:
             attempts.append(exc)
             started = _script_started(marker)
-            if attempt == _SPAWN_ATTEMPTS or started:
+            attempts_started.append(started)
+            started_stalls = sum(attempts_started)
+            give_up = attempt == _SPAWN_ATTEMPTS or (
+                started and (not rerun_safe or started_stalls > _STARTED_RERUNS)
+            )
+            if give_up:
                 raise NodeHarnessSpawnTimeout(
-                    cmd_for_error, exc.timeout, attempts, started=started
+                    cmd_for_error, exc.timeout, attempts,
+                    started=started, rerun_safe=rerun_safe,
+                    attempts_started=attempts_started,
                 ) from exc
         finally:
             try:
@@ -508,12 +629,18 @@ def _run_retrying_spawn_stalls(next_attempt, cmd_for_error):
     raise AssertionError("unreachable")  # pragma: no cover
 
 
-def run_node_script(node_path: str, script: str, **kwargs) -> subprocess.CompletedProcess[str]:
+def run_node_script(
+    node_path: str, script: str, *, rerun_safe: bool = False, **kwargs
+) -> subprocess.CompletedProcess[str]:
     """Run ``script`` from a temp file under ``node_path``.
 
     Use this when the script is large or grows with the behaviour it simulates.
-    Extra keyword arguments go straight to ``subprocess.run``.
+    ``rerun_safe``: the script has no effect outside its own process (no files,
+    child processes or network), so a stall after it started may be retried;
+    see ``_run_retrying_spawn_stalls``. Extra keyword arguments go straight to
+    ``subprocess.run``.
     """
+    _prewarm_binary(node_path)
     budget, deadline_seconds = _budgeted(_utf8(kwargs))
     staged: list[str] = []
 
@@ -528,7 +655,9 @@ def run_node_script(node_path: str, script: str, **kwargs) -> subprocess.Complet
         return [node_path, *preload, staged[-1]], merged, marker
 
     try:
-        return _run_retrying_spawn_stalls(_attempt, [node_path, "<temp script>"])
+        return _run_retrying_spawn_stalls(
+            _attempt, [node_path, "<temp script>"], rerun_safe=rerun_safe
+        )
     finally:
         for path in staged:
             try:
@@ -547,6 +676,7 @@ def run_node_stdin(node_path: str, script: str, **kwargs) -> subprocess.Complete
     stdin form; stdin has no length ceiling, so only the encoding pin matters
     here. Extra keyword arguments go straight to ``subprocess.run``.
     """
+    _prewarm_binary(node_path)
     budget, deadline_seconds = _budgeted(_utf8(kwargs))
 
     def _attempt():

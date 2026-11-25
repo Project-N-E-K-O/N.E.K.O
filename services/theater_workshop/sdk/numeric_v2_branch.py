@@ -598,7 +598,7 @@ class NumericV2BranchService:
                 "chapter": ending["title"],
                 "story_beat": {
                     **({"fixed_narrations": deepcopy(ending["fixed_narrations"])}
-                       if "fixed_narrations" in ending else {}),
+                       if ending.get("fixed_narrations") else {}),
                     "summary": ending["summary"],
                     "opening_scene": ending["opening_scene"],
                     "goals": self._project_goals(
@@ -2633,6 +2633,13 @@ class NumericV2BranchService:
             )
             if len(state[field]) > 4:
                 raise NumericV2BranchError("invalid_branch_generation", {"path": f"{path}.{field}"})
+        for index, boundary in enumerate(state["scene_boundaries"]):
+            if not boundary.startswith(("不得", "禁止", "不能")):
+                raise NumericV2BranchError("invalid_branch_generation", {
+                    "path": f"{path}.scene_boundaries[{index}]",
+                    "issue_code": "character_state_boundary_polarity_invalid",
+                    "message": "状态边界必须以“不得”“禁止”或“不能”开头；正向状态应写入对应角色状态。",
+                })
         contract = state.get("acting_contract")
         if not isinstance(contract, Mapping):
             raise NumericV2BranchError("invalid_branch_generation", {"path": f"{path}.acting_contract"})

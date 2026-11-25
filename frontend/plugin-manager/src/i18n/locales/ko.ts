@@ -1,16 +1,20 @@
-import { pluginConsentMessages } from '../plugin-consent'
-import { modelApiMessages } from '../model-api'
-import { modelBindingsMessages } from '../model-bindings'
-import { authoringMessages } from '../authoring'
+import pluginConsentMessages from '../plugin-consent/ko'
+import modelApiMessages from '../model-api/ko'
+import modelBindingsMessages from '../model-bindings/ko'
+import marketFeedbackMessages from '../market-feedback/ko'
+import authoringMessages from '../authoring/ko'
+import powerMessages from '../power/ko'
 
 /**
  * 한국어 언어 팩
  */
 export default {
-  pluginConsent: pluginConsentMessages['ko'],
-  authoring: authoringMessages['ko'],
-  modelApi: modelApiMessages['ko'],
-  modelBindings: modelBindingsMessages['ko'],
+  pluginConsent: pluginConsentMessages,
+  authoring: authoringMessages,
+  marketFeedback: marketFeedbackMessages,
+  modelApi: modelApiMessages,
+  modelBindings: modelBindingsMessages,
+  power: powerMessages,
   common: {
     chooseLanguage: "언어 선택",
     surfaceLanguagePending: "앱 언어가 변경되었습니다. 저장하지 않은 내용을 보호하기 위해 패널 언어를 유지합니다.",
@@ -24,6 +28,7 @@ export default {
 
     loading: '로딩 중...',
     refresh: '새로고침',
+    retry: '다시 시도',
     search: '검색',
     filter: '필터',
     reset: '초기화',
@@ -823,6 +828,22 @@ export default {
       install: '설치',
       analyze: '분석'
     },
+    messages: {
+      selectPluginToBuild: '먼저 빌드할 플러그인을 선택하세요.',
+      bundleRequiresTwoPlugins: '번들에는 최소 두 개의 플러그인을 선택해야 합니다.',
+      bundleBuildFailedWithError: '번들 빌드 실패: {error}',
+      bundleBuildCompleted: '번들 빌드가 완료되었습니다.',
+      bundleBuildPartialFailed: '번들 빌드 {count}건 실패.',
+      buildFailedWithError: '빌드 실패: {error}',
+      buildCompletedWithFailures: '빌드 완료: 성공 {built}건, 실패 {failed}건.',
+      buildCompleted: '빌드 완료: 성공 {built}건.',
+      inspectCompleted: '패키지 검사가 완료되었습니다.',
+      verifyPassed: '패키지 검증을 통과했습니다.',
+      verifyFailed: '패키지 검증에 실패했습니다.',
+      selectAtLeastOnePlugin: '최소 하나의 플러그인을 선택하세요.',
+      analyzeCompleted: '분석이 완료되었습니다.',
+      analyzeFailedWithError: '분석 실패: {error}'
+    },
     summary: {
       // Phase 7 / req 2.31: metrics labels for buildSummaryMetrics
       metrics: {
@@ -1039,6 +1060,8 @@ export default {
     pluginBuilt: '플러그인이 패키징되었습니다: {packageName}',
     pluginDeleted: '플러그인이 삭제되었습니다',
     pluginDeletedBuiltinRestartFailed: '플러그인 {plugin}은(는) 삭제되었지만 복원된 내장 버전을 시작하지 못했습니다: {error}',
+    pluginDeletedPermissionsNotCleared: '플러그인 {plugin}은(는) 삭제되었지만 권한 기록 파일이 손상되었거나 더 새로운 버전의 파일이라 남아 있을 수 있는 권한 허용을 지우지 못했습니다. 파일을 다시 읽을 수 있게 되면 해당 허용이 계속 적용될 수 있습니다.',
+    pluginsDeletedPermissionsNotCleared: '플러그인 {plugins}이(가) 삭제되었지만 권한 기록 파일이 손상되었거나 더 새로운 버전의 파일이라 남아 있을 수 있는 권한 허용을 지우지 못했습니다. 파일을 다시 읽을 수 있게 되면 해당 허용이 계속 적용될 수 있습니다.',
     startFailed: '시작에 실패했습니다',
     autoStartEnabled: '자동 시작을 켰습니다',
     autoStartDisabled: '자동 시작을 껐습니다',
@@ -1100,7 +1123,7 @@ export default {
     }
   },
   app: {
-    titleSuffix: 'N.E.K.O 플러그인 관리'
+    titleSuffix: 'N.E.K.O 냥파워'
   },
   tutorial: {
     yuiGuide: {

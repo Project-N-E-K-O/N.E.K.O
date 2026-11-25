@@ -1803,7 +1803,9 @@
             state.closeStarted = true;
             state.cancelPending = true;
             stopMicrophone('capture_cancelled');
-            await cancelEnrollment({ keepalive: true, silent: true });
+            const cancellation = cancelEnrollment({ keepalive: true, silent: true });
+            const cleanup = readiness && typeof readiness.close === 'function' ? readiness.close() : Promise.resolve();
+            await Promise.all([cancellation, cleanup]);
             return true;
         };
         window.addEventListener('pagehide', function () {

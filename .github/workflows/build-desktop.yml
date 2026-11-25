@@ -401,7 +401,7 @@ jobs:
           # 内置 Live2D 模型：Linux 分支由 build_frontend.sh 解压，这里是绕过那个脚本
           # 的 Windows/macOS 路径，必须自己解一次，否则 --include-data-dir=static 打进
           # dist 的 static/ 里没有默认模型（check_nuitka_dist 会把这种情况判红）。
-          for model in yui-origin yui-lolita; do
+          for model in yui-origin yui-lolita yui-sister; do
             rm -rf "static/$model"
             tar -xzmf "assets/$model.tar.gz" -C static/
             test -f "static/$model/$model.moc3"
@@ -457,6 +457,10 @@ jobs:
           # Data directories
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=assets=assets"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=templates=templates"
+          # Agent kit staged by prepare_nuitka_plugins.py prepare; the frozen
+          # CLI copies it into every scaffolded plugin (see templates/agent_kit.py).
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=plugin/neko_plugin_cli/agent_kit=plugin/neko_plugin_cli/agent_kit"
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=plugin/neko_plugin_cli/templates/agent_guides=plugin/neko_plugin_cli/templates/agent_guides"
           # Plugin manager UI (vite dist; gitignored)
           if [ -d "frontend/plugin-manager/dist" ]; then
             NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=frontend/plugin-manager/dist=frontend/plugin-manager/dist"
@@ -501,7 +505,7 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=services.theater_workshop"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=memory"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=knowledge"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=nekoclaw"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=nekopower"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=utils"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=steamworks"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=tiktoken"
@@ -621,6 +625,10 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=config/surveys=config/surveys
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=assets=assets
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=templates=templates
+          rem Agent kit staged by prepare_nuitka_plugins.py prepare; the frozen
+          rem CLI copies it into every scaffolded plugin (see templates/agent_kit.py).
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=plugin/neko_plugin_cli/agent_kit=plugin/neko_plugin_cli/agent_kit
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=plugin/neko_plugin_cli/templates/agent_guides=plugin/neko_plugin_cli/templates/agent_guides
           if not exist "frontend\plugin-manager\dist" echo [WARNING] frontend\plugin-manager\dist missing; /ui will be empty in bundle.
           if exist "frontend\plugin-manager\dist" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=frontend/plugin-manager/dist=frontend/plugin-manager/dist
           rem Built-in plugin payload is copied from the filtered stage after Nuitka.
@@ -651,7 +659,7 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=services.theater_workshop
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=memory
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=knowledge
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=nekoclaw
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=nekopower
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=utils
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=steamworks
           rem PR #1264 moved native libs into steamworks/; runtime still loads them

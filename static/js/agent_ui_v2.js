@@ -72,7 +72,7 @@
         const shouldStabilizeTutorialText = options
             && options.stabilizeTutorialText === true
             && isTutorialAgentStatusLocked();
-        const text = shouldStabilizeTutorialText ? 'NekoClaw server ready' : (msg || '');
+        const text = shouldStabilizeTutorialText ? 'NekoPower server ready' : (msg || '');
         status.forEach(s => { if (s) s.textContent = text; });
     };
     const currentLanlanName = () => {
@@ -165,6 +165,36 @@
         return snapshot;
     }
 
+    let _agentUiCsrfToken = '';
+    async function getAgentMutationHeaders(forceRefresh) {
+        try {
+            const security = window.nekoLocalMutationSecurity;
+            if (security && typeof security.getMutationHeaders === 'function') {
+                if (forceRefresh && typeof security.refreshToken === 'function') {
+                    await security.refreshToken();
+                }
+                const headers = await security.getMutationHeaders();
+                if (headers && typeof headers === 'object') {
+                    return headers;
+                }
+            }
+        } catch (_) { /* fall back to page_config */ }
+        if (forceRefresh) _agentUiCsrfToken = '';
+        if (_agentUiCsrfToken) {
+            return { 'X-CSRF-Token': _agentUiCsrfToken };
+        }
+        try {
+            const resp = await fetch('/api/config/page_config', { cache: 'no-store' });
+            const cfg = resp.ok ? await resp.json() : null;
+            const token = cfg && cfg.autostart_csrf_token;
+            if (typeof token === 'string' && token) {
+                _agentUiCsrfToken = token;
+                return { 'X-CSRF-Token': token };
+            }
+        } catch (_) { /* guarded POST will surface rejection */ }
+        return {};
+    }
+
     async function sendCommand(command, payload) {
         const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const t0 = performance.now();
@@ -173,11 +203,26 @@
             const lanlanName = currentLanlanName();
             if (lanlanName) body.lanlan_name = lanlanName;
         }
-        const r = await fetch('/api/agent/command', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-        });
+        const bodyJson = JSON.stringify(body);
+        async function postOnce(forceRefresh) {
+            const csrfHeaders = await getAgentMutationHeaders(forceRefresh);
+            return fetch('/api/agent/command', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...csrfHeaders },
+                body: bodyJson,
+            });
+        }
+        let r = await postOnce(false);
+        if (r.status === 403 && typeof r.clone === 'function') {
+            let shouldRetryCsrf = false;
+            try {
+                const errPayload = await r.clone().json();
+                shouldRetryCsrf = Boolean(errPayload && errPayload.error_code === 'csrf_validation_failed');
+            } catch (_) { /* keep original 403 */ }
+            if (shouldRetryCsrf) {
+                r = await postOnce(true);
+            }
+        }
         if (!r.ok) throw new Error(`command status ${r.status}`);
         const j = await r.json();
         if (!j || j.success !== true) throw new Error(j?.error || 'command failed');
@@ -221,50 +266,13 @@
         const rev = Number(snapshot.revision ?? -1);
         if (Number.isFinite(rev) && rev <= state.revision) return;
 
-        // Detect precheck failure transitions: PENDING → specific failure reason.
-        // Only fire the toast when the user actually opted into that capability —
-        // otherwise background daemons (browser-use install / startup
-        // LLM probe) flipping their own seeded PENDING → *_UNREACHABLE produce
-        // bogus "猫爪预检失败" popups even when the agent is working fine.
-        const CAP_TO_FLAG = {
-            computer_use: 'computer_use_enabled',
-            browser_use: 'browser_use_enabled',
-            user_plugin: 'user_plugin_enabled',
-        };
-        const prevCaps = (state.snapshot && state.snapshot.capabilities) || {};
-        const prevFlags = (state.snapshot && state.snapshot.flags) || {};
-        const newCaps = snapshot.capabilities || {};
-        const analyzerOn = !!snapshot.analyzer_enabled;
-        const snapFlags = snapshot.flags || {};
-        for (const [capName, capInfo] of Object.entries(newCaps)) {
-            if (!capInfo || capInfo.ready) continue;
-            if (!analyzerOn) continue;
-            const flagKey = CAP_TO_FLAG[capName];
-            // 用户是否真的请求了这个能力：新快照、上一帧快照、pending 队列、乐观更新里有任一为真即算。
-            // 只看 snapFlags 会吞掉"用户刚开启 → 后端同帧检查失败立刻关掉"的失败提示。
-            const userRequested = !!(
-                flagKey && (
-                    snapFlags[flagKey] ||
-                    prevFlags[flagKey] ||
-                    state.pending.has(flagKey) ||
-                    state.optimistic[flagKey]
-                )
-            );
-            if (!userRequested) continue;
-            const prevInfo = prevCaps[capName];
-            const wasPending = prevInfo && !prevInfo.ready && prevInfo.reason && prevInfo.reason.includes('PENDING');
-            const nowFailed = capInfo.reason && !capInfo.reason.includes('PENDING');
-            if (wasPending && nowFailed && typeof window.showStatusToast === 'function' && window.t) {
-                const precheckKey = `agent.precheck.${capInfo.reason}`;
-                let reasonText = window.t(precheckKey);
-                if (reasonText === precheckKey) reasonText = capInfo.reason;
-                window.showStatusToast(window.t('agent.status.precheckFailed', { reason: reasonText }), 5000);
-            }
-        }
-
         state.snapshot = snapshot;
         if (Number.isFinite(rev)) state.revision = rev;
         window._agentStatusSnapshot = snapshot;
+        // 悬浮窗显不显示：后端记着的值（喵能力界面里改），同步到本页。
+        if (window.AgentHUD && typeof window.AgentHUD.syncTaskHudPreference === 'function') {
+            window.AgentHUD.syncTaskHudPreference(snapshot.task_hud_visible);
+        }
         if (snapshot.notification && typeof window.showStatusToast === 'function') {
             const msg = window.translateStatusMessage ? window.translateStatusMessage(snapshot.notification) : snapshot.notification;
             window.showStatusToast(msg, 4000);
@@ -363,15 +371,8 @@
             sync(list);
         });
 
-        const anyPending = Object.values(snap.capabilities || {}).some(
-            c => c && typeof c.reason === 'string' && c.reason.includes('PENDING')
-        );
         if (state.globalBusy) {
             setStatus(window.t ? window.t('settings.toggles.checking') : '已接受操作，切换中...', {
-                stabilizeTutorialText: true
-            });
-        } else if (anyPending) {
-            setStatus(window.t ? window.t('agent.status.connectivityCheck') : 'Agent LLM 连接检查中...', {
                 stabilizeTutorialText: true
             });
         } else if (!analyzerEnabled) {
@@ -591,7 +592,7 @@
         applyLocalAgentOff('character-switch-local');
         try {
             const snapshot = await fetchSnapshotRaw();
-            // 用户已经手动打开猫爪时，不允许切换后的慢刷新覆盖乐观开关状态。
+            // 用户已经手动打开喵能力时，不允许切换后的慢刷新覆盖乐观开关状态。
             if (resetMasterSeq === state.masterOpSeq && state.pending.size === 0 && isSnapshotTokenCurrent(resetToken)) {
                 applySnapshot(snapshot, 'character-switch-refresh', resetToken);
             }

@@ -30,6 +30,7 @@ pattern.  Trusted origins must be complete ``http://`` or ``https://`` origins.
 """
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json
 import os
@@ -41,6 +42,7 @@ from utils.deployment import is_behind_proxy
 
 TRUSTED_HOSTS_ENV = "NEKO_TRUSTED_HOSTS"
 TRUSTED_ORIGINS_ENV = "NEKO_TRUSTED_ORIGINS"
+_REMOTE_ACCESS_CONFIG = "remote_access.json"
 
 _HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 _HTTP_DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
@@ -207,6 +209,50 @@ def _read_trusted_hosts(value: str | None) -> tuple[_TrustedHost, ...]:
     return tuple(trusted)
 
 
+def saved_trusted_hosts() -> str:
+    from utils.config_manager import get_config_manager
+    from utils.file_utils import read_bytes_tolerating_replace
+
+    path = get_config_manager(migrate=False).get_runtime_config_path(_REMOTE_ACCESS_CONFIG)
+    try:
+        config = json.loads(read_bytes_tolerating_replace(path))
+    except FileNotFoundError:
+        return ""
+    if not isinstance(config, dict) or not isinstance(config.get("trusted_hosts"), str):
+        raise ValueError("Invalid remote access configuration")
+    return config["trusted_hosts"]
+
+
+def save_trusted_hosts(value: str) -> str:
+    from utils.config_manager import get_config_manager
+
+    entries = [entry.strip() for entry in value.split(",") if entry.strip()]
+    for i, entry in enumerate(entries):
+        if entry.lower().startswith(("https://", "http://")):
+            url = urlsplit(entry)
+            if not url.netloc or url.username is not None or url.password is not None:
+                raise ValueError("Invalid trusted URL")
+            entries[i] = url.netloc
+    trusted = _read_trusted_hosts(",".join(entries))
+    if len(trusted) != len(entries):
+        raise ValueError("Invalid trusted hostname")
+    unique_entries = {}
+    for host, entry in zip(trusted, entries, strict=True):
+        unique_entries.setdefault(host, entry)
+    normalized = ", ".join(unique_entries.values())
+    get_config_manager(migrate=False).save_json_config(
+        _REMOTE_ACCESS_CONFIG, {"trusted_hosts": normalized},
+    )
+    return normalized
+
+
+def _configured_trusted_hosts() -> tuple[_TrustedHost, ...]:
+    try:
+        return _read_trusted_hosts(saved_trusted_hosts())
+    except (OSError, ValueError):
+        return ()
+
+
 def _read_trusted_origins(value: str | None) -> tuple[_Origin, ...]:
     origins: list[_Origin] = []
     for raw_item in (value or "").split(","):
@@ -318,6 +364,7 @@ class HostOriginGuardMiddleware:
         trusted_origins: str | None = None,
     ):
         self.app = app
+        self.use_saved_trusted_hosts = trusted_hosts is None
         self.trusted_hosts = _read_trusted_hosts(
             os.getenv(TRUSTED_HOSTS_ENV) if trusted_hosts is None else trusted_hosts
         )
@@ -336,7 +383,7 @@ class HostOriginGuardMiddleware:
             await self._reject(scope_type, send)
             return
         authority = _parse_authority(host_values[0])
-        if authority is None or not self._host_is_allowed(authority, scope):
+        if authority is None or not await self._host_is_allowed(authority, scope):
             await self._reject(scope_type, send)
             return
 
@@ -348,7 +395,7 @@ class HostOriginGuardMiddleware:
 
         await self.app(scope, receive, send)
 
-    def _host_is_allowed(self, authority: _Authority, scope) -> bool:
+    async def _host_is_allowed(self, authority: _Authority, scope) -> bool:
         if authority.ip is not None or authority.hostname == "localhost":
             return True
 
@@ -365,7 +412,18 @@ class HostOriginGuardMiddleware:
 
         request_scheme = str(scope.get("scheme") or "http").lower()
         request_port = _effective_port(authority, request_scheme)
-        for trusted in self.trusted_hosts:
+        if self._matches_trusted_hosts(authority, request_port, self.trusted_hosts):
+            return True
+        if not self.use_saved_trusted_hosts:
+            return False
+        saved = await asyncio.to_thread(_configured_trusted_hosts)
+        return self._matches_trusted_hosts(authority, request_port, saved)
+
+    @staticmethod
+    def _matches_trusted_hosts(
+        authority: _Authority, request_port: int | None, trusted_hosts: tuple[_TrustedHost, ...],
+    ) -> bool:
+        for trusted in trusted_hosts:
             hostname_matches = authority.hostname == trusted.hostname
             if trusted.wildcard:
                 hostname_matches = authority.hostname.endswith("." + trusted.hostname)

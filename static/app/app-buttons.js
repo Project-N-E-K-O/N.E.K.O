@@ -667,11 +667,19 @@
         return normalized;
     };
 
+    function getActiveScreenshotItems() {
+        var screenshotsList = S.dom.screenshotsList;
+        if (!screenshotsList) return [];
+        return Array.from(screenshotsList.children).filter(function (item) {
+            return !item.dataset || item.dataset.removing !== '1';
+        });
+    }
+
     mod.normalizeAllPendingComposerAttachments = async function normalizeAllPendingComposerAttachments() {
         var screenshotsList = S.dom.screenshotsList;
         if (!screenshotsList) return [];
 
-        var items = Array.from(screenshotsList.children);
+        var items = getActiveScreenshotItems();
         var urls = [];
         var changed = false;
         for (var i = 0; i < items.length; i += 1) {
@@ -791,16 +799,25 @@
      * @param {HTMLElement} item
      */
     mod.removeScreenshotFromList = function removeScreenshotFromList(item) {
-        var screenshotsList = S.dom.screenshotsList;
         var screenshotThumbnailContainer = S.dom.screenshotThumbnailContainer;
+        if (!item || (item.dataset && item.dataset.removing === '1')) return;
 
-        item.style.animation = 'slideOut 0.3s ease';
+        if (item.dataset) {
+            item.dataset.removing = '1';
+        }
+        if (item.style) {
+            item.style.pointerEvents = 'none';
+            item.style.animation = 'slideOut 0.3s ease';
+        }
+        mod.updateScreenshotCount();
+        mod.syncPendingComposerAttachments();
+
         setTimeout(function () {
             item.remove();
             mod.updateScreenshotCount();
             mod.syncPendingComposerAttachments();
 
-            if (screenshotsList.children.length === 0) {
+            if (getActiveScreenshotItems().length === 0 && screenshotThumbnailContainer) {
                 screenshotThumbnailContainer.classList.remove('show');
             }
         }, 300);
@@ -811,18 +828,16 @@
      * Update the displayed screenshot count badge.
      */
     mod.updateScreenshotCount = function updateScreenshotCount() {
-        var screenshotsList = S.dom.screenshotsList;
         var screenshotCountEl = S.dom.screenshotCount;
-        var count = screenshotsList.children.length;
-        screenshotCountEl.textContent = count;
+        var count = getActiveScreenshotItems().length;
+        if (screenshotCountEl) {
+            screenshotCountEl.textContent = count;
+        }
     };
     window.updateScreenshotCount = mod.updateScreenshotCount;
 
     mod.getPendingComposerAttachments = function getPendingComposerAttachments() {
-        var screenshotsList = S.dom.screenshotsList;
-        if (!screenshotsList) return [];
-
-        return Array.from(screenshotsList.children).map(function (item, index) {
+        return getActiveScreenshotItems().map(function (item, index) {
             var img = item.querySelector('.screenshot-thumbnail');
             if (!img || !img.src) return null;
             var translatedAlt = window.t ? window.t('chat.pendingImageAlt', { index: index + 1 }) : '';
@@ -957,9 +972,7 @@
 
     mod.removePendingAttachmentById = function removePendingAttachmentById(attachmentId) {
         if (!attachmentId) return;
-        var screenshotsList = S.dom.screenshotsList;
-        if (!screenshotsList) return;
-        var items = Array.from(screenshotsList.children);
+        var items = getActiveScreenshotItems();
         var target = items.find(function (item) {
             return item.dataset.attachmentId === String(attachmentId);
         });
@@ -973,7 +986,7 @@
         var screenshotThumbnailContainer = S.dom.screenshotThumbnailContainer;
         if (!screenshotsList || !screenshotThumbnailContainer) return;
         mod.updateScreenshotCount();
-        if (screenshotsList.children.length > 0) {
+        if (getActiveScreenshotItems().length > 0) {
             screenshotThumbnailContainer.classList.add('show');
         } else {
             screenshotThumbnailContainer.classList.remove('show');
@@ -1087,7 +1100,9 @@
         var existingItems = Array.from(screenshotsList.children);
         var detachedExistingItems = [];
         existingItems.forEach(function (item) {
-            detachedExistingItems.push(item);
+            if (!item.dataset || item.dataset.removing !== '1') {
+                detachedExistingItems.push(item);
+            }
             item.remove();
         });
         refreshPendingComposerAttachmentList();
@@ -1245,6 +1260,15 @@
                 }),
                 acceptsTouchZone: true,
                 booleanField: Object.freeze({ input: 'easterEgg', output: 'easter_egg' }),
+                roundChoice: false
+            }),
+            // 不拿道具直接连点模型（static/avatar/avatar-click-shake.js）
+            tap: Object.freeze({
+                actions: Object.freeze({
+                    poke: Object.freeze(['normal', 'rapid', 'angry'])
+                }),
+                acceptsTouchZone: false,
+                booleanField: null,
                 roundChoice: false
             }),
             rps: Object.freeze({
@@ -1856,7 +1880,10 @@
         return normalized;
     }
 
-    async function sendAvatarInteractionPayload(payload) {
+    // options.isStillValid（可选）：等待 WebSocket 重连后、真正发送前再确认一次这条互动是否还该发
+    // （例如等待期间已切换角色）。不传时行为不变。
+    async function sendAvatarInteractionPayload(payload, options) {
+        var isStillValid = options && typeof options.isStillValid === 'function' ? options.isStillValid : null;
         var normalized = normalizeAvatarInteractionPayload(payload);
         if (!normalized) {
             return false;
@@ -1886,6 +1913,13 @@
 
         try {
             await window.ensureWebSocketOpen();
+            if (isStillValid && !isStillValid()) {
+                console.debug('[AvatarInteraction] dropped stale interaction after reconnect wait:', normalized.interaction_id);
+                if (avatarInteractionTextContinuationState.interactionId === normalized.interaction_id) {
+                    releaseDeferredTextAfterAvatarInteraction();
+                }
+                return false;
+            }
             if (!S.socket || S.socket.readyState !== WebSocket.OPEN) {
                 throw new Error('WEBSOCKET_NOT_CONNECTED');
             }
@@ -2162,6 +2196,12 @@
         // Mic button click
         // ----------------------------------------------------------------
         micButton.addEventListener('click', async function () {
+            // A host-mediated (mini-game) start offers a receipt right before it
+            // clicks. Take it before any early return so it can only ever
+            // describe THIS dispatch; a user's own press finds the slot empty.
+            var voiceStartReceipt = typeof window.takeVoiceStartReceipt === 'function'
+                ? window.takeVoiceStartReceipt()
+                : null;
             if (micButton.disabled || S.isRecording) return;
             // 邀请等待也已占用串门输入通道，在修改启动状态或结束文本会话前直接提示。
             if (typeof window.isNekoVisitVoiceBlocked === 'function' && window.isNekoVisitVoiceBlocked()) {
@@ -2201,6 +2241,18 @@
             S.voiceStartPending = true;
             var voiceStartEpoch = (S.voiceSessionStartEpoch || 0) + 1;
             S.voiceSessionStartEpoch = voiceStartEpoch;
+            // Accepted synchronously, before the first await: from here this
+            // press is the receipt's start, identified by its epoch. The
+            // receipt only records facts -- it never steers this flow.
+            if (voiceStartReceipt) {
+                voiceStartReceipt.accepted = true;
+                voiceStartReceipt.voiceStartEpoch = voiceStartEpoch;
+            }
+            function settleVoiceStartReceipt(outcome) {
+                if (voiceStartReceipt && voiceStartReceipt.outcome === 'pending') {
+                    voiceStartReceipt.outcome = outcome;
+                }
+            }
             function ensureVoiceStartCurrent() {
                 if (S.voiceSessionStartEpoch !== voiceStartEpoch
                         || window.isMicStarting !== true
@@ -2281,6 +2333,13 @@
                             && S._pendingSessionStartMode !== 'audio')) {
                     return false;
                 }
+                // Every path below stands this start down. Settle its receipt
+                // now: an automatic audio restart takes over WITHOUT moving
+                // the epoch (app-websocket.js), so while it holds the
+                // lifecycle flags the bridge could not tell this exited start
+                // from one still running and would keep reporting 'pending'.
+                // A no-op when the catch already settled it.
+                settleVoiceStartReceipt('cancelled');
                 if (!window.supersededByAudioStart(micStartOwner)) {
                     // This flow may have set S.isSwitchingMode when it began
                     // from a live text session, and standing down returns past
@@ -2397,6 +2456,11 @@
                 await window.ensureWebSocketOpen();
                 ensureVoiceStartCurrent();
                 if (micStartMustStandDown()) return;
+                if (window.nekoVoiceCaptureReadiness) {
+                    await window.nekoVoiceCaptureReadiness.prepareCapture();
+                    ensureVoiceStartCurrent();
+                    if (micStartMustStandDown()) return;
+                }
                 S.socket.send(JSON.stringify({
                     action: 'start_session',
                     input_type: 'audio',
@@ -2496,10 +2560,18 @@
                         // enabled and failed to start). Do not open the mic;
                         // unwind the starting-voice UI so the button is usable
                         // again, and let the ASR failure toast stand.
+                        settleVoiceStartReceipt('cancelled');
                         if (typeof window.abortVoiceStartForBlockedRoute === 'function') {
                             window.abortVoiceStartForBlockedRoute();
                         }
                         return;
+                    }
+                    // startMicCapture takes the receipt synchronously on entry and
+                    // binds it to its own capture generation.
+                    if (voiceStartReceipt
+                            && typeof window.offerVoiceStartReceipt === 'function'
+                            && typeof window.startMicCapture === 'function') {
+                        window.offerVoiceStartReceipt(voiceStartReceipt);
                     }
                     var microphoneStarted = await window.startMicCapture();
                     if (microphoneStarted !== true) {
@@ -2543,7 +2615,9 @@
                 try {
                     var tutorialHoldsVision = typeof window.isNekoHomeTutorialProactiveSuppressed === 'function'
                         && window.isNekoHomeTutorialProactiveSuppressed() === true;
-                    if (S.proactiveVisionEnabled && !tutorialHoldsVision) {
+                    var speechVisionAllowed = typeof window.canProactiveVisionRunDuringSpeech === 'function'
+                        && window.canProactiveVisionRunDuringSpeech() === true;
+                    if (speechVisionAllowed && !tutorialHoldsVision) {
                         if (typeof window.acquireProactiveVisionStream === 'function') {
                             await window.acquireProactiveVisionStream();
                         }
@@ -2580,6 +2654,12 @@
 
                 window.dispatchEvent(new CustomEvent('neko:voice-session-started'));
 
+                // Settled before the lifecycle flags clear. A start that
+                // reached here without committing its own capture handed over
+                // to a capture that something else owns.
+                settleVoiceStartReceipt(
+                    voiceStartReceipt && voiceStartReceipt.committed === true ? 'started' : 'superseded'
+                );
                 S.voiceStartPending = false;
                 window.isMicStarting = false;
                 S.isSwitchingMode = false;
@@ -2589,6 +2669,9 @@
                 var isVoiceStartCancelled = !!(error && error.voiceStartCancelled);
                 var isMicrophoneStartCancelled = !!(
                     error && error.microphoneStartCancelled
+                );
+                settleVoiceStartReceipt(
+                    (isVoiceStartCancelled || isMicrophoneStartCancelled) ? 'cancelled' : 'failed'
                 );
                 var preserveGoodbyeUi = isVoiceStartCancelled
                     && typeof window.isNekoGoodbyeModeActive === 'function'
@@ -3060,7 +3143,7 @@
             var extraImageDataUrls = normalizeExternalImageDataUrls(options.extraImageDataUrls);
             var hasExtraImages = extraImageDataUrls.length > 0;
             var ignoreComposerAttachments = options.ignoreComposerAttachments === true;
-            var hasScreenshots = !ignoreComposerAttachments && screenshotsList.children.length > 0;
+            var hasScreenshots = !ignoreComposerAttachments && getActiveScreenshotItems().length > 0;
             if (!text && !hasScreenshots && !hasExtraImages) return false;
             if (isHomeTutorialInteractionLocked()) {
                 showHomeTutorialLockedToast();
@@ -3085,7 +3168,7 @@
             if (hasScreenshots) {
                 try {
                     await mod.normalizeAllPendingComposerAttachments();
-                    hasScreenshots = screenshotsList.children.length > 0;
+                    hasScreenshots = getActiveScreenshotItems().length > 0;
                 } catch (error) {
                     console.error('[Chat] 待发送图片处理失败:', error);
                     window.showStatusToast(
@@ -3160,12 +3243,34 @@
                 return !isVisitLine && !isReactWindowSource && !(forceReactOptimisticMessage && reactOptimisticMessageAppended !== null);
             }
 
-            function updateReactOptimisticMessageStatus(status) {
+            function buildReactUserBlocks(displayTextValue, imageUrls) {
+                var trimmedText = String(displayTextValue || '').trim();
+                var urls = Array.isArray(imageUrls) ? imageUrls.filter(Boolean) : [];
+                var blocks = [];
+                if (trimmedText) {
+                    blocks.push({
+                        type: 'text',
+                        text: trimmedText
+                    });
+                }
+                urls.forEach(function (url, index) {
+                    var translatedAlt = window.t ? window.t('chat.pendingImageAlt', { index: index + 1 }) : '';
+                    blocks.push({
+                        type: 'image',
+                        url: String(url),
+                        alt: (typeof translatedAlt === 'string' && translatedAlt ? translatedAlt : '图片 ' + (index + 1))
+                    });
+                });
+                return blocks;
+            }
+
+            function updateReactOptimisticMessageStatus(status, extraPatch) {
                 if (reactOptimisticMessageAppended === null || !reactOptimisticMessageId) return;
                 if (window.reactChatWindowHost && typeof window.reactChatWindowHost.updateMessage === 'function') {
-                    window.reactChatWindowHost.updateMessage(reactOptimisticMessageId, {
-                        status: status
-                    });
+                    window.reactChatWindowHost.updateMessage(
+                        reactOptimisticMessageId,
+                        Object.assign({ status: status }, extraPatch || {})
+                    );
                 }
             }
 
@@ -3303,46 +3408,51 @@
 
                     // Send screenshots first
                     if (hasScreenshots) {
-                        var screenshotItems = Array.from(screenshotsList.children);
-                        for (var i = 0; i < screenshotItems.length; i++) {
-                            var img = screenshotItems[i].querySelector('.screenshot-thumbnail');
-                            if (img && img.src) {
-                                sentImageUrls.push(img.src);
-                                var msg = {
-                                    action: 'stream_data',
-                                    data: img.src,
-                                    input_type: getPendingAttachmentInputType(screenshotItems[i]),
-                                    request_id: requestId
-                                };
-                                // Attach paired avatar position metadata (captured at screenshot time)
-                                var storedPos = screenshotItems[i].dataset.avatarPosition;
-                                if (storedPos) {
-                                    try { msg.avatar_position = JSON.parse(storedPos); } catch (e) { /* ignore */ }
+                        var screenshotItems = getActiveScreenshotItems();
+                        if (screenshotItems.length > 0) {
+                            var sentScreenshotCount = 0;
+                            for (var i = 0; i < screenshotItems.length; i++) {
+                                var img = screenshotItems[i].querySelector('.screenshot-thumbnail');
+                                if (img && img.src) {
+                                    sentImageUrls.push(img.src);
+                                    sentScreenshotCount += 1;
+                                    var msg = {
+                                        action: 'stream_data',
+                                        data: img.src,
+                                        input_type: getPendingAttachmentInputType(screenshotItems[i]),
+                                        request_id: requestId
+                                    };
+                                    // Attach paired avatar position metadata (captured at screenshot time)
+                                    var storedPos = screenshotItems[i].dataset.avatarPosition;
+                                    if (storedPos) {
+                                        try { msg.avatar_position = JSON.parse(storedPos); } catch (e) { /* ignore */ }
+                                    }
+                                    S.socket.send(JSON.stringify(msg));
                                 }
-                                S.socket.send(JSON.stringify(msg));
                             }
-                        }
 
-                        if (!isReactWindowSource) {
-                            var screenshotItemCount = screenshotItems.length;
-                            window.appendMessage('\uD83D\uDCF8 [\u5DF2\u53D1\u9001' + screenshotItemCount + '\u5F20\u622A\u56FE]', 'user', true, {
-                                skipReactSync: true
-                            });
-                        }
-                        sentUserContent = true;
+                            if (sentScreenshotCount > 0) {
+                                if (!isReactWindowSource) {
+                                    window.appendMessage('\uD83D\uDCF8 [\u5DF2\u53D1\u9001' + sentScreenshotCount + '\u5F20\u622A\u56FE]', 'user', true, {
+                                        skipReactSync: true
+                                    });
+                                }
+                                sentUserContent = true;
 
-                        // Achievement: send image
-                        if (window.unlockAchievement) {
-                            window.unlockAchievement('ACH_SEND_IMAGE').catch(function (err) {
-                                console.error('\u89E3\u9501\u53D1\u9001\u56FE\u7247\u6210\u5C31\u5931\u8D25:', err);
-                            });
-                        }
+                                // Achievement: send image
+                                if (window.unlockAchievement) {
+                                    window.unlockAchievement('ACH_SEND_IMAGE').catch(function (err) {
+                                        console.error('\u89E3\u9501\u53D1\u9001\u56FE\u7247\u6210\u5C31\u5931\u8D25:', err);
+                                    });
+                                }
+                            }
 
-                        // Clear screenshot list
-                        screenshotsList.innerHTML = '';
-                        screenshotThumbnailContainer.classList.remove('show');
-                        mod.updateScreenshotCount();
-                        mod.syncPendingComposerAttachments();
+                            // Clear screenshot list
+                            screenshotsList.innerHTML = '';
+                            screenshotThumbnailContainer.classList.remove('show');
+                            mod.updateScreenshotCount();
+                            mod.syncPendingComposerAttachments();
+                        }
                     }
 
                     if (hasExtraImages) {
@@ -3431,7 +3541,28 @@
                         });
                     }
 
-                    updateReactOptimisticMessageStatus('sent');
+                    if (!sentUserContent) {
+                        if (reactOptimisticMessageAppended !== null && reactOptimisticMessageId) {
+                            if (window.reactChatWindowHost && typeof window.reactChatWindowHost.removeMessage === 'function') {
+                                window.reactChatWindowHost.removeMessage(reactOptimisticMessageId);
+                            } else {
+                                updateReactOptimisticMessageStatus('failed');
+                            }
+                        }
+                        return false;
+                    }
+
+                    var sentPatch = null;
+                    var imagesChanged = sentImageUrls.length !== optimisticImageUrls.length
+                        || sentImageUrls.some(function (url, idx) {
+                            return optimisticImageUrls[idx] !== url;
+                        });
+                    if (imagesChanged) {
+                        sentPatch = {
+                            blocks: buildReactUserBlocks(displayText, sentImageUrls)
+                        };
+                    }
+                    updateReactOptimisticMessageStatus('sent', sentPatch);
                     rememberSentTextSubmission(requestId, reactOptimisticMessageAppended !== null ? reactOptimisticMessageId : '', !isVisitLine, startedTextSessionHere);
 
                     if (sentUserContent) {
@@ -3487,7 +3618,7 @@
             var text = String(typeof rawText === 'string' ? rawText : '').trim();
             var extraImageDataUrls = normalizeExternalImageDataUrls(options.extraImageDataUrls);
             var hasExtraImages = extraImageDataUrls.length > 0;
-            var hasScreenshots = options.ignoreComposerAttachments === true ? false : screenshotsList.children.length > 0;
+            var hasScreenshots = options.ignoreComposerAttachments === true ? false : getActiveScreenshotItems().length > 0;
 
             var theaterRuntime = window.nekoTheaterRuntime;
             if (theaterRuntime && typeof theaterRuntime.isActive === 'function' && theaterRuntime.isActive()) {
@@ -4405,7 +4536,7 @@
         // Clear all screenshots button
         // ----------------------------------------------------------------
         clearAllScreenshots.addEventListener('click', async function () {
-            if (screenshotsList.children.length === 0) return;
+            if (getActiveScreenshotItems().length === 0) return;
 
             if (await window.showConfirm(
                 window.t ? window.t('dialogs.clearScreenshotsConfirm') : '\u786E\u5B9A\u8981\u6E05\u7A7A\u6240\u6709\u5F85\u53D1\u9001\u7684\u622A\u56FE\u5417\uFF1F',

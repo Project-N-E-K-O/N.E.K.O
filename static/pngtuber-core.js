@@ -11,6 +11,7 @@
     };
     const CLEAR_EMOTIONS = new Set(['neutral', 'idle', 'default', 'none', 'clear', '']);
     const DEFAULT_EMOTION_DURATION_MS = 5000;
+    const DEFAULT_CLICK_DURATION_MS = 600;
     const SCALE_MIN = 0.1;
     const SCALE_MAX = 5;
     const REMIX_FRAME_SPEED_MULTIPLIER = 4;
@@ -162,6 +163,11 @@
             this.layeredBlinkTimer = null;
             this.layeredBlinkEndTimer = null;
             this.layeredStateIndex = 0;
+            // 说话优先时被延后的情绪：话说完再补上（不是丢弃，也不是插进来）
+            this.pendingEmotion = null;
+            this.activeLayeredEmotionIndex = null;
+            // 瞬时状态槽（说话/拖动/点击）随包一起重来，别把上一个模型的槽带到新模型上
+            this.resetLayeredTransientSlots();
             this.layeredStateReturnTimer = null;
             this.layeredToggleVisibility = new Map();
             this.layeredLayerById = new Map();
@@ -429,6 +435,7 @@
                 clearTimeout(this.clickTimer);
                 this.clickTimer = null;
             }
+            this.clearLayeredTransientSlot('click');
             if (this.lipSyncFrame) {
                 cancelAnimationFrame(this.lipSyncFrame);
                 this.lipSyncFrame = null;
@@ -599,15 +606,23 @@
             const stateCount = this.getLayeredStateCount();
             const nextIndex = Math.max(0, Math.min(stateCount - 1, Number(index) || 0));
             const previousIndex = this.layeredStateIndex;
-            if (this.layeredStateReturnTimer) {
+            const isSlotChange = /^slot(:|-)/.test(String(options.source || ''));
+            if (!isSlotChange && this.layeredStateReturnTimer) {
                 clearTimeout(this.layeredStateReturnTimer);
                 this.layeredStateReturnTimer = null;
             }
             this.layeredStateIndex = nextIndex;
+            // 显式的状态切换（情绪、快捷键、外部 API）重定义"家"，并作废旧的瞬时槽：
+            // 槽里的动作此刻已被盖掉，留着它只会在结束时把用户刚选中的状态抢走。
+            // 槽自己发起的切换（source 以 slot 开头）不参与这个判断。
+            if (!isSlotChange) {
+                this.layeredSlotHomeIndex = nextIndex;
+                this.layeredTransientSlots = [];
+            }
             // 状态切换后的 900ms 满帧余温：切换过渡（贴图换装/弹跳）以 rAF 满帧渲染
             this._layeredFullRateHoldUntil = performance.now() + PNGTUBER_FULL_RATE_HOLD_MS;
-            this.drawLayeredState();
             this.restartLayeredAnimationLoop();
+            this.drawLayeredState();
             if ((options.source === 'hotkey' || options.source === 'alt-one-cycle-hotkey')
                 && previousIndex !== nextIndex
                 && this.isLayeredPlusModel()
@@ -625,7 +640,8 @@
             if (returnDelay > 0 && this.layeredStateIndex !== 0) {
                 this.layeredStateReturnTimer = setTimeout(() => {
                     this.layeredStateReturnTimer = null;
-                    this.setLayeredStateIndex(0, { source: 'return' });
+                    if (this.layeredSlotStack().length) this.layeredSlotHomeIndex = 0;
+                    else this.setLayeredStateIndex(0, { source: 'return' });
                 }, Math.max(80, returnDelay));
             }
             return true;
@@ -648,6 +664,9 @@
                 if (mapping && typeof mapping === 'object' && Number.isFinite(Number(mapping.state_index))) {
                     return Number(mapping.state_index);
                 }
+                // An explicit table defines all supported emotions, even when
+                // empty. Its missing keys must not address unrelated states.
+                return null;
             }
             const fallbackOrder = { happy: 1, sad: 2, angry: 3, surprised: 4 };
             const fallbackIndex = fallbackOrder[emotionName];
@@ -892,6 +911,11 @@
             this._fallbackLayersBySpriteId = new Map();
             this._fallbackLayersBySpriteIdSource = null;
             this.layeredStateIndex = 0;
+            // 说话优先时被延后的情绪：话说完再补上（不是丢弃，也不是插进来）
+            this.pendingEmotion = null;
+            this.activeLayeredEmotionIndex = null;
+            // 瞬时状态槽（说话/拖动/点击）随包一起重来，别把上一个模型的槽带到新模型上
+            this.resetLayeredTransientSlots();
             this.layeredToggleVisibility = new Map();
             this.layeredLayerById = new Map();
             this.layeredCanvasPadding = 0;
@@ -930,6 +954,11 @@
                 this.layeredImages = layeredImages;
                 this.layeredMetadata = metadata;
                 this.layeredStateIndex = 0;
+            // 说话优先时被延后的情绪：话说完再补上（不是丢弃，也不是插进来）
+            this.pendingEmotion = null;
+            this.activeLayeredEmotionIndex = null;
+            // 瞬时状态槽（说话/拖动/点击）随包一起重来，别把上一个模型的槽带到新模型上
+            this.resetLayeredTransientSlots();
                 this.initializeLayeredToggleState(layers);
                 this.ensureContainer();
                 const canvas = this.canvasElement;
@@ -1302,6 +1331,7 @@
                 ? Math.max(0, Math.floor(Number(layerState.frame) || 0))
                 : Math.max(0, Math.floor(Number(overrideFrame) || 0));
             const speed = Math.max(0, Number(layerState.animation_speed) || Number(layer.animation_speed) || 0);
+            const fps = speed * REMIX_FRAME_SPEED_MULTIPLIER;
             const canAnimate = this.layeredRuntimeFeatureEnabled('sprite_sheet_animation')
                 && frames > 1
                 && speed > 0
@@ -1309,7 +1339,8 @@
                 && layerState.non_animated_sheet !== true;
             if (overrideFrame === null && canAnimate) {
                 const elapsedSeconds = Math.max(0, (timestamp - (this.layeredAnimationStart || timestamp)) / 1000);
-                frame = Math.floor(elapsedSeconds * speed * REMIX_FRAME_SPEED_MULTIPLIER) % frames;
+                const elapsedFrames = Math.floor(elapsedSeconds * fps);
+                frame = this.layeredTransientSlots?.at(-1)?.kind === 'click' ? elapsedFrames : elapsedFrames % frames;
             }
             frame = Math.min(frames - 1, frame);
             return {
@@ -1324,6 +1355,7 @@
                 hframes,
                 vframes,
                 animated: canAnimate,
+                durationMs: canAnimate ? frames * 1000 / fps : 0,
                 legacyOffsetX: legacyFullSheetX ? (imageWidth - frameWidth) / 2 : 0,
                 legacyOffsetY: legacyFullSheetY ? (imageHeight - frameHeight) / 2 : 0
             };
@@ -2552,14 +2584,41 @@
         }
 
         showDragImage() {
+            // 分层：拖动是"用这个动作演一演"，只有状态目录里真有 drag 这一格才接管
+            if (this.setLayeredTransientSlot('drag')) {
+                this.applyTransform();
+                this.updateLockIconPosition();
+                return;
+            }
             this.showTransientImage(this.config.drag_image || this.config.idle_image);
         }
 
         showClickImage() {
+            const restarting = this.layeredTransientSlots?.at(-1)?.kind === 'click';
+            if (this.setLayeredTransientSlot('click')) {
+                if (restarting) {
+                    this.restartLayeredAnimationLoop();
+                    this.drawLayeredState();
+                }
+                this.applyTransform();
+                this.updateLockIconPosition();
+                const stateName = this.state || 'idle';
+                let durationMs = 0;
+                for (const layer of this.layeredMetadata.layers || []) {
+                    const image = this.layeredImages.get(layer._imageIndex);
+                    if (!image || !this.shouldRenderLayer(layer, stateName)) continue;
+                    const layerState = this.layerStateForRender(layer, stateName);
+                    durationMs = Math.max(durationMs, this.stateFrameInfo(layer, layerState, image).durationMs);
+                }
+                return durationMs || DEFAULT_CLICK_DURATION_MS;
+            }
             this.showTransientImage(this.config.click_image || this.config.talking_image || this.config.idle_image);
+            return null;
         }
 
         restoreStateImage() {
+            this.clearLayeredTransientSlot('drag');
+            this.clearLayeredTransientSlot('click');
             this.setState(this.state || 'idle');
         }
 
@@ -3575,11 +3634,16 @@
             event.preventDefault();
             event.stopPropagation();
             if (this.clickTimer) clearTimeout(this.clickTimer);
-            this.showClickImage();
+            const layeredDuration = this.showClickImage();
             this.clickTimer = setTimeout(() => {
                 this.clickTimer = null;
-                this.restoreStateImage();
-            }, 600);
+                if (layeredDuration === null) {
+                    if (!this._dragState && !this._touchZoomState) this.setState(this.state || 'idle');
+                } else if (this.clearLayeredTransientSlot('click')) {
+                    this.applyTransform();
+                    this.updateLockIconPosition();
+                }
+            }, layeredDuration ?? DEFAULT_CLICK_DURATION_MS);
         }
 
         handleWheelZoom(event) {
@@ -4054,6 +4118,7 @@
             const isCurrentLoad = () => (
                 loadGeneration === this._loadGeneration
                 && (!loadToken || loadToken === this._latestLifecycleLoadToken)
+                && (typeof options.isCurrent !== 'function' || options.isCurrent())
             );
             this.detachDragListeners();
             this.clearEmotion({ render: false });
@@ -4075,6 +4140,7 @@
             this.preloadImages();
             this.attachSpeechListeners();
             this.attachDragListeners();
+            this.syncLayeredSpeechSlot();
             this.setState('idle');
             this.applyTransform();
             this.syncGlobalConfig();
@@ -4085,12 +4151,160 @@
             return true;
         }
 
-        stateToSrc(state) {
-            if (state === 'talking') {
-                if (!this.hasIndependentTalkingImage() && this.emotionImage) return this.emotionImage;
-                return this.config.talking_image || this.emotionImage || this.config.idle_image || DEFAULT_PLACEHOLDER;
+        /**
+         * model.json 的 state_priority：'talking'（默认）说话压住情绪，
+         * 'emotion' 情绪压住说话。只认这两个值，其余按默认走。
+         */
+        statePriority() {
+            return String((this.config && this.config.state_priority) || '')
+                .trim().toLowerCase() === 'emotion' ? 'emotion' : 'talking';
+        }
+
+        // 当前是否真有情绪在显示（平铺看 emotionImage，分层看那个情绪占用的状态号）。
+        // 说话优先且正在说话时情绪被压住了，这里要如实说"没有"。
+        emotionIsActive() {
+            if (this.emotionBlockedBySpeech()) return false;
+            if (Boolean(this.emotionImage)) return true;
+            return this.isLayeredActive()
+                && Number.isFinite(this.activeLayeredEmotionIndex)
+                && this.layeredStateIndex === this.activeLayeredEmotionIndex
+                && this.activeLayeredEmotionIndex !== 0;
+        }
+
+        // 拖动等瞬时动作可以盖住情绪，但不会结束它；说话仲裁还要看被盖住的"家"。
+        layeredEmotionHeld() {
+            if (!this.isLayeredActive() || this.emotionBlockedBySpeech()) return false;
+            const index = this.activeLayeredEmotionIndex;
+            return Number.isFinite(index) && index !== 0
+                && (this.layeredStateIndex === index || this.layeredHomeStateIndex() === index);
+        }
+
+        clearPendingEmotion() {
+            this.pendingEmotion = null;
+        }
+
+        /**
+         * 说话优先（默认）＋正在说话：这一整段话期间情绪不得上画面，新的情绪攒到话说完。
+         * 平铺和分层共用这一条 —— 平铺以前漏在 `stateToSrc('idle')` 上：口型节拍每
+         * 150ms 切一次 talking/idle，而 idle 那一支会返回 emotionImage，于是说话中间
+         * 一闪一闪地插进情绪动作。
+         */
+        emotionBlockedBySpeech() {
+            return Boolean(this.isSpeaking) && this.statePriority() === 'talking'
+                && (!this.isLayeredActive() || this.layeredSlotStateIndex('talking') !== null);
+        }
+
+        /** 话说完了：补上说话期间攒下的情绪，持续时间从实际开始播放时计算。 */
+        flushPendingEmotion() {
+            const pending = this.pendingEmotion;
+            if (!pending) return false;
+            this.pendingEmotion = null;
+            if (pending.name !== this.currentEmotion) return false;
+            // 从 setEmotion 走回去：平铺/分层各自的落地与定时器只有一份实现
+            return this.setEmotion(pending.name, pending.options || {});
+        }
+
+        // ── 分层包的瞬时状态槽：说话 / 拖动 / 点击 ──────────────────────────────
+        // 平铺包里这三个动作靠换 <img> 的 src 表现；分层模式没有 src 可换 —— 渲染只认
+        // layeredStateIndex（layerStateForRender 完全不看名字，见 :1078），所以它们必须
+        // 去占状态槽才可能看得见。只有状态目录里真有同名状态才会占槽：PNGTuber Plus /
+        // Remix 那类换装模型的目录里没有 talking/drag/click，行为与改动前完全一致。
+        layeredSlotStateIndex(kind) {
+            if (!this.isLayeredActive()) return null;
+            const wanted = this.normalizeLayeredTargetName(kind);
+            if (!wanted) return null;
+            // 目录里的名字写作 talking_image，运行时传的是状态名 talking；normalize 会
+            // 去掉下划线，所以两者要能对上。
+            const match = this.layeredStateCatalog().find((record) => {
+                const aliases = Array.isArray(record.aliases) ? record.aliases : [];
+                return [record.name, record.label, record.hotkey, ...aliases]
+                    .map((value) => this.normalizeLayeredTargetName(value))
+                    .some((value) => value === wanted || value === `${wanted}image`);
+            });
+            if (!match) return null;
+            const index = Number(match.state_index);
+            if (!Number.isFinite(index)) return null;
+            return Math.max(0, Math.min(this.getLayeredStateCount() - 1, Math.trunc(index)));
+        }
+
+        layeredSlotStack() {
+            if (!Array.isArray(this.layeredTransientSlots)) this.layeredTransientSlots = [];
+            return this.layeredTransientSlots;
+        }
+
+        // 被瞬时动作盖住的那一格：情绪或用户用快捷键挑中的状态都算"家"，由
+        // setLayeredStateIndex 在非槽来源时更新，所以瞬时动作结束时回到原处。
+        layeredHomeStateIndex() {
+            if (Number.isFinite(this.layeredSlotHomeIndex)) return this.layeredSlotHomeIndex;
+            if (Number.isFinite(this.activeLayeredEmotionIndex)) return this.activeLayeredEmotionIndex;
+            return 0;
+        }
+
+        applyLayeredSlotStack() {
+            if (!this.isLayeredActive()) return false;
+            const stack = this.layeredSlotStack();
+            const top = stack.length ? stack[stack.length - 1] : null;
+            const target = top ? top.index : this.layeredHomeStateIndex();
+            if (!Number.isFinite(target) || target === this.layeredStateIndex) return false;
+            return this.setLayeredStateIndex(target, {
+                source: top ? `slot:${top.kind}` : 'slot-home',
+            });
+        }
+
+        // 返回的是"这一格存在、由槽管着"，不是"画面变了没有"：调用方用它决定要不要
+        // 再走平铺那套换 src 的逻辑，两件事不能混在一起判断。
+        setLayeredTransientSlot(kind) {
+            const index = this.layeredSlotStateIndex(kind);
+            if (index === null) return false;
+            const stack = this.layeredSlotStack();
+            if (!stack.length) this.layeredSlotHomeIndex = this.layeredStateIndex;
+            const existing = stack.findIndex((slot) => slot.kind === kind);
+            if (existing >= 0) stack.splice(existing, 1);
+            // Speech stays below a drag regardless of which started first.
+            const drag = kind === 'talking' ? stack.findIndex((slot) => slot.kind === 'drag') : -1;
+            if (drag >= 0) stack.splice(drag, 0, { kind, index });
+            else stack.push({ kind, index });
+            this.applyLayeredSlotStack();
+            return true;
+        }
+
+        clearLayeredTransientSlot(kind) {
+            const stack = this.layeredSlotStack();
+            const before = stack.length;
+            for (let i = stack.length - 1; i >= 0; i -= 1) {
+                if (stack[i].kind === kind) stack.splice(i, 1);
             }
-            if (state === 'idle') return this.emotionImage || this.config.idle_image || DEFAULT_PLACEHOLDER;
+            if (stack.length === before) return false;
+            return this.applyLayeredSlotStack();
+        }
+
+        resetLayeredTransientSlots() {
+            this.layeredTransientSlots = [];
+            this.layeredSlotHomeIndex = null;
+        }
+
+        // 情绪优先时，被瞬时动作盖住的情绪也保留优先级（与平铺的仲裁同一条规则）。
+        syncLayeredSpeechSlot() {
+            if (!this.isLayeredActive()) return false;
+            if (!this.isSpeaking) return this.clearLayeredTransientSlot('talking');
+            if (this.statePriority() === 'emotion' && (this.emotionImage || this.layeredEmotionHeld())) {
+                return this.clearLayeredTransientSlot('talking');
+            }
+            return this.setLayeredTransientSlot('talking');
+        }
+
+        stateToSrc(state) {
+            // 说话优先时，整段话期间情绪不进画面 —— 注意 'idle' 那一支：口型节拍每
+            // 150ms 就把 talking/idle 切一次，这里漏了 emotionImage 就会在说话中间
+            // 一闪一闪插进情绪动作（就是"说话优先没用"的成因）。
+            const shown = this.emotionBlockedBySpeech() ? '' : this.emotionImage;
+            if (state === 'talking') {
+                // 情绪优先：有情绪在显示时，说话不得覆盖它
+                if (this.statePriority() === 'emotion' && shown) return shown;
+                if (!this.hasIndependentTalkingImage() && shown) return shown;
+                return this.config.talking_image || shown || this.config.idle_image || DEFAULT_PLACEHOLDER;
+            }
+            if (state === 'idle') return shown || this.config.idle_image || DEFAULT_PLACEHOLDER;
             const emotionKey = `${state}_image`;
             return this.config[emotionKey] || this.config.idle_image || DEFAULT_PLACEHOLDER;
         }
@@ -4117,7 +4331,19 @@
             this.currentEmotion = null;
             this.emotionImage = '';
             if (options.render !== false && this.isLayeredActive()) {
-                this.setLayeredStateIndex(0, { source: 'emotion-clear' });
+                this.activeLayeredEmotionIndex = null;
+                this.clearPendingEmotion();
+                // 情绪退出后"家"回到默认状态；但若说话/拖动正占着状态槽，画面归槽管，
+                // 不能在这里抢回待机（那样说话会看着像被情绪打断后再也没回来）。
+                this.layeredSlotHomeIndex = 0;
+                if (!this.layeredSlotStack().length) {
+                    this.setLayeredStateIndex(0, { source: 'emotion-clear' });
+                }
+                // 情绪让位给说话时，情绪一结束就该把口型接回来
+                if (this.isSpeaking) {
+                    this.setState('talking', { restartLayeredAnimation: false });
+                    this.syncLayeredSpeechSlot();
+                }
             } else if (options.render !== false) {
                 const nextState = this.isSpeaking && this.speakingMouthOpen && this.hasIndependentTalkingImage()
                     ? 'talking'
@@ -4131,12 +4357,14 @@
             if (!this.isLayeredActive()) return false;
             const stateIndex = this.layeredEmotionTarget(emotionName);
             if (stateIndex === null) return false;
+            this.clearPendingEmotion();
             if (this.emotionTimer) {
                 clearTimeout(this.emotionTimer);
                 this.emotionTimer = null;
             }
             this.currentEmotion = emotionName;
             this.emotionImage = '';
+            this.activeLayeredEmotionIndex = stateIndex;
             const durationMs = Number(options.durationMs);
             const shouldAutoClear = options.durationMs === undefined
                 ? true
@@ -4156,9 +4384,22 @@
             if (CLEAR_EMOTIONS.has(emotionName)) {
                 return this.clearEmotion();
             }
+            // 说话优先 + 正在说话：这一条情绪不进画面，攒到话说完再补（平铺和分层同一套）。
+            // 先作废当前正在显示的那条，否则它的定时器会在说话中途把情绪插回画面。
+            if (this.emotionBlockedBySpeech()) {
+                const hasTarget = this.isLayeredActive()
+                    ? this.layeredEmotionTarget(emotionName) !== null
+                    : Boolean(this.emotionImageFor(emotionName));
+                if (!hasTarget) return false;
+                this.clearEmotion();
+                this.currentEmotion = emotionName;
+                this.pendingEmotion = { name: emotionName, options };
+                return true;
+            }
             if (this.isLayeredActive()) return this.setLayeredEmotion(emotionName, options);
             const nextImage = this.emotionImageFor(emotionName);
             if (!nextImage) return false;
+            this.clearPendingEmotion();
 
             if (this.emotionTimer) {
                 clearTimeout(this.emotionTimer);
@@ -4380,6 +4621,7 @@
             }
             this.isSpeaking = true;
             this.startTalkingHopAnimation();
+            this.syncLayeredSpeechSlot();
             this.lipSyncMouthOpen = 0;
             this.lipSyncMouthState = !!this.speakingMouthOpen;
             this.lipSyncLastStateChangeAt = performance.now();
@@ -4461,17 +4703,25 @@
             if (this._renderingPaused) return;
             this.isSpeaking = true;
             this.startTalkingHopAnimation();
+            // 分层包：说话在状态目录里有自己的那一格时，由它占住状态槽。
+            // 必须放在下面两个 return 之前 —— 口型节拍会反复调用这里，
+            // 早退的那几次同样要保证槽是占着的。
+            this.syncLayeredSpeechSlot();
             if (this.lipSyncFrame) return;
             if (this.speakingMouthTimer) return;
             this.speakingMouthOpen = true;
             this.startSpeakingBounceAnimation();
-            this.setState('talking', { restartLayeredAnimation: false });
+            if (!(this.statePriority() === 'emotion' && this.emotionIsActive())) {
+                this.setState('talking', { restartLayeredAnimation: false });
+            }
             this.scheduleSpeakingMouthFrame();
         }
 
         stopSpeakingMouthAnimation() {
             this.isSpeaking = false;
             this.speakingMouthOpen = false;
+            // 话说完了：状态槽要还给情绪或待机（isSpeaking 已置否，这里走的是释放分支）
+            this.syncLayeredSpeechSlot();
             if (this.speakingMouthTimer) {
                 clearTimeout(this.speakingMouthTimer);
                 this.speakingMouthTimer = null;
@@ -4622,6 +4872,8 @@
         setSpeaking(isSpeaking) {
             if (this._renderingPaused) {
                 this.isSpeaking = !!isSpeaking;
+                this.syncLayeredSpeechSlot();
+                if (!this.isSpeaking) this.flushPendingEmotion();
                 return;
             }
             if (this.returnIdleTimer) {
@@ -4631,6 +4883,9 @@
             if (this.clickTimer) {
                 clearTimeout(this.clickTimer);
                 this.clickTimer = null;
+                // 点击闪动的复位定时器被取消：分层那一格"点击"占的槽要一起放开，
+                // 否则说话一插进来，点击那一格会一直挂在画面上。
+                this.clearLayeredTransientSlot('click');
             }
             if (isSpeaking) {
                 this.startSpeakingMouthAnimation();
@@ -4640,6 +4895,8 @@
             this.returnIdleTimer = setTimeout(() => {
                 this.returnIdleTimer = null;
                 this.setState('idle');
+                // 说话期间被压住的情绪，在这里回到画面（若它还没过期）
+                this.flushPendingEmotion();
             }, 160);
         }
 
@@ -4667,6 +4924,10 @@
         }
 
         hide() {
+            if (this.pendingEmotion) {
+                if (this.currentEmotion === this.pendingEmotion.name) this.currentEmotion = '';
+                this.clearPendingEmotion();
+            }
             this.clearLayeredTimers();
             this.detachLayeredHotkeys();
             this.detachLayeredPlayEvent();
@@ -4680,6 +4941,8 @@
                 this.clickTimer = null;
             }
             this.stopSpeakingMouthAnimation();
+            this.clearLayeredTransientSlot('click');
+            this.clearLayeredTimers();
             // 隐藏前清掉锁定悬停淡化,避免换模型类型等不走解锁的路径把
             // locked-hover-fade 类留在容器上,下次 show() 时模型以 0.12 透明度出现
             if (typeof this._resetPngtuberLockedHoverFade === 'function') {
@@ -4747,6 +5010,7 @@
                     : 200,
                 characterMenuItems: [
                     { id: 'general', label: '通用设置', labelKey: 'settings.menu.general', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', url: '/character_card_manager' },
+                    { id: 'emote-maker', label: '表情包制作', labelKey: 'settings.menu.emoteMaker', icon: '/static/icons/emoji_icon.png', action: 'navigate', url: '/emote_maker' },
                     { id: 'pngtuber-manage', label: '模型管理', labelKey: 'settings.menu.modelSettings', icon: '/static/icons/character_icon.png', action: 'navigate', urlBase: '/model_manager' },
                     { id: 'voice-clone', label: '声音克隆', labelKey: 'settings.menu.voiceClone', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_clone' }
                 ],
@@ -5242,6 +5506,7 @@
         // 若继续写 DOM 会把刚显示的 Live2D 容器与画布隐藏掉。主 app 调用方不传
         // loadToken，行为与既往一致。
         const isStaleCall = () => {
+            if (typeof options.isCurrent === 'function' && !options.isCurrent()) return true;
             if (loadToken && loadToken !== pngtuberLoadSequence) return true;
             return !!(document.body?.classList.contains('model-manager-page')
                 && window._modelManagerCurrentAvatarType
@@ -5300,30 +5565,33 @@
             });
     }
 
-    async function loadPNGTuberAvatar(config) {
+    async function loadPNGTuberAvatar(config, options = {}) {
         const loadToken = ++pngtuberLoadSequence;
+        const isCurrentLoad = () => loadToken === pngtuberLoadSequence
+            && (typeof options.isCurrent !== 'function' || options.isCurrent());
+        if (!isCurrentLoad()) return window.pngtuberManager || null;
         window.dispatchEvent(new CustomEvent('pngtuber-model-loading', {
             detail: { loadToken }
         }));
         try {
-            await hideOtherAvatarRuntimesForPNGTuber({ loadToken });
-            if (loadToken !== pngtuberLoadSequence) return window.pngtuberManager || null;
+            await hideOtherAvatarRuntimesForPNGTuber({ loadToken, isCurrent: isCurrentLoad });
+            if (!isCurrentLoad()) return window.pngtuberManager || null;
             if (!window.pngtuberManager) {
                 window.pngtuberManager = new PNGTuberManager();
             }
-            const loaded = await window.pngtuberManager.load(config || {}, { loadToken });
-            if (!loaded || loadToken !== pngtuberLoadSequence) return window.pngtuberManager;
+            const loaded = await window.pngtuberManager.load(config || {}, { loadToken, isCurrent: isCurrentLoad });
+            if (!loaded || !isCurrentLoad()) return window.pngtuberManager;
             if (document.body?.classList.contains('model-manager-page')
                 && window._modelManagerCurrentAvatarType
                 && window._modelManagerCurrentAvatarType !== 'pngtuber') {
                 window.pngtuberManager.hide();
                 return window.pngtuberManager;
             }
-            await hideOtherAvatarRuntimesForPNGTuber({ loadToken });
-            if (loadToken !== pngtuberLoadSequence) return window.pngtuberManager;
+            await hideOtherAvatarRuntimesForPNGTuber({ loadToken, isCurrent: isCurrentLoad });
+            if (!isCurrentLoad()) return window.pngtuberManager;
             window.pngtuberManager.show();
-            await hideOtherAvatarRuntimesForPNGTuber({ loadToken });
-            if (loadToken !== pngtuberLoadSequence) return window.pngtuberManager;
+            await hideOtherAvatarRuntimesForPNGTuber({ loadToken, isCurrent: isCurrentLoad });
+            if (!isCurrentLoad()) return window.pngtuberManager;
             window.dispatchEvent(new CustomEvent('pngtuber-model-loaded', {
                 detail: { loadToken }
             }));

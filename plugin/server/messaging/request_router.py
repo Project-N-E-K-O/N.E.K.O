@@ -29,6 +29,8 @@ logger = get_logger("server.messaging.request_router")
 
 # Reply delivery has its own bounded task budget.
 _MAX_PENDING_BUSY_REPLIES = 256
+# How long one overload (BUSY) reply may take to send before it is given up.
+_BUSY_REPLY_TIMEOUT_SECONDS = 0.25
 _RECEIVE_BATCH_SIZE = 32
 _BOUNDED_REPLY_OPERATIONS = frozenset({
     "MEMORY_SEARCH", "MEMORY_PERSONA_GET", "CONVERSATION_REPLY_GET", "CONVERSATION_INTERACTION_GET",
@@ -248,7 +250,7 @@ class PluginRouter:
                         },
                     )
                 ),
-                timeout=0.25,
+                timeout=_BUSY_REPLY_TIMEOUT_SECONDS,
             )
         except asyncio.CancelledError:
             raise

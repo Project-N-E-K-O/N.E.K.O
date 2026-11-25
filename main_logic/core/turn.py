@@ -1522,21 +1522,36 @@ class TurnMixin:
             self._stand_down_reply_turn(reply_turn)
             return
 
-        if self._takeover_active:
-            logger.info("[%s] session takeover active: dropping ordinary realtime response completion", self.lanlan_name)
-            await self._clear_tts_pipeline()
-            self._pending_turn_meta = None
-            self._reset_ai_turn_buffer()
-            self._discarded_turn_open = False
-            self._active_text_request_id = None
-            return
-
         if reply_turn is None:
             active_request_id = self._active_text_request_id
             tts_expected_speech_id = None
         else:
             active_request_id = reply_turn.request_id
             tts_expected_speech_id = reply_turn.speech_id
+
+        if self._takeover_active:
+            logger.info("[%s] session takeover active: dropping ordinary realtime response completion", self.lanlan_name)
+            owns_speech = reply_turn is None or self.current_speech_id == reply_turn.speech_id
+            expected_speech_id = self.current_speech_id if owns_speech else None
+            # Release the old turn before either await can admit a successor.
+            if reply_turn is None or getattr(self, "_pending_turn_meta", None) is reply_turn.meta:
+                self._pending_turn_meta = None
+            if owns_speech:
+                self._reset_ai_turn_buffer()
+                self._discarded_turn_open = False
+            if reply_turn is not None:
+                reply_turn.turn_ended = True
+            if self._active_text_request_id == active_request_id:
+                self._active_text_request_id = None
+            try:
+                if owns_speech:
+                    await self._clear_tts_pipeline(
+                        still_owned=lambda: self.current_speech_id == expected_speech_id,
+                    )
+            finally:
+                if active_request_id:
+                    await self._send_turn_abandoned(active_request_id)
+            return
 
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             logger.info("📨 Response complete (LLM 回复结束)")

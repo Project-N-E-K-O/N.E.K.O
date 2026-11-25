@@ -423,6 +423,16 @@ def test_every_character_scoped_route_is_classified_for_the_fence():
         ("/cancel_correction/{lanlan_name}", "POST"),
         # It establishes the fence itself and cannot be blocked by its own fence.
         ("/release_character/{lanlan_name}", "POST"),
+        # Memory Browser read-only analytics & diagnostic endpoints: never write character files.
+        ("/internal/memory/browser/overview/{lanlan_name}", "GET"),
+        ("/internal/memory/browser/search/{lanlan_name}", "POST"),
+        ("/internal/memory/browser/star_map/{lanlan_name}", "GET"),
+        ("/internal/memory/browser/lineage/{lanlan_name}", "GET"),
+        ("/internal/memory/browser/related/{lanlan_name}", "POST"),
+        ("/internal/memory/browser/snapshots/{lanlan_name}", "GET"),
+        ("/internal/memory/browser/export/{lanlan_name}", "GET"),
+        ("/internal/memory/browser/lineage_graph/{lanlan_name}", "GET"),
+        ("/internal/memory/browser/deep_conflicts/{lanlan_name}", "POST"),
     }
     probe_name = "围栏探针角色"
     fenced: set[tuple[str, str]] = set()
@@ -445,6 +455,10 @@ def test_every_character_scoped_route_is_classified_for_the_fence():
     assert ("/prompt-locale/{lanlan_name}", "PUT") in fenced
     assert ("/internal/memory/{lanlan_name}/theater/forget", "POST") in fenced
     assert ("/internal/memory/{lanlan_name}/theater/retract", "POST") in fenced
+    assert ("/internal/memory/browser/imprint_note/{lanlan_name}", "POST") in fenced
+    assert ("/internal/memory/browser/star_map/label_clusters/{lanlan_name}", "POST") in fenced
+    assert ("/internal/memory/browser/snapshots/create/{lanlan_name}", "POST") in fenced
+    assert ("/internal/memory/browser/snapshots/restore/{lanlan_name}", "POST") in fenced
 
 
 @pytest.mark.unit
@@ -564,6 +578,9 @@ def test_every_memory_server_background_spawn_is_drainable():
         # Weekly introspection: registered by character in review.introspection_tasks,
         # drained the same way (test_character_release_cancels_a_running_introspection).
         ("refine_loops.py", "_run_introspection_tick"),
+        # Periodic persona/reflection/scoped refine runs: registered by character in
+        # their respective refine task registries, drained by cancel_character_derived_tasks.
+        ("refine_loops.py", "_run_tracked_refine_character"),
         # Daily pinned-section check: registered by character in
         # review.pinned_review_tasks, drained the same way
         # (test_a_release_cancels_a_check_waiting_on_the_model).

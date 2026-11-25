@@ -5958,6 +5958,7 @@ function CompactChatApp({
       {galgameStyleOptionsVisible ? (
         <div
           className={`composer-galgame-slot${compactChoiceLayerOpen && galgameStyleOptionsVisible ? ' is-open' : ''}`}
+          data-neko-capture-mask="choices"
           aria-hidden={!(compactChoiceLayerOpen && galgameStyleOptionsVisible)}
         >
           <div
@@ -6022,6 +6023,7 @@ function CompactChatApp({
       {choicePromptHasOptions ? (
         <div
           className={`composer-galgame-slot composer-choice-slot${compactChoiceLayerOpen ? ' is-open' : ''} is-${choicePrompt.source}`}
+          data-neko-capture-mask="choices"
           aria-hidden={compactChoiceLayerOpen ? 'false' : 'true'}
           data-choice-source={choicePrompt.source}
         >

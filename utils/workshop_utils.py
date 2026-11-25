@@ -24,7 +24,9 @@ Dependency hierarchy: utils layer -> config layer (one-way; no dependency on the
 import asyncio
 import os
 import pathlib
-from typing import Optional, List, Dict, Any
+from typing import Callable, Iterable, Optional, List, Dict, Any
+
+from starlette.staticfiles import StaticFiles
 
 from utils.logger_config import get_module_logger
 
@@ -37,7 +39,9 @@ from utils.config_manager import (
     save_workshop_config,
     save_workshop_path,
     persist_user_workshop_folder,
-    get_workshop_path
+    get_workshop_path,
+    register_steam_workshop_library_roots,
+    get_steam_workshop_library_roots,
 )
 
 
@@ -140,6 +144,170 @@ def extract_workshop_root_from_items(items: List[Dict[str, Any]]) -> Optional[st
         return None
 
 
+def extract_workshop_roots_from_items(items: Optional[List[Dict[str, Any]]]) -> List[str]:
+    """
+    Extract the Workshop root of every Steam library that holds a subscribed item
+
+    Steam can install items into several libraries; each item's installedFolder is
+    ``<library>/steamapps/workshop/content/<appid>/<item_id>``, so its parent is the
+    root that ``/workshop/<item_id>/...`` URLs are resolved against.
+
+    Args:
+        items: list of Workshop items; each contains an installedFolder field
+
+    Returns:
+        list[str]: existing roots, de-duplicated, in item order
+    """
+    roots: List[str] = []
+    seen = set()
+    for item in items or ():
+        if not isinstance(item, dict):
+            continue
+        installed_folder = item.get('installedFolder')
+        if not installed_folder or not isinstance(installed_folder, str):
+            continue
+        parent = pathlib.Path(installed_folder).parent
+        key = os.path.normcase(os.path.normpath(str(parent)))
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if parent.is_dir():
+                roots.append(str(parent))
+        except OSError:
+            continue
+    return roots
+
+
+def register_workshop_roots_from_items(items: Optional[List[Dict[str, Any]]]) -> None:
+    """Remember the Workshop roots of all Steam libraries found in ``items`` (runtime only)."""
+    try:
+        roots = extract_workshop_roots_from_items(items)
+        if roots:
+            register_steam_workshop_library_roots(roots)
+    except Exception as e:
+        logger.warning(f"登记Steam创意工坊库目录失败: {e}")
+
+
+def get_workshop_library_roots() -> List[str]:
+    """Workshop roots of all known Steam libraries, in registration order (runtime only)."""
+    try:
+        return list(get_steam_workshop_library_roots())
+    except Exception as e:
+        logger.warning(f"获取Steam创意工坊库目录失败: {e}")
+        return []
+
+
+class WorkshopStaticFiles(StaticFiles):
+    """
+    Static files for ``/workshop`` that also look in the other Steam libraries
+
+    The mounted directory is tried first, so single-library installs behave exactly as
+    a plain ``StaticFiles(directory=...)``. Then the roots returned by
+    ``extra_directories`` (read on every request, so libraries registered later are
+    served too) are tried in order. ``lookup_path`` applies Starlette's checks to
+    each root: absolute paths are rejected, as is anything whose real path (after
+    following symlinks) leaves the root being tried.
+
+    Registered roots only grow during a run (a library stays served after its last
+    item is unsubscribed, until restart). If the same item folder name exists in two
+    roots, the earlier root wins.
+    """
+
+    def __init__(
+        self,
+        *,
+        directory: Optional[str],
+        extra_directories: Optional[Callable[[], Iterable[str]]] = None,
+        **kwargs: Any,
+    ) -> None:
+        self._extra_directories = extra_directories or get_workshop_library_roots
+        super().__init__(directory=directory, **kwargs)
+
+    async def check_config(self) -> None:
+        # Starlette refuses to serve when the mounted directory is gone at the first
+        # request; the other libraries can still be served, so only check a root
+        # that exists (a missing one is skipped by lookup_path like any missing file).
+        if self.directory is not None and not os.path.isdir(self.directory):
+            return
+        await super().check_config()
+
+    def lookup_path(self, path: str):
+        """Starlette's lookup, except a denied file in one library does not hide the next.
+
+        Same checks per root as ``StaticFiles.lookup_path`` (absolute paths rejected,
+        real path must stay inside the root). A ``PermissionError`` moves on to the next
+        library; it is re-raised (Starlette answers 401, as before) only if no library
+        has the file. A root that cannot be compared with the target (``commonpath``
+        raising ``ValueError``, e.g. another drive on Windows) is skipped, so later
+        libraries are still tried.
+        """
+        if path.startswith(("/", "\\")):
+            return "", None
+        denied: Optional[PermissionError] = None
+        for directory in self.all_directories:
+            joined_path = os.path.join(directory, path)
+            if self.follow_symlink:
+                full_path = os.path.abspath(joined_path)
+                root = os.path.abspath(directory)
+            else:
+                full_path = os.path.realpath(joined_path)
+                root = os.path.realpath(directory)
+            try:
+                if os.path.commonpath([full_path, root]) != str(root):
+                    continue
+            except ValueError:
+                continue
+            try:
+                return full_path, os.stat(full_path)
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            except PermissionError as e:
+                if denied is None:
+                    denied = e
+                continue
+        if denied is not None:
+            raise denied
+        return "", None
+
+    @property
+    def all_directories(self) -> List[Any]:
+        base = list(getattr(self, '_base_directories', []))
+        seen = {os.path.normcase(os.path.realpath(str(d))) for d in base}
+        try:
+            extras = list(self._extra_directories() or ())
+        except Exception as e:
+            logger.warning(f"获取额外的创意工坊目录失败: {e}")
+            extras = []
+        for extra in extras:
+            if not extra:
+                continue
+            key = os.path.normcase(os.path.realpath(str(extra)))
+            if key in seen or not os.path.isdir(extra):
+                continue
+            seen.add(key)
+            base.append(str(extra))
+        return base
+
+    @all_directories.setter
+    def all_directories(self, value: List[Any]) -> None:
+        # StaticFiles.__init__ assigns the configured directories here.
+        self._base_directories = list(value)
+
+
+def create_workshop_static_files(workshop_path: Optional[str]) -> WorkshopStaticFiles:
+    """
+    Build the ``/workshop`` app, also when the configured root is unusable
+
+    With a missing root the app starts with no base directory and serves only the
+    Steam libraries registered later (for example by the subscribed-items endpoint),
+    so their URLs work without a restart. Until then every request is a 404.
+    """
+    if workshop_path and os.path.isdir(workshop_path):
+        return WorkshopStaticFiles(directory=workshop_path)
+    return WorkshopStaticFiles(directory=None)
+
+
 def get_workshop_root(subscribed_items: Optional[List[Dict[str, Any]]] = None) -> str:
     """
     Get the Workshop root directory path and save it into the config file
@@ -160,6 +328,8 @@ def get_workshop_root(subscribed_items: Optional[List[Dict[str, Any]]] = None) -
     
     # If an item list is provided, try extracting the root from it.
     if subscribed_items:
+        # Items in other Steam libraries live under other roots; remember them all.
+        register_workshop_roots_from_items(subscribed_items)
         workshop_path = extract_workshop_root_from_items(subscribed_items)
         if workshop_path:
             from_steam = True

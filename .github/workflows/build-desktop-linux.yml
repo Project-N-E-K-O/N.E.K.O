@@ -281,6 +281,10 @@ jobs:
           # Data directories
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=assets=assets"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=templates=templates"
+          # Agent kit staged by prepare_nuitka_plugins.py prepare; the frozen
+          # CLI copies it into every scaffolded plugin (see templates/agent_kit.py).
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=plugin/neko_plugin_cli/agent_kit=plugin/neko_plugin_cli/agent_kit"
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=plugin/neko_plugin_cli/templates/agent_guides=plugin/neko_plugin_cli/templates/agent_guides"
           # Plugin manager UI (vite dist; gitignored)
           if [ -d "frontend/plugin-manager/dist" ]; then
             NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=frontend/plugin-manager/dist=frontend/plugin-manager/dist"
@@ -324,7 +328,7 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=services.theater_workshop"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=memory"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=knowledge"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=nekoclaw"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=nekopower"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=utils"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=steamworks"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=tiktoken"

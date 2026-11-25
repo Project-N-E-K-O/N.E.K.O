@@ -49,7 +49,7 @@ class MyPlugin(NekoPluginBase):
 | `self.config_dir` | `Path` | Compatibility alias for `self.plugin_dir` |
 | `self.storage_dir` | `Path` | User storage root assigned to this plugin |
 | `self.runtime_config_path` | `Path` | External runtime configuration file |
-| `self.metadata` | `dict` | Plugin metadata from `plugin.toml` |
+| `self.metadata` | `dict` | Always `{}` in the plugin process today (`plugin.toml` data is not passed in). Read configuration with `await self.config.dump()` |
 | `self.bus` | `SdkBusContext` | Read/watch facade over host state; it has no publish/emit API |
 | `self.plugins` | `Plugins` | Cross-plugin call helper |
 | `self.system_info` | `SystemInfo` | Host system metadata |
@@ -59,7 +59,7 @@ class MyPlugin(NekoPluginBase):
 `NekoPluginBase` provides logging and configuration without extra setup:
 
 ```python
-self.logger.info("Processing request: {}", request_id)
+self.logger.info("Processing request: %s", request_id)
 timeout = await self.config.get_int("my_settings.timeout", default=30)
 ```
 
@@ -77,6 +77,8 @@ Choose storage by data shape:
 | Structured SQLite data | `self.db` after enabling `[plugin.database]` |
 | Arbitrary persistent files | `self.data_path(...)` |
 | Rebuildable files | `self.cache_path(...)` |
+| Files other plugins may read | `self.shared_path(...)` |
+| Files another plugin published | `self.shared_path_of("<plugin_id>", ...)` after declaring it in `[plugin.shared]` |
 
 ```python
 from plugin.sdk.plugin import unwrap
@@ -96,6 +98,13 @@ and use `self.i18n.t(...)`:
 ```python
 message = self.i18n.t("greeting", name="Alice")
 ```
+
+`self.i18n.t(...)` does not follow the user's language: without `locale=` it
+looks up the plugin's `default_locale`, then its base language (for example `fr` for `fr-CA`), then `en`, then falls back to the
+`default` argument or the key. For user-facing strings that the host
+registers (plugin and entry names, descriptions, schema labels, UI action
+labels), use `tr("key", default="...")`, which the host resolves for each
+user's locale.
 
 ### Methods
 
@@ -147,18 +156,44 @@ preview_path = self.cache_path("preview.png")
 # → <storage-root>/plugins/<plugin_id>/cache/preview.png
 ```
 
+#### `shared_path(*parts) -> Path`
+
+Get a path under the directory this plugin publishes for other plugins to read. The directory is not created for you, and it is kept when the plugin is removed. The directory is named after the plugin id; characters other than lower-case letters, digits, `_` and `-` are escaped in the name, so always take the path from this method.
+
+```python
+cities = self.shared_path("cities.json")
+# → <storage-root>/plugin_shared/<plugin_id>/cities.json
+cities.parent.mkdir(parents=True, exist_ok=True)
+```
+
+#### `shared_path_of(plugin_id, *parts) -> Path`
+
+Get a path under another plugin's shared directory, for reading. That plugin's id must be listed under `[plugin.shared] reads` in `plugin.toml`; otherwise `ValidationError` is raised (`code="shared_not_declared"`). A path that would leave the shared directory is refused as well (`code="shared_bad_path"`).
+
+```python
+cities = self.shared_path_of("weather", "cities.json")
+# → <storage-root>/plugin_shared/weather/cities.json
+```
+
+This is an agreement between plugins, not a security boundary: plugins are not sandboxed from each other. Treat the files as read-only.
+
 #### `register_dynamic_entry(entry_id, handler, ...) -> bool`
 
 Register an entry point at runtime (not via decorator).
 
 ```python
+async def greet(name: str = "World", **_):
+    return Ok({"msg": f"Hi {name}"})
+
 self.register_dynamic_entry(
     entry_id="dynamic_greet",
-    handler=lambda name="World", **_: Ok({"msg": f"Hi {name}"}),
+    handler=greet,
     name="Dynamic Greet",
     description="A dynamically registered greeting",
 )
 ```
+
+The handler must be an `async def` function: registration accepts any callable, but calling an entry whose handler is not a coroutine function fails with `Entry must be 'async def'`.
 
 #### `unregister_dynamic_entry(entry_id) -> bool`
 
@@ -184,7 +219,7 @@ self.register_static_ui("static")  # serves <plugin_dir>/static/index.html
 
 Mount a `PluginRouter` to organize a large or feature-split normal plugin.
 
-Related methods are `exclude_router(router_or_name) -> bool`, `get_router(name)`, and `list_routers()`. A Router cannot be the manifest `[plugin].entry`, and this mount path does not automatically invoke `on_mount` / `on_unmount`.
+Also list every router class in the plugin class attribute `__routers__`: the host's static entry scan only reads that list (see [PluginRouter](./router)). Do not combine a router class listed there with `prefix`: the listed ID would not be callable (see [Prefixed Routers](./router#prefixed-routers)). Related methods are `exclude_router(router_or_name) -> bool`, `get_router(name)`, and `list_routers()`. A Router cannot be the manifest `[plugin].entry`. `on_mount` / `on_unmount` are never called by the host; do not override them.
 
 #### Hosted/static UI and list actions
 
@@ -192,7 +227,7 @@ Hosted TSX uses the exported `ui` namespace plus manifest surfaces; see [Hosted 
 
 #### LLM tool methods
 
-`register_llm_tool(...)`, `unregister_llm_tool(name)`, and `list_llm_tools()` are the imperative counterparts to `@llm_tool`. They register conversation-time tools, not user-plugin Agent entries. See [LLM Tool Calling](./tool-calling).
+`register_llm_tool(...)`, `unregister_llm_tool(name)`, and `list_llm_tools()` are the imperative counterparts to `@llm_tool`. They register conversation-time tools, not user-plugin Agent entries. The sync calls are fire-and-forget; `await register_llm_tool_async(...)` and `await unregister_llm_tool_async(name)` return what `main_server` actually answered (`ok`, per-role results, `error`) and keep the plugin's local registration in step with it. See [LLM Tool Calling](./tool-calling).
 
 #### `run_update(**kwargs) -> object` (async)
 
@@ -235,6 +270,18 @@ self.register_dynamic_entry(
     entry_id="my-tool",
     handler=handler,
     llm_result_fields=["summary"],
+)
+```
+
+### Output Contract
+
+`output_schema` on `@plugin_entry` or `register_dynamic_entry()` declares the JSON Schema of the return value. Symmetric with inputs: a static entry whose return annotation is a Pydantic model gets it inferred and its returned data is validated by the model at runtime (like `params`); an explicit `output_schema` mapping, including every dynamic entry's, is published only (like `input_schema`). A mismatch is a rate-limited warning in the plugin log by default; with `strict_output=True` the call fails with `PLUGIN_OUTPUT_SCHEMA_VIOLATION`. Logs and errors carry field paths and error types only. See [Output contract](./entries#output-contract).
+
+```python
+self.register_dynamic_entry(
+    entry_id="my-tool-described",
+    handler=handler,
+    output_schema={"type": "object", "required": ["summary"]},  # published, not checked
 )
 ```
 
@@ -297,11 +344,35 @@ result = await self.plugins.require_enabled("dependency_plugin")
 
 All methods return `Result` types — check with `isinstance(result, Ok)` before using `.value`.
 
+### Who called you: `ctx.call_chain`
+
+`self.ctx.call_chain` is a read-only view of how the current invocation was reached. The host builds it from its own records; you only read it, and nothing you change in it affects the host.
+
+```python
+chain = self.ctx.call_chain
+chain.callers        # plugin ids that led here, root first; () when the host called you directly
+chain.origin.kind    # "run", "chat_tool", "chat_hook", "ui_action", "plugin_self" or "system"
+chain.origin.ref     # an id such as the run id; never message text
+chain.hops           # each step as (plugin_id, event_type, event_id)
+chain.rights         # permissions every plugin on the chain has been approved for
+chain.rights_known   # False when the host did not say (see below)
+chain.allows("plugin_sdk.main_agent.memory:read")
+```
+
+- It is never `None`. Outside an invocation (a timer, a background task still running after your entry returned), it is a chain holding only your plugin, with `rights_known=False`.
+- `rights` holds permission ids such as `plugin_sdk.main_agent.memory:read`. For one release it also holds the earlier names (`memory.read`, `conversations.read`, `messages.push`), and `allows()` accepts either form.
+- `allows()` is advisory. It answers `False` whenever the rights are unknown, so "not allowed" and "do not know" both read `False`; check `rights_known` to tell them apart. The host decides every use on its own: a `False` here does not mean the host will refuse, and a `True` is a snapshot taken when the call was delivered.
+- Work you hand to a bare `threading.Thread`, a thread pool of your own, or `loop.run_in_executor` with an executor of your own loses the invocation context, so the host sees those requests as your plugin acting on its own. `asyncio.to_thread` keeps it; for a thread of your own, run the work under `contextvars.copy_context().run(...)`.
+- `loop.run_in_executor(None, ...)` keeps it too, but only on the event loop the plugin runtime runs your code on: the runtime sets that loop's default executor to one that copies the context. On an event loop you create yourself, or after you replace the default executor, it loses the context. `neko-plugin check` cannot tell which loop a `run_in_executor(None, ...)` call runs on, so it does not list that call as a blind spot; it lists `asyncio.new_event_loop`, `asyncio.Runner` and `set_default_executor` instead. Other ways of getting a loop of your own, such as calling `asyncio.run` from your code, are not listed.
+- This is separate from the older in-process helpers in `plugin.sdk.shared.runtime.call_chain`, which only track calls inside one plugin process.
+
+The host records cross-plugin calls and capability use for audit (identifiers and capability names only, never arguments, results or message text). Design: [`docs/design/plugin-call-chain.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docs/design/plugin-call-chain.md).
+
 ---
 
 ## PluginStore (Persistent Storage)
 
-Access via `self.store` (the host pre-builds and injects it at plugin construction time — you do not instantiate `PluginStore` yourself).
+Access via `self.store` (the host pre-builds and injects it at plugin construction time — you do not instantiate `PluginStore` yourself). It is disabled unless `plugin.toml` has `[plugin.store]` with `enabled = true`; while disabled, `set()` stores nothing and `get()` returns the default.
 
 All `PluginStore` methods return a `Result`; unwrap with `unwrap_or(...)`.
 
@@ -334,7 +405,7 @@ The `ctx` object is injected by the host at construction time.
 | `ctx.config_path` | `Path` | Path to `plugin.toml` |
 | `ctx.logger` | `Logger` | Logger instance |
 | `ctx.bus` | `SdkBusContext` | Read/watch facade over host state |
-| `ctx.metadata` | `dict` | Plugin metadata |
+| `ctx.metadata` | `dict` | The `ctx` passed to `__init__` has no `metadata` attribute (reading it raises `AttributeError`); the wrapped `self.ctx.metadata` returns `{}`. Use `await self.config.dump()` for configuration |
 
 ### Bus and memory
 
@@ -351,7 +422,7 @@ The list surface is `filter` / `where`, `sort`, `limit`, and `watch`. Callable `
 
 These stores are shared, and reading them is not gated per plugin: any enabled plugin can read `conversations` and `frames`, including turns and pictures that came from the user or from another plugin. Nothing here widens what the host already sent to the model — a frame the session never sent never appears — but it does widen who can see it, from the model provider to every plugin the user has enabled. Treat installing a plugin as granting it that visibility, and say so in your own plugin's description if you read these.
 
-`bus.memory` contains a bounded, in-memory window of recent user-utterance events (one-hour TTL); it is separate from the character's persistent facts, reflections, and persona. `ctx.query_memory(...)` is retained only as a deprecated compatibility call to a placeholder endpoint and does not perform semantic recall.
+`bus.memory` contains a bounded, in-memory window of recent user-utterance events (one-hour TTL); it is separate from the character's persistent facts, reflections, and persona. `ctx.query_memory(...)` runs the same hybrid recall as the built-in `recall_memory` tool over the character's private memory and returns `{"result": text}`, where `text` is a numbered, token-budgeted block of hits rendered in the character's prompt language, or an empty string when nothing relevant was found.
 
 ### Frames
 

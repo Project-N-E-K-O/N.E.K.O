@@ -32,6 +32,7 @@ import os
 
 
 
+from utils.asyncio_retirement import await_retirement
 from utils.cloudsave_runtime import assert_cloudsave_writable
 
 
@@ -215,6 +216,27 @@ class PersistenceMixin:
         require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
         async with self._get_alock(name):
             return await self._aensure_persona_locked(name)
+
+    async def apeek_persona(self, name: str) -> dict:
+        """Read-only persona lookup; never creates memory/{name}/ or persona.json."""
+        from memory.long_term_sync import require_consistent_views, consistent_view_read
+        require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
+        async with self._get_alock(name):
+            if name in self._personas:
+                return self._personas[name]
+            path = os.path.join(str(self._config_manager.memory_dir), name, 'persona.json')
+            if not await asyncio.to_thread(os.path.exists, path):
+                return self._empty_persona()
+            try:
+                with consistent_view_read(path):
+                    data = await read_json_async(path)
+                if isinstance(data, dict):
+                    self._migrate_v1_entity_keys(data)
+                    await asyncio.to_thread(self._drop_cold_copies, name, data)
+                    return data
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(f"[Persona] 只读加载失败: {e}")
+            return self._empty_persona()
 
     @staticmethod
     def _validate_private_persona_sections(persona: dict) -> None:
@@ -705,10 +727,10 @@ class PersistenceMixin:
                 operation="save",
                 target=f"memory/{name}/persona.json",
             )
-            await atomic_write_json_async(
+            await await_retirement(atomic_write_json_async(
                 self._persona_path(name), persona, indent=2, ensure_ascii=False,
-            )
-        except Exception:
+            ))
+        except (Exception, asyncio.CancelledError):
             self._personas.pop(name, None)
             raise
 

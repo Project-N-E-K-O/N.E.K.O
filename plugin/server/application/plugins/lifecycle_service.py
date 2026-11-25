@@ -29,6 +29,7 @@ from plugin.core.registry import (
     _check_plugin_dependency,
     _find_missing_python_requirements,
     _effective_entries,
+    _manifest_entry_ids,
     _overlay_entry_declaration,
     _parse_plugin_dependencies,
     _resolve_plugin_id_conflict,
@@ -43,6 +44,14 @@ from plugin.server.domain import IO_RUNTIME_ERRORS, RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.domain.normalization import is_valid_plugin_id
 from plugin.server.application.plugins.consent_service import denied_plugin_ids
+from plugin.server.application.plugins.permission_push import (
+    permission_push_service,
+    push_permissions,
+)
+from plugin.server.application.plugins.permission_service import (
+    permission_snapshot,
+    reconcile_permission_source,
+)
 from plugin.server.application.plugins.operation_lock import (
     bounded_operation_wait,
     _HeldPluginOperationLock,
@@ -300,7 +309,11 @@ def _read_packaged_isolated_metadata(
     (codex). An artifact written under an older schema is refused by the reader
     and takes the worker path; ``start_plugin`` then rewrites it from that scan
     (``_refresh_scanned_packaged_metadata``), so the cost is one import, not one
-    per start. Schema 3 never shipped in a release, so no in-memory migration.
+    per start, wherever that rewrite is possible (a read-only package or one
+    whose entries the effective configuration overrides keeps scanning).
+    Schema 3 never shipped in a release, so no in-memory migration. Schema 4
+    did, but a v4 file cannot say whether its handlers cover ``__routers__``
+    entries (#3066), so every v4 file takes this one rescan.
 
     Returns ``None`` when there is no usable metadata at all.
     """
@@ -1138,6 +1151,10 @@ class PluginLifecycleService:
                         error_type=str(exc.details.get("error_type", "RegistryRefreshFailed")) if isinstance(exc.details, dict) else "RegistryRefreshFailed",
                     ) from exc
 
+        # Under the operation lock: persist a changed or first-known install
+        # source into the stored permission grants. Never blocks the start.
+        await asyncio.to_thread(reconcile_permission_source, current_plugin_id)
+
         project_dir = await asyncio.to_thread(_project_source_dir_sync, current_plugin_id)
         registered_meta = await asyncio.to_thread(_get_plugin_meta_sync, current_plugin_id)
         config_path = await asyncio.to_thread(_resolve_registered_config_path_sync, registered_meta)
@@ -1368,6 +1385,18 @@ class PluginLifecycleService:
                     error_type=type(created_host).__name__,
                 )
             host_obj = created_host
+            # The child starts with its permission snapshot, so ctx.permissions
+            # is filled before plugin code runs.
+            set_initial_permissions = getattr(created_host, "set_initial_permissions", None)
+            if callable(set_initial_permissions):
+                set_initial_permissions(
+                    await asyncio.to_thread(permission_snapshot, current_plugin_id)
+                )
+            # The plugin_entry ids the effective manifest declares: the child
+            # resolves plain methods only for these (see EntryExecutor).
+            set_manifest_entry_ids = getattr(created_host, "set_manifest_entry_ids", None)
+            if callable(set_manifest_entry_ids):
+                set_manifest_entry_ids(_manifest_entry_ids(conf, pdata))
 
             dependencies = _parse_plugin_dependencies(conf, logger, current_plugin_id)
             for dep in dependencies:
@@ -1516,6 +1545,14 @@ class PluginLifecycleService:
 
             await asyncio.to_thread(_register_or_replace_host_sync, current_plugin_id, host_obj)
             registered_plugin_id = current_plugin_id
+            # A change written after the launch snapshot was built found no
+            # registered host to update; send the current state once now.
+            # Queued on the push service (which retries) so the start does not
+            # wait on the child's downlink under the operation lock; pushed
+            # inline only when the service is not running (then nothing would
+            # retry a failed push either, which only happens before startup).
+            if not permission_push_service.push_soon(current_plugin_id):
+                await push_permissions(current_plugin_id, host_obj)
 
             _emit_lifecycle_event(event_type="plugin_started", plugin_id=current_plugin_id)
             response: dict[str, object] = {
@@ -2297,6 +2334,7 @@ class PluginLifecycleService:
                 "filesystem_rollback": result.filesystem_rollback,
                 "runtime_restart": result.runtime_restart,
                 "cleanup_pending": result.cleanup_pending,
+                "permission_warning": result.permission_warning,
             },
         )
         response: dict[str, object] = {
@@ -2311,6 +2349,7 @@ class PluginLifecycleService:
             "filesystem_rollback": result.filesystem_rollback,
             "runtime_restart": result.runtime_restart,
             "cleanup_pending": result.cleanup_pending,
+            "permission_warning": result.permission_warning,
             "message": "Plugin deleted successfully",
         }
         return response

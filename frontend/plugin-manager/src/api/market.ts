@@ -159,7 +159,7 @@ export interface MarketPluginReadme {
   source_ref?: string
 }
 
-/** Market public comment thread. Comments are displayed read-only in NEKO. */
+/** Public message shape shared by Market comments and issue messages. */
 export interface MarketPluginComment {
   id: number
   author: {
@@ -167,6 +167,7 @@ export interface MarketPluginComment {
     username: string
     display_name: string | null
     avatar_url: string | null
+    community_profile_id?: string | null
   }
   reply_to: {
     id: number
@@ -188,6 +189,7 @@ export interface MarketPluginComment {
 export interface MarketPluginComments {
   messages: MarketPluginComment[]
   next_cursor: number | null
+  can_reply?: boolean
 }
 
 const ZONE_BY_ID: Record<number, string> = {

@@ -20,7 +20,7 @@ op                             what it does
                                to persona.json, with contradiction
                                detection against existing entries.
 ``persona.resolve_corrections`` Batch-resolve queued persona contradictions
-                               via correction model (runs an LLM review,
+                               via the summary model (runs an LLM review,
                                then applies replace / keep_new / keep_old
                                / keep_both actions).
 ============================== ==========================================
@@ -28,11 +28,11 @@ op                             what it does
 Why re-implement vs. call ``FactStore.extract_facts`` etc. directly?
 --------------------------------------------------------------------
 The upstream memory managers (``memory/*.py``) hardcode
-``self._config_manager.get_model_api_config('summary')`` (resp.
-``'correction'``). ``ConfigManager`` groups are set by the main app's
+``self._config_manager.get_model_api_config('memory')`` (the former
+``'correction'`` tier was merged into it). ``ConfigManager`` groups are set by the main app's
 config UI; testbench surfaces its own 4 groups (``chat / simuser /
 judge / memory``) in ``model_config.py`` and never writes them into
-ConfigManager. So we'd be calling the **production** summary/correction
+ConfigManager. So we'd be calling the **production** summary
 model, not what the tester picked in Settings → Models → memory. That's
 a footgun: testers would silently burn their real budget when they
 meant to test an offline endpoint.

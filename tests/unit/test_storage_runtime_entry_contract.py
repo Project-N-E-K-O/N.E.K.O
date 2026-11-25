@@ -31,7 +31,7 @@ DELIBERATELY_UNMIGRATED = {
     # ``node_modules``) and the profile of the browser the browser tools
     # start: both contain links, and the copier stops a whole migration at a
     # link. Its plain files move one by one instead, which is checked below.
-    "nekoclaw",
+    "nekopower",
 }
 
 # Files under state that belong to the anchor root and stay with it, with the
@@ -458,14 +458,14 @@ def test_conditional_runtime_root_alias_is_still_scanned(expression):
 
 
 @pytest.mark.unit
-def test_the_plain_files_of_nekoclaw_move_one_by_one():
-    """nekoclaw does not move as a directory (the links below it would stop a
+def test_the_plain_files_of_nekopower_move_one_by_one():
+    """nekopower does not move as a directory (the links below it would stop a
     whole migration), so every file the host and the browser tools keep
     directly in it has to be named among the migrated entries."""
-    from nekoclaw.builtin.browser.settings import BrowserSettingsStore
-    from nekoclaw.host.paths import HostPaths
+    from nekopower.builtin.browser.settings import BrowserSettingsStore
+    from nekopower.host.paths import HostPaths
 
-    root = Path("data-root") / "nekoclaw"
+    root = Path("data-root") / "nekopower"
     paths = HostPaths(root)
     kept = {
         getattr(paths, name)().name
@@ -476,13 +476,19 @@ def test_the_plain_files_of_nekoclaw_move_one_by_one():
     # The scan must see the files there are, or it proves nothing.
     assert {"ledger.db", "permissions.json", "model_capabilities.json", "browser.json"} <= kept
 
-    migrated = {name.removeprefix("nekoclaw/") for name in MIGRATED_RUNTIME_ENTRY_NAMES if name.startswith("nekoclaw/")}
+    migrated = {name.removeprefix("nekopower/") for name in MIGRATED_RUNTIME_ENTRY_NAMES if name.startswith("nekopower/")}
     assert kept <= migrated, (
-        "A file kept directly in <data root>/nekoclaw is not migrated. Add it to "
-        "MIGRATED_RUNTIME_ENTRY_NAMES in utils/storage/migration.py as nekoclaw/<name>."
+        "A file kept directly in <data root>/nekopower is not migrated. Add it to "
+        "MIGRATED_RUNTIME_ENTRY_NAMES in utils/storage/migration.py as nekopower/<name>."
     )
     # What was committed to the ledger and not yet written into its file is in the write-ahead log.
     assert "ledger.db-wal" in migrated
     # Neither the directory as a whole nor the two directories with links in them.
-    assert "nekoclaw" not in MIGRATED_RUNTIME_ENTRY_NAMES
+    assert "nekopower" not in MIGRATED_RUNTIME_ENTRY_NAMES
     assert not {"task_agents", "browser_profile"} & migrated
+    # What task agents keep for later commissions is plain text in a directory
+    # of its own, apart from their session directories, and moves as a whole.
+    space = paths.space().root
+    assert space.parent == root and space.name in migrated
+    assert root / "task_agents" not in (space, *space.parents)
+    assert space not in paths.session_dir("c1", "a project").parents

@@ -11,6 +11,14 @@ on:
 permissions:
   contents: read
 
+# A new push to a PR supersedes the old run. Every other run gets a group of
+# its own (keyed by run id): GitHub keeps only one pending run per group, so a
+# shared main group would let a later merge replace a waiting run and leave
+# that commit without an Analyze result.
+concurrency:
+  group: analyze-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Five parallel jobs, split by concern so a failing check name points at a
 # category (expand it to see which step is red) instead of one giant title
@@ -271,7 +279,7 @@ jobs:
         # Top-level packages have a strict ordering — only higher layers may
         # depend on lower ones (config/steamworks → utils →
         # knowledge/memory/main_logic/services → main_routers
-        # → plugin → nekoclaw → app/launcher_core). The walker descends into
+        # → plugin → nekopower → app/launcher_core). The walker descends into
         # function bodies and string-form dynamic imports
         # (importlib.import_module / __import__), so deferred / conditional
         # imports cannot smuggle in a layer inversion or cycle. FORBIDDEN_EDGES

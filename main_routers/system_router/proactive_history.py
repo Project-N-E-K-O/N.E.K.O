@@ -63,8 +63,8 @@ def _proactive_chat_totals_path():
     return _state._proactive_chat_totals_path(memory_dir=_legacy_memory_dir())
 
 
-async def _ensure_proactive_chat_totals_loaded() -> None:
-    await _state._ensure_proactive_chat_totals_loaded(memory_dir=_legacy_memory_dir())
+async def _ensure_proactive_chat_totals_loaded() -> bool:
+    return await _state._ensure_proactive_chat_totals_loaded(memory_dir=_legacy_memory_dir())
 
 
 async def _persist_totals_unlocked() -> None:

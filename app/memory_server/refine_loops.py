@@ -58,6 +58,52 @@ def _scoped_prompt_trust_band(entry: dict) -> str:
     return scoped_prompt_trust_band(entry)
 
 
+async def _apeek_persona(pm, name: str) -> dict:
+    """Read persona without creating memory/{name}/ when missing."""
+    peek = getattr(pm, "apeek_persona", None)
+    if callable(peek):
+        return await peek(name)
+    return await pm.aensure_persona(name)
+
+
+async def _run_tracked_refine_character(
+    name: str,
+    fn,
+    *,
+    registry: dict[str, asyncio.Task],
+    verify_roster: bool = True,
+):
+    """Run one character refine pass registered by kind under spawn lock."""
+    async with review._get_review_spawn_lock(name):
+        if not review.is_character_periodic_write_admitted(name):
+            return False, None
+        if verify_roster:
+            try:
+                current_data = await runtime._config_manager.aload_characters()
+            except Exception as e:
+                logger.debug(f"[Refine] 重新加载角色列表失败: {e}")
+                return False, None
+            if name not in (current_data.get('猫娘') or {}):
+                return False, None
+            if not review.is_character_periodic_write_admitted(name):
+                return False, None
+        existing = registry.get(name)
+        if existing is not None and not existing.done():
+            return False, None
+        run = run_with_character_prompt_locale(name, fn, name)
+        task = runtime._spawn_background_task(run)
+        registry[name] = task
+    await asyncio.wait({task})
+    if registry.get(name) is task:
+        registry.pop(name, None)
+    if task.cancelled():
+        return False, None
+    if task.exception() is not None:
+        # The background task completion callback already logged the failure.
+        return False, None
+    return True, task.result()
+
+
 # ── Phase A-4 / A-5: Connect MemoryRefineEngine to cron ─────────────────────
 
 _reflection_refine_subject_cursor: dict[
@@ -88,7 +134,7 @@ async def _run_persona_refine_for_character(character: str) -> None:
     pm = runtime.persona_manager
     if pm is None:
         return
-    persona = await pm.aensure_persona(character)
+    persona = await _apeek_persona(pm, character)
     candidates_by_entity: dict[str, list[dict]] = {}
     for entity in ('master', 'neko', 'relationship'):
         section = pm._get_section_facts(persona, entity)
@@ -98,7 +144,7 @@ async def _run_persona_refine_for_character(character: str) -> None:
         # ordering. Recovery paths: apply_refine_actions resets the count to 0 when
         # stamping succeeds; or manually edit persona.json; or recover with time —
         # after MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS in the frozen state, allow one probe so
-        # a one-off correction-model outage can self-heal (do not permanently freeze an innocent entry).
+        # a one-off summary-model outage can self-heal (do not permanently freeze an innocent entry).
         entries = [
             annotate_entry(e, type_='persona', entity=entity)
             for e in section
@@ -171,14 +217,18 @@ async def _periodic_persona_refine_loop():
             await asyncio.sleep(interval)
             continue
         for name in catgirl_names:
+            if not await review.ais_character_periodic_write_admitted(name):
+                continue
             try:
-                await run_with_character_prompt_locale(
+                ran, _ = await _run_tracked_refine_character(
                     name,
                     _run_persona_refine_for_character,
-                    name,
+                    registry=review.persona_refine_tasks,
+                    verify_roster=True,
                 )
-                from .long_term_sync import queue_capture
-                queue_capture(name)
+                if ran and review.is_character_periodic_write_admitted(name):
+                    from .long_term_sync import queue_capture
+                    queue_capture(name)
             except Exception as e:
                 logger.warning(f"[PersonaRefine] {name} cron 异常: {e}")
         await asyncio.sleep(interval)
@@ -397,14 +447,18 @@ async def _periodic_reflection_refine_loop():
             await asyncio.sleep(interval)
             continue
         for name in catgirl_names:
+            if not await review.ais_character_periodic_write_admitted(name):
+                continue
             try:
-                await run_with_character_prompt_locale(
+                ran, _ = await _run_tracked_refine_character(
                     name,
                     _run_reflection_refine_with_subject_locales,
-                    name,
+                    registry=review.reflection_refine_tasks,
+                    verify_roster=True,
                 )
-                from .long_term_sync import queue_capture
-                queue_capture(name)
+                if ran and review.is_character_periodic_write_admitted(name):
+                    from .long_term_sync import queue_capture
+                    queue_capture(name)
             except Exception as e:
                 logger.warning(f"[ReflectionRefine] {name} cron 异常: {e}")
         await asyncio.sleep(interval)
@@ -438,7 +492,7 @@ async def _run_scoped_refine_for_character(character: str) -> bool:
     engine_ref = runtime.reflection_engine
     if pm is None or engine_ref is None:
         return False
-    persona = await pm.aensure_persona(character)
+    persona = await _apeek_persona(pm, character)
     refls = await engine_ref.aload_reflections(character, include_archived=False)
     buckets = gather_scoped_refine_buckets(persona, refls)
     if not buckets:
@@ -493,7 +547,11 @@ async def _run_scoped_refine_for_character(character: str) -> bool:
     return result.get('served') is not None
 
 
-async def _run_scoped_refine_round(catgirl_names: list[str]) -> None:
+async def _run_scoped_refine_round(
+    catgirl_names: list[str],
+    *,
+    verify_roster: bool = False,
+) -> None:
     """Scan characters fairly and stop after one character serves a cluster."""
     global _scoped_refine_character_cursor
     names = list(dict.fromkeys(catgirl_names))
@@ -504,16 +562,19 @@ async def _run_scoped_refine_round(catgirl_names: list[str]) -> None:
         start = (names.index(_scoped_refine_character_cursor) + 1) % len(names)
     rotation = names[start:] + names[:start]
     for name in rotation:
+        if not await review.ais_character_periodic_write_admitted(name):
+            continue
         try:
-            served = await run_with_character_prompt_locale(
+            ran, served = await _run_tracked_refine_character(
                 name,
                 _run_scoped_refine_for_character,
-                name,
+                registry=review.scoped_refine_tasks,
+                verify_roster=verify_roster,
             )
         except Exception as e:
             logger.warning(f"[ScopedRefine] {name} cron 异常: {e}")
             continue
-        if served:
+        if ran and served:
             _scoped_refine_character_cursor = name
             break
 
@@ -541,7 +602,7 @@ async def _periodic_scoped_refine_loop():
             logger.debug(f"[ScopedRefine] 加载角色列表失败: {e}")
             await asyncio.sleep(interval)
             continue
-        await _run_scoped_refine_round(catgirl_names)
+        await _run_scoped_refine_round(catgirl_names, verify_roster=True)
         await asyncio.sleep(interval)
 
 
@@ -871,8 +932,8 @@ async def _scoped_introspection_contents(name: str) -> list[tuple]:
     engine_ref = runtime.reflection_engine
     if pm is None or engine_ref is None:
         return []
-    persona = await pm.aget_persona(name)
-    reflections = await engine_ref.aload_reflections(name)
+    persona = await _apeek_persona(pm, name)
+    reflections = await engine_ref.aload_reflections(name, include_archived=True)
     content: dict = {}
 
     def _add(entry: dict, kind: str) -> None:
@@ -1119,18 +1180,7 @@ async def _run_introspection_tick() -> None:
         return
     now = datetime.now()
     for name in catgirl_names:
-        scoped_subject = None
-        behavior_review = False
-        # The private block is the organizer's; on any other device it stays due
-        # forever and must not keep the behavior review and group subjects waiting.
-        if not _introspection_due(name, now) or not organizer.allowed(name):
-            behavior_review = (
-                _behavior_review_due(name, now) and await _abehavior_review_enabled()
-            )
-            if not behavior_review:
-                scoped_subject = await _next_scoped_introspection_subject(name, now)
-                if scoped_subject is None:
-                    continue
+        task = None
         # Spawn under the lock character release takes: a name already
         # retired (renamed / deleted) is skipped, and a run registered here
         # is cancelled and drained by the release instead of applying its
@@ -1151,6 +1201,18 @@ async def _run_introspection_tick() -> None:
             existing = review.introspection_tasks.get(name)
             if existing is not None and not existing.done():
                 return
+            scoped_subject = None
+            behavior_review = False
+            # The private block is the organizer's; on any other device it stays due
+            # forever and must not keep the behavior review and group subjects waiting.
+            if not _introspection_due(name, now) or not organizer.allowed(name):
+                behavior_review = (
+                    _behavior_review_due(name, now) and await _abehavior_review_enabled()
+                )
+                if not behavior_review:
+                    scoped_subject = await _next_scoped_introspection_subject(name, now)
+                    if scoped_subject is None:
+                        continue
             if behavior_review:
                 run = run_with_character_prompt_locale(
                     name, _run_behavior_review_for_character, name,
@@ -1235,6 +1297,8 @@ async def _periodic_reflection_synthesis_loop():
             await asyncio.sleep(interval)
             continue
         for name in catgirl_names:
+            if not await review.ais_character_periodic_write_admitted(name):
+                continue
             try:
                 results = []
                 try:

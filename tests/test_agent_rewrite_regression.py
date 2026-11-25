@@ -130,7 +130,7 @@ def test_agent_server_legacy_endpoints_removed():
         "/plan",
         "/analyze_and_plan",
         # Gone with the per-turn analyzer and its channels: work now arrives
-        # through /nekoclaw/dispatch and is recorded in the host's ledger.
+        # through /nekopower/dispatch and is recorded in the host's ledger.
         "/plugin/execute",
         "/computer_use/run",
         "/browser_use/run",
@@ -355,9 +355,9 @@ def test_agent_server_expected_event_driven_endpoints_exist():
         "/api/agent/tasks/{task_id}/complete",
         "/computer_use/availability",
         "/browser_use/availability",
-        "/nekoclaw/dispatch",
-        "/nekoclaw/query",
-        "/nekoclaw/brief",
+        "/nekopower/dispatch",
+        "/nekopower/query",
+        "/nekopower/brief",
         "/builtin/activity",
         "/builtin/stop",
         "/builtin/browser/settings",
@@ -2377,13 +2377,13 @@ def test_agent_command_set_agent_enabled_reports_free_version_and_refreshes_capa
 
     assert 'command == "set_agent_enabled"' in func_src
     assert "gate = _check_agent_api_gate()" in func_src
-    assert "adapter_refreshed = _try_refresh_model_probe(force=True)" in func_src
-    assert "if not adapter_refreshed and Modules.model_probe is not None:" in func_src
-    assert "falling back to the existing one" in func_src
-    assert "if Modules.model_probe is not None:" in func_src
-    assert '_fire_agent_llm_connectivity_check(queue=True)' in func_src
-    assert '_set_capability("computer_use", False, "AGENT_CU_MODULE_NOT_LOADED")' in func_src
-    assert '_set_capability("browser_use", False, "AGENT_CU_MODULE_NOT_LOADED")' in func_src
+    # Whether the tools can be used is worked out from the configuration and
+    # this computer, in the background after the request's own writes;
+    # nothing is sent to the agent model to find it out.
+    assert "_create_tracked_task(_refresh_tool_capabilities_and_tell(lanlan_name))" in func_src
+    assert "if not was_on:" in func_src
+    assert "await _refresh_tool_capabilities()" not in func_src
+    assert "model_probe" not in func_src and "connectivity_check" not in func_src
     assert 'first_reason = (gate.get("reasons") or ["AGENT_ENDPOINT_NOT_CONFIGURED"])[0]' in func_src
     assert '_set_capability("computer_use", False, first_reason)' in func_src
     assert '_set_capability("browser_use", False, first_reason)' in func_src
@@ -2391,26 +2391,20 @@ def test_agent_command_set_agent_enabled_reports_free_version_and_refreshes_capa
     assert '"agent_api_gate": gate' in func_src
 
 
-def test_agent_llm_check_settles_browser_use_instead_of_leaving_it_pending():
+def test_tool_readiness_settles_both_groups_without_asking_the_model():
     source, func = _find_agent_server_function(
-        "_fire_agent_llm_connectivity_check", ast.AsyncFunctionDef
+        "_refresh_tool_capabilities", ast.AsyncFunctionDef
     )
     func_src = ast.get_source_segment(source, func) or ""
 
-    # capabilities.py accesses the state bag as ``_shared.Modules.<attr>``
-    # (single-owner rule of the package split).
-    assert "probe = _shared.Modules.model_probe" in func_src
-    assert "if probe is None:" in func_src
-    assert '_set_capability("computer_use", False, "AGENT_CU_MODULE_NOT_LOADED")' in func_src
-    assert '_set_capability("browser_use", False, "AGENT_CU_MODULE_NOT_LOADED")' in func_src
-    # Once the model answers, the browser tools are as ready as a browser can
-    # be found on this computer; nothing has to be loaded for them.
-    assert "await asyncio.to_thread(_browser_dependency_status)" in func_src
-    assert (
-        '_set_capability("browser_use", dependency_ready, "" if dependency_ready else dependency_error)'
-        in func_src
-    )
-    assert "AGENT_BU_MODULE_NOT_LOADED" not in func_src
+    # Both groups are settled, neither is left "pending"; off the event loop.
+    assert "await asyncio.to_thread(_keyboard_mouse_availability)" in func_src
+    assert "await asyncio.to_thread(_browser_availability)" in func_src
+    assert '"computer_use", bool(keyboard.get("ready"))' in func_src
+    assert '_set_capability("browser_use", browser_ready, browser_reason, started=started)' in func_src
+    # As new as when the check started, not as when it ended.
+    assert "started = _capability_ticket_now()" in func_src
+    assert "PENDING" not in func_src and "create_chat_llm" not in func_src
 
 
 def test_agent_ui_v2_free_warning_accepts_command_gate_shape():
@@ -2431,7 +2425,7 @@ def test_agent_ui_v2_keeps_agent_status_short_during_tutorial():
 
     assert "options.stabilizeTutorialText === true" in status_block
     assert "isTutorialAgentStatusLocked()" in status_block
-    assert "shouldStabilizeTutorialText ? 'NekoClaw server ready' : (msg || '')" in status_block
+    assert "shouldStabilizeTutorialText ? 'NekoPower server ready' : (msg || '')" in status_block
     assert "s.textContent = text;" in status_block
 
 
@@ -3017,6 +3011,8 @@ async def test_turn_check_reliably_retries_on_timeout():
     import threading
 
     attempts = []
+    refs = []
+    original = "chat_original:" + "c" * 32
 
     class SlowAckBridge:
         def __init__(self):
@@ -3025,6 +3021,7 @@ async def test_turn_check_reliably_retries_on_timeout():
 
         async def publish_analyze_request(self, event):
             attempts.append(event.get("event_id"))
+            refs.append(event.get("source_message_ref"))
             return True
 
     bridge = SlowAckBridge()
@@ -3038,9 +3035,11 @@ async def test_turn_check_reliably_retries_on_timeout():
             reply_text="hello",
             ack_timeout_s=0.05,
             retries=2,
+            source_message_ref=original,
         )
         assert ok is False, "Should have failed after all retries"
         assert len(attempts) == 3, f"Expected 3 attempts (1 + 2 retries), got {len(attempts)}"
+        assert refs == [original] * 3
         assert attempts[0], "event_id must not be empty"
         assert all(eid == attempts[0] for eid in attempts), \
             "All attempts should use the same event_id"

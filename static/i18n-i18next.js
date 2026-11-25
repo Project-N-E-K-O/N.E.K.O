@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 合并主线与语音消息语言包，刷新客户端缓存。
-    const LOCALE_VERSION = '2026-11-16-chat-audio-expired';
+    // 语音消息分支合并主线（ChatGPT 账号面板、千问 Token Plan TTS 文案）后刷新语言包缓存。
+    const LOCALE_VERSION = '2026-11-25-chat-audio-main-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

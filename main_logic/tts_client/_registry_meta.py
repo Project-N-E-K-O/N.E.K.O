@@ -171,7 +171,7 @@ TTS_PROVIDER_REGISTRY: dict[str, TTSProviderMeta] = {
         output_streaming=True,
         client_sentence_split=True,
         audio_format="PCM 24kHz → resample 48kHz",
-        notes="mimo-v2.5-tts；辅助 API 选择 MiMo 时使用",
+        notes="mimo-v2.5-tts；通用模型供应商选择 MiMo 时使用",
     ),
     "doubao_tts": TTSProviderMeta(
         name="doubao_tts",
@@ -182,6 +182,16 @@ TTS_PROVIDER_REGISTRY: dict[str, TTSProviderMeta] = {
         client_sentence_split=True,
         audio_format="WAV/PCM 24kHz → resample 48kHz",
         notes="Doubao OpenSpeech seed-icl-2.0；风格控制走 additions.context_texts",
+    ),
+    "qwen_token_plan": TTSProviderMeta(
+        name="qwen_token_plan",
+        category="http_sentence",
+        protocol="HTTP POST /api/v1/services/audio/tts/SpeechSynthesizer (SSE base64 audio)",
+        input_streaming=False,
+        output_streaming=True,
+        client_sentence_split=True,
+        audio_format="PCM 24kHz → resample 48kHz",
+        notes="阿里百炼 Token Plan qwen-audio-3.0-tts-plus；Key 只发往白名单 https 域名",
     ),
     "elevenlabs": TTSProviderMeta(
         name="elevenlabs",

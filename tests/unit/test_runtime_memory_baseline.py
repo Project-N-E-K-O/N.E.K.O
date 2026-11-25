@@ -420,3 +420,51 @@ def test_main_captures_metadata_before_stack_artifacts(monkeypatch, tmp_path):
     assert result == 0
     assert calls == ["metadata", "stack"]
     assert written[0][1]["metadata"] == {"source": "clean"}
+
+
+@pytest.mark.unit
+def test_assert_ports_available_allows_reuseaddr_and_rejects_active_listener(monkeypatch):
+    """F0336: _assert_ports_available delegates to _port_released (SO_REUSEADDR on POSIX, rejects active listeners)."""
+    class _DummyHandler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            return None
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _DummyHandler)
+    busy_port = server.server_port
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(RuntimeError, match="benchmark ports must be free"):
+            baseline._assert_ports_available([busy_port])
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    # Now free: must pass
+    baseline._assert_ports_available([busy_port])
+
+    # Verify POSIX SO_REUSEADDR path is exercised when SO_EXCLUSIVEADDRUSE is absent
+    sock_opts = []
+    real_socket = baseline.socket.socket
+
+    class _SpySocket:
+        def __init__(self, *args, **kwargs):
+            self._inner = real_socket(*args, **kwargs)
+
+        def setsockopt(self, level, optname, value):
+            sock_opts.append((level, optname, value))
+            return self._inner.setsockopt(level, optname, value)
+
+        def bind(self, addr):
+            return self._inner.bind(addr)
+
+        def close(self):
+            return self._inner.close()
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    monkeypatch.delattr(baseline.socket, "SO_EXCLUSIVEADDRUSE", raising=False)
+    monkeypatch.setattr(baseline.socket, "socket", _SpySocket)
+    baseline._assert_ports_available([busy_port])
+    assert (baseline.socket.SOL_SOCKET, baseline.socket.SO_REUSEADDR, 1) in sock_opts

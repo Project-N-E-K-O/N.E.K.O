@@ -364,3 +364,72 @@ def test_full_cache_hit_reads_list_and_timestamp_together(monkeypatch: pytest.Mo
     # Served from the fresh TTL cache.
     assert [row["plugin_id"] for row in collector.get_current_metrics()] == ["a"]
     assert timestamp_reads_locked and all(timestamp_reads_locked)
+
+
+def test_metrics_history_reports_uss_and_keeps_unknown_as_none() -> None:
+    collector = MetricsCollector()
+    known = PluginMetrics(
+        plugin_id="demo", timestamp="2026-01-01T00:00:00+00:00", memory_mb=64.0, memory_uss_mb=32.0
+    )
+    unknown = PluginMetrics(plugin_id="demo", timestamp="2026-01-01T00:00:01+00:00", memory_mb=64.0)
+    collector._metrics_history["demo"] = [known, unknown]
+
+    result = collector.get_metrics_history("demo")
+
+    assert [row["memory_uss_mb"] for row in result] == [32.0, None]
+    assert [row["memory_mb"] for row in result] == [64.0, 64.0]
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_global_totals_sum_only_the_plugins_that_report_uss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = [
+        {"plugin_id": "a", "pid": 1, "cpu_percent": 1.0, "memory_mb": 100.0, "memory_uss_mb": 40.0,
+         "memory_percent": 1.0, "num_threads": 2},
+        {"plugin_id": "b", "pid": 2, "cpu_percent": 2.0, "memory_mb": 200.0, "memory_uss_mb": None,
+         "memory_percent": 2.0, "num_threads": 3},
+        {"plugin_id": "c", "pid": 3, "cpu_percent": 3.0, "memory_mb": 50.0, "memory_uss_mb": 10.0,
+         "memory_percent": 0.5, "num_threads": 1},
+    ]
+    monkeypatch.setattr(module.metrics_collector, "get_current_metrics", lambda: rows)
+
+    payload = await module.MetricsQueryService().get_all_plugin_metrics()
+
+    # RSS keeps summing every plugin; USS only sums the two known values (40 + 10),
+    # and the unknown one is not silently counted as 0.
+    assert payload["global"]["total_memory_mb"] == 350.0
+    assert payload["global"]["total_memory_uss_mb"] == 50.0
+    assert payload["global"]["total_cpu_percent"] == 6.0
+    assert payload["global"]["active_plugins"] == 3
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_global_uss_total_is_none_when_nothing_reports_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = [{"plugin_id": "a", "pid": 1, "memory_mb": 100.0, "memory_uss_mb": None}]
+    monkeypatch.setattr(module.metrics_collector, "get_current_metrics", lambda: rows)
+
+    payload = await module.MetricsQueryService().get_all_plugin_metrics()
+
+    assert payload["global"]["total_memory_uss_mb"] is None
+    assert payload["global"]["total_memory_mb"] == 100.0
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_global_uss_total_tolerates_rows_from_an_older_collector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A collector that predates the USS field emits no such key at all; the query
+    # layer must treat that exactly like an explicit None instead of failing.
+    rows = [{"plugin_id": "a", "pid": 1, "memory_mb": 100.0}]
+    monkeypatch.setattr(module.metrics_collector, "get_current_metrics", lambda: rows)
+
+    payload = await module.MetricsQueryService().get_all_plugin_metrics()
+
+    assert payload["global"]["total_memory_uss_mb"] is None
+    assert payload["global"]["total_memory_mb"] == 100.0

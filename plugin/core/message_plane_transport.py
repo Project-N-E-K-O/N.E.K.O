@@ -221,9 +221,9 @@ class MessagePlaneRpcClient:
         except Exception:
             return None
         
-        deadline = asyncio.get_event_loop().time() + timeout
+        deadline = asyncio.get_running_loop().time() + timeout
         while True:
-            remaining = deadline - asyncio.get_event_loop().time()
+            remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 return None
             
@@ -375,11 +375,11 @@ class MessagePlaneRpcClient:
         
         # Collect responses
         responses: List[Optional[Dict[str, Any]]] = cast(List[Optional[Dict[str, Any]]], [None] * len(requests))
-        deadline = asyncio.get_event_loop().time() + timeout
+        deadline = asyncio.get_running_loop().time() + timeout
         received = set()
         
         while len(received) < len(req_ids):
-            remaining = deadline - asyncio.get_event_loop().time()
+            remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 break
             

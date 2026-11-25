@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -7,6 +8,7 @@ import pytest
 
 from main_logic.facts_sync import sync_worker
 from main_logic.facts_sync.sync_worker import _select_unsynced_facts
+from utils import community_device_hold
 
 
 pytestmark = pytest.mark.unit
@@ -190,6 +192,47 @@ async def test_post_facts_batch_invalidates_cached_registration_on_unauthorized(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("held_after_wait", [False, True])
+async def test_batch_checks_ownership_after_waiting_and_holds_lock_through_post(
+    tmp_path, monkeypatch, held_after_wait,
+) -> None:
+    (tmp_path / "facts.json").write_text(
+        json.dumps([{"hash": "sample-hash-12345678", "text": "sample", "importance": 8}]),
+        encoding="utf-8",
+    )
+    lock = asyncio.Lock()
+    await lock.acquire()
+    acquire = lock.acquire
+    waiting = asyncio.Event()
+    held = False
+    lock_during_post = []
+
+    async def wait_for_lock():
+        waiting.set()
+        return await acquire()
+
+    async def post_batch(*_args):
+        await asyncio.sleep(0)
+        lock_during_post.append(lock.locked())
+        return True, None
+
+    monkeypatch.setattr(community_device_hold, "ownership_lock", lock)
+    monkeypatch.setattr(lock, "acquire", wait_for_lock)
+    monkeypatch.setattr(sync_worker, "_device_bound_to_other_account", lambda: held)
+    monkeypatch.setattr(sync_worker, "_post_facts_batch", post_batch)
+    sync = asyncio.create_task(sync_worker._sync_one_lanlan(tmp_path, tmp_path, "client", "unused"))
+    try:
+        await asyncio.wait_for(waiting.wait(), timeout=3)
+        held = held_after_wait
+    finally:
+        lock.release()
+        await asyncio.wait_for(sync, timeout=3)
+
+    assert lock_during_post == ([] if held_after_wait else [True])
+    assert not lock.locked()
+
+
+@pytest.mark.asyncio
 async def test_failed_facts_remain_retryable_after_diagnostic_threshold(
     tmp_path,
     monkeypatch,
@@ -208,6 +251,10 @@ async def test_failed_facts_remain_retryable_after_diagnostic_threshold(
 
     monkeypatch.setattr(sync_worker, "MAX_FAILED_ATTEMPTS", 2)
     monkeypatch.setattr(sync_worker, "_post_facts_batch", fail_batch)
+    # The ownership gate reads process-wide login/device-hold state that earlier
+    # tests may have left behind; a closed gate skips the upload and leaves
+    # failed_counts empty. This test is about retry bookkeeping, so open it.
+    monkeypatch.setattr(sync_worker, "_device_bound_to_other_account", lambda: False)
 
     for _attempt in range(3):
         await sync_worker._sync_one_lanlan(
