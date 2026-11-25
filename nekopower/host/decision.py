@@ -458,6 +458,18 @@ def _question_text(commission: Commission) -> str:
     return " ".join(parts)
 
 
+def _quotes_its_commission(question: dict[str, Any]) -> bool:
+    """Whether what a commission asks quotes the commission itself: asked whether another member is to do it.
+
+    Such a question carries the commission's title, its project and
+    the names of the members, for a page to show (``TaskAgentManager._beside``):
+    words that nearly anything said of the project next shares. Other
+    requests for approval name a tool, a command, a path.
+    """
+    detail = question.get("detail")
+    return question.get("kind") == "permission" and isinstance(detail, dict) and detail.get("tool") == "beside"
+
+
 def _single_best(scored: list[tuple[float, Commission]]) -> Commission | None:
     """Return the commission with the highest score when it stands alone at the top."""
     ranked = sorted(scored, key=lambda item: item[0], reverse=True)
@@ -513,7 +525,13 @@ def read_answer(text: str, active: list[Commission]) -> Triage | None:
 
     def bears_on(commission: Commission) -> float:
         score = 0.0
-        if tokens:
+        # A question that quotes its own commission is held against the sentence only where the
+        # sentence says an answer at all (a choice, or a word that says it answers): any other
+        # sentence that shares a word with the commission's title is new work, not an answer
+        # that was not understood. (Where it does say one, the words tell which question it
+        # answers, should several wait.)
+        says_no_answer = choice is None and not explicit
+        if tokens and not (says_no_answer and _quotes_its_commission(commission.question() or {})):
             question_tokens = token_set(_question_text(commission))
             score = len(tokens & question_tokens) / len(tokens)
         # A plain yes or no shares no word with the question it answers. It

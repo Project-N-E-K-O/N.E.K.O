@@ -115,8 +115,9 @@ async def _busy(
 async def _filed(host: Any, text: str, project: str | None = "Shop site") -> Any:
     """A commission (of the shop, unless said otherwise) handed to a task agent without her; returns what ``_dispatch`` does of it.
 
-    (While the user is asked for an approval, the stand-in for her decision
-    model reads whatever is dispatched next as an answer to that.)
+    (Not dispatched: how a sentence said while other commissions are under
+    way is read, as a stop, more said to one of them, or new work, is not
+    what these tests are about.)
     """
     commission, _created = await host.ledger.create(
         lanlan_name="Lan", title=text, dispatch_text=text, user_text=text, source="dispatch", project=project,
@@ -370,6 +371,40 @@ async def test_stopped_while_the_user_is_asked_it_is_over_and_nothing_is_made(ho
     host.release.set()
     await wait_status(host, one.commission_id, "done")
     assert scripts["broken links"].requests == [] and host.task_agents._handing_back_to == {}
+
+
+async def test_new_work_said_while_the_user_is_asked_is_not_taken_for_an_answer_that_was_not_understood(hosts, tmp_path):
+    from nekopower.host.decision import read_answer
+
+    host, _trees, _workdir, one, scripts, _seen = await _busy(
+        hosts, tmp_path, {**_links(), "price list": ScriptedLLM([_report("prices checked")])}
+    )
+    two = await _dispatch(host, APART)
+    question = await _asked(host, two.commission_id)
+    waiting = await host.ledger.get(two.commission_id)
+
+    # What is asked quotes the commission: its title, its project. Sentences that share words with those and
+    # say no answer are none; one that says an answer is, with the choice it says.
+    for said in ("fix the login page too", "in the shop site, change the footer colour to blue", "what about the links"):
+        assert read_answer(said, [waiting]) is None
+    answered = read_answer("yes, go ahead with the links", [waiting])
+    assert (answered.kind, answered.targets, answered.choice) == ("answer", [two.commission_id], "once")
+    assert read_answer("no", [waiting]).choice == "deny"
+    # Any other request for approval is read as it was: a word shared with what it asks makes a sentence its answer.
+    asked = json.loads(waiting.pending_question)
+    other = dataclasses.replace(
+        waiting, pending_question=json.dumps({**asked, "detail": {**asked["detail"], "tool": "hand_over"}})
+    )
+    assert read_answer("fix the login page too", [other]).kind == "answer"
+
+    # So new work said meanwhile is handed over as new work, and what is asked still waits.
+    more = await _dispatch(host, "go through the whole price list of the shop site and round every amount")
+    assert more.kind not in ("unclear_answer", "answered", "ambiguous")
+    assert more.commission_id not in (None, two.commission_id)
+    assert (await host.ledger.get(two.commission_id)).question()["id"] == question["id"]
+    host.release.set()
+    await host.abort(two.commission_id)
+    await host.abort(more.commission_id)
 
 
 async def test_what_is_said_to_one_that_was_stopped_is_not_taken_while_what_was_asked_is_still_taken_back(hosts, tmp_path):
