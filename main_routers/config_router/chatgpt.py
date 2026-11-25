@@ -123,15 +123,15 @@ def _turn_off_subscription_without_accounts() -> bool:
     """Turn the ChatGPT subscription off once no signed-in account is left."""
     from utils.subscriptions import SubscriptionError, get_store as get_subscription_store
 
-    if any(entry.get("connected") for entry in get_store().status()["accounts"]):
-        return False
-    store = get_subscription_store()
-    entry = store.read()["plans"].get("chatgpt")
-    if not entry or not entry.get("enabled"):
-        return False
     try:
+        if any(entry.get("connected") for entry in get_store().status()["accounts"]):
+            return False
+        store = get_subscription_store()
+        entry = store.read()["plans"].get("chatgpt")
+        if not entry or not entry.get("enabled"):
+            return False
         store.set_enabled("chatgpt", False)
-    except (SubscriptionError, OSError):
+    except (SubscriptionError, ChatGPTAuthError, OSError):
         # The sign-out itself succeeded; requests then ask to sign in again.
         logger.warning("ChatGPT 已退出登录，但关闭 ChatGPT 订阅失败", exc_info=True)
         return False

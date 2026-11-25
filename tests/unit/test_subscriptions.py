@@ -328,6 +328,18 @@ def client_factory(config_manager, monkeypatch):
     return make, notified
 
 
+def test_turning_chatgpt_off_after_sign_out_never_fails_the_sign_out(monkeypatch):
+    from main_routers.config_router import chatgpt
+    from utils.chatgpt_auth import ChatGPTAuthError
+
+    class Unreadable:
+        def status(self):
+            raise ChatGPTAuthError("credentials unreadable")
+
+    monkeypatch.setattr(chatgpt, "get_store", lambda: Unreadable())
+    assert chatgpt._turn_off_subscription_without_accounts() is False
+
+
 @pytest.mark.asyncio
 async def test_routes_name_a_damaged_file_and_a_failed_save(config_manager, client_factory, monkeypatch):
     from utils.subscriptions.store import SubscriptionStore

@@ -106,6 +106,11 @@
         }
     }
 
+    // The answer the panel draws from; anything else (an older server, a stand-in
+    // answering every address alike) is a failed load, never drawn.
+    const isStatus = data => Boolean(data) && Array.isArray(data.plans)
+        && Boolean(data.state && data.state.plans) && typeof data.state.plans === 'object' && Boolean(data.tiers);
+
     function applyState(data) {
         state = data;
         stateVersion += 1;
@@ -118,7 +123,7 @@
         setBusy(true);
         try {
             const data = await action();
-            if (data && data.plans) applyState(data);
+            if (isStatus(data)) applyState(data);
             return data;
         } catch (error) {
             say(planId, error.message, 'error');
@@ -134,6 +139,7 @@
         try {
             const data = await api('');
             if (ticket !== loadTicket || version !== stateVersion) return;
+            if (!isStatus(data)) throw new Error(t('error.network', 'Could not reach the subscription settings. Please retry.'));
             applyState(data);
             loadError.hidden = true;
             render();
@@ -338,7 +344,7 @@
     }
 
     function render() {
-        if (!state) return;
+        if (!isStatus(state)) return;
         for (const plan of state.plans) {
             const entry = entryOf(plan.id);
             let card = cards.querySelector(`.subscription-card[data-plan="${plan.id}"]`);

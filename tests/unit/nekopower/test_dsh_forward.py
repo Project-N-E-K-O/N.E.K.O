@@ -142,6 +142,17 @@ def test_a_developer_message_goes_out_as_a_system_message() -> None:
     assert payload["messages"][0]["role"] == "developer"  # the caller's request is not changed
 
 
+def test_a_developer_message_merged_in_from_extra_body_goes_out_as_a_system_message() -> None:
+    model = ModelConfig(
+        model="m", base_url="http://127.0.0.1:1/v1",
+        extra_body={"messages": [{"role": "developer", "content": "be brief"}]},
+    )
+
+    _url, _headers, body = prepare_request(_payload(), model)
+
+    assert body["messages"] == [{"role": "system", "content": "be brief"}]
+
+
 def test_a_model_without_a_key_gets_the_placeholder_the_model_client_sends() -> None:
     _url, headers, _body = prepare_request(_payload(), ModelConfig(model="m", base_url="http://127.0.0.1:1/v1"))
     assert headers["Authorization"] == "Bearer sk-placeholder"
