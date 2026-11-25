@@ -2,14 +2,17 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import shutil
 import threading
 from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
+from PIL import Image
 
 from main_routers.workshop_router import preview_cards
 from main_routers.workshop_router.content_gate import (
@@ -22,11 +25,29 @@ from main_routers.workshop_router.content_gate import (
 pytestmark = pytest.mark.unit
 
 
+def _make_valid_png_bytes() -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", (2, 2), color=(12, 34, 56)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+_VALID_PNG_BYTES = _make_valid_png_bytes()
+
+
 class _Upload:
     content_type = 'image/png'
 
-    async def read(self) -> bytes:
-        return b'new-preview-bytes'
+    def __init__(self) -> None:
+        self._offset = 0
+
+    async def read(self, size: int = -1) -> bytes:
+        if size is None or size < 0:
+            chunk = _VALID_PNG_BYTES[self._offset:]
+            self._offset = len(_VALID_PNG_BYTES)
+            return chunk
+        chunk = _VALID_PNG_BYTES[self._offset:self._offset + size]
+        self._offset += len(chunk)
+        return chunk
 
 
 class _Request:
@@ -38,6 +59,15 @@ class _Request:
             'file': _Upload(),
             'content_folder': str(self._content_folder),
         }
+
+
+@pytest.fixture(autouse=True)
+def _stub_workshop_root(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        preview_cards,
+        'get_workshop_path_async',
+        AsyncMock(return_value=str(tmp_path.parent)),
+    )
 
 
 def test_upload_preview_image_replaces_atomically_from_a_worker(
@@ -62,9 +92,9 @@ def test_upload_preview_image_replaces_atomically_from_a_worker(
     assert response.status_code == 200
     assert json.loads(response.body)['success'] is True
     assert observed['target_before_replace'] == b'old-complete-preview'
-    assert observed['staged_bytes'] == b'new-preview-bytes'
+    assert observed['staged_bytes'] == _VALID_PNG_BYTES
     assert observed['thread'] != event_loop_thread
-    assert target.read_bytes() == b'new-preview-bytes'
+    assert target.read_bytes() == _VALID_PNG_BYTES
 
 
 def test_upload_preview_claim_survives_a_cancelled_waiter(
@@ -127,7 +157,7 @@ def test_upload_preview_shares_the_folder_with_reference_audio(tmp_path):
         )
 
     assert response.status_code == 200
-    assert (tmp_path / 'preview.png').read_bytes() == b'new-preview-bytes'
+    assert (tmp_path / 'preview.png').read_bytes() == _VALID_PNG_BYTES
 
 
 def test_upload_preview_returns_409_while_the_folder_is_publishing(tmp_path):

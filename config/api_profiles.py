@@ -45,6 +45,7 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyGrok": "",
     "assistApiKeyDoubao": "",
     "assistApiKeyDoubaoTts": "",
+    "assistApiKeyQwenTokenPlan": "",
     "doubaoVoiceManagementAccessKey": "",
     "doubaoVoiceManagementSecretKey": "",
     "doubaoVoiceManagementAppId": "",
@@ -101,6 +102,10 @@ DEFAULT_CORE_API_PROFILES = {
 }
 
 DEFAULT_ASSIST_API_PROFILES = {
+    "chatgpt": {
+        "OPENROUTER_URL": "https://api.openai.com/v1",
+        "PROVIDER_TYPE": "chatgpt",
+    },
     'free': {
         'OPENROUTER_URL': "https://www.lanlan.tech/text/v1",
         'CONVERSATION_MODEL': "free-model",
@@ -377,6 +382,14 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'grok': 'ASSIST_API_KEY_GROK',
     'doubao': 'ASSIST_API_KEY_DOUBAO',
     'doubao_tts': 'ASSIST_API_KEY_DOUBAO_TTS',
+    'qwen_token_plan': 'ASSIST_API_KEY_QWEN_TOKEN_PLAN',
+}
+
+# TTS-only providers whose key lives in a dedicated Key Book field (core_config.json
+# name) and is mirrored into the shared TTS slot (ttsModelApiKey) while selected.
+TTS_KEY_BOOK_FIELDS = {
+    'doubao_tts': 'assistApiKeyDoubaoTts',
+    'qwen_token_plan': 'assistApiKeyQwenTokenPlan',
 }
 
 # Bailian workspace IDs, one per provider region: core_config.json field ->

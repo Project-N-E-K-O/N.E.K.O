@@ -1,5 +1,6 @@
 /** Small helpers the pages about the task agents share. */
 import { consoleErrorCode } from '@/api/console'
+import type { BoardCard } from '@/api/console'
 
 type Translate = (key: string, named?: Record<string, unknown>) => string
 type Exists = (key: string) => boolean
@@ -45,4 +46,63 @@ export function splitIdle(seconds: number): { amount: number; unit: IdleUnit } {
 
 export function joinIdle(amount: number, unit: IdleUnit): number {
   return amount * UNIT_SECONDS[unit]
+}
+
+// Stand-ins until there is art for each kind of familiar: one face per avatar key.
+export const FAMILIAR_FACES: Record<string, string> = {
+  boss: '😼', worker: '🐱', scout: '🙀', inspector: '😾', planner: '😺', general: '🐈', shadow: '🐈‍⬛',
+}
+
+/** Return a number of tokens in a few characters: `950`, `12k`, `1.3M`. */
+export function formatTokens(tokens: number | null | undefined): string {
+  if (tokens === null || tokens === undefined || !Number.isFinite(tokens)) return ''
+  const value = Math.max(0, tokens)
+  if (value < 1000) return String(Math.round(value))
+  if (value < 999_500) return `${Math.round(value / 1000)}k`
+  const millions = value / 1_000_000
+  return `${millions >= 100 ? Math.round(millions) : Math.round(millions * 10) / 10}M`
+}
+
+/** Return how long something took, as a person reads it: `45s`, `12m`, `3h 5m`. */
+export function formatDuration(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined || !Number.isFinite(seconds) || seconds < 0) return ''
+  if (seconds < 60) return `${Math.round(seconds)}s`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  return minutes % 60 ? `${hours}h ${minutes % 60}m` : `${hours}h`
+}
+
+const LOOKS = ['working', 'waiting_user', 'idle', 'asleep', 'compacting'] as const
+export type FamiliarLook = (typeof LOOKS)[number] | 'resting' | 'queued'
+
+/**
+ * Return how a familiar is drawn. One that is asleep with something in hand
+ * is resting until it is woken, or waiting its turn: told apart by what it
+ * has in hand. A state the page does not know is drawn as asleep.
+ */
+export function familiarLook(card: Pick<BoardCard, 'state' | 'commission'>): FamiliarLook {
+  const { state, commission } = card
+  if (state === 'asleep' && commission && (commission.status === 'resting' || commission.status === 'queued')) {
+    return commission.status
+  }
+  return (LOOKS as readonly string[]).includes(state) ? (state as FamiliarLook) : 'asleep'
+}
+
+/** Return the name of the kind of familiar a card is: a template of the user's names itself, one without a name is shown by its key. */
+export function presetName(card: Pick<BoardCard, 'preset' | 'label'>, t: Translate, te: Exists): string {
+  const key = `power.home.presets.${card.preset}`
+  return te(key) ? t(key) : card.label || card.preset
+}
+
+/**
+ * Return what a familiar is called where there is room for one short name:
+ * the title it earned; else, for one another familiar started, what kind it
+ * is (its own name is the starter's with a number); else its name.
+ */
+export function familiarName(
+  card: Pick<BoardCard, 'name' | 'title' | 'parent' | 'preset' | 'label'>, t: Translate, te: Exists,
+): string {
+  if (card.title) return card.title
+  return (!card.parent && card.name) || presetName(card, t, te)
 }

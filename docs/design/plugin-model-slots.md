@@ -77,7 +77,7 @@ recognition (small) model unless the user configures it separately). A further t
 row there plus the `HostApi` literal, and on the panel side the
 `HostApiSource` type (`frontend/plugin-manager/src/types/model-api.ts`), the
 option in `ModelApi.vue` and the `hostApi` / `hostHint` strings in all eight
-languages (`frontend/plugin-manager/src/i18n/model-api.ts`). The chat, memory and voice tiers stay the main app's
+languages (`frontend/plugin-manager/src/i18n/model-api/<locale>.ts`). The chat, memory and voice tiers stay the main app's
 own and are not followable. Each value is the `model_type` passed to
 `get_model_api_config`. At
 call time the gateway resolves the slot through `get_model_api_config` and

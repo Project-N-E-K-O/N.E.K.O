@@ -36,6 +36,7 @@ from tests.unit.nekopower.fakes import ScriptedLLM, call, finish, say
 from tests.unit.nekopower.host_fakes import (
     FakeDecisionLLM,
     fake_model,
+    let_go,
     make_host,
     scripted_runtime,
     scripts_by_commission,
@@ -114,7 +115,8 @@ def _k(text: str) -> str:
 
 
 async def _let_go(host: Any) -> None:
-    await wait_until(lambda: host.task_agents._held_by == {}, what="every session being let go")
+    """Wait until no commission holds a session any more (``host_fakes.let_go``)."""
+    await let_go(host)
 
 
 def _days_later(host: Any, monkeypatch: Any, days: float) -> None:
@@ -250,7 +252,7 @@ async def test_a_summary_made_leaves_the_length_of_the_conversation_unknown_unti
 
 
 async def _two_sessions(hosts, tmp_path, monkeypatch, *, days: float = 8.0, **host_kwargs):
-    """A session of one commission and one of a project, both over; ``days`` pass; and a commission at work elsewhere."""
+    """A session of one commission and the leader of a project, both over; ``days`` pass; and a commission at work elsewhere."""
     release, wait = _gate()
     scripts = {
         _k("paint the fence"): ScriptedLLM([_report("ready", "painted")]),
@@ -259,6 +261,9 @@ async def _two_sessions(hosts, tmp_path, monkeypatch, *, days: float = 8.0, **ho
     }
     host = _host(hosts, tmp_path, scripts_by_commission(scripts), **host_kwargs)
     await host.space.touch_project("Budget app")
+    # The project has a leader: what is said of a project's session below is said of it. (A
+    # member of a project ends as a session of one commission does: ``test_host_families.py``.)
+    await host.derive_leader("Budget app", "Lan")
     single = await wait_status(host, (await _dispatch(host, "paint the fence")).commission_id, "done")
     project = await wait_status(host, (await _dispatch(host, "sort the budget in the budget app")).commission_id, "done")
     await _let_go(host)
@@ -284,7 +289,7 @@ async def test_nothing_is_written_to_a_session_that_has_ended_and_what_it_left_c
     assert "7 days" in str(refused.value) and "read_session" in str(refused.value)
     # Nothing was written down, and nobody was woken.
     assert await host.ledger.wakes_pending(session_id=single.session_id) == []
-    # The same age in a project does not end it: it is written to.
+    # The same age does not end the leader of a project: it is written to.
     project_name = (await host.ledger.get_session(project.session_id)).name
     answer = await send(sender.session_id, {"to": project_name, "message": "sort it again"})
     assert answer["message"].startswith(f'Queued for "{project_name}"')
@@ -378,6 +383,7 @@ async def test_a_commission_that_got_stuck_is_not_taken_up_again_in_a_session_th
     }
     host = _host(hosts, tmp_path, scripts_by_commission(scripts))
     await host.space.touch_project("Budget app")
+    await host.derive_leader("Budget app", "Lan")
     single = await wait_status(host, (await _dispatch(host, "paint the fence")).commission_id, "blocked")
     project = await wait_status(host, (await _dispatch(host, "sort the budget in the budget app")).commission_id, "blocked")
     await _let_go(host)
@@ -387,7 +393,7 @@ async def test_a_commission_that_got_stuck_is_not_taken_up_again_in_a_session_th
     assert await host.tell(single.id, "the fence at the back") is False
     assert (await host.ledger.get(single.id)).status == "blocked"
     assert len(scripts[_k("paint the fence")].requests) == 1
-    # In a project's session the same is taken up again, however long ago it got stuck.
+    # In the session of a project's leader the same is taken up again, however long ago it got stuck.
     scripts[_k("sort the budget")].add(*_report("ready", "sorted"))
     assert await host.tell(project.id, "the budget of 2026")
     assert (await wait_status(host, project.id, "done")).result_summary == "sorted"

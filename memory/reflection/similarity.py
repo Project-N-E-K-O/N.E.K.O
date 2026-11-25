@@ -16,7 +16,47 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from ._shared import logger
+
+
+def _score_candidates(views, model_id: str, target_dim: int, query_matrix) -> list[float | None]:
+    """Max cosine of each candidate view against the unit query rows.
+
+    Same numbers as normalizing each candidate row by its own
+    ``np.linalg.norm`` and multiplying: the norm is the one cached next to
+    the vector (computed by that same call), and dividing the stacked
+    matrix by a float32 norm column is the same per-element division.
+    Runs in a worker thread.
+    """
+    import numpy as np
+
+    from memory.hybrid_recall import decode_cached_vectors
+
+    # An empty text never had a valid cache (the old path skipped it).
+    live = [(i, view) for i, view in enumerate(views) if view[1]]
+    vectors, norms, _ = decode_cached_vectors(
+        [view for _i, view in live], model_id, target_dim,
+    )
+    candidate_index: list[int] = []
+    candidate_vectors: list = []
+    candidate_norms: list[float] = []
+    for (slot, _view), vector, norm in zip(live, vectors, norms):
+        if vector is None or not np.isfinite(norm) or norm <= 0:
+            continue
+        candidate_index.append(slot)
+        candidate_vectors.append(vector)
+        candidate_norms.append(norm)
+    scores: list[float | None] = [None] * len(views)
+    if candidate_vectors:
+        matrix = np.stack(candidate_vectors)
+        unit = matrix / np.asarray(candidate_norms, dtype=matrix.dtype)[:, None]
+        # (N, D) @ (D, Q) -> (N, Q); max over queries -> (N,)
+        best = (unit @ query_matrix.T).max(axis=1)
+        for slot, score in zip(candidate_index, best):
+            scores[slot] = float(score)
+    return scores
 
 
 def _ready_service():
@@ -113,15 +153,17 @@ async def ascore_against_queries(
         _, query_rows = _unit_rows(query_vectors)
         if not query_rows:
             return None
-        candidate_index, candidate_rows = _unit_rows(
-            _cached_vectors(candidate_entries)[0],
+        # Candidates: the pool runs to thousands of rows, so decode through
+        # the shared ``_VEC_CACHE`` (each unchanged row decoded once per
+        # process, its norm cached with it) in a worker thread, on a snapshot
+        # of the embedding fields taken here.
+        from memory.hybrid_recall import embedding_views
+        views = embedding_views(
+            candidate_entries, lambda e: str(e.get('text') or ''),
         )
-        scores: list[float | None] = [None] * len(candidate_entries)
-        if candidate_rows:
-            # (N, D) @ (D, Q) -> (N, Q); max over queries -> (N,)
-            matrix = np.stack(candidate_rows) @ np.stack(query_rows).T
-            for slot, score in zip(candidate_index, matrix.max(axis=1)):
-                scores[slot] = float(score)
+        scores = await asyncio.to_thread(
+            _score_candidates, views, model_id, target_dim, np.stack(query_rows),
+        )
         return scores
     except Exception as e:  # noqa: BLE001 - vectors are an optional signal
         logger.warning(f"[ReflectionSimilarity] 向量打分失败，退回非向量路径: {e}")

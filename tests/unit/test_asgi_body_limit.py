@@ -475,3 +475,148 @@ def test_external_import_body_cap_fits_largest_archive_and_is_registered():
     source = (Path(__file__).resolve().parents[2] / "app" / "main_server" / "__init__.py").read_text(encoding="utf-8")
     for route in ("/api/memory/external_import/preview", "/api/memory/external_import/commit"):
         assert f'"{route}": EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES' in source
+
+
+def test_multipart_path_limits_rejects_oversized_preview_upload_before_form_parse():
+    from pathlib import Path
+
+    handler_entered = False
+    form_completed = False
+    app = FastAPI()
+
+    @app.post("/api/steam/workshop/upload-preview-image")
+    async def upload_preview(request: Request):
+        nonlocal handler_entered, form_completed
+        handler_entered = True
+        await request.form()
+        form_completed = True
+        return {"ok": True}
+
+    guarded = InboundBodySizeLimitMiddleware(
+        app,
+        max_body_bytes=64,
+        multipart_path_limits={"/api/steam/workshop/upload-preview-image": 32},
+    )
+    oversized_body = (
+        b"--abc\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.png\"\r\n\r\n"
+        + b"x" * 64
+        + b"\r\n--abc--\r\n"
+    )
+
+    # 1. Explicit Content-Length above limit rejects immediately with 413.
+    with TestClient(guarded) as client:
+        r_cl = client.post(
+            "/api/steam/workshop/upload-preview-image",
+            content=oversized_body,
+            headers={
+                "Content-Type": "multipart/form-data; boundary=abc",
+                "Content-Length": str(len(oversized_body)),
+            },
+        )
+    assert r_cl.status_code == 413
+    assert r_cl.json()["error_code"] == "payload_too_large"
+    assert handler_entered is False and form_completed is False
+
+    # 2. Missing/spoofed Content-Length still rejects mid-stream inside ASGI receive wrapper.
+    sent = []
+    chunks = iter([
+        {"type": "http.request", "body": oversized_body[:20], "more_body": True},
+        {"type": "http.request", "body": oversized_body[20:], "more_body": False},
+    ])
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/api/steam/workshop/upload-preview-image",
+        "query_string": b"",
+        "headers": [(b"content-type", b"multipart/form-data; boundary=abc")],
+    }
+    _run(guarded(scope, lambda: asyncio.sleep(0, next(chunks)), lambda msg: asyncio.sleep(0, sent.append(msg))))
+    assert sent[0]["status"] == 413
+    assert form_completed is False
+
+    source = (Path(__file__).resolve().parents[2] / "app" / "main_server" / "__init__.py").read_text(encoding="utf-8")
+    assert '"/api/steam/workshop/upload-preview-image": WORKSHOP_PREVIEW_MAX_MULTIPART_BODY_BYTES' in source
+
+
+def test_multipart_path_limits_enforces_cap_with_duplicate_content_types_and_allows_valid():
+    form_completed = False
+    app = FastAPI()
+
+    @app.post("/api/steam/workshop/upload-preview-image")
+    async def upload_preview(request: Request):
+        nonlocal form_completed
+        form = await request.form()
+        _ = form.get("file")
+        form_completed = True
+        return {"ok": True}
+
+    guarded = InboundBodySizeLimitMiddleware(
+        app,
+        max_body_bytes=256,
+        multipart_path_limits={"/api/steam/workshop/upload-preview-image": 160},
+    )
+    oversized_body = (
+        b"--abc\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.png\"\r\n\r\n"
+        + b"x" * 180
+        + b"\r\n--abc--\r\n"
+    )
+    dup_headers = [
+        (b"content-type", b"multipart/form-data; boundary=abc"),
+        (b"content-type", b"application/json"),
+    ]
+
+    # 1. Duplicate Content-Type without Content-Length (chunked) still enforces path cap mid-stream.
+    sent = []
+    chunks = iter([
+        {"type": "http.request", "body": oversized_body[:40], "more_body": True},
+        {"type": "http.request", "body": oversized_body[40:], "more_body": False},
+    ])
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/api/steam/workshop/upload-preview-image",
+        "query_string": b"",
+        "headers": list(dup_headers),
+    }
+    _run(guarded(scope, lambda: asyncio.sleep(0, next(chunks)), lambda msg: asyncio.sleep(0, sent.append(msg))))
+    assert sent[0]["status"] == 413
+    assert form_completed is False
+
+    # 2. Duplicate Content-Type with explicit Content-Length above path cap rejects preflight with 413.
+    sent_cl = []
+    scope_cl = {
+        "type": "http",
+        "method": "POST",
+        "path": "/api/steam/workshop/upload-preview-image",
+        "query_string": b"",
+        "headers": dup_headers + [(b"content-length", str(len(oversized_body)).encode())],
+    }
+    _run(
+        guarded(
+            scope_cl,
+            lambda: asyncio.sleep(0, {"type": "http.request", "body": b"", "more_body": False}),
+            lambda msg: asyncio.sleep(0, sent_cl.append(msg)),
+        )
+    )
+    assert sent_cl[0]["status"] == 413
+    assert form_completed is False
+
+    # 3. Single valid multipart request within path cap succeeds with 200.
+    valid_body = (
+        b"--abc\r\nContent-Disposition: form-data; name=\"file\"; filename=\"ok.png\"\r\n\r\n"
+        + b"ok"
+        + b"\r\n--abc--\r\n"
+    )
+    assert len(valid_body) <= 160
+    with TestClient(guarded) as client:
+        r_ok = client.post(
+            "/api/steam/workshop/upload-preview-image",
+            content=valid_body,
+            headers={
+                "Content-Type": "multipart/form-data; boundary=abc",
+                "Content-Length": str(len(valid_body)),
+            },
+        )
+    assert r_ok.status_code == 200
+    assert r_ok.json() == {"ok": True}
+    assert form_completed is True

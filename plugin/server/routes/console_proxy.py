@@ -175,7 +175,15 @@ async def set_switch(request: Request) -> JSONResponse:
     else:
         raise HTTPException(400, {"code": "bad_switch"})
     try:
-        answer = await _http().post(f"{_main_base()}/api/agent/command", json=command)
+        main_base = _main_base()
+        answer = await _http().post(
+            f"{main_base}/api/agent/command",
+            json=command,
+            headers={
+                TOKEN_HEADER: csrf_token(),
+                "Referer": f"{main_base}/",
+            },
+        )
         content = answer.json()
     except (httpx.HTTPError, ValueError) as exc:
         logger.warning("the main server did not answer a switch (exc_type=%s)", type(exc).__name__)

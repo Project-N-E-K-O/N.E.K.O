@@ -89,6 +89,7 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
     I.suppressDragReleaseClick = false;
     I.resizeState = null;
     I.minimized = false;
+    I.idleCatPlaygroundActive = false;
     I.idleCatPlaygroundYarnSkinActive = false;
     I.savedShellSize = null;
     I.savedShellPosition = null; // {left, top} before minimize – used to fly back on expand

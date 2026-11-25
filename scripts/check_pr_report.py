@@ -74,7 +74,10 @@ _I18N_LOCALE_GROUPS = {
         "en.json", "es.json", "ja.json", "ko.json",
         "pt.json", "ru.json", "zh-CN.json", "zh-TW.json",
     },
-    "frontend/plugin-manager/src/i18n/locales": {
+    # A trailing "/*" matches the files in any direct subdirectory: the
+    # plugin-manager language packs in locales/ and the message modules split
+    # one file per language (power/, authoring/ ...), discovered by name.
+    "frontend/plugin-manager/src/i18n/*": {
         "en-US.ts", "es.ts", "ja.ts", "ko.ts",
         "pt.ts", "ru.ts", "zh-CN.ts", "zh-TW.ts",
     },
@@ -164,10 +167,14 @@ def _is_test_file(path: str) -> bool:
 def _is_i18n_locale_file(path: str) -> bool:
     """True for locale files that are expected to move as an 8-file group."""
     for locale_dir, files in _I18N_LOCALE_GROUPS.items():
-        prefix = f"{locale_dir}/"
+        wildcard = locale_dir.endswith("/*")
+        prefix = f"{locale_dir[:-2] if wildcard else locale_dir}/"
         if path.startswith(prefix):
-            name = path[len(prefix):]
-            return "/" not in name and name in files
+            rest = path[len(prefix):]
+            if wildcard:
+                subdir, _, name = rest.partition("/")
+                return bool(subdir) and "/" not in name and name in files
+            return "/" not in rest and rest in files
     return False
 
 

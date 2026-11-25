@@ -19,6 +19,8 @@ AI builders for soccer and badminton.
 Split out of the former monolithic ``main_routers/game_router.py``.
 """
 
+from urllib.parse import quote
+
 from ._shared import (
     _is_repeated_neko_invite,
     _log_game_debug_material,
@@ -430,7 +432,7 @@ async def _fetch_recent_history_for_pregame(
 
         client = get_internal_http_client()
         response = await client.get(
-            f"http://127.0.0.1:{MEMORY_SERVER_PORT}/get_recent_history/{lanlan_name}",
+            f"http://127.0.0.1:{MEMORY_SERVER_PORT}/get_recent_history/{quote(str(lanlan_name or ''), safe='')}",
             params={"language": language} if language else None,
             timeout=5.0,
         )

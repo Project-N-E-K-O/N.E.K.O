@@ -443,8 +443,10 @@ async def test_startup_reconciles_existing_install_source_after_migration_before
         install_source_manager = object()
 
         class _StartupReconciler:
-            def __init__(self, manager: object) -> None:
+            def __init__(self, manager: object, *, prune_uninstalled_grants: bool = False) -> None:
                 assert manager is install_source_manager
+                # The replay after the layout migration is the final reconcile.
+                assert prune_uninstalled_grants is True
 
             async def run(self) -> None:
                 calls.append(("install_source", "reconcile"))

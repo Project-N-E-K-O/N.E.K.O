@@ -18,6 +18,8 @@ from plugin.server.application.install_source import (
 )
 from plugin.server.application.plugin_cli import service as cli
 from plugin.server.application.plugins.installation_transactions import replace, uninstall
+from plugin.server.application.plugins import operation_lock
+from plugin.server.application.plugins.operation_lock import plugin_operation_lock
 from plugin.server.infrastructure import autostart_approvals, config_paths, config_resolver
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.plugin_permissions import PluginSource
@@ -773,6 +775,26 @@ async def test_unrecorded_local_upgrade_drops_only_the_replaced_plugins_grants(
     assert record["permissions"][other]["state"] == "granted"
 
 
+def _record_plugin_dir_renames(monkeypatch, plugin_dir: Path) -> list[bool]:
+    """Record each rename of ``plugin_dir`` and whether the operation lock was held.
+
+    The capability analysis worker only reads a plugin tree while holding
+    the operation file lock, so a rename made under that lock can never
+    overlap such a read. ``asyncio.to_thread`` copies the caller's context,
+    so the lock depth is visible from the thread that performs the rename.
+    """
+    renames: list[bool] = []
+    original_rename = Path.rename
+
+    def rename(self, target):
+        if self == plugin_dir:
+            renames.append(operation_lock._OPERATION_DEPTH.get() > 0)
+        return original_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", rename)
+    return renames
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("market_detail", ["complete", "incomplete"])
 async def test_running_market_replacement_restarts_under_the_new_source(
@@ -816,10 +838,21 @@ async def test_running_market_replacement_restarts_under_the_new_source(
             _analyze_after_commit=False,
         )
 
-    await replace.replace_plugin(
-        layout=env.layout(PLUGIN_ID, env.user / PLUGIN_ID), install_new=install_new,
-    )
+    # The first install queued a capability analysis whose worker reads the
+    # plugin tree under the operation file lock. As in the real callers
+    # (PluginCliService.install, the Market replacement transaction), the
+    # replacement must hold the plugin operation lock so its backup rename
+    # cannot overlap that read: on Windows an open handle inside the tree
+    # makes the rename fail with WinError 5.
+    renames_under_lock = _record_plugin_dir_renames(monkeypatch, env.user / PLUGIN_ID)
+    async with plugin_operation_lock.hold():
+        await replace.replace_plugin(
+            layout=env.layout(PLUGIN_ID, env.user / PLUGIN_ID), install_new=install_new,
+        )
 
+    # Non-empty: the guard observed the backup rename (it would stay
+    # silent if replace_plugin stopped using Path.rename).
+    assert renames_under_lock and all(renames_under_lock)
     [(source_at_start, record_at_start)] = seen_at_start
     expected = (
         PluginSource("market", "market-demo")

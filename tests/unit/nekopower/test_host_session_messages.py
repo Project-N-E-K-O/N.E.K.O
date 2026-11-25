@@ -38,6 +38,7 @@ from tests.unit.nekopower.fakes import ScriptedLLM, call, finish, say, usage
 from tests.unit.nekopower.host_fakes import (
     FakeDecisionLLM,
     fake_model,
+    let_go,
     make_host,
     scripted_runtime,
     scripts_by_commission,
@@ -126,7 +127,8 @@ async def _events(host: Any, commission_id: str, kind: str | None = None) -> lis
 
 
 async def _let_go(host: Any) -> None:
-    await wait_until(lambda: host.task_agents._held_by == {}, what="every session being let go")
+    """Wait until no commission holds a session any more (``host_fakes.let_go``)."""
+    await let_go(host)
 
 
 def _said(request: list[dict[str, Any]]) -> list[str]:
@@ -1486,12 +1488,12 @@ async def test_nothing_is_handed_to_a_session_while_the_end_of_its_run_is_looked
 
     # As while the end of its run is looked at (it may be closed to rest this moment):
     # steered in now, what waits would start a run in a session about to be closed.
-    session.settling = True
+    session.settling += 1
     handed = await host.task_agents.hand_over(session.session_id, receipt.commission_id, [wake])
     assert handed.outcome == "held" and session.sent == 1
     assert [item.id for item in await host.ledger.wakes_pending(commission_id=receipt.commission_id)] == [wake.id]
     # Likewise once it has come to wait for the user, whatever the commission read a moment ago said.
-    session.settling = False
+    session.settling -= 1
     session.awaiting_prompt = True
     stale = await host.ledger.get(receipt.commission_id)
     assert stale.status == "working"
@@ -1499,6 +1501,16 @@ async def test_nothing_is_handed_to_a_session_while_the_end_of_its_run_is_looked
     assert (await host.task_agents._hand_to(stale, place, [wake])).outcome == "held"
     assert session.sent == 1
     session.awaiting_prompt = False
+    # Likewise while a landing writes how the commission ends (its changes are landed, or left for
+    # the user), with a session of it open in a runtime or with none.
+    with host.task_agents._nothing_more_said(receipt.commission_id):
+        assert (await host.task_agents._hand_to(stale, place, [wake])).outcome == "held"
+        del host.task_agents._sessions[receipt.commission_id]
+        try:
+            assert (await host.task_agents._hand_to(stale, place, [wake])).outcome == "held"
+        finally:
+            host.task_agents._sessions[receipt.commission_id] = session
+    assert session.sent == 1 and session.settling == 0
     # Likewise while it hands over what it has, the user having allowed no more to be used: it
     # would end with what was handed in, and its sender be told what it stopped with.
     session.wind_up_left = 2

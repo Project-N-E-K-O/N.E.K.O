@@ -256,6 +256,7 @@ def test_environment_proxies_still_apply_and_are_covered(monkeypatch):
     ("minimax", "minimax_tts_worker", ("mm-key", "voice"), {"base_url": "https://api.minimaxi.com"}),
     ("cogtts", "cogtts_tts_worker", ("glm-key", "tongtong"), {}),
     ("doubao", "doubao_tts_worker", ("db-key", "zh_female_voice"), {}),
+    ("qwen_token_plan", "qwen_token_plan_tts_worker", ("sk-sp-key", "longanlingxin"), {}),
     ("mimo", "mimo_tts_worker", ("mimo-key", "mimo_default"), {}),
 ])
 def test_sentence_workers_build_their_client_with_the_tts_pool(

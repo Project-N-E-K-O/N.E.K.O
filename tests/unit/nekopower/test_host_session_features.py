@@ -42,6 +42,7 @@ from tests.unit.nekopower.fakes import ScriptedLLM, call, finish, say
 from tests.unit.nekopower.host_fakes import (
     FakeDecisionLLM,
     fake_model,
+    let_go,
     make_host,
     outbox,
     scripted_runtime,
@@ -181,8 +182,8 @@ def _owed(manager: Any) -> dict[Any, Any]:
 
 
 async def _let_go(host: Any) -> None:
-    """Wait until no commission holds a session any more."""
-    await wait_until(lambda: host.task_agents._held_by == {}, what="every session being let go")
+    """Wait until no commission holds a session any more (``host_fakes.let_go``)."""
+    await let_go(host)
 
 
 def _user_messages(request: list[dict[str, Any]]) -> list[str]:
@@ -1251,7 +1252,7 @@ async def test_a_project_session_nothing_is_at_work_in_is_summed_up_and_the_next
     await _idle_work_over(host)
 
     session = await host.ledger.get_session(first.id)
-    assert session.kind == "project" and session.status == "closed" and session.compacted_at is not None
+    assert session.kind == "line" and session.status == "closed" and session.compacted_at is not None
     assert len(export.requests) == requests_before + 1
     summary = export.requests[-1]
     # It begins as the session's requests did, so that what a provider kept of them is used.
@@ -1578,7 +1579,7 @@ async def test_a_session_in_use_when_everything_was_stopped_is_left_alone_until_
 
     # Long enough to be summed up, and nothing at work in it: yet no timer is set, as nothing was asked since.
     kept = await host.ledger.get_session(first.id)
-    assert kept.kind == "project" and kept.status == "closed" and kept.context_tokens >= 5_000
+    assert kept.kind == "line" and kept.status == "closed" and kept.context_tokens >= 5_000
     assert manager._idle_timers == {} and first.id in manager._idle_stopped
     await asyncio.sleep(0.1)
     assert len(export.requests) == 5 and manager._compacting == {}
@@ -1781,8 +1782,8 @@ async def test_a_session_of_one_commission_is_summed_up_like_one_of_a_project_un
     monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 0.0)
 
     # Eight days later the session of one commission has ended (the seventh day after its last commission
-    # ended is the last it is gone on with): it is not summed up, nor is anything counted against it. The
-    # session of the project is, the same age.
+    # ended is the last it is gone on with): it is not summed up, nor is anything counted against it. Nor
+    # is the member of the project, the same age: it ends the same way. Six days after, it is.
     real = host.ledger._clock
     monkeypatch.setattr(host.ledger, "_clock", lambda: real() + 8 * 86_400.0)
     assert await manager._idle_compact(single.id) is False
@@ -1793,6 +1794,9 @@ async def test_a_session_of_one_commission_is_summed_up_like_one_of_a_project_un
     assert await manager._idle_compact(single.id, manager._idle_stops) is False
     assert single.id not in manager._idle_timers
     monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 0.0)
+    assert await manager._idle_compact(project.id) is False
+    assert len(export.requests) == 5 and manager._idle_compact_failures == {}
+    monkeypatch.setattr(host.ledger, "_clock", lambda: real() + 6 * 86_400.0)
     assert await manager._idle_compact(project.id) is True
     assert len(export.requests) == 6
 
@@ -6064,24 +6068,30 @@ async def test_a_change_of_where_a_project_works_is_carried_through_when_whoever
     assert (await host.ledger.get_session(lan.id)).workdir == str(new)
 
 
-async def test_no_change_of_where_a_project_works_comes_between_the_two_writes_of_a_new_task_agent(hosts, tmp_path):
-    """A task agent made for the user: its project's record and its session say the same place."""
+@pytest.mark.parametrize("preset", [None, "boss"])
+async def test_no_change_of_where_a_project_works_comes_between_the_two_writes_of_a_new_task_agent(hosts, tmp_path, preset):
+    """A task agent made for the user: its project's record and its session say the same place.
+
+    A member that does the project's work, which is what is made when no
+    preset is named, and its leader alike.
+    """
     host = _host(hosts, tmp_path, ScriptedLLM())
     first, second = tmp_path / "first", tmp_path / "second"
     first.mkdir()
     second.mkdir()
 
-    make = host.ledger.project_session
+    writes = "project_session" if preset == "boss" else "create_session"
+    make = getattr(host.ledger, writes)
     changing: list[asyncio.Future] = []
 
-    async def then_a_change_is_asked_for(lanlan_name: str, project: str, **values: Any) -> Any:
+    async def then_a_change_is_asked_for(*args: Any, **values: Any) -> Any:
         # The project is on record, its session not yet: a change asked for now waits for it.
-        changing.append(asyncio.ensure_future(host.set_project_workdir(project, str(second))))
+        changing.append(asyncio.ensure_future(host.set_project_workdir("Budget app", str(second))))
         await asyncio.sleep(0.05)
-        return await make(lanlan_name, project, **values)
+        return await make(*args, **values)
 
-    host.ledger.project_session = then_a_change_is_asked_for
-    made = await host.open_session("Lan", "Budget app", workdir=str(first))
+    setattr(host.ledger, writes, then_a_change_is_asked_for)
+    made = await host.open_session("Lan", "Budget app", workdir=str(first), **({"preset": preset} if preset else {}))
     await changing[0]
     record = (await host.space.get_project("Budget app")).workdir
     assert record == str(second)

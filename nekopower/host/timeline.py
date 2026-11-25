@@ -83,6 +83,19 @@ TIMELINE_KINDS: tuple[str, ...] = (
     "message",  # a session wrote to another
     "done_notice",  # a session is told that the turn its note began is over
     "asked_session",  # a session asked another one a question
+    "orchestrated",  # where a new commission goes was decided
+    "family_formed",  # task agents of one commission each became a project
+    "leader_derived",  # a project got its leader
+    "handed_over",  # the leader of a project handed a commission over to a member
+    "landed",  # what a task agent changed in its git worktree was merged into its project's directory
+    "landing_conflict",  # it clashed there, and the task agent merges what clashed
+    "not_landed",  # it was not merged, and waits in the worktree for the user to decide
+    "landing_held",  # it waits there for the user's word, the settings saying to ask first
+    "tree_discarded",  # the user discarded a worktree with what it held
+    "tree_kept",  # the user sees to a worktree personally
+    "team_formed",  # the leader of a project started a team for a commission
+    "inspected",  # an inspector looked at what a task agent changed before it was merged
+    "stall_reminded",  # a leader was reminded that its team is over and its commission stands
 )
 
 # Kinds of waits. More are added later.
@@ -113,6 +126,19 @@ _EVENT_TYPES: tuple[str, ...] = (
     "rest_over",
     "wake_set",
     "woken",
+    "orchestrated",
+    "family_formed",
+    "leader_derived",
+    "handed_over",
+    "landed",
+    "landing_conflict",
+    "not_landed",
+    "landing_held",
+    "tree_discarded",
+    "tree_kept",
+    "team_formed",
+    "inspected",
+    "stall_reminded",
 )
 _MESSAGE_KINDS: dict[str, str] = {"note": "message", "done": "done_notice", "ask": "asked_session"}
 _UNDER_WAY: tuple[str, ...] = ("queued", "working", "waiting_user")
@@ -347,6 +373,96 @@ def _event_entry(
     elif kind == "told_of_copies":
         # What it was told is the host's framing for the model, not a line to show.
         kind = "copies_reported"
+    elif kind == "orchestrated":
+        # Where it went, and how that was found: no sentence is kept with it.
+        chosen = payload.get("agent") if isinstance(payload.get("agent"), str) else None
+        # Where it went, when that is elsewhere than was decided: the session it is in.
+        placed = payload.get("placed") if isinstance(payload.get("placed"), dict) else None
+        if placed is not None and isinstance(placed.get("session"), str):
+            chosen = placed["session"]
+        peer = _session(chosen) if chosen else None
+        detail = {
+            "action": _text(payload.get("action")),
+            "project": _text(payload.get("project")) or None,
+            "relation": _text(payload.get("relation")),
+            "layer": _text(payload.get("layer")),
+            "model_calls": _number(payload.get("model_calls")),
+            "seconds": payload.get("seconds") if isinstance(payload.get("seconds"), (int, float)) else None,
+            # Sent to a member of a project beside its leader.
+            "direct": payload.get("direct") is True,
+        }
+        if placed is not None:
+            detail["placed"] = _text(placed.get("action"))
+    elif kind == "family_formed":
+        members = payload.get("members") if isinstance(payload.get("members"), list) else []
+        text = _text(payload.get("project"))
+        detail = {"project": text, "members": [item for item in members if isinstance(item, str)]}
+    elif kind == "leader_derived":
+        made = payload.get("session_id") if isinstance(payload.get("session_id"), str) else None
+        text, peer = _text(payload.get("project")), _session(made) if made else None
+        detail = {"project": text, "reason": _text(payload.get("reason"))}
+    elif kind == "handed_over":
+        to = payload.get("to") if isinstance(payload.get("to"), str) else None
+        text, peer = _text(payload.get("name")), _session(to) if to else None
+        detail = {"preset": _text(payload.get("preset")) or None, "new": bool(payload.get("new"))}
+    elif kind == "landed":
+        # What it changed in its git worktree was merged into its project's directory.
+        files = [item for item in payload.get("files") or [] if isinstance(item, dict)]
+        detail = {
+            "tree": _text(payload.get("tree")),
+            "files": [
+                {
+                    "path": _text(item.get("path")), "status": _text(item.get("status")),
+                    "added": _number(item.get("added")), "deleted": _number(item.get("deleted")),
+                }
+                for item in files
+            ],
+            "more": _number(payload.get("more")) or 0,
+            "lines_added": _number(payload.get("lines_added")) or 0,
+            "lines_deleted": _number(payload.get("lines_deleted")) or 0,
+            # Changed outside the project's directory, elsewhere in its repository; and not
+            # carried over, being too large or a repository of their own (still in the worktree).
+            "outside": [_text(item) for item in payload.get("outside") or [] if isinstance(item, str)],
+            "skipped": [_text(item) for item in payload.get("skipped") or [] if isinstance(item, str)],
+            # Landed at the user's word, after it had not been.
+            "by_user": payload.get("by") == "user",
+        }
+    elif kind == "landing_conflict":
+        detail = {
+            "tree": _text(payload.get("tree")),
+            "conflicts": [_text(item) for item in payload.get("conflicts") or [] if isinstance(item, str)],
+            "round": _number(payload.get("round")),
+            "by_user": payload.get("by") == "user",
+        }
+    elif kind in ("not_landed", "landing_held"):
+        text = _text(payload.get("path"))
+        detail = {"tree": _text(payload.get("tree")), "path": text, "reason": _text(payload.get("reason"))}
+        if kind == "not_landed":
+            detail["conflicts"] = [_text(item) for item in payload.get("conflicts") or [] if isinstance(item, str)]
+            detail["rounds"] = _number(payload.get("rounds"))
+    elif kind in ("tree_discarded", "tree_kept"):
+        text, peer = _text(payload.get("path")), dict(_USER)
+        detail = {"tree": _text(payload.get("tree")), "path": text}
+    elif kind == "team_formed":
+        members = [item for item in payload.get("members") or [] if isinstance(item, dict)]
+        detail = {
+            "members": [
+                {
+                    "name": _text(item.get("name")), "preset": _text(item.get("preset")),
+                    "commission_id": item.get("commission_id") if isinstance(item.get("commission_id"), str) else None,
+                    "writes": item.get("writes") is True,
+                }
+                for item in members
+            ],
+            "inspect": payload.get("inspect") is True,
+        }
+    elif kind == "inspected":
+        detail = {
+            "tree": _text(payload.get("tree")), "verdict": _text(payload.get("verdict")),
+            "round": _number(payload.get("round")),
+        }
+    elif kind == "stall_reminded":
+        detail = {"members": _number(payload.get("members"))}
     elif kind == "resting":
         detail = {"until": _number(payload.get("until"))}
     elif kind == "wake_set":

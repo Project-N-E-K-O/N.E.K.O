@@ -468,6 +468,65 @@ async def _test_doubao_tts_connectivity(url: str, api_key: str, model: str = "",
         return {"success": False, "error": str(exc), "error_code": "unknown"}
 
 
+async def _test_qwen_token_plan_tts_connectivity(url: str, api_key: str, model: str = "", voice_id: str = "") -> dict:
+    import httpx
+    from utils.qwen_token_plan_tts import (
+        QwenTokenPlanTtsError,
+        build_qwen_token_plan_tts_payload,
+        extract_qwen_token_plan_audio,
+        qwen_token_plan_api_headers,
+        qwen_token_plan_key_looks_like_bailian_key,
+        qwen_token_plan_tts_url,
+        select_qwen_token_plan_tts_voice,
+        QWEN_TOKEN_PLAN_TTS_DEFAULT_MODEL,
+    )
+
+    try:
+        # Whitelisted HTTPS hosts only: the probe sends the subscription key.
+        api_url = qwen_token_plan_tts_url(url)
+    except ValueError:
+        return {"success": False, "error": "Token Plan 地址必须是 https 的 Token Plan 域名", "error_code": "token_plan_url_invalid"}
+    voice, _ = select_qwen_token_plan_tts_voice(voice_id)
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # Non-streaming: the reply carries only a signed URL, which is enough to prove the key works.
+            resp = await client.post(
+                api_url,
+                headers=qwen_token_plan_api_headers(api_key, stream=False),
+                json=build_qwen_token_plan_tts_payload(
+                    "测试", voice, model=(model or QWEN_TOKEN_PLAN_TTS_DEFAULT_MODEL).strip(),
+                ),
+            )
+        if resp.status_code in (401, 403):
+            if qwen_token_plan_key_looks_like_bailian_key(api_key):
+                # A hint only; the key is still saved as entered.
+                return {"success": False, "error": "Token Plan 需要 sk-sp- 开头的专属 Key", "error_code": "token_plan_key_mismatch"}
+            return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
+        if resp.status_code == 429:
+            return {"success": True}
+        if resp.status_code != 200:
+            return {"success": False, "error": f"HTTP {resp.status_code}", "error_code": "unknown"}
+        chunk, audio_url, _ = extract_qwen_token_plan_audio(resp.json())
+        if not chunk and not audio_url:
+            return {"success": False, "error": "Token Plan TTS 未返回音频数据", "error_code": "empty_response"}
+        return {"success": True}
+    except QwenTokenPlanTtsError as exc:
+        return {"success": False, "error": str(exc), "error_code": "unknown"}
+    except ValueError:
+        return {"success": False, "error": "响应格式错误", "error_code": "invalid_response"}
+    except httpx.TimeoutException:
+        return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
+    except httpx.ConnectError as exc:
+        err_str = str(exc).lower()
+        if "getaddrinfo" in err_str or "name or service" in err_str or "nodename" in err_str:
+            return {"success": False, "error": "域名解析失败", "error_code": "dns_error"}
+        return {"success": False, "error": "无法连接到目标服务器", "error_code": "connection_refused"}
+    except ssl.SSLError:
+        return {"success": False, "error": "SSL证书验证失败", "error_code": "ssl_error"}
+    except Exception as exc:
+        return {"success": False, "error": str(exc), "error_code": "unknown"}
+
+
 async def _test_openai_tts_connectivity(
     url: str,
     api_key: str,
@@ -562,7 +621,7 @@ def _looks_like_anthropic_messages_url(url: str | None) -> bool:
 
 def _normalize_provider_type(profile: dict[str, Any] | None, url: str | None = None) -> str:
     provider_type = str((profile or {}).get("provider_type") or "openai_compatible").strip().lower()
-    if provider_type not in ("openai_compatible", "anthropic", "websocket", "tts", "decision"):
+    if provider_type not in ("openai_compatible", "anthropic", "websocket", "tts", "decision", "chatgpt"):
         return "openai_compatible"
     if provider_type == "openai_compatible" and _looks_like_anthropic_messages_url(url):
         return "anthropic"
@@ -691,6 +750,13 @@ async def _test_connectivity_candidates(
                     model=model,
                     voice_id=voice_id,
                 )
+            elif sub_type == "qwen_token_plan":
+                result = await _test_qwen_token_plan_tts_connectivity(
+                    candidate_url,
+                    api_key,
+                    model=model,
+                    voice_id=voice_id,
+                )
             elif sub_type == "openai_tts":
                 result = await _test_openai_tts_connectivity(
                     candidate_url,
@@ -700,6 +766,22 @@ async def _test_connectivity_candidates(
                 )
             else:
                 result = {"success": False, "error": "不支持的 TTS 探测协议", "error_code": "unsupported"}
+        elif provider_type == "chatgpt":
+            from config import OPENAI_CONNECTIVITY_TEST_MAX_TOKENS
+            from utils.llm_client.chatgpt_client import ChatGPTOutputLimitError, acreate_chatgpt_client
+            client = await acreate_chatgpt_client(base_url=candidate_url, model=model,
+                                                  max_completion_tokens=OPENAI_CONNECTIVITY_TEST_MAX_TOKENS, timeout=15)
+            try:
+                await client.ainvoke("Reply OK.")
+                result = {"success": True, "message": "ChatGPT connected"}
+            except ChatGPTOutputLimitError:
+                # A valid response that spent this small probe budget on
+                # reasoning still establishes model/account connectivity.
+                result = {"success": True, "message": "ChatGPT connected"}
+            except Exception:
+                result = {"success": False, "error": "ChatGPT request failed. Check sign-in, model and plan usage.", "error_code": "chatgpt_unavailable"}
+            finally:
+                await client.aclose()
         elif provider_type == "anthropic":
             result = await _test_anthropic(candidate_url, api_key, model=model, is_free=is_free)
         elif provider_type == "decision":
@@ -1000,6 +1082,8 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
             # Use conversation_model as the test model (most representative)
             model = profile.get("conversation_model", "")
             provider_type = _normalize_provider_type(profile, url_stripped)
+            if provider_type == "chatgpt":
+                model = (req.model or "").strip()
             is_free = profile.get("is_free_version", False)
             _source_label = profile.get("name", provider_key)
         elif scope == "decision":
@@ -1133,10 +1217,13 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
 
         url_stripped = req.url.strip()
         url_candidates = [url_stripped]
-        model = (req.model or "gpt-3.5-turbo").strip()
         provider_type = _normalize_provider_type({"provider_type": req.provider_type}, url_stripped)
+        model = (req.model or ("" if provider_type == "chatgpt" else "gpt-3.5-turbo")).strip()
         is_free = bool(req.is_free)
         _source_label = _identify_provider_label(url_stripped, is_free)
+
+    if provider_type == "chatgpt" and not model:
+        return {"success": False, "error": "Choose a ChatGPT model before testing connectivity.", "error_code": "missing_params"}
 
     # sub_type is allowed only for Mode 2 (custom URL); for Mode 1 built-in providers,
     # api_providers.json determines provider_type/sub_type, which must not be overridden
@@ -1193,6 +1280,8 @@ def _identify_provider_label(url: str, is_free: bool) -> str:
         "token-plan-cn.xiaomimimo.com": "MiMo Token Plan",
         "token-plan-sgp.xiaomimimo.com": "MiMo Token Plan",
         "token-plan-ams.xiaomimimo.com": "MiMo Token Plan",
+        "token-plan.cn-beijing.maas.aliyuncs.com": "阿里百炼 Token Plan",
+        "token-plan.maas.qianwenaiapi.com": "阿里百炼 Token Plan",
     }
     url_lower = url.lower()
     for domain, name in _KNOWN_PROVIDERS.items():

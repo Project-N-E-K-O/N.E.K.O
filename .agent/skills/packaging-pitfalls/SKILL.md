@@ -28,6 +28,7 @@ description: 桌面打包、冻结版专属缺陷、CI 构建矩阵、nightly �
 | 症状 | 先想到 | 详见 |
 |---|---|---|
 | 冻结版里函数返回 `None`、进程静默退出或段错误，源码模式和单测全绿 | Nuitka 4.3.1 丢「`try` 里 `return` + `finally` 含 `while`」的返回值 | `references/frozen-build-bugs.md` |
+| Nuitka 编译中途报 `AssertionError: listcomp_1__.0_clone`，三个平台一起红 | Nuitka 4.2.2 复制「`finally` 含推导式、`try` 有两种以上出口」时临时变量重名 | `references/frozen-build-bugs.md` |
 | 冻结版 `No module named 'cython'` | PyAV 的影子 `.py` 被编进去盖掉了扩展模块 | 同上 |
 | 冻结版里本地端点检测、声纹、向量记忆悄悄降级 | 模型权重没进包（权重不入库，冻结版没有运行时下载路径） | `references/assets-plugins-deps.md` |
 | 某平台的包启动报 `Bad CPU type in executable`，CI 一直绿 | runner label 的原生架构和矩阵声明不一致 | `references/ci-matrix-and-nightly.md` |
@@ -56,7 +57,7 @@ description: 桌面打包、冻结版专属缺陷、CI 构建矩阵、nightly �
 
 ## references 索引
 
-- `references/frozen-build-bugs.md`：冻结版才出现的问题（Nuitka 版本缺陷、PyAV 影子 `.py`）、冻结冒烟都有哪些、本地最小复现的注意事项。冻结版行为和源码模式不一致，或者要动 Nuitka 版本和参数时读。
+- `references/frozen-build-bugs.md`：冻结版才出现的问题（Nuitka 版本缺陷和编译期崩溃、PyAV 影子 `.py`）、冻结冒烟都有哪些、本地最小复现的注意事项。冻结版行为和源码模式不一致，或者要动 Nuitka 版本和参数时读。
 - `references/ci-matrix-and-nightly.md`：构建矩阵的架构陷阱、linux-arm64 试验腿、产物传递、nightly 的四步发布和体积预检、契约测试对 workflow 写法的依赖。改 `build-desktop*.yml` 时读。
 - `references/local-build-and-signing.md`：本地打包脚本和 CI 的关系、有意保留的差异、编译后失败怎么续跑、Windows 批处理和签名的坑。帮维护者出本地包、排查签名问题时读。
 - `references/assets-plugins-deps.md`：内置模型和离线权重、内置插件与市场插件的边界、依赖体积、Intel Mac 和旧版 Windows 的依赖约束。加内置资源、移除内置插件、加依赖时读。

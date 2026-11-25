@@ -580,9 +580,13 @@ def _host_scan(pid: str, conf: dict, manifest_path: Path) -> dict[str, object]:
                 key: handler.meta for key, handler in state.event_handlers.items() if key == f"{pid}:timer:tick_bad"
             }
     finally:
+        # A plain loop, not a comprehension: with the return inside the with
+        # above, a comprehension here crashes Nuitka 4.2.2 in the desktop
+        # build (tests/unit/test_no_comprehension_in_multi_exit_finally.py).
         with state.acquire_event_handlers_write_lock():
-            for key in [key for key in state.event_handlers if key.startswith((f"{pid}.", f"{pid}:"))]:
-                del state.event_handlers[key]
+            for key in list(state.event_handlers):
+                if key.startswith((f"{pid}.", f"{pid}:")):
+                    del state.event_handlers[key]
 
 
 def test_host_scan_and_plugin_process_register_the_same_entries(tmp_path):
@@ -729,8 +733,9 @@ def test_duplicate_ids_in_one_class_decide_on_the_winner_on_both_sides(tmp_path,
             host = {key for key in state.event_handlers if key.startswith(f"{pid}.")}
     finally:
         with state.acquire_event_handlers_write_lock():
-            for key in [key for key in state.event_handlers if key.startswith((f"{pid}.", f"{pid}:"))]:
-                del state.event_handlers[key]
+            for key in list(state.event_handlers):
+                if key.startswith((f"{pid}.", f"{pid}:")):
+                    del state.event_handlers[key]
     process = P(ctx).collect_entries()
     previews = registry._extract_entries_preview(pid, P, conf, {}, manifest_path=ctx.config_path)
     if refused_wins:
@@ -796,8 +801,9 @@ def test_entry_hooks_also_check_entries_only_the_manifest_declares(tmp_path, hoo
             host = {key for key in state.event_handlers if key.startswith(f"{pid}.")}
     finally:
         with state.acquire_event_handlers_write_lock():
-            for key in [key for key in state.event_handlers if key.startswith((f"{pid}.", f"{pid}:"))]:
-                del state.event_handlers[key]
+            for key in list(state.event_handlers):
+                if key.startswith((f"{pid}.", f"{pid}:")):
+                    del state.event_handlers[key]
     previews = registry._extract_entries_preview(pid, P, conf, conf["plugin"], manifest_path=ctx.config_path)
     assert (host == set()) is closed
     assert ([item["id"] for item in previews] == []) is closed
@@ -917,10 +923,12 @@ def test_a_plain_entry_the_loader_scans_in_is_closed_by_its_hook(tmp_path, hook_
     ctx = _ctx(tmp_path, DECLARED_TOML + '[[plugin.entries]]\nid = "plain"\n')
     instance = P(ctx)
     # The real loader path: collect_entries() lists nothing, so the loader
-    # falls back to its method scan and maps "plain" by name.
+    # falls back to its method scan. It does not map the undecorated "plain";
+    # the executor reaches it as an entry the manifest declares.
     entry_map, _meta, _events = _initial_entry_tables(instance, ctx.logger)
-    assert "plain" in entry_map
+    assert "plain" not in entry_map
     executor = _executor_over(instance, ctx, dict(entry_map))
+    executor._manifest_entry_ids = frozenset({"plain"})
     resolved = executor._resolve("plugin_entry", "plain", registered_only=False)
     assert (resolved is None) is closed
 

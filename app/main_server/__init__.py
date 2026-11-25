@@ -663,6 +663,9 @@ def _emote_template_multipart_preflight(scope):
 # exact paths get the archive cap's base64 size (4/3) plus 1 MiB of JSON headroom; every
 # other route stays at 16 MiB.
 from main_routers.emote_template_router import MAX_MULTIPART_BODY_BYTES as EMOTE_MAX_MULTIPART_BODY_BYTES
+from main_routers.workshop_router.preview_cards import (  # noqa: E402
+    WORKSHOP_PREVIEW_MAX_MULTIPART_BODY_BYTES,
+)
 
 _non_multipart_body_limits = {
     "/api/memory/external_import/preview": EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES,
@@ -675,6 +678,9 @@ app.add_middleware(
     multipart_methods=("POST", "PUT"),
     max_multipart_body_bytes=AVATAR_TOOL_MAX_MULTIPART_BODY_BYTES,
     multipart_preflight=_avatar_tool_multipart_preflight,
+    multipart_path_limits={
+        "/api/steam/workshop/upload-preview-image": WORKSHOP_PREVIEW_MAX_MULTIPART_BODY_BYTES,
+    },
 )
 app.add_middleware(
     InboundBodySizeLimitMiddleware,
@@ -1183,16 +1189,14 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
             _runtime_startup_init_completed = True
             _disable_main_storage_limited_mode()
 
-            # Start heavyweight lazy-module background warmup after runtime init, preimporting genai/mcp,
-            # translatepy, and router dependencies before first use. Avoid early on_startup
-            # placement, which competes for GIL with critical runtime initialization.
+            # Start heavyweight lazy-module background warmup after runtime init, preimporting the
+            # SDKs the current config can reach (genai/mcp, router dependencies) before
+            # first use. Avoid early on_startup placement, which competes for GIL with critical
+            # runtime initialization.
             try:
-                from utils.module_warmup import (
-                    MAIN_SERVER_WARMUP,
-                    start_background_warmup,
-                )
+                from utils.module_warmup import start_main_server_warmup
 
-                start_background_warmup(MAIN_SERVER_WARMUP, label="main")
+                start_main_server_warmup()
             except Exception as _warmup_exc:
                 logger.debug(f"[warmup] main_server warmup not started: {_warmup_exc}")
 

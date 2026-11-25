@@ -44,6 +44,8 @@ uv run python -m app.agent_server
 
 The main UI can load with memory and main, but Agent, hosted-plugin, browser/computer-use, and related capabilities require agent/tool. Split mode does not reproduce launcher fallback ports or coordinated lifecycle behavior.
 
+When launching services manually in split mode, export the same `NEKO_INSTANCE_ID` across all three terminals (or set `NEKO_AUTOSTART_CSRF_TOKEN`). Otherwise each process derives its own random `AUTOSTART_CSRF_TOKEN`, causing internal forwarding from `agent_server` and plugin `console_proxy` to `main_server` to fail with `403` / `502`.
+
 ## Cloud-save notes
 
 - Validate the Steam RemoteStorage path through Steam or the desktop launcher.

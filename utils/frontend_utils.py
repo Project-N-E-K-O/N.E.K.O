@@ -1128,24 +1128,57 @@ def _resolve_workshop_search_dirs() -> list:
     return dirs
 
 
+def _is_windows() -> bool:
+    """Return True when running on Windows."""
+    return os.name == "nt"
+
+
+def is_valid_live2d_model_name(model_name: str | None) -> bool:
+    """Return whether ``model_name`` is a single safe Live2D directory/item identifier."""
+    if not isinstance(model_name, str):
+        return False
+    stripped = model_name.strip()
+    if not stripped or stripped in {".", ".."} or stripped.strip(".") == "":
+        return False
+    forbidden_chars = ("/", "\\", ":", "\x00") if _is_windows() else ("/", "\\", "\x00")
+    if any(ch in model_name for ch in forbidden_chars):
+        return False
+    return True
+
+
+def _is_strict_subpath(candidate_real: str, root_real: str) -> bool:
+    """Return True when ``candidate_real`` is strictly nested under ``root_real``."""
+    norm_candidate = os.path.normcase(candidate_real)
+    norm_root = os.path.normcase(root_real)
+    try:
+        return (
+            norm_candidate != norm_root
+            and os.path.commonpath([norm_candidate, norm_root]) == norm_root
+        )
+    except ValueError:
+        return False
+
+
 def _find_model_in_workshop_dir(workshop_search_dir: str, model_name: str):
     """Find ``model_name`` in one Workshop directory; returns the model folder or None."""
     workshop_search_real = os.path.realpath(workshop_search_dir)
     # Direct match when model name equals folder name.
     workshop_model_dir = os.path.join(workshop_search_dir, model_name)
     if os.path.exists(workshop_model_dir):
-        if _is_strictly_within(workshop_search_real, workshop_model_dir):
+        workshop_model_dir_real = os.path.realpath(workshop_model_dir)
+        if _is_strict_subpath(workshop_model_dir_real, workshop_search_real):
             return workshop_model_dir
 
     # Recursively search all Workshop subfolders, handling Steam Workshop's item-ID folder names.
     for item_id in os.listdir(workshop_search_dir):
         item_path = os.path.join(workshop_search_dir, item_id)
         item_path_real = os.path.realpath(item_path)
-        if os.path.isdir(item_path_real) and _is_strictly_within(workshop_search_real, item_path_real):
+        if os.path.isdir(item_path_real) and _is_strict_subpath(item_path_real, workshop_search_real):
             # Check whether a subfolder contains a folder matching the model name.
             potential_model_path = os.path.join(item_path, model_name)
             if os.path.exists(potential_model_path):
-                if _is_strictly_within(workshop_search_real, potential_model_path):
+                potential_model_path_real = os.path.realpath(potential_model_path)
+                if _is_strict_subpath(potential_model_path_real, workshop_search_real):
                     return potential_model_path
 
             # Check whether the subfolder itself is a model directory containing .model3.json.
@@ -1154,7 +1187,7 @@ def _find_model_in_workshop_dir(workshop_search_dir: str, model_name: str):
                     # Extract the model name without its suffix.
                     potential_model_name = os.path.splitext(os.path.splitext(file)[0])[0]
                     if potential_model_name == model_name:
-                        if _is_strictly_within(workshop_search_real, item_path_real):
+                        if _is_strict_subpath(item_path_real, workshop_search_real):
                             return item_path
     return None
 
@@ -1167,18 +1200,11 @@ def find_model_directory(model_name: str):
     from utils.config_manager import get_config_manager
     
     # Validate model names to prevent path traversal.
-    # Reject empty strings, '.', '..', drive prefixes, NUL bytes, and path separators.
+    # Reject empty strings, dot-only names, drive prefixes, NUL bytes, and path separators.
     if not isinstance(model_name, str) or not model_name.strip():
         logging.warning("模型名称为空")
         return (None, None)
-    if (
-        model_name.strip() in {".", ".."}
-        or "\x00" in model_name
-        or os.path.splitdrive(model_name)[0]
-        or ".." in model_name
-        or "/" in model_name
-        or "\\" in model_name
-    ):
+    if not is_valid_live2d_model_name(model_name) or os.path.splitdrive(model_name)[0]:
         model_name_safe = repr(model_name) if len(model_name) <= 100 else repr(model_name[:100]) + '...'
         logging.warning(f"模型名称包含非法路径字符: {model_name_safe}")
         return (None, None)
@@ -1206,7 +1232,9 @@ def find_model_directory(model_name: str):
             docs_model_dir = live2d_root / model_name
             if not docs_model_dir.exists():
                 continue
-            if not _is_strictly_within(str(live2d_root), str(docs_model_dir)):
+            docs_model_dir_real = os.path.realpath(docs_model_dir)
+            docs_live2d_dir_real = os.path.realpath(live2d_root)
+            if not _is_strict_subpath(docs_model_dir_real, docs_live2d_dir_real):
                 continue
 
             live2d_root_norm = os.path.normcase(os.path.normpath(str(live2d_root)))
@@ -1235,18 +1263,20 @@ def find_model_directory(model_name: str):
             # Direct match when model name equals folder name.
             user_mod_model_dir = os.path.join(user_mods_path, model_name)
             if os.path.exists(user_mod_model_dir):
-                if _is_strictly_within(user_mods_path_real, user_mod_model_dir):
+                user_mod_model_dir_real = os.path.realpath(user_mod_model_dir)
+                if _is_strict_subpath(user_mod_model_dir_real, user_mods_path_real):
                     return (user_mod_model_dir, '/user_mods')
             
             # Recursively search all subfolders in the user mod directory.
             for mod_folder in os.listdir(user_mods_path):
                 mod_path = os.path.join(user_mods_path, mod_folder)
                 mod_path_real = os.path.realpath(mod_path)
-                if os.path.isdir(mod_path_real) and _is_strictly_within(user_mods_path_real, mod_path_real):
+                if os.path.isdir(mod_path_real) and _is_strict_subpath(mod_path_real, user_mods_path_real):
                     # Check whether a subfolder contains a folder matching the model name.
                     potential_model_path = os.path.join(mod_path, model_name)
                     if os.path.exists(potential_model_path):
-                        if _is_strictly_within(user_mods_path_real, potential_model_path):
+                        potential_model_path_real = os.path.realpath(potential_model_path)
+                        if _is_strict_subpath(potential_model_path_real, user_mods_path_real):
                             return (potential_model_path, '/user_mods')
                     
                     # Check whether the subfolder itself is a model directory containing .model3.json.
@@ -1255,7 +1285,8 @@ def find_model_directory(model_name: str):
                             # Extract the model name without its suffix.
                             potential_model_name = os.path.splitext(os.path.splitext(file)[0])[0]
                             if potential_model_name == model_name:
-                                return (mod_path, '/user_mods')
+                                if _is_strict_subpath(mod_path_real, user_mods_path_real):
+                                    return (mod_path, '/user_mods')
     except Exception as e:
         logging.warning(f"检查用户mod目录模型时出错: {e}")
     
@@ -1264,7 +1295,8 @@ def find_model_directory(model_name: str):
     static_dir_real = os.path.realpath(static_dir)
     static_model_dir = os.path.join(static_dir, model_name)
     if os.path.exists(static_model_dir):
-        if _is_strictly_within(static_dir_real, static_model_dir):
+        static_model_dir_real = os.path.realpath(static_model_dir)
+        if _is_strict_subpath(static_model_dir_real, static_dir_real):
             return (static_model_dir, '/static')
     
     # Return None if none exists.

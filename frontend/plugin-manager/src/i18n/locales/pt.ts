@@ -1,19 +1,19 @@
-import { pluginConsentMessages } from '../plugin-consent'
-import { modelApiMessages } from '../model-api'
-import { modelBindingsMessages } from '../model-bindings'
-import { marketFeedbackMessages } from '../market-feedback'
-import { authoringMessages } from '../authoring'
+import pluginConsentMessages from '../plugin-consent/pt'
+import modelApiMessages from '../model-api/pt'
+import modelBindingsMessages from '../model-bindings/pt'
+import marketFeedbackMessages from '../market-feedback/pt'
+import authoringMessages from '../authoring/pt'
 import powerMessages from '../power/pt'
 
 /**
  * Pacote de idioma português
  */
 export default {
-  pluginConsent: pluginConsentMessages['pt'],
-  authoring: authoringMessages['pt'],
-  marketFeedback: marketFeedbackMessages['pt'],
-  modelApi: modelApiMessages['pt'],
-  modelBindings: modelBindingsMessages['pt'],
+  pluginConsent: pluginConsentMessages,
+  authoring: authoringMessages,
+  marketFeedback: marketFeedbackMessages,
+  modelApi: modelApiMessages,
+  modelBindings: modelBindingsMessages,
   power: powerMessages,
   common: {
     chooseLanguage: "Escolher idioma",
@@ -1060,6 +1060,8 @@ export default {
     pluginBuilt: 'Plugin empacotado: {packageName}',
     pluginDeleted: 'Plugin excluído',
     pluginDeletedBuiltinRestartFailed: 'O plugin {plugin} foi excluído, mas a versão integrada restaurada não pôde ser iniciada: {error}',
+    pluginDeletedPermissionsNotCleared: 'O plugin {plugin} foi excluído, mas o arquivo de registros de permissões está danificado ou é de uma versão mais nova, então as permissões que ele possa ter não foram removidas. Se o arquivo voltar a ser legível, elas podem continuar valendo.',
+    pluginsDeletedPermissionsNotCleared: 'Os plugins {plugins} foram excluídos, mas o arquivo de registros de permissões está danificado ou é de uma versão mais nova, então as permissões que eles possam ter não foram removidas. Se o arquivo voltar a ser legível, elas podem continuar valendo.',
     startFailed: 'Falha ao iniciar',
     autoStartEnabled: 'Início automático ativado',
     autoStartDisabled: 'Início automático desativado',

@@ -130,6 +130,8 @@ def test_offered_tools_depend_on_platform_images_and_host() -> None:
         "pwsh", "read_image", "ask_user_question", "report", "note_lesson", "web_search",
         "subagent", "list_agents", "send_message", "interrupt_agent", "wait_agent",
         "list_sessions", "read_session", "message_session", "schedule_wake", "ask_session",
+        # (For the leader of a project alone: the host withholds them from every other session.)
+        "hand_over", "start_team",
     }
     assert "bash" not in full_names
     # Only read-only tools may run side by side.

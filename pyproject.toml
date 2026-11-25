@@ -72,6 +72,7 @@ dependencies = [
   "pyzmq>=27.1.0",
   "ormsgpack>=1.4.0",
   "cryptography>=50.0.0",
+  "PyJWT[crypto]>=2.10.1,<3",  # Verify Sign in with ChatGPT ID tokens.
   "python-dotenv>=1.2.1",
   "requests>=2.32.5",
   "sqlalchemy>=2.0.0",
@@ -275,6 +276,9 @@ dev = [
     # seed 跑（确定性），另有 .github/workflows/random-order-tests.yml 定时用
     # 随机 seed 单独跑、单独报，不挡任何人的 PR。
     "pytest-randomly>=4.1.0",
+    # 单条用例的时间上限（pytest.ini 里的 timeout）。卡死的用例到点就失败，并打印
+    # 所有线程卡在哪一行；否则它会一直耗到 job 的 30/75 分钟上限，日志里看不出卡在哪。
+    "pytest-timeout>=2.3.1",
     # tests/unit 是 24000+ 条用例的单进程串行跑，Windows CI 上要 19 分钟，逼近
     # 25 分钟的 job 上限。用 `-n auto --dist loadfile` 按文件分发到多个 worker：
     # 文件内顺序不变（loadfile 保证整个文件在同一个 worker 上按序跑），所以

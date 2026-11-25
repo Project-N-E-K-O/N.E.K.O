@@ -29,6 +29,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict
 from fastapi import Request
+from fastapi.responses import JSONResponse
 from ..shared_state import get_config_manager
 
 
@@ -586,13 +587,26 @@ async def game_badminton_leaderboard(
 
 @router.post("/{game_type}/leaderboard")
 async def game_badminton_leaderboard_submit(game_type: str, request: Request):
-    if not _is_badminton_game_type(game_type):
-        return {"ok": False, "reason": f"暂不支持 {game_type} 的排行榜"}
+    raw_ct = request.headers.get("content-type", "")
+    if raw_ct and raw_ct.split(";", 1)[0].strip().lower() != "application/json":
+        return JSONResponse({"ok": False, "reason": "unsupported_media_type"}, status_code=415)
     try:
         data = await request.json()
     except Exception:
-        return {"ok": False, "reason": "invalid_body"}
+        data = {}
     if not isinstance(data, dict):
+        return {"ok": False, "reason": "invalid_body"}
+    from ..system_router._shared import _validate_local_mutation_request
+    validation_error = _validate_local_mutation_request(
+        request,
+        payload=data,
+        error_defaults={"ok": False, "reason": "csrf_validation_failed"},
+    )
+    if validation_error is not None:
+        return validation_error
+    if not _is_badminton_game_type(game_type):
+        return {"ok": False, "reason": f"暂不支持 {game_type} 的排行榜"}
+    if not data:
         return {"ok": False, "reason": "invalid_body"}
     if not _badminton_score_submission_allowed(data, reserve=True):
         return {"ok": False, "reason": "invalid_session"}

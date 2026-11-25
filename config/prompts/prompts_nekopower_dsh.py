@@ -59,6 +59,14 @@ DSH_HOST_TOOLS_SECTION = (
     "\n"
     # The built-in runtime's own words, with the tool called what dsh calls it.
     + NOTE_LESSON_GUIDANCE.replace("note_lesson", f"{HOST_TOOL_PREFIX}note_lesson")
+    + "\n\n"
+    + (
+        # What the owner set for dsh plugins: told when one is added, not
+        # asked about when it is used (``nekopower/dsh/plugin_command.py``).
+        "To add a dsh plugin the user asked for, run `neko-dsh-plugin add <package>` (also `remove`, `list`). "
+        "First make sure the user knows a plugin runs inside dsh with all its rights and no sandbox, and agrees; "
+        "if not yet, ask with a `waiting` report. It loads when dsh next starts, not in this session."
+    )
 )
 
 # Added to what the host tells a session in its first message (``DSH_FIRST_MESSAGE``)

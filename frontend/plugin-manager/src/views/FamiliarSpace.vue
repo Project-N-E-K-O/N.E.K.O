@@ -86,7 +86,13 @@
 
         <el-tabs v-model="tab">
           <el-tab-pane v-if="!isArchived" :label="t('power.space.familiars.tab')" name="familiars" lazy>
-            <FamiliarsPane :project="selected ? selected.name : null" :selected-id="familiarId" @select="chooseFamiliar" />
+            <FamiliarsPane
+              :project="selected ? selected.name : null" :selected-id="familiarId" :settled="projectSettled"
+              @select="chooseFamiliar"
+            />
+          </el-tab-pane>
+          <el-tab-pane v-if="!isArchived" :label="t('power.space.tabs.activity')" name="activity" lazy>
+            <ActivityPane :project="selected ? selected.name : null" />
           </el-tab-pane>
           <el-tab-pane :label="t('power.space.tabs.rules')" name="rules">
             <RulesPane :scope="scope" :readonly="isArchived" />
@@ -112,6 +118,7 @@ import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { listProjects, pickDirectory, setProjectWorkdir } from '@/api/console'
 import type { SpaceProject, SpaceScope } from '@/api/console'
+import ActivityPane from '@/components/power/space/ActivityPane.vue'
 import FamiliarsPane from '@/components/power/space/FamiliarsPane.vue'
 import NotesPane from '@/components/power/space/NotesPane.vue'
 import PreferencesPane from '@/components/power/space/PreferencesPane.vue'
@@ -123,6 +130,8 @@ const { t, te } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const projects = ref<SpaceProject[]>([])
+// Whether the projects were read, once at least: until then nothing is known of the one the address names.
+const projectsRead = ref(false)
 const loading = ref(false)
 const error = ref('')
 const changing = ref(false)
@@ -144,6 +153,12 @@ const selected = computed<SpaceProject | null>(() => {
     : !project.archive_year && project.name === name)) ?? null
 })
 const isArchived = computed(() => !!selected.value?.archive_year)
+// Whether it is known where the familiar the address names belongs. An address that names no
+// project means the familiars of none. One that names a project: once the projects were read.
+// It is that project's board then, or the project is not at work any more (put away, renamed)
+// and none of its familiars is on any board: what was said in one of them is read all the same.
+// Not while the projects are still read, nor when they could not be.
+const projectSettled = computed(() => !(typeof route.query.project === 'string' && route.query.project) || projectsRead.value)
 const scope = computed<SpaceScope>(() => {
   const project = selected.value
   if (!project) return {}
@@ -155,7 +170,7 @@ const scope = computed<SpaceScope>(() => {
 const familiarId = computed(() => (typeof route.query.familiar === 'string' ? route.query.familiar : ''))
 const tab = computed({
   get: () => {
-    const offered = [...(isArchived.value ? [] : ['familiars']), 'rules', 'notes', selected.value ? 'reviews' : 'preferences']
+    const offered = [...(isArchived.value ? [] : ['familiars', 'activity']), 'rules', 'notes', selected.value ? 'reviews' : 'preferences']
     // A link to a familiar opens on the familiars; one to a project or to everything on the rules.
     const wanted = String(route.query.tab || (familiarId.value ? 'familiars' : 'rules'))
     return offered.includes(wanted) ? wanted : 'rules'
@@ -185,6 +200,7 @@ async function load() {
   loading.value = true
   try {
     projects.value = (await listProjects()).projects
+    projectsRead.value = true
     error.value = ''
   } catch (failure) {
     error.value = describeConsoleError(failure, t, te)

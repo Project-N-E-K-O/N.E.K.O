@@ -24,8 +24,10 @@ from xml.etree import ElementTree as ET
 from xml.sax.saxutils import quoteattr
 
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 
 from main_logic.mini_game_sdk import run_isolated_structured_output
+from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 
 from config.prompts.prompts_drawing_guess import (
     DRAWING_GUESS_CHAT_EXTRA_RULES,
@@ -1260,6 +1262,26 @@ def _pick_user_word_options(
 def _pick_round_words(cycle_state: dict[str, Any]) -> tuple[DrawingGuessWord, list[DrawingGuessWord]]:
     ai_word = _draw_words_from_cycle(cycle_state, 1)[0]
     return ai_word, _pick_user_word_options(cycle_state, excluded_ids={ai_word.id})
+
+
+def _validate_drawing_guess_mutation(
+    request: Request,
+    data: dict[str, Any],
+) -> JSONResponse | None:
+    """Reject unauthenticated/cross-site requests and non-JSON Content-Type."""
+    from ..system_router._shared import _validate_local_mutation_request
+
+    raw_ct = request.headers.get("content-type", "")
+    if raw_ct and raw_ct.split(";", 1)[0].strip().lower() != "application/json":
+        return JSONResponse(
+            {"ok": False, "reason": "unsupported_media_type"},
+            status_code=415,
+        )
+    return _validate_local_mutation_request(
+        request,
+        payload=data,
+        error_defaults={"ok": False, "reason": "csrf_validation_failed"},
+    )
 
 
 async def _payload(request: Request) -> dict[str, Any]:
@@ -3262,6 +3284,7 @@ async def _generate_persona_chat_line(
             model,
             str(char_info.get("base_url") or "") or None,
             str(char_info.get("api_key") or "") or None,
+            provider_type=str(char_info.get("provider_type") or "") or None,
             max_completion_tokens=220,
             timeout=GAME_CHAT_TIMEOUT_SECONDS,
         )
@@ -3449,6 +3472,7 @@ async def _generate_persona_game_line(
             model,
             str(char_info.get("base_url") or "") or None,
             str(char_info.get("api_key") or "") or None,
+            provider_type=str(char_info.get("provider_type") or "") or None,
             max_completion_tokens=180,
             timeout=GAME_EVENT_LINE_TIMEOUT_SECONDS,
         )
@@ -3667,6 +3691,7 @@ async def _classify_game_input_intent(
             model,
             str(char_info.get("base_url") or "") or None,
             str(char_info.get("api_key") or "") or None,
+            provider_type=str(char_info.get("provider_type") or "") or None,
             max_completion_tokens=160,
             timeout=INPUT_INTENT_TIMEOUT_SECONDS,
         )
@@ -3889,6 +3914,7 @@ async def _generate_text_context_guess(
             model,
             str(char_info.get("base_url") or "") or None,
             str(char_info.get("api_key") or "") or None,
+            provider_type=str(char_info.get("provider_type") or "") or None,
             max_completion_tokens=360,
             timeout=TEXT_GUESS_TIMEOUT_SECONDS,
         )
@@ -4355,10 +4381,17 @@ def _ai_drawing_review_response(
 @router.post("/round/start")
 async def drawing_guess_round_start(request: Request):
     data = await _payload(request)
+    validation_error = _validate_drawing_guess_mutation(request, data)
+    if validation_error is not None:
+        return validation_error
     lanlan_name = str(data.get("lanlan_name") or "").strip()
     session_id = str(data.get("session_id") or "").strip()
     if not lanlan_name:
         return {"ok": False, "reason": "missing_lanlan_name"}
+    name_check = validate_character_name(lanlan_name, allow_dots=True, max_units=PROFILE_NAME_MAX_UNITS)
+    if not name_check.ok and name_check.code != "reserved_route_name":
+        return {"ok": False, "reason": "invalid_lanlan_name"}
+    lanlan_name = name_check.normalized
     if not session_id:
         return {"ok": False, "reason": "missing_session_id"}
 
@@ -4427,6 +4460,9 @@ async def drawing_guess_round_start(request: Request):
 @router.post("/ai-draw")
 async def drawing_guess_ai_draw(request: Request):
     data = await _payload(request)
+    validation_error = _validate_drawing_guess_mutation(request, data)
+    if validation_error is not None:
+        return validation_error
     session, error = _require_session(data)
     if error:
         return {"ok": False, "reason": error}
@@ -4517,6 +4553,9 @@ async def _drawing_guess_ai_draw_locked(data: dict[str, Any], session: dict[str,
 @router.post("/ai-draw/review")
 async def drawing_guess_ai_draw_review(request: Request):
     data = await _payload(request)
+    validation_error = _validate_drawing_guess_mutation(request, data)
+    if validation_error is not None:
+        return validation_error
     session, error = _require_session(data)
     if error:
         return {"ok": False, "reason": error}
@@ -5006,6 +5045,9 @@ async def _handle_drawing_guess_input_payload_locked(
 @router.post("/input")
 async def drawing_guess_input(request: Request):
     data = await _payload(request)
+    validation_error = _validate_drawing_guess_mutation(request, data)
+    if validation_error is not None:
+        return validation_error
     return await _handle_drawing_guess_input_payload(data)
 
 
@@ -5055,6 +5097,9 @@ async def handle_external_drawing_guess_transcript(
 async def drawing_guess_live(request: Request):
     """Speak held plugin responses during an idle drawing-guess gap."""
     data = await _payload(request)
+    validation_error = _validate_drawing_guess_mutation(request, data)
+    if validation_error is not None:
+        return validation_error
     session, error = _require_session(data)
     if error:
         return {"ok": False, "reason": error}
@@ -5140,6 +5185,9 @@ async def drawing_guess_live(request: Request):
 @router.post("/choose-word")
 async def drawing_guess_choose_word(request: Request):
     data = await _payload(request)
+    validation_error = _validate_drawing_guess_mutation(request, data)
+    if validation_error is not None:
+        return validation_error
     session, error = _require_session(data)
     if error:
         return {"ok": False, "reason": error}
@@ -5194,6 +5242,9 @@ def _drawing_guess_choose_word_locked(
 @router.post("/timeout")
 async def drawing_guess_timeout(request: Request):
     data = await _payload(request)
+    validation_error = _validate_drawing_guess_mutation(request, data)
+    if validation_error is not None:
+        return validation_error
     session, error = _require_session(data)
     if error:
         return {"ok": False, "reason": error}
@@ -5713,6 +5764,9 @@ async def _run_drawing_guess_vision_turn(
 @router.post("/vision-guess")
 async def drawing_guess_vision_guess(request: Request):
     data = await _payload(request)
+    validation_error = _validate_drawing_guess_mutation(request, data)
+    if validation_error is not None:
+        return validation_error
     session, error = _require_session(data)
     if error:
         return {"ok": False, "reason": error}

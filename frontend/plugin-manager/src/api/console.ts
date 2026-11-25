@@ -265,6 +265,9 @@ export interface BoardCard {
   leader: boolean
   parent: string | null
   model: string | null
+  /** Why the model set for its preset could not be used and its default was; absent when it could. */
+  model_fallback?: string | null
+  usage?: { requests: number; tokens: number }
   context_tokens?: number
   last_active_at?: number | null
   commission: BoardCommission | null
@@ -333,6 +336,257 @@ export const answerCommission = (commissionId: string, answer: { text?: string; 
 export const stopCommission = (commissionId: string) =>
   send<{ status: string }>('post', `/console/commissions/${encodeURIComponent(commissionId)}/stop`)
 
+// -- what happened among the familiars, and who waits for whom ----------------------
+
+/** A session of a familiar, the user, or a free place a commission waits for. */
+export interface TimelineParty {
+  type: 'session' | 'user' | 'place' | (string & {})
+  session_id?: string | null
+  commission_id?: string | null
+}
+
+/** One thing that happened. The page passes over a `kind` it does not know. */
+export interface TimelineEntry {
+  cursor: string
+  at: number
+  kind: string
+  lanlan_name: string | null
+  project: string | null
+  session_id: string | null
+  commission_id: string | null
+  peer: TimelineParty | null
+  text: string
+  detail: Record<string, unknown>
+}
+
+export interface TimelinePage {
+  entries: TimelineEntry[]
+  /** What to pass as `after` for the page after this one. */
+  next: string
+  more: boolean
+  /** Stands after everything on record now: from here on only what is new comes. */
+  latest: string
+}
+
+/** Who waits for whom right now. */
+export interface Wait {
+  kind: 'queue' | 'place' | 'user' | 'notice' | 'child' | 'ask' | (string & {})
+  waiter: TimelineParty
+  target: TimelineParty
+  since: number
+  text: string
+  lanlan_name: string | null
+  projects: string[]
+}
+
+export const getTimeline = (params: { project?: string | null; after?: string; limit?: number } = {}) => {
+  const query: Record<string, string | number> = {}
+  if (params.project) query.project = params.project
+  if (params.after) query.after = params.after
+  if (params.limit) query.limit = params.limit
+  return get<TimelinePage>('/console/timeline', query)
+}
+/** Where to begin reading for what happened lately: `after` is empty when that is the beginning of the record. */
+export const getTimelineStart = () => get<{ after: string; latest: string }>('/console/timeline/start')
+export const getWaits = (project?: string | null) =>
+  get<{ waits: Wait[]; more: boolean }>('/console/waits', project ? { project } : undefined)
+
+// -- one familiar: what was said in it, what it used ---------------------------------
+
+export interface TranscriptCall {
+  name: string
+  /** Its arguments as JSON text, cut when long. */
+  arguments: string
+  cut: boolean
+}
+
+export interface TranscriptEntry {
+  /** Its place in the record: what `before` and `at` are given. */
+  at: number
+  role: 'user' | 'assistant' | 'tool_result' | 'notice' | 'summary' | (string & {})
+  text: string
+  /** True when `text` was cut: the whole entry is read with `at`. */
+  cut: boolean
+  calls: TranscriptCall[]
+  /** The tool a result is of, or the kind of a notice. */
+  tool: string | null
+  failed: boolean
+  pictures: number
+  time: number | null
+}
+
+export interface TranscriptPage {
+  /** False for a session dsh holds (`reason` "dsh") or one nothing was said in (`reason` "empty"). */
+  readable: boolean
+  reason?: 'dsh' | 'empty' | (string & {})
+  entries: TranscriptEntry[]
+  /** What to pass as `before` for the page before this one; null at the beginning. */
+  before: number | null
+}
+
+export const getTranscript = (sessionId: string, params: { before?: number | null; limit?: number; at?: number } = {}) => {
+  const query: Record<string, string | number> = {}
+  if (params.before !== undefined && params.before !== null) query.before = params.before
+  if (params.limit) query.limit = params.limit
+  if (params.at !== undefined) query.at = params.at
+  return get<TranscriptPage>(`/console/familiars/${encodeURIComponent(sessionId)}/transcript`, query)
+}
+
+export interface UsageCount {
+  requests: number
+  input: number
+  output: number
+  cache_read: number
+  cache_write: number
+  tokens: number
+}
+
+export interface SessionUsage {
+  session: UsageCount & { context_tokens: number }
+  window: { window: number; compact_at?: number } | null
+  /** Its latest commission: what the work it belongs to used, and what it may before the user is asked. */
+  commission: { id: string; title: string; status: string; used: number; limit: number | null; own: UsageCount } | null
+}
+
+export interface CommissionUsage {
+  commission: UsageCount
+  used: number
+  limit: number | null
+  session: (UsageCount & { context_tokens: number }) | null
+  window: { window: number; compact_at?: number } | null
+}
+
+export const getSessionUsage = (sessionId: string) =>
+  get<SessionUsage>(`/console/familiars/${encodeURIComponent(sessionId)}/usage`)
+export const getCommissionUsage = (commissionId: string) =>
+  get<CommissionUsage>(`/console/commissions/${encodeURIComponent(commissionId)}/usage`)
+
+// -- the commissions ------------------------------------------------------------------
+
+export interface CommissionRow {
+  id: string
+  title: string
+  /** As the ledger has it, or `resting`. */
+  status: string
+  reason: string
+  result: string
+  source: string
+  route: string | null
+  project: string | null
+  lanlan_name: string | null
+  parent_id: string | null
+  session_id: string | null
+  session: { name: string; kind: string; preset: string; title: string } | null
+  runtime: string | null
+  plugin_id: string | null
+  entry_id: string | null
+  created_at: number
+  started_at: number | null
+  ended_at: number | null
+  updated_at: number
+  usage: { requests: number; tokens: number }
+  ask: BoardAsk | null
+}
+
+export const listCommissions = (
+  params: { status?: string[]; project?: string | null; loose?: boolean; days?: number; limit?: number } = {},
+) => {
+  const query: Record<string, string | number> = {}
+  if (params.status?.length) query.status = params.status.join(',')
+  if (params.loose) query.loose = '1'
+  else if (params.project) query.project = params.project
+  if (params.days !== undefined) query.days = params.days
+  if (params.limit) query.limit = params.limit
+  return get<{ commissions: CommissionRow[]; more: boolean }>('/console/commissions', query)
+}
+
+// -- the model each kind of familiar is sent to ----------------------------------------
+
+export interface RoleModelInEffect {
+  /** "starter": the model of the session that starts it; then nothing else is said. */
+  follows: 'starter' | null
+  slot?: string | null
+  model?: string | null
+  /** Whether it is the task agent model of the main app. */
+  agent?: boolean
+  free?: boolean
+  /** Why its setting could not be used and its default was; null when it could. */
+  fallback: string | null
+}
+
+export interface RoleModelPreset {
+  preset: string
+  label: string
+  source: string
+  valid: boolean
+  /** The id of a slot, "inherit", or null for its default. */
+  setting: string | null
+  default: 'agent' | 'inherit' | (string & {})
+  can_inherit: boolean
+  in_effect: RoleModelInEffect
+}
+
+export interface RoleModelSlot {
+  slot_id: string
+  name: string
+  source: string
+  host_api: string | null
+  model: string | null
+  configured: boolean
+  free: boolean
+  error_code: string | null
+}
+
+export interface RoleModelsView {
+  presets: RoleModelPreset[]
+  /** The slots of the model panel that can call tools, in its order: read each time, none is written in the page. */
+  slots: RoleModelSlot[]
+  slots_error: string | null
+}
+
+export const getRoleModels = () => get<RoleModelsView>('/console/role-models')
+export const setRoleModel = (preset: string, value: string | null) =>
+  send<RoleModelsView>('post', '/console/role-models', { preset, value })
+
+// -- the MCP tools ---------------------------------------------------------------------
+
+export interface McpServer {
+  server: string
+  /** What was set for it; "auto": nothing of its own, it goes by the setting all servers share. */
+  mode: PermissionMode
+  effective: Exclude<PermissionMode, 'auto'>
+  tools: Array<{ id: string; name: string; description: string }>
+}
+
+export interface McpView {
+  version: number
+  adapter: 'running' | 'stopped' | 'missing' | (string & {})
+  plugins_on: boolean
+  category: { mode: PermissionMode; auto: Exclude<PermissionMode, 'auto'> }
+  servers: McpServer[]
+  unreadable: boolean
+}
+
+export const getMcp = () => get<McpView>('/console/mcp')
+/** Set one server, or with `server` null the setting all of them share. */
+export const setMcpPermission = (server: string | null, mode: PermissionMode, expectedVersion: number) =>
+  send<McpView>('post', '/console/mcp/permission', { server: server ?? undefined, mode, expected_version: expectedVersion })
+
+// -- how much one commission may use ---------------------------------------------------
+
+export interface UsageLimit {
+  /** What holds now; null for no limit. */
+  tokens: number | null
+  /** What the user set; null while the default holds. */
+  set: number | null
+  default: number | null
+  min: number
+  max: number
+}
+
+export const getUsageLimit = () => get<UsageLimit>('/console/usage-limit')
+export const setUsageLimit = (tokens: number | null) => send<UsageLimit>('post', '/console/usage-limit', { tokens })
+
 // -- the runtime --------------------------------------------------------------
 
 export const getRuntime = () => get<RuntimeView>('/console/runtime')
@@ -362,6 +616,9 @@ export const openPlace = (key: string) => send<{ success: boolean }>('post', '/c
 export const listProjects = () => get<{ projects: SpaceProject[] }>('/console/space/projects')
 export const setProjectWorkdir = (project: string, workdir: string) =>
   send<{ project: SpaceProject }>('post', '/console/space/projects/workdir', { project, workdir })
+/** Put a project away into the archive: nothing is removed, and a commission that names it brings it back. */
+export const archiveProject = (project: string) =>
+  send<{ project: SpaceProject }>('post', '/console/space/projects/archive', { project })
 /** Show the system's dialog for choosing a folder; `path` is absent when the user closed it. */
 export const pickDirectory = (start?: string | null) =>
   send<{ path?: string; cancelled?: boolean }>('post', '/console/space/pick-directory', { start: start || undefined }, undefined, PICK_TIMEOUT_MS)

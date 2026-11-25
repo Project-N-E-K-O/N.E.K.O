@@ -190,6 +190,15 @@ export interface DeletePluginResult {
     message: string
     error_type: string
   } | null
+  /**
+   * Set when the permission records could not be read, so the grants were not
+   * cleared. ``message`` is untranslated diagnostic text; the UI shows its own
+   * localized notice instead.
+   */
+  permission_warning?: {
+    code: string
+    message: string
+  } | null
   message: string
 }
 

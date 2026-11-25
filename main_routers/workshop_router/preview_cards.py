@@ -22,17 +22,151 @@ Split out of the former monolithic ``main_routers/workshop_router.py``.
 from ._shared import logger, router
 
 import asyncio
-import os
+import inspect
+import io
 import json
+import os
+import shutil
 import tempfile
+import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from utils.file_utils import atomic_write_bytes, atomic_write_json
+from utils.file_utils import atomic_write_bytes, atomic_write_json, extract_unc_share as _extract_unc_share
 from utils.config_manager import get_reserved
+from utils.workshop_utils import get_workshop_path_async
 
 from .content_gate import ContentFolderBusy, claim_partial_writer
+
+MAX_PREVIEW_UPLOAD_BYTES = 10 * 1024 * 1024
+WORKSHOP_PREVIEW_MAX_MULTIPART_BODY_BYTES = MAX_PREVIEW_UPLOAD_BYTES + 256 * 1024
+_MAX_PREVIEW_IMAGE_PIXELS = 100_000_000
+_PREVIEW_STAGING_TTL_SECONDS = 24 * 60 * 60
+_PREVIEW_STAGING_MARKER_FILE = ".neko_preview_staging"
+_PREVIEW_EXTENSION_TO_FORMATS = {
+    ".jpg": {"JPEG"},
+    ".jpeg": {"JPEG"},
+    ".png": {"PNG"},
+    ".webp": {"WEBP"},
+}
+_PREVIEW_FORMAT_TO_EXTENSION = {
+    "JPEG": ".jpg",
+    "PNG": ".png",
+    "WEBP": ".webp",
+}
+
+
+async def _read_upload_bytes_bounded(
+    file, max_bytes: int, chunk_size: int = 64 * 1024
+) -> bytes:
+    """Read uploaded bytes in bounded chunks, stopping once ``max_bytes`` is exceeded."""
+    buf = bytearray()
+    try:
+        while True:
+            to_read = min(chunk_size, max_bytes - len(buf) + 1)
+            chunk = await file.read(to_read)
+            if not chunk:
+                break
+            buf.extend(chunk)
+            if len(buf) > max_bytes:
+                return bytes(buf)
+        return bytes(buf)
+    finally:
+        close_fn = getattr(file, "close", None)
+        if callable(close_fn):
+            await close_fn()
+
+
+def _assert_workshop_path(path: str, base: str) -> str:
+    """Resolve ``path`` and verify containment inside ``base`` (case- and cross-drive-safe)."""
+    if not path or not base:
+        raise PermissionError("path not allowed")
+    unified_path = path.replace("/", "\\")
+    if unified_path.startswith(("\\??\\", "\\\\.\\", "\\\\?\\")):
+        raise PermissionError("path not allowed")
+    try:
+        resolved_base = os.path.realpath(base)
+        if unified_path.startswith("\\\\"):
+            path_share = _extract_unc_share(unified_path)
+            allowed_shares = {
+                share
+                for share in (_extract_unc_share(base), _extract_unc_share(resolved_base))
+                if share is not None
+            }
+            if path_share is None or path_share not in allowed_shares:
+                raise PermissionError("path not allowed")
+        resolved = os.path.realpath(path)
+        norm_full = os.path.normcase(resolved)
+        norm_base = os.path.normcase(resolved_base)
+        if os.path.commonpath([norm_full, norm_base]) != norm_base:
+            raise PermissionError("path not allowed")
+        return resolved
+    except ValueError as exc:
+        raise PermissionError("path not allowed") from exc
+
+
+def _assert_direct_preview_target(parent_dir: str, filename: str) -> str:
+    """Validate a direct preview target entry without dereferencing leaf symlinks."""
+    if not parent_dir or not filename:
+        raise PermissionError("path not allowed")
+    resolved_parent = os.path.realpath(parent_dir)
+    candidate = os.path.join(resolved_parent, filename)
+    raw_candidate = os.path.join(parent_dir, filename)
+    if os.path.islink(raw_candidate) or os.path.islink(candidate):
+        raise PermissionError("path not allowed")
+    resolved = _assert_workshop_path(candidate, resolved_parent)
+    if os.path.normcase(resolved) != os.path.normcase(candidate):
+        raise PermissionError("path not allowed")
+    return candidate
+
+
+def _check_preview_image_dimensions(img) -> None:
+    """Enforce pixel-count limit without mutating PIL's global Image.MAX_IMAGE_PIXELS."""
+    width, height = getattr(img, "size", (0, 0))
+    if width <= 0 or height <= 0 or (width * height) > _MAX_PREVIEW_IMAGE_PIXELS:
+        raise ValueError("Preview image dimensions exceed allowed limit")
+
+
+def _normalize_preview_image_format(raw_format: str | None) -> str:
+    """Normalize camera MPO (JPEG with MPF metadata) to JPEG."""
+    fmt = (raw_format or "").upper()
+    return "JPEG" if fmt == "MPO" else fmt
+
+
+def _validate_preview_image_bytes(image_bytes: bytes) -> str:
+    """Verify uploaded preview bytes as JPEG or PNG and return the normalized format."""
+    from PIL import Image
+
+    with Image.open(io.BytesIO(image_bytes)) as img:
+        _check_preview_image_dimensions(img)
+        fmt = _normalize_preview_image_format(img.format)
+        if fmt not in {"JPEG", "PNG"}:
+            raise ValueError("Unsupported preview image format")
+        img.verify()
+        return fmt
+
+
+def _verify_preview_image_file(file_path: str, *, require_extension_match: bool = True) -> str:
+    """Verify an on-disk preview image file header/checksums cleanly and optionally match its extension."""
+    from PIL import Image
+
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext not in _PREVIEW_EXTENSION_TO_FORMATS:
+        raise ValueError("Unsupported preview image extension")
+    allowed_formats = (
+        _PREVIEW_EXTENSION_TO_FORMATS[ext]
+        if require_extension_match
+        else {"JPEG", "PNG", "WEBP"}
+    )
+    with Image.open(file_path) as img:
+        _check_preview_image_dimensions(img)
+        fmt = _normalize_preview_image_format(img.format)
+        if fmt not in allowed_formats:
+            raise ValueError("Preview image content does not match its file extension")
+        img.verify()
+        return fmt
 
 
 class _PreviewContentFolderMissing(RuntimeError):
@@ -495,10 +629,230 @@ def _write_claimed_preview_image(
         atomic_write_bytes(preview_image_path, image_bytes)
 
 
+def _resolve_preview_staging_root(
+    workshop_base: str,
+    *,
+    normcase_fn=None,
+) -> str | None:
+    """Return canonical WorkshopExport/_preview_staging only when neither segment is a redirect."""
+    if not workshop_base:
+        return None
+    norm = normcase_fn or os.path.normcase
+    resolved_base = os.path.realpath(workshop_base)
+    export_dir = os.path.join(resolved_base, "WorkshopExport")
+    if os.path.islink(export_dir):
+        return None
+    if os.path.exists(export_dir):
+        if norm(os.path.realpath(export_dir)) != norm(export_dir):
+            return None
+    staging_root = os.path.join(export_dir, "_preview_staging")
+    if os.path.islink(staging_root):
+        return None
+    if norm(os.path.realpath(staging_root)) != norm(staging_root):
+        return None
+    try:
+        return _assert_workshop_path(staging_root, resolved_base)
+    except PermissionError:
+        return None
+
+
+def _paths_overlap_by_samefile(resolved_path: str, candidate_root: str) -> bool:
+    """Detect containment or equality via inode identity on case-insensitive filesystems."""
+    def _has_samefile_ancestor(descendant: str, ancestor: str) -> bool:
+        if not os.path.exists(ancestor):
+            return False
+        current = descendant
+        while True:
+            try:
+                if os.path.exists(current) and os.path.samefile(current, ancestor):
+                    return True
+            except OSError:
+                pass
+            parent = os.path.dirname(current)
+            if not parent or parent == current:
+                return False
+            current = parent
+
+    return (
+        _has_samefile_ancestor(resolved_path, candidate_root)
+        or _has_samefile_ancestor(candidate_root, resolved_path)
+    )
+
+
+def _is_path_inside_preview_staging(
+    path: str,
+    workshop_base: str,
+    *,
+    normcase_fn=None,
+) -> bool:
+    """Return True when ``path`` resolves inside or encloses ``WorkshopExport/_preview_staging``."""
+    if not path or not workshop_base:
+        return False
+    norm = normcase_fn or os.path.normcase
+    staging_root = _resolve_preview_staging_root(workshop_base, normcase_fn=norm)
+    if staging_root:
+        candidate_roots = [staging_root]
+    else:
+        literal_staging = os.path.join(
+            os.path.realpath(workshop_base),
+            "WorkshopExport",
+            "_preview_staging",
+        )
+        candidate_roots = [literal_staging]
+        resolved_staging = os.path.realpath(literal_staging)
+        if norm(resolved_staging) != norm(literal_staging):
+            candidate_roots.append(resolved_staging)
+    try:
+        resolved_path = os.path.realpath(path)
+    except ValueError:
+        return False
+    norm_path = norm(resolved_path)
+    for root in candidate_roots:
+        try:
+            norm_root = norm(root)
+            if os.path.commonpath([norm_path, norm_root]) in {norm_path, norm_root}:
+                return True
+        except ValueError:
+            pass
+        if _paths_overlap_by_samefile(resolved_path, root):
+            return True
+    return False
+
+
+def _is_owned_preview_staging_dir(
+    entry_dir: str,
+    *,
+    expected_preview_name: str | None = None,
+) -> bool:
+    """Return True only when ``entry_dir`` is an isolated upload-created preview staging dir."""
+    if not entry_dir or os.path.islink(entry_dir) or not os.path.isdir(entry_dir):
+        return False
+    marker_path = os.path.join(entry_dir, _PREVIEW_STAGING_MARKER_FILE)
+    if os.path.islink(marker_path) or not os.path.isfile(marker_path):
+        return False
+    try:
+        with open(marker_path, "rb") as marker_fp:
+            raw_marker = marker_fp.read(129)
+    except OSError:
+        return False
+    if len(raw_marker) > 128:
+        return False
+    try:
+        recorded_name = raw_marker.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        return False
+    allowed_preview_names = {
+        f"preview{ext}" for ext in _PREVIEW_FORMAT_TO_EXTENSION.values()
+    }
+    if recorded_name not in allowed_preview_names:
+        return False
+    if expected_preview_name is not None and (
+        os.path.normcase(recorded_name) != os.path.normcase(expected_preview_name)
+    ):
+        return False
+    allowed_entry_names = {
+        os.path.normcase(_PREVIEW_STAGING_MARKER_FILE),
+        os.path.normcase(recorded_name),
+    }
+    try:
+        with os.scandir(entry_dir) as entries:
+            for entry in entries:
+                if entry.is_symlink() or not entry.is_file(follow_symlinks=False):
+                    return False
+                if os.path.normcase(entry.name) not in allowed_entry_names:
+                    return False
+    except OSError:
+        return False
+    return True
+
+
+def _cleanup_stale_preview_staging(
+    staging_root: str,
+    *,
+    workshop_base: str | None = None,
+    max_age_seconds: float = _PREVIEW_STAGING_TTL_SECONDS,
+) -> None:
+    """Best-effort pruning of abandoned preview staging directories older than TTL."""
+    if not staging_root or os.path.islink(staging_root) or not os.path.isdir(staging_root):
+        return
+    normalized_root = os.path.normpath(staging_root)
+    resolved_root = os.path.realpath(normalized_root)
+    if os.path.normcase(resolved_root) != os.path.normcase(normalized_root):
+        return
+    if workshop_base is not None:
+        expected_root = _resolve_preview_staging_root(workshop_base)
+        if not expected_root or os.path.normcase(resolved_root) != os.path.normcase(expected_root):
+            return
+    cutoff = time.time() - max_age_seconds
+    try:
+        with os.scandir(resolved_root) as entries:
+            for entry in entries:
+                try:
+                    if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
+                        continue
+                    resolved_entry = os.path.realpath(entry.path)
+                    if os.path.normcase(os.path.dirname(resolved_entry)) != os.path.normcase(resolved_root):
+                        continue
+                    if (
+                        entry.stat(follow_symlinks=False).st_mtime < cutoff
+                        and _is_owned_preview_staging_dir(resolved_entry)
+                    ):
+                        shutil.rmtree(resolved_entry, ignore_errors=True)
+                except OSError:
+                    continue
+    except OSError:
+        return
+
+
+def _cleanup_consumed_preview_staging(
+    source_preview: str,
+    workshop_base: str,
+    *,
+    content_folder: str | None = None,
+) -> None:
+    """Best-effort delete a consumed per-upload staging directory under _preview_staging."""
+    if not source_preview or not workshop_base:
+        return
+    staging_root = _resolve_preview_staging_root(workshop_base)
+    if not staging_root:
+        return
+    parent_raw = os.path.dirname(source_preview)
+    if not parent_raw or os.path.islink(parent_raw):
+        return
+    resolved_parent = os.path.realpath(parent_raw)
+    try:
+        common = os.path.commonpath([resolved_parent, staging_root])
+    except ValueError:
+        return
+    if os.path.normcase(common) != os.path.normcase(staging_root):
+        return
+    if os.path.normcase(resolved_parent) == os.path.normcase(staging_root):
+        return
+    if os.path.normcase(os.path.dirname(resolved_parent)) != os.path.normcase(staging_root):
+        return
+    if content_folder:
+        try:
+            resolved_content = os.path.realpath(content_folder)
+            norm_parent = os.path.normcase(resolved_parent)
+            norm_content = os.path.normcase(resolved_content)
+            overlap = os.path.commonpath([norm_parent, norm_content])
+            if overlap in {norm_parent, norm_content}:
+                return
+        except ValueError:
+            pass
+    if _is_owned_preview_staging_dir(
+        resolved_parent,
+        expected_preview_name=os.path.basename(source_preview),
+    ):
+        shutil.rmtree(resolved_parent, ignore_errors=True)
+
+
 def _write_preview_image(
     content_folder: str | None,
     preview_image_path: str,
     image_bytes: bytes,
+    *,
+    workshop_base: str | None = None,
 ) -> None:
     """Persist preview bytes in one worker, claiming content folders only."""
     if content_folder:
@@ -506,28 +860,42 @@ def _write_preview_image(
             content_folder, preview_image_path, image_bytes
         )
     else:
-        atomic_write_bytes(preview_image_path, image_bytes)
+        try:
+            _cleanup_stale_preview_staging(
+                os.path.dirname(os.path.dirname(preview_image_path)),
+                workshop_base=workshop_base,
+            )
+        except Exception:
+            pass
+        staging_dir = os.path.dirname(preview_image_path)
+        os.makedirs(staging_dir, exist_ok=True)
+        try:
+            atomic_write_bytes(
+                os.path.join(staging_dir, _PREVIEW_STAGING_MARKER_FILE),
+                os.path.basename(preview_image_path).encode("utf-8"),
+            )
+            atomic_write_bytes(preview_image_path, image_bytes)
+        except Exception:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            raise
 
 
 @router.post('/upload-preview-image')
 async def upload_preview_image(request: Request):
-    """
-    Upload a preview image, renamed uniformly to preview.* and saved into the given content folder (if provided).
-    """
-    try:  
-        # Receive uploaded files and form data
+    """Upload a preview image, renamed to preview.* and saved into content_folder or staging."""
+    form = None
+    try:
         form = await request.form()
         file = form.get('file')
         content_folder = form.get('content_folder')
-        
+
         if not file:
             return JSONResponse({
                 "success": False,
                 "error": "没有选择文件",
                 "message": "请选择要上传的图片文件"
             }, status_code=400)
-        
-        # Validate file type
+
         allowed_types = ['image/jpeg', 'image/png', 'image/jpg']
         if file.content_type not in allowed_types:
             return JSONResponse({
@@ -535,51 +903,99 @@ async def upload_preview_image(request: Request):
                 "error": "文件类型不允许",
                 "message": "只允许上传JPEG和PNG格式的图片"
             }, status_code=400)
-        
-        # Get the file extension
-        # Map extensions strictly from content-type; do not trust filename
-        content_type_to_ext = {"image/jpeg": ".jpg", "image/jpg": ".jpg", "image/png": ".png"}
-        file_extension = content_type_to_ext.get(file.content_type)
-        if not file_extension:
-            return JSONResponse({"success": False, "error": "文件类型不允许"}, status_code=400)
-                    
-        # Handle the content-folder path
+
+        workshop_base = await get_workshop_path_async()
+        resolved_workshop_base = os.path.realpath(workshop_base)
+
         if content_folder:
-            # Normalize the path
             import urllib.parse
-            content_folder = urllib.parse.unquote(content_folder)
+
+            content_folder = urllib.parse.unquote(str(content_folder))
+            if "\x00" in content_folder:
+                return JSONResponse({
+                    "success": False,
+                    "error": "无效路径",
+                    "message": "内容文件夹路径包含非法字符"
+                }, status_code=400)
             if os.name == 'nt':
                 content_folder = content_folder.replace('/', '\\')
-                if content_folder.startswith('\\\\'):
-                    content_folder = content_folder[2:]
-                else:
-                    content_folder = content_folder.replace('\\', '/')
-            
-            # Verify that the content folder exists
+
+            try:
+                resolved_folder = _assert_workshop_path(content_folder, workshop_base)
+                if (
+                    os.path.normcase(resolved_folder) == os.path.normcase(resolved_workshop_base)
+                    or _is_path_inside_preview_staging(resolved_folder, resolved_workshop_base)
+                ):
+                    raise PermissionError("cannot write directly into workshop root or preview staging")
+                content_folder = resolved_folder
+            except PermissionError:
+                return JSONResponse({
+                    "success": False,
+                    "error": "权限错误",
+                    "message": "指定的内容文件夹不在允许的范围内"
+                }, status_code=403)
+
             if not os.path.exists(content_folder) or not os.path.isdir(content_folder):
-                # Fall back to a temporary directory if the folder does not exist
-                logger.warning(f"指定的内容文件夹不存在: {content_folder}，使用临时目录")
-                content_folder = None
-        
-        # Create a consistently named preview-image path
-        if content_folder:
-            # Save directly to the content folder
-            preview_image_path = os.path.join(content_folder, f'preview{file_extension}')
+                return JSONResponse({
+                    "success": False,
+                    "error": "目录不存在",
+                    "message": "指定的内容文件夹不存在"
+                }, status_code=400)
+            staging_root = None
         else:
-            # Use a temporary directory
-            import tempfile
-            temp_folder = tempfile.gettempdir()
-            preview_image_path = os.path.join(temp_folder, f'preview{file_extension}')
-        
-        # Finish reading from the asynchronous upload object, then pass the complete atomic disk-write unit to the worker.
-        image_bytes = await file.read()
+            content_folder = None
+            staging_root = _resolve_preview_staging_root(resolved_workshop_base)
+            if staging_root is None:
+                return JSONResponse({
+                    "success": False,
+                    "error": "权限错误",
+                    "message": "预览暂存目录不在允许的范围内"
+                }, status_code=403)
+
+        image_bytes = await _read_upload_bytes_bounded(file, MAX_PREVIEW_UPLOAD_BYTES)
+        if not image_bytes or len(image_bytes) > MAX_PREVIEW_UPLOAD_BYTES:
+            return JSONResponse({
+                "success": False,
+                "error": "文件大小无效",
+                "message": "预览图片为空或超过10MB限制"
+            }, status_code=400)
+
+        try:
+            detected_format = await asyncio.to_thread(_validate_preview_image_bytes, image_bytes)
+        except Exception:
+            return JSONResponse({
+                "success": False,
+                "error": "无效的图片文件",
+                "message": "上传的文件不是有效的JPEG或PNG图片"
+            }, status_code=400)
+
+        file_extension = _PREVIEW_FORMAT_TO_EXTENSION.get(detected_format)
+        if not file_extension:
+            return JSONResponse({"success": False, "error": "文件类型不允许"}, status_code=400)
+
+        if content_folder:
+            preview_image_path = _assert_direct_preview_target(
+                content_folder,
+                f'preview{file_extension}',
+            )
+        else:
+            staging_dir = _assert_workshop_path(
+                os.path.join(staging_root, uuid.uuid4().hex),
+                staging_root,
+            )
+            preview_image_path = _assert_direct_preview_target(
+                staging_dir,
+                f'preview{file_extension}',
+            )
+
         await asyncio.to_thread(
             _write_preview_image,
             content_folder,
             preview_image_path,
             image_bytes,
+            workshop_base=resolved_workshop_base,
         )
-        
+
         return JSONResponse({
             "success": True,
             "file_path": preview_image_path,
@@ -591,6 +1007,12 @@ async def upload_preview_image(request: Request):
             "error": str(e),
             "message": str(e),
         }, status_code=409)
+    except PermissionError:
+        return JSONResponse({
+            "success": False,
+            "error": "权限错误",
+            "message": "指定的内容文件夹不在允许的范围内",
+        }, status_code=403)
     except Exception as e:
         logger.error(f"上传预览图片时出错: {e}")
         return JSONResponse({
@@ -598,3 +1020,12 @@ async def upload_preview_image(request: Request):
             "error": "内部错误",
             "message": "文件上传失败"
         }, status_code=500)
+    finally:
+        close_form = getattr(form, "close", None)
+        if callable(close_form):
+            try:
+                close_result = close_form()
+                if inspect.isawaitable(close_result):
+                    await close_result
+            except Exception:
+                pass

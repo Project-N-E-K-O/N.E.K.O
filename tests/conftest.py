@@ -109,6 +109,7 @@ from tests.utils.llm_judger import LLMJudger
 
 logger = logging.getLogger(__name__)
 
+
 SYSTEM_CHROME_PATH = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 _RUNTIME_TEST_PORTS: dict[str, int] = {}
 _RUNTIME_TEST_PORT_RETRY_LIMIT = 10
@@ -190,12 +191,53 @@ def pytest_addoption(parser):
 
 
 def pytest_configure(config):
+    # A plugin of its own, not hooks imported here: this conftest already takes
+    # its pytest_runtest_teardown from storage_root_env_guard, and pytest finds
+    # conftest hooks by name, so a second one here would replace that one.
+    from tests import teardown_watchdog
+
+    if not config.pluginmanager.is_registered(teardown_watchdog):
+        config.pluginmanager.register(teardown_watchdog, "neko-teardown-watchdog")
     config.addinivalue_line("markers", "manual: requires human supervision and real API/screen/browser")
     config.addinivalue_line("markers", "unit: unit tests")
     config.addinivalue_line("markers", "frontend: frontend integration tests")
 
-    # Auto-install Playwright browsers if not already present.
-    _ensure_playwright_browsers()
+    # Auto-install Playwright browsers if not already present - unless this
+    # run cannot drive a browser at all. On a fresh CI runner the install
+    # takes ~170 s, which used to be most of every Windows unit job's startup.
+    if _run_may_need_playwright(config.args, config.invocation_params.dir):
+        _ensure_playwright_browsers()
+
+
+_UNIT_TEST_DIR = _Path(__file__).resolve().parent / "unit"
+
+
+def _run_may_need_playwright(args, invocation_dir) -> bool:
+    """Whether the paths pytest was given can reach a Playwright browser.
+
+    False only when every argument is a ``.py`` file under tests/unit whose
+    source never mentions Playwright: tests there drive a browser by calling
+    ``sync_playwright()`` themselves, while tests/frontend and tests/e2e also
+    get one through pytest-playwright fixtures (``page``, ``mock_page``) that
+    a file does not have to name. A directory, a node id outside tests/unit,
+    or no argument at all keeps the old behaviour. Argument files
+    (``pytest @shard.args``) are expanded into ``args`` before this runs.
+    """
+    if not args:
+        return True
+    for arg in args:
+        path = _Path(str(arg).split("::", 1)[0])
+        if not path.is_absolute():
+            path = _Path(invocation_dir) / path
+        try:
+            path = path.resolve()
+            if path.suffix != ".py" or not path.is_file() or _UNIT_TEST_DIR not in path.parents:
+                return True
+            if "playwright" in path.read_text(encoding="utf-8", errors="replace").lower():
+                return True
+        except OSError:
+            return True
+    return False
 
 
 def _ensure_playwright_browsers():

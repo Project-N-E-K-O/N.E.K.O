@@ -29,6 +29,7 @@ from plugin.core.registry import (
     _check_plugin_dependency,
     _find_missing_python_requirements,
     _effective_entries,
+    _manifest_entry_ids,
     _overlay_entry_declaration,
     _parse_plugin_dependencies,
     _resolve_plugin_id_conflict,
@@ -1391,6 +1392,11 @@ class PluginLifecycleService:
                 set_initial_permissions(
                     await asyncio.to_thread(permission_snapshot, current_plugin_id)
                 )
+            # The plugin_entry ids the effective manifest declares: the child
+            # resolves plain methods only for these (see EntryExecutor).
+            set_manifest_entry_ids = getattr(created_host, "set_manifest_entry_ids", None)
+            if callable(set_manifest_entry_ids):
+                set_manifest_entry_ids(_manifest_entry_ids(conf, pdata))
 
             dependencies = _parse_plugin_dependencies(conf, logger, current_plugin_id)
             for dep in dependencies:
@@ -2328,6 +2334,7 @@ class PluginLifecycleService:
                 "filesystem_rollback": result.filesystem_rollback,
                 "runtime_restart": result.runtime_restart,
                 "cleanup_pending": result.cleanup_pending,
+                "permission_warning": result.permission_warning,
             },
         )
         response: dict[str, object] = {
@@ -2342,6 +2349,7 @@ class PluginLifecycleService:
             "filesystem_rollback": result.filesystem_rollback,
             "runtime_restart": result.runtime_restart,
             "cleanup_pending": result.cleanup_pending,
+            "permission_warning": result.permission_warning,
             "message": "Plugin deleted successfully",
         }
         return response

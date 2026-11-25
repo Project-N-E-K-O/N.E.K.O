@@ -462,6 +462,20 @@ async def test_migrated_internal_loopback_callers_succeed_under_proxy_mode(
         return None
 
     class _FakeCoreRequest:
+        def __init__(self):
+            from types import SimpleNamespace
+            from starlette.datastructures import Headers
+            from main_routers.system_router._shared import AUTOSTART_CSRF_TOKEN
+
+            self.method = "POST"
+            self.base_url = "http://testserver/"
+            self.url = SimpleNamespace(path="/api/config/core_api")
+            self.headers = Headers({
+                "content-type": "application/json",
+                "origin": "http://testserver",
+                "x-csrf-token": AUTOSTART_CSRF_TOKEN,
+            })
+
         async def json(self):
             return {"coreApi": "qwen", "assistApi": "qwen", "enableCustomApi": True, "coreApiKey": "new-key"}
 

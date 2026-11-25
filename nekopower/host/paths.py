@@ -247,6 +247,14 @@ class HostPaths:
         """Return where the model each preset's sessions are sent to is set (``role_models.py``)."""
         return self.root() / "role_models.json"
 
+    def usage_limit_json(self) -> Path:
+        """Return where the usage limit the user set is kept (``usage_limit.py``)."""
+        return self.root() / "usage_limit.json"
+
+    def landing_json(self) -> Path:
+        """Return where what the user set about landing is kept (``landing_settings.py``)."""
+        return self.root() / "landing.json"
+
     def dsh(self) -> Path:
         """Return where dsh is installed, for a user who downloaded it (``nekopower.dsh.install``).
 
@@ -281,3 +289,7 @@ class HostPaths:
 
     def work_dir(self, commission_id: str, project: str | None = None) -> Path:
         return self.session_dir(commission_id, project) / "work"
+
+    def project_work_dir(self, project: str) -> Path:
+        """Return the directory the host gives a project to work in when the user named none; raises ValueError for an unsafe name."""
+        return self.root() / "task_agents" / "projects" / _segment(project, "project") / "work"

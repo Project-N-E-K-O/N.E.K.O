@@ -33,6 +33,7 @@ from tests.unit.nekopower.fakes import ScriptedLLM, call, finish, say
 from tests.unit.nekopower.host_fakes import (
     FakeDecisionLLM,
     fake_model,
+    let_go,
     make_host,
     pick_plugin,
     scripted_runtime,
@@ -102,8 +103,8 @@ async def _released(host: Any, commission_id: str) -> None:
 
 
 async def _let_go(host: Any) -> None:
-    """Wait until no commission holds a session any more."""
-    await wait_until(lambda: host.task_agents._held_by == {}, what="every session being let go")
+    """Wait until no commission holds a session any more (``host_fakes.let_go``)."""
+    await let_go(host)
 
 
 def _user_messages(request: list[dict[str, Any]]) -> list[str]:
@@ -136,6 +137,10 @@ async def test_commissions_of_a_project_are_worked_on_in_its_one_session_one_aft
 
     first = await _dispatch(host, "add a CSV export to the budget app")
     await wait_status(host, first.commission_id, "working")
+    # Working is on record a moment before its first request reaches the model:
+    # the others are dispatched once it has, or one of no project could be
+    # asked first, and the order checked below would turn on timing.
+    await wait_until(lambda: seen[:1] == ["add a CSV export"], what="the first commission's first request")
     second = await _dispatch(host, "add a chart to the budget app")
     other = await _dispatch(host, "what is the weather tomorrow")
     await host.brain.settle()
@@ -164,7 +169,7 @@ async def test_commissions_of_a_project_are_worked_on_in_its_one_session_one_aft
     session = await host.ledger.get_session(done.session_id)
     # One session, named after the project, kept where the first commission opened it.
     assert done.session_id == former.session_id == first.commission_id
-    assert (session.kind, session.name, session.project, session.status) == ("project", "Budget app", "Budget app", "closed")
+    assert (session.kind, session.name, session.project, session.status) == ("line", "Budget app", "Budget app", "closed")
     assert done.session_dir == former.session_dir == session.session_dir
     assert Path(done.workdir) == Path(former.workdir) == Path(session.workdir) == workdir
     # The second went on from what the first left: it was asked with the first's
@@ -196,10 +201,14 @@ async def test_another_characters_commission_of_the_project_has_a_session_of_its
     await wait_status(host, first.commission_id, "working")
     second = await _dispatch(host, "add a chart to the budget app", lanlan_name="Mio")
 
-    done = await wait_status(host, second.commission_id, "done")
-    assert done.session_id == second.commission_id != first.commission_id
+    # A session of its own. The project and its directory are the one the other writes in: it waits its turn.
+    await wait_until(lambda: host.task_agents.queued == [second.commission_id], what="the other character's waiting")
+    waiting = await host.ledger.get(second.commission_id)
+    assert waiting.session_id == second.commission_id != first.commission_id
+    assert scripts["add a chart"].requests == []
     release.set()
     await wait_status(host, first.commission_id, "done")
+    await wait_status(host, second.commission_id, "done")
 
 
 async def test_a_commission_waiting_for_the_user_keeps_its_session_and_the_next_one_waits(hosts, tmp_path):

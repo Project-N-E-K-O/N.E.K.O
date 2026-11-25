@@ -1198,8 +1198,9 @@ def normalize_language_code(lang: str, format: str = 'short') -> str:
 # ============================================================================
 
 # Lazy translation backends: translatepy takes about 0.2 s including translator language tables, and googletrans
-# is needed only for actual translation, not greetings. Import on first use and
-# prewarm through utils.module_warmup after ready, removing startup-chain costs.
+# is needed only for actual translation, not greetings. Import on first use, off the
+# startup chain. utils.module_warmup prewarms googletrans outside the China region;
+# translatepy (China region, ~28 MiB) is imported on the first translation instead.
 Translator = None  # googletrans.Translator
 TranslatepyTranslator = None
 CHINA_ACCESSIBLE_SERVICES = None
@@ -1233,8 +1234,28 @@ def _ensure_googletrans() -> bool:
     return GOOGLETRANS_AVAILABLE
 
 
+# translate_text runs the first import in a worker thread, so two first translations can
+# race. Check, import and record under one lock so the import runs once and the cached
+# globals are never half written. (A failed import still pins TRANSLATEPY_AVAILABLE to
+# False for the process, as before; translation then falls back to the LLM.)
+_translatepy_init_lock = threading.Lock()
+
+
 def _ensure_translatepy() -> bool:
     """Import translatepy and the translators reachable from mainland China on first call; cache the result."""
+    # Already loaded: answer without the lock, so a caller on the event loop never
+    # waits on another thread's first import once translatepy is in.
+    if (
+        TRANSLATEPY_AVAILABLE is True
+        and TranslatepyTranslator is not None
+        and CHINA_ACCESSIBLE_SERVICES is not None
+    ):
+        return True
+    with _translatepy_init_lock:
+        return _ensure_translatepy_unlocked()
+
+
+def _ensure_translatepy_unlocked() -> bool:
     global TranslatepyTranslator, CHINA_ACCESSIBLE_SERVICES, TRANSLATEPY_AVAILABLE
     # Explicitly forced unavailability takes precedence → downgrade.
     if TRANSLATEPY_AVAILABLE is False:
@@ -1465,7 +1486,8 @@ async def translate_with_translatepy(text: str, source_lang: str, target_lang: s
     Returns:
         Translated text, or None on failure
     """
-    if not text or not text.strip() or not _ensure_translatepy():
+    # May be the first use (a direct caller, not translate_text): import off the loop.
+    if not text or not text.strip() or not await asyncio.to_thread(_ensure_translatepy):
         return None
 
     try:
@@ -1894,7 +1916,10 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
     if is_china:
         # Chinese regions use translatepy directly, skipping Google and repeated full timeouts.
         logger.debug("⏭️ [翻译服务] 中文区，直接使用 translatepy")
-        if _ensure_translatepy():
+        # translatepy is not warmed at startup (subtitles are off by default and
+        # their switch is invisible to the backend), so the first call imports it
+        # here: ~0.12-0.25 s of module loading, kept off the event loop.
+        if await asyncio.to_thread(_ensure_translatepy):
             # Ambiguous Latin text uses unknown so translatepy autodetects.
             translatepy_source = 'unknown' if ambiguous_latin_source else source_lang
             logger.debug(f"🌐 [翻译服务] 尝试 translatepy (中文区): {translatepy_source} -> {target_lang}")
@@ -2055,7 +2080,8 @@ class TranslationService:
         try:
             config = await self.config_manager.aget_model_api_config('recognition')
 
-            if not config.get('api_key') or not config.get('model') or not config.get('base_url'):
+            if (not config.get('model') or not config.get('base_url')
+                    or (not config.get('api_key') and config.get('provider_type') != 'chatgpt')):
                 logger.warning("翻译服务：API配置不完整（缺少 api_key、model 或 base_url），无法进行翻译")
                 return None
 

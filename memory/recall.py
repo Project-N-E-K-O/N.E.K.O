@@ -69,7 +69,6 @@ try:
     from memory.embeddings import (
         decode_embedding,
         get_embedding_service,
-        is_cached_embedding_valid,
         parse_dim_from_model_id,
     )
 except ImportError:
@@ -80,7 +79,6 @@ except ImportError:
     from memory.embeddings_fallback import (
         decode_embedding,
         get_embedding_service,
-        is_cached_embedding_valid,
         parse_dim_from_model_id,
         _warn_once,
     )
@@ -379,32 +377,22 @@ class MemoryRecallReranker:
         embedded_obs: list[dict] = []
         embedded_decoded: list = []
         unembedded: list[dict] = []
-        for o in observations:
-            # ``observations`` already passed through ``_hard_filter``,
-            # which guarantees every entry is a dict with non-empty
-            # text — no need for a defensive isinstance check here.
-            text = o.get('text', '')
-            if not is_cached_embedding_valid(o, text, model_id):
-                unembedded.append(o)
-                continue
-            cvec = decode_embedding(o.get('embedding'))
-            # A row that passes is_cached_embedding_valid but fails to
-            # decode (corrupt base64, or a future format we don't
-            # know) falls through to the unembedded pool rather than
-            # crashing the rerank.  is_cached_embedding_valid already
-            # tries to decode and checks dim, so this branch is mainly
-            # defence-in-depth for racey writes between validity check
-            # and rerank.
-            if cvec is None or cvec.size == 0:
-                unembedded.append(o)
-                continue
-            if target_dim is None:
-                target_dim = int(cvec.size)
-            elif cvec.size != target_dim:
-                # Mixed dims under a single model_id should be
-                # impossible (model_id encodes dim), but defend
-                # against it: drop to unembedded so the matmul stays
-                # rectangular.
+        # ``observations`` already passed through ``_hard_filter``, which
+        # guarantees every entry is a dict with non-empty text. One decode
+        # per row (the validity check's own vector, cached across calls),
+        # in a worker thread so a cold pool does not stall the event loop.
+        # A row without a valid vector, or whose dim disagrees with the
+        # first valid row's (impossible under one model_id, but keeps the
+        # matmul rectangular), falls through to the unembedded pool.
+        from memory.hybrid_recall import decode_cached_vectors, embedding_views
+        decoded, _norms, target_dim = await asyncio.to_thread(
+            decode_cached_vectors,
+            embedding_views(observations, lambda o: o.get('text', '')),
+            model_id,
+            target_dim,
+        )
+        for o, cvec in zip(observations, decoded):
+            if cvec is None:
                 unembedded.append(o)
                 continue
             embedded_obs.append(o)
@@ -527,20 +515,17 @@ class MemoryRecallReranker:
 
         target_dim = parse_dim_from_model_id(model_id)
 
-        # Decode candidate embeddings once, build (N, D)
-        indexed_decoded: list[tuple[int, "np.ndarray"]] = []
-        for i, o in enumerate(survivors):
-            text = o.get('text', '')
-            if not is_cached_embedding_valid(o, text, model_id):
-                continue
-            cvec = decode_embedding(o.get('embedding'))
-            if cvec is None or cvec.size == 0:
-                continue
-            if target_dim is None:
-                target_dim = int(cvec.size)
-            elif cvec.size != target_dim:
-                continue
-            indexed_decoded.append((i, cvec))
+        # Decode candidate embeddings once (cached, in a worker thread), build (N, D)
+        from memory.hybrid_recall import decode_cached_vectors, embedding_views
+        decoded, _norms, target_dim = await asyncio.to_thread(
+            decode_cached_vectors,
+            embedding_views(survivors, lambda o: o.get('text', '')),
+            model_id,
+            target_dim,
+        )
+        indexed_decoded: list[tuple[int, "np.ndarray"]] = [
+            (i, cvec) for i, cvec in enumerate(decoded) if cvec is not None
+        ]
 
         if not indexed_decoded:
             return []

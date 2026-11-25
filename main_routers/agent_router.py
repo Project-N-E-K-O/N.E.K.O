@@ -28,6 +28,7 @@ See ``main_routers/characters_router.py`` docstring or
 enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
+import json
 import os
 import time
 import uuid
@@ -37,13 +38,101 @@ from urllib.parse import urlencode, urlparse
 from utils.logger_config import get_module_logger
 from fastapi import APIRouter, Body, Request
 from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.routing import APIRoute
 import httpx
 from .shared_state import get_session_manager, get_config_manager
+from .system_router._shared import _validate_local_mutation_request
 from config import TOOL_SERVER_PORT, USER_PLUGIN_BASE
 from main_logic.activity.system_signals import is_remote_backend_deployment
 from utils.desktop_capture import native_wayland_capture_available
 
-router = APIRouter(prefix="/api/agent", tags=["agent"])
+
+class _AgentMutationRoute(APIRoute):
+    """Enforce remote-mode block, JSON Content-Type, and local CSRF/Origin checks."""
+
+    def get_route_handler(self):
+        downstream = super().get_route_handler()
+
+        async def guarded(request: Request):
+            if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+                blocked = _remote_backend_block()
+                if blocked is not None:
+                    return blocked
+
+                path = request.url.path
+                requires_json = any(
+                    path.endswith(suffix)
+                    for suffix in (
+                        "/flags",
+                        "/command",
+                        "/builtin/browser/settings",
+                        "/admin/control",
+                    )
+                )
+                media_type = (
+                    request.headers.get("content-type", "")
+                    .split(";", 1)[0]
+                    .strip()
+                    .lower()
+                )
+                parsed_payload: dict | None = None
+                if requires_json or media_type:
+                    if media_type != "application/json":
+                        return JSONResponse(
+                            {"success": False, "error": "Content-Type must be application/json"},
+                            status_code=415,
+                        )
+                else:
+                    raw_content_length = request.headers.get("content-length")
+                    if raw_content_length is not None:
+                        try:
+                            content_length = int(raw_content_length)
+                        except ValueError:
+                            return JSONResponse(
+                                {"success": False, "error": "Content-Type must be application/json"},
+                                status_code=415,
+                            )
+                        if content_length != 0:
+                            return JSONResponse(
+                                {"success": False, "error": "Content-Type must be application/json"},
+                                status_code=415,
+                            )
+
+                if media_type == "application/json":
+                    raw_body = await request.body()
+                    if requires_json or raw_body:
+                        try:
+                            decoded = json.loads(raw_body.decode("utf-8")) if raw_body else None
+                        except (UnicodeDecodeError, ValueError, RecursionError):
+                            return JSONResponse(
+                                {"success": False, "error": "Invalid JSON body"},
+                                status_code=400,
+                            )
+                        if not isinstance(decoded, dict):
+                            return JSONResponse(
+                                {"success": False, "error": "JSON body must be an object"},
+                                status_code=400,
+                            )
+                        parsed_payload = decoded
+
+                is_emergency_stop = path == "/api/agent/builtin/stop"
+                is_json_emergency_stop = is_emergency_stop and media_type == "application/json"
+                rejected = _validate_local_mutation_request(
+                    request,
+                    payload=parsed_payload,
+                    error_defaults={"success": False},
+                    require_csrf=not is_json_emergency_stop,
+                    allow_stale_csrf=is_json_emergency_stop,
+                )
+                if rejected is not None:
+                    return rejected
+
+            return await downstream(request)
+
+        return guarded
+
+
+router = APIRouter(prefix="/api/agent", tags=["agent"], route_class=_AgentMutationRoute)
 logger = get_module_logger(__name__, "Main")
 TOOL_SERVER_BASE = f"http://127.0.0.1:{TOOL_SERVER_PORT}"
 _HTTP_CLIENT: httpx.AsyncClient | None = None

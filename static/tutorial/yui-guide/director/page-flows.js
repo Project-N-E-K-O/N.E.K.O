@@ -18,10 +18,172 @@
         DESKTOP_PLUGIN_DASHBOARD_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT,
         TAKEOVER_CAPTURE_SELECTORS,
         wait,
-        fetchWithTimeout,
         resolveWithTimeout,
         clamp
     } = namespace;
+
+    function createDirectorTimeoutError(code) {
+        const error = new Error('Director command timed out');
+        error.name = 'TimeoutError';
+        error.code = code || 'director_command_timeout';
+        return error;
+    }
+
+    function awaitWithDeadline(promise, deadlineMs, code, onTimeout) {
+        const remainingMs = deadlineMs - Date.now();
+        if (!(remainingMs > 0)) {
+            Promise.resolve(promise).catch(() => {});
+            if (typeof onTimeout === 'function') {
+                try { onTimeout(); } catch (_) { /* ignore abort errors */ }
+            }
+            return Promise.reject(createDirectorTimeoutError(code));
+        }
+        return new Promise((resolve, reject) => {
+            let settled = false;
+            let timerId = window.setTimeout(() => {
+                if (settled) return;
+                settled = true;
+                timerId = null;
+                if (typeof onTimeout === 'function') {
+                    try { onTimeout(); } catch (_) { /* ignore abort errors */ }
+                }
+                reject(createDirectorTimeoutError(code));
+            }, remainingMs);
+            Promise.resolve(promise).then(
+                (value) => {
+                    if (settled) return;
+                    settled = true;
+                    if (timerId !== null) {
+                        window.clearTimeout(timerId);
+                        timerId = null;
+                    }
+                    resolve(value);
+                },
+                (err) => {
+                    if (settled) return;
+                    settled = true;
+                    if (timerId !== null) {
+                        window.clearTimeout(timerId);
+                        timerId = null;
+                    }
+                    reject(err);
+                }
+            );
+        });
+    }
+
+    let _directorPageFlowCsrfToken = '';
+    async function getDirectorMutationHeaders(forceRefresh, deadlineMs) {
+        const effectiveDeadlineMs = Number.isFinite(deadlineMs) ? deadlineMs : (Date.now() + 2000);
+        try {
+            const security = window.nekoLocalMutationSecurity;
+            if (security && typeof security.getMutationHeaders === 'function') {
+                if (forceRefresh && typeof security.refreshToken === 'function') {
+                    await awaitWithDeadline(
+                        security.refreshToken(),
+                        effectiveDeadlineMs,
+                        'director_csrf_timeout'
+                    );
+                }
+                const headers = await awaitWithDeadline(
+                    security.getMutationHeaders(),
+                    effectiveDeadlineMs,
+                    'director_csrf_timeout'
+                );
+                if (headers && typeof headers === 'object' && (headers['X-CSRF-Token'] || headers['x-csrf-token'])) {
+                    return headers;
+                }
+            }
+        } catch (err) {
+            if (err && err.name === 'TimeoutError') {
+                throw err;
+            }
+            /* fall back to page_config */
+        }
+        if (forceRefresh) _directorPageFlowCsrfToken = '';
+        if (_directorPageFlowCsrfToken) {
+            return { 'X-CSRF-Token': _directorPageFlowCsrfToken };
+        }
+        try {
+            const controller = typeof AbortController === 'function' ? new AbortController() : null;
+            const fetchInit = controller
+                ? { cache: 'no-store', signal: controller.signal }
+                : { cache: 'no-store' };
+            const onTimeout = controller ? () => controller.abort() : null;
+            const resp = await awaitWithDeadline(
+                fetch('/api/config/page_config', fetchInit),
+                effectiveDeadlineMs,
+                'director_csrf_timeout',
+                onTimeout
+            );
+            const cfg = resp && resp.ok
+                ? await awaitWithDeadline(resp.json(), effectiveDeadlineMs, 'director_csrf_timeout', onTimeout)
+                : null;
+            const token = cfg && cfg.autostart_csrf_token;
+            if (typeof token === 'string' && token) {
+                _directorPageFlowCsrfToken = token;
+                return { 'X-CSRF-Token': token };
+            }
+        } catch (err) {
+            if (err && err.name === 'TimeoutError') {
+                throw err;
+            }
+            /* guarded POST will surface rejection */
+        }
+        return {};
+    }
+
+    async function postAgentCommandWithCsrf(bodyObj, timeoutMs) {
+        const normalizedTimeoutMs = Math.max(100, Math.round(Number.isFinite(timeoutMs) ? timeoutMs : 3600));
+        const deadlineMs = Date.now() + normalizedTimeoutMs;
+        const bodyJson = JSON.stringify(bodyObj);
+        async function sendOnce(forceRefresh) {
+            if (deadlineMs - Date.now() <= 0) {
+                throw createDirectorTimeoutError('director_command_timeout');
+            }
+            const csrfHeaders = await getDirectorMutationHeaders(forceRefresh, deadlineMs);
+            if (deadlineMs - Date.now() <= 0) {
+                throw createDirectorTimeoutError('director_command_timeout');
+            }
+            const controller = typeof AbortController === 'function' ? new AbortController() : null;
+            const fetchInit = {
+                method: 'POST',
+                headers: Object.assign({
+                    'Content-Type': 'application/json'
+                }, csrfHeaders),
+                body: bodyJson
+            };
+            if (controller) {
+                fetchInit.signal = controller.signal;
+            }
+            const onTimeout = controller ? () => controller.abort() : null;
+            const response = await awaitWithDeadline(
+                fetch('/api/agent/command', fetchInit),
+                deadlineMs,
+                'director_command_timeout',
+                onTimeout
+            );
+            return { response, onTimeout };
+        }
+        const firstAttempt = await sendOnce(false);
+        const response = firstAttempt.response;
+        if (response.status !== 403 || typeof response.clone !== 'function') return response;
+        try {
+            const payload = await awaitWithDeadline(
+                response.clone().json(),
+                deadlineMs,
+                'director_command_timeout',
+                firstAttempt.onTimeout
+            );
+            if (!payload || payload.error_code !== 'csrf_validation_failed') return response;
+        } catch (err) {
+            if (err && err.name === 'TimeoutError') {
+                throw err;
+            }
+            return response;
+        }
+        return (await sendOnce(true)).response;
+    }
 
     namespace.extendDirector({
         getHomeInteractionApi() {
@@ -731,16 +893,10 @@
         async setAgentMasterEnabled(enabled) {
             return this.callHomeInteractionApi('setAgentMasterEnabled', [enabled], async () => {
                 try {
-                    const response = await fetchWithTimeout('/api/agent/command', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({
-                            request_id: Date.now() + '-' + Math.random().toString(36).slice(2, 8),
-                            command: 'set_agent_enabled',
-                            enabled: !!enabled
-                        })
+                    const response = await postAgentCommandWithCsrf({
+                        request_id: Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+                        command: 'set_agent_enabled',
+                        enabled: !!enabled
                     }, 3600);
                     if (!response.ok) {
                         return false;
@@ -758,17 +914,11 @@
         async setAgentFlagEnabled(flagKey, enabled) {
             return this.callHomeInteractionApi('setAgentFlagEnabled', [flagKey, enabled], async () => {
                 try {
-                    const response = await fetchWithTimeout('/api/agent/command', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({
-                            request_id: Date.now() + '-' + Math.random().toString(36).slice(2, 8),
-                            command: 'set_flag',
-                            key: flagKey,
-                            value: !!enabled
-                        })
+                    const response = await postAgentCommandWithCsrf({
+                        request_id: Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+                        command: 'set_flag',
+                        key: flagKey,
+                        value: !!enabled
                     }, 3600);
                     if (!response.ok) {
                         return false;
