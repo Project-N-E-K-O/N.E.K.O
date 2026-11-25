@@ -128,6 +128,17 @@ describe('what a NekoPower commission asks, as a card of the chat', () => {
     expect(given).toEqual([{ taskId: 'c1', questionId: 'q4', selected: { 0: ['Not now'], 1: ['Not now'] }, text: '' }]);
   });
 
+  it('shows what is asked where the questions offer nothing to pick', () => {
+    const plain = { kind: 'questions', id: 'q6', questions: [{ id: 'a', question: 'Which folder holds the photos?' }, { id: 'b', question: 'And the videos?' }] };
+    const { at, given, container } = show(ask(plain));
+    expect([...container.querySelectorAll('.nekopower-ask-line')].map(line => line.textContent))
+      .toEqual(['1. Which folder holds the photos?', '2. And the videos?']);
+    expect(at('[data-option]')).toBeNull();
+    fireEvent.change(at('[data-ask-input]'), { target: { value: 'D:/Camera for both' } });
+    fireEvent.click(at('[data-ask-send]'));
+    expect(given).toEqual([{ taskId: 'c1', questionId: 'q6', text: 'D:/Camera for both' }]);
+  });
+
   it('says how the answer fared, and takes no more once it is given or the question is over', () => {
     const sending = show(ask(permission, { state: 'sending' }));
     expect((sending.at('[data-choice="once"]') as HTMLButtonElement).disabled).toBe(true);

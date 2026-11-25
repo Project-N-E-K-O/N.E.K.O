@@ -384,6 +384,14 @@
     // By task: the card of what it asks now (`{message, questionId}`); the cards are the chat's to keep.
     var open = new Map();
     var queued = [];
+    // When each task was last told of by the page's connection (a count, not a time): what a read
+    // that began before that says of the task is older, and is not gone by.
+    var told = new Map();
+    var tellings = 0;
+
+    function character() {
+        return (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+    }
 
     function host() {
         var api = window.reactChatWindowHost;
@@ -439,29 +447,61 @@
     /** A `nekopower_question` frame of the main server: a question to show, or (none) one that is over. */
     function receive(frame) {
         if (!frame || !frame.task_id) return;
+        told.set(String(frame.task_id), ++tellings);
         if (frame.question && typeof frame.question === 'object') show(String(frame.task_id), frame.title, frame.question, frame.route);
         else close(String(frame.task_id), text(frame.question_id));
     }
 
     var syncing = null;
-    /** Read what waits now: questions put while the page was away are shown, cards of ones that are over closed. */
+    var again = false;
+    /**
+     * Read what waits now: questions put while the page was away are shown, cards of ones that are
+     * over closed. What the page's connection said of a task while the read was on its way is
+     * newer than the read, and stands; so does the character the page is with by then.
+     */
     function sync() {
-        if (syncing) return syncing;
+        if (syncing) {
+            // Asked for while one is on its way: that one may have been answered before what
+            // prompted this, so another follows it.
+            again = true;
+            return syncing;
+        }
+        var since = tellings;
+        var mine = character();
         syncing = waiting().then(function (rows) {
             syncing = null;
-            if (!rows) return;
-            var asked = new Map();
-            rows.forEach(function (row) {
-                if (row && row.task_id && row.question) asked.set(String(row.task_id), row);
-            });
-            Array.from(open.keys()).forEach(function (taskId) {
-                var row = asked.get(taskId);
-                if (!row || view(row.question).id !== open.get(taskId).questionId) close(taskId);
-            });
-            asked.forEach(function (row, taskId) { show(taskId, row.title, row.question, row.route); });
+            var rerun = again || mine !== character();
+            again = false;
+            if (rows && mine === character()) {
+                var asked = new Map();
+                rows.forEach(function (row) {
+                    if (row && row.task_id && row.question) asked.set(String(row.task_id), row);
+                });
+                var fresh = function (taskId) { return (told.get(taskId) || 0) > since; };
+                Array.from(open.keys()).forEach(function (taskId) {
+                    var row = asked.get(taskId);
+                    if (fresh(taskId)) return;
+                    if (!row || view(row.question).id !== open.get(taskId).questionId) close(taskId);
+                });
+                asked.forEach(function (row, taskId) {
+                    // Of another character than the one this page is with: its page shows it, as
+                    // the connection would have sent it there.
+                    if (fresh(taskId) || (mine && row.lanlan_name && row.lanlan_name !== mine)) return;
+                    show(taskId, row.title, row.question, row.route);
+                });
+            }
+            if (rerun) return sync();
         });
         return syncing;
     }
+
+    // The chat was emptied (the character was switched): its cards are gone with it. What the
+    // character the page is with now is asked is read anew.
+    window.addEventListener('react-chat-window:messages-cleared', function () {
+        open.clear();
+        queued = [];
+        sync();
+    });
 
     window.addEventListener('react-chat-window:action', function (event) {
         var detail = event.detail || {};
@@ -475,11 +515,13 @@
         var given = { choice: payload.choice, text: payload.text, note: payload.note, selected: payload.selected };
         patch(card, { state: 'sending', notice: '' });
         answer(block.taskId, block.questionId, given).then(function (result) {
+            // The task may ask its next question before this is back: that card is the one kept.
+            var forget = function () { if (open.get(block.taskId) === card) open.delete(block.taskId); };
             if (result.ok) {
-                open.delete(block.taskId);
+                forget();
                 patch(card, { state: 'answered', answer: shownAnswer(given), notice: result.noteLost ? word('noteLost') : '' });
             } else if (result.stale) {
-                open.delete(block.taskId);
+                forget();
                 patch(card, { state: 'closed', notice: word('stale') });
                 sync();
             } else {

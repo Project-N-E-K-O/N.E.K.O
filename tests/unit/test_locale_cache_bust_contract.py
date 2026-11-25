@@ -66,6 +66,7 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-11-25-chat-audio-message-glue",
         "2026-11-25-chat-audio-ui-main-merge",
         "2026-11-25-chat-audio-ui-only",
         "2026-11-25-bailian-api-host",
@@ -657,7 +658,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "937a2ba71dd7ed75117a3c8e0e907fe0342cdb014819ca42998d4756e58e47ab"
+LOCALE_KEY_SIGNATURE = "a3781ce32738ea78e868acb6aeaece89708df38bfe74fb92564f137bcef881f1"
 
 
 _BUMP_INSTRUCTIONS = (

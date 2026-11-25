@@ -32,6 +32,9 @@ let asks: Asks;
 let messages: Message[];
 let calls: Array<{ url: string; body: Record<string, unknown> | null; headers: Record<string, string> }>;
 let reply: (url: string) => { status: number; body: unknown };
+// Set to keep the page's requests from being answered until it is resolved.
+let hold: Promise<void> | null;
+const listening: Array<[string, EventListener]> = [];
 const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); };
 const block = (index = 0) => messages[index].blocks[0];
 function press(node: Element | null) {
@@ -48,6 +51,8 @@ beforeEach(() => {
   messages = [];
   calls = [];
   reply = () => ({ status: 200, body: { success: true } });
+  hold = null;
+  (window as unknown as Record<string, unknown>).lanlan_config = { lanlan_name: 'Lan' };
   const w = window as unknown as Record<string, unknown>;
   w.reactChatWindowHost = {
     appendMessage: (message: Message) => { messages.push(message); },
@@ -56,15 +61,24 @@ beforeEach(() => {
   w.nekoLocalMutationSecurity = { getMutationHeaders: async () => ({ 'X-CSRF-Token': 'token' }) };
   vi.stubGlobal('fetch', vi.fn(async (url: string, options?: { body?: string; headers?: Record<string, string> }) => {
     calls.push({ url, body: options?.body ? JSON.parse(options.body) : null, headers: options?.headers ?? {} });
+    if (hold) await hold;
     const answer = reply(url);
     return { ok: answer.status >= 200 && answer.status < 300, status: answer.status, json: async () => answer.body };
   }));
   delete w.NekoPowerAsk;
-  // Each test its own copy: the script keeps which cards are open.
+  // Each test its own copy: the script keeps which cards are open. What a copy listens for on the
+  // window is taken off again after the test, or the copies of earlier tests would answer too.
+  const listen = window.addEventListener.bind(window);
+  vi.spyOn(window, 'addEventListener').mockImplementation((type: string, listener: EventListener, options?: unknown) => {
+    listening.push([type, listener]);
+    listen(type, listener, options as AddEventListenerOptions);
+  });
   new Function(source)();
   asks = w.NekoPowerAsk as Asks;
 });
 afterEach(() => {
+  vi.restoreAllMocks();
+  listening.splice(0).forEach(([type, listener]) => window.removeEventListener(type, listener));
   vi.unstubAllGlobals();
   vi.useRealTimers();
   document.body.innerHTML = '';
@@ -262,6 +276,89 @@ describe('the cards of the chat window', () => {
     reply = () => ({ status: 502, body: {} });
     await asks.sync();
     expect(messages.map(message => message.blocks[0].state)).toEqual(['closed', 'pending', 'pending']);
+  });
+
+  it('keeps the card of the next question answerable when it comes before the last answer is back', async () => {
+    let release = () => {};
+    hold = new Promise(resolve => { release = resolve; });
+    asks.receive(frame(permission));
+    answerFromChat({ taskId: 'c1', questionId: 'q1', choice: 'once' });
+    await flush();
+    // Approved, and the task asks the next thing at once, before the page hears its answer was taken.
+    asks.receive(frame(confirmation));
+    hold = null;
+    release();
+    await flush();
+    expect(messages.map(message => message.blocks[0].state)).toEqual(['answered', 'pending']);
+    messages = [messages[1]];
+    answerFromChat({ taskId: 'c1', questionId: 'q2', choice: 'yes' });
+    await flush();
+    expect(calls.map(call => call.body)).toEqual([{ question_id: 'q1', choice: 'once' }, { question_id: 'q2', choice: 'yes' }]);
+    expect(block().state).toBe('answered');
+  });
+
+  it('shows the questions again after the chat was emptied, and only those of the character it is with', async () => {
+    const rows = [
+      { task_id: 'c1', title: 'build the site', route: 'task_agent', lanlan_name: 'Lan', question: permission },
+      { task_id: 'c8', title: 'for another', route: 'task_agent', lanlan_name: 'Mio', question: confirmation },
+    ];
+    reply = () => ({ status: 200, body: { questions: rows } });
+    asks.receive(frame(permission));
+    // The character was switched and switched back: the chat was emptied, its cards with it.
+    messages = [];
+    window.dispatchEvent(new CustomEvent('react-chat-window:messages-cleared'));
+    await flush();
+    expect(messages.map(message => message.id)).toEqual(['nekopower-ask-c1-q1']);
+    // With the other character, hers and not this one's.
+    (window as unknown as Record<string, { lanlan_name: string }>).lanlan_config.lanlan_name = 'Mio';
+    messages = [];
+    window.dispatchEvent(new CustomEvent('react-chat-window:messages-cleared'));
+    await flush();
+    expect(messages.map(message => message.id)).toEqual(['nekopower-ask-c8-q2']);
+  });
+
+  it('does not go by a read that is older than what the connection said meanwhile', async () => {
+    let release = () => {};
+    hold = new Promise(resolve => { release = resolve; });
+    asks.receive(frame(permission, { task_id: 'c2' }));
+    // What the read will say: c1 asks nothing, c2 still asks. Both changed while it was on its way.
+    reply = () => ({ status: 200, body: { questions: [{ task_id: 'c2', title: 't', route: 'task_agent', lanlan_name: 'Lan', question: permission }] } });
+    const reading = asks.sync();
+    asks.receive(frame(confirmation));
+    asks.receive(frame(null, { task_id: 'c2', question_id: 'q1' }));
+    hold = null;
+    release();
+    await reading;
+    await flush();
+    // The new question is not closed for being missing from the older read, nor the closed one shown again.
+    expect(messages.map(message => [message.id, message.blocks[0].state])).toEqual([
+      ['nekopower-ask-c2-q1', 'closed'], ['nekopower-ask-c1-q2', 'pending'],
+    ]);
+  });
+
+  it('reads once more when it was asked to while a read was on its way, or the character changed meanwhile', async () => {
+    let release = () => {};
+    hold = new Promise(resolve => { release = resolve; });
+    reply = () => ({ status: 200, body: { questions: [] } });
+    const reading = asks.sync();
+    void asks.sync();
+    hold = null;
+    release();
+    await reading;
+    await flush();
+    expect(calls.filter(call => call.url === '/api/agent/questions').length).toBe(2);
+    // A read that began with one character and ends with another shows nothing of it, and is made again.
+    calls = [];
+    hold = new Promise(resolve => { release = resolve; });
+    reply = () => ({ status: 200, body: { questions: [{ task_id: 'c1', title: 't', route: 'task_agent', lanlan_name: 'Lan', question: permission }] } });
+    const stale = asks.sync();
+    (window as unknown as Record<string, { lanlan_name: string }>).lanlan_config.lanlan_name = 'Mio';
+    hold = null;
+    release();
+    await stale;
+    await flush();
+    expect(calls.length).toBe(2);
+    expect(messages).toEqual([]);
   });
 
   it('keeps a question for a chat window that is not there yet', () => {

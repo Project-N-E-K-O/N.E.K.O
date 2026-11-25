@@ -141,7 +141,8 @@ export default function NekoPowerAskBlock({ block, message, interactive, onActio
         {block.title ? <span>{block.title}</span> : null}
       </header>
 
-      {view.shape === 'questions' ? view.questions.map((item, index) => (
+      {/* Its questions each on a line, with what they offer where they offer something; else one line. */}
+      {view.questions.length ? view.questions.map((item, index) => (
         <div key={item.id} className="nekopower-ask-question" data-question={item.id}>
           <p className="nekopower-ask-line">{view.questions.length > 1 ? `${index + 1}. ${item.text}` : item.text}</p>
           {item.options.length && open ? (
