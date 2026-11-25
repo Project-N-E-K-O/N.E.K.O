@@ -254,6 +254,8 @@ def _run_first_peek_notice_harness(
     i18n_echoes_key: bool = False,
     toast_kind: str = "dom",
     bridge_receipt: str = "ack",
+    first_launch_peeks: int = 2,
+    reloaded_peeks: int = 1,
 ) -> dict:
     # toast_kind="dom": the page's own toast (bootstrap-goodbye-and-toasts.js),
     # marked and rendering into #status-toast-text.
@@ -274,6 +276,8 @@ def _run_first_peek_notice_harness(
         let dropToasts = {json.dumps(drop_toasts)};
         const toastKind = {json.dumps(toast_kind)};
         const bridgeReceipt = {json.dumps(bridge_receipt)};
+        const firstLaunchPeeks = {json.dumps(first_launch_peeks)};
+        const reloadedPeeks = {json.dumps(reloaded_peeks)};
 
         // Fake clock: the page's receipt timeout only fires when settle() runs it.
         const timers = [];
@@ -434,16 +438,17 @@ def _run_first_peek_notice_harness(
         await first.peek({{ active: true, visible: false, phase: 'hidden', reason: 'interaction-state' }});
         await first.peek({{ active: false, phase: 'unanchored', reason: 'drag-away-from-edge' }});
         const beforeAnchor = first.notices.length;
-        await first.peek(anchor());
-        await first.peek({{ active: false, phase: 'unanchored', reason: 'drag-away-from-edge' }});
-        await first.peek(anchor());
+        for (let i = 0; i < firstLaunchPeeks; i++) {{
+          await first.peek(anchor());
+          await first.peek({{ active: false, phase: 'unanchored', reason: 'drag-away-from-edge' }});
+        }}
         const legacyAfterLoad = localData.has({json.dumps(LEGACY_FIRST_PEEK_KEY)})
           ? localData.get({json.dumps(LEGACY_FIRST_PEEK_KEY)})
           : null;
 
         // Reloading the same pet window in the same launch keeps sessionStorage.
         const reloaded = load(localStorage, makeStorage(launch1Session));
-        await reloaded.peek(anchor(false));
+        for (let i = 0; i < reloadedPeeks; i++) await reloaded.peek(anchor(false));
 
         // An app restart creates a new pet window with empty sessionStorage.
         const restarted = load(localStorage, makeStorage(new Map()));
@@ -456,6 +461,7 @@ def _run_first_peek_notice_harness(
           reloadedNotices: reloaded.notices,
           restartedNotices: restarted.notices,
           sessionShown: launch1Session.get({json.dumps(FIRST_PEEK_SESSION_KEY)}) || null,
+          sessionAttempts: launch1Session.get('neko_widget_mode_first_peek_notice_attempts') || null,
           legacyAfterLoad,
           localKeys: Array.from(localData.keys()),
           openChannels: openChannels.size,
@@ -580,6 +586,22 @@ def test_first_edge_peek_notice_never_confirmed_by_bridge_gives_up_for_the_launc
     assert outcome["openChannels"] == 0
 
 
+def test_first_edge_peek_notice_attempt_budget_survives_a_pet_window_reload() -> None:
+    # One unconfirmed peek, then the same pet window reloads (sessionStorage
+    # kept): only one more peek may try, not a fresh budget of two.
+    outcome = _run_first_peek_notice_harness(
+        toast_kind="bridge", drop_toasts=-1, first_launch_peeks=1, reloaded_peeks=3
+    )
+
+    dropped = {"message": FIRST_PEEK_MESSAGE, "durationMs": 10000, "dropped": True}
+    assert outcome["firstNotices"] == [dropped] * 2
+    assert outcome["reloadedNotices"] == [dropped] * 2
+    assert outcome["sessionAttempts"] == "2"
+    assert outcome["sessionShown"] == "1"
+    # A new pet window (app restart) starts with a fresh budget.
+    assert outcome["restartedNotices"] == [dropped] * 4
+
+
 def test_first_edge_peek_notice_without_receipt_channel_counts_hand_off_as_shown() -> None:
     # Without BroadcastChannel nothing can confirm the bridge; the hand-off
     # counts as shown rather than retrying on every peek.
@@ -597,11 +619,15 @@ def test_toast_window_posts_a_receipt_for_each_shown_status_notice() -> None:
     channel = "'neko-status-toast-shown'"
     assert channel in toast_source
     assert channel in client_source
+    # Posted from the show timer, not on IPC arrival: a notice cleared or
+    # replaced before it shows must not be confirmed (behaviour is covered in
+    # tests/frontend/toast_pointer_passthrough.test.cjs).
     handler = toast_source[toast_source.index("api.onShowStatusToast(function(data) {"):]
     handler = handler[: handler.index("});")]
-    assert handler.index("showStatusToast(data.message, data.duration);") < handler.index(
-        "announceStatusToastShown(data.message);"
-    )
+    assert "announceStatusToastShown" not in handler
+    show_timer = toast_source[toast_source.index("statusToast.classList.add('show');"):]
+    show_timer = show_timer[: show_timer.index("}, 10);")]
+    assert "announceStatusToastShown(message);" in show_timer
 
 
 def test_page_status_toast_is_marked_as_the_dom_implementation() -> None:

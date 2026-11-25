@@ -28,6 +28,9 @@
     // launch, so a toast window that never confirms (or keeps dropping the
     // notice) cannot bring back a notice on every peek.
     const FIRST_PEEK_NOTICE_MAX_ATTEMPTS = 2;
+    // Kept next to the shown flag so a reload of the same pet window cannot
+    // reset the attempt budget; a new pet window (app restart) starts at zero.
+    const FIRST_PEEK_NOTICE_ATTEMPTS_SESSION_KEY = 'neko_widget_mode_first_peek_notice_attempts';
 
     const clientState = {
         enabled: false,
@@ -188,7 +191,24 @@
     }
 
     let firstPeekNoticePending = false;
-    let firstPeekNoticeAttempts = 0;
+    // Falls back to this page's own count when sessionStorage is unavailable.
+    let firstPeekNoticeAttempts = readFirstPeekNoticeAttempts();
+
+    function readFirstPeekNoticeAttempts() {
+        try {
+            const count = parseInt(window.sessionStorage.getItem(FIRST_PEEK_NOTICE_ATTEMPTS_SESSION_KEY), 10);
+            return Number.isFinite(count) && count > 0 ? count : 0;
+        } catch (_) {
+            return 0;
+        }
+    }
+
+    function recordFirstPeekNoticeAttempt() {
+        firstPeekNoticeAttempts += 1;
+        try {
+            window.sessionStorage.setItem(FIRST_PEEK_NOTICE_ATTEMPTS_SESSION_KEY, String(firstPeekNoticeAttempts));
+        } catch (_) {}
+    }
 
     function markFirstPeekNoticeShown() {
         firstPeekNoticeShown = true;
@@ -254,7 +274,8 @@
 
     async function showFirstPeekNoticeViaBridge(message) {
         firstPeekNoticePending = true;
-        firstPeekNoticeAttempts += 1;
+        // Counted before sending, so a reload mid-attempt still spends it.
+        recordFirstPeekNoticeAttempt();
         try {
             let receipt = await showBridgeNoticeAndAwaitReceipt(message);
             // No receipt: the toast window lost or dropped it (for example the
