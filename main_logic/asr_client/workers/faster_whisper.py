@@ -1296,6 +1296,9 @@ async def transcribe_pcm16_locally(
     handoff_lock = threading.Lock()
     started = False
     returned = False
+    # The decoder keeps a queued call until it reaches it; holding the audio
+    # (and model) in a box lets an abandoned call drop them right away.
+    job: list[Any] = [model, pcm16]
 
     def give_back() -> None:
         # Exactly once: from the decoder after it ran (or skipped) the call,
@@ -1313,19 +1316,23 @@ async def transcribe_pcm16_locally(
     def decode() -> str:
         nonlocal started
         with handoff_lock:
-            skipped = skip.is_set()
+            skipped = skip.is_set() or not job
             started = not skipped
         try:
             if skipped:
                 return ""
-            return _transcribe_pcm16(model, pcm16, whisper_language, initial_prompt)
+            decode_model, audio = job
+            return _transcribe_pcm16(decode_model, audio, whisper_language, initial_prompt)
         finally:
+            job.clear()
             give_back()
 
     def stop_waiting() -> None:
         with handoff_lock:
             skip.set()
             reached_decoder = started
+            if not reached_decoder:
+                job.clear()
         if not reached_decoder:
             give_back()
 

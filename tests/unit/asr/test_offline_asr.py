@@ -546,6 +546,16 @@ async def test_faster_whisper_cancelled_queued_call_returns_its_slot(monkeypatch
     monkeypatch.setattr(faster_whisper, "_load_whisper_model", lambda spec: _BlockingModel())
     spec = faster_whisper._model_spec_from_env()
 
+    submitted: list[Any] = []
+    real_executor = whisper_pool.decoder_executor()
+
+    class _RecordingExecutor:
+        def submit(self, fn: Any) -> Any:
+            submitted.append(fn)
+            return real_executor.submit(fn)
+
+    monkeypatch.setattr(whisper_pool, "decoder_executor", lambda: _RecordingExecutor())
+
     def call() -> Any:
         return faster_whisper.transcribe_pcm16_locally(
             _pcm(1), load_timeout_seconds=5, decode_timeout_seconds=5
@@ -564,14 +574,21 @@ async def test_faster_whisper_cancelled_queued_call_returns_its_slot(monkeypatch
         queued.cancel()
         with pytest.raises(asyncio.CancelledError):
             await queued
-        # Given back at once, not when the running decode finishes.
+        # Given back at once, not when the running decode finishes, and the
+        # queued call no longer holds the recording or the model.
         assert whisper_pool._decode_slots_used == 1
         assert whisper_pool.lease_count(spec) == 1
+        queued_job = next(
+            cell.cell_contents
+            for cell in submitted[1].__closure__
+            if isinstance(cell.cell_contents, list)
+        )
+        assert queued_job == []
     finally:
         release.set()
     assert await running == "done"
     # The skipped call still passes through the decoder; nothing is returned twice.
-    await asyncio.to_thread(whisper_pool.decoder_executor().submit(lambda: None).result, 5)
+    await asyncio.to_thread(real_executor.submit(lambda: None).result, 5)
     assert whisper_pool._decode_slots_used == 0
     assert whisper_pool.lease_count(spec) == 0
 
