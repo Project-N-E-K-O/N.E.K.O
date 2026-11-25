@@ -192,6 +192,8 @@ import time
 from collections import OrderedDict
 from typing import Any, Dict, Optional
 from fastapi import HTTPException, Request
+from fastapi.responses import JSONResponse
+from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from config.prompts.prompts_soccer import (
     get_soccer_passive_guard_system_prompt,
     get_soccer_passive_guard_user_prompt,
@@ -238,6 +240,27 @@ _SDK_GAME_PROTOCOL_TYPE_PATTERN = re.compile(r"^[a-z][a-z0-9:-]{0,63}$")
 _SDK_GAME_PROTOCOL_MAX_BYTES = 256 * 1024
 _SDK_GAME_PROTOCOL_EVENT_LIMIT = 128
 _SDK_GAME_PROTOCOL_VALUE_LIMIT = 64
+
+
+def _validate_game_mutation_request(
+    request: Request,
+    data: Any = None,
+) -> JSONResponse | None:
+    """Reject unauthenticated/cross-site requests and explicit non-JSON Content-Type."""
+    from ..system_router._shared import _validate_local_mutation_request
+
+    raw_ct = request.headers.get("content-type", "")
+    if raw_ct and raw_ct.split(";", 1)[0].strip().lower() != "application/json":
+        return JSONResponse(
+            {"ok": False, "reason": "unsupported_media_type"},
+            status_code=415,
+        )
+    payload = data if isinstance(data, dict) else None
+    return _validate_local_mutation_request(
+        request,
+        payload=payload,
+        error_defaults={"ok": False, "reason": "csrf_validation_failed"},
+    )
 _SDK_GAME_CONTEXT_SCOPES = frozenset({
     "character-public",
     "recent-chat-summary",
@@ -577,11 +600,14 @@ def _sdk_bounded_json_copy(value: Any, *, field: str, maximum_bytes: int) -> Any
     """Return a detached JSON value while enforcing the public SDK byte bound."""
     try:
         encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, RecursionError) as exc:
         raise ValueError(f"{field}_not_json") from exc
     if len(encoded) > maximum_bytes:
         raise ValueError(f"{field}_too_large")
-    return json.loads(encoded.decode("utf-8"))
+    try:
+        return json.loads(encoded.decode("utf-8"))
+    except (ValueError, RecursionError) as exc:
+        raise ValueError(f"{field}_not_json") from exc
 
 
 def _sdk_route_instance_error(state: dict | None, data: dict) -> dict | None:
@@ -1697,9 +1723,19 @@ async def game_chat(game_type: str, request: Request):
         line: str        — neko line
         control: dict    — optional game control instructions (mood, difficulty)
     """
+    json_parse_failed = False
     try:
         data = await request.json()
     except Exception:
+        data = {}
+        json_parse_failed = True
+    if not isinstance(data, dict):
+        data = {}
+        json_parse_failed = True
+    validation_error = _validate_game_mutation_request(request, data)
+    if validation_error is not None:
+        return validation_error
+    if json_parse_failed:
         return {"error": "无效的请求体"}
 
     session_id = str(data.get('session_id', 'default'))
@@ -1807,6 +1843,15 @@ async def game_chat(game_type: str, request: Request):
 
 @router.post("/{game_type}/passive-guard")
 async def game_passive_guard(game_type: str, request: Request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    validation_error = _validate_game_mutation_request(request, data)
+    if validation_error is not None:
+        return validation_error
     if game_type != "soccer":
         return {
             "ok": False,
@@ -1814,11 +1859,7 @@ async def game_passive_guard(game_type: str, request: Request):
             "recommendedAction": "observe_more",
             "exitPromptType": "none",
         }
-    try:
-        data = await request.json()
-    except Exception:
-        return {"ok": False, "reason": "invalid_request"}
-    if not isinstance(data, dict):
+    if not data:
         return {"ok": False, "reason": "invalid_request"}
 
     lanlan_name, session_id, _state, route_error = _sdk_active_route_from_payload(
@@ -1918,6 +1959,15 @@ async def _start_watch_speech_takeover(state: dict, manager) -> None:
 @router.post("/{game_type}/route/start")
 async def game_route_start(game_type: str, request: Request):
     """Declare that the game window is open and main external inputs are hijacked."""
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    validation_error = _validate_game_mutation_request(request, data)
+    if validation_error is not None:
+        return validation_error
     if str(game_type or "") == "new_user_icebreaker":
         raise HTTPException(
             status_code=400,
@@ -1927,14 +1977,14 @@ async def game_route_start(game_type: str, request: Request):
                 "route": "/api/icebreaker/route/start",
             },
         )
-    try:
-        data = await request.json()
-    except Exception:
-        data = {}
 
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
     if not lanlan_name:
         return {"ok": False, "reason": "missing_lanlan_name"}
+    name_check = validate_character_name(lanlan_name, allow_dots=True, max_units=PROFILE_NAME_MAX_UNITS)
+    if not name_check.ok and name_check.code != "reserved_route_name":
+        return {"ok": False, "reason": "invalid_lanlan_name"}
+    lanlan_name = name_check.normalized
     # route/start is a valid new-route entry; resolving prompt locale synchronizes the request's
     # explicit preference and chooses this game's language via session explicit > render fallback.
     # Pure read here: this request can still be retired as a stale generation
@@ -2346,6 +2396,11 @@ async def game_route_drain(game_type: str, request: Request):
         data = await request.json()
     except Exception:
         data = {}
+    if not isinstance(data, dict):
+        data = {}
+    validation_error = _validate_game_mutation_request(request, data)
+    if validation_error is not None:
+        return validation_error
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
     state = _get_active_game_route_state(lanlan_name, game_type) if lanlan_name else None
     if not state:
@@ -2380,8 +2435,11 @@ async def game_sdk_protocol(game_type: str, request: Request):
     try:
         data = await request.json()
     except Exception:
-        return {"ok": False, "reason": "invalid_body"}
-    if not isinstance(data, dict):
+        data = {}
+    validation_error = _validate_game_mutation_request(request, data)
+    if validation_error is not None:
+        return validation_error
+    if not isinstance(data, dict) or not data:
         return {"ok": False, "reason": "invalid_body"}
 
 
@@ -2472,8 +2530,11 @@ async def game_sdk_context_read(game_type: str, request: Request):
     try:
         data = await request.json()
     except Exception:
-        return {"ok": False, "reason": "invalid_body"}
-    if not isinstance(data, dict):
+        data = {}
+    validation_error = _validate_game_mutation_request(request, data)
+    if validation_error is not None:
+        return validation_error
+    if not isinstance(data, dict) or not data:
         return {"ok": False, "reason": "invalid_body"}
 
 
@@ -2554,8 +2615,11 @@ async def game_sdk_memory_submit(game_type: str, request: Request):
     try:
         data = await request.json()
     except Exception:
-        return {"ok": False, "reason": "invalid_body"}
-    if not isinstance(data, dict):
+        data = {}
+    validation_error = _validate_game_mutation_request(request, data)
+    if validation_error is not None:
+        return validation_error
+    if not isinstance(data, dict) or not data:
         return {"ok": False, "reason": "invalid_body"}
 
     lanlan_name, session_id, state, route_error = _sdk_active_route_from_payload(
@@ -2631,6 +2695,11 @@ async def game_route_voice_transcript(game_type: str, request: Request):
     try:
         data = await request.json()
     except Exception:
+        data = {}
+    validation_error = _validate_game_mutation_request(request, data)
+    if validation_error is not None:
+        return validation_error
+    if not isinstance(data, dict) or not data:
         return {"ok": False, "reason": "invalid_body"}
 
     transcript = str(data.get("transcript") or data.get("text") or "").strip()
@@ -2725,6 +2794,11 @@ async def game_route_heartbeat(game_type: str, request: Request):
         data = await request.json()
     except Exception:
         data = {}
+    if not isinstance(data, dict):
+        data = {}
+    validation_error = _validate_game_mutation_request(request, data)
+    if validation_error is not None:
+        return validation_error
 
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
     state = _get_active_game_route_state(lanlan_name, game_type) if lanlan_name else None
@@ -2781,6 +2855,11 @@ async def game_route_end(game_type: str, request: Request):
         data = await request.json()
     except Exception:
         data = {}
+    if not isinstance(data, dict):
+        data = {}
+    validation_error = _validate_game_mutation_request(request, data)
+    if validation_error is not None:
+        return validation_error
     return await _complete_game_end_from_payload(game_type, data, default_reason="route_end")
 
 
@@ -2924,6 +3003,11 @@ async def game_project_mirror_assistant(game_type: str, request: Request):
     try:
         data = await request.json()
     except Exception:
+        data = {}
+    validation_error = _validate_game_mutation_request(request, data)
+    if validation_error is not None:
+        return validation_error
+    if not isinstance(data, dict) or not data:
         return {"ok": False, "reason": "invalid_body"}
 
     line = _strip_ssml_like_tags(str(data.get("line") or "").strip())
@@ -3058,6 +3142,15 @@ async def game_project_mirror_assistant(game_type: str, request: Request):
 @router.post("/{game_type}/speak")
 async def game_project_speak(game_type: str, request: Request):
     """Formal B-layer output: speak A.line through the existing project TTS pipeline."""
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    validation_error = _validate_game_mutation_request(request, data)
+    if validation_error is not None:
+        return validation_error
     if str(game_type or "") == "new_user_icebreaker":
         raise HTTPException(
             status_code=400,
@@ -3067,9 +3160,7 @@ async def game_project_speak(game_type: str, request: Request):
                 "route": "/api/icebreaker/speak",
             },
         )
-    try:
-        data = await request.json()
-    except Exception:
+    if not data:
         return {"ok": False, "reason": "invalid_body"}
 
     line = str(data.get("line") or "").strip()
@@ -3381,16 +3472,21 @@ async def game_project_speak(game_type: str, request: Request):
 @router.post("/{game_type}/speech/preload")
 async def game_project_speech_preload(game_type: str, request: Request):
     """Silently preload caller-selected text into the official project TTS cache."""
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    validation_error = _validate_game_mutation_request(request, data)
+    if validation_error is not None:
+        return validation_error
     if str(game_type or "") == "new_user_icebreaker":
         raise HTTPException(
             status_code=400,
             detail={"ok": False, "reason": "not_a_game_route"},
         )
-    try:
-        data = await request.json()
-    except Exception:
-        return {"ok": False, "reason": "invalid_body"}
-    if not isinstance(data, dict):
+    if not data:
         return {"ok": False, "reason": "invalid_body"}
 
 
@@ -4243,8 +4339,11 @@ async def game_realtime_context(game_type: str, request: Request):
     try:
         data = await request.json()
     except Exception:
-        return {"ok": False, "reason": "invalid_body"}
-    if not isinstance(data, dict):
+        data = {}
+    validation_error = _validate_game_mutation_request(request, data)
+    if validation_error is not None:
+        return validation_error
+    if not isinstance(data, dict) or not data:
         return {"ok": False, "reason": "invalid_body"}
 
 
@@ -4707,6 +4806,11 @@ async def game_end(game_type: str, request: Request):
         data = await request.json()
     except Exception:
         data = {}
+    if not isinstance(data, dict):
+        data = {}
+    validation_error = _validate_game_mutation_request(request, data)
+    if validation_error is not None:
+        return validation_error
     return await _complete_game_end_from_payload(game_type, data, default_reason="game_end")
 
 
@@ -4724,6 +4828,16 @@ async def game_quick_lines(game_type: str, request: Request):
     heals mgr.user_language. Otherwise the first quick lines can inherit English
     from the global cache populated during ``start_session``.
     """
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    validation_error = _validate_game_mutation_request(request, data)
+    if validation_error is not None:
+        return validation_error
+
     if game_type != "soccer" and not _is_badminton_game_type(game_type):
         return {"ok": False, "error": f"暂不支持 {game_type} 的快路径文案生成", "lines": {}}
 
@@ -4731,10 +4845,6 @@ async def game_quick_lines(game_type: str, request: Request):
     session_id = ""
     requested_name = ""
     try:
-        try:
-            data = await request.json()
-        except Exception:
-            data = {}
         session_id = str(data.get("session_id") or data.get("sessionId") or "").strip()
         try:
             current_name = _get_current_character_info().get("lanlan_name") or ""

@@ -1094,6 +1094,7 @@ class CoreConfigMixin:
             'ASSIST_API_KEY_DEEPSEEK': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_DOUBAO': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_DOUBAO_TTS': '',
+            'ASSIST_API_KEY_QWEN_TOKEN_PLAN': '',
             'ASSIST_API_KEY_QWEN_INTL': '',
             'ASSIST_WORKSPACE_ID_QWEN': '',
             'ASSIST_WORKSPACE_ID_QWEN_INTL': '',
@@ -1203,6 +1204,7 @@ class CoreConfigMixin:
         config['ASSIST_API_KEY_DEEPSEEK'] = core_cfg.get('assistApiKeyDeepseek', '') or _fb('deepseek')
         config['ASSIST_API_KEY_DOUBAO'] = core_cfg.get('assistApiKeyDoubao', '') or _fb('doubao')
         config['ASSIST_API_KEY_DOUBAO_TTS'] = core_cfg.get('assistApiKeyDoubaoTts', '')
+        config['ASSIST_API_KEY_QWEN_TOKEN_PLAN'] = core_cfg.get('assistApiKeyQwenTokenPlan', '')
         # MiniMax / MiMo are assist-only TTS providers; coreApiKey is not necessarily compatible.
         # Do not fall back, which would put invalid keys in TTS credentials and cause 401,
         # hiding the real missing-TTS-provider-key guidance.
@@ -1611,6 +1613,11 @@ class CoreConfigMixin:
                     # provider) actually supplies count. Anything incomplete is handed whole to
                     # the followed tier at runtime, never patched field by field.
                     config[model_key] = config[url_key] = config[apikey_key] = ''
+                if prefix == 'tts' and str(provider or '').strip().lower() == 'qwen_token_plan':
+                    # The hosted worker reads its slot from core_config.json directly. The
+                    # slot holds a Token Plan key and host, which must not become the
+                    # tts_custom credentials that CosyVoice clones fall back to.
+                    continue
                 if prefix == 'tts' and provider == 'deepseek':
                     # The hosted worker uses the DeepSeek key book and fixed endpoint.
                     # Retain a saved DashScope slot for existing CosyVoice clones,

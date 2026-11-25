@@ -22,7 +22,7 @@
 约束：
 
 - `get_tts_worker`、`get_config_manager`、`_get_voice_meta` 这些要留在 `main_logic.tts_client` 的顶层命名空间。大量测试用 `monkeypatch.setattr(tts_client, ...)` 换它们，搬走就整片失效。
-- `priority` 越小越先判。现在的顺序是：`gptsovits` 10、`vllm_omni` 20、`custom` 25、`minimax` 30、`elevenlabs` 40、`cosyvoice` 50、`deepseek` 59、`mimo` 60、`doubao_tts` 65、`glm_tts` 66（以代码为准）。先于 core 自带音色和按 core 类型的默认 worker。
+- `priority` 越小越先判。现在的顺序是：`gptsovits` 10、`vllm_omni` 20、`custom` 25、`minimax` 30、`elevenlabs` 40、`cosyvoice` 50、`qwen_token_plan` 58、`deepseek` 59、`mimo` 60、`doubao_tts` 65、`glm_tts` 66（以代码为准）。先于 core 自带音色和按 core 类型的默认 worker。
 - 两种选中方式：按配置选中（下拉框 / 开关）和按音色元数据选中（克隆 / 设计出来的音色，看 `voice_meta.provider`）。`DispatchContext.voice_meta` 是惰性的：按配置选中的 provider 必须在任何音色存储查找之前就短路返回。
 - `resolve` 返回的 `api_key_override` 用来防串 key。用户自配端点没填 key 时返回**空串**而不是 `None`，`None` 会让调用方回落到别的 TTS 槽位的 key。
 - 用户自配端点（`fallback_on_failure=True`）失败时，日志只记错误码、provider、阶段，不记原始异常：异常文本可能带 key 或签名 URL。
@@ -48,7 +48,7 @@
 入口是 `main_logic/core/tts_runtime.py::_resolve_session_use_tts`。文本模式恒用外部 TTS；语音模式默认用 realtime 模型自带的声音，以下情况改用外部 TTS：
 
 1. 音色归属于用户自配的 provider（`selected_configured_tts_preset_provider_key`）。
-2. 选中的 provider 声明了 `realtime_output_override=True`（现在是 `custom`、`deepseek`、`mimo`、`doubao_tts`），并且是**明确选择**：
+2. 选中的 provider 声明了 `realtime_output_override=True`（现在是 `custom`、`qwen_token_plan`、`deepseek`、`mimo`、`doubao_tts`），并且是**明确选择**：
    - TTS 下拉框（`TTS_PROVIDER` / `ttsProvider` / `ttsModelProvider`）的值就是这家；或
    - 角色的音色是这家目录里的音色**原名**（别名不算）。
    - 「跟随辅助 API」加上辅助 API 恰好是这家，不算。理由：很多人只是把辅助 API 当聊天模型用，下拉框明确选择才代表想换声音。

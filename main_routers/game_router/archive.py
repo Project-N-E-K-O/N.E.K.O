@@ -19,6 +19,8 @@ highlights, tail messages and the memory-server submission call.
 Split out of the former monolithic ``main_routers/game_router.py``.
 """
 
+from urllib.parse import quote
+
 from ._shared import (
     _ACCIDENTAL_GAME_ENTRY_GRACE_MS,
     _DEFAULT_LAST_FULL_DIALOGUE_COUNT,
@@ -779,7 +781,7 @@ async def _submit_game_archive_to_memory(archive: dict) -> dict:
                     format="full",
                 )
         response = await client.post(
-            f"http://127.0.0.1:{MEMORY_SERVER_PORT}/cache/{lanlan_name}",
+            f"http://127.0.0.1:{MEMORY_SERVER_PORT}/cache/{quote(str(lanlan_name or ''), safe='')}",
             json=payload,
             timeout=8.0,
         )

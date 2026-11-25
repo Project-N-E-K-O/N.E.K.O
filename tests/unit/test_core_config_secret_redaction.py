@@ -11,7 +11,8 @@ _ASSIST_API_KEY_FIELDS = (
     'assistApiKeyQwen', 'assistApiKeyQwenIntl', 'assistApiKeyOpenai',
     'assistApiKeyDeepseek', 'assistApiKeyGlm', 'assistApiKeyStep',
     'assistApiKeySilicon', 'assistApiKeyGemini', 'assistApiKeyKimi',
-    'assistApiKeyDoubao', 'assistApiKeyDoubaoTts', 'assistApiKeyMinimax',
+    'assistApiKeyDoubao', 'assistApiKeyDoubaoTts', 'assistApiKeyQwenTokenPlan',
+    'assistApiKeyMinimax',
     'assistApiKeyMinimaxIntl', 'assistApiKeyMimo',
     'assistApiKeyMimoTokenPlan', 'assistApiKeyElevenlabs', 'assistApiKeyGrok',
     'assistApiKeyClaude', 'assistApiKeyKimiCode', 'assistApiKeyOpenrouter',
@@ -82,7 +83,19 @@ def core_config_router(monkeypatch):
 
 class _FakeRequest:
     def __init__(self, payload):
+        from types import SimpleNamespace
+        from starlette.datastructures import Headers
+        from main_routers.system_router._shared import AUTOSTART_CSRF_TOKEN
+
         self._payload = payload
+        self.method = 'POST'
+        self.base_url = 'http://testserver/'
+        self.url = SimpleNamespace(path='/api/config/core_api')
+        self.headers = Headers({
+            'content-type': 'application/json',
+            'origin': 'http://testserver',
+            'x-csrf-token': AUTOSTART_CSRF_TOKEN,
+        })
 
     async def json(self):
         return self._payload

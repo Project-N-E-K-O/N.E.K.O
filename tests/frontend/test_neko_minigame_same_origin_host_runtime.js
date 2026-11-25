@@ -834,6 +834,7 @@ async function main() {
   assert(retrySizeError?.code === 'invalid_payload' && calls.length === beforeCsrfRetry + 1,
     'a longer refreshed CSRF token escaped the command budget on retry');
   csrfToken = 'test-token';
+  await host.refreshMutationHeaders();
   let oversizedCommandError = null;
   const commandCallsBeforeOversize = calls.filter(
     (call) => call.url.endsWith('/round/input'),
@@ -1690,22 +1691,28 @@ async function main() {
     host._session.lanlanName = previousMediaCharacter;
   }
   const realPost = host._post.bind(host);
+  const realDateNow = Date.now;
   host._post = (url, body, options) => {
     endOptionCalls.push({ url: String(url), timeoutMs: options?.timeoutMs });
     return realPost(url, body, options);
   };
-  await host.end({ session_id: 'server-session' }, { timeoutMs: 1234 });
-  assert(endOptionCalls.some((call) => /\/end$/.test(call.url) && call.timeoutMs === 1234),
-    'runtime end ignored the caller-supplied timeout');
-  endOptionCalls.length = 0;
-  await host.end({ session_id: 'server-session' }, { timeoutMs: 999999 });
-  assert(endOptionCalls.some((call) => /\/end$/.test(call.url) && call.timeoutMs === 30000),
-    'runtime end did not clamp an oversized caller timeout');
-  endOptionCalls.length = 0;
-  await host.end({ session_id: 'server-session' }, { timeoutMs: 'nonsense' });
-  assert(endOptionCalls.some((call) => /\/end$/.test(call.url) && call.timeoutMs === 8000),
-    'an invalid caller timeout did not degrade to the existing default');
-  host._post = realPost;
+  try {
+    Date.now = () => 1_700_000_000_000;
+    await host.end({ session_id: 'server-session' }, { timeoutMs: 1234 });
+    assert(endOptionCalls.some((call) => /\/end$/.test(call.url) && call.timeoutMs === 1234),
+      'runtime end ignored the caller-supplied timeout');
+    endOptionCalls.length = 0;
+    await host.end({ session_id: 'server-session' }, { timeoutMs: 999999 });
+    assert(endOptionCalls.some((call) => /\/end$/.test(call.url) && call.timeoutMs === 30000),
+      'runtime end did not clamp an oversized caller timeout');
+    endOptionCalls.length = 0;
+    await host.end({ session_id: 'server-session' }, { timeoutMs: 'nonsense' });
+    assert(endOptionCalls.some((call) => /\/end$/.test(call.url) && call.timeoutMs === 8000),
+      'an invalid caller timeout did not degrade to the existing default');
+  } finally {
+    Date.now = realDateNow;
+    host._post = realPost;
+  }
 
   const endResult = await host.end({ session_id: 'server-session' });
   for (const field of LEAKY_ARCHIVE_FIELDS) {
@@ -2136,6 +2143,418 @@ async function main() {
     for (const peer of quotaPeers) peer.dispose();
   }
 
+  // Verify CSRF header caching, synchronous keepalive unload dispatch before
+  // dispose, and skipping tokenless sendBeacon.
+  {
+    let pageConfigRequests = 0;
+    let currentToken = 'cached-unload-token';
+    let force403OnNextChat = false;
+    let beaconSentCount = 0;
+    const endCalls = [];
+    const unloadFetchImpl = async (url, init = {}) => {
+      const pathName = String(url);
+      if (pathName.startsWith('/api/config/page_config')) {
+        pageConfigRequests += 1;
+        return jsonResponse({ autostart_csrf_token: currentToken });
+      }
+      if (pathName.endsWith('/chat') && force403OnNextChat) {
+        force403OnNextChat = false;
+        currentToken = 'refreshed-unload-token';
+        return jsonResponse({ error_code: 'csrf_validation_failed' }, 403);
+      }
+      if (/\/api\/game\/[^/]+\/end$/.test(pathName)) {
+        const body = init.body ? JSON.parse(init.body) : {};
+        endCalls.push({ url: pathName, init, body });
+        if (!init.headers?.['X-CSRF-Token'] && !body._csrf_token) {
+          return jsonResponse({ error_code: 'csrf_validation_failed' }, 403);
+        }
+        return jsonResponse(RAW_END_RESPONSE);
+      }
+      return jsonResponse({ ok: true, accepted: true });
+    };
+    const unloadHost = createHost({
+      gameType: 'example-game',
+      sessionId: 'unload-sync-session',
+      fetchImpl: unloadFetchImpl,
+      windowImpl: windowMock,
+      navigatorImpl: { ...windowMock.navigator, sendBeacon: () => false },
+    });
+    unloadHost.connectGame({
+      protocolVersions: ['1'],
+      manifest: {
+        id: 'example-game', version: '1.0.0',
+        requiredCapabilities: ['runtime', 'dialogue'], optionalCapabilities: [],
+      },
+    });
+    await Promise.all([
+      unloadHost.getMutationHeaders(),
+      unloadHost.getMutationHeaders(),
+    ]);
+    assert(pageConfigRequests === 1,
+      `expected concurrent getMutationHeaders calls to dedup, saw ${pageConfigRequests} fetches`);
+    force403OnNextChat = true;
+    await unloadHost.requestDialogue({ event: { kind: 'turn_3' } });
+    assert(pageConfigRequests === 2,
+      `expected cached token reuse plus 1 refresh after 403 csrf_validation_failed, saw ${pageConfigRequests} fetches`);
+
+    // Synchronous page-exit: sendBeacon returns false, then dispose runs synchronously.
+    const endPromise = unloadHost.end({ reason: 'pagehide' }, { useBeacon: true });
+    assert(unloadHost._pendingRequests.size === 1,
+      `expected /end request to be synchronously queued before dispose, pending=${unloadHost._pendingRequests.size}`);
+    unloadHost.dispose({ preservePendingOperations: ['route_end'] });
+    const endResult = await endPromise;
+    assert(endResult.ok === true, `synchronous unload fallback failed after dispose: ${JSON.stringify(endResult)}`);
+    assert(endCalls.length === 1, `expected 1 synchronous /end fetch, got ${endCalls.length}`);
+    assert(endCalls[0].init.keepalive === true, 'synchronous /end fallback dropped keepalive');
+    assert(endCalls[0].init.headers['X-CSRF-Token'] === 'refreshed-unload-token',
+      'synchronous /end fallback missed cached X-CSRF-Token header');
+    assert(endCalls[0].body._csrf_token === 'refreshed-unload-token',
+      'synchronous /end fallback missed cached _csrf_token body field');
+
+    // Empty cached token: never send a tokenless sendBeacon even if sendBeacon returns true.
+    const noTokenHost = createHost({
+      gameType: 'example-game',
+      sessionId: 'unload-no-token-session',
+      fetchImpl: unloadFetchImpl,
+      windowImpl: windowMock,
+      navigatorImpl: {
+        ...windowMock.navigator,
+        sendBeacon: () => {
+          beaconSentCount += 1;
+          return true;
+        },
+      },
+    });
+    noTokenHost.connectGame({
+      protocolVersions: ['1'],
+      manifest: {
+        id: 'example-game', version: '1.0.0',
+        requiredCapabilities: ['runtime'], optionalCapabilities: [],
+      },
+    });
+    const noTokenEndPromise = noTokenHost.end({ reason: 'pagehide' }, { useBeacon: true });
+    noTokenHost.dispose({ preservePendingOperations: ['route_end'] });
+    const noTokenResult = await noTokenEndPromise;
+    assert(beaconSentCount === 0, 'tokenless sendBeacon must not be invoked');
+    assert(endCalls.length === 2 && endCalls[1].init.keepalive === true,
+      'tokenless unload did not fall back to synchronous keepalive fetch');
+    assert(noTokenResult.ok === false && noTokenResult.status === 403,
+      `expected tokenless unload fallback to preserve 403 CSRF rejection, got ${JSON.stringify(noTokenResult)}`);
+
+    // Aborting one caller while page_config is pending cancels only that caller
+    // without breaking concurrent waiters sharing the CSRF fetch.
+    let releaseSlowPageConfig;
+    const slowPageConfigGate = new Promise((resolve) => { releaseSlowPageConfig = resolve; });
+    const abortTestFetchImpl = async (url, init = {}) => {
+      const pathName = String(url);
+      if (pathName.startsWith('/api/config/page_config')) {
+        await slowPageConfigGate;
+        return jsonResponse({ autostart_csrf_token: 'shared-abort-token' });
+      }
+      const body = init.body ? JSON.parse(init.body) : {};
+      endCalls.push({ url: pathName, init, body });
+      return jsonResponse({ ok: true, accepted: true });
+    };
+    const abortWaitHost = createHost({
+      gameType: 'example-game',
+      sessionId: 'abort-csrf-wait-session',
+      fetchImpl: abortTestFetchImpl,
+      windowImpl: windowMock,
+      navigatorImpl: windowMock.navigator,
+    });
+    abortWaitHost.connectGame({
+      protocolVersions: ['1'],
+      manifest: {
+        id: 'example-game', version: '1.0.0',
+        requiredCapabilities: ['runtime'], optionalCapabilities: [],
+      },
+    });
+    const hbAbortController = new AbortController();
+    const abortedHeartbeat = abortWaitHost.heartbeat(
+      { ok: true },
+      { signal: hbAbortController.signal },
+    ).then(() => null, (err) => err);
+    const healthyHeartbeat = abortWaitHost.heartbeat({ ok: true });
+    await new Promise((resolve) => setImmediate(resolve));
+    hbAbortController.abort();
+    const abortedError = await abortedHeartbeat;
+    assert(abortedError?.code === 'cancelled',
+      `expected aborted heartbeat to cancel while page_config was pending, got ${abortedError?.code}`);
+    releaseSlowPageConfig();
+    const healthyResp = await healthyHeartbeat;
+    assert(healthyResp.ok === true, 'cancelling one caller broke shared page_config waiter');
+    abortWaitHost.dispose();
+  }
+
+  // Thread #35: Without nekoLocalMutationSecurity, sequential drain/heartbeat polling
+  // reuses the cached CSRF token and fetches /api/config/page_config only once until 403 refresh.
+  {
+    let pageConfigFetches = 0;
+    let activeToken = 'cache-token-1';
+    let failNextDrainWith403 = false;
+    const mutationHeadersSeen = [];
+    const pollingFetch = async (url, init = {}) => {
+      const pathName = String(url);
+      if (pathName.startsWith('/api/config/page_config')) {
+        pageConfigFetches += 1;
+        return jsonResponse({ autostart_csrf_token: activeToken });
+      }
+      if (pathName.includes('/route/drain') && failNextDrainWith403) {
+        failNextDrainWith403 = false;
+        activeToken = 'cache-token-2';
+        return jsonResponse({ error_code: 'csrf_validation_failed' }, 403);
+      }
+      mutationHeadersSeen.push(init.headers?.['X-CSRF-Token'] || '');
+      return jsonResponse({ ok: true, outputs: [] });
+    };
+    const pollingHost = createHost({
+      gameType: 'example-game',
+      sessionId: 'csrf-cache-reuse-session',
+      fetchImpl: pollingFetch,
+      windowImpl: windowMock,
+      navigatorImpl: windowMock.navigator,
+    });
+    pollingHost.connectGame({
+      protocolVersions: ['1'],
+      manifest: {
+        id: 'example-game', version: '1.0.0',
+        requiredCapabilities: ['runtime'], optionalCapabilities: [],
+      },
+    });
+    await pollingHost.drain({ tick: 1 });
+    await pollingHost.heartbeat({ tick: 2 });
+    await pollingHost.drain({ tick: 3 });
+    await pollingHost.heartbeat({ tick: 4 });
+    await pollingHost.drain({ tick: 5 });
+    assert(pageConfigFetches === 1,
+      `expected sequential drain/heartbeat polling to reuse cached CSRF token (1 page_config fetch), saw ${pageConfigFetches}`);
+    assert(mutationHeadersSeen.length === 5 && mutationHeadersSeen.every((t) => t === 'cache-token-1'),
+      `expected all 5 polling calls to reuse cache-token-1, saw ${JSON.stringify(mutationHeadersSeen)}`);
+
+    // Forced refresh on 403 fetches page_config a second time and caches the new token.
+    failNextDrainWith403 = true;
+    await pollingHost.drain({ tick: 6 });
+    await pollingHost.drain({ tick: 7 });
+    assert(pageConfigFetches === 2,
+      `expected single refresh on 403 plus cached reuse afterward (2 fetches), saw ${pageConfigFetches}`);
+    assert(mutationHeadersSeen.slice(-2).every((t) => t === 'cache-token-2'),
+      `expected refreshed polling calls to reuse cache-token-2, saw ${JSON.stringify(mutationHeadersSeen.slice(-2))}`);
+    pollingHost.dispose();
+  }
+
+  // Thread #30: cancelPendingRequests() without external signal must cancel pending CSRF waits
+  // before initial submit and during 403 refresh retry, while preserveOperations keeps shared waiters alive.
+  {
+    let pageConfigGate = null;
+    let releasePageConfig = null;
+    let resolveRefreshStarted = null;
+    const refreshPageConfigStarted = new Promise((resolve) => { resolveRefreshStarted = resolve; });
+    let pageConfigCount = 0;
+    let chatPostCount = 0;
+    let endPostCount = 0;
+    let chat403First = false;
+    const cancelCsrfFetch = async (url) => {
+      const pathName = String(url);
+      if (pathName.startsWith('/api/config/page_config')) {
+        pageConfigCount += 1;
+        pageConfigGate = new Promise((resolve) => { releasePageConfig = resolve; });
+        if (pageConfigCount === 3) {
+          resolveRefreshStarted?.();
+        }
+        await pageConfigGate;
+        return jsonResponse({ autostart_csrf_token: `cancel-test-token-${pageConfigCount}` });
+      }
+      if (pathName.endsWith('/chat')) {
+        chatPostCount += 1;
+        if (chat403First) {
+          chat403First = false;
+          return jsonResponse({ error_code: 'csrf_validation_failed' }, 403);
+        }
+        return jsonResponse({ ok: true, accepted: true });
+      }
+      if (/\/api\/game\/[^/]+\/end$/.test(pathName)) {
+        endPostCount += 1;
+        return jsonResponse(RAW_END_RESPONSE);
+      }
+      return jsonResponse({ ok: true });
+    };
+    const cancelHost = createHost({
+      gameType: 'example-game',
+      sessionId: 'cancel-pending-csrf-session',
+      fetchImpl: cancelCsrfFetch,
+      windowImpl: windowMock,
+      navigatorImpl: windowMock.navigator,
+    });
+    cancelHost.connectGame({
+      protocolVersions: ['1'],
+      manifest: {
+        id: 'example-game', version: '1.0.0',
+        requiredCapabilities: ['runtime', 'dialogue'], optionalCapabilities: [],
+      },
+    });
+
+    // 1) cancelPendingRequests() during initial page_config wait cancels requestDialogue (0 /chat POSTs).
+    const initialCancelPromise = cancelHost.requestDialogue({ event: { kind: 'cancelled_wait' } })
+      .then(() => null, (err) => err);
+    await new Promise((resolve) => setImmediate(resolve));
+    cancelHost.cancelPendingRequests();
+    releasePageConfig?.();
+    const initialErr = await initialCancelPromise;
+    assert(initialErr?.code === 'cancelled',
+      `expected cancelPendingRequests() to cancel requestDialogue during page_config wait, got ${initialErr?.code}`);
+    assert(chatPostCount === 0 && pageConfigCount === 1,
+      `expected 0 dialogue POSTs and no retry refresh, got chat=${chatPostCount}, page_config=${pageConfigCount}`);
+
+    // 2) Preserve shared page_config when cancelling requestDialogue while preserving route_end.
+    const sharedDialoguePromise = cancelHost.requestDialogue({ event: { kind: 'shared_cancel' } })
+      .then(() => null, (err) => err);
+    const sharedEndPromise = cancelHost.end({ reason: 'unload' }, { useBeacon: false });
+    await new Promise((resolve) => setImmediate(resolve));
+    cancelHost.cancelPendingRequests('cancelled', { preserveOperations: ['route_end'] });
+    releasePageConfig?.();
+    const sharedDialogueErr = await sharedDialoguePromise;
+    const sharedEndResp = await sharedEndPromise;
+    assert(sharedDialogueErr?.code === 'cancelled',
+      `expected requestDialogue to cancel while route_end preserved, got ${sharedDialogueErr?.code}`);
+    assert(sharedEndResp?.ok === true && endPostCount === 1 && chatPostCount === 0,
+      `expected preserved route_end to share page_config and succeed, end=${endPostCount}, chat=${chatPostCount}`);
+
+    // 3) cancelPendingRequests() during 403 refresh wait aborts retry before second /chat POST.
+    chat403First = true;
+    const refreshCancelPromise = cancelHost.requestDialogue({ event: { kind: 'refresh_cancel' } })
+      .then(() => null, (err) => err);
+    await refreshPageConfigStarted;
+    assert(chatPostCount === 1 && pageConfigCount === 3,
+      `expected 1 initial /chat attempt waiting on refresh page_config, got chat=${chatPostCount}, page_config=${pageConfigCount}`);
+    cancelHost.cancelPendingRequests();
+    releasePageConfig?.();
+    const refreshErr = await refreshCancelPromise;
+    assert(refreshErr?.code === 'cancelled' && chatPostCount === 1,
+      `expected 403 refresh cancel to stop retry /chat POST, err=${refreshErr?.code}, chat=${chatPostCount}`);
+    cancelHost.dispose();
+  }
+
+  // Threads #42, #44, #45:
+  // #42: Keep last known _cachedCsrfToken while forceRefresh is pending so synchronous unload succeeds.
+  {
+    let pageConfigCalls = 0;
+    let releaseBlockedRefresh = null;
+    const blockedRefreshGate = new Promise((resolve) => { releaseBlockedRefresh = resolve; });
+    const unloadDuringRefreshCalls = [];
+    const refreshKeepFetch = async (url, init = {}) => {
+      const pathName = String(url);
+      if (pathName.startsWith('/api/config/page_config')) {
+        pageConfigCalls += 1;
+        if (pageConfigCalls === 1) {
+          return jsonResponse({ autostart_csrf_token: 'initial-valid-token' });
+        }
+        await blockedRefreshGate;
+        return jsonResponse({ autostart_csrf_token: 'new-valid-token' });
+      }
+      if (/\/api\/game\/[^/]+\/end$/.test(pathName)) {
+        const body = init.body ? JSON.parse(init.body) : {};
+        unloadDuringRefreshCalls.push({ headers: init.headers || {}, body });
+        if (init.headers?.['X-CSRF-Token'] !== 'initial-valid-token'
+          && body._csrf_token !== 'initial-valid-token') {
+          return jsonResponse({ error_code: 'csrf_validation_failed' }, 403);
+        }
+        return jsonResponse(RAW_END_RESPONSE);
+      }
+      return jsonResponse({ ok: true });
+    };
+    const refreshKeepHost = createHost({
+      gameType: 'example-game',
+      sessionId: 'refresh-keep-token-session',
+      fetchImpl: refreshKeepFetch,
+      windowImpl: windowMock,
+      navigatorImpl: { ...windowMock.navigator, sendBeacon: () => false },
+    });
+    refreshKeepHost.connectGame({
+      protocolVersions: ['1'],
+      manifest: { id: 'example-game', version: '1.0.0', requiredCapabilities: ['runtime'], optionalCapabilities: [] },
+    });
+    await refreshKeepHost.getMutationHeaders();
+    const pendingRefresh = refreshKeepHost.refreshMutationHeaders();
+    await new Promise((resolve) => setImmediate(resolve));
+    const endProm = refreshKeepHost.end({ reason: 'pagehide' }, { useBeacon: true });
+    refreshKeepHost.dispose({ preservePendingOperations: ['route_end'] });
+    const endResp = await endProm;
+    releaseBlockedRefresh();
+    await pendingRefresh;
+    assert(endResp.ok === true && unloadDuringRefreshCalls.length === 1,
+      `expected unload during blocked refresh to keep previous token and succeed: ${JSON.stringify(endResp)}`);
+    assert(unloadDuringRefreshCalls[0].headers['X-CSRF-Token'] === 'initial-valid-token',
+      'unload during blocked refresh dropped previous CSRF header token');
+  }
+
+  // #44: sendRealtimeContextWithCsrf retries at most once (2 total POSTs) even when page_config returns no token.
+  {
+    let rtPosts = 0;
+    const rtHost = createHost({
+      gameType: 'example-game',
+      sessionId: 'single-retry-rt-session',
+      fetchImpl: async (url) => {
+        const pathName = String(url);
+        if (pathName.startsWith('/api/config/page_config')) {
+          return jsonResponse({});
+        }
+        if (pathName.endsWith('/realtime-context')) {
+          rtPosts += 1;
+          return jsonResponse({ error_code: 'csrf_validation_failed' }, 403);
+        }
+        return jsonResponse({ ok: true });
+      },
+      windowImpl: windowMock,
+      navigatorImpl: windowMock.navigator,
+    });
+    rtHost.connectGame({
+      protocolVersions: ['1'],
+      manifest: { id: 'example-game', version: '1.0.0', requiredCapabilities: ['runtime'], optionalCapabilities: [] },
+    });
+    const rtResp = await rtHost.sendRealtimeContextWithCsrf({ stage: 1 });
+    assert(rtResp.status === 403 && rtPosts === 2,
+      `expected single CSRF retry (2 total POSTs) on sendRealtimeContextWithCsrf, got status=${rtResp.status}, posts=${rtPosts}`);
+    rtHost.dispose();
+  }
+
+  // #45: _postWithCsrf disables keepalive when adding _csrf_token pushes body over 60 KiB.
+  {
+    const endKeepaliveFlags = [];
+    const boundToken = 'k'.repeat(24);
+    const keepaliveHost = createHost({
+      gameType: 'example-game',
+      sessionId: 'keepalive-bound-session',
+      fetchImpl: async (url, init = {}) => {
+        const pathName = String(url);
+        if (pathName.startsWith('/api/config/page_config')) {
+          return jsonResponse({ autostart_csrf_token: boundToken });
+        }
+        if (/\/api\/game\/[^/]+\/end$/.test(pathName)) {
+          endKeepaliveFlags.push(Boolean(init.keepalive));
+          return jsonResponse(RAW_END_RESPONSE);
+        }
+        return jsonResponse({ ok: true });
+      },
+      windowImpl: windowMock,
+      navigatorImpl: windowMock.navigator,
+    });
+    keepaliveHost.connectGame({
+      protocolVersions: ['1'],
+      manifest: { id: 'example-game', version: '1.0.0', requiredCapabilities: ['runtime'], optionalCapabilities: [] },
+    });
+    await keepaliveHost.getMutationHeaders();
+    const emptyBodyBytes = Buffer.byteLength(
+      JSON.stringify(keepaliveHost._trustedRuntimePayload({ note: '' })),
+      'utf8',
+    );
+    // Leaves pre-token body <= 60 KiB while post-_csrf_token body exceeds 60 KiB.
+    const noteLen = (60 * 1024) - emptyBodyBytes - 4;
+    await keepaliveHost.end({ note: 'a'.repeat(noteLen) }, { useBeacon: false });
+    assert(endKeepaliveFlags.length === 1 && endKeepaliveFlags[0] === false,
+      `expected keepalive=false when final body with _csrf_token exceeds 60 KiB, got ${JSON.stringify(endKeepaliveFlags)}`);
+    keepaliveHost.dispose();
+  }
+
   // F0433: enableLoggerAfterRouteStart must POST /api/game/logs/enable even when a
   // cached CSRF token is already present, respect { ok: false }, and inspect /api/game/logs
   // rejections without entering an infinite log_queue_overflow loop.
@@ -2222,6 +2641,363 @@ async function main() {
     assert(httpErrorLogResult?.ok === false && httpErrorLogResult.status === 500,
       'postLog did not surface non-2xx HTTP failure');
     f0433Host.dispose();
+  }
+
+  // Round 7 @wehos #1 & CodeRabbit Outside-Diff #2:
+  // 1) After 403 csrf_validation_failed marks the cached token stale, normal callers wait for
+  //    refresh instead of reusing the stale token (and do not reuse it if refresh fails),
+  //    while synchronous unload still retains the fallback token.
+  {
+    let pageConfigCalls = 0;
+    let releaseRefresh = null;
+    const refreshGate = new Promise((resolve) => { releaseRefresh = resolve; });
+    let returnEmptyRefresh = false;
+    const staleGuardHost = createHost({
+      gameType: 'example-game',
+      sessionId: 'stale-csrf-flag-session',
+      fetchImpl: async (url) => {
+        const pathName = String(url);
+        if (pathName.startsWith('/api/config/page_config')) {
+          pageConfigCalls += 1;
+          if (pageConfigCalls === 1) {
+            return jsonResponse({ autostart_csrf_token: 'tok-initial' });
+          }
+          if (pageConfigCalls === 2) {
+            await refreshGate;
+            return jsonResponse(returnEmptyRefresh ? {} : { autostart_csrf_token: 'tok-refreshed' });
+          }
+          return jsonResponse({ autostart_csrf_token: 'tok-recovered' });
+        }
+        return jsonResponse({ ok: true });
+      },
+      windowImpl: windowMock,
+      navigatorImpl: windowMock.navigator,
+    });
+    staleGuardHost.connectGame({
+      protocolVersions: ['1'],
+      manifest: { id: 'example-game', version: '1.0.0', requiredCapabilities: ['runtime'], optionalCapabilities: [] },
+    });
+    await staleGuardHost.getMutationHeaders();
+    returnEmptyRefresh = true;
+    const refreshPromise = staleGuardHost.refreshMutationHeaders();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert(staleGuardHost._csrfTokenStale === true && staleGuardHost._cachedCsrfToken === 'tok-initial',
+      'expected forceRefresh to mark token stale while retaining fallback value');
+    // Concurrent normal caller during pending refresh joins refresh instead of reusing stale token or re-fetching.
+    const concurrentPromise = staleGuardHost.getMutationHeaders();
+    assert(pageConfigCalls === 2, `expected concurrent normal caller to await active refresh, saw ${pageConfigCalls} fetches`);
+    releaseRefresh();
+    const [refreshHeaders, concurrentHeaders] = await Promise.all([refreshPromise, concurrentPromise]);
+    assert(!refreshHeaders['X-CSRF-Token'] && !concurrentHeaders['X-CSRF-Token'],
+      'expected failed refresh not to hand stale token to normal callers');
+    // Subsequent normal caller after failed refresh fetches again instead of trusting stale cache.
+    const recoveredHeaders = await staleGuardHost.getMutationHeaders();
+    assert(recoveredHeaders['X-CSRF-Token'] === 'tok-recovered' && pageConfigCalls === 3,
+      `expected post-failure normal caller to re-fetch token, got ${JSON.stringify(recoveredHeaders)}, calls=${pageConfigCalls}`);
+    staleGuardHost.dispose();
+  }
+
+  // 2) route_end shares a single endTimeoutMs deadline across initial POST, CSRF refresh, and retry.
+  for (const useBeaconFlag of [false, true]) {
+    let endAttemptCount = 0;
+    let clockNow = 1000;
+    const realDateNow = Date.now;
+    let timedError = null;
+    try {
+      Date.now = () => clockNow;
+      const deadlineHost = createHost({
+        gameType: 'example-game',
+        sessionId: `route-end-deadline-${useBeaconFlag}`,
+        fetchImpl: async (url) => {
+          const pathName = String(url);
+          if (pathName.startsWith('/api/config/page_config')) {
+            if (endAttemptCount >= 1) {
+              // Simulate initial POST + slow CSRF refresh consuming entire 8000ms budget.
+              clockNow += 8500;
+              return jsonResponse({ autostart_csrf_token: 'tok-late' });
+            }
+            return jsonResponse({ autostart_csrf_token: 'tok-init' });
+          }
+          if (/\/api\/game\/[^/]+\/end$/.test(pathName)) {
+            endAttemptCount += 1;
+            clockNow += 500;
+            return jsonResponse({ error_code: 'csrf_validation_failed' }, 403);
+          }
+          return jsonResponse({ ok: true });
+        },
+        windowImpl: windowMock,
+        navigatorImpl: useBeaconFlag
+          ? { ...windowMock.navigator, sendBeacon: () => false }
+          : windowMock.navigator,
+      });
+      deadlineHost.connectGame({
+        protocolVersions: ['1'],
+        manifest: { id: 'example-game', version: '1.0.0', requiredCapabilities: ['runtime'], optionalCapabilities: [] },
+      });
+      await deadlineHost.getMutationHeaders();
+      try {
+        await deadlineHost.end({ reason: 'deadline_test' }, { useBeacon: useBeaconFlag, timeoutMs: 8000 });
+      } catch (err) {
+        timedError = err;
+      }
+      assert(timedError?.code === 'timeout' && endAttemptCount === 1,
+        `expected single shared route_end deadline timeout after 1 POST (useBeacon=${useBeaconFlag}), got code=${timedError?.code}, posts=${endAttemptCount}`);
+      deadlineHost.dispose();
+    } finally {
+      Date.now = realDateNow;
+    }
+  }
+
+  // 3) Overlapping forceRefresh calls never overwrite newer cached tokens and superseded callers join the latest refresh.
+  {
+    let resolveFirstRefresh;
+    let resolveSecondRefresh;
+    const firstGate = new Promise((resolve) => { resolveFirstRefresh = resolve; });
+    const secondGate = new Promise((resolve) => { resolveSecondRefresh = resolve; });
+    let fetchCount = 0;
+    const seqHost = createHost({
+      gameType: 'example-game',
+      sessionId: 'csrf-refresh-seq',
+      fetchImpl: async (url) => {
+        if (String(url).startsWith('/api/config/page_config')) {
+          fetchCount += 1;
+          const idx = fetchCount;
+          if (idx === 1) {
+            await firstGate;
+            return jsonResponse({ autostart_csrf_token: 'tok-stale-1' });
+          }
+          await secondGate;
+          return jsonResponse({ autostart_csrf_token: 'tok-fresh-2' });
+        }
+        return jsonResponse({ ok: true });
+      },
+      windowImpl: windowMock,
+    });
+    const firstPromise = seqHost.getMutationHeaders({ forceRefresh: true });
+    const secondPromise = seqHost.getMutationHeaders({ forceRefresh: true });
+    resolveSecondRefresh();
+    const secondHeaders = await secondPromise;
+    assert(secondHeaders['X-CSRF-Token'] === 'tok-fresh-2',
+      `expected newer forceRefresh to return tok-fresh-2, got ${JSON.stringify(secondHeaders)}`);
+    resolveFirstRefresh();
+    const firstHeaders = await firstPromise;
+    assert(firstHeaders['X-CSRF-Token'] === 'tok-fresh-2',
+      `expected superseded forceRefresh to join newer token instead of returning tokenless headers, got ${JSON.stringify(firstHeaders)}`);
+    const cachedHeaders = await seqHost.getMutationHeaders();
+    assert(cachedHeaders['X-CSRF-Token'] === 'tok-fresh-2' && fetchCount === 2,
+      `expected stale response not to overwrite newer token or trigger refetch, got ${JSON.stringify(cachedHeaders)}, fetchCount=${fetchCount}`);
+    seqHost.dispose();
+
+    // 3b) Refresh #1 resolves BEFORE Refresh #2 completes -> joins Refresh #2 without overwriting cache or losing token.
+    let resolveEarlyFirst;
+    let resolveLateSecond;
+    const earlyFirstGate = new Promise((resolve) => { resolveEarlyFirst = resolve; });
+    const lateSecondGate = new Promise((resolve) => { resolveLateSecond = resolve; });
+    let joinFetchCount = 0;
+    const joinHost = createHost({
+      gameType: 'example-game',
+      sessionId: 'csrf-refresh-join',
+      fetchImpl: async (url) => {
+        if (String(url).startsWith('/api/config/page_config')) {
+          joinFetchCount += 1;
+          const idx = joinFetchCount;
+          if (idx === 1) {
+            await earlyFirstGate;
+            return jsonResponse({ autostart_csrf_token: 'tok-early-stale-1' });
+          }
+          await lateSecondGate;
+          return jsonResponse({ autostart_csrf_token: 'tok-late-fresh-2' });
+        }
+        return jsonResponse({ ok: true });
+      },
+      windowImpl: windowMock,
+    });
+    const earlyFirstPromise = joinHost.getMutationHeaders({ forceRefresh: true });
+    const lateSecondPromise = joinHost.getMutationHeaders({ forceRefresh: true });
+    resolveEarlyFirst();
+    await Promise.resolve();
+    await Promise.resolve();
+    resolveLateSecond();
+    const [earlyFirstHeaders, lateSecondHeaders] = await Promise.all([earlyFirstPromise, lateSecondPromise]);
+    assert(earlyFirstHeaders['X-CSRF-Token'] === 'tok-late-fresh-2'
+      && lateSecondHeaders['X-CSRF-Token'] === 'tok-late-fresh-2'
+      && joinFetchCount === 2,
+    `expected early-finishing superseded refresh to join in-flight newer refresh, got h1=${JSON.stringify(earlyFirstHeaders)}, h2=${JSON.stringify(lateSecondHeaders)}, fetches=${joinFetchCount}`);
+    joinHost.dispose();
+
+    // 3c) Overlapping forceRefresh via shared nekoLocalMutationSecurity joins newer token without overwriting cache.
+    let resolveSecFirst;
+    let resolveSecSecond;
+    const secFirstGate = new Promise((resolve) => { resolveSecFirst = resolve; });
+    const secSecondGate = new Promise((resolve) => { resolveSecSecond = resolve; });
+    let secCalls = 0;
+    const secWindow = {
+      ...windowMock,
+      nekoLocalMutationSecurity: {
+        async getMutationHeaders() {
+          secCalls += 1;
+          const idx = secCalls;
+          if (idx === 1) {
+            await secFirstGate;
+            return { 'X-CSRF-Token': 'tok-sec-stale-1' };
+          }
+          await secSecondGate;
+          return { 'X-CSRF-Token': 'tok-sec-fresh-2' };
+        },
+      },
+    };
+    const secHost = createHost({
+      gameType: 'example-game',
+      sessionId: 'csrf-security-seq',
+      fetchImpl: async () => jsonResponse({ ok: true }),
+      windowImpl: secWindow,
+    });
+    const secFirstPromise = secHost.getMutationHeaders({ forceRefresh: true });
+    const secSecondPromise = secHost.getMutationHeaders({ forceRefresh: true });
+    resolveSecSecond();
+    const secSecondHeaders = await secSecondPromise;
+    assert(secSecondHeaders['X-CSRF-Token'] === 'tok-sec-fresh-2',
+      `expected newer security forceRefresh to return tok-sec-fresh-2, got ${JSON.stringify(secSecondHeaders)}`);
+    resolveSecFirst();
+    const secFirstHeaders = await secFirstPromise;
+    assert(secFirstHeaders['X-CSRF-Token'] === 'tok-sec-fresh-2' && secHost._cachedCsrfToken === 'tok-sec-fresh-2',
+      `expected superseded security caller to join newer token without overwriting cache, got ${JSON.stringify(secFirstHeaders)}, cached=${secHost._cachedCsrfToken}`);
+    secHost.dispose();
+  }
+
+  // 4) _awaitWithAbortSignal detaches abort/waiter listeners immediately when timeout settles before promise.
+  {
+    const waiterHost = createHost({
+      gameType: 'example-game',
+      sessionId: 'waiter-cleanup-timeout',
+      fetchImpl: async () => jsonResponse({ ok: true }),
+      windowImpl: windowMock,
+    });
+    const attachedHandlers = new Set();
+    let removeCount = 0;
+    const spySignal = {
+      aborted: false,
+      addEventListener(type, fn) {
+        if (type === 'abort') attachedHandlers.add(fn);
+      },
+      removeEventListener(type, fn) {
+        if (type === 'abort' && attachedHandlers.delete(fn)) removeCount += 1;
+      },
+    };
+    const fakeOpEntry = { cancelReason: null, waiters: new Set() };
+    let timedErr = null;
+    try {
+      await waiterHost._awaitWithAbortSignal(
+        new Promise(() => {}),
+        spySignal,
+        'hung_waiter_cleanup',
+        fakeOpEntry,
+        Date.now() + 10,
+      );
+    } catch (err) {
+      timedErr = err;
+    }
+    assert(timedErr?.code === 'timeout', `expected timeout error, got ${timedErr?.code}`);
+    assert(attachedHandlers.size === 0 && removeCount === 1,
+      `expected abort listener detached immediately on timeout, active=${attachedHandlers.size}, removed=${removeCount}`);
+    assert(fakeOpEntry.waiters.size === 0,
+      `expected csrfOpEntry waiter removed immediately on timeout, remaining=${fakeOpEntry.waiters.size}`);
+    waiterHost.dispose();
+  }
+
+  // 5) Ordinary _postWithCsrf callers share one timeoutMs deadline across CSRF lookup, POST, and 403 refresh.
+  {
+    // 5a: slow initial page_config exhausts start({ timeoutMs: 25 }) before /route/start is ever posted.
+    let slowConfigTimer = null;
+    let slowConfigResolved = false;
+    let routeStartPosts5a = 0;
+    const slowStartHost = createHost({
+      gameType: 'example-game',
+      sessionId: 'post-with-csrf-initial-deadline',
+      fetchImpl: async (url) => {
+        const pathName = String(url);
+        if (pathName.startsWith('/api/config/page_config')) {
+          await new Promise((resolve) => {
+            slowConfigTimer = setTimeout(() => {
+              slowConfigResolved = true;
+              resolve();
+            }, 500);
+          });
+          return jsonResponse({ autostart_csrf_token: 'tok-slow' });
+        }
+        if (pathName.endsWith('/route/start')) {
+          routeStartPosts5a += 1;
+        }
+        return jsonResponse({ ok: true, state: { game_route_active: true } });
+      },
+      windowImpl: windowMock,
+      navigatorImpl: windowMock.navigator,
+    });
+    slowStartHost.connectGame({
+      protocolVersions: ['1'],
+      manifest: { id: 'example-game', version: '1.0.0', requiredCapabilities: ['runtime'], optionalCapabilities: [] },
+    });
+    let err5a = null;
+    try {
+      await slowStartHost.start({}, { timeoutMs: 25 });
+    } catch (err) {
+      err5a = err;
+    } finally {
+      if (slowConfigTimer) clearTimeout(slowConfigTimer);
+      slowStartHost.dispose();
+    }
+    assert(err5a?.code === 'timeout', `5a expected timeout error, got ${err5a?.code}`);
+    assert(slowConfigResolved === false, '5a expected start() to reject before the slow page_config timer resolved');
+    assert(routeStartPosts5a === 0, `5a expected /route/start not posted after CSRF timeout, saw ${routeStartPosts5a}`);
+
+    // 5b: slow 403 refresh page_config exhausts shared start({ timeoutMs: 35 }) before retry /route/start.
+    let pageConfigCount5b = 0;
+    let refreshTimer5b = null;
+    let refreshResolved5b = false;
+    let routeStartPosts5b = 0;
+    const refreshTimeoutHost = createHost({
+      gameType: 'example-game',
+      sessionId: 'post-with-csrf-refresh-deadline',
+      fetchImpl: async (url) => {
+        const pathName = String(url);
+        if (pathName.startsWith('/api/config/page_config')) {
+          pageConfigCount5b += 1;
+          if (pageConfigCount5b === 1) {
+            return jsonResponse({ autostart_csrf_token: 'tok-stale' });
+          }
+          await new Promise((resolve) => {
+            refreshTimer5b = setTimeout(() => {
+              refreshResolved5b = true;
+              resolve();
+            }, 500);
+          });
+          return jsonResponse({ autostart_csrf_token: 'tok-refreshed' });
+        }
+        if (pathName.endsWith('/route/start')) {
+          routeStartPosts5b += 1;
+          return jsonResponse({ error_code: 'csrf_validation_failed' }, 403);
+        }
+        return jsonResponse({ ok: true });
+      },
+      windowImpl: windowMock,
+      navigatorImpl: windowMock.navigator,
+    });
+    refreshTimeoutHost.connectGame({
+      protocolVersions: ['1'],
+      manifest: { id: 'example-game', version: '1.0.0', requiredCapabilities: ['runtime'], optionalCapabilities: [] },
+    });
+    let err5b = null;
+    try {
+      await refreshTimeoutHost.start({}, { timeoutMs: 35 });
+    } catch (err) {
+      err5b = err;
+    } finally {
+      if (refreshTimer5b) clearTimeout(refreshTimer5b);
+      refreshTimeoutHost.dispose();
+    }
+    assert(err5b?.code === 'timeout', `5b expected timeout error, got ${err5b?.code}`);
+    assert(refreshResolved5b === false, '5b expected start() to reject before the slow refresh page_config timer resolved');
+    assert(routeStartPosts5b === 1, `5b expected exactly 1 /route/start post before refresh timeout, saw ${routeStartPosts5b}`);
   }
 
   process.stdout.write('mini-game same-origin host runtime test passed\n');

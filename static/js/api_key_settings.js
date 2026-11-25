@@ -1445,6 +1445,24 @@ function getTtsProviderMeta(pk) {
 }
 
 /**
+ * Whether the TTS URL input still holds the endpoint a provider filled in by default.
+ */
+function isTtsUrlStillAutofilled(urlInput) {
+    const autofilled = urlInput && urlInput.dataset.autofilledUrl;
+    return !!autofilled && urlInput.value.trim() === autofilled;
+}
+
+/**
+ * Whether a TTS provider keeps its key in its own Key Book entry (registry
+ * api_key_field other than the shared ttsModelApiKey slot).
+ */
+function isKeyBookBackedTtsProvider(providerKey) {
+    const meta = getTtsProviderMeta(providerKey);
+    const field = (meta && meta.api_key_field) || 'ttsModelApiKey';
+    return field !== 'ttsModelApiKey' && !!_apiKeyRegistry[providerKey];
+}
+
+/**
  * 该 provider 是否真的具备某个槽位所需的能力。
  *
  * TTS 与「实时全模态」两个下拉原本把辅助 LLM 全表无差别铺开，于是列出了一堆后端
@@ -1712,6 +1730,8 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
             url: urlInput.value,
             model: modelIdInput.value,
             key: getRealKey(keyInput),
+            // The next provider fills in its own default voice; keep the custom one.
+            voice: voiceInput ? voiceInput.value : undefined,
         };
     }
     // Also remember follow modes that return early below.
@@ -1846,24 +1866,51 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
         // 结构信号兜底）；预填默认值优先取 api_providers.json，缺失时回退注册表 default_*。
         const _spMeta = getTtsProviderMeta(provider);
         const pInfo = getProviderInfo(provider);
+        const keyBookBacked = isKeyBookBackedTtsProvider(provider);
         if (urlInput) {
             // 切换到该 provider 时：
             // - 若 URL 为空，或当前 URL 是从其他 provider 自动填充的 readonly 值（用户没主动编辑过），
             //   覆盖为默认 URL；
             // - 若 URL 是用户主动编辑过的地址（非 readonly），保留。
+            // - A provider whose key lives in its own Key Book entry starts from its own
+            //   endpoint when the user switches to it, so another provider's URL is never
+            //   paired with that key. Re-renders (e.g. a locale change) keep an edited URL.
+            // - A URL some provider filled in by default (and the user left unchanged) is
+            //   that provider's endpoint, not a user edit: switching replaces it too.
             const wasReadonly = urlInput.hasAttribute('readonly');
-            if (!urlInput.value || !urlInput.value.trim() || wasReadonly) {
-                urlInput.value = getProviderOpenrouterUrl(provider, pInfo) || _spMeta.default_url || '';
+            const switchedProvider = !_isLoadingSavedConfig && previousProvider !== provider;
+            const switchedToKeyBookBacked = keyBookBacked && userInitiated && switchedProvider;
+            const stillAutofilled = isTtsUrlStillAutofilled(urlInput);
+            const providerDefaultUrl = getProviderOpenrouterUrl(provider, pInfo) || _spMeta.default_url || '';
+            if (!urlInput.value || !urlInput.value.trim() || wasReadonly || switchedToKeyBookBacked
+                || (switchedProvider && stillAutofilled)) {
+                urlInput.value = providerDefaultUrl;
+            }
+            // A URL equal to this provider's default counts as autofilled, including one
+            // loaded from saved config after reopening the page.
+            if (providerDefaultUrl && urlInput.value.trim() === providerDefaultUrl.trim()) {
+                urlInput.dataset.autofilledUrl = providerDefaultUrl.trim();
+            } else if (!isTtsUrlStillAutofilled(urlInput)) {
+                delete urlInput.dataset.autofilledUrl;
             }
             urlInput.removeAttribute('readonly');
         }
-        if (modelIdInput && (!_isLoadingSavedConfig || !modelIdInput.value || !modelIdInput.value.trim())) {
+        // Defaults only when the provider actually changes or the field is empty;
+        // re-renders of the same provider (e.g. a locale change) keep unsaved edits.
+        const fillDefaults = !_isLoadingSavedConfig && previousProvider !== provider;
+        if (modelIdInput && (fillDefaults || !modelIdInput.value || !modelIdInput.value.trim())) {
             modelIdInput.value = pInfo.tts_default_model || _spMeta.default_model || '';
         }
-        if (voiceInput && (!_isLoadingSavedConfig || !voiceInput.value || !voiceInput.value.trim())) {
+        if (voiceInput && (fillDefaults || !voiceInput.value || !voiceInput.value.trim())) {
             voiceInput.value = pInfo.tts_default_voice || _spMeta.default_voice || '';
         }
-        setKeyEditable(keyInput);
+        if (keyBookBacked) {
+            // The key lives in this provider's own Key Book entry (registry api_key_field);
+            // the shared TTS key input only mirrors it, so a save never clears it.
+            setKeyReadonly(keyInput, getEffectiveAssistKey(provider, null, { useTokenPlan: false }), provider);
+        } else {
+            setKeyEditable(keyInput);
+        }
     } else if (modelType === 'tts' && provider === 'gptsovits') {
         // GPT-SoVITS：用下方专属字段（#gptsovits-config-fields 的 URL + voice grid），
         // 标准 url/model/key/voice 不参与，故这里不动标准输入（它们会被隐藏）。
@@ -1874,7 +1921,14 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
         }
     } else if (provider === 'custom') {
         // custom: remove readonly
-        if (urlInput) urlInput.removeAttribute('readonly');
+        if (urlInput) {
+            // Another provider's default endpoint is not a custom address.
+            if (modelType === 'tts' && previousProvider !== provider && isTtsUrlStillAutofilled(urlInput)) {
+                urlInput.value = '';
+            }
+            delete urlInput.dataset.autofilledUrl;
+            urlInput.removeAttribute('readonly');
+        }
         if (modelIdInput) modelIdInput.removeAttribute('readonly');
         setKeyEditable(keyInput);
     } else {
@@ -1906,6 +1960,9 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
         if (provider === 'custom' && _customTtsDraft && !_isLoadingSavedConfig) {
             urlInput.value = _customTtsDraft.url;
             modelIdInput.value = _customTtsDraft.model;
+            if (voiceInput && typeof _customTtsDraft.voice === 'string') {
+                voiceInput.value = _customTtsDraft.voice;
+            }
             setMaskedInput(keyInput, _customTtsDraft.key);
             _customTtsDraft = null;
         }
@@ -1966,10 +2023,12 @@ function updateTtsProtocolHint(provider) {
     const keyByProvider = {
         custom: 'api.ttsProtocolHintOpenAI',
         vllm_omni: 'api.ttsProtocolHintVllmOmni',
+        qwen_token_plan: 'api.ttsProtocolHintQwenTokenPlan',
     };
     const fallbackByProvider = {
         custom: 'OpenAI-compatible: HTTP(S) POST /v1/audio/speech，完整文本请求、流式音频响应。',
         vllm_omni: 'vLLM-Omni: WS(S) /v1/audio/speech/stream，文本与音频双向流式传输。',
+        qwen_token_plan: '阿里百炼 Token Plan：HTTPS POST /api/v1/services/audio/tts/SpeechSynthesizer，流式音频响应。需要 sk-sp- 开头的 Token Plan 专属 Key。',
     };
     const key = keyByProvider[provider];
     if (!key) {
@@ -4078,6 +4137,11 @@ async function save_button_down(e) {
     } else if (selectedTtsProvider) {
         payload.ttsProvider = '';
     }
+    if (isKeyBookBackedTtsProvider(selectedTtsProvider)) {
+        // The backend mirrors this provider's Key Book entry into the TTS slot;
+        // the read-only copy in the slot input may be older than the Key Book.
+        delete payload.ttsModelApiKey;
+    }
 
     const disableTtsEl = document.getElementById('disableTts');
     if (disableTtsEl) {
@@ -4293,13 +4357,28 @@ async function saveApiKey(params) {
         });
         body.enableCustomApi = params.enableCustomApi ?? false;
 
-        const response = await fetch('/api/config/core_api', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(body)
-        });
+        async function postCoreApiOnce(forceRefresh) {
+            const csrfHeaders = await getSettingsMutationHeaders(forceRefresh);
+            return fetch('/api/config/core_api', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...csrfHeaders,
+                },
+                body: JSON.stringify(body)
+            });
+        }
+        let response = await postCoreApiOnce(false);
+        if (response.status === 403 && typeof response.clone === 'function') {
+            let shouldRetryCsrf = false;
+            try {
+                const errPayload = await response.clone().json();
+                shouldRetryCsrf = Boolean(errPayload && errPayload.error_code === 'csrf_validation_failed');
+            } catch (_) { /* keep original 403 */ }
+            if (shouldRetryCsrf) {
+                response = await postCoreApiOnce(true);
+            }
+        }
 
         if (response.ok) {
             const result = await response.json();
@@ -4538,6 +4617,37 @@ function autoFillAssistApiKey(force) {
 }
 
 // Beacon功能 - 页面关闭时发送信号给服务器
+let _settingsCsrfToken = '';
+
+async function getSettingsMutationHeaders(forceRefresh) {
+    try {
+        const security = window.nekoLocalMutationSecurity;
+        if (security && typeof security.getMutationHeaders === 'function') {
+            if (forceRefresh && typeof security.refreshToken === 'function') {
+                await security.refreshToken();
+            }
+            const headers = await security.getMutationHeaders();
+            if (headers && typeof headers === 'object') {
+                return headers;
+            }
+        }
+    } catch (_) { /* fall back to page_config */ }
+    if (forceRefresh) _settingsCsrfToken = '';
+    if (_settingsCsrfToken) {
+        return { 'X-CSRF-Token': _settingsCsrfToken };
+    }
+    try {
+        const resp = await fetch('/api/config/page_config', { cache: 'no-store' });
+        const cfg = resp && resp.ok ? await resp.json() : null;
+        const token = cfg && cfg.autostart_csrf_token;
+        if (typeof token === 'string' && token) {
+            _settingsCsrfToken = token;
+            return { 'X-CSRF-Token': token };
+        }
+    } catch (_) { /* guarded POST will surface rejection */ }
+    return {};
+}
+
 let beaconSent = false;
 
 function sendBeacon() {
@@ -5354,7 +5464,11 @@ const ConnectivityManager = {
                     result.url = urlInput ? urlInput.value.trim() : '';
                     result.providerType = 'tts';
                     result.subType = _spProbe.probe_sub_type || provider;
-                    result.key = keyInput ? getRealKey(keyInput) : '';
+                    // A Key Book-backed provider probes with the current Key Book value,
+                    // not the read-only copy taken when it was selected.
+                    result.key = isKeyBookBackedTtsProvider(provider)
+                        ? getEffectiveAssistKey(provider, null, { useTokenPlan: false })
+                        : (keyInput ? getRealKey(keyInput) : '');
                     result.model = getResolvedCustomModelId(mt, provider);
                     result.voiceId = document.getElementById('ttsVoiceId')?.value?.trim() || '';
                 } else {

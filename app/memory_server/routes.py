@@ -30,9 +30,9 @@ from datetime import datetime, timedelta
 from typing import Annotated, Literal
 from uuid import uuid4
 
-from fastapi import HTTPException, Query, Request
+from fastapi import Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from config.prompts.prompts_sys import _loc
 from config.prompts.prompts_memory import (
@@ -129,6 +129,29 @@ class TheaterEpisodeRetractRequest(BaseModel):
     # Identify the archive attempts to fence against late /cache writes.
     archive_request_id: str = Field(default="", max_length=160)
     archive_attempt: int = Field(default=0, ge=0)
+
+
+class RecordSurfacedRequest(BaseModel):
+    commitment_ids: list[str] = Field(default_factory=list)
+    reflection_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("commitment_ids", "reflection_ids", mode="before")
+    @classmethod
+    def _none_to_empty_list(cls, value: object) -> object:
+        return [] if value is None else value
+
+
+async def _refuse_browsers(request: Request) -> None:
+    """Reject browser-originated requests before handling internal memory routes."""
+    if any(header in request.headers for header in ("origin", "referer", "sec-fetch-site")):
+        raise HTTPException(status_code=403, detail={"ok": False, "reason": "untrusted_origin"})
+
+
+async def _require_json_content_type(request: Request) -> None:
+    """Reject non-JSON Content-Type payloads such as text/plain CORS simple requests."""
+    media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if media_type != "application/json":
+        raise HTTPException(status_code=415, detail={"ok": False, "reason": "unsupported_media_type"})
 
 
 def _theater_story_event_id(lanlan_name: str, message) -> str:
@@ -1083,7 +1106,7 @@ async def _periodic_new_dialog_qps_log_loop():
 
 # --- Reflection API (HTTP callers: main_server/system_router) ---
 
-@app.post("/reflect/{lanlan_name}")
+@app.post("/reflect/{lanlan_name}", dependencies=[Depends(_refuse_browsers)])
 async def api_reflect(lanlan_name: str):
     """Synthesize reflections + automatic state migration, returning the result.
 
@@ -1186,7 +1209,10 @@ async def api_followup_topics(lanlan_name: str):
     return {"topics": topics, "commitment": await _due_commitment_topic(lanlan_name)}
 
 
-@app.post("/record_surfaced/{lanlan_name}")
+@app.post(
+    "/record_surfaced/{lanlan_name}",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
 async def api_record_surfaced(request: Request, lanlan_name: str):
     """Record which reflections this proactive chat mentioned, refreshing the cooldown.
 
@@ -1196,14 +1222,23 @@ async def api_record_surfaced(request: Request, lanlan_name: str):
     a failed one is retried with the delivery record.
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
-    body = await request.json()
+    try:
+        raw_body = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail={"ok": False, "reason": "invalid_json"}) from exc
+    if not isinstance(raw_body, dict):
+        raise HTTPException(status_code=422, detail={"ok": False, "reason": "invalid_payload"})
+    try:
+        payload = RecordSurfacedRequest.model_validate(raw_body)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail={"ok": False, "reason": "invalid_payload"}) from exc
     result: dict[str, object] = {"ok": True}
-    commitment_ids = body.get("commitment_ids") or []
+    commitment_ids = payload.commitment_ids
     if commitment_ids:
-        result["commitments_recorded"] = isinstance(commitment_ids, list) and await _record_surfaced_commitments(
+        result["commitments_recorded"] = await _record_surfaced_commitments(
             lanlan_name, commitment_ids,
         )
-    reflection_ids = body.get("reflection_ids", [])
+    reflection_ids = payload.reflection_ids
     if not reflection_ids:
         return result
     try:
@@ -7879,7 +7914,7 @@ async def api_memory_funnel(lanlan_name: str, since: str | None = None, until: s
     }
 
 
-@app.post("/cancel_correction/{lanlan_name}")
+@app.post("/cancel_correction/{lanlan_name}", dependencies=[Depends(_refuse_browsers)])
 async def cancel_correction(lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     """Interrupt a character's memory-organization tasks so memory edits take effect immediately."""
@@ -7968,7 +8003,7 @@ async def set_prompt_locale_preference(
 PREEMPT_SUMMARY_WINDOW_S = 10.0
 
 
-@app.post("/preempt_summary/{lanlan_name}")
+@app.post("/preempt_summary/{lanlan_name}", dependencies=[Depends(_refuse_browsers)])
 async def preempt_summary(lanlan_name: str):
     """Abandon ``lanlan_name``'s summary LLM calls to background compression (#3601).
 
@@ -8468,7 +8503,10 @@ class _BrowserSearchRequest(BaseModel):
     top_k: int = 20
 
 
-@app.get("/internal/memory/browser/overview/{lanlan_name}")
+@app.get(
+    "/internal/memory/browser/overview/{lanlan_name}",
+    dependencies=[Depends(_refuse_browsers)],
+)
 async def browser_memory_overview(lanlan_name: str):
     """Return read-only Imprint, editable long-term memory groups, and 6-axis health diagnostics."""
     name = validate_lanlan_name(lanlan_name)
@@ -8484,7 +8522,10 @@ async def browser_memory_overview(lanlan_name: str):
         return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
 
 
-@app.post("/internal/memory/browser/imprint_note/{lanlan_name}")
+@app.post(
+    "/internal/memory/browser/imprint_note/{lanlan_name}",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
 async def browser_generate_imprint_note(
     lanlan_name: str,
     request: _BrowserImprintNoteRequest,
@@ -8506,7 +8547,10 @@ async def browser_generate_imprint_note(
         return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
 
 
-@app.post("/internal/memory/browser/search/{lanlan_name}")
+@app.post(
+    "/internal/memory/browser/search/{lanlan_name}",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
 async def browser_search_memory(lanlan_name: str, request: _BrowserSearchRequest):
     """Search across persona entries + hybrid recall (facts & reflections)."""
     name = validate_lanlan_name(lanlan_name)
@@ -8674,7 +8718,10 @@ def _admit_browser_character_write(name: str):
         runtime._end_character_request(name, token)
 
 
-@app.post("/internal/memory/browser/persona/edit")
+@app.post(
+    "/internal/memory/browser/persona/edit",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
 async def browser_edit_persona(request: _BrowserPersonaEditRequest):
     name = validate_lanlan_name(request.character_name)
     if runtime.persona_manager is None:
@@ -8694,7 +8741,10 @@ async def browser_edit_persona(request: _BrowserPersonaEditRequest):
     return {"success": True, "entry": updated}
 
 
-@app.post("/internal/memory/browser/persona/flags")
+@app.post(
+    "/internal/memory/browser/persona/flags",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
 async def browser_set_persona_flags(request: _BrowserPersonaFlagsRequest):
     name = validate_lanlan_name(request.character_name)
     if runtime.persona_manager is None:
@@ -8716,7 +8766,10 @@ async def browser_set_persona_flags(request: _BrowserPersonaFlagsRequest):
     return {"success": True, "entry": updated}
 
 
-@app.post("/internal/memory/browser/persona/archive")
+@app.post(
+    "/internal/memory/browser/persona/archive",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
 async def browser_archive_persona(request: _BrowserPersonaArchiveRequest):
     name = validate_lanlan_name(request.character_name)
     if runtime.persona_manager is None:
@@ -8731,7 +8784,10 @@ async def browser_archive_persona(request: _BrowserPersonaArchiveRequest):
     return {"success": True}
 
 
-@app.post("/internal/memory/browser/persona/restore_version")
+@app.post(
+    "/internal/memory/browser/persona/restore_version",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
 async def browser_restore_persona_version(request: _BrowserPersonaRestoreRequest):
     name = validate_lanlan_name(request.character_name)
     if runtime.persona_manager is None:
@@ -8758,7 +8814,10 @@ async def browser_restore_persona_version(request: _BrowserPersonaRestoreRequest
     return {"success": True, "entry": updated}
 
 
-@app.post("/internal/memory/browser/correction/resolve")
+@app.post(
+    "/internal/memory/browser/correction/resolve",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
 async def browser_resolve_correction(request: _BrowserCorrectionResolveRequest):
     name = validate_lanlan_name(request.character_name)
     if runtime.persona_manager is None:
@@ -8785,7 +8844,10 @@ async def browser_resolve_correction(request: _BrowserCorrectionResolveRequest):
     return {"success": True, **res}
 
 
-@app.post("/internal/memory/browser/reflection/review")
+@app.post(
+    "/internal/memory/browser/reflection/review",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
 async def browser_review_reflection(request: _BrowserReflectionReviewRequest):
     name = validate_lanlan_name(request.character_name)
     if runtime.reflection_engine is None:
@@ -8806,7 +8868,10 @@ async def browser_review_reflection(request: _BrowserReflectionReviewRequest):
     return {"success": True, **res}
 
 
-@app.post("/internal/memory/browser/fact/edit")
+@app.post(
+    "/internal/memory/browser/fact/edit",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
 async def browser_edit_fact(request: _BrowserFactEditRequest):
     name = validate_lanlan_name(request.character_name)
     if runtime.fact_store is None:
@@ -8824,7 +8889,10 @@ async def browser_edit_fact(request: _BrowserFactEditRequest):
     return {"success": True, "fact": updated}
 
 
-@app.post("/internal/memory/browser/fact/archive")
+@app.post(
+    "/internal/memory/browser/fact/archive",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
 async def browser_archive_fact(request: _BrowserFactArchiveRequest):
     name = validate_lanlan_name(request.character_name)
     if runtime.fact_store is None:
@@ -8840,7 +8908,10 @@ async def browser_archive_fact(request: _BrowserFactArchiveRequest):
     return {"success": True}
 
 
-@app.post("/internal/memory/browser/duplicate/merge")
+@app.post(
+    "/internal/memory/browser/duplicate/merge",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
 async def browser_merge_duplicate(request: _BrowserDuplicateMergeRequest):
     name = validate_lanlan_name(request.character_name)
     merged = str(request.merged_text or "").strip()
@@ -8956,7 +9027,10 @@ async def browser_merge_duplicate(request: _BrowserDuplicateMergeRequest):
         return {"success": True, "kept": updated, "dropped": True}
 
 
-@app.post("/internal/memory/browser/directive/add")
+@app.post(
+    "/internal/memory/browser/directive/add",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
 async def browser_add_directive(request: _BrowserDirectiveRequest):
     from memory.user_directives import _normalize_term, get_user_directives_manager
     name = validate_lanlan_name(request.character_name)
@@ -8985,7 +9059,10 @@ async def browser_add_directive(request: _BrowserDirectiveRequest):
     return {"success": True, "directive": created}
 
 
-@app.post("/internal/memory/browser/directive/remove")
+@app.post(
+    "/internal/memory/browser/directive/remove",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
 async def browser_remove_directive(request: _BrowserDirectiveRequest):
     from memory.user_directives import get_user_directives_manager
     name = validate_lanlan_name(request.character_name)
@@ -9019,7 +9096,10 @@ class _BrowserRelatedMemoriesRequest(BaseModel):
     scope: str | None = None
 
 
-@app.get("/internal/memory/browser/star_map/{lanlan_name}")
+@app.get(
+    "/internal/memory/browser/star_map/{lanlan_name}",
+    dependencies=[Depends(_refuse_browsers)],
+)
 async def browser_memory_star_map(lanlan_name: str):
     """Return read-only 2D PCA Memory Star Map + high-dim clusters + cached theme labels."""
     name = validate_lanlan_name(lanlan_name)
@@ -9035,7 +9115,10 @@ async def browser_memory_star_map(lanlan_name: str):
         return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
 
 
-@app.post("/internal/memory/browser/star_map/label_clusters/{lanlan_name}")
+@app.post(
+    "/internal/memory/browser/star_map/label_clusters/{lanlan_name}",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
 async def browser_label_star_map_clusters(
     lanlan_name: str,
     request: _BrowserStarMapLabelRequest,
@@ -9063,7 +9146,10 @@ async def browser_label_star_map_clusters(
         return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
 
 
-@app.get("/internal/memory/browser/lineage/{lanlan_name}")
+@app.get(
+    "/internal/memory/browser/lineage/{lanlan_name}",
+    dependencies=[Depends(_refuse_browsers)],
+)
 async def browser_memory_lineage(
     lanlan_name: str,
     kind: Literal["persona", "reflection", "fact"],
@@ -9089,7 +9175,10 @@ async def browser_memory_lineage(
         return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
 
 
-@app.post("/internal/memory/browser/related/{lanlan_name}")
+@app.post(
+    "/internal/memory/browser/related/{lanlan_name}",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
 async def browser_related_memories(
     lanlan_name: str,
     request: _BrowserRelatedMemoriesRequest,
@@ -9131,7 +9220,10 @@ class _BrowserDeepConflictRequest(BaseModel):
     language: str | None = None
 
 
-@app.get("/internal/memory/browser/snapshots/{lanlan_name}")
+@app.get(
+    "/internal/memory/browser/snapshots/{lanlan_name}",
+    dependencies=[Depends(_refuse_browsers)],
+)
 async def browser_list_snapshots(lanlan_name: str):
     """List per-character safety snapshots (newest first)."""
     name = validate_lanlan_name(lanlan_name)
@@ -9144,7 +9236,10 @@ async def browser_list_snapshots(lanlan_name: str):
         return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
 
 
-@app.post("/internal/memory/browser/snapshots/create/{lanlan_name}")
+@app.post(
+    "/internal/memory/browser/snapshots/create/{lanlan_name}",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
 async def browser_create_snapshot(
     lanlan_name: str,
     request: _BrowserSnapshotCreateRequest,
@@ -9170,7 +9265,10 @@ async def browser_create_snapshot(
         return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
 
 
-@app.post("/internal/memory/browser/snapshots/restore/{lanlan_name}")
+@app.post(
+    "/internal/memory/browser/snapshots/restore/{lanlan_name}",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
 async def browser_restore_snapshot(
     lanlan_name: str,
     request: _BrowserSnapshotRestoreRequest,
@@ -9212,7 +9310,10 @@ async def browser_restore_snapshot(
     return {"success": True, **result}
 
 
-@app.get("/internal/memory/browser/export/{lanlan_name}")
+@app.get(
+    "/internal/memory/browser/export/{lanlan_name}",
+    dependencies=[Depends(_refuse_browsers)],
+)
 async def browser_export_memory_zip(
     lanlan_name: str,
     mode: Literal["keepsake", "diagnostics"] = "keepsake",
@@ -9241,7 +9342,10 @@ async def browser_export_memory_zip(
         return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
 
 
-@app.get("/internal/memory/browser/lineage_graph/{lanlan_name}")
+@app.get(
+    "/internal/memory/browser/lineage_graph/{lanlan_name}",
+    dependencies=[Depends(_refuse_browsers)],
+)
 async def browser_full_lineage_graph(lanlan_name: str):
     """Return Developer Mode 5-lane causal DAG (message -> memo -> fact -> reflection -> persona)."""
     name = validate_lanlan_name(lanlan_name)
@@ -9257,7 +9361,10 @@ async def browser_full_lineage_graph(lanlan_name: str):
         return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
 
 
-@app.post("/internal/memory/browser/deep_conflicts/{lanlan_name}")
+@app.post(
+    "/internal/memory/browser/deep_conflicts/{lanlan_name}",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
 async def browser_deep_conflict_check(
     lanlan_name: str,
     request: _BrowserDeepConflictRequest,

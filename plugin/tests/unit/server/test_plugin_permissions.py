@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -16,6 +17,7 @@ from plugin.server.application.install_source.models import (
 from plugin.server.application.plugins import permission_service
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.plugin_permissions import (
+    LEGACY_APPROVED,
     LEGACY_DENIED,
     PluginPermissionStore,
     PluginSource,
@@ -596,7 +598,8 @@ def test_changed_source_discards_grants_and_never_restores_them(manager):
 
     switched = store.sync_source("x", MANUAL)
     assert switched["permissions"] == {}
-    assert LEGACY_DENIED not in switched
+    # A denial outlives the source change (KEPT_ON_SOURCE_CHANGE).
+    assert switched[LEGACY_DENIED] is True
     assert switched["source"] == MANUAL.to_dict()
     assert switched["source_changed_at"]
 
@@ -1067,8 +1070,34 @@ def consent_flow(monkeypatch, tmp_path):
     from plugin.server.application.plugins import lifecycle_service
 
     monkeypatch.setattr(lifecycle_service.PluginLifecycleService, "stop_plugin", _not_running)
+    def seed(plugin_id, decision, capabilities=()):
+        """Write a decision to the legacy consent file (before any import)."""
+        path = shared.get_runtime_config_path("plugin_consents.json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "plugins": {
+                        plugin_id: {
+                            "decision": decision,
+                            "approved_capabilities": list(capabilities),
+                            "version": "1",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def legacy_bytes():
+        path = shared.get_runtime_config_path("plugin_consents.json")
+        return path.read_bytes() if path.exists() else None
+
     return {
         "service": consent_service,
+        "seed": seed,
+        "legacy_bytes": legacy_bytes,
         "consents": consents,
         "permissions": permissions,
         "report": report,
@@ -1078,15 +1107,17 @@ def consent_flow(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_revoke_after_import_is_mirrored(consent_flow):
-    consent_flow["consents"].decide("demo", "approved", ["memory.read"], "1")
+    consent_flow["seed"]("demo", "approved", ["memory.read"])
     assert consent_flow["permissions"].read("demo")["permissions"][MEMORY_READ]["state"] == "granted"
 
+    legacy = consent_flow["legacy_bytes"]()
     await consent_flow["service"].revoke_plugin("demo")
 
-    assert consent_flow["consents"].read("demo") == {}
+    assert consent_flow["legacy_bytes"]() == legacy
     record = consent_flow["permissions"].read("demo")
     assert MEMORY_READ not in record["permissions"]
     assert LEGACY_DENIED not in record
+    assert LEGACY_APPROVED not in record
 
 
 @pytest.mark.asyncio
@@ -1119,7 +1150,7 @@ async def test_approve_and_deny_are_mirrored_and_keep_permission_flow_decisions(
 @pytest.mark.asyncio
 async def test_mirror_write_failure_fails_the_operation_and_a_retry_converges(consent_flow):
     service = consent_flow["service"]
-    consent_flow["consents"].decide("demo", "approved", ["memory.read"], "1")
+    consent_flow["seed"]("demo", "approved", ["memory.read"])
     consent_flow["permissions"].read("demo")  # imported
     consent_flow["manager"].fail_name = "plugin_permissions.json"
 
@@ -1127,14 +1158,13 @@ async def test_mirror_write_failure_fails_the_operation_and_a_retry_converges(co
         await service.revoke_plugin("demo")
 
     assert captured.value.code == "PLUGIN_PERMISSIONS_WRITE_FAILED"
-    # Neither store changed.
-    assert consent_flow["consents"].read("demo")["decision"] == "approved"
     assert MEMORY_READ in consent_flow["permissions"].read("demo")["permissions"]
 
     consent_flow["manager"].fail_name = None
+    legacy = consent_flow["legacy_bytes"]()
     await service.revoke_plugin("demo")
-    assert consent_flow["consents"].read("demo") == {}
     assert MEMORY_READ not in consent_flow["permissions"].read("demo")["permissions"]
+    assert consent_flow["legacy_bytes"]() == legacy
 
 
 def test_apply_legacy_decision_is_idempotent(manager):
@@ -1150,7 +1180,7 @@ def test_apply_legacy_decision_is_idempotent(manager):
 
 @pytest.mark.asyncio
 async def test_mirror_first_loads_and_imports_inside_the_consent_operation(consent_flow):
-    consent_flow["consents"].decide("demo", "approved", ["memory.read"], "1")
+    consent_flow["seed"]("demo", "approved", ["memory.read"])
 
     # The permission store has not been read yet: the revoke itself imports.
     await consent_flow["service"].revoke_plugin("demo")
@@ -1161,7 +1191,7 @@ async def test_mirror_first_loads_and_imports_inside_the_consent_operation(conse
 
 @pytest.mark.asyncio
 async def test_deny_mirror_failure_leaves_both_stores_unchanged(consent_flow):
-    consent_flow["consents"].decide("demo", "approved", ["memory.read"], "1")
+    consent_flow["seed"]("demo", "approved", ["memory.read"])
     consent_flow["permissions"].read("demo")
     consent_flow["manager"].fail_name = "plugin_permissions.json"
 
@@ -1188,46 +1218,64 @@ def test_mirror_applies_source_rules(manager):
 
 
 @pytest.mark.asyncio
-async def test_approval_after_a_source_change_grants_only_what_was_asked(consent_flow):
+async def test_approval_after_a_source_change_asks_about_everything_again(consent_flow):
     service, permissions = consent_flow["service"], consent_flow["permissions"]
-    consent_flow["consents"].decide("demo", "approved", ["memory.read"], "1")
+    consent_flow["seed"]("demo", "approved", ["memory.read"])
     permissions.read("demo")  # imported: memory:read granted
     permissions.sync_source("demo", MARKET)  # first binding
     permissions.sync_source("demo", MANUAL)  # source change discards grants
     consent_flow["report"]["capabilities"] = ["memory.read", "messages.push"]
 
+    details = await asyncio.to_thread(service.consent_details, "demo")
+    assert details["decision"] is None
+    assert details["state"] == "confirm"
+    assert details["unconfirmed"] == ["memory.read", "messages.push"]
+
+    with pytest.raises(ServerDomainError) as captured:
+        await service.approve_plugin(
+            "demo", version="1", unconfirmed=["messages.push"], analysis_status="completed"
+        )
+    assert captured.value.code == "PLUGIN_CONSENT_CHANGED"
     await service.approve_plugin(
-        "demo", version="1", unconfirmed=["messages.push"], analysis_status="completed"
+        "demo",
+        version="1",
+        unconfirmed=["memory.read", "messages.push"],
+        analysis_status="completed",
     )
 
-    assert set(permissions.read("demo")["permissions"]) == {MESSAGES_PUSH}
+    assert set(permissions.read("demo")["permissions"]) == {MEMORY_READ, MESSAGES_PUSH}
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ["approve", "deny", "revoke"])
-async def test_failed_consent_write_rolls_the_permission_store_back(consent_flow, operation):
+async def test_consent_decisions_never_write_the_legacy_file(consent_flow, operation):
     service, permissions = consent_flow["service"], consent_flow["permissions"]
-    consent_flow["consents"].decide("demo", "approved", ["memory.read"], "1")
+    consent_flow["seed"]("demo", "approved", ["memory.read"])
     consent_flow["report"]["capabilities"] = ["memory.read", "conversations.read"]
-    before = permissions.read("demo")
+    permissions.read("demo")  # imported
+    legacy = consent_flow["legacy_bytes"]()
+    # Any write to the legacy file would fail the request.
     consent_flow["manager"].fail_name = "plugin_consents.json"
 
-    with pytest.raises(ServerDomainError) as captured:
-        if operation == "approve":
-            await service.approve_plugin(
-                "demo",
-                version="1",
-                unconfirmed=["conversations.read"],
-                analysis_status="completed",
-            )
-        elif operation == "deny":
-            await service.deny_plugin("demo")
-        else:
-            await service.revoke_plugin("demo")
+    if operation == "approve":
+        details = await service.approve_plugin(
+            "demo",
+            version="1",
+            unconfirmed=["conversations.read"],
+            analysis_status="completed",
+        )
+        assert details["decision"] == "approved"
+        assert permissions.read("demo")["permissions"][CONVERSATIONS_READ]["state"] == "granted"
+    elif operation == "deny":
+        details = await service.deny_plugin("demo")
+        assert details["decision"] == "denied"
+        assert permissions.read("demo")[LEGACY_DENIED] is True
+    else:
+        details = await service.revoke_plugin("demo")
+        assert details["decision"] is None
+        assert permissions.read("demo")["permissions"] == {}
 
-    assert captured.value.code == "PLUGIN_CONSENT_WRITE_FAILED"
-    assert permissions.read("demo") == before
-    assert consent_flow["consents"].read("demo")["decision"] == "approved"
+    assert consent_flow["legacy_bytes"]() == legacy
 
 
 def test_writes_persist_an_import_held_in_memory_or_fail(manager):
@@ -1266,25 +1314,6 @@ def test_consent_approval_replaces_an_explicit_undecided_entry(manager):
     assert record["permissions"][MEMORY_READ]["legacy_any"] is True
     # A real decision from the permission flow is still kept.
     assert record["permissions"][CONVERSATIONS_READ]["state"] == "denied"
-
-
-@pytest.mark.asyncio
-async def test_failed_undo_is_reported_on_the_consent_error(consent_flow, monkeypatch):
-    service, permissions = consent_flow["service"], consent_flow["permissions"]
-    consent_flow["consents"].decide("demo", "approved", ["memory.read"], "1")
-    permissions.read("demo")
-    consent_flow["manager"].fail_name = "plugin_consents.json"
-
-    def _restore_fails(*_args, **_kwargs):
-        raise ServerDomainError("PLUGIN_PERMISSIONS_WRITE_FAILED", "disk full", 503)
-
-    monkeypatch.setattr(permissions, "restore", _restore_fails)
-
-    with pytest.raises(ServerDomainError) as captured:
-        await service.revoke_plugin("demo")
-
-    assert captured.value.code == "PLUGIN_CONSENT_WRITE_FAILED"
-    assert captured.value.details["permission_rollback"] == "incomplete"
 
 
 def test_sync_source_with_a_pending_import_only_fails_a_needed_write(manager):
