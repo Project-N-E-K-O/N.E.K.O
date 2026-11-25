@@ -121,15 +121,19 @@
     async function act(planId, action) {
         if (busy) return;
         setBusy(true);
+        let failed = false;
         try {
             const data = await action();
             if (isStatus(data)) applyState(data);
             return data;
         } catch (error) {
+            failed = true;
             say(planId, error.message, 'error');
         } finally {
             setBusy(false);
             render();
+            // A lost answer does not mean nothing was saved: read what the server has now.
+            if (failed) load();
         }
     }
 
