@@ -4051,8 +4051,6 @@
         afterBind: afterBind,
         isActive: function () { return I.isVisitChatActive(); },
         getState: publicVisitState,
-        // 语音消息（app-buttons.js）：串门接管输入框时把转写文本当作亲人句发出
-        submitAudioTranscript: function (detail) { return I.submitVisitAudioTranscript(detail); },
         // 喵宇宙面板的备用邀请码入口复用正式预览、确认与加入流程。
         joinWithCode: joinWithCode,
         joinDirect: joinDirect,
@@ -4068,6 +4066,8 @@
         requestCatWorldState: requestCatWorldState,
         endCatVisitForModelReturn: endCatVisitForModelReturn,
         confirmCatVisitEnded: confirmCatVisitEnded,
+        // 语音消息（app-buttons.js）：串门接管输入框时把转写文本当作亲人句发出
+        submitAudioTranscript: function (detail) { return I.submitVisitAudioTranscript(detail); },
         // 测试用：只读快照与内部入口
         _test: {
             assembleClauses: assembleClauses,
