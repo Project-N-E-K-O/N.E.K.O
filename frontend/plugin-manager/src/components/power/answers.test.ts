@@ -1,0 +1,297 @@
+// @vitest-environment happy-dom
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createApp, h, nextTick, reactive } from 'vue'
+import type { Component } from 'vue'
+import { createI18n } from 'vue-i18n'
+import ElementPlus from 'element-plus'
+import words from '@/i18n/power/en-US'
+import type { BoardAsk, BoardCard } from '@/api/console'
+import AskBox from './AskBox.vue'
+import { SETTLE_MS, answerBody, askQuestions, askShape, describeAnswerError, saysSomething } from './ask'
+import AskBubble from './colony/AskBubble.vue'
+import ColonyTerritory from './colony/ColonyTerritory.vue'
+import type { ColonyMember } from './colony/ColonyTerritory.vue'
+import FamiliarCard from './home/FamiliarCard.vue'
+import { sendAnswer } from './useAskAnswers'
+
+const api = vi.hoisted(() => ({
+  answerCommission: vi.fn(),
+  consoleErrorCode: (error: unknown) => (error as { code?: string })?.code ?? null,
+}))
+vi.mock('@/api/console', () => api)
+
+let cleanup: Array<() => void> = []
+async function flush() { for (let i = 0; i < 8; i++) { await Promise.resolve(); await nextTick() } }
+async function mount(component: Component, props: Record<string, unknown> = {}) {
+  const container = document.createElement('div')
+  document.body.append(container)
+  const state = reactive({ props })
+  const app = createApp({ render: () => h(component, state.props) })
+  app.use(ElementPlus)
+  app.use(createI18n({ legacy: false, locale: 'en-US', messages: { 'en-US': { power: words } } }))
+  app.mount(container)
+  cleanup.push(() => { app.unmount(); container.remove() })
+  await flush()
+  return { container, state }
+}
+const t = (key: string) => key
+const te = () => false
+function typeInto(input: Element | null, value: string) {
+  expect(input).toBeTruthy()
+  ;(input as HTMLInputElement).value = value
+  input!.dispatchEvent(new Event('input', { bubbles: true }))
+}
+const inputOf = (container: Element, testId: string) =>
+  container.querySelector(`input[data-testid="${testId}"], [data-testid="${testId}"] input`)
+async function press(element: Element | null | undefined) {
+  expect(element).toBeTruthy()
+  ;(element as HTMLElement).click()
+  await flush()
+}
+
+const permission = (over: Partial<BoardAsk> = {}): BoardAsk => ({
+  id: 'q1', kind: 'permission', category: 'run_command', detail: { command: 'npm run build' }, options: ['always', 'session', 'once', 'deny'], ...over,
+})
+const confirmation: BoardAsk = { id: 'q2', kind: 'confirmation', question: 'Send it to the group?' }
+const oneQuestion: BoardAsk = {
+  id: 'q3', kind: 'questions',
+  questions: [{ id: 'theme', question: 'Which theme?', options: [{ label: 'Light', description: 'matches the logo' }, { label: 'Dark' }, 'System'] }],
+}
+const twoQuestions: BoardAsk = {
+  id: 'q4', kind: 'questions',
+  questions: [
+    { id: 'same', question: 'Deploy where?', options: [{ label: 'Vercel' }, { label: 'Not now' }] },
+    { id: 'same', question: 'Which tags?', options: ['a', 'b', 'Not now'], multi_select: true },
+  ],
+}
+const inWords: BoardAsk = { id: 'q5', kind: 'report', question: 'Which file do I keep?' }
+
+beforeEach(() => { api.answerCommission.mockReset() })
+afterEach(() => {
+  cleanup.forEach(done => done())
+  cleanup = []
+  vi.useRealTimers()
+})
+
+describe('how a question is answered', () => {
+  it('tells the kinds of question apart, and names each question by where it stands', () => {
+    expect([permission(), confirmation, oneQuestion, inWords].map(askShape)).toEqual(['permission', 'confirmation', 'questions', 'words'])
+    // Questions that offer nothing to pick are answered in words.
+    expect(askShape({ kind: 'questions', questions: [{ question: 'Why?' }] })).toBe('words')
+    // By position: the model gave both the same id.
+    expect(askQuestions(twoQuestions).map(item => [item.id, item.multi, item.options.map(option => option.label)])).toEqual([
+      ['0', false, ['Vercel', 'Not now']], ['1', true, ['a', 'b', 'Not now']],
+    ])
+    expect(askQuestions(oneQuestion)[0].options).toEqual([
+      { label: 'Light', description: 'matches the logo' }, { label: 'Dark', description: '' }, { label: 'System', description: '' },
+    ])
+  })
+
+  it('sends an answer against the question that was shown, without what says nothing', () => {
+    expect(answerBody({ choice: 'deny', note: '  use pnpm  ' }, permission())).toEqual({
+      text: undefined, choice: 'deny', selected: undefined, note: 'use pnpm', question_id: 'q1',
+    })
+    expect(answerBody({ selected: { 0: ['Vercel'], 1: [] }, text: ' ' }, twoQuestions)).toEqual({
+      text: undefined, choice: undefined, selected: { 0: ['Vercel'] }, note: undefined, question_id: 'q4',
+    })
+    expect([{}, { text: '  ' }, { selected: { 0: [] } }, { note: 'only a note' }].map(saysSomething)).toEqual([false, false, false, false])
+    expect([{ choice: 'once' }, { text: 'x' }, { selected: { 0: ['a'] } }].map(saysSomething)).toEqual([true, true, true])
+  })
+
+  it('says of an answer that came too late that the question is another by now', async () => {
+    expect(describeAnswerError({ code: 'not_taken' }, t, te)).toBe('power.ask.stale')
+    // Any other refusal in the words the pages have for it.
+    expect(describeAnswerError({ response: { status: 500 } }, t, te)).toBe('power.errors.generic')
+    // The answer is in; the sentence that was to go with it was not taken.
+    api.answerCommission.mockResolvedValue({ success: true, note_taken: false })
+    expect(await sendAnswer('c1', { choice: 'deny', note: 'x' }, permission(), t)).toBe('power.ask.noteLost')
+    expect(api.answerCommission).toHaveBeenCalledWith('c1', { text: undefined, choice: 'deny', selected: undefined, note: 'x', question_id: 'q1' })
+    api.answerCommission.mockResolvedValue({ success: true })
+    expect(await sendAnswer('c1', { choice: 'once' }, permission(), t)).toBe('')
+  })
+})
+
+describe('the box a question is answered in', () => {
+  it('takes a sentence along with an approval, and never the sentence alone', async () => {
+    const answers: unknown[] = []
+    const { container } = await mount(AskBox, { ask: permission(), busy: '', onAnswer: (given: unknown) => answers.push(given) })
+    typeInto(inputOf(container, 'familiar-note'), 'use pnpm instead')
+    await flush()
+    // Words alone would be read as a refusal: Enter sends nothing, and there is no button for them.
+    inputOf(container, 'familiar-note')!.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }))
+    expect(answers).toEqual([])
+    expect(container.querySelector('[data-testid="familiar-answer"]')).toBeNull()
+    await press(container.querySelector('[data-choice="deny"]'))
+    expect(answers).toEqual([{ choice: 'deny', note: 'use pnpm instead' }])
+  })
+
+  it('answers a plugin that wants confirmation with yes or no, with words beside them', async () => {
+    const answers: unknown[] = []
+    const { container } = await mount(AskBox, { ask: confirmation, busy: '', onAnswer: (given: unknown) => answers.push(given) })
+    expect(container.querySelector('[data-confirm="yes"]')?.textContent).toContain(words.ask.confirm.yes)
+    await press(container.querySelector('[data-confirm="yes"]'))
+    typeInto(inputOf(container, 'familiar-reply'), 'only the first two')
+    await flush()
+    await press(container.querySelector('[data-confirm="no"]'))
+    await press(container.querySelector('[data-testid="familiar-answer"]'))
+    expect(answers).toEqual([
+      { choice: 'yes', text: undefined }, { choice: 'no', text: 'only the first two' }, { text: 'only the first two' },
+    ])
+  })
+
+  it('answers the one question that offers one pick the moment an option is pressed', async () => {
+    const answers: unknown[] = []
+    const { container } = await mount(AskBox, { ask: oneQuestion, busy: '', onAnswer: (given: unknown) => answers.push(given) })
+    // The options are buttons, said once: not printed into the question as well.
+    expect(container.querySelector('[data-testid="familiar-asked"]')?.textContent).toBe('Which theme?')
+    expect([...container.querySelectorAll('[data-option]')].map(option => option.getAttribute('data-option'))).toEqual(['Light', 'Dark', 'System'])
+    expect(container.querySelector('[data-option="Light"]')?.textContent).toContain('matches the logo')
+    typeInto(inputOf(container, 'familiar-reply'), 'bigger type too')
+    await flush()
+    await press(container.querySelector('[data-option="Dark"]'))
+    expect(answers).toEqual([{ selected: { 0: ['Dark'] }, text: 'bigger type too' }])
+  })
+
+  it('lets several be picked where more is asked, and sends them together', async () => {
+    const answers: unknown[] = []
+    const { container } = await mount(AskBox, { ask: twoQuestions, busy: '', onAnswer: (given: unknown) => answers.push(given) })
+    const option = (question: string, label: string) => container.querySelector(`[data-question="${question}"] [data-option="${label}"]`)
+    const send = () => container.querySelector('[data-testid="familiar-answer"]') as HTMLButtonElement
+    expect(send().disabled).toBe(true)
+    await press(option('0', 'Vercel'))
+    await press(option('0', 'Not now'))
+    await press(option('1', 'a'))
+    await press(option('1', 'Not now'))
+    await press(option('1', 'a'))
+    expect(answers).toEqual([])
+    // One of the first (the later press took its place), any of the second; pressed again, off.
+    expect(option('0', 'Vercel')?.getAttribute('aria-pressed')).toBe('false')
+    expect(option('0', 'Not now')?.getAttribute('aria-pressed')).toBe('true')
+    expect(option('1', 'a')?.getAttribute('aria-pressed')).toBe('false')
+    expect(send().disabled).toBe(false)
+    await press(send())
+    expect(answers).toEqual([{ selected: { 0: ['Not now'], 1: ['Not now'] }, text: '' }])
+  })
+
+  it('holds its buttons back for a moment when another question takes the place of the one shown', async () => {
+    vi.useFakeTimers()
+    const answers: unknown[] = []
+    const { container, state } = await mount(AskBox, { ask: permission(), busy: '', onAnswer: (given: unknown) => answers.push(given) })
+    const once = () => container.querySelector('[data-choice="once"]') as HTMLButtonElement
+    expect(once().disabled).toBe(false)
+    state.props = { ...state.props, ask: permission({ id: 'q9', detail: { command: 'rm -rf dist' } }) }
+    await flush()
+    // The press that was on its way to the last question does not approve this one.
+    expect(once().disabled).toBe(true)
+    await press(once())
+    expect(answers).toEqual([])
+    vi.advanceTimersByTime(SETTLE_MS)
+    await flush()
+    expect(once().disabled).toBe(false)
+    await press(once())
+    expect(answers).toEqual([{ choice: 'once', note: undefined }])
+  })
+})
+
+describe('the card above the head of a familiar that waits', () => {
+  const bubble = (ask: BoardAsk, more: Record<string, unknown> = {}) => mount(AskBubble, { ask, name: 'Tabby', busy: '', error: '', ...more })
+
+  it('offers an approval this once or not at all, and the rest behind "more"', async () => {
+    const answers: unknown[] = []
+    let opened = 0
+    const { container } = await bubble(permission(), { onAnswer: (given: unknown) => answers.push(given), onMore: () => { opened += 1 } })
+    expect(container.querySelector('[data-testid="bubble-asked"]')?.textContent).toContain('npm run build')
+    // Not for good, nor for all of the commission: those are given where all of it is shown.
+    expect([...container.querySelectorAll('[data-choice]')].map(choice => choice.getAttribute('data-choice'))).toEqual(['once', 'deny'])
+    expect(container.querySelector('[data-testid="bubble-say"]')).toBeNull()
+    await press(container.querySelector('[data-choice="once"]'))
+    await press(container.querySelector('[data-testid="bubble-more"]'))
+    expect(answers).toEqual([{ choice: 'once' }])
+    expect(opened).toBe(1)
+  })
+
+  it('answers yes or no, a few options, or in words on a line of its own', async () => {
+    const answers: unknown[] = []
+    const onAnswer = (given: unknown) => answers.push(given)
+    const yesNo = await bubble(confirmation, { onAnswer })
+    await press(yesNo.container.querySelector('[data-confirm="no"]'))
+    const picks = await bubble(oneQuestion, { onAnswer })
+    await press(picks.container.querySelector('[data-option="System"]'))
+    // Where it can only be answered in words the line is there from the start; elsewhere it is asked for.
+    expect(picks.container.querySelector('[data-testid="bubble-reply"]')).toBeNull()
+    const said = await bubble(inWords, { onAnswer })
+    typeInto(said.container.querySelector('[data-testid="bubble-reply"]'), 'the newest one')
+    await flush()
+    said.container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await flush()
+    expect(answers).toEqual([{ choice: 'no', text: undefined }, { selected: { 0: ['System'] }, text: '' }, { text: 'the newest one' }])
+  })
+
+  it('leaves what has much to pick from to the whole question, and says why an answer was not taken', async () => {
+    const { container } = await bubble(twoQuestions, { error: 'Not delivered' })
+    expect(container.querySelector('[data-option]')).toBeNull()
+    expect(container.querySelector('[data-testid="bubble-more"]')).toBeTruthy()
+    expect(container.querySelector('[data-testid="bubble-error"]')?.textContent).toBe('Not delivered')
+    await press(container.querySelector('[data-testid="bubble-say"]'))
+    expect(container.querySelector('[data-testid="bubble-reply"]')).toBeTruthy()
+  })
+})
+
+describe('where the cards are shown', () => {
+  const member = (over: Partial<ColonyMember>): ColonyMember => ({
+    id: 's1', name: 'Tabby', avatar: 'worker', leader: false, parent: null, look: 'waiting_user', said: '', hidden: false, ...over,
+  })
+
+  it('puts what a familiar asks above its head, beside its button and not in it', async () => {
+    const given: unknown[] = []
+    const opened: string[] = []
+    const { container } = await mount(ColonyTerritory, {
+      territory: {
+        key: 'project:blog', name: 'blog', loose: false,
+        members: [
+          member({ ask: permission(), commission: 'c1' }),
+          // Nothing known of what it asks (what happened is replayed): only that it waits.
+          member({ id: 's2', name: 'Soot' }),
+          member({ id: 's3', name: 'Ash', look: 'working', said: 'half way', ask: permission(), commission: 'c3' }),
+        ],
+      },
+      answering: { c1: '' }, failed: {},
+      onAnswer: (id: string, answer: unknown) => given.push([id, answer]),
+      onAsk: (id: string) => opened.push(id),
+    })
+    await flush()
+    const card = container.querySelector('[data-ask-of="s1"]')
+    expect(card).toBeTruthy()
+    expect(card!.closest('button')).toBeNull()
+    expect(container.querySelector('[data-cat="s1"] .bubble')).toBeNull()
+    expect(container.querySelector('[data-cat="s2"] .bubble')?.textContent).toBe(words.colony.waitingBubble)
+    expect(container.querySelector('[data-ask-of="s2"]')).toBeNull()
+    // One at work asks nothing, whatever its card still carries.
+    expect(container.querySelector('[data-ask-of="s3"]')).toBeNull()
+    expect(container.querySelector('[data-cat="s3"] .bubble')?.textContent).toBe('half way')
+    await press(card!.querySelector('[data-choice="deny"]'))
+    await press(card!.querySelector('[data-testid="bubble-more"]'))
+    expect(given).toEqual([['s1', { choice: 'deny' }]])
+    expect(opened).toEqual(['s1'])
+  })
+
+  it('answers in the card of the board, where pressing the card itself still opens the familiar', async () => {
+    const card = {
+      id: 's1', name: 'Tabby', preset: 'worker', avatar: 'worker', label: '', title: '', duty: '', doing: '', state: 'waiting_user', leader: false,
+      commission: { id: 'c1', title: 'build the site', status: 'waiting_user', started_at: null, ask: confirmation },
+    } as unknown as BoardCard
+    const opened: unknown[] = []
+    const answers: unknown[] = []
+    const props = { card, answers: true, busy: '', error: 'It did not take that', onOpen: (which: unknown) => opened.push(which), onAnswer: (given: unknown) => answers.push(given) }
+    const { container } = await mount(FamiliarCard, props)
+    await press(container.querySelector('[data-confirm="yes"]'))
+    expect(answers).toEqual([{ choice: 'yes', text: undefined }])
+    expect(opened).toEqual([])
+    expect(container.querySelector('[data-testid="familiar-card-error"]')?.textContent).toContain('It did not take that')
+    await press(container.querySelector('[data-testid="familiar-open"]'))
+    expect(opened).toEqual([card])
+    // Where the card is one of a list to choose from, it only opens.
+    const plain = await mount(FamiliarCard, { card })
+    expect(plain.container.querySelector('[data-testid="familiar-ask"]')).toBeNull()
+  })
+})

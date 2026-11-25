@@ -112,7 +112,8 @@ export default function NekoPowerAskBlock({ block, message, interactive, onActio
     setPicked({ ...picked, [item.id]: now });
   };
   const sendWords = () => {
-    if (held || (!reply.trim() && !somePicked)) return;
+    // Words alone are no answer to a request for approval: they would be read as a refusal.
+    if (held || view.shape === 'permission' || (!reply.trim() && !somePicked)) return;
     give(somePicked ? { selected: picked, text: reply } : { text: reply });
   };
   const compact = presentation === 'bubble';
