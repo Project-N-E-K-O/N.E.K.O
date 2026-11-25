@@ -277,6 +277,12 @@ class VoiceInputRegistry:
             if not tasks:
                 return
             await asyncio.gather(*tasks, return_exceptions=True)
+            # Drop the finished tasks here instead of waiting for their
+            # ``discard`` done-callbacks. Since Python 3.12, gather() over
+            # tasks that are all already done completes without yielding to
+            # the event loop, so callbacks still queued on the loop never get
+            # a turn and this loop would spin forever on the same done tasks.
+            self._background_tasks.difference_update(tasks)
 
     async def close(self) -> None:
         if not self._closed:

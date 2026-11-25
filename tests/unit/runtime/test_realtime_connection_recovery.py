@@ -88,6 +88,11 @@ async def _settle_background_tasks(client: OmniRealtimeClient) -> None:
             asyncio.gather(*pending),
             timeout=max(0.0, deadline - loop.time()),
         )
+        # ``_bg_tasks`` is emptied by each task's ``discard`` done-callback,
+        # which runs on a later loop iteration. Since Python 3.12, gather()
+        # over tasks that are all already done completes without yielding, so
+        # without this the loop would spin forever before those callbacks run.
+        await asyncio.sleep(0)
 
 
 def _make_manager(session=None) -> LLMSessionManager:
