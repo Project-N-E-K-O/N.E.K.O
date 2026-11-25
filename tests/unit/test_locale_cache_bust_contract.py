@@ -66,10 +66,24 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
-        "2026-11-25-bailian-api-host",
+        "2026-11-25-chat-audio-ui-main-merge",
+        "2026-11-25-theme-studio-bailian-merge",
         "2026-11-25-theme-studio-backup-skipped-images",
         "2026-11-25-theme-studio-panel-i18n",
         "2026-11-25-theme-studio-subscriptions-merge",
+        "2026-11-25-chat-audio-ui-only",
+        "2026-11-25-bailian-api-host",
+        "2026-11-25-chat-audio-main-merge-2",
+        "2026-11-25-chat-audio-main-merge",
+        "2026-11-16-chat-audio-expired",
+        "2026-11-15-chat-audio-independent-asr",
+        "2026-11-15-chat-audio-main-rebase-4",
+        "2026-11-15-chat-audio-main-rebase-3",
+        "2026-11-14-chat-audio-theater-nekoclaw-merge",
+        "2026-11-15-chat-audio-main-rebase-2",
+        "2026-11-14-chat-audio-theater-nekoclaw-manual-unavailable",
+        "2026-11-15-chat-audio-main-rebase-1",
+        "2026-11-14-chat-audio-theater-nekoclaw-close-preview",
         "2026-11-25-subscriptions-panel",
         "2026-11-25-theme-studio-main-merge",
         "2026-11-25-qwen-token-plan-tts-main-merge",
@@ -144,13 +158,13 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-11-13-theater-invite-card",
         "2026-11-13-theater-main-merge",
         "2026-11-11-theater-sync-evidence-merge",
-        "2026-11-11-atlascloud-assist-provider-main-merge",
         "2026-11-03-theater-market-community-invite-merge",
         "2026-11-11-sync-evidence-notices",
         "2026-11-03-theater-market-news-overseas-merge",
         "2026-11-03-theater-market-systray-labels-merge",
-        "2026-11-03-news-overseas-systray-labels-main-merge",
         "2026-11-03-theater-market-chat-sync-merge",
+        "2026-11-11-chat-audio-messages",
+        "2026-11-11-chat-audio-main-merge",
         "2026-11-11-air-basketball-main-merge",
         "2026-11-02-atlascloud-assist-provider-main-merge",
         "2026-11-10-air-basketball-shared-court",
@@ -630,6 +644,11 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-03-air-basketball-review-fixes",
         "2026-10-03-air-basketball-review-round2",
         "2026-10-01-theater-click-guide-memory-reactivation",
+        "2026-11-12-chat-audio-atlascloud-main-merge",
+        "2026-11-14-chat-audio-manual-unavailable",
+        "2026-11-13-chat-audio-close-preview",
+        "2026-11-11-atlascloud-assist-provider-main-merge",
+        "2026-11-03-news-overseas-systray-labels-main-merge",
     }
 )
 
@@ -642,7 +661,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "9d36779be79c58352acfa32da69685fd9c3ce5903ddc79b78cf688c9317cc099"
+LOCALE_KEY_SIGNATURE = "15e38b81d19cd2379856f223175b2395dfd8d68cb734e7c8e405809beca36c9d"
 
 
 _BUMP_INSTRUCTIONS = (
