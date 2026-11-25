@@ -10888,10 +10888,15 @@ class TaskAgentManager(TreeWork):
                 # as what that member was at (``hand_over``: what it was at is over, its session not
                 # yet let go of), is the busy member's: given back below, for whatever that one is
                 # at next. What the user said to the commission goes with it.
-                notes = self._notes.get(commission_id, [])
-                handed = [note for note in notes if isinstance(note, _Handed)]
+                # Loops, not comprehensions: Nuitka 4.2.2 cannot compile one in a finally whose
+                # try leaves more than one way (tests/unit/test_no_comprehension_in_multi_exit_finally.py).
+                rest: list[str] = []
+                for note in self._notes.get(commission_id, []):
+                    if isinstance(note, _Handed):
+                        handed.append(note)
+                    else:
+                        rest.append(note)
                 if handed:
-                    rest = [note for note in notes if not isinstance(note, _Handed)]
                     if rest:
                         self._notes[commission_id] = rest
                     else:
@@ -10913,7 +10918,10 @@ class TaskAgentManager(TreeWork):
                 self._spawn(self._start_next())
             if handed:
                 # Pending again (whatever this is cancelled by: the ledger has them as handed over).
-                await asyncio.shield(self._put_back([wake for note in handed for wake in note.wakes]))
+                wakes: list[int] = []
+                for note in handed:
+                    wakes.extend(note.wakes)
+                await asyncio.shield(self._put_back(wakes))
         if started:
             await self._launch(commission_id)
 
