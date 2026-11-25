@@ -1474,11 +1474,11 @@ function isKeyBookBackedTtsProvider(providerKey) {
  * 两处都 fail-open：元数据没取到（/api_providers 失败）时不过滤，宁可多列几项，
  * 也不要把用户正在用的服务商从下拉里藏掉。
  */
-function isProviderCapableForModelType(providerKey, modelType) {
+function isProviderCapableForModelType(providerKey, modelType, { allowPanelOnly = false } = {}) {
     const pk = String(providerKey || '').trim();
     if (!pk || pk === 'custom' || pk.startsWith('follow_')) return true;
     // Subscriptions (ChatGPT) are chosen in the Subscriptions & plans panel, not per slot.
-    if (isProviderFlagEnabled(getProviderInfo(pk).subscription_panel_only)) return false;
+    if (!allowPanelOnly && isProviderFlagEnabled(getProviderInfo(pk).subscription_panel_only)) return false;
     const supportedTypes = getProviderInfo(pk).supported_model_types;
     if (Array.isArray(supportedTypes) && !supportedTypes.includes(modelType)) return false;
 
@@ -1514,6 +1514,13 @@ function isProviderCapableForModelType(providerKey, modelType) {
 function getProviderInfo(providerKey) {
     if (!providerKey) return {};
     return _assistApiProviders[providerKey] || _keyBookApiProviders[providerKey] || _coreApiProviders[providerKey] || {};
+}
+
+// Whether a slot's saved provider is one to keep read-only: chosen in the panel now,
+// and one the slot could use otherwise (others drop to the slot's default as before).
+function keepsPanelOnlyChoice(providerKey, modelType) {
+    return isProviderFlagEnabled(getProviderInfo(providerKey).subscription_panel_only)
+        && isProviderCapableForModelType(providerKey, modelType, { allowPanelOnly: true });
 }
 
 // A slot saved with a provider the dropdown no longer lists because it is chosen in
@@ -3264,8 +3271,7 @@ async function loadCurrentApiKey() {
                     onCustomModelProviderChange(mt);
                     return;
                 }
-                if (data[providerField]
-                    && isProviderFlagEnabled(getProviderInfo(data[providerField]).subscription_panel_only)) {
+                if (data[providerField] && keepsPanelOnlyChoice(data[providerField], mt)) {
                     keepPanelOnlyProvider(sel, mt, data[providerField]);
                     onCustomModelProviderChange(mt);
                     return;
@@ -7002,7 +7008,14 @@ async function initializePage() {
             MODEL_TYPES.forEach(mt => {
                 const sel = document.getElementById(`${mt}ModelProvider`);
                 if (sel && modelProviderSnapshot[mt] !== undefined) {
-                    sel.value = modelProviderSnapshot[mt];
+                    const kept = modelProviderSnapshot[mt];
+                    if (kept && keepsPanelOnlyChoice(kept, mt)) {
+                        // The rebuilt list leaves it out: put the kept choice back, its hint
+                        // in the new language.
+                        keepPanelOnlyProvider(sel, mt, kept);
+                    } else {
+                        sel.value = kept;
+                    }
                     onCustomModelProviderChange(mt);
                 }
             });

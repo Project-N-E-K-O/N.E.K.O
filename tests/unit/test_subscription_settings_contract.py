@@ -75,11 +75,16 @@ def test_page_loads_the_panel_and_hides_chatgpt_from_slot_dropdowns():
 def test_a_slot_saved_with_a_panel_only_provider_keeps_it_with_a_hint():
     """Nightly builds let ChatGPT be chosen per slot; loading such a slot keeps it read-only."""
     settings = (ROOT / "static/js/api_key_settings.js").read_text(encoding="utf-8")
-    load = settings.index("keepPanelOnlyProvider(sel, mt, data[providerField]);")
+    load = settings.index("keepsPanelOnlyChoice(data[providerField], mt)")
     fallback = settings.index("!isProviderCapableForModelType(data[providerField], mt)) {")
     # Checked before the branch that drops slots to their default provider.
     assert load < fallback
     assert "option.disabled = true;" in settings
+    # Only where the slot could use it otherwise; a text provider saved on speech slots still drops.
+    assert "isProviderCapableForModelType(providerKey, modelType, { allowPanelOnly: true })" in settings
+    # A language switch rebuilds the dropdowns; the kept choice is put back, not lost.
+    restore = settings.index("Restore model provider select values")
+    assert "keepPanelOnlyProvider(sel, mt, kept);" in settings[restore:restore + 1200]
     assert "api.subscriptions.panelOnlySlotHint" in settings
     for locale in LOCALES:
         messages = json.loads((ROOT / "static/locales" / f"{locale}.json").read_text(encoding="utf-8"))
