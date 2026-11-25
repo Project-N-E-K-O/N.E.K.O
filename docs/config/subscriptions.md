@@ -32,6 +32,7 @@ A feature belongs to one subscription at a time. Ticking a feature another subsc
 | Switch it off | Ticks and model choices are kept for next time; features go back to their previous settings |
 | Untick one feature | Only that feature goes back to its previous setting |
 | Last ChatGPT account signed out, or the plan key removed | That subscription turns off; its features go back to their previous settings |
+| The key reused from elsewhere on the page cleared (no key entered in the subscription itself) | The subscription stays on, its card shows in red that no key is available, and requests report an error; no other key is used |
 | Subscription expired, quota used up, or access revoked | The subscription stays on and requests report the reason; nothing silently falls back to a pay-as-you-go API key |
 
 New requests follow the change at once; an ongoing conversation picks it up when its session ends.

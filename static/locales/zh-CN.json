@@ -1369,6 +1369,7 @@
       "hasKey": "已保存 Key。",
       "usesGeneralKey": "使用本页其他地方（通用模型供应商或 API 管理簿）已填的对应 Key。",
       "needsKey": "填好 Key 才能使用这个订阅。",
+      "keyMissingWhileOn": "没有可用的 Key：这个订阅接管的功能会报错，不会改用别的 Key。请填写 Key 或关掉订阅。",
       "planInfo": "套餐说明与用量",
       "tag": "订阅 · {{plan}}",
       "featureNote": "这个功能现在走 {{plan}} 订阅。下面的设置保留着，关掉订阅后恢复使用；在这期间它的指示灯不代表实际在用的配置。",
@@ -1389,7 +1390,10 @@
         "unsupported_tier": "这个订阅不能接管该功能。",
         "no_key": "这个订阅通过登录使用，不需要 Key。",
         "unknown_region": "这个订阅没有该地区。",
-        "busy": "订阅设置正忙，请重试。"
+        "busy": "订阅设置正忙，请重试。",
+        "invalid": "订阅设置无法接受这个改动，请刷新页面后重试。",
+        "unreadable": "订阅设置文件已损坏，无法修改。请修复或删除 subscriptions.json 后重试。",
+        "save_failed": "订阅设置保存失败（文件可能被占用或磁盘已满），请稍后重试。"
       }
     },
     "imageModelConfig": "图片生成",

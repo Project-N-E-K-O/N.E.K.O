@@ -1051,6 +1051,10 @@ html[data-theme="dark"].subtitle-window-host body.subtitle-window-host {
   color: #aaa;
 }
 
+[data-theme="dark"] .subscription-state[data-kind="error"] {
+  color: #ef9a9a;
+}
+
 [data-theme="dark"] .subscription-summary {
   background: #252525;
   border-color: #3a5a6e;

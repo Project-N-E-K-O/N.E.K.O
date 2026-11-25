@@ -73,6 +73,8 @@
         }
         if (!response.ok) {
             const detail = data && data.detail;
+            // Request validation answers with a list of problems, not one message.
+            if (Array.isArray(detail)) throw new Error(t('error.invalid', 'The subscription settings could not take this change. Reload the page and retry.'));
             const code = detail && typeof detail === 'object' ? detail.code : '';
             const message = detail && typeof detail === 'object' ? detail.message : String(detail || '');
             throw new Error(code ? t(`error.${code}`, message) : message || t('error.network', 'Request failed.'));
@@ -313,7 +315,9 @@
         const stateText = plan.auth === 'chatgpt_oauth'
             ? (plan.ready ? '' : t('needsSignIn', 'Sign in to ChatGPT above to use this subscription.'))
             : (plan.ready ? (entry.has_key ? t('hasKey', 'Key saved.') : t('usesGeneralKey', 'Uses the matching key already entered elsewhere on this page (General Model Provider or API Key Book).'))
-                : t('needsKey', 'Enter the key to use this subscription.'));
+                : (entry.enabled
+                    ? t('keyMissingWhileOn', 'No key available: the features this subscription took will fail instead of using another key. Enter the key or turn the subscription off.')
+                    : t('needsKey', 'Enter the key to use this subscription.')));
         const message = el('p', { className: 'subscription-message', role: 'status', 'aria-live': 'polite' });
         const kept = messages[plan.id];
         if (kept) {
@@ -321,7 +325,10 @@
             message.dataset.kind = kept.kind;
         }
         return [
-            stateText ? el('p', { className: 'subscription-state', text: stateText }) : null,
+            stateText ? el('p', {
+                className: 'subscription-state', text: stateText,
+                ...(entry.enabled && !plan.ready ? { 'data-kind': 'error' } : {}),
+            }) : null,
             el('div', { className: 'subscription-actions' }, test,
                 plan.info_url && plan.auth !== 'chatgpt_oauth'
                     ? el('a', { className: 'gsv-tutorial-link', href: plan.info_url, target: '_blank', rel: 'noopener noreferrer', text: t('planInfo', 'Plan details and usage') })
@@ -351,6 +358,8 @@
             ].filter(Boolean));
         }
         markFeatures();
+        // Drawn again mid-request (a language switch, say): the new controls wait too.
+        if (busy) setBusy(true);
     }
 
     // Per-Feature Models and General Model Provider: which features go through a subscription.

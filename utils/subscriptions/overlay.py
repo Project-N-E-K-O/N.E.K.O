@@ -41,7 +41,12 @@ def plan_key(plan: dict[str, Any], entry: dict[str, Any], snapshot: dict[str, An
 
 
 def build_overlay(state: dict[str, Any], plans: dict[str, dict[str, Any]], snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Tier -> model configuration for every tier an enabled, usable plan takes."""
+    """Tier -> model configuration for every tier an enabled plan takes.
+
+    A keyed plan that is on but has no key (the reused key was removed elsewhere,
+    say) still takes its tiers with an empty key: its requests then fail on
+    authentication instead of quietly going to another, pay-as-you-go key.
+    """
     overlay: dict[str, dict[str, Any]] = {}
     for plan_id, plan in plans.items():
         entry = state.get("plans", {}).get(plan_id)
@@ -49,8 +54,6 @@ def build_overlay(state: dict[str, Any], plans: dict[str, dict[str, Any]], snaps
             continue
         if plan["auth"] == "api_key":
             api_key = plan_key(plan, entry, snapshot)
-            if not api_key:
-                continue
         else:
             api_key = ""
         base_url = plan_base_url(plan, entry.get("region"))

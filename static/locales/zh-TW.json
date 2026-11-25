@@ -1369,6 +1369,7 @@
       "hasKey": "已儲存 Key。",
       "usesGeneralKey": "使用本頁其他地方（通用模型供應商或 API 管理簿）已填的對應 Key。",
       "needsKey": "填好 Key 才能使用這個訂閱。",
+      "keyMissingWhileOn": "沒有可用的 Key：這個訂閱接管的功能會報錯，不會改用別的 Key。請填寫 Key 或關閉訂閱。",
       "planInfo": "方案說明與用量",
       "tag": "訂閱 · {{plan}}",
       "featureNote": "這個功能現在走 {{plan}} 訂閱。下方的設定保留著，關掉訂閱後恢復使用；在這期間它的指示燈不代表實際在用的設定。",
@@ -1389,7 +1390,10 @@
         "unsupported_tier": "這個訂閱不能接管該功能。",
         "no_key": "這個訂閱透過登入使用，不需要 Key。",
         "unknown_region": "這個訂閱沒有該地區。",
-        "busy": "訂閱設定忙碌中，請重試。"
+        "busy": "訂閱設定忙碌中，請重試。",
+        "invalid": "訂閱設定無法接受這個變更，請重新整理頁面後再試。",
+        "unreadable": "訂閱設定檔已損壞，無法修改。請修復或刪除 subscriptions.json 後再試。",
+        "save_failed": "訂閱設定儲存失敗（檔案可能被占用或磁碟已滿），請稍後再試。"
       }
     },
     "imageModelConfig": "圖片生成",

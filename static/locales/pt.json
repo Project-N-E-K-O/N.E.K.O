@@ -1369,6 +1369,7 @@
       "hasKey": "Chave salva.",
       "usesGeneralKey": "Usa a chave correspondente já informada em outra parte desta página (Provedor de modelo geral ou agenda de chaves de API).",
       "needsKey": "Informe a chave para usar esta assinatura.",
+      "keyMissingWhileOn": "Nenhuma chave disponível: os recursos que esta assinatura assumiu vão falhar em vez de usar outra chave. Informe a chave ou desative a assinatura.",
       "planInfo": "Detalhes do plano e uso",
       "tag": "Assinatura · {{plan}}",
       "featureNote": "Esta função usa agora a assinatura {{plan}}. As configurações abaixo são mantidas e voltam a valer quando a assinatura é desativada; enquanto isso, o indicador de conexão não reflete o que está em uso.",
@@ -1389,7 +1390,10 @@
         "unsupported_tier": "Esta assinatura não pode assumir esta função.",
         "no_key": "Esta assinatura é usada com login, não com uma chave.",
         "unknown_region": "Esta assinatura não tem essa região.",
-        "busy": "As configurações de assinatura estão ocupadas. Tente novamente."
+        "busy": "As configurações de assinatura estão ocupadas. Tente novamente.",
+        "invalid": "As configurações de assinatura não aceitam esta alteração. Recarregue a página e tente novamente.",
+        "unreadable": "O arquivo de configurações de assinatura está corrompido e não pode ser alterado. Corrija ou remova subscriptions.json e tente novamente.",
+        "save_failed": "Não foi possível salvar as configurações de assinatura (o arquivo pode estar em uso ou o disco cheio). Tente novamente."
       }
     },
     "imageModelConfig": "Geração de imagens",

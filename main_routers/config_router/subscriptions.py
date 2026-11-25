@@ -151,9 +151,13 @@ async def _run(fn, *args) -> Any:
     try:
         return await asyncio.to_thread(fn, *args)
     except SubscriptionError as exc:
-        _refuse("invalid", str(exc))
+        _refuse(exc.code, str(exc))
     except LockTimeout:
         _refuse("busy", "Subscription settings are busy. Please retry.", 503)
+    except OSError:
+        # The file is held by another program (antivirus on os.replace) or the disk is full.
+        logger.warning("订阅设置读写失败", exc_info=True)
+        _refuse("save_failed", "Could not save the subscription settings. Please retry.", 500)
 
 
 async def _changed() -> dict[str, Any]:

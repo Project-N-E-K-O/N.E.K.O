@@ -919,7 +919,9 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
         cached_token_field="prompt_tokens_details.cached_tokens",
     ),
     # OpenCode Go asks every request of a session to carry the same x-opencode-session
-    # header. One value per process stands for N.E.K.O's session with it.
+    # header. The value is made once per process, so when the main and agent servers
+    # run as separate processes each sends its own; whether OpenCode wants one value
+    # across processes is on the PR's list of checks with a real subscription.
     "opencode_go": CacheProviderConfig(
         provider_id="opencode_go",
         name="OpenCode Go",

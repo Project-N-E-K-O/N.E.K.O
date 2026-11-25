@@ -2215,7 +2215,8 @@ font-size: 0.8em;
 .subscription-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
 .subscription-state { margin: 6px 0; font-size: 0.85em; color: #666; }
 .subscription-message { margin: 4px 0; font-size: 0.85em; overflow-wrap: anywhere; }
-.subscription-message[data-kind="error"] { color: #c0392b; }
+.subscription-message[data-kind="error"],
+.subscription-state[data-kind="error"] { color: #c0392b; }
 .subscription-message[data-kind="ok"] { color: #2e7d32; }
 .subscription-summary { margin: 4px 0 8px; padding: 8px 12px; font-size: 0.85em; color: var(--text-blue-sub, #2a6f97); background: #f0f9ff; border: 1px solid #d0e8ff; border-radius: 8px; }
 .subscription-tag { margin-left: 8px; font-size: 0.75em; padding: 1px 8px; border-radius: 999px; background: #e3f6fd; color: #1f6f8b; border: 1px solid #b3e5fc; white-space: nowrap; }

@@ -31,7 +31,11 @@ VERSION = 1
 
 
 class SubscriptionError(ValueError):
-    """A change the store refuses; the message is safe to show."""
+    """A change the store refuses; the message is safe to show, ``code`` names it for the panel."""
+
+    def __init__(self, message: str, code: str = "invalid") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def _empty() -> dict[str, Any]:
@@ -89,11 +93,11 @@ class SubscriptionStore:
             value = json.loads(text)
         except ValueError:
             raise SubscriptionError(
-                "Subscription settings are unreadable. Fix or remove subscriptions.json."
+                "Subscription settings are unreadable. Fix or remove subscriptions.json.", "unreadable"
             ) from None
         if not isinstance(value, dict) or not isinstance(value.get("plans"), dict):
             raise SubscriptionError(
-                "Subscription settings are unreadable. Fix or remove subscriptions.json."
+                "Subscription settings are unreadable. Fix or remove subscriptions.json.", "unreadable"
             )
         return parse(text)
 

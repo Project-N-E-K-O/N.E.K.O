@@ -104,15 +104,17 @@ def test_plan_definitions_load():
     assert mimo["regions"]["cn"].startswith("https://token-plan-cn.") and mimo["key_fallback"]
 
 
-def test_overlay_skips_plans_that_are_off_or_have_no_key():
+def test_overlay_skips_plans_that_are_off_and_keeps_keyless_ones_failing():
     plans = get_plans()
     state = {"plans": {
         "chatgpt": {"enabled": True, "tiers": {"conversation": "gpt-x", "realtime": "x"}, "api_key": "", "region": ""},
         "mimo_token_plan": {"enabled": True, "tiers": {"memory": "mimo-v2.6-pro"}, "api_key": "", "region": "sgp"},
     }}
     overlay = build_overlay(state, plans, {})
-    assert set(overlay) == {"conversation"}
+    assert set(overlay) == {"conversation", "memory"}
     assert overlay["conversation"]["provider_type"] == "chatgpt" and overlay["conversation"]["api_key"] == ""
+    # On without a key: the tier stays with the plan and its requests fail on authentication.
+    assert overlay["memory"]["subscription"] == "mimo_token_plan" and overlay["memory"]["api_key"] == ""
     # The plan key entered under General Model Provider stands in for a missing own key.
     overlay = build_overlay(state, plans, {"ASSIST_API_KEY_MIMO_TOKEN_PLAN": "tp-general"})
     assert overlay["memory"]["api_key"] == "tp-general"
@@ -266,6 +268,22 @@ def test_minigame_tiers_following_the_other_tier_inherit_its_subscription(config
     assert _all_tiers(cm) == baseline
 
 
+def test_a_plan_whose_reused_key_was_removed_does_not_fall_back_to_another_key(config_manager):
+    cm = config_manager
+    plan = get_plans()["ark_coding_plan"]
+    tier = plan["tiers"][0]
+    _write_core(cm, {**BASE_CORE, "assistApiKeyDoubao": "sk-doubao-test"})
+    store = _store(cm)
+    store.set_tier("ark_coding_plan", tier, "doubao-seed-2.1-pro")
+    store.set_enabled("ark_coding_plan", True)
+    assert cm.get_model_api_config(tier)["api_key"] == "sk-doubao-test"
+
+    _write_core(cm, BASE_CORE)  # the reused key removed under General Model Provider
+    result = cm.get_model_api_config(tier)
+    assert result["subscription"] == "ark_coding_plan"
+    assert result["api_key"] == ""
+
+
 def test_agent_server_drops_its_read_cache_when_told_the_configuration_changed(monkeypatch):
     import asyncio
 
@@ -308,6 +326,29 @@ def client_factory(config_manager, monkeypatch):
         )
 
     return make, notified
+
+
+@pytest.mark.asyncio
+async def test_routes_name_a_damaged_file_and_a_failed_save(config_manager, client_factory, monkeypatch):
+    from utils.subscriptions.store import SubscriptionStore
+
+    cm = config_manager
+    _write_core(cm, BASE_CORE)
+    make, _ = client_factory
+    prefix = "/api/config/subscriptions"
+    path = cm.local_state_dir / "subscriptions.json"
+    async with make() as client:
+        path.write_text("{broken", encoding="utf-8")
+        damaged = await client.post(f"{prefix}/chatgpt/tier", json={"tier": "conversation", "model": "gpt-x"})
+        assert damaged.status_code == 400 and damaged.json()["detail"]["code"] == "unreadable"
+        path.unlink()
+
+        def held(self, value):
+            raise PermissionError("held by another program")
+
+        monkeypatch.setattr(SubscriptionStore, "_write", held)
+        failed = await client.post(f"{prefix}/chatgpt/tier", json={"tier": "conversation", "model": "gpt-x"})
+        assert failed.status_code == 500 and failed.json()["detail"]["code"] == "save_failed"
 
 
 @pytest.mark.asyncio

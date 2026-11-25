@@ -1369,6 +1369,7 @@
       "hasKey": "Key saved.",
       "usesGeneralKey": "Uses the matching key already entered elsewhere on this page (General Model Provider or API Key Book).",
       "needsKey": "Enter the key to use this subscription.",
+      "keyMissingWhileOn": "No key available: the features this subscription took will fail instead of using another key. Enter the key or turn the subscription off.",
       "planInfo": "Plan details and usage",
       "tag": "Subscription · {{plan}}",
       "featureNote": "This feature uses the {{plan}} subscription now. The settings below are kept and come back when the subscription is off; meanwhile their connectivity light does not reflect what is used.",
@@ -1389,7 +1390,10 @@
         "unsupported_tier": "This subscription cannot take over this feature.",
         "no_key": "This subscription signs in instead of using a key.",
         "unknown_region": "This subscription has no such region.",
-        "busy": "Subscription settings are busy. Please retry."
+        "busy": "Subscription settings are busy. Please retry.",
+        "invalid": "The subscription settings could not take this change. Reload the page and retry.",
+        "unreadable": "The subscription settings file is damaged and cannot be changed. Fix or remove subscriptions.json, then retry.",
+        "save_failed": "Could not save the subscription settings (the file may be in use or the disk full). Please retry."
       }
     },
     "imageModelConfig": "Image generation",
