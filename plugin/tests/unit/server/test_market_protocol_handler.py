@@ -248,10 +248,15 @@ def test_protocol_handler_malformed_dotenv_allows_open_but_fails_closed_for_inst
 
     assert market_protocol_handler.main(["neko://open?plugin=demo"]) == 0
 
+    http_client_calls = 0
+
     def forbid_http(*_args, **_kwargs):
+        nonlocal http_client_calls
+        http_client_calls += 1
         raise AssertionError("HTTP must not be attempted when .env cannot be read")
 
     monkeypatch.setattr(httpx, "AsyncClient", forbid_http)
     install_uri = f"neko://install?url=https://example.test/p.neko-plugin&sha256={'c' * 64}&id=demo&version=1.0.0"
     assert market_protocol_handler.main([install_uri]) == 1
+    assert http_client_calls == 0
     assert any(".env" in msg for msg in notices)
