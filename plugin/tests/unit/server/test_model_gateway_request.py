@@ -67,6 +67,19 @@ def test_plugin_temperature_is_accepted_and_dropped(slot, body, value):
     assert body.keys() == original.keys()  # the caller's body is left as it was
 
 
+def test_deeply_nested_temperature_is_dropped_before_copying(slot, body):
+    # The value is never inspected, so its shape must not matter: dropping it
+    # before the request is copied keeps a deep structure from raising
+    # RecursionError in copy.deepcopy.
+    value: list = []
+    for _ in range(5000):
+        value = [value]
+    body["temperature"] = value
+    result = prepare_chat_request(slot, body)
+    assert "temperature" not in result
+    assert body["temperature"] is value
+
+
 def test_saved_default_temperature_is_ignored(slot, body):
     slot.defaults = ModelDefaults.model_validate({"temperature": 0.8, "max_output_tokens": 500})
     assert slot.defaults.model_dump() == {"max_output_tokens": 500}

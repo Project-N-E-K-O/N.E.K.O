@@ -322,7 +322,9 @@ def prepare_chat_request(slot: ModelSlot, body: object) -> dict:
             _invalid("stop", "Expected a string or a list of 1 to 4 strings.")
     if "response_format" in source:
         _response_format(source["response_format"])
-    request = copy.deepcopy(source)
+    # Dropped before copying: their values are never inspected, so an arbitrary
+    # (e.g. deeply nested) value must not reach copy.deepcopy.
+    request = copy.deepcopy({key: value for key, value in source.items() if key not in DROPPED_FIELDS})
     for message in request["messages"]:
         if message["role"] == "assistant":
             for field in ("audio", "function_call", "annotations"):
@@ -333,8 +335,6 @@ def prepare_chat_request(slot: ModelSlot, body: object) -> dict:
                 message.pop("tool_calls", None)
     request["model"] = slot.model
     request["stream"] = stream
-    for field in DROPPED_FIELDS & request.keys():
-        request.pop(field)
     if not {"max_tokens", "max_completion_tokens"} & request.keys():
         budget = slot.defaults.max_output_tokens or 1024
         if budget > MAX_OUTPUT_TOKENS:
