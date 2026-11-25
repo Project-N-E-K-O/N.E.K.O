@@ -208,6 +208,74 @@ test('the ordinary send path checks for a visit before the bubble and right befo
   assert.match(flush.slice(0, flush.indexOf('\n    }\n')), /settleDeferredSubmission\(submission, sent\)/);
 });
 
+function buttonsSection(start, end) {
+  const from = buttonsSource.indexOf(start);
+  const to = buttonsSource.indexOf(end, from);
+  assert.ok(from >= 0 && to > from, `missing section: ${start}`);
+  return buttonsSource.slice(from, to);
+}
+
+function deferredQueue(sendHandler) {
+  const window = { lanlan_config: { lanlan_name: 'Neko' } };
+  const context = vm.createContext({ window, console: { error() {} }, Object, String, Promise });
+  vm.runInContext([
+    buttonsSection('    var avatarInteractionTextContinuationState = {', '    var avatarInteractionDispatchGateState = {'),
+    buttonsSection('    function hasPendingAvatarInteractionContinuation() {', '    function releaseDeferredTextAfterAvatarInteraction() {'),
+    'this.api = { state: avatarInteractionTextContinuationState, queueDeferredTextSubmission, flushDeferredTextSubmissions };',
+  ].join('\n'), context);
+  context.api.state.deferredSendHandler = sendHandler;
+  return { ...context.api, window };
+}
+
+test('a queued voice transcript is handed to the visit route when a visit took over meanwhile', async () => {
+  const handled = [];
+  // The real handler (sendTextPayloadInternal) answers 'visit_reroute' here.
+  const queue = deferredQueue(async (text, options) => { handled.push({ text, options }); return 'visit_reroute'; });
+  const settled = [];
+  const voice = { expectedLanlanName: 'Neko', audioMessage: true, rerouteToVisit: true };
+  queue.queueDeferredTextSubmission('语音', voice, (result) => settled.push(result));
+  queue.window.nekoVisitChat = { isActive: () => true, submitAudioTranscript() {} };
+  queue.flushDeferredTextSubmissions();
+  for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(settled, ['visit_reroute'], 'not dropped: the host resends it as a visit line');
+  assert.equal(handled.length, 1);
+
+  // Theater still drops it, and a switched character still voids it.
+  const theater = deferredQueue(async () => assert.fail('must not send'));
+  const theaterSettled = [];
+  theater.queueDeferredTextSubmission('语音', voice, (result) => theaterSettled.push(result));
+  theater.window.nekoTheaterRuntime = { isActive: () => true };
+  theater.flushDeferredTextSubmissions();
+  const stale = deferredQueue(async () => assert.fail('must not send'));
+  const staleSettled = [];
+  stale.queueDeferredTextSubmission('语音', voice, (result) => staleSettled.push(result));
+  stale.window.nekoVisitChat = { isActive: () => true, submitAudioTranscript() {} };
+  stale.window.lanlan_config.lanlan_name = 'Other';
+  stale.flushDeferredTextSubmissions();
+  for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(theaterSettled, [false]);
+  assert.deepEqual(staleSettled, [false]);
+});
+
+test('the visit route is checked before the ordinary-chat takeover refusals', () => {
+  const entry = buttonsSection('        async function sendTextPayload(rawText, options) {', 'var theaterRuntime = window.nekoTheaterRuntime;');
+  const reroute = entry.indexOf('if (shouldRerouteAudioMessageToVisit(options)) return AUDIO_MESSAGE_VISIT_REROUTE;');
+  const refuse = entry.indexOf('if (options.audioMessage === true && isOrdinaryChatTakenOver()) return false;');
+  assert.ok(reroute > 0 && refuse > reroute, 'send entry');
+  const internal = buttonsSection('        async function sendTextPayloadInternal(rawText, options) {', '            // Send message\n');
+  const lateReroute = internal.lastIndexOf('return AUDIO_MESSAGE_VISIT_REROUTE;');
+  const lateRefuse = internal.indexOf('if (options.audioMessage === true && isOrdinaryChatTakenOver()) {');
+  assert.ok(lateReroute > 0 && lateRefuse > lateReroute, 'after the text-session wait');
+  // The helper only reroutes voice messages that asked for it, and only for a visit.
+  const helper = buttonsSection('    function shouldRerouteAudioMessageToVisit(options) {', '    // 带 expectedLanlanName 的提交');
+  const sandbox = { window: { nekoVisitChat: { isActive: () => true, submitAudioTranscript() {} } } };
+  vm.runInNewContext(`${helper}\nthis.check = shouldRerouteAudioMessageToVisit;`, sandbox);
+  assert.equal(sandbox.check({ rerouteToVisit: true, audioMessage: true }), true);
+  assert.equal(sandbox.check({ audioMessage: true }), false);
+  sandbox.window.nekoVisitChat = { isActive: () => false, submitAudioTranscript() {} };
+  assert.equal(sandbox.check({ rerouteToVisit: true }), false);
+});
+
 test('the chat window offers voice messages while a visit owns the composer', () => {
   const props = fs.readFileSync(
     path.join(ROOT, 'static/app/app-react-chat-window/geometry-and-messages.js'), 'utf8');

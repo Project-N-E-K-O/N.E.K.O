@@ -1408,12 +1408,36 @@
         });
     }
 
+    // 语音消息只属于普通聊天：小剧场或串门接管普通聊天时，都不能把它发进普通会话
+    // （串门运行时会以 VISIT_INPUT_REFUSED_SOURCE 拒收，草稿却已被当作发出而清掉）
+    function isOrdinaryChatTakenOver() {
+        var theaterRuntime = window.nekoTheaterRuntime;
+        if (theaterRuntime && typeof theaterRuntime.isActive === 'function' && theaterRuntime.isActive()) {
+            return true;
+        }
+        var visitChat = window.nekoVisitChat;
+        return !!(visitChat && typeof visitChat.isActive === 'function' && visitChat.isActive());
+    }
+
+    // 带 rerouteToVisit 的语音消息遇到串门接管时不作废：交回宿主改走串门台词
+    // （宿主按 AUDIO_MESSAGE_VISIT_REROUTE 处理）。小剧场接管照旧拒收
+    function shouldRerouteAudioMessageToVisit(options) {
+        if (!options || options.rerouteToVisit !== true) return false;
+        var visitChat = window.nekoVisitChat;
+        return !!(visitChat && typeof visitChat.isActive === 'function' && visitChat.isActive()
+            && typeof visitChat.submitAudioTranscript === 'function');
+    }
+
     // 带 expectedLanlanName 的提交（语音消息）在角色切换后再也不可能发出：
     // 视为永久取消，不能放回队列重试（否则会立即重刷，形成不让出主线程的死循环）
     function isDeferredSubmissionForStaleTarget(options) {
         var expected = options && options.expectedLanlanName;
         if (typeof expected !== 'string' || !expected) return false;
-        return !(window.lanlan_config && window.lanlan_config.lanlan_name === expected);
+        if (!(window.lanlan_config && window.lanlan_config.lanlan_name === expected)) return true;
+        // 排队期间开始了小剧场或串门的语音消息同样作废（发送链路也会拒绝它）；
+        // 能改走串门台词的除外：照常交给发送链路，由它返回重路由结果
+        return options.audioMessage === true && isOrdinaryChatTakenOver()
+            && !shouldRerouteAudioMessageToVisit(options);
     }
 
     function settleDeferredSubmission(submission, sent) {
@@ -1449,6 +1473,12 @@
             for (var index = 0; index < pending.length; index += 1) {
                 nextPendingIndex = index;
                 var submission = pending[index];
+                if (isDeferredSubmissionForStaleTarget(submission.options)) {
+                    // 已作废的语音消息不进发送链路：不出气泡、不开文本会话
+                    settleDeferredSubmission(submission, false);
+                    nextPendingIndex = index + 1;
+                    continue;
+                }
                 var sent = await sendHandler(submission.text, Object.assign({}, submission.options, {
                     skipAvatarInteractionDeferral: true
                 }));
@@ -2136,6 +2166,8 @@
             ignoreComposerAttachments: true,
             // 发送链路在开会话之后、真正发出前再核对一次角色
             expectedLanlanName: payload.target,
+            // 标明是语音消息：小剧场期间不会被当作演绎输入
+            audioMessage: true,
             // 头像互动进行中时文字会先排队：等真正发出（或因换角色被放弃）的结果再决定草稿去留
             awaitDeferredSend: true,
             // 排队或开会话期间串门接管了输入框：不按普通文字发出，交回来改走串门链路
@@ -3727,6 +3759,13 @@
                 }
                 return AUDIO_MESSAGE_VISIT_REROUTE;
             }
+            // 同理，等待期间开始了小剧场或串门：语音消息属于普通聊天，不能送进普通会话。
+            // 延迟队列直接调用本函数、不经过 sendTextPayload 的入口检查，也由这里拦下
+            // （能改走串门台词的已在上面交回）
+            if (options.audioMessage === true && isOrdinaryChatTakenOver()) {
+                updateReactOptimisticMessageStatus('failed');
+                return false;
+            }
 
             // Send message
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
@@ -3948,6 +3987,10 @@
 
         async function sendTextPayload(rawText, options) {
             options = options || {};
+            // 转写期间串门接管了输入框：交回宿主改走串门台词
+            if (shouldRerouteAudioMessageToVisit(options)) return AUDIO_MESSAGE_VISIT_REROUTE;
+            // 转写期间小剧场或串门接管了普通聊天：语音消息不再发送
+            if (options.audioMessage === true && isOrdinaryChatTakenOver()) return false;
             var text = String(typeof rawText === 'string' ? rawText : '').trim();
             var extraImageDataUrls = normalizeExternalImageDataUrls(options.extraImageDataUrls);
             var hasExtraImages = extraImageDataUrls.length > 0;
@@ -3955,6 +3998,8 @@
 
             var theaterRuntime = window.nekoTheaterRuntime;
             if (theaterRuntime && typeof theaterRuntime.isActive === 'function' && theaterRuntime.isActive()) {
+                // 语音消息是普通聊天的录音：转写期间进了小剧场，就不能把它当成演绎台词提交
+                if (options.audioMessage === true) return false;
                 if (options.source !== 'react-chat-window' && options.source !== 'legacy-text-button') return false;
                 if (!text) return false;
                 // 剧场启动前遗留的普通附件在界面中已隐藏，不属于本次演绎输入；仅拒绝显式附带的新图片。

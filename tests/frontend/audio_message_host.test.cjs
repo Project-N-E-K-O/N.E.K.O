@@ -399,7 +399,7 @@ test('a queued voice transcript for a switched character is dropped, not retried
   queue.window.lanlan_config.lanlan_name = 'Other'; // switched while the avatar interaction ran
   queue.flushDeferredTextSubmissions();
   await settleQueue();
-  assert.equal(attempts, 1);
+  assert.equal(attempts, 0, 'a void voice message never enters the send path');
   assert.deepEqual(settled, [false]);
   assert.equal(queue.state.deferredTextSubmissions.length, 0);
   assert.equal(queue.state.drainingDeferredTextSubmissions, false);
@@ -495,4 +495,65 @@ test('chat-window host: a deferred hide applies the moment the draft ends', () =
   assert.equal(sandbox.I.state.audioMessageTarget, '');
   assert.equal(sandbox.I.state.deferredAudioMessageTarget, null);
   assert.equal(renders, 1);
+});
+
+test('a voice transcript that lands after a theater started is not submitted as a theater line', () => {
+  // Same character, so both target checks pass; the theater branch must
+  // refuse voice messages before handing text to the theater runtime.
+  assert.match(glue, /audioMessage: true/);
+  const start = source.indexOf("            if (theaterRuntime && typeof theaterRuntime.isActive === 'function' && theaterRuntime.isActive()) {");
+  const branch = source.slice(start, source.indexOf('return theaterRuntime.handleComposerSubmit(text);', start));
+  assert.ok(start > 0 && branch.length > 0);
+  // The refusal is the branch's first check, ahead of any theater dispatch;
+  // ordinary typed theater input still reaches handleComposerSubmit.
+  const refusal = branch.indexOf('if (options.audioMessage === true) return false;');
+  assert.ok(refusal >= 0 && refusal < branch.indexOf("options.source !== 'react-chat-window'"));
+});
+
+test('a queued voice transcript is dropped when a theater started meanwhile; queued text is not', async () => {
+  const sent = [];
+  const queue = deferredQueueHarness(async (text) => { sent.push(text); return true; });
+  const settled = [];
+  queue.queueDeferredTextSubmission('语音', { expectedLanlanName: 'Neko', audioMessage: true }, (ok) => settled.push(ok));
+  queue.queueDeferredTextSubmission('打字', { source: 'react-chat-window' });
+  queue.window.nekoTheaterRuntime = { isActive: () => true };
+  queue.flushDeferredTextSubmissions();
+  await settleQueue();
+  assert.deepEqual(settled, [false]);
+  assert.deepEqual(sent, ['打字']);
+});
+
+test('the shared text send re-checks the theater for voice messages right before sending', () => {
+  const sendStart = source.indexOf('            // Send message\n            if (S.socket && S.socket.readyState === WebSocket.OPEN)');
+  const sessionStart = source.indexOf('await mod._textSessionStartPromise;');
+  const guard = source.indexOf('if (options.audioMessage === true && isOrdinaryChatTakenOver()) {', sessionStart);
+  assert.ok(sessionStart > 0 && guard > sessionStart && guard < sendStart);
+});
+
+test('a queued voice transcript is dropped when a visit took over the composer meanwhile', async () => {
+  const sent = [];
+  const queue = deferredQueueHarness(async (text) => { sent.push(text); return true; });
+  const settled = [];
+  queue.queueDeferredTextSubmission('语音', { expectedLanlanName: 'Neko', audioMessage: true }, (ok) => settled.push(ok));
+  queue.queueDeferredTextSubmission('打字', { source: 'react-chat-window' });
+  queue.window.nekoVisitChat = { isActive: () => true };
+  queue.flushDeferredTextSubmissions();
+  await settleQueue();
+  assert.deepEqual(settled, [false]);
+  assert.deepEqual(sent, ['打字']);
+});
+
+test('voice messages are refused at the send entry while a visit or theater owns the chat', () => {
+  const entry = source.indexOf('        async function sendTextPayload(rawText, options) {');
+  const body = source.slice(entry, source.indexOf('var theaterRuntime = window.nekoTheaterRuntime;', entry));
+  assert.match(body, /if \(options\.audioMessage === true && isOrdinaryChatTakenOver\(\)\) return false;/);
+  const helper = source.slice(source.indexOf('    function isOrdinaryChatTakenOver() {'), source.indexOf('    // 带 expectedLanlanName 的提交'));
+  const sandbox = { window: {} };
+  vm.runInNewContext(`${helper}\nthis.check = isOrdinaryChatTakenOver;`, sandbox);
+  assert.equal(sandbox.check(), false);
+  sandbox.window.nekoVisitChat = { isActive: () => true };
+  assert.equal(sandbox.check(), true);
+  sandbox.window.nekoVisitChat = { isActive: () => false };
+  sandbox.window.nekoTheaterRuntime = { isActive: () => true };
+  assert.equal(sandbox.check(), true);
 });
