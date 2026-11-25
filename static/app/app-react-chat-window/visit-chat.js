@@ -754,13 +754,30 @@
             setTimeout(function () { restoreDraft(requestId); }, 0);
             return false;
         }
-        var send = window.appButtons && typeof window.appButtons.sendTextPayload === 'function'
-            ? window.appButtons.sendTextPayload
-            : (typeof window.sendTextPayload === 'function' ? window.sendTextPayload : null);
+        var send = visitLineSender();
         if (!send) {
             setTimeout(function () { restoreDraft(requestId); }, 0);
             return false;
         }
+        dispatchVisitLine(send, text, requestId, detail.submitMethod).then(function (ok) {
+            // 前端自己没发出去（会话没起来 / WS 未连等）：同样标「未送达」
+            if (!ok) markNotDelivered(requestId, true);
+        });
+        return true;
+    };
+
+    function visitLineSender() {
+        if (window.appButtons && typeof window.appButtons.sendTextPayload === 'function') {
+            return window.appButtons.sendTextPayload;
+        }
+        return typeof window.sendTextPayload === 'function' ? window.sendTextPayload : null;
+    }
+
+    /**
+     * 把一句已过阶段检查的亲人句交出去：出本地气泡、记进等回显的列表、按当前收件人发 WS。
+     * 返回 Promise<boolean>：false 表示前端自己没发出去（调用方决定怎么收尾）。
+     */
+    function dispatchVisitLine(send, text, requestId, submitMethod) {
         var messageId = 'visit-local-' + requestId;
         var appState = window.appState;
         // 页面还没有普通文本会话：这句会先发开会话请求，串门路由只回 ack、并不起普通会话
@@ -772,23 +789,72 @@
         submitSeq += 1;
         pendingLocal.push({ requestId: requestId, messageId: messageId, text: text.trim(), submitSeq: submitSeq });
         try {
-            Promise.resolve(send(text, {
+            return Promise.resolve(send(text, {
                 source: 'neko_visit:' + visit.recipient,
                 visitId: visit.visitId || '',
                 requestId: requestId,
                 // 串门只收文字：待发截图留在输入区，不上传、不清掉
                 ignoreComposerAttachments: true,
-                submitMethod: detail.submitMethod,
+                submitMethod: submitMethod,
                 visitLine: true,
                 skipAvatarInteractionDeferral: true
-            })).then(function (ok) {
-                // 前端自己没发出去（会话没起来 / WS 未连等）：同样标「未送达」
-                if (ok === false) markNotDelivered(requestId, true);
-            }, function () { markNotDelivered(requestId, true); });
+            })).then(function (ok) { return ok !== false; }, function () { return false; });
         } catch (_) {
-            markNotDelivered(requestId, true);
+            return Promise.resolve(false);
         }
+    }
+
+    // ── 语音消息的转写文本（app-buttons.js 的 sendAudioMessagePayload）──────────
+    // 串门接管输入框时，转写文本和亲人打字走同一条串门链路（收件人、visitId、neko_visit: source）。
+    // 与打字不同的是：录音草稿留在聊天窗里，要等这句的结果出来再决定清不清草稿——
+    // 后端回显（认领本地气泡）算已发出；按 request_id 拒收、前端没发出去都算被拒，草稿保留可重发。
+    // 本机后端的拒收与回显都很快；迟迟等不到时按已发出处理，之后的拒收照打字那样标「未送达」。
+    var AUDIO_LINE_VERDICT_MS = 10000;
+    var audioLineWaiters = new Map();   // request_id → {settle, timer}
+
+    function settleAudioLine(requestId, outcome) {
+        var waiter = audioLineWaiters.get(requestId);
+        if (!waiter) return false;
+        audioLineWaiters.delete(requestId);
+        clearTimeout(waiter.timer);
+        waiter.settle(outcome);
         return true;
+    }
+
+    /**
+     * detail: {text, requestId}（requestId 是录音的 id，重试沿用同一个）。
+     * 返回 Promise<'sent' | 'refused' | 'empty'>：'empty' 表示清洗后没有可发的字（当作没识别到语音）。
+     * 被拒时不往文字输入框塞转写文本，也不留「未送达」气泡（草稿还在，重发会再出一条）。
+     */
+    I.submitVisitAudioTranscript = function submitVisitAudioTranscript(detail) {
+        var text = detail && typeof detail.text === 'string' ? detail.text.trim() : '';
+        var requestId = detail && typeof detail.requestId === 'string' ? detail.requestId : '';
+        if (!requestId) return Promise.resolve('refused');
+        if (!text || relayCleanIsEmpty(text)) return Promise.resolve('empty');
+        var refused = blockReason();
+        if (refused) {
+            toast(refusalToast(refused));
+            return Promise.resolve('refused');
+        }
+        // 同一段录音还在等结果（重复提交）：不再发第二次
+        if (audioLineWaiters.has(requestId) || pendingLocal.some(function (entry) { return entry.requestId === requestId; })) {
+            return Promise.resolve('refused');
+        }
+        var send = visitLineSender();
+        if (!send) return Promise.resolve('refused');
+        // 上次被拒后重发：本地气泡沿用同一个 id，先撤掉可能留下的旧气泡与迟到回显登记
+        lateEchoBubbles.delete(requestId);
+        var host = getHost();
+        if (host && typeof host.removeMessage === 'function') host.removeMessage('visit-local-' + requestId);
+        return new Promise(function (resolve) {
+            audioLineWaiters.set(requestId, {
+                settle: resolve,
+                timer: setTimeout(function () { settleAudioLine(requestId, 'sent'); }, AUDIO_LINE_VERDICT_MS)
+            });
+            dispatchVisitLine(send, text, requestId, undefined).then(function (ok) {
+                if (!ok) markNotDelivered(requestId, true);
+            });
+        });
     };
 
     function takePending(requestId) {
@@ -802,6 +868,14 @@
         var entry = takePending(requestId);
         if (!entry) return false;
         var host = getHost();
+        // 还在等结果的语音消息被拒（restore：拒收 / 前端没发出去）：录音草稿留着重发，撤掉本地气泡即可。
+        // 场次结束（restore=false）不算拒收——这句可能已经送达，照打字那样标「未送达」、留给迟到的回显认领
+        if (restore && settleAudioLine(requestId, 'refused')) {
+            if (host && typeof host.removeMessage === 'function') host.removeMessage(entry.messageId);
+            if (typeof I.clearPendingRollbackDraft === 'function') I.clearPendingRollbackDraft(requestId);
+            return true;
+        }
+        settleAudioLine(requestId, 'sent');
         if (host && typeof host.updateMessage === 'function') {
             var message = localBubbleMessage(entry.messageId, entry.text, 'failed');
             message.blocks.push({ type: 'status', tone: 'warning', text: t('visit.input.notDelivered', '未送达') });
@@ -830,6 +904,8 @@
             claimed = pendingLocal.shift() || null;
         }
         if (claimed && typeof I.clearPendingRollbackDraft === 'function') I.clearPendingRollbackDraft(claimed.requestId);
+        // 回显到了：等结果的语音消息算已发出
+        if (claimed) settleAudioLine(claimed.requestId, 'sent');
         return claimed;
     }
 
@@ -3963,6 +4039,8 @@
         afterBind: afterBind,
         isActive: function () { return I.isVisitChatActive(); },
         getState: publicVisitState,
+        // 语音消息（app-buttons.js）：串门接管输入框时把转写文本当作亲人句发出
+        submitAudioTranscript: function (detail) { return I.submitVisitAudioTranscript(detail); },
         // 喵宇宙面板的备用邀请码入口复用正式预览、确认与加入流程。
         joinWithCode: joinWithCode,
         joinDirect: joinDirect,

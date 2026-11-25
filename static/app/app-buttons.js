@@ -2060,6 +2060,20 @@
             throw audioMessageRejection('stale_target');
         }
         var text = typeof result.data.text === 'string' ? result.data.text.trim() : '';
+        // 串门接管了输入框（转写期间才开始的也算）：和打字一样作为亲人句发给选中的收件人。
+        // 普通文字链路会被串门运行时以 VISIT_INPUT_REFUSED_SOURCE 拒收
+        var visitChat = window.nekoVisitChat;
+        if (text && visitChat && typeof visitChat.isActive === 'function' && visitChat.isActive()
+                && typeof visitChat.submitAudioTranscript === 'function') {
+            var outcome = await visitChat.submitAudioTranscript({ text: text, requestId: payload.requestId });
+            if (outcome === 'empty') {
+                text = '';
+            } else if (outcome !== 'sent') {
+                throw audioMessageRejection('busy');
+            } else {
+                return true;
+            }
+        }
         if (!text) {
             window.showStatusToast(
                 window.t ? window.t('chat.audioMessageNoSpeech') : 'No speech was recognised in the recording.',

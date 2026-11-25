@@ -280,14 +280,10 @@ test('the shared text send re-checks the character right before sending', () => 
   assert.ok(sessionStart < guard && guard < sendStart);
 });
 
-test('chat-window host: no voice messages while a visit owns the composer', () => {
+// Voice messages during a visit are covered in audio_message_visit.test.cjs.
+test('chat-window host: reports draft activity back from the chat window', () => {
   const props = fs.readFileSync(
     path.join(__dirname, '../../static/app/app-react-chat-window/geometry-and-messages.js'), 'utf8');
-  assert.match(
-    props,
-    /audioMessageTarget: typeof I\.state\.onComposerAudioMessage === 'function' && !visitOwnsComposer/,
-  );
-  assert.ok(props.indexOf('var visitOwnsComposer') < props.indexOf('audioMessageTarget:'));
   assert.match(props, /onAudioMessageActiveChange: I\.handleAudioMessageActiveChange/);
 });
 
