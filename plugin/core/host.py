@@ -1102,10 +1102,19 @@ def _install_system_audit(
             resolve_plugin_storage_dir(SimpleNamespace(plugin_id=plugin_id)),
             resolve_plugin_shared_dir(plugin_id),
         ]
+        own_files = None
         try:
-            # Only this process's own plugin log directory: the log root also
-            # holds the host's logs, other plugins' and the call-chain audit.
-            exempt_dirs.append(resolve_plugin_log_directory(log_subdir="plugin"))
+            from plugin.logging_layout import plugin_log_service_name
+            from utils.logging_layout import is_service_log_file
+
+            # Only this plugin's own log files (with error copies and
+            # rotations): the plugin log directory is shared by all plugins,
+            # and the log root also holds the host's logs and the audit.
+            service = plugin_log_service_name(plugin_id)
+            own_files = (
+                resolve_plugin_log_directory(log_subdir="plugin"),
+                lambda name: is_service_log_file(name, service),
+            )
         except Exception:
             pass  # no log directory known: its files are simply not exempt
         auditor = system_audit.SystemAuditor(
@@ -1114,6 +1123,7 @@ def _install_system_audit(
             project_root=project_root,
             permissions=permissions,
             sender=message_sender.put_nowait,
+            own_files=own_files,
         )
         return system_audit.install(auditor)
     except Exception as exc:

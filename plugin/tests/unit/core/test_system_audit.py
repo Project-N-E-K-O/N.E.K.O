@@ -928,11 +928,22 @@ def test_launch_wiring_exempts_plugin_storage_and_uses_the_message_uplink(tmp_pa
         lambda *, log_subdir=None: log_root / log_subdir if log_subdir else log_root,
     )
     auditor = host._install_system_audit("demo", config, REPO_ROOT, permissions, sender, logger=None)
-    # Only this process's own log directory: not the log root, which also
-    # holds the host's logs and the call-chain audit.
-    assert os.path.normcase(str(log_root / "plugin")) in auditor._exempt_dirs
+    # Only this plugin's own log files: the plugin log directory is shared by
+    # all plugins, and the log root holds the host's logs and the audit too.
+    from plugin.logging_layout import plugin_log_service_name
+    from utils.logging_layout import log_filename
+
+    shared = log_root / "plugin"
+    assert os.path.normcase(str(shared)) not in auditor._exempt_dirs
     assert os.path.normcase(str(log_root)) not in auditor._exempt_dirs
-    assert not auditor._exempt(os.path.normcase(str(log_root / "plugin_call_audit" / "call_audit.jsonl")), False)
+    mine = log_filename(plugin_log_service_name("demo"))
+    theirs = log_filename(plugin_log_service_name("other"))
+    write = {"directory": False, "read": False}
+    for name in (mine, mine + ".1", log_filename(plugin_log_service_name("demo"), kind="error")):
+        assert auditor._fs_target(str(shared / name), **write) is None
+    for path in (shared / theirs, shared / (theirs + ".1"), log_root / "plugin_call_audit" / "call_audit.jsonl",
+                 log_root / mine):
+        assert auditor._fs_target(str(path), **write) is not None, path
     assert auditor is installed[0] and auditor._permissions is permissions
     storage = os.path.normcase(str(tmp_path / "storage" / "plugins" / "demo"))
     assert storage in auditor._exempt_dirs

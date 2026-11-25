@@ -370,6 +370,7 @@ class SystemAuditor:
         permissions: Any = None,
         sender: Callable[[dict], None] | None = None,
         home: str | None = None,
+        own_files: tuple[os.PathLike | str, Callable[[str], bool]] | None = None,
     ) -> None:
         self._plugin_dir = _norm(os.fspath(plugin_dir))
         self._project_root = _norm(os.fspath(project_root)) if project_root is not None else None
@@ -389,6 +390,14 @@ class SystemAuditor:
             except Exception:
                 pass  # an unusable path exempts nothing
         self._read_exempt = tuple(sorted(read_exempt))
+        # (directory, is-ours(file name)): this process's own files in a
+        # directory it shares with others (its log files among all plugins').
+        self._own_files = None
+        if own_files is not None:
+            try:
+                self._own_files = (frozenset(_forms(os.fspath(own_files[0]))), own_files[1])
+            except Exception:
+                self._own_files = None  # unusable: nothing extra is exempt
         self._permissions = permissions
         self._sender = sender
         self._home = os.path.expanduser("~") if home is None else home
@@ -536,6 +545,13 @@ class SystemAuditor:
         # have been switched to a link since the last use.
         return os.path.join(os.path.realpath(parent), name)
 
+    def _own_file(self, real: str) -> bool:
+        if self._own_files is None:
+            return False
+        directories, is_ours = self._own_files
+        directory, name = os.path.split(real)
+        return os.path.normcase(directory) in directories and bool(is_ours(name))
+
     def _exempt(self, path: str, read: bool) -> bool:
         return _under(path, self._exempt_dirs) or (read and _under(path, self._read_exempt))
 
@@ -557,7 +573,7 @@ class SystemAuditor:
         # cannot lead out of it (and an alias of it is still the data directory).
         real = self._real(path, follow=follow)
         key = os.path.normcase(real)
-        if self._exempt(key, read):
+        if self._exempt(key, read) or self._own_file(real):
             return None
         shown = real
         if self._real_home is not None:
