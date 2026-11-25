@@ -174,6 +174,10 @@ const LIVE2D_PEEK_CORNER_ROTATION_DEGREES = 45;
 // 脚碰到底边时，头也要落进工作区最下面这一段才算下角，否则按侧边探身处理。
 // 侧边探身的头高比例本来就覆盖到 RATIO_END，两段在这里接上。
 const LIVE2D_PEEK_BOTTOM_CORNER_HEAD_RATIO = LIVE2D_PEEK_SIDE_ROTATION_RATIO_END;
+// 这一段的高度还不能超过模型身高的这个比例。只按工作区算的话，模型越小，
+// 底部那一段相对它就越大，脚刚碰底边头就已经在里面，小模型几乎一贴底就进下角。
+// 0.26 约等于身子一半出了底边（头在身高 24% 处），大模型仍由工作区的那一段决定。
+const LIVE2D_PEEK_BOTTOM_CORNER_HEAD_MODEL_RATIO = 0.26;
 // live2d-core.js performs its final cross-display renderer resize after 120ms.
 // Restore the semantic edge anchor only after that pass can no longer clear it.
 const LIVE2D_PEEK_DISPLAY_RESIZE_SETTLE_MS = 160;
@@ -535,7 +539,11 @@ function isLive2DPeekHeadInBottomCornerZone(manager, geometry, workArea) {
         ? head.y
         : geometry.top + geometry.height * LIVE2D_PEEK_HEAD_Y_RATIO;
     if (!Number.isFinite(headY)) return true;
-    return headY >= workArea.top + workArea.height * LIVE2D_PEEK_BOTTOM_CORNER_HEAD_RATIO;
+    const workAreaZone = workArea.height * (1 - LIVE2D_PEEK_BOTTOM_CORNER_HEAD_RATIO);
+    const modelZone = geometry.height > 0
+        ? geometry.height * LIVE2D_PEEK_BOTTOM_CORNER_HEAD_MODEL_RATIO
+        : workAreaZone;
+    return workArea.bottom - headY <= Math.min(workAreaZone, modelZone);
 }
 
 function getLive2DPeekEdgeContact(manager, model, viewport = null, options = null) {

@@ -1347,6 +1347,35 @@ test('feet past the bottom edge become a bottom corner once the head enters the 
     }
 });
 
+test('bottom corner zone scales with the model so small models need the same drop depth', () => {
+    // 工作区高 800。下角区取「工作区底部 20%（160px）」和「身高 26%」中较小的一个，
+    // 头在身高 24% 处时约等于一半身子越过底边，和模型大小无关。
+    for (const height of [150, 200, 300, 400]) {
+        const headLocalY = height * 0.24;
+        const classify = (feetY) => {
+            const harness = createHarness();
+            const manager = new harness.Live2DManager();
+            const model = createRotatingModel({ x: 0, y: feetY - height, height });
+            const head = () => model.transformPoint(150, headLocalY);
+            manager.getHeadScreenAnchor = head;
+            manager.getHeadDetectionGeometryInfo = () => {
+                const anchor = head();
+                return { reliableHeadRect: true, headAnchor: anchor, rawHeadAnchor: anchor };
+            };
+            return harness.getLive2DPeekEdgeContact(manager, model);
+        };
+
+        const feetOnBottom = classify(800);
+        assert.equal(feetOnBottom.edge, 'left', `${height}px model with feet on the bottom edge stays a side peek`);
+        assert.equal(feetOnBottom.allowBottomOverflow, true);
+
+        assert.equal(classify(800 + height * 0.45).edge, 'left', `${height}px model 45% past the bottom stays a side peek`);
+        const halfPast = classify(800 + height * 0.52);
+        assert.equal(halfPast.edge, 'bottom-left', `${height}px model about half past the bottom becomes a corner`);
+        assert.equal(halfPast.allowBottomOverflow, false);
+    }
+});
+
 test('restoring any dynamic side-peek transform keeps the grabbed model-local point under the pointer', () => {
     const harness = createHarness();
     for (const degrees of [55, 41.5, 28, -55, -41.5, -28]) {
@@ -1756,7 +1785,8 @@ test('very small models stay flush with the contacted screen edge', async () => 
         { edge: 'left', x: 0, y: 360, scaleX: 1 },
         { edge: 'right', x: 1000, y: 360, scaleX: -1 },
         { edge: 'top-left', x: 0, y: 0, scaleX: 1 },
-        { edge: 'bottom-right', x: 1000, y: 784, scaleX: -1 }
+        // 下角阈值跟着模型身高走：小模型也要大约一半身子出了底边才算下角。
+        { edge: 'bottom-right', x: 1000, y: 796, scaleX: -1 }
     ];
 
     for (const item of cases) {
@@ -2060,11 +2090,12 @@ test('Windows bottom corners trigger at the current display work-area bottom', a
             }
         });
         const manager = new harness.Live2DManager();
-        // 矮模型的脚正好落在任务栏上沿，头也在工作区底部那一段里。
-        const model = createRotatingModel({ x: item.x, y: 1092, height: 300, scaleX: item.scaleX });
+        // 矮模型拖到大约一半身子越过任务栏上沿（工作区底边 1392），头离这条边
+        // 72px，在按身高算的下角区（300 * 0.26 = 78px）以内；按屏幕底边 1440 算则不在。
+        const model = createRotatingModel({ x: item.x, y: 1210, height: 300, scaleX: item.scaleX });
         manager.getHeadScreenAnchor = () => model.transformPoint(150, 110);
         manager.getBodyScreenRectInfo = () => {
-            const waist = model.transformPoint(150, 330);
+            const waist = model.transformPoint(150, 180);
             return { rect: { centerX: waist.x, bottom: waist.y } };
         };
 
