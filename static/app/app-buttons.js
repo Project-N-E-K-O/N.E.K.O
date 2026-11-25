@@ -2121,6 +2121,8 @@
             ignoreComposerAttachments: true,
             // 发送链路在开会话之后、真正发出前再核对一次角色
             expectedLanlanName: payload.target,
+            // 标明是语音消息：小剧场期间不会被当作演绎输入
+            audioMessage: true,
             // 头像互动进行中时文字会先排队：等真正发出（或因换角色被放弃）的结果再决定草稿去留
             awaitDeferredSend: true
         });
@@ -3873,6 +3875,8 @@
 
             var theaterRuntime = window.nekoTheaterRuntime;
             if (theaterRuntime && typeof theaterRuntime.isActive === 'function' && theaterRuntime.isActive()) {
+                // 语音消息是普通聊天的录音：转写期间进了小剧场，就不能把它当成演绎台词提交
+                if (options.audioMessage === true) return false;
                 if (options.source !== 'react-chat-window' && options.source !== 'legacy-text-button') return false;
                 if (!text) return false;
                 // 剧场启动前遗留的普通附件在界面中已隐藏，不属于本次演绎输入；仅拒绝显式附带的新图片。
