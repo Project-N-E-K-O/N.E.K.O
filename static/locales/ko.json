@@ -1510,6 +1510,7 @@
             "fetchTooltip": "제공업체에서 사용 가능한 모델 목록을 가져옵니다",
             "loading": "모델 목록을 가져오는 중…",
             "noMatch": "일치하는 모델이 없습니다",
+            "decisionTag": "네이티브 의사결정",
             "more": "모델이 {{count}}개 더 있습니다. 키워드를 입력해 필터링하세요",
             "unavailable": {
                 "noProvider": "먼저 제공업체를 선택하세요",
@@ -1693,11 +1694,13 @@
         "mimoTokenPlanKeyLabel": "MiMo Token Plan 키",
         "mimoTokenPlanKeyPlaceholder": "Token Plan 키 입력 (tp-xxxxx)",
         "mimoTokenPlanKeyHint": "활성화하면 MiMo는 이 Token Plan 키와 엔드포인트만 사용하며 일반 MiMo API 키는 잠깁니다.",
-        "bailianWorkspaceIdLabel": "Bailian 워크스페이스 ID(의사결정 모델)",
-        "bailianWorkspaceIdPlaceholder": "예: llm-xxxxxxxx",
-        "bailianWorkspaceIdHint": "비워 두면 의사결정 모델 대신 일반 채팅 모델을 사용합니다. 워크스페이스 ID는 API Host의 맨 앞부분(예: llm-xxx)이며, Bailian(Model Studio) 콘솔의 워크스페이스 관리 페이지나 API 키를 만들 때 나오는 팝업에서 확인할 수 있습니다. API Host 전체를 붙여 넣어도 됩니다.",
+        "bailianWorkspaceIdLabel": "Bailian API Host(의사결정 모델)",
+        "bailianWorkspaceIdPlaceholder": "예: ws-xxxxxxxxxxxxxxxx.ap-southeast-1.maas.aliyuncs.com",
+        "bailianWorkspaceIdHint": "비워 두면 의사결정 모델 대신 일반 채팅 모델을 사용합니다. Bailian(Model Studio) 콘솔의 워크스페이스 관리 페이지를 열고 'API Host' 열의 값(예: ws-xxxx.ap-southeast-1.maas.aliyuncs.com)을 복사해 붙여 넣으세요. API 키를 만들 때 나오는 팝업에도 있습니다. 앞부분의 워크스페이스 ID만 넣어도 되며, 이때 리전은 API 키의 리전을 따릅니다.",
         "bailianWorkspaceIdDocLink": "공식 문서 보기",
-        "bailianWorkspaceIdInvalid": "워크스페이스 ID 형식이 올바르지 않습니다: 영문자, 숫자, -만 사용할 수 있으며 최대 63자입니다",
+        "bailianWorkspaceIdInvalid": "API Host 형식이 올바르지 않습니다: 콘솔의 API Host(예: ws-xxxx.ap-southeast-1.maas.aliyuncs.com)나 워크스페이스 ID만 입력하세요",
+        "bailianWorkspaceConsoleLink": "워크스페이스 관리 페이지 열기",
+        "bailianWorkspaceRegionUnsupported": "이 API Host의 리전({{region}})에는 의사결정 모델이 없어 채팅 모델로 판단합니다",
         "mimoApiKeyLockedByTokenPlan": "MiMo Token Plan이 활성화되어 이 키는 사용되지 않습니다"
     },
     "live2d": {
@@ -6319,12 +6322,13 @@
             "unknown": "알 수 없는 오류",
             "backend_unavailable": "백엔드 서비스를 사용할 수 없습니다",
             "invalid_response": "응답 형식이 잘못되었습니다",
-            "invalid_workspace_id": "Bailian 워크스페이스 ID 형식이 잘못되었습니다",
+            "invalid_workspace_id": "Bailian API Host 형식이 잘못되었습니다",
+            "workspace_mismatch": "API Host와 API 키가 서로 다른 Bailian 워크스페이스에 속해 있습니다",
             "token_plan_key_mismatch": "일반 백련 키로 보입니다. Token Plan에는 sk-sp-로 시작하는 전용 키가 필요합니다",
             "token_plan_url_invalid": "Token Plan 주소는 공식 Token Plan 도메인의 https 주소여야 합니다"
         },
         "decisionFallback": {
-            "workspace_missing": "Bailian 워크스페이스 ID가 없어 의사결정 모델 대신 채팅 모델을 사용 중",
+            "workspace_missing": "Bailian API Host가 없어 의사결정 모델 대신 채팅 모델을 사용 중",
             "region_unsupported": "이 지역에는 의사결정 모델 네이티브 API가 없어 채팅 모델을 사용 중"
         },
         "status": {

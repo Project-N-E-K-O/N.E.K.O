@@ -28,11 +28,18 @@ from utils.decision_client import (
 
 @pytest.fixture(autouse=True)
 def _reset_native_cooldown():
+    from utils.decision_client import adapters
+    from utils.decision_client.openrouter_catalog import clear_openrouter_catalog
+
     clear_native_cooldown()
+    clear_openrouter_catalog()
+    adapters._http_clients.clear()
     try:
         yield
     finally:
         clear_native_cooldown()
+        clear_openrouter_catalog()
+        adapters._http_clients.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +287,7 @@ async def test_systemone_adapter_splits_more_than_16_questions_into_concurrent_r
         async def __aexit__(self, *exc):
             return False
 
-        async def post(self, url, json=None, headers=None):
+        async def post(self, url, json=None, headers=None, **kwargs):
             sent_payloads.append(json)
             return _FakeResponse(json)
 
@@ -316,29 +323,42 @@ async def test_systemone_adapter_splits_more_than_16_questions_into_concurrent_r
 
 
 # ---------------------------------------------------------------------------
-# Bailian workspace ID validation and dedicated-host URL building
+# Bailian workspace API Host parsing and dedicated-host URL building
 # ---------------------------------------------------------------------------
+
+_BJ_CHAT = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+_SG_CHAT = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+_US_CHAT = "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
+_HK_CHAT = "https://cn-hongkong.dashscope.aliyuncs.com/compatible-mode/v1"
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
+        # A bare workspace ID (current ws- form and the older llm- form).
+        ("ws-lp9lqfo9ycxyrv5m", "ws-lp9lqfo9ycxyrv5m"),
         ("llm-abc123", "llm-abc123"),
         ("  LLM-AbC123  ", "llm-abc123"),
         ("a", "a"),
         ("a" * 63, "a" * 63),
         ("llm-abc\n", "llm-abc"),
+        # The API Host as the console shows it, and URLs on it.
+        ("ws-abc.cn-beijing.maas.aliyuncs.com", "ws-abc.cn-beijing.maas.aliyuncs.com"),
+        ("WS-Abc.AP-Southeast-1.MAAS.Aliyuncs.com", "ws-abc.ap-southeast-1.maas.aliyuncs.com"),
+        ("https://ws-abc.cn-beijing.maas.aliyuncs.com", "ws-abc.cn-beijing.maas.aliyuncs.com"),
+        ("https://ws-abc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", "ws-abc.cn-beijing.maas.aliyuncs.com"),
+        ("http://ws-abc.us-east-1.maas.aliyuncs.com/?x=1#y", "ws-abc.us-east-1.maas.aliyuncs.com"),
         ("", ""),
         ("   ", ""),
         (None, ""),
     ],
 )
-def test_workspace_id_normalization_accepts_single_dns_labels(raw, expected):
-    from utils.decision_client.workspace import normalize_workspace_id, safe_workspace_id
+def test_workspace_host_normalization_accepts_ids_hosts_and_urls(raw, expected):
+    from utils.decision_client.workspace import normalize_workspace_host, safe_workspace_host
 
-    assert normalize_workspace_id(raw) == expected
-    assert safe_workspace_id(raw) == expected
+    assert normalize_workspace_host(raw) == expected
+    assert safe_workspace_host(raw) == expected
 
 
 @pytest.mark.unit
@@ -362,49 +382,110 @@ def test_workspace_id_normalization_accepts_single_dns_labels(raw, expected):
         "llm․evil",
         "ｌｌｍ",  # full-width letters
         "K",  # Kelvin sign case-folds to ASCII "k"
-        "https://llm-abc.cn-beijing.maas.aliyuncs.com",
+        "ws-abc.cn-beijing.maas.aliyuncs.com.evil.com",
+        "ws-abc.cn-beijing-maas-aliyuncs-com",  # look-alike suffix of the same length
+        "ws-abc.cn-beijing.maas.aliyuncs.com:443",
+        "ws-abc.cn-beijing.maas.aliyuncs.com.",
+        "evil.ws-abc.cn-beijing.maas.aliyuncs.com",
+        "ws-abc.maas.aliyuncs.com",
+        "ws_abc.cn-beijing.maas.aliyuncs.com",
+        "ws-abc.cn_beijing.maas.aliyuncs.com",
+        "user@ws-abc.cn-beijing.maas.aliyuncs.com",
+        "https://user@ws-abc.cn-beijing.maas.aliyuncs.com/",
+        "https://evil.com/ws-abc.cn-beijing.maas.aliyuncs.com",
+        "ftp://ws-abc.cn-beijing.maas.aliyuncs.com",
+        "a" * 64 + ".cn-beijing.maas.aliyuncs.com",
+        "ws-abc.cn-beijing.maas.aliyuncs.com/" + "x" * 600,
         123,
         ["llm-abc"],
     ],
 )
-def test_workspace_id_rejects_anything_that_could_change_the_host(raw):
+def test_workspace_host_rejects_anything_that_could_change_the_host(raw):
+    from utils.api_config_loader import get_assist_api_profiles
     from utils.decision_client.workspace import (
-        InvalidWorkspaceIdError,
-        build_workspace_decision_url,
-        normalize_workspace_id,
-        safe_workspace_id,
+        InvalidWorkspaceHostError,
+        normalize_workspace_host,
+        resolve_workspace_decision_url,
+        safe_workspace_host,
     )
 
-    with pytest.raises(InvalidWorkspaceIdError):
-        normalize_workspace_id(raw)
-    assert safe_workspace_id(raw) == ""
-    assert build_workspace_decision_url(
-        "https://{workspace_id}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone", raw,
-    ) == ""
+    with pytest.raises(InvalidWorkspaceHostError):
+        normalize_workspace_host(raw)
+    assert safe_workspace_host(raw) == ""
+    template = get_assist_api_profiles(force_reload=True)["qwen"]["DECISION_URL_TEMPLATE"]
+    assert resolve_workspace_decision_url(template, raw, _BJ_CHAT) == ("", "workspace_missing")
 
 
 @pytest.mark.unit
-def test_build_workspace_decision_url_for_both_regions():
-    from utils.decision_client.workspace import build_workspace_decision_url
+def test_resolve_workspace_decision_url_takes_region_from_host_or_chat_endpoint():
     from utils.api_config_loader import get_assist_api_profiles
+    from utils.decision_client.workspace import resolve_workspace_decision_url as resolve
 
     profiles = get_assist_api_profiles(force_reload=True)
-    assert build_workspace_decision_url(profiles["qwen"]["DECISION_URL_TEMPLATE"], "LLM-Abc") == (
-        "https://llm-abc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone"
+    tpl = profiles["qwen"]["DECISION_URL_TEMPLATE"]
+    assert profiles["qwen_intl"]["DECISION_URL_TEMPLATE"] == tpl
+
+    def url(host):
+        return f"https://{host}/compatible-mode/v1/systemone"
+
+    # A bare ID takes the region of the chat endpoint the key resolved to.
+    assert resolve(tpl, "LLM-Abc", _BJ_CHAT) == (url("llm-abc.cn-beijing.maas.aliyuncs.com"), "")
+    assert resolve(tpl, "llm-abc", _SG_CHAT) == (url("llm-abc.ap-southeast-1.maas.aliyuncs.com"), "")
+    assert resolve(tpl, "llm-abc", _US_CHAT) == ("", "region_unsupported")
+    assert resolve(tpl, "llm-abc", _HK_CHAT) == ("", "region_unsupported")
+    assert resolve(tpl, "llm-abc", "https://gw.example/v1") == ("", "region_unsupported")
+    # A full API Host keeps its own region whatever the chat endpoint is.
+    assert resolve(tpl, "ws-x.ap-southeast-1.maas.aliyuncs.com", _US_CHAT) == (
+        url("ws-x.ap-southeast-1.maas.aliyuncs.com"), "",
     )
-    assert build_workspace_decision_url(profiles["qwen_intl"]["DECISION_URL_TEMPLATE"], "llm-abc") == (
-        "https://llm-abc.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/systemone"
-    )
-    # No placeholder or no ID -> nothing to call.
-    assert build_workspace_decision_url("https://example.com/systemone", "llm-abc") == ""
-    assert build_workspace_decision_url(profiles["qwen"]["DECISION_URL_TEMPLATE"], "") == ""
-    # Defense in depth: the ID must land as the leading host label of an https URL.
-    assert build_workspace_decision_url("https://evil.example/{workspace_id}/systemone", "llm-abc") == ""
-    assert build_workspace_decision_url("http://{workspace_id}.cn-beijing.maas.aliyuncs.com/v1", "llm-abc") == ""
-    assert build_workspace_decision_url("https://user@{workspace_id}.example/v1", "llm-abc") == ""
+    assert resolve(tpl, "ws-x.cn-beijing.maas.aliyuncs.com", "") == (url("ws-x.cn-beijing.maas.aliyuncs.com"), "")
+    assert resolve(tpl, "ws-x.us-east-1.maas.aliyuncs.com", _BJ_CHAT) == ("", "region_unsupported")
+    assert resolve(tpl, "ws-x.eu-central-1.maas.aliyuncs.com", _SG_CHAT) == ("", "region_unsupported")
+    # Nothing saved: say the region has no decision model before asking for a host.
+    assert resolve(tpl, "", _BJ_CHAT) == ("", "workspace_missing")
+    assert resolve(tpl, "", "") == ("", "workspace_missing")
+    assert resolve(tpl, "", _US_CHAT) == ("", "region_unsupported")
+    # Defense in depth: the host must land as the whole hostname of an https URL.
+    for bad_tpl in (
+        "https://example.com/systemone",
+        "http://{workspace_host}/v1",
+        "https://user@{workspace_host}/v1",
+        "https://{workspace_host}.evil.example/v1",
+        "https://evil.example/{workspace_host}/v1",
+        "https://{workspace_host}:8443/v1",
+    ):
+        assert resolve(bad_tpl, "llm-abc", _BJ_CHAT) == ("", "workspace_missing"), bad_tpl
     # Only providers whose native endpoint needs a workspace carry a template.
     templated = {key for key, prof in profiles.items() if prof.get("DECISION_URL_TEMPLATE")}
     assert templated == {"qwen", "qwen_intl"}
+
+
+@pytest.mark.unit
+def test_region_from_chat_url_knows_shared_and_workspace_hosts():
+    from utils.decision_client.workspace import region_from_chat_url
+
+    assert region_from_chat_url(_BJ_CHAT) == "cn-beijing"
+    assert region_from_chat_url(_SG_CHAT) == "ap-southeast-1"
+    assert region_from_chat_url(_US_CHAT) == "us-east-1"
+    assert region_from_chat_url(_HK_CHAT) == "cn-hongkong"
+    assert region_from_chat_url("https://ws-a.eu-central-1.maas.aliyuncs.com/compatible-mode/v1") == "eu-central-1"
+    assert region_from_chat_url("https://dashscope.aliyuncs.com.evil.example/v1") == ""
+    assert region_from_chat_url("https://x.y.cn-beijing.maas.aliyuncs.com/v1") == ""
+    assert region_from_chat_url("") == ""
+
+
+@pytest.mark.unit
+def test_stored_workspace_host_prefers_host_field_over_legacy_id():
+    from utils.decision_client.workspace import stored_workspace_host
+
+    host = "ws-a.cn-beijing.maas.aliyuncs.com"
+    assert stored_workspace_host({"h": host, "l": "llm-old"}, "h", "l") == host
+    assert stored_workspace_host({"l": "LLM-Old"}, "h", "l") == "llm-old"
+    assert stored_workspace_host({"h": "  ", "l": "llm-old"}, "h", "l") == "llm-old"
+    # An invalid host field is unset; it never falls back to a stale legacy ID.
+    assert stored_workspace_host({"h": "evil.com", "l": "llm-old"}, "h", "l") == ""
+    assert stored_workspace_host({"l": "evil.com"}, "h", "l") == ""
+    assert stored_workspace_host({}, "h", "l") == ""
 
 
 @pytest.mark.unit
@@ -416,39 +497,103 @@ def test_openai_decisions_adapter_roundtrip():
     assert payload["input"] == "App crashes on export"
     assert isinstance(payload["questions"], list)
     by_name = {q["name"]: q for q in payload["questions"]}
-    assert by_name["is_urgent"]["type"] == "predicate"
-    assert by_name["route"]["choices"] == ["billing", "tech"]
-    assert by_name["severity"]["levels"] == ["low", "medium", "high"]
+    # Wire shapes the live endpoint accepts (2026-11-25): predicates fold the
+    # true/false descriptions into instructions, choices and levels are objects.
+    assert by_name["is_urgent"] == {
+        "name": "is_urgent",
+        "type": "predicate",
+        "instructions": "Is this urgent?\nTrue: Urgent\nFalse: Not urgent",
+    }
+    assert by_name["route"]["choices"] == [
+        {"value": "billing", "description": "Invoices"},
+        {"value": "tech", "description": "Bugs"},
+    ]
+    assert by_name["route"]["instructions"] == "Pick queue"
+    assert by_name["severity"]["levels"] == [{"label": "low"}, {"label": "medium"}, {"label": "high"}]
+    no_desc = adapter.build_payload(
+        state="s",
+        questions={"c": ChoiceQuestion(instructions="Pick", criteria={"a": "", "b": ""})},
+        model="gpt-6-luna",
+    )
+    assert no_desc["questions"][0]["choices"] == [{"value": "a"}, {"value": "b"}]
 
+    # Response shape the live endpoint returns.
     resp = adapter.parse_response(
         {
             "model": "gpt-6-luna",
             "answers": [
-                {"name": "is_urgent", "type": "predicate", "value": True, "probability": 0.91},
+                {"type": "predicate", "name": "is_urgent", "probability": 0.97},
                 {
-                    "name": "route",
                     "type": "choice",
-                    "selected": "tech",
-                    "probabilities": {"billing": 0.08, "tech": 0.92},
+                    "name": "route",
+                    "choice": "tech",
+                    "probabilities": [
+                        {"value": "billing", "probability": 0.0},
+                        {"value": "tech", "probability": 1.0},
+                    ],
+                    "confidence": 1.0,
                 },
                 {
-                    "name": "severity",
                     "type": "score",
-                    "score_index": 2,
-                    "probabilities": {"low": 0.01, "medium": 0.09, "high": 0.90},
+                    "name": "severity",
+                    "score": 0.86,
+                    "probabilities": [
+                        {"value": 0, "label": "low", "probability": 0.21},
+                        {"value": 1, "label": "medium", "probability": 0.72},
+                        {"value": 2, "label": "high", "probability": 0.07},
+                    ],
+                    "confidence": 0.58,
                 },
             ],
-            "usage": {"prompt_tokens": 64, "completion_tokens": 0},
+            "usage": {
+                "input_tokens": 128,
+                "input_tokens_details": {"cached_tokens": 5, "cache_write_tokens": 0},
+                "output_tokens": 0,
+                "total_tokens": 128,
+            },
         },
         qs,
         "gpt-6-luna",
     )
     assert resp.protocol == "openai_decisions"
     assert resp.answers["is_urgent"].value is True
-    assert resp.answers["is_urgent"].probability == pytest.approx(0.91)
+    assert resp.answers["is_urgent"].probability == pytest.approx(0.97)
     assert resp.answers["route"].value == "tech"
-    assert resp.answers["severity"].value == pytest.approx(2.0)
-    assert resp.answers["severity"].score_norm == pytest.approx(1.0)
+    assert resp.answers["route"].probabilities == {"billing": 0.0, "tech": 1.0}
+    assert resp.answers["route"].confidence == pytest.approx(1.0)
+    assert resp.answers["severity"].value == pytest.approx(0.86)
+    assert resp.answers["severity"].score_norm == pytest.approx(0.43)
+    assert resp.answers["severity"].probabilities == {"low": 0.21, "medium": 0.72, "high": 0.07}
+    assert (resp.prompt_tokens, resp.completion_tokens, resp.cached_tokens) == (128, 0, 5)
+
+    # Without a score, the expectation over index-only probabilities is used.
+    index_only = adapter.parse_response(
+        {"answers": [{
+            "name": "severity",
+            "probabilities": [{"value": 0, "probability": 0.0}, {"value": 2, "probability": 1.0}],
+        }]},
+        {"severity": qs["severity"]},
+        "gpt-6-luna",
+    )
+    assert index_only.answers["severity"].value == pytest.approx(2.0)
+    assert index_only.answers["severity"].probabilities == {"low": 0.0, "high": 1.0}
+
+    # Older map-shaped probabilities and selected/score_index keys still parse.
+    legacy = adapter.parse_response(
+        {
+            "answers": [
+                {"name": "is_urgent", "value": True, "probability": 0.91},
+                {"name": "route", "selected": "tech", "probabilities": {"billing": 0.08, "tech": 0.92}},
+                {"name": "severity", "score_index": 2, "probabilities": {"low": 0.01, "medium": 0.09, "high": 0.90}},
+            ],
+            "usage": {"prompt_tokens": 64, "completion_tokens": 0},
+        },
+        qs,
+        "gpt-6-luna",
+    )
+    assert legacy.answers["route"].value == "tech"
+    assert legacy.answers["severity"].value == pytest.approx(2.0)
+    assert legacy.prompt_tokens == 64
 
 
 @pytest.mark.unit
@@ -458,38 +603,63 @@ def test_gemini_decisions_adapter_roundtrip():
     payload = adapter.build_payload(state="App crashes on export", questions=qs, model="gemini-decision-1")
     assert payload["model"] == "gemini-decision-1"
     assert payload["input"] == "App crashes on export"
-    assert payload["questions"]["severity"]["legend"] == {"1": "low", "2": "medium", "3": "high"}
+    assert "state" not in payload
+    # noul criteria rejects every key, so the descriptions go into the instructions.
+    assert payload["questions"]["is_urgent"] == {
+        "type": "noul",
+        "instructions": "Is this urgent?\nTrue: Urgent\nFalse: Not urgent",
+    }
+    assert payload["questions"]["route"]["criteria"] == {"billing": "Invoices", "tech": "Bugs"}
+    # Score levels go in criteria (0-based), not a legend.
+    assert payload["questions"]["severity"] == {
+        "type": "score",
+        "instructions": "Rate severity",
+        "criteria": ["low", "medium", "high"],
+    }
+    # An object state is sent as JSON text: the endpoint rejects plain objects.
+    obj_payload = adapter.build_payload(state={"user": "累"}, questions={"x": qs["is_urgent"]}, model="m")
+    assert obj_payload["input"] == '{"user": "累"}'
 
+    # Response shape the live endpoint returns (score and probability keys 0-based).
     resp = adapter.parse_response(
         {
             "answers": {
-                "is_urgent": {"noul": 0.87, "confidence": 0.93},
+                "is_urgent": {"confidence": 0.97, "noul": 0.97, "type": "noul"},
                 "route": {
+                    "confidence": 0.99,
                     "choice": "tech",
-                    "probabilities": {"billing": 0.02, "tech": 0.98},
-                    "confidence": 0.97,
+                    "probabilities": {"billing": 0.01, "tech": 0.99},
+                    "type": "choice",
                 },
                 "severity": {
-                    "score": 2.6,  # 1-based in [1, 3] -> 1.6 in [0, 2] -> 0.8 norm
-                    "probabilities": {"1": 0.05, "2": 0.30, "3": 0.65},
-                    "confidence": 0.90,
+                    "confidence": 0.55,
+                    "score": 0.9,
+                    "probabilities": {"2": 0.18, "0": 0.27, "1": 0.55},
+                    "legend": {"1": "medium", "0": "low", "2": "high"},
+                    "type": "score",
                 },
             },
-            "usage_metadata": {"input_token_count": 72, "output_token_count": 0},
+            "usage": {
+                "total_tokens": 105,
+                "total_input_tokens": 105,
+                "input_tokens_by_modality": [{"modality": "text", "tokens": 105}],
+                "total_output_tokens": 0,
+            },
         },
         qs,
         "gemini-decision-1",
     )
     assert resp.protocol == "gemini_decisions"
-    assert resp.prompt_tokens == 72
+    assert resp.model == "gemini-decision-1"
+    assert resp.prompt_tokens == 105
     assert resp.completion_tokens == 0
     assert resp.answers["is_urgent"].value is True
     assert resp.answers["route"].value == "tech"
-    assert resp.answers["severity"].value == pytest.approx(1.6)
-    assert resp.answers["severity"].score_norm == pytest.approx(0.8)
-    assert resp.answers["severity"].probabilities["high"] == pytest.approx(0.65)
+    assert resp.answers["severity"].value == pytest.approx(0.9)
+    assert resp.answers["severity"].score_norm == pytest.approx(0.45)
+    assert resp.answers["severity"].probabilities == {"low": 0.27, "medium": 0.55, "high": 0.18}
 
-    # Also verify Gemini camelCase usageMetadata parsing
+    # Older usage metadata spellings still count.
     camel_resp = adapter.parse_response(
         {
             "answers": {"is_urgent": {"noul": 0.9}},
@@ -505,6 +675,115 @@ def test_gemini_decisions_adapter_roundtrip():
     assert camel_resp.prompt_tokens == 55
     assert camel_resp.completion_tokens == 0
     assert camel_resp.cached_tokens == 12
+
+
+class _RecordingAsyncClient:
+    """Stands in for httpx.AsyncClient and answers every decision question."""
+
+    sent: list[dict] = []
+
+    def __init__(self, *args, **kwargs):
+        self.is_closed = False
+
+    async def post(self, url, json=None, headers=None, **kwargs):
+        type(self).sent.append({"url": url, "json": json, "headers": headers, **kwargs})
+        questions = json["questions"]
+        names = [q["name"] for q in questions] if isinstance(questions, list) else list(questions)
+        return SimpleNamespace(
+            status_code=200,
+            json=lambda: {"answers": {qid: {"noul": 0.9} for qid in names}, "usage": {"total_input_tokens": 7}},
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_gemini_adapter_sends_key_header_and_batches_64_questions():
+    _RecordingAsyncClient.sent = []
+    questions = {f"q{i}": BoolQuestion(instructions=f"q {i}?") for i in range(65)}
+    with patch("utils.decision_client.adapters.httpx.AsyncClient", _RecordingAsyncClient):
+        resp = await GeminiDecisionsAdapter().execute(
+            state="s", questions=questions, model="gemini-decision-1",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/", api_key="AIza-test",
+        )
+    sent = _RecordingAsyncClient.sent
+    assert [len(s["json"]["questions"]) for s in sent] == [64, 1]
+    assert {s["url"] for s in sent} == {"https://generativelanguage.googleapis.com/v1beta/decisions"}
+    assert all(s["headers"]["x-goog-api-key"] == "AIza-test" for s in sent)
+    assert all("Authorization" not in s["headers"] for s in sent)
+    assert all(s["timeout"] == 8.0 for s in sent)
+    assert set(resp.answers) == set(questions)
+    assert resp.prompt_tokens == 14
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_decision_requests_reuse_one_pooled_client_per_event_loop():
+    import asyncio
+
+    from utils.decision_client import adapters
+
+    created: list[object] = []
+
+    class _CountingClient(_RecordingAsyncClient):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            created.append(self)
+
+    _RecordingAsyncClient.sent = []
+    q = {"t": BoolQuestion(instructions="ok?")}
+    with patch("utils.decision_client.adapters.httpx.AsyncClient", _CountingClient):
+        for _ in range(3):
+            await SystemOneAdapter("systemone").execute(
+                state="s", questions=q, model="decision-model-preview", base_url="",
+                api_key="sk", decision_url="https://ws-a.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone",
+            )
+        assert len(created) == 1
+        # A closed client is replaced instead of reused.
+        created[0].is_closed = True
+        await SystemOneAdapter("systemone").execute(
+            state="s", questions=q, model="decision-model-preview", base_url="",
+            api_key="sk", decision_url="https://ws-a.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone",
+        )
+        assert len(created) == 2
+        assert adapters._http_clients[asyncio.get_running_loop()] is created[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_systemone_workspace_mismatch_is_reported_with_its_own_code():
+    class _Forbidden(_RecordingAsyncClient):
+        async def post(self, url, json=None, headers=None, **kwargs):
+            body = {"error": {"message": "Workspace endpoint access denied.", "type": "access_denied", "code": "access_denied"}}
+            return SimpleNamespace(status_code=403, json=lambda: body, text="")
+
+    with patch("utils.decision_client.adapters.httpx.AsyncClient", _Forbidden):
+        with pytest.raises(DecisionProtocolError) as info:
+            await SystemOneAdapter("systemone").execute(
+                state="s", questions={"t": BoolQuestion(instructions="ok?")}, model="decision-model-preview",
+                base_url="", api_key="sk-ws-x",
+                decision_url="https://ws-other.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone",
+            )
+    assert info.value.status_code == 403
+    assert info.value.error_code == "workspace_mismatch"
+    assert info.value.permanent_route_error is True
+    from utils.decision_client import adapters
+
+    adapters._http_clients.clear()
+
+    # Other 403s (e.g. a model the workspace may not use) keep no special code.
+    class _ModelDenied(_RecordingAsyncClient):
+        async def post(self, url, json=None, headers=None, **kwargs):
+            body = {"error": {"message": "Access denied", "type": "access_denied", "code": "access_denied"}}
+            return SimpleNamespace(status_code=403, json=lambda: body, text="")
+
+    with patch("utils.decision_client.adapters.httpx.AsyncClient", _ModelDenied):
+        with pytest.raises(DecisionProtocolError) as info:
+            await SystemOneAdapter("systemone").execute(
+                state="s", questions={"t": BoolQuestion(instructions="ok?")}, model="decision-model",
+                base_url="", api_key="sk-ws-x",
+                decision_url="https://ws-a.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone",
+            )
+    assert info.value.error_code == ""
 
 
 @pytest.mark.unit
@@ -573,7 +852,7 @@ def test_score_question_missing_score_is_omitted_while_explicit_zero_is_preserve
         {
             "answers": {
                 "missing": {"confidence": 0.8},
-                "zero": {"score": 1, "confidence": 0.8},  # 1-based -> 0.0
+                "zero": {"score": 0, "confidence": 0.8},  # 0-based, like System One
             }
         },
         qs,
@@ -958,7 +1237,50 @@ def test_config_manager_decision_slot_defaults_and_cross_provider(clean_user_dat
         bad_dec = cm.get_model_api_config("decision")
         assert bad_dec["decision_protocol"] == "chat_fallback", bad
         assert "evil" not in bad_dec["decision_url"], bad
-        assert cm.get_core_config()["ASSIST_WORKSPACE_ID_QWEN"] == ""
+        assert cm.get_core_config()["ASSIST_WORKSPACE_HOST_QWEN"] == ""
+
+    # The saved API Host (current field) wins over a leftover legacy ID and
+    # carries its own region.
+    _set_cfg({
+        "coreApi": "qwen", "assistApi": "qwen", "coreApiKey": "sk-qwen",
+        "assistWorkspaceIdQwen": "llm-old",
+        "assistWorkspaceHostQwen": "WS-New.cn-beijing.maas.aliyuncs.com",
+    })
+    host_dec = cm.get_model_api_config("decision")
+    assert host_dec["decision_protocol"] == "systemone"
+    assert host_dec["decision_url"] == (
+        "https://ws-new.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone"
+    )
+    assert cm.get_core_config()["ASSIST_WORKSPACE_HOST_QWEN"] == "ws-new.cn-beijing.maas.aliyuncs.com"
+    # qwen_intl on the US endpoint with a Singapore API Host uses that host.
+    _set_cfg({
+        "coreApi": "qwen", "assistApi": "qwen_intl", "assistApiKeyQwenIntl": "sk-intl",
+        "assistWorkspaceHostQwenIntl": "ws-sg.ap-southeast-1.maas.aliyuncs.com",
+        "resolvedProviderUrls": {"assist:qwen_intl": "https://dashscope-us.aliyuncs.com/compatible-mode/v1"},
+    })
+    sg_host_dec = cm.get_model_api_config("decision")
+    assert sg_host_dec["decision_protocol"] == "systemone"
+    assert sg_host_dec["decision_url"] == (
+        "https://ws-sg.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/systemone"
+    )
+    # An API Host in a region without a decision endpoint decides with chat.
+    _set_cfg({
+        "coreApi": "qwen", "assistApi": "qwen_intl", "assistApiKeyQwenIntl": "sk-intl",
+        "assistWorkspaceHostQwenIntl": "ws-us.us-east-1.maas.aliyuncs.com",
+    })
+    us_host_dec = cm.get_model_api_config("decision")
+    assert us_host_dec["decision_protocol"] == "chat_fallback"
+    assert us_host_dec["native_unavailable_reason"] == "region_unsupported"
+    assert us_host_dec["model"] == "qwen3.7-flash"
+    # An invalid host field is ignored; it does not fall back to the legacy ID.
+    _set_cfg({
+        "coreApi": "qwen", "assistApi": "qwen", "coreApiKey": "sk-qwen",
+        "assistWorkspaceIdQwen": "llm-old",
+        "assistWorkspaceHostQwen": "ws-new.cn-beijing.maas.aliyuncs.com.evil.com",
+    })
+    bad_host_dec = cm.get_model_api_config("decision")
+    assert bad_host_dec["decision_protocol"] == "chat_fallback"
+    assert "evil" not in bad_host_dec["decision_url"]
 
     # A hand-entered custom decision URL on a workspace host still wins.
     _set_cfg({
@@ -1199,7 +1521,7 @@ async def test_connectivity_decision_probe_success_and_auth_error():
         assert mock_dec_probe.await_count == 0
 
     # Built-in Mode 1 provider_scope='decision' tests the provider's decision model & protocol
-    # on the Bailian workspace host built from the submitted workspace ID.
+    # on the Bailian workspace host built from the submitted workspace ID (legacy field name).
     with patch(
         "main_routers.config_router.connectivity._test_decision_endpoint",
         AsyncMock(return_value={"success": True}),
@@ -1238,6 +1560,47 @@ async def test_connectivity_decision_probe_success_and_auth_error():
             "https://llm-sg.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/systemone"
         )
 
+    # The full API Host (what the page sends now) keeps its own region, even a
+    # Singapore host entered for qwen; a URL on it is reduced to the host.
+    for submitted, expected in (
+        ("https://WS-Abc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+         "https://ws-abc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone"),
+        ("ws-sg.ap-southeast-1.maas.aliyuncs.com",
+         "https://ws-sg.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/systemone"),
+    ):
+        with patch(
+            "main_routers.config_router.connectivity._test_decision_endpoint",
+            AsyncMock(return_value={"success": True}),
+        ) as mock_dec_probe:
+            host_res = await test_connectivity(
+                ConnectivityTestRequest(
+                    provider_key="qwen", provider_scope="decision", api_key="sk-ws", workspace_host=submitted,
+                )
+            )
+        assert host_res["success"] is True and "decision_fallback" not in host_res
+        assert mock_dec_probe.await_args.args[0] == expected
+
+    # A host in a region without a decision endpoint probes the chat fallback.
+    with (
+        patch(
+            "main_routers.config_router.connectivity._test_openai_compatible",
+            AsyncMock(return_value={"success": True}),
+        ) as mock_oai,
+        patch(
+            "main_routers.config_router.connectivity._test_decision_endpoint",
+            AsyncMock(return_value={"success": True}),
+        ) as mock_dec_probe,
+    ):
+        us_res = await test_connectivity(
+            ConnectivityTestRequest(
+                provider_key="qwen_intl", provider_scope="decision", api_key="sk-us",
+                workspace_host="ws-us.us-east-1.maas.aliyuncs.com",
+            )
+        )
+        assert us_res["decision_fallback"] == "region_unsupported"
+        assert mock_dec_probe.await_count == 0
+        assert mock_oai.await_args.kwargs["model"] == "qwen3.7-flash"
+
     # No workspace ID -> no doomed native request: probe the chat model the runtime
     # actually decides with, and tell the page it is the chat fallback.
     with (
@@ -1271,14 +1634,18 @@ async def test_connectivity_decision_probe_success_and_auth_error():
             AsyncMock(return_value={"success": True}),
         ) as mock_dec_probe,
     ):
-        for bad in ("evil.com/x", "llm-abc.evil.com", "llm@evil.com", "a" * 64):
-            bad_res = await test_connectivity(
-                ConnectivityTestRequest(
-                    provider_key="qwen", provider_scope="decision", api_key="sk-qwen", workspace_id=bad,
+        for field in ("workspace_id", "workspace_host"):
+            for bad in (
+                "evil.com/x", "llm-abc.evil.com", "llm@evil.com", "a" * 64,
+                "ws-a.cn-beijing.maas.aliyuncs.com.evil.com", "user@ws-a.cn-beijing.maas.aliyuncs.com",
+            ):
+                bad_res = await test_connectivity(
+                    ConnectivityTestRequest(
+                        provider_key="qwen", provider_scope="decision", api_key="sk-qwen", **{field: bad},
+                    )
                 )
-            )
-            assert bad_res["success"] is False
-            assert bad_res["error_code"] == "invalid_workspace_id"
+                assert bad_res["success"] is False
+                assert bad_res["error_code"] == "invalid_workspace_id"
         assert mock_oai.await_count == 0
         assert mock_dec_probe.await_count == 0
 
@@ -1608,7 +1975,7 @@ async def test_memory_recall_skips_native_without_workspace_id(clean_user_data_d
 
 
 # ---------------------------------------------------------------------------
-# /api/config/core_api: workspace ID save-side and read-side validation
+# /api/config/core_api: workspace host save-side and read-side validation
 # ---------------------------------------------------------------------------
 
 
@@ -1664,16 +2031,20 @@ class _FakeJsonRequest:
 
 
 @pytest.mark.unit
-def test_core_api_save_validates_workspace_ids(clean_user_data_dir, _core_config_router_for_workspace):
+def test_core_api_save_validates_workspace_hosts(clean_user_data_dir, _core_config_router_for_workspace):
     import asyncio
 
     from utils.config_manager import get_config_manager
 
     router = _core_config_router_for_workspace
-    assert router.CORE_CONFIG_WORKSPACE_ID_FIELDS == ("assistWorkspaceIdQwen", "assistWorkspaceIdQwenIntl")
+    assert router.CORE_CONFIG_WORKSPACE_HOST_FIELDS == (
+        ("assistWorkspaceHostQwen", "assistWorkspaceIdQwen"),
+        ("assistWorkspaceHostQwenIntl", "assistWorkspaceIdQwenIntl"),
+    )
     cm = get_config_manager("N.E.K.O")
     cm.config_dir.mkdir(parents=True, exist_ok=True)
-    stored = {"coreApi": "qwen", "assistApi": "qwen", "coreApiKey": "sk-qwen", "assistWorkspaceIdQwen": "llm-old"}
+    host = "ws-old.cn-beijing.maas.aliyuncs.com"
+    stored = {"coreApi": "qwen", "assistApi": "qwen", "coreApiKey": "sk-qwen", "assistWorkspaceHostQwen": host}
     cm.save_json_config("core_config.json", stored)
     cm._core_config_cache = None
 
@@ -1683,27 +2054,53 @@ def test_core_api_save_validates_workspace_ids(clean_user_data_dir, _core_config
         })))
 
     # Injection-style values are rejected and nothing is written.
-    for bad in ("evil.com", "llm-abc.evil.com", "llm@evil.com", "evil.com/x", "a" * 64, "-x", 7):
-        resp = _save({"assistWorkspaceIdQwen": bad})
+    for bad in (
+        "evil.com", "llm-abc.evil.com", "llm@evil.com", "evil.com/x", "a" * 64, "-x", 7,
+        "ws-a.cn-beijing.maas.aliyuncs.com.evil.com", "ws-a.cn-beijing.maas.aliyuncs.com:443",
+    ):
+        resp = _save({"assistWorkspaceHostQwen": bad})
         assert resp["success"] is False, bad
-        assert resp["error"] == "INVALID_WORKSPACE_ID"
-        assert cm.load_json_config("core_config.json", {})["assistWorkspaceIdQwen"] == "llm-old"
+        assert resp["error"] == "INVALID_WORKSPACE_HOST"
+        assert resp["field"] == "assistWorkspaceHostQwen"
+        assert cm.load_json_config("core_config.json", {})["assistWorkspaceHostQwen"] == host
 
-    # A valid value is stored in canonical form; empty clears it.
-    assert _save({"assistWorkspaceIdQwen": "  LLM-New ", "assistWorkspaceIdQwenIntl": "llm-sg"})["success"] is True
+    # Valid values are stored in canonical form (a URL keeps only its host); empty clears.
+    assert _save({
+        "assistWorkspaceHostQwen": "  https://WS-New.cn-beijing.maas.aliyuncs.com/compatible-mode/v1 ",
+        "assistWorkspaceHostQwenIntl": "LLM-SG",
+    })["success"] is True
     saved = cm.load_json_config("core_config.json", {})
-    assert saved["assistWorkspaceIdQwen"] == "llm-new"
-    assert saved["assistWorkspaceIdQwenIntl"] == "llm-sg"
-    assert _save({"assistWorkspaceIdQwenIntl": ""})["success"] is True
-    assert cm.load_json_config("core_config.json", {})["assistWorkspaceIdQwenIntl"] == ""
+    assert saved["assistWorkspaceHostQwen"] == "ws-new.cn-beijing.maas.aliyuncs.com"
+    assert saved["assistWorkspaceHostQwenIntl"] == "llm-sg"
+    assert _save({"assistWorkspaceHostQwenIntl": ""})["success"] is True
+    assert cm.load_json_config("core_config.json", {})["assistWorkspaceHostQwenIntl"] == ""
 
-    # Read side: GET returns the stored ID, and a hand-edited invalid value reads as unset.
-    cm.save_json_config("core_config.json", {**stored, "assistWorkspaceIdQwen": "llm-x.evil.com"})
+    # A page loaded before the host field existed still saves through the legacy
+    # name; the value lands in the host field and the legacy field goes away.
+    cm.save_json_config("core_config.json", {**stored, "assistWorkspaceIdQwen": "llm-older"})
+    cm._core_config_cache = None
+    assert _save({"assistWorkspaceIdQwen": "LLM-Legacy"})["success"] is True
+    saved = cm.load_json_config("core_config.json", {})
+    assert saved["assistWorkspaceHostQwen"] == "llm-legacy"
+    assert "assistWorkspaceIdQwen" not in saved
+    resp = _save({"assistWorkspaceIdQwen": "evil.com"})
+    assert resp["success"] is False and resp["field"] == "assistWorkspaceIdQwen"
+
+    # Read side: a file saved by an older version (ID-only field) reads through,
+    # and a hand-edited invalid value reads as unset.
+    cm.save_json_config("core_config.json", {
+        "coreApi": "qwen", "assistApi": "qwen", "coreApiKey": "sk-qwen", "assistWorkspaceIdQwen": "llm-legacy",
+    })
     cm._core_config_cache = None
     got = asyncio.run(router.get_core_config_api())
     assert got["success"] is True
-    assert got["assistWorkspaceIdQwen"] == ""
-    assert got["assistWorkspaceIdQwenIntl"] == ""
+    assert got["assistWorkspaceHostQwen"] == "llm-legacy"
+    assert got["assistWorkspaceHostQwenIntl"] == ""
+    assert "assistWorkspaceIdQwen" not in got
+    cm.save_json_config("core_config.json", {**stored, "assistWorkspaceHostQwen": "ws-x.evil.com"})
+    cm._core_config_cache = None
+    got = asyncio.run(router.get_core_config_api())
+    assert got["assistWorkspaceHostQwen"] == ""
 
 
 @pytest.mark.asyncio
@@ -2009,3 +2406,212 @@ def test_auth_errors_are_permanent_only_for_bailian_systemone():
     assert not _http_error_is_permanent(401, "openrouter_decisions")
     assert not _http_error_is_permanent(403)
     assert not _http_error_is_permanent(500, "systemone")
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter decision model catalog
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        # On OpenRouter gpt-6-luna is a chat model; its decision variant has its own ID.
+        ("openai/gpt-6-luna", "chat_fallback"),
+        ("openai/gpt-6-luna-pro", "chat_fallback"),
+        ("openai/gpt-6-luna-decisions", "openrouter_decisions"),
+        ("google/gemini-decision-1", "openrouter_decisions"),
+        ("perplexity/pplx-decider-v1.3:free", "openrouter_decisions"),
+        ("~perplexity/pplx-decider-latest", "openrouter_decisions"),
+        ("baseten/joey-1", "openrouter_decisions"),
+        ("respan/span-02", "openrouter_decisions"),
+        # Long-lived families match versions newer than the snapshot.
+        ("typesafe/jev-1.99", "openrouter_decisions"),
+        ("liquid/d1.9-ultra", "openrouter_decisions"),
+        ("cloudflare/clef-mini", "openrouter_decisions"),
+        # Retired from OpenRouter, and chat models of decision vendors.
+        ("inception/mercury-decide", "chat_fallback"),
+        ("typesafe/jev-router", "chat_fallback"),
+        ("anthropic/claude-haiku-4.5", "chat_fallback"),
+    ],
+)
+def test_openrouter_decision_models_are_recognized_by_id(model, expected):
+    assert infer_decision_protocol(model, "https://openrouter.ai/api/v1") == expected
+
+
+@pytest.mark.unit
+def test_openrouter_catalog_remembers_fetched_models():
+    from utils.decision_client import openrouter_catalog as catalog
+
+    assert infer_decision_protocol("newlab/decider-7", "https://openrouter.ai/api/v1") == "chat_fallback"
+    catalog._remember([{"id": "NewLab/Decider-7"}], 0.0)
+    assert catalog.is_openrouter_decision_model("newlab/decider-7")
+    assert infer_decision_protocol("newlab/decider-7", "https://openrouter.ai/api/v1") == "openrouter_decisions"
+    catalog.clear_openrouter_catalog()
+    assert not catalog.is_openrouter_decision_model("newlab/decider-7")
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_openrouter_catalog_fetch_parses_public_list_without_a_key():
+    from utils.decision_client import openrouter_catalog as catalog
+
+    seen: list[dict] = []
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url, **kwargs):
+            seen.append({"url": url, **kwargs})
+            body = {"data": [
+                {"id": "newlab/decider-7", "name": "NewLab: Decider 7"},
+                {"id": "baseten/joey-1", "name": "baseten/joey-1"},
+                {"name": "missing id"},
+                "junk",
+            ]}
+            return SimpleNamespace(raise_for_status=lambda: None, json=lambda: body)
+
+    with patch("utils.decision_client.openrouter_catalog.httpx.AsyncClient", _Client):
+        entries = await catalog.fetch_openrouter_decision_models()
+    assert entries == [{"id": "newlab/decider-7", "name": "NewLab: Decider 7"}, {"id": "baseten/joey-1"}]
+    assert seen == [{"url": "https://openrouter.ai/api/v1/models?output_modalities=decisions"}]
+    assert catalog.is_openrouter_decision_model("newlab/decider-7")
+    assert catalog.catalog_is_stale() is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_openrouter_catalog_refresh_runs_once_in_background_and_backs_off_after_failure():
+    import asyncio
+
+    from utils.decision_client import openrouter_catalog as catalog
+
+    calls = 0
+    release = asyncio.Event()
+
+    async def _fail():
+        nonlocal calls
+        calls += 1
+        catalog._last_attempt_at = catalog.time.monotonic()
+        await release.wait()
+        raise RuntimeError("offline")
+
+    with patch.object(catalog, "fetch_openrouter_decision_models", _fail):
+        catalog.schedule_refresh_if_stale()
+        catalog.schedule_refresh_if_stale()  # already in flight
+        await asyncio.sleep(0)
+        assert calls == 1
+        release.set()
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert catalog._refresh_in_flight is False
+        # A failure waits CATALOG_RETRY_SECONDS before the next attempt.
+        catalog.schedule_refresh_if_stale()
+        await asyncio.sleep(0)
+        assert calls == 1
+    now = catalog.time.monotonic()
+    assert catalog.catalog_is_stale(now + catalog.CATALOG_RETRY_SECONDS + 1) is True
+    catalog._remember([{"id": "x/y"}], now)
+    assert catalog.catalog_is_stale(now + catalog.CATALOG_TTL_SECONDS - 1) is False
+    assert catalog.catalog_is_stale(now + catalog.CATALOG_TTL_SECONDS + catalog.CATALOG_RETRY_SECONDS + 1) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_decision_client_refreshes_openrouter_catalog_only_for_openrouter():
+    resp = SimpleNamespace(answers={}, model="m", protocol="chat_fallback")
+    with (
+        patch("utils.decision_client.client.schedule_refresh_if_stale") as mock_refresh,
+        patch.object(DecisionClient, "_decide_in_context", AsyncMock(return_value=resp)),
+    ):
+        q = {"t": BoolQuestion(instructions="ok?")}
+        await DecisionClient().decide(
+            state="s", questions=q,
+            config={"model": "baseten/joey-1", "base_url": "https://openrouter.ai/api/v1", "api_key": "k"},
+        )
+        assert mock_refresh.call_count == 1
+        await DecisionClient().decide(
+            state="s", questions=q,
+            config={"model": "deepseek-flash", "base_url": "https://api.deepseek.com/v1", "api_key": "k"},
+        )
+        assert mock_refresh.call_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_model_list_adds_openrouter_decision_models_first_for_the_decision_slot():
+    from main_routers.config_router import model_catalog
+
+    chat = {
+        "success": True,
+        "resolved_url": "https://openrouter.ai/api/v1",
+        "models": [{"id": "anthropic/claude-haiku-4.5"}, {"id": "openai/gpt-6-luna"}],
+    }
+    fetched = [{"id": "newlab/decider-7", "name": "NewLab: Decider 7"}, {"id": "baseten/joey-1"}]
+    with patch(
+        "utils.decision_client.openrouter_catalog.fetch_openrouter_decision_models",
+        AsyncMock(return_value=fetched),
+    ):
+        from utils.decision_client import openrouter_catalog as catalog
+
+        catalog._remember(fetched, catalog.time.monotonic())
+        merged = await model_catalog._with_openrouter_decision_models(chat, "https://openrouter.ai/api/v1")
+    assert merged["success"] is True
+    assert [m["id"] for m in merged["models"]] == [
+        "baseten/joey-1", "newlab/decider-7", "anthropic/claude-haiku-4.5", "openai/gpt-6-luna",
+    ]
+    assert [m.get("decision", False) for m in merged["models"]] == [True, True, False, False]
+    assert merged["models"][1]["name"] == "NewLab: Decider 7"
+
+    # Decision list unreachable: keep the chat list, tag only what the snapshot knows.
+    with patch(
+        "utils.decision_client.openrouter_catalog.fetch_openrouter_decision_models",
+        AsyncMock(side_effect=RuntimeError("offline")),
+    ):
+        offline = await model_catalog._with_openrouter_decision_models(
+            {**chat, "models": [{"id": "openai/gpt-6-luna-decisions"}, {"id": "openai/gpt-6-luna"}]},
+            "https://openrouter.ai/api/v1",
+        )
+    assert [(m["id"], m.get("decision", False)) for m in offline["models"]] == [
+        ("openai/gpt-6-luna-decisions", True), ("openai/gpt-6-luna", False),
+    ]
+    # Both lists failed: the original failure is returned unchanged.
+    failure = {"success": False, "error_code": "timeout", "error": "t"}
+    with patch(
+        "utils.decision_client.openrouter_catalog.fetch_openrouter_decision_models",
+        AsyncMock(side_effect=RuntimeError("offline")),
+    ):
+        assert await model_catalog._with_openrouter_decision_models(failure, "https://openrouter.ai/api/v1") is failure
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_connectivity_reports_workspace_mismatch():
+    from main_routers.config_router.connectivity import _test_decision_endpoint
+
+    mismatch = DecisionProtocolError(
+        "systemone HTTP 403: Workspace endpoint access denied.",
+        status_code=403, protocol="systemone", permanent_route_error=True, error_code="workspace_mismatch",
+    )
+    with patch.object(DecisionClient, "decide", AsyncMock(side_effect=mismatch)):
+        res = await _test_decision_endpoint(
+            "https://ws-a.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone",
+            "sk-ws-other", model="decision-model-preview", protocol="systemone",
+        )
+    assert res["success"] is False
+    assert res["error_code"] == "workspace_mismatch"
+    plain_403 = DecisionProtocolError("systemone HTTP 403: Access denied", status_code=403, protocol="systemone")
+    with patch.object(DecisionClient, "decide", AsyncMock(side_effect=plain_403)):
+        res = await _test_decision_endpoint(
+            "https://ws-a.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone",
+            "sk-ws-a", model="decision-model-preview", protocol="systemone",
+        )
+    assert res["error_code"] == "auth_failed"

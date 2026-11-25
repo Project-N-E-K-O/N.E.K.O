@@ -30,8 +30,8 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyKimi": "",
     "assistApiKeyKimiCode": "",
     "assistApiKeyQwenIntl": "",
-    "assistWorkspaceIdQwen": "",
-    "assistWorkspaceIdQwenIntl": "",
+    "assistWorkspaceHostQwen": "",
+    "assistWorkspaceHostQwenIntl": "",
     "assistApiKeyMinimax": "",
     "assistApiKeyMimo": "",
     "useMimoTokenPlan": False,
@@ -127,7 +127,7 @@ DEFAULT_ASSIST_API_PROFILES = {
         'RECOGNITION_MODEL': "qwen3.7-flash",
         'DECISION_MODEL': "decision-model-preview",
         'DECISION_PROTOCOL': "systemone",
-        'DECISION_URL_TEMPLATE': "https://{workspace_id}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone",
+        'DECISION_URL_TEMPLATE': "https://{workspace_host}/compatible-mode/v1/systemone",
         'VISION_MODEL': "qwen3.8-omni-flash",
         'AGENT_MODEL': "qwen3.8-flash",
     },
@@ -142,7 +142,7 @@ DEFAULT_ASSIST_API_PROFILES = {
         'RECOGNITION_MODEL': "qwen3.7-flash",
         'DECISION_MODEL': "decision-model-preview",
         'DECISION_PROTOCOL': "systemone",
-        'DECISION_URL_TEMPLATE': "https://{workspace_id}.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/systemone",
+        'DECISION_URL_TEMPLATE': "https://{workspace_host}/compatible-mode/v1/systemone",
         'VISION_MODEL': "qwen3.8-omni-flash",
         'AGENT_MODEL': "qwen3.8-flash",
     },
@@ -393,12 +393,13 @@ TTS_KEY_BOOK_FIELDS = {
     'qwen_token_plan': 'assistApiKeyQwenTokenPlan',
 }
 
-# Bailian workspace IDs, one per provider region: core_config.json field ->
-# resolved config key. The native decision endpoint lives on a workspace-only
-# host (see DECISION_URL_TEMPLATE); without an ID the decision slot uses chat.
-ASSIST_WORKSPACE_ID_FIELDS = {
-    'qwen': ('assistWorkspaceIdQwen', 'ASSIST_WORKSPACE_ID_QWEN'),
-    'qwen_intl': ('assistWorkspaceIdQwenIntl', 'ASSIST_WORKSPACE_ID_QWEN_INTL'),
+# Bailian workspace API Hosts, one per provider: (core_config.json field,
+# legacy ID-only field read while the host field is empty, resolved config key).
+# The native decision endpoint lives on the workspace host (see
+# DECISION_URL_TEMPLATE); without one the decision slot uses a chat model.
+ASSIST_WORKSPACE_HOST_FIELDS = {
+    'qwen': ('assistWorkspaceHostQwen', 'assistWorkspaceIdQwen', 'ASSIST_WORKSPACE_HOST_QWEN'),
+    'qwen_intl': ('assistWorkspaceHostQwenIntl', 'assistWorkspaceIdQwenIntl', 'ASSIST_WORKSPACE_HOST_QWEN_INTL'),
 }
 
 DEFAULT_CONFIG_DATA = {

@@ -35,6 +35,7 @@ from pydantic import BaseModel
 
 from utils.http.url import same_endpoint
 from utils.config_manager import _as_bool
+from utils.decision_client.openrouter_catalog import is_openrouter_url
 
 
 _MODEL_LIST_TIMEOUT_SECONDS = 15.0
@@ -246,6 +247,35 @@ async def _fetch_models(url: str, api_key: str, provider_type: str) -> dict[str,
     return {"success": True, "models": models, "resolved_url": url}
 
 
+async def _with_openrouter_decision_models(result: dict[str, Any], fallback_url: str) -> dict[str, Any]:
+    """Add OpenRouter's decision models (absent from its default list) ahead of the rest.
+
+    Decision entries carry ``decision: true`` so the picker can tag them. When
+    the decision list cannot be fetched, the chat list is kept and only the
+    IDs the built-in catalog already knows are tagged.
+    """
+    from utils.decision_client.openrouter_catalog import (
+        fetch_openrouter_decision_models,
+        is_openrouter_decision_model,
+    )
+
+    try:
+        decision_entries = await fetch_openrouter_decision_models()
+    except Exception as exc:
+        logger.info("[ModelList] OpenRouter 决策模型列表拉取失败: %s", type(exc).__name__)
+        decision_entries = []
+    if not result.get("success") and not decision_entries:
+        return result
+    merged = _normalize_model_entries(
+        [*decision_entries, *(result.get("models") or [])], strip_gemini_prefix=False
+    )
+    for entry in merged:
+        if is_openrouter_decision_model(entry["id"]):
+            entry["decision"] = True
+    merged.sort(key=lambda entry: (not entry.get("decision"), entry["id"].lower()))
+    return {"success": True, "models": merged, "resolved_url": result.get("resolved_url") or fallback_url}
+
+
 @router.post("/list_models")
 async def list_models(req: ModelListRequest) -> dict:
     """List the models an upstream endpoint offers, for the model ID pickers."""
@@ -280,6 +310,10 @@ async def list_models(req: ModelListRequest) -> dict:
     )
     if (req.provider_key or "").strip():
         result.pop("check_url", None)
+    if (req.model_type or "").strip() == "decision" and is_openrouter_url(
+        result.get("resolved_url") or target["urls"][0]
+    ):
+        result = await _with_openrouter_decision_models(result, target["urls"][0])
     if result.get("success"):
         logger.info(
             "[ModelList] %s 拉取到 %d 个模型",
