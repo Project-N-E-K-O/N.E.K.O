@@ -200,7 +200,7 @@ def check_a2_llm(client) -> list[str]:
         return orig_stamp(session, wire, source=source, note=note)
 
     # LLM selects candidate index 0 with confidence 0.9.
-    attr_mod._llm_for_memory = lambda session, *, temperature=0.0: _FakeLLM(
+    attr_mod._llm_for_memory = lambda session: _FakeLLM(
         json.dumps([{"index": 0, "confidence": 0.9}]))
     attr_mod.record_last_llm_wire = _spy_stamp
     try:
@@ -248,7 +248,7 @@ def check_a5_llm_fallback(client) -> list[str]:
     orig_llm = attr_mod._llm_for_memory
     try:
         # (a) unparsable prose reply -> method=text + structured fallback.
-        attr_mod._llm_for_memory = lambda session, *, temperature=0.0: _FakeLLM(
+        attr_mod._llm_for_memory = lambda session: _FakeLLM(
             "我觉得这条记忆没有明确来源呢")
         _delete_session(client)
         _create_session(client, "a5_unparsable")
@@ -269,7 +269,7 @@ def check_a5_llm_fallback(client) -> list[str]:
                "A5.warning_surfaced", f"{data.get('warnings')}")
 
         # (b) a VALID empty [] is an honest "no sources" -> stays method=llm.
-        attr_mod._llm_for_memory = lambda session, *, temperature=0.0: _FakeLLM("[]")
+        attr_mod._llm_for_memory = lambda session: _FakeLLM("[]")
         r = client.post("/api/memory/lineage/attribute",
                         json={"node_id": "fact_x", "use_llm": True})
         _check(r.status_code == 200, "A5.empty_status", f"{r.status_code}")

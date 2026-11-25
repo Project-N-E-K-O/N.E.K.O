@@ -58,7 +58,7 @@ import { openPromptPreviewModal } from '../_prompt_preview_modal.js';
 //
 
 function defaultOverride() {
-  return { provider: '', base_url: '', api_key: '', model: '', temperature: '', max_tokens: '', timeout: '' };
+  return { provider: '', base_url: '', api_key: '', model: '', max_tokens: '', timeout: '' };
 }
 
 const LS_OVERRIDE_OPEN = 'testbench:evaluation:run:override_open';
@@ -757,7 +757,6 @@ function renderOverrideSection(root, state) {
   grid.append(bind('model', i18n('evaluation.run.override.model'), ''));
   grid.append(bind('api_key', i18n('evaluation.run.override.api_key'),
     i18n('evaluation.run.override.api_key_hint'), 'password'));
-  grid.append(bind('temperature', i18n('evaluation.run.override.temperature'), '', 'number'));
   grid.append(bind('max_tokens', i18n('evaluation.run.override.max_tokens'), '', 'number'));
   grid.append(bind('timeout', i18n('evaluation.run.override.timeout'),
     i18n('evaluation.run.override.timeout_hint'), 'number'));
@@ -1036,7 +1035,7 @@ function collectOverride(override) {
   const out = {};
   for (const [k, v] of Object.entries(override || {})) {
     if (v === null || v === undefined || v === '') continue;
-    if (['temperature', 'max_tokens', 'timeout'].includes(k)) {
+    if (['max_tokens', 'timeout'].includes(k)) {
       const num = Number(v);
       if (!Number.isFinite(num)) continue;
       out[k] = num;

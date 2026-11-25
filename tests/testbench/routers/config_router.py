@@ -97,7 +97,6 @@ class _UpdateGroupRequest(BaseModel):
     base_url: str | None = None
     api_key: str | None = None
     model: str | None = None
-    temperature: float | None = None
     max_tokens: int | None = None
     timeout: float | None = None
 
@@ -374,7 +373,6 @@ async def _ping_chat(cfg: ModelGroupConfig, prompt: str) -> dict[str, Any]:
             model=cfg.model,
             base_url=cfg.base_url,
             api_key=cfg.api_key,
-            temperature=cfg.temperature,
             max_tokens=cfg.max_tokens,
             timeout=cfg.timeout or 30.0,
             max_retries=0,

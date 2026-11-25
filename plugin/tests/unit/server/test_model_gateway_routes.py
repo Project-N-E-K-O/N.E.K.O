@@ -1153,18 +1153,19 @@ async def test_free_host_fallback_quota_exhaustion_is_final(http_client, setup_g
     assert attempts[-1]["error_code"] == "agent_quota_exceeded"
 
 
-async def test_anthropic_host_legacy_default_rejected_only_when_effective(http_client, setup_gateway, monkeypatch):
+@pytest.mark.parametrize("sent", [None, 0.5, 1.5])
+async def test_anthropic_host_never_receives_a_temperature(http_client, setup_gateway, monkeypatch, sent):
+    # Whatever the plugin sends (even above Anthropic's limit of 1, once
+    # rejected with model_defaults_incompatible) is dropped, so the call
+    # succeeds and nothing reaches the upstream body.
     consumed = patch_host_config(monkeypatch, {
         "model": "real-model", "base_url": "https://upstream.test/v1",
         "api_key": "free-access", "provider_type": "anthropic",
     })
-    # Saving rejects >1 now; simulate a legacy document that still carries it.
-    bind_host_slot(setup_gateway, defaults={"temperature": 1.0})
-    object.__setattr__(setup_gateway.config.slots[HOST_SLOT_ID].defaults, "temperature", 1.5)
+    bind_host_slot(setup_gateway)
 
     async def anthropic_upstream(request):
-        payload = json.loads(request.content)
-        assert payload["temperature"] == 0.5
+        assert "temperature" not in json.loads(request.content)
         return httpx.Response(200, json={
             "id": "msg-1", "type": "message", "role": "assistant", "model": "real-model",
             "content": [{"type": "text", "text": "hello"}], "stop_reason": "end_turn",
@@ -1172,18 +1173,9 @@ async def test_anthropic_host_legacy_default_rejected_only_when_effective(http_c
         })
 
     setup_gateway.upstream.handler = anthropic_upstream
-    # An explicit valid override must succeed despite the unused legacy default.
-    ok = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body(temperature=0.5))
-    assert ok.status_code == 200, ok.text
-    assert consumed == ["plugin:alpha:analysis"]
-    # Omitting temperature falls back to the legacy default and is rejected
-    # before any upstream request. Quota is reserved only after validation,
-    # so the locally rejected request does not consume the shared allowance.
-    calls_before = len(setup_gateway.calls)
-    bad = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
-    assert bad.status_code == 400
-    assert bad.json()["error"]["code"] == "model_defaults_incompatible"
-    assert len(setup_gateway.calls) == calls_before
+    request_body = body() if sent is None else body(temperature=sent)
+    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=request_body)
+    assert response.status_code == 200, response.text
     assert consumed == ["plugin:alpha:analysis"]
 
 
@@ -1203,18 +1195,18 @@ async def test_free_host_invalid_request_does_not_consume_quota(http_client, set
     assert consumed == []
 
 
-async def test_legacy_high_default_document_reads_and_explicit_temperature_calls(http_client, setup_gateway, monkeypatch):
-    # A document written before the save-time intersection limit must remain
-    # readable end to end, and an explicit valid temperature must still work.
+async def test_saved_default_temperature_is_not_sent(http_client, setup_gateway, monkeypatch):
+    # A slot saved with a default temperature before it was retired: the value
+    # is dropped when the slot is loaded and never reaches the upstream body.
     consumed = patch_host_config(monkeypatch, {
         "model": "real-model", "base_url": "https://upstream.test/v1",
         "api_key": "free-access", "provider_type": "anthropic",
     })
-    bind_host_slot(setup_gateway, defaults={"temperature": 1.0})
-    object.__setattr__(setup_gateway.config.slots[HOST_SLOT_ID].defaults, "temperature", 1.5)
+    bind_host_slot(setup_gateway, defaults={"temperature": 1.5})
+    assert setup_gateway.config.slots[HOST_SLOT_ID].defaults.model_dump() == {"max_output_tokens": None}
 
     async def anthropic_upstream(request):
-        assert json.loads(request.content)["temperature"] == 0.5
+        assert "temperature" not in json.loads(request.content)
         return httpx.Response(200, json={
             "id": "msg-1", "type": "message", "role": "assistant", "model": "real-model",
             "content": [{"type": "text", "text": "hello"}], "stop_reason": "end_turn",
@@ -1222,7 +1214,7 @@ async def test_legacy_high_default_document_reads_and_explicit_temperature_calls
         })
 
     setup_gateway.upstream.handler = anthropic_upstream
-    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body(temperature=0.5))
+    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
     assert response.status_code == 200, response.text
     assert consumed == ["plugin:alpha:analysis"]
 
@@ -1254,11 +1246,12 @@ async def test_exhausted_free_primary_falls_back_to_paid_manual_backup(http_clie
     assert attempts[-1]["status"] == "success"
 
 
-async def test_legacy_disk_document_reads_through_real_store_and_explicit_temperature_calls(
+async def test_saved_default_on_disk_reads_through_real_store_and_is_not_sent(
     http_client, setup_gateway, monkeypatch, tmp_path,
 ):
-    # Full path: a pre-limit document on disk -> real ModelConfigStore.read()
-    # (whole-document validation) -> gateway call with an explicit temperature.
+    # Full path: a document on disk that still has a default temperature ->
+    # real ModelConfigStore.read() (whole-document validation) -> gateway call
+    # with a plugin-sent temperature. Neither value reaches the upstream body.
     from contextlib import contextmanager
 
     import utils.cloudsave_runtime as cloudsave
@@ -1298,7 +1291,7 @@ async def test_legacy_disk_document_reads_through_real_store_and_explicit_temper
     })
 
     async def anthropic_upstream(request):
-        assert json.loads(request.content)["temperature"] == 0.5
+        assert "temperature" not in json.loads(request.content)
         return httpx.Response(200, json={
             "id": "msg-1", "type": "message", "role": "assistant", "model": "real-model",
             "content": [{"type": "text", "text": "hello"}], "stop_reason": "end_turn",
@@ -1309,5 +1302,7 @@ async def test_legacy_disk_document_reads_through_real_store_and_explicit_temper
     response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body(temperature=0.5))
     assert response.status_code == 200, response.text
     assert consumed == ["plugin:alpha:analysis"]
-    # The legacy default survived the call untouched on disk.
-    assert store.read().slots[HOST_SLOT_ID].defaults.temperature == 1.5
+    # Reading neither exposes nor rewrites it; the next save removes it.
+    assert store.read().slots[HOST_SLOT_ID].defaults.model_dump() == {"max_output_tokens": None}
+    on_disk = json.loads((tmp_path / CONFIG_FILENAME).read_text(encoding="utf-8"))
+    assert "temperature" in on_disk["slots"][HOST_SLOT_ID]["defaults"]

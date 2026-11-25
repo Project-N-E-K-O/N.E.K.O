@@ -79,7 +79,7 @@ async def test_screen_history_is_not_duplicated_or_concatenated_on_chat_request(
     llm = ChatOpenAI.__new__(ChatOpenAI)
     for name, value in dict(
         model=client.model, base_url="https://example.invalid/v1",
-        temperature=None, max_completion_tokens=2000, max_tokens=None,
+        max_completion_tokens=2000, max_tokens=None,
         extra_body={}, tools=None, tool_choice=None, enable_cache_control=False,
     ).items():
         setattr(llm, name, value)

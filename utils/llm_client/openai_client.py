@@ -78,7 +78,9 @@ class ChatOpenAI:
         model: str = "",
         base_url: str | None = None,
         api_key: str | None = None,
-        temperature: float | None = None,
+        # Keyword-only from here: removing ``temperature`` (once the fourth
+        # parameter) must not let an old positional call shift into ``streaming``.
+        *,
         streaming: bool = False,
         max_retries: int = 2,
         extra_body: dict | None = None,
@@ -100,12 +102,8 @@ class ChatOpenAI:
         # the caller wants to suppress tools mid-conversation).
         self.tools = list(tools) if tools else None
         self.tool_choice = tool_choice
-        # Project rule: never send temperature. default=None omits request field,
-        # leaving model defaults. o1/o3/gpt-5-thinking/Claude extended-thinking reject
-        # this parameter and can pass through; ordinary models use defaults too, avoiding hard-to-reproduce
-        # regressions from temperature drift between tasks. Callers must no longer pass temperature=
-        # (CI enforced by scripts/check_no_temperature.py).
-        self.temperature = temperature
+        # Project rule: this client never sends a temperature; every provider
+        # uses its own default (scripts/check_no_temperature.py enforces it in CI).
         self.extra_body: dict = extra_body or {}
         self.max_completion_tokens = max_completion_tokens
         self.max_tokens = max_tokens
@@ -169,11 +167,6 @@ class ChatOpenAI:
             "messages": _normalize_messages(messages),
             "stream": stream,
         }
-        # Project convention: default=None omits temperature. Retain branch only
-        # for backwards-compatible explicit `temperature=0` (0.0 valid, so test None
-        # rather than truthiness); actual callers must no longer pass this parameter.
-        if self.temperature is not None:
-            p["temperature"] = self.temperature
         # Provider-aware routing of token-limit field:
         #   Anthropic SDK / Anthropic-compat endpoints → max_tokens
         #   OpenAI-compat endpoints → whatever config.providers registers for the

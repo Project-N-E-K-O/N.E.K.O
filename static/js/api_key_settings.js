@@ -1474,9 +1474,11 @@ function isKeyBookBackedTtsProvider(providerKey) {
  * 两处都 fail-open：元数据没取到（/api_providers 失败）时不过滤，宁可多列几项，
  * 也不要把用户正在用的服务商从下拉里藏掉。
  */
-function isProviderCapableForModelType(providerKey, modelType) {
+function isProviderCapableForModelType(providerKey, modelType, { allowPanelOnly = false } = {}) {
     const pk = String(providerKey || '').trim();
     if (!pk || pk === 'custom' || pk.startsWith('follow_')) return true;
+    // Subscriptions (ChatGPT) are chosen in the Subscriptions & plans panel, not per slot.
+    if (!allowPanelOnly && isProviderFlagEnabled(getProviderInfo(pk).subscription_panel_only)) return false;
     const supportedTypes = getProviderInfo(pk).supported_model_types;
     if (Array.isArray(supportedTypes) && !supportedTypes.includes(modelType)) return false;
 
@@ -1512,6 +1514,65 @@ function isProviderCapableForModelType(providerKey, modelType) {
 function getProviderInfo(providerKey) {
     if (!providerKey) return {};
     return _assistApiProviders[providerKey] || _keyBookApiProviders[providerKey] || _coreApiProviders[providerKey] || {};
+}
+
+// Whether a slot's saved provider is one to keep read-only: chosen in the panel now,
+// and one the slot could use otherwise (others drop to the slot's default as before).
+function keepsPanelOnlyChoice(providerKey, modelType) {
+    return isProviderFlagEnabled(getProviderInfo(providerKey).subscription_panel_only)
+        && isProviderCapableForModelType(providerKey, modelType, { allowPanelOnly: true });
+}
+
+// A slot saved with a provider the dropdown no longer lists because it is chosen in
+// the Subscriptions & plans panel (ChatGPT, chosen per slot in nightly builds): the
+// saved choice stays, read-only, so the page shows what requests use and saving the
+// settings does not quietly change it. Picking anything else drops it for good.
+function keepPanelOnlyProvider(sel, modelType, providerKey) {
+    let option = Array.from(sel.options).find(opt => opt.value === providerKey);
+    if (!option) {
+        option = document.createElement('option');
+        option.value = providerKey;
+        option.disabled = true;
+        const nameKey = `api.assistProviderNames.${providerKey}`;
+        const translated = window.t ? window.t(nameKey) : nameKey;
+        option.textContent = (translated && translated !== nameKey)
+            ? translated : (getProviderInfo(providerKey).name || providerKey);
+        sel.appendChild(option);
+    }
+    sel.value = providerKey;
+    syncProviderSelectDropdowns(sel, { rebuild: true });
+
+    const hintId = `${modelType}PanelOnlyProviderHint`;
+    let hint = document.getElementById(hintId);
+    if (!hint) {
+        hint = document.createElement('div');
+        hint.id = hintId;
+        hint.className = 'field-row panel-only-provider-hint';
+        const text = document.createElement('em');
+        text.style.cssText = 'font-weight: normal; color: #c0392b; font-size: 0.85em;';
+        hint.appendChild(text);
+        const row = sel.closest('.field-row');
+        if (row && row.parentNode) row.parentNode.insertBefore(hint, row.nextSibling);
+    }
+    const params = { provider: option.textContent };
+    hint.firstChild.textContent = window.t
+        ? window.t('api.subscriptions.panelOnlySlotHint', params)
+        : `${option.textContent} is now set up under Subscriptions & plans.`;
+
+    if (!sel.dataset.panelOnlyWatch) {
+        sel.dataset.panelOnlyWatch = 'true';
+        const drop = () => {
+            if (sel.value === providerKey) return;
+            sel.removeEventListener('change', drop);
+            const stale = Array.from(sel.options).find(opt => opt.value === providerKey);
+            if (stale) stale.remove();
+            const shown = document.getElementById(hintId);
+            if (shown) shown.remove();
+            delete sel.dataset.panelOnlyWatch;
+            syncProviderSelectDropdowns(sel, { rebuild: true });
+        };
+        sel.addEventListener('change', drop);
+    }
 }
 
 function isProviderFlagEnabled(value) {
@@ -3212,6 +3273,11 @@ async function loadCurrentApiKey() {
                     onCustomModelProviderChange(mt);
                     return;
                 }
+                if (data[providerField] && keepsPanelOnlyChoice(data[providerField], mt)) {
+                    keepPanelOnlyProvider(sel, mt, data[providerField]);
+                    onCustomModelProviderChange(mt);
+                    return;
+                }
                 if (data[providerField] && !isProviderCapableForModelType(data[providerField], mt)) {
                     // 存量配置里选中了一个该槽根本没有实现的服务商（TTS / 实时全模态
                     // 下拉曾把辅助 LLM 全表铺开）。这个选择在后端从来没有生效过，但它
@@ -4396,6 +4462,11 @@ async function saveApiKey(params) {
                     statusMessage = window.t ? window.t('api.saveSuccessReload') : 'API Key保存成功！配置已重新加载，新配置将在下次对话时生效。';
                 }
                 showStatus(statusMessage, 'success');
+                // The subscriptions panel marks which features a subscription took; a
+                // feature's own setting saved just now may win over it.
+                if (typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+                    window.dispatchEvent(new CustomEvent('neko:core-config-saved'));
+                }
 
                 // 清除本地Voice ID记录
                 await clearVoiceIds();
@@ -6939,7 +7010,14 @@ async function initializePage() {
             MODEL_TYPES.forEach(mt => {
                 const sel = document.getElementById(`${mt}ModelProvider`);
                 if (sel && modelProviderSnapshot[mt] !== undefined) {
-                    sel.value = modelProviderSnapshot[mt];
+                    const kept = modelProviderSnapshot[mt];
+                    if (kept && keepsPanelOnlyChoice(kept, mt)) {
+                        // The rebuilt list leaves it out: put the kept choice back, its hint
+                        // in the new language.
+                        keepPanelOnlyProvider(sel, mt, kept);
+                    } else {
+                        sel.value = kept;
+                    }
                     onCustomModelProviderChange(mt);
                 }
             });

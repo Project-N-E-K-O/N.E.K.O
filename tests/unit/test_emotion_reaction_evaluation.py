@@ -322,5 +322,5 @@ assert "main_logic.omni_realtime_client" not in sys.modules
     assert data["failed_calls"] == 0 and data["coverage_sufficient"]
     assert data["status"] == "review_required"
     assert data["model_setup"] == {"model": "offline", "provider_type": None,
-                                   "temperature": 0.3, "timeout_seconds": 30}
+                                   "timeout_seconds": 30}
     assert "offline-placeholder" not in report.read_text(encoding="utf-8")

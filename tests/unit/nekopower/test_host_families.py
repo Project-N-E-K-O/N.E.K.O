@@ -1419,12 +1419,15 @@ async def test_sessions_whose_project_is_archived_or_whose_record_was_removed_ar
     kept = await host.ledger.create_session(name="kept", lanlan_name="Lan", kind="single", duty="chairs")
     await host.ledger.create_session(name="hers", lanlan_name="Mia", kind="single", duty="another character's")
     commission, _made = await host.ledger.create(lanlan_name="Lan", title="t", dispatch_text="t", source="dispatch")
+    # Looked at by a clock of its own, a while after the session was made: two readings of the real
+    # one taken this close together can be the same (on Windows it moves on about every 15 ms).
+    host.task_agents.families._clock = lambda: kept.last_active_at + 90.0
 
     standing = await host.task_agents.families.standing(commission)
 
     assert [project.name for project in standing.projects] == ["Budget app"]
     assert sorted((agent.duty, agent.project) for agent in standing.agents) == [("budget work", "Budget app"), ("chairs", None)]
-    assert standing.agent(kept.id).idle_seconds > 0
+    assert standing.agent(kept.id).idle_seconds == 90.0
     # One with a commission under way is at work, however long ago its session's status was written.
     under_way, _made = await host.ledger.create(
         lanlan_name="Lan", title="chairs", dispatch_text="chairs", source="dispatch", session_id=kept.id

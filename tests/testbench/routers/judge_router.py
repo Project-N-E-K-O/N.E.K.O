@@ -418,7 +418,6 @@ class _JudgeModelOverride(BaseModel):
     base_url: str | None = None
     api_key: str | None = None
     model: str | None = None
-    temperature: float | None = None
     max_tokens: int | None = None
     timeout: float | None = None
 
@@ -803,7 +802,6 @@ def _override_to_model_config(
         base_url=data.get("base_url") or "",
         api_key=data.get("api_key") or "",
         model=data.get("model") or "",
-        temperature=data.get("temperature", 0.7),
         max_tokens=data.get("max_tokens", 2048),
         timeout=data.get("timeout", 60.0),
     )
