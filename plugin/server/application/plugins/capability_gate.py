@@ -2,10 +2,12 @@
 
 Judged uses (the RPC operations in ``CAPABILITY_BY_OPERATION`` and the
 MESSAGE_PUSH route) all go through ``check``. It reads only the host's call
-registry and the consent store, never plugin-supplied ``_ctx`` or views. It
-runs whatever the master switch says, and never refuses a call yet; a failure
-in here is logged by type and ignored, so the caller sees exactly what it saw
-before. Permission ids come from ``plugin.sdk.shared.permissions``.
+registry and the permission store (the same resolved states the plugin
+process is sent, see ``permission_service.resolved_states``), never
+plugin-supplied ``_ctx`` or views. It runs whatever the master switch says,
+and never refuses a call yet (``REFUSES_CALLS``); a failure in here is logged
+by type and ignored, so the caller sees exactly what it saw before.
+Permission ids come from ``plugin.sdk.shared.permissions``.
 """
 
 from __future__ import annotations
@@ -16,12 +18,11 @@ import re
 import time
 
 from plugin.core.call_registry import CallLink, CallRecord, CallRegistry, Origin
-from plugin.core.capability_policy import Decision, current_mode, decide
+from plugin.core.capability_policy import Decision, current_mode, decide, is_enforced
 from plugin.sdk.shared.permissions import (
     PERMISSIONS,
     PLUGIN_PERMISSION_DENIED,
     legacy_name,
-    normalize_permission,
 )
 from plugin.logging_config import get_logger
 from plugin.server.application.plugins import call_audit
@@ -55,37 +56,40 @@ _RESULT_CODES = frozenset({
 })
 _DEDUP_SECONDS = 60.0
 _last_written: dict[tuple, float] = {}
-# After a failed consent read, do not retry the file on the event loop for a while.
+# After a failed grant read, do not retry the store on the event loop for a
+# while; the last record read is used meanwhile.
 _CONSENT_RETRY_SECONDS = 5.0
 _consent_failed_at = -_CONSENT_RETRY_SECONDS
 
+# Whether the gate refuses the uses it judges denied. Observe only for now:
+# every audit record says ``enforcing: False``. ``mode`` keeps its meaning
+# (what the master switch says), so it is not proof that a call was refused.
+REFUSES_CALLS = False
+
+
+def _enforcing(refused: bool) -> bool:
+    """The audit ``enforcing`` field: whether a refusal was carried out."""
+    return REFUSES_CALLS and refused
+
 
 def granted_capabilities(plugin_id: str) -> tuple[frozenset[str], bool]:
-    """Approved permission ids from plugin_consents.json, and whether the read worked.
+    """Granted permission ids, and whether the grants could be read.
 
-    The store keeps the earlier capability names; they are mapped to
-    permission ids here, and names outside the vocabulary are dropped.
+    Only a ``granted`` state counts. When the read fails, the plugin's last
+    record read is used (none: nothing granted) and the second value is False.
     """
     global _consent_failed_at
-    if time.monotonic() - _consent_failed_at < _CONSENT_RETRY_SECONDS:
-        return frozenset(), False
-    try:
-        from plugin.server.infrastructure.plugin_consent import consent_store
+    from plugin.server.application.plugins.permission_service import resolved_states
 
-        record = consent_store.read(plugin_id)
-    except Exception:  # the whole store is unreadable: back off for everyone
+    backing_off = time.monotonic() - _consent_failed_at < _CONSENT_RETRY_SECONDS
+    _, states, read_failed = resolved_states(plugin_id, read=not backing_off)
+    if read_failed and not backing_off:
+        # The store is unreadable for everyone: back off for everyone.
         _consent_failed_at = time.monotonic()
-        return frozenset(), False
-    try:
-        if record.get("decision") != "approved":
-            return frozenset(), True
-        # Missing means none, as in consent_policy.derive_consent; a wrong type is malformed.
-        approved = record.get("approved_capabilities") or []
-        if not isinstance(approved, list) or not all(isinstance(c, str) for c in approved):
-            return frozenset(), False  # malformed record: unknown, for this plugin only
-        return frozenset(filter(None, map(normalize_permission, approved))), True
-    except Exception:  # only this plugin's record is malformed
-        return frozenset(), False
+    granted = frozenset(
+        permission for permission, state in states.items() if state.status == "granted"
+    )
+    return granted, not read_failed
 
 
 def link_for_plugin_call(caller: str, parent_request_id: object) -> CallLink | None:
@@ -181,7 +185,9 @@ def end_call(record: CallRecord | None, code: str, started: float) -> None:
         return
     try:
         uses = registry.remove(record)
-        base = {"mode": current_mode(), "trace_id": record.trace_id, "call_id": record.call_id,
+        # No use is refused while REFUSES_CALLS is False; once refusals are
+        # carried out, pass whether this call had one.
+        base = {"mode": current_mode(), "enforcing": _enforcing(False), "trace_id": record.trace_id, "call_id": record.call_id,
                 "parent_call_id": record.parent_call_id, "depth": record.depth, "target": record.target}
         call_audit.record({
             "kind": "forward", **base, "caller": record.caller, "event_type": _identifier(record.event_type),
@@ -221,7 +227,10 @@ def check(plugin_id: str, parent_request_id: object, capability: str, operation:
         if decision.allowed and "possible_laundering" not in flags:
             if record is not None:
                 registry.note_use(record, capability)
-            return decision
+            # An allowance based on the last record read (store unreadable)
+            # is also audited below, so it can be told apart.
+            if "consent_unavailable" not in flags:
+                return decision
         verdict = "allow" if decision.allowed else "would_deny"
         key = (plugin_id, capability, verdict, decision.reason, decision.blocked_by, tuple(sorted(flags)))
         now = time.monotonic()
@@ -230,7 +239,9 @@ def check(plugin_id: str, parent_request_id: object, capability: str, operation:
                 _last_written.clear()
             _last_written[key] = now
             call_audit.record({
-                "kind": "decision", "mode": current_mode(), "plugin": plugin_id, "operation": operation,
+                "kind": "decision", "mode": current_mode(),
+                "enforcing": _enforcing(not decision.allowed and is_enforced(capability)),
+                "plugin": plugin_id, "operation": operation,
                 "capability": capability, "chain": list(chain), "verdict": verdict,
                 "reason": decision.reason, "blocked_by": list(decision.blocked_by), "flags": sorted(flags),
                 "trace_id": record.trace_id if record else None, "call_id": record.call_id if record else None,

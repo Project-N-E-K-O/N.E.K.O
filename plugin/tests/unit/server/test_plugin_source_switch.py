@@ -552,7 +552,9 @@ async def _async_value(value):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scenario", ["running_start_fails", "cleanup_fails", "stopped_succeeds"])
+@pytest.mark.parametrize(
+    "scenario", ["running_start_fails", "cleanup_fails", "cleanup_fails_after_denial", "stopped_succeeds"]
+)
 @pytest.mark.parametrize("builtin_resolvable", [True, False], ids=["resolved", "unresolved"])
 async def test_switch_keeps_builtin_grants_with_the_builtin_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str, builtin_resolvable: bool
@@ -616,8 +618,18 @@ async def test_switch_keeps_builtin_grants_with_the_builtin_source(
     builtin_config = tmp_path / "builtin" / "study_companion" / "plugin.toml"
     builtin_config.parent.mkdir(parents=True)
     builtin_config.write_text("builtin", encoding="utf-8")
-    running = scenario in ("running_start_fails", "cleanup_fails")
-    if scenario == "cleanup_fails":
+    running = scenario in ("running_start_fails", "cleanup_fails", "cleanup_fails_after_denial")
+    if scenario == "cleanup_fails_after_denial":
+        # The user denied the plugin; a grant decided per permission stays.
+        builtin = sources["builtin"] or PluginSource("builtin")
+        store.apply_legacy_decision("study_companion", "denied", source=builtin)
+        store.decide(
+            "study_companion", "plugin_sdk.main_agent.memory:read", "granted", source=builtin
+        )
+        record = store.read("study_companion")
+        assert record.get("legacy_denied") is True
+        assert record["permissions"]["plugin_sdk.main_agent.memory:read"]["state"] == "granted"
+    if scenario in ("cleanup_fails", "cleanup_fails_after_denial"):
         def _cannot_remove(_path: Path) -> None:
             raise OSError("directory in use")
 
@@ -686,6 +698,16 @@ async def test_switch_keeps_builtin_grants_with_the_builtin_source(
             assert target.exists()
             assert exc_info.value.rollback_code == "override_rollback_incomplete"
             assert store.read("study_companion") == {}
+        elif scenario == "cleanup_fails_after_denial":
+            # Dropped as a source change would: approvals go, the denial stays.
+            with pytest.raises(SourceSwitchError) as exc_info:
+                await switch_builtin_source(request, **callbacks)
+            assert target.exists()
+            assert exc_info.value.rollback_code == "override_rollback_incomplete"
+            record = store.read("study_companion")
+            assert record["permissions"] == {}
+            assert record.get("legacy_denied") is True
+            assert permission_service.consent_record("study_companion")["decision"] == "denied"
         else:
             await switch_builtin_source(request, **callbacks)
             # The install owner's post-commit reconciliation.

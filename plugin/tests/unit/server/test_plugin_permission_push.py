@@ -311,27 +311,6 @@ def test_snapshot_revisions_grow(store):
 
 
 # ---------------------------------------------------------------------------
-# Granted capabilities: earlier names and permission ids both normalise
-# ---------------------------------------------------------------------------
-
-
-def test_granted_capabilities_normalises_mixed_names(monkeypatch):
-    from plugin.server.infrastructure import plugin_consent
-
-    monkeypatch.setattr(capability_gate, "_consent_failed_at", -10_000.0)
-    monkeypatch.setattr(
-        plugin_consent.consent_store,
-        "read",
-        lambda _pid: {
-            "decision": "approved",
-            "approved_capabilities": ["memory.read", CONVERSATIONS_READ, "unknown.cap"],
-        },
-    )
-    granted, ok = capability_gate.granted_capabilities("demo")
-    assert ok and granted == frozenset({MEMORY_READ, CONVERSATIONS_READ})
-
-
-# ---------------------------------------------------------------------------
 # Push to running plugin processes
 # ---------------------------------------------------------------------------
 
@@ -441,8 +420,8 @@ async def test_a_failed_push_is_logged(monkeypatch, store, hosts):
     "write",
     [
         "decide_permission",
-        "mirror_consent_decision",
-        "mirror_consent_revoke",
+        "record_consent_decision",
+        "record_consent_revoke",
         "forget_permissions",
         "restore_permissions",
         "reconcile_permission_source",
@@ -456,11 +435,11 @@ async def test_every_store_write_reaches_the_plugin(monkeypatch, service, store,
     if write == "decide_permission":
         await asyncio.to_thread(permission_service.decide_permission, "demo", MEMORY_READ, "denied")
         expected = "denied"
-    elif write == "mirror_consent_decision":
-        await asyncio.to_thread(permission_service.mirror_consent_decision, "demo", "denied")
+    elif write == "record_consent_decision":
+        await asyncio.to_thread(permission_service.record_consent_decision, "demo", "denied")
         expected = "denied"
-    elif write == "mirror_consent_revoke":
-        await asyncio.to_thread(permission_service.mirror_consent_decision, "demo", None)
+    elif write == "record_consent_revoke":
+        await asyncio.to_thread(permission_service.record_consent_decision, "demo", None)
         expected = "undecided"
     elif write == "forget_permissions":
         await asyncio.to_thread(permission_service.forget_permissions, "demo")
@@ -658,11 +637,11 @@ async def test_a_fallback_snapshot_is_rebuilt_once_reads_recover(monkeypatch, se
     await _until(lambda: "demo" not in service._timers and _idle(service))
 
 
-def test_undoing_a_consent_mirror_to_nothing_counts_as_a_removal(store):
-    undo = permission_service.mirror_consent_decision("demo", "approved", ["memory.read"])
+def test_restoring_a_consent_decision_to_nothing_counts_as_a_removal(store):
+    permission_service.record_consent_decision("demo", "approved", ["memory.read"])
     assert _states("demo").get(MEMORY_READ).status == "granted"
     before = permission_service._removals.get("demo", 0)
-    undo()
+    permission_service.restore_permissions("demo", None)
     assert "demo" not in permission_service._last_records
     assert permission_service._removals.get("demo", 0) > before
 
