@@ -33,9 +33,10 @@ const glueStart = buttonsSource.indexOf('    // ===== 语音消息：录音 -> �
 const glue = buttonsSource.slice(
   glueStart, buttonsSource.indexOf('    function clearReactChatWindowHostBindingPoll() {', glueStart));
 
-function glueHarness({ visitActive = true, outcomes = ['sent'], text = '你好' } = {}) {
+function glueHarness({ visitActive = true, outcomes = ['sent'], text = '你好', sendResult = true } = {}) {
   const calls = { fetch: [], sent: [], visit: [], toasts: [] };
   const queue = outcomes.slice();
+  const flags = { visitActive };
   const window = {
     lanlan_config: { lanlan_name: 'Neko' },
     reactChatWindowHost: { setAudioMessageTarget() { return true; }, setOnComposerAudioMessage() {} },
@@ -44,7 +45,7 @@ function glueHarness({ visitActive = true, outcomes = ['sent'], text = '你好' 
     setInterval() { return 1; },
     addEventListener() {},
     nekoVisitChat: {
-      isActive: () => visitActive,
+      isActive: () => flags.visitActive,
       async submitAudioTranscript(detail) {
         calls.visit.push(detail);
         return queue.shift();
@@ -54,7 +55,7 @@ function glueHarness({ visitActive = true, outcomes = ['sent'], text = '你好' 
   const mod = {
     async sendTextPayload(sentText, options) {
       calls.sent.push({ text: sentText, options });
-      return true;
+      return typeof sendResult === 'function' ? sendResult(flags) : sendResult;
     },
   };
   async function fetch(url, init) {
@@ -102,6 +103,41 @@ test('without a visit owning the composer the ordinary text path is used', async
   assert.equal(calls.visit.length, 0);
   assert.equal(calls.sent.length, 1);
   assert.equal(calls.sent[0].options.source, 'react-chat-window');
+});
+
+test('a visit that starts while the text is queued reroutes it to the visit line', async () => {
+  // The ordinary send path hands the text back instead of sending it
+  // (queued behind an avatar interaction, or waiting for the text session).
+  const { api, calls } = glueHarness({
+    visitActive: false,
+    outcomes: ['refused', 'sent'],
+    sendResult: (flags) => { flags.visitActive = true; return 'visit_reroute'; },
+  });
+  const error = await rejection(api.sendAudioMessagePayload(payload));
+  assert.equal(error.message, 'busy', 'a refused visit line keeps the draft');
+  assert.equal(calls.sent[0].options.rerouteToVisit, true);
+  assert.equal(calls.sent[0].options.awaitDeferredSend, true);
+  assert.deepEqual(calls.visit.map((detail) => detail.requestId), ['1764-abc']);
+  // The retry goes straight to the visit.
+  assert.equal(await api.sendAudioMessagePayload(payload), true);
+  assert.equal(calls.sent.length, 1);
+  assert.equal(calls.visit.length, 2);
+});
+
+test('the ordinary send path checks for a visit before the bubble and right before sending', () => {
+  const start = buttonsSource.indexOf('        async function sendTextPayloadInternal(rawText, options) {');
+  const body = buttonsSource.slice(start, buttonsSource.indexOf('\n        function ', start + 10));
+  const first = body.indexOf("options.rerouteToVisit === true && visitOwnsComposerForAudioMessage()");
+  const second = body.indexOf("options.rerouteToVisit === true && visitOwnsComposerForAudioMessage()", first + 1);
+  const bubble = body.indexOf('appendReactUserMessage');
+  const sessionWait = body.indexOf('await mod._textSessionStartPromise;');
+  const send = body.indexOf('            // Send message\n            if (S.socket && S.socket.readyState === WebSocket.OPEN)');
+  assert.ok(first > 0 && first < bubble, 'checked before any bubble is drawn (queued submissions)');
+  assert.ok(sessionWait < second && second < send, 'checked again after the text session wait');
+  assert.ok(body.slice(second, send).includes('removeMessage(reactOptimisticMessageId)'));
+  // The deferred queue settles awaiting callers with the send result itself.
+  const flush = buttonsSource.slice(buttonsSource.indexOf('    function flushDeferredTextSubmissions() {'));
+  assert.match(flush.slice(0, flush.indexOf('\n    }\n')), /settleDeferredSubmission\(submission, sent\)/);
 });
 
 test('the chat window offers voice messages while a visit owns the composer', () => {

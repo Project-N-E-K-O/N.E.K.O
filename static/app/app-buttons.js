@@ -1991,6 +1991,17 @@
     var audioMessageDesiredTarget = null;
     var audioMessageAppliedTarget = null;
 
+    // 串门接管了输入框：语音消息的转写文本只能作为串门台词发出
+    function visitOwnsComposerForAudioMessage() {
+        var visitChat = window.nekoVisitChat;
+        return !!(visitChat && typeof visitChat.isActive === 'function' && visitChat.isActive()
+            && typeof visitChat.submitAudioTranscript === 'function');
+    }
+
+    // 普通文字链路发现串门已接管输入框（排队或开会话期间才开始的）时，不发出、返回这个值，
+    // 由语音消息改走串门链路
+    var AUDIO_MESSAGE_VISIT_REROUTE = 'visit_reroute';
+
     function audioMessageRejection(message) {
         var error = new Error(message || 'failed');
         error.name = 'AudioMessageRejected';
@@ -2084,26 +2095,14 @@
             throw audioMessageRejection('stale_target');
         }
         var text = typeof result.data.text === 'string' ? result.data.text.trim() : '';
+        if (!text) {
+            showAudioMessageNoSpeech();
+            return true;
+        }
         // 串门接管了输入框（转写期间才开始的也算）：和打字一样作为亲人句发给选中的收件人。
         // 普通文字链路会被串门运行时以 VISIT_INPUT_REFUSED_SOURCE 拒收
-        var visitChat = window.nekoVisitChat;
-        if (text && visitChat && typeof visitChat.isActive === 'function' && visitChat.isActive()
-                && typeof visitChat.submitAudioTranscript === 'function') {
-            var outcome = await visitChat.submitAudioTranscript({ text: text, requestId: payload.requestId });
-            if (outcome === 'empty') {
-                text = '';
-            } else if (outcome !== 'sent') {
-                throw audioMessageRejection('busy');
-            } else {
-                return true;
-            }
-        }
-        if (!text) {
-            window.showStatusToast(
-                window.t ? window.t('chat.audioMessageNoSpeech') : 'No speech was recognised in the recording.',
-                4000
-            );
-            return true;
+        if (visitOwnsComposerForAudioMessage()) {
+            return sendAudioTranscriptAsVisitLine(text, payload.requestId);
         }
         var accepted = await mod.sendTextPayload(text, {
             source: 'react-chat-window',
@@ -2113,13 +2112,36 @@
             // 发送链路在开会话之后、真正发出前再核对一次角色
             expectedLanlanName: payload.target,
             // 头像互动进行中时文字会先排队：等真正发出（或因换角色被放弃）的结果再决定草稿去留
-            awaitDeferredSend: true
+            awaitDeferredSend: true,
+            // 排队或开会话期间串门接管了输入框：不按普通文字发出，交回来改走串门链路
+            rerouteToVisit: true
         });
+        if (accepted === AUDIO_MESSAGE_VISIT_REROUTE) {
+            return sendAudioTranscriptAsVisitLine(text, payload.requestId);
+        }
         if (accepted === false) {
             throw audioMessageRejection(
                 payload.target !== currentAudioMessageTarget() ? 'stale_target' : 'busy'
             );
         }
+        return true;
+    }
+
+    function showAudioMessageNoSpeech() {
+        window.showStatusToast(
+            window.t ? window.t('chat.audioMessageNoSpeech') : 'No speech was recognised in the recording.',
+            4000
+        );
+    }
+
+    // 作为串门台词发出（visit-chat.js 等到回显或拒收才结算）：被拒以 busy 拒绝，草稿保留
+    async function sendAudioTranscriptAsVisitLine(text, requestId) {
+        var outcome = await window.nekoVisitChat.submitAudioTranscript({ text: text, requestId: requestId });
+        if (outcome === 'empty') {
+            showAudioMessageNoSpeech();
+            return true;
+        }
+        if (outcome !== 'sent') throw audioMessageRejection('busy');
         return true;
     }
 
@@ -3367,6 +3389,10 @@
 
         async function sendTextPayloadInternal(rawText, options) {
             options = options || {};
+            // 语音消息排在头像互动队列里时串门开始了：普通文字会被串门拒收，交回去改走串门链路
+            if (options.rerouteToVisit === true && visitOwnsComposerForAudioMessage()) {
+                return AUDIO_MESSAGE_VISIT_REROUTE;
+            }
             var text = String(typeof rawText === 'string' ? rawText : '').trim();
             var extraImageDataUrls = normalizeExternalImageDataUrls(options.extraImageDataUrls);
             var hasExtraImages = extraImageDataUrls.length > 0;
@@ -3635,6 +3661,14 @@
                     && !(window.lanlan_config && window.lanlan_config.lanlan_name === options.expectedLanlanName)) {
                 updateReactOptimisticMessageStatus('failed');
                 return false;
+            }
+            // 开会话等待期间串门接管了输入框：撤掉普通用户气泡，交回去改走串门链路（串门那边会出自己的气泡）
+            if (options.rerouteToVisit === true && visitOwnsComposerForAudioMessage()) {
+                if (reactOptimisticMessageId && window.reactChatWindowHost
+                        && typeof window.reactChatWindowHost.removeMessage === 'function') {
+                    window.reactChatWindowHost.removeMessage(reactOptimisticMessageId);
+                }
+                return AUDIO_MESSAGE_VISIT_REROUTE;
             }
 
             // Send message
