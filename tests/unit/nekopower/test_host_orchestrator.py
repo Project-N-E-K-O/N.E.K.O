@@ -709,6 +709,12 @@ def test_what_names_another_member_of_the_project_is_not_told_apart() -> None:
     assert found(plain) == (orch.CONTINUE, "writer", True)
     # Naming the other member: said of that one's work. (Where it goes is as it was before.)
     assert found(f"Orchard Archivist, {plain}") == (orch.CONTINUE, "writer", False)
+    # So it is where two are of that title, and which one is meant is not told.
+    twin = replace(archivist, id="twin", idle_seconds=120.0)
+    standing = orch.Standing(projects=standing.projects, agents=(writer, archivist, twin))
+    assert orch.named_member(f"Orchard Archivist, {plain}", (archivist, twin), bars, "thesis") is None
+    assert found(f"Orchard Archivist, {plain}") == (orch.CONTINUE, "writer", False)
+    assert found(plain) == (orch.CONTINUE, "writer", True)
 
 
 def test_a_sentence_that_points_back_or_adds_to_something_is_not_told_apart() -> None:

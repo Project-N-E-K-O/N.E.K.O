@@ -505,11 +505,16 @@ async def test_a_host_that_shuts_down_while_the_user_is_asked_does_not_wait_for_
     host.ledger.transition = noting
 
     # The member it waits for is still busy: nothing but the shutting down takes back what is asked.
+    from nekopower.host.task_agents import _SHUTDOWN_START_WAIT_SECONDS
+
+    asking = host.task_agents._asking_beside[two.commission_id]
+    looking = list(host.task_agents._starting)
     began = asyncio.get_running_loop().time()
     await host.shutdown()
 
-    # (Well within what a start that hangs is waited for.)
-    assert asyncio.get_running_loop().time() - began < 3.0
+    # Taken back by the shutting down, and the look over by itself: not cut off as a start that hangs is.
+    assert asking.withdrawn == "closed" and looking and not any(task.cancelled() for task in looking)
+    assert asyncio.get_running_loop().time() - began < _SHUTDOWN_START_WAIT_SECONDS
     assert host.task_agents._asking_beside == {} and not host.task_agents._starting
     # It ends as what is queued does, and what was asked is no longer to be answered.
     assert ("failed", True) in moves and ("working", True) not in moves
@@ -692,6 +697,101 @@ async def test_stopped_while_its_member_is_being_made_it_takes_no_place(hosts, t
     # (The member that was being made is there, with nothing to do.)
     assert len(await _members(host)) == 2 and manager._held_by == {main.id: one.commission_id}
     host.release.set()
+
+
+async def test_not_told_apart_where_not_every_member_was_held_against_what_was_said(hosts, tmp_path, monkeypatch):
+    host, trees, _workdir, one, _scripts, _seen = await _busy(hosts, tmp_path, _links())
+    main = await _session_of(host, one.commission_id)
+
+    async def some_left_out(*_args: Any) -> bool:
+        # As where the project has more members than the sessions last in use that are read.
+        return False
+
+    monkeypatch.setattr(host.task_agents.families, "_all_compared", some_left_out)
+    two = await _dispatch(host, APART)
+    await _settled(host)
+
+    # It goes where it was going, and nobody is asked about another member.
+    back = await host.ledger.get(two.commission_id)
+    assert (back.status, back.session_id) == ("queued", main.id) and await outbox(host, "question") == []
+    assert len(await _members(host)) == 1 and trees.made == []
+    host.release.set()
+    assert (await wait_status(host, two.commission_id, "done")).session_id == main.id
+
+
+async def test_set_to_queue_while_the_user_is_asked_no_member_is_opened_on_the_answer(hosts, tmp_path):
+    host, trees, _workdir, one, _scripts, _seen = await _busy(hosts, tmp_path, _links())
+    main = await _session_of(host, one.commission_id)
+    two = await _dispatch(host, APART)
+    await _asked(host, two.commission_id)
+
+    await host.set_landing_settings(beside="queue")
+    assert await host.answer(two.commission_id, "yes", choice="once")
+    await _settled(host)
+
+    # As the user set it last: it waits for the busy member, with no member opened.
+    back = await host.ledger.get(two.commission_id)
+    assert (back.status, back.session_id) == ("queued", main.id)
+    assert len(await _members(host)) == 1 and trees.made == []
+    assert await _events(host, two.commission_id, "beside_opened") == []
+    host.release.set()
+    assert (await wait_status(host, two.commission_id, "done")).session_id == main.id
+
+
+async def test_what_is_on_its_way_to_the_commission_as_it_goes_to_another_member_is_put_back(hosts, tmp_path):
+    from nekopower.host.task_agents import _Handed
+    from tests.unit.nekopower.test_host_session_messages import _note
+
+    host, _trees, _workdir, one, _scripts, _seen = await _busy(hosts, tmp_path, _links())
+    manager = host.task_agents
+    main = await _session_of(host, one.commission_id)
+    # Handed over by hand here; and every place is taken, so that it waits in the queue for the member made.
+    await host.wakes.close()
+    most, manager._max_concurrent = manager._max_concurrent, 1
+    go, held_up = asyncio.Event(), asyncio.Event()
+    create = host.ledger.create_session
+
+    async def making(**values: Any) -> Any:
+        if values.get("seat") == "tree":
+            held_up.set()
+            await go.wait()
+        return await create(**values)
+
+    host.ledger.create_session = making
+    two = await _dispatch(host, APART)
+    await _asked(host, two.commission_id)
+    assert await host.answer(two.commission_id, "yes", choice="once")
+    await wait_until(held_up.is_set, what="its member being made")
+
+    # A note to the busy member is on its way to the commission that waits there (as what that member is at,
+    # ``hand_over``), its text being made, when the commission goes to the member made for it.
+    sender = types.SimpleNamespace(session_id=main.id, id=None, status="done")
+    await _note(host.ledger, sender, main.id, "Check the footer as well.")
+    [wake] = await host.ledger.wakes_pending(session_id=main.id)
+    made, written = asyncio.Event(), asyncio.Event()
+    wake_text = manager._wake_text
+
+    async def writing(*args: Any, **kwargs: Any) -> Any:
+        made.set()
+        await written.wait()
+        return await wake_text(*args, **kwargs)
+
+    manager._wake_text = writing
+    handing = asyncio.ensure_future(manager._hand_to(await host.ledger.get(two.commission_id), main, [wake]))
+    await wait_until(made.is_set, what="the note being made ready")
+    go.set()
+    await wait_until(
+        lambda: manager._session_of.get(two.commission_id) not in (None, main.id), what="it going to the member made"
+    )
+    written.set()
+
+    # Not taken along: put back, for whatever the busy member is at.
+    assert (await handing).outcome == "held"
+    assert not [note for note in manager._notes.get(two.commission_id, []) if isinstance(note, _Handed)]
+    assert [item.id for item in await host.ledger.wakes_pending(session_id=main.id)] == [wake.id]
+    manager._max_concurrent = most
+    host.release.set()
+    await wait_status(host, two.commission_id, "done")
 
 
 async def test_what_is_written_to_the_busy_member_is_not_taken_along_to_the_member_made_beside_it(hosts, tmp_path):
@@ -919,6 +1019,9 @@ async def test_a_queued_commission_waits_for_the_user_only_where_it_is_asked_abo
         await asyncio.wait_for(
             manager._ask(two.commission_id, {"kind": "questions"}, direct=_Session(two.commission_id)), timeout=5
         )
+    # So is what such a session reports it waits for, and an answer it closed before taking.
+    await manager._on_report(_Session(two.commission_id), {"status": "waiting", "summary": "which colour?"})
+    await manager._answer_untaken(two.commission_id, "blue")
 
     still = await host.ledger.get(two.commission_id)
     assert (still.status, still.pending_question) == ("queued", None) and await outbox(host, "question") == []

@@ -561,6 +561,22 @@ def named_member(sentence: str, members: Sequence[Agent], bars: Bars, project: s
     return None if best is None or tied else best[1]
 
 
+def names_a_member(sentence: str, members: Sequence[Agent], bars: Bars, project: str = "") -> bool:
+    """Whether a sentence names any of these members by the title on its card, as ``named_member`` reads it.
+
+    Though which one it names may not be told (two of one title): it is
+    said of a member's work all the same.
+    """
+    from nekopower.host.space import name_occurs, normalize_name
+
+    return any(
+        len(normalize_name(member.title)) >= bars.name_min_chars
+        and name_occurs(member.title, sentence)
+        and not (project and name_occurs(member.title, project))
+        for member in members
+    )
+
+
 def _title_in(agent: Agent, words: str) -> bool:
     """Whether the title on a task agent's card is in these words."""
     from nekopower.host.space import name_occurs
@@ -706,7 +722,7 @@ def settle(
                 # (Not what names another member of the project: that is said of that one's work,
                 # and no further member is to be had for it.)
                 apart=apart_from(sentence, latest, bars, project.name)
-                and named_member(sentence, working, bars, project.name) is None,
+                and not names_a_member(sentence, working, bars, project.name),
             )
         return verdict(SUMMON_IN_PROJECT, project=project.name, preset=WORKING_PRESET, relation=relation)
     if target is None:

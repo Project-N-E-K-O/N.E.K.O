@@ -4965,6 +4965,9 @@ class TaskAgentManager(TreeWork):
                 commission_id,
                 "waiting_user",
                 reason="the task agent needs an answer",
+                # (A report of a run on its way out, whose commission was queued again meanwhile, is
+                # refused, as it was before a queued commission could wait for the user at all.)
+                only_from=("working",),
                 pending_question=json.dumps(question, ensure_ascii=False),
             )
             if moved.applied and moved.commission is not None:
@@ -7121,7 +7124,11 @@ class TaskAgentManager(TreeWork):
         """
         try:
             moved = await self._ledger.transition(
-                commission_id, "waiting_user", reason="its session closed before it took the answer"
+                commission_id,
+                "waiting_user",
+                reason="its session closed before it took the answer",
+                # (From where the answer moved it to: a queued one is asked about by ``_ask_beside`` alone.)
+                only_from=("working",),
             )
             if (
                 moved.applied
@@ -8599,6 +8606,9 @@ class TaskAgentManager(TreeWork):
         if stopped() or in_the_way():
             return Handover("held", _CLOSING_RETRY_SECONDS)
         chosen = way()
+        # The session it waits for: another member may be made for it while this is awaited
+        # (``_beside``), and what was for this session is then not its to take along.
+        waits_in = self._session_of.get(commission_id)
         session = self._sessions.get(commission_id)
         # Whether the switch and the quota were asked about a turn this starts.
         counted = False
@@ -8636,7 +8646,13 @@ class TaskAgentManager(TreeWork):
                 return Handover("dropped")
             # Looked at after everything that was awaited; nothing is
             # awaited from here to where it is handed on.
-            if stopped() or in_the_way() or way() != chosen or self._sessions.get(commission_id) is not session:
+            if (
+                stopped()
+                or in_the_way()
+                or way() != chosen
+                or self._sessions.get(commission_id) is not session
+                or self._session_of.get(commission_id) != waits_in
+            ):
                 await self._put_back(fired, kick=False)
                 return Handover("held", _CLOSING_RETRY_SECONDS)
             if counted and not self._is_switched_on():
@@ -10766,6 +10782,9 @@ class TaskAgentManager(TreeWork):
             # have taken a while, and two of these may get here together with room for one.
             async with self.families.placing:
                 if await self._ledger.lead_session(commission.lanlan_name, kept.project) is not None:
+                    return
+                if (await self.landing.get()).get("beside") != choice:
+                    # Set otherwise since it was read (to queue, say): it waits for the member.
                     return
                 if not await room(commission, kept):
                     return

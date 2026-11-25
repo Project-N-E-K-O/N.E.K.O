@@ -297,6 +297,11 @@ class Families:
             verdict = replace(
                 verdict, action=orch.TO_LEADER, agent=None, direct=False, reason="not every member was looked at"
             )
+        if verdict.apart and verdict.project and not await self._all_compared(commission, verdict.project, standing):
+            # Told apart from what the member it goes to is at without every member held against
+            # the sentence: one that was not may be the one it names, or goes on with. It goes
+            # where it was going, and no other member is opened for it (``TaskAgentManager._beside``).
+            verdict = replace(verdict, apart=False)
         if (
             settings.LEADER_IN_GIT_REPOSITORIES
             and not verdict.direct
