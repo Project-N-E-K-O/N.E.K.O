@@ -264,23 +264,35 @@ def _with_openrouter_decision_models(
 ) -> dict[str, Any]:
     """Add OpenRouter's decision models (absent from its default list) ahead of the rest.
 
-    Decision entries carry ``decision: true`` so the picker can tag them. When
-    the decision list could not be fetched (*decision_entries* is empty), the
-    chat list is kept and only the IDs the built-in catalog already knows are
-    tagged.
+    When the decision list could not be fetched (*decision_entries* is empty),
+    the chat list is kept and only the IDs the built-in catalog already knows
+    are tagged.
     """
-    from utils.decision_client.openrouter_catalog import is_openrouter_decision_model
-
     if not result.get("success") and not decision_entries:
         return result
     merged = _normalize_model_entries(
         [*decision_entries, *(result.get("models") or [])], strip_gemini_prefix=False
     )
-    for entry in merged:
-        if is_openrouter_decision_model(entry["id"]):
+    resolved_url = result.get("resolved_url") or fallback_url
+    return _tag_decision_models({"success": True, "models": merged, "resolved_url": resolved_url}, resolved_url)
+
+
+def _tag_decision_models(result: dict[str, Any], url: str) -> dict[str, Any]:
+    """Mark models that use a native decision API on *url* with ``decision: true`` and list them first.
+
+    Uses the same protocol rule as the runtime decision slot, so a tagged model
+    is one the slot would call natively.
+    """
+    from utils.decision_client.schema import infer_decision_protocol, is_native_decision_protocol
+
+    if not result.get("success"):
+        return result
+    models = [dict(entry) for entry in result.get("models") or []]
+    for entry in models:
+        if is_native_decision_protocol(infer_decision_protocol(entry["id"], url)):
             entry["decision"] = True
-    merged.sort(key=lambda entry: (not entry.get("decision"), entry["id"].lower()))
-    return {"success": True, "models": merged, "resolved_url": result.get("resolved_url") or fallback_url}
+    models.sort(key=lambda entry: (not entry.get("decision"), entry["id"].lower()))
+    return {**result, "models": models}
 
 
 @router.post("/list_models")
@@ -326,6 +338,8 @@ async def list_models(req: ModelListRequest) -> dict:
             result.pop("check_url", None)
         if decision_task is not None:
             result = _with_openrouter_decision_models(result, target["urls"][0], await decision_task)
+        elif (req.model_type or "").strip() == "decision":
+            result = _tag_decision_models(result, result.get("resolved_url") or target["urls"][0])
     finally:
         if decision_task is not None and not decision_task.done():
             decision_task.cancel()

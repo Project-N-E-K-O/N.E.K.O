@@ -61,6 +61,12 @@ def _reset_native_cooldown():
         ("custom-decider", "https://my-gateway.example/v1/decisions", None, None, "openai_decisions"),
         ("deepseek-v4-flash", "https://api.deepseek.com/v1", "chat_fallback", "deepseek-v4-flash", "chat_fallback"),
         ("free-mini-model", "https://www.lanlan.tech/text/v1", "chat_fallback", "free-mini-model", "chat_fallback"),
+        # SiliconFlow serves Kev-4B / SemIf on /v1/systemone; the bare IDs mean nothing elsewhere.
+        ("Kev-4B", "https://api.siliconflow.cn/v1", "systemone", "Kev-4B", "systemone"),
+        ("SemIf", "https://api.siliconflow.cn/v1", "systemone", "Kev-4B", "systemone"),
+        ("kev-4b", "https://api.siliconflow.cn/v1", None, None, "systemone"),
+        ("Qwen/Qwen3-8B", "https://api.siliconflow.cn/v1", "systemone", "Kev-4B", "chat_fallback"),
+        ("Kev-4B", "https://api.deepseek.com/v1", None, None, "chat_fallback"),
     ],
 )
 def test_infer_decision_protocol(model, endpoint_url, prof_proto, prof_model, expected):
@@ -130,6 +136,7 @@ def test_all_assist_providers_have_decision_fields():
         "openai": ("gpt-6-luna", "openai_decisions"),
         "gemini": ("gemini-decision-1", "gemini_decisions"),
         "openrouter": ("google/gemini-decision-1", "openrouter_decisions"),
+        "silicon": ("Kev-4B", "systemone"),
     }
     assert set(native_expected.keys()).issubset(providers.keys())
     for key, profile in providers.items():
@@ -1343,6 +1350,16 @@ def test_config_manager_decision_slot_defaults_and_cross_provider(clean_user_dat
     assert gem_dec["model"] == "gemini-decision-1"
     assert gem_dec["decision_protocol"] == "gemini_decisions"
     assert gem_dec["decision_url"] == "https://generativelanguage.googleapis.com/v1beta/decisions"
+
+    # Default silicon assist -> native systemone on SiliconFlow's own host (Kev-4B),
+    # with the recognition chat model standing by.
+    _set_cfg({"coreApi": "qwen", "assistApi": "silicon", "assistApiKeySilicon": "sk-sf"})
+    sf_dec = cm.get_model_api_config("decision")
+    assert sf_dec["model"] == "Kev-4B"
+    assert sf_dec["decision_protocol"] == "systemone"
+    assert sf_dec["decision_url"] == "https://api.siliconflow.cn/v1/systemone"
+    assert sf_dec["native_unavailable_reason"] == ""
+    assert sf_dec["fallback_model"] == "Qwen/Qwen3-VL-30B-A3B-Instruct"
 
     # Default deepseek assist -> chat_fallback
     _set_cfg({"coreApi": "qwen", "assistApi": "deepseek", "assistApiKeyDeepseek": "sk-ds"})
@@ -2725,3 +2742,63 @@ async def test_connectivity_reports_workspace_mismatch():
             "sk-ws-a", model="decision-model-preview", protocol="systemone",
         )
     assert res["error_code"] == "auth_failed"
+
+
+@pytest.mark.unit
+def test_model_list_tags_native_decision_models_for_the_decision_slot():
+    from main_routers.config_router import model_catalog
+
+    def _listed(ids, url):
+        result = {"success": True, "resolved_url": url, "models": [{"id": i} for i in ids]}
+        return [(m["id"], m.get("decision", False)) for m in model_catalog._tag_decision_models(result, url)["models"]]
+
+    assert _listed(["Qwen/Qwen3-8B", "SemIf", "Kev-4B"], "https://api.siliconflow.cn/v1") == [
+        ("Kev-4B", True), ("SemIf", True), ("Qwen/Qwen3-8B", False),
+    ]
+    assert _listed(["gpt-5-nano", "gpt-6-luna"], "https://api.openai.com/v1") == [
+        ("gpt-6-luna", True), ("gpt-5-nano", False),
+    ]
+    assert _listed(["Kev-4B", "deepseek-flash"], "https://api.deepseek.com/v1") == [
+        ("deepseek-flash", False), ("Kev-4B", False),
+    ]
+    failure = {"success": False, "error_code": "timeout"}
+    assert model_catalog._tag_decision_models(failure, "https://api.siliconflow.cn/v1") is failure
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_model_list_tags_decision_models_only_for_the_decision_slot(clean_user_data_dir, monkeypatch):
+    from main_routers.config_router import model_catalog
+
+    monkeypatch.setattr(model_catalog, "_resolve_provider_target", lambda *_a: {
+        "urls": ["https://api.siliconflow.cn/v1"], "api_key": "k", "provider_type": "openai_compatible",
+    })
+
+    async def _chat(url, api_key, provider_type):
+        return {"success": True, "models": [{"id": "Qwen/Qwen3-8B"}, {"id": "Kev-4B"}], "resolved_url": url}
+
+    monkeypatch.setattr(model_catalog, "_fetch_models", _chat)
+    decision = await model_catalog.list_models(model_catalog.ModelListRequest(provider_key="silicon", model_type="decision"))
+    assert [(m["id"], m.get("decision", False)) for m in decision["models"]] == [
+        ("Kev-4B", True), ("Qwen/Qwen3-8B", False),
+    ]
+    memory = await model_catalog.list_models(model_catalog.ModelListRequest(provider_key="silicon", model_type="memory"))
+    assert [m for m in memory["models"] if m.get("decision")] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_connectivity_decision_probe_uses_siliconflow_systemone():
+    from main_routers.config_router.connectivity import ConnectivityTestRequest, test_connectivity
+
+    with patch(
+        "main_routers.config_router.connectivity._test_decision_endpoint",
+        AsyncMock(return_value={"success": True}),
+    ) as mock_dec:
+        res = await test_connectivity(ConnectivityTestRequest(
+            provider_key="silicon", provider_scope="decision", api_key="sk-sf",
+        ))
+    assert res["success"] is True
+    assert mock_dec.await_args.args[0] == "https://api.siliconflow.cn/v1/systemone"
+    assert mock_dec.await_args.kwargs["model"] == "Kev-4B"
+    assert mock_dec.await_args.kwargs["protocol"] == "systemone"

@@ -165,8 +165,9 @@
       "conversation_model": "deepseek-ai/DeepSeek-V4.1-Flash",
       "memory_model": "deepseek-ai/DeepSeek-V4-Flash",
       "recognition_model": "Qwen/Qwen3-VL-30B-A3B-Instruct",
-      "decision_model": "deepseek-ai/DeepSeek-V4-Flash",
-      "decision_protocol": "chat_fallback",
+      "decision_model": "Kev-4B",
+      "decision_protocol": "systemone",
+      "decision_url": "https://api.siliconflow.cn/v1/systemone",
       "vision_model": "deepseek-ai/DeepSeek-V4.1-Flash",
       "agent_model": "deepseek-ai/DeepSeek-V4.1-Flash"
     },

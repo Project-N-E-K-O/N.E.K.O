@@ -41,6 +41,13 @@ _KNOWN_NATIVE_MODEL_PREFIXES: tuple[tuple[str, str], ...] = (
     ("gemini-decision-", "gemini_decisions"),
 )
 
+# Decision models whose bare IDs only mean a decision model on one host. SiliconFlow
+# serves Kev-4B and SemIf on POST /v1/systemone (alpha; IDs are case-insensitive)
+# and rejects them on chat completions (observed 2026-11-25).
+_HOST_NATIVE_MODELS: dict[str, tuple[frozenset[str], str]] = {
+    "api.siliconflow.cn": (frozenset({"kev-4b", "semif"}), "systemone"),
+}
+
 
 def is_native_decision_protocol(protocol: str | None) -> bool:
     """Return True when *protocol* targets a native zero-output Decisions API."""
@@ -60,8 +67,9 @@ def infer_decision_protocol(
       1. Explicit native decision endpoint suffix in *base_url* (e.g. ``/systemone``,
          ``/v1/decisions``, ``/v1beta/decisions``, ``/alpha/decisions``).
       2. Known native decision model IDs: vendor prefixes (e.g.
-         ``decision-model-preview``, ``gpt-6-luna``, ``gemini-decision-1``) and the
-         OpenRouter decision model catalog (e.g. ``google/gemini-decision-1``).
+         ``decision-model-preview``, ``gpt-6-luna``, ``gemini-decision-1``), the
+         OpenRouter decision model catalog (e.g. ``google/gemini-decision-1``) and
+         host-scoped IDs (e.g. ``Kev-4B`` on SiliconFlow).
       3. Profile-declared native protocol when *model* matches *profile_model* (or is empty).
       4. ``chat_fallback`` for every other chat/generative model.
     """
@@ -88,6 +96,9 @@ def infer_decision_protocol(
 
     if is_openrouter_decision_model(m):
         return "openrouter_decisions"
+    host_models = _HOST_NATIVE_MODELS.get(url_host)
+    if host_models and m in host_models[0]:
+        return host_models[1]
     for prefix, proto in _KNOWN_NATIVE_MODEL_PREFIXES:
         if m.startswith(prefix):
             if url_host == "openrouter.ai" and proto != "openrouter_decisions":
