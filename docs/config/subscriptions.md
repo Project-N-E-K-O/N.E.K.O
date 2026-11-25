@@ -38,14 +38,27 @@ New requests follow the change at once; an ongoing conversation picks it up when
 
 ## Plan keys
 
-Keys of plans that need one are stored in `subscriptions.json` and never returned to the settings page. For MiMo Token Plan, a Token Plan key already entered under **General Model Provider** is used when the card has no key of its own.
+Keys of plans that need one are stored in `subscriptions.json` and never returned to the settings page. When the MiMo Token Plan, Kimi Code, StepFun Step Plan or Volcengine Ark Coding Plan card has no key of its own, the matching key already entered on the page is used (for MiMo the Token Plan key under **General Model Provider**, otherwise the same vendor's key in the **API Key Book**).
 
 ## Subscriptions
 
-- **ChatGPT**: sign-in is described in [ChatGPT subscription provider](/config/chatgpt); models are listed from the signed-in account.
-- **MiMo Token Plan**: choose the China, Singapore or Europe cluster and enter a key starting with `tp-`.
+| Subscription | Sign-in | Features it can take over | Notes |
+| --- | --- | --- | --- |
+| ChatGPT | Sign in (see [ChatGPT subscription provider](/config/chatgpt)) | All 9 | Models are listed from the signed-in account |
+| MiMo Token Plan | `tp-` key; the one entered under General Model Provider also works | All 9 | China, Singapore or Europe cluster |
+| Kimi Code | Membership key; the Kimi Code key in the API Key Book also works | All 9 | Same connection as the Kimi Code provider; China / overseas |
+| MiniMax M Plan | Plan key (not the pay-as-you-go key) | All 9 | Once the plan quota is used up, MiniMax charges the account balance by default unless turned off there |
+| Alibaba Cloud Model Studio Token Plan | `sk-sp-` key | All 9 | Beijing / Singapore |
+| Alibaba Cloud Model Studio Coding Plan | `sk-sp-` key | All 9 | China / international |
+| Volcengine Ark Coding Plan | Ark key | All 9 | Uses `/api/coding/v3`; the plain address is billed pay-as-you-go |
+| Z.ai GLM Coding Plan | Plan key | 7 (not the chat or mini-game chat model) | Images are read only through a tool, so features that must see images are not offered |
+| StepFun Step Plan | Step key | All 9 | China / international |
+| Baidu Qianfan Token Plan | Plan key | All 9 | |
+| Tencent Cloud Token Plan | `sk-tp-` key | All 9 | Model names must be lowercase; Hy models cannot read images |
+| OpenCode Go | Console key | All 9 | Models can be listed from the provider; Extra Usage charges the balance |
+| Ollama Cloud | Ollama key | All 9 | Models can be listed from the provider; usage continues on purchased credit after the plan's |
 
-Subscriptions marked **Not yet tested** have not been tried with a real subscription yet; please report problems.
+Subscriptions marked **Not yet tested** have not been tried with a real subscription yet; please report problems. Each plan model's thinking switch follows the registered form of its model family; whether it turns thinking off, and whether addresses and model names are exact, is confirmed in a later round of tests with real subscriptions.
 
 ## Performance
 

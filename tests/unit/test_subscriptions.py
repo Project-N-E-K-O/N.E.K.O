@@ -283,3 +283,79 @@ async def test_a_tier_set_up_in_full_is_reported_as_own_setting(config_manager, 
         status = (await client.post("/api/config/subscriptions/chatgpt/enable", json={"enabled": True})).json()
     row = status["tiers"]["conversation"]
     assert row == {"effective": None, "claimed_by": "chatgpt", "own_setting": True}
+
+
+# ---------------------------------------------------------------------------
+# The plans owner approved (2026-11-25) and what they need from the provider tables
+# ---------------------------------------------------------------------------
+
+APPROVED_PLANS = (
+    "chatgpt", "mimo_token_plan", "kimi_code", "minimax_m_plan", "bailian_token_plan",
+    "bailian_coding_plan", "ark_coding_plan", "glm_coding_plan", "step_plan",
+    "qianfan_token_plan", "tencent_token_plan", "opencode_go", "ollama_cloud",
+)
+
+
+def test_all_approved_plans_load_with_consistent_defaults():
+    plans = get_plans()
+    assert tuple(plans) == APPROVED_PLANS
+    for plan_id, plan in plans.items():
+        assert plan["tiers"], plan_id
+        for tier, model in plan["default_models"].items():
+            assert tier in plan["tiers"], (plan_id, tier)
+            assert plan["models"] == "account" or model in plan["models"], (plan_id, model)
+        if plan["auth"] == "api_key":
+            # Every tier a keyed plan offers has a model to start from.
+            assert set(plan["default_models"]) == set(plan["tiers"]), plan_id
+        for url in [plan["base_url"], *plan["regions"].values()]:
+            assert not url or url.startswith("https://"), (plan_id, url)
+    # GLM Coding Plan reads images only through a tool: no chat tiers that must see pictures.
+    assert {"conversation", "game_main"}.isdisjoint(plans["glm_coding_plan"]["tiers"])
+    # Kimi Code reuses the Kimi Code provider: Anthropic protocol and its key-book key.
+    assert plans["kimi_code"]["provider_type"] == "anthropic"
+    assert plans["kimi_code"]["key_fallback"] == "ASSIST_API_KEY_KIMI_CODE"
+    assert plans["ollama_cloud"]["fetch_models"] and plans["opencode_go"]["fetch_models"]
+
+
+def test_plan_default_models_turn_thinking_down():
+    """Every default model of a keyed plan gets a thinking-off body, or is a known exception."""
+    from config.providers import get_extra_body
+    from utils.subscriptions.plans import plan_base_url
+
+    # Kimi Code models are not registered: K3.1 Pro cannot turn thinking off and the
+    # kimi-for-coding default behaves as before this change (unchanged provider).
+    known_unregistered = {"kimi-for-coding"}
+    for plan_id, plan in get_plans().items():
+        if plan["auth"] != "api_key":
+            continue
+        url = plan_base_url(plan, None)
+        for model in set(plan["default_models"].values()) - known_unregistered:
+            assert get_extra_body(model, url), (plan_id, model)
+
+
+def test_gateway_ids_map_onto_registered_models():
+    from config.providers import EXTRA_BODY_CLAUDE, get_extra_body
+
+    tencent = "https://tokenhub.tencentmaas.com/plan/v3"
+    assert get_extra_body("deepseek-v4-pro-0813", tencent) == EXTRA_BODY_CLAUDE
+    assert get_extra_body("minimax-m3", "https://ollama.com/v1") == EXTRA_BODY_CLAUDE
+    # Elsewhere the dated or lowercase id stays unknown.
+    assert get_extra_body("deepseek-v4-pro-0813", "https://api.example.com/v1") == {}
+
+
+def test_opencode_go_requests_carry_one_session_header():
+    from config.providers import get_cache_kwargs
+
+    first = get_cache_kwargs("https://opencode.ai/inference/go/openai/v1")["default_headers"]
+    second = get_cache_kwargs("https://opencode.ai/inference/go/openai/v1")["default_headers"]
+    assert first["x-opencode-session"].startswith("ses_")
+    assert first == second
+    assert "x-opencode-session" not in get_cache_kwargs("https://api.openai.com/v1")["default_headers"]
+
+
+def test_kimi_code_overseas_host_is_the_same_service():
+    from utils.llm_client.anthropic_client import _is_kimi_code_anthropic_base_url
+
+    assert _is_kimi_code_anthropic_base_url("https://api.kimi.ai/coding")
+    assert _is_kimi_code_anthropic_base_url("https://api.kimi.com/coding/")
+    assert not _is_kimi_code_anthropic_base_url("https://api.kimi.ai/v1")

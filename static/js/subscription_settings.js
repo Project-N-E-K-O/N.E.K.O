@@ -73,7 +73,10 @@
         return data;
     }
 
-    const planName = id => ((state && state.plans.find(plan => plan.id === id)) || { name: id }).name;
+    const planName = id => {
+        const plan = (state && state.plans.find(item => item.id === id)) || { name: id };
+        return translate(`api.subscriptions.plans.${id}`, plan.name);
+    };
     const entryOf = id => (state && state.state.plans[id]) || { enabled: false, tiers: {}, has_key: false, region: '' };
 
     function say(planId, text, kind) {
@@ -129,8 +132,9 @@
     }
 
     function modelChoices(plan) {
-        if (plan.models === 'account') return accountModels[plan.id] || [];
-        return plan.models;
+        const fixed = plan.models === 'account' ? [] : plan.models;
+        const listed = accountModels[plan.id] || [];
+        return [...listed, ...fixed.filter(model => !listed.includes(model))];
     }
 
     async function fetchAccountModels(plan) {
@@ -144,7 +148,7 @@
         const owner = state.tiers[tier] && state.tiers[tier].claimed_by;
         if (model && owner && owner !== plan.id) {
             const question = t('moveConfirm', '{{feature}} is taken over by {{from}} now. Let {{to}} take it over instead?',
-                { feature: tierLabel(tier), from: planName(owner), to: plan.name });
+                { feature: tierLabel(tier), from: planName(owner), to: planName(plan.id) });
             const confirmed = typeof window.showConfirm === 'function'
                 ? await window.showConfirm(question, t('title', 'Subscriptions & plans'))
                 : window.confirm(question);
@@ -175,7 +179,7 @@
             checkbox.addEventListener('change', async () => {
                 if (!checkbox.checked) return chooseTier(plan, tier, null);
                 let model = select.value;
-                if (!model && plan.models === 'account') {
+                if (!model && plan.fetch_models) {
                     try {
                         model = (await fetchAccountModels(plan))[0] || '';
                     } catch (error) {
@@ -198,7 +202,7 @@
                 select,
                 note ? el('span', { className: 'subscription-tier-note', text: note }) : null));
         }
-        if (plan.models === 'account') {
+        if (plan.fetch_models) {
             list.appendChild(el('button', {
                 type: 'button', className: 'gsv-tutorial-link', text: t('loadModels', 'Load models from this account'),
                 onclick: () => act(plan.id, async () => {
@@ -215,9 +219,9 @@
         const rows = el('div', { className: 'subscription-key' });
         const input = el('input', {
             type: 'password', autocomplete: 'off', className: 'subscription-key-input',
-            'aria-label': t('keyLabel', '{{plan}} key', { plan: plan.name }),
+            'aria-label': t('keyLabel', '{{plan}} key', { plan: planName(plan.id) }),
             placeholder: entry.has_key ? t('keySaved', 'Key saved (enter a new one to replace it)')
-                : plan.uses_general_provider_key ? t('keyFromGeneral', 'Using the key entered under General Model Provider')
+                : plan.uses_general_provider_key ? t('keyFromGeneral', 'Using the matching key already entered on this page')
                     : t('keyPlaceholder', 'Paste the subscription key{{prefix}}', { prefix: plan.key_prefix ? ` (${plan.key_prefix}…)` : '' }),
         });
         let region = null;
@@ -245,7 +249,7 @@
             entry.has_key ? el('button', {
                 type: 'button', className: 'gsv-tutorial-link', text: t('removeKey', 'Remove key'),
                 onclick: async () => {
-                    const question = t('removeKeyConfirm', 'Remove the {{plan}} key? The subscription turns off and its features use your own settings again.', { plan: plan.name });
+                    const question = t('removeKeyConfirm', 'Remove the {{plan}} key? The subscription turns off and its features use your own settings again.', { plan: planName(plan.id) });
                     const confirmed = typeof window.showConfirm === 'function'
                         ? await window.showConfirm(question, t('title', 'Subscriptions & plans'), { danger: true })
                         : window.confirm(question);
@@ -260,7 +264,7 @@
         switchInput.addEventListener('change', () => act(plan.id, () => api(`/${plan.id}/enable`, { enabled: switchInput.checked }))
             .then(data => { if (!data) render(); }));
         return [
-            el('span', { className: 'subscription-name', text: plan.name }),
+            el('span', { className: 'subscription-name', text: planName(plan.id) }),
             plan.verified ? null : el('span', { className: 'subscription-badge', text: t('unverified', 'Not yet tested'), title: t('unverifiedHint', 'Not yet tested with a real subscription; report problems if it misbehaves.') }),
             el('label', { className: 'subscription-switch' }, switchInput, el('span', { text: t('useIt', 'Use this subscription') })),
         ];
@@ -277,7 +281,7 @@
         });
         const stateText = plan.auth === 'chatgpt_oauth'
             ? (plan.ready ? '' : t('needsSignIn', 'Sign in to ChatGPT above to use this subscription.'))
-            : (plan.ready ? (entry.has_key ? t('hasKey', 'Key saved.') : t('usesGeneralKey', 'Uses the key entered under General Model Provider.'))
+            : (plan.ready ? (entry.has_key ? t('hasKey', 'Key saved.') : t('usesGeneralKey', 'Uses the matching key already entered elsewhere on this page (General Model Provider or API Key Book).'))
                 : t('needsKey', 'Enter the key to use this subscription.'));
         const message = el('p', { className: 'subscription-message', role: 'status', 'aria-live': 'polite' });
         const kept = messages[plan.id];

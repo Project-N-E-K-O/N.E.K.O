@@ -109,6 +109,7 @@ def _status() -> dict[str, Any]:
             "tiers": plan["tiers"],
             "default_models": plan["default_models"],
             "models": plan["models"],
+            "fetch_models": plan["fetch_models"],
             "key_prefix": plan["key_prefix"],
             "verified": plan["verified"],
             "info_url": plan["info_url"],
@@ -264,15 +265,17 @@ def _endpoint(plan: dict[str, Any], plan_id: str) -> tuple[str, str]:
 
 @router.post("/subscriptions/{plan_id}/models", dependencies=[Depends(local_only)])
 async def subscription_models(plan_id: str):
-    """Models to choose from: the signed-in account's for ChatGPT, the plan's list otherwise."""
+    """Models to choose from: listed by the plan's endpoint when it can, else the plan's own list."""
     from .model_catalog import _fetch_models
 
     plan = _plan_or_404(plan_id)
-    if plan["models"] != "account":
+    if not plan["fetch_models"]:
         return {"success": True, "models": [{"id": model} for model in plan["models"]]}
-    if not await asyncio.to_thread(_chatgpt_connected):
+    if plan["auth"] == "chatgpt_oauth" and not await asyncio.to_thread(_chatgpt_connected):
         _refuse("not_signed_in", "Continue with ChatGPT before listing models.")
     url, key = await asyncio.to_thread(_endpoint, plan, plan_id)
+    if plan["auth"] == "api_key" and not key:
+        _refuse("missing_key", "Enter this plan's key before listing models.")
     return await _fetch_models(url, key, plan["provider_type"])
 
 

@@ -38,14 +38,27 @@
 
 ## 套餐的 Key
 
-需要 Key 的套餐，Key 保存在 `subscriptions.json`，不会返回给设置页面。MiMo Token Plan 如果已经在「通用模型供应商」里填过 Token Plan Key，订阅卡片不填 Key 时会直接使用那一把。
+需要 Key 的套餐，Key 保存在 `subscriptions.json`，不会返回给设置页面。MiMo Token Plan、Kimi Code、阶跃星辰 Step Plan、火山方舟 Coding Plan 的卡片不填 Key 时，会直接使用本页已填的对应 Key（MiMo 用「通用模型供应商」里的 Token Plan Key，其余用 API 管理簿里同一家的 Key）。
 
 ## 各订阅
 
-- **ChatGPT**：登录方式见 [ChatGPT 订阅接入](/zh-CN/config/chatgpt)，模型列表按登录的账号拉取。
-- **MiMo Token Plan**：选择中国大陆、新加坡或欧洲集群，填 `tp-` 开头的 Key。
+| 订阅 | 接入方式 | 可接管的功能 | 说明 |
+| --- | --- | --- | --- |
+| ChatGPT | 登录（见 [ChatGPT 订阅接入](/zh-CN/config/chatgpt)） | 全部 9 项 | 模型列表按登录的账号拉取 |
+| MiMo Token Plan | `tp-` Key；可直接用「通用模型供应商」里已填的 | 全部 9 项 | 选中国大陆、新加坡或欧洲集群 |
+| Kimi Code | 会员 Key；可直接用 API 管理簿里的 Kimi Code Key | 全部 9 项 | 和 Kimi Code 服务商同一套接法；中国大陆 / 海外 |
+| MiniMax M Plan | 套餐 Key（和按量 Key 不通用） | 全部 9 项 | 额度用完后默认从账户余额扣费，可在 MiniMax 后台关掉 |
+| 阿里云百炼 Token Plan | `sk-sp-` Key | 全部 9 项 | 北京 / 新加坡 |
+| 阿里云百炼 Coding Plan | `sk-sp-` Key | 全部 9 项 | 中国大陆 / 国际 |
+| 火山方舟 Coding Plan | 方舟 Key | 全部 9 项 | 走 `/api/coding/v3`，写成普通地址会按量计费 |
+| 智谱 GLM Coding Plan | 套餐专属 Key | 7 项（不含聊天模型和小游戏聊天模型） | 看图只能通过工具，所以不接管要看图的功能 |
+| 阶跃星辰 Step Plan | Step Key | 全部 9 项 | 中国大陆 / 国际 |
+| 百度千帆 Token Plan | 套餐专属 Key | 全部 9 项 | |
+| 腾讯云 Token Plan | `sk-tp-` Key | 全部 9 项 | 模型名需小写；Hy 系列模型不能看图 |
+| OpenCode Go | Console Key | 全部 9 项 | 可从服务商拉取模型列表；打开 Extra Usage 后会扣余额 |
+| Ollama Cloud | Ollama Key | 全部 9 项 | 可从服务商拉取模型列表；套餐额度用完后接着扣另买的额度 |
 
-标「未实测」的订阅还没用真实订阅测试过，遇到问题请反馈。
+标「未实测」的订阅还没用真实订阅测试过，遇到问题请反馈。各家模型的思考开关按同一家模型的写法登记；能不能关、地址和模型名是否准确，要等批量实测确认。
 
 ## 性能
 

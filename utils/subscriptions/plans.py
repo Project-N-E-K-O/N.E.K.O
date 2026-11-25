@@ -84,6 +84,8 @@ def _normalize(plan_id: str, raw: Any) -> dict[str, Any] | None:
         },
         # "account": listed from the signed-in account; otherwise a fixed list.
         "models": "account" if raw.get("models") == "account" else _strings(raw.get("models")),
+        # The plan's endpoint also lists its models (GET /models with the plan key).
+        "fetch_models": raw.get("models") == "account" or bool(raw.get("fetch_models", False)),
         "key_prefix": str(raw.get("key_prefix") or ""),
         # Snapshot key whose value stands in when the plan has no key of its own
         # (a plan key the user already entered under General Model Provider).
