@@ -8530,6 +8530,10 @@ class TaskAgentManager(TreeWork):
             commission = await self._ledger.get(waiting) if waiting is not None else None
             if commission is None or commission.status in ENDED_STATUSES:
                 commission = await self._ledger.resting_in(session_id)
+            elif self._session_of.get(waiting) != session_id:
+                # Gone to another member while it was read (``_beside``): what is for this session
+                # is not its to take along. Looked for again in a moment.
+                return Handover("held", _CLOSING_RETRY_SECONDS)
         if commission is not None:
             return await self._hand_to(commission, target, wakes, still_wanted)
         return await self._file_for_notes(target, wakes, still_wanted)
@@ -10785,6 +10789,12 @@ class TaskAgentManager(TreeWork):
                     return
                 if (await self.landing.get()).get("beside") != choice:
                     # Set otherwise since it was read (to queue, say): it waits for the member.
+                    return
+                holding = self._held_by.get(main)
+                still = await self._ledger.get(holding) if holding is not None else None
+                if still is None or still.status not in ("working", "waiting_user") or still.resting:
+                    # What the busy one was at is over, or rests, by now (the user took a while): it
+                    # lets the session go in a moment, and the commission starts there in its turn.
                     return
                 if not await room(commission, kept):
                     return
