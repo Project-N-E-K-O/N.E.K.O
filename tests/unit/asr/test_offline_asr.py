@@ -370,12 +370,14 @@ class _SlowHttpClient:
 
 
 async def test_long_recording_bounds_concurrent_requests(monkeypatch) -> None:
-    client = _SlowHttpClient(delay=0.05)
+    client = _SlowHttpClient(delay=0.4)
     monkeypatch.setattr(offline, "_create_http_client", lambda _timeout: client)
     # Six 27 s segments, each well within its own budget, but the whole
     # recording takes about three request rounds: waiting for a slot must not
-    # count against a segment's budget.
-    transcriber = _transcriber("glm", request_timeout_ms=80)
+    # count against a segment's budget. (Counted against it, the last round
+    # would end at about 1.2 s, past the 1 s budget. Each request leaves 0.6 s
+    # to spare, for a busy machine: with 30 ms to spare this went red on CI.)
+    transcriber = _transcriber("glm", request_timeout_ms=1000)
     text = await transcriber.transcribe(_pcm(6 * 27))
     assert client.calls == 6
     assert client.max_in_flight == offline._MAX_CONCURRENT_SEGMENT_REQUESTS

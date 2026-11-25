@@ -1633,9 +1633,9 @@
             onComposerScreenshot: I.handleComposerScreenshot,
             onComposerRemoveAttachment: I.handleComposerRemoveAttachment,
             onComposerSubmit: I.handleComposerSubmit,
-            // 两者都有时聊天窗才显示语音消息按钮。串门接管输入框时不提供：转写文本走的是
-            // 普通文字发送链路，会被串门运行时以 VISIT_INPUT_REFUSED_SOURCE 拒收
-            audioMessageTarget: typeof I.state.onComposerAudioMessage === 'function' && !visitOwnsComposer
+            // 两者都有时聊天窗才显示语音消息按钮。串门接管输入框时照常提供：宿主把转写文本
+            // 当作亲人句走串门链路（visit-chat.js 的 submitVisitAudioTranscript）
+            audioMessageTarget: typeof I.state.onComposerAudioMessage === 'function'
                 ? (I.state.audioMessageTarget || undefined) : undefined,
             onComposerAudioMessage: typeof I.state.onComposerAudioMessage === 'function'
                 ? I.handleComposerAudioMessage : undefined,

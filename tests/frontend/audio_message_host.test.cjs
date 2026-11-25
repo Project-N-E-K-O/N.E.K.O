@@ -341,14 +341,10 @@ test('the shared text send re-checks the character right before sending', () => 
   assert.ok(sessionStart < guard && guard < sendStart);
 });
 
-test('chat-window host: no voice messages while a visit owns the composer', () => {
+// Voice messages during a visit are covered in audio_message_visit.test.cjs.
+test('chat-window host: reports draft activity back from the chat window', () => {
   const props = fs.readFileSync(
     path.join(__dirname, '../../static/app/app-react-chat-window/geometry-and-messages.js'), 'utf8');
-  assert.match(
-    props,
-    /audioMessageTarget: typeof I\.state\.onComposerAudioMessage === 'function' && !visitOwnsComposer/,
-  );
-  assert.ok(props.indexOf('var visitOwnsComposer') < props.indexOf('audioMessageTarget:'));
   assert.match(props, /onAudioMessageActiveChange: I\.handleAudioMessageActiveChange/);
 });
 
@@ -530,34 +526,40 @@ test('a queued voice transcript is dropped when a theater started meanwhile; que
 test('the shared text send re-checks the theater for voice messages right before sending', () => {
   const sendStart = source.indexOf('            // Send message\n            if (S.socket && S.socket.readyState === WebSocket.OPEN)');
   const sessionStart = source.indexOf('await mod._textSessionStartPromise;');
-  const guard = source.indexOf('if (options.audioMessage === true && isOrdinaryChatTakenOver()) {', sessionStart);
+  const guard = source.indexOf('if (options.audioMessage === true && isTheaterOwningChat()) {', sessionStart);
   assert.ok(sessionStart > 0 && guard > sessionStart && guard < sendStart);
 });
 
-test('a queued voice transcript is dropped when a visit took over the composer meanwhile', async () => {
-  const sent = [];
-  const queue = deferredQueueHarness(async (text) => { sent.push(text); return true; });
+test('a queued voice transcript whose visit started meanwhile is handed to the send path to reroute', async () => {
+  // Visits are not refused here: the send path answers AUDIO_MESSAGE_VISIT_REROUTE
+  // and the host sends the transcript as a visit line instead.
+  const seen = [];
+  const queue = deferredQueueHarness(async (text, options) => {
+    seen.push(text);
+    return options.rerouteToVisit === true ? 'visit_reroute' : true;
+  });
   const settled = [];
-  queue.queueDeferredTextSubmission('语音', { expectedLanlanName: 'Neko', audioMessage: true }, (ok) => settled.push(ok));
-  queue.queueDeferredTextSubmission('打字', { source: 'react-chat-window' });
-  queue.window.nekoVisitChat = { isActive: () => true };
+  queue.queueDeferredTextSubmission('语音', {
+    expectedLanlanName: 'Neko', audioMessage: true, rerouteToVisit: true,
+  }, (result) => settled.push(result));
+  queue.window.nekoVisitChat = { isActive: () => true, submitAudioTranscript() {} };
   queue.flushDeferredTextSubmissions();
   await settleQueue();
-  assert.deepEqual(settled, [false]);
-  assert.deepEqual(sent, ['打字']);
+  assert.deepEqual(seen, ['语音']);
+  assert.deepEqual(settled, ['visit_reroute']);
 });
 
-test('voice messages are refused at the send entry while a visit or theater owns the chat', () => {
+test('voice messages are refused at the send entry only while a theater owns the chat', () => {
   const entry = source.indexOf('        async function sendTextPayload(rawText, options) {');
   const body = source.slice(entry, source.indexOf('var theaterRuntime = window.nekoTheaterRuntime;', entry));
-  assert.match(body, /if \(options\.audioMessage === true && isOrdinaryChatTakenOver\(\)\) return false;/);
-  const helper = source.slice(source.indexOf('    function isOrdinaryChatTakenOver() {'), source.indexOf('    // 带 expectedLanlanName 的提交'));
+  assert.match(body, /if \(options\.audioMessage === true && isTheaterOwningChat\(\)\) return false;/);
+  const helper = source.slice(source.indexOf('    function isTheaterOwningChat() {'), source.indexOf('    // 带 expectedLanlanName 的提交'));
   const sandbox = { window: {} };
-  vm.runInNewContext(`${helper}\nthis.check = isOrdinaryChatTakenOver;`, sandbox);
+  vm.runInNewContext(`${helper}
+this.check = isTheaterOwningChat;`, sandbox);
   assert.equal(sandbox.check(), false);
   sandbox.window.nekoVisitChat = { isActive: () => true };
-  assert.equal(sandbox.check(), true);
-  sandbox.window.nekoVisitChat = { isActive: () => false };
+  assert.equal(sandbox.check(), false, 'visits are rerouted, not refused');
   sandbox.window.nekoTheaterRuntime = { isActive: () => true };
   assert.equal(sandbox.check(), true);
 });

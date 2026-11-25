@@ -377,6 +377,8 @@ class _Cues:
                 "once": _patterns(texts.PERMISSION_ONCE_PATTERNS),
                 "capability_question": _patterns(texts.CAPABILITY_QUESTION_PATTERNS),
                 "beside_answer": _patterns(texts.BESIDE_ANSWER_WORD_PATTERNS),
+                "hand_over_answer": _patterns(texts.HAND_OVER_ANSWER_WORD_PATTERNS),
+                "start_team_answer": _patterns(texts.START_TEAM_ANSWER_WORD_PATTERNS),
             }
         return cls._loaded[name]
 
@@ -468,39 +470,58 @@ def _question_text(commission: Commission) -> str:
     return " ".join(parts)
 
 
-def _quotes_its_commission(question: dict[str, Any]) -> bool:
-    """Whether what a commission asks quotes the commission itself: asked whether another member is to do it.
+# What is asked (``detail.tool``) where a request for approval quotes the commission it is asked for: the
+# cue lists of what an answer to it says of the choice itself, and the setting of how many words of its own
+# it may say beside them (``_says_more_than_an_answer``).
+_QUOTING_TOOLS: dict[str, tuple[tuple[str, ...], str]] = {
+    "beside": (("beside_answer",), "BESIDE_ANSWER_WORDS_MAX"),
+    "hand_over": (("beside_answer", "hand_over_answer"), "HAND_OVER_ANSWER_WORDS_MAX"),
+    "start_team": (("beside_answer", "hand_over_answer", "start_team_answer"), "START_TEAM_ANSWER_WORDS_MAX"),
+}
 
-    Such a question carries the commission's title, its project and
-    the names of the members, for a page to show (``TaskAgentManager._beside``):
-    words that nearly anything said of the project next shares. Other
-    requests for approval name a tool, a command, a path.
+
+def _quotes_its_commission(question: dict[str, Any]) -> bool:
+    """Whether what a commission asks quotes the commission itself: asked whether other members are to do it.
+
+    Such a question carries the commission's title for a page to show:
+    asked beside a busy member, with its project and the names of the
+    members (``TaskAgentManager._beside``); asked for the project's leader,
+    with what the member it starts is to do (``_hand_over``,
+    ``_ask_about_member``), or what each member of the team it starts that
+    changes files is to do (``_cb_start_team``), in the user's language.
+    Those are words that nearly anything said of the project next shares.
+    Other requests for approval name a tool, a command, a path.
     """
     detail = question.get("detail")
-    return question.get("kind") == "permission" and isinstance(detail, dict) and detail.get("tool") == "beside"
+    return question.get("kind") == "permission" and isinstance(detail, dict) and detail.get("tool") in _QUOTING_TOOLS
 
 
-def _says_more_than_an_answer(text: str, question_tokens: frozenset[str]) -> bool:
+def _says_more_than_an_answer(text: str, question: dict[str, Any], question_tokens: frozenset[str]) -> bool:
     """Whether a sentence that says a yes or a no says more than an answer to a question that quotes its commission.
 
     It adds something (``supplement``), or what says yes or no (and for how
     long), what says it answers and what speaks of the choice itself
-    (another member, waiting, who said so: ``BESIDE_ANSWER_WORD_PATTERNS``)
-    set aside, more words of its own are left that are not the question's
-    than an answer says (``BESIDE_ANSWER_WORDS_MAX``). It is then new work
-    that says a yes or a no in passing ("make sure the checkout page loads
+    (another member, waiting, who said so: ``BESIDE_ANSWER_WORD_PATTERNS``;
+    for the leader's questions its changing files, the work handed to it,
+    the user doing it themself as well: ``HAND_OVER_ANSWER_WORD_PATTERNS``;
+    for its team, the team, at the same time, one after the other:
+    ``START_TEAM_ANSWER_WORD_PATTERNS``) set aside, more words of its own
+    are left that are not the question's than an answer says (the setting
+    ``_QUOTING_TOOLS`` names for the question). It is then new work that
+    says a yes or a no in passing ("make sure the checkout page loads
     fast"); a long answer is taken for new work as well, which the user
     sees, with the question still open.
     """
-    from config.nekopower_settings import BESIDE_ANSWER_WORDS_MAX
+    from config import nekopower_settings as settings
     from nekopower.host.orchestrator import content_tokens
 
     if has_cue("supplement", text):
         return True
+    of_the_choice, most = _QUOTING_TOOLS[question["detail"]["tool"]]
     rest = text
-    for name in ("answer", "deny", "session", "always", "once", "beside_answer"):
+    for name in ("answer", "deny", "session", "always", "once", *of_the_choice):
         rest = strip_cues(name, rest)
-    return len(content_tokens(rest) - question_tokens) > BESIDE_ANSWER_WORDS_MAX
+    return len(content_tokens(rest) - question_tokens) > getattr(settings, most)
 
 
 def _single_best(scored: list[tuple[float, Commission]]) -> Commission | None:
@@ -556,6 +577,30 @@ def read_answer(text: str, active: list[Commission]) -> Triage | None:
     explicit = has_cue("answer", text)
     choice = parse_permission_choice(text)
 
+    def new_work_beside(commission: Commission) -> bool:
+        question = commission.question() or {}
+        return _quotes_its_commission(question) and _says_more_than_an_answer(
+            text, question, token_set(_question_text(commission))
+        )
+
+    if choice is not None and not explicit and any(new_work_beside(commission) for commission in waiting):
+        # New work that says a yes or a no in passing, while a question that quotes its commission
+        # waits: no answer to it, nor to any other question waiting beside it, which it would
+        # answer by that yes or no alone (and allow, say, a command). Should it name what one of
+        # those asks (the command, the path), it may answer that after all: the user is asked which.
+        from nekopower.host.orchestrator import content_tokens
+
+        said = text
+        for name in ("answer", "deny", "session", "always", "once"):
+            said = strip_cues(name, said)
+        named = content_tokens(said)
+        if any(
+            not _quotes_its_commission(commission.question() or {}) and named & token_set(_question_text(commission))
+            for commission in waiting
+        ):
+            return Triage(kind="ambiguous", targets=[commission.id for commission in waiting])
+        return None
+
     def bears_on(commission: Commission) -> float:
         score = 0.0
         # A question that quotes its own commission is held against the sentence only where the
@@ -567,9 +612,6 @@ def read_answer(text: str, active: list[Commission]) -> Triage | None:
         quotes = _quotes_its_commission(question)
         says_no_answer = choice is None and not explicit
         question_tokens = token_set(_question_text(commission))
-        if quotes and choice is not None and not explicit and _says_more_than_an_answer(text, question_tokens):
-            # New work that says a yes or a no in passing, while this waits: no answer to it.
-            return 0.0
         if tokens and not (says_no_answer and quotes):
             score = len(tokens & question_tokens) / len(tokens)
         # A plain yes or no shares no word with the question it answers. It

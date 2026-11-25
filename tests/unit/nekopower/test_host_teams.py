@@ -228,6 +228,38 @@ async def test_a_team_the_user_does_not_allow_is_not_started(hosts, tmp_path, ho
     assert await _events(host, receipt.commission_id, "team_formed") == []
 
 
+async def test_new_work_said_while_the_user_is_asked_about_a_team_is_not_taken_for_the_answer(hosts, tmp_path):
+    lead = TeamLead(PARTS)
+    members = _team_scripts()
+    host, trees, workdir = await _shop(hosts, tmp_path, _by_role(lead, members), allow=False)
+
+    receipt = await _dispatch(host, TEAM)
+    question = (await wait_status(host, receipt.commission_id, "waiting_user")).question()
+    assert question["detail"]["tool"] == "start_team"
+
+    # What is asked quotes what each member is to do (the links, the styles). New work that shares those words
+    # and says no answer, or says a no or a yes in passing, is new work: not an answer that was not understood,
+    # and no answer that refuses (or allows) the team.
+    for said in (
+        "go through the links of the contact page and repair the broken ones",
+        "no rush, but rename the images folder of the shop site",
+        "ok, and tidy the styles of the about page so it matches the new footer",
+    ):
+        more = await _dispatch(host, said)
+        assert more.kind not in ("unclear_answer", "answered", "ambiguous"), said
+        assert more.commission_id not in (None, receipt.commission_id), said
+        still = await host.ledger.get(receipt.commission_id)
+        assert (still.status, still.question()["id"]) == ("waiting_user", question["id"]), said
+        await host.abort(more.commission_id)
+    assert await host.ledger.select(parent_id=receipt.commission_id) == [] and trees.made == []
+
+    # What answers it is read as the answer still.
+    answered = await _dispatch(host, "yes, go ahead")
+    assert (answered.kind, [item.id for item in answered.commissions]) == ("answered", [receipt.commission_id])
+    done = await wait_status(host, receipt.commission_id, "done")
+    assert done.result_summary == "the footer is redone" and len(trees.made) == 2
+
+
 async def test_where_no_worktree_can_be_made_a_team_only_reads(hosts, tmp_path):
     lead = ScriptedLLM([
         [call("start_team", {"parts": PARTS}), finish("tool_calls")],

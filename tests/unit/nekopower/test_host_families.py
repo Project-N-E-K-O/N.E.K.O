@@ -905,6 +905,35 @@ async def test_a_new_member_that_writes_is_asked_about_first_by_default(hosts, t
     assert await host.permission_store.mode("open_session") == "first_ask"
 
 
+async def test_new_work_said_while_the_user_is_asked_about_a_new_member_is_not_taken_for_the_answer(hosts, tmp_path):
+    host, leader_llm = await _leader_asks(hosts, tmp_path, _hand_over(description="Fixes the pages"))
+    receipt = await _dispatch(host, "fix the header of the shop site")
+    question = (await wait_status(host, receipt.commission_id, "waiting_user")).question()
+    assert question["detail"]["tool"] == "hand_over"
+
+    # What is asked quotes the commission (the shop site, the header). New work that shares those words and
+    # says no answer, or says a no or a yes in passing, is new work: not an answer that was not understood,
+    # and no answer that refuses (or allows) the member.
+    for said in (
+        "go through the price list of the shop site and round every amount",
+        "no rush, but rename the images folder of the shop site",
+        "ok, and translate the about page of the shop site into Japanese",
+    ):
+        more = await _dispatch(host, said)
+        assert more.kind not in ("unclear_answer", "answered", "ambiguous"), said
+        assert more.commission_id not in (None, receipt.commission_id), said
+        still = await host.ledger.get(receipt.commission_id)
+        assert (still.status, still.question()["id"]) == ("waiting_user", question["id"]), said
+        await host.abort(more.commission_id)
+    assert len(leader_llm.requests) == 1
+
+    # What answers it is read as the answer still.
+    answered = await _dispatch(host, "yes, go ahead")
+    assert (answered.kind, [item.id for item in answered.commissions]) == ("answered", [receipt.commission_id])
+    done = await wait_status(host, receipt.commission_id, "done")
+    assert done.result_summary == "header fixed" and len(await host.ledger.members("Lan", "Shop site")) == 1
+
+
 async def test_allowed_for_good_it_is_not_asked_about_again(hosts, tmp_path):
     host, _leader = await _leader_asks(
         hosts, tmp_path, [*_hand_over(), *_hand_over(description="another writer")],
