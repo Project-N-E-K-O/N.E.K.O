@@ -138,6 +138,34 @@ describe('the task HUD and what a task asks', () => {
     }
   });
 
+  it('does not go by what the server said of a task that the connection updated while it was asked', async () => {
+    vi.useFakeTimers();
+    const schedule = new Function(`${reconcileSource}
+ return scheduleAgentTaskReconciliation;`)();
+    const hudUpdate = window.AgentHUD.updateAgentTaskHUD;
+    window.AgentHUD.updateAgentTaskHUD = vi.fn();
+    window._agentTaskMap = new Map([['c1', task('c1')], ['c2', task('c2')]]);
+    let release = () => {};
+    const held = new Promise(resolve => { release = resolve; });
+    // Read before either of them asked anything; answered after the connection said c1 asks.
+    vi.stubGlobal('fetch', vi.fn(async () => { await held; return { ok: true, json: async () => ({ tasks: [task('c1'), task('c2', { status: 'waiting_user', question: permission('q2') })] }) }; }));
+    try {
+      schedule();
+      await vi.advanceTimersByTimeAsync(5000);
+      window._agentTaskMap.set('c1', task('c1', { status: 'waiting_user', question: permission('q1') }));
+      release();
+      await vi.advanceTimersByTimeAsync(100);
+      // c1 keeps what the connection said (the line being typed into is not taken away); c2 is brought up to date.
+      expect(window._agentTaskMap.get('c1').question.id).toBe('q1');
+      expect(window._agentTaskMap.get('c2').question.id).toBe('q2');
+    } finally {
+      window._agentTaskMap = new Map();
+      await vi.advanceTimersByTimeAsync(60000);
+      window.AgentHUD.updateAgentTaskHUD = hudUpdate;
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('still puts the cards in their order when that changed', () => {
     show([task('p1', { type: 'user_plugin' }), task('c2')]);
     expect(order()).toEqual(['c2', 'p1']);
