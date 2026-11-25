@@ -32,3 +32,5 @@ The JSON also contains keybook/provider metadata, an API-key registry, default-m
 See [API provider field reference](/api_providers_fields) for the schema contract. For user-facing differences between the bundled free path, bring-your-own keys, and local components, see [Cost and providers](/guide/cost-and-providers).
 
 ChatGPT subscription sign-in uses a separate OAuth credential store and an account-specific model picker. See [ChatGPT subscription provider](/config/chatgpt).
+
+Subscriptions and plans (ChatGPT, MiMo Token Plan and others) take over text features from a panel of their own, without rewriting providers or tier settings. See [Subscriptions & plans](/config/subscriptions).

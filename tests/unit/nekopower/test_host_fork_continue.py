@@ -699,9 +699,18 @@ async def test_one_handed_back_goes_before_those_handed_over_after_it(hosts, tmp
     renamed = await wait_status(host, renaming.id, "done")
     added = await wait_status(host, later.id, "done")
     assert renamed.session_id == added.session_id == first.session_id
-    said = (Path((await host.ledger.get_session(first.session_id)).session_dir) / "transcript.jsonl").read_text(
-        encoding="utf-8"
+    transcript = Path((await host.ledger.get_session(first.session_id)).session_dir) / "transcript.jsonl"
+
+    def recorded() -> str:
+        return transcript.read_text(encoding="utf-8") if transcript.exists() else ""
+
+    # The runtime writes its record off the event loop, after the status is saved;
+    # a busy machine reads the file before the last entries are in.
+    await wait_until(
+        lambda: f"Commission {renaming.id}" in recorded() and f"Commission {later.id}" in recorded(),
+        what="both commissions on the session's record",
     )
+    said = recorded()
     assert said.index(f"Commission {renaming.id}") < said.index(f"Commission {later.id}")
 
 

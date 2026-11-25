@@ -18,6 +18,7 @@ Three-pronged coverage:
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 import subprocess
 import sys
@@ -422,6 +423,36 @@ def _write_tree(root: Path) -> None:
         _write(root, rel)
 
 
+# Variables that point git at some other repository, as inside a git hook of
+# another checkout. Dropped for the git commands these tests run themselves.
+# Kept apart from the script's GIT_LOCATION_VARS on purpose: setting up the
+# test repositories must not depend on the code under test.
+_GIT_LOCATION_VARS = frozenset({
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_PREFIX",
+})
+
+
+def _git(cwd: Path, *args: str) -> None:
+    env = {key: value for key, value in os.environ.items() if key not in _GIT_LOCATION_VARS}
+    subprocess.run(["git", *args], cwd=str(cwd), env=env, check=True, capture_output=True)
+
+
+def _git_tree(root: Path) -> None:
+    """``_write_tree`` with every file tracked, plus an untracked ``scratch``
+    package that only a filesystem walk would report."""
+    _write_tree(root)
+    _git(root, "init", "-q")
+    _git(root, "add", "-A")
+    _write(root, "scratch/mod.py")
+
+
 @pytest.mark.unit
 def test_unregistered_package_is_reported_without_git(
     script_module, tmp_path, monkeypatch,
@@ -441,25 +472,14 @@ def test_unregistered_package_is_reported_without_git(
 @pytest.mark.unit
 @pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 def test_unregistered_package_check_reads_git_index(
-    script_module, tmp_path, monkeypatch,
+    script_module, tmp_path,
 ) -> None:
     """With git, only tracked files count: an untracked local scratch
     directory and a tracked file deleted from the working tree are ignored,
     while a tracked unregistered package is still reported."""
-    for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
-        monkeypatch.delenv(var, raising=False)
-
-    def git(*args: str) -> None:
-        subprocess.run(
-            ["git", *args], cwd=str(tmp_path), check=True, capture_output=True,
-        )
-
-    git("init", "-q")
-    _write_tree(tmp_path)
     _write(tmp_path, "gone/mod.py")
-    git("add", "-A")
+    _git_tree(tmp_path)
     (tmp_path / "gone" / "mod.py").unlink()
-    _write(tmp_path, "scratch/mod.py")  # untracked
 
     assert script_module._tracked_python_files(tmp_path) is not None
     found = script_module.find_unregistered_packages(tmp_path, {"registered"})
@@ -469,19 +489,88 @@ def test_unregistered_package_check_reads_git_index(
 @pytest.mark.unit
 @pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 def test_tree_inside_another_checkout_falls_back_to_the_filesystem(
-    script_module, tmp_path, monkeypatch,
+    script_module, tmp_path,
 ) -> None:
     """An exported tree unpacked inside some other git work tree must not be
     judged by that outer repository's index, which tracks none of its files."""
-    for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
-        monkeypatch.delenv(var, raising=False)
-    subprocess.run(["git", "init", "-q"], cwd=str(tmp_path), check=True, capture_output=True)
+    _git(tmp_path, "init", "-q")
     exported = tmp_path / "exported"
     _write_tree(exported)
 
     assert script_module._tracked_python_files(exported) is None
     found = script_module.find_unregistered_packages(exported, {"registered"})
     assert [directory for directory, _ in found] == ["newpkg"]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+@pytest.mark.parametrize("layout", ["bare_repository", "dot_git_folder"])
+def test_directory_without_a_work_tree_falls_back_to_the_filesystem(
+    script_module, tmp_path, layout,
+) -> None:
+    """A bare repository or a ``.git`` folder has no work tree. Git still
+    reads an index there (an empty one, or the enclosing checkout's), which
+    must not stand in for the files under the directory."""
+    if layout == "bare_repository":
+        root = tmp_path / "bare"
+        root.mkdir()
+        _git(root, "init", "-q", "--bare")
+    else:
+        _git_tree(tmp_path / "repo")
+        root = tmp_path / "repo" / ".git"
+    _write_tree(root)
+
+    assert script_module._tracked_python_files(root) is None
+    found = script_module.find_unregistered_packages(root, {"registered"})
+    assert [directory for directory, _ in found] == ["newpkg"]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+@pytest.mark.parametrize(
+    "variables",
+    [("GIT_DIR",), ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")],
+    ids=["git_dir", "git_dir_work_tree_index"],
+)
+def test_inherited_git_location_variables_do_not_redirect_the_listing(
+    script_module, tmp_path, monkeypatch, variables,
+) -> None:
+    """Inside a git hook of another repository GIT_DIR and friends point at
+    that repository; the check must still read this one's index."""
+    root = tmp_path / "repo"
+    _git_tree(root)
+    other = tmp_path / "other"
+    _write(other, "otherpkg/mod.py")
+    _git(other, "init", "-q")
+    _git(other, "add", "-A")
+    location = {
+        "GIT_DIR": other / ".git",
+        "GIT_WORK_TREE": other,
+        "GIT_INDEX_FILE": other / ".git" / "index",
+    }
+    for name in variables:
+        monkeypatch.setenv(name, str(location[name]))
+
+    found = script_module.find_unregistered_packages(root, {"registered"})
+    assert found == [("newpkg", "newpkg/sub/mod.py")]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+@pytest.mark.parametrize(
+    "variable",
+    ["GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS"],
+)
+def test_pathspec_variables_do_not_shrink_the_listing(
+    script_module, tmp_path, monkeypatch, variable,
+) -> None:
+    """These variables change what a pathspec matches; tracked files in
+    subfolders must still be listed."""
+    _git_tree(tmp_path)
+    monkeypatch.setenv(variable, "1")
+
+    found = script_module.find_unregistered_packages(tmp_path, {"registered"})
+    assert found == [("newpkg", "newpkg/sub/mod.py")]
 
 
 @pytest.mark.unit

@@ -209,7 +209,8 @@ def _is_kimi_code_anthropic_base_url(base_url: str | None) -> bool:
     parsed = _parse_base_url(base_url)
     if parsed is None:
         return False
-    return (parsed.hostname or "").lower() == "api.kimi.com" and parsed.path.rstrip("/") == "/coding"
+    # api.kimi.ai is the overseas host of the same Kimi Code service.
+    return (parsed.hostname or "").lower() in ("api.kimi.com", "api.kimi.ai") and parsed.path.rstrip("/") == "/coding"
 
 def _normalize_anthropic_sdk_base_url(base_url: str | None) -> str | None:
     parsed = _parse_base_url(base_url)

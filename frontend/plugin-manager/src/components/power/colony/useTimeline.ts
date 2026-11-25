@@ -10,9 +10,9 @@
  * While nobody looks at the page nothing is asked for; it reads on from
  * where it stopped when they look again.
  */
-import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { getTimeline, getTimelineStart } from '@/api/console'
-import type { TimelineEntry } from '@/api/console'
+import type { SceneStanding, TimelineEntry } from '@/api/console'
 
 export const KEPT_ENTRIES = 3000
 const PAGE_ROWS = 1000
@@ -33,6 +33,15 @@ export function useTimeline(
   const whole = ref(false)
   /** How many entries were let go at the front since it began: whoever keeps a place among them moves it by as many. */
   const dropped = ref(0)
+  /** How many entries come before where it began; 0 when it began at the beginning. */
+  const before = ref(0)
+  /** How the familiars stood where it began: a replay starts from there. */
+  const base = shallowRef<SceneStanding[]>([])
+  /**
+   * Whether reading everything from the beginning would hold it all: when more came before than
+   * may be held, it would end with the same latest ones, and is not offered.
+   */
+  const wholeFits = computed(() => before.value + entries.value.length <= KEPT_ENTRIES)
   // Whether a read is under way: a second one beside it would be given the same page and add it twice.
   let reading = false
   let after: string | undefined
@@ -67,6 +76,8 @@ export function useTimeline(
         after = start.after || undefined
         // Nothing lies before where it begins: what is read is all there is.
         whole.value = !start.after
+        before.value = start.after && typeof start.before === 'number' ? start.before : 0
+        base.value = start.after && Array.isArray(start.scene) ? start.scene : []
         begun = true
       }
       for (;;) {
@@ -98,6 +109,9 @@ export function useTimeline(
     timer = null
     entries.value = []
     dropped.value = 0
+    // Read from the beginning, nothing lies before it; read from a place, where it begins says so anew.
+    before.value = 0
+    base.value = []
     loading.value = true
     whole.value = fromStart
     after = undefined
@@ -123,5 +137,5 @@ export function useTimeline(
     if (timer) clearTimeout(timer)
   })
 
-  return { entries, loading, error, whole, dropped, fromBeginning: () => begin(true) }
+  return { entries, loading, error, whole, dropped, before, base, wholeFits, fromBeginning: () => begin(true) }
 }

@@ -57,12 +57,12 @@
         >
         <span class="muted moment" data-testid="replay-moment">{{ momentLabel }}</span>
         <el-button v-if="position !== null" size="small" data-testid="replay-now" @click="toNow">{{ t('power.colony.now') }}</el-button>
-        <el-button v-else-if="!whole && !dropped && entries.length" size="small" data-testid="replay-whole" @click="fromBeginning">
+        <el-button v-else-if="!whole && !dropped && wholeFits && entries.length" size="small" data-testid="replay-whole" @click="fromBeginning">
           {{ t('power.colony.fromBeginning') }}
         </el-button>
       </div>
       <!-- More happened than is held: reading from the beginning would end with the same latest ones, so it is said and not offered. -->
-      <p v-if="dropped" class="muted" data-testid="timeline-capped">{{ t('power.activity.onlyLatest', { count: KEPT_ENTRIES }) }}</p>
+      <p v-if="dropped || !wholeFits" class="muted" data-testid="timeline-capped">{{ t('power.activity.onlyLatest', { count: KEPT_ENTRIES }) }}</p>
       <p v-if="gone && position !== null" class="muted" role="status" data-testid="replay-gone">{{ t('power.colony.momentGone') }}</p>
 
       <h2 class="feed-title">{{ t('power.activity.title') }}</h2>
@@ -105,7 +105,7 @@ const router = useRouter()
 const describe = (failure: unknown) => describeConsoleError(failure, t, te)
 const { board, loaded, error, load } = useBoard(() => t('power.home.unavailable'), describe)
 const {
-  entries, loading: timelineLoading, error: timelineError, whole, dropped, fromBeginning,
+  entries, loading: timelineLoading, error: timelineError, whole, dropped, base, wholeFits, fromBeginning,
 } = useTimeline(() => null, describe)
 
 // The entry what happened is replayed up to; null: as things stand now.
@@ -133,7 +133,8 @@ const byId = computed(() => new Map(cards.value.map(card => [card.id, card])))
 const ghosts = computed(() => ghostsOf(entries.value, new Set(byId.value.keys())))
 const ghostById = computed(() => new Map(ghosts.value.map(ghost => [ghost.id, ghost])))
 const seen = computed(() => firstSeen(entries.value, whole.value))
-const scene = computed(() => sceneAt(entries.value, position.value ?? entries.value.length - 1))
+// From how they stood where the entries begin; once the first of those were let go, that is not where they begin.
+const scene = computed(() => sceneAt(entries.value, position.value ?? entries.value.length - 1, dropped.value ? [] : base.value))
 
 const nameOfCard = (card: BoardCard) => familiarName(card, t, te)
 function nameOf(sessionId: string | null | undefined): string {
@@ -145,7 +146,7 @@ function nameOf(sessionId: string | null | undefined): string {
 
 function member(card: BoardCard): ColonyMember {
   const at = scene.value.get(card.id)
-  const base = { id: card.id, name: nameOfCard(card), avatar: card.avatar, leader: card.leader, parent: card.parent }
+  const base = { id: card.id, name: nameOfCard(card), avatar: card.avatar, leader: card.leader, parent: card.parent, team: card.team ?? null }
   if (position.value === null) {
     // As it stands now; what it said lately stays above it for a while.
     const fresh = at && clock.value - at.saidAt <= SAID_SECONDS ? at.said : ''

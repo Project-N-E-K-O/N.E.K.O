@@ -30,6 +30,7 @@ is being written while it is read is read as far as its last whole line.
 
 from __future__ import annotations
 
+import collections
 import json
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -495,6 +496,72 @@ def read_page(
         raise RecordUnreadable(f"the record of this session cannot be read now ({type(exc).__name__})") from exc
     found.reverse()
     return {"entries": found, "before": reached if reached > 0 else None}
+
+
+def search_page(path: Path, query: str, *, hits: int, excerpt_tokens: int, max_bytes: int) -> dict[str, Any]:
+    """Return the entries of a record where every word of ``query`` occurs, for showing them; the latest first.
+
+    ``{"hits": [...], "total": n, "whole": bool}``: at most ``hits`` of
+    them, each ``{"at", "role", "tool", "excerpt", "time"}`` (``at`` is
+    the place ``read_whole_entry`` reads it at, ``role`` and ``tool`` as
+    ``_page_entry`` says); ``total`` how many there are; ``whole`` False
+    when the record is longer than ``max_bytes`` and only its last
+    ``max_bytes`` were looked through. What a message says and the
+    arguments of the tools it calls are looked through. Upper and lower
+    case are the same. Raises ``RecordError`` with no words to look for,
+    and as ``read_page`` for a record that cannot be read.
+    """
+    import os
+
+    words = _words(query)
+    if not words:
+        raise RecordError("give the words to look for")
+    try:
+        handle = path.open("rb")
+    except FileNotFoundError as exc:
+        raise RecordError("this session has no record that can be read: nothing was said in it, or it was removed") from exc
+    except OSError as exc:
+        raise RecordUnreadable(f"the record of this session cannot be read now ({type(exc).__name__})") from exc
+    # The latest ``hits`` of them, with their text, and how many there are: a common word in a long
+    # record would otherwise hold the text of every place it occurs.
+    found: collections.deque[tuple[int, dict[str, Any], str]] = collections.deque(maxlen=max(0, hits))
+    total = 0
+    try:
+        with handle:
+            size = os.fstat(handle.fileno()).st_size
+            # Where that is in the middle of a line, the rest of that line is no JSON and is passed over.
+            begin = max(0, size - max_bytes)
+            handle.seek(begin)
+            place = begin
+            for raw in handle:
+                at, place = place, place + len(raw)
+                if place > size or not raw.endswith(b"\n"):
+                    # Added since it was opened, or the line being written this moment.
+                    break
+                try:
+                    entry = json.loads(raw)
+                except ValueError:
+                    continue
+                # Whole: a cap this large is never reached, and nothing is counted for it.
+                shown = _page_entry(entry, 1 << 62) if isinstance(entry, dict) else None
+                if shown is None:
+                    continue
+                text = "\n".join([shown["text"], *(call["arguments"] for call in shown["calls"])])
+                folded = text.casefold()
+                if all(word in folded for word in words):
+                    total += 1
+                    found.append((at, shown, text))
+    except OSError as exc:
+        raise RecordUnreadable(f"the record of this session cannot be read now ({type(exc).__name__})") from exc
+    # An excerpt is made for the places that come back, not for all there are; the latest first.
+    listed = [
+        {
+            "at": at, "role": shown["role"], "tool": shown["tool"],
+            "excerpt": _excerpt(text, words[0], excerpt_tokens), "time": shown["time"],
+        }
+        for at, shown, text in reversed(found)
+    ]
+    return {"hits": listed, "total": total, "whole": begin == 0}
 
 
 def read_whole_entry(path: Path, at: int, *, entry_tokens: int, max_bytes: int) -> dict[str, Any]:
