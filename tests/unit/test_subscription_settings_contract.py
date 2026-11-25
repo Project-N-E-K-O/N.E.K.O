@@ -87,3 +87,5 @@ def test_panel_refreshes_after_a_settings_save_and_drops_stale_replies():
     # Replies a newer change overtook are not applied; unsaved keys survive re-rendering.
     assert "version !== stateVersion" in script and "keyDrafts[plan.id]" in script
     assert "generation !== accountGeneration" in script
+    # A failed change reads the server state again; a failed read offers a retry.
+    assert "if (failed) load();" in script and "onclick: () => load()" in script

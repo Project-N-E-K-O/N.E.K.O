@@ -150,7 +150,13 @@
         } catch (error) {
             // A change that succeeded meanwhile already shows the current state.
             if (ticket !== loadTicket || version !== stateVersion) return;
-            loadError.textContent = error.message;
+            // Nothing retries on its own: the server is this machine, so the page cannot
+            // tell when it is back. One click reads the state again.
+            loadError.replaceChildren(error.message, ' ', el('button', {
+                type: 'button', className: 'gsv-tutorial-link', text: translate('common.retry', 'Retry'),
+                onclick: () => load(),
+            }));
+            loadError.dataset.kind = 'error';
             loadError.hidden = false;
         }
     }
