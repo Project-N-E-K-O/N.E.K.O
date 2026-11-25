@@ -186,6 +186,12 @@ def test_rename_records_both_ends_outside(env):
         ("os.system", ('TOKEN="abc def" curl x',), "<shell>"),
         ("os.system", ("API_TOKEN=secret",), "<shell>"),
         ("os.system", ("$CMD --x",), "<shell>"),
+        # A value that could run on past its blank: nothing is guessed.
+        ("os.system", (r"PASSWORD=first\ secret curl https://example.invalid",), "<shell>"),
+        ("os.system", ("A='x y' curl",), "<shell>"),
+        ("os.system", ("A=$(cat key) curl",), "<shell>"),
+        ("os.system", ("A=`cat key` curl",), "<shell>"),
+        ("os.system", ('X=1 "/opt/My  Tool/bin/run me" --x',), "run me"),
         ("subprocess.Popen", (None, "SECRET=x ./run.sh", None, None), "run.sh"),
         # A document opened with its program: only its extension.
         ("os.startfile", ("C:\\My Docs\\plan for 2027.pdf", None), "*.pdf"),
@@ -682,6 +688,7 @@ def test_program_name():
     assert program_name("/opt/My App/tool") == "tool"
     assert program_name("/opt/My App/tool --x", command_line=True) == "My"
     assert program_name('"/opt/My App/tool" --x', command_line=True) == "tool"
+    assert program_name('"/opt/My  Tool" --x', command_line=True) == "My  Tool"  # blanks kept
     assert program_name(Path("/opt/tool")) == "tool"
     assert program_name(None) == "<unknown>"
     assert program_name("") == "<unknown>"
@@ -785,6 +792,10 @@ def test_real_hook_records_each_kind(tmp_path):
     assert connects and all(r["target"].startswith(("localhost(127.0.0.1):", "localhost([::1]):")) for r in connects)
     # Nothing about the data directory, the interpreter or the import of the SDK.
     assert not [r for r in result["records"] if r["target"] in ("<fd>", "<dir_fd>") or "tree" in r["target"]]
+    # rmtree opens subdirectories by relative name (cwd is not exempt here):
+    # the only file opens recorded are the outside ones.
+    opens = [r for r in result["records"] if r["event"] == "open"]
+    assert opens and all(r["target"].endswith("/outside/*.txt") for r in opens), opens
     assert all(
         "own" not in r["target"] and "site-packages" not in r["target"] and "libdir" not in r["target"]
         for r in result["records"]

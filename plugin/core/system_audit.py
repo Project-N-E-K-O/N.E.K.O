@@ -135,7 +135,8 @@ _SERVICE_PORTS = {"http": 80, "https": 443}
 # "_"; a subset of what the host accepts in a target (capability_gate._TARGET).
 _HOST_NAME = re.compile(r"[\w.\-]{1,253}")
 # A leading shell variable assignment (NAME=value): never a program name.
-_SHELL_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+_SHELL_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=\S*")
+_SHELL_SPECIAL = frozenset("\\'\"$`")
 _FROZEN = bool(getattr(sys, "frozen", False)) or "__compiled__" in globals()
 
 
@@ -261,24 +262,26 @@ def program_name(value: object, *, command_line: bool = False) -> str:
         return "<unknown>"
     text = value.strip()
     if command_line:
-        words = text.split()
-        # Skip leading NAME=value words (their values may be secrets);
-        # anything still unclear is recorded as "<shell>".
-        while words and _SHELL_ASSIGNMENT.match(words[0]):
-            word = words.pop(0)
-            if word.count('"') % 2 or word.count("'") % 2:
-                return "<shell>"  # a quoted value with blanks: don't guess past it
-        if not words:
+        # Leading NAME=value words are skipped (their values may be secrets).
+        # A value with quoting, escapes or expansions could run on past the
+        # blank after it, so then nothing is guessed: "<shell>".
+        while True:
+            match = _SHELL_ASSIGNMENT.match(text)
+            if match is None:
+                break
+            if any(char in match.group(0) for char in _SHELL_SPECIAL):
+                return "<shell>"
+            text = text[match.end():].lstrip()
+        if not text:
             return "<shell>"
-        text = " ".join(words)
         if text[:1] in ('"', "'"):
             quote = text[0]
             end = text.find(quote, 1)
             if end <= 0:
                 return "<shell>"
-            text = text[1:end]
+            text = text[1:end]  # the quoted program, blanks and all
         else:
-            text = words[0]
+            text = text.split(None, 1)[0]
             if "=" in text or text[:1] in ("$", "`", "(", "{"):
                 return "<shell>"
     name = text.replace("\\", "/").rsplit("/", 1)[-1]
@@ -446,6 +449,10 @@ class SystemAuditor:
                 isinstance(mode, str) and any(c in mode for c in "wax+")
             )
             permission = FS_WRITE if writes else FS_READ
+            if isinstance(path, (str, bytes)) and not os.path.isabs(path) and _inside_rmtree():
+                # rmtree opens subdirectories by name relative to a dir_fd the
+                # event does not carry; its root was judged already.
+                return []
             target = self._fs_target(path, directory=False, read=permission == FS_READ)
             return [(permission, target, ())] if target else []
         spec = _FS_EVENTS.get(event)
