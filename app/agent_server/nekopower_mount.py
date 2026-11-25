@@ -138,8 +138,15 @@ def hud_task(commission: Any) -> Optional[Dict[str, Any]]:
     # What it asks while it waits for the user, with the answers on offer.
     # Said as None otherwise: the page merges what it is sent into what it
     # has, and a question left out would stay on the card once answered.
-    task["question"] = commission.question() if status == "waiting_user" else None
+    task["question"] = _page_question(commission) if status == "waiting_user" else None
     return task
+
+
+def _page_question(commission: Any) -> Optional[Dict[str, Any]]:
+    """Return what a commission asks as a card shows it, in the commission's language."""
+    from nekopower.host.reports import page_question
+
+    return page_question(commission.question(), commission.lang or "en")
 
 
 class HudTasks:
@@ -333,12 +340,14 @@ async def send_report(item: Any) -> bool:
         "metadata": {"nekopower_kind": item.kind, "nekopower_reason": reason},
         "timestamp": _now_iso(),
     }
-    question = payload.get("question")
+    question = payload.get("card") or payload.get("question")
     if item.kind == "question" and task_id and isinstance(question, dict):
         # The parts of what is asked, for a card with the ways to answer; the
         # sentence above is hers to pass on all the same.
         event["question"] = question
         event["title"] = str(payload.get("title") or "")
+        # Who does the work: a plugin called directly takes no sentence added to an approval.
+        event["route"] = payload.get("route")
     return await _send_main_event(event)
 
 

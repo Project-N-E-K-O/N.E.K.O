@@ -1430,25 +1430,48 @@ window.AgentHUD._doUpdateAgentTaskHUD = function () {
     });
 
     // Build the desired card order, reusing/updating existing cards
-    const fragment = document.createDocumentFragment();
-    activeTasks.forEach(task => {
+    const desired = activeTasks.map(task => {
         const existing = existingById.get(task.id);
-        if (existing) {
-            const node = this._updateTaskCard(existing, task);
-            fragment.appendChild(node || existing);
-        } else {
-            const card = this._createTaskCard(task);
-            fragment.appendChild(card);
-        }
+        return existing ? (this._updateTaskCard(existing, task) || existing) : this._createTaskCard(task);
     });
 
-    // Re-append empty state first (it should stay at top), then task cards
-    if (emptyState && emptyState.parentNode === taskList) {
-        taskList.insertBefore(fragment, emptyState.nextSibling);
-    } else {
-        taskList.appendChild(fragment);
+    // 顺序没变就不动 DOM：把卡片挪走再插回会让卡片里正在打字的输入框丢掉焦点（输入法也会被打断）。
+    const standing = Array.from(taskList.querySelectorAll('.task-card'));
+    const sameOrder = standing.length === desired.length && standing.every((card, index) => card === desired[index]);
+    if (!sameOrder) {
+        const fragment = document.createDocumentFragment();
+        desired.forEach(card => fragment.appendChild(card));
+        // Re-append empty state first (it should stay at top), then task cards
+        if (emptyState && emptyState.parentNode === taskList) {
+            taskList.insertBefore(fragment, emptyState.nextSibling);
+        } else {
+            taskList.appendChild(fragment);
+        }
     }
     if (window.NekoPluginViews) window.NekoPluginViews.syncHud();
+};
+
+// 等用户回话的任务：卡片里直接显示它问的话，带按钮和小输入框（static/app/app-nekopower-ask.js）。
+// 同一个问题不重画（输入框里打到一半的字不能丢）；换了问题才换，按钮先停一小会儿，免得点到新问题上。
+window.AgentHUD._syncTaskAsk = function (card, task) {
+    if (!card) return;
+    const asks = window.NekoPowerAsk;
+    const question = task.status === 'waiting_user' && task.question && typeof task.question === 'object' && asks ? task.question : null;
+    const shown = card.querySelector('.task-ask');
+    if (!question) {
+        if (shown) shown.remove();
+        return;
+    }
+    const questionId = String(question.id || '');
+    if (shown && shown.dataset.questionId === questionId) return;
+    if (shown) shown.remove();
+    card.appendChild(asks.render({
+        taskId: task.id,
+        question: question,
+        // 插件直接办的事没有使魔能收「补一句」。
+        noNote: task.type === 'user_plugin',
+        settle: Boolean(shown)
+    }));
 };
 
 // 差异更新已有任务卡片（避免全量 DOM 重建触发 backdrop-filter 重合成导致模型闪烁）
@@ -1532,6 +1555,7 @@ window.AgentHUD._updateTaskCard = function (card, task) {
     }
 
     this._syncTaskDescriptionRow(card, task, isRunning);
+    this._syncTaskAsk(card, task);
 
     // Handle progress row: add if now running but missing, remove if no longer running
     const progressRow = card.querySelector('.task-progress-row');
@@ -1821,6 +1845,7 @@ window.AgentHUD._createTaskCard = function (task) {
     card.appendChild(header);
 
     this._syncTaskDescriptionRow(card, task, isRunning);
+    this._syncTaskAsk(card, task);
 
     // === 第二行：倒计时 + 进度条（仅运行中任务） ===
     if (isRunning) {

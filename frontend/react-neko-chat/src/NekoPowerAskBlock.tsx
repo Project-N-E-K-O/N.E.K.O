@@ -1,0 +1,229 @@
+import { useEffect, useState } from 'react';
+import { i18n } from './i18n';
+import type { ChatMessage, MessageAction, MessageBlock } from './message-schema';
+
+type AskBlock = Extract<MessageBlock, { type: 'nekopower_ask' }>;
+
+/**
+ * How long the buttons of a question that took the place of another are held back: a press
+ * meant for the one that was there a moment ago must not answer this one.
+ */
+export const NEKOPOWER_ASK_SETTLE_MS = 900;
+// A command or path longer than this is not read at a glance: it is shown whole before an
+// approval that holds for more than this once is offered.
+const GLANCE_CHARS = 80;
+const WIDE_CHOICES = ['always', 'session'];
+const CHOICE_WORDS: Record<string, [string, string]> = {
+  always: ['agent.ask.always', 'Always allow'],
+  session: ['agent.ask.session', 'Allow for this task'],
+  once: ['agent.ask.once', 'Just this once'],
+  deny: ['agent.ask.deny', 'Deny'],
+};
+
+const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+
+export interface AskQuestion {
+  /** Where it stands among the questions ("0", "1", ...): what the answer names it by. */
+  id: string;
+  text: string;
+  options: Array<{ label: string; description: string }>;
+  multi: boolean;
+}
+
+/** What a question of a NekoPower commission is shown and answered by. */
+export function askView(question: Record<string, unknown>) {
+  const detail = (question.detail && typeof question.detail === 'object' ? question.detail : {}) as Record<string, unknown>;
+  const options = (Array.isArray(question.options) ? question.options : [])
+    .filter((option): option is string => typeof option === 'string' && option in CHOICE_WORDS);
+  const questions: AskQuestion[] = (Array.isArray(question.questions) ? question.questions : []).flatMap((item, index) => {
+    if (!item || typeof item !== 'object') return [];
+    const asked = item as Record<string, unknown>;
+    const offered = (Array.isArray(asked.options) ? asked.options : [])
+      .map(option => (option && typeof option === 'object'
+        ? { label: text((option as Record<string, unknown>).label), description: text((option as Record<string, unknown>).description) }
+        : { label: text(String(option ?? '')), description: '' }))
+      .filter(option => option.label);
+    return [{ id: String(index), text: text(asked.question), options: offered, multi: asked.multi_select === true }];
+  });
+  const whole = text(detail.command) || text(detail.path);
+  const shape = options.length ? 'permission' as const
+    : question.kind === 'confirmation' ? 'confirmation' as const
+      : questions.some(item => item.options.length) ? 'questions' as const : 'words' as const;
+  const line = shape === 'permission'
+    ? text(question.line) || whole || text(detail.title) || text(detail.tool) || text(question.category)
+    : [text(question.question), text(question.details)].filter(Boolean).join(' ');
+  return {
+    shape,
+    line,
+    whole,
+    // Whether all of what it would do has to be opened before a wider approval is offered.
+    needsWhole: shape === 'permission' && Boolean(whole) && (question.line_cut === true || whole.length > GLANCE_CHARS || whole.includes('\n')),
+    options,
+    questions,
+    quick: questions.length === 1 && !questions[0].multi,
+  };
+}
+
+/**
+ * What a NekoPower commission asks the user, answered where it is shown: buttons for what can
+ * be picked and a line for words beside them. The host sends the answer and says how it fared
+ * (`state`): this only hands over what was pressed.
+ *
+ * `settle`: it took the place of another question a moment ago (in the slot above the
+ * composer), so its buttons wait for a moment.
+ */
+export default function NekoPowerAskBlock({ block, message, interactive, onAction, presentation = 'card', settle = false }: {
+  block: AskBlock;
+  message: ChatMessage;
+  interactive: boolean;
+  presentation?: 'card' | 'bubble';
+  settle?: boolean;
+  onAction?: (message: ChatMessage, action: MessageAction) => void;
+}) {
+  const view = askView(block.question);
+  const [reply, setReply] = useState('');
+  const [picked, setPicked] = useState<Record<string, string[]>>({});
+  const [wholeOpen, setWholeOpen] = useState(false);
+  const [settling, setSettling] = useState(settle);
+  useEffect(() => {
+    if (!settle) return;
+    const timer = setTimeout(() => setSettling(false), NEKOPOWER_ASK_SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [settle]);
+
+  const open = block.state === 'pending' || block.state === 'sending';
+  const held = !interactive || block.state !== 'pending' || settling;
+  const somePicked = Object.values(picked).some(labels => labels.length);
+  const give = (given: Record<string, unknown>) => {
+    if (held) return;
+    onAction?.(message, {
+      id: 'answer', label: 'answer', action: 'nekopower_ask_answer',
+      payload: { taskId: block.taskId, questionId: block.questionId, ...given },
+    });
+  };
+  const pick = (item: AskQuestion, label: string) => {
+    if (held) return;
+    if (view.quick) {
+      give({ selected: { [item.id]: [label] }, text: reply });
+      return;
+    }
+    const had = picked[item.id] ?? [];
+    const now = had.includes(label) ? had.filter(each => each !== label) : item.multi ? [...had, label] : [label];
+    setPicked({ ...picked, [item.id]: now });
+  };
+  const sendWords = () => {
+    if (held || (!reply.trim() && !somePicked)) return;
+    give(somePicked ? { selected: picked, text: reply } : { text: reply });
+  };
+  const compact = presentation === 'bubble';
+  const hit = (id: string) => (compact ? {
+    'data-compact-hit-region': 'true', 'data-compact-hit-region-id': `nekopower-ask:${block.taskId}:${id}`,
+    'data-compact-hit-region-kind': 'message-action', 'data-compact-no-drag': 'true',
+  } : {});
+  const placeholder = view.shape === 'permission'
+    ? i18n('agent.ask.notePlaceholder', 'Add a sentence (optional), then press a button')
+    : view.shape === 'words'
+      ? i18n('agent.ask.replyPlaceholder', 'Type your answer…')
+      : i18n('agent.ask.addPlaceholder', 'Type an answer, or add a sentence and pick above');
+
+  return (
+    <section className={`message-block nekopower-ask nekopower-ask-${presentation} nekopower-ask-${block.state}`}
+      data-nekopower-ask={block.taskId} data-question-id={block.questionId} data-shape={view.shape} data-compact-no-drag="true"
+      aria-label={i18n('agent.ask.title', 'NekoPower · waiting for you')}>
+      <header className="nekopower-ask-head">
+        <strong>🐾 {i18n('agent.ask.title', 'NekoPower · waiting for you')}</strong>
+        {block.title ? <span>{block.title}</span> : null}
+      </header>
+
+      {view.shape === 'questions' ? view.questions.map((item, index) => (
+        <div key={item.id} className="nekopower-ask-question" data-question={item.id}>
+          <p className="nekopower-ask-line">{view.questions.length > 1 ? `${index + 1}. ${item.text}` : item.text}</p>
+          {item.options.length && open ? (
+            <div className="nekopower-ask-options" role="group" aria-label={item.text}>
+              {item.options.map(option => {
+                const on = (picked[item.id] ?? []).includes(option.label);
+                return (
+                  <button key={option.label} type="button" className={`nekopower-ask-option${on ? ' is-on' : ''}`}
+                    aria-pressed={view.quick ? undefined : on} disabled={held} data-option={option.label}
+                    {...hit(`option:${item.id}:${option.label}`)} onClick={() => pick(item, option.label)}>
+                    <b>{option.label}</b>
+                    {option.description && !compact ? <span>{option.description}</span> : null}
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+        </div>
+      )) : <p className="nekopower-ask-line">{view.line}</p>}
+
+      {open && view.shape === 'permission' ? (
+        <>
+          {view.needsWhole ? (
+            <>
+              {wholeOpen ? <pre className="nekopower-ask-whole" tabIndex={0}>{view.whole}</pre> : null}
+              <div className="nekopower-ask-row">
+                <button type="button" className="nekopower-ask-button is-plain" data-ask-whole="toggle" {...hit('whole')}
+                  onClick={() => setWholeOpen(!wholeOpen)}>
+                  {wholeOpen ? i18n('agent.ask.hideWhole', 'Show less') : i18n('agent.ask.showWhole', 'Show all of it')}
+                </button>
+              </div>
+            </>
+          ) : null}
+          <div className="nekopower-ask-row" role="group">
+            {view.options
+              // An approval that holds for more than this once: only with all of what it would do in view.
+              .filter(option => !WIDE_CHOICES.includes(option) || !view.needsWhole || wholeOpen)
+              .map(option => (
+                <button key={option} type="button" className={`nekopower-ask-button${option === 'deny' ? ' is-deny' : ''}`}
+                  disabled={held} data-choice={option} {...hit(`choice:${option}`)}
+                  onClick={() => give({ choice: option, note: reply })}>
+                  {i18n(CHOICE_WORDS[option][0], CHOICE_WORDS[option][1])}
+                </button>
+              ))}
+          </div>
+          {view.needsWhole && !wholeOpen && view.options.some(option => WIDE_CHOICES.includes(option)) ? (
+            <p className="nekopower-ask-hint">{i18n('agent.ask.wideHint', 'Wider approvals appear once all of it is shown')}</p>
+          ) : null}
+        </>
+      ) : null}
+
+      {open && view.shape === 'confirmation' ? (
+        <div className="nekopower-ask-row" role="group">
+          <button type="button" className="nekopower-ask-button" disabled={held} data-confirm="yes" {...hit('yes')}
+            onClick={() => give({ choice: 'yes', text: reply })}>{i18n('agent.ask.yes', 'Yes, go ahead')}</button>
+          <button type="button" className="nekopower-ask-button is-deny" disabled={held} data-confirm="no" {...hit('no')}
+            onClick={() => give({ choice: 'no', text: reply })}>{i18n('agent.ask.no', 'No')}</button>
+        </div>
+      ) : null}
+
+      {open && !(view.shape === 'permission' && block.noNote) ? (
+        <form className="nekopower-ask-say" onSubmit={event => { event.preventDefault(); sendWords(); }}>
+          <input type="text" value={reply} placeholder={placeholder} aria-label={placeholder} disabled={!interactive || block.state !== 'pending'}
+            data-ask-input="true" {...hit('input')}
+            onChange={event => setReply(event.target.value)}
+            // Words alone are no answer to a request for approval (they would read as a refusal):
+            // there the line only goes along with a button.
+            onKeyDown={event => {
+              event.stopPropagation();
+              if (event.key === 'Enter' && view.shape === 'permission') event.preventDefault();
+            }} />
+          {view.shape !== 'permission' ? (
+            <button type="submit" className="nekopower-ask-button is-solid" disabled={held || (!reply.trim() && !somePicked)} data-ask-send="true" {...hit('send')}>
+              {i18n('agent.ask.send', 'Send')}
+            </button>
+          ) : null}
+        </form>
+      ) : null}
+
+      {block.state === 'answered' ? (
+        <p className="nekopower-ask-result" role="status">
+          {block.answer ? i18n('agent.ask.answered', 'Answered: {{answer}}', { answer: block.answer }) : i18n('agent.ask.answeredPlain', 'Answered')}
+        </p>
+      ) : null}
+      {block.state === 'closed' && !block.notice ? (
+        <p className="nekopower-ask-result is-gone" role="status">{i18n('agent.ask.closed', 'This question is over')}</p>
+      ) : null}
+      {block.notice ? <p className="nekopower-ask-notice" role="status">{block.notice}</p> : null}
+    </section>
+  );
+}

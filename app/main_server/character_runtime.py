@@ -919,6 +919,7 @@ async def _send_nekopower_question(event: dict) -> None:
         "type": "nekopower_question",
         "task_id": str(event.get("task_id") or ""),
         "title": str(event.get("title") or ""),
+        "route": event.get("route"),
         "lanlan_name": event.get("lanlan_name"),
         "question": question if isinstance(question, dict) else None,
         # Of one that stopped waiting: which question that was ("" where it is not known).

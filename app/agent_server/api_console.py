@@ -807,6 +807,33 @@ def build_console_router(
         # The answer is in whatever becomes of this: a note nothing took is said, and is no error.
         return {"success": True, "note_taken": bool(await host.tell(commission_id, note))}
 
+    @router.get("/questions")
+    async def list_questions() -> dict[str, Any]:
+        """Return what commissions ask the user right now, the oldest first, each as a card shows it.
+
+        For a page that shows the questions as cards and was not there when
+        they were put (it opened later, or its connection was away). A task
+        agent's own task agent is among them: the user is asked for it too.
+        """
+        from nekopower.host.reports import page_question
+
+        host = await get_host()
+        waiting = await host.ledger.select(statuses=("waiting_user",), oldest_first=True)
+        return {
+            "success": True,
+            "questions": [
+                {
+                    "task_id": commission.id,
+                    "title": commission.title,
+                    "lanlan_name": commission.lanlan_name,
+                    "route": commission.route,
+                    "question": page_question(commission.question(), commission.lang or "en"),
+                }
+                for commission in waiting
+                if commission.question()
+            ],
+        }
+
     @router.post("/commissions/{commission_id}/stop")
     async def stop_commission(commission_id: str) -> dict[str, Any]:
         """Stop what a task agent is doing, as the user asks."""

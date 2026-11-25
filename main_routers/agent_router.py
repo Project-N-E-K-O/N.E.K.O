@@ -681,44 +681,29 @@ async def proxy_task_cancel(task_id: str):
         return JSONResponse({"success": False, "error": f"proxy error: {e}"}, status_code=502)
 
 
-@router.get('/commissions/waiting')
-async def proxy_commissions_waiting():
+@router.get('/questions')
+async def proxy_questions():
     """Return what NekoPower commissions ask the user right now, for the chat window to show.
 
     A page that opens, or comes back after its connection was away, missed
     the questions put meanwhile; and a task agent's own task agent is not
     among the tasks of the HUD. Read from the agent process's
-    ``/console/commissions``; of each only what a card of its question
-    needs.
+    ``/console/questions``.
     """
     from config import AUTOSTART_CSRF_TOKEN
 
     try:
         client = _get_http_client()
         r = await client.get(
-            f"{TOOL_SERVER_BASE}/console/commissions",
-            params={"status": "waiting_user", "days": "0"},
+            f"{TOOL_SERVER_BASE}/console/questions",
             headers={"X-CSRF-Token": AUTOSTART_CSRF_TOKEN},
             timeout=httpx.Timeout(5.0, connect=1.0),
         )
         if not r.is_success:
-            return JSONResponse({"commissions": [], "error": f"tool_server responded {r.status_code}"}, status_code=502)
-        rows = r.json().get("commissions") or []
-        return {
-            "commissions": [
-                {
-                    "id": row.get("id"),
-                    "title": row.get("title") or "",
-                    "lanlan_name": row.get("lanlan_name"),
-                    "route": row.get("route"),
-                    "question": row.get("ask"),
-                }
-                for row in rows
-                if isinstance(row, dict) and row.get("id") and isinstance(row.get("ask"), dict)
-            ]
-        }
+            return JSONResponse({"questions": [], "error": f"tool_server responded {r.status_code}"}, status_code=502)
+        return {"questions": r.json().get("questions") or []}
     except Exception as e:
-        return JSONResponse({"commissions": [], "error": f"proxy error: {e}"}, status_code=502)
+        return JSONResponse({"questions": [], "error": f"proxy error: {e}"}, status_code=502)
 
 
 @router.post('/commissions/{commission_id}/answer')
