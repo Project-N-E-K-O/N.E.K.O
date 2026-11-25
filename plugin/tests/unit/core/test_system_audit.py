@@ -225,16 +225,16 @@ def test_repeats_are_recorded_once_a_minute(env):
 def test_plugin_dir_data_dir_and_interpreter_are_exempt(env):
     import json as stdlib_module
 
-    for path in (
-        env.plugin_dir / "config.json",
-        env.data_dir / "state.db",
-        Path(stdlib_module.__file__),
-        Path(pytest.__file__),  # site-packages
-    ):
+    for path in (env.plugin_dir / "config.json", env.data_dir / "state.db"):
         env.from_plugin("open", (str(path), "r", 0))
         env.from_plugin("open", (str(path), "w", os.O_WRONLY))
+    for path in (Path(stdlib_module.__file__), Path(pytest.__file__)):  # stdlib, site-packages
+        env.from_plugin("open", (str(path), "r", 0))
     env.from_plugin("open", (3, "r", 0))  # an fd
     assert env.records() == []
+    # Writing into the interpreter's directories is recorded.
+    env.from_plugin("open", (str(Path(pytest.__file__).parent / "x.pth"), "w", os.O_WRONLY))
+    assert [r["permission"] for r in env.records()] == [FS_WRITE]
 
 
 def test_standard_library_data_files_are_exempt_for_reading_only(env):

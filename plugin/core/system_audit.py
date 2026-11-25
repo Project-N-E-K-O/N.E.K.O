@@ -28,9 +28,9 @@ Python docs):
 environment is read (only ``os.putenv`` / ``os.unsetenv``), so reads of
 ``os.environ`` cannot be seen here; static analysis is the only signal.
 
-Exempt, so the records stay about the plugin itself: the interpreter and the
-standard library, site-packages, the plugin's own directory and data, the log
-directory, the import machinery (``open_code`` and ``.pyc`` writes), and uses
+Exempt, so the records stay about the plugin itself: reads of the interpreter,
+the standard library and site-packages; the plugin's own directory and data and
+the log directory; the import machinery (``open_code`` and ``.pyc`` writes), and uses
 the SDK / host code makes itself (reply channel, model gateway client and so
 on). Who made a use is read from the Python stack: the innermost frame that
 is plugin code (records) or host code (exempt) decides; library frames in
@@ -66,6 +66,10 @@ from plugin.sdk.shared.models.exceptions import SystemPermissionDeniedError
 # from the audited call). Observe only for now: every record says
 # ``enforcing: False``. Turned on together with the host gate's REFUSES_CALLS.
 REFUSES_SYSTEM_USES = False
+# Known gap to close before switching it on: a use with no plugin frame on the
+# stack is never refused (it may be the SDK's own work on a library thread),
+# so ``asyncio.to_thread(open, path)`` / ``run_in_executor(None, open, path)``
+# is recorded (flagged ``unattributed``) but would not be refused.
 
 SYSTEM_AUDIT = "SYSTEM_AUDIT"  # message type on the plugin's message uplink
 
@@ -276,14 +280,16 @@ class SystemAuditor:
         self._plugin_dir = _norm(os.fspath(plugin_dir))
         self._project_root = _norm(os.fspath(project_root)) if project_root is not None else None
         exempt = {self._plugin_dir}
-        for directory in (*interpreter_directories(), *exempt_dirs):
+        for directory in exempt_dirs:
             try:
                 exempt.add(_norm(os.fspath(directory)))
             except Exception:
                 pass
         self._exempt_dirs = tuple(sorted(exempt))
+        # The interpreter's directories are exempt for reading only: a plugin
+        # writing into site-packages (or next to a frozen launcher) is recorded.
         read_exempt = set()
-        for path in system_read_paths():
+        for path in (*interpreter_directories(), *system_read_paths()):
             try:
                 read_exempt.add(_norm(path))
             except Exception:
