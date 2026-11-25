@@ -240,9 +240,14 @@ def test_widget_mode_has_no_web_settings_control_or_dom_sync() -> None:
     assert "document.querySelectorAll" not in client_source
 
 
+LEGACY_FIRST_PEEK_KEY = "neko_widget_mode_first_peek_notice_seen"
+FIRST_PEEK_SESSION_KEY = "neko_widget_mode_first_peek_notice_shown"
+FIRST_PEEK_MESSAGE = "i18n:settings.widgetMode.firstPeekNotice"
+
+
 def _run_first_peek_notice_harness(
-    stored_value: str | None,
     *,
+    legacy_local_value: str | None = None,
     storage_throws: bool = False,
     drop_first_toast: bool = False,
     i18n_echoes_key: bool = False,
@@ -261,7 +266,24 @@ def _run_first_peek_notice_harness(
 
         let dropNextToast = {json.dumps(drop_first_toast)};
         const toastKind = {json.dumps(toast_kind)};
-        function load(storage) {{
+        const storageThrows = {json.dumps(storage_throws)};
+
+        function makeStorage(data) {{
+          if (storageThrows) {{
+            return {{
+              getItem() {{ throw new Error('SecurityError'); }},
+              setItem() {{ throw new Error('QuotaExceededError'); }},
+              removeItem() {{ throw new Error('SecurityError'); }},
+            }};
+          }}
+          return {{
+            getItem(key) {{ return data.has(key) ? data.get(key) : null; }},
+            setItem(key, value) {{ data.set(key, String(value)); }},
+            removeItem(key) {{ data.delete(key); }},
+          }};
+        }}
+
+        function load(localStorage, sessionStorage) {{
           const listeners = new Map();
           const notices = [];
           const toastText = {{ textContent: '' }};
@@ -272,7 +294,8 @@ def _run_first_peek_notice_harness(
             }}
           }}
           const win = {{
-            localStorage: storage,
+            localStorage,
+            sessionStorage,
             addEventListener(type, callback) {{
               if (!listeners.has(type)) listeners.set(type, []);
               listeners.get(type).push(callback);
@@ -322,36 +345,46 @@ def _run_first_peek_notice_harness(
           return {{ notices, peek }};
         }}
 
-        const data = new Map();
-        const initial = {json.dumps(stored_value)};
-        if (initial !== null) data.set('neko_widget_mode_first_peek_notice_seen', initial);
-        const storage = {json.dumps(storage_throws)}
-          ? {{
-              getItem() {{ throw new Error('SecurityError'); }},
-              setItem() {{ throw new Error('QuotaExceededError'); }},
-            }}
-          : {{
-              getItem(key) {{ return data.has(key) ? data.get(key) : null; }},
-              setItem(key, value) {{ data.set(key, String(value)); }},
-            }};
+        const anchor = (visible = true) => ({{
+          active: true, visible, phase: visible ? 'peeking' : 'hidden', reason: 'anchor-created',
+        }});
 
-        const first = load(storage);
+        // localStorage outlives app launches; sessionStorage belongs to one pet window.
+        const localData = new Map();
+        const legacy = {json.dumps(legacy_local_value)};
+        if (legacy !== null) localData.set({json.dumps(LEGACY_FIRST_PEEK_KEY)}, legacy);
+        const localStorage = makeStorage(localData);
+        const launch1Session = new Map();
+
+        const first = load(localStorage, makeStorage(launch1Session));
         // Visibility toggles of an existing anchor and peek clears are not a new peek.
         first.peek({{ active: true, visible: false, phase: 'hidden', reason: 'interaction-state' }});
         first.peek({{ active: false, phase: 'unanchored', reason: 'drag-away-from-edge' }});
         const beforeAnchor = first.notices.length;
-        first.peek({{ active: true, visible: true, phase: 'peeking', reason: 'anchor-created' }});
-        first.peek({{ active: true, visible: true, phase: 'peeking', reason: 'anchor-created' }});
+        first.peek(anchor());
+        first.peek({{ active: false, phase: 'unanchored', reason: 'drag-away-from-edge' }});
+        first.peek(anchor());
+        const legacyAfterLoad = localData.has({json.dumps(LEGACY_FIRST_PEEK_KEY)})
+          ? localData.get({json.dumps(LEGACY_FIRST_PEEK_KEY)})
+          : null;
 
-        // A reload of the page must remember that the notice was already shown.
-        const reloaded = load(storage);
-        reloaded.peek({{ active: true, visible: false, phase: 'hidden', reason: 'anchor-created' }});
+        // Reloading the same pet window in the same launch keeps sessionStorage.
+        const reloaded = load(localStorage, makeStorage(launch1Session));
+        reloaded.peek(anchor(false));
+
+        // An app restart creates a new pet window with empty sessionStorage.
+        const restarted = load(localStorage, makeStorage(new Map()));
+        restarted.peek(anchor());
+        restarted.peek(anchor());
 
         console.log(JSON.stringify({{
           beforeAnchor,
           firstNotices: first.notices,
           reloadedNotices: reloaded.notices,
-          stored: data.get('neko_widget_mode_first_peek_notice_seen') || null,
+          restartedNotices: restarted.notices,
+          sessionShown: launch1Session.get({json.dumps(FIRST_PEEK_SESSION_KEY)}) || null,
+          legacyAfterLoad,
+          localKeys: Array.from(localData.keys()),
         }}));
         """
     )
@@ -364,22 +397,30 @@ def _run_first_peek_notice_harness(
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
-def test_first_edge_peek_shows_notice_once_and_persists() -> None:
-    outcome = _run_first_peek_notice_harness(None)
+ONE_NOTICE = [{"message": FIRST_PEEK_MESSAGE, "durationMs": 10000}]
+
+
+def test_first_edge_peek_notice_shows_once_per_launch() -> None:
+    outcome = _run_first_peek_notice_harness()
 
     assert outcome["beforeAnchor"] == 0
-    assert outcome["firstNotices"] == [
-        {"message": "i18n:settings.widgetMode.firstPeekNotice", "durationMs": 10000}
-    ]
+    # Not repeated by later peeks in the same launch.
+    assert outcome["firstNotices"] == ONE_NOTICE
+    assert outcome["sessionShown"] == "1"
+    # A reload of the same pet window is still the same launch.
     assert outcome["reloadedNotices"] == []
-    assert outcome["stored"] == "1"
+    # Shown again on the first peek after an app restart.
+    assert outcome["restartedNotices"] == ONE_NOTICE
+    # Nothing is remembered across launches.
+    assert outcome["localKeys"] == []
 
 
-def test_first_edge_peek_notice_is_skipped_once_seen() -> None:
-    outcome = _run_first_peek_notice_harness("1")
+def test_legacy_seen_flag_no_longer_suppresses_first_edge_peek_notice() -> None:
+    outcome = _run_first_peek_notice_harness(legacy_local_value="1")
 
-    assert outcome["firstNotices"] == []
-    assert outcome["reloadedNotices"] == []
+    assert outcome["firstNotices"] == ONE_NOTICE
+    assert outcome["restartedNotices"] == ONE_NOTICE
+    assert outcome["legacyAfterLoad"] is None
 
 
 def test_first_edge_peek_notice_is_localized_without_honorifics() -> None:
@@ -395,29 +436,26 @@ def test_first_edge_peek_notice_is_localized_without_honorifics() -> None:
             assert honorific not in notice, locale
 
 
-def test_first_edge_peek_notice_shows_once_per_session_without_storage() -> None:
-    outcome = _run_first_peek_notice_harness(None, storage_throws=True)
+def test_first_edge_peek_notice_shows_once_per_page_without_storage() -> None:
+    outcome = _run_first_peek_notice_harness(storage_throws=True)
 
-    assert outcome["firstNotices"] == [
-        {"message": "i18n:settings.widgetMode.firstPeekNotice", "durationMs": 10000}
-    ]
-    assert outcome["stored"] is None
+    assert outcome["firstNotices"] == ONE_NOTICE
+    assert outcome["sessionShown"] is None
 
 
 def test_first_edge_peek_notice_dropped_by_busier_toast_is_retried() -> None:
-    outcome = _run_first_peek_notice_harness(None, drop_first_toast=True)
+    outcome = _run_first_peek_notice_harness(drop_first_toast=True)
 
-    message = "i18n:settings.widgetMode.firstPeekNotice"
     assert outcome["firstNotices"] == [
-        {"message": message, "durationMs": 10000, "dropped": True},
-        {"message": message, "durationMs": 10000},
+        {"message": FIRST_PEEK_MESSAGE, "durationMs": 10000, "dropped": True},
+        {"message": FIRST_PEEK_MESSAGE, "durationMs": 10000},
     ]
     assert outcome["reloadedNotices"] == []
-    assert outcome["stored"] == "1"
+    assert outcome["sessionShown"] == "1"
 
 
 def test_first_edge_peek_notice_never_shows_a_raw_i18n_key() -> None:
-    outcome = _run_first_peek_notice_harness(None, i18n_echoes_key=True)
+    outcome = _run_first_peek_notice_harness(i18n_echoes_key=True)
 
     assert len(outcome["firstNotices"]) == 1
     message = outcome["firstNotices"][0]["message"]
@@ -425,17 +463,16 @@ def test_first_edge_peek_notice_never_shows_a_raw_i18n_key() -> None:
     assert "贴边探身" in message
 
 
-def test_first_edge_peek_notice_via_desktop_toast_bridge_shows_once() -> None:
+def test_first_edge_peek_notice_via_desktop_toast_bridge_shows_once_per_launch() -> None:
     # The desktop shell forwards window.showStatusToast to a separate toast
     # window, so the pet page's #status-toast-text never holds the notice.
-    outcome = _run_first_peek_notice_harness(None, toast_kind="bridge")
+    outcome = _run_first_peek_notice_harness(toast_kind="bridge")
 
     assert outcome["beforeAnchor"] == 0
-    assert outcome["firstNotices"] == [
-        {"message": "i18n:settings.widgetMode.firstPeekNotice", "durationMs": 10000}
-    ]
+    assert outcome["firstNotices"] == ONE_NOTICE
+    assert outcome["sessionShown"] == "1"
     assert outcome["reloadedNotices"] == []
-    assert outcome["stored"] == "1"
+    assert outcome["restartedNotices"] == ONE_NOTICE
 
 
 def test_page_status_toast_is_marked_as_the_dom_implementation() -> None:

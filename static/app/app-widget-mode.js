@@ -7,9 +7,15 @@
     const API_STATE = '/api/widget-mode/state';
     const API_ENABLED = '/api/widget-mode/enabled';
     const API_STEALTH_ENABLED = '/api/widget-mode/stealth-enabled';
-    // Shown once, on the first edge peek, so a model that just slid into the
-    // screen edge is not mistaken for a missing one.
-    const FIRST_PEEK_NOTICE_STORAGE_KEY = 'neko_widget_mode_first_peek_notice_seen';
+    // Shown on the first edge peek of every app launch, so a model that just
+    // slid into the screen edge is not mistaken for a missing one, even by a
+    // user who missed the notice last time. Kept in sessionStorage: it survives
+    // a reload of the same pet window but starts empty in a new one (an app
+    // restart, or the shell rebuilding its windows).
+    const FIRST_PEEK_NOTICE_SESSION_KEY = 'neko_widget_mode_first_peek_notice_shown';
+    // Earlier builds remembered the notice forever in localStorage; that flag
+    // must no longer suppress it.
+    const LEGACY_FIRST_PEEK_NOTICE_STORAGE_KEY = 'neko_widget_mode_first_peek_notice_seen';
     const FIRST_PEEK_NOTICE_DURATION_MS = 10000;
 
     const clientState = {
@@ -160,9 +166,11 @@
 
     let firstPeekNoticeShown = false;
 
-    function hasSeenFirstPeekNotice() {
+    try { window.localStorage.removeItem(LEGACY_FIRST_PEEK_NOTICE_STORAGE_KEY); } catch (_) {}
+
+    function hasShownFirstPeekNoticeThisLaunch() {
         try {
-            return window.localStorage.getItem(FIRST_PEEK_NOTICE_STORAGE_KEY) === '1';
+            return window.sessionStorage.getItem(FIRST_PEEK_NOTICE_SESSION_KEY) === '1';
         } catch (_) {
             return false;
         }
@@ -189,18 +197,18 @@
         // Only a freshly created anchor is a real peek; visibility toggles of an
         // existing anchor (stealth, interaction) are not.
         if (!detail || detail.active !== true || detail.reason !== 'anchor-created') return;
-        if (firstPeekNoticeShown || hasSeenFirstPeekNotice()) return;
+        if (firstPeekNoticeShown || hasShownFirstPeekNoticeThisLaunch()) return;
         const message = t(
             'settings.widgetMode.firstPeekNotice',
             '她躲到屏幕边上了，把她拖回来就能恢复。不需要的话，可以在托盘菜单的“设置”里关闭“启用贴边探身”。'
         );
         showNotice(message, FIRST_PEEK_NOTICE_DURATION_MS);
         // showStatusToast silently drops a notice while a higher-priority one is
-        // on screen; only count it as seen once it actually rendered, otherwise
+        // on screen; only count it as shown once it actually rendered, otherwise
         // the next peek tries again.
         if (!isStatusToastShowing(message)) return;
         firstPeekNoticeShown = true;
-        try { window.localStorage.setItem(FIRST_PEEK_NOTICE_STORAGE_KEY, '1'); } catch (_) {}
+        try { window.sessionStorage.setItem(FIRST_PEEK_NOTICE_SESSION_KEY, '1'); } catch (_) {}
     }
 
     window.addEventListener('neko:live2d-peek-changed', showFirstPeekNotice);
