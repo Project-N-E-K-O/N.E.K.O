@@ -2071,9 +2071,15 @@
             source: 'react-chat-window',
             requestId: payload.requestId,
             // 语音消息只发转写文本，不带走输入框里待发送的图片
-            ignoreComposerAttachments: true
+            ignoreComposerAttachments: true,
+            // 发送链路在开会话之后、真正发出前再核对一次角色
+            expectedLanlanName: payload.target
         });
-        if (accepted === false) throw audioMessageRejection('busy');
+        if (accepted === false) {
+            throw audioMessageRejection(
+                payload.target !== currentAudioMessageTarget() ? 'stale_target' : 'busy'
+            );
+        }
         return true;
     }
 
@@ -3581,6 +3587,14 @@
                     updateReactOptimisticMessageStatus('failed');
                     return false; // Don't send if session start failed
                 }
+            }
+
+            // 语音消息转写出的文本只属于录音时的角色：开会话、连 WebSocket 的等待期间若切换了角色，
+            // 就不发进新角色的会话。其他调用方不传 expectedLanlanName，不受影响
+            if (typeof options.expectedLanlanName === 'string' && options.expectedLanlanName
+                    && !(window.lanlan_config && window.lanlan_config.lanlan_name === options.expectedLanlanName)) {
+                updateReactOptimisticMessageStatus('failed');
+                return false;
             }
 
             // Send message

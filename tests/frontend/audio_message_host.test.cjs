@@ -247,3 +247,35 @@ test('switching to a character without offline ASR does not keep the old draft',
   assert.equal(calls.keepDraft.at(-1), false);
   assert.deepEqual(calls.targets, ['Neko', '']);
 });
+
+test('the text send carries the recording character and reports a switch during it', async () => {
+  const { window } = harness();
+  // The shared send path refuses (returns false) when the character changed
+  // while it was opening the text session.
+  const send = [];
+  const ctx = vm.createContext({
+    window,
+    mod: {
+      async sendTextPayload(text, options) {
+        send.push({ text, options });
+        window.lanlan_config.lanlan_name = 'Other';
+        return false;
+      },
+    },
+    fetch: async () => ({ ok: true, status: 200, async json() { return { ok: true, text: '你好' }; } }),
+    console: { warn() {} }, encodeURIComponent, JSON, Object, String, Error, Promise,
+  });
+  vm.runInContext(`${glue}\nthis.api = { sendAudioMessagePayload };`, ctx);
+  const error = await rejection(ctx.api.sendAudioMessagePayload(payload));
+  assert.equal(error.message, 'stale_target');
+  assert.equal(send[0].options.expectedLanlanName, 'Neko');
+});
+
+test('the shared text send re-checks the character right before sending', () => {
+  const guard = source.indexOf('options.expectedLanlanName');
+  const sendStart = source.indexOf('            // Send message\n            if (S.socket && S.socket.readyState === WebSocket.OPEN)');
+  const sessionStart = source.indexOf('await mod._textSessionStartPromise;');
+  assert.ok(guard > 0 && sendStart > 0 && sessionStart > 0);
+  // After waiting for the text session (and its WebSocket), before the send.
+  assert.ok(sessionStart < guard && guard < sendStart);
+});
