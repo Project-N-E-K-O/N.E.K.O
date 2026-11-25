@@ -272,7 +272,7 @@ test('the text send carries the recording character and reports a switch during 
 });
 
 test('the shared text send re-checks the character right before sending', () => {
-  const guard = source.indexOf('options.expectedLanlanName');
+  const guard = source.indexOf("if (typeof options.expectedLanlanName === 'string' && options.expectedLanlanName");
   const sendStart = source.indexOf('            // Send message\n            if (S.socket && S.socket.readyState === WebSocket.OPEN)');
   const sessionStart = source.indexOf('await mod._textSessionStartPromise;');
   assert.ok(guard > 0 && sendStart > 0 && sessionStart > 0);
@@ -312,4 +312,70 @@ test('chat-window host: draft activity comes from the chat state, not only the D
   assert.equal(sandbox.I.state.audioMessageActive, true);
   sandbox.I.handleAudioMessageActiveChange('yes');
   assert.equal(sandbox.I.state.audioMessageActive, false);
+});
+
+function deferredQueueHarness(sendHandler) {
+  const window = { lanlan_config: { lanlan_name: 'Neko' } };
+  const context = vm.createContext({ window, console: { error() {} }, Object, String, Promise });
+  vm.runInContext([
+    section('    var avatarInteractionTextContinuationState = {', '    var avatarInteractionDispatchGateState = {'),
+    section('    function hasPendingAvatarInteractionContinuation() {', '    function releaseDeferredTextAfterAvatarInteraction() {'),
+    'this.api = { state: avatarInteractionTextContinuationState, queueDeferredTextSubmission, flushDeferredTextSubmissions };',
+  ].join('\n'), context);
+  context.api.state.deferredSendHandler = sendHandler;
+  return { ...context.api, window };
+}
+
+async function settleQueue() {
+  for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
+}
+
+test('a queued voice transcript for a switched character is dropped, not retried forever', async () => {
+  let attempts = 0;
+  // Mirrors sendTextPayloadInternal's guard: refuses while the character differs.
+  const queue = deferredQueueHarness(async (text, options) => {
+    attempts += 1;
+    return queue.window.lanlan_config.lanlan_name === options.expectedLanlanName;
+  });
+  const settled = [];
+  queue.queueDeferredTextSubmission('给旧角色的话', { expectedLanlanName: 'Neko' }, (sent) => settled.push(sent));
+  queue.window.lanlan_config.lanlan_name = 'Other'; // switched while the avatar interaction ran
+  queue.flushDeferredTextSubmissions();
+  await settleQueue();
+  assert.equal(attempts, 1);
+  assert.deepEqual(settled, [false]);
+  assert.equal(queue.state.deferredTextSubmissions.length, 0);
+  assert.equal(queue.state.drainingDeferredTextSubmissions, false);
+});
+
+test('a queued voice transcript reports its real send result to the caller', async () => {
+  const sent = [];
+  const queue = deferredQueueHarness(async (text) => { sent.push(text); return true; });
+  const settled = [];
+  queue.queueDeferredTextSubmission('你好', { expectedLanlanName: 'Neko' }, (ok) => settled.push(ok));
+  queue.flushDeferredTextSubmissions();
+  await settleQueue();
+  assert.deepEqual(sent, ['你好']);
+  assert.deepEqual(settled, [true]);
+});
+
+test('a queued voice transcript that fails is handed back instead of re-queued', async () => {
+  let attempts = 0;
+  const queue = deferredQueueHarness(async () => { attempts += 1; return false; });
+  const settled = [];
+  queue.queueDeferredTextSubmission('稍后再发', { expectedLanlanName: 'Neko' }, (ok) => settled.push(ok));
+  queue.flushDeferredTextSubmissions();
+  await settleQueue();
+  assert.equal(attempts, 1);
+  assert.deepEqual(settled, [false]);
+  assert.equal(queue.state.deferredTextSubmissions.length, 0);
+});
+
+test('the deferral branch hands voice messages a promise of the real result', () => {
+  const branch = section(
+    "                if (deferredOptions.awaitDeferredSend === true) {",
+    '                queueDeferredTextSubmission(text, deferredOptions);\n                return true;',
+  );
+  assert.match(branch, /return new Promise\(function \(resolve\) \{\s*queueDeferredTextSubmission\(text, deferredOptions, resolve\);/);
+  assert.match(glue, /awaitDeferredSend: true/);
 });

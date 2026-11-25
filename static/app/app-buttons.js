@@ -1399,11 +1399,27 @@
             && !!avatarInteractionTextContinuationState.interactionId;
     }
 
-    function queueDeferredTextSubmission(text, options) {
+    function queueDeferredTextSubmission(text, options, settle) {
         avatarInteractionTextContinuationState.deferredTextSubmissions.push({
             text: String(text || ''),
-            options: Object.assign({}, options || {})
+            options: Object.assign({}, options || {}),
+            // 可选：发送最终成功 / 放弃时回调（语音消息据此保留或清除草稿）
+            settle: typeof settle === 'function' ? settle : null
         });
+    }
+
+    // 带 expectedLanlanName 的提交（语音消息）在角色切换后再也不可能发出：
+    // 视为永久取消，不能放回队列重试（否则会立即重刷，形成不让出主线程的死循环）
+    function isDeferredSubmissionForStaleTarget(options) {
+        var expected = options && options.expectedLanlanName;
+        if (typeof expected !== 'string' || !expected) return false;
+        return !(window.lanlan_config && window.lanlan_config.lanlan_name === expected);
+    }
+
+    function settleDeferredSubmission(submission, sent) {
+        if (submission && typeof submission.settle === 'function') {
+            try { submission.settle(sent); } catch (_) { /* 回调方自行处理 */ }
+        }
     }
 
     function flushDeferredTextSubmissions() {
@@ -1437,7 +1453,15 @@
                     skipAvatarInteractionDeferral: true
                 }));
                 if (sent === false) {
-                    queueDeferredTextSubmission(submission.text, submission.options);
+                    // 角色已换的语音文本永久作废；其他等结果的调用方也直接收到失败，
+                    // 由它保留草稿让用户重发，而不是在队列里无限重试
+                    if (submission.settle || isDeferredSubmissionForStaleTarget(submission.options)) {
+                        settleDeferredSubmission(submission, false);
+                    } else {
+                        queueDeferredTextSubmission(submission.text, submission.options, submission.settle);
+                    }
+                } else {
+                    settleDeferredSubmission(submission, sent);
                 }
                 nextPendingIndex = index + 1;
             }
@@ -2073,7 +2097,9 @@
             // 语音消息只发转写文本，不带走输入框里待发送的图片
             ignoreComposerAttachments: true,
             // 发送链路在开会话之后、真正发出前再核对一次角色
-            expectedLanlanName: payload.target
+            expectedLanlanName: payload.target,
+            // 头像互动进行中时文字会先排队：等真正发出（或因换角色被放弃）的结果再决定草稿去留
+            awaitDeferredSend: true
         });
         if (accepted === false) {
             throw audioMessageRejection(
@@ -3850,10 +3876,16 @@
                         && requestChatAutoCollapseAfterAcceptedEnter(deferredOptions, deferredOptions.requestId)) {
                     deferredOptions.autoCollapseAfterEnterRequested = true;
                 }
-                queueDeferredTextSubmission(text, deferredOptions);
                 textInputBox.value = '';
                 textInputComposing = false;
                 lastTextCompositionEndAt = 0;
+                if (deferredOptions.awaitDeferredSend === true) {
+                    // 调用方（语音消息）要等真正发出的结果，而不是"已排队"
+                    return new Promise(function (resolve) {
+                        queueDeferredTextSubmission(text, deferredOptions, resolve);
+                    });
+                }
+                queueDeferredTextSubmission(text, deferredOptions);
                 return true;
             }
 
