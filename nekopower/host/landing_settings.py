@@ -14,7 +14,7 @@
 
 """What the user set about landing the changes task agents make in git worktrees.
 
-Two settings, kept in a file next to the ledger:
+Three settings, kept in a file next to the ledger:
 
 * ``mode``: ``auto`` (what a task agent changed in its worktree is merged
   into the project's directory as soon as its commission is done) or ``ask``
@@ -22,6 +22,12 @@ Two settings, kept in a file next to the ledger:
   is not wanted). ``auto`` unless the user set otherwise.
 * ``inspect``: whether an inspector looks at what was changed before every
   landing. Off unless the user set otherwise.
+* ``beside``: what becomes of work that waits for a member which is busy
+  with something else, in a project without a leader: ``ask`` (the user is
+  asked whether another member is to do it in a git worktree of its own),
+  ``open`` (another member does, with nobody asked) or ``queue`` (it waits
+  for the member, as it did before there was such a question). ``ask``
+  unless the user set otherwise.
 
 Read once and kept, with what is set since. A file that cannot be read, or
 holds something else, is read as nothing set.
@@ -43,7 +49,12 @@ LANDING_AUTO = "auto"
 LANDING_ASK = "ask"
 LANDING_MODES: tuple[str, ...] = (LANDING_AUTO, LANDING_ASK)
 
-_DEFAULTS: dict[str, Any] = {"mode": LANDING_AUTO, "inspect": False}
+BESIDE_ASK = "ask"
+BESIDE_OPEN = "open"
+BESIDE_QUEUE = "queue"
+BESIDE_CHOICES: tuple[str, ...] = (BESIDE_ASK, BESIDE_OPEN, BESIDE_QUEUE)
+
+_DEFAULTS: dict[str, Any] = {"mode": LANDING_AUTO, "inspect": False, "beside": BESIDE_ASK}
 
 
 def _note_a_write_that_failed(writing: "asyncio.Future[dict[str, Any]]") -> None:
@@ -79,6 +90,8 @@ class LandingStore:
                 found["mode"] = raw["mode"]
             if isinstance(raw.get("inspect"), bool):
                 found["inspect"] = raw["inspect"]
+            if raw.get("beside") in BESIDE_CHOICES:
+                found["beside"] = raw["beside"]
         return found
 
     def _write(self, values: dict[str, Any], path: Path) -> None:
@@ -88,7 +101,7 @@ class LandingStore:
         atomic_write_json(path, {"version": _FILE_VERSION, **values})
 
     async def get(self) -> dict[str, Any]:
-        """Return the settings: ``{"mode": "auto" | "ask", "inspect": bool}``."""
+        """Return the settings: ``{"mode": "auto" | "ask", "inspect": bool, "beside": "ask" | "open" | "queue"}``."""
         if self._kept is None:
             # Not beside a write: what it writes is what holds afterwards.
             async with self._lock:
@@ -96,28 +109,33 @@ class LandingStore:
                     self._kept = await asyncio.to_thread(self._read)
         return dict(self._kept)
 
-    async def put(self, *, mode: Any = None, inspect: Any = None) -> dict[str, Any]:
+    async def put(self, *, mode: Any = None, inspect: Any = None, beside: Any = None) -> dict[str, Any]:
         """Set what is given and return the settings as they stand; raises ``ValueError`` with a code for what cannot be set.
 
         ``bad_mode`` for a mode that is none of ``LANDING_MODES``,
-        ``bad_inspect`` for what is no boolean. Done to the end once
-        begun, the caller cancelled or not.
+        ``bad_inspect`` for what is no boolean, ``bad_beside`` for what
+        is none of ``BESIDE_CHOICES``. Done to the end once begun, the
+        caller cancelled or not.
         """
         if mode is not None and mode not in LANDING_MODES:
             raise ValueError("bad_mode")
         if inspect is not None and not isinstance(inspect, bool):
             raise ValueError("bad_inspect")
-        writing = asyncio.ensure_future(self._put(mode, inspect))
+        if beside is not None and beside not in BESIDE_CHOICES:
+            raise ValueError("bad_beside")
+        writing = asyncio.ensure_future(self._put(mode, inspect, beside))
         writing.add_done_callback(_note_a_write_that_failed)
         return await asyncio.shield(writing)
 
-    async def _put(self, mode: str | None, inspect: bool | None) -> dict[str, Any]:
+    async def _put(self, mode: str | None, inspect: bool | None, beside: str | None) -> dict[str, Any]:
         async with self._lock:
             values = dict(self._kept) if self._kept is not None else await asyncio.to_thread(self._read)
             if mode is not None:
                 values["mode"] = mode
             if inspect is not None:
                 values["inspect"] = inspect
+            if beside is not None:
+                values["beside"] = beside
             await asyncio.to_thread(self._write, values, self._path())
             self._kept = values
             return dict(values)

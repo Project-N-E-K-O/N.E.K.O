@@ -115,6 +115,10 @@ class Agent:
     # Looked at for a member of a project that has a leader only: what goes on with the work of
     # one that cannot is the leader's to hand out, since it may be something that member cannot do.
     changes_files: bool = True
+    # What it is at this moment, or is to do next: the words of the commissions under way in it
+    # (their titles, what she dispatched and what the user said).
+    # Looked at only for whether a sentence is about something else than its work (``apart_from``).
+    at_hand: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +177,9 @@ class Bars:
     # In a project with a leader, a sentence that shares this many words
     # with a member's own work (the project's name not counted) is that member's.
     member_hits: int = settings.ORCHESTRATOR_MEMBER_HITS
+    # A sentence that says fewer words of its own is not told to be about something else than a
+    # member's work, whatever it shares with it.
+    apart_words: int = settings.ORCHESTRATOR_APART_MIN_WORDS
     # A name shorter than this (white space removed) is not looked for in a sentence.
     name_min_chars: int = settings.SPACE_PROJECT_MATCH_MIN_CHARS
     # A task agent whose last commission ended longer ago takes no more work.
@@ -211,6 +218,11 @@ class Verdict:
     # ``CONTINUE`` in a member of a project that has a leader: it plainly goes on with what that
     # member does, and does not go through the leader (which is told of it afterwards).
     direct: bool = False
+    # ``CONTINUE`` in the member that works in a project without a leader, which got it for being
+    # that member and for nothing the sentence says: it is plainly about something else than
+    # what that member works on (``apart_from``). The host may ask the user whether another
+    # member is to do it beside that one, should that one be busy.
+    apart: bool = False
     # How long finding it took, the small model's answer included.
     seconds: float = 0.0
 
@@ -549,6 +561,22 @@ def named_member(sentence: str, members: Sequence[Agent], bars: Bars, project: s
     return None if best is None or tied else best[1]
 
 
+def names_a_member(sentence: str, members: Sequence[Agent], bars: Bars, project: str = "") -> bool:
+    """Whether a sentence names any of these members by the title on its card, as ``named_member`` reads it.
+
+    Though which one it names may not be told (two of one title): it is
+    said of a member's work all the same.
+    """
+    from nekopower.host.space import name_occurs, normalize_name
+
+    return any(
+        len(normalize_name(member.title)) >= bars.name_min_chars
+        and name_occurs(member.title, sentence)
+        and not (project and name_occurs(member.title, project))
+        for member in members
+    )
+
+
 def _title_in(agent: Agent, words: str) -> bool:
     """Whether the title on a task agent's card is in these words."""
     from nekopower.host.space import name_occurs
@@ -581,6 +609,33 @@ def clear_member(sentence: str, members: Sequence[Agent], bars: Bars, project: s
     if len(shared) > 1 and most - shared[1][0] < bars.min_hits:
         return None
     return member
+
+
+def apart_from(sentence: str, member: Agent, bars: Bars, project: str = "") -> bool:
+    """Whether a sentence is plainly about something else than what this member works on.
+
+    It does not name the member, and shares fewer words with its card,
+    what it did lately and what it is at (``Agent.at_hand``) than make
+    a match at all (``Bars.min_hits``), the words of the project's own
+    name (``project``) left out. Counted as ``clear_member`` counts,
+    with no weights. No model is asked. A sentence that says few words
+    of its own (``Bars.apart_words``) is not: it names nothing by
+    itself, and goes on with what was said before. Nor is one that
+    points back at something or adds to it (as ``relation_by_words``
+    reads it): said beside a member at work, that is most likely about
+    its work, in words of its own. What goes on with the work in other
+    words and with none of these is told apart all the same: words
+    alone do not tell (``beside_scenarios_independent.json``).
+    """
+    from nekopower.host.decision import has_cue
+
+    words = content_tokens(sentence) - token_set(project)
+    if len(words) < bars.apart_words or named_member(sentence, [member], bars, project) is not None:
+        return False
+    if _has("refers_back", sentence) or has_cue("supplement", sentence):
+        return False
+    shared = words & token_set("\n".join([*_lines_of_agent(member), *member.at_hand]))
+    return len(shared) < bars.min_hits
 
 
 def settle(
@@ -662,7 +717,13 @@ def settle(
         at_work = [member for member in working if member.preset == WORKING_PRESET] or working
         if at_work:
             latest = min(at_work, key=lambda member: member.idle_seconds)
-            return verdict(CONTINUE, agent=latest.id, project=project.name, relation=relation)
+            return verdict(
+                CONTINUE, agent=latest.id, project=project.name, relation=relation,
+                # (Not what names another member of the project: that is said of that one's work,
+                # and no further member is to be had for it.)
+                apart=apart_from(sentence, latest, bars, project.name)
+                and not names_a_member(sentence, working, bars, project.name),
+            )
         return verdict(SUMMON_IN_PROJECT, project=project.name, preset=WORKING_PRESET, relation=relation)
     if target is None:
         return verdict(SUMMON_STRAY, preset=WORKING_PRESET, relation=NEW)

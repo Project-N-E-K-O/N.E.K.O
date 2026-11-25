@@ -56,6 +56,9 @@ _SIZE_BUDGET_SECONDS = 1.5
 _SHOWN_CATEGORIES: tuple[str, ...] = (
     "workdir_files", "outside_read", "outside_write", "run_command",
     "keyboard_mouse", "browser", "plugin_entry", "managed_delivery", "other", "open_session",
+    # Another member for work that waits for a busy one: set here as well, or what was
+    # allowed for good from its question could not be taken back.
+    "open_beside",
 )
 _UNSET = object()
 # No setting of a page is a number beyond this; the largest number a row of the ledger is counted by.
