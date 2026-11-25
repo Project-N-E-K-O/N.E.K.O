@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -328,3 +329,27 @@ def static_surface_url(plugin_id: str, mode: str, entry: str) -> str | None:
         rel = normalized_entry.removeprefix("static/")
         return f"/plugin/{plugin_id}/ui/{rel}"
     return None
+
+
+def _sanitize_json_key(key: Any) -> str:
+    if isinstance(key, str):
+        return key
+    if key is None:
+        return "null"
+    if isinstance(key, bool):
+        return "true" if key else "false"
+    return str(key)
+
+
+def sanitize_json_value(value: Any) -> Any:
+    """Replace non-finite floats with None recursively so allow_nan=False succeeds."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, Mapping):
+        return {
+            _sanitize_json_key(k): sanitize_json_value(v)
+            for k, v in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [sanitize_json_value(item) for item in value]
+    return value

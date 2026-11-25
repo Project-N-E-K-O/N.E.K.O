@@ -19,7 +19,6 @@ Access paths:
 """
 import asyncio
 import json
-import math
 import mimetypes
 import os
 import re
@@ -34,6 +33,7 @@ from pydantic import BaseModel, Field
 from utils.deployment import has_forwarding_metadata
 
 from plugin.core.state import state
+from plugin.core.ui_manifest import sanitize_json_value as _sanitize_json_value
 from plugin.logging_config import get_logger
 from plugin.server.application.plugins.ui_query_service import PluginUiQueryService
 from plugin.server.domain.errors import ServerDomainError
@@ -642,20 +642,6 @@ async def plugin_hosted_ui_source(
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
     return JSONResponse(source)
-
-
-def _sanitize_json_value(value: object) -> object:
-    """Replace non-finite floats with None recursively so allow_nan=False succeeds."""
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
-    if isinstance(value, Mapping):
-        return {
-            (k if isinstance(k, str) else str(k)): _sanitize_json_value(v)
-            for k, v in value.items()
-        }
-    if isinstance(value, (list, tuple)):
-        return [_sanitize_json_value(item) for item in value]
-    return value
 
 
 @router.get("/plugin/{plugin_id}/hosted-ui/context")

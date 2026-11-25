@@ -128,8 +128,17 @@ async def test_permanent_update_with_profile_targets_profile_not_base_config(
             mode: str = "temporary",
             profile: str | None = None,
             timeout: float = 10.0,
+            replace: bool = False,
         ) -> dict[str, object]:
-            self.sent.append({"config": config, "mode": mode, "profile": profile, "timeout": timeout})
+            self.sent.append(
+                {
+                    "config": config,
+                    "mode": mode,
+                    "profile": profile,
+                    "timeout": timeout,
+                    "replace": replace,
+                }
+            )
             return {"handler_called": True}
 
     def _fake_update_profile(*, plugin_id: str, profile_name: str, updates: dict[str, object]) -> dict[str, object]:
@@ -182,7 +191,9 @@ async def test_permanent_update_with_profile_targets_profile_not_base_config(
     )
     assert active_res["hot_reloaded"] is True
     assert active_res["profile"] == "work"
-    assert host.sent == [{"config": {"feature": {"x": 2}}, "mode": "temporary", "profile": "work", "timeout": 10.0}]
+    assert host.sent == [
+        {"config": {"feature": {"x": 2}}, "mode": "temporary", "profile": "work", "timeout": 10.0, "replace": True}
+    ]
     assert base_calls == []
 
     # 4. Whitespace profile raises INVALID_ARGUMENT.

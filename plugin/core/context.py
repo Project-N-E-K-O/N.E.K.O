@@ -1769,13 +1769,17 @@ class PluginContext:
         if isinstance(local_payload, dict):
             return local_payload
         try:
-            return await self._send_request_and_wait_async(
+            payload = await self._send_request_and_wait_async(
                 method_name="get_own_config",
                 request_type="PLUGIN_CONFIG_GET",
                 request_data={"plugin_id": self.plugin_id},
                 timeout=timeout,
                 wrap_result=True,
             )
+            config_obj = payload.get("config") if isinstance(payload, dict) else None
+            if isinstance(config_obj, dict):
+                self._set_effective_config_cache(config_obj)
+            return payload
         except TimeoutError as e:
             raise TimeoutError(f"Plugin config get timed out after {timeout}s") from e
 
@@ -2032,6 +2036,18 @@ class PluginContext:
             self._effective_config_uncertain = old_effective_config_uncertain
             raise
 
+    async def _refresh_effective_config_after_profile_change(self, *, timeout: float) -> None:
+        self._effective_config = None
+        self._effective_config_uncertain = False
+        try:
+            refreshed = await self.get_own_config(timeout=timeout)
+        except Exception:
+            self._effective_config = None
+            return
+        config_obj = refreshed.get("config") if isinstance(refreshed, dict) else None
+        if isinstance(config_obj, dict):
+            self._set_effective_config_cache(config_obj)
+
     async def upsert_own_profile_config(
         self,
         profile_name: str,
@@ -2044,21 +2060,31 @@ class PluginContext:
             raise ValueError("profile_name must be a non-empty string")
         if not isinstance(config, dict):
             raise TypeError("config must be a dict")
+        normalized_name = profile_name.strip()
+        request_timeout = float(timeout)
+        request_deadline = time.monotonic() + request_timeout
         try:
             payload = await self._send_request_and_wait_async(
                 method_name="upsert_own_profile_config",
                 request_type="PLUGIN_CONFIG_PROFILE_UPSERT",
                 request_data={
                     "plugin_id": self.plugin_id,
-                    "profile_name": profile_name.strip(),
+                    "profile_name": normalized_name,
                     "config": config,
                     "make_active": bool(make_active),
+                    "_request_deadline_monotonic": request_deadline,
                 },
-                timeout=timeout,
+                timeout=request_timeout,
                 wrap_result=True,
             )
-            self._effective_config = None
-            self._effective_config_uncertain = False
+            if isinstance(payload, dict) and isinstance(payload.get("affected_active"), bool):
+                affected_active = payload["affected_active"]
+            elif isinstance(payload, dict) and isinstance(payload.get("active_profile"), str):
+                affected_active = bool(make_active) or payload["active_profile"] == normalized_name
+            else:
+                affected_active = bool(make_active)
+            if affected_active:
+                await self._refresh_effective_config_after_profile_change(timeout=request_timeout)
             return payload
         except TimeoutError as e:
             self._effective_config_uncertain = True
@@ -2074,19 +2100,28 @@ class PluginContext:
     ) -> Dict[str, Any]:
         if not isinstance(profile_name, str) or not profile_name.strip():
             raise ValueError("profile_name must be a non-empty string")
+        normalized_name = profile_name.strip()
+        request_timeout = float(timeout)
+        request_deadline = time.monotonic() + request_timeout
         try:
             payload = await self._send_request_and_wait_async(
                 method_name="delete_own_profile_config",
                 request_type="PLUGIN_CONFIG_PROFILE_DELETE",
                 request_data={
                     "plugin_id": self.plugin_id,
-                    "profile_name": profile_name.strip(),
+                    "profile_name": normalized_name,
+                    "_request_deadline_monotonic": request_deadline,
                 },
-                timeout=timeout,
+                timeout=request_timeout,
                 wrap_result=True,
             )
-            self._effective_config = None
-            self._effective_config_uncertain = False
+            affected_active = (
+                payload.get("affected_active")
+                if isinstance(payload, dict) and isinstance(payload.get("affected_active"), bool)
+                else False
+            )
+            if affected_active:
+                await self._refresh_effective_config_after_profile_change(timeout=request_timeout)
             return payload
         except TimeoutError as e:
             self._effective_config_uncertain = True
@@ -2102,19 +2137,22 @@ class PluginContext:
     ) -> Dict[str, Any]:
         if not isinstance(profile_name, str) or not profile_name.strip():
             raise ValueError("profile_name must be a non-empty string")
+        normalized_name = profile_name.strip()
+        request_timeout = float(timeout)
+        request_deadline = time.monotonic() + request_timeout
         try:
             payload = await self._send_request_and_wait_async(
                 method_name="set_own_active_profile",
                 request_type="PLUGIN_CONFIG_PROFILE_ACTIVATE",
                 request_data={
                     "plugin_id": self.plugin_id,
-                    "profile_name": profile_name.strip(),
+                    "profile_name": normalized_name,
+                    "_request_deadline_monotonic": request_deadline,
                 },
-                timeout=timeout,
+                timeout=request_timeout,
                 wrap_result=True,
             )
-            self._effective_config = None
-            self._effective_config_uncertain = False
+            await self._refresh_effective_config_after_profile_change(timeout=request_timeout)
             return payload
         except TimeoutError as e:
             self._effective_config_uncertain = True

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Any, Callable, Generic, Iterable, Mapping, Protocol, TypeVar, cast
@@ -605,11 +606,49 @@ class SdkBusList(Generic[TRecord]):
         return _mapping_get(item, field)
 
     def _local_filter(self, filters: dict[str, Any], *, strict: bool = True) -> "SdkBusList[TRecord]":
+        compiled_regexes: dict[str, re.Pattern[str]] = {}
+        since_bound: float | None = None
+        until_bound: float | None = None
+        try:
+            for key, expected in filters.items():
+                if key == "strict" or expected is None:
+                    continue
+                if key.endswith("_re"):
+                    compiled_regexes[key] = re.compile(expected)
+                elif key == "since_ts":
+                    since_bound = float(expected)
+                elif key == "until_ts":
+                    until_bound = float(expected)
+        except Exception:
+            if strict:
+                raise
+            return SdkBusList(
+                [],
+                namespace=self._namespace,
+                record_factory=self._record_factory,
+                host_ctx=self._host_ctx,
+            )
+
         def _matches(item: TRecord) -> bool:
             for key, expected in filters.items():
-                if key == "strict":
+                if key == "strict" or expected is None:
                     continue
                 try:
+                    if key.endswith("_re"):
+                        actual = self._item_value(item, key[:-3])
+                        if not isinstance(actual, str) or compiled_regexes[key].search(actual) is None:
+                            return False
+                        continue
+                    if key == "since_ts":
+                        actual = self._item_value(item, "timestamp")
+                        if actual is None or float(actual) < float(since_bound):
+                            return False
+                        continue
+                    if key == "until_ts":
+                        actual = self._item_value(item, "timestamp")
+                        if actual is None or float(actual) > float(until_bound):
+                            return False
+                        continue
                     if key.endswith("_min"):
                         actual = self._item_value(item, key[:-4])
                         if actual is None or actual < expected:
@@ -656,7 +695,7 @@ class SdkBusList(Generic[TRecord]):
         if has_var_kw:
             bounded = SdkBusList._raw_filter_bounded_kwargs(raw_filter)
             if bounded is not None:
-                return ("strict" in accepted or has_var_kw) and all(key in bounded for key in kwargs)
+                return all(key in bounded for key in kwargs)
             return True
         return "strict" in accepted and all(key in accepted for key in kwargs)
 

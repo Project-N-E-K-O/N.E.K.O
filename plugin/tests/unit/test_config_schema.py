@@ -443,3 +443,13 @@ def test_plugin_dependencies_schema_matches_runtime_dependency_parser() -> None:
         bad_cfg["plugin"]["dependency"] = bad_table
         with pytest.raises(ConfigValidationError):
             validate_plugin_config(bad_cfg)
+
+    # 5. Single-table [plugin.dependency] dict is wrapped into a list like runtime parser.
+    single_table_cfg = _base_config()
+    single_table_cfg["plugin"]["dependency"] = {"id": "provider_a", "untested": ">=1.0.0"}
+    validated_single = validate_plugin_config(single_table_cfg)
+    assert validated_single.plugin.dependency is not None
+    assert len(validated_single.plugin.dependency) == 1
+    assert validated_single.plugin.dependency[0].id == "provider_a"
+    parsed_single = _parse_plugin_dependencies(single_table_cfg, _NoopLogger(), "schema_demo")
+    assert [(dep.id, dep.untested) for dep in parsed_single] == [("provider_a", ">=1.0.0")]

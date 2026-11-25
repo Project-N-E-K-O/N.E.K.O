@@ -241,6 +241,13 @@ class PluginSectionSchema(BaseModel):
     dependencies: Optional[List[StrictStr]] = None
     dependency: Optional[List[PluginDependencySchema]] = None
 
+    @field_validator("dependency", mode="before")
+    @classmethod
+    def wrap_single_dependency_table(cls, v: Any) -> Any:
+        if isinstance(v, dict):
+            return [v]
+        return v
+
     @field_validator("dependencies")
     @classmethod
     def validate_dependencies(cls, v: Optional[List[str]]) -> Optional[List[str]]:

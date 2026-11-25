@@ -115,6 +115,18 @@ def test_http_inbox_send_returns_409_when_full_and_200_on_success(tmp_path: Path
         b3 = json.loads(r3.read().decode("utf-8"))
         assert r3.status == 400
         assert b3["error"] == "content_required"
+
+        conn.request(
+            "POST",
+            "/inbox/send",
+            body=json.dumps({"content": "   \t\n "}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        r4 = conn.getresponse()
+        b4 = json.loads(r4.read().decode("utf-8"))
+        assert r4.status == 400
+        assert b4["error"] == "content_required"
+        assert len(plugin._inbox.pending()) == 1
         conn.close()
     finally:
         server.shutdown()

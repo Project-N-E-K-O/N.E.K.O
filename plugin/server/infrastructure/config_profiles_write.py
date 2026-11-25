@@ -18,6 +18,7 @@ from plugin.server.infrastructure.config_profiles import (
     resolve_profile_path,
 )
 from plugin.server.infrastructure.config_locking import get_plugin_update_lock, plugin_config_file_lock
+from plugin.server.infrastructure.config_storage import ConfigCommitCancelled, ConfigCommitGuard
 
 logger = get_logger("server.infrastructure.config_profiles_write")
 
@@ -107,7 +108,7 @@ def _fsync_parent_dir(path: Path) -> None:
         os.close(dir_fd)
 
 
-def _atomic_dump_toml(*, target_path: Path, payload: dict[str, object], prefix: str) -> None:
+def _write_temp_toml(*, target_path: Path, payload: dict[str, object], prefix: str) -> Path:
     if tomli_w is None:
         raise HTTPException(status_code=500, detail="TOML library not available")
 
@@ -129,9 +130,6 @@ def _atomic_dump_toml(*, target_path: Path, payload: dict[str, object], prefix: 
             tomli_w.dump(payload, temp_file)
             temp_file.flush()
             os.fsync(temp_file.fileno())
-
-        os.replace(temp_file_path, target_path)
-        _fsync_parent_dir(target_path)
     except (OSError, RuntimeError, ValueError, TypeError) as exc:
         try:
             if temp_file_path.exists():
@@ -145,6 +143,92 @@ def _atomic_dump_toml(*, target_path: Path, payload: dict[str, object], prefix: 
             status_code=500,
             detail=f"Failed to persist {target_path.name}",
         ) from exc
+    return temp_file_path
+
+
+def _cleanup_temp_files(*paths: Path) -> None:
+    for temp_file_path in paths:
+        try:
+            if temp_file_path.exists():
+                temp_file_path.unlink()
+        except OSError:
+            logger.debug(
+                "failed to cleanup temp profile file: {}",
+                str(temp_file_path),
+            )
+
+
+def _atomic_dump_toml(
+    *,
+    target_path: Path,
+    payload: dict[str, object],
+    prefix: str,
+    commit_guard: ConfigCommitGuard | None = None,
+) -> None:
+    temp_file_path = _write_temp_toml(
+        target_path=target_path,
+        payload=payload,
+        prefix=prefix,
+    )
+    try:
+        if commit_guard is None:
+            os.replace(temp_file_path, target_path)
+        else:
+            commit_guard.commit(lambda: os.replace(temp_file_path, target_path))
+        _fsync_parent_dir(target_path)
+    except ConfigCommitCancelled:
+        _cleanup_temp_files(temp_file_path)
+        raise
+    except (OSError, RuntimeError, ValueError, TypeError) as exc:
+        _cleanup_temp_files(temp_file_path)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to persist {target_path.name}",
+        ) from exc
+
+
+def _atomic_dump_toml_pair(
+    *,
+    first_path: Path,
+    first_payload: dict[str, object],
+    first_prefix: str,
+    second_path: Path,
+    second_payload: dict[str, object],
+    second_prefix: str,
+    commit_guard: ConfigCommitGuard,
+) -> None:
+    first_temp = _write_temp_toml(
+        target_path=first_path,
+        payload=first_payload,
+        prefix=first_prefix,
+    )
+    try:
+        second_temp = _write_temp_toml(
+            target_path=second_path,
+            payload=second_payload,
+            prefix=second_prefix,
+        )
+    except BaseException:
+        _cleanup_temp_files(first_temp)
+        raise
+    try:
+        commit_guard.commit(
+            lambda: (
+                os.replace(first_temp, first_path),
+                os.replace(second_temp, second_path),
+            )
+        )
+        _fsync_parent_dir(first_path)
+        _fsync_parent_dir(second_path)
+    except ConfigCommitCancelled:
+        _cleanup_temp_files(first_temp, second_temp)
+        raise
+    except (OSError, RuntimeError, ValueError, TypeError) as exc:
+        _cleanup_temp_files(first_temp, second_temp)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to persist {first_path.name} / {second_path.name}",
+        ) from exc
 
 
 def upsert_profile_config(
@@ -153,6 +237,7 @@ def upsert_profile_config(
     profile_name: str,
     config: dict[str, object],
     make_active: bool | None,
+    commit_guard: ConfigCommitGuard | None = None,
 ) -> dict[str, object]:
     _require_toml_read_write()
     if "plugin" in config:
@@ -178,6 +263,7 @@ def upsert_profile_config(
             op="upsert",
         )
         profiles_cfg, files_map = _normalize_profiles_config(data)
+        previous_active = _resolve_active_profile_name(plugin_id, profiles_cfg)
 
         raw_path = files_map.get(profile_name)
         if not isinstance(raw_path, str) or not raw_path.strip():
@@ -201,22 +287,38 @@ def upsert_profile_config(
                 detail=f"Failed to create profile directory: {profile_path.parent}",
             ) from exc
 
-        _atomic_dump_toml(
-            target_path=profile_path,
-            payload=config,
-            prefix=".profile_",
-        )
-        _atomic_dump_toml(
-            target_path=profiles_path,
-            payload=data,
-            prefix=".profiles_",
-        )
+        if commit_guard is None:
+            _atomic_dump_toml(
+                target_path=profile_path,
+                payload=config,
+                prefix=".profile_",
+            )
+            _atomic_dump_toml(
+                target_path=profiles_path,
+                payload=data,
+                prefix=".profiles_",
+            )
+        else:
+            _atomic_dump_toml_pair(
+                first_path=profile_path,
+                first_payload=config,
+                first_prefix=".profile_",
+                second_path=profiles_path,
+                second_payload=data,
+                second_prefix=".profiles_",
+                commit_guard=commit_guard,
+            )
 
-        return get_profile_config(
+        active_name = _resolve_active_profile_name(plugin_id, profiles_cfg)
+        affected_active = (active_name == profile_name) or (previous_active != active_name)
+        result = get_profile_config(
             plugin_id=plugin_id,
             profile_name=profile_name,
             config_path=config_path,
         )
+        result["active_profile"] = active_name
+        result["affected_active"] = affected_active
+        return result
 
 
 def update_profile_config(
@@ -250,11 +352,15 @@ def update_profile_config(
                 op="update",
             )
         else:
+            data = {}
+
+        if not isinstance(data.get("config_profiles"), dict):
             seeded_cfg = _resolve_profiles_cfg(
                 plugin_id=plugin_id,
                 config_path=config_path,
             )
-            data = {"config_profiles": dict(seeded_cfg)} if isinstance(seeded_cfg, dict) else {}
+            if isinstance(seeded_cfg, dict):
+                data["config_profiles"] = dict(seeded_cfg)
 
         profiles_cfg, files_map = _normalize_profiles_config(data)
         raw_path = files_map.get(profile_name)
@@ -333,6 +439,7 @@ def delete_profile_config(
     *,
     plugin_id: str,
     profile_name: str,
+    commit_guard: ConfigCommitGuard | None = None,
 ) -> dict[str, object]:
     _require_toml_read_write()
     if not profile_name:
@@ -347,6 +454,8 @@ def delete_profile_config(
                 "plugin_id": plugin_id,
                 "profile": profile_name,
                 "removed": False,
+                "active_profile": None,
+                "affected_active": False,
             }
 
         data = _load_profiles_file_for_update(
@@ -355,6 +464,7 @@ def delete_profile_config(
             op="delete",
         )
         profiles_cfg, files_map = _normalize_profiles_config(data)
+        previous_active = _resolve_active_profile_name(plugin_id, profiles_cfg)
 
         removed = False
         if profile_name in files_map:
@@ -365,17 +475,33 @@ def delete_profile_config(
         if isinstance(active_obj, str) and active_obj == profile_name:
             profiles_cfg.pop("active", None)
 
-        data["config_profiles"] = profiles_cfg
-        _atomic_dump_toml(
-            target_path=profiles_path,
-            payload=data,
-            prefix=".profiles_",
+        new_active = _resolve_active_profile_name(plugin_id, profiles_cfg)
+        affected_active = bool(
+            (removed and previous_active == profile_name)
+            or (previous_active != new_active)
         )
+
+        data["config_profiles"] = profiles_cfg
+        if commit_guard is None:
+            _atomic_dump_toml(
+                target_path=profiles_path,
+                payload=data,
+                prefix=".profiles_",
+            )
+        else:
+            _atomic_dump_toml(
+                target_path=profiles_path,
+                payload=data,
+                prefix=".profiles_",
+                commit_guard=commit_guard,
+            )
 
         return {
             "plugin_id": plugin_id,
             "profile": profile_name,
             "removed": removed,
+            "active_profile": new_active,
+            "affected_active": affected_active,
         }
 
 
@@ -383,6 +509,7 @@ def set_active_profile(
     *,
     plugin_id: str,
     profile_name: str,
+    commit_guard: ConfigCommitGuard | None = None,
 ) -> dict[str, object]:
     _require_toml_read_write()
     if not profile_name:
@@ -406,11 +533,19 @@ def set_active_profile(
 
         profiles_cfg["active"] = profile_name
         data["config_profiles"] = profiles_cfg
-        _atomic_dump_toml(
-            target_path=profiles_path,
-            payload=data,
-            prefix=".profiles_",
-        )
+        if commit_guard is None:
+            _atomic_dump_toml(
+                target_path=profiles_path,
+                payload=data,
+                prefix=".profiles_",
+            )
+        else:
+            _atomic_dump_toml(
+                target_path=profiles_path,
+                payload=data,
+                prefix=".profiles_",
+                commit_guard=commit_guard,
+            )
 
         return get_profiles_state(
             plugin_id=plugin_id,

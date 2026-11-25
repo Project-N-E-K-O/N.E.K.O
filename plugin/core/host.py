@@ -79,21 +79,8 @@ from plugin.settings import (
 from utils import process_creation
 
 
+from plugin.core.ui_manifest import sanitize_json_value as _sanitize_json_value
 from plugin.logging_layout import sanitize_log_identifier as _sanitize_plugin_id
-
-
-def _sanitize_json_value(value: Any) -> Any:
-    """Replace non-finite floats with None recursively so allow_nan=False succeeds."""
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
-    if isinstance(value, Mapping):
-        return {
-            (k if isinstance(k, str) else str(k)): _sanitize_json_value(v)
-            for k, v in value.items()
-        }
-    if isinstance(value, (list, tuple)):
-        return [_sanitize_json_value(item) for item in value]
-    return value
 
 
 def _resolve_current_storage_layout() -> dict[str, Any]:
@@ -853,9 +840,11 @@ async def _handle_config_update_command(
     ``res_sender`` is the :class:`ChannelSender` for the result channel.
     """
     req_id = msg.get("req_id", "unknown")
-    new_config = msg.get("config", {})
+    raw_new_config = msg.get("config", {})
+    new_config = dict(raw_new_config) if isinstance(raw_new_config, Mapping) else {}
     mode = msg.get("mode", "temporary")  # temporary | permanent
     profile_name = msg.get("profile")
+    replace = bool(msg.get("replace", False))
     
     ret_payload = {"req_id": req_id, "success": False, "data": None, "error": None}
     
@@ -865,18 +854,35 @@ async def _handle_config_update_command(
             plugin_id, mode, req_id,
         )
         
-        # Deep-copy old configuration for callbacks, avoiding shared nested references.
-        old_config = {}
-        if hasattr(ctx, '_effective_config'):
-            old_config = copy.deepcopy(ctx._effective_config) if ctx._effective_config else {}
-        
-        # Update process-local configuration cache.
-        if hasattr(ctx, '_effective_config') and ctx._effective_config is not None:
-            # Deep-merge configuration.
+        had_cached_config = hasattr(ctx, "_effective_config") and ctx._effective_config is not None
+        if replace:
+            old_config = copy.deepcopy(ctx._effective_config) if had_cached_config else {}
+            ctx._effective_config = copy.deepcopy(new_config)
+            if hasattr(ctx, "_effective_config_uncertain"):
+                ctx._effective_config_uncertain = False
+            logger.debug("[Plugin Process] Config cache replaced")
+        elif had_cached_config:
+            old_config = copy.deepcopy(ctx._effective_config)
             _deep_merge(ctx._effective_config, new_config)
             logger.debug("[Plugin Process] Config cache updated")
         else:
-            ctx._effective_config = new_config
+            base_config: dict[str, Any] = {}
+            get_own_config = getattr(ctx, "get_own_config", None)
+            if callable(get_own_config):
+                try:
+                    loaded = get_own_config()
+                    if inspect.isawaitable(loaded):
+                        loaded = await loaded
+                    if isinstance(loaded, Mapping) and isinstance(loaded.get("config"), Mapping):
+                        base_config = copy.deepcopy(dict(loaded["config"]))
+                except Exception:
+                    logger.debug(
+                        "[Plugin Process] Failed to hydrate base config before temporary update",
+                        exc_info=True,
+                    )
+            old_config = copy.deepcopy(base_config)
+            _deep_merge(base_config, new_config)
+            ctx._effective_config = base_config
 
         refresh_runtime_config = getattr(ctx, "_refresh_instance_runtime_config", None)
         if callable(refresh_runtime_config) and isinstance(ctx._effective_config, dict):
@@ -901,7 +907,7 @@ async def _handle_config_update_command(
             except Exception as e:
                 logger.exception("[Plugin Process] config_change handler failed")
                 # Restore prechange configuration.
-                ctx._effective_config = old_config
+                ctx._effective_config = old_config if had_cached_config else None
                 if callable(refresh_runtime_config) and isinstance(old_config, dict):
                     refresh_runtime_config(old_config)
                 logger.debug("[Plugin Process] Config rolled back after handler failure")
@@ -981,6 +987,9 @@ def _deep_merge(base: dict, updates: dict) -> None:
         updates: Updates dictionary.
     """
     for key, value in updates.items():
+        if value == "__DELETE__":
+            base.pop(key, None)
+            continue
         if key in base and isinstance(base[key], dict) and isinstance(value, dict):
             _deep_merge(base[key], value)
         else:
@@ -2539,7 +2548,8 @@ class PluginHost:
         config: Dict[str, Any],
         mode: str = "temporary",
         profile: str | None = None,
-        timeout: float = 10.0
+        timeout: float = 10.0,
+        replace: bool = False,
     ) -> Dict[str, Any]:
         """
         Send CONFIG_UPDATE to children for hot updates.
@@ -2549,6 +2559,8 @@ class PluginHost:
             mode: "temporary" | "permanent"
             profile: Profile name in permanent mode.
             timeout: Timeout.
+            replace: When True, replace the child's effective config cache
+                instead of deep-merging into it.
         
         Returns:
             {
@@ -2564,6 +2576,7 @@ class PluginHost:
             "config": config,
             "mode": mode,
             "profile": profile,
+            "replace": bool(replace),
         }
         return await self.comm_manager._send_command_and_wait(req_id, cmd, timeout, "CONFIG_UPDATE")
 

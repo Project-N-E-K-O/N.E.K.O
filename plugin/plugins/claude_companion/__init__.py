@@ -870,7 +870,7 @@ class ClaudeCompanionPlugin(NekoPluginBase):
                 "message": "inbox not initialized",
             }
         content = data.get("content", "")
-        if not content:
+        if not isinstance(content, str) or not content.strip():
             return {
                 "status": "error",
                 "error": "content_required",

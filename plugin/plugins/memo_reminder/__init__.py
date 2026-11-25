@@ -228,10 +228,23 @@ class MemoReminderPlugin(NekoPluginBase):
     async def _reload_config(self, cfg: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
         if isinstance(cfg, Mapping):
             resolved_cfg: Dict[str, Any] = dict(cfg)
+            raw_memo = resolved_cfg.get("memo")
+            if not isinstance(raw_memo, Mapping):
+                return resolved_cfg
+            existing_memo = (
+                dict(self._memo_cfg)
+                if isinstance(getattr(self, "_memo_cfg", None), Mapping)
+                else {}
+            )
+            memo_cfg: Dict[str, Any] = {**existing_memo, **raw_memo}
         else:
             dumped = await self.config.dump(timeout=5.0)
             resolved_cfg = dict(dumped) if isinstance(dumped, Mapping) else {}
-        memo_cfg = resolved_cfg.get("memo") if isinstance(resolved_cfg.get("memo"), Mapping) else {}
+            memo_cfg = (
+                dict(resolved_cfg["memo"])
+                if isinstance(resolved_cfg.get("memo"), Mapping)
+                else {}
+            )
         self._memo_cfg = dict(memo_cfg)
         self._max_reminders = _parse_max_reminders(
             memo_cfg.get("max_reminders", _DEFAULT_MAX_REMINDERS)

@@ -17,6 +17,7 @@ import {
   RefreshButton,
   useForm,
   useEffect,
+  useState,
   useToast,
   useConfirm,
 } from "@neko/plugin-ui"
@@ -112,6 +113,7 @@ export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardS
   const confirm = useConfirm()
   const configForm = useForm<ConfigFormValues>(defaultConfigForm)
   const locationForm = useForm<LocationFormValues>(emptyLocationForm)
+  const [savingConfig, setSavingConfig] = useState(false)
   const updateConfigAction = actionById(actions || [], "update_config")
   const addLocationAction = actionById(actions || [], "add_location")
   const removeLocationAction = actionById(actions || [], "remove_location")
@@ -154,6 +156,8 @@ export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardS
       toast.error(t("panel.errors.actionUnavailable"))
       return
     }
+    if (savingConfig) return
+    setSavingConfig(true)
     try {
       const cacheTtl = Number(configForm.values.cache_ttl_seconds)
       if (!Number.isInteger(cacheTtl) || cacheTtl < 0) {
@@ -180,6 +184,8 @@ export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardS
       toast.success(t("panel.messages.configSaved"))
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSavingConfig(false)
     }
   }
 
@@ -331,6 +337,7 @@ export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardS
                 type="password"
                 value={configForm.values.amap_key}
                 placeholder={t("panel.keepSecret")}
+                disabled={savingConfig}
                 onChange={(value) => configForm.setField("amap_key", value)}
               />
             </Field>
@@ -342,10 +349,11 @@ export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardS
                 type="password"
                 value={configForm.values.baidu_map_key}
                 placeholder={t("panel.keepSecret")}
+                disabled={savingConfig}
                 onChange={(value) => configForm.setField("baidu_map_key", value)}
               />
             </Field>
-            <Button tone="success" disabled={!updateConfigAction} onClick={saveConfig}>
+            <Button tone="success" disabled={savingConfig || !updateConfigAction} onClick={saveConfig}>
               {t("panel.actions.saveConfig")}
             </Button>
           </Stack>

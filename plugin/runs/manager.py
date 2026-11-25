@@ -20,6 +20,7 @@ from plugin.settings import RUN_EXECUTION_TIMEOUT, RUN_STORE_MAX_COMPLETED
 
 _TIMEOUT_UNSET = object()
 _TIMEOUT_ERROR_CODES = frozenset({"TIMEOUT", "DEADLINE_EXCEEDED", "OPERATION_TIMEOUT"})
+_RUN_GUARD_TIMEOUT_GRACE_SECONDS = 5.0
 
 
 ExportType = Literal["text", "json", "url", "binary_url", "binary"]
@@ -825,25 +826,31 @@ async def _execute_run_guarded(
     client_host: Optional[str],
 ) -> None:
     """Wrap ``_execute_run`` with a timeout guard."""
-    timeout = _resolve_run_execution_timeout(
+    timeout = await asyncio.to_thread(
+        _resolve_run_execution_timeout,
         args,
         plugin_id=plugin_id,
         entry_id=entry_id,
     )
-    if timeout is None or timeout <= 0:
-        await _execute_run(
-            run_id, plugin_id=plugin_id, entry_id=entry_id,
-            args=args, task_id=task_id, client_host=client_host,
-        )
-        return
+    guard_timeout = (
+        timeout + _RUN_GUARD_TIMEOUT_GRACE_SECONDS
+        if timeout is not None and timeout > 0
+        else None
+    )
     try:
-        await asyncio.wait_for(
-            _execute_run(
+        if guard_timeout is None:
+            await _execute_run(
                 run_id, plugin_id=plugin_id, entry_id=entry_id,
                 args=args, task_id=task_id, client_host=client_host,
-            ),
-            timeout=timeout,
-        )
+            )
+        else:
+            await asyncio.wait_for(
+                _execute_run(
+                    run_id, plugin_id=plugin_id, entry_id=entry_id,
+                    args=args, task_id=task_id, client_host=client_host,
+                ),
+                timeout=guard_timeout,
+            )
     except asyncio.CancelledError:
         _propagate_cancel_to_plugin(plugin_id, run_id)
         term = _run_store.commit_terminal(

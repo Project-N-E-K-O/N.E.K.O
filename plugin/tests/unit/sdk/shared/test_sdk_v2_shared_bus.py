@@ -1110,6 +1110,19 @@ def test_sdk_bus_list_filter_splits_host_bus_filter_and_sdk_record_fields() -> N
     assert [item.conversation_id for item in sdk_conv.filter(conversation_id="c1")] == ["c1"]
     assert [item.conversation_id for item in sdk_conv.filter(timestamp_min=20.0)] == ["c2"]
 
+    # Chained BusFilter after local snapshot keeps working (including regex & timestamps) while watch() stays disabled.
+    chained = sdk_events.filter(source="alpha", event_id="evt-1").filter(source_re="^a")
+    assert len(chained) == 1
+    assert chained[0].event_id == "evt-1"
+    assert chained[0].source == "alpha"
+    assert len(sdk_events.filter(source="alpha", event_id="evt-1").filter(source_re="^b")) == 0
+    assert len(sdk_events.filter(event_id="evt-1").filter(since_ts=20.0, until_ts=35.0)) == 1
+    with pytest.raises(TypeError, match=r"watch\(\) is not available"):
+        chained.watch()
+    with pytest.raises(Exception):
+        chained.filter(source_re="[unclosed", strict=True)
+    assert len(chained.filter(source_re="[unclosed", strict=False)) == 0
+
 
 @pytest.mark.asyncio
 async def test_sdk_bus_list_filter_works_inside_async_event_loop_on_fetched_lists() -> None:

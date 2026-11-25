@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import threading
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -281,7 +282,7 @@ async def test_memo_reminder_enforces_configured_max_reminders_and_config_change
             await plugin.on_config_change()
             assert plugin._max_reminders == 200
     finally:
-        plugin.shutdown()
+        await asyncio.to_thread(plugin.shutdown)
 
 
 @pytest.mark.plugin_unit
@@ -312,5 +313,23 @@ async def test_memo_reminder_temporary_config_change_uses_new_config_over_stale_
         assert (await plugin.add_reminder(time="30m", message="only-one")).is_ok()
         blocked = await plugin.add_reminder(time="30m", message="over-temp-limit")
         assert blocked.is_err()
+
+        # Unrelated temporary config patch without [memo] preserves current limit & timezone.
+        unrelated_res = await plugin.on_config_change(
+            new_config={"other": {"flag": True}},
+            mode="temporary",
+        )
+        assert unrelated_res.is_ok()
+        assert plugin._max_reminders == 1
+        assert str(plugin._tz) == "America/New_York"
+
+        # Partial [memo] patch preserves unspecified keys like timezone.
+        partial_res = await plugin.on_config_change(
+            new_config={"memo": {"max_reminders": 3}},
+            mode="temporary",
+        )
+        assert partial_res.is_ok()
+        assert plugin._max_reminders == 3
+        assert str(plugin._tz) == "America/New_York"
     finally:
-        plugin.shutdown()
+        await asyncio.to_thread(plugin.shutdown)

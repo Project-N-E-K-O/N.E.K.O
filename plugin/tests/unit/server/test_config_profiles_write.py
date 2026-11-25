@@ -200,3 +200,81 @@ def test_update_profile_config_merges_updates_and_preserves_active_profile(
     persisted_profiles = tomllib.loads((plugin_dir / "profiles.toml").read_text(encoding="utf-8"))
     assert persisted_profiles["config_profiles"]["active"] == "home"
     assert set(persisted_profiles["config_profiles"]["files"]) == {"home", "work"}
+
+
+@pytest.mark.plugin_unit
+def test_update_profile_config_preserves_manifest_profiles_and_extra_keys_when_table_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tomllib
+
+    plugin_dir = tmp_path / "demo"
+    profiles_dir = plugin_dir / "profiles"
+    profiles_dir.mkdir(parents=True)
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text(
+        "[plugin]\nid='demo'\n[plugin.config_profiles]\nactive='home'\n"
+        "[plugin.config_profiles.files]\nhome='profiles/home.toml'\nwork='profiles/work.toml'\n",
+        encoding="utf-8",
+    )
+    (plugin_dir / "profiles.toml").write_text("[extra]\nnote='keep'\n", encoding="utf-8")
+    monkeypatch.setattr(module, "get_plugin_config_path", lambda _pid: config_path)
+
+    res = module.update_profile_config(
+        plugin_id="demo",
+        profile_name="work",
+        updates={"feature": {"x": 1}},
+    )
+    assert res["active_profile"] == "home"
+    persisted_profiles = tomllib.loads((plugin_dir / "profiles.toml").read_text(encoding="utf-8"))
+    assert persisted_profiles["extra"] == {"note": "keep"}
+    assert persisted_profiles["config_profiles"]["active"] == "home"
+    assert set(persisted_profiles["config_profiles"]["files"]) == {"home", "work"}
+
+
+@pytest.mark.plugin_unit
+def test_profile_writes_respect_cancelled_commit_guard_and_clean_temp_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+    from plugin.server.infrastructure.config_storage import ConfigCommitCancelled, ConfigCommitGuard
+
+    plugin_dir = tmp_path / "demo"
+    plugin_dir.mkdir(parents=True)
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\nentry='demo:Plugin'\n", encoding="utf-8")
+    (plugin_dir / "profiles.toml").write_text(
+        "[config_profiles]\nactive='home'\n[config_profiles.files]\nhome='profiles/home.toml'\n",
+        encoding="utf-8",
+    )
+    (plugin_dir / "profiles").mkdir()
+    (plugin_dir / "profiles" / "home.toml").write_text("[feature]\nx=1\n", encoding="utf-8")
+    monkeypatch.setattr(module, "get_plugin_config_path", lambda _pid: config_path)
+
+    for op in ("upsert", "delete", "activate"):
+        guard = ConfigCommitGuard(deadline=time.monotonic() + 10.0)
+        assert guard.cancel_if_pending() is True
+        with pytest.raises(ConfigCommitCancelled):
+            if op == "upsert":
+                module.upsert_profile_config(
+                    plugin_id="demo",
+                    profile_name="work",
+                    config={"feature": {"x": 2}},
+                    make_active=True,
+                    commit_guard=guard,
+                )
+            elif op == "delete":
+                module.delete_profile_config(
+                    plugin_id="demo",
+                    profile_name="home",
+                    commit_guard=guard,
+                )
+            else:
+                module.set_active_profile(
+                    plugin_id="demo",
+                    profile_name="home",
+                    commit_guard=guard,
+                )
+        assert not list(plugin_dir.glob(".profile*"))
+        assert not list((plugin_dir / "profiles").glob(".profile*"))
+    assert "active='home'" in (plugin_dir / "profiles.toml").read_text(encoding="utf-8")

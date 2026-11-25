@@ -16,11 +16,12 @@ from plugin.settings import MESSAGE_QUEUE_MAX
 def test_query_messages_sync_clamps_max_count_to_configured_max(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
-    def _fake_refresh(*, limit: int, timeout: float, ttl_seconds: float, force: bool) -> None:
+    def _fake_snapshot(*, limit: int, timeout: float, ttl_seconds: float, force: bool) -> list[dict[str, object]]:
+        del timeout, ttl_seconds, force
         captured["limit"] = limit
+        return []
 
-    monkeypatch.setattr(module.state, "refresh_messages_cache_from_message_plane", _fake_refresh)
-    monkeypatch.setattr(module.state, "iter_message_records_reverse", lambda: iter([]))
+    monkeypatch.setattr(module.state, "snapshot_messages_from_message_plane", _fake_snapshot)
 
     module._query_messages_sync(plugin_id=None, max_count=MESSAGE_QUEUE_MAX + 9999, priority_min=None)
 
@@ -29,12 +30,6 @@ def test_query_messages_sync_clamps_max_count_to_configured_max(monkeypatch: pyt
 
 @pytest.mark.plugin_unit
 def test_query_messages_sync_filters_by_plugin_and_priority(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        module.state,
-        "refresh_messages_cache_from_message_plane",
-        lambda **kwargs: None,
-    )
-
     records = [
         {"plugin_id": "a", "priority": 1, "content": "low", "time": "2026-01-01T00:00:00Z"},
         {"plugin_id": "b", "priority": 9, "content": "other", "time": "2026-01-01T00:00:01Z"},
@@ -49,7 +44,11 @@ def test_query_messages_sync_filters_by_plugin_and_priority(monkeypatch: pytest.
             "message_id": 123,
         },
     ]
-    monkeypatch.setattr(module.state, "iter_message_records_reverse", lambda: iter(records))
+    monkeypatch.setattr(
+        module.state,
+        "snapshot_messages_from_message_plane",
+        lambda **kwargs: list(records),
+    )
 
     payload = module._query_messages_sync(plugin_id="a", max_count=10, priority_min=5)
 
@@ -261,7 +260,14 @@ def test_url_only_image_part_serializes_no_binary_data() -> None:
 def test_filtered_query_refreshes_beyond_smaller_ttl_cache_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import importlib
     from plugin.core.state import GlobalState
+    from tests.fake_clock import patch_module_clock
+
+    state_module = importlib.import_module("plugin.core.state")
+    monkeypatch.setattr(module, "MESSAGE_QUEUE_MAX", 1000)
+    monkeypatch.setattr(state_module, "MESSAGE_QUEUE_MAX", 1000)
+    patch_module_clock(monkeypatch, state_module, time=lambda: 1000.0)
 
     test_state = GlobalState()
     history = [
@@ -299,3 +305,7 @@ def test_filtered_query_refreshes_beyond_smaller_ttl_cache_limit(
     smaller = module._query_messages_sync(plugin_id=None, max_count=50, priority_min=None)
     assert len(smaller) == 50
     assert rpc_calls == [100, 1000]
+
+    # 4. Reverse sync preserves the deeper cached limit (1000) instead of shrinking to 500.
+    test_state.sync_message_plane_messages()
+    assert rpc_calls == [100, 1000, 1000]

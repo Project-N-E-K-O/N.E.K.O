@@ -1092,3 +1092,62 @@ async def test_config_update_rolls_back_runtime_helpers_when_config_change_fails
     assert sender.payloads[-1]["success"] is False
     assert "config_change handler failed" in str(sender.payloads[-1]["error"])
     assert ctx.handler_contexts == ["lifecycle.config_change"]
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_config_update_replace_removes_deleted_keys_and_temporary_hydrates_missing_cache() -> None:
+    class _Ctx:
+        def __init__(self, initial: dict[str, object] | None, disk: dict[str, object]) -> None:
+            self._effective_config = initial
+            self._effective_config_uncertain = True
+            self._disk = disk
+            self.refreshed: list[dict[str, object]] = []
+
+        async def get_own_config(self) -> dict[str, object]:
+            return {"config": dict(self._disk)}
+
+        def _refresh_instance_runtime_config(self, effective_config: dict[str, object]) -> None:
+            self.refreshed.append(host_module.copy.deepcopy(effective_config))
+
+    # 1. replace=True replaces snapshot instead of deep-merging, removing keys omitted from active profile.
+    ctx_replace = _Ctx({"feature": {"keep": 1, "remove_me": 2}}, {})
+    sender = _FakeResponseSender()
+    await host_module._handle_config_update_command(
+        msg={
+            "req_id": "req-replace",
+            "config": {"feature": {"keep": 1}},
+            "mode": "temporary",
+            "replace": True,
+        },
+        ctx=ctx_replace,
+        events_by_type={},
+        plugin_id="demo",
+        res_sender=sender,
+        logger=_FakeLogger(),
+    )
+    assert sender.payloads[-1]["success"] is True
+    assert ctx_replace._effective_config == {"feature": {"keep": 1}}
+    assert ctx_replace._effective_config_uncertain is False
+
+    # 2. Temporary partial update with _effective_config=None hydrates via get_own_config() before merging.
+    ctx_hydrate = _Ctx(None, {"memo": {"max_reminders": 42, "timezone": "Asia/Tokyo"}})
+    sender2 = _FakeResponseSender()
+    await host_module._handle_config_update_command(
+        msg={
+            "req_id": "req-hydrate",
+            "config": {"other": {"enabled": True}},
+            "mode": "temporary",
+            "replace": False,
+        },
+        ctx=ctx_hydrate,
+        events_by_type={},
+        plugin_id="demo",
+        res_sender=sender2,
+        logger=_FakeLogger(),
+    )
+    assert sender2.payloads[-1]["success"] is True
+    assert ctx_hydrate._effective_config == {
+        "memo": {"max_reminders": 42, "timezone": "Asia/Tokyo"},
+        "other": {"enabled": True},
+    }

@@ -251,3 +251,11 @@ async def test_non_finite_floats_in_ui_context_and_actions_are_sanitized_to_null
     assert len(actions) == 1
     assert actions[0]["confirm"] == {"title": "Proceed?", "threshold": None}
     json.dumps(result, allow_nan=False)
+
+    from plugin.core.ui_manifest import sanitize_json_value
+
+    assert sanitize_json_value({None: 1, True: 2, False: 3}) == {
+        "null": 1,
+        "true": 2,
+        "false": 3,
+    }

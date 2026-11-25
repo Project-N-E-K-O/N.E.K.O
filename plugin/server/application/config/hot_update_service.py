@@ -23,6 +23,7 @@ class _SupportsConfigUpdate(Protocol):
         mode: str = "temporary",
         profile: str | None = None,
         timeout: float = 10.0,
+        replace: bool = False,
     ) -> dict[str, object]:
         ...
 
@@ -149,9 +150,11 @@ async def hot_update_plugin_config(
             )
         full_config = _ensure_mapping(full_config_obj, field="config")
         update_mode = "temporary"
+        replace_snapshot = True
     else:
         full_config = normalized_updates
         update_mode = mode
+        replace_snapshot = False
 
     host_adapter = cast(_SupportsConfigUpdate, host)
     try:
@@ -160,6 +163,7 @@ async def hot_update_plugin_config(
             mode=update_mode,
             profile=profile_name,
             timeout=timeout,
+            replace=replace_snapshot,
         )
     except TimeoutError:
         logger.warning("Timeout waiting for CONFIG_UPDATE response from plugin {}", plugin_id)

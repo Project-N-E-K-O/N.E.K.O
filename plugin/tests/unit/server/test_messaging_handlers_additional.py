@@ -259,12 +259,15 @@ async def test_plugin_config_profile_write_handlers_enforce_scope_and_delegate(
     assert send.calls[-1][3]["code"] == "PERMISSION_DENIED"
 
     async def _upsert(**kwargs: object) -> dict[str, object]:
-        return {"upserted": kwargs}
+        assert kwargs.get("commit_guard") is not None
+        return {"upserted": {k: v for k, v in kwargs.items() if k != "commit_guard"}}
 
     async def _delete(**kwargs: object) -> dict[str, object]:
+        assert kwargs.get("commit_guard") is not None
         return {"removed": True, "profile": kwargs["profile_name"]}
 
     async def _activate(**kwargs: object) -> dict[str, object]:
+        assert kwargs.get("commit_guard") is not None
         return {"config_profiles": {"active": kwargs["profile_name"]}}
 
     monkeypatch.setattr(plugin_config_module.config_command_service, "upsert_plugin_profile_config", _upsert)
@@ -296,3 +299,41 @@ async def test_plugin_config_profile_write_handlers_enforce_scope_and_delegate(
         send,
     )
     assert send.calls[-1][2] == {"config_profiles": {"active": "home"}}
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_plugin_config_profile_handlers_cancel_on_deadline_and_return_persistence_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import time
+
+    send = _Recorder()
+
+    async def _stuck_profile_op(**kwargs: object) -> dict[str, object]:
+        commit_guard = kwargs["commit_guard"]
+        assert commit_guard is not None
+        await asyncio.sleep(10)
+        return {}
+
+    monkeypatch.setattr(plugin_config_module.config_command_service, "upsert_plugin_profile_config", _stuck_profile_op)
+    monkeypatch.setattr(plugin_config_module.config_command_service, "delete_plugin_profile_config", _stuck_profile_op)
+    monkeypatch.setattr(plugin_config_module.config_command_service, "set_plugin_active_profile", _stuck_profile_op)
+
+    for req_id, handler, extra in (
+        ("r-t1", plugin_config_module.handle_plugin_config_profile_upsert, {"config": {"k": 1}}),
+        ("r-t2", plugin_config_module.handle_plugin_config_profile_delete, {}),
+        ("r-t3", plugin_config_module.handle_plugin_config_profile_activate, {}),
+    ):
+        await _invoke(
+            handler,
+            {
+                "from_plugin": "p1",
+                "request_id": req_id,
+                "profile_name": "work",
+                "_request_deadline_monotonic": time.monotonic() + 0.05,
+                **extra,
+            },
+            send,
+        )
+        assert send.calls[-1][3]["code"] == "PERSISTENCE_TIMEOUT"
