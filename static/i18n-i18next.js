@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 主题工坊菜单项与 main 的订阅面板等文案合并后刷新语言包缓存。
-    const LOCALE_VERSION = '2026-11-25-theme-studio-subscriptions-merge';
+    // 主题工坊面板文案接入 i18n（themeStudio.*）后刷新语言包缓存。
+    const LOCALE_VERSION = '2026-11-25-theme-studio-panel-i18n';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

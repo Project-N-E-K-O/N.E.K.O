@@ -7932,5 +7932,1390 @@
         "keepLocal": "Manter seleção deste dispositivo",
         "failed": "Não foi possível carregar o modelo. A seleção anterior foi mantida.",
         "retry": "Tentar novamente"
+    },
+    "themeStudio": {
+        "core": {
+            "request": {
+                "timeout": "Tempo limite da solicitação esgotado ({{seconds}} s)",
+                "failed": "A operação falhou"
+            },
+            "typeLabel": {
+                "color": "Cor",
+                "length": "Tamanho",
+                "blur": "Desfoque",
+                "number": "Número",
+                "font": "Fonte",
+                "shadow": "Sombra",
+                "image": "Imagem",
+                "switch": "Interruptor",
+                "select": "Modo",
+                "time": "Ritmo",
+                "ratio": "Entrelinha",
+                "filter": "Filtros",
+                "gradient": "Gradiente"
+            },
+            "audit": {
+                "pair": {
+                    "bodyChat": "Texto / fundo do chat",
+                    "bodyTopbar": "Texto / barra superior",
+                    "bodyInput": "Texto / campo de entrada",
+                    "bodyGlass": "Texto / vidro do painel",
+                    "bodyAiBubble": "Texto / balão da IA",
+                    "userBubbleText": "Texto do balão do usuário",
+                    "sendText": "Texto do botão Enviar",
+                    "subTextChat": "Texto secundário / fundo do chat",
+                    "placeholder": "Texto de espaço reservado",
+                    "chipText": "Texto do chip",
+                    "linkChat": "Link / fundo do chat"
+                },
+                "fixedOne": "\"{{name}}\" ajustado para {{hex}} ({{ratio}}:1). Clique em \"Aplicar\" para efetivar",
+                "fixNone": "Nada pôde ser corrigido automaticamente: texto e fundo estão próximos demais; altere a cor de fundo manualmente",
+                "fixedSomeStuck": "{{fixed}} correções preenchidas; {{stuck}} não puderam ser ajustadas automaticamente. Clique em \"Aplicar\" para efetivar",
+                "fixedAll": "{{fixed}} correções preenchidas. Clique em \"Aplicar\" para efetivar",
+                "incomplete": "Cores incompletas; ainda não é possível avaliar",
+                "groupFail": "{{bad}} / {{total}} abaixo do limite",
+                "groupPass": "Todos os {{total}} aprovados",
+                "need": "Requer ≥ {{need}}",
+                "jumpDark": "Clique para ir a {{key}} (escuro)",
+                "jumpLight": "Clique para ir a {{key}} (claro)",
+                "fixButton": "Corrigir",
+                "fixButtonTitle": "Calcula uma cor aprovada com base no brilho do fundo (só preenche o valor, não aplica)",
+                "fixFailed": "Este par não alcança {{need}}:1 automaticamente; altere a cor de fundo",
+                "light": "Claro",
+                "dark": "Escuro",
+                "nothingToCompare": "Ainda não há cores para comparar: primeiro defina variáveis básicas como \"fundo do chat\" e \"texto\".",
+                "summaryPass": "Todas as {{total}} verificações dos dois conjuntos atendem aos limites WCAG (texto 4.5, secundário 3.0).",
+                "summaryFail": "{{bad}} abaixo do limite. Clique em um item para ir à variável correspondente."
+            },
+            "undo": {
+                "nothingToUndo": "Nada para desfazer",
+                "undone": "Última etapa desfeita",
+                "nothingToRedo": "Nada para refazer",
+                "redone": "Refeito",
+                "undoTitle": "Desfazer a última alteração ({{count}} etapas disponíveis)",
+                "undoTitleEmpty": "Nada para desfazer",
+                "redoTitle": "Refazer ({{count}} etapas disponíveis)",
+                "redoTitleEmpty": "Nada para refazer"
+            },
+            "validate": {
+                "badBlur": "O desfoque só aceita px/rem/em/pt (18px ou blur(18px))",
+                "badValue": "Valor inválido. Corrija-o ou clique em \"Limpar\""
+            }
+        },
+        "catalog": {
+            "groups": {
+                "chatBubbles": "Balões do chat",
+                "chatWindow": "Janela do chat",
+                "composer": "Área de entrada",
+                "panels": "Painéis / diálogos / menus",
+                "recommendations": "Recomendações / chips do sistema",
+                "global": "Global",
+                "nonColor": "Ajustes não cromáticos",
+                "panelGlow": "Brilho do painel / glassmorfismo",
+                "liquidGlass": "Vidro líquido / gradientes",
+                "glassTexture": "Textura de vidro líquido"
+            },
+            "vars": {
+                "bubble-veil": {
+                    "native": "Ligado",
+                    "label": "Véu do fundo do chat",
+                    "hint": "Interruptor geral da camada \"véu branco + desfoque de fundo\" dos balões. Desligado: o fundo dos balões fica totalmente transparente e o desfoque vai a zero, deixando a imagem e a cor de fundo do chat aparecerem por inteiro (mais contraste; útil quando, com imagem de fundo, tudo parece acinzentado ou difícil de ler). Ligado: volta ao visual nativo do N.E.K.O. Internamente é um multiplicador 0-1 aplicado à opacidade do véu e ao raio do desfoque."
+                },
+                "user-bubble-bg": {
+                    "label": "Fundo do balão do usuário"
+                },
+                "user-bubble-text": {
+                    "label": "Texto do balão do usuário"
+                },
+                "user-bubble-border": {
+                    "label": "Borda do balão do usuário"
+                },
+                "ai-bubble-bg": {
+                    "label": "Fundo do balão da IA"
+                },
+                "ai-bubble-text": {
+                    "label": "Texto do balão da IA"
+                },
+                "ai-bubble-border": {
+                    "label": "Borda do balão da IA"
+                },
+                "code-bg": {
+                    "label": "Fundo do bloco de código",
+                    "hint": "Fundo do código em linha e dos blocos de código (.message-markdown-inline-code / .message-markdown-pre). Nativamente só o código em linha tem fundo; os blocos não. Deixe vazio para manter as cores nativas"
+                },
+                "code-text": {
+                    "label": "Texto do bloco de código",
+                    "hint": "Cor do texto do código em linha e dos blocos. Nativo: código em linha #22324d, blocos #1f2c42 (ambos #c0cce0 no modo escuro). Deixe vazio para manter as cores nativas"
+                },
+                "image-bg": {
+                    "label": "Fundo do bloco de imagem",
+                    "hint": "Fundo do contêiner de imagem .message-block-image nas mensagens, sob a imagem. Deixe vazio para manter o nativo (transparente; só aparece se a imagem for transparente ou falhar ao carregar)"
+                },
+                "tool-bubble-bg": {
+                    "label": "Fundo dos balões de ferramenta/sistema",
+                    "hint": "Fundo compartilhado pelos balões de ferramenta e de sistema (.message-bubble-tool / .message-bubble-system). Nativamente o de ferramenta é um gradiente e o de sistema um cinza translúcido (claro rgba(131,148,175,0.14) / escuro rgba(80,90,110,0.2)); ao preencher, ambos viram uma mesma cor sólida. Deixe vazio para manter o nativo"
+                },
+                "tool-bubble-text": {
+                    "label": "Texto dos balões de ferramenta/sistema",
+                    "hint": "Cor do texto dos balões de ferramenta e de sistema. Nativo: ferramenta #2b3a50, sistema #607086 (escuro #b8bcc4 / #9aa0ac). Deixe vazio para manter as cores nativas"
+                },
+                "status-bg": {
+                    "label": "Fundo do bloco de status",
+                    "hint": "Fundo dos blocos de status das mensagens (os tons info / success / warning / error de .message-block-status compartilham esta variável). Nativamente cada tom é diferente (claro success rgba(48,161,100,0.12), warning rgba(235,168,52,0.16), error rgba(223,91,91,0.14)); ao preencher, os quatro viram uma mesma cor. Deixe vazio para manter o nativo"
+                },
+                "status-text": {
+                    "label": "Texto do bloco de status",
+                    "hint": "Cor do texto dos blocos de status (os quatro tons compartilham esta variável). Nativamente cada tom é diferente (claro success #236845, warning #9a6008, error #a63a3a; escuro #5ec790 / #e8b44a / #e07070); ao preencher, os quatro viram uma mesma cor. Deixe vazio para manter o nativo"
+                },
+                "chat-bg": {
+                    "label": "Fundo da janela do chat",
+                    "hint": "Define a cor da cápsula no modo compacto (o painel de fundo não a sobrescreve mais). Expandido, também afeta #react-chat-window-root e .chat-window. Deixe vazio para manter o nativo"
+                },
+                "chat-panel-bg": {
+                    "label": "Fundo do painel traseiro do chat",
+                    "hint": "Cor do painel atrás da lista de mensagens: .compact-export-history-scroll no modo compacto, .message-list e .chat-body expandido/tela cheia. Deixe vazio para manter o nativo (transparente)"
+                },
+                "chat-bg-image": {
+                    "label": "Imagem de fundo do chat",
+                    "hint": "Coloca uma imagem no painel atrás da lista de mensagens. Ela tem prioridade sobre a cor sólida de \"Fundo do painel traseiro do chat\" (que continua por baixo e aparece nas áreas transparentes). Suporta png/jpg/webp/gif, até 4 MB cada. Só são válidos none ou url(\"…/backgrounds/<arquivo>\"). Deixe vazio para voltar ao nativo (sem imagem)"
+                },
+                "chat-bg-image-brightness": {
+                    "label": "Brilho da imagem de fundo",
+                    "hint": "Escurece toda a \"Imagem de fundo do chat\" para que ela não dispute atenção com o texto. Faixa 0-1: 1 = brilho original, 0.6 = 40% mais escuro, 0 = preto. Só escurece, nunca clareia (uma camada preta fica sobre a imagem e o texto não é afetado — não é um filter no contêiner, que escureceria também balões e texto). Só vale quando há uma \"Imagem de fundo do chat\"; deixe vazio para manter a original"
+                },
+                "chat-bg-fit": {
+                    "label": "Ajuste da imagem de fundo",
+                    "options": {
+                        "cover": "Cobrir (pode cortar)",
+                        "contain": "Conter (mostra o fundo)"
+                    },
+                    "hint": "Como a imagem de fundo preenche a área do chat. Cobrir = cover: ocupa toda a área e corta em cima/embaixo ou nas laterais se as proporções forem diferentes (comportamento nativo, serve para a maioria dos papéis de parede). Conter = contain: reduz a imagem para que apareça inteira, deixando cor de fundo nas laterais ou em cima/embaixo. Só afeta a imagem de fundo. Vazio = Cobrir"
+                },
+                "chat-bg-position": {
+                    "label": "Posição da imagem de fundo",
+                    "options": {
+                        "center": "Centro",
+                        "top": "Topo",
+                        "bottom": "Base",
+                        "left": "Esquerda",
+                        "right": "Direita"
+                    },
+                    "hint": "Onde a imagem de fundo fica na área do chat; só é perceptível quando as proporções da imagem diferem do contêiner (ou com \"Conter\"). Centro = comportamento nativo; Topo/Base servem para papéis de parede com o foco na metade superior/inferior. Vazio = Centro"
+                },
+                "chat-bg-repeat": {
+                    "label": "Repetição da imagem de fundo",
+                    "options": {
+                        "no-repeat": "Sem repetição (única)",
+                        "repeat": "Repetir nos dois sentidos",
+                        "repeat-x": "Repetir na horizontal",
+                        "repeat-y": "Repetir na vertical"
+                    },
+                    "hint": "Se o papel de parede se repete para preencher a área. Mantenha fotos em \"Sem repetição\" (comportamento nativo); texturas finas, xadrez e padrões podem se repetir para preencher sem esticar. Com repetição, o \"ajuste\" não tem efeito (cada bloco repete no tamanho original). Vazio = sem repetição"
+                },
+                "corner-style": {
+                    "label": "Estilo dos cantos",
+                    "options": {
+                        "round": "Arredondados",
+                        "continuous": "Contínuos (estilo iOS)"
+                    },
+                    "hint": "Forma dos cantos arredondados. Arredondados = arco de círculo (comportamento nativo); Contínuos = superelipse, sem a mudança brusca para reta no canto, como nos aparelhos da Apple. Requer um motor recente (corner-shape, Chrome 139+); sem suporte, este ajuste é ignorado sem erros e o resto funciona normalmente. Vazio = arredondados"
+                },
+                "chat-top-fade": {
+                    "label": "Esmaecimento superior",
+                    "hint": "O esmaecimento no topo do histórico do chat — a origem da \"névoa\" no alto da imagem de fundo. Faixa 0-1: 1 = nativo do app (os 28px superiores surgem do transparente e o topo da imagem esmaece junto), 0 = sem esmaecimento e borda superior nítida, valores intermediários em transição linear. Atenção: desligado, as mensagens roladas até o topo são cortadas secamente"
+                },
+                "chat-panel-radius": {
+                    "label": "Raio do painel traseiro do chat",
+                    "hint": "Raio dos cantos do painel atrás da lista de mensagens, junto com \"Fundo do painel traseiro do chat\". É uma variável separada — o \"Raio geral\" também arredonda botões e campo de entrada; este só o painel. Deixe vazio para manter os cantos retos nativos"
+                },
+                "topbar-bg": {
+                    "label": "Fundo da barra superior"
+                },
+                "topbar-text": {
+                    "label": "Texto da barra superior"
+                },
+                "chat-blur": {
+                    "label": "Desfoque de vidro fosco",
+                    "hint": "É usado no CSS como backdrop-filter, então deve ser escrito como blur(18px); digitando só 18px, o backend completa para blur(18px). Unidades: apenas px/rem/em/pt (sem % / vh / vw)"
+                },
+                "chat-opacity": {
+                    "label": "Opacidade da superfície do chat",
+                    "hint": "Faixa 0-1. É gravado via ponte em --neko-chat-opacity-factor, o multiplicador de opacidade nativo do N.E.K.O: ele multiplica o alfa do fundo de cada superfície do chat (nativamente algo como rgba(255,255,255,calc(.91 * fator))), escalando a opacidade geral do painel/janela do chat sem mudar nenhuma cor individual. Deixe vazio para manter o nativo (fator 1 = 100%). Obs.: antes o carregador do app descartava isso silenciosamente (não havia tipo number) enquanto o painel informava sucesso; já foi corrigido"
+                },
+                "input-bg": {
+                    "label": "Fundo da área de entrada"
+                },
+                "input-text": {
+                    "label": "Texto digitado"
+                },
+                "input-border": {
+                    "label": "Borda da área de entrada"
+                },
+                "input-placeholder": {
+                    "label": "Texto de espaço reservado"
+                },
+                "button-bg": {
+                    "label": "Fundo dos botões de ferramentas"
+                },
+                "button-text": {
+                    "label": "Texto dos botões de ferramentas"
+                },
+                "button-hover-bg": {
+                    "label": "Botões de ferramentas ao passar o mouse",
+                    "hint": "Só se aplica ao passar o mouse sobre um botão de ferramentas (.composer-tool-btn:hover); o estado normal é controlado por \"Fundo dos botões de ferramentas\". Deixe vazio para manter a cor nativa (claro #44b7fe1a / escuro #44b7fe26)"
+                },
+                "send-bg": {
+                    "label": "Fundo do botão Enviar"
+                },
+                "send-text": {
+                    "label": "Texto do botão Enviar"
+                },
+                "panel-bg": {
+                    "label": "Fundo do painel",
+                    "hint": "Aplica-se ao painel de entrada (.composer-panel) e ao painel flutuante de tarefas (#agent-task-hud). No modo cápsula compacta o app deixa o próprio painel transparente; ali, o que aparece é o \"fundo do chat\""
+                },
+                "panel-text": {
+                    "label": "Texto do painel",
+                    "hint": "Aplica-se ao texto de superfícies de painel como o painel flutuante de tarefas e a barra de visitas; para o texto do campo de entrada use \"Texto digitado\". A cor do texto da cápsula compacta não segue este valor (para que mudar o texto do painel não recolora a cápsula)"
+                },
+                "panel-border": {
+                    "label": "Borda do painel"
+                },
+                "popover-bg": {
+                    "label": "Fundo do menu pop-up"
+                },
+                "popover-text": {
+                    "label": "Texto do menu pop-up"
+                },
+                "popover-border": {
+                    "label": "Borda do menu pop-up"
+                },
+                "modal-bg": {
+                    "label": "Fundo do diálogo"
+                },
+                "modal-text": {
+                    "label": "Texto do diálogo"
+                },
+                "accent-bg": {
+                    "label": "Fundo de destaque da página de plugins",
+                    "hint": "Via ponte: grava --neko-popup-accent-bg em #agent-plugin-content / #agent-plugin-views, ou seja, o fundo ao passar o mouse e ao selecionar as abas do painel de plugins (#agent-content-tabs button:hover / [aria-selected=\"true\"]). Deixe vazio para manter o nativo (padrão do próprio painel: claro rgba(42,123,196,.08) / selecionado .10; variáveis de modo: claro rgba(42,123,196,0.05) / escuro rgba(58,159,216,0.1))"
+                },
+                "panel-text-sub": {
+                    "label": "Texto secundário do painel",
+                    "hint": "Via ponte: grava --neko-popup-text-sub em #agent-plugin-content / #agent-plugin-views; é usado pelo texto das abas e pelo botão de fechar no topo do painel de plugins (#agent-content-tabs button / #agent-plugin-close). Deixe vazio para manter o nativo (o painel também tem seu próprio padrão #667582; claro #666666 / escuro #b0b0b0)"
+                },
+                "overlay-bg": {
+                    "label": "Fundo da sobreposição do diálogo",
+                    "hint": "Fundo da sobreposição em tela cheia .modal-overlay atrás dos diálogos. Nativamente o modo claro quase não tem sobreposição (o rgba(0,0,0,0.5) do componente comum só vale em alguns diálogos) e o escuro usa rgba(0,0,0,0.65). Os diálogos de minicinema e visitas (janelas transparentes) têm transparent !important e não são afetados. Deixe vazio para manter o nativo"
+                },
+                "rec-bg": {
+                    "label": "Fundo da barra de recomendações"
+                },
+                "rec-text": {
+                    "label": "Texto da barra de recomendações"
+                },
+                "rec-border": {
+                    "label": "Borda da barra de recomendações",
+                    "hint": "Só se aplica a .proactive-recommendation-card. Deixe vazio para manter a borda nativa (claro rgba(108,151,174,0.18) / escuro rgb(65,84,95))"
+                },
+                "chip-bg": {
+                    "label": "Fundo do chip"
+                },
+                "chip-text": {
+                    "label": "Texto do chip"
+                },
+                "text-gradient": {
+                    "label": "Gradiente de texto",
+                    "hint": "Troca o preenchimento do texto do chat por um gradiente (ex.: linear-gradient(135deg, #6ee7ff 0%, #a78bfa 100%)). Só afeta os blocos de texto das mensagens, não o fundo dos balões; blocos de código e código em linha ficam sólidos automaticamente para continuarem legíveis. Atenção: ativado, a \"cor do texto do balão\" deixa de valer para o texto (o gradiente o preenche), e gradientes claros podem ficar ilegíveis em fundos claros — escolha cores com grande diferença entre claro e escuro. Vazio = texto sólido"
+                },
+                "accent": {
+                    "label": "Cor de destaque"
+                },
+                "link": {
+                    "label": "Cor dos links"
+                },
+                "highlight": {
+                    "label": "Realce de seleção"
+                },
+                "scrollbar-thumb": {
+                    "label": "Alça da barra de rolagem"
+                },
+                "scrollbar-track": {
+                    "label": "Trilho da barra de rolagem"
+                },
+                "radius": {
+                    "label": "Raio geral (botões/painel de entrada)",
+                    "hint": "Os valores nativos variam por componente (barra superior 0 / cartões 12px / botões 10px). Deixe vazio para manter tudo nativo"
+                },
+                "bubble-radius": {
+                    "label": "Raio dos balões do chat",
+                    "hint": "Só afeta os balões em si. Deixe vazio para manter o nativo (os balões do usuário têm cantos assimétricos de 16px/8px)"
+                },
+                "shell-radius": {
+                    "label": "Raio da moldura da janela do chat",
+                    "hint": "Só afeta a moldura da janela do chat #react-chat-window-shell. Deixe vazio para manter o nativo"
+                },
+                "card-radius": {
+                    "label": "Raio dos cartões de plugins",
+                    "hint": "Só afeta os cartões .agent-plugin-view. Deixe vazio para manter o nativo"
+                },
+                "modal-radius": {
+                    "label": "Raio dos diálogos",
+                    "hint": "Só afeta os diálogos .modal-dialog. Deixe vazio para manter o nativo"
+                },
+                "popover-radius": {
+                    "label": "Raio das camadas flutuantes",
+                    "hint": "Só afeta camadas flutuantes como .composer-overflow-popover. Deixe vazio para manter o nativo"
+                },
+                "rec-radius": {
+                    "label": "Raio dos cartões de recomendação",
+                    "hint": "Só afeta os cartões de recomendação. Deixe vazio para manter o nativo"
+                },
+                "font-family": {
+                    "label": "Família da fonte"
+                },
+                "font-size": {
+                    "label": "Tamanho de fonte base",
+                    "hint": "Tamanho da fonte do texto das mensagens; vale para texto simples e Markdown (ex.: 1rem / 17px). Deixe vazio para manter o nativo"
+                },
+                "line-height": {
+                    "label": "Altura da linha",
+                    "hint": "Espaçamento entre linhas do texto nos balões, como multiplicador sem unidade (1.55 = 1.55 × tamanho da fonte). 1.3 é compacto, 1.55 próximo do nativo, 1.8 bem folgado. Por ser multiplicador e não px, acompanha o \"Tamanho de fonte base\", então texto maior nunca fica com linhas grudadas. Deixe vazio para manter o nativo"
+                },
+                "shadow": {
+                    "label": "Sombra",
+                    "hint": "Ex.: 0 2px 4px rgba(0,0,0,0.1). Aplica-se a 7 superfícies de cartão (balões do usuário/IA, painel de entrada, duas camadas flutuantes, diálogo e cartão de recomendação), substituindo totalmente suas sombras. Deixe vazio para manter as sombras nativas"
+                },
+                "panel-glow-color": {
+                    "label": "Cor do brilho",
+                    "hint": "Cor compartilhada pelo brilho externo, pelos realces dos cantos e pelo gradiente interno da borda. Qualquer cor CSS serve (#7ff / dodgerblue / rgb(120,200,255)). Mudar aqui recolore os três"
+                },
+                "panel-glow-strength": {
+                    "label": "Intensidade do brilho",
+                    "hint": "Multiplicador 0-1 que escala juntos o alcance do brilho externo, o raio de desfoque e a intensidade da cor. 0 = sem brilho, 1 = todo o \"Tamanho do brilho\". Deixe vazio para manter o nativo (sem brilho)"
+                },
+                "panel-glow-size": {
+                    "label": "Tamanho do brilho",
+                    "hint": "Raio base do brilho externo (alcance ×1, desfoque ×0.42). A largura do gradiente interno da borda também é calculada a partir dele. 24px é um começo suave; a partir de 40px o brilho se espalha bastante"
+                },
+                "panel-glow-pulse": {
+                    "label": "Amplitude da pulsação",
+                    "hint": "Quanto a intensidade do brilho pulsa, 0-1: 0 = constante, 0.5 = o brilho oscila entre 100% e 50%, 1 = do totalmente escuro ao totalmente claro. Vazio ou 0 não adiciona animação (economiza uma camada de composição)"
+                },
+                "panel-glow-speed": {
+                    "label": "Ritmo da pulsação",
+                    "hint": "Duração de uma pulsação; 3.2s ou 800ms funcionam, e número sem unidade conta em segundos (3 vira 3s). Máximo 60s. Quanto menor, mais rápido; 5s ou mais é uma pulsação lenta. Só faz diferença quando a \"Amplitude da pulsação\" é maior que 0"
+                },
+                "panel-border-color": {
+                    "label": "Cor da borda",
+                    "hint": "A borda translúcida ao redor do painel. Para um realce de vidro use um branco translúcido (rgba(255,255,255,.55)); para uma borda neon colorida, use uma cor bem saturada"
+                },
+                "panel-border-width": {
+                    "label": "Espessura da borda",
+                    "hint": "Espessura da borda. 1px é um realce fino; a partir de 2-3px surge um nítido \"contorno de vidro\". Vazio = sem borda"
+                },
+                "panel-corner-glow": {
+                    "label": "Realces dos cantos",
+                    "hint": "Multiplicador 0-1 para a intensidade dos quatro realces radiais dos cantos — o jeito mais fácil de dar volume no glassmorfismo. 0 = desligado, 1 = máximo"
+                },
+                "panel-edge-gradient": {
+                    "label": "Gradiente interno da borda",
+                    "hint": "Multiplicador 0-1 para a luz suave que se atenua da borda para dentro (uma sombra inset); junto com o brilho externo faz o painel parecer iluminado por si mesmo. 0 = desligado"
+                },
+                "panel-sheen": {
+                    "label": "Reflexo do vidro",
+                    "hint": "Multiplicador 0-1 para a faixa de brilho diagonal vinda do canto superior esquerdo (simula o reflexo do vidro). 0.3-0.5 fica natural; 1 fica visivelmente esbranquiçado"
+                },
+                "panel-inner-glow": {
+                    "label": "Sombra interna",
+                    "hint": "Multiplicador 0-1 para uma leve sombra rebaixada no interior do painel, deixando-o com aspecto mais espesso. 0 = desligado"
+                },
+                "panel-glass-tint": {
+                    "label": "Tonalidade do vidro",
+                    "hint": "Tonalidade translúcida de vidro, acima de \"Fundo do painel traseiro do chat\" e abaixo da imagem de fundo. Para vidro fosco use uma cor clara translúcida como rgba(255,255,255,.14) (rgba(20,30,45,.35) em temas escuros)"
+                },
+                "panel-glass-blur": {
+                    "label": "Vidro fosco",
+                    "hint": "Desfoca a própria \"Imagem de fundo do chat\" (só a imagem; o texto não é afetado — usa uma camada negativa entre a imagem e o texto). Escreva blur(18px) ou só 18px (o backend completa para blur(18px)); unidades apenas px/rem/em/pt"
+                },
+                "glass-filter": {
+                    "label": "Desfoque do vidro da interface",
+                    "hint": "Quanto desfocar o que fica atrás das \"superfícies de vidro\" (barra superior, moldura do campo de entrada, camadas flutuantes), escrito diretamente como cadeia de backdrop-filter, ex.: blur(20px) saturate(150%). Até 4 partes, sem repetir filtros, blur no máximo 40px e demais porcentagens no máximo 400%. Vazio = sem efeito; essas superfícies mantêm o visual nativo"
+                },
+                "glass-tint": {
+                    "label": "Tonalidade do vidro da interface",
+                    "hint": "Tonalidade translúcida sobre as superfícies de vidro, feita para combinar com o desfoque acima: para vidro fosco use uma cor translúcida como rgba(255,255,255,0.55). Vazio = sem efeito; o fundo segue o nativo"
+                },
+                "glass-highlight": {
+                    "label": "Borda de realce do vidro",
+                    "hint": "Borda de realce ao redor das superfícies de vidro; um branco translúcido dá a sensação de luz na aresta do vidro. Vazio = sem efeito; não é desenhada"
+                },
+                "bubble-glass-filter": {
+                    "label": "Desfoque de vidro dos balões",
+                    "hint": "Desfoque atrás dos próprios balões do usuário/IA, geralmente um pouco mais leve que o vidro da interface, ex.: blur(12px) saturate(140%). Vazio = sem efeito; os balões mantêm a translucidez nativa"
+                },
+                "bubble-glass-tint": {
+                    "label": "Tonalidade de vidro dos balões",
+                    "hint": "Tonalidade translúcida dos balões; para um aspecto de vidro use uma cor bem suave como rgba(255,255,255,0.18). Vazio = sem efeito; o fundo dos balões segue o nativo"
+                },
+                "chat-gradient": {
+                    "label": "Gradiente da área do chat",
+                    "hint": "Gradiente de fundo de toda a área do chat (lista de mensagens e corpo do chat). Deve ser linear-gradient(...) ou radial-gradient(...), com 2-4 paradas, cada uma com porcentagem. Vazio = sem efeito; usa o fundo nativo"
+                },
+                "panel-gradient": {
+                    "label": "Gradiente do painel",
+                    "hint": "Gradiente de fundo do painel traseiro do chat / painel de exportar histórico; mesmo formato do anterior, sobre a cor sólida do painel. Vazio = sem efeito; o painel mantém o fundo nativo"
+                },
+                "user-bubble-gradient": {
+                    "label": "Gradiente do balão do usuário",
+                    "hint": "Aplica um fundo em gradiente só aos balões do usuário; o mais prático é gerá-lo com um clique pelo atalho \"ângulo + cores inicial/final\". Vazio = sem efeito (não configurado por padrão); os balões usam a cor sólida de fundo do balão do usuário"
+                },
+                "ai-bubble-gradient": {
+                    "label": "Gradiente do balão da IA",
+                    "hint": "Aplica um fundo em gradiente só aos balões da IA. Vazio = sem efeito (não configurado por padrão); eles usam a cor sólida de fundo do balão da IA"
+                },
+                "glass-rim": {
+                    "label": "Reflexo da aresta do vidro",
+                    "hint": "Luz refletida na aresta do vidro: uma linha brilhante ao redor de painéis/balões/campo de entrada, como um chanfro polido. Com alfa baixo na tonalidade do vidro e desfoque da interface, quanto mais brilhante, mais \"espessura\" o vidro mostra. Vazio = não é desenhada"
+                },
+                "glass-sheen": {
+                    "label": "Brilho deslizante",
+                    "hint": "Brilho deslizante 0–1: 0 = parado, 0.3–0.7 faz uma faixa de brilho varrer lentamente o vidro (só visível com o desfoque de vidro da interface/balões configurado). Vazio = sem efeito"
+                },
+                "glass-noise": {
+                    "label": "Granulado fosco",
+                    "hint": "Granulado fosco 0–1: 0 = liso, 0.1–0.25 adiciona uma leve textura fosca (com o alfa da tonalidade e o desfoque, ainda se vê o que está atrás com sensação granulada). Vazio = sem efeito"
+                },
+                "glass-lens": {
+                    "label": "Anel de lente na borda",
+                    "hint": "Anel de lente 0–1: 0 = nada, 0.5–0.8 sobrepõe na borda do vidro um anel brilhante curvado para dentro mais um brilho interno suave, imitando como as bordas do Liquid Glass da Apple \"dobram\" a luz. Vazio = sem efeito"
+                },
+                "glass-thickness": {
+                    "label": "Espessura do vidro",
+                    "hint": "Espessura do vidro 0–1: realce de 1px em cima + borda escura de 1px embaixo + laterais meio iluminadas + sombra externa; quanto maior, mais parece uma placa espessa de vidro. Vazio = sem efeito"
+                },
+                "glass-specular": {
+                    "label": "Brilho especular",
+                    "hint": "Brilho especular 0–1: com 0.6–0.8 um reflexo suave no vidro segue o ponteiro do mouse (o traço mais reconhecível do Liquid Glass da Apple); em telas sensíveis ao toque fica no canto superior esquerdo. Vazio = sem efeito"
+                },
+                "ambient-glow": {
+                    "label": "Luz do ponteiro",
+                    "hint": "Luz do ponteiro 0–1: com 0.4–0.7 surge no vidro um brilho suave que segue o mouse (a fonte de luz se move e os reflexos a acompanham — mais parecido com iluminação real do que um único ponto especular). Vazio = sem efeito"
+                },
+                "glass-dispersion": {
+                    "label": "Dispersão na borda",
+                    "hint": "Dispersão 0–1: com 0.3–0.55 surgem na borda do vidro duas linhas finas e brilhantes, quente (canto superior esquerdo) e fria (canto inferior direito), imitando a refração que separa a luz em cores. Vazio = sem efeito"
+                },
+                "glass-caustic": {
+                    "label": "Cáusticas em movimento",
+                    "hint": "Cáusticas 0–1: com 0.3–0.6 um brilho suave atrás do vidro se expande e contrai lentamente, como a luz de uma superfície de água tremulando através do vidro; difere do \"Brilho deslizante\" em direção e ritmo. Vazio = sem efeito"
+                }
+            }
+        },
+        "editor": {
+            "group": {
+                "ariaLabel": "Grupo {{group}} (clique para expandir/recolher)",
+                "changedCount": "{{count}} alterados",
+                "totalCount": "{{count}} itens"
+            },
+            "groups": {
+                "expandAll": "Expandir tudo",
+                "collapseAll": "Recolher tudo"
+            },
+            "row": {
+                "nativeValue": "Nativo {{value}}",
+                "emptyIsNative": "Vazio = nativo",
+                "nativeSyntax": "Valor nativo: {{value}}",
+                "alreadyNative": "Esta linha já está no valor nativo",
+                "editReverted": "Alteração da linha desfeita",
+                "nativeValueTitle": "Valor nativo: {{value}}",
+                "noUniformNative": "Esta variável não tem um único valor nativo",
+                "clear": "Limpar",
+                "clearTitle": "Limpar esta linha = voltar ao valor nativo do N.E.K.O",
+                "clearAria": "Limpar {{label}}",
+                "copyTitle": "Copiar o valor desta linha (dá para colar em outra linha, até no outro conjunto claro/escuro)",
+                "copyAria": "Copiar {{label}}",
+                "pasteTitle": "Colar nesta linha o último valor copiado (ou o da área de transferência)",
+                "pasteAria": "Colar em {{label}}",
+                "stateCleared": "Limpo",
+                "stateChanged": "Alterado",
+                "copyEmpty": "Esta linha está vazia (valor nativo); não há nada para copiar",
+                "copied": "Valor de \"{{label}}\" copiado: {{value}}",
+                "pasteEmpty": "Não há nada para colar na área de transferência (você também pode clicar antes no botão de copiar de uma linha)",
+                "pasteRejected": "\"{{label}}\" não aceita este valor: {{value}}",
+                "pasted": "Colado em \"{{label}}\""
+            },
+            "preview": {
+                "filterTitle": "Pré-visualização: {{value}} (afeta apenas as listras atrás da barra de pré-visualização)",
+                "filterNone": "Nenhuma cadeia de filtros para pré-visualizar (vazio = sem efeito)",
+                "gradientTitle": "Pré-visualização: {{value}}",
+                "gradientNone": "Nenhum gradiente para pré-visualizar (vazio = sem efeito)",
+                "filterHost": "Pré-visualização do filtro: as listras ao fundo são processadas pela cadeia de filtros atual",
+                "gradientHost": "Pré-visualização do gradiente",
+                "modeDark": "Escuro",
+                "modeLight": "Claro",
+                "hoverSuffix": " · Pré-visualizando \"{{name}}\""
+            },
+            "switch": {
+                "label": "Interruptor",
+                "nativeTitle": "Aparência nativa = ligado",
+                "nativeOn": "Nativo: ligado"
+            },
+            "color": {
+                "swatchAria": "{{label}}: seletor de cor",
+                "valueAria": "{{label}}: valor da cor",
+                "opacityAria": "{{label}}: opacidade",
+                "alphaLabel": "Alfa",
+                "alphaNoColor": "O valor atual não tem cor (transparent / inherit / vazio); informe uma cor primeiro e depois ajuste a opacidade",
+                "alphaTransparent": "O valor atual não tem cor (transparent); informe uma cor primeiro e depois ajuste a opacidade",
+                "alphaReuse": "Arrastar a opacidade reaproveita a cor anterior"
+            },
+            "image": {
+                "fileAria": "{{label}}: escolher arquivo de imagem",
+                "pick": "Escolher imagem",
+                "pickAria": "Escolher {{label}}",
+                "clear": "Remover",
+                "clearAria": "Remover {{label}}",
+                "hint": "A imagem é desenhada sobre a cor de fundo",
+                "readFailed": "Falha ao ler a imagem",
+                "readFailedDetail": "Falha ao ler a imagem: {{reason}}",
+                "uploading": "Enviando imagem de fundo…",
+                "noUrl": "O backend não retornou a URL da imagem",
+                "selected": "Imagem de fundo selecionada",
+                "uploadFailedDetail": "Falha ao enviar a imagem de fundo: {{reason}}",
+                "uploadFailed": "Falha ao enviar a imagem de fundo",
+                "current": "Imagem de fundo atual",
+                "none": "Sem imagem de fundo (segue o nativo)"
+            },
+            "gradient": {
+                "angleAria": "{{label}}: ângulo do gradiente",
+                "fromAria": "{{label}}: cor inicial",
+                "toAria": "{{label}}: cor final",
+                "generate": "Gerar",
+                "generateTitle": "Gera um linear-gradient a partir do ângulo e das cores inicial/final e o coloca no campo",
+                "generateAria": "Gerar {{label}}",
+                "angle": "Ângulo"
+            },
+            "freshness": {
+                "reloading": "O painel foi atualizado para v{{remote}} (esta página ainda é v{{local}}); recarregando…"
+            },
+            "compare": {
+                "chatBg": "Fundo do chat",
+                "panelBg": "Fundo do painel",
+                "userBubble": "Balão do usuário",
+                "aiBubble": "Balão da IA",
+                "bubbleText": "Texto do balão",
+                "accent": "Cor de destaque",
+                "shellRadius": "Raio dos cantos da moldura",
+                "chatBlur": "Desfoque de vidro fosco",
+                "same": "Este tema coincide com a paleta atual nestes itens e só difere nos detalhes — veja a pré-visualização acima."
+            },
+            "value": {
+                "empty": "(vazio)"
+            },
+            "aiPrompt": {
+                "title": "# Tema do N.E.K.O: {{name}}",
+                "intro1": "Você é um designer de paletas de cores. Abaixo está o tema que uso agora (variáveis CSS da janela de chat do N.E.K.O).",
+                "intro2": "Melhore-o e retorne o resultado **completo** na mesma estrutura de duas partes, para que eu possa colá-lo direto de volta no painel.",
+                "rulesHeading": "Restrições obrigatórias:",
+                "rule1": "1. Use apenas os nomes de variáveis que aparecem abaixo; não adicione variáveis inexistentes nem remova nenhuma;",
+                "rule2": "2. Cores usam #rrggbb / rgba() / transparent; comprimentos levam px; o desfoque é escrito como blur(18px);",
+                "rule3": "3. O conjunto claro fica em vars e o escuro em dark_vars; ambos devem estar completos;",
+                "rule4": "4. Contraste do texto principal com o fundo de pelo menos 4.5:1 e do texto secundário de pelo menos 3:1 (o painel verifica o contraste);",
+                "rule5": "5. Retorne apenas um bloco de código {{fence}}json com o conteúdo {\"name\": \"...\", \"vars\": {...}, \"dark_vars\": {...}}.",
+                "changesHeading": "Os {{count}} itens que alterei desta vez (foque nestes):",
+                "changeLine": "- {{mode}} {{label}}: {{before}} → {{after}}",
+                "currentPalette": "Paleta atual:",
+                "modalTitle": "Prompt para IA · {{name}}",
+                "modalHint": "Copie e cole em qualquer IA (ChatGPT / Claude / um modelo local). Depois que ela ajustar conforme o contrato de variáveis, cole o JSON retornado em \"Importar\"."
+            },
+            "dump": {
+                "expand": "Expandir JSON",
+                "collapse": "Recolher JSON",
+                "saved": "Salvo: {{light}} claros / {{dark}} escuros",
+                "pending": "; há ainda {{count}} alterações não aplicadas — o JSON acima já as reflete (copiá-lo dá o resultado editado); clique em \"Aplicar\" para gravá-las no servidor.",
+                "noPending": "; não há alterações não aplicadas."
+            },
+            "meta": {
+                "defaultName": "Padrão"
+            },
+            "changes": {
+                "reverted": "Alteração de \"{{label}}\" desfeita",
+                "revertAllConfirm": "Desfazer todas as {{count}} alterações não aplicadas? Isso não pode ser revertido.",
+                "revertedAllNotice": "{{count}} alterações não aplicadas foram desfeitas (a paleta no servidor não foi alterada).",
+                "revertedAll": "Todas as alterações foram desfeitas",
+                "undo": "Desfazer",
+                "undoAria": "Desfazer a alteração de \"{{label}}\""
+            },
+            "apply": {
+                "withCount": "Aplicar ({{count}} alterações)",
+                "label": "Aplicar"
+            }
+        },
+        "actions": {
+            "modeHint": {
+                "lightOnly": "Atenção: desta vez só o grupo \"Claro\" foi alterado — se o app estiver no modo escuro, a aparência não muda (os dois grupos são independentes).",
+                "darkOnly": "Atenção: desta vez só o grupo \"Escuro\" foi alterado — se o app estiver no modo claro, a aparência não muda (os dois grupos são independentes)."
+            },
+            "savedModeHint": {
+                "lightOnly": "No momento só o grupo \"Claro\" tem itens personalizados (o modo escuro mantém a aparência nativa).",
+                "darkOnly": "No momento só o grupo \"Escuro\" tem itens personalizados (o modo claro mantém a aparência nativa)."
+            },
+            "paletteHint": {
+                "notLoaded": "A paleta ainda não foi carregada; você ainda pode editar, e \"Aplicar\" tentará carregá-la de novo.",
+                "empty": "A paleta está vazia: todos os componentes usam a aparência nativa do N.E.K.O. Preencha qualquer linha e aplique para ver o efeito na hora.",
+                "saved": "{{total}} itens salvos (claro {{light}} / escuro {{dark}}). Linhas vazias mantêm a aparência nativa; os dois grupos são independentes, então configurar só um não altera o outro modo."
+            },
+            "apply": {
+                "invalidNotice": "{{count}} linha(s) com entrada inválida (borda vermelha); a aplicação foi bloqueada.\nCorrija os valores destacados em vermelho ou clique em \"Limpar\" na linha.",
+                "invalidShort": "Há entradas inválidas; nada foi aplicado",
+                "noChangesNotice": "Nada para aplicar (0 alterações de variáveis, nome/ativação inalterados e nenhuma entrada inválida em vermelho).\nOs valores são registrados enquanto você digita, sem precisar sair do campo. Se você alterou algo, talvez \"Reverter grupo\" tenha desfeito.",
+                "noChanges": "Nada para aplicar",
+                "busy": "Aplicando…",
+                "partLight": "claro: {{count}}",
+                "partDark": "escuro: {{count}}",
+                "partEnabled": "tema ativado",
+                "partDisabled": "tema desativado",
+                "partName": "nome do tema \"{{name}}\"",
+                "partMaterials": "materiais avançados",
+                "noVarChanges": "sem alterações de variáveis",
+                "readbackFailedNote": "Salvo, mas a releitura falhou; o painel continua marcado como \"não sincronizado\" (as marcas de alteração foram mantidas). Clique em \"Recarregar\".",
+                "partialNotice": "Aplicado ({{counts}}), mas o backend rejeitou {{rejected}} itens; os valores voltaram ao painel para você corrigir ali mesmo:\n",
+                "partialToastRestored": "Aplicado ({{count}} rejeitados, devolvidos ao painel)",
+                "partialToast": "Aplicado ({{count}} rejeitados)",
+                "doneNotice": "Aplicado e salvo em theme.json: {{counts}}",
+                "doneShort": "Aplicado: {{counts}}",
+                "statusPendingFix": " ({{count}} a corrigir)",
+                "failedNotice": "Falha ao aplicar: {{error}}",
+                "failed": "Falha ao aplicar"
+            },
+            "readbackFailedSuffix": " (falha na releitura)",
+            "reset": {
+                "confirm": "Restaurar o tema padrão integrado? Todas as cores personalizadas atuais serão apagadas.",
+                "busy": "Redefinindo…",
+                "done": "Tema padrão restaurado.",
+                "doneReadbackFailed": "Tema padrão restaurado.\nA releitura falhou, então o painel pode não mostrar os valores mais recentes. Clique em \"Recarregar\".",
+                "doneShort": "Redefinido",
+                "failedNotice": "Falha ao redefinir: {{error}}",
+                "failed": "Falha ao redefinir"
+            },
+            "export": {
+                "noFileContent": "O backend não retornou o conteúdo do arquivo",
+                "downloadedWithImages": "Baixado: {{filename}}\n({{kb}} KB, inclui {{images}} imagem(ns) de fundo)",
+                "downloaded": "Baixado: {{filename}}\n({{kb}} KB)",
+                "pendingConfirm": "Há {{count}} alteração(ões) não aplicada(s).\nO JSON exportado vem do theme.json salvo em disco (sem essas alterações). Exportar mesmo assim?",
+                "busy": "Exportando…",
+                "hintPending": "Abaixo está o JSON da paleta salva em theme.json (sem {{count}} alteração(ões) não aplicada(s)); copie para guardar ou compartilhar.",
+                "hint": "Abaixo está a paleta atual em texto JSON; copie para guardar ou compartilhar.",
+                "doneDownloadedPending": "Exportado e baixado (sem as alterações não aplicadas)",
+                "doneDownloaded": "Exportado e baixado",
+                "downloadFailed": "Falha ao baixar o arquivo ({{error}}); o texto JSON está abaixo para copiar manualmente.",
+                "doneNoFile": "Exportado (nenhum arquivo gravado)",
+                "title": "Exportar tema",
+                "failedNotice": "Falha ao exportar: {{error}}",
+                "failed": "Falha ao exportar"
+            },
+            "import": {
+                "title": "Importar tema",
+                "hint": "Cole o texto JSON da paleta. A importação substitui tudo; itens inválidos são descartados pelo backend.",
+                "empty": "Cole o conteúdo primeiro",
+                "tooLong": "O conteúdo é longo demais ({{length}} caracteres, limite {{max}}). Remova o que não for necessário e tente de novo.",
+                "failed": "Falha ao importar",
+                "failedTooLong": "Falha ao importar: conteúdo longo demais",
+                "textKept": "O texto colado foi mantido; ajuste e tente de novo.",
+                "busy": "Importando…",
+                "partialNotice": "Importado, mas o backend rejeitou {{count}} itens:\n",
+                "partialToast": "Importado (alguns itens rejeitados)",
+                "partialStatus": "Importado ({{count}} rejeitados)",
+                "partialStatusReadbackFailed": "Importado ({{count}} rejeitados, falha na releitura)",
+                "doneNotice": "Importado e salvo em theme.json.",
+                "done": "Importado",
+                "failedNotice": "Falha ao importar: {{error}}"
+            },
+            "readbackFailedNote": "Salvo, mas a releitura falhou, então o painel pode não mostrar os valores mais recentes. Clique em \"Recarregar\".",
+            "readbackFailedHint": "A releitura falhou, então o painel pode não mostrar os valores mais recentes. Clique em \"Recarregar\"."
+        },
+        "library": {
+            "family": {
+                "glassy": "Vidro líquido",
+                "gradient": "Gradiente",
+                "dark": "Escuro",
+                "light": "Claro",
+                "texture": "Papel",
+                "minimal": "Minimalista",
+                "custom": "Personalizado",
+                "other": "Outros",
+                "favorites": "Favoritos"
+            },
+            "empty": "A biblioteca está vazia. Quando gostar das cores, clique em \"Salvar\" para guardá-las como seu tema; .zip / .json compartilhados por outros entram com \"Importar\". Você pode voltar a eles a qualquer momento e \"Compartilhar\" um tema como zip.",
+            "item": {
+                "untitled": "Sem nome",
+                "builtin": "Integrado",
+                "noTime": "Sem data",
+                "counts": "Claro {{light}} / Escuro {{dark}}",
+                "hasImage": "Com imagem de fundo",
+                "noMaterialTitle": "Este tema não tem materiais avançados; ao aplicá-lo eles são desativados (seus ajustes manuais são mantidos)",
+                "noMaterial": "Sem materiais",
+                "materialFallback": "Material",
+                "materialTitle": "Inclui materiais avançados: {{material}}",
+                "materialOffByDefault": " (desativados por padrão no tema)",
+                "materialChip": "Material · {{material}}",
+                "noNote": "Sem descrição · clique em \"Editar\" para escrever uma; ela vai junto ao compartilhar",
+                "noNoteTitle": "A descrição aparece no cartão e é gravada no theme.json do pacote compartilhado",
+                "tagTitle": "Mostrar só temas \"{{tag}}\"",
+                "favOn": "★ Favoritado",
+                "favOff": "☆ Favoritar",
+                "unfavAria": "Remover {{name}} dos favoritos",
+                "favAria": "Adicionar {{name}} aos favoritos",
+                "unfavTitle": "Remover dos favoritos",
+                "favTitle": "Favoritar (vai para \"Favoritos\" e fica no topo de \"Todos\")",
+                "edit": "Editar",
+                "editTitle": "Alterar nome / nota / tags (o id não muda; favoritos e agendamentos continuam reconhecendo)",
+                "editAria": "Editar informações do tema {{name}}",
+                "apply": "Aplicar",
+                "applyAria": "Aplicar tema {{name}}",
+                "share": "Compartilhar",
+                "shareTitle": "Exportar como zip (inclui imagens de fundo)",
+                "shareAria": "Compartilhar tema {{name}}",
+                "jsonTitle": "Copiar como JSON em texto puro (envie; a outra pessoa cola em \"Importar\")",
+                "jsonAria": "Copiar JSON do tema {{name}}",
+                "delete": "Excluir",
+                "deleteAria": "Excluir tema {{name}}"
+            },
+            "filter": {
+                "all": "Todos"
+            },
+            "emptyState": {
+                "query": "Nenhum tema corresponde a \"{{query}}\". Tente outra palavra ou clique em \"Todos\" para limpar os filtros.",
+                "favorites": "Nenhum favorito ainda: clique em \"☆ Favoritar\" abaixo de um cartão de tema. Os favoritos aparecem primeiro em \"Todos\".",
+                "custom": "Ainda não há temas personalizados: \"Importar pacote\" traz .zip / .json compartilhados por outros, e clicar em \"Salvar\" depois de ajustar as cores também guarda aqui.",
+                "tag": "Nenhum tema com a tag \"{{tag}}\". Clique em \"Todos\" para ver tudo.",
+                "family": "Ainda não há temas neste estilo. Tente outro estilo ou \"Todos\"."
+            },
+            "loadFailed": "Falha ao carregar a biblioteca: {{error}}",
+            "shuffle": {
+                "none": "Ainda não há temas integrados para sortear",
+                "picked": "Para variar: {{name}}"
+            },
+            "save": {
+                "busy": "Salvando na biblioteca…",
+                "currentTheme": "Tema atual",
+                "doneWithNote": "\"{{name}}\" salvo em Personalizado (a descrição foi gravada e vai junto ao compartilhar)",
+                "done": "\"{{name}}\" salvo em Personalizado",
+                "doneStatus": "Salvo nos temas personalizados",
+                "failedNotice": "Falha ao salvar na biblioteca: {{error}}",
+                "failed": "Falha ao salvar",
+                "failedStatus": "Falha ao salvar na biblioteca"
+            },
+            "apply": {
+                "busy": "Trocando de tema…",
+                "thisTheme": "este tema",
+                "materialOff": "; materiais avançados desativados (este tema não os tem)",
+                "materialSwitched": "; os materiais foram trocados pelos do tema",
+                "materialLocked": "; os materiais estão bloqueados (seus ajustes manuais foram mantidos)",
+                "switched": "Trocado para \"{{name}}\"",
+                "doneStatus": "Tema trocado",
+                "failedNotice": "Falha ao trocar de tema: {{error}}",
+                "failed": "Falha ao trocar",
+                "failedStatus": "Falha ao trocar de tema"
+            },
+            "share": {
+                "busy": "Empacotando…",
+                "noContent": "O backend não retornou o conteúdo do pacote",
+                "doneWithImages": "Exportado {{filename}} (inclui {{images}} imagem(ns))",
+                "done": "Exportado {{filename}}",
+                "doneStatus": "Pacote de compartilhamento exportado",
+                "failedNotice": "Falha ao exportar o pacote: {{error}}",
+                "failedStatus": "Falha ao exportar o pacote"
+            },
+            "json": {
+                "busy": "Gerando JSON do tema…",
+                "noContent": "O backend não retornou conteúdo JSON",
+                "hint": "Este é \"{{name}}\" como tema em texto puro (claro {{light}} / escuro {{dark}}). Envie e a outra pessoa poderá colar em \"Importar\".",
+                "imagesStripped": "Atenção: este tema usa {{count}} imagem(ns) de fundo. Imagens não cabem em texto, então foram removidas do JSON (quem receber terá um fundo sólido). Para compartilhar com imagens, use \"Compartilhar\" para exportar um zip.",
+                "title": "JSON do tema · {{name}}",
+                "doneStatus": "JSON do tema pronto; clique em \"Copiar e fechar\" para copiar",
+                "failedNotice": "Falha ao gerar o JSON do tema: {{error}}",
+                "failed": "Falha ao gerar",
+                "failedStatus": "Falha ao gerar o JSON do tema"
+            },
+            "meta": {
+                "title": "Editar informações do tema · {{name}}",
+                "hint": "Só o nome, a nota e as tags mudam. O id do item continua o mesmo — favoritos e \"Troca automática por horário\" usam ele, então renomear não os quebra.",
+                "nameRequired": "O nome não pode ficar vazio",
+                "saving": "Salvando…",
+                "unchanged": "Nada mudou; mantido como estava",
+                "updated": "\"{{name}}\" atualizado",
+                "updatedStatus": "Informações do tema atualizadas",
+                "failedNotice": "Falha ao atualizar as informações do tema: {{error}}",
+                "failed": "Falha ao atualizar; veja o aviso à esquerda"
+            },
+            "delete": {
+                "confirmButton": "Confirmar exclusão",
+                "scheduledNotice": "\"{{name}}\" é usado na troca automática ({{slots}}). Depois de excluí-lo, esses horários manterão o tema ativo e não trocarão.",
+                "clickAgainScheduled": "Clique em \"Confirmar exclusão\" de novo para excluir (ele é usado na troca automática)",
+                "clickAgain": "Clique em \"Confirmar exclusão\" de novo para excluir",
+                "busy": "Excluindo…",
+                "done": "Excluído",
+                "doneStatus": "Item da biblioteca excluído",
+                "failedNotice": "Falha ao excluir: {{error}}",
+                "failed": "Falha ao excluir"
+            },
+            "file": {
+                "readFailed": "Falha ao ler o arquivo",
+                "readFailedNotice": "Falha ao ler o arquivo: {{error}}"
+            },
+            "importArchive": {
+                "busy": "Importando pacote…",
+                "untitled": "Tema sem nome",
+                "doneWithImages": "\"{{name}}\" importado para a biblioteca (inclui {{images}} imagem(ns) de fundo)",
+                "done": "\"{{name}}\" importado para a biblioteca",
+                "notApplied": "Ainda não está ativo — clique em \"Aplicar\" na lista para trocar para ele.",
+                "doneShort": "Importado para a biblioteca",
+                "failedNotice": "Falha ao importar o pacote: {{error}}",
+                "failedStatus": "Falha ao importar o pacote"
+            },
+            "backup": {
+                "empty": "A biblioteca está vazia; não há nada para fazer backup",
+                "busy": "Empacotando a biblioteca…",
+                "doneTitle": "Backup da biblioteca feito ({{count}} temas)",
+                "restoreHint": "Depois de trocar de computador ou reinstalar, escolha este zip em \"Restaurar backup\" para recuperar tudo (só adiciona, nunca sobrescreve).",
+                "done": "Backup de {{count}} temas feito",
+                "doneStatus": "Backup da biblioteca feito",
+                "failedNotice": "Falha no backup da biblioteca: {{error}}",
+                "failed": "Falha no backup",
+                "failedStatus": "Falha no backup da biblioteca"
+            },
+            "restore": {
+                "readFailedNotice": "Falha ao ler o backup: {{error}}",
+                "busy": "Restaurando a biblioteca…",
+                "done": "{{count}} temas restaurados do backup para a biblioteca",
+                "skippedItem": "· {{name}}: {{reason}}",
+                "skipped": "{{count}} não puderam ser restaurados:",
+                "notApplied": "Os temas restaurados só foram adicionados à biblioteca; clique em \"Aplicar\" para trocar para um.",
+                "doneShort": "{{count}} temas restaurados",
+                "doneStatus": "Biblioteca restaurada",
+                "failedNotice": "Falha ao restaurar a biblioteca: {{error}}",
+                "failed": "Falha ao restaurar",
+                "failedStatus": "Falha ao restaurar a biblioteca"
+            },
+            "schedule": {
+                "zone": {
+                    "morning": "Manhã",
+                    "day": "Dia",
+                    "evening": "Fim de tarde",
+                    "night": "Noite"
+                },
+                "weekend": "Fim de semana",
+                "weekday": "Dia útil",
+                "windowOvernight": "{{start}}–{{end}} (dia seguinte)",
+                "optionNone": "(Não trocar, manter como está)",
+                "groupBuiltin": "Temas integrados",
+                "groupCustom": "Meus temas",
+                "missing": "{{name}} (não existe mais)",
+                "saveDirty": "Salvar *",
+                "save": "Salvar",
+                "saveDirtyTitle": "Há escolhas não salvas (clique para salvar)",
+                "saveTitle": "Salvar as escolhas de horário dos dias úteis e do fim de semana",
+                "selectAria": "Tema para {{day}}, {{zone}}",
+                "slotLabel": "{{day}}, {{zone}}",
+                "nowUnknown": "O horário atual ainda não foi carregado.",
+                "loading": "Carregando…",
+                "notPicked": "Nenhum (manter como está)",
+                "nowHead": "Agora é {{day}}, {{zone}} ({{hour}}h)",
+                "nowDisabled": "; a troca automática está desativada.",
+                "nowWillSwitchWeekend": "; no horário, troca para \"{{theme}}\" (tabela de fim de semana).",
+                "nowWillSwitch": "; no horário, troca para \"{{theme}}\".",
+                "nowStale": "; {{count}} horário(s) apontam para temas que não estão mais na biblioteca (reimporte o tema ou escolha outro para corrigir).",
+                "nowNotPicked": "; nenhum tema escolhido para este horário, então nada será trocado.",
+                "loadFailed": "Falha ao carregar o agendamento: {{error}}",
+                "saving": "Salvando a troca automática…",
+                "savedSwitched": "Salvo e trocado para \"{{name}}\"",
+                "savedSwitchedStatus": "A troca automática está ativa",
+                "savedDisabled": "Salvo (troca automática desativada)",
+                "savedDisabledStatus": "Troca automática desativada",
+                "savedNoTheme": "Salvo; nenhum tema escolhido para este horário",
+                "savedStatus": "Troca automática salva",
+                "saveFailedNotice": "Falha ao salvar a troca automática: {{error}}",
+                "saveFailedStatus": "Falha ao salvar a troca automática"
+            }
+        },
+        "sync": {
+            "blockerDirty": "{{count}} alteração(ões) não aplicada(s)",
+            "blockerModal": "uma caixa de diálogo está sendo editada",
+            "blockerBusy": "a ação anterior ainda está em andamento",
+            "blockerUnknown": "há operações não concluídas",
+            "reasonSeparator": ", ",
+            "blockedNotice": "O tema no disco foi alterado externamente (talvez pela troca agendada ou por outra janela).\nEstado do painel: {{reasons}}. Para não sobrescrever suas alterações, ele não foi atualizado automaticamente.\nPara sincronizar agora: aplique ou use «Reverter este grupo» para limpar as alterações do painel; para descartá-las e sincronizar direto, clique em «Recarregar».",
+            "blockedToast": "O tema no disco mudou; não foi sobrescrito automaticamente",
+            "failureNotice": "O painel não conseguiu ler o theme.json {{count}} vezes seguidas; acompanhar alterações externas está temporariamente indisponível.\nVocê ainda pode editar manualmente; se continuar, verifique «Status» para ver se o serviço de temas está funcionando.",
+            "failureStatus": "Detecção de alterações externas indisponível",
+            "syncedToast": "Alteração externa sincronizada: {{name}}",
+            "syncedStatus": "Alteração externa sincronizada",
+            "loadedNotice": "Tema atual carregado: {{light}} claro / {{dark}} escuro",
+            "loadedStatus": "Carregado · claro {{light}} / escuro {{dark}}",
+            "loadFailedNotice": "Falha ao carregar: {{error}}\n(O serviço de temas pode não estar respondendo; você pode continuar editando e «Aplicar» tentará novamente.)",
+            "loadFailedStatus": "Falha ao carregar",
+            "reloadConfirm": "O painel tem {{count}} alteração(ões) não aplicada(s).\n«Recarregar» vai descartá-las (não pode ser desfeito). Continuar?",
+            "reloadDiscarded": "Recarregado; {{count}} alteração(ões) não aplicada(s) descartada(s)."
+        },
+        "misc": {
+            "untitled": "Sem nome",
+            "untitledTheme": "Tema sem nome",
+            "revertNoneDark": "Não há alterações no grupo escuro",
+            "revertNoneLight": "Não há alterações no grupo claro",
+            "revertedDark": "Alterações do grupo escuro revertidas",
+            "revertedLight": "Alterações do grupo claro revertidas",
+            "dropMultiple": "Só é possível importar um arquivo por vez; usando o primeiro",
+            "dropUnsupportedNotice": "Só é possível soltar pacotes .zip ou arquivos de tema .json.",
+            "dropUnsupportedToast": "Tipo de arquivo não suportado",
+            "dropBusy": "Ocupado; solte o arquivo quando esta etapa terminar",
+            "dropReading": "Lendo «{{name}}»…",
+            "cssBlockLight": "{{name}} · claro",
+            "cssBlockDark": "{{name}} · escuro",
+            "cssHeader": "{{name}} - exportado do N.E.K.O Theme Studio ({{date}})",
+            "cssEmpty": "A paleta atual está vazia; não há variáveis para exportar",
+            "variant": {
+                "warm": "Mais quente",
+                "cool": "Mais frio",
+                "bright": "Mais claro",
+                "deep": "Mais intenso"
+            },
+            "variantLabel": "Variante · {{label}}",
+            "variantNoColors": "A paleta atual não tem variáveis de cor para ajustar",
+            "wallpaperFilled": "{{count}} variáveis preenchidas (Ctrl+Z para desfazer)",
+            "wallpaperGenerated": "Paleta completa gerada a partir de «{{label}}»: veja o resultado, clique em «Aplicar» se gostar ou pressione Ctrl+Z para desfazer.",
+            "wallpaperDefaultName": "Papel de parede",
+            "wallpaperNotImage": "Escolha uma imagem (png / jpg / webp / gif)",
+            "wallpaperTooLarge": "A imagem é grande demais (máx. 12 MB); comprima e tente de novo",
+            "wallpaperReadFailed": "Não foi possível ler esta imagem; tente outra",
+            "wallpaperDecodeFailed": "Não foi possível decodificar esta imagem; tente outra",
+            "wallpaperNoColors": "Nenhuma cor utilizável encontrada nesta imagem (talvez seja quase toda transparente)",
+            "wallpaperFailed": "Falha ao gerar a paleta: {{error}}",
+            "glow": {
+                "low": "Baixa",
+                "medium": "Média",
+                "high": "Alta"
+            },
+            "glowApplied": "Intensidade do brilho definida como «{{label}}» (quatro variáveis, Ctrl+Z para desfazer)",
+            "font": {
+                "system": "Padrão do sistema",
+                "sans": "Sem serifa",
+                "mono": "Monoespaçada"
+            },
+            "fontApplied": "Fonte alterada para «{{label}}» (clique em «Aplicar» para ter efeito, Ctrl+Z para desfazer)",
+            "libraryCount": "{{count}} temas na biblioteca",
+            "materialsLoadFailed": "A central de materiais não carregou (materials.js não está pronto); recarregue o painel para tentar de novo.",
+            "dropOverlay": "Solte para importar um tema (pacote .zip / .json)"
+        },
+        "health": {
+            "help": {
+                "noChange": {
+                    "title": "O tema está definido, mas a interface não mudou nada",
+                    "body": "Tente nesta ordem: (1) confirme que escolheu cores no painel e clicou em «Aplicar»; (2) feche o N.E.K.O por completo e abra de novo (janelas abertas não recarregam sozinhas); (3) veja a linha «Relatório da janela»: se nunca houve relatório, a janela de chat ainda não foi aberta."
+                },
+                "whyApply": {
+                    "title": "Por que preciso clicar em «Aplicar» depois de cada mudança?",
+                    "body": "Os valores no painel são apenas um rascunho; «Aplicar» os grava no theme.json do diretório de dados. A janela de chat o lê a cada 1,5 segundo, então normalmente a mudança aparece em segundos."
+                },
+                "lightDark": {
+                    "title": "Claro e escuro são duas paletas independentes",
+                    "body": "As abas «Claro / Escuro» no topo do painel são independentes. Se você só mudou o grupo escuro, nada muda enquanto o app estiver no modo claro."
+                },
+                "storage": {
+                    "title": "Onde ficam os dados do tema?",
+                    "body": "Clique em «Copiar diretório de dados» neste cartão: theme.json (tema atual), themes/ (biblioteca de temas), backgrounds/ (fundos), schedule.json (troca agendada), diagnostics.json (relatórios do carregador)."
+                },
+                "migrate": {
+                    "title": "Trocar de máquina / reinstalar",
+                    "body": "No rodapé do painel você pode «Exportar» um pacote (zip, com fundos) e importá-lo na máquina nova. A biblioteca de temas inteira também pode ser exportada de uma vez, sem salvar um por um."
+                },
+                "background": {
+                    "title": "Por que a imagem de fundo não aparece?",
+                    "body": "As imagens de fundo são servidas pelo backend do app a partir de backgrounds/ no diretório de dados. Se após o envio a prévia do painel estiver certa mas a janela de chat não mudar, verifique primeiro se «Relatório da janela» não mostra erros e se o tema atual está ativado."
+                },
+                "modalTitle": "O tema não está funcionando?",
+                "modalHint": "Estes são os problemas mais comuns do Estúdio de temas. Depois de alterar, fechar e reabrir o N.E.K.O normalmente mostra o resultado."
+            },
+            "stateNoService": "Falha ao carregar: não foi possível obter o status do serviço de temas",
+            "key": {
+                "dataDir": "Diretório de dados",
+                "currentTheme": "Tema atual",
+                "vars": "Variáveis de cor",
+                "library": "Biblioteca de temas",
+                "backgrounds": "Imagens de fundo",
+                "loader": "Recursos do carregador",
+                "report": "Relatório da janela",
+                "loaderState": "Estado do carregador",
+                "loaderError": "Erro do carregador",
+                "windowMismatch": "Janela divergente",
+                "styleMissing": "Estilos não aplicados",
+                "windowLagging": "Janela atrasada"
+            },
+            "unknown": "Desconhecido",
+            "themeEnabled": "{{name}} (ativado)",
+            "themeDisabled": "Cores padrão de fábrica (o tema «{{name}}» está desativado; ligue o interruptor e clique em «Aplicar»)",
+            "varsEmpty": "Ainda é o tema vazio de fábrica: escolha cores e clique em «Aplicar» para que tenham efeito",
+            "varsCount": "{{light}} claro · {{dark}} escuro",
+            "libraryCount": "{{custom}} personalizados · {{builtin}} integrados",
+            "backgroundCount": "{{count}}",
+            "loaderMissing": "Não foi possível ler os dois arquivos em static/theme-studio/loader/",
+            "unknownPage": "Página desconhecida",
+            "reportStats": " · variáveis nts {{vars}} · regras de estilo {{rules}}",
+            "loaderDisabled": "O relatório diz que o tema está desativado: ligue o interruptor do painel e clique em «Aplicar»",
+            "windowMismatch": "A janela {{page}} do relatório não aplicou nenhuma variável: continua com a aparência padrão; tente recarregá-la",
+            "styleMissing": "O relatório diz que {{count}} variáveis foram injetadas, mas há 0 regras de estilo: o <style> injetado foi removido",
+            "windowLagging": "O theme.json já está vazio, mas a janela ainda informa as {{count}} variáveis anteriores; ela se atualiza em até 1,5 segundo",
+            "noReport": "Nenhum relatório recebido ainda: ele aparece depois que a janela de chat for aberta",
+            "keyLabel": "{{key}}: ",
+            "stateOk": "Tudo certo: o tema está em vigor",
+            "stateWarn": "O serviço de temas está funcionando, mas há alguns pontos de atenção",
+            "stateBad": "Problema: o tema pode não estar em vigor",
+            "refreshedToast": "Status atualizado",
+            "stateLoadFailed": "Falha ao carregar: {{error}}",
+            "verifyMismatch": "O tema foi gravado no theme.json, mas a janela ainda não o aplicou. Veja «Janela divergente / Estilos não aplicados» no cartão «Status» e recarregue essa janela ou reinicie o app.",
+            "dataDirMissing": "O diretório de dados ainda não foi lido",
+            "dataDirCopied": "Diretório de dados copiado",
+            "dataDirNotice": "Diretório de dados: {{path}}"
+        },
+        "modal": {
+            "copyAndClose": "Copiar e fechar",
+            "save": "Salvar",
+            "ok": "OK",
+            "copied": "Copiado para a área de transferência",
+            "copyFailedSelected": "Falha ao copiar; o texto está selecionado, pressione Ctrl+C para copiar",
+            "dumpCopied": "JSON da paleta copiado",
+            "copyFailedManual": "Falha ao copiar; selecione o texto manualmente",
+            "cssTitle": "Trecho de variáveis CSS · {{name}}",
+            "cssCurrentPalette": "Paleta atual",
+            "cssHint": "Você pode colar este CSS em qualquer lugar: as cores claras ficam em :root e as escuras em :root[data-theme=\"dark\"]. Os nomes das variáveis são os da coluna do painel e os valores já incluem suas alterações atuais (não é preciso «Aplicar» antes)."
+        },
+        "guide": {
+            "focusHint": "O foco do teclado está na janela principal do N.E.K.O: clique uma vez nela (por exemplo, no campo de chat) e volte para digitar"
+        },
+        "materials": {
+            "mode": {
+                "dark": "Escuro",
+                "light": "Claro"
+            },
+            "error": {
+                "panelNotReady": "A interface do painel ainda não está pronta",
+                "backendDown": "O plugin do backend pode não estar em execução",
+                "specFailed": "Falha ao carregar a lista de parâmetros: {{error}}"
+            },
+            "preview": {
+                "compileFailed": "Falha ao compilar a pré-visualização: {{error}}",
+                "varCount": "{{count}} variáveis",
+                "metaLine": " · Predefinição {{preset}} · Qualidade {{quality}} · {{mode}}",
+                "readabilityWarn": "A opacidade da base de vidro é {{percent}}%, então o texto por cima pode ficar difícil de ler. Reduza “Opacidade” ou “Intensidade do tingimento” para recuperar o contraste (a configuração atual ainda funciona, só parece mais sólida).",
+                "bgLight": "Fundo: claro",
+                "bgDark": "Fundo: escuro",
+                "title": "Pré-visualização ao vivo · {{mode}}",
+                "off": "Materiais desativados",
+                "compareTitle": "Mostra o material original (parâmetros padrão) na metade direita para comparar antes e depois ao arrastar os controles",
+                "compare": "Comparar",
+                "bgTitle": "Alterna o fundo da pré-visualização: o claro verifica a legibilidade em cenas claras, o escuro mostra os reflexos do vidro branco",
+                "original": "Original",
+                "current": "Atual",
+                "compiling": "Compilando pré-visualização…"
+            },
+            "nav": {
+                "overview": "Visão geral",
+                "base": "Material base",
+                "dye": "Tingimento do vidro",
+                "light": "Luz e reflexos",
+                "refract": "Refração",
+                "liquid": "Efeito líquido",
+                "surface": "Superfície",
+                "anim": "Animação",
+                "components": "Componentes",
+                "presets": "Predefinições e qualidade"
+            },
+            "group": {
+                "baseSurface": "Superfície base",
+                "dye": "Tingimento do vidro",
+                "edge": "Luz de borda",
+                "inner": "Brilho interno",
+                "ambient": "Reflexo ambiente",
+                "dynamic": "Iluminação dinâmica",
+                "refract": "Refração",
+                "dispersion": "Dispersão",
+                "liquid": "Efeito líquido",
+                "noise": "Ruído",
+                "radius": "Arredondamento",
+                "border": "Borda",
+                "shadow": "Sombra",
+                "switches": "Interruptores",
+                "durations": "Durações",
+                "feedback": "Resposta à interação"
+            },
+            "row": {
+                "clearDarkTitle": "Limpar a substituição escura deste item e voltar ao valor claro",
+                "clearDark": "Escuro ✕",
+                "on": "Ligado",
+                "off": "Desligado"
+            },
+            "toast": {
+                "badColor": "Formato de cor não suportado: {{value}} (use #rrggbb ou rgb()/rgba())",
+                "presetClearedDark": "Trocar de predefinição limpa as substituições escuras: {{count}} removidas (a predefinição substitui o conjunto inteiro).",
+                "presetNameEmpty": "Dê um nome à predefinição primeiro.",
+                "presetNameTaken": "“{{name}}” coincide com uma predefinição integrada; escolha outro nome.",
+                "presetSaved": "Salvo como “{{name}}”. Clique em “Aplicar materiais” para gravar no disco.",
+                "presetDeleted": "Predefinição personalizada “{{name}}” excluída.",
+                "presetDeleteFailed": "Falha ao excluir a predefinição: {{error}}",
+                "compResetAll": "Todos os componentes voltaram a herdar o material global",
+                "followOn": "Os materiais acompanharão a troca de tema",
+                "followOff": "Materiais bloqueados: as configurações atuais são mantidas ao trocar de tema",
+                "reverted": "Alterações de material descartadas",
+                "darkCleared": "{{count}} substituições escuras removidas; tudo volta ao modo claro"
+            },
+            "search": {
+                "found": "{{count}} encontrados (em todas as telas). Limpe a busca para voltar à tela atual.",
+                "none": "Nenhum parâmetro corresponde a “{{query}}”."
+            },
+            "hint": {
+                "darkGlass": "Em temas escuros a base do vidro escurece automaticamente (mantendo seu tingimento): o texto do modo escuro é claro e ficaria ilegível sobre branco, por isso o modo escuro mostra vidro escuro.",
+                "lightDark": "Claro e escuro são ajustados separadamente: o escuro só guarda valores diferentes do claro; o resto herda do claro."
+            },
+            "overview": {
+                "status": "Status atual",
+                "advanced": "Materiais avançados",
+                "enabled": "Ativado",
+                "disabled": "Desativado",
+                "preset": "Predefinição de material",
+                "quality": "Modo de desempenho",
+                "darkOverrides": "Substituições escuras",
+                "itemCount": "{{count}}",
+                "components": "Componentes personalizados",
+                "paramTotal": "Total de parâmetros",
+                "quickPresets": "Predefinições rápidas",
+                "limits": "Escopo e limites",
+                "limitsHint": "Os materiais avançados afetam apenas cor, desfoque, refração, iluminação, arredondamento, borda e sombra: não alteram display/position/tamanho/overflow/z-index, então o layout não quebra; o contraste do texto é garantido pela “verificação de legibilidade” do painel. Ao desligar o plugin ou este interruptor, a camada de materiais é removida por inteiro e o tema original volta.",
+                "fallbackHint": "Ambientes sem suporte a backdrop-filter (motores antigos / aceleração de hardware desativada) usam cor sólida semitransparente, então nunca aparece vidro fosco renderizado pela metade."
+            },
+            "preset": {
+                "customDesc": "Predefinição personalizada · clique para aplicar o conjunto"
+            },
+            "presetDesc": {
+                "clear": "Vidro transparente, tingimento leve",
+                "frosted": "Fosco, leitura do dia a dia",
+                "liquid": "Vidro líquido estilo Apple: cantos grandes, alta saturação, linha especular no topo e refração interna",
+                "smoke": "Tom esfumaçado escuro, baixa saturação",
+                "soft": "Suave, baixo contraste, para uso prolongado",
+                "prism": "Dispersão de prisma, luz de borda forte"
+            },
+            "presets": {
+                "builtin": "Predefinições de material",
+                "builtinHint": "Uma predefinição substitui todo o conjunto de parâmetros: ao trocar, as cinco seções voltam aos valores dela, sem restos da anterior.",
+                "mine": "Minhas predefinições",
+                "delete": "Excluir",
+                "mineEmpty": "Ainda não há predefinições personalizadas. Quando os parâmetros estiverem bons, dê um nome e salve abaixo (gravado em theme.json com “Aplicar materiais”).",
+                "namePlaceholder": "Nome para o conjunto atual (≤40 caracteres)",
+                "save": "Salvar como predefinição",
+                "mineHint": "Excluir uma predefinição personalizada grava no disco na hora (sem “Aplicar materiais”); salvar é enviado com “Aplicar materiais” e vai junto nos pacotes de exportação/compartilhamento.",
+                "quality": "Modo de desempenho",
+                "qualityHint": "Economia: metade do desfoque, sem refração/movimento/ruído/holofote. Alta: luz de borda e reflexo ambiente mais fortes. Ultra: todos os efeitos no máximo.",
+                "reset": "Redefinir",
+                "resetDefaults": "Restaurar parâmetros padrão"
+            },
+            "qualityDesc": {
+                "saver": "Prioriza bateria, efeitos pela metade",
+                "balanced": "Equilibrado, padrão",
+                "high": "Alta qualidade, luz reforçada",
+                "ultra": "Ultra, todos os efeitos no máximo"
+            },
+            "comp": {
+                "inherit": "Herdar global",
+                "preset": "Usar predefinição",
+                "custom": "Personalizado",
+                "presetNote": "Usa opacidade / desfoque / arredondamento / borda / sombra de “{{preset}}”",
+                "inheritNote": "Segue o material global; sem variáveis próprias",
+                "hint": "Materiais por componente afetam só o próprio componente: “Herdar global” não cria variáveis próprias e nunca sobrescreve as configurações globais.",
+                "customCount": "{{count}} componentes personalizados",
+                "allInherit": "Todos os componentes seguem o global",
+                "resetAll": "Herdar global em todos",
+                "scopeHint": "Os componentes só substituem opacidade / desfoque / arredondamento / borda / sombra; a cor continua global para nenhuma parte destoar.",
+                "stripHint": "As miniaturas usam diretamente as variáveis do componente: “Herdar global” volta aos valores globais, “Personalizado” muda na hora (só ilustram cor / arredondamento / desfoque / borda / sombra)."
+            },
+            "head": {
+                "dirty": "{{count}} alterações de material pendentes",
+                "clearDarkCount": "Limpar substituições escuras ({{count}})",
+                "title": "Materiais avançados",
+                "searchPlaceholder": "Buscar parâmetros (ex.: radius / blur)",
+                "clearDark": "Limpar substituições escuras",
+                "enable": "Ativar",
+                "followTitle": "Ligado: ao trocar de tema, as configurações atuais são substituídas pelos materiais do tema; desligado: seus materiais ajustados à mão são mantidos",
+                "follow": "Seguir o tema",
+                "modeTitle": "Editar separadamente os materiais claro e escuro",
+                "qualityTitle": "Modo de desempenho",
+                "revert": "Voltar ao salvo",
+                "masterOff": "O interruptor geral do tema (“Ativar tema” no topo do painel) está desligado, então os materiais avançados não terão efeito por enquanto."
+            },
+            "sample": {
+                "tag": "Amigo",
+                "message": "Pré-visualização do material de vidro",
+                "button": "Botão",
+                "dialogTitle": "Título do diálogo",
+                "dialogBody": "O conteúdo do diálogo usa o material do componente “Diálogo”."
+            }
+        },
+        "page": {
+            "title": "Estúdio de temas - Project N.E.K.O.",
+            "header": {
+                "title": "Estúdio de temas",
+                "paletteInfoAria": "Informações da paleta"
+            },
+            "restartHint": {
+                "text": "No primeiro uso (ou logo após atualizar o N.E.K.O), reinicie a janela do N.E.K.O uma vez; caso contrário, o tema não será aplicado na interface do chat.",
+                "dismiss": "Entendi, não mostrar novamente"
+            },
+            "toolbar": {
+                "aria": "Barra de ferramentas",
+                "modeAria": "Modo claro / escuro",
+                "light": "Claro",
+                "dark": "Escuro",
+                "searchPlaceholder": "Pesquisar variáveis, nomes ou descrições…",
+                "searchAria": "Pesquisar variáveis",
+                "searchClear": "Limpar pesquisa",
+                "onlyDirtyTitle": "Mostrar apenas as variáveis alteradas ou limpas nesta sessão (incluindo o outro modo)",
+                "onlyDirty": "Só alterações",
+                "toggleGroupsTitle": "Expandir ou recolher todos os grupos de variáveis (o estado é lembrado)",
+                "themeName": "Nome do tema",
+                "themeNamePlaceholder": "Padrão",
+                "enabledTitle": "Quando desativado, o carregador não injeta nenhum estilo no aplicativo",
+                "enabled": "Ativado",
+                "undo": "Desfazer",
+                "redo": "Refazer",
+                "revertModeTitle": "Descartar as alterações não aplicadas deste modo",
+                "revertMode": "Reverter modo"
+            },
+            "editor": {
+                "aria": "Editor de variáveis",
+                "closeNotice": "Fechar aviso",
+                "noMatch": "Nenhuma variável corresponde. Tente outra palavra-chave ou desative “Só alterações”."
+            },
+            "preview": {
+                "aria": "Pré-visualização",
+                "title": "Pré-visualização ao vivo",
+                "userMessage": "Sobre o que quer conversar esta noite?",
+                "avatar": "N",
+                "aiMessage": "Estou ouvindo~ Que tal experimentar uma nova paleta?",
+                "link": "Isto é um link",
+                "chip": "Chip sugerido",
+                "inputPlaceholder": "Diga algo…",
+                "send": "Enviar",
+                "compareCurrent": "Atual",
+                "compareRehearsal": "Prévia",
+                "foot": "A pré-visualização simula as edições deste painel com estilos inline; o resultado real é o da janela do aplicativo."
+            },
+            "health": {
+                "title": "Status",
+                "refreshAria": "Recarregar status",
+                "refreshTitle": "Recarregar",
+                "copyDirTitle": "Copiar a pasta onde ficam os dados dos temas, para diagnóstico",
+                "copyDir": "Copiar pasta de dados",
+                "helpTitle": "Ver perguntas frequentes",
+                "help": "Por que não funcionou?",
+                "foot1": "As variáveis do tema são aplicadas pelo carregador da janela do chat; aqui aparece o diagnóstico mais recente dele. A pasta de dados contém ",
+                "foot2": " (tema atual), ",
+                "foot3": " (biblioteca de temas) e ",
+                "foot4": " (imagens de fundo)."
+            },
+            "audit": {
+                "title": "Verificação de legibilidade",
+                "fixAllTitle": "Ajusta automaticamente todas as cores de texto abaixo do limite até que passem por pouco (só preenche valores; vale depois de clicar em “Aplicar”)",
+                "fixAll": "Corrigir tudo",
+                "recheckTitle": "Verificar novamente as cores atuais pelos limites da WCAG",
+                "recheck": "Verificar de novo",
+                "foot": "Segundo a WCAG 2.1: o texto principal precisa de ≥ 4.5:1; texto secundário / placeholders / chips / links, ≥ 3.0:1. Clique em um item para ir à linha da variável; a “Correção automática” só preenche valores sugeridos, sem aplicá-los."
+            },
+            "library": {
+                "title": "Biblioteca de temas",
+                "searchPlaceholder": "Pesquisar nome / descrição / tag",
+                "searchAria": "Pesquisar nomes, descrições ou tags de temas",
+                "shuffleTitle": "Troca para um tema embutido aleatório; se não gostar, clique de novo",
+                "shuffle": "Me surpreenda",
+                "refreshAria": "Atualizar a lista da biblioteca",
+                "refreshTitle": "Atualizar lista",
+                "saveNamePlaceholder": "Salvar como… (vazio para usar o nome atual)",
+                "saveNameAria": "Nome do item da biblioteca",
+                "saveTitle": "Salvar a paleta atual como tema “Personalizado”",
+                "save": "Salvar",
+                "notePlaceholder": "Descrição curta (opcional): o que este tema quer transmitir? Vai junto ao compartilhar",
+                "noteAria": "Descrição do tema (exportada com o pacote compartilhado)",
+                "actionsAria": "Ações da biblioteca de temas",
+                "importTitle": "Importar um pacote .zip ou arquivo de tema .json compartilhado para “Personalizado”",
+                "import": "Importar",
+                "backupTitle": "Empacota todos os temas de “Personalizado” em um zip na área de trabalho; recupere tudo ao trocar de computador ou reinstalar",
+                "backup": "Fazer backup de tudo",
+                "restoreTitle": "Restaurar a biblioteca a partir de um zip criado em “Fazer backup de tudo” (só adiciona, não substitui temas existentes)",
+                "restore": "Restaurar backup",
+                "wallpaperTitle": "Escolha um papel de parede e gere automaticamente uma paleta clara/escura completa a partir das cores principais (só preenche o painel; vale depois de clicar em “Aplicar”)",
+                "wallpaper": "Do papel de parede",
+                "variantsTitle": "Dá outro clima às cores atuais: mais quente / mais fria / mais clara / mais profunda (Ctrl+Z para desfazer)",
+                "variants": "Variantes",
+                "familyAria": "Filtrar temas por família de estilo",
+                "tagsAria": "Filtrar temas por tag",
+                "foot1": "O zip exportado por “Compartilhar” inclui ",
+                "foot2": " e as imagens de fundo usadas, então outras pessoas levam a paleta inteira de uma vez com “Importar”; enviar só ",
+                "foot3": " como arquivo único também funciona na importação. Os favoritos (☆) aparecem primeiro em “Todos”, e as categorias “Favoritos” e “Personalizado” mostram só os que interessam.",
+                "foot4": "“Fazer backup de tudo” empacota todos os temas de “Personalizado” em um zip (com imagens de fundo); depois de trocar de computador ou reinstalar, escolha-o em “Restaurar backup” — só adiciona, nunca substitui."
+            },
+            "quick": {
+                "title": "Ajuste rápido",
+                "glow": "Intensidade do brilho",
+                "glowLow": "Baixa",
+                "glowMedium": "Média",
+                "glowHigh": "Alta",
+                "font": "Fonte",
+                "fontAria": "Predefinições de fonte",
+                "fontSystem": "Padrão do sistema",
+                "fontSans": "Sem serifa",
+                "fontMono": "Monoespaçada",
+                "foot": "Estes dois preenchem com um clique: só colocam um conjunto de variáveis no editor, e nada é gravado no servidor até clicar em “Aplicar”; se não gostar, Ctrl+Z volta um passo."
+            },
+            "schedule": {
+                "title": "Trocar tema por horário",
+                "enabled": "Ativado",
+                "weekendToggle": "Usar outra agenda nos fins de semana (sáb / dom)",
+                "foot1": "No horário definido, o plugin troca o tema atual e todas as janelas acompanham em 1–2 segundos, sem reiniciar o aplicativo. Os horários usam a ",
+                "footLocalTime": "hora local",
+                "foot2": "; deixe um horário vazio para manter o tema em uso naquele momento. Marque a opção de fim de semana para que sábado e domingo sejam diferentes dos dias úteis (sem marcar = usa a tabela dos dias úteis)."
+            },
+            "changes": {
+                "title": "Alterações pendentes",
+                "revertAllTitle": "Desfazer todas as alterações abaixo (as cores no servidor não mudam)",
+                "revertAll": "Desfazer tudo",
+                "foot": "Estas alterações existem só neste painel; são gravadas no servidor ao clicar em “Aplicar”. Desfazer um item reverte apenas aquela linha."
+            },
+            "dump": {
+                "title": "Paleta atual",
+                "aiPromptTitle": "Transforma as cores atuais em um prompt e copia, para qualquer IA continuar ajustando",
+                "aiPromptAria": "Copiar prompt para IA",
+                "cssSnippetTitle": "Exportar as cores atuais como trecho de variáveis CSS",
+                "cssSnippetAria": "Exportar trecho de variáveis CSS",
+                "toggleAria": "Recolher ou expandir o JSON da paleta",
+                "copyAria": "Copiar JSON da paleta",
+                "copyTitle": "Copiar JSON"
+            },
+            "footer": {
+                "aria": "Ações",
+                "resetTitle": "Restaurar o tema padrão embutido e limpar todas as cores personalizadas",
+                "reset": "Redefinir",
+                "export": "Exportar",
+                "import": "Importar",
+                "reload": "Recarregar",
+                "applyHint": "Aplicar"
+            },
+            "modal": {
+                "name": "Nome",
+                "note": "Nota",
+                "notePlaceholder": "Descreva esta paleta em uma linha; deixe vazio para apagar",
+                "tags": "Tags",
+                "tagsPlaceholder": "Separadas por vírgula, até 4 (12 caracteres cada)",
+                "textAria": "JSON da paleta",
+                "cancel": "Cancelar"
+            }
+        }
     }
 }

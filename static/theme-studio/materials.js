@@ -1,13 +1,14 @@
-/* 高级材质中心 —— 面板侧交互层。
-   数据流：本文件只负责「编辑 materials 子树 + 调后端编译预览」，真正的落盘
-   由 app.js 的 applyTheme 提交给 apply_theme，编译变量由后端 compile_materials
-   产出，前端不重写一份公式，避免预览与应用窗口出现偏差。
-   对外接口挂在 window.NekoMaterials：
-     mount(root)     渲染外壳（index.html 里 #materials-root）
-     sync(palette)   get_theme 返回后同步当前/基线并重绘
-     snapshot()      applyTheme 取当前材质设置
-     isDirty()       是否有未应用的材质改动
-     resetLocal()    丢弃本地改动回到基线
+/* Advanced material center -- panel-side interaction layer.
+   Data flow: this file only "edits the materials subtree + asks the backend to
+   compile a preview". Persisting is done by app.js applyTheme via apply_theme,
+   and the compiled variables come from the backend compile_materials, so the
+   frontend never duplicates the formulas (preview and app window can't drift).
+   Public API on window.NekoMaterials:
+     mount(root)     render the shell (#materials-root in index.html)
+     sync(palette)   sync current/baseline after get_theme returns, then redraw
+     snapshot()      current material settings for applyTheme
+     isDirty()       whether there are unapplied material edits
+     resetLocal()    drop local edits and return to the baseline
 */
 (function () {
   'use strict';
@@ -15,24 +16,38 @@
   var HAS = Object.prototype.hasOwnProperty;
   var NL = String.fromCharCode(10);
 
-  var SPEC = null;          // material_spec 结果
-  var PARAMS = {};          // key -> 参数定义
+  /** Translate a panel string under themeStudio.<key>; falls back to the Chinese source text. */
+  function T(key, fallback, params) {
+    if (typeof window.tsT === 'function') return window.tsT(key, fallback, params);
+    var text = String(fallback == null ? key : fallback);
+    if (!params) return text;
+    return text.replace(/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g, function (match, name) {
+      return HAS.call(params, name) ? String(params[name]) : match;
+    });
+  }
+
+  function modeLabel(mode) {
+    return mode === 'dark' ? T('materials.mode.dark', '暗色') : T('materials.mode.light', '亮色');
+  }
+
+  var SPEC = null;          // material_spec result
+  var PARAMS = {};          // key -> param definition
   var SECTION_OF = {};      // key -> section id
-  var CURRENT = null;       // 可编辑副本
-  var BASELINE = null;      // 已保存副本（脏判定基准）
-  var MODE = 'light';       // 亮色 / 暗色编辑
-  var BG_MODE = 'dark';     // 预览壁纸深浅：dark 深色壁纸 / light 浅色壁纸
-  var BG_TOUCHED = false;   // 用户手动切过壁纸后，不再跟随编辑模式自动变
+  var CURRENT = null;       // editable copy
+  var BASELINE = null;      // saved copy (dirty-check baseline)
+  var MODE = 'light';       // editing light / dark
+  var BG_MODE = 'dark';     // preview wallpaper: dark wallpaper / light wallpaper
+  var BG_TOUCHED = false;   // once the user flips the wallpaper, stop following the edit mode
   var TAB = 'overview';
   var DIRTY = false;
   var MOUNTED = false;
-  // 主题总开关（调色板的 enabled）。关掉时加载器会 removeStyle，材质随之不生效。
+  // Theme master switch (palette.enabled). When off the loader removes the style, so materials don't apply.
   var MASTER_ON = true;
   var PREVIEW_TIMER = null;
   var PREVIEW_SEQ = 0;
   var PREVIEW_VARS = null;
 
-  /* ---------------- 通用工具 ---------------- */
+  /* ---------------- Generic helpers ---------------- */
 
   function el(tag, attrs) {
     var node = document.createElement(tag);
@@ -89,7 +104,7 @@
 
   function callEntry(entryId, args) {
     if (window.NekoPanel && window.NekoPanel.call) return window.NekoPanel.call(entryId, args);
-    return Promise.reject(new Error('面板接口尚未就绪'));
+    return Promise.reject(new Error(T('materials.error.panelNotReady', '面板接口尚未就绪')));
   }
 
   function hexOf(value) {
@@ -133,7 +148,7 @@
     return out;
   }
 
-  /* ---------------- 值读写 ---------------- */
+  /* ---------------- Value read / write ---------------- */
 
   function paramOf(key) { return PARAMS[key] || null; }
 
@@ -168,7 +183,7 @@
   function writeValue(sectionId, key, value) {
     var param = paramOf(key);
     if (MODE === 'dark') {
-      // 暗色只存「显式覆盖」：与亮色相同的值直接删键，回到继承语义。
+      // Dark only stores explicit overrides: a value equal to light drops the key and inherits again.
       var light = lightValue(sectionId, key);
       var darkRoot = CURRENT.dark || (CURRENT.dark = {});
       var darkSection = darkRoot[sectionId] || (darkRoot[sectionId] = {});
@@ -178,7 +193,7 @@
     } else {
       var section = CURRENT[sectionId] || (CURRENT[sectionId] = {});
       section[key] = value;
-      // 亮色值变了以后，暗色组里与新亮色相同的覆盖就成了死值，一并清掉。
+      // Once the light value changes, dark overrides equal to the new light value are dead; drop them too.
       var dk = CURRENT.dark && CURRENT.dark[sectionId];
       if (dk && HAS.call(dk, key) && equalForKind(dk[key], value, param)) {
         delete dk[key];
@@ -188,8 +203,9 @@
     markDirty();
   }
 
-  // 暗色只存「与亮色不同」的显式覆盖。想让某一项回到继承亮色，只能把值手动调成与亮色完全相同 —— 34 个 number / 14 个 percent 参数没人能盯着数字对齐。
-  // 所以给「暗色」标记一个可点击的清除入口。
+  // Dark only stores overrides that differ from light. Returning an item to inherit-from-light would
+  // otherwise mean matching the light value by hand -- nobody can line up 34 number / 14 percent params.
+  // So the "dark" marker doubles as a clickable clear button.
   function clearDarkOverride(sectionId, key) {
     var darkRoot = CURRENT && CURRENT.dark;
     if (!darkRoot || !darkRoot[sectionId] || !HAS.call(darkRoot[sectionId], key)) return;
@@ -212,13 +228,13 @@
   function markDirty() {
     DIRTY = !same(CURRENT, BASELINE);
     renderBadge();
-    // 头部状态（尤其暗色批量清除按钮的显示与计数）必须跟手：
-    // 只更新徽标会让按钮停在上一帧，用户以为没生效。
+    // Header state (especially the dark bulk-clear button visibility and count) must update immediately:
+    // refreshing only the badge leaves the button one frame behind and looks broken.
     renderHeadState();
     schedulePreview();
   }
 
-  /* ---------------- 预览编译 ---------------- */
+  /* ---------------- Preview compilation ---------------- */
 
   var PREVIEW_APPLIED = [];
   var SEARCH = '';
@@ -240,8 +256,8 @@
 
   function runPreview() {
     if (!CURRENT) return;
-    // 拖滑块会连续触发：上一个请求没回来就只记一个「待补」，回来后再发一次最新参数。
-    // 否则快速拖动会堆出几十个 run，只是让过期结果互相覆盖。
+    // Dragging a slider fires continuously: while a request is in flight just mark one "pending" and
+    // send the latest params when it returns. Otherwise fast drags pile up dozens of stale runs.
     if (PREVIEW_INFLIGHT) { PREVIEW_PENDING = true; return; }
     PREVIEW_INFLIGHT = true;
     var seq = ++PREVIEW_SEQ;
@@ -257,7 +273,11 @@
       PREVIEW_INFLIGHT = false;
       if (seq !== PREVIEW_SEQ) { drainPreview(); return; }
       var meta = byId('mt-pv-meta');
-      if (meta) meta.textContent = '预览编译失败：' + (error && error.message ? error.message : '后端插件可能未启动');
+      if (meta) {
+        meta.textContent = T('materials.preview.compileFailed', '预览编译失败：{{error}}', {
+          error: error && error.message ? error.message : T('materials.error.backendDown', '后端插件可能未启动')
+        });
+      }
       drainPreview();
     });
   }
@@ -271,7 +291,7 @@
   function paintPreview(result) {
     var stage = byId('mt-pv');
     if (!stage) return;
-    // 组件缩略块吃同一批变量：10 个小方块直接引用组件别名，未自定义时按回退链落到全局。
+    // Component chips consume the same variables: the 10 chips reference component aliases and fall back to global when not customized.
     var paintTargets = [stage];
     var strip = byId('mt-comp-strip');
     if (strip) paintTargets.push(strip);
@@ -292,19 +312,21 @@
       });
     });
     paintReadability(vars);
-    // 对比开着、用户又切了亮暗时，右半屏要换成该模式的原始变量。
+    // With compare on and the light/dark mode switched, the right half must show that mode's original variables.
     if (REF_ON) ensureRef(MODE);
     var meta = byId('mt-pv-meta');
     if (meta) {
       meta.textContent = '';
-      meta.appendChild(el('b', { text: Object.keys(vars).length + ' 个变量' }));
-      meta.appendChild(document.createTextNode(' · 预设 ' + presetLabel(CURRENT.preset) +
-        ' · 画质 ' + qualityLabel(CURRENT.quality) +
-        ' · ' + (MODE === 'dark' ? '暗色' : '亮色')));
+      meta.appendChild(el('b', { text: T('materials.preview.varCount', '{{count}} 个变量', { count: Object.keys(vars).length }) }));
+      meta.appendChild(document.createTextNode(T('materials.preview.metaLine', ' · 预设 {{preset}} · 画质 {{quality}} · {{mode}}', {
+        preset: presetLabel(CURRENT.preset),
+        quality: qualityLabel(CURRENT.quality),
+        mode: modeLabel(MODE)
+      })));
     }
   }
 
-  // --nts-mt-bg 是「底色 rgba(tint, opacity 乘染色浓度)」，它的 alpha 就是玻璃的实心程度。
+  // --nts-mt-bg is the base "rgba(tint, opacity x tint strength)"; its alpha is how solid the glass is.
   function bgAlphaOf(vars) {
     var raw = (vars && (vars['--nts-mt-bg'] || vars['--nts-mt-bg-c'])) || '';
     var hit = String(raw).match(/rgba?\(([^)]*)\)/i);
@@ -320,8 +342,9 @@
     if (!box) return;
     var alpha = bgAlphaOf(vars);
     if (alpha !== null && alpha >= 0.62) {
-      box.textContent = '玻璃基底不透明度 ' + Math.round(alpha * 100) +
-        '%，压在上面的文字容易看不清 —— 调低「透明度」或「染色浓度」可恢复对比度（当前设置仍然可用，只是观感偏实）。';
+      box.textContent = T('materials.preview.readabilityWarn',
+        '玻璃基底不透明度 {{percent}}%，压在上面的文字容易看不清 —— 调低「透明度」或「染色浓度」可恢复对比度（当前设置仍然可用，只是观感偏实）。',
+        { percent: Math.round(alpha * 100) });
       box.style.display = '';
     } else {
       box.textContent = '';
@@ -342,8 +365,10 @@
     return id || '';
   }
 
-  /* ---------------- 导航分组 ---------------- */
+  /* ---------------- Navigation groups ---------------- */
 
+  // label / title below are the Chinese source text; they are localized at render time
+  // via materials.nav.<id> and materials.group.<id>.
   var TABS = [
     { id: 'overview', label: '总览' },
     { id: 'base', label: '基础材质' },
@@ -359,37 +384,37 @@
 
   var GROUPS = {
     base: [
-      { title: '基础面', keys: ['opacity', 'tint', 'tintStrength', 'blur', 'blurLevel', 'saturation', 'brightness'] }
+      { id: 'baseSurface', title: '基础面', keys: ['opacity', 'tint', 'tintStrength', 'blur', 'blurLevel', 'saturation', 'brightness'] }
     ],
     dye: [
-      { title: '玻璃染色', keys: ['dyePrimary', 'dyeSecondary', 'dyeStrength', 'dyeWarmth', 'dyeAlpha', 'dyeGradient'] }
+      { id: 'dye', title: '玻璃染色', keys: ['dyePrimary', 'dyeSecondary', 'dyeStrength', 'dyeWarmth', 'dyeAlpha', 'dyeGradient'] }
     ],
     light: [
-      { title: '边缘光', keys: ['edgeIntensity', 'edgeWidth', 'edgeAlpha', 'edgeColor', 'edgeTop', 'edgeBottom', 'edgeLeft', 'edgeRight', 'edgeFade'] },
-      { title: '内部高光', keys: ['innerIntensity', 'innerAlpha', 'innerRange', 'innerPos', 'innerSoftness', 'innerDouble'] },
-      { title: '环境反射', keys: ['ambientIntensity', 'ambientColor', 'ambientDirection', 'ambientRange', 'ambientBlur', 'ambientAlpha'] },
-      { title: '动态光照', keys: ['dynamic', 'dynamicSpeed', 'dynamicIntensity', 'dynamicRange', 'dynamicReflect', 'mouseFollow', 'mouseDelay'] }
+      { id: 'edge', title: '边缘光', keys: ['edgeIntensity', 'edgeWidth', 'edgeAlpha', 'edgeColor', 'edgeTop', 'edgeBottom', 'edgeLeft', 'edgeRight', 'edgeFade'] },
+      { id: 'inner', title: '内部高光', keys: ['innerIntensity', 'innerAlpha', 'innerRange', 'innerPos', 'innerSoftness', 'innerDouble'] },
+      { id: 'ambient', title: '环境反射', keys: ['ambientIntensity', 'ambientColor', 'ambientDirection', 'ambientRange', 'ambientBlur', 'ambientAlpha'] },
+      { id: 'dynamic', title: '动态光照', keys: ['dynamic', 'dynamicSpeed', 'dynamicIntensity', 'dynamicRange', 'dynamicReflect', 'mouseFollow', 'mouseDelay'] }
     ],
     refract: [
-      { title: '折射', keys: ['refractStrength', 'refractRange', 'refractEdge', 'refractBlur', 'refractAlpha', 'refractLocal'] },
-      { title: '色散', keys: ['dispStrength', 'dispRange', 'dispAlpha', 'dispShift', 'dispWidth'] }
+      { id: 'refract', title: '折射', keys: ['refractStrength', 'refractRange', 'refractEdge', 'refractBlur', 'refractAlpha', 'refractLocal'] },
+      { id: 'dispersion', title: '色散', keys: ['dispStrength', 'dispRange', 'dispAlpha', 'dispShift', 'dispWidth'] }
     ],
     liquid: [
-      { title: '液态动态', keys: ['liquid', 'liquidAmp', 'liquidSpeed', 'liquidRange', 'liquidSmooth', 'liquidStrength'] }
+      { id: 'liquid', title: '液态动态', keys: ['liquid', 'liquidAmp', 'liquidSpeed', 'liquidRange', 'liquidSmooth', 'liquidStrength'] }
     ],
     surface: [
-      { title: '噪点', keys: ['noise', 'noiseStrength', 'noiseSize', 'noiseAlpha', 'noiseDensity'] },
-      { title: '圆角', keys: ['radius', 'radiusCard', 'radiusButton', 'radiusDialog', 'radiusInput'] },
-      { title: '边框', keys: ['borderWidth', 'borderAlpha'] },
-      { title: '阴影', keys: ['shadowStrength', 'shadowSpread', 'shadowDistance', 'shadowBlur', 'innerShadow', 'innerShadowStrength'] }
+      { id: 'noise', title: '噪点', keys: ['noise', 'noiseStrength', 'noiseSize', 'noiseAlpha', 'noiseDensity'] },
+      { id: 'radius', title: '圆角', keys: ['radius', 'radiusCard', 'radiusButton', 'radiusDialog', 'radiusInput'] },
+      { id: 'border', title: '边框', keys: ['borderWidth', 'borderAlpha'] },
+      { id: 'shadow', title: '阴影', keys: ['shadowStrength', 'shadowSpread', 'shadowDistance', 'shadowBlur', 'innerShadow', 'innerShadowStrength'] }
     ],
     anim: [
-      { title: '开关', keys: ['animation', 'reducedMotion', 'easing'] },
-      { title: '时长', keys: ['enterDuration', 'exitDuration', 'hoverDuration', 'pressDuration', 'expandDuration'] },
-      { title: '交互反馈', keys: ['hover', 'press', 'spotlight', 'spotRadius', 'spotIntensity', 'spotSpeed'] }
+      { id: 'switches', title: '开关', keys: ['animation', 'reducedMotion', 'easing'] },
+      { id: 'durations', title: '时长', keys: ['enterDuration', 'exitDuration', 'hoverDuration', 'pressDuration', 'expandDuration'] },
+      { id: 'feedback', title: '交互反馈', keys: ['hover', 'press', 'spotlight', 'spotRadius', 'spotIntensity', 'spotSpeed'] }
     ]
   };
-  /* ---------------- 控件 ---------------- */
+  /* ---------------- Controls ---------------- */
 
   function stepOf(param) {
     var min = num(param.min, 0);
@@ -432,7 +457,9 @@
     function syncMark() {
       var overridden = MODE === 'dark' && hasDarkOverride(sectionId, key);
       if (overridden && !mark) {
-        mark = el('button', { class: 'mt-row-clear', type: 'button', title: '清除这一项的暗色覆盖，回到亮色', text: '暗色 ✕' });
+        mark = el('button', { class: 'mt-row-clear', type: 'button',
+          title: T('materials.row.clearDarkTitle', '清除这一项的暗色覆盖，回到亮色'),
+          text: T('materials.row.clearDark', '暗色 ✕') });
         mark.addEventListener('click', function () { clearDarkOverride(sectionId, key); });
         label.appendChild(mark);
       } else if (!overridden && mark) {
@@ -453,9 +480,9 @@
       var toggle = el('label', { class: 'mt-toggle' });
       var box = el('input', { type: 'checkbox' });
       box.checked = !!value;
-      var caption = el('span', { text: value ? '开启' : '关闭' });
+      var caption = el('span', { text: value ? T('materials.row.on', '开启') : T('materials.row.off', '关闭') });
       box.addEventListener('change', function () {
-        caption.textContent = box.checked ? '开启' : '关闭';
+        caption.textContent = box.checked ? T('materials.row.on', '开启') : T('materials.row.off', '关闭');
         commit(!!box.checked);
       });
       toggle.appendChild(box);
@@ -491,7 +518,7 @@
         var okColor = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(next) || /^rgba?\(/i.test(next);
         if (!okColor) {
           text.value = String(readValue(sectionId, key) || '');
-          toast('颜色格式不支持：' + next + '（用 #rrggbb 或 rgb()/rgba()）', 'error');
+          toast(T('materials.toast.badColor', '颜色格式不支持：{{value}}（用 #rrggbb 或 rgb()/rgba()）', { value: next }), 'error');
           return;
         }
         text.value = next;
@@ -532,10 +559,10 @@
     return row;
   }
 
-  /* ---------------- 面板内容 ---------------- */
+  /* ---------------- Pane content ---------------- */
 
 
-  /** 90 个参数散在 8 个界面，找不到就只能靠翻页。搜索跨全部界面，命中即列。 */
+  /** 90 params spread over 8 views are hard to find by paging; search spans all views and lists every hit. */
   function renderSearch(pane) {
     var hits = [];
     Object.keys(PARAMS).forEach(function (key) {
@@ -544,7 +571,9 @@
       if (hay.indexOf(SEARCH) >= 0) hits.push(param);
     });
     pane.appendChild(el('p', { class: 'mt-hint', text:
-      hits.length ? ('找到 ' + hits.length + ' 项（跨全部界面），清空搜索回到当前界面。') : ('没有匹配「' + SEARCH + '」的参数。') }));
+      hits.length
+        ? T('materials.search.found', '找到 {{count}} 项（跨全部界面），清空搜索回到当前界面。', { count: hits.length })
+        : T('materials.search.none', '没有匹配「{{query}}」的参数。', { query: SEARCH }) }));
     hits.forEach(function (param) { pane.appendChild(buildRow(param)); });
   }
   function renderPane() {
@@ -556,19 +585,18 @@
     if (TAB === 'components') return renderComponents(pane);
     if (TAB === 'presets') return renderPresets(pane);
     (GROUPS[TAB] || []).forEach(function (group) {
-      pane.appendChild(el('div', { class: 'mt-sub', text: group.title }));
+      pane.appendChild(el('div', { class: 'mt-sub', text: T('materials.group.' + group.id, group.title) }));
       group.keys.forEach(function (key) {
         var param = PARAMS[key];
         if (param) pane.appendChild(buildRow(param));
       });
     });
     if (TAB === 'base') {
-      pane.appendChild(el('p', { class: 'mt-hint', text:
-        '暗色主题下玻璃底会自动压暗（保留你的染色倾向）：宿主的暗色文字是浅色，白底会看不清，' +
-        '所以暗色模式下看到的是深色玻璃。' }));
+      pane.appendChild(el('p', { class: 'mt-hint', text: T('materials.hint.darkGlass',
+        '暗色主题下玻璃底会自动压暗（保留你的染色倾向）：宿主的暗色文字是浅色，白底会看不清，所以暗色模式下看到的是深色玻璃。') }));
     }
-    pane.appendChild(el('p', { class: 'mt-hint', text:
-      '亮色与暗色分别调：暗色只保存与亮色不同的值，未覆盖项自动继承亮色。' }));
+    pane.appendChild(el('p', { class: 'mt-hint', text: T('materials.hint.lightDark',
+      '亮色与暗色分别调：暗色只保存与亮色不同的值，未覆盖项自动继承亮色。') }));
   }
 
   function statLine(label, value) {
@@ -580,27 +608,29 @@
   }
 
   function renderOverview(pane) {
-    pane.appendChild(el('div', { class: 'mt-sub', text: '当前状态' }));
-    pane.appendChild(statLine('高级材质', CURRENT.enabled ? '已启用' : '未启用'));
-    pane.appendChild(statLine('材质预设', presetLabel(CURRENT.preset)));
-    pane.appendChild(statLine('性能模式', qualityLabel(CURRENT.quality)));
-    pane.appendChild(statLine('暗色覆盖', darkOverrideCount() + ' 项'));
-    pane.appendChild(statLine('组件自定义', Object.keys(CURRENT.components || {}).length + ' / 10'));
-    pane.appendChild(statLine('参数总数', (SPEC.params || []).length + ' 项'));
+    pane.appendChild(el('div', { class: 'mt-sub', text: T('materials.overview.status', '当前状态') }));
+    pane.appendChild(statLine(T('materials.overview.advanced', '高级材质'),
+      CURRENT.enabled ? T('materials.overview.enabled', '已启用') : T('materials.overview.disabled', '未启用')));
+    pane.appendChild(statLine(T('materials.overview.preset', '材质预设'), presetLabel(CURRENT.preset)));
+    pane.appendChild(statLine(T('materials.overview.quality', '性能模式'), qualityLabel(CURRENT.quality)));
+    pane.appendChild(statLine(T('materials.overview.darkOverrides', '暗色覆盖'),
+      T('materials.overview.itemCount', '{{count}} 项', { count: darkOverrideCount() })));
+    pane.appendChild(statLine(T('materials.overview.components', '组件自定义'), Object.keys(CURRENT.components || {}).length + ' / 10'));
+    pane.appendChild(statLine(T('materials.overview.paramTotal', '参数总数'),
+      T('materials.overview.itemCount', '{{count}} 项', { count: (SPEC.params || []).length })));
 
-    pane.appendChild(el('div', { class: 'mt-sub', text: '快捷预设' }));
+    pane.appendChild(el('div', { class: 'mt-sub', text: T('materials.overview.quickPresets', '快捷预设') }));
     var grid = el('div', { class: 'mt-grid' });
     PRESET_ORDER().concat(CUSTOM_ORDER()).forEach(function (id) {
       grid.appendChild(presetCard(id));
     });
     pane.appendChild(grid);
 
-    pane.appendChild(el('div', { class: 'mt-sub', text: '能力边界' }));
-    pane.appendChild(el('p', { class: 'mt-hint', text:
-      '高级材质只作用于颜色、模糊、折射、光照、圆角、边框与阴影：不改 display/position/尺寸/溢出/z-index，' +
-      '因此不会破坏布局；文本对比度由面板的「可读性自检」兜底。关闭插件或关掉这里的开关后，应用侧会整体撤掉材质层，回到原始主题。' }));
-    pane.appendChild(el('p', { class: 'mt-hint', text:
-      '不支持 backdrop-filter 的环境（旧内核 / 硬件加速被禁用）会自动降级为纯色半透明，不会出现半渲染的毛玻璃。' }));
+    pane.appendChild(el('div', { class: 'mt-sub', text: T('materials.overview.limits', '能力边界') }));
+    pane.appendChild(el('p', { class: 'mt-hint', text: T('materials.overview.limitsHint',
+      '高级材质只作用于颜色、模糊、折射、光照、圆角、边框与阴影：不改 display/position/尺寸/溢出/z-index，因此不会破坏布局；文本对比度由面板的「可读性自检」兜底。关闭插件或关掉这里的开关后，应用侧会整体撤掉材质层，回到原始主题。') }));
+    pane.appendChild(el('p', { class: 'mt-hint', text: T('materials.overview.fallbackHint',
+      '不支持 backdrop-filter 的环境（旧内核 / 硬件加速被禁用）会自动降级为纯色半透明，不会出现半渲染的毛玻璃。') }));
   }
 
   function PRESET_ORDER() {
@@ -614,7 +644,7 @@
     return order;
   }
 
-  /** 用户自存的预设名（按字典序，稳定排序以免每次渲染顺序抖动）。 */
+  /** User-saved preset names (sorted, so the render order stays stable). */
   function CUSTOM_ORDER() {
     return Object.keys((CURRENT && CURRENT.custom_presets) || {}).sort();
   }
@@ -630,12 +660,15 @@
       text: (builtin && builtin.label) || (custom ? id : presetLabel(id))
     }));
     card.appendChild(el('span', {
-      text: (builtin && builtin.desc) || (custom ? '自定义预设 · 点击整套套用' : (PRESET_DESC[id] || ''))
+      text: (builtin && builtin.desc) || (custom
+        ? T('materials.preset.customDesc', '自定义预设 · 点击整套套用')
+        : (PRESET_DESC[id] ? T('materials.presetDesc.' + id, PRESET_DESC[id]) : ''))
     }));
     card.addEventListener('click', function () { applyPreset(id); });
     return card;
   }
 
+  // Chinese source text; localized at render time via materials.presetDesc.<id>.
   var PRESET_DESC = {
     clear: '清透玻璃，弱染色',
     frosted: '磨砂雾面，常规阅读',
@@ -662,24 +695,24 @@
       }
     });
     CURRENT.preset = id;
-    // 预设是「整套」语义：暗色覆盖一并清空，避免旧覆盖与新预设打架。
+    // A preset replaces the whole set: dark overrides are cleared too, so old overrides don't fight the new preset.
     var clearedDark = countOverrides(CURRENT.dark);
     CURRENT.dark = {};
     if (clearedDark > 0) {
-      toast('切换预设会清空暗色覆盖：已清除 ' + clearedDark + ' 项（预设是整套替换）。', 'warn');
+      toast(T('materials.toast.presetClearedDark', '切换预设会清空暗色覆盖：已清除 {{count}} 项（预设是整套替换）。', { count: clearedDark }), 'warn');
     }
     markDirty();
     renderPane();
     renderHeadState();
   }
 
-  /** 把当前五节参数存成一条自定义预设（随「应用材质」提交，后端按名合并落盘）。 */
+  /** Save the current five sections as a custom preset (submitted with "apply materials"; the backend merges by name). */
   function saveCurrentAsPreset() {
     var input = byId('mt-preset-name');
     var name = String((input && input.value) || '').trim().slice(0, 40);
-    if (!name) { toast('先给预设起个名字。', 'warn'); return; }
+    if (!name) { toast(T('materials.toast.presetNameEmpty', '先给预设起个名字。'), 'warn'); return; }
     if (SPEC && SPEC.presets && SPEC.presets[name.toLowerCase()]) {
-      toast('「' + name + '」和内置预设重名了，换一个。', 'warn');
+      toast(T('materials.toast.presetNameTaken', '「{{name}}」和内置预设重名了，换一个。', { name: name }), 'warn');
       return;
     }
     if (!CURRENT.custom_presets || typeof CURRENT.custom_presets !== 'object') {
@@ -701,19 +734,19 @@
     markDirty();
     renderPane();
     renderHeadState();
-    toast('已存为「' + name + '」，点「应用材质」写入磁盘。', 'ok');
+    toast(T('materials.toast.presetSaved', '已存为「{{name}}」，点「应用材质」写入磁盘。', { name: name }), 'ok');
   }
 
-  /** 删除一条自定义预设：走独立 entry 立即落盘（应用的合并语义会把删掉的加回来）。 */
+  /** Delete a custom preset: a dedicated entry persists it immediately (apply's merge semantics would re-add it). */
   function deleteCustomPreset(name) {
     if (!name) return;
     callEntry('delete_material_preset', { name: name }).then(function (data) {
       var materials = (data && data.materials) || null;
-      // 只从草稿里删掉这一条：其他还没应用的新建 / 修改预设必须原样留下，
-      // 不能被服务端已保存的那份预设库整体替换掉。
+      // Remove only this entry from the draft: other unapplied new / edited presets must stay as they are
+      // and must not be replaced wholesale by the server's saved preset library.
       if (CURRENT.custom_presets) delete CURRENT.custom_presets[name];
       if (CURRENT.preset === name) CURRENT.preset = 'custom';
-      // 已保存的基线跟服务端走（删除已经落盘），这样剩下的未应用改动仍显示为待应用。
+      // The saved baseline follows the server (the delete is persisted), so remaining unapplied edits still show as pending.
       if (BASELINE) {
         if (materials) {
           BASELINE.custom_presets = clone(materials.custom_presets || {});
@@ -726,28 +759,30 @@
       markDirty();
       renderPane();
       renderHeadState();
-      toast('已删除自定义预设「' + name + '」。', 'ok');
+      toast(T('materials.toast.presetDeleted', '已删除自定义预设「{{name}}」。', { name: name }), 'ok');
     }).catch(function (error) {
-      toast('删除预设失败：' + (error && error.message ? error.message : error), 'warn');
+      toast(T('materials.toast.presetDeleteFailed', '删除预设失败：{{error}}', {
+        error: error && error.message ? error.message : error
+      }), 'warn');
     });
   }
 
   function renderPresets(pane) {
-    pane.appendChild(el('div', { class: 'mt-sub', text: '材质预设' }));
+    pane.appendChild(el('div', { class: 'mt-sub', text: T('materials.presets.builtin', '材质预设') }));
     var grid = el('div', { class: 'mt-grid' });
     PRESET_ORDER().forEach(function (id) { grid.appendChild(presetCard(id)); });
     pane.appendChild(grid);
-    pane.appendChild(el('p', { class: 'mt-hint', text:
-      '预设是整套参数替换：切换后五节参数会整体重置为该预设的值，不会残留上一个预设的调校。' }));
+    pane.appendChild(el('p', { class: 'mt-hint', text: T('materials.presets.builtinHint',
+      '预设是整套参数替换：切换后五节参数会整体重置为该预设的值，不会残留上一个预设的调校。') }));
 
-    pane.appendChild(el('div', { class: 'mt-sub', text: '我的预设' }));
+    pane.appendChild(el('div', { class: 'mt-sub', text: T('materials.presets.mine', '我的预设') }));
     var customIds = CUSTOM_ORDER();
     if (customIds.length) {
       var customGrid = el('div', { class: 'mt-grid' });
       customIds.forEach(function (id) {
         var wrap = el('div', { class: 'mt-preset-wrap' });
         wrap.appendChild(presetCard(id));
-        var del = el('button', { class: 'mt-mini mt-preset-del', type: 'button', text: '删除' });
+        var del = el('button', { class: 'mt-mini mt-preset-del', type: 'button', text: T('materials.presets.delete', '删除') });
         del.addEventListener('click', function (event) {
           if (event && event.stopPropagation) event.stopPropagation();
           deleteCustomPreset(id);
@@ -757,13 +792,13 @@
       });
       pane.appendChild(customGrid);
     } else {
-      pane.appendChild(el('p', { class: 'mt-hint', text:
-        '还没有自定义预设。把参数调到满意后，在下面起个名存起来（会随「应用材质」写进 theme.json）。' }));
+      pane.appendChild(el('p', { class: 'mt-hint', text: T('materials.presets.mineEmpty',
+        '还没有自定义预设。把参数调到满意后，在下面起个名存起来（会随「应用材质」写进 theme.json）。') }));
     }
     var saveRow = el('div', { class: 'mt-save-row' });
     var nameInput = el('input', { class: 'mt-input', id: 'mt-preset-name', type: 'text',
-      placeholder: '给当前这套材质起个名（≤40 字）', maxlength: '40' });
-    var saveBtn = el('button', { class: 'mt-mini', type: 'button', text: '存为预设' });
+      placeholder: T('materials.presets.namePlaceholder', '给当前这套材质起个名（≤40 字）'), maxlength: '40' });
+    var saveBtn = el('button', { class: 'mt-mini', type: 'button', text: T('materials.presets.save', '存为预设') });
     saveBtn.addEventListener('click', saveCurrentAsPreset);
     nameInput.addEventListener('keydown', function (event) {
       if (event && event.key === 'Enter') saveCurrentAsPreset();
@@ -771,17 +806,17 @@
     saveRow.appendChild(nameInput);
     saveRow.appendChild(saveBtn);
     pane.appendChild(saveRow);
-    pane.appendChild(el('p', { class: 'mt-hint', text:
-      '删除自定义预设会立即写盘（不依赖「应用材质」）；保存则跟随「应用材质」一起提交，导出/分享包里也会带上。' }));
+    pane.appendChild(el('p', { class: 'mt-hint', text: T('materials.presets.mineHint',
+      '删除自定义预设会立即写盘（不依赖「应用材质」）；保存则跟随「应用材质」一起提交，导出/分享包里也会带上。') }));
 
-    pane.appendChild(el('div', { class: 'mt-sub', text: '性能模式' }));
+    pane.appendChild(el('div', { class: 'mt-sub', text: T('materials.presets.quality', '性能模式') }));
     var modes = el('div', { class: 'mt-grid' });
     ((SPEC && SPEC.quality) || []).forEach(function (item) {
       var card = el('button', {
         class: 'mt-preset' + (CURRENT.quality === item.id ? ' is-active' : ''), type: 'button'
       });
       card.appendChild(el('b', { text: item.label }));
-      card.appendChild(el('span', { text: QUALITY_DESC[item.id] || '' }));
+      card.appendChild(el('span', { text: QUALITY_DESC[item.id] ? T('materials.qualityDesc.' + item.id, QUALITY_DESC[item.id]) : '' }));
       card.addEventListener('click', function () {
         CURRENT.quality = item.id;
         markDirty();
@@ -791,11 +826,11 @@
       modes.appendChild(card);
     });
     pane.appendChild(modes);
-    pane.appendChild(el('p', { class: 'mt-hint', text:
-      '省电：模糊减半、关闭折射/动态/噪点/追光；高品质：加强边缘光与环境反射；极致：全部效果满配。' }));
+    pane.appendChild(el('p', { class: 'mt-hint', text: T('materials.presets.qualityHint',
+      '省电：模糊减半、关闭折射/动态/噪点/追光；高品质：加强边缘光与环境反射；极致：全部效果满配。') }));
 
-    pane.appendChild(el('div', { class: 'mt-sub', text: '重置' }));
-    var reset = el('button', { class: 'mt-mini is-danger', type: 'button', text: '恢复默认材质参数' });
+    pane.appendChild(el('div', { class: 'mt-sub', text: T('materials.presets.reset', '重置') }));
+    var reset = el('button', { class: 'mt-mini is-danger', type: 'button', text: T('materials.presets.resetDefaults', '恢复默认材质参数') });
     reset.addEventListener('click', function () {
       var defaults = deepDefaults();
       ['global', 'lighting', 'refraction', 'surface', 'animation'].forEach(function (section) {
@@ -811,13 +846,14 @@
     pane.appendChild(reset);
   }
 
+  // Chinese source text; localized at render time via materials.qualityDesc.<id>.
   var QUALITY_DESC = {
     saver: '省电优先，效果减半',
     balanced: '均衡，默认档',
     high: '高品质，光效加强',
     ultra: '极致，全部效果满配'
   };
-  /* ---------------- 组件材质 ---------------- */
+  /* ---------------- Component materials ---------------- */
 
   function compControl(compId, param) {
     var entry = (CURRENT.components && CURRENT.components[compId]) || {};
@@ -875,7 +911,11 @@
     head.appendChild(el('span', { class: 'mt-comp-name', text: comp.label }));
 
     var modeSel = el('select', { class: 'mt-select' });
-    [['inherit', '继承全局'], ['preset', '套用预设'], ['custom', '自定义']].forEach(function (pair) {
+    [
+      ['inherit', T('materials.comp.inherit', '继承全局')],
+      ['preset', T('materials.comp.preset', '套用预设')],
+      ['custom', T('materials.comp.custom', '自定义')]
+    ].forEach(function (pair) {
       var opt = el('option', { value: pair[0], text: pair[1] });
       if (entry.mode === pair[0]) opt.setAttribute('selected', '');
       modeSel.appendChild(opt);
@@ -908,16 +948,16 @@
       });
       card.appendChild(body);
     } else if (entry.mode === 'preset') {
-      card.appendChild(el('div', { class: 'mt-comp-note', text:
-        '取「' + presetLabel(entry.preset) + '」的透明度 / 模糊 / 圆角 / 边框 / 阴影' }));
+      card.appendChild(el('div', { class: 'mt-comp-note', text: T('materials.comp.presetNote',
+        '取「{{preset}}」的透明度 / 模糊 / 圆角 / 边框 / 阴影', { preset: presetLabel(entry.preset) }) }));
     } else {
-      card.appendChild(el('div', { class: 'mt-comp-note', text: '跟随全局材质，不产生专属变量' }));
+      card.appendChild(el('div', { class: 'mt-comp-note', text: T('materials.comp.inheritNote', '跟随全局材质，不产生专属变量') }));
     }
     return card;
   }
 
 
-  /** 组件材质缩略块：10 个小方块直接吃组件别名变量，拖参数就能看到变化。 */
+  /** Component material chips: 10 small tiles consume the component alias variables, so param drags show up live. */
   function buildComponentStrip() {
     var strip = el('div', { class: 'mt-comp-strip', id: 'mt-comp-strip' });
     ((SPEC && SPEC.components) || []).forEach(function (comp) {
@@ -934,20 +974,22 @@
     return strip;
   }
   function renderComponents(pane) {
-    pane.appendChild(el('p', { class: 'mt-hint', text:
-      '组件级材质只影响对应组件：选「继承全局」时不产生任何专属变量，绝不会覆盖全局设置。' }));
+    pane.appendChild(el('p', { class: 'mt-hint', text: T('materials.comp.hint',
+      '组件级材质只影响对应组件：选「继承全局」时不产生任何专属变量，绝不会覆盖全局设置。') }));
     (function () {
       var compCount = Object.keys(CURRENT.components || {}).length;
       var bar = el('div', { class: 'mt-comp-bar' });
-      bar.appendChild(el('span', { class: 'mt-comp-bar-text', text: compCount ? ('已自定义 ' + compCount + ' 个组件') : '全部组件跟随全局' }));
-      var resetAll = el('button', { class: 'mt-mini', type: 'button', id: 'mt-comp-reset-all', text: '全部继承全局' });
+      bar.appendChild(el('span', { class: 'mt-comp-bar-text', text: compCount
+        ? T('materials.comp.customCount', '已自定义 {{count}} 个组件', { count: compCount })
+        : T('materials.comp.allInherit', '全部组件跟随全局') }));
+      var resetAll = el('button', { class: 'mt-mini', type: 'button', id: 'mt-comp-reset-all', text: T('materials.comp.resetAll', '全部继承全局') });
       resetAll.disabled = compCount === 0;
       resetAll.addEventListener('click', function () {
         CURRENT.components = {};
         renderPane();
         markDirty();
         schedulePreview();
-        if (window.NekoPanel) window.NekoPanel.toast('所有组件已回到继承全局', 'ok');
+        if (window.NekoPanel) window.NekoPanel.toast(T('materials.toast.compResetAll', '所有组件已回到继承全局'), 'ok');
       });
       bar.appendChild(resetAll);
       pane.appendChild(bar);
@@ -956,14 +998,14 @@
     ((SPEC && SPEC.components) || []).forEach(function (comp) {
       pane.appendChild(componentCard(comp));
     });
-    pane.appendChild(el('p', { class: 'mt-hint', text:
-      '组件级只覆盖透明度 / 模糊 / 圆角 / 边框 / 阴影五项，颜色仍走全局，避免局部配色跳脱。' }));
-    pane.appendChild(el('p', { class: 'mt-hint', text:
-      '缩略块直接吃组件变量：选「继承全局」时回退全局值，选「自定义」时立刻变化（只示意颜色 / 圆角 / 模糊 / 边框 / 阴影）。' }));
+    pane.appendChild(el('p', { class: 'mt-hint', text: T('materials.comp.scopeHint',
+      '组件级只覆盖透明度 / 模糊 / 圆角 / 边框 / 阴影五项，颜色仍走全局，避免局部配色跳脱。') }));
+    pane.appendChild(el('p', { class: 'mt-hint', text: T('materials.comp.stripHint',
+      '缩略块直接吃组件变量：选「继承全局」时回退全局值，选「自定义」时立刻变化（只示意颜色 / 圆角 / 模糊 / 边框 / 阴影）。') }));
     schedulePreview();
   }
 
-  /* ---------------- 头部状态 ---------------- */
+  /* ---------------- Header state ---------------- */
 
   function paramPair(a, b) { return String(a) === String(b); }
 
@@ -999,7 +1041,7 @@
     var badge = byId('mt-dirty');
     if (!badge) return;
     if (DIRTY) {
-      badge.textContent = '材质改动 ' + diffCount() + ' 项待应用';
+      badge.textContent = T('materials.head.dirty', '材质改动 {{count}} 项待应用', { count: diffCount() });
       badge.classList.add('is-on');
     } else {
       badge.textContent = '';
@@ -1023,7 +1065,7 @@
     if (darkBtn) {
       var nDark = countOverrides(CURRENT.dark);
       darkBtn.style.display = (MODE === 'dark' && nDark > 0) ? '' : 'none';
-      darkBtn.textContent = '清除暗色覆盖（' + nDark + '）';
+      darkBtn.textContent = T('materials.head.clearDarkCount', '清除暗色覆盖（{{count}}）', { count: nDark });
       darkBtn.disabled = nDark === 0;
     }
   }
@@ -1035,11 +1077,11 @@
     TABS.forEach(function (tab) {
       var button = el('button', {
         class: 'mt-tab' + (TAB === tab.id ? ' is-active' : ''),
-        type: 'button', text: tab.label
+        type: 'button', text: T('materials.nav.' + tab.id, tab.label)
       });
       button.addEventListener('click', function () {
         TAB = tab.id;
-        // 切界面就退出搜索：留着搜索词会让人以为点了 tab 没反应。
+        // Switching views exits search: a lingering query makes the tab click look like it did nothing.
         SEARCH = '';
         var box = byId('mt-search');
         if (box) box.value = '';
@@ -1056,9 +1098,13 @@
     renderHeadState();
     renderBadge();
   }
-  /* ---------------- 外壳与预览 ---------------- */
+  /* ---------------- Shell and preview ---------------- */
 
-  function bgLabel() { return BG_MODE === 'light' ? '背景：浅色' : '背景：深色'; }
+  function bgLabel() {
+    return BG_MODE === 'light'
+      ? T('materials.preview.bgLight', '背景：浅色')
+      : T('materials.preview.bgDark', '背景：深色');
+  }
 
   function applyBgMode() {
     var stage = byId('mt-pv');
@@ -1069,9 +1115,9 @@
     if (btn) btn.textContent = bgLabel();
   }
 
-  // 预览要覆盖规范要求的 6 类组件：玻璃卡片(chat) / 气泡(bubble) / 按钮 / 输入框 / 弹窗 / 侧边栏。
-  // 每一类都吃自己的组件别名（--nts-mt-c-*-<comp>），没自定义时按回退链落到全局 ——
-  // 否则「组件材质」页拖参数，预览纹丝不动，用户只能靠猜。
+  // The preview covers the 6 component kinds the spec requires: glass card (chat) / bubble / button /
+  // input / dialog / sidebar. Each consumes its own component alias (--nts-mt-c-*-<comp>) and falls back
+  // to global when not customized -- otherwise dragging on the "component materials" page wouldn't move the preview.
   function buildStack() {
     var stack = el('div', { class: 'mt-pv-stack' });
     var hero = el('div', { class: 'mt-pv-card mt-pv-hero mt-pv-chat' });
@@ -1083,12 +1129,12 @@
     stack.appendChild(hero);
 
     var msg = el('div', { class: 'mt-pv-card mt-pv-msg' });
-    msg.appendChild(el('span', { class: 'mt-pv-tag', text: '友' }));
-    msg.appendChild(document.createTextNode('玻璃材质实时预览'));
+    msg.appendChild(el('span', { class: 'mt-pv-tag', text: T('materials.sample.tag', '友') }));
+    msg.appendChild(document.createTextNode(T('materials.sample.message', '玻璃材质实时预览')));
     stack.appendChild(msg);
 
     var row = el('div', { class: 'mt-pv-row' });
-    row.appendChild(el('div', { class: 'mt-pv-btn', text: '普通按钮' }));
+    row.appendChild(el('div', { class: 'mt-pv-btn', text: T('materials.sample.button', '普通按钮') }));
     row.appendChild(el('div', { class: 'mt-pv-input' }));
     var side = el('div', { class: 'mt-pv-side' });
     side.appendChild(el('i', {}));
@@ -1099,16 +1145,17 @@
 
     var pop = el('div', { class: 'mt-pv-pop' });
     var popHead = el('div', { class: 'mt-pv-pop-head' });
-    popHead.appendChild(el('span', { text: '弹窗标题' }));
+    popHead.appendChild(el('span', { text: T('materials.sample.dialogTitle', '弹窗标题') }));
     popHead.appendChild(el('span', { class: 'mt-pv-x', text: '✕' }));
     pop.appendChild(popHead);
-    pop.appendChild(el('div', { class: 'mt-pv-pop-body', text: '弹窗内容会吃「弹窗」这一组件的材质。' }));
+    pop.appendChild(el('div', { class: 'mt-pv-pop-body', text: T('materials.sample.dialogBody', '弹窗内容会吃「弹窗」这一组件的材质。') }));
     stack.appendChild(pop);
     return stack;
   }
 
-  // 原始 vs 当前：右半屏垫一层参数默认值编译出来的变量，拖滑块时能直接看出前后差别。
-  // 变量缓存按 mode 分开 —— 亮/暗两套编译结果不同，混用会把暗色原始值贴到亮色预览上。
+  // Original vs current: the right half is backed by variables compiled from param defaults, so slider
+  // drags show the before/after directly. The cache is per mode -- light/dark compile differently, and
+  // mixing them would paint dark originals onto the light preview.
   function toggleCompare() {
     REF_ON = !REF_ON;
     var stage = byId('mt-pv');
@@ -1131,7 +1178,7 @@
       REF_CACHE[mode] = (result && result.vars) || {};
       paintRef(REF_CACHE[mode]);
     }).catch(function () {
-      // 原始材质编译失败不该拖垮预览：留空即可，卡片按 CSS 兜底值显示。
+      // A failed compile of the original material must not break the preview: leave it empty, cards use CSS fallbacks.
     });
   }
 
@@ -1150,18 +1197,19 @@
     if (!BG_TOUCHED) BG_MODE = MODE === 'dark' ? 'dark' : 'light';
     var wrap = el('aside', { class: 'mt-pv-wrap' });
     var title = el('div', { class: 'mt-pv-title' });
-    title.appendChild(el('span', { id: 'mt-pv-mode-label', text: '实时预览 · ' + (MODE === 'dark' ? '暗色' : '亮色') }));
-    title.appendChild(el('span', { class: 'mt-pv-off', id: 'mt-pv-off', text: '材质未启用' }));
+    title.appendChild(el('span', { id: 'mt-pv-mode-label',
+      text: T('materials.preview.title', '实时预览 · {{mode}}', { mode: modeLabel(MODE) }) }));
+    title.appendChild(el('span', { class: 'mt-pv-off', id: 'mt-pv-off', text: T('materials.preview.off', '材质未启用') }));
     syncOffTag();
     title.appendChild(el('button', {
       class: 'mt-pv-bg', type: 'button', id: 'mt-pv-compare',
-      title: '右半屏显示参数默认值下的原始材质，拖滑块时能直接对比调整前后',
-      text: '对比原始',
+      title: T('materials.preview.compareTitle', '右半屏显示参数默认值下的原始材质，拖滑块时能直接对比调整前后'),
+      text: T('materials.preview.compare', '对比原始'),
       'on:click': function () { toggleCompare(); }
     }));
     title.appendChild(el('button', {
       class: 'mt-pv-bg', type: 'button', id: 'mt-pv-bg',
-      title: '切换预览壁纸深浅：浅色壁纸看浅色场景是否看得清，深色壁纸看白玻璃反光',
+      title: T('materials.preview.bgTitle', '切换预览壁纸深浅：浅色壁纸看浅色场景是否看得清，深色壁纸看白玻璃反光'),
       text: bgLabel(),
       'on:click': function () {
         BG_MODE = BG_MODE === 'light' ? 'dark' : 'light';
@@ -1181,15 +1229,15 @@
     stage.appendChild(el('div', { class: 'mt-pv-inner' }));
     stage.appendChild(el('div', { class: 'mt-pv-noise' }));
 
-    // A/B 对比层：右半屏铺「原始材质」，左半屏仍是当前设置（clip-path 在 CSS 里切）。
+    // A/B compare layer: the right half shows the original material, the left half the current settings (clip-path cut in CSS).
     var ref = el('div', { class: 'mt-pv-ref', id: 'mt-pv-ref', 'data-bg': BG_MODE });
     ref.appendChild(el('div', { class: 'mt-pv-wall' }));
     ref.appendChild(buildStack());
-    ref.appendChild(el('span', { class: 'mt-pv-side-label', text: '原始' }));
+    ref.appendChild(el('span', { class: 'mt-pv-side-label', text: T('materials.preview.original', '原始') }));
     stage.appendChild(ref);
-    stage.appendChild(el('span', { class: 'mt-pv-side-label mt-pv-label-cur', id: 'mt-pv-label-cur', text: '当前' }));
+    stage.appendChild(el('span', { class: 'mt-pv-side-label mt-pv-label-cur', id: 'mt-pv-label-cur', text: T('materials.preview.current', '当前') }));
 
-    // 追光预览：与加载器同一套 --nts-mt-mx/-my 变量，看到的就是应用窗口的效果。
+    // Spotlight preview: same --nts-mt-mx/-my variables as the loader, so it matches the app window.
     stage.addEventListener('pointermove', function (event) {
       var rect = stage.getBoundingClientRect();
       if (!rect.width || !rect.height) return;
@@ -1197,15 +1245,15 @@
       var y = ((event.clientY - rect.top) / rect.height) * 100;
       stage.style.setProperty('--nts-mt-mx', x.toFixed(2) + '%');
       stage.style.setProperty('--nts-mt-my', y.toFixed(2) + '%');
-      // 光照方向与应用窗口同一套算法：从中心指向指针，sheen 角度跟着转。
+      // Light direction uses the same algorithm as the app window: from center toward the pointer, sheen angle follows.
       var ang = Math.atan2(y - 50, x - 50) * 180 / Math.PI;
       if (ang < 0) ang += 360;
       stage.style.setProperty('--nts-mt-light-angle', ang.toFixed(1) + 'deg');
     }, { passive: true });
 
     wrap.appendChild(stage);
-    wrap.appendChild(el('div', { class: 'mt-pv-meta', id: 'mt-pv-meta', text: '正在编译预览…' }));
-    // 可读性提示：玻璃基底越实，压在上面的文字越难看清。只提示不阻止 —— 用户有权调到自己喜欢。
+    wrap.appendChild(el('div', { class: 'mt-pv-meta', id: 'mt-pv-meta', text: T('materials.preview.compiling', '正在编译预览…') }));
+    // Readability hint: the more solid the glass, the harder text on it is to read. Warn only, never block -- users may tune it as they like.
     wrap.appendChild(el('div', { class: 'mt-pv-warn', id: 'mt-pv-warn' }));
     return wrap;
   }
@@ -1221,12 +1269,12 @@
 
     var head = el('div', { class: 'mt-head' });
     var title = el('h3', { class: 'mt-head-title' });
-    title.appendChild(document.createTextNode('高级材质'));
+    title.appendChild(document.createTextNode(T('materials.head.title', '高级材质')));
     title.appendChild(el('span', { class: 'mt-tag', text: 'v' + ((SPEC && SPEC.version) || 1) }));
     head.appendChild(title);
     head.appendChild(el('span', { class: 'mt-head-spacer' }));
     var searchBox = el('input', { class: 'mt-search', id: 'mt-search',
-      type: 'search', placeholder: '搜索参数（如 色散 / 圆角 / blur）' });
+      type: 'search', placeholder: T('materials.head.searchPlaceholder', '搜索参数（如 色散 / 圆角 / blur）') });
     searchBox.value = SEARCH;
     searchBox.addEventListener('input', function () {
       SEARCH = String(searchBox.value || '').trim().toLowerCase();
@@ -1235,7 +1283,7 @@
     head.appendChild(searchBox);
     head.appendChild(el('span', { class: 'mt-head-spacer' }));
     head.appendChild(el('span', { class: 'mt-dirty', id: 'mt-dirty' }));
-    var darkClear = el('button', { class: 'mt-mini mt-dark-clear', id: 'mt-dark-clear', type: 'button', text: '清除暗色覆盖' });
+    var darkClear = el('button', { class: 'mt-mini mt-dark-clear', id: 'mt-dark-clear', type: 'button', text: T('materials.head.clearDark', '清除暗色覆盖') });
     darkClear.addEventListener('click', clearAllDark);
     head.appendChild(darkClear);
 
@@ -1248,12 +1296,12 @@
       schedulePreview();
     });
     enableWrap.appendChild(enableBox);
-    enableWrap.appendChild(el('span', { text: '启用' }));
+    enableWrap.appendChild(el('span', { text: T('materials.head.enable', '启用') }));
     head.appendChild(enableWrap);
 
-    // 「跟随主题」是 lock 的反面：关掉它 = 材质锁定，切主题不覆盖这套手调参数。
+    // "Follow theme" is the inverse of lock: turning it off locks the materials, so switching themes keeps these hand-tuned params.
     var followWrap = el('label', { class: 'mt-switch',
-      title: '打开时，切换主题会用主题自带的材质替换当前设置；关掉则保留你手调的这套材质' });
+      title: T('materials.head.followTitle', '打开时，切换主题会用主题自带的材质替换当前设置；关掉则保留你手调的这套材质') });
     var followBox = el('input', { type: 'checkbox', id: 'mt-follow' });
     followBox.checked = !CURRENT.lock;
     followBox.addEventListener('change', function () {
@@ -1261,16 +1309,16 @@
       markDirty();
       if (window.NekoPanel) {
         window.NekoPanel.toast(followBox.checked
-          ? '材质将跟随主题切换'
-          : '材质已锁定：切换主题时保留当前设置', 'ok');
+          ? T('materials.toast.followOn', '材质将跟随主题切换')
+          : T('materials.toast.followOff', '材质已锁定：切换主题时保留当前设置'), 'ok');
       }
     });
     followWrap.appendChild(followBox);
-    followWrap.appendChild(el('span', { text: '跟随主题' }));
+    followWrap.appendChild(el('span', { text: T('materials.head.follow', '跟随主题') }));
     head.appendChild(followWrap);
 
-    var modeSel = el('select', { class: 'mt-select', id: 'mt-mode', title: '分别编辑亮色与暗色材质' });
-    [['light', '亮色'], ['dark', '暗色']].forEach(function (pair) {
+    var modeSel = el('select', { class: 'mt-select', id: 'mt-mode', title: T('materials.head.modeTitle', '分别编辑亮色与暗色材质') });
+    [['light', modeLabel('light')], ['dark', modeLabel('dark')]].forEach(function (pair) {
       var opt = el('option', { value: pair[0], text: pair[1] });
       if (MODE === pair[0]) opt.setAttribute('selected', '');
       modeSel.appendChild(opt);
@@ -1283,7 +1331,7 @@
     });
     head.appendChild(modeSel);
 
-    var qualitySel = el('select', { class: 'mt-select', id: 'mt-quality', title: '性能模式' });
+    var qualitySel = el('select', { class: 'mt-select', id: 'mt-quality', title: T('materials.head.qualityTitle', '性能模式') });
     ((SPEC && SPEC.quality) || []).forEach(function (item) {
       var opt = el('option', { value: item.id, text: item.label });
       if (CURRENT.quality === item.id) opt.setAttribute('selected', '');
@@ -1296,17 +1344,17 @@
     });
     head.appendChild(qualitySel);
 
-    var resetBtn = el('button', { class: 'mt-mini', type: 'button', text: '回到已保存' });
+    var resetBtn = el('button', { class: 'mt-mini', type: 'button', text: T('materials.head.revert', '回到已保存') });
     resetBtn.addEventListener('click', function () {
       resetLocal();
-      toast('已丢弃材质改动', 'ok');
+      toast(T('materials.toast.reverted', '已丢弃材质改动'), 'ok');
     });
     head.appendChild(resetBtn);
     shell.appendChild(head);
 
-    // 总开关关着的时候，勾着「启用」也没用（加载器整块撤掉）；不提示就是静默失效。
-    var masterWarn = el('div', { class: 'mt-master-warn', id: 'mt-master-warn', text:
-      '主题总开关（面板上方的「启用主题」）已关闭 —— 高级材质暂时不会生效。' });
+    // With the master switch off, ticking "enable" does nothing (the loader drops the whole layer); without a hint it fails silently.
+    var masterWarn = el('div', { class: 'mt-master-warn', id: 'mt-master-warn', text: T('materials.head.masterOff',
+      '主题总开关（面板上方的「启用主题」）已关闭 —— 高级材质暂时不会生效。') });
     masterWarn.style.display = 'none';
     shell.appendChild(masterWarn);
 
@@ -1322,8 +1370,8 @@
     schedulePreview();
   }
 
-  /** 暗色覆盖项数（用于提示「切预设会清掉多少项」）。 */
-  // 暗色只存差异，想把「某一页的暗色调法」整体丢掉时，逐项点清除太慢。
+  /** Clear every dark override at once. */
+  // Dark only stores differences; clearing item by item is too slow when dropping a whole dark tuning.
   function clearAllDark() {
     var n = countOverrides(CURRENT.dark);
     if (!n) return;
@@ -1331,7 +1379,7 @@
     renderPane();
     markDirty();
     schedulePreview();
-    if (window.NekoPanel) window.NekoPanel.toast('已清除 ' + n + ' 项暗色覆盖，全部回到亮色', 'ok');
+    if (window.NekoPanel) window.NekoPanel.toast(T('materials.toast.darkCleared', '已清除 {{count}} 项暗色覆盖，全部回到亮色', { count: n }), 'ok');
   }
 
   function countOverrides(dark) {
@@ -1343,7 +1391,7 @@
     return total;
   }
 
-  /** 质材总开关未开时，预览仍然会画出来（调参用），必须标明它不代表窗口现状。 */
+  /** When the material switch is off the preview still renders (for tuning), so mark that it doesn't reflect the windows. */
   function syncOffTag() {
     var tag = byId('mt-pv-off');
     if (!tag) return;
@@ -1354,16 +1402,16 @@
     if (!BG_TOUCHED) BG_MODE = MODE === 'dark' ? 'dark' : 'light';
     applyBgMode();
     var label = byId('mt-pv-mode-label');
-    if (label) label.textContent = '实时预览 · ' + (MODE === 'dark' ? '暗色' : '亮色');
+    if (label) label.textContent = T('materials.preview.title', '实时预览 · {{mode}}', { mode: modeLabel(MODE) });
   }
 
-  /* ---------------- 对外接口 ---------------- */
+  /* ---------------- Public API ---------------- */
 
   /**
-   * 把磁盘上的材质设为新基线。
-   * options.submitted：保存时提交的那份快照（保存路径才传）。等待保存 / 回读期间
-   * 用户又改了材质（CURRENT 已不等于提交的快照）时，只更新基线、保留这些新改动，
-   * 不能被回读值静默覆盖。
+   * Make the on-disk materials the new baseline.
+   * options.submitted: the snapshot submitted on save (only passed on the save path). If the user
+   * edited materials again while saving / reading back (CURRENT no longer equals the submitted
+   * snapshot), only the baseline is updated and those new edits are kept, never silently overwritten.
    */
   function sync(palette, options) {
     MASTER_ON = !(palette && palette.enabled === false);
@@ -1422,9 +1470,10 @@
       root.textContent = '';
       var shell = el('div', { class: 'mt-shell' });
       var head = el('div', { class: 'mt-head' });
-      head.appendChild(el('h3', { class: 'mt-head-title', text: '高级材质' }));
-      head.appendChild(el('span', { class: 'mt-hint', text:
-        '参数表读取失败：' + (error && error.message ? error.message : '后端插件可能未启动') }));
+      head.appendChild(el('h3', { class: 'mt-head-title', text: T('materials.head.title', '高级材质') }));
+      head.appendChild(el('span', { class: 'mt-hint', text: T('materials.error.specFailed', '参数表读取失败：{{error}}', {
+        error: error && error.message ? error.message : T('materials.error.backendDown', '后端插件可能未启动')
+      }) }));
       shell.appendChild(head);
       root.appendChild(shell);
     });
@@ -1439,9 +1488,15 @@
     applyPreset: function (id) { applyPreset(id); }
   };
 
+  // Boot once the DOM is ready and the i18n bundle has loaded (whenI18nReady also times out, so it never blocks).
+  function start() {
+    if (typeof window.whenI18nReady === 'function') window.whenI18nReady(boot);
+    else boot();
+  }
+
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', boot);
+    document.addEventListener('DOMContentLoaded', start);
   } else {
-    boot();
+    start();
   }
 })();

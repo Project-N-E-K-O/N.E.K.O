@@ -1,9 +1,10 @@
-/* 高级材质中心（材质工作台）样式。
-   与 style.css 共用面板私有变量；预览区读取后端编译出的 --nts-mt-* 变量，
-   因此预览与应用窗口用的是同一份编译产物。
+/* Advanced material center (material workbench) styles.
+   Shares the panel-private variables with style.css; the preview reads the
+   backend-compiled --nts-mt-* variables, so preview and app windows use the
+   same compiled output.
 */
 
-/* ---------- 外壳 ---------- */
+/* ---------- Shell ---------- */
 .mt-root { margin: 0 0 18px; }
 .mt-shell { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-1); overflow: hidden; }
 .mt-head { display: flex; flex-wrap: wrap; gap: 10px 12px; align-items: center; padding: 11px 14px; border-bottom: 1px solid var(--border-soft); background: var(--surface-2); }
@@ -32,7 +33,7 @@
 .mt-dirty { font-size: 11px; color: var(--warn); background: var(--warn-soft); border-radius: 999px; padding: 1px 8px; display: none; }
 .mt-dirty.is-on { display: inline-block; }
 
-/* ---------- 主体布局 ---------- */
+/* ---------- Main layout ---------- */
 .mt-body { display: grid; grid-template-columns: 150px minmax(0, 1fr) 246px; align-items: stretch; }
 .mt-tabs { display: flex; flex-direction: column; gap: 1px; padding: 8px 7px; border-right: 1px solid var(--border-soft); background: var(--surface-2); }
 .mt-tab { font: inherit; font-size: 12px; text-align: left; padding: 6px 9px; border: 0; border-radius: 7px; background: transparent; color: var(--text-sub); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -44,7 +45,7 @@
 .mt-sub::after { content: ''; flex: 1; height: 1px; background: var(--border-soft); }
 .mt-hint { font-size: 11.5px; color: var(--text-faint); line-height: 1.6; margin: 0 0 8px; }
 
-/* ---------- 参数行 ---------- */
+/* ---------- Param rows ---------- */
 .mt-row { display: grid; grid-template-columns: minmax(88px, 38%) minmax(0, 1fr) 62px; gap: 9px; align-items: center; padding: 3px 0; }
 .mt-row-label { font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mt-row-label small { color: var(--text-faint); font-size: 10.5px; margin-left: 5px; font-variant-numeric: tabular-nums; }
@@ -58,7 +59,7 @@
 .mt-toggle input { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
 .mt-select-full { width: 100%; }
 
-/* ---------- 预设 / 组件卡片 ---------- */
+/* ---------- Preset / component cards ---------- */
 .mt-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(126px, 1fr)); gap: 7px; margin: 6px 0 2px; }
 .mt-preset { text-align: left; font: inherit; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); cursor: pointer; transition: border-color .12s, box-shadow .12s; }
 .mt-preset:hover { border-color: var(--accent-line); }
@@ -72,14 +73,15 @@
 .mt-comp.is-off .mt-comp-body { display: none; }
 .mt-comp-note { font-size: 10.5px; color: var(--text-faint); }
 
-/* ---------- 预览 ---------- */
+/* ---------- Preview ---------- */
 .mt-pv-wrap { border-left: 1px solid var(--border-soft); background: var(--surface-2); padding: 11px; }
 .mt-pv-title { font-size: 11px; font-weight: 650; letter-spacing: .05em; color: var(--text-faint); margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .mt-pv-bg { font: inherit; font-size: 10.5px; font-weight: 600; letter-spacing: 0; padding: 2px 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text-sub); cursor: pointer; flex: none; }
 .mt-pv-bg:hover { border-color: var(--accent-line); color: var(--text); }
 .mt-pv { position: relative; border-radius: 12px; overflow: hidden; min-height: 268px; background: #10141d; isolation: isolate; }
-/* 预览壁纸可切深浅：深色壁纸看白玻璃反光与高光，浅色壁纸看浅色场景下还看不看得清。
-   玻璃在两种背景上的观感差别很大，只给一种等于让用户盲猜。 */
+/* The preview wallpaper can be dark or light: dark shows white-glass reflections and highlights,
+   light shows whether things stay readable in light scenes. Glass looks very different on each,
+   so offering only one would leave users guessing. */
 .mt-pv[data-bg="light"], .mt-pv-ref[data-bg="light"] { background: #eef2f7; }
 .mt-pv[data-bg="light"] .mt-pv-wall,
 .mt-pv-ref[data-bg="light"] .mt-pv-wall { background:
@@ -101,8 +103,8 @@
   border-radius: var(--nts-mt-radius-c, var(--nts-mt-radius, 16px));
   border: var(--nts-mt-border-width, 1px) solid var(--nts-mt-border, rgba(255,255,255,.3));
   background-color: var(--nts-mt-bg, rgba(255,255,255,.18));
-  /* 与应用窗口同序叠层：rim(边缘环带) → sheen(顶部镜面) → spot(鼠标追光) → refract-tint(折射染色)。
-     少铺 spot 与 refract-tint，就等于拖「追光半径/强度」和「折射染色」时预览纹丝不动 —— 假控件。 */
+  /* Same layer order as the app window: rim (edge band) -> sheen (top specular) -> spot (pointer spotlight) -> refract-tint.
+     Skipping spot and refract-tint would make the spotlight radius/intensity and refraction tint controls do nothing in the preview. */
   background-image: var(--nts-mt-rim-img, none), var(--nts-mt-sheen-img, none), var(--nts-mt-spot, none),
     linear-gradient(var(--nts-mt-refract-tint, transparent), var(--nts-mt-refract-tint, transparent));
   background-repeat: no-repeat;
@@ -119,17 +121,17 @@
     inset 0 calc(var(--nts-mt-lens, 6px) * -1.4) calc(var(--nts-mt-lens, 6px) * 2.8) calc(var(--nts-mt-lens, 6px) * -1) var(--nts-mt-heel, rgba(0,0,0,.12)),
     inset var(--nts-mt-disp-shift, 2px) 0 var(--nts-mt-disp-blur, 2px) var(--nts-mt-disp-warm, transparent),
     inset calc(var(--nts-mt-disp-shift, 2px) * -1) 0 var(--nts-mt-disp-blur, 2px) var(--nts-mt-disp-cool, transparent),
-    /* 四边描边：玻璃的上缘亮、下缘暗，是「有厚度」的关键；只给一圈均匀 border 会变成塑料片 */
+    /* Per-side edges: a bright top and darker bottom are what make glass look thick; a uniform border looks like plastic */
     inset 0 var(--nts-mt-edge-width, 1px) 0 var(--nts-mt-edge-t, transparent),
     inset 0 calc(-1 * var(--nts-mt-edge-width, 1px)) 0 var(--nts-mt-edge-b, transparent),
     inset var(--nts-mt-edge-width, 1px) 0 0 var(--nts-mt-edge-l, transparent),
     inset calc(-1 * var(--nts-mt-edge-width, 1px)) 0 0 var(--nts-mt-edge-r, transparent),
-    /* 底部液态折射：liquidAmp 调的就是这一条 */
+    /* Bottom liquid refraction: this is the line liquidAmp controls */
     inset 0 calc(-1 * var(--nts-mt-liquid-amp, 0px)) calc(var(--nts-mt-liquid-amp, 0px) * 2) var(--nts-mt-refract-tint, transparent);
   transition: box-shadow .18s var(--nts-mt-easing, ease), background-color .18s var(--nts-mt-easing, ease); }
 .mt-pv-card::before { content: ''; position: absolute; inset: 0; z-index: -1; background: var(--nts-mt-dye, none); opacity: 1; }
-/* 悬停亮环与按压内阴影：让 hover / press 这组参数在预览里也有落点，
-   否则用户只能去应用窗口里反复点按来验证。 */
+/* Hover ring and press inset shadow: give the hover / press params something to show in the preview,
+   otherwise users would have to keep clicking in the app window to check them. */
 .mt-pv-card::after { content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, var(--nts-mt-hover, .12));
   opacity: 0; transition: opacity var(--nts-mt-hover-duration, 180ms) var(--nts-mt-easing, ease); }
@@ -142,14 +144,15 @@
 .mt-pv-lines i + i { margin-top: 6px; width: 62%; background: rgba(255,255,255,.34); }
 .mt-pv-msg { margin-left: 22px; }
 .mt-pv-tag { display: inline-block; font-size: 10px; padding: 0 5px; border-radius: 4px; background: rgba(255,255,255,.18); margin-right: 5px; }
-/* 浅色壁纸下正文改深色：预览里的文字颜色必须跟随后景明暗，否则浅背景 + 白字读不出内容 */
+/* Dark body text on the light wallpaper: preview text must follow the backdrop brightness, white text on light is unreadable */
 .mt-pv[data-bg="light"] .mt-pv-card { color: rgba(15, 23, 42, .88); }
 .mt-pv[data-bg="light"] .mt-pv-lines i { background: rgba(15, 23, 42, .40); }
 .mt-pv[data-bg="light"] .mt-pv-lines i + i { background: rgba(15, 23, 42, .22); }
 .mt-pv[data-bg="light"] .mt-pv-tag { background: rgba(15, 23, 42, .08); }
-/* 三个装饰层与应用窗口里的同名层一一对应：sheen = 顶部柔光带，inner = 内高光，
-   ambient = 环境反射。它们都吃后端编译好的"图"变量，所以预览里看到的层次就是
-   应用里会有的层次 —— 预览不自己重算，避免两边观感不一致。 */
+/* The three decoration layers map one-to-one to the same-named layers in the app window:
+   sheen = top soft band, inner = inner highlight, ambient = ambient reflection. They all use
+   the backend-compiled image variables, so the preview shows exactly the app's layering --
+   the preview never recomputes them, so the two can't drift apart. */
 .mt-pv-edge { position: absolute; inset: 0; z-index: 2; pointer-events: none; border-radius: inherit; background: var(--nts-mt-rim-img, none), var(--nts-mt-sheen-img, none); background-repeat: no-repeat; background-size: cover, cover; }
 .mt-pv-ambient { position: absolute; inset: -20%; z-index: 1; pointer-events: none; background: var(--nts-mt-ambient-img, none); background-repeat: no-repeat; background-size: var(--nts-mt-ambient-size, 100%) var(--nts-mt-ambient-size, 100%); }
 .mt-pv-inner { position: absolute; inset: 0; z-index: 2; pointer-events: none; border-radius: inherit; background: var(--nts-mt-inner-img, none), var(--nts-mt-inner2, none); background-repeat: no-repeat, no-repeat; background-size: cover, cover; background-position: center, center; }
@@ -162,7 +165,7 @@
 .mt-pv-stack { z-index: 1; }
 .mt-pv-card { z-index: 0; }
 .mt-pv-ambient { z-index: 0; }
-/* ---------- 响应式 ---------- */
+/* ---------- Responsive ---------- */
 @media (max-width: 1180px) {
   .mt-body { grid-template-columns: 132px minmax(0, 1fr); }
   .mt-pv-wrap { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--border-soft); }
@@ -176,8 +179,9 @@
 
 @media (prefers-reduced-motion: reduce) {
   .mt-preset { transition: none; }
+}
 
-/* 自定义预设：卡片本体 + 右上角删除，避免误点卡片本体触发整套套用。 */
+/* Custom presets: the card plus a delete button in the top-right corner, so deleting never hits the card and applies the preset. */
 .mt-preset-wrap { position: relative; }
 .mt-preset-wrap .mt-preset { width: 100%; padding-right: 46px; }
 .mt-preset-del { position: absolute; top: 6px; right: 6px; opacity: .72; }
@@ -185,9 +189,8 @@
 .mt-save-row { display: flex; gap: 7px; align-items: center; margin: 7px 0 2px; }
 .mt-input { flex: 1; min-width: 0; font: inherit; font-size: 11.5px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--text); }
 .mt-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-}
 
-/* 可读性提示：玻璃基底偏实时出现，只是提醒，不拦操作。 */
+/* Readability hint: shown when the glass base gets too solid; a reminder only, never blocks. */
 .mt-pv-warn {
   margin-top: 8px;
   padding: 6px 9px;
@@ -204,7 +207,7 @@
 }
 
 
-/* 暗色覆盖的清除按钮：跟在参数名后面，点一下回到继承亮色 */
+/* Dark-override clear button: sits after the param name; one click goes back to inheriting light */
 .mt-row-clear {
   margin-left: 6px;
   padding: 1px 6px;
@@ -232,8 +235,8 @@
   border: 1px solid rgba(251, 191, 36, .3);
 }
 
-/* 组件材质缩略块（组件页顶部）：直接吃组件别名变量，未自定义时回退全局值。
-   只示意颜色 / 圆角 / 模糊 / 边框 / 阴影，不含任何布局属性。 */
+/* Component material chips (top of the components page): use the component alias variables, falling back to global when not customized.
+   They only illustrate color / radius / blur / border / shadow, with no layout properties. */
 .mt-comp-strip { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin: 6px 0 12px; }
 .mt-comp-chip { display: flex; flex-direction: column; gap: 6px; align-items: center; }
 .mt-comp-chip-face {
@@ -248,7 +251,7 @@
 }
 .mt-comp-chip-name { font-size: 10px; line-height: 1.2; color: rgba(148, 163, 184, 0.9); }
 @media (max-width: 720px) { .mt-comp-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-/* 参数搜索：90 个参数散在 8 个界面，没有搜索只能翻页找。 */
+/* Param search: 90 params spread over 8 views; without search you'd have to page through them. */
 .mt-search {
   width: 190px;
   padding: 5px 9px;
@@ -263,7 +266,7 @@
 .mt-search::placeholder { color: rgba(148, 163, 184, 0.75); }
 @media (max-width: 720px) { .mt-search { width: 100%; } }
 
-/* 批量重置：组件页一次回到继承全局，暗色一次清空全部覆盖 */
+/* Bulk reset: the components page returns everything to inherit-global at once, dark clears all overrides at once */
 .mt-comp-bar {
   display: flex;
   align-items: center;
@@ -285,9 +288,9 @@
   border-color: rgba(251, 191, 36, 0.3);
 }
 
-/* ---- 预览：6 类组件 + 原始/当前对比（v0.15.69 起）----
-   规范要求预览至少覆盖玻璃卡片 / 普通按钮 / 聊天气泡 / 输入框 / 弹窗 / 侧边栏，
-   并且要能看到调整前的原始材质。每类组件读自己的组件别名，未自定义时回退全局。 */
+/* ---- Preview: 6 component kinds + original/current compare (since v0.15.69) ----
+   The spec requires the preview to cover at least glass card / button / chat bubble / input / dialog / sidebar,
+   and to show the original material before adjustment. Each kind reads its own component alias, falling back to global. */
 .mt-pv-row { display: flex; gap: 8px; align-items: stretch; }
 .mt-pv-chat {
   background-color: var(--nts-mt-c-bg-chat, var(--nts-mt-bg));
@@ -341,7 +344,7 @@
 .mt-pv[data-bg="light"] .mt-pv-btn,
 .mt-pv[data-bg="light"] .mt-pv-pop { color: rgba(15, 23, 42, .88); }
 .mt-pv[data-bg="light"] .mt-pv-side i { background: rgba(15, 23, 42, .35); }
-/* 对比层只保留右半屏：clip-path 切掉左边 50%，中缝用 1px 亮线标出分界。 */
+/* The compare layer keeps only the right half: clip-path cuts the left 50%, a 1px bright line marks the seam. */
 .mt-pv-ref { position: absolute; inset: 0; z-index: 2; display: none; pointer-events: none; overflow: hidden; clip-path: inset(0 0 0 50%); }
 .mt-pv[data-compare="1"] .mt-pv-ref { display: block; }
 .mt-pv-ref::after { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 1px; background: rgba(255, 255, 255, .55); }

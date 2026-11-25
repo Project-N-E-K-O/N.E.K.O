@@ -30,8 +30,9 @@ MATERIAL_VERSION = 1
 
 QUALITY_MODES = ("saver", "balanced", "high", "ultra")
 
-# 编译产物版本：新增 / 重命名派生变量时必须 +1。theme.json 里的镜像靠它判过期 ——
-# 只看 loader_version / css_sha8 的话，编译器升级而加载器没变时镜像永远不重算（0.15.12 踩过）。
+# Compiled-output version: must be bumped whenever a derived variable is added / renamed. The mirror in
+# theme.json uses it to detect staleness -- looking only at loader_version / css_sha8, a compiler upgrade
+# with an unchanged loader would never recompute the mirror (hit in 0.15.12).
 COMPILE_VERSION = "1.6.20"
 QUALITY_LABELS = {
     "saver": "省电",
@@ -85,7 +86,7 @@ COMPONENT_LABELS = {
     "menu": "下拉菜单",
 }
 
-#: 组件可独立覆盖的参数（继承全局时不产出变量）。
+#: Params a component may override on its own (no variables are emitted while it inherits the global ones).
 COMPONENT_PARAMS = ("opacity", "blur", "radius", "borderWidth", "shadowStrength")
 
 EASINGS = ("ease", "linear", "ease-in", "ease-out", "ease-in-out")
@@ -108,7 +109,7 @@ class Param:
 
 
 _RAW_PARAMS: tuple[Param, ...] = (
-    # ---------------------------------------------------------------- 基础材质
+    # ---------------------------------------------------------------- base material
     Param("opacity", "global", "number", 0.58, 0.0, 1.0, label="玻璃透明度（越低越透）"),
     Param("tint", "global", "color", "#ffffff", label="玻璃底色"),
     Param("tintStrength", "global", "number", 0.35, 0.0, 1.0, label="背景染色强度"),
@@ -122,7 +123,7 @@ _RAW_PARAMS: tuple[Param, ...] = (
     Param("dyeWarmth", "global", "number", 0.0, -100.0, 100.0, label="冷暖倾向"),
     Param("dyeAlpha", "global", "number", 0.45, 0.0, 1.0, label="颜色透明度"),
     Param("dyeGradient", "global", "number", 0.4, 0.0, 1.0, label="渐变染色强度"),
-    # ---------------------------------------------------------------- 边缘光
+    # ---------------------------------------------------------------- edge light
     Param("edgeIntensity", "lighting", "number", 0.4, 0.0, 1.0, label="边缘光强度"),
     Param("edgeWidth", "lighting", "px", 1.0, 0.0, 8.0, label="边缘光宽度"),
     Param("edgeAlpha", "lighting", "number", 0.35, 0.0, 1.0, label="边缘光透明度"),
@@ -132,21 +133,21 @@ _RAW_PARAMS: tuple[Param, ...] = (
     Param("edgeLeft", "lighting", "number", 0.25, 0.0, 1.0, label="左缘亮度"),
     Param("edgeRight", "lighting", "number", 0.25, 0.0, 1.0, label="右缘亮度"),
     Param("edgeFade", "lighting", "percent", 70.0, 0.0, 100.0, label="边缘渐隐"),
-    # ---------------------------------------------------------------- 内部高光
+    # ---------------------------------------------------------------- inner highlight
     Param("innerIntensity", "lighting", "number", 0.35, 0.0, 1.0, label="内部高光强度"),
     Param("innerAlpha", "lighting", "number", 0.3, 0.0, 1.0, label="内部高光透明度"),
     Param("innerRange", "lighting", "percent", 55.0, 0.0, 100.0, label="内部高光范围"),
     Param("innerPos", "lighting", "percent", 30.0, 0.0, 100.0, label="内部高光位置"),
     Param("innerSoftness", "lighting", "percent", 60.0, 0.0, 100.0, label="内部高光柔和度"),
     Param("innerDouble", "lighting", "bool", False, label="双层内部高光"),
-    # ---------------------------------------------------------------- 环境反射
+    # ---------------------------------------------------------------- ambient reflection
     Param("ambientIntensity", "lighting", "number", 0.25, 0.0, 1.0, label="环境反射强度"),
     Param("ambientColor", "lighting", "color", "#cfe8ff", label="环境反射颜色"),
     Param("ambientDirection", "lighting", "deg", 135.0, 0.0, 360.0, label="环境反射方向"),
     Param("ambientRange", "lighting", "percent", 60.0, 0.0, 100.0, label="环境反射范围"),
     Param("ambientBlur", "lighting", "px", 24.0, 0.0, 60.0, label="环境反射模糊"),
     Param("ambientAlpha", "lighting", "number", 0.25, 0.0, 1.0, label="环境反射透明度"),
-    # ---------------------------------------------------------------- 动态光照
+    # ---------------------------------------------------------------- dynamic lighting
     Param("dynamic", "lighting", "bool", True, label="动态光照"),
     Param("dynamicSpeed", "lighting", "number", 6.0, 0.5, 30.0, label="动态光照速度"),
     Param("dynamicIntensity", "lighting", "number", 0.3, 0.0, 1.0, label="动态光照强度"),
@@ -154,33 +155,33 @@ _RAW_PARAMS: tuple[Param, ...] = (
     Param("mouseFollow", "lighting", "number", 0.5, 0.0, 1.0, label="鼠标跟随强度"),
     Param("mouseDelay", "lighting", "ms", 120.0, 0.0, 800.0, label="鼠标跟随延迟"),
     Param("dynamicReflect", "lighting", "bool", True, label="动态反射"),
-    # ---------------------------------------------------------------- 折射
+    # ---------------------------------------------------------------- refraction
     Param("refractStrength", "refraction", "number", 0.2, 0.0, 1.0, label="折射强度"),
     Param("refractRange", "refraction", "percent", 40.0, 0.0, 100.0, label="折射范围"),
     Param("refractEdge", "refraction", "px", 6.0, 0.0, 20.0, label="折射边缘"),
     Param("refractBlur", "refraction", "px", 18.0, 0.0, 60.0, label="折射模糊"),
     Param("refractAlpha", "refraction", "number", 0.3, 0.0, 1.0, label="折射透明度"),
     Param("refractLocal", "refraction", "number", 0.5, 0.0, 1.0, label="局部折射强度"),
-    # ---------------------------------------------------------------- 色散
+    # ---------------------------------------------------------------- dispersion
     Param("dispStrength", "refraction", "number", 0.12, 0.0, 1.0, label="色散强度"),
     Param("dispRange", "refraction", "percent", 30.0, 0.0, 100.0, label="色散范围"),
     Param("dispAlpha", "refraction", "number", 0.25, 0.0, 1.0, label="色散透明度"),
     Param("dispShift", "refraction", "px", 4.0, 0.0, 30.0, label="色散色彩偏移"),
     Param("dispWidth", "refraction", "px", 2.0, 0.0, 10.0, label="色散边缘宽度"),
-    # ---------------------------------------------------------------- 液态动态
+    # ---------------------------------------------------------------- liquid motion
     Param("liquid", "refraction", "bool", True, label="液态动态"),
     Param("liquidAmp", "refraction", "px", 4.0, 0.0, 24.0, label="形变幅度"),
     Param("liquidSpeed", "refraction", "number", 9.0, 2.0, 30.0, label="形变速度"),
     Param("liquidRange", "refraction", "percent", 50.0, 0.0, 100.0, label="波动范围"),
     Param("liquidSmooth", "refraction", "percent", 70.0, 0.0, 100.0, label="平滑度"),
     Param("liquidStrength", "refraction", "number", 0.35, 0.0, 1.0, label="液态强度"),
-    # ---------------------------------------------------------------- 纹理
+    # ---------------------------------------------------------------- texture
     Param("noise", "surface", "bool", False, label="噪点纹理"),
     Param("noiseStrength", "surface", "number", 0.18, 0.0, 1.0, label="噪点强度"),
     Param("noiseSize", "surface", "px", 3.0, 1.0, 24.0, label="噪点尺寸"),
     Param("noiseAlpha", "surface", "number", 0.2, 0.0, 1.0, label="噪点透明度"),
     Param("noiseDensity", "surface", "percent", 50.0, 0.0, 100.0, label="噪点密度"),
-    # ---------------------------------------------------------------- 圆角
+    # ---------------------------------------------------------------- corner radius
     Param("radius", "surface", "px", 20.0, 0.0, 40.0, label="全局圆角"),
     Param("radiusCard", "surface", "px", 20.0, 0.0, 40.0, label="卡片圆角"),
     Param("radiusButton", "surface", "px", 13.0, 0.0, 40.0, label="按钮圆角"),
@@ -188,14 +189,14 @@ _RAW_PARAMS: tuple[Param, ...] = (
     Param("radiusInput", "surface", "px", 16.0, 0.0, 40.0, label="输入框圆角"),
     Param("borderWidth", "surface", "px", 1.0, 0.0, 8.0, label="边框宽度"),
     Param("borderAlpha", "surface", "number", 0.42, 0.0, 1.0, label="边框透明度"),
-    # ---------------------------------------------------------------- 阴影
+    # ---------------------------------------------------------------- shadow
     Param("shadowStrength", "surface", "number", 0.35, 0.0, 1.0, label="外阴影强度"),
     Param("shadowSpread", "surface", "px", 0.0, 0.0, 40.0, label="外阴影扩散"),
     Param("shadowDistance", "surface", "px", 8.0, 0.0, 40.0, label="外阴影距离"),
     Param("shadowBlur", "surface", "px", 24.0, 0.0, 60.0, label="外阴影模糊"),
     Param("innerShadow", "surface", "bool", False, label="内阴影"),
     Param("innerShadowStrength", "surface", "number", 0.25, 0.0, 1.0, label="内阴影强度"),
-    # ---------------------------------------------------------------- 动画
+    # ---------------------------------------------------------------- animation
     Param("animation", "animation", "bool", True, label="动画总开关"),
     Param("enterDuration", "animation", "ms", 260.0, 0.0, 2000.0, label="进入动画时长"),
     Param("exitDuration", "animation", "ms", 180.0, 0.0, 2000.0, label="退出动画时长"),
@@ -205,7 +206,7 @@ _RAW_PARAMS: tuple[Param, ...] = (
     Param("easing", "animation", "enum", "ease-out", choices=EASINGS, label="缓动曲线"),
     Param("hover", "animation", "number", 0.4, 0.0, 1.0, label="悬停高光"),
     Param("press", "animation", "number", 0.6, 0.0, 1.0, label="点击下沉"),
-    # ---------------------------------------------------------------- 鼠标交互
+    # ---------------------------------------------------------------- mouse interaction
     Param("spotlight", "animation", "bool", True, label="鼠标追光"),
     Param("spotRadius", "animation", "px", 240.0, 0.0, 600.0, label="光斑半径"),
     Param("spotIntensity", "animation", "number", 0.35, 0.0, 1.0, label="光斑强度"),
@@ -241,7 +242,7 @@ def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
-# 三个锚点：ease（起步缓）→ ease-in-out（对称）→ linear（匀速）。
+# Three anchors: ease (slow start) -> ease-in-out (symmetric) -> linear (constant speed).
 _EASE_LOW = (0.25, 0.1, 0.25, 1.0)
 _EASE_MID = (0.42, 0.0, 0.58, 1.0)
 _EASE_TOP = (0.0, 0.0, 1.0, 1.0)
@@ -429,9 +430,10 @@ PRESETS: dict[str, dict[str, dict[str, Any]]] = {
         dynamic=True, dynamicIntensity=0.3, mouseFollow=0.5, spotlight=True, spotIntensity=0.35,
     ),
     "liquid": _preset(
-        # Apple Liquid Glass 观感：低不透明度 + 高饱和背板模糊 + 极强顶部镜面亮线
-        # + 明显内发光与底部折射收边 + 大圆角。每一项都对应 v1.6.1 光学层里的
-        # 一个派生变量，所以面板上拖这些滑块时应用窗口里真的会变。
+        # Apple Liquid Glass look: low opacity + highly saturated backdrop blur + a very strong
+        # top specular line + visible inner glow and bottom refraction rim + large radii. Each item
+        # maps to a derived variable in the v1.6.1 optical layer, so dragging these sliders in the
+        # panel really changes the app windows.
         opacity=0.34, tintStrength=0.5, blur=30, blurLevel="high", saturation=200, brightness=108,
         dyeStrength=0.55, dyeAlpha=0.5, dyeGradient=0.85,
         dyePrimary="#bfe8ff", dyeSecondary="#d8c8ff",
@@ -525,8 +527,9 @@ def normalize_materials(raw: Any) -> tuple[dict[str, Any], list[str]]:
     enabled = _coerce_bool(raw.get("enabled", base["enabled"]))
     clean["enabled"] = bool(enabled) if enabled is not None else base["enabled"]
 
-    # 内置预设名大小写不敏感（全部小写）；自定义预设名按用户原文匹配 ——
-    # 这里先只做内置归一，命中不上的先原样留着，等 custom_presets 解析完再审一次。
+    # Built-in preset names are case-insensitive (all lowercase); custom preset names match the user's
+    # original text -- only built-in normalization happens here; non-matches are kept as-is and
+    # re-checked once custom_presets has been parsed.
     preset_raw = str(raw.get("preset", "custom")).strip()
     preset_key = preset_raw.lower()
     clean["preset"] = preset_key if preset_key in PRESET_IDS else preset_raw
@@ -534,14 +537,15 @@ def normalize_materials(raw: Any) -> tuple[dict[str, Any], list[str]]:
     quality = str(raw.get("quality", "balanced")).strip().lower()
     clean["quality"] = quality if quality in QUALITY_MODES else "balanced"
 
-    # 「跟随主题切换」的反面：lock=True 时应用主题不替换材质（用户自己调的那套要留住）。
+    # The opposite of "follow theme switches": with lock=True, applying a theme does not replace the
+    # materials (the user's own tuned set must be kept).
     lock = _coerce_bool(raw.get("lock", base.get("lock", False)))
     clean["lock"] = bool(lock) if lock is not None else False
 
     for section in SECTIONS:
         clean[section] = _clean_section(raw.get(section), section, warnings, section)
 
-    # 亮暗差异：只保留用户显式给出的键，未给出 / 非法的键继承亮色值。
+    # Light/dark differences: keep only keys the user gave explicitly; missing / invalid keys inherit the light value.
     dark_raw = raw.get("dark")
     if isinstance(dark_raw, dict):
         dark_clean: dict[str, Any] = {}
@@ -607,8 +611,9 @@ def normalize_materials(raw: Any) -> tuple[dict[str, Any], list[str]]:
             }
         clean["custom_presets"] = kept
 
-    # 自定义预设名只有在它真的存在于 custom_presets 里才算数：否则（含旧版本
-    # 遗留的自由文本）一律退回 custom，不能让 theme.json 里留着指向空气的标签。
+    # A custom preset name only counts if it really exists in custom_presets: otherwise (including
+    # free text left over from older versions) fall back to custom -- theme.json must not keep a
+    # label pointing at nothing.
     if clean["preset"] not in PRESET_IDS and clean["preset"] not in clean["custom_presets"]:
         clean["preset"] = "custom"
 
@@ -635,7 +640,7 @@ def apply_materials(current: dict[str, Any], patch: Any) -> tuple[dict[str, Any]
     if isinstance(preset, str):
         key = preset.strip().lower()
         if key in PRESETS:
-            # 切换预设 = 整套参数替换（不是只改一个颜色）。
+            # Switching presets = replacing the whole param set (not just changing one color).
             for section in SECTIONS:
                 base[section] = copy.deepcopy(PRESETS[key][section])
             base["dark"] = {}
@@ -805,49 +810,52 @@ def apply_quality(target: dict[str, str], quality: str) -> None:
         for key in ("--nts-mt-blur", "--nts-mt-refract-blur", "--nts-mt-ambient-blur"):
             if key in target:
                 target[key] = _scale_px(target[key], 0.5)
-        # 组件级模糊也要跟着降，否则「省电」在自定义组件上失效。
+        # Component-level blur must drop too, otherwise "saver" has no effect on customized components.
         for key in list(target.keys()):
             if key.startswith("--nts-mt-c-blur-"):
                 target[key] = _scale_px(target[key], 0.5)
         if "--nts-mt-shadow-blur" in target:
             target["--nts-mt-shadow-blur"] = _scale_px(target["--nts-mt-shadow-blur"], 0.7)
-        # 组件自定义阴影同理：它是 shorthand，改不了 blur 变量，只能整条缩放。
+        # Same for component custom shadows: they are shorthands with no blur variable to change, so scale the whole value.
         for key in list(target.keys()):
             if key.startswith("--nts-mt-c-shadow-"):
                 target[key] = _scale_shadow_blur(target[key], 0.7)
-        # 透明 + 关掉逐帧效果：用完全透明代替「有值但很弱」，避免残留边缘。
+        # Transparent + per-frame effects off: use fully transparent instead of "present but faint" to avoid leftover edges.
         for key in ("--nts-mt-disp",):
             target[key] = "rgba(0, 0, 0, 0)"
         for key in ("--nts-mt-dynamic", "--nts-mt-dynamic-reflect", "--nts-mt-liquid",
                     "--nts-mt-noise", "--nts-mt-spotlight"):
             target[key] = "0"
-        # 无限循环的液态漂移才是省电模式的大头：上面把 liquid 置 0 只让渐变退化成
-        # 静态，但 --nts-mt-anim 若仍是 infinite，浏览器照样逐帧重绘 —— 等于白关。
+        # The infinitely looping liquid drift is the main cost saver mode must cut: setting liquid to 0
+        # above only makes the gradient static, but if --nts-mt-anim is still infinite the browser keeps
+        # repainting every frame -- turning it off would be pointless.
         target["--nts-mt-anim"] = "none"
-        # 玻璃表面是叠 7 层背景画出来的。把变量调透明只是「画了但看不见」，
-        # 图层仍在合成里；省电要真的少画几层 —— 纯装饰的多层渐变直接置 none，
-        # 只保留底色与染色（视觉从「液态玻璃」退化为「磨砂平涂」，这是省电该付的代价）。
+        # The glass surface is painted from 7 stacked background layers. Making variables transparent only
+        # means "painted but invisible" -- the layers are still composited; saver must really paint fewer
+        # layers -- purely decorative gradient layers are set to none, keeping only the base tint and dye
+        # (the look degrades from "liquid glass" to "flat frosted fill", the price saver mode should pay).
         for key in ("--nts-mt-inner-img", "--nts-mt-inner2", "--nts-mt-sheen-img", "--nts-mt-noise-img",
                     "--nts-mt-ambient-img", "--nts-mt-spot"):
             if key in target:
                 target[key] = "none"
     elif quality == "high":
-        # 多层高光更强、阴影更细（blur 收一点，玻璃层次更清楚）。
+        # Stronger layered highlights, finer shadows (slightly less blur so the glass layering reads more clearly).
         for key in ("--nts-mt-ambient", "--nts-mt-inner", "--nts-mt-edge"):
             if key in target:
                 target[key] = _boost_alpha(target[key], 1.15)
         if "--nts-mt-shadow-blur" in target:
             target["--nts-mt-shadow-blur"] = _scale_px(target["--nts-mt-shadow-blur"], 0.85)
     elif quality == "ultra":
-        # 极致档必须与均衡档有可见差异：否则四档画质里有两档是同一个东西，
-        # 用户切了没反应，就成了摆设。更大模糊、更宽色散、更强高光正是选它的理由。
+        # Ultra must differ visibly from balanced: otherwise two of the four quality tiers are the same
+        # thing and switching does nothing. More blur, wider dispersion and stronger highlights are the
+        # reason to pick it.
         for key in ("--nts-mt-ambient", "--nts-mt-inner", "--nts-mt-edge"):
             if key in target:
                 target[key] = _boost_alpha(target[key], 1.3)
         for key in ("--nts-mt-blur", "--nts-mt-disp-blur", "--nts-mt-refract-blur"):
             if key in target:
                 target[key] = _scale_px(target[key], 1.15)
-        # 组件级模糊同样跟着提，否则内置组件仍是均衡档的厚度。
+        # Raise component-level blur too, otherwise built-in components keep the balanced-tier thickness.
         for key in list(target.keys()):
             if key.startswith("--nts-mt-c-blur-"):
                 target[key] = _scale_px(target[key], 1.15)
@@ -880,8 +888,9 @@ def compile_materials(materials: dict[str, Any]) -> tuple[dict[str, str], dict[s
         values = resolve_section(materials, "global", dark_mode)
         tint = _parse_color(values.get("tint")) or (255, 255, 255, 1.0)
         if dark_mode:
-            # 暗色主题下玻璃底必须压暗：宿主暗色主题的文字是浅色，玻璃底若仍是白色（tint 默认白），
-            # 不透明度一高就是白底浅字，直接看不清。混入深灰而不是换纯黑 —— 用户染色仍要透得出来。
+            # In dark themes the glass base must be darkened: host dark-theme text is light, and if the glass
+            # base is still white (tint defaults to white), higher opacity gives light text on white, which is
+            # unreadable. Mix in dark gray rather than pure black -- the user's dye must still show through.
             tint = _mix_rgb(tint, (16, 20, 28, 1.0), 0.62)
         opacity = float(values.get("opacity", 0.72))
         tint_strength = float(values.get("tintStrength", 0.35))
@@ -889,8 +898,8 @@ def compile_materials(materials: dict[str, Any]) -> tuple[dict[str, str], dict[s
 
         dye_a = _parse_color(values.get("dyePrimary")) or (125, 211, 252, 1.0)
         dye_b = _parse_color(values.get("dyeSecondary")) or (167, 139, 250, 1.0)
-        # 冷暖倾向直接改染料本身：背景层没有 hue-rotate 的干净落点（会连带文字颜色），
-        # 旧 --nts-mt-dye-warmth 产出后没有任何消费者，滑块是死的。
+        # Warmth modifies the dye itself: the background layer has no clean place for hue-rotate (it would
+        # also shift text color), and the old --nts-mt-dye-warmth had no consumer, so the slider was dead.
         warmth = _clamp(float(values.get("dyeWarmth", 0.0)), -100.0, 100.0) / 100.0
         if warmth > 0.0:
             dye_a = _mix_rgb(dye_a, (255, 150, 92, 1.0), warmth * 0.45)
@@ -901,8 +910,8 @@ def compile_materials(materials: dict[str, Any]) -> tuple[dict[str, str], dict[s
         strength = float(values.get("dyeStrength", 0.28))
         alpha = float(values.get("dyeAlpha", 0.45))
         gradient = float(values.get("dyeGradient", 0.4))
-        # 液态强度也调染料浓度：液态越强，流动的染料越明显。
-        # 旧 --nts-mt-liquid-alpha 只是个数字，没有任何规则消费它。
+        # Liquid strength also scales dye density: the stronger the liquid, the more visible the flowing dye.
+        # The old --nts-mt-liquid-alpha was just a number that no rule consumed.
         liq_strength = _clamp(float(resolve_section(materials, "refraction", dark_mode).get("liquidStrength", 0.35)), 0.0, 1.0)
         liquid_gain = 0.55 + liq_strength * 0.9
         if strength <= 0.001 or alpha <= 0.001:
@@ -932,8 +941,8 @@ def compile_materials(materials: dict[str, Any]) -> tuple[dict[str, str], dict[s
         blur = float(values.get("shadowBlur", 24.0))
         spread = float(values.get("shadowSpread", 0.0))
         if strength <= 0.001:
-            # box-shadow 是逗号分隔的多层声明，任何一层写 none 都会让整条失效，
-            # 所以「不加阴影」要用全透明的合法层，而不是 none。
+            # box-shadow is a comma-separated multi-layer declaration; a none in any layer invalidates the
+            # whole thing, so "no shadow" must be a valid fully transparent layer, not none.
             target["--nts-mt-shadow"] = "0 0 0 rgba(0, 0, 0, 0)"
         else:
             target["--nts-mt-shadow"] = (
@@ -957,9 +966,9 @@ def compile_materials(materials: dict[str, Any]) -> tuple[dict[str, str], dict[s
         target["--nts-mt-disp"] = _rgba((140, 200, 255, 1.0), disp)
         target["--nts-mt-liquid-alpha"] = str(round(float(values.get("liquidStrength", 0.35)), 3))
 
-    # 派生变量（v2）：CSS 里需要"已算好"的复合值，避免在样式表里做颜色/时长运算。
-    # 这样"开关类参数"（噪点、追光、动态反射、减弱动效）在关闭时产出惰性值，
-    # CSS 不需要 if，也不会因为 alpha=0 的元素仍在逐帧合成而白烧 GPU。
+    # Derived variables (v2): CSS needs "precomputed" composite values so the stylesheet does no color/duration math.
+    # This way toggle params (noise, spotlight, dynamic reflection, reduced motion) emit inert values when off,
+    # CSS needs no conditionals, and alpha=0 elements no longer burn GPU by still being composited every frame.
     for target, dark_mode in ((light, False), (dark, True)):
         lig = resolve_section(materials, "lighting", dark_mode)
         edge_color = _parse_color(lig.get("edgeColor")) or (255, 255, 255, 1.0)
@@ -967,8 +976,8 @@ def compile_materials(materials: dict[str, Any]) -> tuple[dict[str, str], dict[s
         for side, side_key in (("t", "edgeTop"), ("b", "edgeBottom"), ("l", "edgeLeft"), ("r", "edgeRight")):
             target["--nts-mt-edge-" + side] = _rgba(edge_color, edge_base * float(lig.get(side_key, 0.25)))
         if lig.get("innerDouble"):
-            # 第二层高光落在对侧内角，表达双层玻璃的厚度感。
-            # 旧值是纯 rgba，作为 background-image 的一层根本画不出来。
+            # The second highlight sits in the opposite inner corner to convey double-layer glass thickness.
+            # The old value was a bare rgba, which cannot be painted as a background-image layer at all.
             target["--nts-mt-inner2"] = (
                 "radial-gradient(circle at 28% 24%, "
                 + _rgba(edge_color, edge_base * 0.5)
@@ -977,14 +986,14 @@ def compile_materials(materials: dict[str, Any]) -> tuple[dict[str, str], dict[s
         else:
             target["--nts-mt-inner2"] = "none"
         liq = resolve_section(materials, "refraction", dark_mode)
-        # dynamicReflect 关闭 = 不显示环境反射（ambient 层置全透明），比只停动画更彻底
+        # dynamicReflect off = hide ambient reflection (ambient layer fully transparent), more thorough than just stopping the animation
         if not lig.get("dynamicReflect"):
             target["--nts-mt-ambient"] = "rgba(0, 0, 0, 0)"
         liquid_on = bool(liq.get("liquid"))
         dynamic_on = bool(lig.get("dynamic"))
         if liquid_on or dynamic_on:
-            # 漂移一轮的时长：120 / 速度。旧口径 30 / 速度 会算出 5s 一轮，
-            # 玻璃表面像被风刮；苹果那种「几乎静止的流动」需要 20s 以上。
+            # Duration of one drift cycle: 120 / speed. The old 30 / speed gave 5s cycles and the glass
+            # surface looked wind-blown; Apple's "almost still flow" needs 20s or more.
             liquid_dur = _clamp(120.0 / max(0.5, float(liq.get("liquidSpeed", 9.0))), 10.0, 90.0)
             dynamic_dur = _clamp(120.0 / max(0.5, float(lig.get("dynamicSpeed", 6.0))), 10.0, 90.0)
             if liquid_on and dynamic_on:
@@ -992,7 +1001,7 @@ def compile_materials(materials: dict[str, Any]) -> tuple[dict[str, str], dict[s
             else:
                 dur = liquid_dur if liquid_on else dynamic_dur
             smooth = _clamp(float(liq.get("liquidSmooth", 70.0)) / 100.0, 0.0, 1.0)
-            # 平滑度是 0-100 的连续滑块，不能只有三档：70 与 83 拖起来一模一样等于没做。
+            # Smoothness is a continuous 0-100 slider and cannot have just three steps: if 70 and 83 look identical, the slider is useless.
             ease = _ease_curve(smooth)
             target["--nts-mt-anim"] = f"nts-mt-drift {round(dur, 2):g}s {ease} infinite"
         else:
@@ -1002,7 +1011,7 @@ def compile_materials(materials: dict[str, Any]) -> tuple[dict[str, str], dict[s
         if surf.get("noise"):
             noise_a = float(surf.get("noiseStrength", 0.18)) * float(surf.get("noiseAlpha", 0.2)) * 0.5
             density = _clamp(float(surf.get("noiseDensity", 50.0)) / 100.0, 0.0, 1.0)
-            # 密度越高，同一点径下颗粒间隙越小 —— 视觉上更「密」。
+            # Higher density means smaller gaps between grains at the same dot size -- visually "denser".
             noise_gap = max(1.0, float(surf.get("noiseSize", 3.0)) * (1.6 - density))
             target["--nts-mt-noise-img"] = (
                 "repeating-radial-gradient(circle at 50% 50%, "
@@ -1015,14 +1024,14 @@ def compile_materials(materials: dict[str, Any]) -> tuple[dict[str, str], dict[s
         if not anim.get("animation") or anim.get("reducedMotion"):
             for dur_key in ("enterDuration", "exitDuration", "hoverDuration", "pressDuration", "expandDuration"):
                 target[var_name(PARAM_BY_KEY[dur_key])] = "0ms"
-            # 面板里的「关闭动画 / 减少动态效果」也要停掉无限循环的漂移动画，
-            # 不能只依赖系统级 prefers-reduced-motion。
+            # The panel's "disable animation / reduce motion" must also stop the infinitely looping drift
+            # animation, not rely solely on the system-level prefers-reduced-motion.
             target["--nts-mt-anim"] = "none"
         if anim.get("spotlight"):
             spot_a = float(anim.get("spotIntensity", 0.35)) * 0.5
-            # spotSpeed 之前是死参数：它只写进 theme.json，没有任何规则消费。
-            # 这里把它变成「光斑半径倍率」（越快越大越柔），用 calc 直接乘在
-            # 半径变量上，于是 spotRadius 与 spotSpeed 同时生效。
+            # spotSpeed used to be a dead param: it was only written to theme.json and no rule consumed it.
+            # Here it becomes a "spot radius multiplier" (faster = larger and softer), multiplied onto the
+            # radius variable via calc, so spotRadius and spotSpeed both take effect.
             spot_speed = _clamp(float(anim.get("spotSpeed", 60.0)), 0.0, 100.0)
             spot_mult = round(0.55 + spot_speed / 100.0 * 0.85, 3)
             target["--nts-mt-spot"] = (
@@ -1034,11 +1043,12 @@ def compile_materials(materials: dict[str, Any]) -> tuple[dict[str, str], dict[s
         else:
             target["--nts-mt-spot"] = "none"
 
-        # ---- v1.6.1 Liquid Glass 光学层 ----
-        # 苹果玻璃的观感不是「一条描边」，而是五件事叠出来的：顶部镜面亮线、
-        # 亮线下方的柔光带、底部被折射压暗的收边、整面内发光、边缘微色散。
-        # 这一段同时把 v1.6.0 里「算出来但 CSS 没人消费」的 15 个参数接上 ——
-        # 之前拖那些滑块只会改 theme.json，观感一动不动，属于明确的假功能。
+        # ---- v1.6.1 Liquid Glass optical layer ----
+        # The Apple glass look is not "one outline" but five things stacked: a top specular line, a soft
+        # glow band below it, a bottom rim darkened by refraction, a full-surface inner glow, and slight
+        # edge dispersion. This block also wires up the 15 params that v1.6.0 "computed but no CSS
+        # consumed" -- dragging those sliders used to only change theme.json with no visible effect,
+        # a clear fake feature.
         glb = resolve_section(materials, "global", dark_mode)
         refr = resolve_section(materials, "refraction", dark_mode)
         level_factor = {"low": 0.55, "medium": 1.0, "high": 1.65, "ultra": 2.35}.get(
@@ -1111,9 +1121,10 @@ def compile_materials(materials: dict[str, Any]) -> tuple[dict[str, str], dict[s
         target["--nts-mt-refract-size"] = f"{round(_clamp(100.0 + r_range * 0.5, 100.0, 260.0), 1):g}%"
         disp_rng = _clamp(float(refr.get("dispRange", 30.0)), 0.0, 200.0)
         target["--nts-mt-disp-blur"] = f"{round(max(0.5, float(refr.get('dispWidth', 2.0)) * (1.0 + disp_rng / 60.0)), 2):g}px"
-        # v1.6.10 光学补强：随指针的边缘镜面环带 + 边缘收暗 + 双向色散分色。
-        # 环带用 var(--nts-mt-mx/-my) 定位 —— 加载器在指针移动时写这两个变量，
-        # 于是高光沿玻璃边缘走，而不是钉死在某个固定角度。
+        # v1.6.10 optical reinforcement: a pointer-following specular rim band + edge darkening + two-way
+        # dispersion color split. The rim band is positioned by var(--nts-mt-mx/-my) -- the loader writes
+        # those two variables on pointer move, so the highlight travels along the glass edge instead of
+        # being pinned to a fixed angle.
         rim_alpha = _clamp(edge_base * (0.35 + edge_top * 0.55), 0.0, 0.62)
         if rim_alpha <= 0.004:
             target["--nts-mt-rim-img"] = "none"
@@ -1128,17 +1139,17 @@ def compile_materials(materials: dict[str, Any]) -> tuple[dict[str, str], dict[s
         target["--nts-mt-rim-shade"] = _rgba((6, 10, 18, 1.0), round(rim_shade, 3))
         disp_strength = float(refr.get("dispStrength", 0.2))
         disp_alpha = _clamp(float(refr.get("dispAlpha", 0.25)), 0.0, 1.0)
-        # dispAlpha 之前只写进没人消费的 --nts-mt-disp，色散透明度滑块是死的。
+        # dispAlpha used to go only into --nts-mt-disp, which nothing consumed, so the dispersion alpha slider was dead.
         disp_a = _clamp(disp_strength * (0.35 + disp_alpha * 1.2), 0.0, 0.55)
         target["--nts-mt-disp-warm"] = _rgba((255, 126, 176, 1.0), round(disp_a, 3))
         target["--nts-mt-disp-cool"] = _rgba((126, 214, 255, 1.0), round(disp_a, 3))
-        # 底部折光亮线：玻璃有厚度时，底边会把光折回来。只用 box-shadow，不进布局。
+        # Bottom refracted light line: thick glass bends light back at the bottom edge. box-shadow only, no layout impact.
         under_a = _clamp(edge_base * (0.22 + edge_bottom * 0.5), 0.0, 0.34)
         target["--nts-mt-under-glow"] = _rgba((255, 255, 255, 1.0), round(under_a, 3))
 
-    # 组件级覆盖：只有 mode=preset/custom 的组件才产出专属变量；
-    # 其它组件在 CSS 里走 var(--nts-mt-c-<prop>-<comp>, var(--nts-mt-<prop>)) 继承全局。
-    # 统一加 c- 前缀，避免与全局参数同名（radiusButton / radiusInput / radiusDialog）。
+    # Component-level overrides: only components with mode=preset/custom emit their own variables;
+    # other components inherit the globals in CSS via var(--nts-mt-c-<prop>-<comp>, var(--nts-mt-<prop>)).
+    # Always prefixed with c- to avoid clashing with global params (radiusButton / radiusInput / radiusDialog).
     for comp, entry in (materials.get("components") or {}).items():
         if comp not in COMPONENTS or not isinstance(entry, dict):
             continue
@@ -1169,7 +1180,7 @@ def compile_materials(materials: dict[str, Any]) -> tuple[dict[str, str], dict[s
             if "shadowStrength" in style:
                 comp_strength = _clamp(float(style["shadowStrength"]), 0.0, 1.0)
                 if comp_strength <= 0.001:
-                    # 同 --nts-mt-shadow：多层 box-shadow 里不能出现 none。
+                    # Same as --nts-mt-shadow: none must not appear in a multi-layer box-shadow.
                     target[f"--nts-mt-c-shadow-{comp}"] = "0 0 0 rgba(0, 0, 0, 0)"
                 else:
                     distance = float(surf.get("shadowDistance", 8.0))

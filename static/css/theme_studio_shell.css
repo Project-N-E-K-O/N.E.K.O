@@ -1,47 +1,47 @@
-/* 主题工坊本体内置版：外壳样式（与本体其它功能面板对齐）
-   本文件在 /static/theme-studio/style.css 之后加载，只做两件事：
+/* Theme Studio, built-in host edition: shell styles (aligned with the host's other feature panels)
+   This file loads after /static/theme-studio/style.css and does exactly two things:
 
-   1. 把主题工坊自己的设计变量（--surface / --accent / --radius …）重映射到本体的
-      面板配色，这样面板里几百条组件规则不用改一行就换了皮肤；
-   2. 提供本体那套外壳：渐变标题栏（.container-header.page-title-bar）、
-      .container-content 滚动区、贴底操作栏。
+   1. Remaps Theme Studio's own design tokens (--surface / --accent / --radius ...) onto the host's
+      panel palette, so the hundreds of component rules in the panel get reskinned without touching a line;
+   2. Provides the host shell: gradient title bar (.container-header.page-title-bar),
+      the .container-content scroll area, and the bottom-pinned action bar.
 
-   暗色跟随本体的 data-theme（theme-manager.js 写入），用 [data-theme="dark"]，
-   不再跟系统 prefers-color-scheme —— 和「记忆浏览 / API Key 设置」等页面保持一致。
-   style.css 里那段 @media (prefers-color-scheme: dark) 会被这里的 :root 覆盖掉，
-   因为同为 :root、本文件在后。 */
+   Dark mode follows the host's data-theme (written by theme-manager.js) via [data-theme="dark"],
+   not the system prefers-color-scheme -- consistent with pages like Memory Browser / API Key settings.
+   The @media (prefers-color-scheme: dark) block in style.css is overridden by the :root here,
+   because both are :root and this file comes later. */
 
 /* ============================================================
-   1. 设计变量：本体面板配色（记忆浏览 / API Key 设置同源）
+   1. Design tokens: host panel palette (shared with Memory Browser / API Key settings)
    ============================================================ */
 :root {
   color-scheme: light;
 
-  /* 画布与表面 */
+  /* Canvas and surfaces */
   --bg-sub: #f3f9fc;
   --surface: #ffffff;
   --surface-2: #f7fcff;
   --surface-3: #eaf8ff;
   --footer-bg: rgba(243, 249, 252, 0.86);
 
-  /* 描边 */
+  /* Borders */
   --border: rgba(64, 197, 241, 0.34);
   --border-soft: rgba(39, 184, 234, 0.16);
 
-  /* 文字 */
+  /* Text */
   --text: #1f2a36;
   --text-sub: #5c6f7e;
   --text-faint: #647887;   /* 5.1:1 on #fff */
 
-  /* 主色：--accent 给文字/描边（#147ea6 与白底 5.1:1），--accent-fill 给填充按钮
-     （白字 4.9:1；本体品牌色 #40c5f1 太浅，填充态不能用它） */
+  /* Accent: --accent for text/borders (#147ea6 is 5.1:1 on white), --accent-fill for filled buttons
+     (4.9:1 with white text; the host brand color #40c5f1 is too light for filled states) */
   --accent: #147ea6;
   --accent-strong: #0f5f8f;
   --accent-fill: #147ea6;
   --accent-soft: rgba(64, 197, 241, 0.13);
   --accent-line: rgba(64, 197, 241, 0.44);
 
-  /* 语义色 */
+  /* Semantic colors */
   --danger: #c03a35;
   --danger-soft: rgba(192, 58, 53, 0.1);
   --ok: #1f7d52;
@@ -49,7 +49,7 @@
   --warn: #8f6114;
   --warn-soft: rgba(226, 160, 48, 0.14);
 
-  /* 形状与阴影 */
+  /* Shape and shadows */
   --radius: 14px;
   --radius-sm: 8px;
   --shadow-1: 0 1px 3px rgba(14, 116, 144, 0.08);
@@ -57,7 +57,7 @@
   --ring: 0 0 0 4px rgba(64, 197, 241, 0.2);
   --page-glow: none;
 
-  /* 预览区（主题工坊自己的一小块画布） */
+  /* Preview area (Theme Studio's own small canvas) */
   --preview-bg: #eef7fd;
   --preview-line: rgba(64, 197, 241, 0.22);
 }
@@ -99,15 +99,15 @@
   --preview-line: rgba(125, 211, 252, 0.2);
 }
 
-/* 暗色下别自己画底色：本体 dark-mode.css 已经把 body 刷成 #1e1e1e，
-   其他面板（记忆浏览 / API Key）的容器都是透明的，这里跟着透明才对得上。 */
+/* Don't paint our own background in dark mode: the host dark-mode.css already paints body #1e1e1e,
+   and other panels' (Memory Browser / API Key) containers are transparent, so stay transparent to match. */
 [data-theme="dark"] .theme-studio-page .container,
 [data-theme="dark"] .theme-studio-page .container-content {
   background: transparent;
 }
 
 /* ============================================================
-   2. 外壳：与「记忆浏览 / API Key 设置」同一套骨架
+   2. Shell: same skeleton as Memory Browser / API Key settings
    body > .container > (.container-header + .container-content > .app)
    ============================================================ */
 html,
@@ -145,7 +145,7 @@ body.theme-studio-page {
   overflow: hidden;
 }
 
-/* ---- 标题栏：渐变底 + 描边渐变字，和记忆浏览 / API Key 一模一样 ---- */
+/* ---- Title bar: gradient background + stroked gradient text, identical to Memory Browser / API Key ---- */
 .theme-studio-page .container-header {
   flex: 0 0 auto;
   display: flex;
@@ -215,7 +215,7 @@ body.theme-studio-page {
   white-space: nowrap;
 }
 
-/* 版本号：标题旁的小胶囊，和渐变标题同处一行 */
+/* Version: small pill next to the title, on the same line as the gradient title */
 .theme-studio-page .header-version {
   flex: 0 0 auto;
   padding: 2px 9px;
@@ -238,7 +238,7 @@ body.theme-studio-page {
   -webkit-app-region: no-drag;
 }
 
-/* 当前主题 / 更新时间：跟着标题栏走，不占内容区一行 */
+/* Current theme / updated time: lives in the title bar instead of taking a content row */
 .theme-studio-page .container-header .meta-pills {
   display: flex;
   align-items: center;
@@ -269,12 +269,12 @@ body.theme-studio-page {
   background: rgba(255, 255, 255, 0.56);
 }
 
-/* 标题栏里的窗口控制按钮：window_controls.css 默认就是白字 + 半透明底 */
+/* Window control buttons in the title bar: window_controls.css already defaults to white text + translucent background */
 .theme-studio-page .container-header .neko-window-controls {
   margin-left: 0;
 }
 
-/* ---- 内容区：滚动交给 .container-content，.app 只管排版 ---- */
+/* ---- Content area: .container-content handles scrolling, .app only handles layout ---- */
 .theme-studio-page .container-content {
   flex: 1 1 auto;
   min-height: 0;
@@ -309,7 +309,7 @@ body.theme-studio-page {
 }
 
 /* ============================================================
-   3. 组件微调：卡片 / 标题 / 按钮 / 操作栏，向本体看齐
+   3. Component tweaks: cards / titles / buttons / action bar, aligned with the host
    ============================================================ */
 .theme-studio-page .card {
   border: 1px solid var(--border-soft);
@@ -387,7 +387,7 @@ body.theme-studio-page {
 }
 
 /* ============================================================
-   4. 响应式
+   4. Responsive
    ============================================================ */
 @media (max-width: 900px) {
   .theme-studio-page .container-content { padding: 18px 16px 0; }

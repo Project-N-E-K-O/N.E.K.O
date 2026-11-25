@@ -1,20 +1,118 @@
 /**
- * 主题工坊面板脚本（静态面板，无构建步骤、无框架）
+ * Theme Studio panel script (static panel: no build step, no framework).
  *
- * 本体内置版：面板与主题服务同源（都挂在 N.E.K.O 主服务上），所以既没有插件
- * 宿主的 /runs 任务队列，也没有 CSRF 引导：
- *   POST /api/theme_studio/run/{entry_id}   一次请求直接拿到结果
- *   GET  /api/theme_studio/theme.json       读当前调色板（外部同步轮询同一地址）
- * 所有地址都从 API_BASE 拼，页面本身由 /theme_studio 直接服务。
+ * Built-in edition: the panel and the theme service share an origin (both run on
+ * the N.E.K.O main server), so there is neither the plugin host's /runs queue nor
+ * a CSRF bootstrap:
+ *   POST /api/theme_studio/run/{entry_id}   one request returns the result
+ *   GET  /api/theme_studio/theme.json       current palette (also polled by external sync)
+ * Every URL is built from API_BASE; the page itself is served at /theme_studio.
  */
 
 /* ============================================================================
- * 1. 变量目录 —— THEME_CONTRACT.md §3 的权威清单
+ * 0. i18n
+ *
+ * The panel uses the host i18n (static/i18n-i18next.js): static markup carries
+ * data-i18n* attributes, runtime strings go through tsT(). Every key lives
+ * under the top-level "themeStudio" namespace of static/locales/*.json.
+ * The Chinese text passed as `fallback` is what the panel shows when the key
+ * or the i18n runtime is missing, so behaviour without translations is
+ * unchanged. Placeholders use i18next syntax: {{name}}.
+ * ==========================================================================*/
+
+var TS_I18N_NS = 'themeStudio.';
+
+function tsInterpolate(text, params) {
+  if (!params) return String(text);
+  return String(text).replace(/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g, function (match, name) {
+    return Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : match;
+  });
+}
+
+/**
+ * Translate a panel string.
+ * @param {string} key      key below "themeStudio." (e.g. "toast.applied")
+ * @param {string} fallback Chinese source text, used when no translation exists
+ * @param {Object=} params  interpolation values for {{name}} placeholders
+ */
+function tsT(key, fallback, params) {
+  var full = TS_I18N_NS + key;
+  try {
+    if (typeof window.t === 'function' && window.i18n && window.i18n.isInitialized !== false) {
+      var text = window.t(full, params || {});
+      if (typeof text === 'string' && text && text !== full) return text;
+    }
+  } catch (error) {
+    // fall through to the source text
+  }
+  return tsInterpolate(fallback == null ? key : fallback, params);
+}
+window.tsT = tsT;
+
+/**
+ * Run `callback` once the host i18n has loaded the language bundle (it fires
+ * "localechange" after initialising), or after a short timeout so a failed
+ * i18n load never blocks the panel.
+ */
+function whenI18nReady(callback) {
+  var done = false;
+  function run() {
+    if (done) return;
+    done = true;
+    callback();
+  }
+  if (window.i18n && window.i18n.isInitialized) { run(); return; }
+  window.addEventListener('localechange', run, { once: true });
+  setTimeout(run, 2500);
+}
+window.whenI18nReady = whenI18nReady;
+
+/** Stable id of a catalog group for persisted UI state (not its display name). */
+function groupStateKey(group) {
+  return (group && (group.stateKey || group.group)) || '';
+}
+
+/**
+ * Translate the variable catalog in place (called once before the editor is
+ * built). Keys are derived from data, so catalog entries need no extra fields:
+ *   group  -> themeStudio.catalog.groups.<groupKey>
+ *   label  -> themeStudio.catalog.vars.<var name without "--nts-">.label
+ *   hint   -> themeStudio.catalog.vars.<var name without "--nts-">.hint
+ * Options of select-type items: themeStudio.catalog.vars.<name>.options.<value>
+ */
+function localizeCatalog() {
+  if (typeof CATALOG === 'undefined' || !CATALOG || !CATALOG.forEach) return;
+  CATALOG.forEach(function (group) {
+    // Collapsed-group state is persisted by group; keep it keyed by the original
+    // (untranslated) name so saved state survives language changes and matches
+    // what earlier versions stored.
+    if (!group.stateKey) group.stateKey = group.group;
+    if (group.groupKey) {
+      group.group = tsT('catalog.groups.' + group.groupKey, group.group);
+    }
+    (group.items || []).forEach(function (item) {
+      var base = 'catalog.vars.' + String(item.key || '').replace(/^--nts-/, '');
+      if (item.label) item.label = tsT(base + '.label', item.label);
+      if (item.hint) item.hint = tsT(base + '.hint', item.hint);
+      if (Array.isArray(item.options)) {
+        item.options.forEach(function (option) {
+          if (option && typeof option === 'object' && option.label != null) {
+            option.label = tsT(base + '.options.' + String(option.value), option.label);
+          }
+        });
+      }
+    });
+  });
+}
+
+/* ============================================================================
+ * 1. Variable catalog — the authoritative list from THEME_CONTRACT.md §3
  * ==========================================================================*/
 
 var CATALOG = [
   {
     group: '聊天气泡',
+    groupKey: 'chatBubbles',
     items: [
       { key: '--nts-user-bubble-bg', label: '用户气泡背景', type: 'color', native: '#44b7fe' },
       { key: '--nts-user-bubble-text', label: '用户气泡文字', type: 'color', native: '#ffffff' },
@@ -61,6 +159,7 @@ var CATALOG = [
   },
   {
     group: '聊天窗口',
+    groupKey: 'chatWindow',
     items: [
       { key: '--nts-chat-bg', label: '聊天窗口背景', type: 'color', native: 'transparent',
         hint: '紧凑胶囊形态下那条胶囊的底色由它决定（背板不再抢它）。展开后还影响 #react-chat-window-root 与 .chat-window。留空即保持原生' },
@@ -126,7 +225,9 @@ var CATALOG = [
         hint: 'CSS 消费方是 backdrop-filter，因此必须写成 blur(18px) 形式；只填 18px 后端会自动补成 blur(18px)；单位只接受 px/rem/em/pt（不支持 % / vh / vw）'
       },
       {
-        key: '--nts-bubble-veil', label: '聊天背景虚化', type: 'switch', native: '开',
+        key: '--nts-bubble-veil', label: '聊天背景虚化', type: 'switch',
+        // Display-only reference value; resolved lazily so it follows the current locale.
+        get native() { return tsT('catalog.vars.bubble-veil.native', '开'); },
         hint: '气泡上那层「白纱 + 背景模糊」的总开关。关掉后气泡底完全透明、背景模糊归零，聊天背景图与底色会完整透出来（对比度更高，适合铺了背景图之后觉得画面发灰/看不清的情况）；打开则回到 N.E.K.O 原生观感。底层是 0-1 乘子，同时作用于白纱不透明度与模糊半径。'
       },
       {
@@ -137,6 +238,7 @@ var CATALOG = [
   },
   {
     group: '输入区',
+    groupKey: 'composer',
     items: [
       { key: '--nts-input-bg', label: '输入区背景', type: 'color', native: 'rgba(40, 40, 40, 0.65)', darkNative: 'rgba(40,40,40,0.65)' },
       { key: '--nts-input-text', label: '输入文字', type: 'color', native: 'inherit', darkNative: '#e0e0e0' },
@@ -151,6 +253,7 @@ var CATALOG = [
   },
   {
     group: '面板 / 弹窗 / 菜单',
+    groupKey: 'panels',
     items: [
       {
         key: '--nts-panel-bg', label: '面板背景', type: 'color', native: 'transparent',
@@ -185,6 +288,7 @@ var CATALOG = [
   },
   {
     group: '推荐 / 系统 chip',
+    groupKey: 'recommendations',
     items: [
       { key: '--nts-rec-bg', label: '推荐条背景', type: 'color', native: 'transparent' },
       { key: '--nts-rec-text', label: '推荐条文字', type: 'color', native: 'inherit' },
@@ -195,6 +299,7 @@ var CATALOG = [
   },
   {
     group: '全局',
+    groupKey: 'global',
     items: [
       {
         key: '--nts-text-gradient', label: '文字渐变', type: 'gradient', native: 'none',
@@ -209,6 +314,7 @@ var CATALOG = [
   },
   {
     group: '非颜色项',
+    groupKey: 'nonColor',
     items: [
       {
         key: '--nts-radius', label: '通用圆角（按钮/输入面板）', type: 'length', native: '8px',
@@ -255,6 +361,7 @@ var CATALOG = [
   },
   {
     group: '面板光效 / 玻璃拟态',
+    groupKey: 'panelGlow',
     items: [
       {
         key: '--nts-panel-glow-color', label: '光晕颜色', type: 'color', native: '#ffffff',
@@ -312,6 +419,7 @@ var CATALOG = [
   },
   {
     group: '液态玻璃 / 渐变',
+    groupKey: 'liquidGlass',
     items: [
       {
         key: '--nts-glass-filter', label: '界面玻璃模糊', type: 'filter',
@@ -364,6 +472,7 @@ var CATALOG = [
   },
   {
     group: '液态玻璃质感',
+    groupKey: 'glassTexture',
     items: [
       {
         key: '--nts-glass-rim', label: '玻璃边缘反光', type: 'color',
@@ -419,35 +528,40 @@ CATALOG.forEach(function (group) {
   group.items.forEach(function (item) { CATALOG_BY_KEY[item.key] = item; });
 });
 
-/** 行首的类型标签：告诉用户这一行接受什么形态的值。 */
+/** Type tag at the start of a row: tells the user what kind of value the row accepts.
+ *  Getters resolve the translation lazily (this object is built before i18n is ready). */
 var TYPE_LABEL = {
-  color: '色',
-  length: '尺寸',
-  blur: '模糊',
-  number: '数值',
-  font: '字体',
-  shadow: '阴影',
-  image: '图片',
-  switch: '开关',
-  select: '方式',
-  time: '节奏',
-  ratio: '行高',
-  filter: '模糊链',
-  gradient: '渐变'
+  get color() { return tsT('core.typeLabel.color', '色'); },
+  get length() { return tsT('core.typeLabel.length', '尺寸'); },
+  get blur() { return tsT('core.typeLabel.blur', '模糊'); },
+  get number() { return tsT('core.typeLabel.number', '数值'); },
+  get font() { return tsT('core.typeLabel.font', '字体'); },
+  get shadow() { return tsT('core.typeLabel.shadow', '阴影'); },
+  get image() { return tsT('core.typeLabel.image', '图片'); },
+  get switch() { return tsT('core.typeLabel.switch', '开关'); },
+  get select() { return tsT('core.typeLabel.select', '方式'); },
+  get time() { return tsT('core.typeLabel.time', '节奏'); },
+  get ratio() { return tsT('core.typeLabel.ratio', '行高'); },
+  get filter() { return tsT('core.typeLabel.filter', '模糊链'); },
+  get gradient() { return tsT('core.typeLabel.gradient', '渐变'); }
 };
 
 /* ============================================================================
- * 2. 客户端校验镜像（与后端 __init__.py 的规则保持一致，仅用于即时反馈；
- *    真正的安全边界永远是后端）
+ * 2. Client-side validation mirror (kept in sync with the backend __init__.py
+ *    rules; for instant feedback only — the real security boundary is always
+ *    the backend)
  * ==========================================================================*/
 
 var RE_HEX = /^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
-// CSS 命名颜色（148 个标准命名色 + transparent + currentcolor，与后端
-// plugin/__init__.py 的 RE_KEYWORD_COLOR 完全同集合、同顺序）。刻意不收
-// inherit/initial/unset/revert：它们把颜色继承成父级，会让「只改气泡文字色」串到别处去。
-// transparent 必须显式列出：后端一直收它，这里漏了就会「面板不标红、落盘成功、加载器丢门控」。
-// 每段末尾都带一个空格，最后 .split(' ') 拆开 —— 旧实现有几段漏了空格，名字粘成
-// "purplebeccapurple"/"blueblueviolet" 这类假名字（150 条只剩 136 条，一半是错的）。
+// CSS named colors (148 standard names + transparent + currentcolor; exactly the
+// same set and order as RE_KEYWORD_COLOR in the backend plugin/__init__.py).
+// inherit/initial/unset/revert are deliberately excluded: they inherit the parent's
+// color, so "change only the bubble text color" would leak elsewhere.
+// transparent must be listed explicitly: the backend has always accepted it; missing it
+// here means "panel shows no error, save succeeds, loader drops the gate".
+// Every chunk ends with a space and is split with .split(' ') at the end — the old
+// version missed the space in a few chunks, gluing names into fakes like
+// "purplebeccapurple"/"blueblueviolet" (150 entries became 136, half of them wrong).
 var COLOR_NAMES = (
   'transparent aliceblue antiquewhite aqua aquamarine azure beige bisque black blanchedalmond ' +
   'blue blueviolet brown burlywood cadetblue chartreuse chocolate coral cornflowerblue cornsilk ' +
@@ -470,9 +584,10 @@ var COLOR_NAMES = (
 
 var NAMED_COLOR = Object.create(null);
 
-/** 命名色 → hex（CSS 规范值）。旧实现 parseColor 不认命名色，色块只能退回 #000000，
- *  看起来就像「改成 dodgerblue 却变黑」。本轮把这张表补上：transparent → #00000000；
- *  currentcolor 没有固定 RGB（它继承父级文字色），只参与校验、不参与解析。 */
+/** Named color -> hex (CSS spec values). The old parseColor did not understand named
+ *  colors, so the swatch fell back to #000000 — it looked like "set dodgerblue, got black".
+ *  This table fills the gap: transparent -> #00000000; currentcolor has no fixed RGB
+ *  (it inherits the parent text color), so it is validated but never parsed. */
 var NAMED_HEX = Object.create(null);
 (function () {
   var table = {
@@ -528,29 +643,32 @@ var RE_HSL = /^hsla?\(\s*-?[0-9]{1,3}(\.[0-9]+)?\s*,\s*[0-9]{1,3}(\.[0-9]+)?%\s*
 var RE_LENGTH = /^-?[0-9]{1,4}(\.[0-9]+)?(px|rem|em|%|pt|vh|vw)$/i;
 var RE_PERCENT = /^[0-9]{1,3}(\.[0-9]+)?%$/;
 var RE_BLUR = /^blur\(\s*-?[0-9]{1,4}(\.[0-9]+)?(px|rem|em|pt)\s*\)$/i;
-/* 模糊允许裸长度（后端会把 18px 补成 blur(18px)），但单位只认 px/rem/em/pt：
- * % / vh / vw 会被后端归一成 blur(18%) 这样的非法 CSS，loader 静默丢弃。 */
+/* Blur accepts a bare length (the backend expands 18px to blur(18px)), but only in
+ * px/rem/em/pt: % / vh / vw would be normalized by the backend into invalid CSS like
+ * blur(18%), which the loader silently drops. */
 var RE_BLUR_LENGTH = /^-?[0-9]{1,4}(\.[0-9]+)?(px|rem|em|pt)$/i;
-// 允许 1.0 / 1.00（用户最自然地把「100%」写成 1.0）；仍拒绝 1.5 / 2。
+// Allow 1.0 / 1.00 (users naturally write "100%" as 1.0); still reject 1.5 / 2.
 var RE_NUMBER = /^(?:0|1|0?\.[0-9]+|1\.0+)$/;
-// 行高：无单位倍数 0.8–3.0（最多两位小数）。与后端 RE_RATIO、loader RE_RATIO 逐字相同。
+// Line height: unitless multiplier 0.8–3.0 (at most two decimals). Identical to backend RE_RATIO and loader RE_RATIO.
 var RE_RATIO = /^[0-9](?:\.[0-9]{1,2})?$/;
 var RE_ZERO = /^0$/;
-/* 时长（animation-duration）：带单位 s/ms，或裸数字按秒。与后端 RE_TIME /
- * loader RE_TIME 三处保持一致；上限 60s（超过 1 分钟对观感没有意义，还能挡住
- * 打字打错量级，例如 3000 当成秒 = 50 分钟）。 */
+/* Duration (animation-duration): with unit s/ms, or a bare number meaning seconds.
+ * Kept in sync with backend RE_TIME / loader RE_TIME; capped at 60s (over a minute
+ * is meaningless visually, and it catches magnitude typos such as 3000 read as
+ * seconds = 50 minutes). */
 var RE_TIME = /^(?:(?:0|[1-9][0-9]{0,3})(?:\.[0-9]{1,3})?(?:s|ms))$/i;
 var RE_TIME_BARE = /^(?:0|[1-9][0-9]{0,3})(?:\.[0-9]{1,3})?$/;
 var TIME_MAX_SECONDS = 60;
 var RE_FONT = /^[A-Za-z0-9\u4e00-\u9fff ,'"\-_.]{1,200}$/;
 var RE_FORBIDDEN = /[;{}<>\\]|@import|url\s*\(/i;
 var RE_INSET = /^inset$/i;
-/* 聊天背景图：整串锚定成「none」或本体背景图路由下的绝对 url(...)。
- * 只认 127.0.0.1 / localhost 或无主机名（同源）三种写法 —— 消费方是应用窗口，
- * 相对路径会被解析到页面自己的位置。与后端 RE_BG_URL、loader RE_BG_VALUE 三处一致。 */
+/* Chat background image: the whole string must be "none" or an absolute url(...) under
+ * the built-in backgrounds route. Only 127.0.0.1 / localhost / no host (same origin)
+ * are accepted — the consumer is the app window, where a relative path would resolve
+ * against the page itself. Kept in sync with backend RE_BG_URL and loader RE_BG_VALUE. */
 var RE_BG_VALUE = /^(?:none|url\(\s*"?(?:https?:\/\/(?:127\.0\.0\.1|localhost):[0-9]{2,5})?\/api\/theme_studio\/backgrounds\/[A-Za-z0-9._-]{1,80}"?\s*\))$/i;
 
-/** 与后端 _shadow_tokens 同构：按「括号外空白」切分；括号不配对 → []。 */
+/** Mirrors backend _shadow_tokens: split on whitespace outside parentheses; unbalanced parentheses -> []. */
 function shadowTokens(value) {
   var tokens = [], depth = 0, buf = '';
   for (var i = 0; i < value.length; i += 1) {
@@ -569,13 +687,14 @@ function shadowTokens(value) {
 }
 
 /**
- * box-shadow 的结构校验。只做「token 白名单」是不够的：浏览器对 box-shadow 的
- * 语法要求是 <inset>? && <length>{2,4} && <color>?，而百分比在 box-shadow 里
- * 不是合法长度。旧实现放行 '0 0 10% #000' / '1px' / '1px 2px 3px 4px 5px'，
- * 面板显示已应用，浏览器却把整条声明丢掉 —— 与「改了设置但外观不变」完全一样。
- * 三处校验（面板 / loader / 后端）必须给出同一判定，见 THEME_CONTRACT §9.10b。
+ * Structural validation of box-shadow. A token whitelist alone is not enough: the
+ * browser grammar is <inset>? && <length>{2,4} && <color>?, and percentages are not
+ * valid lengths in box-shadow. The old version let '0 0 10% #000' / '1px' /
+ * '1px 2px 3px 4px 5px' through; the panel said "applied" while the browser dropped
+ * the whole declaration — exactly "changed the setting but nothing looks different".
+ * All three validators (panel / loader / backend) must agree; see THEME_CONTRACT §9.10b.
  */
-/** 按「顶层逗号」切多层 box-shadow（后端 _split_shadow_layers 同构）。 */
+/** Split a multi-layer box-shadow on top-level commas (mirrors backend _split_shadow_layers). */
 function shadowLayers(value) {
   var layers = [];
   var depth = 0;
@@ -596,9 +715,9 @@ function shadowLayers(value) {
   return layers;
 }
 
-/** 单层 box-shadow 的 token 校验（与后端 _shadow_layer_ok 同判定）。 */
+/** Token validation of a single box-shadow layer (same verdict as backend _shadow_layer_ok). */
 function shadowLayerOk(tokens) {
-  if (!tokens.length || tokens.length > 6) return false; // inset + 4 长度 + 颜色
+  if (!tokens.length || tokens.length > 6) return false; // inset + 4 lengths + color
   var lengths = 0;
   var colors = 0;
   var insets = 0;
@@ -612,12 +731,12 @@ function shadowLayerOk(tokens) {
       if (++colors > 1) return false;
       continue;
     }
-    // 百分比不是 box-shadow 的合法长度（50% 会被浏览器整条丢弃）
+    // Percentages are not valid box-shadow lengths (50% makes the browser drop the whole declaration)
     if (RE_PERCENT.test(t) || t.indexOf('%') !== -1) return false;
     if (RE_LENGTH.test(t) || RE_ZERO.test(t)) {
       lengths += 1;
       if (lengths > 4) return false;
-      // 负值只有前两个长度（x/y 偏移）合法；模糊半径与扩散半径不能为负
+      // Negative values are only valid for the first two lengths (x/y offset); blur and spread radii cannot be negative
       if (t.charAt(0) === '-' && lengths > 2) return false;
       continue;
     }
@@ -626,7 +745,7 @@ function shadowLayerOk(tokens) {
   return lengths >= 2;
 }
 
-/** 支持逗号分隔的多层阴影（霓虹发光主题的标准写法）。 */
+/** Supports comma-separated multi-layer shadows (the standard way to write neon-glow themes). */
 function isSafeShadow(value) {
   var layers = shadowLayers(value);
   if (!layers.length || layers.length > 4) return false;
@@ -636,14 +755,15 @@ function isSafeShadow(value) {
   return true;
 }
 
-/* ---------------- 模糊链 / 渐变（FEATURE-CONTRACT v0.1.11 §2） ----------------
- * 与后端 _is_filter_value / _is_gradient_value、loader 的 isSafeValue 三端逐字同判定。
- * 面板只是即时反馈，安全边界永远在后端；三端任一放宽都会出现「面板能存、
- * 加载器丢值、用户看到改了没反应」。 */
+/* ---------------- Filter chain / gradient (FEATURE-CONTRACT v0.1.11 §2) ----------------
+ * Same verdict, rule for rule, as backend _is_filter_value / _is_gradient_value and the
+ * loader's isSafeValue. The panel only gives instant feedback; the security boundary is
+ * always the backend. Loosening any one of the three leads to "panel saves it, loader
+ * drops it, user sees no change". */
 
 var RE_FILTER_TOKEN = /^(blur|saturate|brightness|contrast|grayscale)\((\d{1,3}(?:\.\d+)?)(px|%)\)$/;
 
-/** 空格分隔的滤镜链：1–4 个 token、同名不重复、blur ≤ 40px、其余 ≤ 400%。 */
+/** Space-separated filter chain: 1–4 tokens, no duplicate functions, blur ≤ 40px, others ≤ 400%. */
 function isSafeFilterChain(v) {
   if (typeof v !== 'string') return false;
   var s = v.trim();
@@ -666,20 +786,20 @@ function isSafeFilterChain(v) {
 
 var RE_GRAD_HEAD = /^(linear|radial)-gradient\(([\s\S]*)\)$/;
 var RE_GRAD_ANGLE = /^-?\d{1,3}(?:\.\d+)?deg$/;
-// 停止点的百分比是**必填**的（契约 §2.2 散文 + 后端 _gradient_ok：group(2) is None
-// 直接判非法）。所以 `linear-gradient(135deg, #fff, #000)` 非法，只有
-// `linear-gradient(135deg, #fff 0%, #000 100%)` 这种「面板生成什么、校验就收什么」
-// 的形态才合法 —— 两端判定必须逐字一致。
+// Color-stop percentages are **required** (contract §2.2 prose + backend _gradient_ok:
+// group(2) is None is rejected outright). So `linear-gradient(135deg, #fff, #000)` is
+// invalid; only the "what the panel generates is what validation accepts" form
+// `linear-gradient(135deg, #fff 0%, #000 100%)` is valid — both sides must agree exactly.
 var RE_GRAD_STOP = /^((?:#[0-9a-f]{3,8})|(?:rgba?\([^()]*\))|(?:hsla?\([^()]*\))|(?:[a-z]{3,20}))\s+(\d{1,3}(?:\.\d+)?)%$/i;
 
-/** 只接受 linear/radial-gradient：2–4 个停止点、停止点必须带百分比、整串锚定。 */
+/** Only linear/radial-gradient: 2–4 color stops, each with a percentage, whole string anchored. */
 function isSafeGradient(v) {
   if (typeof v !== 'string') return false;
   var s = v.trim();
   if (!s || s.length > 300) return false;
   var m = RE_GRAD_HEAD.exec(s);
   if (!m) return false;
-  // 按「顶层逗号」切分：rgba(0,0,0,.5) 里的逗号不算分隔符。
+  // Split on top-level commas: the commas inside rgba(0,0,0,.5) are not separators.
   var body = m[2], depth = 0, parts = [], buf = '';
   for (var i = 0; i < body.length; i += 1) {
     var ch = body[i];
@@ -699,24 +819,25 @@ function isSafeGradient(v) {
     if (!sm) return false;
     var color = sm[1];
     if (!(isNamedColor(color) || RE_HEX.test(color) || RE_RGB.test(color) || RE_HSL.test(color))) return false;
-    // 百分比必填（正则已强制），且 ≤ 100。
+    // Percentage is required (enforced by the regex) and must be ≤ 100.
     if (!sm[2] || parseFloat(sm[2]) > 100) return false;
   }
   return true;
 }
 
-/** 与后端 __init__.py 的 _is_safe_value 逐条对齐；仅作即时反馈，安全边界在后端。 */
+/** Aligned rule by rule with backend __init__.py _is_safe_value; instant feedback only, the security boundary is the backend. */
 function isSafeValue(key, value) {
   if (typeof value !== 'string') return false;
   var v = value.trim();
   if (!v || v.length > 300) return false;
   var item = CATALOG_BY_KEY[key];
   var type = item ? item.type : 'color';
-  // 背景图必须排在 RE_FORBIDDEN 之前：黑名单里有 `url\s*\(`，而 url(...) 正是
-  // 背景图的唯一合法写法。整串锚定，只认 none 或本体 /api/theme_studio/backgrounds/ 的绝对地址。
+  // Background images must be checked before RE_FORBIDDEN: the blacklist contains `url\s*\(`,
+  // yet url(...) is the only valid form for a background image. Whole string anchored: only
+  // none or an absolute address under the built-in /api/theme_studio/backgrounds/.
   if (type === 'image') return RE_BG_VALUE.test(v);
   if (type === 'select') {
-    // 下拉类变量：值必须是 CATALOG 里声明的某个 option，整串匹配。
+    // Select-type variables: the value must exactly match one of the options declared in CATALOG.
     var choices = (item && item.options) || [];
     for (var ci = 0; ci < choices.length; ci++) {
       if (choices[ci].value === v.toLowerCase()) return true;
@@ -724,39 +845,41 @@ function isSafeValue(key, value) {
     return false;
   }
   if (RE_FORBIDDEN.test(v)) return false;
-  // filter / gradient 走契约 §2 的专用校验（与后端/loader 同一套判定）。
+  // filter / gradient use the dedicated validators from contract §2 (same verdict as backend/loader).
   if (type === 'filter') return isSafeFilterChain(v);
   if (type === 'gradient') return isSafeGradient(v);
   if (type === 'color') {
     return RE_HEX.test(v) || RE_RGB.test(v) || RE_HSL.test(v) || isNamedColor(v);
   }
-  // 负长度/负半径在 CSS 里一律非法（整条声明被丢弃 → 面板报成功、外观不变），
-  // 后端 _is_safe_value 对 length/blur 单独拦 "-"；这里镜像同一条规则。
-  // （shadow 的偏移量要负号，走的是 isSafeShadow 的 token 分支，不受影响。）
+  // Negative lengths/radii are always invalid CSS (the declaration is dropped -> panel
+  // reports success, nothing changes). Backend _is_safe_value rejects "-" for length/blur;
+  // this mirrors the same rule. (Shadow offsets need the minus sign but go through
+  // isSafeShadow's token branch, so they are unaffected.)
   if (type === 'length') {
     if (v.indexOf('-') !== -1) return false;
     return RE_LENGTH.test(v) || RE_PERCENT.test(v) || RE_ZERO.test(v);
   }
   if (type === 'blur') {
     if (v.indexOf('-') !== -1) return false;
-    // 只接受 px/rem/em/pt（可写 blur(18px) 或裸 18px，后端会把裸长度补成 blur()）。
-    // 旧实现直接用 RE_LENGTH（含 % / vh / vw）：18% 能通过面板校验，后端归一成
-    // blur(18%) 非法 CSS 被 loader 丢弃 —— 「应用成功但外观不变」的根因之一。
+    // Only px/rem/em/pt (blur(18px) or bare 18px; the backend wraps bare lengths in blur()).
+    // The old version used RE_LENGTH (incl. % / vh / vw): 18% passed the panel check, the
+    // backend normalized it to invalid blur(18%) and the loader dropped it — one root cause
+    // of "applied successfully but nothing changed".
     return RE_BLUR.test(v) || RE_BLUR_LENGTH.test(v) || RE_ZERO.test(v);
   }
   if (type === 'number') {
-    // 百分比只接受 0–100（--nts-chat-opacity 是 0–1 乘子，999% 这类写法对应用无意义，后端会静默丢弃）
+    // Percentages only 0–100 (--nts-chat-opacity is a 0–1 multiplier; values like 999% are meaningless and silently dropped by the backend)
     if (RE_PERCENT.test(v)) return parseFloat(v) <= 100;
     return RE_NUMBER.test(v);
   }
   if (type === 'ratio') {
-    // 行高倍数：0.8–3.0，最多两位小数。范围与后端 RATIO_MIN/RATIO_MAX 一致。
+    // Line-height multiplier: 0.8–3.0, at most two decimals. Range matches backend RATIO_MIN/RATIO_MAX.
     if (!RE_RATIO.test(v)) return false;
     var ratio = parseFloat(v);
     return ratio >= 0.8 && ratio <= 3;
   }
   if (type === 'time') {
-    // 裸数字按秒（后端会补 s）；带单位只认 s/ms，且换算后不得超过 60s。
+    // Bare numbers mean seconds (the backend appends s); units only s/ms, and at most 60s after conversion.
     if (RE_TIME_BARE.test(v)) return parseFloat(v) <= TIME_MAX_SECONDS;
     if (!RE_TIME.test(v)) return false;
     var secs = /ms$/i.test(v) ? parseFloat(v) / 1000 : parseFloat(v);
@@ -768,7 +891,7 @@ function isSafeValue(key, value) {
 }
 
 /* ============================================================================
- * 3. 颜色工具
+ * 3. Color utilities
  * ==========================================================================*/
 
 function clamp(n, lo, hi) { return Math.min(hi, Math.max(lo, n)); }
@@ -795,17 +918,18 @@ function hslToRgb(h, s, l) {
   ];
 }
 
-/** 解析一个 CSS 颜色 → {r,g,b,a}；无法解析返回 null。 */
+/** Parse a CSS color -> {r,g,b,a}; returns null when it cannot be parsed. */
 function parseColor(input) {
   if (typeof input !== 'string') return null;
   var v = input.trim();
   if (!v) return null;
   var lower = v.toLowerCase();
   if (lower === 'transparent') return { r: 0, g: 0, b: 0, a: 0 };
-  // 命名色查 NAMED_HEX 后交给下面的 hex 分支解析。旧实现这里直接返回 null，
-  // 于是 "dodgerblue" 这类值在色块上只能退回 #000000 —— 用户看到的就是
-  // 「改了个名字色，结果变黑」。currentcolor 没有固定 RGB（它继承父级文字色），
-  // 故意留在表外：返回 null，面板原样显示文字、不静默改成黑色。
+  // Named colors are looked up in NAMED_HEX and handed to the hex branch below. The old
+  // version returned null here, so values like "dodgerblue" fell back to #000000 on the
+  // swatch — users saw "set a named color, it turned black". currentcolor has no fixed RGB
+  // (it inherits the parent text color) and is deliberately left out: it returns null and
+  // the panel shows the text as-is instead of silently turning it black.
   if (NAMED_HEX[lower]) return parseColor(NAMED_HEX[lower]);
 
   var m = v.match(/^#([0-9a-f]{3,8})$/i);
@@ -817,7 +941,7 @@ function parseColor(input) {
       };
     }
     if (h.length === 4) {
-      // #RGBA：每个 nibble 复制成双位，alpha = 末位 / 15（等价 0x尾尾 / 255）
+      // #RGBA: each nibble is doubled; alpha = last nibble / 15 (same as 0xNN / 255)
       return {
         r: parseInt(h[0] + h[0], 16), g: parseInt(h[1] + h[1], 16), b: parseInt(h[2] + h[2], 16),
         a: parseInt(h[3] + h[3], 16) / 255
@@ -870,24 +994,28 @@ function toRgba(r, g, b, a) {
 }
 
 /* ============================================================================
- * 4. 后端调用（本体 HTTP API）
+ * 4. Backend calls (built-in HTTP API)
  * ==========================================================================*/
 
-/* 主题服务挂在本体主服务上的前缀。面板页面也是本体路由，所以同源、不必带端口。 */
+/* Prefix of the theme service mounted on the main server. The panel page is a built-in
+ * route too, so it is same-origin and needs no port. */
 var API_BASE = '/api/theme_studio';
-/* 与 theme_studio/service.py 的 DEFAULT_THEME_NAME、index.html 主题名 placeholder 三处一致。
- * 后端把空串/纯空白 name 视为「恢复默认名」并返回默认名，面板仍显式提交它。 */
+/* Must match DEFAULT_THEME_NAME in theme_studio/service.py and the theme-name placeholder
+ * in index.html. The backend treats an empty/blank name as "restore the default name" and
+ * returns it; the panel still submits it explicitly. (Kept verbatim: it is the stored value.) */
 var DEFAULT_THEME_NAME = '默认';
-/* 单次请求超时。本体服务是常驻 uvicorn 进程，正常情况毫秒级返回；给足 30s 只是
- * 为了不让慢盘上的「整库导入」被误判成失败。 */
+/* Per-request timeout. The built-in service is a long-running uvicorn process that normally
+ * answers in milliseconds; the generous 30s only keeps a full-library import on a slow
+ * disk from being misreported as a failure. */
 var POST_TIMEOUT_MS = 30000;
 
 function delay(ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); }
 
 /**
- * 带超时的 fetch。超时抛出的错误带 timeout=true，供上层区分「超时」与「HTTP 失败」。
- * 手写 AbortController 而不是 AbortSignal.timeout：后者在旧版 Electron/Chrome 里
- * 不一定存在，而这个静态面板没有构建步骤、无法做 polyfill。
+ * fetch with a timeout. The error thrown on timeout carries timeout=true so callers can
+ * tell "timed out" from "HTTP failure". Uses a hand-rolled AbortController rather than
+ * AbortSignal.timeout: the latter may be missing in older Electron/Chrome, and this
+ * static panel has no build step to polyfill it.
  */
 function fetchWithTimeout(url, options, timeoutMs) {
   var opts = options || {};
@@ -896,7 +1024,7 @@ function fetchWithTimeout(url, options, timeoutMs) {
   opts.signal = controller.signal;
   return fetch(url, opts).catch(function (error) {
     if (error && error.name === 'AbortError') {
-      var timeoutError = new Error('请求超时（' + Math.round(timeoutMs / 1000) + 's）');
+      var timeoutError = new Error(tsT('core.request.timeout', '请求超时（{{seconds}}s）', { seconds: Math.round(timeoutMs / 1000) }));
       timeoutError.timeout = true;
       throw timeoutError;
     }
@@ -904,7 +1032,7 @@ function fetchWithTimeout(url, options, timeoutMs) {
   }).finally(function () { clearTimeout(timer); });
 }
 
-/** POST 一个 JSON 体，原样返回 fetch Response（业务判断交给调用方）。 */
+/** POST a JSON body and return the raw fetch Response (business checks are left to the caller). */
 function postJson(url, body) {
   return fetchWithTimeout(url, {
     method: 'POST',
@@ -913,11 +1041,12 @@ function postJson(url, body) {
   }, POST_TIMEOUT_MS);
 }
 
-/* 宿主的错误包装：entry 里 return Err(SdkError("导入内容为空。")) 时，宿主会把它包成
+/* Host error wrapping: when an entry does return Err(SdkError("<reason>")), the host wraps it as
  *   Plugin 'neko_theme_studio' entry 'entry import_theme' execution failed:
- *   Plugin 'neko_theme_studio' entry 'import_theme' execution failed: 导入内容为空。
- * 有时还会套两层。原样显示给用户就是一句看不懂的内部报错，所以把外壳剥掉，
- * 只留插件自己写的中文原因；剥完仍是空串时退回原文本，绝不吞掉错误。 */
+ *   Plugin 'neko_theme_studio' entry 'import_theme' execution failed: <reason>
+ * sometimes nested twice. Shown as-is it is an unreadable internal error, so strip the
+ * wrappers and keep only the reason written by the plugin; if nothing is left, fall back
+ * to the original text — never swallow the error. */
 var HOST_ERROR_WRAPPER = /execution failed:\s*/g;
 
 function stripHostErrorWrapper(text) {
@@ -939,17 +1068,17 @@ function pluginErrorMessage(error) {
   return '';
 }
 
-/* 调用一个本体 entry，返回其 JSON 结果。
+/* Call a built-in entry and return its JSON result.
  *
- * 本体版没有「插件进程没起来」这个失败模式：主题服务跟着主服务一起启动，调用
- * 失败只可能是后端真的出错或超时，重不重试交给用户决定 —— 这里不再自愈重跑，
- * 免得把一次 30s 超时拖成两次。保留 callPlugin 这个名字是因为面板里有 20 多处
- * 调用点都叫它。 */
+ * The built-in version has no "plugin process not running" failure mode: the theme
+ * service starts with the main server, so a failure can only be a real backend error or
+ * a timeout, and retrying is up to the user — no self-healing retry here, so one 30s
+ * timeout never becomes two. The name callPlugin is kept because 20+ call sites use it. */
 async function callPlugin(entryId, args) {
   return callPluginOnce(entryId, args);
 }
 
-/** 调用一个本体 entry。后端返回 {ok:true,result} / {ok:false,error}，HTTP 恒 200。 */
+/** Call a built-in entry. The backend returns {ok:true,result} / {ok:false,error}, always with HTTP 200. */
 async function callPluginOnce(entryId, args) {
   var url = API_BASE + '/run/' + encodeURIComponent(entryId);
   var resp;
@@ -967,17 +1096,17 @@ async function callPluginOnce(entryId, args) {
   }
   var payload = await resp.json();
   if (!payload || payload.ok !== true) {
-    var reason = (payload && (payload.error || payload.detail)) || '操作失败';
-    throw new Error(pluginErrorMessage(reason) || '操作失败');
+    var reason = (payload && (payload.error || payload.detail)) || tsT('core.request.failed', '操作失败');
+    throw new Error(pluginErrorMessage(reason) || tsT('core.request.failed', '操作失败'));
   }
   return payload.result;
 }
 
 /* ============================================================================
- * 5. 状态
+ * 5. State
  * ==========================================================================*/
 
-/** 下拉项的短文案（去掉「（…）」备注），用于「原生 X」那一格。 */
+/** Short label of a select option (drops the "(…)" note), used in the "native X" cell. */
 function selectOptionLabel(item, value) {
   var opts = (item && item.options) || [];
   var hit = '';
@@ -985,26 +1114,27 @@ function selectOptionLabel(item, value) {
     if (!hit && String(opt.value) === String(value)) hit = String(opt.label || opt.value);
   });
   if (!hit) hit = String(value || '');
-  return hit.split('（')[0];
+  // Translated labels may use an ASCII "(" instead of the full-width "（".
+  return hit.split(/\s*[（(]/)[0];
 }
 
 var state = {
-  mode: 'light',            // 'light' | 'dark' —— 编辑 vars 还是 dark_vars
-  palette: null,            // 服务器上的调色板（唯一真相）
-  edited: { light: {}, dark: {} },  // 用户真正改过的键 → 值
-  cleared: { light: {}, dark: {} }, // 用户点了「清空」的键 → true（提交空串 = 删除）
+  mode: 'light',            // 'light' | 'dark' — editing vars or dark_vars
+  palette: null,            // palette on the server (single source of truth)
+  edited: { light: {}, dark: {} },  // keys the user actually changed -> value
+  cleared: { light: {}, dark: {} }, // keys the user hit "Clear" on -> true (empty string submitted = delete)
   collapsed: {},
-  filter: '',               // 搜索框里的过滤词（小写比较）
-  onlyDirty: false,         // 只看改动：隐藏未改动的行
+  filter: '',               // filter text from the search box (compared in lower case)
+  onlyDirty: false,         // "changes only": hide unchanged rows
   busy: false,
   modalMode: 'import',
   modalReturnFocus: null,
-  // 名称 / 启用的「已保存基线」：由 renderMeta 写入，applyTheme 用它判断有没有改动。
-  // 初值等于 index.html 的 DOM 初值，所以首次 get_theme 失败（palette=null）时
-  // 只改名称或启用开关也能被识别成有效改动。
+  // Saved baseline for name / enabled: written by renderMeta, used by applyTheme to detect
+  // changes. The initial values equal the DOM defaults in index.html, so even if the first
+  // get_theme fails (palette=null), changing only the name or the toggle counts as a change.
   metaName: '',
   metaEnabled: true,
-  // 「运行状态」卡片最近一次读到的后端状态（studio_status 的返回）。
+  // Backend status last read by the "Runtime status" card (studio_status result).
   status: null
 };
 
@@ -1017,12 +1147,12 @@ function isDirty(key) {
 }
 
 
-/** 名称/启用开关这类「元信息」的脏值（变量脏值仍由 dirtyCount 负责）。
+/** Dirty count of the "meta" fields: name and enabled toggle (variables are still counted by dirtyCount).
  *
- *  旧实现只数变量，于是「只改名」或「只拐开关」时 dirty=0：
- *  ① 外部同步（按时段自动换主题）判定面板干净 → 直接刷新，把刚敲的名字冲掉；
- *  ② 「应用」按钮不显示改动项数，点下去才报「没有可应用的改动」，像插件坏了；
- *  ③ busy 期间这两个控件没被禁用，回读时敲的字会被 renderMeta 覆盖。
+ *  The old version only counted variables, so renaming or flipping the toggle alone gave dirty=0:
+ *  (1) external sync (time-based theme switching) saw a clean panel and refreshed, wiping the typed name;
+ *  (2) the "Apply" button showed no change count and only said "nothing to apply" when clicked, looking broken;
+ *  (3) these two controls were not disabled while busy, so text typed during reload was overwritten by renderMeta.
  */
 function metaDirtyCount() {
   var n = 0;
@@ -1033,7 +1163,7 @@ function metaDirtyCount() {
   return n;
 }
 
-/** 面板里所有未提交的改动：变量 + 名称/启用。 */
+/** All uncommitted changes in the panel: variables + name/enabled. */
 function pendingChangeCount() { return dirtyCount() + metaDirtyCount(); }
 
 function dirtyCount() {
@@ -1042,7 +1172,7 @@ function dirtyCount() {
   return light + dark;
 }
 
-/** 该行在当前模式下「显示」的值：改过就用改的值，否则用原生参考值。 */
+/** Value displayed for the row in the current mode: the edited value if changed, otherwise the native reference value. */
 function displayValue(key) {
   if (Object.prototype.hasOwnProperty.call(editedMap(), key)) return editedMap()[key];
   if (Object.prototype.hasOwnProperty.call(clearedMap(), key)) return '';
@@ -1055,7 +1185,7 @@ function displayValue(key) {
   return '';
 }
 
-/** 服务器调色板里该键的值（当前模式），没有则 null。 */
+/** Value of this key in the server palette (current mode), or null if absent. */
 function serverValue(key) {
   if (!state.palette) return null;
   var bag = state.mode === 'dark' ? state.palette.dark_vars : state.palette.vars;
@@ -1063,21 +1193,21 @@ function serverValue(key) {
   return null;
 }
 
-/** 提交时该键的取值：改过 → 值；清空 → ''（删除）；没碰过 → undefined（不发）。 */
+/** Value submitted for this key: edited -> value; cleared -> '' (delete); untouched -> undefined (not sent). */
 function submitValue(key) {
   if (Object.prototype.hasOwnProperty.call(editedMap(), key)) return editedMap()[key];
   if (Object.prototype.hasOwnProperty.call(clearedMap(), key)) return '';
   return undefined;
 }
 
-/* ---------------------------------------------------------------- 可读性自检（v0.4.9）
+/* ---------------------------------------------------------------- Readability check (v0.4.9)
  *
- * 面板里配完色，最常被忽略的是「文字和底色的对比度」。这组纯函数与
- * `_work/audit_themes.py` 的口径保持一致（WCAG 2.1：正文 4.5、次要 3.0），
- * 点一下就能扫出所有低于阈值的组合，并跳回对应变量行改。
+ * After picking colors, the most overlooked thing is text/background contrast. These pure
+ * functions use the same criteria as `_work/audit_themes.py` (WCAG 2.1: body 4.5,
+ * secondary 3.0); one click lists every pair below the threshold and jumps to its row.
  */
 
-/** 把带 alpha 的前景合成到不透明背景上（都返回 {r,g,b,a:1}）。 */
+/** Composite a foreground with alpha onto an opaque background (both return {r,g,b,a:1}). */
 function colorOver(fg, bg) {
   if (!fg) return null;
   if (!bg) return { r: fg.r, g: fg.g, b: fg.b, a: 1 };
@@ -1101,7 +1231,7 @@ function colorLuma(c) {
   return 0.2126 * colorChannel(c.r) + 0.7152 * colorChannel(c.g) + 0.0722 * colorChannel(c.b);
 }
 
-/** WCAG 对比度：(较亮 + .05) / (较暗 + .05)。 */
+/** WCAG contrast ratio: (lighter + .05) / (darker + .05). */
 function contrastRatio(fg, bg) {
   if (!fg || !bg) return 0;
   var l1 = colorLuma(fg);
@@ -1110,7 +1240,7 @@ function contrastRatio(fg, bg) {
   return (l1 + 0.05) / (l2 + 0.05);
 }
 
-/** 渐变里最中间那个色标（气泡文字最常见的落点）。 */
+/** The middle color stop of a gradient (where bubble text most often sits). */
 function gradientMidColor(value) {
   if (typeof value !== 'string' || !value) return null;
   var re = /(#[0-9a-fA-F]{3,8}|rgba?\([^()]*\))/g;
@@ -1124,7 +1254,7 @@ function gradientMidColor(value) {
   return stops[Math.floor(stops.length / 2)];
 }
 
-/** 把颜色 c 朝 target 混合 t（0 保留原色、1 变成 target）。 */
+/** Mix color c toward target by t (0 keeps the original, 1 becomes target). */
 function mixToward(c, target, t) {
   return {
     r: c.r + (target.r - c.r) * t,
@@ -1135,10 +1265,12 @@ function mixToward(c, target, t) {
 }
 
 /**
- * 给「前景压在背景上」找一档刚好达标的颜色。
- * 同时朝黑、朝白两个方向按 1% 步进试，取「改动最小且先达标」的那个：
- * 浅底深字通常压暗，深底浅字通常提亮；已有极值色（纯白字压中蓝底）时
- * 会改走另一侧（压成深字）——两种都在 WCAG 上成立。已达标或无解返回 null。
+ * Find a foreground color that just meets the threshold on the given background.
+ * Tries both toward black and toward white in 1% steps and picks the smallest change
+ * that passes: dark text on light backgrounds usually gets darker, light text on dark
+ * backgrounds lighter; when the color is already extreme (pure white on mid blue) it goes
+ * the other way (to dark text) — both are valid under WCAG. Returns null if it already
+ * passes or there is no solution.
  */
 function contrastFixColor(fg, bg, need) {
   if (!fg || !bg) return null;
@@ -1152,8 +1284,9 @@ function contrastFixColor(fg, bg, need) {
   var best = null;
   targets.forEach(function (target) {
     for (var step = 1; step <= 100; step++) {
-      // 先四舍五入到 8 位色再算：写进输入框的是 #rrggbb，若按浮点值判定
-      // 达标、落盘后四舍五入又掉到阈值下，用户会觉得「修了还是红的」。
+      // Round to 8-bit channels before measuring: the input receives #rrggbb, and if a
+      // float value passed but the rounded one falls below the threshold, users would
+      // see "fixed it, still red".
       var raw = mixToward(base, target.color, step / 100);
       var c = { r: Math.round(raw.r), g: Math.round(raw.g), b: Math.round(raw.b), a: 1 };
       var ratio = contrastRatio(c, bg);
@@ -1168,7 +1301,7 @@ function contrastFixColor(fg, bg, need) {
   return best;
 }
 
-/** {r,g,b} → '#rrggbb'（四舍五入并夹到 0–255）。 */
+/** {r,g,b} -> '#rrggbb' (rounded and clamped to 0–255). */
 function colorToHex(c) {
   if (!c) return '';
   function part(v) {
@@ -1181,7 +1314,7 @@ function colorToHex(c) {
   return '#' + part(c.r) + part(c.g) + part(c.b);
 }
 
-/** 指定模式下的生效值（改过 → 改的值；清空 → ''；否则服务器值 / 原生值）。 */
+/** Effective value in the given mode (edited -> edited value; cleared -> ''; otherwise server / native value). */
 function valueForMode(key, mode) {
   var ed = state.edited[mode] || {};
   var cl = state.cleared[mode] || {};
@@ -1202,22 +1335,23 @@ function auditParse(key, mode, fallback) {
   return parseColor(v);
 }
 
-/** 11 组对比度检查（与 _work/audit_themes.py 的 checks() 同口径）。 */
+/** 11 contrast checks (same criteria as checks() in _work/audit_themes.py).
+ *  `name` is a getter so it is translated when the audit runs, not at load time. */
 var READ_PAIRS = [
-  { name: '正文 / 聊天背景', fg: '--nts-panel-text', bg: 'chat', need: 4.5 },
-  { name: '正文 / 顶栏', fg: '--nts-topbar-text', bg: 'surface', need: 4.5 },
-  { name: '正文 / 输入框', fg: '--nts-input-text', bg: 'input', need: 4.5 },
-  { name: '正文 / 面板玻璃', fg: '--nts-panel-text', bg: 'glass', need: 4.5 },
-  { name: '正文 / AI 气泡', fg: '--nts-ai-bubble-text', bg: 'ai', need: 4.5 },
-  { name: '用户气泡文字', fg: '--nts-user-bubble-text', bg: 'user', need: 4.5 },
-  { name: '发送键文字', fg: '--nts-send-text', bg: 'send', need: 4.5 },
-  { name: '次要文字 / 聊天背景', fg: '--nts-panel-text-sub', bg: 'chat', need: 3.0 },
-  { name: 'placeholder', fg: '--nts-input-placeholder', bg: 'input', need: 3.0 },
-  { name: 'chip 文字', fg: '--nts-chip-text', bg: 'chip', need: 3.0 },
-  { name: '链接 / 聊天背景', fg: '--nts-link', bg: 'chat', need: 3.0 }
+  { get name() { return tsT('core.audit.pair.bodyChat', '正文 / 聊天背景'); }, fg: '--nts-panel-text', bg: 'chat', need: 4.5 },
+  { get name() { return tsT('core.audit.pair.bodyTopbar', '正文 / 顶栏'); }, fg: '--nts-topbar-text', bg: 'surface', need: 4.5 },
+  { get name() { return tsT('core.audit.pair.bodyInput', '正文 / 输入框'); }, fg: '--nts-input-text', bg: 'input', need: 4.5 },
+  { get name() { return tsT('core.audit.pair.bodyGlass', '正文 / 面板玻璃'); }, fg: '--nts-panel-text', bg: 'glass', need: 4.5 },
+  { get name() { return tsT('core.audit.pair.bodyAiBubble', '正文 / AI 气泡'); }, fg: '--nts-ai-bubble-text', bg: 'ai', need: 4.5 },
+  { get name() { return tsT('core.audit.pair.userBubbleText', '用户气泡文字'); }, fg: '--nts-user-bubble-text', bg: 'user', need: 4.5 },
+  { get name() { return tsT('core.audit.pair.sendText', '发送键文字'); }, fg: '--nts-send-text', bg: 'send', need: 4.5 },
+  { get name() { return tsT('core.audit.pair.subTextChat', '次要文字 / 聊天背景'); }, fg: '--nts-panel-text-sub', bg: 'chat', need: 3.0 },
+  { get name() { return tsT('core.audit.pair.placeholder', 'placeholder'); }, fg: '--nts-input-placeholder', bg: 'input', need: 3.0 },
+  { get name() { return tsT('core.audit.pair.chipText', 'chip 文字'); }, fg: '--nts-chip-text', bg: 'chip', need: 3.0 },
+  { get name() { return tsT('core.audit.pair.linkChat', '链接 / 聊天背景'); }, fg: '--nts-link', bg: 'chat', need: 3.0 }
 ];
 
-/** 某个模式下的一行审计结果数组（跳过解析不出的颜色）。 */
+/** Audit result rows for one mode (colors that cannot be parsed are skipped). */
 function auditRowsForMode(mode) {
   var dark = mode === 'dark';
   var chatBg = auditParse('--nts-chat-bg', mode, dark ? '#1f242a' : '#eef3f8');
@@ -1246,7 +1380,7 @@ function auditRowsForMode(mode) {
       ratio: Math.round(ratio * 100) / 100,
       need: pair.need,
       ok: ratio >= pair.need,
-      // 自动修正要用的两个不透明色：前景已合成到背景上，背景是实际计算底。
+      // The two opaque colors used by auto-fix: fg is already composited onto bg, bg is the computed backdrop.
       fg: fg,
       bg: bg
     });
@@ -1254,7 +1388,7 @@ function auditRowsForMode(mode) {
   return out;
 }
 
-/** 点失败项 → 切到对应模式、清搜索、滚到那一行并高亮。 */
+/** Clicking a failed item -> switch to its mode, clear the search, scroll to the row and highlight it. */
 function jumpToAuditRow(key, mode) {
   if (mode && state.mode !== mode) setMode(mode);
   if (state.filter) setFilter('');
@@ -1262,14 +1396,14 @@ function jumpToAuditRow(key, mode) {
   var ref = rowsByKey[key];
   if (!ref || !ref.container) return;
   if (ref.container.hidden) {
-    // 该行被折叠组藏着：先展开那一组
+    // The row is hidden inside a collapsed group: expand that group first
     var group = null;
     CATALOG.forEach(function (g) {
       if (group) return;
       g.items.forEach(function (it) { if (it.key === key) group = g; });
     });
-    if (group && state.collapsed[group.group]) {
-      state.collapsed[group.group] = false;
+    if (group && state.collapsed[groupStateKey(group)]) {
+      state.collapsed[groupStateKey(group)] = false;
       saveCatalogCollapsed();
       applyFilters();
     }
@@ -1282,13 +1416,14 @@ function jumpToAuditRow(key, mode) {
 }
 
 /**
- * 把一条失败项的前景色修正成刚好达标的颜色：只写进输入框（成为 dirty），
- * 不直接提交——用户还能在预览里看、能改回、能点「应用」时一起生效。
- * @returns {boolean} true = 找到了可用的修正值
+ * Fix a failed item's foreground to a color that just passes: only fills the input
+ * (making it dirty) without submitting — the user can still preview, revert, and apply
+ * it together with other changes via "Apply".
+ * @returns {boolean} true = a usable fix value was found
  */
 function applyAuditFix(row, quiet) {
   if (!row) return false;
-  // 多留 0.05 的余量：面板显示两位小数，卡在 4.499 会让人以为「修了还是红的」。
+  // Keep a 0.05 margin: the panel shows two decimals, and 4.499 would look like "fixed but still red".
   var fix = contrastFixColor(row.fg, row.bg, row.need + 0.05);
   if (!fix) return false;
   if (row.mode && state.mode !== row.mode) setMode(row.mode);
@@ -1297,12 +1432,14 @@ function applyAuditFix(row, quiet) {
   markEdited(row.key, hex);
   syncRow(row.key);
   if (!quiet) {
-    showToast('「' + row.name + '」调到 ' + hex + '（' + fix.ratio.toFixed(2) + ':1），点「应用」生效', 'ok');
+    showToast(tsT('core.audit.fixedOne', '「{{name}}」调到 {{hex}}（{{ratio}}:1），点「应用」生效', {
+      name: row.name, hex: hex, ratio: fix.ratio.toFixed(2)
+    }), 'ok');
   }
   return true;
 }
 
-/** 把亮/暗两组里所有失败项一次性填好修正值（仍然需要用户点「应用」）。 */
+/** Fill in fix values for every failed item in both light and dark sets at once (the user still has to click "Apply"). */
 function fixAllAudit() {
   var original = state.mode;
   var fixed = 0;
@@ -1319,13 +1456,15 @@ function fixAllAudit() {
   if (state.mode !== original) setMode(original);
   renderAudit(true);
   if (!fixed) {
-    showToast('没有能自动修正的项：这组底色和文字太接近，需要手动改背景色', 'error');
+    showToast(tsT('core.audit.fixNone', '没有能自动修正的项：这组底色和文字太接近，需要手动改背景色'), 'error');
     return;
   }
-  showToast('已填好 ' + fixed + ' 项修正值' + (stuck ? '，' + stuck + ' 项自动调不动' : '') + '；点「应用」生效', 'ok');
+  showToast(stuck
+    ? tsT('core.audit.fixedSomeStuck', '已填好 {{fixed}} 项修正值，{{stuck}} 项自动调不动；点「应用」生效', { fixed: fixed, stuck: stuck })
+    : tsT('core.audit.fixedAll', '已填好 {{fixed}} 项修正值；点「应用」生效', { fixed: fixed }), 'ok');
 }
 
-/** 渲染审计结果；第一次点击时才算（auto=false 表示仅用当前状态预扫一次）。 */
+/** Render the audit results; computed on first click (auto=false means a one-off pre-scan of the current state). */
 function renderAudit(auto) {
   var list = $('audit-list');
   var summary = $('audit-summary');
@@ -1337,12 +1476,14 @@ function renderAudit(auto) {
   function renderGroup(label, rows) {
     var head = el('li', { class: 'audit-group' }, [el('span', { text: label })]);
     if (!rows.length) {
-      head.appendChild(el('span', { class: 'audit-muted', text: '颜色没配全，暂时无法判断' }));
+      head.appendChild(el('span', { class: 'audit-muted', text: tsT('core.audit.incomplete', '颜色没配全，暂时无法判断') }));
     } else {
       var groupBad = bad.filter(function (r) { return r.mode === rows[0].mode; }).length;
       head.appendChild(el('span', {
         class: 'audit-badge ' + (groupBad ? 'is-fail' : 'is-pass'),
-        text: groupBad ? groupBad + ' / ' + rows.length + ' 项低于阈值' : rows.length + ' 项全部达标'
+        text: groupBad
+          ? tsT('core.audit.groupFail', '{{bad}} / {{total}} 项低于阈值', { bad: groupBad, total: rows.length })
+          : tsT('core.audit.groupPass', '{{total}} 项全部达标', { total: rows.length })
       }));
     }
     list.appendChild(head);
@@ -1350,10 +1491,12 @@ function renderAudit(auto) {
       var li = el('li', { class: 'audit-item ' + (r.ok ? 'is-pass' : 'is-fail') }, [
         el('span', { class: 'audit-name', text: r.name }),
         el('span', { class: 'audit-ratio', text: r.ratio.toFixed(2) + ':1' }),
-        el('span', { class: 'audit-plus', text: r.ok ? '✓' : '需 ≥ ' + r.need.toFixed(1) })
+        el('span', { class: 'audit-plus', text: r.ok ? '✓' : tsT('core.audit.need', '需 ≥ {{need}}', { need: r.need.toFixed(1) }) })
       ]);
       if (!r.ok) {
-        li.title = '点击跳到 ' + r.key + '（' + (r.mode === 'dark' ? '暗色' : '亮色') + '）';
+        li.title = r.mode === 'dark'
+          ? tsT('core.audit.jumpDark', '点击跳到 {{key}}（暗色）', { key: r.key })
+          : tsT('core.audit.jumpLight', '点击跳到 {{key}}（亮色）', { key: r.key });
         li.setAttribute('role', 'button');
         li.setAttribute('tabindex', '0');
         li.addEventListener('click', function () { jumpToAuditRow(r.key, r.mode); });
@@ -1366,46 +1509,47 @@ function renderAudit(auto) {
         var fixBtn = el('button', {
           class: 'btn btn-mini audit-fix',
           type: 'button',
-          text: '自动修正',
-          title: '按背景亮度自动调出一个达标颜色（只填值，不直接应用）'
+          text: tsT('core.audit.fixButton', '自动修正'),
+          title: tsT('core.audit.fixButtonTitle', '按背景亮度自动调出一个达标颜色（只填值，不直接应用）')
         });
         fixBtn.addEventListener('click', function (event) {
           event.preventDefault();
           event.stopPropagation();
           if (applyAuditFix(r, false)) renderAudit(true);
-          else showToast('这一组自动调不到 ' + r.need.toFixed(1) + ':1，需要改背景色', 'error');
+          else showToast(tsT('core.audit.fixFailed', '这一组自动调不到 {{need}}:1，需要改背景色', { need: r.need.toFixed(1) }), 'error');
         });
         li.appendChild(fixBtn);
       }
       list.appendChild(li);
     });
   }
-  renderGroup('亮色', light);
-  renderGroup('暗色', dark);
+  renderGroup(tsT('core.audit.light', '亮色'), light);
+  renderGroup(tsT('core.audit.dark', '暗色'), dark);
   if (!light.length && !dark.length) {
-    summary.textContent = '还没有可比较的颜色：先给「聊天背景」「正文」等基础变量配值。';
+    summary.textContent = tsT('core.audit.nothingToCompare', '还没有可比较的颜色：先给「聊天背景」「正文」等基础变量配值。');
     return;
   }
   if (!bad.length) {
     summary.className = 'audit-summary is-pass';
-    summary.textContent = '两组共 ' + (light.length + dark.length) + ' 项全部达到 WCAG 阈值（正文 4.5、次要 3.0）。' + (auto ? '' : '');
+    summary.textContent = tsT('core.audit.summaryPass', '两组共 {{total}} 项全部达到 WCAG 阈值（正文 4.5、次要 3.0）。', { total: light.length + dark.length }) + (auto ? '' : '');
   } else {
     summary.className = 'audit-summary is-fail';
-    summary.textContent = '有 ' + bad.length + ' 项低于阈值，点条目可跳到对应变量。';
+    summary.textContent = tsT('core.audit.summaryFail', '有 {{bad}} 项低于阈值，点条目可跳到对应变量。', { bad: bad.length });
   }
 }
 
-/* ===== UNDO_BEGIN（v0.10.0：撤销 / 重做）===== */
+/* ===== UNDO_BEGIN (v0.10.0: undo / redo) ===== */
 
 /**
- * 撤销栈：每一步存的是「改动前」的 edited/cleared 全量快照。
+ * Undo stack: each step stores a full snapshot of edited/cleared from before the change.
  *
- * 为什么存快照而不是存单条操作：编辑区的改动是「地图上的增删」，单条操作的
- * 逆操作要区分 markEdited / markCleared / 恢复到服务器值这些分支，容易漏；
- * 两张表一共最多一百多个键，快照代价可以忽略，正确性最高。
+ * Why snapshots instead of individual operations: edits are additions/removals in maps,
+ * and inverting a single operation has to distinguish markEdited / markCleared /
+ * revert-to-server branches, which is easy to get wrong; the two maps hold at most a
+ * hundred-odd keys, so snapshots are cheap and the most reliable.
  *
- * 合并策略：同一个变量行 900ms 内的连续改动只压一次栈 —— 否则打十个字就是
- * 十步撤销，Ctrl+Z 会像卡住一样。
+ * Coalescing: consecutive edits to the same row within 900ms push only one entry —
+ * otherwise typing ten characters means ten undo steps and Ctrl+Z feels stuck.
  */
 var undoState = { past: [], future: [], limit: 50, lastKey: '', lastAt: 0, applying: false };
 
@@ -1456,23 +1600,23 @@ function undoApply(snapshot) {
 function undoStep() {
   if (state.busy) return;
   if (!undoState.past.length) {
-    showToast('没有可撤销的改动了');
+    showToast(tsT('core.undo.nothingToUndo', '没有可撤销的改动了'));
     return;
   }
   undoState.future.push(undoSnapshot());
   undoApply(undoState.past.pop());
-  showToast('已撤销上一步', 'ok');
+  showToast(tsT('core.undo.undone', '已撤销上一步'), 'ok');
 }
 
 function redoStep() {
   if (state.busy) return;
   if (!undoState.future.length) {
-    showToast('没有可重做的改动了');
+    showToast(tsT('core.undo.nothingToRedo', '没有可重做的改动了'));
     return;
   }
   undoState.past.push(undoSnapshot());
   undoApply(undoState.future.pop());
-  showToast('已重做', 'ok');
+  showToast(tsT('core.undo.redone', '已重做'), 'ok');
 }
 
 function updateUndoButtons() {
@@ -1481,14 +1625,14 @@ function updateUndoButtons() {
   if (undoBtn) {
     undoBtn.disabled = !!state.busy || !undoState.past.length;
     undoBtn.title = undoState.past.length
-      ? '撤销上一次改动（还能撤销 ' + undoState.past.length + ' 步）'
-      : '没有可撤销的改动';
+      ? tsT('core.undo.undoTitle', '撤销上一次改动（还能撤销 {{count}} 步）', { count: undoState.past.length })
+      : tsT('core.undo.undoTitleEmpty', '没有可撤销的改动');
   }
   if (redoBtn) {
     redoBtn.disabled = !!state.busy || !undoState.future.length;
     redoBtn.title = undoState.future.length
-      ? '重做（还能重做 ' + undoState.future.length + ' 步）'
-      : '没有可重做的改动';
+      ? tsT('core.undo.redoTitle', '重做（还能重做 {{count}} 步）', { count: undoState.future.length })
+      : tsT('core.undo.redoTitleEmpty', '没有可重做的改动');
   }
 }
 
@@ -1498,7 +1642,7 @@ function initUndoShortcuts() {
     if (!meta) return;
     var target = event.target;
     var tag = target && target.tagName ? String(target.tagName).toLowerCase() : '';
-    // 输入框里有浏览器自己的撤销历史，抢过来只会让人更困惑。
+    // Inputs have the browser's own undo history; hijacking it would only confuse people.
     if (tag === 'input' || tag === 'textarea' || tag === 'select' ||
         (target && target.isContentEditable)) return;
     var key = String(event.key || '').toLowerCase();
@@ -1516,12 +1660,14 @@ function initUndoShortcuts() {
 
 function markEdited(key, value) {
   undoPush(key);
-  // 记住「上一个通过校验的编辑值」：非颜色行输入非法时要回滚到它，
-  // 否则应用仍会提交上一个合法值并报成功（用户以为新输入生效了）。
+  // Remember the last edited value that passed validation: invalid input on a non-color
+  // row rolls back to it; otherwise Apply would still submit the previous valid value and
+  // report success (the user would think the new input took effect).
   rowValidCache[key] = value;
   delete clearedMap()[key];
-  // 改回服务器上已有的值 = 没改：否则把值敲回去后按钮仍显示「已改」，
-  // 应用时还会把同值再写一遍（版本号 +1，用户以为哪里坏了）。
+  // Changing back to the server's value = unchanged: otherwise the button would still say
+  // "changed" after retyping it, and Apply would write the same value again (version +1,
+  // making users think something broke).
   if (serverValue(key) === value) {
     delete editedMap()[key];
     return;
@@ -1538,10 +1684,11 @@ function markCleared(key) {
 }
 
 /**
- * 「清空」的语义是「删掉 theme.json 里的这一项」。若服务器本来就没有这一项，
- * 清空应当退化成「撤销本地编辑」而不是记一条空串提交（否则干净的行点一下清空
- * 就凭空多出一项改动，应用后版本号变化但外观不变）。
- * @returns {boolean} true = 真的提交了删除
+ * "Clear" means "delete this entry from theme.json". If the server has no such entry,
+ * clearing degrades to "discard the local edit" instead of recording an empty-string
+ * submission (otherwise clicking Clear on a clean row would invent a change, and applying
+ * it would bump the version without any visible difference).
+ * @returns {boolean} true = a deletion will actually be submitted
  */
 function clearRow(key) {
   var hasServer = serverValue(key) !== null;
@@ -1556,13 +1703,16 @@ function clearRow(key) {
   return true;
 }
 
-/* ---------------- 行级「非法输入」与「颜色记忆」 ----------------
- * 1) invalidRows：哪几行当前是红框非法态。applyTheme 见到非 0 就阻止应用，
- *    避免「输入非法 → 应用仍提交上一个合法值并报成功」。
- * 2) rowValidCache：每行上一次通过校验的编辑值；输入非法时把 edited 回滚到它
- *    （没有就删除该键 = 回退服务器值），使面板状态与将提交的内容一致。
- * 3) lastRgbByKey：全透明行记住最近一次的 RGB，让 alpha 滑块在 transparent
- *    状态下仍然可用（旧实现一置灰，用户就再也拖不回半透明）。 */
+/* ---------------- Per-row "invalid input" and "color memory" ----------------
+ * 1) invalidRows: rows currently in the red invalid state. applyTheme refuses to apply
+ *    when this is non-zero, avoiding "invalid input -> Apply still submits the previous
+ *    valid value and reports success".
+ * 2) rowValidCache: each row's last edited value that passed validation; on invalid input
+ *    edited is rolled back to it (or the key is deleted = back to the server value), so
+ *    the panel state matches what will be submitted.
+ * 3) lastRgbByKey: fully transparent rows remember their last RGB so the alpha slider
+ *    still works while transparent (the old version greyed it out and users could never
+ *    drag back to semi-transparent). */
 var rowValidCache = {};
 var invalidRows = {};
 var lastRgbByKey = {};
@@ -1575,11 +1725,11 @@ function markRowInvalid(key, bad) {
 function invalidRowCount() { return Object.keys(invalidRows).length; }
 
 function invalidInputHint(item) {
-  if (item && item.type === 'blur') return '模糊只接受 px/rem/em/pt（可写 18px 或 blur(18px)）';
-  return '该值不合法，请改成合法值或点「清空」';
+  if (item && item.type === 'blur') return tsT('core.validate.badBlur', '模糊只接受 px/rem/em/pt（可写 18px 或 blur(18px)）');
+  return tsT('core.validate.badValue', '该值不合法，请改成合法值或点「清空」');
 }
 
-/** 非法输入时回滚到上一个合法编辑值；没有就删掉本地编辑（退回服务器值）。 */
+/** On invalid input, roll back to the last valid edited value; if none, drop the local edit (back to the server value). */
 function rollbackRowToLastValid(key) {
   if (Object.prototype.hasOwnProperty.call(rowValidCache, key)) {
     markEdited(key, rowValidCache[key]);
@@ -1592,7 +1742,7 @@ function markAllRowsValid() { invalidRows = {}; }
 
 function clearRgbMemory() { lastRgbByKey = {}; }
 
-/** 记住一行最近一次带颜色成分的 RGB（transparent 字面量没有颜色信息，跳过）。 */
+/** Remember a row's most recent RGB that carried color (the literal transparent has none, so it is skipped). */
 function rememberRgbValue(key, parsed, raw) {
   if (!parsed) return;
   if (String(raw || '').trim().toLowerCase() === 'transparent') return;
@@ -1601,29 +1751,32 @@ function rememberRgbValue(key, parsed, raw) {
   }
 }
 
-/** 宽容写法归一化：把「人最自然的写法」补全成校验能直接吃掉的形态。
+/** Lenient input normalization: complete the most natural way people type a value into a
+ *  form the validator accepts directly.
  *
- * - ``length`` 行敲纯数字 ``16`` → ``16px``（过去会标红，必须自己补单位）；
- * - ``blur`` 行敲纯数字 ``7`` → ``blur(7px)``（后端本来就接受 ``blur(7px)`` 与裸 ``7px``，
- *   但不接受无单位的 ``7``）；
- * - 其余（带单位/带百分号/负数/多 token）原样返回，交给 ``isSafeValue()`` 判定
- *   （``-4px`` 仍然非法：负圆角会让整条声明被浏览器丢弃）。
+ * - a bare number ``16`` in a ``length`` row -> ``16px`` (used to turn red; the unit had to be typed);
+ * - a bare number ``7`` in a ``blur`` row -> ``blur(7px)`` (the backend already accepts
+ *   ``blur(7px)`` and bare ``7px``, but not the unitless ``7``);
+ * - everything else (with unit / percent / negative / multiple tokens) is returned as-is
+ *   for ``isSafeValue()`` to judge (``-4px`` stays invalid: a negative radius makes the
+ *   browser drop the whole declaration).
  *
- * 注意：只在面板侧归一化，后端与 loader 的校验保持严格 —— API 契约不变，
- * 手改 ``theme.json`` 或走 JSON 导入仍须写完整形态。
+ * Note: normalization happens only in the panel; backend and loader validation stay strict —
+ * the API contract is unchanged, and hand-edited ``theme.json`` or JSON imports must still
+ * use the full form.
  */
 function normalizeTypedValue(item, raw) {
   if (!item) return raw;
   if (!/^-?[0-9]{1,4}(?:\.[0-9]+)?$/.test(raw)) return raw;
   if (item.type === 'length') return raw + 'px';
   if (item.type === 'blur') return 'blur(' + raw + 'px)';
-  // 时长裸数字补 s：CSS 的 animation-duration 不认无单位数字，后端也会补，
-  // 面板这里先补上，用户敲 3 立刻看到 3s。
+  // Append s to a bare duration: CSS animation-duration rejects unitless numbers. The
+  // backend appends it too, but doing it here means typing 3 shows 3s immediately.
   if (item.type === 'time') return raw + 's';
   return raw;
 }
 
-/** 统一设置输入框的红框 / 无障碍非法标记 / 提示标题。 */
+/** Set an input's red border / accessible invalid flag / hint title in one place. */
 function setInputInvalid(input, item, bad) {
   if (!input) return;
   input.classList.toggle('is-bad', !!bad);
@@ -1637,7 +1790,7 @@ function setInputInvalid(input, item, bad) {
 }
 
 /* ============================================================================
- * 6. DOM 帮手
+ * 6. DOM helpers
  * ==========================================================================*/
 
 function el(tag, props, children) {
@@ -1659,7 +1812,7 @@ function el(tag, props, children) {
 
 function $(id) { return document.getElementById(id); }
 
-/** kind: 'ok' | 'error' | 空 —— 只影响配色，不影响文案。 */
+/** kind: 'ok' | 'error' | empty — affects colours only, not the text. */
 function showToast(message, kind) {
   var node = $('toast');
   node.textContent = message;
@@ -1670,7 +1823,7 @@ function showToast(message, kind) {
   showToast._timer = setTimeout(function () { node.classList.remove('show'); }, 3000);
 }
 
-/** kind: 'idle' | 'busy' | 'ok' | 'error' | 'warn' —— 底部状态点配色。 */
+/** kind: 'idle' | 'busy' | 'ok' | 'error' | 'warn' — colour of the footer status dot. */
 function setStatus(text, kind) {
   var node = $('status');
   if (!node) return;
@@ -1678,7 +1831,7 @@ function setStatus(text, kind) {
   node.dataset.kind = kind || 'idle';
 }
 
-/** kind: 'ok' | 'warn' | 'error' —— 左侧色条与配色。传空文案即收起。 */
+/** kind: 'ok' | 'warn' | 'error' — left accent bar and colours. Empty text hides the notice. */
 function showNotice(kind, text) {
   var node = $('notice');
   if (!node) return;
@@ -1697,25 +1850,25 @@ function showNotice(kind, text) {
 
 function hideNotice() { showNotice('ok', ''); }
 
-/** 顶部细进度条：读取/应用期间给一个非阻塞的「在忙」信号。 */
+/** Thin top progress bar: a non-blocking "busy" signal while loading/applying. */
 function setLoading(loading) {
   document.body.classList.toggle('is-loading', !!loading);
 }
 
 /* ============================================================================
- * 7. 渲染编辑器
+ * 7. Editor rendering
  * ==========================================================================*/
 
 var rowsByKey = {};   // key → { hexInput, colorInput, alpha, alphaVal, textInput, rowEl, syncFn }
 
-var groupNodes = {};   // group 名 → <section class="group">
+var groupNodes = {};   // group name → <section class="group">
 
 function buildEditor() {
   var host = $('groups');
   host.textContent = '';
 
   CATALOG.forEach(function (group) {
-    var key = group.group;
+    var key = groupStateKey(group);
     var body = el('div', { class: 'group-body' });
     var count = el('span', { class: 'group-count' });
     var head = el('div', {
@@ -1723,7 +1876,7 @@ function buildEditor() {
       role: 'button',
       tabindex: '0',
       'aria-expanded': state.collapsed[key] ? 'false' : 'true',
-      'aria-label': key + ' 分组（点击展开/收起）',
+      'aria-label': tsT('editor.group.ariaLabel', '{{group}} 分组（点击展开/收起）', { group: group.group }),
       onclick: function () { toggleGroup(key); },
       onkeydown: function (event) {
         if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') {
@@ -1733,7 +1886,7 @@ function buildEditor() {
       }
     }, [
       el('span', { class: 'group-caret', 'aria-hidden': 'true', text: '▶' }),
-      el('span', { class: 'group-title', text: key }),
+      el('span', { class: 'group-title', text: group.group }),
       count
     ]);
     var wrap = el('section', { class: 'group' + (state.collapsed[key] ? ' is-collapsed' : '') }, [head, body]);
@@ -1756,30 +1909,32 @@ function toggleGroup(key) {
     var head = node.querySelector('.group-head');
     if (head) head.setAttribute('aria-expanded', state.collapsed[key] ? 'false' : 'true');
   }
-  // 折叠状态写 localStorage：下次打开面板保持上次的分组浏览位置。
+  // Persist collapse state to localStorage so the panel reopens where the user left off.
   saveCatalogCollapsed();
   updateGroupToggleLabel();
 }
 
 function allCollapsed() {
-  return CATALOG.every(function (group) { return !!state.collapsed[group.group]; });
+  return CATALOG.every(function (group) { return !!state.collapsed[groupStateKey(group)]; });
 }
 
 function updateGroupToggleLabel() {
   var btn = $('btn-toggle-groups');
   if (!btn) return;
   var collapsed = allCollapsed();
-  btn.textContent = collapsed ? '全部展开' : '全部收起';
-  // a11y（v0.4.21）：这个按钮控制的是所有分组，补一个 aria-expanded 让读屏
-  // 知道「现在是全收起状态」；视觉上按钮文案已经表达了同一件事。
+  btn.textContent = collapsed
+    ? tsT('editor.groups.expandAll', '全部展开')
+    : tsT('editor.groups.collapseAll', '全部收起');
+  // a11y (v0.4.21): this button controls every group, so add aria-expanded to tell
+  // screen readers "all collapsed"; visually the button text already says the same.
   btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
 }
 
 function toggleAllGroups() {
   var collapse = !allCollapsed();
   CATALOG.forEach(function (group) {
-    state.collapsed[group.group] = collapse;
-    var node = groupNodes[group.group];
+    state.collapsed[groupStateKey(group)] = collapse;
+    var node = groupNodes[groupStateKey(group)];
     if (!node) return;
     node.classList.toggle('is-collapsed', collapse);
     var head = node.querySelector('.group-head');
@@ -1789,28 +1944,28 @@ function toggleAllGroups() {
   updateGroupToggleLabel();
 }
 
-/** 当前模式下的「原生参考值」：暗色优先 darkNative，没有就退回亮色原生值。 */
+/** Native reference value for the current mode: darkNative in dark mode, else the light native value. */
 function nativeOf(item) {
   if (state.mode === 'dark' && item.darkNative !== undefined) return item.darkNative;
   return item.native || '';
 }
 
-/** placeholder 展示原生参考值；太长的不塞进输入框，免得像噪声。 */
+/** Placeholder shows the native reference value; long ones are left out so they don't look like noise. */
 function placeholderFor(item) {
   var native = nativeOf(item);
-  if (native && native.length <= 28) return '原生 ' + native;
-  return '留空 = 原生';
+  if (native && native.length <= 28) return tsT('editor.row.nativeValue', '原生 {{value}}', { value: native });
+  return tsT('editor.row.emptyIsNative', '留空 = 原生');
 }
 
-/* ---------------- filter / gradient 行的预览条与渐变快组 ----------------
- * 本轮不允许改 style.css，所以预览条与快组控件全部用内联样式。 */
+/* ---------------- Preview strip and gradient quick-builder for filter / gradient rows ----------------
+ * style.css was off-limits this round, so the preview strip and quick-builder use inline styles only. */
 
 var PREVIEW_BASE_STYLE = 'position:relative;flex:0 0 84px;height:26px;border-radius:6px;' +
   'overflow:hidden;border:1px solid rgba(128,128,128,0.35);' +
   'background:repeating-linear-gradient(45deg, rgba(120,140,170,0.45) 0 5px, rgba(120,140,170,0.12) 5px 10px);';
 
-/** 造一条预览条：底纹是斜条纹，filter 行让 backdrop-filter 去糊它；
- *  gradient 行则把条纹当「未配置」的占位。返回 { host, node }。 */
+/** Build a preview strip over a diagonal-stripe backdrop: filter rows blur it with backdrop-filter;
+ *  gradient rows use the stripes as the "not configured" placeholder. Returns { host, node }. */
 function buildPreviewHost(title) {
   var host = el('span', {
     class: 'live-preview',
@@ -1823,7 +1978,7 @@ function buildPreviewHost(title) {
   return { host: host, node: node };
 }
 
-/** 把预览条同步成当前生效值；空/非法 → 清掉效果，只留底纹（＝没有预览）。 */
+/** Sync the preview strip to the effective value; empty/invalid clears the effect and leaves only the stripes (= no preview). */
 function syncValuePreview(ref, value) {
   if (!ref || !ref.previewNode) return;
   var v = value === null || value === undefined ? '' : String(value).trim();
@@ -1834,20 +1989,22 @@ function syncValuePreview(ref, value) {
     ref.previewNode.style.webkitBackdropFilter = ok ? v : '';
     if (ref.previewHost) {
       ref.previewHost.title = ok
-        ? '预览：' + v + '（只对预览条背后的斜纹生效）'
-        : '当前没有可预览的滤镜链（留空 = 不生效）';
+        ? tsT('editor.preview.filterTitle', '预览：{{value}}（只对预览条背后的斜纹生效）', { value: v })
+        : tsT('editor.preview.filterNone', '当前没有可预览的滤镜链（留空 = 不生效）');
     }
   } else if (ref.item.type === 'gradient') {
     ok = !!v && isSafeGradient(v);
     ref.previewNode.style.backgroundImage = ok ? v : '';
     if (ref.previewHost) {
-      ref.previewHost.title = ok ? '预览：' + v : '当前没有可预览的渐变（留空 = 不生效）';
+      ref.previewHost.title = ok
+        ? tsT('editor.preview.gradientTitle', '预览：{{value}}', { value: v })
+        : tsT('editor.preview.gradientNone', '当前没有可预览的渐变（留空 = 不生效）');
     }
   }
 }
 
-/** 「角度 + 起止色」→ 写回文本框，再派发 input/change 事件走原有的输入流程
- *  （校验、脏标记、预览全部复用同一套代码，不另开路径）。 */
+/** "Angle + from/to colours" → write into the text box, then dispatch input/change to reuse the normal
+ *  input flow (validation, dirty marking and preview all share one code path). */
 function composeGradient(textInput, angleInput, fromInput, toInput) {
   var angle = parseInt(angleInput.value, 10);
   if (!isFinite(angle)) angle = 135;
@@ -1859,7 +2016,7 @@ function composeGradient(textInput, angleInput, fromInput, toInput) {
   if (typeof textInput.focus === 'function') textInput.focus();
 }
 
-/** 这一行里是不是有焦点（正在输入 / 拖滑块 / 点快组控件）。 */
+/** Whether focus is inside this row (typing / dragging a slider / using the quick-builder). */
 function rowHoldsFocus(ref) {
   var active = document.activeElement;
   if (!active || active === document.body) return false;
@@ -1895,17 +2052,17 @@ function buildRow(item, countNode) {
   var switchField = null;
   var selectInput = null;
   var selectField = null;
-  var previewHost = null;   // filter / gradient 行右侧的预览条外壳
-  var previewNode = null;   // 真正承载 backdrop-filter / background-image 的那一层
-  var quickRow = null;      // gradient 行的「角度 + 起止色 + 生成」快组
+  var previewHost = null;   // preview strip shell on the right of filter / gradient rows
+  var previewNode = null;   // the layer that actually carries backdrop-filter / background-image
+  var quickRow = null;      // "angle + from/to + generate" quick-builder of gradient rows
   var gradAngle = null;
   var gradFrom = null;
   var gradTo = null;
   var gradGen = null;
 
   if (isSwitch) {
-    // 开关控件：勾选 = 1（原生观感），未勾选 = 0（完全清透）。
-    // 用 '1' / '0' 两个字符串写进 edited，和 number 变量共用后端校验。
+    // Switch control: checked = 1 (native look), unchecked = 0 (fully clear).
+    // Stored in edited as the strings '1' / '0' so it shares backend validation with number vars.
     switchInput = el('input', {
       type: 'checkbox', class: 'veil-switch',
       'aria-label': item.label
@@ -1916,18 +2073,18 @@ function buildRow(item, countNode) {
     });
     switchField = el('div', { class: 'field switch-field' }, [
       switchInput,
-      el('span', { class: 'switch-text', text: '开关' })
+      el('span', { class: 'switch-text', text: tsT('editor.switch.label', '开关') })
     ]);
     nativeCell = el('span', {
       class: 'row-native',
-      title: '原生观感 = 打开',
-      text: '原生 开'
+      title: tsT('editor.switch.nativeTitle', '原生观感 = 打开'),
+      text: tsT('editor.switch.nativeOn', '原生 开')
     });
   }
 
   if (isSelect) {
-    // 下拉类变量：选项写死在 CATALOG 的 options 里，选完立刻 markEdited；
-    // 与 color/switch 一样走 edited 表，提交仍由「应用」统一完成。
+    // Select variables: options are fixed in CATALOG's options; markEdited right after choosing.
+    // Like color/switch they go through the edited table; "Apply" still does the submit.
     selectInput = el('select', {
       class: 'fit-select',
       'aria-label': item.label
@@ -1942,15 +2099,15 @@ function buildRow(item, countNode) {
     selectField = el('div', { class: 'field' }, [selectInput]);
     nativeCell = el('span', {
       class: 'row-native',
-      title: '原生写法：' + (nativeOf(item) || ''),
-      text: '原生 ' + selectOptionLabel(item, nativeOf(item))
+      title: tsT('editor.row.nativeSyntax', '原生写法：{{value}}', { value: nativeOf(item) || '' }),
+      text: tsT('editor.row.nativeValue', '原生 {{value}}', { value: selectOptionLabel(item, nativeOf(item)) })
     });
   }
 
   if (isColor) {
     colorInput = el('input', {
       type: 'color', class: 'swatch', value: '#000000',
-      'aria-label': item.label + ' 色板'
+      'aria-label': tsT('editor.color.swatchAria', '{{label}} 色板', { label: item.label })
     });
     hexInput = el('input', {
       type: 'text',
@@ -1958,13 +2115,13 @@ function buildRow(item, countNode) {
       spellcheck: 'false',
       autocomplete: 'off',
       placeholder: placeholderFor(item),
-      'aria-label': item.label + ' 颜色值',
+      'aria-label': tsT('editor.color.valueAria', '{{label}} 颜色值', { label: item.label }),
       oninput: function () {
         var raw = hexInput.value.trim();
         if (!raw) { clearRow(item.key); setInputInvalid(hexInput, item, false); syncRow(item.key, { keepHex: true, defer: true }); return; }
         if (raw.toLowerCase() === 'currentcolor') {
-          // currentcolor 是合法 CSS 关键字（后端/loader 都收），但没有固定 RGB：
-          // 原样存字符串，不能为了「渲染色块」把它盖成黑色，也不能标红。
+          // currentcolor is a valid CSS keyword (backend/loader accept it) but has no fixed RGB:
+          // store the string as-is; never coerce it to black for the swatch, and never flag it red.
           setInputInvalid(hexInput, item, false);
           markRowInvalid(item.key, false);
           markEdited(item.key, 'currentcolor');
@@ -1975,22 +2132,22 @@ function buildRow(item, countNode) {
         if (!parsed) { setInputInvalid(hexInput, item, true); markRowInvalid(item.key, true); return; }
         setInputInvalid(hexInput, item, false);
         markRowInvalid(item.key, false);
-        // 只有 6/3 位 hex 没有自己的 alpha，才继承当前值的 alpha；transparent、
-        // 4/8 位 hex、rgba(...) 一律用解析出的 alpha。旧实现一律走 currentAlpha()，
-        // 而 currentAlpha 对全透明返回 1 → 输入 "transparent" 的过程中被记成
-        // rgba(0,0,0,1) 纯黑，Ctrl+Enter（不要求失焦）直接写盘。
+        // Only 6/3-digit hex has no alpha of its own, so only it inherits the current alpha;
+        // transparent, 4/8-digit hex and rgba(...) use the parsed alpha. The old code always used
+        // currentAlpha(), which returns 1 for fully transparent → typing "transparent" got recorded
+        // as rgba(0,0,0,1) solid black, and Ctrl+Enter (no blur needed) wrote it to disk.
         var isPlainHex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(raw);
         var alphaOut = isPlainHex ? currentAlpha(item.key) : parsed.a;
         rememberRgbValue(item.key, parsed, raw);
         markEdited(item.key, toRgba(parsed.r, parsed.g, parsed.b, alphaOut));
-        // keepHex：输入框保留用户正在敲的原文，否则 "#ff8" 会被当成 3 位色改写，
-        // 后续按键拼出用户没输入过的值（实测 #ff8800 → #ffff8880）。
+        // keepHex: keep the user's in-progress text, otherwise "#ff8" gets rewritten as a 3-digit
+        // colour and later keystrokes build a value never typed (observed: #ff8800 → #ffff8880).
         syncRow(item.key, { keepHex: true, defer: true });
       },
       onchange: function () {
-        // 失焦/回车才算定稿：只有此时才从 4/8 位 hex 里取 alpha 并归一化展示。
-        // 逐键过程中保持原有 alpha，否则 6 位色 "#ff8800" 的 4 位前缀 "#ff88"
-        // 会被当成 53% 透明的 4 位色，把用户输入的实色变成半透明。
+        // Blur/Enter finalises: only then take alpha from 4/8-digit hex and normalise the display.
+        // While typing keep the existing alpha, otherwise the 4-char prefix "#ff88" of "#ff8800"
+        // would be read as a 53%-transparent colour, turning a solid colour semi-transparent.
         var raw = hexInput.value.trim();
         if (!raw) return;
         if (raw.toLowerCase() === 'currentcolor') {
@@ -2012,15 +2169,16 @@ function buildRow(item, countNode) {
 
     alpha = el('input', {
       type: 'range', min: '0', max: '100', step: '1', value: '100',
-      'aria-label': item.label + ' 不透明度',
+      'aria-label': tsT('editor.color.opacityAria', '{{label}} 不透明度', { label: item.label }),
       oninput: function () {
         var a = Number(alpha.value) / 100;
         var parsed = parseColor(displayValue(item.key));
-        // 不是靠猜颜色：全透明行若记得上一次的 RGB（lastRgbByKey），就沿用它
-        // 把不透明度拖回来 —— 旧实现此时滑块 disabled、currentAlpha 强制 1，
-        // 用户再也调不回半透明。只有完全没有 RGB 记忆时才不猜（否则纯黑）。
+        // No colour guessing: a fully transparent row that remembers its last RGB (lastRgbByKey)
+        // reuses it so opacity can be dragged back up — the old code disabled the slider and forced
+        // currentAlpha to 1, so the user could never get back to semi-transparent. Only when there
+        // is no remembered RGB at all do we skip (otherwise it would be solid black).
         var rgb = parsed && parsed.a > 0 ? parsed : lastRgbByKey[item.key];
-        // 拖动滑块会连发 input 事件：行内立刻更新，全局刷新按帧合并。
+        // Dragging the slider fires input repeatedly: update the row now, batch the global refresh per frame.
         if (!rgb) { syncRow(item.key, { defer: true }); return; }
         rememberRgbValue(item.key, rgb, '');
         markEdited(item.key, toRgba(rgb.r, rgb.g, rgb.b, a));
@@ -2034,46 +2192,46 @@ function buildRow(item, countNode) {
       if (!parsed) return;
       rememberRgbValue(item.key, parsed, '#');
       markEdited(item.key, toRgba(parsed.r, parsed.g, parsed.b, currentAlpha(item.key)));
-      // 拖动取色器同样会连发 input：合并到下一帧再刷全局。
+      // Dragging the colour picker also fires input repeatedly: batch the global refresh to the next frame.
       syncRow(item.key, { defer: true });
     });
   } else if (isImage) {
-    // 背景图行：合法值只有 none 或 url("…/backgrounds/<文件>")。选图先由后端落盘并
-    // 回读成 url(...)，再走既有 markEdited / cleared 机制 —— 提交、脏标记、collect()
-    // 都不另开路径，applyTheme 里照旧提交。
+    // Background image row: the only valid values are none or url("…/backgrounds/<file>"). A picked
+    // image is saved by the backend and read back as url(...), then goes through the existing
+    // markEdited / cleared flow — submit, dirty marking and collect() share one path; applyTheme submits as usual.
     imgSwatch = el('div', { class: 'img-swatch', 'aria-hidden': 'true' });
     var imageFileInput = el('input', {
       type: 'file',
       class: 'visually-hidden',
       accept: 'image/png,image/jpeg,image/webp,image/gif',
       tabindex: '-1',
-      'aria-label': item.label + ' 选择图片文件',
+      'aria-label': tsT('editor.image.fileAria', '{{label}} 选择图片文件', { label: item.label }),
       onchange: function () {
         var file = imageFileInput.files && imageFileInput.files[0];
         if (file) pickBackgroundImage(item, file, imageFileInput);
       }
     });
     var pickBtn = el('button', {
-      type: 'button', class: 'btn btn-mini', 'data-act': 'pick', text: '选择图片',
-      'aria-label': '选择' + item.label,
+      type: 'button', class: 'btn btn-mini', 'data-act': 'pick', text: tsT('editor.image.pick', '选择图片'),
+      'aria-label': tsT('editor.image.pickAria', '选择{{label}}', { label: item.label }),
       onclick: function () { if (imageFileInput) imageFileInput.click(); }
     });
     var clearImageBtn = el('button', {
-      type: 'button', class: 'btn btn-mini btn-ghost', 'data-act': 'clear', text: '清除',
-      'aria-label': '清除' + item.label,
+      type: 'button', class: 'btn btn-mini btn-ghost', 'data-act': 'clear', text: tsT('editor.image.clear', '清除'),
+      'aria-label': tsT('editor.image.clearAria', '清除{{label}}', { label: item.label }),
       onclick: function () {
-        // 与 .row-clear 等价：走 cleared 机制，提交空串 = 删掉 theme.json 里的这一项。
+        // Same as .row-clear: goes through the cleared flow; submitting "" removes the entry from theme.json.
         if (!isDirty(item.key) && serverValue(item.key) === null) {
-          showToast('该行本来就是原生值');
+          showToast(tsT('editor.row.alreadyNative', '该行本来就是原生值'));
           return;
         }
         var removed = clearRow(item.key);
         syncRow(item.key);
-        if (!removed) showToast('已撤销本行改动');
+        if (!removed) showToast(tsT('editor.row.editReverted', '已撤销本行改动'));
       }
     });
-    // 第二列位置放整块图片控件，并横跨「色块 + 编辑框」两列；行内没有文本输入框，
-    // 因此这一行的子节点只有 4 个（标签 / 图片控件 / 原生值 / 清空）。
+    // The image control sits in column 2 and spans "swatch + editor" columns; there is no text input,
+    // so this row has only 4 children (label / image control / native value / clear).
     imageField = el('div', {
       class: 'field image-field',
       style: 'grid-column: 2 / span 2;'
@@ -2082,14 +2240,16 @@ function buildRow(item, countNode) {
       el('div', { class: 'img-actions' }, [
         pickBtn,
         clearImageBtn,
-        el('span', { class: 'img-hint', text: '图片会盖在背景色之上' })
+        el('span', { class: 'img-hint', text: tsT('editor.image.hint', '图片会盖在背景色之上') })
       ]),
       imageFileInput
     ]);
     nativeCell = el('span', {
       class: 'row-native',
-      title: nativeOf(item) ? '原生值：' + nativeOf(item) : '该变量没有统一的原生值',
-      text: nativeOf(item) ? '原生 ' + nativeOf(item) : ''
+      title: nativeOf(item)
+        ? tsT('editor.row.nativeValueTitle', '原生值：{{value}}', { value: nativeOf(item) })
+        : tsT('editor.row.noUniformNative', '该变量没有统一的原生值'),
+      text: nativeOf(item) ? tsT('editor.row.nativeValue', '原生 {{value}}', { value: nativeOf(item) }) : ''
     });
   } else {
     textInput = el('input', {
@@ -2100,18 +2260,18 @@ function buildRow(item, countNode) {
       placeholder: placeholderFor(item),
       'aria-label': item.label,
       oninput: function () {
-        // 注意：这里不能对 value 做 trim 后再回写。多 token 的值（阴影、字体族）
-        // 是逐个字符敲出来的，行尾空格一被 trim 掉，下一个 token 就会粘在前一个
-        // 上 —— 实测 "0 2px 4px red" 被录成 "02px4px red"，"Segoe UI" 变成
-        // "SegoeUI"。所以：校验用 trim 后的值，显示保留用户原文。
+        // Note: never write a trimmed value back here. Multi-token values (shadows, font families)
+        // are typed char by char; trimming the trailing space glues the next token onto the previous
+        // one — observed "0 2px 4px red" recorded as "02px4px red", "Segoe UI" as "SegoeUI".
+        // So validate the trimmed value but keep the user's raw text on display.
         var raw = textInput.value;
         var trimmed = normalizeTypedValue(item, raw.trim());
         if (!trimmed) { clearRow(item.key); setInputInvalid(textInput, item, false); syncRow(item.key, { keepText: true, defer: true }); return; }
         if (!isSafeValue(item.key, trimmed)) {
-          // 非法值只标红还不够：之前 edited 里仍留着上一个合法值，applyTheme
-          // 会把它提交上去并报「已应用」，用户以为刚敲的值生效了。
-          // 这里回滚到上一个合法编辑值（没有就退回服务器值）并记入非法行集合，
-          // applyTheme 见到红框行会直接阻止应用。
+          // Flagging red is not enough: edited still holds the previous valid value, so applyTheme
+          // would submit it and report "applied", making the user think the new value took effect.
+          // Roll back to the last valid edit (or the server value) and record the row as invalid;
+          // applyTheme refuses to apply while any row is flagged.
           setInputInvalid(textInput, item, true);
           markRowInvalid(item.key, true);
           rollbackRowToLastValid(item.key);
@@ -2124,7 +2284,7 @@ function buildRow(item, countNode) {
         syncRow(item.key, { keepText: true, defer: true });
       },
       onchange: function () {
-        // 失焦/回车时定稿：去掉首尾空白，再做一次完整校验。
+        // Finalise on blur/Enter: strip surrounding whitespace and validate fully once more.
         var trimmed = normalizeTypedValue(item, textInput.value.trim());
         textInput.value = trimmed;
         if (!trimmed) { clearRow(item.key); setInputInvalid(textInput, item, false); syncRow(item.key); return; }
@@ -2142,44 +2302,46 @@ function buildRow(item, countNode) {
       }
     });
     if (isFilter || isGradient) {
-      // 预览条和输入框同一行：输入框允许伸缩，预览条固定宽度（内联样式，
-      // 因为本轮不能改 style.css）。
+      // Preview strip shares the line with the input: the input flexes, the strip has a fixed
+      // width (inline styles, since style.css was off-limits this round).
       textInput.style.flex = '1 1 140px';
       textInput.style.width = 'auto';
       var previewParts = buildPreviewHost(
-        isFilter ? '滤镜预览：背后的斜纹会被当前模糊链处理' : '渐变预览'
+        isFilter
+          ? tsT('editor.preview.filterHost', '滤镜预览：背后的斜纹会被当前模糊链处理')
+          : tsT('editor.preview.gradientHost', '渐变预览')
       );
       previewHost = previewParts.host;
       previewNode = previewParts.node;
     }
     if (isGradient) {
-      // 快组：角度 + 起止色 + 生成。只在本地点「生成」时才写入输入框，
-      // 不点就不改值 —— 否则一打开面板就凭空多出一项改动。
+      // Quick-builder: angle + from/to + generate. Writes into the input only when "Generate" is
+      // clicked — otherwise opening the panel would conjure up an edit out of nowhere.
       gradAngle = el('input', {
         type: 'number', min: '0', max: '360', step: '1', value: '135',
-        'aria-label': item.label + ' 渐变角度',
+        'aria-label': tsT('editor.gradient.angleAria', '{{label}} 渐变角度', { label: item.label }),
         style: 'flex:0 0 64px;width:64px;height:26px;padding:0 6px;'
       });
       gradFrom = el('input', {
         type: 'color', class: 'swatch', value: '#eef4ff',
-        'aria-label': item.label + ' 起始色',
+        'aria-label': tsT('editor.gradient.fromAria', '{{label}} 起始色', { label: item.label }),
         style: 'flex:0 0 28px;width:28px;height:26px;'
       });
       gradTo = el('input', {
         type: 'color', class: 'swatch', value: '#dfe9ff',
-        'aria-label': item.label + ' 结束色',
+        'aria-label': tsT('editor.gradient.toAria', '{{label}} 结束色', { label: item.label }),
         style: 'flex:0 0 28px;width:28px;height:26px;'
       });
       gradGen = el('button', {
-        type: 'button', class: 'btn btn-mini', text: '生成',
-        title: '按角度与起止色生成 linear-gradient 并写入输入框',
-        'aria-label': '生成' + item.label,
+        type: 'button', class: 'btn btn-mini', text: tsT('editor.gradient.generate', '生成'),
+        title: tsT('editor.gradient.generateTitle', '按角度与起止色生成 linear-gradient 并写入输入框'),
+        'aria-label': tsT('editor.gradient.generateAria', '生成{{label}}', { label: item.label }),
         onclick: function () { composeGradient(textInput, gradAngle, gradFrom, gradTo); }
       });
       quickRow = el('div', {
         style: 'display:flex;align-items:center;gap:6px;flex:1 1 100%;min-width:0;'
       }, [
-        el('span', { style: 'flex:none;font-size:11px;color:var(--text-faint);', text: '角度' }),
+        el('span', { style: 'flex:none;font-size:11px;color:var(--text-faint);', text: tsT('editor.gradient.angle', '角度') }),
         gradAngle,
         gradFrom,
         gradTo,
@@ -2188,8 +2350,10 @@ function buildRow(item, countNode) {
     }
     nativeCell = el('span', {
       class: 'row-native',
-      title: nativeOf(item) ? '原生值：' + nativeOf(item) : '该变量没有统一的原生值',
-      text: nativeOf(item) ? '原生 ' + nativeOf(item) : ''
+      title: nativeOf(item)
+        ? tsT('editor.row.nativeValueTitle', '原生值：{{value}}', { value: nativeOf(item) })
+        : tsT('editor.row.noUniformNative', '该变量没有统一的原生值'),
+      text: nativeOf(item) ? tsT('editor.row.nativeValue', '原生 {{value}}', { value: nativeOf(item) }) : ''
     });
   }
 
@@ -2201,7 +2365,7 @@ function buildRow(item, countNode) {
   } else if (selectField) {
     field = selectField;
   } else if (previewHost) {
-    // filter / gradient 行：输入框 + 预览条排第一行，渐变快组换第二行（row-gap 补间距）。
+    // filter / gradient rows: input + preview strip on line one, gradient quick-builder wraps to line two (row-gap spaces it).
     field = el('div', { class: 'field', style: 'flex-wrap:wrap;row-gap:6px;' },
       [isColor ? hexInput : textInput, previewHost].concat(quickRow ? [quickRow] : []));
   } else {
@@ -2210,45 +2374,45 @@ function buildRow(item, countNode) {
 
   var alphaCell = el('div', { class: 'alpha-cell' });
   if (isColor) {
-    alphaCell.appendChild(el('span', { class: 'alpha-label', text: '透明' }));
+    alphaCell.appendChild(el('span', { class: 'alpha-label', text: tsT('editor.color.alphaLabel', '透明') }));
     alphaCell.appendChild(alpha);
     alphaCell.appendChild(alphaVal);
   }
 
   var clearBtn = el('button', {
-    type: 'button', class: 'row-clear', text: '清空',
-    title: '清空该行 = 回退到 N.E.K.O 原生值',
-    'aria-label': '清空 ' + item.label,
+    type: 'button', class: 'row-clear', text: tsT('editor.row.clear', '清空'),
+    title: tsT('editor.row.clearTitle', '清空该行 = 回退到 N.E.K.O 原生值'),
+    'aria-label': tsT('editor.row.clearAria', '清空 {{label}}', { label: item.label }),
     onclick: function () {
-      // 干净且服务器上没有值的行：「清空」无事可做，不能凭空造出一项改动。
+      // Clean row with no server value: "Clear" has nothing to do and must not invent an edit.
       if (!isDirty(item.key) && serverValue(item.key) === null) {
-        showToast('该行本来就是原生值');
+        showToast(tsT('editor.row.alreadyNative', '该行本来就是原生值'));
         return;
       }
       var removed = clearRow(item.key);
       syncRow(item.key);
-      if (!removed) showToast('已撤销本行改动');
+      if (!removed) showToast(tsT('editor.row.editReverted', '已撤销本行改动'));
     }
   });
 
   var copyBtn = el('button', {
     type: 'button', class: 'row-icon row-copy', text: '⧉',
-    title: '复制这一行的值（可以粘贴到别的行，甚至另一组亮/暗）',
-    'aria-label': '复制 ' + item.label,
+    title: tsT('editor.row.copyTitle', '复制这一行的值（可以粘贴到别的行，甚至另一组亮/暗）'),
+    'aria-label': tsT('editor.row.copyAria', '复制 {{label}}', { label: item.label }),
     onclick: function () { copyRowValue(item); }
   });
   var pasteBtn = el('button', {
     type: 'button', class: 'row-icon row-paste', text: '⇩',
-    title: '把上次复制（或剪贴板里）的值粘贴到这一行',
-    'aria-label': '粘贴到 ' + item.label,
+    title: tsT('editor.row.pasteTitle', '把上次复制（或剪贴板里）的值粘贴到这一行'),
+    'aria-label': tsT('editor.row.pasteAria', '粘贴到 {{label}}', { label: item.label }),
     onclick: function () { pasteRowValue(item); }
   });
   var rowExtra = el('div', { class: 'row-extra' }, [copyBtn, pasteBtn, clearBtn]);
 
-  // 网格五列：标签 | 色块或类型标签 | 编辑框 | 透明度或原生值 | 复制/粘贴/清空
-  // 非颜色行没有色块，用同宽类型标签占位，保证输入框左边缘对齐。
-  // 图片行特殊：整块图片控件占「色块 + 编辑框」两列（见上面的 image-field），
-  // 所以这一行的子节点是 4 个而不是 5 个。
+  // Five grid columns: label | swatch or type tag | editor | opacity or native value | copy/paste/clear
+  // Non-colour rows have no swatch; a same-width type tag fills in so input left edges line up.
+  // Image rows are special: the image control spans "swatch + editor" (see image-field above),
+  // so the row has 4 children instead of 5.
   var rowChildren;
   if (isImage) {
     rowChildren = [label, imageField, nativeCell || el('span', {}), rowExtra];
@@ -2269,9 +2433,9 @@ function buildRow(item, countNode) {
   }
 
   var container = el('div', { class: 'row-wrap' }, [rowEl, hint]);
-  // 「只看改动」开着时，把值敲回原值会让这一行变干净；若此刻立刻 hidden，
-  // 正在这一行里输入的人会整块消失、输入框失焦。先保留到焦点真正离开，
-  // 再由 focusout 收走（见 applyFilters 的 rowHoldsFocus）。
+  // With "Only changed" on, typing a value back to the original makes the row clean; hiding it
+  // right away would make the row vanish under the user and drop input focus. Keep it until focus
+  // really leaves, then let focusout remove it (see rowHoldsFocus in applyFilters).
   container.addEventListener('focusout', function () {
     if (!state.onlyDirty) return;
     window.setTimeout(function () {
@@ -2295,10 +2459,10 @@ function buildRow(item, countNode) {
   return container;
 }
 
-/* ---------------- 背景图片上传（聊天背景图行专用） ----------------
- * 图片不能像颜色那样直接写进变量：文件要先交给后端落盘（校验体积/类型），
- * 再拿回 /api/theme_studio/backgrounds/<文件> 的地址拼成 url("...")。所以这里只做
- * 「读文件 → 调 import_background → markEdited」，提交仍由 applyTheme 完成。 */
+/* ---------------- Background image upload (chat background row only) ----------------
+ * An image can't be written into a variable like a colour: the file is first saved by the backend
+ * (size/type checked), then its /api/theme_studio/backgrounds/<file> URL is wrapped as url("...").
+ * So this only does "read file → call import_background → markEdited"; applyTheme still submits. */
 
 function pickBackgroundImage(item, file, input) {
   var reader = new FileReader();
@@ -2307,7 +2471,7 @@ function pickBackgroundImage(item, file, input) {
     var comma = raw.indexOf(',');
     var base64 = comma >= 0 ? raw.slice(comma + 1) : '';
     if (!base64) {
-      showToast('读取图片失败', 'error');
+      showToast(tsT('editor.image.readFailed', '读取图片失败'), 'error');
       if (input) input.value = '';
       return;
     }
@@ -2315,29 +2479,29 @@ function pickBackgroundImage(item, file, input) {
   };
   reader.onerror = function () {
     var why = reader.error && reader.error.message ? reader.error.message : file.name;
-    showNotice('error', '读取图片失败：' + why);
-    showToast('读取图片失败', 'error');
+    showNotice('error', tsT('editor.image.readFailedDetail', '读取图片失败：{{reason}}', { reason: why }));
+    showToast(tsT('editor.image.readFailed', '读取图片失败'), 'error');
     if (input) input.value = '';
   };
   reader.readAsDataURL(file);
 }
 
 async function uploadBackgroundImage(item, filename, base64, input) {
-  setBusy(true, '正在上传背景图片…');
+  setBusy(true, tsT('editor.image.uploading', '正在上传背景图片…'));
   try {
     var result = await callPlugin('import_background', { filename: filename, data: base64 });
     var url = result && result.url ? String(result.url) : '';
-    if (!url) throw new Error('后端没有返回图片地址');
+    if (!url) throw new Error(tsT('editor.image.noUrl', '后端没有返回图片地址'));
     markEdited(item.key, 'url("' + url + '")');
     syncRow(item.key);
-    setStatus('已选择背景图片', 'ok');
-    showToast('已选择背景图片', 'ok');
+    setStatus(tsT('editor.image.selected', '已选择背景图片'), 'ok');
+    showToast(tsT('editor.image.selected', '已选择背景图片'), 'ok');
   } catch (error) {
-    showNotice('error', '背景图片上传失败：' + pluginErrorMessage(error));
-    showToast('背景图片上传失败', 'error');
-    setStatus('背景图片上传失败', 'error');
+    showNotice('error', tsT('editor.image.uploadFailedDetail', '背景图片上传失败：{{reason}}', { reason: pluginErrorMessage(error) }));
+    showToast(tsT('editor.image.uploadFailed', '背景图片上传失败'), 'error');
+    setStatus(tsT('editor.image.uploadFailed', '背景图片上传失败'), 'error');
   } finally {
-    // 清空 input：否则再选同一个文件不会触发 change。
+    // Reset the input, otherwise picking the same file again won't fire change.
     if (input) input.value = '';
     setBusy(false);
   }
@@ -2346,28 +2510,28 @@ async function uploadBackgroundImage(item, filename, base64, input) {
 function currentAlpha(key) {
   var raw = Object.prototype.hasOwnProperty.call(editedMap(), key) ? editedMap()[key] : displayValue(key);
   var parsed = parseColor(raw);
-  // 当前值全透明（transparent / rgba(...,0)）时不能把 alpha=0 继承给新颜色：
-  // 用户从色板选一个实色，提交的却是 rgba(...,0)，面板显示「已改」而画面
-  // 依旧完全透明 —— 看起来就是「改了没反应」。色板选色默认按实色处理。
-  // 注意：alpha 滑块不走这里，它用 lastRgbByKey 里记住的 RGB 调不透明度。
+  // When the current value is fully transparent (transparent / rgba(...,0)), don't pass alpha=0 on
+  // to the new colour: the user picks a solid colour but rgba(...,0) gets submitted, the panel shows
+  // "changed" while the page stays fully transparent — it looks like nothing happened. Swatch picks
+  // default to solid. Note: the alpha slider doesn't use this; it uses the RGB in lastRgbByKey.
   if (!parsed || parsed.a === 0) return 1;
   return parsed.a;
 }
 
-/** 把某一行的控件同步成当前状态。opts.keepHex=true 时不动正在编辑的 hex 输入框。 */
-/* ---- 编辑区全局刷新的合并（v0.4.17） -------------------------------------
- * syncRow 以前每被调用一次，末尾都要重算分组计数、预览、JSON dump、按钮状态。
- * 一次全量同步（syncAll 遍历 95 行）就把这套重活干了 96 遍；逐键输入时也是
- * 「每敲一个字符一遍」。这里把「行内 DOM 更新」与「全局刷新」拆开：
- * 行内必须立刻更新（输入框不能延迟），全局合并到下一帧。
- * 策略函数 editorSyncPlan 是纯函数，由 test/editor-selftest.js 直接锁住。
+/** Sync a row's controls to the current state. opts.keepHex=true leaves the hex input being edited alone. */
+/* ---- Batching of editor-wide refreshes (v0.4.17) -------------------------------------
+ * syncRow used to recompute group counts, preview, JSON dump and button state on every call.
+ * A full sync (syncAll over 95 rows) did that heavy work 96 times, and typing did it once per
+ * keystroke. Here "row DOM update" and "global refresh" are split: the row updates immediately
+ * (inputs must not lag), the global part is batched to the next frame.
+ * The policy function editorSyncPlan is pure and pinned by test/editor-selftest.js.
  */
 var editorSyncState = { pending: false, flushes: 0, scheduled: 0 };
 
 /* ===== EDITOR_SYNC_BEGIN ===== */
 /**
- * 这次 syncRow 之后全局刷新该怎么做。
- * @param {object|undefined} opts syncRow 的可选参数
+ * How to do the global refresh after this syncRow call.
+ * @param {object|undefined} opts optional syncRow options
  * @returns {'none'|'deferred'|'immediate'}
  */
 function editorSyncPlan(opts) {
@@ -2376,13 +2540,13 @@ function editorSyncPlan(opts) {
   return 'immediate';
 }
 
-/** 下一帧执行；没有 requestAnimationFrame 时退回 16ms 定时器。 */
+/** Run on the next frame; falls back to a 16ms timer without requestAnimationFrame. */
 function nextFrame(fn) {
   if (typeof requestAnimationFrame === 'function') return requestAnimationFrame(fn);
   return setTimeout(fn, 16);
 }
 
-/** 立刻做一次全局刷新（分组计数 / 预览 / JSON dump / 按钮状态 / 只看改动过滤）。 */
+/** Do a global refresh now (group counts / preview / JSON dump / button state / "only changed" filter). */
 function flushEditorGlobals() {
   editorSyncState.pending = false;
   editorSyncState.flushes += 1;
@@ -2390,12 +2554,12 @@ function flushEditorGlobals() {
   renderPreview();
   renderDump();
   updateButtons();
-  // 「只看改动」开着时，行被改回干净状态就该从列表里收走；但正在输入的行必须
-  // 留着（applyFilters 会保留焦点行），否则输入框瞬间失焦、行整块消失。
+  // With "Only changed" on, rows that become clean should leave the list; but the row being typed
+  // in must stay (applyFilters keeps the focused row), or the input loses focus and the row vanishes.
   if (state.onlyDirty) applyFilters();
 }
 
-/** 合并到下一帧再刷新；同一帧内多次调用只刷一次。 */
+/** Batch the refresh to the next frame; multiple calls within one frame refresh once. */
 function scheduleEditorGlobals() {
   if (editorSyncState.pending) return;
   editorSyncState.pending = true;
@@ -2414,26 +2578,30 @@ function syncRow(key, opts) {
 
   if (ref.stateTag) {
     var cleared = Object.prototype.hasOwnProperty.call(clearedMap(), key);
-    ref.stateTag.textContent = dirty ? (cleared ? '已清空' : '已改') : '';
+    ref.stateTag.textContent = dirty
+      ? (cleared ? tsT('editor.row.stateCleared', '已清空') : tsT('editor.row.stateChanged', '已改'))
+      : '';
   }
 
   if (ref.hexInput) ref.hexInput.placeholder = placeholderFor(ref.item);
   if (ref.textInput) ref.textInput.placeholder = placeholderFor(ref.item);
   if (ref.nativeCell) {
     var native = nativeOf(ref.item);
-    ref.nativeCell.textContent = native ? '原生 ' + native : '';
-    ref.nativeCell.title = native ? '原生值：' + native : '该变量没有统一的原生值';
+    ref.nativeCell.textContent = native ? tsT('editor.row.nativeValue', '原生 {{value}}', { value: native }) : '';
+    ref.nativeCell.title = native
+      ? tsT('editor.row.nativeValueTitle', '原生值：{{value}}', { value: native })
+      : tsT('editor.row.noUniformNative', '该变量没有统一的原生值');
   }
 
   if (ref.item.type === 'color') {
     var parsed = parseColor(value);
     var fullyTransparent = !!parsed && parsed.a === 0;
     if (parsed) {
-      // 记住最近一次带颜色的 RGB：transparent 之后拖动 alpha 滑块要靠它找回颜色。
-      // rememberRgbValue 内部会跳过 transparent / rgba(...,0) 字面量。
+      // Remember the latest coloured RGB: after transparent, dragging the alpha slider uses it to recover the colour.
+      // rememberRgbValue itself skips transparent / rgba(...,0) literals.
       rememberRgbValue(key, parsed, value);
-      // 全透明的 rgba(...,0) / #0000 若按 RGB 显示成 #000000，用户会以为颜色
-      // 被改成了黑色；这里显式显示 transparent，和 alpha=0% 一起表达真实状态。
+      // Showing fully transparent rgba(...,0) / #0000 as #000000 would make users think it turned black;
+      // show transparent explicitly so that, together with alpha=0%, it reflects the real state.
       if (!(opts && opts.keepHex)) {
         ref.hexInput.value = fullyTransparent ? 'transparent' : toHex(parsed.r, parsed.g, parsed.b);
       }
@@ -2443,37 +2611,37 @@ function syncRow(key, opts) {
       setInputInvalid(ref.hexInput, ref.item, false);
       markRowInvalid(key, false);
     } else {
-      // 值是 inherit / 空 等非颜色字面量：文本原样展示，控件退回中性
-      // 色块也要跟着退，否则清空/重置后色块仍显示上一次的颜色，看起来像没生效。
+      // Non-colour literals like inherit / empty: show the text as-is and reset the controls to neutral,
+      // swatch included — otherwise after clear/reset it still shows the old colour and looks ineffective.
       ref.hexInput.value = value || '';
       if (ref.colorInput) ref.colorInput.value = '#000000';
       ref.alpha.value = '100';
       ref.alphaVal.textContent = '100%';
     }
-    // transparent / inherit / 空 都没有当前 RGB：滑块只在「有 RGB 记忆」时可用
-    // （拖动会沿用上一次的颜色，见 lastRgbByKey）。完全没记忆时置灰，否则拖动
-    // 会得到 rgba(0,0,0,x) 纯黑半透明，用户看到的是「一拖就变黑」。
+    // transparent / inherit / empty have no current RGB: the slider is only usable with a remembered
+    // RGB (dragging reuses the last colour, see lastRgbByKey). With no memory it is disabled, otherwise
+    // dragging yields semi-transparent black rgba(0,0,0,x) and it looks like "drag turns it black".
     if (ref.alpha) {
       var hasRgbMemory = !!lastRgbByKey[key];
       ref.alpha.disabled = !!state.busy || !parsed || (fullyTransparent && !hasRgbMemory);
       if (!parsed) {
-        ref.alpha.title = '当前值没有颜色成分（transparent / inherit / 空）；先填一个颜色再调不透明度';
+        ref.alpha.title = tsT('editor.color.alphaNoColor', '当前值没有颜色成分（transparent / inherit / 空）；先填一个颜色再调不透明度');
       } else if (fullyTransparent && !hasRgbMemory) {
-        ref.alpha.title = '当前值没有颜色成分（transparent）；先填一个颜色再调不透明度';
+        ref.alpha.title = tsT('editor.color.alphaTransparent', '当前值没有颜色成分（transparent）；先填一个颜色再调不透明度');
       } else if (fullyTransparent) {
-        ref.alpha.title = '拖动不透明度会沿用上一次的颜色';
+        ref.alpha.title = tsT('editor.color.alphaReuse', '拖动不透明度会沿用上一次的颜色');
       } else {
         ref.alpha.title = '';
       }
     }
   } else if (ref.item.type === 'switch') {
     if (ref.switchInput) {
-      // 显示值可能是 '1' / '0' / 空（空 = 服务器没有值 = 原生观感 = 打开）
+      // Display value may be '1' / '0' / empty (empty = no server value = native look = on)
       var raw = value === null || value === undefined ? '' : String(value).trim();
       ref.switchInput.checked = raw === '' ? true : !(raw === '0' || raw === '0.0');
     }
   } else if (ref.item.type === 'select') {
-    // 空值/未知值一律显示成「原生项」（= 未设置的外观），避免下拉框停在第一项造成误导。
+    // Empty/unknown values show the "native" option (= unset look), so the dropdown doesn't mislead by sitting on the first item.
     if (ref.selectInput) {
       var selectValue = value === null || value === undefined ? '' : String(value).trim().toLowerCase();
       var known = '';
@@ -2486,30 +2654,32 @@ function syncRow(key, opts) {
     }
     markRowInvalid(key, false);
   } else if (ref.item.type === 'image') {
-    // 有图才画图；无图留空，CSS 用斜纹表示「没有背景图」。切换模式/重新读取后
-    // 这里会显示对应模式的 url(...)。
+    // Draw the image only if there is one; otherwise leave it empty and CSS stripes mean "no background
+    // image". After switching mode / reloading this shows that mode's url(...).
     if (ref.imgSwatch) {
       var imgValue = value ? String(value) : '';
       var hasImage = !!imgValue && imgValue !== 'none' && imgValue.indexOf('url(') === 0;
       ref.imgSwatch.style.backgroundImage = hasImage ? imgValue : '';
-      ref.imgSwatch.title = hasImage ? '当前背景图片' : '未设置背景图片（跟随原生）';
+      ref.imgSwatch.title = hasImage
+        ? tsT('editor.image.current', '当前背景图片')
+        : tsT('editor.image.none', '未设置背景图片（跟随原生）');
     }
     markRowInvalid(key, false);
   } else {
     if (!(opts && opts.keepText)) {
       ref.textInput.value = value || '';
-      // 回显的是当前有效值，红框/非法行标记必须一起清掉；
-      // 否则「清空」或撤销后红框还留着，applyTheme 会一直被非法行拦住。
+      // We're echoing the current valid value, so clear the red border / invalid-row mark too;
+      // otherwise after "Clear" or undo it lingers and applyTheme stays blocked by an invalid row.
       setInputInvalid(ref.textInput, ref.item, false);
       markRowInvalid(key, false);
     }
   }
 
-  // filter / gradient：预览条跟着当前生效值走（空/非法只留底纹）。
+  // filter / gradient: the preview strip follows the effective value (empty/invalid shows only stripes).
   if (ref.previewNode) syncValuePreview(ref, value);
 
-  // 行内 DOM 已经更新完，全局部分按策略走：全量同步时逐行静默、输入时合并到
-  // 下一帧、其余（失焦定稿、清空、读回主题）仍然立刻刷新，行为与以前一致。
+  // Row DOM is done; the global part follows the plan: silent per row during full sync, batched to
+  // the next frame while typing, and immediate otherwise (blur commit, clear, reload) as before.
   var plan = editorSyncPlan(opts);
   if (plan === 'immediate') flushEditorGlobals();
   else if (plan === 'deferred') scheduleEditorGlobals();
@@ -2526,21 +2696,21 @@ function refreshCounts() {
   CATALOG.forEach(function (group) {
     var total = group.items.length;
     var dirty = group.items.filter(function (item) { return isDirtyAny(item.key); }).length;
-    // 找到该组的计数节点：通过任意一行的 countNode
+    // Find the group's count node via any row's countNode
     var node = rowsByKey[group.items[0].key] && rowsByKey[group.items[0].key].countNode;
     if (!node) return;
     node.textContent = '';
     if (dirty) {
-      node.appendChild(el('span', { class: 'is-dirty-count', text: dirty + ' 项已改' }));
+      node.appendChild(el('span', { class: 'is-dirty-count', text: tsT('editor.group.changedCount', '{{count}} 项已改', { count: dirty }) }));
       node.appendChild(el('span', { class: 'dot', text: '·' }));
     }
-    node.appendChild(el('span', { text: total + ' 项' }));
+    node.appendChild(el('span', { text: tsT('editor.group.totalCount', '{{count}} 项', { count: total }) }));
   });
 }
 
-/* ---------------- 过滤：搜索 / 只看改动 ---------------- */
+/* ---------------- Filtering: search / only changed ---------------- */
 
-/** 该键在任一模式（亮/暗）里是否被改过或清空过。 */
+/** Whether this key was edited or cleared in either mode (light/dark). */
 function isDirtyAny(key) {
   return Object.prototype.hasOwnProperty.call(state.edited.light, key) ||
     Object.prototype.hasOwnProperty.call(state.edited.dark, key) ||
@@ -2548,7 +2718,7 @@ function isDirtyAny(key) {
     Object.prototype.hasOwnProperty.call(state.cleared.dark, key);
 }
 
-/** 只按搜索词匹配（不含「只看改动」条件）；保留焦点行时也要靠它判断。 */
+/** Match by search query only (ignores "only changed"); also used when keeping the focused row. */
 function rowMatchesQuery(item, query) {
   if (!query) return true;
   var hay = (item.label + ' ' + item.key + ' ' + (item.hint || '')).toLowerCase();
@@ -2561,10 +2731,10 @@ function rowMatches(item, query) {
 }
 
 /**
- * 把「搜索词 + 只看改动」应用到行与分组上：
- * - 行级：row-wrap[hidden]
- * - 组级：没有命中行的组整体隐藏
- * - 过滤时强制展开，否则命中项藏在折叠组里等于没找到
+ * Apply "search query + only changed" to rows and groups:
+ * - row level: row-wrap[hidden]
+ * - group level: groups with no matching rows are hidden entirely
+ * - force-expand while filtering, otherwise matches hidden in collapsed groups are as good as missing
  */
 function applyFilters() {
   var query = (state.filter || '').trim().toLowerCase();
@@ -2572,21 +2742,21 @@ function applyFilters() {
   var shown = 0;
 
   CATALOG.forEach(function (group) {
-    var section = groupNodes[group.group];
+    var section = groupNodes[groupStateKey(group)];
     var visible = 0;
     group.items.forEach(function (item) {
       var ref = rowsByKey[item.key];
       if (!ref) return;
       var match = rowMatches(item, query);
-      // 焦点行：值刚被敲回原值、从「只看改动」里掉了出去，但用户还在这一行里，
-      // 隐藏等于把输入框抢走。先留着，focusout 之后再收。
+      // Focused row: its value was just typed back to the original and dropped out of "only changed",
+      // but the user is still in it; hiding it would steal the input. Keep it until focusout.
       if (!match && rowHoldsFocus(ref) && rowMatchesQuery(item, query)) match = true;
       if (ref.container) ref.container.hidden = !match;
       if (match) { visible += 1; shown += 1; }
     });
     if (section) {
       section.hidden = visible === 0;
-      section.classList.toggle('is-collapsed', !filtering && !!state.collapsed[group.group]);
+      section.classList.toggle('is-collapsed', !filtering && !!state.collapsed[groupStateKey(group)]);
       var head = section.querySelector('.group-head');
       if (head) head.setAttribute('aria-expanded', section.classList.contains('is-collapsed') ? 'false' : 'true');
     }
@@ -2618,13 +2788,13 @@ function setOnlyDirty(on) {
 }
 
 /* ============================================================================
- * 8. 预览（内联样式，纯本地模拟）
+ * 8. Preview (inline styles, purely local simulation)
  * ==========================================================================*/
 
-/* ===== PANEL_FRESHNESS_BEGIN（v0.9.0：面板版本自检）=====
- * 宿主静态服务把 index.html 也当缓存资源发（max-age=3600）。升级后一小时内
- * 重开面板，浏览器可能直接给旧页面 —— 于是「新功能没有」其实只是页面没换。
- * 这里用 no-store 再要一次 index.html，只比版本号；不一致就带时间戳重载一次。
+/* ===== PANEL_FRESHNESS_BEGIN (v0.9.0: panel version self-check) =====
+ * The host static server serves index.html as a cacheable asset (max-age=3600). Reopening the
+ * panel within an hour of an upgrade may get the old page — "missing features" is just a stale page.
+ * Fetch index.html again with no-store, compare only the version; on mismatch reload once with a timestamp.
  */
 var PANEL_FRESHNESS_DELAY_MS = 3000;
 var PANEL_FRESHNESS_KEY = 'nts.panel.refreshed.';
@@ -2640,14 +2810,14 @@ async function checkPanelFreshness() {
   if (!local) return false;
   var response;
   try {
-    // 本体内置版没有独立的 index.html：面板就是 /theme_studio 这个页面本身，
-    // 所以重新拉当前页，用模板渲染出的 #panel-version 判断服务端是不是换了新面板。
+    // The built-in version has no separate index.html: the panel is the /theme_studio page itself,
+    // so re-fetch the current page and use the template-rendered #panel-version to detect a new panel.
     var pageUrl = String(window.location.pathname || '/theme_studio');
     response = await fetchWithTimeout(pageUrl + '?_=' + Date.now(), {
       cache: 'no-store', credentials: 'same-origin'
     }, 4000);
   } catch (error) {
-    return false; // 拿不到就算了：这是锦上添花，不打扰用户
+    return false; // Give up quietly: this is a nicety, don't bother the user
   }
   if (!response || !response.ok) return false;
   var html = '';
@@ -2659,25 +2829,26 @@ async function checkPanelFreshness() {
   try {
     if (window.sessionStorage && window.sessionStorage.getItem(key)) return false;
     if (window.sessionStorage) window.sessionStorage.setItem(key, '1');
-  } catch (error) { /* 隐私模式禁用存储：仍然刷一次，靠版本变化自然收敛 */ }
-  showNotice('warn', '面板界面已更新到 v' + remote + '（当前页还是 v' + local +
-    '），正在重新加载…');
+  } catch (error) { /* Storage disabled in private mode: still reload once; version changes converge naturally */ }
+  showNotice('warn', tsT('editor.freshness.reloading', '面板界面已更新到 v{{remote}}（当前页还是 v{{local}}），正在重新加载…', {
+    remote: remote, local: local
+  }));
   setTimeout(function () {
-    try { window.location.reload(); } catch (error) { /* 忽略 */ }
+    try { window.location.reload(); } catch (error) { /* ignore */ }
   }, 700);
   return true;
 }
 /* ===== PANEL_FRESHNESS_END ===== */
 
-/* ===== HOVER_PREVIEW_BEGIN（v0.9.0：主题卡悬停预演）=====
- * 悬停仓库卡片时，把右侧预览临时换成那一套主题的颜色，移开就恢复。
- * 刻意只改预览：不调 applyTheme / 不写盘 / 不动 state.edited，
- * 否则「只是看一眼」会变成「改了面板里的草稿」。
- * 数据源就是主题文件本身（/api/theme_studio/presets|themes/<id>.json）——
- * 调 entry 要过一遍校验与写锁，悬停根本来不及；而这里只是读一个 JSON。
+/* ===== HOVER_PREVIEW_BEGIN (v0.9.0: theme card hover preview) =====
+ * Hovering a library card temporarily switches the right-hand preview to that theme's colours,
+ * restoring on leave. Deliberately preview-only: no applyTheme / no disk writes / no state.edited,
+ * otherwise "just a peek" would become "edited the panel draft".
+ * The data source is the theme file itself (/api/theme_studio/presets|themes/<id>.json) — calling
+ * an entry goes through validation and the write lock, far too slow for hover; this just reads JSON.
  */
 var hoverPreview = {
-  seq: 0,            // 只认最后一次请求，避免慢请求回来盖掉新的
+  seq: 0,            // only honour the latest request so a slow one can't overwrite a newer one
   themeId: '',
   name: '',
   palette: null,     // { builtin, vars, dark_vars }
@@ -2690,7 +2861,7 @@ function hoverPreviewMap() {
   return map && typeof map === 'object' ? map : null;
 }
 
-/** 预演值：命中就返回，未命中返回 null（让 pvValue 落回当前调色板的逻辑）。 */
+/** Hover-preview value: returned on hit, null on miss (so pvValue falls back to the current palette). */
 function hoverPreviewValue(key) {
   var map = hoverPreviewMap();
   if (!map || !Object.prototype.hasOwnProperty.call(map, key)) return null;
@@ -2698,7 +2869,7 @@ function hoverPreviewValue(key) {
   return value === null || value === undefined ? '' : String(value);
 }
 
-/** 内置主题里的图是可移植写法 url("images/<hash>")，预览要换成能直接访问的地址。 */
+/** Built-in themes reference images portably as url("images/<hash>"); the preview needs a directly reachable URL. */
 function rewritePreviewRefs(map, builtin) {
   var out = {};
   if (!map || typeof map !== 'object') return out;
@@ -2739,16 +2910,16 @@ async function showHoverPreview(item) {
       }, 4000);
       if (!response.ok) throw new Error('HTTP ' + response.status);
       var raw = await response.json();
-      if (!raw || typeof raw !== 'object') throw new Error('主题文件不是对象');
+      if (!raw || typeof raw !== 'object') throw new Error('theme file is not an object');
       cached = {
         builtin: !!item.builtin,
         vars: rewritePreviewRefs(raw.vars, !!item.builtin),
         dark_vars: rewritePreviewRefs(raw.dark_vars, !!item.builtin)
       };
-      // 缓存上限：仓库最多 200 条，但没必要为一个看着就走的悬停攒满内存。
+      // Cache cap: the library holds up to 200 entries, but a passing hover needn't fill memory.
       if (Object.keys(hoverPreview.cache).length < 60) hoverPreview.cache[url] = cached;
     } catch (error) {
-      return; // 预演是锦上添花：网络失败就什么都不做，绝不弹错
+      return; // Hover preview is a nicety: on network failure do nothing, never show an error
     }
   }
   if (seq !== hoverPreview.seq) return;
@@ -2769,7 +2940,7 @@ function clearHoverPreview() {
 /* ===== HOVER_PREVIEW_END ===== */
 
 function pvValue(key, fallback) {
-  // 悬停预演优先：命中的键直接用那套主题的值，其余键仍走当前调色板。
+  // Hover preview wins: keys it has use that theme's values; others still use the current palette.
   var preview = hoverPreviewValue(key);
   if (preview !== null && preview !== '') return preview;
   var v = displayValue(key);
@@ -2779,23 +2950,27 @@ function pvValue(key, fallback) {
 }
 
 function renderPreview() {
-  $('preview-mode').textContent = (state.mode === 'dark' ? '暗色' : '亮色') +
-    (hoverPreview.palette ? ' · 预演「' + hoverPreview.name + '」' : '');
+  $('preview-mode').textContent = (state.mode === 'dark'
+    ? tsT('editor.preview.modeDark', '暗色')
+    : tsT('editor.preview.modeLight', '亮色')) +
+    (hoverPreview.palette
+      ? tsT('editor.preview.hoverSuffix', ' · 预演「{{name}}」', { name: hoverPreview.name })
+      : '');
 
   var chatBg = pvValue('--nts-chat-bg', state.mode === 'dark' ? '#1f242a' : '#eef3f8');
   var panelBg = pvValue('--nts-chat-panel-bg', '');
   var radius = pvValue('--nts-radius', '12px');
-  // 预览必须按真实消费方取圆角：外壳读 --nts-shell-radius、气泡读
-  // --nts-bubble-radius，都没配时才回退通用 --nts-radius。之前全部读通用值，
-  // 于是改「聊天气泡圆角」预览纹丝不动，看起来像没生效。
+  // The preview must read radii like the real consumers: the shell reads --nts-shell-radius, bubbles
+  // read --nts-bubble-radius, falling back to the generic --nts-radius only when unset. Previously all
+  // read the generic value, so changing the bubble radius didn't move the preview and looked broken.
   var shellRadius = pvValue('--nts-shell-radius', radius);
   var bubbleRadius = pvValue('--nts-bubble-radius', radius);
   var blur = pvValue('--nts-chat-blur', '');
-  // 契约允许裸长度（"18px"），真正落盘前 loader/后端会归一成 blur(18px)。
-  // 预览直接拿裸长度写 backdropFilter 是非法值，浏览器整条丢弃 —— 于是
-  // 明明改了模糊，预览却毫无反应（真机上更会被误判成主题没生效）。
-  // 但拼接前必须确认单位合法：blur(18%) / blur(2vw) 同样是非法值，
-  // 旧实现会无条件拼上去，等于把「面板校验放过的非法输入」带进预览。
+  // The contract allows a bare length ("18px"); loader/backend normalise it to blur(18px) before saving.
+  // Writing a bare length into backdropFilter is invalid and the browser drops it — so the blur was
+  // changed but the preview didn't react (and on device it looks like the theme didn't apply).
+  // But the unit must be valid before wrapping: blur(18%) / blur(2vw) are invalid too, and the old
+  // code wrapped unconditionally, leaking input the panel validation let through into the preview.
   var blurCss = '';
   if (blur) {
     if (RE_BLUR.test(blur)) blurCss = blur;
@@ -2803,10 +2978,10 @@ function renderPreview() {
     else if (RE_ZERO.test(blur)) blurCss = 'blur(0)';
   }
 
-  /* 「聊天背景虚化」开关（--nts-bubble-veil，0–1 乘子）。真机上它同时缩放气泡
-   * 白纱底的不透明度与 backdrop 模糊半径 —— 预览必须真算一遍，否则拨开关时
-   * 预览纹丝不动，会被当成「开关没生效」（真机其实是生效的，这种错觉最坑）。
-   * 只在服务器确实有这个变量时才介入，未配置时保持预览原本的观感。 */
+  /* "Chat background veil" switch (--nts-bubble-veil, 0–1 multiplier). On device it scales both the
+   * opacity of the bubbles' frosted backing and the backdrop blur radius — the preview must compute it
+   * too, or flipping the switch won't move the preview and it looks broken (though it works on device).
+   * Only kicks in when the server actually has the variable; otherwise the preview keeps its usual look. */
   var veilRaw = pvValue('--nts-bubble-veil', '');
   var veilActive = veilRaw !== '';
   var veil = 1;
@@ -2817,8 +2992,8 @@ function renderPreview() {
     if (veil > 1) veil = 1;
   }
   var veilBlur = 'blur(' + Math.round(8 * veil * 100) / 100 + 'px) saturate(1.08)';
-  // 开关为 1 时的原生观感（白纱底色），与 neko-chat-window.css 的
-  // .compact-export-history-bubble 亮/暗两套值一致。
+  // Native look when the switch is 1 (frosted backing colour), matching the light/dark values of
+  // .compact-export-history-bubble in neko-chat-window.css.
   var veilUserSheet = state.mode === 'dark' ? [33, 72, 118, 0.902] : [208, 231, 255, 0.8784];
   var veilAiSheet = state.mode === 'dark' ? [33, 45, 62, 0.878] : [255, 255, 255, 0.8784];
 
@@ -2830,17 +3005,17 @@ function renderPreview() {
   preview.style.webkitBackdropFilter = blurCss;
   preview.style.boxShadow = pvValue('--nts-shadow', '');
 
-  // 背板（消息列表底板）在预览里对应 .pv-body。圆角必须单独取
-  // --nts-chat-panel-radius：它和「通用圆角」是两个不同消费方，读错了
-  // 就会出现「改了背板圆角，预览里动的却是按钮」这种假象。
+  // The backing panel (message list base) maps to .pv-body in the preview. Its radius must come from
+  // --nts-chat-panel-radius: that and the generic radius have different consumers; reading the wrong
+  // one makes "changed the panel radius but the buttons moved in the preview".
   var panelRadius = pvValue('--nts-chat-panel-radius', '');
-  // 聊天背景图：与「背板底色」同层，图片画在 background-color 之上（所以预览里
-  // 只要两者都设，看到的就是图片）。cover/center/no-repeat 必须成套设置，
-  // 否则 4K 图会按原始像素平铺成一团马赛克。
+  // Chat background image: same layer as the panel background colour, painted above background-color
+  // (so with both set the preview shows the image). cover/center/no-repeat must be set together,
+  // otherwise a 4K image tiles at native pixels into a mosaic.
   var panelImage = pvValue('--nts-chat-bg-image', '');
   var hasPanelImage = !!panelImage && panelImage !== 'none' && panelImage.indexOf('url(') === 0;
-  // 背景图亮度：与 CSS 同一套算法 —— 黑色蒙版 alpha = 1 - 亮度，叠在图片前面。
-  // 预览必须跟着变，否则用户拨了亮度、预览里图片纹丝不动，会以为没生效。
+  // Background image brightness: same algorithm as the CSS — a black scrim with alpha = 1 - brightness
+  // over the image. The preview must follow, or adjusting brightness looks like it did nothing.
   var imgBrightRaw = pvValue('--nts-chat-bg-image-brightness', '');
   var imgBright = 1;
   if (imgBrightRaw !== '') {
@@ -2862,7 +3037,7 @@ function renderPreview() {
     pvBody.style.backgroundSize = hasPanelImage ? 'cover' : '';
     pvBody.style.backgroundPosition = hasPanelImage ? 'center center' : '';
     pvBody.style.backgroundRepeat = hasPanelImage ? 'no-repeat' : '';
-    // 顶部渐隐（用户说的「图片最上边那层雾」）：与应用同一条 mask 渐变的 alpha 乘法。
+    // Top fade (the "haze at the top of the image" users mention): same mask-gradient alpha multiply as the app.
     var topFadeRaw = pvValue('--nts-chat-top-fade', '');
     if (topFadeRaw === '') {
       pvBody.style.maskImage = '';
@@ -2880,9 +3055,9 @@ function renderPreview() {
   }
 
 
-  /* ---------- 面板光效 / 玻璃拟态（预览侧还原）----------
-   * 「未配置 = 不动预览」，与真机的门控语义一致；每个乘子都真算，否则拨动
-   * 控件时预览纹丝不动会被当成没生效。 */
+  /* ---------- Panel glow / glassmorphism (preview-side reproduction) ----------
+   * "Unset = leave the preview alone", matching the on-device gating; every multiplier is really
+   * computed, otherwise moving a control without the preview reacting looks broken. */
   function pvNumber(key) {
     var raw = pvValue(key, '');
     if (raw === '') return null;
@@ -2901,8 +3076,8 @@ function renderPreview() {
     return '';
   }
 
-  /* 把任意 CSS 颜色按比例混到透明上 —— 真机用 color-mix，预览用 rgba 近似。
-   * 颜色解析复用 parseColor，范围与校验器一致。 */
+  /* Mix any CSS colour toward transparent by a ratio — the device uses color-mix, the preview an rgba
+   * approximation. Colour parsing reuses parseColor, same range as the validator. */
   function pvTint(color, amount) {
     var c = parseColor(color || '');
     if (!c || amount <= 0) return 'rgba(0,0,0,0)';
@@ -2911,10 +3086,10 @@ function renderPreview() {
   }
 
   var glowColor = pvValue('--nts-panel-glow-color', '#ffffff');
-  /* 与 CSS 同一条门控：外发光要求 strength 有值，其余按需。 */
-  /* 与 CSS 的门控完全一致：外发光只要 color / strength / size 任一被配置就生效，
-   * 其余取默认（strength 1、size 24px）。早期预览要求 strength 有值，导致用户
-   * 只改「光晕颜色」时预览毫无光晕 —— 那正是最容易被误判成「改了没反应」的场景。 */
+  /* Same gating as the CSS: outer glow requires strength to be set, the rest as needed. */
+  /* Exactly matches the CSS gating: outer glow turns on when any of color / strength / size is set,
+   * others use defaults (strength 1, size 24px). Early previews required strength, so changing only
+   * the glow colour showed no glow — exactly the case most easily mistaken for "changed, nothing happened". */
   var glowStrength = pvNumber('--nts-panel-glow-strength');
   var glowColorRaw = pvValue('--nts-panel-glow-color', '');
   var glowSizeRaw = pvValue('--nts-panel-glow-size', '');
@@ -2930,8 +3105,8 @@ function renderPreview() {
   var glassTintRaw = pvValue('--nts-panel-glass-tint', '');
 
   if (pvBody) {
-    /* background-image 的**第一个**在最上层，所以光效层要 prepend。
-     * 底下保持原有的「蒙版 + 背景图」。 */
+    /* The **first** background-image is on top, so glow layers are prepended.
+     * The original "scrim + background image" stays underneath. */
     var below = hasPanelImage ? (imgScrim + panelImage) : '';
     var above = [];
 
@@ -2951,7 +3126,7 @@ function renderPreview() {
         + ' 0%, rgba(0,0,0,0) 46%)');
     }
     if (glowOn && glowAmount > 0) {
-      /* 外发光：一圈从透明过渡到发光色的径向渐变，厚度随 size×strength。 */
+      /* Outer glow: a radial gradient ring from transparent to the glow colour, thickness scales with size×strength. */
       var inner = Math.max(0, glowSizePx * 1.42 * glowAmount).toFixed(1);
       above.push('radial-gradient(ellipse at center, rgba(0,0,0,0) calc(100% - '
         + inner + 'px), ' + pvTint(glowColor, glowAmount * 0.55) + ' 100%)');
@@ -2966,12 +3141,12 @@ function renderPreview() {
       pvBody.style.backgroundPosition = 'center center';
     }
 
-    /* 描边：真机在 anchor::after 上，预览直接给 body 加 border。 */
+    /* Border: on device it's on anchor::after; the preview puts a border on the body directly. */
     pvBody.style.border = (borderWidth || borderColorRaw)
       ? (borderWidth || '1.5px') + ' solid ' + (borderColorRaw || 'rgba(255,255,255,.55)')
       : '';
 
-    /* 内侧边缘渐变 + 内阴影：预览里都用 inset 阴影表达。 */
+    /* Inner edge gradient + inner shadow: both expressed as inset shadows in the preview. */
     var glowShadows = [];
     if (edgeGradient !== null && edgeGradient > 0) {
       glowShadows.push('inset 0 0 ' + (glowSizePx * 0.9).toFixed(1) + 'px '
@@ -2994,8 +3169,8 @@ function renderPreview() {
     color: pvValue('--nts-topbar-text', state.mode === 'dark' ? '#e0e0e0' : '#24445a')
   });
 
-  /* 气泡底色：设了「气泡背景」变量时它接管底色（虚化让位，与 CSS 的
-   * yieldsTo 语义一致），但 backdrop 模糊仍随开关缩放。 */
+  /* Bubble background: when the bubble background variable is set it takes over (the veil yields,
+   * matching the CSS yieldsTo semantics), but the backdrop blur still scales with the switch. */
   var userBgRaw = pvValue('--nts-user-bubble-bg', '');
   var aiBgRaw = pvValue('--nts-ai-bubble-bg', '');
   styleBubble($('pv-user'), {
@@ -3055,11 +3230,11 @@ function renderPreview() {
   renderCompare();
 }
 
-/* ===== BATCH1_BEGIN（v0.10.0：单行复制粘贴 / 对比卡 / AI 提示词）===== */
+/* ===== BATCH1_BEGIN (v0.10.0: per-row copy/paste / compare card / AI prompt) ===== */
 
 var rowClipboard = '';
 
-/** 复制这一行「当前显示的值」（含服务器值），供粘贴到别的行或别的模式。 */
+/** Copy this row's currently displayed value (including the server value) to paste into another row or mode. */
 function copyRowValue(item) {
   var value = displayValue(item.key);
   if (value === null || value === undefined || String(value) === '') {
@@ -3067,15 +3242,15 @@ function copyRowValue(item) {
   }
   value = value === null || value === undefined ? '' : String(value);
   if (!value) {
-    showToast('这一行现在是空的（原生值），没有可复制的值', 'warn');
+    showToast(tsT('editor.row.copyEmpty', '这一行现在是空的（原生值），没有可复制的值'), 'warn');
     return;
   }
   rowClipboard = value;
-  try { copyText(value); } catch (error) { /* 剪贴板不可用时仍有内存副本 */ }
-  showToast('已复制「' + item.label + '」的值：' + value, 'ok');
+  try { copyText(value); } catch (error) { /* in-memory copy remains if the clipboard is unavailable */ }
+  showToast(tsT('editor.row.copied', '已复制「{{label}}」的值：{{value}}', { label: item.label, value: value }), 'ok');
 }
 
-/** 把上次复制（或系统剪贴板）的值粘贴到这一行，走正常校验与「已改」标记。 */
+/** Paste the last copied (or system clipboard) value into this row, with normal validation and "changed" marking. */
 async function pasteRowValue(item) {
   var text = '';
   if (rowClipboard) {
@@ -3085,34 +3260,38 @@ async function pasteRowValue(item) {
   }
   text = String(text || '').trim();
   if (!text) {
-    showToast('剪贴板里没有可粘贴的内容（也可以先点某一行的复制按钮）', 'warn');
+    showToast(tsT('editor.row.pasteEmpty', '剪贴板里没有可粘贴的内容（也可以先点某一行的复制按钮）'), 'warn');
     return;
   }
   if (!isSafeValue(item.key, text)) {
-    showToast('「' + item.label + '」不接受这个值：' + text.slice(0, 40), 'warn');
+    showToast(tsT('editor.row.pasteRejected', '「{{label}}」不接受这个值：{{value}}', { label: item.label, value: text.slice(0, 40) }), 'warn');
     return;
   }
   undoPush(item.key, true);
   markEdited(item.key, normalizeTypedValue(item, text));
   syncRow(item.key);
-  showToast('已粘贴到「' + item.label + '」', 'ok');
+  showToast(tsT('editor.row.pasted', '已粘贴到「{{label}}」', { label: item.label }), 'ok');
 }
 
 /**
- * 对比卡：悬停预演时列出「当前值 → 预演值」里真正不同且看得见的几项。
+ * Compare card: while hover-previewing, list the few "current → previewed" values that actually
+ * differ and are visible.
  *
- * 这里不复制整块预览 DOM（那要把 renderPreview 的近三百行改成可传参的形式，
- * 风险大且没必要）：改成逐变量对比关键面 —— 颜色给色块，长度/模糊给文本。
+ * The whole preview DOM is not duplicated (that would mean parameterising ~300 lines of
+ * renderPreview, risky and unnecessary): instead compare key surfaces per variable — swatches for
+ * colours, text for lengths/blur.
+ * Entries: [CSS variable, i18n key suffix under editor.compare., Chinese fallback label];
+ * labels are translated at render time.
  */
 var COMPARE_KEYS = [
-  ['--nts-chat-bg', '聊天背景'],
-  ['--nts-chat-panel-bg', '背板底色'],
-  ['--nts-user-bubble-bg', '用户气泡'],
-  ['--nts-ai-bubble-bg', 'AI 气泡'],
-  ['--nts-user-bubble-text', '气泡文字'],
-  ['--nts-accent', '主色调'],
-  ['--nts-shell-radius', '外壳圆角'],
-  ['--nts-chat-blur', '毛玻璃模糊']
+  ['--nts-chat-bg', 'chatBg', '聊天背景'],
+  ['--nts-chat-panel-bg', 'panelBg', '背板底色'],
+  ['--nts-user-bubble-bg', 'userBubble', '用户气泡'],
+  ['--nts-ai-bubble-bg', 'aiBubble', 'AI 气泡'],
+  ['--nts-user-bubble-text', 'bubbleText', '气泡文字'],
+  ['--nts-accent', 'accent', '主色调'],
+  ['--nts-shell-radius', 'shellRadius', '外壳圆角'],
+  ['--nts-chat-blur', 'chatBlur', '毛玻璃模糊']
 ];
 
 function compareIsColor(value) {
@@ -3131,7 +3310,7 @@ function comparePairs() {
     var before = current === null || current === undefined ? '' : String(current);
     var after = previewed === null || previewed === undefined ? '' : String(previewed);
     if (after === '' || after === before) return;
-    out.push({ key: key, label: pair[1], before: before, after: after });
+    out.push({ key: key, label: tsT('editor.compare.' + pair[1], pair[2]), before: before, after: after });
   });
   return out;
 }
@@ -3148,7 +3327,7 @@ function renderCompare() {
   if (!pairs.length) {
     body.appendChild(el('p', {
       class: 'pv-compare-empty',
-      text: '这套主题在这几项上和当前配色一致，只有细节不同 —— 直接看上面的预览即可。'
+      text: tsT('editor.compare.same', '这套主题在这几项上和当前配色一致，只有细节不同 —— 直接看上面的预览即可。')
     }));
     return;
   }
@@ -3159,7 +3338,7 @@ function renderCompare() {
     if (compareIsColor(pair.before)) {
       beforeCell.appendChild(el('span', { class: 'pv-chip-sw', style: 'background:' + pair.before }));
     }
-    beforeCell.appendChild(el('code', { text: pair.before || '（空）' }));
+    beforeCell.appendChild(el('code', { text: pair.before || tsT('editor.value.empty', '（空）') }));
     var afterCell = el('span', { class: 'pv-compare-val is-after' });
     if (compareIsColor(pair.after)) {
       afterCell.appendChild(el('span', { class: 'pv-chip-sw', style: 'background:' + pair.after }));
@@ -3172,36 +3351,41 @@ function renderCompare() {
   });
 }
 
-/** 把当前配色整理成一段可以直接抛给 AI 的提示词（含变量契约与硬约束）。 */
+/** Turn the current palette into a prompt that can be handed straight to an AI (with the variable contract and hard constraints). */
 function buildAiPrompt() {
-  // 面板自测约定：源码里不许出现反引号（防止误用模板字符串），围栏用字符拼出来。
+  // Panel self-test rule: no backticks in the source (guards against template literals), so build the fence from char codes.
   var FENCE = String.fromCharCode(96, 96, 96);
   var name = ($('theme-name') && $('theme-name').value.trim()) || state.metaName || DEFAULT_THEME_NAME;
   var light = effectiveVars('light');
   var dark = effectiveVars('dark');
   var changes = pendingChangeList();
   var lines = [];
-  lines.push('# N.E.K.O 主题：' + name);
+  var emptyText = tsT('editor.value.empty', '（空）');
+  lines.push(tsT('editor.aiPrompt.title', '# N.E.K.O 主题：{{name}}', { name: name }));
   lines.push('');
-  lines.push('你是一个配色设计师。下面是我当前用的主题（N.E.K.O 聊天窗口的 CSS 变量），');
-  lines.push('请在此基础上做改进，并把**完整**结果按同样的两段结构输出，方便我直接粘贴回面板。');
+  lines.push(tsT('editor.aiPrompt.intro1', '你是一个配色设计师。下面是我当前用的主题（N.E.K.O 聊天窗口的 CSS 变量），'));
+  lines.push(tsT('editor.aiPrompt.intro2', '请在此基础上做改进，并把**完整**结果按同样的两段结构输出，方便我直接粘贴回面板。'));
   lines.push('');
-  lines.push('硬约束：');
-  lines.push('1. 只能使用下面出现过的变量名，不要新增不存在的变量，也不要删除它们；');
-  lines.push('2. 颜色用 #rrggbb / rgba() / transparent；长度带 px；模糊写成 blur(18px) 这种形式；');
-  lines.push('3. 亮色组写在 vars 里，暗色组写在 dark_vars 里，两组都要给全；');
-  lines.push('4. 正文与背景对比度至少 4.5:1，次要文字至少 3:1（这套面板有对比度自检）；');
-  lines.push('5. 只输出一个 ' + FENCE + 'json 代码块，内容为 {"name": "...", "vars": {...}, "dark_vars": {...}}。');
+  lines.push(tsT('editor.aiPrompt.rulesHeading', '硬约束：'));
+  lines.push(tsT('editor.aiPrompt.rule1', '1. 只能使用下面出现过的变量名，不要新增不存在的变量，也不要删除它们；'));
+  lines.push(tsT('editor.aiPrompt.rule2', '2. 颜色用 #rrggbb / rgba() / transparent；长度带 px；模糊写成 blur(18px) 这种形式；'));
+  lines.push(tsT('editor.aiPrompt.rule3', '3. 亮色组写在 vars 里，暗色组写在 dark_vars 里，两组都要给全；'));
+  lines.push(tsT('editor.aiPrompt.rule4', '4. 正文与背景对比度至少 4.5:1，次要文字至少 3:1（这套面板有对比度自检）；'));
+  lines.push(tsT('editor.aiPrompt.rule5', '5. 只输出一个 {{fence}}json 代码块，内容为 {"name": "...", "vars": {...}, "dark_vars": {...}}。', { fence: FENCE }));
   lines.push('');
   if (changes.length) {
-    lines.push('我这次改过的 ' + changes.length + ' 项（可以重点看这些）：');
+    lines.push(tsT('editor.aiPrompt.changesHeading', '我这次改过的 {{count}} 项（可以重点看这些）：', { count: changes.length }));
     changes.slice(0, 12).forEach(function (entry) {
-      lines.push('- ' + (CHANGE_MODE_LABELS[entry.mode] || entry.mode) + ' ' +
-        changeKeyLabel(entry.key) + '：' + (entry.before || '（空）') + ' → ' + (entry.after || '（空）'));
+      lines.push(tsT('editor.aiPrompt.changeLine', '- {{mode}} {{label}}：{{before}} → {{after}}', {
+        mode: changeModeLabel(entry.mode),
+        label: changeKeyLabel(entry.key),
+        before: entry.before || emptyText,
+        after: entry.after || emptyText
+      }));
     });
     lines.push('');
   }
-  lines.push('当前配色：');
+  lines.push(tsT('editor.aiPrompt.currentPalette', '当前配色：'));
   lines.push(FENCE + 'json');
   lines.push(JSON.stringify({ name: name, vars: light, dark_vars: dark }, null, 2));
   lines.push(FENCE);
@@ -3212,8 +3396,10 @@ function copyAiPrompt() {
   var text = buildAiPrompt();
   openModal(
     'export',
-    '给 AI 的提示词 · ' + (($('theme-name') && $('theme-name').value.trim()) || DEFAULT_THEME_NAME),
-    '复制后贴给任意 AI（ChatGPT / Claude / 本地模型都行）。它按变量契约改完，你把返回的 JSON 贴回「导入」即可。',
+    tsT('editor.aiPrompt.modalTitle', '给 AI 的提示词 · {{name}}', {
+      name: ($('theme-name') && $('theme-name').value.trim()) || DEFAULT_THEME_NAME
+    }),
+    tsT('editor.aiPrompt.modalHint', '复制后贴给任意 AI（ChatGPT / Claude / 本地模型都行）。它按变量契约改完，你把返回的 JSON 贴回「导入」即可。'),
     text
   );
 }
@@ -3227,8 +3413,8 @@ function liveStyle(node, cfg) {
   if (cfg.borderColor !== undefined) node.style.borderColor = cfg.borderColor;
   if (cfg.borderTopColor !== undefined) node.style.borderTopColor = cfg.borderTopColor;
   if (cfg.borderRadius !== undefined) node.style.borderRadius = cfg.borderRadius;
-  // 用 !== undefined 而不是真值判断：清空 --nts-chat-blur 时要能把上一帧的
-  // backdrop-filter 撤掉，否则预览里毛玻璃永远留着，看着像清空没生效。
+  // Use !== undefined rather than truthiness: clearing --nts-chat-blur must remove the previous
+  // backdrop-filter, otherwise the frosted glass lingers in the preview and clearing looks broken.
   if (cfg.blur !== undefined) {
     node.style.backdropFilter = cfg.blur || '';
     node.style.webkitBackdropFilter = cfg.blur || '';
@@ -3244,21 +3430,21 @@ function styleBubble(node, cfg) {
   node.style.borderWidth = '1px';
   node.style.borderRadius = cfg.radius || '12px';
   node.style.alignSelf = cfg.align;
-  // 气泡的 backdrop 模糊：聊天背景虚化开关（--nts-bubble-veil）按 0–1 乘子
-  // 缩放半径。必须无条件写（哪怕空串），否则关掉开关后上一帧的模糊会留在
-  // 预览里，看着像开关没生效。
+  // Bubble backdrop blur: the chat background veil switch (--nts-bubble-veil) scales the radius by a
+  // 0–1 multiplier. Always write it (even an empty string), otherwise after turning the switch off the
+  // previous blur stays in the preview and the switch looks broken.
   if (cfg.blur !== undefined) {
     node.style.backdropFilter = cfg.blur || '';
     node.style.webkitBackdropFilter = cfg.blur || '';
   }
 }
 
-/* 把 RGBA 数组按 0–1 乘子缩放 alpha（预览里的"白纱"）。 */
+/* Scale the alpha of an RGBA array by a 0–1 multiplier (the frosted "veil" in the preview). */
 function veilSheet(rgba, veil) {
   return toRgba(rgba[0], rgba[1], rgba[2], rgba[3] * veil);
 }
 
-/* 把一个 CSS 颜色按 0–1 乘子缩放 alpha；解析不了就原样返回。 */
+/* Scale a CSS colour's alpha by a 0–1 multiplier; return it unchanged if it can't be parsed. */
 function veilTint(color, veil) {
   var c = parseColor(color);
   if (!c) return color;
@@ -3267,22 +3453,22 @@ function veilTint(color, veil) {
 }
 
 /* ============================================================================
- * 9. 调色板 dump / 元信息
+ * 9. Palette dump / meta info
  * ==========================================================================*/
 
 /* ===== DUMP_LAZY_BEGIN ===== */
-// 当前调色板 JSON 卡（v0.4.21）：折叠时不再重建 JSON。
+// Current palette JSON card (v0.4.21): no JSON rebuild while collapsed.
 //
-// 一份调色板是 2 × 95 行字符串，而 renderDump() 挂在每一次全局刷新上
-// （编辑一行、切模式、重新读取、外部改动跟随都会触发）。折叠状态下用户根本
-// 看不到这段文本，每次还去 JSON.stringify 一遍纯属浪费，所以折叠时只记「脏」，
-// 展开时补一次渲染。
+// A palette is 2 × 95 lines of strings, and renderDump() runs on every global refresh
+// (editing a row, switching mode, reloading, following external changes). While collapsed the
+// user can't see the text, so JSON.stringify each time is pure waste: collapsed only marks it
+// dirty, and expanding renders once.
 var DUMP_COLLAPSE_KEY = 'nts.dump.collapsed';
 var dumpState = { collapsed: false, dirty: false, renders: 0, skipped: 0 };
 
 /**
- * 折叠状态下是否跳过重建。抽成纯函数是为了能在 Node 里直接跑真值表
- * （见 test/dump-selftest.js），而不是靠读源码猜。
+ * Whether to skip the rebuild while collapsed. A pure function so the truth table can run directly
+ * in Node (see test/dump-selftest.js) instead of guessing from the source.
  * @param {boolean} collapsed
  * @param {boolean} dirty
  * @returns {'skip'|'render'}
@@ -3306,22 +3492,24 @@ function saveDumpCollapsed() {
   try {
     var store = libraryStorage();
     if (store) store.setItem(DUMP_COLLAPSE_KEY, dumpState.collapsed ? '1' : '0');
-  } catch (error) { /* 隐私模式：不记住就行 */ }
+  } catch (error) { /* private mode: just don't remember it */ }
 }
 
-/** 把 dumpState.collapsed 反映到 DOM（按钮箭头、aria-expanded、body hidden）。 */
+/** Reflect dumpState.collapsed in the DOM (button arrow, aria-expanded, body hidden). */
 function applyDumpCollapsed() {
   var btn = $('btn-toggle-dump');
   var body = $('dump-body');
   if (btn) {
     btn.textContent = dumpState.collapsed ? '▸' : '▾';
     btn.setAttribute('aria-expanded', dumpState.collapsed ? 'false' : 'true');
-    btn.setAttribute('title', dumpState.collapsed ? '展开 JSON' : '折叠 JSON');
+    btn.setAttribute('title', dumpState.collapsed
+      ? tsT('editor.dump.expand', '展开 JSON')
+      : tsT('editor.dump.collapse', '折叠 JSON'));
   }
   if (body) body.hidden = dumpState.collapsed;
 }
 
-/** 折叠 / 展开；展开时若是脏的就补渲染一次。 */
+/** Collapse / expand; when expanding a dirty dump, render it once. */
 function toggleDumpCard() {
   dumpState.collapsed = !dumpState.collapsed;
   saveDumpCollapsed();
@@ -3331,7 +3519,7 @@ function toggleDumpCard() {
 /* ===== DUMP_LAZY_END ===== */
 
 function renderDump(force) {
-  // 折叠时只标脏（见上方 DUMP_LAZY 说明）；展开 / 复制 / 强制调用才真的重建。
+  // While collapsed only mark dirty (see DUMP_LAZY above); expand / copy / forced calls actually rebuild.
   if (!force && dumpLazyPlan(dumpState.collapsed, dumpState.dirty) === 'skip') {
     dumpState.dirty = true;
     dumpState.skipped += 1;
@@ -3347,26 +3535,28 @@ function renderDump(force) {
   };
   var pending = Object.keys(state.edited.light).length + Object.keys(state.edited.dark).length +
     Object.keys(state.cleared.light).length + Object.keys(state.cleared.dark).length;
-  // 这里必须是纯 JSON：旧实现把 "// ↑ 含 N 项未应用的改动" 拼在 JSON 末尾，
-  // 与右侧 dump 说明（effectiveVars，含未应用改动）不一致，复制出去也不是合法
-  // JSON。未应用提示改放 #dump-foot —— 它在 #dump 之外，复制永远拿到合法 JSON。
+  // This must be pure JSON: the old code appended "// ↑ includes N unapplied changes" to the JSON,
+  // which contradicted the dump description (effectiveVars, unapplied changes included) and made the
+  // copy invalid JSON. The unapplied note lives in #dump-foot, outside #dump, so copies are always valid.
   $('dump').textContent = JSON.stringify(payload, null, 2);
 
   var foot = $('dump-foot');
   if (foot) {
     var saved = paletteCounts(state.palette);
-    foot.textContent = '已保存：亮色 ' + saved.light + ' 项 / 暗色 ' + saved.dark + ' 项' +
+    foot.textContent = tsT('editor.dump.saved', '已保存：亮色 {{light}} 项 / 暗色 {{dark}} 项', {
+      light: saved.light, dark: saved.dark
+    }) +
       (pending
-        ? '；另有 ' + pending + ' 项改动尚未应用 —— 上面的 JSON 已经按改动后的样子生成（复制出去就是改完的效果），点「应用」才会写进服务器。'
-        : '；没有未应用的改动。');
+        ? tsT('editor.dump.pending', '；另有 {{count}} 项改动尚未应用 —— 上面的 JSON 已经按改动后的样子生成（复制出去就是改完的效果），点「应用」才会写进服务器。', { count: pending })
+        : tsT('editor.dump.noPending', '；没有未应用的改动。'));
   }
 }
 
-/** 某模式「生效中」的变量：服务器已保存的值叠加本地未应用的改动。
+/** Effective variables for a mode: server-saved values overlaid with local unapplied changes.
  *
- * 注意不能直接用 collect(mode)：那只包含本次会话里改过/清空过的键，读回一个
- * 已保存的调色板时会渲染成空对象 —— 面板会声称「当前调色板 vars: {}」，
- * 与磁盘上真实的 theme.json 不符，极为误导。
+ * Don't use collect(mode) directly: it only has keys edited/cleared in this session, so reading back
+ * a saved palette would render an empty object — the panel would claim "current palette vars: {}",
+ * contradicting the real theme.json on disk, which is badly misleading.
  */
 function effectiveVars(mode) {
   var out = {};
@@ -3391,19 +3581,20 @@ function collect(mode) {
 function renderMeta(options) {
   var p = state.palette;
   if (!p) return;
-  // 用户已经改了名称/启用但还没应用时，不能拿服务端的值把输入框冲掉：旧实现
-  // 每次回读都无条件写 #theme-enabled，于是「拐一下开关」会被静默复位成服务端的值，
-  // 用户再点应用时还以为自己改过。
-  // 例外：用户点「重新读取」并确认放弃改动（discard）时，名称 / 启用也要一起回到磁盘值，
-  // 否则面板说「已放弃」，这两项却还留着、继续拦外部同步，下次应用还会被写进去。
+  // If the user changed name/enabled but hasn't applied, don't overwrite the inputs with server values:
+  // the old code always wrote #theme-enabled on every read-back, so flipping the switch was silently
+  // reset to the server value, and the user thought it was changed when applying.
+  // Exception: when the user clicks "Reload" and confirms discarding changes, name / enabled also go
+  // back to the disk values, otherwise the panel says "discarded" while these two linger, keep blocking
+  // external sync, and get written on the next apply.
   var discard = !!(options && options.discard);
   var keepEdits = !discard && metaDirtyCount() > 0;
-  // 基线必须在每次读回调色板时刷新：applyTheme 靠它判断名称/启用是否真的变了。
+  // The baseline must refresh on every palette read-back: applyTheme uses it to tell whether name/enabled really changed.
   state.metaName = p.name || '';
   state.metaEnabled = p.enabled !== false;
-  // theme.json 不再有 version 字段（0.1.5 起）：面板也不显示版本计数，
-  // 只留主题名与「最后更新时间」两枚 pill。
-  $('meta-name').textContent = p.name || '默认';
+  // theme.json has no version field anymore (since 0.1.5): the panel shows no version counter,
+  // only the theme name and "last updated" pills.
+  $('meta-name').textContent = p.name || tsT('editor.meta.defaultName', '默认');
   var when = p.updated_at ? String(p.updated_at).replace('T', ' ').slice(0, 19) : '—';
   $('meta-updated').textContent = when;
   if (!keepEdits && document.getElementById('theme-name') &&
@@ -3413,16 +3604,21 @@ function renderMeta(options) {
   if (!keepEdits) $('theme-enabled').checked = p.enabled !== false;
 }
 
-/* ===== CHANGES_BEGIN（v0.5.1：待应用改动清单）===== */
+/* ===== CHANGES_BEGIN (v0.5.1: pending changes list) ===== */
 
-var CHANGE_MODE_LABELS = { light: '亮色', dark: '暗色' };
+/** Display label for a palette mode ('light' / 'dark'), translated at call time. */
+function changeModeLabel(mode) {
+  if (mode === 'light') return tsT('editor.preview.modeLight', '亮色');
+  if (mode === 'dark') return tsT('editor.preview.modeDark', '暗色');
+  return mode;
+}
 
 /**
- * 把「服务器上的值 + 本地改动」摊平成一行一条改动（纯函数）。
+ * Flatten "server values + local edits" into one entry per change (pure function).
  *
  * @param {{palette?: Object, edited?: Object, cleared?: Object}} snapshot
  * @returns {Array<{key: string, mode: string, before: string, after: string, kind: string}>}
- *   kind: changed（改值）/ added（原来没有）/ removed（清空）
+ *   kind: changed (value changed) / added (previously absent) / removed (cleared)
  */
 function changeEntryList(snapshot) {
   var snap = snapshot || {};
@@ -3465,7 +3661,7 @@ function pendingChangeList() {
 }
 
 function changeValueText(value) {
-  return String(value) === '' ? '（空）' : String(value);
+  return String(value) === '' ? tsT('editor.value.empty', '（空）') : String(value);
 }
 
 function changeKeyLabel(key) {
@@ -3473,7 +3669,7 @@ function changeKeyLabel(key) {
   return (item && item.label) || key;
 }
 
-/** 撤掉一条改动：删掉本地编辑/清空标记，再把这一行同步回服务器值。 */
+/** Revert one change: drop the local edit/clear mark, then sync the row back to the server value. */
 function revertChange(entry) {
   if (!entry) return;
   var edited = state.edited[entry.mode] || {};
@@ -3484,24 +3680,24 @@ function revertChange(entry) {
   state.cleared[entry.mode] = cleared;
   syncRow(entry.key);
   renderChanges();
-  showToast('已撤销「' + changeKeyLabel(entry.key) + '」的改动', 'ok');
+  showToast(tsT('editor.changes.reverted', '已撤销「{{label}}」的改动', { label: changeKeyLabel(entry.key) }), 'ok');
 }
 
 function revertAllChanges() {
   var entries = pendingChangeList();
   if (!entries.length) return;
-  if (!window.confirm('要撤销全部 ' + entries.length + ' 项未应用的改动吗？撤销后无法恢复。')) return;
+  if (!window.confirm(tsT('editor.changes.revertAllConfirm', '要撤销全部 {{count}} 项未应用的改动吗？撤销后无法恢复。', { count: entries.length }))) return;
   state.edited = { light: {}, dark: {} };
   state.cleared = { light: {}, dark: {} };
   markAllRowsValid();
   clearRgbMemory();
   syncAll();
   renderChanges();
-  showNotice('warn', '已撤销 ' + entries.length + ' 项未应用的改动（服务器上的配色没动）。');
-  showToast('已撤销全部改动', 'ok');
+  showNotice('warn', tsT('editor.changes.revertedAllNotice', '已撤销 {{count}} 项未应用的改动（服务器上的配色没动）。', { count: entries.length }));
+  showToast(tsT('editor.changes.revertedAll', '已撤销全部改动'), 'ok');
 }
 
-/** 重画清单。没有改动时整张卡隐藏，不占版面。 */
+/** Redraw the list. With no changes the whole card is hidden and takes no space. */
 function renderChanges() {
   var card = $('changes-card');
   if (!card) return;
@@ -3520,7 +3716,7 @@ function renderChanges() {
     var row = el('li', { class: 'change-row' });
     row.appendChild(el('span', {
       class: 'change-mode is-' + entry.mode,
-      text: CHANGE_MODE_LABELS[entry.mode] || entry.mode
+      text: changeModeLabel(entry.mode)
     }));
     row.appendChild(el('span', {
       class: 'change-label',
@@ -3535,8 +3731,8 @@ function renderChanges() {
     var undo = el('button', {
       class: 'btn btn-mini change-undo',
       type: 'button',
-      text: '撤销',
-      'aria-label': '撤销「' + changeKeyLabel(entry.key) + '」的改动'
+      text: tsT('editor.changes.undo', '撤销'),
+      'aria-label': tsT('editor.changes.undoAria', '撤销「{{label}}」的改动', { label: changeKeyLabel(entry.key) })
     });
     undo.addEventListener('click', function () { revertChange(entry); });
     row.appendChild(undo);
@@ -3549,28 +3745,30 @@ function renderChanges() {
 function updateButtons() {
   var n = pendingChangeCount();
   var applyBtn = $('btn-apply');
-  applyBtn.textContent = n ? '应用（' + n + ' 项改动）' : '应用';
+  applyBtn.textContent = n
+    ? tsT('editor.apply.withCount', '应用（{{count}} 项改动）', { count: n })
+    : tsT('editor.apply.label', '应用');
   applyBtn.disabled = state.busy;
   applyBtn.dataset.busy = state.busy ? 'true' : 'false';
   ['btn-reset', 'btn-export', 'btn-import', 'btn-reload', 'btn-revert-mode'].forEach(function (id) {
     var node = $(id);
     if (node) node.disabled = state.busy;
   });
-  // 待应用改动清单（v0.5.1）：跟着按钮文案一起刷新，卡片自带隐藏逻辑。
+  // Pending changes list (v0.5.1): refreshed with the button text; the card hides itself.
   renderChanges();
   updateUndoButtons();
   renderQuickPresets();
 }
 
 /* ============================================================================
- * 10. 动作
+ * 10. Actions
  * ==========================================================================*/
 
 function buildArgs(mode) {
   return collect(mode);
 }
 
-/** 调色板里两组各有多少项（0 是常见且值得说出来的状态）。 */
+/** How many entries each of the two palette groups has (0 is common and worth stating). */
 function paletteCounts(p) {
   var l = p && p.vars && typeof p.vars === 'object' ? Object.keys(p.vars).length : 0;
   var d = p && p.dark_vars && typeof p.dark_vars === 'object' ? Object.keys(p.dark_vars).length : 0;
@@ -3578,53 +3776,57 @@ function paletteCounts(p) {
 }
 
 /**
- * 只改了一组时的提醒。亮/暗两组是各管各的（THEME_CONTRACT §3.0），
- * 所以「只配了亮色、应用却在暗色模式」= 零效果 —— 这是最容易误判成
- * 「插件坏了」的用法，必须在提示里点出来。
+ * Warning shown when only one group changed. Light and dark are independent
+ * (THEME_CONTRACT §3.0), so "only light configured while the app is in dark
+ * mode" has zero effect -- the usage most easily mistaken for "the plugin is
+ * broken", so the hint must call it out.
  */
 function modeHint(nLight, nDark) {
   if (nLight && !nDark) {
-    return '\n注意：本次只改了「亮色」组 —— 应用若正处在暗色模式，外观不会变（两组各管各的）。';
+    return '\n' + tsT('actions.modeHint.lightOnly', '注意：本次只改了「亮色」组 —— 应用若正处在暗色模式，外观不会变（两组各管各的）。');
   }
   if (nDark && !nLight) {
-    return '\n注意：本次只改了「暗色」组 —— 应用若正处在亮色模式，外观不会变（两组各管各的）。';
+    return '\n' + tsT('actions.modeHint.darkOnly', '注意：本次只改了「暗色」组 —— 应用若正处在亮色模式，外观不会变（两组各管各的）。');
   }
   return '';
 }
 
-/** 从磁盘读回调色板时的中性文案：不是「本次只改了」，而是「当前只有」。
- * 旧实现直接用 modeHint，刷新/回读时会误报「本次只改了亮色组」。 */
+/** Neutral wording when reading the palette back from disk: not "this time you
+ * only changed" but "currently only". The old code reused modeHint and falsely
+ * reported "only the light group changed" on refresh / readback. */
 function savedModeHint(nLight, nDark) {
   if (nLight && !nDark) {
-    return '\n当前只有「亮色」组有自定义项（暗色模式仍是原生外观）。';
+    return '\n' + tsT('actions.savedModeHint.lightOnly', '当前只有「亮色」组有自定义项（暗色模式仍是原生外观）。');
   }
   if (nDark && !nLight) {
-    return '\n当前只有「暗色」组有自定义项（亮色模式仍是原生外观）。';
+    return '\n' + tsT('actions.savedModeHint.darkOnly', '当前只有「暗色」组有自定义项（亮色模式仍是原生外观）。');
   }
   return '';
 }
 
 /**
- * 编辑器底部那行常驻说明：它要回答「为什么我什么都没看到」这个最常见的问题，
- * 所以把「空 = 原生」和「亮暗两组各管各的」直接写在这里，而不是藏在 README。
+ * The persistent note under the editor: it answers the most common question,
+ * "why don't I see anything", so "empty = native" and "light and dark are
+ * independent" are stated right here instead of hidden in the README.
  */
 function renderPaletteHint() {
   var node = $('empty-hint');
   if (!node) return;
   if (!state.palette) {
-    node.textContent = '尚未读取到调色板；面板仍可编辑，点「应用」会重试读取。';
+    node.textContent = tsT('actions.paletteHint.notLoaded', '尚未读取到调色板；面板仍可编辑，点「应用」会重试读取。');
     return;
   }
   var c = paletteCounts(state.palette);
   if (!c.light && !c.dark) {
-    node.textContent = '当前调色板为空：所有组件都使用 N.E.K.O 原生外观。任意一行填值并应用，即刻生效。';
+    node.textContent = tsT('actions.paletteHint.empty', '当前调色板为空：所有组件都使用 N.E.K.O 原生外观。任意一行填值并应用，即刻生效。');
     return;
   }
-  node.textContent = '已保存 ' + (c.light + c.dark) + ' 项（亮色 ' + c.light + ' / 暗色 ' + c.dark +
-    '）。留空的行保持原生外观；两组各管各的，只配一组时另一模式不会变。';
+  node.textContent = tsT('actions.paletteHint.saved',
+    '已保存 {{total}} 项（亮色 {{light}} / 暗色 {{dark}}）。留空的行保持原生外观；两组各管各的，只配一组时另一模式不会变。',
+    { total: c.light + c.dark, light: c.light, dark: c.dark });
 }
 
-/** 从后端 rejected 文案里抠出被拒的变量名（后端文案带 '--nts-xxx'）。 */
+/** Extract rejected variable names from the backend's rejected messages (they contain '--nts-xxx'). */
 function rejectedKeysOf(rejected) {
   var keys = {};
   (rejected || []).forEach(function (msg) {
@@ -3636,9 +3838,11 @@ function rejectedKeysOf(rejected) {
 }
 
 /**
- * 把被拒绝的提交值放回编辑态。后端只拒绝单条，合法部分已落盘，所以这里
- * 不能清空整组改动，否则用户只能凭记忆重新输入被拒的那个值。
- * @returns {number} 恢复的条目数
+ * Put rejected submitted values back into the edit state. The backend rejects
+ * entries individually and the valid part is already on disk, so we must not
+ * clear the whole change set, or the user would have to retype the rejected
+ * value from memory.
+ * @returns {number} number of restored entries
  */
 function restoreRejected(rejected, sentLight, sentDark) {
   var keys = rejectedKeysOf(rejected);
@@ -3657,14 +3861,14 @@ function restoreRejected(rejected, sentLight, sentDark) {
   return restored;
 }
 
-/** 材质中心当前编辑值的快照（不论是否有改动）；没挂载时返回 null。 */
+/** Snapshot of the material center's current edit values (dirty or not); null when not mounted. */
 function materialsSnapshot() {
   var api = window.NekoMaterials;
   if (!api || typeof api.snapshot !== 'function') return null;
   try { return api.snapshot() || null; } catch (error) { return null; }
 }
 
-/** 材质中心的当前编辑值；没改动/没挂载时返回 null（后端据此保持磁盘材质不变）。 */
+/** The material center's current edit values; null when unchanged / not mounted (the backend then keeps the on-disk materials). */
 function currentMaterialsPayload() {
   var api = window.NekoMaterials;
   if (!api || typeof api.snapshot !== 'function' || typeof api.isDirty !== 'function') return null;
@@ -3675,39 +3879,41 @@ function currentMaterialsPayload() {
   }
 }
 
-/** 把磁盘上的 palette 推给材质中心，让它的「已保存」基线跟上磁盘。 */
+/** Push the on-disk palette to the material center so its "saved" baseline matches disk. */
 function syncMaterials(palette, options) {
   var api = window.NekoMaterials;
   if (!api || typeof api.sync !== 'function') return;
   try {
     api.sync(palette || state.palette, options);
   } catch (error) {
-    // 材质中心渲染出错不能拖垮主面板：它只是面板的一部分。
+    // A material center render error must not take down the main panel: it is only one part of it.
   }
 }
 
-/** 重置/回读失败时把材质编辑态拉回基线。 */
+/** Pull the material edit state back to its baseline after reset / failed readback. */
 function resetMaterialsLocal() {
   var api = window.NekoMaterials;
   if (!api || typeof api.resetLocal !== 'function') return;
   try {
     api.resetLocal();
   } catch (error) {
-    // 同上：不影响主流程。
+    // Same as above: never affects the main flow.
   }
 }
 
 async function applyTheme() {
   if (state.busy) return;
 
-  // 红框行必须先解决：非法输入时 edited 里留的是「上一个合法值」，直接应用会
-  // 把它提交上去并显示成功，用户会以为刚敲的非法值生效了。这里明确阻止。
+  // Red-outlined rows must be resolved first: with invalid input, `edited` still
+  // holds the "last valid value", so applying would submit it and report success,
+  // making the user think the invalid value just typed took effect. Block it here.
   if (invalidRowCount()) {
     var nBad = invalidRowCount();
-    showNotice('warn', '有 ' + nBad + ' 行输入不合法（红框），已阻止应用。\n' +
-      '请把红框里的值改成合法值，或点该行「清空」。');
-    showToast('有非法输入，未应用', 'error');
-    setStatus('有非法输入，未应用', 'warn');
+    showNotice('warn', tsT('actions.apply.invalidNotice',
+      '有 {{count}} 行输入不合法（红框），已阻止应用。\n请把红框里的值改成合法值，或点该行「清空」。',
+      { count: nBad }));
+    showToast(tsT('actions.apply.invalidShort', '有非法输入，未应用'), 'error');
+    setStatus(tsT('actions.apply.invalidShort', '有非法输入，未应用'), 'warn');
     return;
   }
 
@@ -3716,26 +3922,30 @@ async function applyTheme() {
   var nLight = Object.keys(lightVars).length;
   var nDark = Object.keys(darkVars).length;
   var enabled = $('theme-enabled').checked;
-  // 材质子树是整份替换语义：只有面板真改过才带上，没碰过就不传，
-  // 否则「只调颜色」的提交会把磁盘上的材质覆盖成面板里的旧值。
+  // The materials subtree is replaced wholesale: only send it when the panel actually
+  // changed it, otherwise a "colors only" submit would overwrite on-disk materials
+  // with stale panel values.
   var materials = currentMaterialsPayload();
   var materialsDirty = !!materials;
-  // 用 renderMeta 写入的「已保存基线」比较，而不是 !!state.palette：
-  // 首次 get_theme 失败（palette=null）时旧实现一律判为没改，只改名称或启用
-  // 开关永远提示「没有可应用的改动」，改动根本提交不出去。
+  // Compare against the "saved baseline" written by renderMeta, not !!state.palette:
+  // when the first get_theme failed (palette=null) the old code always judged "unchanged",
+  // so changing only the name or the enabled toggle always said "nothing to apply"
+  // and the change could never be submitted.
   var enabledChanged = state.metaEnabled !== enabled;
   var nameInput = $('theme-name');
   var name = nameInput ? nameInput.value.trim() : '';
-  // 只改主题名也是一次有效改动：漏掉它会让 name 永远存不进去（实测点了应用毫无反应）。
+  // Changing only the theme name is a valid change too: missing it means the name
+  // could never be saved (observed: clicking apply did nothing).
   var nameChanged = name !== (state.metaName || '');
 
-  // 没有任何改动时不要假装成功：否则「点了应用但什么都没发生」会被当成插件故障。
-  // 提示语写成诊断信息：编辑是逐键实时记录（oninput → markEdited），不需要失焦。
+  // Do not fake success when nothing changed: otherwise "clicked apply but nothing
+  // happened" gets taken for a plugin fault. The message is diagnostic: edits are
+  // recorded per keystroke (oninput -> markEdited), no blur needed.
   if (!nLight && !nDark && !enabledChanged && !nameChanged && !materialsDirty) {
-    showNotice('warn', '没有可应用的改动（当前 0 项变量改动，名称/启用未变，也没有红框非法输入）。\n' +
-      '改值会在输入时立即记入面板，不必等控件失焦；如果确实改过，可能是刚才用「还原本组」撤销了。');
-    showToast('没有改动可应用');
-    setStatus('没有改动可应用', 'warn');
+    showNotice('warn', tsT('actions.apply.noChangesNotice',
+      '没有可应用的改动（当前 0 项变量改动，名称/启用未变，也没有红框非法输入）。\n改值会在输入时立即记入面板，不必等控件失焦；如果确实改过，可能是刚才用「还原本组」撤销了。'));
+    showToast(tsT('actions.apply.noChanges', '没有改动可应用'));
+    setStatus(tsT('actions.apply.noChanges', '没有改动可应用'), 'warn');
     return;
   }
 
@@ -3745,70 +3955,83 @@ async function applyTheme() {
     enabled: enabled
   };
   if (materialsDirty) args.materials = materials;
-  // 名称清空按默认名提交：与后端「空串/纯空白 = 恢复默认名」一致，
-  // DEFAULT_THEME_NAME 与后端常量、placeholder 一致。
+  // An emptied name is submitted as the default name, matching the backend's
+  // "empty / whitespace = restore default name"; DEFAULT_THEME_NAME matches the
+  // backend constant and the placeholder.
   if (nameChanged) args.name = name || DEFAULT_THEME_NAME;
 
-  setBusy(true, '正在应用…');
-  // 提交时刻的材质快照：保存 / 回读期间材质控件仍可编辑，之后的改动要留在面板里。
+  setBusy(true, tsT('actions.apply.busy', '正在应用…'));
+  // Material snapshot at submit time: material controls stay editable during save /
+  // readback, and later edits must remain in the panel.
   var materialsAtSubmit = materialsSnapshot();
   try {
     var result = await callPlugin('apply_theme', args);
     var rejected = result && result.rejected;
-    // 写入成功后必须回读，且要检查返回值：silent 失败被吞时面板还停在旧值，
-    // 文案却显示「已应用」—— 用户看到的和磁盘不一致。
+    // After a successful write we must read back and check the result: if a silent
+    // failure is swallowed, the panel keeps old values while saying "applied" --
+    // what the user sees would not match disk.
     var reloaded = await reloadPalette({ silent: true, materialsSubmitted: materialsAtSubmit });
     if (reloaded) {
-      // 只有回读成功才认为「面板 = 磁盘」，此时才清脏标记与非法态。
+      // Only a successful readback means "panel = disk"; only then clear dirty and invalid state.
       state.edited = { light: {}, dark: {} };
       state.cleared = { light: {}, dark: {} };
       markAllRowsValid();
-      // reloadPalette 内部的 syncAll() 发生在清脏之前：行上的黄底「已改」、
-      // 分组头的「已改 N 项」、dump 脚注都还停在旧状态。不在这里再刷一遍，
-      // 用户会以为没保存成功，再点「应用」还被拦「没有可应用的改动」。
+      // The syncAll() inside reloadPalette ran before the dirty state was cleared: the
+      // yellow "changed" rows, the group header's "N changed" and the dump footnote are
+      // all stale. Without refreshing here the user thinks the save failed, and clicking
+      // "apply" again gets blocked with "nothing to apply".
       syncAll();
-      // 应用成功 = 服务端已经接受了这批改动，撤销栈再留着只会把「已写入的值」
-      // 又撤成「没写过」的错觉；这里清空，撤销只在「未应用」阶段有意义。
+      // Applied = the server accepted these changes; keeping the undo stack would only
+      // create the illusion of undoing written values into "never written". Clear it:
+      // undo only makes sense before applying.
       undoState.past = [];
       undoState.future = [];
       updateUndoButtons();
     } else {
-      // 回读失败：脏标记必须保留（不能先清后读）。旧实现先清空 edited/cleared 再
-      // 回读，回读一失败面板就显示成「已保存」，而屏幕上可能还是旧值 —— 用户会
-      // 以为改动丢了。保留脏标记 = 面板诚实显示「未同步」，点「重新读取」才是
-      // 恢复一致的路径。同时用提交值更新名称/启用基线，避免下次误判有改动。
+      // Readback failed: dirty flags must be kept (never clear before reading). The old
+      // code cleared edited/cleared first, so a failed readback showed "saved" while
+      // the screen might still hold old values -- the user would think the changes were
+      // lost. Keeping them = the panel honestly shows "not synced", and "reload" is the
+      // path back to consistency. Also update the name/enabled baseline with the
+      // submitted values so the next run does not detect phantom changes.
       if (nameChanged) state.metaName = name || DEFAULT_THEME_NAME;
       state.metaEnabled = enabled;
     }
-    // 被拒条目留在面板上，让用户就地修正（合法部分后端已落盘）
+    // Rejected entries stay in the panel for in-place fixing (the valid part is already on disk).
     var restored = rejected && rejected.length ? restoreRejected(rejected, lightVars, darkVars) : 0;
-    // 只把真正发生的变化写进文案，避免「0 项」和「主题名已改」被漏报。
+    // Only describe changes that actually happened, so "0 entries" or a renamed theme is never misreported.
     var parts = [];
-    if (nLight) parts.push('亮色 ' + nLight + ' 项');
-    if (nDark) parts.push('暗色 ' + nDark + ' 项');
-    if (enabledChanged) parts.push(enabled ? '已启用主题' : '已停用主题');
-    if (nameChanged) parts.push('主题名「' + (name || DEFAULT_THEME_NAME) + '」');
-    if (materialsDirty) parts.push('高级材质');
-    var counts = parts.length ? parts.join(' / ') : '无变量改动';
-    var readbackNote = reloaded ? '' :
-      '\n已写入，但回读失败，面板仍标记为「未同步」（改动标记已保留），请点「重新读取」。';
-    if (rejected && rejected.length) {
-      showNotice('warn', '已应用（' + counts + '），但后端拒绝了 ' + rejected.length +
-        ' 条，已把它们的原值放回面板便于就地修正：\n' + rejected.join('\n') + readbackNote);
-      showToast('已应用（' + rejected.length + ' 条被拒绝' + (restored ? '，已回填' : '') + '）');
-    } else {
-      showNotice(reloaded ? 'ok' : 'warn', '已应用并写入 theme.json：' + counts +
-        modeHint(nLight, nDark) + readbackNote);
-      showToast('已应用 ' + counts, 'ok');
+    if (nLight) parts.push(tsT('actions.apply.partLight', '亮色 {{count}} 项', { count: nLight }));
+    if (nDark) parts.push(tsT('actions.apply.partDark', '暗色 {{count}} 项', { count: nDark }));
+    if (enabledChanged) {
+      parts.push(enabled ? tsT('actions.apply.partEnabled', '已启用主题') : tsT('actions.apply.partDisabled', '已停用主题'));
     }
-    setStatus('已应用 ' + counts + (restored ? '（' + restored + ' 条待修正）' : '') +
-      (reloaded ? '' : '（回读失败）'),
+    if (nameChanged) parts.push(tsT('actions.apply.partName', '主题名「{{name}}」', { name: name || DEFAULT_THEME_NAME }));
+    if (materialsDirty) parts.push(tsT('actions.apply.partMaterials', '高级材质'));
+    var counts = parts.length ? parts.join(' / ') : tsT('actions.apply.noVarChanges', '无变量改动');
+    var readbackNote = reloaded ? '' :
+      '\n' + tsT('actions.apply.readbackFailedNote', '已写入，但回读失败，面板仍标记为「未同步」（改动标记已保留），请点「重新读取」。');
+    if (rejected && rejected.length) {
+      showNotice('warn', tsT('actions.apply.partialNotice',
+        '已应用（{{counts}}），但后端拒绝了 {{rejected}} 条，已把它们的原值放回面板便于就地修正：\n',
+        { counts: counts, rejected: rejected.length }) + rejected.join('\n') + readbackNote);
+      showToast(restored
+        ? tsT('actions.apply.partialToastRestored', '已应用（{{count}} 条被拒绝，已回填）', { count: rejected.length })
+        : tsT('actions.apply.partialToast', '已应用（{{count}} 条被拒绝）', { count: rejected.length }));
+    } else {
+      showNotice(reloaded ? 'ok' : 'warn', tsT('actions.apply.doneNotice', '已应用并写入 theme.json：{{counts}}', { counts: counts }) +
+        modeHint(nLight, nDark) + readbackNote);
+      showToast(tsT('actions.apply.doneShort', '已应用 {{counts}}', { counts: counts }), 'ok');
+    }
+    setStatus(tsT('actions.apply.doneShort', '已应用 {{counts}}', { counts: counts }) +
+      (restored ? tsT('actions.apply.statusPendingFix', '（{{count}} 条待修正）', { count: restored }) : '') +
+      (reloaded ? '' : tsT('actions.readbackFailedSuffix', '（回读失败）')),
       reloaded ? 'ok' : 'warn');
     verifyAppliedShortly();
   } catch (error) {
-    showNotice('error', '应用失败：' + pluginErrorMessage(error));
-    showToast('应用失败', 'error');
-    setStatus('应用失败', 'error');
+    showNotice('error', tsT('actions.apply.failedNotice', '应用失败：{{error}}', { error: pluginErrorMessage(error) }));
+    showToast(tsT('actions.apply.failed', '应用失败'), 'error');
+    setStatus(tsT('actions.apply.failed', '应用失败'), 'error');
   } finally {
     setBusy(false);
   }
@@ -3816,8 +4039,8 @@ async function applyTheme() {
 
 async function resetTheme() {
   if (state.busy) return;
-  if (!window.confirm('确定恢复内置默认主题？当前所有自定义颜色都会被清除。')) return;
-  setBusy(true, '正在重置…');
+  if (!window.confirm(tsT('actions.reset.confirm', '确定恢复内置默认主题？当前所有自定义颜色都会被清除。'))) return;
+  setBusy(true, tsT('actions.reset.busy', '正在重置…'));
   try {
     var result = await callPlugin('reset_theme', {});
     state.edited = { light: {}, dark: {} };
@@ -3826,100 +4049,112 @@ async function resetTheme() {
     clearRgbMemory();
     var reloaded = await reloadPalette({ silent: true });
     if (reloaded) {
-      showNotice('ok', '已恢复默认主题。');
+      showNotice('ok', tsT('actions.reset.done', '已恢复默认主题。'));
     } else {
-      // 重置已落盘，但面板没能回读：提示重新读取，而不是假装一切最新。
-      // 材质同理 —— 后端已把材质恢复成默认（enabled=false），编辑态不能还停在旧值。
+      // The reset is on disk but the panel could not read it back: ask to reload
+      // instead of pretending everything is current. Same for materials -- the backend
+      // restored them to default (enabled=false), so the edit state must not keep old values.
       resetMaterialsLocal();
-      showNotice('warn', '已恢复默认主题。\n回读失败，面板显示可能不是最新值，请点「重新读取」。');
+      showNotice('warn', tsT('actions.reset.doneReadbackFailed', '已恢复默认主题。\n回读失败，面板显示可能不是最新值，请点「重新读取」。'));
     }
-    showToast('已重置', 'ok');
-    setStatus('已重置' + (reloaded ? '' : '（回读失败）'), reloaded ? 'ok' : 'warn');
+    showToast(tsT('actions.reset.doneShort', '已重置'), 'ok');
+    setStatus(tsT('actions.reset.doneShort', '已重置') + (reloaded ? '' : tsT('actions.readbackFailedSuffix', '（回读失败）')), reloaded ? 'ok' : 'warn');
   } catch (error) {
-    showNotice('error', '重置失败：' + pluginErrorMessage(error));
-    showToast('重置失败', 'error');
-    setStatus('重置失败', 'error');
+    showNotice('error', tsT('actions.reset.failedNotice', '重置失败：{{error}}', { error: pluginErrorMessage(error) }));
+    showToast(tsT('actions.reset.failed', '重置失败'), 'error');
+    setStatus(tsT('actions.reset.failed', '重置失败'), 'error');
   } finally {
     setBusy(false);
   }
 }
 
 /**
- * 让后端打包文件内容，再由面板触发浏览器下载。
- * 内置之后面板是普通顶层页面（不再是没有 allow-downloads 的 sandbox iframe），
- * 后端不再往桌面 / 下载目录写文件。
+ * Let the backend package the file content, then trigger a browser download from the panel.
+ * Since being built in, the panel is a normal top-level page (no longer a sandboxed
+ * iframe without allow-downloads), so the backend no longer writes to Desktop / Downloads.
  */
 async function saveThemeFile(args) {
   var result = await callPlugin('export_to_file', args);
   var data = result && result.data ? String(result.data) : '';
-  if (!data || !result.filename) throw new Error('后端没有返回文件内容');
+  if (!data || !result.filename) throw new Error(tsT('actions.export.noFileContent', '后端没有返回文件内容'));
   downloadBlob(base64ToBytes(data), result.filename, result.mime || 'application/octet-stream');
   return result;
 }
 
 function savedHint(result) {
   var kb = Math.round((result.bytes || 0) / 1024);
-  return '已下载：' + result.filename +
-    '\n（' + kb + ' KB' + (result.images ? '，含 ' + result.images + ' 张背景图' : '') + '）';
+  return result.images
+    ? tsT('actions.export.downloadedWithImages', '已下载：{{filename}}\n（{{kb}} KB，含 {{images}} 张背景图）',
+      { filename: result.filename, kb: kb, images: result.images })
+    : tsT('actions.export.downloaded', '已下载：{{filename}}\n（{{kb}} KB）', { filename: result.filename, kb: kb });
 }
 
 async function exportTheme() {
   if (state.busy) return;
-  // 后端 export_theme 返回的是磁盘上已保存的 theme.json，不含面板里未应用的改动。
-  // 与右侧 dump（effectiveVars，含未应用改动）不一致，所以先明确告知再导出。
+  // The backend's export_theme returns the theme.json saved on disk, without the
+  // panel's unapplied changes. That differs from the dump on the right (effectiveVars,
+  // which includes them), so say so explicitly before exporting.
   var pending = dirtyCount();
-  if (pending && !window.confirm('有 ' + pending + ' 项未应用的改动。\n' +
-    '导出的 JSON 来自磁盘上已保存的 theme.json（不含这些未应用改动）。继续导出？')) {
+  if (pending && !window.confirm(tsT('actions.export.pendingConfirm',
+    '有 {{count}} 项未应用的改动。\n导出的 JSON 来自磁盘上已保存的 theme.json（不含这些未应用改动）。继续导出？',
+    { count: pending }))) {
     return;
   }
-  setBusy(true, '正在导出…');
+  setBusy(true, tsT('actions.export.busy', '正在导出…'));
   try {
     var result = await callPlugin('export_theme', {});
     var hint = pending
-      ? '下面是已保存到 theme.json 的调色板 JSON（不含 ' + pending + ' 项未应用改动），可复制保存或分享。'
-      : '下面是当前调色板的 JSON 文本，可复制保存或分享。';
-    // 同时下载一份 JSON 文件。
+      ? tsT('actions.export.hintPending', '下面是已保存到 theme.json 的调色板 JSON（不含 {{count}} 项未应用改动），可复制保存或分享。', { count: pending })
+      : tsT('actions.export.hint', '下面是当前调色板的 JSON 文本，可复制保存或分享。');
+    // Also download a JSON file.
     try {
       var savedJson = await saveThemeFile({ kind: 'json' });
       hint = savedHint(savedJson) + '\n\n' + hint;
-      setStatus(pending ? '已导出并下载（不含未应用改动）' : '已导出并下载', 'ok');
+      setStatus(pending
+        ? tsT('actions.export.doneDownloadedPending', '已导出并下载（不含未应用改动）')
+        : tsT('actions.export.doneDownloaded', '已导出并下载'), 'ok');
     } catch (saveError) {
-      hint = '下载文件失败（' + pluginErrorMessage(saveError) + '），下面是 JSON 文本，可手动复制。\n\n' + hint;
-      setStatus('已导出（未写出文件）', 'ok');
+      hint = tsT('actions.export.downloadFailed', '下载文件失败（{{error}}），下面是 JSON 文本，可手动复制。',
+        { error: pluginErrorMessage(saveError) }) + '\n\n' + hint;
+      setStatus(tsT('actions.export.doneNoFile', '已导出（未写出文件）'), 'ok');
     }
-    openModal('export', '导出主题', hint, result.payload || '');
+    openModal('export', tsT('actions.export.title', '导出主题'), hint, result.payload || '');
   } catch (error) {
-    showNotice('error', '导出失败：' + pluginErrorMessage(error));
-    showToast('导出失败', 'error');
-    setStatus('导出失败', 'error');
+    showNotice('error', tsT('actions.export.failedNotice', '导出失败：{{error}}', { error: pluginErrorMessage(error) }));
+    showToast(tsT('actions.export.failed', '导出失败'), 'error');
+    setStatus(tsT('actions.export.failed', '导出失败'), 'error');
   } finally {
     setBusy(false);
   }
 }
 
-// 与 plugin/__init__.py 的 IMPORT_MAX_CHARS 保持一致。宿主的 input_schema 会在
-// entry 被调用之前就按 maxLength 拒绝超长输入，并把错误包成 INTERNAL，用户看到的
-// 是一条看不懂的内部报错 —— 所以这里先拦一次，给出人话提示。
+// Keep in sync with IMPORT_MAX_CHARS in plugin/__init__.py. The host's input_schema
+// rejects over-long input by maxLength before the entry is even called and wraps the
+// error as INTERNAL, which users cannot make sense of -- so check here first and give
+// a readable message.
 var IMPORT_MAX_CHARS = 262144;
 
 function openImport() {
-  openModal('import', '导入主题', '粘贴调色板 JSON 文本。导入为整体替换；非法条目会被后端丢弃。', '');
+  openModal('import', tsT('actions.import.title', '导入主题'),
+    tsT('actions.import.hint', '粘贴调色板 JSON 文本。导入为整体替换；非法条目会被后端丢弃。'), '');
 }
 
 async function doImport() {
   var text = $('modal-text').value.trim();
-  if (!text) { showToast('请先粘贴内容'); return; }
+  if (!text) { showToast(tsT('actions.import.empty', '请先粘贴内容')); return; }
   if (text.length > IMPORT_MAX_CHARS) {
-    var tooLong = '导入内容过长（' + text.length + ' 字符，上限 ' + IMPORT_MAX_CHARS +
-      ' 字符）。请删掉不必要的内容后重试。';
+    var tooLong = tsT('actions.import.tooLong',
+      '导入内容过长（{{length}} 字符，上限 {{max}} 字符）。请删掉不必要的内容后重试。',
+      { length: text.length, max: IMPORT_MAX_CHARS });
     showNotice('error', tooLong);
-    showToast('导入失败', 'error');
-    setStatus('导入失败：内容过长', 'error');
-    openModal('import', '导入主题', tooLong + '\n粘贴内容已保留，可修改后重试。', text);
+    showToast(tsT('actions.import.failed', '导入失败'), 'error');
+    setStatus(tsT('actions.import.failedTooLong', '导入失败：内容过长'), 'error');
+    openModal('import', tsT('actions.import.title', '导入主题'),
+      tooLong + '\n' + tsT('actions.import.textKept', '粘贴内容已保留，可修改后重试。'), text);
     return;
   }
   closeModal();
-  setBusy(true, '正在导入…');
+  setBusy(true, tsT('actions.import.busy', '正在导入…'));
   try {
     var result = await callPlugin('import_theme', { payload: text });
     state.edited = { light: {}, dark: {} };
@@ -3928,39 +4163,44 @@ async function doImport() {
     clearRgbMemory();
     var reloaded = await reloadPalette({ silent: true });
     var readbackNote = reloaded ? '' :
-      '\n已写入，但回读失败，面板显示可能不是最新值，请点「重新读取」。';
+      '\n' + tsT('actions.readbackFailedNote', '已写入，但回读失败，面板显示可能不是最新值，请点「重新读取」。');
     var rejected = result && result.rejected;
     if (rejected && rejected.length) {
-      showNotice('warn', '已导入，但后端拒绝了 ' + rejected.length + ' 条：\n' + rejected.join('\n') + readbackNote);
-      showToast('已导入（部分条目被拒绝）', 'ok');
-      setStatus('已导入（' + rejected.length + ' 条被拒绝' + (reloaded ? '' : '，回读失败') + '）', 'warn');
+      showNotice('warn', tsT('actions.import.partialNotice', '已导入，但后端拒绝了 {{count}} 条：\n', { count: rejected.length }) +
+        rejected.join('\n') + readbackNote);
+      showToast(tsT('actions.import.partialToast', '已导入（部分条目被拒绝）'), 'ok');
+      setStatus(reloaded
+        ? tsT('actions.import.partialStatus', '已导入（{{count}} 条被拒绝）', { count: rejected.length })
+        : tsT('actions.import.partialStatusReadbackFailed', '已导入（{{count}} 条被拒绝，回读失败）', { count: rejected.length }),
+        'warn');
     } else {
-      showNotice(reloaded ? 'ok' : 'warn', '已导入并写入 theme.json。' + readbackNote);
-      showToast('已导入', 'ok');
-      setStatus('已导入' + (reloaded ? '' : '（回读失败）'), reloaded ? 'ok' : 'warn');
+      showNotice(reloaded ? 'ok' : 'warn', tsT('actions.import.doneNotice', '已导入并写入 theme.json。') + readbackNote);
+      showToast(tsT('actions.import.done', '已导入'), 'ok');
+      setStatus(tsT('actions.import.done', '已导入') + (reloaded ? '' : tsT('actions.readbackFailedSuffix', '（回读失败）')), reloaded ? 'ok' : 'warn');
     }
   } catch (error) {
-    showNotice('error', '导入失败：' + pluginErrorMessage(error));
-    showToast('导入失败', 'error');
-    setStatus('导入失败', 'error');
-    // 失败时调色板没变，把用户粘贴的文本放回弹窗，避免「内容被吞、只能重新粘贴」。
-    openModal('import', '导入主题',
-      '导入失败：' + pluginErrorMessage(error) + '\n粘贴内容已保留，可修改后重试。', text);
+    showNotice('error', tsT('actions.import.failedNotice', '导入失败：{{error}}', { error: pluginErrorMessage(error) }));
+    showToast(tsT('actions.import.failed', '导入失败'), 'error');
+    setStatus(tsT('actions.import.failed', '导入失败'), 'error');
+    // On failure the palette is unchanged; put the pasted text back into the dialog so it is not "swallowed".
+    openModal('import', tsT('actions.import.title', '导入主题'),
+      tsT('actions.import.failedNotice', '导入失败：{{error}}', { error: pluginErrorMessage(error) }) + '\n' +
+      tsT('actions.import.textKept', '粘贴内容已保留，可修改后重试。'), text);
   } finally {
     setBusy(false);
   }
 }
 
 /* ============================================================================
- * 10b. 主题仓库（保存 / 切换 / 分享 zip / 导入 zip）
+ * 10b. Theme library (save / switch / share zip / import zip)
  * ==========================================================================*/
 
-/** 3 秒内二次点击才真正删除的行内确认状态（不用 window.confirm：
- *  无头/自动化环境下 confirm 会阻塞渲染进程，整个面板假死）。 */
+/** Inline confirm state: a second click within 3 s actually deletes (no window.confirm:
+ *  in headless / automated environments confirm blocks the renderer and freezes the panel). */
 var pendingDelete = { id: '', at: 0 };
 var LIB_CONFIRM_MS = 3000;
 
-/** base64 → Uint8Array。atob 对非法字符抛异常，调用方自己兜。 */
+/** base64 -> Uint8Array. atob throws on invalid characters; callers handle it. */
 function base64ToBytes(base64) {
   var bin = atob(base64);
   var out = new Uint8Array(bin.length);
@@ -3968,7 +4208,7 @@ function base64ToBytes(base64) {
   return out;
 }
 
-/** 触发一次浏览器下载（Blob + 临时 <a download>）。 */
+/** Trigger a browser download (Blob + temporary <a download>). */
 function downloadBlob(bytes, filename, mime) {
   var blob = new Blob([bytes], { type: mime || 'application/octet-stream' });
   var url = URL.createObjectURL(blob);
@@ -3978,17 +4218,24 @@ function downloadBlob(bytes, filename, mime) {
   a.style.display = 'none';
   document.body.appendChild(a);
   a.click();
-  // 立刻 revoke 会让部分 Chromium 版本取消下载，延后一拍。
+  // Revoking immediately makes some Chromium versions cancel the download; delay a bit.
   setTimeout(function () {
-    try { document.body.removeChild(a); } catch (e) { /* 已被移除 */ }
+    try { document.body.removeChild(a); } catch (e) { /* already removed */ }
     URL.revokeObjectURL(url);
   }, 1000);
 }
 
-/* ===== LIB_CORE_BEGIN —— 主题库纯函数区 =====
- * 只做数据变换，不碰 DOM、不读全局 state：这样 _work/panel_selftest.js 可以把
- * 这一段原样抠出来直接断言（族/tag/搜索三重叠加、收藏置顶、折叠状态读写）。
- * 必须保持 ES5 语法（无箭头函数 / 模板串 / let-const）。 */
+/* ===== LIB_CORE_BEGIN -- theme library pure functions =====
+ * Data transforms only: no DOM, no global state, so _work/panel_selftest.js can
+ * extract this block verbatim and assert on it (family/tag/search filtering,
+ * favorites pinned first, collapsed-state read/write).
+ * Must stay ES5 (no arrow functions / template strings / let-const).
+ * Labels below are the Chinese source text; they are translated at render time
+ * via libT(), which falls back to the source text when tsT is not available. */
+function libT(key, fallback) {
+  return typeof tsT === 'function' ? tsT(key, fallback) : fallback;
+}
+
 var LIB_FAMILIES = [
   { id: 'glassy', label: '液态玻璃', tone: '#7fb8ff' },
   { id: 'gradient', label: '渐变', tone: '#b48bff' },
@@ -4002,17 +4249,17 @@ var LIB_CUSTOM_FAMILY = '__custom__';
 var LIB_FAV_KEY = 'nts.library.favorites';
 var LIB_COLLAPSE_KEY = 'nts.catalog.collapsed';
 
-/** 六个合法族的 id 列表（顺序与 tab 一致）。 */
+/** Ids of the six valid families (same order as the tabs). */
 function libFamilyIds() {
   return LIB_FAMILIES.map(function (family) { return family.id; });
 }
 
 function libFamilyLabel(family) {
-  if (family === LIB_CUSTOM_FAMILY) return '自定义';
+  if (family === LIB_CUSTOM_FAMILY) return libT('library.family.custom', '自定义');
   for (var i = 0; i < LIB_FAMILIES.length; i += 1) {
-    if (LIB_FAMILIES[i].id === family) return LIB_FAMILIES[i].label;
+    if (LIB_FAMILIES[i].id === family) return libT('library.family.' + family, LIB_FAMILIES[i].label);
   }
-  return '其他';
+  return libT('library.family.other', '其他');
 }
 
 function libFamilyTone(family) {
@@ -4024,8 +4271,9 @@ function libFamilyTone(family) {
 }
 
 /**
- * 条目的风格族：后端合法 family 直接用；旧数据没有 family 时按亮/暗变量数
- * 归入 dark / light（契约 §3.1 允许的一支），保证任何条目都有可浏览的族。
+ * An entry's style family: a valid backend family is used as is; legacy data
+ * without one falls into dark / light by its light/dark variable counts (allowed
+ * by contract §3.1), so every entry has a browsable family.
  */
 function libFamilyOf(item) {
   var declared = item && typeof item.family === 'string' ? item.family.toLowerCase() : '';
@@ -4053,7 +4301,7 @@ function libSearchText(item) {
     .join(' ').toLowerCase();
 }
 
-/** 搜索：name / note / tags 子串，大小写不敏感。 */
+/** Search: case-insensitive substring match on name / note / tags. */
 function libMatchesQuery(item, query) {
   var q = String(query || '').trim().toLowerCase();
   if (!q) return true;
@@ -4070,18 +4318,19 @@ function libIsFavorite(item, favorites) {
   return favorites.indexOf(String(item.id)) >= 0;
 }
 
-/** 风格族过滤；LIB_FAV_FAMILY / LIB_CUSTOM_FAMILY 是两个虚拟族。 */
+/** Family filter; LIB_FAV_FAMILY / LIB_CUSTOM_FAMILY are two virtual families. */
 function libMatchesFamily(item, family, favorites) {
   if (!family) return true;
   if (family === LIB_FAV_FAMILY) return libIsFavorite(item, favorites);
-  // 「自定义」= 用户自己保存或导入的条目（后端 builtin=false）。
+  // "Custom" = entries the user saved or imported (backend builtin=false).
   if (family === LIB_CUSTOM_FAMILY) return !item || !item.builtin;
   return libFamilyOf(item) === family;
 }
 
 /**
- * 过滤主流程：family && tag && query 三重叠加。
- * 「全部」视图（family 为空）把收藏置顶，其余保持后端给的顺序（内置在前、新的在前）。
+ * Main filter: family && tag && query combined.
+ * The "All" view (empty family) pins favorites first; the rest keep the backend
+ * order (built-ins first, newest first).
  */
 function libSelectLibrary(items, opts) {
   var query = opts && opts.query ? opts.query : '';
@@ -4113,8 +4362,8 @@ function libSelectLibrary(items, opts) {
 }
 
 /**
- * 「自定义」视图也要收藏置顶：自己的主题往往会攒到几十个，
- * 常用的那几套先冒出来才方便。
+ * The "Custom" view pins favorites first too: users often collect dozens of
+ * their own themes, and the frequently used ones should surface first.
  */
 function libSortCustomWithFavorites(items, favorites) {
   var favs = [];
@@ -4128,8 +4377,9 @@ function libSortCustomWithFavorites(items, favorites) {
 }
 
 /**
- * 各族 tab 的数量徽标：在当前 tag + 搜索条件下，每个族还能筛出多少条。
- * 这样徽标本身就是「点这个 tab 会看到几条」，0 条时也能一眼看出该换条件。
+ * Count badges for the family tabs: how many entries each family yields under the
+ * current tag + search. The badge thus reads "this tab will show N", and a 0 makes
+ * it obvious the filters need changing.
  */
 function libFamilyCounts(items, query, tag, favorites) {
   var counts = { all: 0, fav: 0, custom: 0, families: {} };
@@ -4149,7 +4399,7 @@ function libFamilyCounts(items, query, tag, favorites) {
   return counts;
 }
 
-/** 只留下仍存在于仓库列表里的收藏 id（refreshLibrary 用，旧 id 自动清理）。 */
+/** Keep only favorite ids that still exist in the library (used by refreshLibrary; stale ids are pruned). */
 function libPruneFavorites(favorites, items) {
   var alive = {};
   var list = items instanceof Array ? items : [];
@@ -4175,7 +4425,7 @@ function libStorageWrite(storage, key, value) {
   try { storage.setItem(key, value); return true; } catch (error) { return false; }
 }
 
-/** 收藏 id 列表：非法 JSON / 非数组 / 非字符串项一律丢弃（localStorage 可能被改坏）。 */
+/** Favorite id list: invalid JSON / non-arrays / non-string items are dropped (localStorage may be corrupted). */
 function libReadIdList(storage, key) {
   var raw = libStorageRead(storage, key);
   if (!raw) return [];
@@ -4195,7 +4445,7 @@ function libWriteIdList(storage, key, ids) {
   return libStorageWrite(storage, key, JSON.stringify(list));
 }
 
-/** 折叠状态：只收 names 里列出的分组名，且只认 true（默认全部展开）。 */
+/** Collapsed state: only group names listed in `names`, and only `true` counts (everything expanded by default). */
 function libReadCollapsed(storage, key, names) {
   var raw = libStorageRead(storage, key);
   var out = {};
@@ -4220,22 +4470,27 @@ function libWriteCollapsed(storage, key, collapsed, names) {
 }
 /* ===== LIB_CORE_END ===== */
 
-/** 主题仓库的本地视图状态（v0.2.0：风格族 tab + 搜索 + 收藏 + 标签筛选）。 */
+/** Local view state of the theme library (v0.2.0: family tabs + search + favorites + tag filter). */
 var libraryState = {
   items: [],
-  filter: '',    // 标签筛选（'' = 全部标签）
-  family: '',    // 风格族筛选（'' = 全部；LIB_FAV_FAMILY = 收藏虚拟族）
-  query: '',     // 搜索词
-  favorites: [], // 收藏 id 列表（与 localStorage 同步）
+  filter: '',    // tag filter ('' = all tags)
+  family: '',    // family filter ('' = all; LIB_FAV_FAMILY = favorites virtual family)
+  query: '',     // search text
+  favorites: [], // favorite id list (synced with localStorage)
   lastShuffle: null
 };
-var LIB_EMPTY_TEXT = '仓库还是空的。调好配色后点「保存」存成自己的主题；别人分享的 .zip / .json 用「导入」收进来，之后随时切回来，也能「分享」成 zip 发给别人。';
+/** Empty-library text; a function so the translation is looked up at render time. */
+function libEmptyText() {
+  return tsT('library.empty', '仓库还是空的。调好配色后点「保存」存成自己的主题；别人分享的 .zip / .json 用「导入」收进来，之后随时切回来，也能「分享」成 zip 发给别人。');
+}
 
-// 主题库卡片节点缓存：搜索/标签/族筛选只改变「哪些卡片可见」，卡片本身不用重建。
-// 键 = 主题 id，值 = { sig, node }。sig 不含过滤条件——标签 chip 的 aria-pressed 之后就地同步。
+// Library card node cache: search / tag / family filters only change which cards are
+// visible, so cards need not be rebuilt.
+// Key = theme id, value = { sig, node }. sig excludes the filters -- the tag chips'
+// aria-pressed is synced in place afterwards.
 var libraryCardCache = Object.create(null);
 
-/** localStorage 句柄：隐私模式 / 被禁用时 setItem 会抛，读写一律走 try/catch。 */
+/** localStorage handle: setItem throws in private mode / when disabled, so all reads and writes go through try/catch. */
 function libraryStorage() {
   try { return window.localStorage; } catch (error) { return null; }
 }
@@ -4244,7 +4499,7 @@ function saveLibraryFavorites() {
   libWriteIdList(libraryStorage(), LIB_FAV_KEY, libraryState.favorites);
 }
 
-/** 切换收藏；返回 true = 这次是「收藏」。 */
+/** Toggle a favorite; returns true when it was just favorited. */
 function toggleLibraryFavorite(id) {
   var key = String(id || '');
   if (!key) return false;
@@ -4255,7 +4510,7 @@ function toggleLibraryFavorite(id) {
   return at < 0;
 }
 
-/** 重渲染会替换星标按钮，把焦点还给同一张卡的星标（键盘用户不丢位置）。 */
+/** Re-rendering replaces the star button; give focus back to the same card's star (keyboard users keep their place). */
 function refocusLibraryFav(id) {
   var list = $('lib-list');
   if (!list || typeof list.querySelectorAll !== 'function') return;
@@ -4268,12 +4523,12 @@ function refocusLibraryFav(id) {
   }
 }
 
-/** 分类编辑器：分组名列表（折叠状态只持久化这些已知分组）。 */
+/** Catalog editor: list of group names (collapsed state is persisted only for these known groups). */
 function catalogGroupNames() {
-  return CATALOG.map(function (group) { return group.group; });
+  return CATALOG.map(function (group) { return groupStateKey(group); });
 }
 
-/** 读取折叠状态（nts.catalog.collapsed）；没有记录 = 全部展开。 */
+/** Load collapsed state (nts.catalog.collapsed); no record = everything expanded. */
 function loadCatalogCollapsed() {
   state.collapsed = libReadCollapsed(libraryStorage(), LIB_COLLAPSE_KEY, catalogGroupNames());
 }
@@ -4282,7 +4537,7 @@ function saveCatalogCollapsed() {
   libWriteCollapsed(libraryStorage(), LIB_COLLAPSE_KEY, state.collapsed, catalogGroupNames());
 }
 
-/** 从条目里收集标签，按出现次数排序（内置主题自带 tags）。 */
+/** Collect tags from the entries, sorted by frequency (built-in themes ship with tags). */
 function libraryTags(items) {
   var counts = {};
   items.forEach(function (item) {
@@ -4299,7 +4554,7 @@ function libraryTags(items) {
   });
 }
 
-/** 缩略色板：当前亮/暗模式下取后端给的 preview 快照。 */
+/** Thumbnail swatch: the backend's preview snapshot for the current light/dark mode. */
 function buildLibraryThumb(item) {
   var preview = null;
   if (item && item.preview && typeof item.preview === 'object') {
@@ -4310,23 +4565,23 @@ function buildLibraryThumb(item) {
     thumb.classList.add('is-blank');
     return thumb;
   }
-  // 值都来自后端校验过的变量，但这里仍走 CSSOM 逐条赋值：
-  // 不拼 HTML、也不整串塞 style 属性，非法值最多被浏览器忽略。
+  // All values come from backend-validated variables, but still assign them one by one
+  // via CSSOM: no HTML concatenation, no whole style string; invalid values are at worst ignored.
   try {
     if (preview.bg) thumb.style.backgroundColor = String(preview.bg);
     if (preview.gradient) thumb.style.backgroundImage = String(preview.gradient);
     if (preview.panel) thumb.style.borderColor = String(preview.panel);
-  } catch (error) { /* 个别浏览器拒绝某个值，忽略即可 */ }
+  } catch (error) { /* some browsers reject a value; just ignore it */ }
   var dots = el('span', { class: 'lib-dots', 'aria-hidden': 'true' });
   var solidUser = preview.userSolid || preview.ai || '';
   if (solidUser) {
     var dotUser = el('span', { class: 'lib-dot' });
-    try { dotUser.style.backgroundColor = String(solidUser); } catch (error) { /* 忽略 */ }
+    try { dotUser.style.backgroundColor = String(solidUser); } catch (error) { /* ignore */ }
     dots.appendChild(dotUser);
   }
   if (preview.accent) {
     var dotAccent = el('span', { class: 'lib-dot lib-dot-accent' });
-    try { dotAccent.style.backgroundColor = String(preview.accent); } catch (error) { /* 忽略 */ }
+    try { dotAccent.style.backgroundColor = String(preview.accent); } catch (error) { /* ignore */ }
     dots.appendChild(dotAccent);
   }
   thumb.appendChild(dots);
@@ -4334,7 +4589,7 @@ function buildLibraryThumb(item) {
 }
 
 
-/** 卡片缓存指纹：只包含「会让这张卡 DOM 变化」的因素（模式、收藏态、条目数据）。 */
+/** Card cache signature: only the factors that change this card's DOM (mode, favorite state, entry data). */
 function libraryCardSig(item) {
   var tags = libTagsOf(item);
   return [
@@ -4353,7 +4608,7 @@ function libraryCardSig(item) {
   ].join('\u0000');
 }
 
-/** 标签 chip 的选中态取决于当前筛选词，就地同步，避免为了一个属性重建整张卡。 */
+/** A tag chip's pressed state depends on the current filter; sync it in place rather than rebuild the card for one attribute. */
 function syncLibraryCardTags(node) {
   if (!node || !node.querySelectorAll) return;
   var chips = node.querySelectorAll('.lib-tag');
@@ -4365,51 +4620,52 @@ function syncLibraryCardTags(node) {
   }
 }
 
-/** 仓库条目的一行（名字/描述用 textContent，绝不拼 HTML）。 */
+/** One library entry row (name/description via textContent, never concatenated HTML). */
 function buildLibraryItem(item) {
-  var name = String(item.name || item.id || '未命名');
+  var name = String(item.name || item.id || tsT('library.item.untitled', '未命名'));
   var family = libFamilyOf(item);
   var favorite = libIsFavorite(item, libraryState.favorites);
   var meta = [];
-  // 内置主题的 saved_at 是「内置」，不要再当时间显示。
-  if (item.builtin) meta.push('内置');
-  else meta.push(String(item.saved_at || '').replace('T', ' ').slice(0, 16) || '未记录时间');
-  meta.push('亮 ' + (item.light || 0) + ' / 暗 ' + (item.dark || 0) + ' 项');
-  if (item.has_image) meta.push('含背景图');
+  // A built-in theme's saved_at is "built-in"; do not display it as a time.
+  if (item.builtin) meta.push(tsT('library.item.builtin', '内置'));
+  else meta.push(String(item.saved_at || '').replace('T', ' ').slice(0, 16) || tsT('library.item.noTime', '未记录时间'));
+  meta.push(tsT('library.item.counts', '亮 {{light}} / 暗 {{dark}} 项', { light: item.light || 0, dark: item.dark || 0 }));
+  if (item.has_image) meta.push(tsT('library.item.hasImage', '含背景图'));
 
-  // 族徽标：中文族名 + 小色点（色点用 CSSOM 赋值，不拼 style 字符串）。
+  // Family badge: family name + small dot (dot color via CSSOM, no style string).
   var familyDot = el('span', { class: 'lib-family-dot', 'aria-hidden': 'true' });
-  try { familyDot.style.backgroundColor = libFamilyTone(family); } catch (error) { /* 忽略 */ }
+  try { familyDot.style.backgroundColor = libFamilyTone(family); } catch (error) { /* ignore */ }
   var familyChip = el('span', { class: 'lib-family-chip', 'data-family': family }, [
     familyDot,
     el('span', { text: libFamilyLabel(family) })
   ]);
 
-  // 材质徽标：这套主题自带高级材质（切过去会一起换），老主题没有就只显示族。
+  // Material badge: this theme ships advanced materials (switched along with it); older themes show only the family.
   var nameRow = el('span', { class: 'lib-name-row' }, [
     el('span', { class: 'lib-name-text', text: name, title: name }),
     familyChip
   ]);
   if (item.material && item.material.enabled === false) {
-    // 配色版主题显式携带 materials.enabled=false：它要关掉高级材质，
-    // 所以徽标必须说「无材质」，不能再显示一个具体的预设名。
+    // Color-only themes carry materials.enabled=false explicitly: they turn advanced
+    // materials off, so the badge must say "no materials", not a specific preset name.
     nameRow.appendChild(el('span', {
       class: 'lib-material-chip is-off',
-      title: '这套主题不带高级材质；应用后会关闭高级材质（你手调的参数会保留）'
-    }, [el('span', { text: '无材质' })]));
+      title: tsT('library.item.noMaterialTitle', '这套主题不带高级材质；应用后会关闭高级材质（你手调的参数会保留）')
+    }, [el('span', { text: tsT('library.item.noMaterial', '无材质') })]));
   } else if (item.material) {
-    var materialLabel = String(item.material.label || item.material.preset || '材质');
+    var materialLabel = String(item.material.label || item.material.preset || tsT('library.item.materialFallback', '材质'));
     var qualityLabel = String(item.material.quality_label || item.material.quality || '');
     var materialChip = el('span', {
       class: 'lib-material-chip',
       'data-preset': String(item.material.preset || ''),
-      title: '自带高级材质：' + materialLabel + (qualityLabel ? ' · ' + qualityLabel : '')
-        + (item.material.enabled === false ? '（主题里默认未启用）' : '')
-    }, [el('span', { text: '材质 · ' + materialLabel })]);
+      title: tsT('library.item.materialTitle', '自带高级材质：{{material}}', {
+        material: materialLabel + (qualityLabel ? ' · ' + qualityLabel : '')
+      }) + (item.material.enabled === false ? tsT('library.item.materialOffByDefault', '（主题里默认未启用）') : '')
+    }, [el('span', { text: tsT('library.item.materialChip', '材质 · {{material}}', { material: materialLabel }) })]);
     nameRow.appendChild(materialChip);
   }
   var text = el('div', { class: 'lib-text' }, [nameRow]);
-  // 描述一行截断；title 里放全文，鼠标悬停能看到完整说明。
+  // The description is truncated to one line; the title holds the full text on hover.
   var noteText = item.note ? String(item.note) : '';
   if (noteText) {
     text.appendChild(el('span', {
@@ -4418,11 +4674,11 @@ function buildLibraryItem(item) {
       title: noteText.slice(0, 500)
     }));
   } else if (!item.builtin) {
-    // 自定义条目没写简介时给一个入口提示：用户不用先猜「编辑」能干什么。
+    // A custom entry without a description gets a hint, so users need not guess what "Edit" does.
     text.appendChild(el('span', {
       class: 'lib-note is-empty',
-      text: '没有简介 · 点「编辑」写一句，分享时会一起带走',
-      title: '简介会显示在卡片上，也会写进分享包的 theme.json'
+      text: tsT('library.item.noNote', '没有简介 · 点「编辑」写一句，分享时会一起带走'),
+      title: tsT('library.item.noNoteTitle', '简介会显示在卡片上，也会写进分享包的 theme.json')
     }));
   }
   text.appendChild(el('span', { class: 'lib-meta', text: meta.join(' · ') }));
@@ -4432,7 +4688,7 @@ function buildLibraryItem(item) {
     tags.slice(0, 4).forEach(function (tag) {
       var chip = el('button', {
         type: 'button', class: 'lib-tag', text: tag,
-        title: '只看「' + tag + '」主题',
+        title: tsT('library.item.tagTitle', '只看「{{tag}}」主题', { tag: tag }),
         'aria-pressed': libraryState.filter === tag ? 'true' : 'false'
       });
       chip.addEventListener('click', function (event) {
@@ -4446,17 +4702,22 @@ function buildLibraryItem(item) {
   }
   var main = el('div', { class: 'lib-main' }, [buildLibraryThumb(item), text]);
 
-  // 收藏按钮：放在操作行里并带文字。之前是右上角一枚半透明的 ☆（22px、opacity .5），
-  // 实际反馈是「根本找不到收藏在哪」，所以改成有文字的按钮（重渲染会换节点，
-  // 仍然按 data-fav-id 找回焦点）。
+  // Favorite button: lives in the action row with text. It used to be a translucent ☆
+  // in the top-right corner (22px, opacity .5), and the feedback was "can't find the
+  // favorite button at all", so it is now a labelled button (re-rendering replaces the
+  // node; focus is still restored via data-fav-id).
   var favBtn = el('button', {
     type: 'button',
     class: 'btn btn-mini lib-fav' + (favorite ? ' is-on' : ''),
-    text: favorite ? '★ 已收藏' : '☆ 收藏',
+    text: favorite ? tsT('library.item.favOn', '★ 已收藏') : tsT('library.item.favOff', '☆ 收藏'),
     'data-fav-id': String(item.id || ''),
     'aria-pressed': favorite ? 'true' : 'false',
-    'aria-label': (favorite ? '取消收藏 ' : '收藏 ') + name,
-    title: favorite ? '取消收藏' : '收藏（进「收藏」分类，并在「全部」里置顶）'
+    'aria-label': favorite
+      ? tsT('library.item.unfavAria', '取消收藏 {{name}}', { name: name })
+      : tsT('library.item.favAria', '收藏 {{name}}', { name: name }),
+    title: favorite
+      ? tsT('library.item.unfavTitle', '取消收藏')
+      : tsT('library.item.favTitle', '收藏（进「收藏」分类，并在「全部」里置顶）')
   });
   favBtn.addEventListener('click', function (event) {
     event.stopPropagation();
@@ -4465,11 +4726,12 @@ function buildLibraryItem(item) {
     if (!refocusLibraryFav(item.id) && !nowFavorite) focusFamilyTab(LIB_FAV_FAMILY);
   });
 
-  // 「编辑」：只改名称/备注/标签。内置主题不给改（后端也会拒绝），所以按 builtin 决定是否渲染。
+  // "Edit": name / note / tags only. Built-in themes cannot be edited (the backend
+  // rejects it too), so render the button based on builtin.
   var metaBtn = item.builtin ? null : el('button', {
-    type: 'button', class: 'btn btn-mini lib-meta', 'data-act': 'meta', text: '编辑',
-    title: '改名称 / 备注 / 标签（id 不变，收藏和排程照旧认它）',
-    'aria-label': '编辑主题信息 ' + name
+    type: 'button', class: 'btn btn-mini lib-meta', 'data-act': 'meta', text: tsT('library.item.edit', '编辑'),
+    title: tsT('library.item.editTitle', '改名称 / 备注 / 标签（id 不变，收藏和排程照旧认它）'),
+    'aria-label': tsT('library.item.editAria', '编辑主题信息 {{name}}', { name: name })
   });
   if (metaBtn) {
     metaBtn.addEventListener('click', function (event) {
@@ -4479,29 +4741,31 @@ function buildLibraryItem(item) {
   }
 
   var applyBtn = el('button', {
-    type: 'button', class: 'btn btn-mini', 'data-act': 'apply', text: '应用',
-    'aria-label': '应用主题 ' + name
+    type: 'button', class: 'btn btn-mini', 'data-act': 'apply', text: tsT('library.item.apply', '应用'),
+    'aria-label': tsT('library.item.applyAria', '应用主题 {{name}}', { name: name })
   });
   var exportBtn = el('button', {
-    type: 'button', class: 'btn btn-mini', 'data-act': 'export', text: '分享',
-    title: '导出成 zip（含背景图片）', 'aria-label': '分享主题 ' + name
+    type: 'button', class: 'btn btn-mini', 'data-act': 'export', text: tsT('library.item.share', '分享'),
+    title: tsT('library.item.shareTitle', '导出成 zip（含背景图片）'),
+    'aria-label': tsT('library.item.shareAria', '分享主题 {{name}}', { name: name })
   });
-  // 「JSON」：把这一套主题导出成纯文本（贴进对话/issue 就能分享）。
-  // 「分享」给的是 zip（含背景图），两者互补：zip 适合自己存档，JSON 适合贴文本。
+  // "JSON": export this theme as plain text (paste into a chat / issue to share).
+  // "Share" gives a zip (with background images); they complement each other: zip for
+  // archiving, JSON for pasting.
   var jsonBtn = el('button', {
     type: 'button', class: 'btn btn-mini lib-json', 'data-act': 'json', text: 'JSON',
-    title: '复制成纯文本 JSON（贴给对方，对方在「导入」里粘贴即可）',
-    'aria-label': '复制主题 JSON ' + name
+    title: tsT('library.item.jsonTitle', '复制成纯文本 JSON（贴给对方，对方在「导入」里粘贴即可）'),
+    'aria-label': tsT('library.item.jsonAria', '复制主题 JSON {{name}}', { name: name })
   });
   jsonBtn.addEventListener('click', function (event) {
     event.stopPropagation();
     copyLibraryItemJson(item, jsonBtn);
   });
 
-  // 内置主题删不掉（后端也会拒绝），直接不渲染删除按钮。
+  // Built-in themes cannot be deleted (the backend rejects it too), so no delete button.
   var deleteBtn = item.builtin ? null : el('button', {
-    type: 'button', class: 'btn btn-mini', 'data-act': 'delete', text: '删除',
-    'aria-label': '删除主题 ' + name
+    type: 'button', class: 'btn btn-mini', 'data-act': 'delete', text: tsT('library.item.delete', '删除'),
+    'aria-label': tsT('library.item.deleteAria', '删除主题 {{name}}', { name: name })
   });
 
   applyBtn.addEventListener('click', function () { applyLibraryItem(item, applyBtn); });
@@ -4518,9 +4782,10 @@ function buildLibraryItem(item) {
     el('div', { class: 'lib-btns' }, libBtns)
   ]);
   row.setAttribute('data-id', String(item.id || ''));
-  // 悬停/焦点预演：鼠标经过或键盘聚焦时右侧预览换成这一套，离开恢复。
-  // 只有真正指向卡片本体才算（卡片内的按钮悬停也会冒泡到卡片，这没关系：
-  // 用户在看这张卡的应用/分享按钮时，预览它本来就是对的）。
+  // Hover / focus preview: the right-hand preview switches to this theme while the
+  // pointer or keyboard focus is on the card, and restores on leave. (Hovering the
+  // card's buttons bubbles up to the card too, which is fine: previewing it while the
+  // user looks at its apply/share buttons is exactly right.)
   row.addEventListener('pointerenter', function () { showHoverPreview(item); });
   row.addEventListener('pointerleave', function () { clearHoverPreview(); });
   row.addEventListener('focusin', function () { showHoverPreview(item); });
@@ -4528,7 +4793,7 @@ function buildLibraryItem(item) {
   return row;
 }
 
-/** 风格族 tab 行（全部 / 收藏 / 六个实体族），带当前筛选下的数量徽标。 */
+/** Family tab row (All / Favorites / the six real families), with count badges under the current filters. */
 function renderLibraryFamilies() {
   var host = $('lib-family-tabs');
   if (!host) return;
@@ -4553,17 +4818,18 @@ function renderLibraryFamilies() {
     });
     return tab;
   };
-  host.appendChild(makeTab('', '全部', counts.all));
-  // 「收藏」「自定义」常驻（即使 0 条也保留）：它们是入口而不是筛选结果，
-  // 藏起来时用户根本不知道有这个功能；点进去有对应的引导文案。
-  host.appendChild(makeTab(LIB_FAV_FAMILY, '收藏', counts.fav));
-  host.appendChild(makeTab(LIB_CUSTOM_FAMILY, '自定义', counts.custom));
+  host.appendChild(makeTab('', tsT('library.filter.all', '全部'), counts.all));
+  // "Favorites" and "Custom" are always shown (even at 0): they are entry points, not
+  // filter results; hidden, users would never learn the feature exists. Each has a
+  // guiding empty-state text.
+  host.appendChild(makeTab(LIB_FAV_FAMILY, tsT('library.family.favorites', '收藏'), counts.fav));
+  host.appendChild(makeTab(LIB_CUSTOM_FAMILY, libFamilyLabel(LIB_CUSTOM_FAMILY), counts.custom));
   LIB_FAMILIES.forEach(function (family) {
-    host.appendChild(makeTab(family.id, family.label, counts.families[family.id] || 0));
+    host.appendChild(makeTab(family.id, libFamilyLabel(family.id), counts.families[family.id] || 0));
   });
 }
 
-/** 取消最后一条收藏后卡片消失时，把焦点还给「收藏」tab。 */
+/** When un-favoriting the last card makes it disappear, return focus to the "Favorites" tab. */
 function focusFamilyTab(family) {
   var host = $('lib-family-tabs');
   if (!host || typeof host.querySelectorAll !== 'function') return;
@@ -4576,7 +4842,7 @@ function focusFamilyTab(family) {
   }
 }
 
-/** 标签筛选条（内置主题多起来以后，一屏十几行很难找）。 */
+/** Tag filter bar (with many built-in themes, a dozen-plus rows per screen are hard to scan). */
 function renderLibraryFilters() {
   var host = $('lib-filters');
   if (!host) return;
@@ -4597,11 +4863,11 @@ function renderLibraryFilters() {
     });
     return chip;
   };
-  host.appendChild(makeChip('全部', ''));
+  host.appendChild(makeChip(tsT('library.filter.all', '全部'), ''));
   tags.forEach(function (tag) { host.appendChild(makeChip(tag, tag)); });
 }
 
-/** 按当前「族 + 标签 + 搜索」筛选渲染仓库列表，「全部」视图里收藏置顶。 */
+/** Render the library list filtered by family + tag + search; favorites are pinned first in "All". */
 function renderLibrary() {
   var list = $('lib-list');
   var empty = $('lib-empty');
@@ -4613,7 +4879,8 @@ function renderLibrary() {
     family: libraryState.family,
     favorites: libraryState.favorites
   });
-  // 复用上次渲染的卡片节点：输入搜索词时只增删可见项，不重建整表（24 套主题 × 10+ 节点）。
+  // Reuse card nodes from the last render: typing a search only adds/removes visible items
+  // instead of rebuilding the whole list (24 themes x 10+ nodes).
   var keep = Object.create(null);
   list.innerHTML = '';
   visible.forEach(function (item) {
@@ -4633,17 +4900,18 @@ function renderLibrary() {
   });
   if (empty) {
     empty.hidden = visible.length > 0;
-    if (!items.length) empty.textContent = LIB_EMPTY_TEXT;
+    if (!items.length) empty.textContent = libEmptyText();
     else if (libraryState.query) {
-      empty.textContent = '没有匹配「' + libraryState.query + '」的主题，换个词试试，或点「全部」清空筛选。';
+      empty.textContent = tsT('library.emptyState.query', '没有匹配「{{query}}」的主题，换个词试试，或点「全部」清空筛选。',
+        { query: libraryState.query });
     } else if (libraryState.family === LIB_FAV_FAMILY) {
-      empty.textContent = '还没有收藏任何主题：点主题卡片下方的「☆ 收藏」按钮就能收藏，收藏会排在「全部」最前面。';
+      empty.textContent = tsT('library.emptyState.favorites', '还没有收藏任何主题：点主题卡片下方的「☆ 收藏」按钮就能收藏，收藏会排在「全部」最前面。');
     } else if (libraryState.family === LIB_CUSTOM_FAMILY) {
-      empty.textContent = '还没有自定义主题：「导入包」可以导入别人分享的 .zip / .json；调好配色点「保存」也会存到这里。';
+      empty.textContent = tsT('library.emptyState.custom', '还没有自定义主题：「导入包」可以导入别人分享的 .zip / .json；调好配色点「保存」也会存到这里。');
     } else if (libraryState.filter) {
-      empty.textContent = '没有「' + libraryState.filter + '」标签的主题，点「全部」看所有。';
+      empty.textContent = tsT('library.emptyState.tag', '没有「{{tag}}」标签的主题，点「全部」看所有。', { tag: libraryState.filter });
     } else {
-      empty.textContent = '这个风格族下还没有主题，试试别的族或「全部」。';
+      empty.textContent = tsT('library.emptyState.family', '这个风格族下还没有主题，试试别的族或「全部」。');
     }
   }
   renderLibraryFamilies();
@@ -4657,43 +4925,44 @@ async function refreshLibrary() {
   if (!list) return null;
   try {
     var result = await callPlugin('list_themes', {});
-    // 后端返回 {count, themes:[...]}（早期版本写的是 items，字段名对不上时仓库永远空白）。
+    // The backend returns {count, themes:[...]} (early versions used `items`; a field mismatch left the library forever blank).
     var items = result && result.themes instanceof Array ? result.themes
       : (result && result.items instanceof Array ? result.items : []);
     libraryState.items = items;
-    // 收藏里可能残留已被删除的主题 id：按新列表剪掉并写回 localStorage。
+    // Favorites may hold ids of deleted themes: prune them against the new list and write back to localStorage.
     var prunedFavorites = libPruneFavorites(libraryState.favorites, items);
     if (prunedFavorites.length !== libraryState.favorites.length || prunedFavorites.join('\n') !== libraryState.favorites.join('\n')) {
       libraryState.favorites = prunedFavorites;
       saveLibraryFavorites();
     }
-    // 认不出的族值（旧版本 / 手改）退回「全部」；两个虚拟族是合法的。
+    // Unknown family values (old versions / hand edits) fall back to "All"; the two virtual families are valid.
     if (libraryState.family && libraryState.family !== LIB_FAV_FAMILY &&
         libraryState.family !== LIB_CUSTOM_FAMILY &&
         libFamilyIds().indexOf(libraryState.family) < 0) {
       libraryState.family = '';
     }
-    // 当前筛选标签在新列表里不存在时自动回到「全部」。
+    // If the current tag filter no longer exists in the new list, fall back to "All".
     if (libraryState.filter && libraryTags(items).indexOf(libraryState.filter) < 0) {
       libraryState.filter = '';
     }
     renderLibrary();
-    // 排程卡的下拉和「到点会切到哪套」都取自仓库列表：仓库一变就得重渲染，
-    // 否则删掉 / 改名 / 导入主题之后它还显示旧名字（要重开面板才更新）。
-    // 这里只重渲染，不发 RPC —— 排程配置本身没被 list_themes 改动。
+    // The schedule card's dropdown and "which theme it switches to" come from the library
+    // list: re-render whenever the library changes, or it keeps showing old names after a
+    // delete / rename / import (until the panel is reopened).
+    // Re-render only, no RPC -- list_themes does not change the schedule config itself.
     if (scheduleState.loaded) renderSchedule();
     return items;
   } catch (error) {
-    // 仓库读不到不该挡住编辑器：只提示，不抛。
+    // A library read failure must not block the editor: show a hint, do not throw.
     if (empty) {
       empty.hidden = false;
-      empty.textContent = '仓库读取失败：' + pluginErrorMessage(error);
+      empty.textContent = tsT('library.loadFailed', '仓库读取失败：{{error}}', { error: pluginErrorMessage(error) });
     }
     return null;
   }
 }
 
-/** 「随机」：从内置主题里挑一套和上次不同的直接应用，不满意再点一次。 */
+/** "Shuffle": pick a built-in theme different from the last one and apply it; click again if you don't like it. */
 async function shuffleLibraryTheme() {
   if (state.busy) return;
   var builtins = libraryState.items.filter(function (item) { return item.builtin; });
@@ -4702,14 +4971,14 @@ async function shuffleLibraryTheme() {
     builtins = libraryState.items.filter(function (item) { return item.builtin; });
   }
   if (!builtins.length) {
-    showToast('还没有可随机的内置主题', 'error');
+    showToast(tsT('library.shuffle.none', '还没有可随机的内置主题'), 'error');
     return;
   }
   var pool = builtins.filter(function (item) { return item.id !== libraryState.lastShuffle; });
   if (!pool.length) pool = builtins;
   var pick = pool[Math.floor(Math.random() * pool.length)];
   libraryState.lastShuffle = pick.id;
-  showToast('换个心情：' + String(pick.name || pick.id));
+  showToast(tsT('library.shuffle.picked', '换个心情：{{name}}', { name: String(pick.name || pick.id) }));
   await applyLibraryItem(pick, null);
 }
 
@@ -4719,7 +4988,7 @@ async function saveLibraryTheme() {
   var noteInput = $('lib-note');
   var name = input ? input.value.trim() : '';
   var note = noteInput ? noteInput.value.trim() : '';
-  setBusy(true, '正在保存到仓库…');
+  setBusy(true, tsT('library.save.busy', '正在保存到仓库…'));
   try {
     var args = {};
     if (name) args.name = name;
@@ -4727,18 +4996,20 @@ async function saveLibraryTheme() {
     var result = await callPlugin('save_theme', args);
     if (input) input.value = '';
     if (noteInput) noteInput.value = '';
-    // 存完直接切到「自定义」，让用户看到刚存的那一条（内置主题不在这个分类里）。
+    // After saving, switch to "Custom" so the user sees the entry just saved (built-ins are not in that view).
     libraryState.family = LIB_CUSTOM_FAMILY;
     libraryState.filter = '';
     await refreshLibrary();
     var savedName = (result && result.theme && result.theme.name)
-      || (result && result.name) || name || '当前主题';
-    showToast('已保存「' + savedName + '」到自定义' + (note ? '（简介已写入，分享时一起带走）' : ''), 'ok');
-    setStatus('已保存到自定义主题', 'ok');
+      || (result && result.name) || name || tsT('library.save.currentTheme', '当前主题');
+    showToast(note
+      ? tsT('library.save.doneWithNote', '已保存「{{name}}」到自定义（简介已写入，分享时一起带走）', { name: savedName })
+      : tsT('library.save.done', '已保存「{{name}}」到自定义', { name: savedName }), 'ok');
+    setStatus(tsT('library.save.doneStatus', '已保存到自定义主题'), 'ok');
   } catch (error) {
-    showNotice('error', '保存到仓库失败：' + pluginErrorMessage(error));
-    showToast('保存失败', 'error');
-    setStatus('保存到仓库失败', 'error');
+    showNotice('error', tsT('library.save.failedNotice', '保存到仓库失败：{{error}}', { error: pluginErrorMessage(error) }));
+    showToast(tsT('library.save.failed', '保存失败'), 'error');
+    setStatus(tsT('library.save.failedStatus', '保存到仓库失败'), 'error');
   } finally {
     setBusy(false);
   }
@@ -4747,34 +5018,36 @@ async function saveLibraryTheme() {
 async function applyLibraryItem(item, button) {
   if (state.busy) return;
   if (button) button.disabled = true;
-  setBusy(true, '正在切换主题…');
+  setBusy(true, tsT('library.apply.busy', '正在切换主题…'));
   try {
     var result = await callPlugin('apply_saved_theme', { id: item.id });
-    // 整体替换语义：面板里的未应用改动会失效，必须清干净再回读。
+    // Wholesale replacement: unapplied panel changes become invalid, so clear them before reading back.
     state.edited = { light: {}, dark: {} };
     state.cleared = { light: {}, dark: {} };
     markAllRowsValid();
     clearRgbMemory();
     var reloaded = await reloadPalette({ silent: true });
     var label = (result && result.theme && result.theme.name)
-      || (result && result.name) || item.name || '该主题';
-    // 材质随主题：主题自带材质时明确告诉用户「材质也换了」，锁定时告诉用户「保留了」。
+      || (result && result.name) || item.name || tsT('library.apply.thisTheme', '该主题');
+    // Materials follow the theme: say "materials switched too" when the theme ships them,
+    // and "kept" when they are locked.
     var materialNote = '';
     if (result && result.material_applied && result.material_enabled === false) {
-      materialNote = '，已关闭高级材质（这套主题不带材质）';
-    } else if (result && result.material_applied) materialNote = '，材质已换成主题自带的那套';
+      materialNote = tsT('library.apply.materialOff', '，已关闭高级材质（这套主题不带材质）');
+    } else if (result && result.material_applied) materialNote = tsT('library.apply.materialSwitched', '，材质已换成主题自带的那套');
     else if (result && result.material_present && result.material_locked) {
-      materialNote = '，材质已锁定（保留你手调的设置）';
+      materialNote = tsT('library.apply.materialLocked', '，材质已锁定（保留你手调的设置）');
     }
-    showNotice(reloaded ? 'ok' : 'warn', '已切换到「' + label + '」' + materialNote +
-      (reloaded ? '' : '\n回读失败，面板显示可能不是最新值，请点「重新读取」。'));
-    showToast('已切换到「' + label + '」' + materialNote, 'ok');
-    setStatus('已切换主题' + (reloaded ? '' : '（回读失败）'), reloaded ? 'ok' : 'warn');
+    var switchedText = tsT('library.apply.switched', '已切换到「{{name}}」', { name: label }) + materialNote;
+    showNotice(reloaded ? 'ok' : 'warn', switchedText +
+      (reloaded ? '' : '\n' + tsT('actions.readbackFailedHint', '回读失败，面板显示可能不是最新值，请点「重新读取」。')));
+    showToast(switchedText, 'ok');
+    setStatus(tsT('library.apply.doneStatus', '已切换主题') + (reloaded ? '' : tsT('actions.readbackFailedSuffix', '（回读失败）')), reloaded ? 'ok' : 'warn');
     verifyAppliedShortly();
   } catch (error) {
-    showNotice('error', '切换主题失败：' + pluginErrorMessage(error));
-    showToast('切换失败', 'error');
-    setStatus('切换主题失败', 'error');
+    showNotice('error', tsT('library.apply.failedNotice', '切换主题失败：{{error}}', { error: pluginErrorMessage(error) }));
+    showToast(tsT('library.apply.failed', '切换失败'), 'error');
+    setStatus(tsT('library.apply.failedStatus', '切换主题失败'), 'error');
   } finally {
     if (button) button.disabled = false;
     setBusy(false);
@@ -4784,57 +5057,63 @@ async function applyLibraryItem(item, button) {
 async function exportLibraryItem(item, button) {
   if (state.busy) return;
   if (button) button.disabled = true;
-  setBusy(true, '正在打包…');
+  setBusy(true, tsT('library.share.busy', '正在打包…'));
   try {
     var result = await callPlugin('export_theme_archive', { id: item.id });
     var data = result && result.data ? String(result.data) : '';
-    if (!data) throw new Error('后端没有返回包内容');
+    if (!data) throw new Error(tsT('library.share.noContent', '后端没有返回包内容'));
     var bytes = base64ToBytes(data);
     var filename = (result && result.filename) || ((item.name || 'theme') + '.zip');
     downloadBlob(bytes, filename, 'application/zip');
     var images = result && typeof result.images === 'number' ? result.images : 0;
-    showToast('已导出 ' + filename + (images ? '（含 ' + images + ' 张图）' : ''), 'ok');
-    setStatus('已导出分享包', 'ok');
+    showToast(images
+      ? tsT('library.share.doneWithImages', '已导出 {{filename}}（含 {{images}} 张图）', { filename: filename, images: images })
+      : tsT('library.share.done', '已导出 {{filename}}', { filename: filename }), 'ok');
+    setStatus(tsT('library.share.doneStatus', '已导出分享包'), 'ok');
   } catch (error) {
-    showNotice('error', '导出分享包失败：' + pluginErrorMessage(error));
-    showToast('导出失败', 'error');
-    setStatus('导出分享包失败', 'error');
+    showNotice('error', tsT('library.share.failedNotice', '导出分享包失败：{{error}}', { error: pluginErrorMessage(error) }));
+    showToast(tsT('actions.export.failed', '导出失败'), 'error');
+    setStatus(tsT('library.share.failedStatus', '导出分享包失败'), 'error');
   } finally {
     if (button) button.disabled = false;
     setBusy(false);
   }
 }
 
-/** 把一套已存主题导出成纯文本 JSON，塞进只读弹窗里让人复制走。
+/** Export a saved theme as plain-text JSON into a read-only dialog for copying.
  *
- * 与「分享」的区别：分享是 zip（能把背景图一起带走），这里是纯文本——
- * 图片没法变成文本，后端会把引用背景图的变量摘掉并告诉有几张，这里照实说明。
- * 也不直接写剪贴板：弹窗里能看见内容、能选中，剪贴板写失败时还能手动 Ctrl+C。
+ * Unlike "Share" (a zip that carries background images), this is plain text --
+ * images cannot become text, so the backend strips variables referencing background
+ * images and reports how many; we state that plainly here.
+ * We also do not write to the clipboard directly: the dialog shows selectable
+ * content, so users can still Ctrl+C manually if a clipboard write fails.
  */
 async function copyLibraryItemJson(item, button) {
   if (state.busy) return;
   if (button) button.disabled = true;
-  setBusy(true, '正在生成主题 JSON…');
+  setBusy(true, tsT('library.json.busy', '正在生成主题 JSON…'));
   try {
     var result = await callPlugin('theme_json', { theme_id: item.id });
     var payload = result && typeof result.payload === 'string' ? result.payload : '';
-    if (!payload) throw new Error('后端没有返回 JSON 内容');
-    var name = (result && result.name) || item.name || item.id || '未命名';
+    if (!payload) throw new Error(tsT('library.json.noContent', '后端没有返回 JSON 内容'));
+    var name = (result && result.name) || item.name || item.id || tsT('library.item.untitled', '未命名');
     var images = result && typeof result.images === 'number' ? result.images : 0;
     var light = result && typeof result.light === 'number' ? result.light : 0;
     var dark = result && typeof result.dark === 'number' ? result.dark : 0;
-    var hint = '这是「' + name + '」的纯文本主题（亮 ' + light + ' / 暗 ' + dark +
-      ' 项）。贴给别人以后，对方在「导入」里粘贴就能用。';
+    var hint = tsT('library.json.hint',
+      '这是「{{name}}」的纯文本主题（亮 {{light}} / 暗 {{dark}} 项）。贴给别人以后，对方在「导入」里粘贴就能用。',
+      { name: name, light: light, dark: dark });
     if (images > 0) {
-      hint += '\n注意：这套主题引用了 ' + images + ' 张背景图，图片没法放进文本，' +
-        '已从 JSON 里摘掉（对方会得到纯色背景）。要连图片一起分享请用「分享」导出 zip。';
+      hint += '\n' + tsT('library.json.imagesStripped',
+        '注意：这套主题引用了 {{count}} 张背景图，图片没法放进文本，已从 JSON 里摘掉（对方会得到纯色背景）。要连图片一起分享请用「分享」导出 zip。',
+        { count: images });
     }
-    openModal('export', '主题 JSON · ' + name, hint, payload);
-    setStatus('已生成主题 JSON，点「复制并关闭」即可复制', 'ok');
+    openModal('export', tsT('library.json.title', '主题 JSON · {{name}}', { name: name }), hint, payload);
+    setStatus(tsT('library.json.doneStatus', '已生成主题 JSON，点「复制并关闭」即可复制'), 'ok');
   } catch (error) {
-    showNotice('error', '生成主题 JSON 失败：' + pluginErrorMessage(error));
-    showToast('生成失败', 'error');
-    setStatus('生成主题 JSON 失败', 'error');
+    showNotice('error', tsT('library.json.failedNotice', '生成主题 JSON 失败：{{error}}', { error: pluginErrorMessage(error) }));
+    showToast(tsT('library.json.failed', '生成失败'), 'error');
+    setStatus(tsT('library.json.failedStatus', '生成主题 JSON 失败'), 'error');
   } finally {
     if (button) button.disabled = false;
     setBusy(false);
@@ -4842,15 +5121,15 @@ async function copyLibraryItemJson(item, button) {
 }
 
 /* ============================================================================
- * 主题库：编辑名称 / 备注 / 标签（v0.4.18）
+ * Theme library: edit name / note / tags (v0.4.18)
  * ==========================================================================*/
 
-/** 打开「编辑主题信息」弹窗。内置主题不给改（后端也会拒绝）。 */
+/** Open the "Edit theme info" dialog. Built-in themes cannot be edited (the backend rejects it too). */
 function openMetaModal(item) {
   if (!item || item.builtin) return;
   state.metaItem = item;
-  openModal('meta', '编辑主题信息 · ' + String(item.name || item.id || ''),
-    '只改名称、备注和标签。条目 id 不变 —— 收藏和「按时段自动换主题」里选的都是它，改名不会让它们失效。',
+  openModal('meta', tsT('library.meta.title', '编辑主题信息 · {{name}}', { name: String(item.name || item.id || '') }),
+    tsT('library.meta.hint', '只改名称、备注和标签。条目 id 不变 —— 收藏和「按时段自动换主题」里选的都是它，改名不会让它们失效。'),
     '');
   $('meta-name-field').value = String(item.name || '');
   $('meta-note').value = String(item.note || '');
@@ -4862,7 +5141,7 @@ function openMetaModal(item) {
   }
 }
 
-/** 「暖色，渐变 ; 深色」→ ['暖色','渐变','深色']（最多 4 个，与后端 _theme_tags 同口径）。 */
+/** "暖色，渐变 ; 深色" -> ['暖色','渐变','深色'] (at most 4, same rules as the backend's _theme_tags). */
 function parseTagInput(text) {
   return String(text || '')
     .split(/[,，、;；\s]+/)
@@ -4876,14 +5155,14 @@ async function saveThemeMeta() {
   if (!item) { closeModal(); return; }
   var name = String($('meta-name-field').value || '').trim();
   if (!name) {
-    showToast('名称不能为空');
+    showToast(tsT('library.meta.nameRequired', '名称不能为空'));
     $('meta-name-field').focus();
     return;
   }
   var okBtn = $('modal-ok');
   var original = okBtn.textContent;
   okBtn.disabled = true;
-  okBtn.textContent = '保存中…';
+  okBtn.textContent = tsT('library.meta.saving', '保存中…');
   try {
     var result = await callPlugin('update_theme_meta', {
       theme_id: item.id,
@@ -4895,15 +5174,15 @@ async function saveThemeMeta() {
     closeModal();
     await refreshLibrary();
     if (result && result.updated === false) {
-      showToast('没有变化，已保持原样');
+      showToast(tsT('library.meta.unchanged', '没有变化，已保持原样'));
     } else {
-      showToast('已更新「' + String((result && result.name) || name) + '」', 'ok');
-      setStatus('主题信息已更新', 'ok');
+      showToast(tsT('library.meta.updated', '已更新「{{name}}」', { name: String((result && result.name) || name) }), 'ok');
+      setStatus(tsT('library.meta.updatedStatus', '主题信息已更新'), 'ok');
     }
   } catch (error) {
-    // 弹窗不关：用户刚打的字还在，改一改再存即可。
-    showNotice('error', '修改主题信息失败：' + pluginErrorMessage(error));
-    showToast('修改失败，看看左侧提示');
+    // Keep the dialog open: what the user just typed is still there to fix and save again.
+    showNotice('error', tsT('library.meta.failedNotice', '修改主题信息失败：{{error}}', { error: pluginErrorMessage(error) }));
+    showToast(tsT('library.meta.failed', '修改失败，看看左侧提示'));
   } finally {
     okBtn.disabled = false;
     okBtn.textContent = original;
@@ -4911,12 +5190,12 @@ async function saveThemeMeta() {
 }
 
 /* ============================================================================
- * 首次使用提示（v0.4.18）
+ * First-use hint (v0.4.18)
  * ==========================================================================*/
 
 var RESTART_HINT_KEY = 'nts.restartHint.dismissed';
 
-/** 提示条：没关过就显示；关掉写 localStorage，隐私模式下写失败也不影响用（下次还会显示）。 */
+/** Hint bar: shown until dismissed; dismissal is written to localStorage (if that fails in private mode it still works, it just shows again next time). */
 function initRestartHint() {
   var bar = $('restart-hint');
   if (!bar) return;
@@ -4928,7 +5207,7 @@ function initRestartHint() {
   if (!closeBtn) return;
   closeBtn.addEventListener('click', function () {
     bar.hidden = true;
-    try { localStorage.setItem(RESTART_HINT_KEY, '1'); } catch (error) { /* 忽略 */ }
+    try { localStorage.setItem(RESTART_HINT_KEY, '1'); } catch (error) { /* ignore */ }
   });
 }
 
@@ -4940,23 +5219,25 @@ async function deleteLibraryItem(item, button) {
     pendingDelete = { id: item.id, at: now };
     if (button) {
       button.classList.add('is-confirm');
-      button.textContent = '确认删除';
+      button.textContent = tsT('library.delete.confirmButton', '确认删除');
     }
-    // 这套主题可能正被「按时段自动换主题」用着：删掉之后那些时段到点只会保持
-    // 当时正在用的主题，不会自动换 —— 得在删之前就说清楚，别等用户发现不灵。
+    // This theme may be used by "auto-switch theme by time": after deletion those slots
+    // just keep whatever theme is active instead of switching -- say so before deleting,
+    // not after the user notices it stopped working.
     var refs = scheduleRefsFor(item.id);
     if (refs.length) {
-      showNotice('warn', '「' + String(item.name || item.id) + '」正被自动换主题使用（' +
-        refs.join(' / ') + '）。删掉之后这些时段会保持当时正在用的主题，不会自动换。');
-      showToast('再点一次「确认删除」才会删掉（它正被自动换主题使用）');
+      showNotice('warn', tsT('library.delete.scheduledNotice',
+        '「{{name}}」正被自动换主题使用（{{slots}}）。删掉之后这些时段会保持当时正在用的主题，不会自动换。',
+        { name: String(item.name || item.id), slots: refs.join(' / ') }));
+      showToast(tsT('library.delete.clickAgainScheduled', '再点一次「确认删除」才会删掉（它正被自动换主题使用）'));
     } else {
-      showToast('再点一次「确认删除」才会删掉');
+      showToast(tsT('library.delete.clickAgain', '再点一次「确认删除」才会删掉'));
     }
     setTimeout(function () {
-      // 超时自动解除，避免按钮永远停在确认态。
+      // Disarm automatically on timeout so the button never stays in the confirm state.
       if (button) {
         button.classList.remove('is-confirm');
-        button.textContent = '删除';
+        button.textContent = tsT('library.item.delete', '删除');
       }
       if (pendingDelete.id === item.id) pendingDelete = { id: '', at: 0 };
     }, LIB_CONFIRM_MS);
@@ -4964,31 +5245,33 @@ async function deleteLibraryItem(item, button) {
   }
   pendingDelete = { id: '', at: 0 };
   if (button) button.disabled = true;
-  setBusy(true, '正在删除…');
+  setBusy(true, tsT('library.delete.busy', '正在删除…'));
   try {
     await callPlugin('delete_theme', { id: item.id });
     await refreshLibrary();
-    // 后端读到失效时段会静默丢掉，界面上的「现在是…会切到哪套」也要跟上。
+    // The backend silently drops slots that point to missing themes; the UI's
+    // "now ... will switch to" must follow.
     if (scheduleState.loaded) await refreshSchedule();
-    showToast('已删除', 'ok');
-    setStatus('已删除仓库条目', 'ok');
+    showToast(tsT('library.delete.done', '已删除'), 'ok');
+    setStatus(tsT('library.delete.doneStatus', '已删除仓库条目'), 'ok');
   } catch (error) {
-    // 按钮在第 4406 行就被禁用了；失败后必须还原，否则这张卡永远是灰的，
-    // 再点也没反应（列表签名不含禁用态，刷新列表还会复用同一个按钮）。
+    // The button was disabled above; it must be restored on failure, otherwise the card
+    // stays greyed out forever and clicks do nothing (the list signature excludes the
+    // disabled state, so a refresh reuses the same button).
     if (button) {
       button.disabled = false;
       button.classList.remove('is-confirm');
-      button.textContent = '删除';
+      button.textContent = tsT('library.item.delete', '删除');
     }
-    showNotice('error', '删除失败：' + pluginErrorMessage(error));
-    showToast('删除失败', 'error');
-    setStatus('删除失败', 'error');
+    showNotice('error', tsT('library.delete.failedNotice', '删除失败：{{error}}', { error: pluginErrorMessage(error) }));
+    showToast(tsT('library.delete.failed', '删除失败'), 'error');
+    setStatus(tsT('library.delete.failed', '删除失败'), 'error');
   } finally {
     setBusy(false);
   }
 }
 
-/** 读本地 zip / json 文件并导入仓库（只入仓库，不自动应用）。 */
+/** Read a local zip / json file and import it into the library (library only, not applied). */
 function pickArchiveFile() {
   var fileInput = $('lib-file');
   if (fileInput) fileInput.click();
@@ -5002,82 +5285,89 @@ function handleArchiveFile(file, fileInput) {
     var comma = raw.indexOf(',');
     var base64 = comma >= 0 ? raw.slice(comma + 1) : '';
     if (fileInput) fileInput.value = '';
-    if (!base64) { showToast('读取文件失败', 'error'); return; }
+    if (!base64) { showToast(tsT('library.file.readFailed', '读取文件失败'), 'error'); return; }
     importArchive(file.name, base64);
   };
   reader.onerror = function () {
     if (fileInput) fileInput.value = '';
     var why = reader.error && reader.error.message ? reader.error.message : file.name;
-    showNotice('error', '读取文件失败：' + why);
-    showToast('读取文件失败', 'error');
+    showNotice('error', tsT('library.file.readFailedNotice', '读取文件失败：{{error}}', { error: why }));
+    showToast(tsT('library.file.readFailed', '读取文件失败'), 'error');
   };
   reader.readAsDataURL(file);
 }
 
 async function importArchive(filename, base64) {
   if (state.busy) return;
-  setBusy(true, '正在导入分享包…');
+  setBusy(true, tsT('library.importArchive.busy', '正在导入分享包…'));
   try {
     var result = await callPlugin('import_theme_archive', {
       filename: filename || '',
       data: base64
     });
-    // 导入的条目一律进「自定义」：直接切过去，用户马上能看到刚导入的那套，
-    // 不会在「全部」里和二十多套内置主题混在一起找。
+    // Imported entries always land in "Custom": switch there so the user sees the new
+    // theme right away instead of hunting among twenty-plus built-ins in "All".
     libraryState.family = LIB_CUSTOM_FAMILY;
     libraryState.filter = '';
     await refreshLibrary();
     var label = (result && result.theme && result.theme.name)
-      || (result && result.name) || '未命名主题';
-    // import_theme_archive 返回 {imported, theme:{...has_image}, source_format, rejected}，
-    // 没有顶层 images 计数，只能从 theme.has_image 推断（zip 里的图已落盘并改写引用）。
+      || (result && result.name) || tsT('library.importArchive.untitled', '未命名主题');
+    // import_theme_archive returns {imported, theme:{...has_image}, source_format, rejected}
+    // with no top-level images count, so infer it from theme.has_image (zip images are
+    // already on disk with references rewritten).
     var images = (result && result.theme && result.theme.has_image) ? 1 : 0;
-    showNotice('ok', '已导入「' + label + '」到仓库' + (images ? '（含 ' + images + ' 张背景图）' : '') +
-      '\n它还没有生效 —— 在列表里点「应用」才会切换过去。');
-    showToast('已导入到仓库', 'ok');
-    setStatus('已导入到仓库', 'ok');
+    showNotice('ok', (images
+      ? tsT('library.importArchive.doneWithImages', '已导入「{{name}}」到仓库（含 {{images}} 张背景图）', { name: label, images: images })
+      : tsT('library.importArchive.done', '已导入「{{name}}」到仓库', { name: label })) +
+      '\n' + tsT('library.importArchive.notApplied', '它还没有生效 —— 在列表里点「应用」才会切换过去。'));
+    showToast(tsT('library.importArchive.doneShort', '已导入到仓库'), 'ok');
+    setStatus(tsT('library.importArchive.doneShort', '已导入到仓库'), 'ok');
   } catch (error) {
-    showNotice('error', '导入分享包失败：' + pluginErrorMessage(error));
-    showToast('导入失败', 'error');
-    setStatus('导入分享包失败', 'error');
+    showNotice('error', tsT('library.importArchive.failedNotice', '导入分享包失败：{{error}}', { error: pluginErrorMessage(error) }));
+    showToast(tsT('actions.import.failed', '导入失败'), 'error');
+    setStatus(tsT('library.importArchive.failedStatus', '导入分享包失败'), 'error');
   } finally {
     setBusy(false);
   }
 }
 
 /* ============================================================================
- * 主题库备份 / 恢复（v0.4.16）
+ * Theme library backup / restore (v0.4.16)
  *
- * 为什么需要：此前只有「单套主题」的分享 zip。换电脑、重装、或者误删
- * ``static/themes/`` 之后，用户自己那几十套自定义主题没有任何出口 ——
- * ``install.ps1`` 内部备份用户看不见也拿不到。这里补上「整套库」的进 / 出。
+ * Why: previously there was only the single-theme share zip. After switching
+ * computers, reinstalling, or accidentally deleting ``static/themes/``, users had
+ * no way out for their dozens of custom themes -- the internal ``install.ps1``
+ * backup is invisible and inaccessible to them. This adds whole-library in / out.
  *
- * 三个约束（对应 backend ``_build_library_archive`` / ``import_library``）：
- * 1. 备份包必须可移植：图片改写为 ``url("images/<name>")``，不含本机绝对地址；
- * 2. 恢复**只新增不覆盖**：重装后把老库拿回来时，仓库里可能已经有同名主题，
- *    各留一份；绝不能静默顶掉用户刚做的那些；
- * 3. 单条坏掉不毁整包：``skipped`` 里带着原因，其余照常导入并汇报。
+ * Three constraints (matching backend ``_build_library_archive`` / ``import_library``):
+ * 1. The backup must be portable: images are rewritten to ``url("images/<name>")``,
+ *    with no absolute local paths;
+ * 2. Restore **only adds, never overwrites**: when bringing an old library back after
+ *    a reinstall, same-named themes may already exist -- keep both; never silently
+ *    replace what the user just made;
+ * 3. One broken entry does not ruin the whole package: ``skipped`` carries reasons,
+ *    the rest are imported and reported.
  * ========================================================================== */
 
 async function backupLibrary(button) {
   if (state.busy) return;
   if (!libraryState.items.length) {
-    showToast('主题仓库还是空的，没有可备份的主题', 'warn');
+    showToast(tsT('library.backup.empty', '主题仓库还是空的，没有可备份的主题'), 'warn');
     return;
   }
-  setBusy(true, '正在打包主题库…');
+  setBusy(true, tsT('library.backup.busy', '正在打包主题库…'));
   if (button) button.disabled = true;
   try {
     var result = await saveThemeFile({ kind: 'library' });
     var count = result.themes || 0;
-    showNotice('ok', '主题库已备份（' + count + ' 套）\n' + savedHint(result) +
-      '\n换电脑或重装后，用「恢复备份」选这个 zip 就能整套拿回来（只新增、不覆盖）。');
-    showToast('已备份 ' + count + ' 套主题', 'ok');
-    setStatus('已备份主题库', 'ok');
+    showNotice('ok', tsT('library.backup.doneTitle', '主题库已备份（{{count}} 套）', { count: count }) + '\n' + savedHint(result) +
+      '\n' + tsT('library.backup.restoreHint', '换电脑或重装后，用「恢复备份」选这个 zip 就能整套拿回来（只新增、不覆盖）。'));
+    showToast(tsT('library.backup.done', '已备份 {{count}} 套主题', { count: count }), 'ok');
+    setStatus(tsT('library.backup.doneStatus', '已备份主题库'), 'ok');
   } catch (error) {
-    showNotice('error', '备份主题库失败：' + pluginErrorMessage(error));
-    showToast('备份失败', 'error');
-    setStatus('备份主题库失败', 'error');
+    showNotice('error', tsT('library.backup.failedNotice', '备份主题库失败：{{error}}', { error: pluginErrorMessage(error) }));
+    showToast(tsT('library.backup.failed', '备份失败'), 'error');
+    setStatus(tsT('library.backup.failedStatus', '备份主题库失败'), 'error');
   } finally {
     if (button) button.disabled = false;
     setBusy(false);
@@ -5097,65 +5387,72 @@ function handleLibraryBackupFile(file, fileInput) {
     var comma = raw.indexOf(',');
     var base64 = comma >= 0 ? raw.slice(comma + 1) : '';
     if (fileInput) fileInput.value = '';
-    if (!base64) { showToast('读取文件失败', 'error'); return; }
+    if (!base64) { showToast(tsT('library.file.readFailed', '读取文件失败'), 'error'); return; }
     restoreLibrary(file.name, base64);
   };
   reader.onerror = function () {
     if (fileInput) fileInput.value = '';
     var why = reader.error && reader.error.message ? reader.error.message : file.name;
-    showNotice('error', '读取备份包失败：' + why);
-    showToast('读取文件失败', 'error');
+    showNotice('error', tsT('library.restore.readFailedNotice', '读取备份包失败：{{error}}', { error: why }));
+    showToast(tsT('library.file.readFailed', '读取文件失败'), 'error');
   };
   reader.readAsDataURL(file);
 }
 
 async function restoreLibrary(filename, base64) {
   if (state.busy) return;
-  setBusy(true, '正在恢复主题库…');
+  setBusy(true, tsT('library.restore.busy', '正在恢复主题库…'));
   try {
     var result = await callPlugin('import_library', {
       filename: filename || '',
       data: base64
     });
-    // 恢复进来的都是「自定义」：切过去让用户马上看到
+    // Everything restored is "Custom": switch there so the user sees it right away.
     libraryState.family = LIB_CUSTOM_FAMILY;
     libraryState.filter = '';
     await refreshLibrary();
     var imported = (result && result.imported) || 0;
     var skipped = (result && result.skipped) || [];
-    var text = '已从备份恢复 ' + imported + ' 套主题到仓库';
+    var text = tsT('library.restore.done', '已从备份恢复 {{count}} 套主题到仓库', { count: imported });
     if (skipped.length) {
       var shown = [];
       for (var i = 0; i < skipped.length && i < 3; i++) {
-        shown.push('· ' + (skipped[i].name || '未命名') + '：' + (skipped[i].reason || '导入失败'));
+        shown.push(tsT('library.restore.skippedItem', '· {{name}}：{{reason}}', {
+          name: skipped[i].name || tsT('library.item.untitled', '未命名'),
+          reason: skipped[i].reason || tsT('actions.import.failed', '导入失败')
+        }));
       }
-      text += '\n有 ' + skipped.length + ' 套没能恢复：\n' + shown.join('\n') +
-        (skipped.length > shown.length ? '\n…' : '');
+      text += '\n' + tsT('library.restore.skipped', '有 {{count}} 套没能恢复：', { count: skipped.length }) + '\n' +
+        shown.join('\n') + (skipped.length > shown.length ? '\n…' : '');
     }
-    text += '\n恢复的主题只是进了仓库，点「应用」才会切换过去。';
+    text += '\n' + tsT('library.restore.notApplied', '恢复的主题只是进了仓库，点「应用」才会切换过去。');
     showNotice(skipped.length ? 'warn' : 'ok', text);
-    showToast('已恢复 ' + imported + ' 套主题', skipped.length ? 'warn' : 'ok');
-    setStatus('已恢复主题库', 'ok');
+    showToast(tsT('library.restore.doneShort', '已恢复 {{count}} 套主题', { count: imported }), skipped.length ? 'warn' : 'ok');
+    setStatus(tsT('library.restore.doneStatus', '已恢复主题库'), 'ok');
   } catch (error) {
-    showNotice('error', '恢复主题库失败：' + pluginErrorMessage(error));
-    showToast('恢复失败', 'error');
-    setStatus('恢复主题库失败', 'error');
+    showNotice('error', tsT('library.restore.failedNotice', '恢复主题库失败：{{error}}', { error: pluginErrorMessage(error) }));
+    showToast(tsT('library.restore.failed', '恢复失败'), 'error');
+    setStatus(tsT('library.restore.failedStatus', '恢复主题库失败'), 'error');
   } finally {
     setBusy(false);
   }
 }
 
 /* ============================================================================
- * 按时段自动换主题（v0.4.13）
+ * Auto-switch theme by time of day (v0.4.13)
  *
- * 分工：**后端负责换**，面板只负责配置。
- * 到点后后端把该时段的主题整体写进 theme.json，加载器 1.5s 内自己轮询到，
- * 于是「所有窗口（包括没开面板的）」一起变 —— 这里绝不在前端用定时器改样式，
- * 否则面板一关就失效，还会和加载器抢着写同一个 <style>。
- * 时段边界不在这里算：后端的 windows 原样下发，避免出现第三份「几点算早晨」。
+ * Division of labor: **the backend does the switching**, the panel only configures.
+ * When a slot starts, the backend writes that slot's theme into theme.json and the
+ * loader picks it up by polling within 1.5 s, so all windows (including ones without
+ * the panel) change together -- never restyle from a front-end timer here, or it stops
+ * working once the panel closes and fights the loader over the same <style>.
+ * Slot boundaries are not computed here: the backend's windows are used as is, to
+ * avoid a third definition of "when does morning start".
  * ========================================================================== */
 
-/** 时段 → 中文名。边界一律取 scheduleState.windows，不在前端写死小时数。 */
+/** Slot -> display name (Chinese source text, translated at render time in
+ * scheduleZoneLabel). Boundaries always come from scheduleState.windows; no hours
+ * are hard-coded in the front end. */
 var SCHEDULE_ZONE_LABELS = { morning: '早晨', day: '白天', evening: '傍晚', night: '夜晚' };
 
 var scheduleState = {
@@ -5164,24 +5461,24 @@ var scheduleState = {
   windows: [],
   now: null,
   loaded: false,
-  /** 排程里记着、但仓库里已经不存在的时段（后端 get_schedule 的 stale）。 */
+  /** Slots recorded in the schedule whose theme no longer exists in the library (backend get_schedule's stale). */
   stale: [],
-  /** 周末表里只要有一个时段选了主题，就算「周末用另一套」。 */
+  /** If any weekend slot has a theme, "use a different set on weekends" is on. */
   weekendEnabled: false,
-  /** 卡里有还没保存的选择（改了下拉 / 勾了开关但没点保存）。 */
+  /** The card has unsaved choices (changed a dropdown / toggled a switch without saving). */
   dirty: false,
-  /** 上次渲染选项用的主题列表指纹：列表没变就不重建 <option>，别丢焦点。 */
+  /** Signature of the theme list used for the last options render: unchanged list = do not rebuild <option>s (keeps focus). */
   optionsSig: ''
 };
 
-/** 取某一张表（工作日 / 周末）的 {时段: 主题 id}。 */
+/** Get one table's (weekday / weekend) {slot: theme id}. */
 function scheduleMapOf(kind) {
   var schedule = scheduleState.schedule || {};
   var map = kind === 'weekend' ? schedule.weekend_zones : schedule.zones;
   return map && typeof map === 'object' ? map : {};
 }
 
-/** 周末表是否真的在用（有任一非空时段）。 */
+/** Whether the weekend table is actually in use (any non-empty slot). */
 function scheduleWeekendHasValues(schedule) {
   var map = schedule && schedule.weekend_zones;
   if (!map || typeof map !== 'object') return false;
@@ -5191,7 +5488,7 @@ function scheduleWeekendHasValues(schedule) {
   });
 }
 
-/** 从某个格子（#schedule-rows / #schedule-rows-weekend）收集 {时段: 主题 id}。 */
+/** Collect {slot: theme id} from a grid (#schedule-rows / #schedule-rows-weekend). */
 function collectScheduleZones(containerId) {
   var out = {};
   var rows = $(containerId);
@@ -5205,7 +5502,16 @@ function collectScheduleZones(containerId) {
 }
 
 function scheduleZoneLabel(zone) {
-  return SCHEDULE_ZONE_LABELS[String(zone)] || String(zone);
+  var key = String(zone);
+  if (!Object.prototype.hasOwnProperty.call(SCHEDULE_ZONE_LABELS, key)) return key;
+  return tsT('library.schedule.zone.' + key, SCHEDULE_ZONE_LABELS[key]);
+}
+
+/** "Weekend" / "Weekday" label for a day kind. */
+function scheduleDayLabel(kind) {
+  return kind === 'weekend'
+    ? tsT('library.schedule.weekend', '周末')
+    : tsT('library.schedule.weekday', '工作日');
 }
 
 function schedulePad2(value) {
@@ -5214,7 +5520,7 @@ function schedulePad2(value) {
   return (n < 10 ? '0' : '') + n;
 }
 
-/** 「06:00–10:00」；night 跨零点时显示成「22:00–次日 06:00」。 */
+/** "06:00–10:00"; a night slot crossing midnight shows as "22:00–next day 06:00". */
 function scheduleWindowText(zone) {
   var win = null;
   scheduleState.windows.forEach(function (item) {
@@ -5223,11 +5529,13 @@ function scheduleWindowText(zone) {
   if (!win) return '';
   var start = schedulePad2(win.start) + ':00';
   var end = schedulePad2(win.end) + ':00';
-  if (Number(win.start) > Number(win.end)) return start + '–次日 ' + end;
+  if (Number(win.start) > Number(win.end)) {
+    return tsT('library.schedule.windowOvernight', '{{start}}–次日 {{end}}', { start: start, end: end });
+  }
   return start + '–' + end;
 }
 
-/** 主题列表 → 选项。内置与自定义分两组，内置在前（大多数人的默认选择）。 */
+/** Theme list -> options. Built-in and custom in two groups, built-in first (most people's default choice). */
 function scheduleThemeGroups() {
   var builtin = [];
   var custom = [];
@@ -5248,15 +5556,15 @@ function scheduleOptionsSig(groups) {
   return parts.join('\u0000');
 }
 
-/** 重建某个时段的下拉框（只在主题列表变化时调用）。 */
+/** Rebuild a slot's dropdown (only called when the theme list changes). */
 function fillScheduleSelect(select, groups, current) {
   if (!select) return;
   select.innerHTML = '';
-  var none = el('option', { value: '', text: '（不换，保持原样）' });
+  var none = el('option', { value: '', text: tsT('library.schedule.optionNone', '（不换，保持原样）') });
   select.appendChild(none);
   [
-    { label: '内置主题', items: groups.builtin },
-    { label: '我的主题', items: groups.custom }
+    { label: tsT('library.schedule.groupBuiltin', '内置主题'), items: groups.builtin },
+    { label: tsT('library.schedule.groupCustom', '我的主题'), items: groups.custom }
   ].forEach(function (group) {
     if (!group.items.length) return;
     var optgroup = el('optgroup', { label: group.label });
@@ -5265,25 +5573,26 @@ function fillScheduleSelect(select, groups, current) {
     });
     select.appendChild(optgroup);
   });
-  // 排程里引用的主题可能已被删除：补一个占位项，否则 select.value 赋值会静默失效、
-  // 界面显示第一项「（不换）」而实际排程里还留着那个 id（下一次保存才暴露）。
+  // A theme referenced by the schedule may have been deleted: add a placeholder option,
+  // otherwise assigning select.value silently fails, the UI shows the first item
+  // ("don't switch") while the schedule still holds that id (exposed only on next save).
   var known = groups.builtin.concat(groups.custom).some(function (option) {
     return option.id === current;
   });
   if (current && !known) {
-    select.appendChild(el('option', { value: current, text: current + '（已不存在）' }));
+    select.appendChild(el('option', { value: current, text: tsT('library.schedule.missing', '{{name}}（已不存在）', { name: current }) }));
   }
   select.value = current || '';
 }
 
-/** 记住「排程卡有未保存的选择」，并把保存按钮标成待保存。 */
+/** Remember that the schedule card has unsaved choices and mark the save button as pending. */
 function markScheduleDirty() {
   if (scheduleState.dirty) return;
   scheduleState.dirty = true;
   updateScheduleDirtyHint();
 }
 
-/** 保存成功 / 明确放弃后清掉 dirty 标记（下拉与两个开关都清）。 */
+/** Clear the dirty flags after a successful save / explicit discard (dropdowns and both switches). */
 function clearScheduleDirty() {
   scheduleState.dirty = false;
   ['schedule-weekend', 'schedule-enabled'].forEach(function (id) {
@@ -5299,13 +5608,15 @@ function updateScheduleDirtyHint() {
   var button = $('btn-schedule-save');
   if (!button) return;
   button.classList.toggle('is-dirty', !!scheduleState.dirty);
-  button.textContent = scheduleState.dirty ? '保存 *' : '保存';
+  button.textContent = scheduleState.dirty
+    ? tsT('library.schedule.saveDirty', '保存 *')
+    : tsT('library.schedule.save', '保存');
   button.title = scheduleState.dirty
-    ? '有还没保存的选择（点这里保存）'
-    : '保存工作日与周末的时段选择';
+    ? tsT('library.schedule.saveDirtyTitle', '有还没保存的选择（点这里保存）')
+    : tsT('library.schedule.saveTitle', '保存工作日与周末的时段选择');
 }
 
-/** 重建一格（工作日 / 周末）的四个时段下拉；同一份签名就不动 DOM（别丢焦点）。 */
+/** Rebuild one grid's (weekday / weekend) four slot dropdowns; same signature = leave the DOM alone (keeps focus). */
 function renderScheduleGrid(containerId, kind) {
   var rows = $(containerId);
   if (!rows) return;
@@ -5316,9 +5627,9 @@ function renderScheduleGrid(containerId, kind) {
   if (rows.getAttribute('data-sig') === signature) {
     var selects = rows.querySelectorAll('.schedule-select');
     for (var i = 0; i < selects.length; i += 1) {
-      // 用户改过但还没保存的选择必须留住：刷仓库 / 勾周末 / 外部同步都会
-      // 走到这里，旧实现把 select.value 一律写回「已保存值」，等于静默撤销
-      // 用户刚做的选择（而且没有任何提示）。
+      // Unsaved user choices must be kept: library refresh / weekend toggle / external
+      // sync all land here, and the old code wrote select.value back to the saved value,
+      // silently undoing what the user just picked (with no notice at all).
       if (selects[i].dataset.dirty === '1') continue;
       var zone = selects[i].getAttribute('data-zone');
       var want = String(map[zone] || '');
@@ -5332,7 +5643,8 @@ function renderScheduleGrid(containerId, kind) {
       class: 'schedule-select',
       'data-zone': zone,
       'data-kind': kind,
-      'aria-label': (kind === 'weekend' ? '周末' : '工作日') + scheduleZoneLabel(zone) + '用哪套主题'
+      'aria-label': tsT('library.schedule.selectAria', '{{day}}{{zone}}用哪套主题',
+        { day: scheduleDayLabel(kind), zone: scheduleZoneLabel(zone) })
     });
     fillScheduleSelect(select, groups, String(map[zone] || ''));
     select.addEventListener('change', function () {
@@ -5350,18 +5662,20 @@ function renderScheduleGrid(containerId, kind) {
   rows.setAttribute('data-sig', signature);
 }
 
-/** stale 列表压成一句人话（测试/调试用，渲染里只要长度就不重复调）。 */
+/** Collapse the stale list into one readable line (for tests/debugging; rendering only needs its length). */
 function scheduleStaleText() {
   var stale = scheduleState.stale || [];
   if (!stale.length) return '';
   var labels = stale.map(function (item) {
-    var kind = item && item.day_kind === 'weekend' ? '周末 ' : '工作日 ';
-    return kind + scheduleZoneLabel(item && item.zone);
+    return tsT('library.schedule.slotLabel', '{{day}} {{zone}}', {
+      day: scheduleDayLabel(item && item.day_kind),
+      zone: scheduleZoneLabel(item && item.zone)
+    });
   });
   return labels.join(' / ');
 }
 
-/** 这个主题被自动换主题的哪些时段用着（删除前预警用）。 */
+/** Which auto-switch slots use this theme (for the pre-delete warning). */
 function scheduleRefsFor(themeId) {
   var id = String(themeId || '');
   if (!id) return [];
@@ -5372,14 +5686,17 @@ function scheduleRefsFor(themeId) {
     var map = pair[1] || {};
     Object.keys(map).forEach(function (zone) {
       if (String(map[zone] || '') !== id) return;
-      var label = (kind === 'weekend' ? '周末 ' : '工作日 ') + scheduleZoneLabel(zone);
+      var label = tsT('library.schedule.slotLabel', '{{day}} {{zone}}', {
+        day: scheduleDayLabel(kind),
+        zone: scheduleZoneLabel(zone)
+      });
       if (refs.indexOf(label) < 0) refs.push(label);
     });
   });
   return refs;
 }
 
-/** 按 scheduleState 重渲染整张卡。 */
+/** Re-render the whole card from scheduleState. */
 function renderSchedule() {
   renderScheduleGrid('schedule-rows', 'weekday');
   renderScheduleGrid('schedule-rows-weekend', 'weekend');
@@ -5400,12 +5717,14 @@ function renderSchedule() {
   if (now) {
     var detail = scheduleState.now;
     if (!detail) {
-      now.textContent = scheduleState.loaded ? '还没读到当前时段。' : '正在读取…';
+      now.textContent = scheduleState.loaded
+        ? tsT('library.schedule.nowUnknown', '还没读到当前时段。')
+        : tsT('library.schedule.loading', '正在读取…');
     } else {
       var current = scheduleZoneLabel(detail.zone);
-      var dayLabel = detail.day_kind === 'weekend' ? '周末' : '工作日';
+      var dayLabel = scheduleDayLabel(detail.day_kind);
       var picked = String(detail.theme_id || '');
-      var theme = '未选（保持原样）';
+      var theme = tsT('library.schedule.notPicked', '未选（保持原样）');
       if (picked) {
         var name = picked;
         var known = false;
@@ -5415,23 +5734,29 @@ function renderSchedule() {
             known = true;
           }
         });
-        // 排程里还记着这个 id，但仓库里已经没有了（被删 / 备份没恢复回来）：
-        // 老实说出来，别让用户以为到点会切到一套不存在的主题。
-        theme = known ? name : name + '（已不存在）';
+        // The schedule still records this id but the library no longer has it (deleted /
+        // not restored from backup): say so honestly, rather than implying it will switch
+        // to a theme that does not exist.
+        theme = known ? name : tsT('library.schedule.missing', '{{name}}（已不存在）', { name: name });
       }
-      var head = '现在是' + dayLabel + '的' + current + '（' + schedulePad2(detail.hour) + ' 点）';
+      var head = tsT('library.schedule.nowHead', '现在是{{day}}的{{zone}}（{{hour}} 点）',
+        { day: dayLabel, zone: current, hour: schedulePad2(detail.hour) });
       if (!scheduleState.schedule.enabled) {
-        now.textContent = head + '；自动换主题已关闭。';
+        now.textContent = head + tsT('library.schedule.nowDisabled', '；自动换主题已关闭。');
       } else if (picked) {
         var fromWeekend = detail.day_kind === 'weekend' && scheduleState.weekendEnabled;
-        now.textContent = head + '，到点会切到「' + theme + '」' + (fromWeekend ? '（周末表）' : '') + '。';
+        now.textContent = head + (fromWeekend
+          ? tsT('library.schedule.nowWillSwitchWeekend', '，到点会切到「{{theme}}」（周末表）。', { theme: theme })
+          : tsT('library.schedule.nowWillSwitch', '，到点会切到「{{theme}}」。', { theme: theme }));
       } else if (scheduleState.stale.length) {
-        // 后端把失效时段丢掉了（排程文件里还留着那个 id），不解释的话用户只会
-        // 看到「这个时段还没选」而不知道自己配的东西为什么没了。
-        now.textContent = head + '；有 ' + scheduleState.stale.length +
-          ' 个时段引用的主题已不在仓库里（重新导入那套主题或重新选一个就会恢复）。';
+        // The backend dropped stale slots (the schedule file still holds the id); without
+        // an explanation the user would only see "no theme picked for this slot" and not
+        // know why their setting vanished.
+        now.textContent = head + tsT('library.schedule.nowStale',
+          '；有 {{count}} 个时段引用的主题已不在仓库里（重新导入那套主题或重新选一个就会恢复）。',
+          { count: scheduleState.stale.length });
       } else {
-        now.textContent = head + '；这个时段还没选主题，到点不会换。';
+        now.textContent = head + tsT('library.schedule.nowNotPicked', '；这个时段还没选主题，到点不会换。');
       }
       now.classList.toggle('is-idle', !scheduleState.schedule.enabled);
     }
@@ -5441,7 +5766,7 @@ function renderSchedule() {
   if (saveBtn) saveBtn.disabled = !!state.busy;
 }
 
-/** 读排程。主题列表为空时顺手拉一次仓库（下拉框要有内容才可选）。 */
+/** Load the schedule. If the theme list is empty, fetch the library too (the dropdowns need options). */
 async function refreshSchedule() {
   try {
     if (!libraryState.items.length) await refreshLibrary();
@@ -5465,23 +5790,23 @@ async function refreshSchedule() {
     var now = $('schedule-now');
     if (now) {
       now.classList.remove('is-idle');
-      now.textContent = '读取排程失败：' + pluginErrorMessage(error);
+      now.textContent = tsT('library.schedule.loadFailed', '读取排程失败：{{error}}', { error: pluginErrorMessage(error) });
     }
     return null;
   }
 }
 
-/** 保存排程。启用状态下后端会立刻按当前时段切一次，所以这里要顺带回读调色板。 */
+/** Save the schedule. When enabled the backend switches immediately for the current slot, so read the palette back too. */
 async function saveSchedule() {
   if (state.busy) return;
   var zones = collectScheduleZones('schedule-rows');
   var weekendBox = $('schedule-weekend');
   var useWeekend = !!(weekendBox && weekendBox.checked);
-  // 不勾「周末用另一套」就发空表：后端据此认为周末沿用工作日那张表。
+  // Without "use a different set on weekends", send an empty table: the backend then reuses the weekday table.
   var weekend = useWeekend ? collectScheduleZones('schedule-rows-weekend') : {};
   var enabledBox = $('schedule-enabled');
   var wanted = !!(enabledBox && enabledBox.checked);
-  setBusy(true, '正在保存自动换主题…');
+  setBusy(true, tsT('library.schedule.saving', '正在保存自动换主题…'));
   try {
     var result = await callPlugin('save_schedule', {
       enabled: wanted,
@@ -5491,43 +5816,45 @@ async function saveSchedule() {
     if (result && result.schedule) scheduleState.schedule = result.schedule;
     if (result && result.now) scheduleState.now = result.now;
     scheduleState.weekendEnabled = scheduleWeekendHasValues(result && result.schedule);
-    // 存盘成功 = 面板里的选择就是磁盘上的选择，dirty 清零。
+    // Saved = the panel's choices are what is on disk; clear dirty.
     clearScheduleDirty();
     renderSchedule();
     var applied = result && result.applied;
     if (applied && applied.action === 'applied') {
-      // 后端已经换过主题了：面板里的编辑器还显示旧的，必须回读，否则用户
-      // 一按「应用」就把自动切换的结果覆盖回去。
+      // The backend already switched themes while the editor still shows the old one:
+      // read back, or the user's next "Apply" would overwrite the auto-switch result.
       await reloadPalette({ silent: true });
-      showToast('已保存，并切换到「' + String((applied.theme && applied.theme.name) || applied.theme_id) + '」', 'ok');
-      setStatus('自动换主题已生效', 'ok');
+      showToast(tsT('library.schedule.savedSwitched', '已保存，并切换到「{{name}}」',
+        { name: String((applied.theme && applied.theme.name) || applied.theme_id) }), 'ok');
+      setStatus(tsT('library.schedule.savedSwitchedStatus', '自动换主题已生效'), 'ok');
     } else if (!wanted) {
-      showToast('已保存（自动换主题已关闭）', 'ok');
-      setStatus('自动换主题已关闭', 'ok');
+      showToast(tsT('library.schedule.savedDisabled', '已保存（自动换主题已关闭）'), 'ok');
+      setStatus(tsT('library.schedule.savedDisabledStatus', '自动换主题已关闭'), 'ok');
     } else {
-      showToast('已保存；这个时段还没选主题', 'ok');
-      setStatus('自动换主题已保存', 'ok');
+      showToast(tsT('library.schedule.savedNoTheme', '已保存；这个时段还没选主题'), 'ok');
+      setStatus(tsT('library.schedule.savedStatus', '自动换主题已保存'), 'ok');
     }
   } catch (error) {
-    showNotice('error', '保存自动换主题失败：' + pluginErrorMessage(error));
-    showToast('保存失败', 'error');
-    setStatus('保存自动换主题失败', 'error');
+    showNotice('error', tsT('library.schedule.saveFailedNotice', '保存自动换主题失败：{{error}}', { error: pluginErrorMessage(error) }));
+    showToast(tsT('library.save.failed', '保存失败'), 'error');
+    setStatus(tsT('library.schedule.saveFailedStatus', '保存自动换主题失败'), 'error');
   } finally {
     setBusy(false);
   }
 }
 
 /* ============================================================================
- * 18. 外部改动感知（v0.4.14）
+ * 18. External change detection (v0.4.14)
  *
- * 面板不是唯一的写入方：按时段自动换主题的后台线程、开着面板的其它窗口、
- * 命令行/脚本都会改 theme.json。面板只在打开时 get_theme 一次，之后一直显示
- * 打开那一刻的旧值 —— 用户看到的主题名、颜色、可读性自检全是过期的，
- * 而且点「应用」时提交的是基于旧值编辑出来的差量。
+ * The panel is not the only writer: the scheduled theme-switch thread, other
+ * windows with the panel open, and CLI/scripts all modify theme.json. The panel
+ * only calls get_theme once on open and then keeps showing those stale values,
+ * so the theme name, colors and readability audit the user sees are outdated,
+ * and clicking "Apply" submits a diff edited on top of old values.
  *
- * 对策：定时轻量轮询 theme.json（纯 GET，不走 entry 调度，没有校验/写锁开销），
- * 比对 updated_at + 两组变量数。只有「面板没有未提交改动」时才自动跟随；
- * 有未提交改动时只提示、绝不覆盖。
+ * Fix: poll theme.json lightly on a timer (plain GET, no entry dispatch, no
+ * validation/write-lock cost) and compare signatures. Follow automatically only
+ * when the panel has no uncommitted edits; otherwise just notify, never overwrite.
  * ==========================================================================*/
 
 var EXTERNAL_SYNC_INTERVAL_MS = 5000;
@@ -5537,15 +5864,15 @@ var EXTERNAL_SYNC_TIMEOUT_MS = 4000;
 var externalSyncState = {
   timer: null,
   inFlight: false,
-  lastSignature: '',   // 上次「面板已知同步」的签名
-  pending: null,       // 已提示过、尚未跟随的外部改动签名
+  lastSignature: '',   // signature of the last state the panel knows it is in sync with
+  pending: null,       // signature of an external change already notified but not yet followed
   failures: 0,
-  warned: false,       // 连续失败提示只弹一次（恢复后重置）
-  materialsDeferred: false, // 上一次回读因材质草稿而没有同步材质
+  warned: false,       // the consecutive-failure notice shows only once (reset on recovery)
+  materialsDeferred: false, // last read-back skipped materials because of material drafts
   lastCheckAt: 0
 };
 
-/** FNV-1a 32 位 —— 同步、无需随机源，只用来判「内容变没变」。 */
+/** FNV-1a 32-bit: synchronous, no randomness, only used to tell whether content changed. */
 function hashText(text) {
   var hash = 0x811c9dc5;
   for (var i = 0; i < text.length; i += 1) {
@@ -5555,12 +5882,13 @@ function hashText(text) {
   return ('00000000' + hash.toString(16)).slice(-8);
 }
 
-/** 调色板的稳定签名：按**内容**算。
+/** Stable palette signature, computed from the **content**.
  *
- *  旧实现是 updated_at + 键数：只有「手改了一个已有变量的值、又没动
- *  updated_at」时完全感知不到 —— 而这恰恰是这个功能存在的理由（面板不是
- *  唯一写入方：按时段自动换主题、CLI、别的窗口都会改 theme.json）。
- *  96×2 条键值算一遍 FNV 是微秒级，5 秒一次完全没有开销问题。 */
+ *  The old implementation used updated_at + key counts, which missed a
+ *  hand-edited value of an existing variable when updated_at stayed the same,
+ *  which is exactly why this feature exists (the panel is not the only writer:
+ *  scheduled switching, CLI and other windows all modify theme.json).
+ *  FNV over 96x2 key/values takes microseconds; once every 5 s costs nothing. */
 function paletteSignature(p) {
   if (!p || typeof p !== 'object') return '';
   function pairBlock(map) {
@@ -5574,7 +5902,7 @@ function paletteSignature(p) {
     p.enabled === false ? '0' : '1',
     pairBlock(p.vars),
     pairBlock(p.dark_vars),
-    // 材质只在别的窗口里改动时，也要能被感知到。
+    // Changes made only to materials in another window must be detected too.
     materialsSignatureText(p.materials)
   ].join('\u0002'));
 }
@@ -5584,14 +5912,14 @@ function materialsSignatureText(materials) {
   try { return JSON.stringify(materials); } catch (e) { return ''; }
 }
 
-/** 材质中心有未应用的改动时算 1 项待应用：外部同步不能把它覆盖掉。 */
+/** Unapplied edits in the material center count as 1 pending item: external sync must not overwrite them. */
 function materialsDirtyCount() {
   var api = window.NekoMaterials;
   if (!api || typeof api.isDirty !== 'function') return 0;
   try { return api.isDirty() ? 1 : 0; } catch (e) { return 0; }
 }
 
-/** 是否应该自动跟随这次外部改动。纯函数，自测里直接断言。 */
+/** Whether to follow this external change automatically. Pure function, asserted directly in self-tests. */
 function externalSyncDecision(signature, state) {
   var opts = state || {};
   if (!signature) return { apply: false, reason: 'empty' };
@@ -5602,7 +5930,7 @@ function externalSyncDecision(signature, state) {
   return { apply: true, reason: 'ok' };
 }
 
-/** 面板当前是否「干净到可以自动跟随」。 */
+/** Whether the panel is currently clean enough to follow automatically. */
 function externalSyncBlockers() {
   var modal = $('modal');
   return {
@@ -5612,33 +5940,34 @@ function externalSyncBlockers() {
   };
 }
 
-/** 提示「磁盘变了但面板有你的改动，没敢自动覆盖」。同一签名只提示一次。 */
+/** Notify that the disk changed but the panel holds edits, so it was not overwritten. Once per signature. */
 function warnExternalChangeBlocked() {
   var blockers = externalSyncBlockers();
   var why = [];
-  if (blockers.dirty) why.push('面板里有 ' + blockers.dirty + ' 项还没应用的改动');
-  if (blockers.modalOpen) why.push('正在编辑弹窗内容');
-  if (blockers.busy) why.push('正在处理上一次操作');
-  showNotice('warn',
+  if (blockers.dirty) why.push(tsT('sync.blockerDirty', '面板里有 {{count}} 项还没应用的改动', { count: blockers.dirty }));
+  if (blockers.modalOpen) why.push(tsT('sync.blockerModal', '正在编辑弹窗内容'));
+  if (blockers.busy) why.push(tsT('sync.blockerBusy', '正在处理上一次操作'));
+  showNotice('warn', tsT('sync.blockedNotice',
     '磁盘上的主题被外部改动了（可能是按时段自动换主题，或别的窗口）。\n' +
-    '面板里' + (why.length ? why.join('、') : '有未完成的操作') +
-    '，为了不覆盖你的改动，没有自动刷新。\n' +
-    '想现在跟上：先应用或「还原本组」清掉面板里的改动；想放弃面板改动直接跟上，就点「重新读取」。');
-  showToast('磁盘主题已变化，未自动覆盖');
+    '面板里{{reasons}}，为了不覆盖你的改动，没有自动刷新。\n' +
+    '想现在跟上：先应用或「还原本组」清掉面板里的改动；想放弃面板改动直接跟上，就点「重新读取」。',
+    { reasons: why.length ? why.join(tsT('sync.reasonSeparator', '、')) : tsT('sync.blockerUnknown', '有未完成的操作') }));
+  showToast(tsT('sync.blockedToast', '磁盘主题已变化，未自动覆盖'));
 }
 
-/** 外部同步连续失败要说出来：静默坏掉的功能等于没有。 */
+/** Report repeated external-sync failures: a feature that breaks silently is no feature. */
 function noteExternalSyncFailure() {
   externalSyncState.failures += 1;
   if (externalSyncState.failures < 3 || externalSyncState.warned) return;
   externalSyncState.warned = true;
-  showNotice('warn', '面板已经连续 ' + externalSyncState.failures
-    + ' 次读不到 theme.json，「外部改动自动跟随」暂时不可用。\n'
-    + '你仍然可以手动编辑；如果一直这样，点「运行状态」看看主题服务是否还正常。');
-  setStatus('外部改动感知不可用', 'warn');
+  showNotice('warn', tsT('sync.failureNotice',
+    '面板已经连续 {{count}} 次读不到 theme.json，「外部改动自动跟随」暂时不可用。\n'
+    + '你仍然可以手动编辑；如果一直这样，点「运行状态」看看主题服务是否还正常。',
+    { count: externalSyncState.failures }));
+  setStatus(tsT('sync.failureStatus', '外部改动感知不可用'), 'warn');
 }
 
-/** 轮询一次：跟着磁盘走，把面板刷新到一致。失败会累计，连续 3 次后提示一次。 */
+/** Poll once: follow the disk and bring the panel in line. Failures accumulate; notify once after 3 in a row. */
 async function checkExternalChange() {
   if (externalSyncState.inFlight) return false;
   externalSyncState.inFlight = true;
@@ -5671,21 +6000,23 @@ async function checkExternalChange() {
     var palette = await reloadPalette({ silent: true, keepMaterialDrafts: true });
     if (!palette) return false;
     if (externalSyncState.materialsDeferred) {
-      // 回读期间出现了材质草稿：保留草稿、不推进基线，按「有未应用改动」提示一次。
+      // Material drafts appeared during read-back: keep them, do not advance the baseline, notify once as "unapplied edits".
       if (externalSyncState.pending !== signature) {
         externalSyncState.pending = signature;
         warnExternalChangeBlocked();
       }
       return false;
     }
-    // 用后端真值重新确立签名：GET theme.json 与 get_theme 之间可能又被改过，
-    // 拿 GET 的签名当真会让下一轮立刻误报「又变了」。
+    // Re-establish the signature from the backend's actual value: the file may have
+    // changed again between GET theme.json and get_theme, and trusting the GET
+    // signature would make the next poll report "changed again" right away.
     externalSyncState.lastSignature = paletteSignature(palette);
-    showToast('已同步外部改动：' + (palette.name || '未命名'));
-    setStatus('已同步外部改动', 'ok');
-    // 「运行状态」卡片读的是 studio_status（后端的 theme.json + 窗口上报）。外部改动
-    // 跟过来时只刷编辑区不刷这张卡，卡片就会一直写着上一次的主题名 —— 界面已经是
-    // 默认外观、面板却还说「上次那套主题已生效」，正是用户报的那个现象。
+    showToast(tsT('sync.syncedToast', '已同步外部改动：{{name}}', { name: palette.name || tsT('misc.untitled', '未命名') }));
+    setStatus(tsT('sync.syncedStatus', '已同步外部改动'), 'ok');
+    // The status card reads studio_status (backend theme.json + window reports). If an
+    // external change refreshes only the editor and not this card, the card keeps the
+    // previous theme name: the UI already looks default while the panel says the old
+    // theme is active, which is exactly the reported symptom.
     refreshHealth({});
     return true;
   } catch (error) {
@@ -5699,7 +6030,7 @@ async function checkExternalChange() {
 function startExternalSync() {
   stopExternalSync();
   externalSyncState.timer = setInterval(function () {
-    // 面板在后台时不轮询：省电，也避免切回来时连发几次。
+    // Do not poll while the panel is in the background: saves power and avoids a burst on return.
     if (document.visibilityState === 'hidden') return;
     checkExternalChange();
   }, EXTERNAL_SYNC_INTERVAL_MS);
@@ -5715,25 +6046,34 @@ function stopExternalSync() {
 function revertMode() {
   var mode = state.mode;
   var n = Object.keys(state.edited[mode]).length + Object.keys(state.cleared[mode]).length;
-  if (!n) { showToast('当前' + (mode === 'dark' ? '暗色' : '亮色') + '组没有改动'); return; }
+  if (!n) {
+    showToast(mode === 'dark'
+      ? tsT('misc.revertNoneDark', '当前暗色组没有改动')
+      : tsT('misc.revertNoneLight', '当前亮色组没有改动'));
+    return;
+  }
   state.edited[mode] = {};
   state.cleared[mode] = {};
   syncAll();
-  showToast('已还原' + (mode === 'dark' ? '暗色' : '亮色') + '组改动', 'ok');
+  showToast(mode === 'dark'
+    ? tsT('misc.revertedDark', '已还原暗色组改动')
+    : tsT('misc.revertedLight', '已还原亮色组改动'), 'ok');
 }
 
 async function reloadPalette(options) {
   var silent = options && options.silent;
-  // discardEdits：用户点「重新读取」时明确表示放弃面板里的改动。不清脏的话
-  // dirtyCount 永远 > 0，外部同步被永久拦断且不再提示，面板看着像卡住了；
-  // 更糟的是再点「应用」会把用户以为已放弃的值提交上去。
+  // discardEdits: clicking "Reload" explicitly discards the panel's edits. Without
+  // clearing the dirty state, dirtyCount stays > 0, external sync is blocked forever
+  // with no further notice and the panel looks stuck; worse, the next "Apply" would
+  // submit values the user thinks were discarded.
   var discardEdits = !!(options && options.discardEdits);
   var keepMaterialDrafts = !!(options && options.keepMaterialDrafts);
   setLoading(true);
   try {
     var palette = await callPlugin('get_theme', {});
-    // 外部同步路径：等待 get_theme 期间用户可能刚改了材质（进度条不拦编辑）。
-    // 这时不能用磁盘值覆盖材质草稿，也不推进签名基线，下一轮轮询再试。
+    // External-sync path: the user may have edited materials while get_theme was pending
+    // (the progress bar does not block editing). Do not overwrite the material drafts with
+    // disk values or advance the signature baseline; retry on the next poll.
     var materialsDeferred = keepMaterialDrafts && materialsDirtyCount() > 0;
     externalSyncState.materialsDeferred = materialsDeferred;
     state.palette = palette;
@@ -5742,26 +6082,28 @@ async function reloadPalette(options) {
       state.cleared = { light: {}, dark: {} };
       markAllRowsValid();
       clearRgbMemory();
-      // 「重新读取」既然丢弃了未应用的改动，撤销栈也要一起丢掉：否则再按 Ctrl+Z
-      // 会把刚丢弃的改动又还原回来，用户看到的是「撤销竟然把不要的东西弄回来了」。
+      // Since "Reload" discards unapplied edits, drop the undo stack too: otherwise Ctrl+Z
+      // would bring back the edits just discarded.
       undoState.past.length = 0;
       undoState.future.length = 0;
       updateUndoButtons();
     }
-    // 基线签名跟着更新：否则刚读完就轮到外部同步，会把同一份数据误判成「又变了」。
+    // Update the baseline signature too: otherwise an external-sync poll right after this read would misjudge the same data as "changed".
     if (!materialsDeferred) {
       externalSyncState.lastSignature = paletteSignature(palette);
       externalSyncState.pending = null;
     } else {
-      // 基线作废（而不是保留旧签名）：草稿被撤销或应用后，下一轮轮询无论磁盘
-      // 此时是新值还是又回到了旧值，都会被判为「需要同步」并把面板拉回磁盘。
+      // Invalidate the baseline (instead of keeping the old signature): once the drafts are
+      // reverted or applied, the next poll treats the disk as "needs sync" whether it holds
+      // new values or old ones again, and pulls the panel back to disk.
       externalSyncState.lastSignature = '';
     }
     renderMeta({ discard: discardEdits });
     renderPaletteHint();
-    // 材质子树跟着磁盘刷新：导入/重置/应用之后，材质中心的「已保存」基线
-    // 必须一起更新，否则它一直显示「N 项待应用」。
-    // 保存路径会带上提交时的材质快照：等待期间又改的材质只更新基线、不被覆盖。
+    // Refresh the materials subtree from disk: after import/reset/apply the material
+    // center's "saved" baseline must update too, or it keeps showing "N pending".
+    // The save path passes the submitted material snapshot: materials edited while
+    // waiting only update the baseline and are not overwritten.
     var materialsSyncOptions = (options && Object.prototype.hasOwnProperty.call(options, 'materialsSubmitted'))
       ? { submitted: options.materialsSubmitted }
       : undefined;
@@ -5769,23 +6111,26 @@ async function reloadPalette(options) {
     syncAll();
     applyFilters();
     renderAudit(true);
-    // 读一次磁盘就顺带把「运行状态」刷新一遍：这张卡片说「当前主题/窗口有没有应用」，
-    // 它跟编辑区必须来自同一次读取，否则会出现「编辑区已经是默认、卡片还写着上次那套」。
+    // Every disk read also refreshes the status card: it reports whether the theme is
+    // applied in the windows, and must come from the same read as the editor, or the
+    // editor shows defaults while the card still names the previous theme.
     refreshHealth({});
     var c = paletteCounts(palette);
     if (!silent) {
-      showNotice('ok', '已读取当前主题：亮色 ' + c.light +
-        ' 项 / 暗色 ' + c.dark + ' 项' + savedModeHint(c.light, c.dark));
-      // 状态栏常驻显示两条腿各有多少项，避免「只配了一组」被忽略。
-      setStatus('已读取 · 亮色 ' + c.light + ' / 暗色 ' + c.dark, 'ok');
+      showNotice('ok', tsT('sync.loadedNotice', '已读取当前主题：亮色 {{light}} 项 / 暗色 {{dark}} 项',
+        { light: c.light, dark: c.dark }) + savedModeHint(c.light, c.dark));
+      // The status bar always shows both counts so "only one group configured" is not missed.
+      setStatus(tsT('sync.loadedStatus', '已读取 · 亮色 {{light}} / 暗色 {{dark}}', { light: c.light, dark: c.dark }), 'ok');
     }
     return palette;
   } catch (error) {
     if (!silent) {
-      showNotice('error', '读取失败：' + pluginErrorMessage(error) + '\n（后端主题服务可能没响应；面板仍可编辑，点击「应用」会重试。）');
-      setStatus('读取失败', 'error');
+      showNotice('error', tsT('sync.loadFailedNotice',
+        '读取失败：{{error}}\n（后端主题服务可能没响应；面板仍可编辑，点击「应用」会重试。）',
+        { error: pluginErrorMessage(error) }));
+      setStatus(tsT('sync.loadFailedStatus', '读取失败'), 'error');
     }
-    // 读取失败也不能让面板变成空白：用当前编辑状态继续渲染。
+    // A failed read must not leave the panel blank: keep rendering from the current edit state.
     renderPaletteHint();
     syncAll();
     return null;
@@ -5794,26 +6139,26 @@ async function reloadPalette(options) {
   }
 }
 
-/** busy 期间锁住行内控件：否则飞行中的编辑会在成功后随 state.edited 清空而静默丢失。 */
+/** Lock row controls while busy: otherwise in-flight edits are silently lost when state.edited is cleared on success. */
 function setRowControlsDisabled(busy) {
-  // 主题名/启用开关也是一次性提交的编辑目标：busy 期间不禁用，回读时敲的字会被覆盖。
+  // Theme name / enable switch are submitted in the same batch: if not disabled while busy, text typed during read-back gets overwritten.
   ['theme-name', 'theme-enabled'].forEach(function (id) {
     var node = $(id);
     if (node) node.disabled = !!busy;
   });
   Object.keys(rowsByKey).forEach(function (key) {
     var ref = rowsByKey[key];
-    // 图片行的「选择图片 / 清除」、开关与下拉也要一起禁用：busy 期间它们
-    // 还能点，就会和后端正在进行的写入并发（例如两张背景图同时 import）。
+    // Image rows' "Choose image / Clear", switches and selects must be disabled too: if they
+    // stay clickable while busy they race the backend write in progress (e.g. two background imports).
     ['hexInput', 'colorInput', 'alpha', 'textInput', 'clearBtn',
       'gradAngle', 'gradFrom', 'gradTo', 'gradGen',
       'pickBtn', 'clearImageBtn', 'switchInput', 'selectInput'].forEach(function (name) {
       if (ref[name]) ref[name].disabled = !!busy;
     });
-    // 解锁时不能把 alpha 一律启用：transparent / inherit / 空 的行必须继续置灰，
-    // 否则应用一次之后滑块又能拖出纯黑半透明（旧实现只在 syncRow 里设 disabled，
-    // 被这里一次性覆盖掉）。但若有 RGB 记忆（拖过颜色/选过色），transparent
-    // 也要保持可用 —— 拖动会沿用记忆里的颜色，见 lastRgbByKey。
+    // On unlock, do not enable alpha unconditionally: transparent / inherit / empty rows must
+    // stay disabled, or after one apply the slider could drag out semi-transparent black (the old
+    // code set disabled only in syncRow and this overwrote it). With an RGB memory (color dragged
+    // or picked), transparent stays enabled: dragging reuses the remembered color, see lastRgbByKey.
     if (!busy && ref.alpha) {
       var parsed = parseColor(displayValue(key));
       var transparent = !!parsed && parsed.a === 0;
@@ -5830,60 +6175,67 @@ function setBusy(busy, message) {
 }
 
 /* -------------------------------------------------------------------------- *
- * 10e. 运行状态（status card）
+ * 10e. Status card
  *
- * 插件时代这张卡片叫「安装自检」：主题要生效，插件必须把 loader 两件套与模板
- * 标记写进 N.E.K.O 的安装目录，于是需要「一键修复 / 卸载 / 重新接入」三连。
- * 内置之后这层动作在设计上就不存在了 —— 模板自己 include 静态资源，没有可以
- * 「装错」的位置。卡片改成回答另一个问题：主题到底有没有真的贴到界面上。
+ * In the plugin era this card was the "install self-check": for a theme to take
+ * effect the plugin had to write the two loader files and template markers into
+ * the N.E.K.O install directory, hence "repair / uninstall / reconnect". Built in,
+ * that layer no longer exists by design: templates include the static assets
+ * themselves, so nothing can be "installed wrong". The card now answers another
+ * question: is the theme actually applied to the UI?
  *
- * 数据来自后端 studio_status：数据目录、当前主题、仓库/背景图/内置主题数量，
- * 以及聊天窗口里的加载器通过 loader_report 回传的运行时诊断（后端落在
- * data_dir/diagnostics.json，保留最近 20 次）。
+ * Data comes from the backend studio_status: data directory, current theme,
+ * library/background/built-in counts, plus runtime diagnostics the chat-window
+ * loader sends back via loader_report (stored in data_dir/diagnostics.json,
+ * last 20 kept).
  * -------------------------------------------------------------------------- */
 
-var HELP_TOPICS = [
-  {
-    title: '主题装上了但界面完全没变',
-    body: '按顺序试：①确认在面板里选过颜色并点了「应用」；②彻底关掉 N.E.K.O 再重开'
-      + '（已打开的窗口不会自己重载）；③看「应用侧上报」这一行 —— 一直没有上报，'
-      + '说明聊天窗口还没被打开过。'
-  },
-  {
-    title: '为什么每次改完都要点「应用」',
-    body: '面板上的值只是草稿，点「应用」才会写进数据目录里的 theme.json；'
-      + '聊天窗口每 1.5 秒读一次它，所以应用之后一般秒级生效。'
-  },
-  {
-    title: '亮色 / 暗色是两套独立配色',
-    body: '面板顶部的「亮色 / 暗色」互相独立。只改了暗色组时，本体处在亮色模式下当然看不到变化。'
-  },
-  {
-    title: '主题数据存在哪',
-    body: '点这张卡片上的「复制数据目录」：theme.json（当前主题）、themes/（主题仓库）、'
-      + 'backgrounds/（背景图）、schedule.json（按时段自动换主题）、diagnostics.json（加载器上报）。'
-  },
-  {
-    title: '换机器 / 重装怎么办',
-    body: '面板底部可以「导出」分享包（zip，含背景图）。新机器上导入即可；'
-      + '整个主题仓库也能一次导出，不用一棵树一棵树地存。'
-  },
-  {
-    title: '背景图为什么没显示',
-    body: '背景图由本体后端从数据目录的 backgrounds/ 提供。上传后如果面板预览正常、'
-      + '聊天窗口却没变，先确认「应用侧上报」里没有报错、当前主题是启用状态。'
-  }
-];
+// Built on demand (not at load time) so the text follows the current UI language.
+function helpTopics() {
+  return [
+    {
+      title: tsT('health.help.noChange.title', '主题装上了但界面完全没变'),
+      body: tsT('health.help.noChange.body', '按顺序试：①确认在面板里选过颜色并点了「应用」；②彻底关掉 N.E.K.O 再重开'
+        + '（已打开的窗口不会自己重载）；③看「应用侧上报」这一行 —— 一直没有上报，'
+        + '说明聊天窗口还没被打开过。')
+    },
+    {
+      title: tsT('health.help.whyApply.title', '为什么每次改完都要点「应用」'),
+      body: tsT('health.help.whyApply.body', '面板上的值只是草稿，点「应用」才会写进数据目录里的 theme.json；'
+        + '聊天窗口每 1.5 秒读一次它，所以应用之后一般秒级生效。')
+    },
+    {
+      title: tsT('health.help.lightDark.title', '亮色 / 暗色是两套独立配色'),
+      body: tsT('health.help.lightDark.body', '面板顶部的「亮色 / 暗色」互相独立。只改了暗色组时，本体处在亮色模式下当然看不到变化。')
+    },
+    {
+      title: tsT('health.help.storage.title', '主题数据存在哪'),
+      body: tsT('health.help.storage.body', '点这张卡片上的「复制数据目录」：theme.json（当前主题）、themes/（主题仓库）、'
+        + 'backgrounds/（背景图）、schedule.json（按时段自动换主题）、diagnostics.json（加载器上报）。')
+    },
+    {
+      title: tsT('health.help.migrate.title', '换机器 / 重装怎么办'),
+      body: tsT('health.help.migrate.body', '面板底部可以「导出」分享包（zip，含背景图）。新机器上导入即可；'
+        + '整个主题仓库也能一次导出，不用一棵树一棵树地存。')
+    },
+    {
+      title: tsT('health.help.background.title', '背景图为什么没显示'),
+      body: tsT('health.help.background.body', '背景图由本体后端从数据目录的 backgrounds/ 提供。上传后如果面板预览正常、'
+        + '聊天窗口却没变，先确认「应用侧上报」里没有报错、当前主题是启用状态。')
+    }
+  ];
+}
 
 function openHelpModal() {
+  var topics = helpTopics();
   var lines = [];
-  for (var i = 0; i < HELP_TOPICS.length; i += 1) {
-    lines.push((i + 1) + '. ' + HELP_TOPICS[i].title);
-    lines.push('   ' + HELP_TOPICS[i].body);
+  for (var i = 0; i < topics.length; i += 1) {
+    lines.push((i + 1) + '. ' + topics[i].title);
+    lines.push('   ' + topics[i].body);
     lines.push('');
   }
-  openModal('help', '主题没生效？',
-    '这是主题工坊最常见的问题清单。改完关掉 N.E.K.O 再重开，通常就能看到变化。',
+  openModal('help', tsT('health.help.modalTitle', '主题没生效？'),
+    tsT('health.help.modalHint', '这是主题工坊最常见的问题清单。改完关掉 N.E.K.O 再重开，通常就能看到变化。'),
     lines.join('\n'));
 }
 
@@ -5898,7 +6250,7 @@ function renderHealth(info) {
   while (listNode.firstChild) listNode.removeChild(listNode.firstChild);
 
   if (!info || typeof info !== 'object') {
-    stateNode.textContent = '读取失败：拿不到主题服务状态';
+    stateNode.textContent = tsT('health.stateNoService', '读取失败：拿不到主题服务状态');
     stateNode.className = 'health-line is-bad';
     return;
   }
@@ -5906,97 +6258,102 @@ function renderHealth(info) {
   var items = [];
   var level = 'ok';
 
-  items.push(healthItem('数据目录', String(info.data_dir || '未知'), 'ok'));
+  items.push(healthItem(tsT('health.key.dataDir', '数据目录'), String(info.data_dir || tsT('health.unknown', '未知')), 'ok'));
 
-  // 「停用」不等于「没选主题」：窗口看到的是出厂默认，而 theme.json 里还留着
-  // 上一次那套名字。两件事必须分开说，否则「界面是默认的、面板写着上次那套」
-  // 读起来就像主题丢了。
+  // "Disabled" is not "no theme selected": windows show the factory default while
+  // theme.json still holds the previous name. Say the two apart, or "UI is default,
+  // panel names the old theme" reads like the theme was lost.
   var themeName = String(info.theme_name || DEFAULT_THEME_NAME);
   var currentText = info.theme_enabled
-    ? themeName + '（启用中）' + (info.theme_updated_at ? ' · ' + String(info.theme_updated_at) : '')
-    : '出厂默认配色（主题「' + themeName + '」已停用，打开启用开关再点「应用」）';
-  items.push(healthItem('当前主题', currentText, info.theme_enabled ? 'ok' : 'warn'));
+    ? tsT('health.themeEnabled', '{{name}}（启用中）', { name: themeName })
+      + (info.theme_updated_at ? ' · ' + String(info.theme_updated_at) : '')
+    : tsT('health.themeDisabled', '出厂默认配色（主题「{{name}}」已停用，打开启用开关再点「应用」）', { name: themeName });
+  items.push(healthItem(tsT('health.key.currentTheme', '当前主题'), currentText, info.theme_enabled ? 'ok' : 'warn'));
   if (!info.theme_enabled && level === 'ok') level = 'warn';
 
   var light = Number(info.light_vars) || 0;
   var dark = Number(info.dark_vars) || 0;
   if (light + dark === 0) {
     if (level === 'ok') level = 'warn';
-    items.push(healthItem('配色变量', '还是出厂空主题 —— 选好颜色点「应用」才会生效', 'warn'));
+    items.push(healthItem(tsT('health.key.vars', '配色变量'), tsT('health.varsEmpty', '还是出厂空主题 —— 选好颜色点「应用」才会生效'), 'warn'));
   } else {
-    items.push(healthItem('配色变量', '亮色 ' + light + ' 项 · 暗色 ' + dark + ' 项', 'ok'));
+    items.push(healthItem(tsT('health.key.vars', '配色变量'),
+      tsT('health.varsCount', '亮色 {{light}} 项 · 暗色 {{dark}} 项', { light: light, dark: dark }), 'ok'));
   }
 
-  items.push(healthItem('主题仓库', (Number(info.library_count) || 0) + ' 套自定义 · '
-    + (Number(info.preset_count) || 0) + ' 套内置', 'ok'));
-  items.push(healthItem('背景图', (Number(info.background_count) || 0) + ' 张', 'ok'));
+  items.push(healthItem(tsT('health.key.library', '主题仓库'), tsT('health.libraryCount', '{{custom}} 套自定义 · {{builtin}} 套内置',
+    { custom: Number(info.library_count) || 0, builtin: Number(info.preset_count) || 0 }), 'ok'));
+  items.push(healthItem(tsT('health.key.backgrounds', '背景图'),
+    tsT('health.backgroundCount', '{{count}} 张', { count: Number(info.background_count) || 0 }), 'ok'));
 
   var loaderVersion = String(info.loader_version || '');
   if (loaderVersion) {
-    items.push(healthItem('加载器资源', 'v' + loaderVersion
+    items.push(healthItem(tsT('health.key.loader', '加载器资源'), 'v' + loaderVersion
       + (info.css_sha8 ? ' · css ' + String(info.css_sha8) : ''), 'ok'));
   } else {
     if (level === 'ok') level = 'warn';
-    items.push(healthItem('加载器资源', '读不到 static/theme-studio/loader/ 下的两件套', 'warn'));
+    items.push(healthItem(tsT('health.key.loader', '加载器资源'), tsT('health.loaderMissing', '读不到 static/theme-studio/loader/ 下的两件套'), 'warn'));
   }
 
   var diag = info.diagnostics;
   if (diag && typeof diag === 'object') {
-    var page = String(diag.page || '未知页面');
+    var page = String(diag.page || tsT('health.unknownPage', '未知页面'));
     var when = String(diag.received_at || '');
-    items.push(healthItem('应用侧上报', page + (when ? ' · ' + when : '')
-      + ' · nts 变量 ' + (Number(diag.nts_vars) || 0)
-      + ' · 样式规则 ' + (Number(diag.rules) || 0), 'ok'));
+    items.push(healthItem(tsT('health.key.report', '应用侧上报'), page + (when ? ' · ' + when : '')
+      + tsT('health.reportStats', ' · nts 变量 {{vars}} · 样式规则 {{rules}}',
+        { vars: Number(diag.nts_vars) || 0, rules: Number(diag.rules) || 0 }), 'ok'));
     if (diag.enabled === false) {
       level = 'bad';
-      items.push(healthItem('加载器状态', '上报说主题是停用的 —— 打开面板的启用开关再点「应用」', 'bad'));
+      items.push(healthItem(tsT('health.key.loaderState', '加载器状态'), tsT('health.loaderDisabled', '上报说主题是停用的 —— 打开面板的启用开关再点「应用」'), 'bad'));
     }
     var diagErrors = diag.errors || [];
     for (var e = 0; e < diagErrors.length && e < 5; e += 1) {
       level = 'bad';
-      items.push(healthItem('加载器报错', String(diagErrors[e]), 'bad'));
+      items.push(healthItem(tsT('health.key.loaderError', '加载器报错'), String(diagErrors[e]), 'bad'));
     }
-    // 上报内容必须和 theme.json 对得上：theme.json 是「后端认为该用的」，上报是
-    // 「窗口里真用上的」。两者不一致时，面板只能如实报「窗口还没应用这次改动」，
-    // 不能拿 theme.json 的名字替窗口宣布「已生效」。
+    // The report must match theme.json: theme.json is what the backend thinks should be
+    // used, the report is what the window actually uses. When they differ, the panel can
+    // only say "the window has not applied this change yet"; it must not use the
+    // theme.json name to declare the theme active on the window's behalf.
     var themeVars = light + dark;
     var reportedVars = Number(diag.nts_vars) || 0;
     var reportedRules = Number(diag.rules) || 0;
     if (info.theme_enabled && themeVars > 0 && reportedVars === 0) {
       level = 'bad';
-      items.push(healthItem('窗口对不上',
-        '上报的窗口 ' + page + ' 一个变量都没应用 —— 那个窗口还是默认外观，刷新它试试', 'bad'));
+      items.push(healthItem(tsT('health.key.windowMismatch', '窗口对不上'),
+        tsT('health.windowMismatch', '上报的窗口 {{page}} 一个变量都没应用 —— 那个窗口还是默认外观，刷新它试试', { page: page }), 'bad'));
     }
     if (reportedVars > 0 && reportedRules === 0) {
       level = 'bad';
-      items.push(healthItem('样式未生效',
-        '上报说注入了 ' + reportedVars + ' 个变量，但样式规则数为 0 —— 注入的 <style> 已被清理', 'bad'));
+      items.push(healthItem(tsT('health.key.styleMissing', '样式未生效'),
+        tsT('health.styleMissing', '上报说注入了 {{count}} 个变量，但样式规则数为 0 —— 注入的 <style> 已被清理', { count: reportedVars }), 'bad'));
     }
     if (themeVars === 0 && reportedVars > 0) {
-      // 反向不一致：theme.json 已经改回空主题，窗口还挂着上一次的样式。窗口 1.5s 内
-      // 就会自己跟上，这里说出来只是让「刚重置完立刻看面板」的人知道是过渡态。
+      // Reverse mismatch: theme.json is back to an empty theme but the window still holds
+      // the previous styles. The window catches up within 1.5 s; this only tells someone
+      // checking right after a reset that it is a transitional state.
       if (level === 'ok') level = 'warn';
-      items.push(healthItem('窗口滞后一拍',
-        'theme.json 已经是空主题，窗口上报的还是上一次的 ' + reportedVars + ' 个变量 —— 1.5 秒内会自己跟上', 'warn'));
+      items.push(healthItem(tsT('health.key.windowLagging', '窗口滞后一拍'),
+        tsT('health.windowLagging', 'theme.json 已经是空主题，窗口上报的还是上一次的 {{count}} 个变量 —— 1.5 秒内会自己跟上', { count: reportedVars }), 'warn'));
     }
   } else {
     if (level === 'ok') level = 'warn';
-    items.push(healthItem('应用侧上报', '还没有收到上报 —— 打开一次聊天窗口后就会有', 'warn'));
+    items.push(healthItem(tsT('health.key.report', '应用侧上报'), tsT('health.noReport', '还没有收到上报 —— 打开一次聊天窗口后就会有'), 'warn'));
   }
 
   for (var i = 0; i < items.length; i += 1) {
     var li = el('li', { class: items[i].level === 'ok' ? '' : 'is-' + items[i].level });
-    li.appendChild(el('span', { class: 'hk', text: items[i].key + '：' }));
+    li.appendChild(el('span', { class: 'hk', text: tsT('health.keyLabel', '{{key}}：', { key: items[i].key }) }));
     li.appendChild(el('span', { class: 'hv', text: items[i].value }));
     listNode.appendChild(li);
   }
 
   if (level === 'ok') {
-    stateNode.textContent = '一切正常：主题已经生效';
+    stateNode.textContent = tsT('health.stateOk', '一切正常：主题已经生效');
   } else if (level === 'warn') {
-    stateNode.textContent = '主题服务正常，但有几处需要注意';
+    stateNode.textContent = tsT('health.stateWarn', '主题服务正常，但有几处需要注意');
   } else {
-    stateNode.textContent = '有问题：主题可能没有生效';
+    stateNode.textContent = tsT('health.stateBad', '有问题：主题可能没有生效');
   }
   stateNode.className = 'health-line is-' + level;
 }
@@ -6007,26 +6364,27 @@ function refreshHealth(options) {
     .then(function (result) {
       state.status = result || {};
       renderHealth(state.status);
-      if (opts.toast) showToast('运行状态已刷新', 'ok');
+      if (opts.toast) showToast(tsT('health.refreshedToast', '运行状态已刷新'), 'ok');
       return state.status;
     })
     .catch(function (error) {
       state.status = null;
       var stateNode = $('health-state');
       if (stateNode) {
-        stateNode.textContent = '读取失败：' + pluginErrorMessage(error);
+        stateNode.textContent = tsT('health.stateLoadFailed', '读取失败：{{error}}', { error: pluginErrorMessage(error) });
         stateNode.className = 'health-line is-bad';
       }
-      if (opts.toast) showToast('读取失败', 'error');
+      if (opts.toast) showToast(tsT('sync.loadFailedStatus', '读取失败'), 'error');
       return null;
     });
 }
 
 /**
- * 应用成功后隔一会儿复核一次「运行状态」。
- * 窗口 1.5s 内就轮到新主题，应用成功时还会立刻上报一次；因此 2.5s 后读到的
- * 运行状态足以判断「theme.json 改了、窗口也真用上了」。对不上就明说，不让
- * 「面板说已切换、界面还是默认」这种沉默的不一致留到用户自己发现。
+ * Re-check the status card shortly after a successful apply.
+ * Windows pick up the new theme within 1.5 s and also report immediately on a
+ * successful apply, so the status read after 2.5 s tells whether theme.json changed
+ * and the window really uses it. If not, say so instead of leaving a silent
+ * "panel says switched, UI still default" mismatch for the user to discover.
  */
 function verifyAppliedShortly() {
   window.setTimeout(function () {
@@ -6035,33 +6393,33 @@ function verifyAppliedShortly() {
       var stateNode = $('health-state');
       var cls = stateNode ? String(stateNode.className || '') : '';
       if (cls.indexOf('is-bad') !== -1) {
-        showNotice('warn', '主题已写进 theme.json，但窗口那边还没应用上 —— '
-          + '看「运行状态」卡片里的「窗口对不上 / 样式未生效」，刷新那个窗口或重启应用即可。');
+        showNotice('warn', tsT('health.verifyMismatch', '主题已写进 theme.json，但窗口那边还没应用上 —— '
+          + '看「运行状态」卡片里的「窗口对不上 / 样式未生效」，刷新那个窗口或重启应用即可。'));
       }
     });
   }, 2500);
 }
 
-/** 复制数据目录：排查问题时可以直接贴给会看日志的人。 */
+/** Copy the data directory so it can be pasted to whoever reads the logs while troubleshooting. */
 async function copyStatusPath() {
   var info = state.status;
   if (!info || !info.data_dir) {
-    showToast('还没有读到数据目录', 'error');
+    showToast(tsT('health.dataDirMissing', '还没有读到数据目录'), 'error');
     return;
   }
   try {
     await navigator.clipboard.writeText(String(info.data_dir));
-    showToast('数据目录已复制', 'ok');
+    showToast(tsT('health.dataDirCopied', '数据目录已复制'), 'ok');
   } catch (error) {
-    showNotice('info', '数据目录：' + String(info.data_dir));
+    showNotice('info', tsT('health.dataDirNotice', '数据目录：{{path}}', { path: String(info.data_dir) }));
   }
 }/* ============================================================================
- * 11. 弹窗
+ * 11. Modal
  * ==========================================================================*/
 
 function openModal(mode, title, hint, text) {
   state.modalMode = mode;
-  // 记住打开弹窗前焦点在哪，关闭后还回去（否则键盘用户会掉回页面顶部）
+  // Remember where focus was before opening and restore it on close (otherwise keyboard users land at the page top)
   state.modalReturnFocus = document.activeElement;
   $('modal-title').textContent = title;
   $('modal-hint').textContent = hint;
@@ -6075,7 +6433,9 @@ function openModal(mode, title, hint, text) {
     if (mode === 'export') area.select();
   }
   if (fields) fields.style.display = isMeta ? '' : 'none';
-  $('modal-ok').textContent = mode === 'export' ? '复制并关闭' : (isMeta ? '保存' : '确定');
+  $('modal-ok').textContent = mode === 'export'
+    ? tsT('modal.copyAndClose', '复制并关闭')
+    : (isMeta ? tsT('modal.save', '保存') : tsT('modal.ok', '确定'));
   $('modal').hidden = false;
   area.focus();
 }
@@ -6086,11 +6446,11 @@ function closeModal() {
   var back = state.modalReturnFocus;
   state.modalReturnFocus = null;
   if (back && typeof back.focus === 'function') {
-    try { back.focus(); } catch (e) { /* 元素可能已被替换，忽略 */ }
+    try { back.focus(); } catch (e) { /* the element may have been replaced; ignore */ }
   }
 }
 
-/** 弹窗打开时把 Tab 圈在面板内，避免焦点跑到背后的行编辑器上。 */
+/** While the modal is open, keep Tab inside it so focus does not reach the row editors behind. */
 function trapModalFocus(event) {
   var panel = $('modal-panel') || $('modal');
   if (!panel) return;
@@ -6122,36 +6482,36 @@ function onModalOk() {
   if (state.modalMode === 'export') {
     var area = $('modal-text');
     area.select();
-    // 复制失败就别关弹窗：关掉之后用户既没复制成功、也看不到那段文本了。
+    // Keep the modal open if copying fails: once closed, the text is neither copied nor visible.
     copyText(area.value).then(function () {
-      showToast('已复制到剪贴板', 'ok');
+      showToast(tsT('modal.copied', '已复制到剪贴板'), 'ok');
       closeModal();
     }).catch(function () {
       if (area && area.focus) area.focus();
       if (area && area.select) area.select();
-      showToast('复制失败，文本已选中 —— 按 Ctrl+C 手动复制');
+      showToast(tsT('modal.copyFailedSelected', '复制失败，文本已选中 —— 按 Ctrl+C 手动复制'));
     });
     return;
   }
-  // 帮助弹窗只是说明文字：「确定」只关闭，绝不能当成调色板 JSON 去导入。
+  // The help modal is just text: "OK" only closes it and must never import it as palette JSON.
   if (state.modalMode !== 'import') { closeModal(); return; }
   doImport();
 }
 
-/** 复制调色板 dump（含未应用改动），方便贴 issue / 对比。 */
+/** Copy the palette dump (including unapplied edits) for issues / comparisons. */
 function copyDump() {
-  // 折叠状态下 JSON 可能是旧的（折叠期间只标脏），复制前强制重建一次，
-  // 保证「复制到的就是当前看到的调色板」。
+  // While collapsed the JSON may be stale (only marked dirty), so force a rebuild
+  // before copying: what gets copied is the palette currently shown.
   renderDump(true);
   copyText($('dump').textContent || '').then(function () {
-    showToast('调色板 JSON 已复制', 'ok');
+    showToast(tsT('modal.dumpCopied', '调色板 JSON 已复制'), 'ok');
   }).catch(function () {
-    showToast('复制失败，请手动选择文本');
+    showToast(tsT('modal.copyFailedManual', '复制失败，请手动选择文本'));
   });
 }
 
 /* ============================================================================
- * 12. 引导
+ * 12. Guidance
  * ==========================================================================*/
 
 function isTypingTarget(node) {
@@ -6160,23 +6520,24 @@ function isTypingTarget(node) {
   return tag === 'input' || tag === 'textarea' || tag === 'select' || node.isContentEditable === true;
 }
 
-/** 搜索结果里第一个可见行的可编辑控件 —— 让键盘用户按回车能直接开始改。 */
+/** Editable control of the first visible row in search results, so keyboard users can press Enter and start editing. */
 function firstVisibleRow() {
   var wrap = document.querySelector('.row-wrap:not([hidden])');
   if (!wrap) return null;
-  // 只返回可键入的输入框：色块是 type=color，聚焦它既不能打字、也不会弹出色板
-  // （浏览器只在点击时弹），键盘用户按回车会卡在那里。
+  // Only return text inputs: the swatch is type=color, which can neither be typed into
+  // nor opens the picker on focus (browsers open it only on click), so Enter would get stuck.
   return wrap.querySelector('input.hex, input.raw');
 }
 
-/* ===== FEATURES_28_BEGIN（v0.5.0：拖拽导入 + 导出 CSS 片段）===== */
+/* ===== FEATURES_28_BEGIN (v0.5.0: drag-and-drop import + CSS snippet export) ===== */
 
 /**
- * 把文件拖到面板上直接导入（F7）。
+ * Drop a file onto the panel to import it (F7).
  *
- * 为什么绑在 document.body 上而不是某张卡：用户拖文件时手是奔着「面板」来的，
- * 落在哪张卡上不应该决定能不能导入。用 dragenter/dragleave 的计数抵消子元素
- * 冒泡（进一个子元素会先 leave 再 enter），避免高亮闪烁。
+ * Bound to document.body rather than a single card: the user aims at "the panel",
+ * and which card the file lands on should not decide whether import works. A
+ * dragenter/dragleave counter cancels out child-element bubbling (entering a child
+ * fires leave then enter) to avoid highlight flicker.
  */
 var dropDepth = 0;
 
@@ -6196,6 +6557,9 @@ function dropReset() {
 function initDropImport() {
   if (!document.body || document.body.getAttribute('data-drop-import') === '1') return;
   document.body.setAttribute('data-drop-import', '1');
+  // Overlay text for body.is-drop-target::after (CSS reads it via attr()).
+  document.body.setAttribute('data-drop-label',
+    tsT('misc.dropOverlay', '松开即可导入主题（.zip 分享包 / .json）'));
 
   document.body.addEventListener('dragenter', function (e) {
     if (!dropHasFiles(e.dataTransfer)) return;
@@ -6207,7 +6571,7 @@ function initDropImport() {
   document.body.addEventListener('dragover', function (e) {
     if (!dropHasFiles(e.dataTransfer)) return;
     e.preventDefault();
-    try { e.dataTransfer.dropEffect = 'copy'; } catch (err) { /* 有些环境是只读的 */ }
+    try { e.dataTransfer.dropEffect = 'copy'; } catch (err) { /* read-only in some environments */ }
   });
 
   document.body.addEventListener('dragleave', function (e) {
@@ -6222,23 +6586,23 @@ function initDropImport() {
     dropReset();
     var files = e.dataTransfer && e.dataTransfer.files;
     if (!files || !files.length) return;
-    if (files.length > 1) showToast('一次只能导入一个文件，已用第一个', 'warn');
+    if (files.length > 1) showToast(tsT('misc.dropMultiple', '一次只能导入一个文件，已用第一个'), 'warn');
     var file = files[0];
     var lower = String(file.name || '').toLowerCase();
     if (lower.slice(-4) !== '.zip' && lower.slice(-5) !== '.json') {
-      showNotice('error', '只支持拖入 .zip 分享包或 .json 主题文件。');
-      showToast('文件类型不支持', 'error');
+      showNotice('error', tsT('misc.dropUnsupportedNotice', '只支持拖入 .zip 分享包或 .json 主题文件。'));
+      showToast(tsT('misc.dropUnsupportedToast', '文件类型不支持'), 'error');
       return;
     }
     if (state.busy) {
-      showToast('正在忙，等这一步做完再拖', 'warn');
+      showToast(tsT('misc.dropBusy', '正在忙，等这一步做完再拖'), 'warn');
       return;
     }
-    showNotice('info', '正在读取「' + file.name + '」…');
+    showNotice('info', tsT('misc.dropReading', '正在读取「{{name}}」…', { name: file.name }));
     handleArchiveFile(file, null);
   });
 
-  /* 拖到面板外面时浏览器会直接打开文件（丢掉当前面板状态），一律拦掉。 */
+  /* Dropping outside the panel makes the browser open the file (losing panel state); always block it. */
   ['dragover', 'drop'].forEach(function (type) {
     window.addEventListener(type, function (e) {
       if (dropHasFiles(e.dataTransfer)) e.preventDefault();
@@ -6247,16 +6611,17 @@ function initDropImport() {
 }
 
 /**
- * 把当前配色导出成 CSS 变量片段（F8）。
+ * Export the current palette as a CSS variable snippet (F8).
  *
- * 亮色写 `:root`、暗色写 `:root[data-theme="dark"]`，与宿主/插件自己的约定一致，
- * 用户把这段贴进任意页面就能得到同一套配色。空调色板返回空串（不产生空壳文件）。
+ * Light goes to `:root`, dark to `:root[data-theme="dark"]`, matching the host/plugin
+ * convention, so pasting it into any page reproduces the palette. An empty palette
+ * returns an empty string (no empty shell file).
  */
 function cssSnippetText() {
   var light = effectiveVars('light');
   var dark = effectiveVars('dark');
   var palette = state.palette || {};
-  var name = palette.name || '未命名主题';
+  var name = palette.name || tsT('misc.untitledTheme', '未命名主题');
   var lines = [];
   var today = new Date();
   var stamp = today.getFullYear() + '-'
@@ -6275,34 +6640,37 @@ function cssSnippetText() {
     lines.push('');
   }
 
-  pushBlock(':root', light, name + ' · 亮色');
-  pushBlock(':root[data-theme="dark"]', dark, name + ' · 暗色');
+  pushBlock(':root', light, tsT('misc.cssBlockLight', '{{name}} · 亮色', { name: name }));
+  pushBlock(':root[data-theme="dark"]', dark, tsT('misc.cssBlockDark', '{{name}} · 暗色', { name: name }));
   if (!lines.length) return '';
-  lines.unshift('/* ' + name + ' —— 由 N.E.K.O 主题工作室导出（' + stamp + '） */', '');
+  lines.unshift('/* ' + tsT('misc.cssHeader', '{{name}} —— 由 N.E.K.O 主题工作室导出（{{date}}）',
+    { name: name, date: stamp }) + ' */', '');
   return lines.join('\n');
 }
 
 function copyCssSnippet() {
   var text = cssSnippetText();
   if (!text) {
-    showToast('当前调色板是空的，没有可导出的变量', 'warn');
+    showToast(tsT('misc.cssEmpty', '当前调色板是空的，没有可导出的变量'), 'warn');
     return;
   }
   openModal(
     'export',
-    'CSS 变量片段 · ' + ((state.palette && state.palette.name) || '当前配色'),
-    '这段 CSS 可以直接贴到别处使用：亮色在 :root，暗色在 :root[data-theme="dark"]。'
-      + '变量名就是面板里那一列，颜色值已经按当前改动算好（不需要先「应用」）。',
+    tsT('modal.cssTitle', 'CSS 变量片段 · {{name}}',
+      { name: (state.palette && state.palette.name) || tsT('modal.cssCurrentPalette', '当前配色') }),
+    tsT('modal.cssHint', '这段 CSS 可以直接贴到别处使用：亮色在 :root，暗色在 :root[data-theme="dark"]。'
+      + '变量名就是面板里那一列，颜色值已经按当前改动算好（不需要先「应用」）。'),
     text
   );
 }
 
 /* ===== FEATURES_28_END ===== */
 
-/* ===== WALLPAPER_BEGIN（v0.11.0：壁纸取色 + 变体生成）===== */
+/* ===== WALLPAPER_BEGIN (v0.11.0: wallpaper color extraction + variant generation) ===== */
 
 var WALLPAPER_SAMPLE = 96;
 var WALLPAPER_MAX_FILE = 12 * 1024 * 1024;
+// `label` is the source-text fallback; the shown label is resolved via tsT('misc.variant.<id>') at use time.
 var VARIANT_STEPS = [
   { id: 'warm', label: '更暖', dh: 14, ds: 0.06, dl: -0.02 },
   { id: 'cool', label: '更冷', dh: -14, ds: 0.06, dl: -0.02 },
@@ -6353,9 +6721,10 @@ function rgbToHsl(r, g, b) {
   return { h: h * 360, s: s, l: l };
 }
 
-/* 名字不能叫 hslToRgb：文件前面 parseColor 用的同名函数接收百分比、返回数组，
- * 函数声明会被这一份整体覆盖，结果输入 hsl(...) 颜色得到 rgba(NaN, ...)。
- * 这一份接收 0-1 的饱和度 / 亮度，返回 {r, g, b}，只给快捷调校与壁纸取色用。 */
+/* Must not be named hslToRgb: the function of that name used by parseColor earlier in
+ * the file takes percentages and returns an array; a same-named declaration would
+ * replace it and hsl(...) input would yield rgba(NaN, ...). This one takes 0-1
+ * saturation / lightness and returns {r, g, b}; used only by quick-tune and wallpaper extraction. */
 function hslFractionToRgb(h, s, l) {
   var hh = ((h % 360) + 360) % 360 / 360;
   if (s === 0) {
@@ -6428,7 +6797,7 @@ function wallpaperInk(bg, need) {
   var white = { r: 255, g: 255, b: 255, a: 1 };
   var black = { r: 12, g: 14, b: 18, a: 1 };
   var fixed = contrastFixColor(white, bg, need) || contrastFixColor(black, bg, need);
-  // contrastFixColor 返回 { color: {r,g,b,a}, ratio, t, toward }，这里要转成 CSS 颜色字符串
+  // contrastFixColor returns { color: {r,g,b,a}, ratio, t, toward }; convert to a CSS color string here
   if (fixed && fixed.color) return colorToHex(fixed.color);
   return contrastRatio(white, bg) >= contrastRatio(black, bg) ? '#ffffff' : '#0c0e12';
 }
@@ -6564,8 +6933,8 @@ function applyWallpaperPalette(palette, label) {
   syncAll();
   renderChanges();
   updateUndoButtons();
-  showToast('已填入 ' + changed + ' 个变量（Ctrl+Z 可撤销）', 'ok');
-  showNotice('info', '已按「' + label + '」生成整套配色：先看看效果，满意再点「应用」，不满意 Ctrl+Z 撤销。');
+  showToast(tsT('misc.wallpaperFilled', '已填入 {{count}} 个变量（Ctrl+Z 可撤销）', { count: changed }), 'ok');
+  showNotice('info', tsT('misc.wallpaperGenerated', '已按「{{label}}」生成整套配色：先看看效果，满意再点「应用」，不满意 Ctrl+Z 撤销。', { label: label }));
   return changed;
 }
 
@@ -6578,20 +6947,20 @@ function openWallpaperPicker() {
 
 function handleWallpaperFile(file) {
   if (!file) return;
-  var name = String(file.name || '壁纸');
+  var name = String(file.name || tsT('misc.wallpaperDefaultName', '壁纸'));
   if (!/^image\//.test(String(file.type || ''))) {
-    showToast('请选一张图片（png / jpg / webp / gif）', 'warn');
+    showToast(tsT('misc.wallpaperNotImage', '请选一张图片（png / jpg / webp / gif）'), 'warn');
     return;
   }
   if (file.size > WALLPAPER_MAX_FILE) {
-    showToast('图片太大了（上限 12 MB），先压缩一下再试', 'warn');
+    showToast(tsT('misc.wallpaperTooLarge', '图片太大了（上限 12 MB），先压缩一下再试'), 'warn');
     return;
   }
   var reader = new FileReader();
-  reader.onerror = function () { showToast('这张图片读不出来，换一张试试', 'error'); };
+  reader.onerror = function () { showToast(tsT('misc.wallpaperReadFailed', '这张图片读不出来，换一张试试'), 'error'); };
   reader.onload = function () {
     var img = new Image();
-    img.onerror = function () { showToast('这张图片解码失败，换一张试试', 'error'); };
+    img.onerror = function () { showToast(tsT('misc.wallpaperDecodeFailed', '这张图片解码失败，换一张试试'), 'error'); };
     img.onload = function () {
       try {
         var canvas = document.createElement('canvas');
@@ -6602,12 +6971,12 @@ function handleWallpaperFile(file) {
         var data = ctx.getImageData(0, 0, WALLPAPER_SAMPLE, WALLPAPER_SAMPLE).data;
         var colors = extractImageColors(data, WALLPAPER_SAMPLE, WALLPAPER_SAMPLE);
         if (!colors.length) {
-          showToast('这张图里没取到可用颜色（可能大部分是透明的）', 'warn');
+          showToast(tsT('misc.wallpaperNoColors', '这张图里没取到可用颜色（可能大部分是透明的）'), 'warn');
           return;
         }
         applyWallpaperPalette({ light: wallpaperPalette(colors, 'light'), dark: wallpaperPalette(colors, 'dark') }, name);
       } catch (err) {
-        showToast('生成配色失败：' + String(err && err.message ? err.message : err), 'error');
+        showToast(tsT('misc.wallpaperFailed', '生成配色失败：{{error}}', { error: String(err && err.message ? err.message : err) }), 'error');
       }
     };
     img.src = String(reader.result || '');
@@ -6619,8 +6988,9 @@ function applyNextVariant() {
   var step = VARIANT_STEPS[variantState.index % VARIANT_STEPS.length];
   variantState.index += 1;
   var palette = buildVariantPalette(step);
-  var changed = applyWallpaperPalette(palette, '变体 · ' + step.label);
-  if (!changed) showToast('当前配色里没有可调整的颜色变量', 'warn');
+  var stepLabel = tsT('misc.variant.' + step.id, step.label);
+  var changed = applyWallpaperPalette(palette, tsT('misc.variantLabel', '变体 · {{label}}', { label: stepLabel }));
+  if (!changed) showToast(tsT('misc.variantNoColors', '当前配色里没有可调整的颜色变量'), 'warn');
   else variantState.lastLabel = step.label;
 }
 
@@ -6638,30 +7008,31 @@ function initWallpaperFeature() {
 
 /* ===== WALLPAPER_END ===== */
 
-/* ===== BATCH3_BEGIN（v0.12.0：快捷调校 —— 光效三档 / 字体三档）=====
- * 两组都是「一键铺开」：把一组变量同时填进编辑区，用户再按「应用」提交。
- * 只写 state.edited（不调 apply_theme），所以：
- *   - 立刻能在预览/JSON/改动清单里看到；
- *   - 不满意可 Ctrl+Z 一步退回（照旧走 undoPush）；
- *   - 混着手改也没问题 —— 它只是把几个值一起 markEdited 进去。
+/* ===== BATCH3_BEGIN (v0.12.0: quick tune - three glow levels / three font presets) =====
+ * Both are one-click fills: a set of variables goes into the editor at once and the
+ * user then presses "Apply". They only write state.edited (no apply_theme), so:
+ *   - the result shows immediately in the preview / JSON / change list;
+ *   - Ctrl+Z reverts it in one step (still goes through undoPush);
+ *   - mixing with manual edits is fine: it just markEdited()s several values together.
+ * `label` fields are source-text fallbacks; shown labels are resolved via tsT at use time.
  */
 var GLOW_LEVELS = {
   low: { label: '低', value: '0.15' },
   medium: { label: '中', value: '0.45' },
   high: { label: '高', value: '0.85' }
 };
-/* 这四个是「光效强度」的落点（用户 2026-11-19 拍板 0.15 / 0.45 / 0.85）：
- *   ambient-glow       指针跟随柔光
- *   glass-dispersion   边缘分光
- *   glass-caustic      流动焦散
- *   panel-glow-pulse   背板呼吸 */
+/* The four targets of "glow intensity" (levels 0.15 / 0.45 / 0.85 decided 2026-11-19):
+ *   ambient-glow       pointer-following soft glow
+ *   glass-dispersion   edge dispersion
+ *   glass-caustic      flowing caustics
+ *   panel-glow-pulse   backplate breathing */
 var GLOW_LEVEL_KEYS = [
   '--nts-ambient-glow',
   '--nts-glass-dispersion',
   '--nts-glass-caustic',
   '--nts-panel-glow-pulse'
 ];
-/* 字体三档（用户拍板「字体给三档预设」）。系统默认 = 清空两个变量、回到应用原生。 */
+/* Three font presets (as decided: "three font presets"). System default = clear both variables and fall back to the app's native font. */
 var FONT_PRESETS = {
   system: { label: '系统默认', family: '', lineHeight: '' },
   sans: {
@@ -6690,7 +7061,7 @@ function glowLevelOfValue(value) {
   return best;
 }
 
-/** 当前配置命中哪一档（四个值都接近同一档才算命中，否则返回空）。 */
+/** Which level the current config matches (all four values must be near the same level, else empty). */
 function currentGlowLevel() {
   var hit = '';
   for (var i = 0; i < GLOW_LEVEL_KEYS.length; i += 1) {
@@ -6702,7 +7073,7 @@ function currentGlowLevel() {
   return hit;
 }
 
-/** 当前字体命中哪个预设（字体族精确匹配；系统默认 = 两个变量都空）。 */
+/** Which preset the current font matches (exact font-family match; system default = both variables empty). */
 function currentFontPreset() {
   var family = String(displayValue('--nts-font-family') || '').trim();
   var lineHeight = String(displayValue('--nts-line-height') || '').trim();
@@ -6725,7 +7096,8 @@ function applyGlowLevel(level) {
     syncRow(key);
   });
   renderQuickPresets();
-  showToast('光效强度已设为「' + def.label + '」（四项变量，Ctrl+Z 可撤销）', 'ok');
+  showToast(tsT('misc.glowApplied', '光效强度已设为「{{label}}」（四项变量，Ctrl+Z 可撤销）',
+    { label: tsT('misc.glow.' + level, def.label) }), 'ok');
 }
 
 function applyFontPreset(id) {
@@ -6745,7 +7117,8 @@ function applyFontPreset(id) {
   }
   syncRow('--nts-line-height');
   renderQuickPresets();
-  showToast('字体已切到「' + preset.label + '」（点「应用」才生效，Ctrl+Z 可撤销）', 'ok');
+  showToast(tsT('misc.fontApplied', '字体已切到「{{label}}」（点「应用」才生效，Ctrl+Z 可撤销）',
+    { label: tsT('misc.font.' + id, preset.label) }), 'ok');
 }
 
 var quickState = { glow: '', font: '' };
@@ -6786,7 +7159,7 @@ function initQuickPresets() {
 function wireEvents() {
   $('mode-light').addEventListener('click', function () { setMode('light'); });
   $('mode-dark').addEventListener('click', function () { setMode('dark'); });
-  // 标签式控件按惯例支持左右方向键切换
+  // Tab-style controls switch with Left/Right arrow keys by convention
   ['mode-light', 'mode-dark'].forEach(function (id) {
     $(id).addEventListener('keydown', function (event) {
       if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
@@ -6802,14 +7175,14 @@ function wireEvents() {
   $('btn-export').addEventListener('click', exportTheme);
   $('btn-import').addEventListener('click', openImport);
   $('btn-reload').addEventListener('click', function () {
-    // 「重新读取」会丢弃未应用的改动：先数出来、让人确认，别让一次误点
-    // 把半小时的调色白做（resetTheme 早就有确认，这里之前没有）。
+    // "Reload" discards unapplied edits: count them and ask first, so one misclick does
+    // not throw away half an hour of tuning (resetTheme already confirmed; this did not).
     var pending = pendingChangeCount();
-    if (pending && !window.confirm('面板里有 ' + pending + ' 项还没应用的改动。\n'
-      + '「重新读取」会丢弃它们（不可恢复）。继续？')) return;
+    if (pending && !window.confirm(tsT('sync.reloadConfirm', '面板里有 {{count}} 项还没应用的改动。\n'
+      + '「重新读取」会丢弃它们（不可恢复）。继续？', { count: pending }))) return;
     reloadPalette({ discardEdits: true }).then(function (palette) {
       if (palette && pending) {
-        showNotice('warn', '已重新读取，丢弃了 ' + pending + ' 项未应用的改动。');
+        showNotice('warn', tsT('sync.reloadDiscarded', '已重新读取，丢弃了 {{count}} 项未应用的改动。', { count: pending }));
       }
     });
   });
@@ -6849,14 +7222,14 @@ function wireEvents() {
   if ($('btn-audit-fix')) $('btn-audit-fix').addEventListener('click', function () { fixAllAudit(); });
   if ($('notice-close')) $('notice-close').addEventListener('click', hideNotice);
 
-  // 主题仓库
+  // Theme library
   if ($('btn-lib-save')) $('btn-lib-save').addEventListener('click', saveLibraryTheme);
   if ($('btn-lib-shuffle')) $('btn-lib-shuffle').addEventListener('click', function () {
     shuffleLibraryTheme();
   });
   if ($('btn-lib-refresh')) $('btn-lib-refresh').addEventListener('click', function () {
     refreshLibrary().then(function (items) {
-      if (items) showToast('仓库共 ' + items.length + ' 个主题');
+      if (items) showToast(tsT('misc.libraryCount', '仓库共 {{count}} 个主题', { count: items.length }));
     });
   });
   if ($('btn-lib-import')) $('btn-lib-import').addEventListener('click', pickArchiveFile);
@@ -6868,7 +7241,7 @@ function wireEvents() {
       handleLibraryBackupFile(input.files && input.files[0], input);
     });
   }
-  // 按时段自动换主题
+  // Scheduled theme switching
   if ($('btn-schedule-save')) $('btn-schedule-save').addEventListener('click', saveSchedule);
   if ($('schedule-weekend')) {
     $('schedule-weekend').addEventListener('change', function () {
@@ -6880,7 +7253,7 @@ function wireEvents() {
   }
   if ($('schedule-enabled')) {
     $('schedule-enabled').addEventListener('change', function () {
-      // 启用开关本身也是「未保存的选择」：后端 save_schedule 才写盘。
+      // The enable switch itself is an unsaved choice too: only the backend save_schedule writes it to disk.
       this.dataset.dirty = '1';
       markScheduleDirty();
     });
@@ -6891,7 +7264,7 @@ function wireEvents() {
       handleArchiveFile(input.files && input.files[0], input);
     });
   }
-  // 名称框回车 = 保存（textarea 默认换行，这里显式拦下来）
+  // Enter in the name box = save (a textarea inserts a newline by default, so intercept it explicitly)
   if ($('lib-name')) {
     $('lib-name').addEventListener('keydown', function (event) {
       if (event.key === 'Enter' && !event.shiftKey) {
@@ -6901,7 +7274,7 @@ function wireEvents() {
     });
   }
 
-  // 主题仓库搜索框：输入即过滤，和族 tab / 标签筛选叠加；Esc 清空，回车跳到第一张卡。
+  // Library search box: filters as you type, combined with family tabs / tag filters; Esc clears, Enter jumps to the first card.
   if ($('lib-search')) {
     var libSearch = $('lib-search');
     libSearch.addEventListener('input', function (event) {
@@ -6924,7 +7297,7 @@ function wireEvents() {
     });
   }
 
-  // 运行状态
+  // Status card
   if ($('btn-health-refresh')) $('btn-health-refresh').addEventListener('click', function () {
     refreshHealth({ toast: true });
   });
@@ -6932,8 +7305,9 @@ function wireEvents() {
   if ($('btn-help-open')) $('btn-help-open').addEventListener('click', openHelpModal);
 
   $('theme-enabled').addEventListener('change', function () { renderDump(); updateButtons(); });
-  // 不能直接把 renderDump 当监听器：它第一个参数是 force，InputEvent 是真值，
-  // 折叠状态下每敲一个字都会重建 ~10KB JSON（v0.4.27 的惰性化就白做了）。
+  // Do not use renderDump directly as the listener: its first parameter is `force` and an
+  // InputEvent is truthy, so every keystroke would rebuild ~10KB of JSON even while
+  // collapsed (undoing the v0.4.27 laziness).
   if ($('theme-name')) {
     $('theme-name').addEventListener('input', function () {
       renderDump();
@@ -6952,7 +7326,7 @@ function wireEvents() {
     var modalOpen = !$('modal').hidden;
     if (event.key === 'Escape' && modalOpen) { closeModal(); return; }
     if (event.key === 'Tab' && modalOpen) { trapModalFocus(event); return; }
-    // 弹窗打开时不响应全局快捷键，否则会在用户看不到的背景下触发应用/搜索
+    // Ignore global shortcuts while the modal is open, or apply/search would fire in the hidden background
     if (modalOpen) return;
     if ((event.ctrlKey || event.metaKey) && (event.key === 'Enter' || event.key === 'NumpadEnter')) {
       event.preventDefault();
@@ -6972,22 +7346,23 @@ function setMode(mode) {
   $('mode-dark').classList.toggle('is-active', mode === 'dark');
   $('mode-light').setAttribute('aria-selected', mode === 'light' ? 'true' : 'false');
   $('mode-dark').setAttribute('aria-selected', mode === 'dark' ? 'true' : 'false');
-  // 缩略色板跟当前编辑模式走（亮/暗各一套 preview 快照）。
+  // Thumbnail swatches follow the current edit mode (one preview snapshot each for light/dark).
   if (libraryState.items.length) renderLibrary();
   syncAll();
 }
 
-/* 11g. 键盘焦点自愈（v0.15.72）
- * 现象：宠物/悬浮形态下，面板 iframe 能收到鼠标事件（悬停、拖选、点按钮都正常），
- * 但键盘事件完全进不来 —— 按 Tab 没有焦点框，点输入框也没有光标。
- * 这不是面板拦了焦点（面板里没有任何抢焦点的 mousedown/blur 代码），而是宿主把键盘
- * 焦点留在别的窗口/文档上。面板能做的只有两件事：①点输入框时主动向上层窗口要一次
- * 焦点并重试几次；②仍然拿不到时给一句可执行的提示，别让用户以为面板坏了。
+/* 11g. Keyboard focus recovery (v0.15.72)
+ * Symptom: in pet/floating mode the panel iframe receives mouse events (hover, drag-select
+ * and button clicks work) but no keyboard events at all: Tab shows no focus ring and
+ * clicking an input shows no caret. The panel does not steal focus (it has no focus-grabbing
+ * mousedown/blur code); the host keeps keyboard focus on another window/document. The panel
+ * can only (1) ask the parent window for focus when an input is clicked, retrying a few
+ * times, and (2) if that still fails, show an actionable hint so it does not look broken.
  */
 function initFocusRecovery() {
   var hinted = false;
   function claimFocus(el) {
-    try { if (window.top && window.top !== window) window.top.focus(); } catch (e1) { /* 跨域顶层：忽略 */ }
+    try { if (window.top && window.top !== window) window.top.focus(); } catch (e1) { /* cross-origin top: ignore */ }
     try { window.focus(); } catch (e2) { /* ignore */ }
     if (el && typeof el.focus === 'function') {
       try { el.focus({ preventScroll: true }); } catch (e3) { try { el.focus(); } catch (e4) { /* ignore */ } }
@@ -7010,66 +7385,78 @@ function initFocusRecovery() {
     setTimeout(function () {
       if (document.hasFocus() || hinted) return;
       hinted = true;
-      setStatus('键盘焦点被 N.E.K.O 主窗口占着：先点一下主窗口（比如聊天输入框），再回来就能输入', 'warn');
+      setStatus(tsT('guide.focusHint', '键盘焦点被 N.E.K.O 主窗口占着：先点一下主窗口（比如聊天输入框），再回来就能输入'), 'warn');
     }, 400);
   }, true);
 }
 function bootstrap() {
-  // 重复启动哨兵（v0.4.27）：面板被注入两次时，wireEvents 会绑两遍、外部同步与
-  // 排程轮询也会各起一套 —— 表现为「点一次按钮执行两次」「提示弹两遍」。
+  // Double-boot guard (v0.4.27): if the panel is injected twice, wireEvents binds twice
+  // and external sync / schedule polling start twice, showing up as "one click runs
+  // twice" and "notices pop up twice".
   if (window.__NTS_PANEL_BOOTED__) return;
   window.__NTS_PANEL_BOOTED__ = true;
-  // localStorage 里的收藏与分组折叠状态：读失败/隐私模式都退回默认值，不挡启动。
+  // Favorites and group collapse state from localStorage: read failures / private mode fall back to defaults without blocking startup.
   libraryState.favorites = libReadIdList(libraryStorage(), LIB_FAV_KEY);
   loadCatalogCollapsed();
-  // 当前调色板 JSON 卡的折叠状态（v0.4.21）：记住上次的样子，折叠时省掉重建。
+  // Collapse state of the current-palette JSON card (v0.4.21): remember it and skip rebuilds while collapsed.
   dumpState.collapsed = loadDumpCollapsed();
   buildEditor();
   wireEvents();
   initRestartHint();
-  // 拖拽导入（v0.5.0）：绑在 body 上，拖到面板任意位置都能导入
+  // Drag-and-drop import (v0.5.0): bound on body, so dropping anywhere on the panel works
   initDropImport();
   initFocusRecovery();
   setMode('light');
-  // 先按本地状态渲染，保证面板不会白屏；随后用 get_theme 校准。
+  // Render from local state first so the panel never shows blank; get_theme corrects it afterwards.
   syncAll();
   applyFilters();
   reloadPalette({});
-  // 仓库要单独拉一次（它读的是 themes/ 目录，不是 theme.json）。失败只是列表空，
-  // 不影响编辑器 —— refreshLibrary 自己吞异常并写进 #lib-empty。
+  // The library is fetched separately (it reads themes/, not theme.json). A failure only
+  // leaves the list empty without affecting the editor: refreshLibrary swallows errors into #lib-empty.
   refreshLibrary();
-  // 可读性自检：先用当前状态预扫一次，打开面板就能看到有没有配崩。
+  // Readability audit: pre-scan the current state so a broken palette shows right away.
   renderAudit(true);
-  // 按时段自动换主题：要等仓库列表回来才知道下拉框能选什么。
+  // Scheduled switching: the dropdown options depend on the library list.
   refreshSchedule();
-  // 运行状态：把数据目录、当前主题与加载器上报立刻摊在面板上。
-  // 这是用户「装上了却没效果」时唯一能自助定位的地方。
+  // Status card: show data directory, current theme and loader reports right away.
+  // It is the only place users can self-diagnose "installed but no effect".
   refreshHealth({});
-  // 外部改动感知：等首屏那几发请求落定再起，避免互相抢。
+  // External change detection: start after the initial requests settle so they do not compete.
   setTimeout(startExternalSync, EXTERNAL_SYNC_START_DELAY_MS);
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState === 'visible') checkExternalChange();
   });
 }
 
+// Runtime strings are resolved while the editor is built, so wait for the
+// language bundle first (bounded; see whenI18nReady).
+function bootstrapWhenReady() {
+  whenI18nReady(function () {
+    localizeCatalog();
+    bootstrap();
+  });
+}
+
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', bootstrap);
+  document.addEventListener('DOMContentLoaded', bootstrapWhenReady);
 } else {
-  bootstrap();
-  // 面板起来以后再查一次版本：升级后旧页面（含旧 app.js）需要自己退出舞台。
+  bootstrapWhenReady();
+  // Check the version again once the panel is up: after an upgrade, a stale page (with an old app.js) must retire itself.
   setTimeout(checkPanelFreshness, PANEL_FRESHNESS_DELAY_MS);
 }
 
-/* 材质中心（materials.js）是独立脚本，只能通过 window 拿入口调用与 toast。
- * 同样只在缺失时挂，避免脚本被重复执行时把已有引用覆盖成死函数。 */
-/* 材质中心是独立文件（materials.js）。它 404 或语法错时 #materials-root 会一直空着，
-   面板其它功能照常，用户只会以为「材质页坏了」。兜底给一句可诊断的话。 */
+/* The material center (materials.js) is a separate script and can only reach entry calls
+ * and toast through window. Also attached only when missing, so a re-executed script does
+ * not overwrite existing references with dead functions. */
+/* The material center is a separate file (materials.js). If it 404s or has a syntax error,
+   #materials-root stays empty while the rest works, and users just think the materials
+   page is broken. Fall back to a diagnosable message. */
 setTimeout(function () {
   try {
     var box = document.getElementById('materials-root');
     if (!box || box.firstChild || window.NekoMaterials) return;
-    box.textContent = '材质中心没能加载（materials.js 未就绪），刷新面板可以重试。';
-  } catch (e) { /* 提示本身失败不该影响面板 */ }
+    box.textContent = tsT('misc.materialsLoadFailed', '材质中心没能加载（materials.js 未就绪），刷新面板可以重试。');
+  } catch (e) { /* a failing hint must not affect the panel */ }
 }, 3000);
 
 window.NekoPanel = window.NekoPanel || {
@@ -7077,8 +7464,8 @@ window.NekoPanel = window.NekoPanel || {
   toast: function (message, kind) { showToast(message, kind); }
 };
 
-/* 自动化/调试钩子：面板里没有模块系统，测试脚本只能通过 window 拿内部函数。
- * 只在缺失时挂，不覆盖已有对象。 */
+/* Automation/debug hooks: the panel has no module system, so test scripts reach internals via window.
+ * Attached only when missing; never overwrites an existing object. */
 window.__ntsPanel = window.__ntsPanel || {
   checkPanelFreshness: checkPanelFreshness,
   panelVersionOf: panelVersionOf,
@@ -7125,12 +7512,12 @@ window.__ntsPanel = window.__ntsPanel || {
   initDropImport: initDropImport,
   toggleDumpCard: toggleDumpCard,
   applyDumpCollapsed: applyDumpCollapsed,
-  // v0.4.17：编辑区刷新合并的观测点（scheduled 发起次数 / flushes 实际刷新次数）
+  // v0.4.17: observation point for coalesced editor refreshes (scheduled = requests, flushes = actual refreshes)
   editorSyncState: editorSyncState,
-  // v0.4.26：名称/启用开关也算脏，自测脚本要能直接量
+  // v0.4.26: name / enable switch count as dirty too; self-test scripts measure this directly
   metaDirtyCount: metaDirtyCount,
   pendingChangeCount: pendingChangeCount,
-  // v0.4.18：主题信息编辑 / 首次使用提示（自测脚本用）
+  // v0.4.18: theme info editing / first-use hint (for self-test scripts)
   openMetaModal: openMetaModal,
   saveThemeMeta: saveThemeMeta,
   parseTagInput: parseTagInput,
@@ -7160,7 +7547,7 @@ window.__ntsPanel = window.__ntsPanel || {
   renderHealth: renderHealth,
   copyStatusPath: copyStatusPath,
   openHelpModal: openHelpModal,
-  // v0.2.0 面板 UX：族 tab / 搜索 / 收藏 / 分组折叠（自测脚本用）
+  // v0.2.0 panel UX: family tabs / search / favorites / group collapse (for self-test scripts)
   libraryState: libraryState,
   LIB_FAMILIES: LIB_FAMILIES,
   LIB_FAV_FAMILY: LIB_FAV_FAMILY,
@@ -7176,7 +7563,7 @@ window.__ntsPanel = window.__ntsPanel || {
   libWriteCollapsed: libWriteCollapsed,
   toggleLibraryFavorite: toggleLibraryFavorite,
   renderLibrary: renderLibrary,
-  // v0.4.13 按时段自动换主题（自测脚本用）
+  // v0.4.13 scheduled theme switching (for self-test scripts)
   scheduleState: scheduleState,
   SCHEDULE_ZONE_LABELS: SCHEDULE_ZONE_LABELS,
   refreshSchedule: refreshSchedule,
@@ -7186,7 +7573,7 @@ window.__ntsPanel = window.__ntsPanel || {
   scheduleRefsFor: scheduleRefsFor,
   scheduleStaleText: scheduleStaleText,
   scheduleThemeGroups: scheduleThemeGroups,
-  // 外部改动感知（v0.4.14）
+  // External change detection (v0.4.14)
   externalSyncState: externalSyncState,
   paletteSignature: paletteSignature,
   externalSyncDecision: externalSyncDecision,

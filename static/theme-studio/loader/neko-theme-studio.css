@@ -27,9 +27,9 @@
  * transparent!important}` in index.css). Specificity alone can never win.
  */
 
-/* ===================== A 聊天气泡 ===================== */
+/* ===================== A Chat bubbles===================== */
 
-/* --- A 聊天气泡 : light (123 rule(s)) --- */
+/* --- A Chat bubbles: light (123 rule(s)) --- */
 
 :root:not([data-theme="dark"])[data-nts-l-user-bubble-bg]:root:root body .message.user {
   background-color: var(--nts-user-bubble-bg) !important;
@@ -564,7 +564,7 @@
   box-shadow: var(--nts-shadow) !important;
 }
 
-/* --- A 聊天气泡 : dark (123 rule(s)) --- */
+/* --- A Chat bubbles: dark (123 rule(s)) --- */
 
 :root[data-theme="dark"][data-nts-d-user-bubble-bg]:root:root body .message.user {
   background-color: var(--nts-user-bubble-bg) !important;
@@ -1099,9 +1099,9 @@
   box-shadow: var(--nts-shadow) !important;
 }
 
-/* ===================== B 聊天窗口 ===================== */
+/* ===================== B Chat window===================== */
 
-/* --- B 聊天窗口 : light (10 rule(s)) --- */
+/* --- B Chat window: light (10 rule(s)) --- */
 
 :root:not([data-theme="dark"])[data-nts-l-chat-panel-bg]:root:root body .chat-body {
   background-color: var(--nts-chat-panel-bg) !important;
@@ -1147,7 +1147,7 @@
   background-color: var(--nts-chat-panel-bg) !important;
 }
 
-/* --- B 聊天窗口 : dark (10 rule(s)) --- */
+/* --- B Chat window: dark (10 rule(s)) --- */
 
 :root[data-theme="dark"][data-nts-d-chat-panel-bg]:root:root body .chat-body {
   background-color: var(--nts-chat-panel-bg) !important;
@@ -1193,9 +1193,9 @@
   background-color: var(--nts-chat-panel-bg) !important;
 }
 
-/* ===================== C 输入区 ===================== */
+/* ===================== C Input area===================== */
 
-/* --- C 输入区 : light (26 rule(s)) --- */
+/* --- C Input area: light (26 rule(s)) --- */
 
 :root:not([data-theme="dark"])[data-nts-l-input-bg]:root:root body #text-input-area {
   background-color: var(--nts-input-bg) !important;
@@ -1308,7 +1308,7 @@
   -webkit-backdrop-filter: var(--nts-chat-blur) !important;
 }
 
-/* --- C 输入区 : dark (26 rule(s)) --- */
+/* --- C Input area: dark (26 rule(s)) --- */
 
 :root[data-theme="dark"][data-nts-d-input-bg]:root:root body #text-input-area {
   background-color: var(--nts-input-bg) !important;
@@ -1421,9 +1421,9 @@
   -webkit-backdrop-filter: var(--nts-chat-blur) !important;
 }
 
-/* ===================== D 面板弹层 ===================== */
+/* ===================== D Panels and popovers===================== */
 
-/* --- D 面板弹层 : light (16 rule(s)) --- */
+/* --- D Panels and popovers: light (16 rule(s)) --- */
 
 :root:not([data-theme="dark"])[data-nts-l-popover-bg]:root:root body .composer-overflow-popover {
   background-color: var(--nts-popover-bg) !important;
@@ -1501,7 +1501,7 @@
   box-shadow: var(--nts-shadow) !important;
 }
 
-/* --- D 面板弹层 : dark (16 rule(s)) --- */
+/* --- D Panels and popovers: dark (16 rule(s)) --- */
 
 :root[data-theme="dark"][data-nts-d-popover-bg]:root:root body .composer-overflow-popover {
   background-color: var(--nts-popover-bg) !important;
@@ -1579,9 +1579,9 @@
   box-shadow: var(--nts-shadow) !important;
 }
 
-/* ===================== E 推荐与chip ===================== */
+/* ===================== E Suggestions and chips===================== */
 
-/* --- E 推荐与chip : light (9 rule(s)) --- */
+/* --- E Suggestions and chips: light (9 rule(s)) --- */
 
 :root:not([data-theme="dark"])[data-nts-l-rec-bg]:root:root body .proactive-recommendation-card {
   background-color: var(--nts-rec-bg) !important;
@@ -1623,7 +1623,7 @@
   box-shadow: var(--nts-shadow) !important;
 }
 
-/* --- E 推荐与chip : dark (9 rule(s)) --- */
+/* --- E Suggestions and chips: dark (9 rule(s)) --- */
 
 :root[data-theme="dark"][data-nts-d-rec-bg]:root:root body .proactive-recommendation-card {
   background-color: var(--nts-rec-bg) !important;
@@ -1665,9 +1665,9 @@
   box-shadow: var(--nts-shadow) !important;
 }
 
-/* ===================== F 全局 ===================== */
+/* ===================== F Global===================== */
 
-/* --- F 全局 : light (3 rule(s)) --- */
+/* --- F Global: light (3 rule(s)) --- */
 
 :root:not([data-theme="dark"])[data-nts-l-link]:root:root body a {
   color: var(--nts-link) !important;
@@ -1682,7 +1682,7 @@
   outline-offset: -1.5px !important;
 }
 
-/* --- F 全局 : dark (3 rule(s)) --- */
+/* --- F Global: dark (3 rule(s)) --- */
 
 :root[data-theme="dark"][data-nts-d-link]:root:root body a {
   color: var(--nts-link) !important;
@@ -1697,9 +1697,9 @@
   outline-offset: -1.5px !important;
 }
 
-/* ===================== G 非颜色 ===================== */
+/* ===================== G Non-color===================== */
 
-/* --- G 非颜色 : light (7 rule(s)) --- */
+/* --- G Non-color: light (7 rule(s)) --- */
 
 :root:not([data-theme="dark"])[data-nts-l-card-radius]:root:root body .agent-plugin-view {
   border-top-left-radius: var(--nts-card-radius) !important;
@@ -1750,7 +1750,7 @@
   border-bottom-left-radius: var(--nts-chat-panel-radius) !important;
 }
 
-/* --- G 非颜色 : dark (7 rule(s)) --- */
+/* --- G Non-color: dark (7 rule(s)) --- */
 
 :root[data-theme="dark"][data-nts-d-card-radius]:root:root body .agent-plugin-view {
   border-top-left-radius: var(--nts-card-radius) !important;
@@ -1801,9 +1801,9 @@
   border-bottom-left-radius: var(--nts-chat-panel-radius) !important;
 }
 
-/* ===================== H 紧凑胶囊 ===================== */
+/* ===================== H Compact capsule===================== */
 
-/* --- H 紧凑胶囊 : light (7 rule(s)) --- */
+/* --- H Compact capsule: light (7 rule(s)) --- */
 
 :root:not([data-theme="dark"])[data-nts-l-chat-bg]:root:root body .compact-chat-surface-frame {
   --compact-chat-surface-bg: var(--nts-chat-bg) !important;
@@ -1835,7 +1835,7 @@
   background-color: var(--nts-button-bg) !important;
 }
 
-/* --- H 紧凑胶囊 : dark (7 rule(s)) --- */
+/* --- H Compact capsule: dark (7 rule(s)) --- */
 
 :root[data-theme="dark"][data-nts-d-chat-bg]:root:root body .compact-chat-surface-frame {
   --compact-chat-surface-bg: var(--nts-chat-bg) !important;
@@ -1867,9 +1867,9 @@
   background-color: var(--nts-button-bg) !important;
 }
 
-/* ===================== I 悬浮HUD ===================== */
+/* ===================== I Floating HUD===================== */
 
-/* --- I 悬浮HUD : light (2 rule(s)) --- */
+/* --- I Floating HUD: light (2 rule(s)) --- */
 
 :root:not([data-theme="dark"])[data-nts-l-accent-bg]:root:root body #agent-content-tasks-tab {
   background-color: var(--nts-accent-bg) !important;
@@ -1879,7 +1879,7 @@
   color: var(--nts-accent) !important;
 }
 
-/* --- I 悬浮HUD : dark (2 rule(s)) --- */
+/* --- I Floating HUD: dark (2 rule(s)) --- */
 
 :root[data-theme="dark"][data-nts-d-accent-bg]:root:root body #agent-content-tasks-tab {
   background-color: var(--nts-accent-bg) !important;
@@ -1889,9 +1889,9 @@
   color: var(--nts-accent) !important;
 }
 
-/* ===================== J 液态玻璃 ===================== */
+/* ===================== J Liquid glass===================== */
 
-/* --- J 液态玻璃 : light (18 rule(s)) --- */
+/* --- J Liquid glass: light (18 rule(s)) --- */
 
 :root:not([data-theme="dark"])[data-nts-l-glass-filter]:root:root:root:root body .window-topbar {
   backdrop-filter: var(--nts-glass-filter) !important;
@@ -1976,7 +1976,7 @@
   background-color: var(--nts-bubble-glass-tint) !important;
 }
 
-/* --- J 液态玻璃 : dark (18 rule(s)) --- */
+/* --- J Liquid glass: dark (18 rule(s)) --- */
 
 :root[data-theme="dark"][data-nts-d-glass-filter]:root:root:root:root body .window-topbar {
   backdrop-filter: var(--nts-glass-filter) !important;
@@ -2061,9 +2061,9 @@
   background-color: var(--nts-bubble-glass-tint) !important;
 }
 
-/* ===================== J 渐变 ===================== */
+/* ===================== J Gradient===================== */
 
-/* --- J 渐变 : light (9 rule(s)) --- */
+/* --- J Gradient: light (9 rule(s)) --- */
 
 :root:not([data-theme="dark"])[data-nts-l-chat-gradient]:root:root:root:root body .chat-body {
   background-image: var(--nts-chat-gradient) !important;
@@ -2101,7 +2101,7 @@
   background-image: var(--nts-ai-bubble-gradient) !important;
 }
 
-/* --- J 渐变 : dark (9 rule(s)) --- */
+/* --- J Gradient: dark (9 rule(s)) --- */
 
 :root[data-theme="dark"][data-nts-d-chat-gradient]:root:root:root:root body .chat-body {
   background-image: var(--nts-chat-gradient) !important;

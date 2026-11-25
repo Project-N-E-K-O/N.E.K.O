@@ -53,46 +53,47 @@ from ._sdk_compat import (
 from . import assets as _assets
 from . import materials as _materials
 
-# ---------------------------------------------------------------------------- 路径
-#: 本文件所在目录（本体代码树里的 ``theme_studio/``）。
+# ---------------------------------------------------------------------------- paths
+#: Directory containing this file (``theme_studio/`` in the host code tree).
 PACKAGE_DIR = Path(__file__).resolve().parent
-#: 本体根目录。
+#: Host root directory.
 APP_ROOT = PACKAGE_DIR.parent
-#: 只读资源：loader 两件套等前端静态文件，由本体的 /static 路由提供。
+#: Read-only resources: frontend static files such as the two loader files, served by the host's /static route.
 APP_STATIC_DIR = APP_ROOT / "static" / "theme-studio"
-#: 只读内置主题（随本体发布）。
+#: Read-only built-in themes (shipped with the host).
 PRESETS_DIR = PACKAGE_DIR / "presets"
-#: 本体内主题工坊的 HTTP 前缀，必须与 ``main_routers/theme_studio_router.py`` 一致。
+#: HTTP prefix of the in-host Theme Studio; must match ``main_routers/theme_studio_router.py``.
 API_BASE = "/api/theme_studio"
-#: 背景图对外 URL 前缀。
+#: Public URL prefix for background images.
 BACKGROUNDS_URL_BASE = API_BASE + "/backgrounds"
 
-# --------------------------------------------------------------------------- 常量
+# --------------------------------------------------------------------------- constants
 
 SCHEMA_VERSION = 1
 DEFAULT_THEME_NAME = "默认"
 
-#: 写文件的全局锁。宿主可能并发调用 entry（面板点击 + 轮询 + 生命周期），
-#: 必须串行化「读 → 合并 → 原子替换」整段，否则会丢更新。
-# 用 RLock 而不是 Lock：同一线程里「先持锁做一段读-改-写，再调用内部持锁函数」
-# 是很容易写出来的嵌套（save_theme 就这样自死锁过 —— 整个插件进程的 entry 队列
-# 被一个永久等待的线程堵死，所有 entry 30s 超时）。可重入锁把这类写法变成安全行为。
+#: Global lock for file writes. The host may call entries concurrently (panel clicks + polling + lifecycle),
+#: so the whole "read -> merge -> atomic replace" sequence must be serialized or updates get lost.
+# RLock rather than Lock: "hold the lock for a read-modify-write, then call an inner function that also
+# takes the lock" on the same thread is an easy nesting to write (save_theme once self-deadlocked this way --
+# the plugin process's entire entry queue was blocked by a thread waiting forever, and every entry hit the
+# 30s timeout). A reentrant lock makes that pattern safe.
 _WRITE_LOCK = threading.RLock()
 
-#: 变量名前缀与形态（契约 §3）。
+#: Variable name prefix and shape (contract §3).
 RE_VAR_NAME = re.compile(r"^--nts-[a-z0-9-]{1,60}$")
 
-#: 已知变量白名单 —— **形式合法不等于有意义**。
+#: Allowlist of known variables -- **well-formed does not mean meaningful**.
 #:
-#: 缺了这道门会出现「报成功的静默空操作」：``apply_theme`` 传入一个拼错的变量名
-#: （例如 ``--nts-nope-var``）时，后端照收、写进 theme.json、回显为已接受，
-#: 但 ``neko-theme-studio.css`` 里没有任何规则消费它，用户看不到任何变化。
-#: 独立验证者实测确认过这一点。
+#: Without this gate you get "silent no-ops reported as success": when ``apply_theme`` receives a
+#: misspelled variable name (e.g. ``--nts-nope-var``), the backend accepts it, writes it to theme.json
+#: and echoes it as accepted, but no rule in ``neko-theme-studio.css`` consumes it, so the user sees
+#: no change. An independent verifier confirmed this in practice.
 #:
-#: 清单来源 = ``tools/gen-css.js`` 实际产出的样式表里出现过的全部 ``--nts-*``
-#: （可用 ``build/vars.json`` 交叉核对：CSS 消费 59 个 = 本集合）。
-#: 新增变量的顺序：先在 ``test/targets.js`` 加目标 → 跑 ``tools/build-theme-css.ps1``
-#: → 把生成 CSS 里新出现的名字加到这里与面板 CATALOG。
+#: Source of the list = every ``--nts-*`` appearing in the stylesheet actually produced by
+#: ``tools/gen-css.js`` (cross-check with ``build/vars.json``: the 59 consumed by CSS = this set).
+#: To add a variable: first add a target in ``test/targets.js`` -> run ``tools/build-theme-css.ps1``
+#: -> add the names newly appearing in the generated CSS here and to the panel CATALOG.
 KNOWN_VARS = frozenset(
     {
         "--nts-accent",
@@ -175,8 +176,8 @@ KNOWN_VARS = frozenset(
     }
 )
 
-#: v0.1.11 新增：液态玻璃 + 自定义渐变（契约 _work/FEATURE-CONTRACT-0.1.11.md §1）。
-#: 追加成并集，保持 ``KNOWN_VARS`` 仍是唯一公开清单（面板/loader 的变量表都以它为准）。
+#: Added in v0.1.11: liquid glass + custom gradients (contract _work/FEATURE-CONTRACT-0.1.11.md §1).
+#: Appended as a union so ``KNOWN_VARS`` stays the single public list (the panel/loader variable tables follow it).
 KNOWN_VARS = KNOWN_VARS | frozenset(
     {
         "--nts-glass-filter",
@@ -188,17 +189,17 @@ KNOWN_VARS = KNOWN_VARS | frozenset(
         "--nts-panel-gradient",
         "--nts-user-bubble-gradient",
         "--nts-ai-bubble-gradient",
-        #: v0.13.0：文字渐变。填一条 linear/radial-gradient，就把**聊天正文**的文字
-        #: 填充换成这条渐变（``background-clip: text``）。它只作用于消息文本块，
-        #: 不碰气泡背景 —— 否则会把气泡自己的底色一起裁成文字形状。
+        #: v0.13.0: text gradient. A linear/radial-gradient here replaces the text fill of the
+        #: **chat body** with that gradient (``background-clip: text``). It applies only to message
+        #: text blocks, not bubble backgrounds -- otherwise the bubble's own fill would be clipped to the text shape too.
         "--nts-text-gradient",
     }
 )
 
-#: v0.2.0 新增：真·液态玻璃质感（契约 _work/FEATURE-CONTRACT-0.2.0.md §1）。
-#: ``--nts-glass-rim`` 是边缘反射光颜色；``--nts-glass-sheen`` / ``--nts-glass-noise``
-#: 是 0–1 的连续量（掠光强度 / 雾面颗粒），统一并进 ``GLOW_AMOUNT_VARS``，
-#: 非法值表现是「回到原生」而不是「变成全亮」。
+#: Added in v0.2.0: real liquid-glass texture (contract _work/FEATURE-CONTRACT-0.2.0.md §1).
+#: ``--nts-glass-rim`` is the edge reflection color; ``--nts-glass-sheen`` / ``--nts-glass-noise``
+#: are 0–1 continuous amounts (sheen strength / frosted grain), merged into ``GLOW_AMOUNT_VARS``;
+#: an invalid value means "back to native", not "fully bright".
 KNOWN_VARS = KNOWN_VARS | frozenset(
     {
         "--nts-glass-rim",
@@ -207,11 +208,11 @@ KNOWN_VARS = KNOWN_VARS | frozenset(
     }
 )
 
-#: v0.3.0 新增：Apple Liquid Glass 风格的材质参数（契约 _work/FEATURE-CONTRACT-0.3.0.md §1）。
-#: 三个都是 0–1 的连续量，未配置 == 零效果（旧主题外观不变）：
-#:   ``--nts-glass-lens``      边缘透镜亮环（折射带的感知近似）
-#:   ``--nts-glass-thickness`` 玻璃厚度：上缘高光 / 下缘暗边 / 内侧柔光
-#:   ``--nts-glass-specular``  镜面高光强度（位置由 loader 跟随指针写入 --nts-spec-x/y）
+#: Added in v0.3.0: Apple Liquid Glass style material params (contract _work/FEATURE-CONTRACT-0.3.0.md §1).
+#: All three are 0–1 continuous amounts; unset == zero effect (old themes look unchanged):
+#:   ``--nts-glass-lens``      edge lens ring (perceptual approximation of the refraction band)
+#:   ``--nts-glass-thickness`` glass thickness: top-edge highlight / bottom-edge shade / inner soft glow
+#:   ``--nts-glass-specular``  specular highlight strength (position written to --nts-spec-x/y by the loader, following the pointer)
 KNOWN_VARS = KNOWN_VARS | frozenset(
     {
         "--nts-glass-lens",
@@ -220,11 +221,11 @@ KNOWN_VARS = KNOWN_VARS | frozenset(
     }
 )
 
-#: v0.4.0 新增：光效引擎的三个连续量（契约 _work/FEATURE-CONTRACT-0.4.0.md §1）。
-#: 同样是 0–1、未配置 == 零效果，所以旧主题/旧预设外观完全不变：
-#:   ``--nts-ambient-glow``      指针光源：柔光跟随鼠标（比单点镜面更像真实光照）
-#:   ``--nts-glass-dispersion``  边缘分光：暖色左上 / 冷色右下两条 1px 折射亮线
-#:   ``--nts-glass-caustic``     流动焦散：玻璃后面的光斑缓慢胀缩（13s，与掠光不同步）
+#: Added in v0.4.0: three continuous amounts for the lighting engine (contract _work/FEATURE-CONTRACT-0.4.0.md §1).
+#: Likewise 0–1 with unset == zero effect, so old themes/presets look exactly the same:
+#:   ``--nts-ambient-glow``      pointer light: a soft glow following the mouse (more like real lighting than a single specular spot)
+#:   ``--nts-glass-dispersion``  edge dispersion: two 1px refraction lines, warm top-left / cool bottom-right
+#:   ``--nts-glass-caustic``     flowing caustics: light spots behind the glass slowly swell and shrink (13s, out of sync with the sheen)
 KNOWN_VARS = KNOWN_VARS | frozenset(
     {
         "--nts-ambient-glow",
@@ -233,8 +234,8 @@ KNOWN_VARS = KNOWN_VARS | frozenset(
     }
 )
 
-#: v0.12.0 新增：背景图位置 / 平铺 / 行高（批次三）。
-#: 前两个是 keyword（见 ``KEYWORD_VARS``），行高是下面新引入的 ``ratio`` 种类。
+#: Added in v0.12.0: background image position / repeat / line height (batch three).
+#: The first two are keywords (see ``KEYWORD_VARS``); line height is the newly introduced ``ratio`` kind below.
 KNOWN_VARS = KNOWN_VARS | frozenset(
     {
         "--nts-chat-bg-position",
@@ -243,19 +244,19 @@ KNOWN_VARS = KNOWN_VARS | frozenset(
     }
 )
 
-#: 滤镜链（喂给 ``backdrop-filter``）：``blur(20px) saturate(150%)``。
-#: 1–4 个 token、互不重复；blur ≤ 40px、百分比 ≤ 400%（见 ``_filter_chain_ok``）。
+#: Filter chain (fed to ``backdrop-filter``): ``blur(20px) saturate(150%)``.
+#: 1–4 tokens, no duplicates; blur ≤ 40px, percentages ≤ 400% (see ``_filter_chain_ok``).
 FILTER_VARS = frozenset({"--nts-glass-filter", "--nts-bubble-glass-filter"})
-#: 渐变（喂给 ``background-image``）：``linear-gradient(135deg, #a 0%, #b 100%)``。
-#: 只接受 linear / radial，2–4 个停止点，停止点必须带百分比（见 ``_gradient_ok``）。
+#: Gradients (fed to ``background-image``): ``linear-gradient(135deg, #a 0%, #b 100%)``.
+#: Only linear / radial, 2–4 stops, each stop must carry a percentage (see ``_gradient_ok``).
 GRADIENT_VARS = frozenset(
     {
         "--nts-chat-gradient",
         "--nts-panel-gradient",
         "--nts-user-bubble-gradient",
         "--nts-ai-bubble-gradient",
-        #: v0.13.0：文字渐变。消费方是 ``background-image`` + ``background-clip: text``，
-        #: 与背景渐变同一套校验（linear/radial、2–4 个停止点、停止点必须带百分比）。
+        #: v0.13.0: text gradient. Consumed via ``background-image`` + ``background-clip: text``,
+        #: with the same validation as background gradients (linear/radial, 2–4 stops, stops must carry a percentage).
         "--nts-text-gradient",
     }
 )
@@ -275,7 +276,7 @@ RE_GRADIENT_STOP = re.compile(
 GRADIENT_MAX_STOPS = 4
 GRADIENT_MAX_CHARS = 300
 
-#: 允许的颜色值形态。刻意保守：整串锚定，杜绝把任意 CSS 注入变量。
+#: Allowed color value shapes. Deliberately conservative: fully anchored, so arbitrary CSS cannot be injected into variables.
 RE_HEX = re.compile(
     r"^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$", re.IGNORECASE
 )
@@ -291,43 +292,43 @@ RE_HSL = re.compile(
     r"(?:,\s*(?:0|1|0?\.[0-9]+)\s*)?\)$",
     re.IGNORECASE,
 )
-#: CSS 命名颜色（规范里的 148 个）加上 currentcolor。
-#: 刻意**不**收 inherit / initial / unset / revert —— 它们把颜色继承成父级，
-#: 会让「只改气泡文字色」串到别处去。
+#: CSS named colors (the 148 in the spec) plus currentcolor.
+#: Deliberately does **not** accept inherit / initial / unset / revert -- they inherit the parent's color,
+#: which would let "change only the bubble text color" leak elsewhere.
 RE_KEYWORD_COLOR = re.compile(
     r"^(?:transparent|aliceblue|antiquewhite|aqua|aquamarine|azure|beige|bisque|black|blanchedalmond|blue|blueviolet|brown|burlywood|cadetblue|chartreuse|chocolate|coral|cornflowerblue|cornsilk|crimson|currentcolor|cyan|darkblue|darkcyan|darkgoldenrod|darkgray|darkgreen|darkgrey|darkkhaki|darkmagenta|darkolivegreen|darkorange|darkorchid|darkred|darksalmon|darkseagreen|darkslateblue|darkslategray|darkslategrey|darkturquoise|darkviolet|deeppink|deepskyblue|dimgray|dimgrey|dodgerblue|firebrick|floralwhite|forestgreen|fuchsia|gainsboro|ghostwhite|gold|goldenrod|gray|green|greenyellow|grey|honeydew|hotpink|indianred|indigo|ivory|khaki|lavender|lavenderblush|lawngreen|lemonchiffon|lightblue|lightcoral|lightcyan|lightgoldenrodyellow|lightgray|lightgreen|lightgrey|lightpink|lightsalmon|lightseagreen|lightskyblue|lightslategray|lightslategrey|lightsteelblue|lightyellow|lime|limegreen|linen|magenta|maroon|mediumaquamarine|mediumblue|mediumorchid|mediumpurple|mediumseagreen|mediumslateblue|mediumspringgreen|mediumturquoise|mediumvioletred|midnightblue|mintcream|mistyrose|moccasin|navajowhite|navy|oldlace|olive|olivedrab|orange|orangered|orchid|palegoldenrod|palegreen|paleturquoise|palevioletred|papayawhip|peachpuff|peru|pink|plum|powderblue|purple|rebeccapurple|red|rosybrown|royalblue|saddlebrown|salmon|sandybrown|seagreen|seashell|sienna|silver|skyblue|slateblue|slategray|slategrey|snow|springgreen|steelblue|tan|teal|thistle|tomato|turquoise|violet|wheat|white|whitesmoke|yellow|yellowgreen)$",
     re.IGNORECASE,
 )
 
-#: 非颜色项：长度 / 百分比。
+#: Non-color items: length / percentage.
 RE_LENGTH = re.compile(r"^-?[0-9]{1,4}(?:\.[0-9]+)?(?:px|rem|em|%|pt|vh|vw)$", re.IGNORECASE)
 RE_PERCENT = re.compile(r"^[0-9]{1,3}(?:\.[0-9]+)?%$")
 RE_ZERO = re.compile(r"^0$")
 
-#: 透明度类（0–1 或百分比）。
-RE_NUMBER = re.compile(r"^(?:0|1|0?\.[0-9]+|1\.0+)$")  # 放行 1.0 / 1.00 写法
+#: Opacity-like values (0–1 or percentage).
+RE_NUMBER = re.compile(r"^(?:0|1|0?\.[0-9]+|1\.0+)$")  # also allows 1.0 / 1.00
 
-#: 时间值（v0.1.11，呼吸节奏）。接受 ``3s`` / ``1.5s`` / ``800ms``，也接受裸数字
-#: （按秒解释，``3`` = ``3s``）。上限 60s：再长用户在面板上试不出来，而且
-#: 一个无限循环的 60s 动画已经足够"没有动作感"，没有实际意义。
+#: Time values (v0.1.11, breathing rhythm). Accepts ``3s`` / ``1.5s`` / ``800ms`` and bare numbers
+#: (interpreted as seconds, ``3`` = ``3s``). Capped at 60s: anything longer can't be tried out in the
+#: panel, and an infinitely looping 60s animation already feels "motionless", so more is pointless.
 RE_TIME = re.compile(r"^(?:(?:0|[1-9][0-9]{0,3})(?:\.[0-9]{1,3})?(?:s|ms))$", re.IGNORECASE)
 RE_TIME_BARE = re.compile(r"^(?:0|[1-9][0-9]{0,3})(?:\.[0-9]{1,3})?$")
 TIME_MAX_SECONDS = 60.0
 
-#: 字体名白名单：字母数字、中日文、空格、逗号、引号、连字符、下划线、点。
+#: Font name allowlist: alphanumerics, CJK, spaces, commas, quotes, hyphens, underscores, dots.
 RE_FONT = re.compile(r"^[A-Za-z0-9\u4e00-\u9fff ,'\"\-_.]{1,200}$")
 
-#: 明确拒绝的危险片段。注意这里**不**禁用圆括号 —— rgb()/hsl() 合法值本身
-#: 需要括号，安全性由上面每个 kind 的「整串锚定」正则保证。
+#: Explicitly rejected dangerous fragments. Note that parentheses are **not** banned here -- valid
+#: rgb()/hsl() values need them; safety comes from each kind's fully anchored regex above.
 RE_FORBIDDEN = re.compile(r"[;{}<>\\]|@import|url\s*\(", re.IGNORECASE)
 
-#: 长度/百分比语义的变量。
+#: Variables with length/percentage semantics.
 #:
-#: 分区圆角（``--nts-bubble-radius`` 等 6 个）与 ``--nts-radius`` 是**并列**的独立
-#: 旋钮，不是别名：``neko-theme-studio.css`` 为每个区域单独生成声明，且每个变量
-#: 都带自己的原生回退值（气泡 16px/8px、外壳 14px、卡片 0px、弹窗 0px、浮层 12px、
-#: 推荐卡 18px）。因此留空即完全保持原生外观 —— 把它们纳入白名单不会破坏
-#: 契约 §9.3 的「未配置零变化」。
+#: The per-area radii (``--nts-bubble-radius`` and the others, 6 in all) are **parallel**, independent
+#: knobs alongside ``--nts-radius``, not aliases: ``neko-theme-studio.css`` emits a separate declaration
+#: per area, and each variable has its own native fallback (bubble 16px/8px, shell 14px, card 0px,
+#: modal 0px, popover 12px, recommendation card 18px). So leaving them empty keeps the native look
+#: exactly -- allowlisting them does not break contract §9.3's "unset means zero change".
 LENGTH_VARS = frozenset(
     {
         "--nts-radius",
@@ -341,33 +342,34 @@ LENGTH_VARS = frozenset(
         "--nts-chat-panel-radius",
     }
 )
-#: ``--nts-chat-blur`` 在契约 §3 里写作「px」，但 ``neko-theme-studio.css`` 实际
-#: 把它的原生值写成 ``blur(18px)`` 并直接喂给 ``backdrop-filter``：
+#: Contract §3 describes ``--nts-chat-blur`` as "px", but ``neko-theme-studio.css`` actually writes its
+#: native value as ``blur(18px)`` and feeds it straight to ``backdrop-filter``:
 #:   ``backdrop-filter: var(--nts-chat-blur, blur(18px))``
-#: 若只写 ``18px``，backdrop-filter 会因语法非法被整条丢弃 → 毛玻璃消失，
-#: 且**没有任何报错**。这里两种写法都接受，并由面板统一输出 ``blur(...)``。
+#: With just ``18px`` the whole backdrop-filter is dropped as invalid syntax -> the frosted glass
+#: disappears with **no error at all**. Both forms are accepted here, and the panel always emits ``blur(...)``.
 BLUR_VARS = frozenset({
     "--nts-chat-blur",
     "--nts-panel-glass-blur",
 })
 RE_BLUR = re.compile(r"^blur\(\s*-?[0-9]{1,4}(?:\.[0-9]+)?(?:px|rem|em|pt)\s*\)$", re.IGNORECASE)
-#: 裸长度里对 blur 合法的写法。``blur()`` 只接受绝对长度，``%``/``vh``/``vw``
-#: 会被 ``backdrop-filter`` 整条丢弃；而 ``RE_LENGTH`` 为了 shadow 偏移量必须放行它们，
-#: 所以这里单列一个更严的正则，避免 ``blur(18%)`` 这种「校验通过、CSS 无效」的产物。
+#: Bare lengths that are valid for blur. ``blur()`` only accepts absolute lengths; ``%``/``vh``/``vw``
+#: make ``backdrop-filter`` drop the whole declaration, but ``RE_LENGTH`` must allow them for shadow
+#: offsets, so a stricter regex lives here to avoid "passes validation, invalid CSS" output like ``blur(18%)``.
 RE_BLUR_BARE = re.compile(r"^-?[0-9]{1,4}(?:\.[0-9]+)?(?:px|rem|em|pt)$", re.IGNORECASE)
-#: 面板边缘光效 / 玻璃拟态（v0.1.11）。
+#: Panel edge glow / glassmorphism (v0.1.11).
 #:
-#: 这是一组**纯装饰**变量，全部可选；留空则整块 CSS 不加载，外观与原生完全一致
-#: （契约「未配置零变化」仍然成立）。挂载点由 targets.js 的 NTS_GLOW 定义：
+#: A set of **purely decorative** variables, all optional; when empty the whole CSS block is not loaded
+#: and the look is identical to native (the contract's "unset means zero change" still holds).
+#: Mount points are defined by NTS_GLOW in targets.js:
 #:
-#:   * 外发光 / 边缘光晕  → .compact-export-history-anchor::before
-#:     （不能挂在 .compact-export-history-scroll 上：它自带 mask-image，
-#:      实测外发光只能透出 4 个像素，用整图差分验证过）
-#:   * 描边 / 四角高光 / 反射高光 / 内阴影 → .compact-export-history-anchor::after
-#:   * 磨砂层（模糊背景图本身）→ .compact-export-history-scroll::before，z-index:-1
-#:     挂到 ::after 会盖住消息文字，挂到 backdrop-filter 又糊不到画在自身上的
-#:     背景图；负 z 层恰好夹在「容器背景」与「消息内容」之间
-#:     （实测：图片清晰度 -62%、文字清晰度 -1%）
+#:   * outer glow / edge halo  -> .compact-export-history-anchor::before
+#:     (cannot go on .compact-export-history-scroll: it has its own mask-image, and in practice
+#:      only 4 pixels of outer glow showed through, verified with a full-image diff)
+#:   * outline / corner highlights / reflection highlight / inner shadow -> .compact-export-history-anchor::after
+#:   * frosted layer (blurring the background image itself) -> .compact-export-history-scroll::before, z-index:-1
+#:     On ::after it would cover the message text, and backdrop-filter cannot blur a background image
+#:     painted on the element itself; a negative-z layer sits exactly between "container background"
+#:     and "message content" (measured: image sharpness -62%, text sharpness -1%)
 GLOW_COLOR_VARS = frozenset(
     {
         "--nts-panel-glow-color",
@@ -376,8 +378,8 @@ GLOW_COLOR_VARS = frozenset(
     }
 )
 
-#: 0–1 乘子。与 ``--nts-bubble-veil`` 同理，做成连续量而不是布尔开关：
-#: 用户可以要「一点点光」，且值非法时表现为回到原生（而不是变成全亮/全黑）。
+#: 0–1 multipliers. Like ``--nts-bubble-veil``, continuous amounts rather than boolean switches:
+#: users can ask for "just a little glow", and an invalid value means back to native (not fully bright/dark).
 GLOW_AMOUNT_VARS = frozenset(
     {
         "--nts-panel-glow-strength",
@@ -386,21 +388,21 @@ GLOW_AMOUNT_VARS = frozenset(
         "--nts-panel-edge-gradient",
         "--nts-panel-sheen",
         "--nts-panel-inner-glow",
-        # v0.2.0：真·液态玻璃的两条 0–1 连续量。
+        # v0.2.0: the two 0–1 continuous amounts of real liquid glass.
         "--nts-glass-sheen",
         "--nts-glass-noise",
-        # v0.3.0：Apple Liquid Glass 材质的三条 0–1 连续量。
+        # v0.3.0: the three 0–1 continuous amounts of the Apple Liquid Glass material.
         "--nts-glass-lens",
         "--nts-glass-thickness",
         "--nts-glass-specular",
-        # v0.4.0：光效引擎的三条 0–1 连续量。
+        # v0.4.0: the three 0–1 continuous amounts of the lighting engine.
         "--nts-ambient-glow",
         "--nts-glass-dispersion",
         "--nts-glass-caustic",
     }
 )
 
-#: 长度类：光晕扩散半径、描边宽度。
+#: Lengths: glow spread radius, outline width.
 GLOW_LENGTH_VARS = frozenset(
     {
         "--nts-panel-glow-size",
@@ -408,20 +410,21 @@ GLOW_LENGTH_VARS = frozenset(
     }
 )
 
-#: 时间类：呼吸周期。单位接受 s / ms；不带单位一律按秒（``3`` = ``3s``）。
+#: Times: breathing period. Units s / ms; unitless values are seconds (``3`` = ``3s``).
 TIME_VARS = frozenset({"--nts-panel-glow-speed"})
 
-#: 阴影变量：契约 §3 列为非颜色项，但真正需要的是一个 box-shadow 串，
-#: 因此按 token 逐项校验（长度 / 安全颜色 / inset），而不是当成单一长度。
+#: Shadow variables: contract §3 lists them as non-color items, but what is actually needed is a
+#: box-shadow string, so it is validated token by token (length / safe color / inset), not as a single length.
 SHADOW_VARS = frozenset({"--nts-shadow"})
-#: 字体变量。
+#: Font variables.
 FONT_VARS = frozenset({"--nts-font-family"})
-#: 透明度变量（契约 §3 列为非颜色项，但既非长度也非字体）。
-#: ``--nts-bubble-veil`` 是「聊天背景上那层虚化」的总开关：0 = 完全清透（关掉白纱
-#: 与背景模糊），1 = 应用原生观感（半透明白纱 + backdrop blur）。它是一个 0–1 的
-#: 乘子，由 CSS 的 ``calc()`` 同时乘进 alpha 与 blur 半径 —— 见 gen-css.js 的
-#: bubble veil 段。之所以做成乘子而不是布尔开关：乘子取值连续，用户可以要
-#: 「一半虚化」，且值非法时整条声明失效的表现是"回到原生"而不是"变成全透明"。
+#: Opacity variables (contract §3 lists them as non-color items, but they are neither lengths nor fonts).
+#: ``--nts-bubble-veil`` is the master switch for "the veil over the chat background": 0 = fully clear
+#: (white veil and background blur off), 1 = native look (translucent white veil + backdrop blur). It is
+#: a 0–1 multiplier that CSS ``calc()`` multiplies into both alpha and blur radius -- see the bubble veil
+#: section of gen-css.js. Why a multiplier rather than a boolean: it is continuous, so users can ask for
+#: "half veil", and when the value is invalid the dropped declaration means "back to native" rather than
+#: "fully transparent".
 NUMBER_VARS = frozenset({
     "--nts-chat-opacity",
     "--nts-bubble-veil",
@@ -429,48 +432,49 @@ NUMBER_VARS = frozenset({
     "--nts-chat-top-fade",
 })
 
-#: v0.13.0：文字渐变（见 ``GRADIENT_VARS``）。
+#: v0.13.0: text gradient (see ``GRADIENT_VARS``).
 KNOWN_VARS = KNOWN_VARS | frozenset({"--nts-text-gradient"})
 
-#: 行高：无单位倍数。CSS 的 ``line-height`` 用无单位数字最稳（跟着字体大小缩放），
-#: 但 ``RE_NUMBER`` 的 0–1 乘子语义放不下 1.4~2.0 这种常用行高，因此单列一个
-#: ``ratio`` 种类：0.8–3.0、最多两位小数。三端（Python / 面板 / loader）逐条同判。
+#: Line height: unitless multiple. Unitless numbers are the most robust for CSS ``line-height`` (they scale
+#: with font size), but ``RE_NUMBER``'s 0–1 multiplier semantics cannot hold common line heights like
+#: 1.4~2.0, so there is a separate ``ratio`` kind: 0.8–3.0, at most two decimals. All three sides
+#: (Python / panel / loader) apply the same check.
 RATIO_VARS = frozenset({"--nts-line-height"})
 RE_RATIO = re.compile(r"^[0-9](?:\.[0-9]{1,2})?$")
 RATIO_MIN = 0.8
 RATIO_MAX = 3.0
 
-#: ``import_theme`` 接受的 JSON 文本上限（与 input_schema 的 ``maxLength`` 同源）。
-#: input_schema 只是给宿主的声明，宿主不保证强制执行，因此代码里必须自己兜底。
+#: Max JSON text length accepted by ``import_theme`` (same source as the input_schema ``maxLength``).
+#: input_schema is only a declaration to the host, which does not guarantee enforcement, so the code must guard it itself.
 IMPORT_MAX_CHARS = 262144
 
-#: 面板 / 加载器读取调色板的对外路径前缀（本体同源，见 main_routers/theme_studio_router.py）。
+#: Public path prefix the panel / loader use to read the palette (same origin as the host, see main_routers/theme_studio_router.py).
 PLUGIN_ID = "neko_theme_studio"
 
-#: 主题仓库（``<数据目录>/themes/<id>.json``）与背景图（``<数据目录>/backgrounds/<hash>.<ext>``）
-#: 都放在用户数据目录下 —— 本体通过 ``/api/theme_studio/backgrounds/*`` 把图片递给
-#: 应用窗口，所以不能再像插件时代那样依赖插件静态目录。
+#: The theme library (``<data dir>/themes/<id>.json``) and background images (``<data dir>/backgrounds/<hash>.<ext>``)
+#: both live in the user data directory -- the host hands images to app windows via
+#: ``/api/theme_studio/backgrounds/*``, so we can no longer rely on a plugin static directory as in the plugin era.
 LIBRARY_DIR_NAME = "themes"
 BACKGROUND_DIR_NAME = "backgrounds"
 
-#: 内置主题（随本体一起发布，用户不能删除）：``theme_studio/presets/<id>.json``。
-#: 格式与仓库条目一致，另外带 ``"builtin": true``。里面的背景图写成**可移植**的
-#: ``url("images/<hash>.<ext>")``，读出来时再改写成这台机器上的绝对 URL ——
-#: 否则一份预设换台机器就指向了别人的端口。图片本体放进用户数据目录的
-#: ``backgrounds/``（与用户上传的是同一个目录、同一套命名），导入时自动拷贝过去。
+#: Built-in themes (shipped with the host, not deletable by users): ``theme_studio/presets/<id>.json``.
+#: Same format as library entries, plus ``"builtin": true``. Background images in them are written in the
+#: **portable** form ``url("images/<hash>.<ext>")`` and rewritten to this machine's absolute URL when read --
+#: otherwise a preset moved to another machine would point at someone else's port. The image files go into
+#: ``backgrounds/`` in the user data directory (same directory and naming as user uploads), copied over on import.
 PRESET_DIR_NAME = "presets"
 
-#: 「按时段自动换主题」的排程（``<数据目录>/schedule.json``）：面板写、服务读。
-#: loader 自己
-#: 决定此刻该用哪套内置主题，不依赖面板是否开着。
+#: Schedule for "switch theme automatically by time of day" (``<data dir>/schedule.json``): written by the panel,
+#: read by the service. The loader decides on its own
+#: which built-in theme to use right now, regardless of whether the panel is open.
 SCHEDULE_FILE_NAME = "schedule.json"
 
-#: 四个时段。**判定规则必须与加载器的 ``scheduleZone()`` 一致**：
-#: 06:00–09:59 morning、10:00–17:59 day、18:00–21:59 evening、22:00–05:59 night。
-#: 边界写在这里并由 ``get_schedule`` 一并返回，面板文案也用它，避免三处各写一份。
+#: The four zones. **The rule must match the loader's ``scheduleZone()``**:
+#: 06:00–09:59 morning, 10:00–17:59 day, 18:00–21:59 evening, 22:00–05:59 night.
+#: Boundaries are defined here and returned by ``get_schedule``; panel text uses them too, so there are not three separate copies.
 SCHEDULE_ZONES = ("morning", "day", "evening", "night")
 
-#: 时段边界（本地时间小时，左闭右开）。night 跨零点，单独用 (22, 6) 表达。
+#: Zone boundaries (local hour, half-open [start, end)). night wraps midnight, expressed as (22, 6).
 SCHEDULE_ZONE_HOURS: dict[str, tuple[int, int]] = {
     "morning": (6, 10),
     "day": (10, 18),
@@ -479,11 +483,11 @@ SCHEDULE_ZONE_HOURS: dict[str, tuple[int, int]] = {
 }
 
 
-#: 排程分两套时段表：工作日（周一–周五）与周末（周六–周日）。
-#: 周末表为空 = 和平时完全一样（老版本 schedule.json 就是这种形状，自动兼容）。
+#: The schedule has two zone tables: weekday (Mon–Fri) and weekend (Sat–Sun).
+#: An empty weekend table = same as weekdays (old schedule.json files have exactly this shape, so they stay compatible).
 SCHEDULE_DAY_KINDS = ("weekday", "weekend")
 
-#: Python ``datetime.weekday()`` 的周六 / 周日（周一 = 0）。
+#: Saturday / Sunday in Python ``datetime.weekday()`` (Monday = 0).
 SCHEDULE_WEEKEND_WEEKDAYS = (5, 6)
 
 SCHEDULE_DAY_KIND_LABELS = {"weekday": "工作日", "weekend": "周末"}
@@ -497,7 +501,7 @@ def _default_data_dir() -> Path:
     to the user's Documents directory; never let a missing directory break
     service construction.
     """
-    try:  # 延迟导入：避免与 app 包初始化形成循环依赖
+    try:  # deferred import: avoids a circular dependency with app package initialization
         from utils.config_manager import get_config_manager
 
         docs = getattr(get_config_manager(), "app_docs_dir", None)
@@ -530,8 +534,9 @@ def _schedule_windows() -> list[dict[str, Any]]:
     ]
 
 
-#: 后台检查间隔（秒）。加载器每 1.5s 轮询 theme.json，所以换主题的实际生效
-#: 延迟 = 本间隔 + 1.5s。时段粒度是小时，30s 已足够准，又不至于让插件线程白转。
+#: Background check interval (seconds). The loader polls theme.json every 1.5s, so the actual delay before
+#: a theme switch takes effect = this interval + 1.5s. Zones are hour-granular, so 30s is accurate enough
+#: without keeping the thread spinning for nothing.
 SCHEDULE_TICK_SECONDS = 30.0
 
 
@@ -553,7 +558,7 @@ def _zone_for_hour(hour: Any) -> str:
             if start <= h < end:
                 return zone
         elif h >= start or h < end:
-            # night 跨零点：(22, 6) → 22,23,0..5
+            # night wraps midnight: (22, 6) -> 22,23,0..5
             return zone
     return SCHEDULE_ZONES[-1]
 
@@ -571,32 +576,32 @@ def _zone_occurrence_date(stamp: datetime, zone: str) -> str:
     return day.isoformat()
 
 
-#: 主题「风格族」：面板主题库按族分组浏览（v0.2.0）。
-#: 值必须与 ``plugin/static/app.js`` 的族表、``_work/FEATURE-CONTRACT-0.2.0.md`` §3
-#: 三处一致；未知族一律规整成 ``light``（老条目没有 family 字段时也从亮/暗推断）。
+#: Theme "style families": the panel's theme library is browsed grouped by family (v0.2.0).
+#: Values must match the family table in ``plugin/static/app.js`` and ``_work/FEATURE-CONTRACT-0.2.0.md`` §3
+#: (three places); unknown families are normalized to ``light`` (old entries without a family field are inferred from light/dark).
 PRESET_FAMILIES = (
-    "glassy",    # 液态玻璃
-    "gradient",  # 渐变
-    "dark",      # 暗色
-    "light",     # 浅色
-    "texture",   # 纸感 / 质地
-    "minimal",   # 极简
+    "glassy",    # liquid glass
+    "gradient",  # gradient
+    "dark",      # dark
+    "light",     # light
+    "texture",   # paper / texture
+    "minimal",   # minimal
 )
 
-#: 分享包（zip）与图片的体积上限。压缩包是**别人给的**文件，必须按不可信输入处理。
+#: Size limits for share bundles (zip) and images. Archives are files **from other people** and must be treated as untrusted input.
 ARCHIVE_MAX_BYTES = 8 * 1024 * 1024
 IMAGE_MAX_BYTES = 4 * 1024 * 1024
 ARCHIVE_MAX_ENTRIES = 300
 ARCHIVE_MAX_UNCOMPRESSED = 24 * 1024 * 1024
 LIBRARY_MAX_ITEMS = 200
-# 每套主题含一个 JSON，亮暗模式各可引用一张背景图；另含清单和说明文件。
+# Each theme has one JSON, and light/dark mode may each reference one background image; plus the manifest and readme.
 LIBRARY_ARCHIVE_MAX_ENTRIES = LIBRARY_MAX_ITEMS * 3 + 2
-#: box-shadow 允许用逗号叠多层（霓虹/发光主题常见写法：两层不同颜色的光晕）。
-#: 早先三处校验器都只认单层，把含逗号的值整串拒掉 —— 用户从别处拿到的主题
-#: 一应用就少一条 `--nts-shadow`，还没人告诉他为什么。这里统一放开到 4 层。
+#: box-shadow may stack multiple comma-separated layers (common in neon/glow themes: two halos in different colors).
+#: All three validators used to accept a single layer only and rejected any value containing a comma -- a theme
+#: obtained elsewhere silently lost its `--nts-shadow` on apply, with nobody telling the user why. Uniformly allow up to 4 layers.
 SHADOW_MAX_LAYERS = 4
 
-#: 分享包里的说明文件（纯文本，方便别人拿到 zip 后知道怎么用）。
+#: Readme inside the share bundle (plain text, so whoever receives the zip knows how to use it).
 ARCHIVE_README = (
     "N.E.K.O 主题工坊 · 主题分享包\n"
     "\n"
@@ -605,11 +610,11 @@ ARCHIVE_README = (
     "导入只会把主题存进仓库，不会立刻改动你当前的配色；在仓库里点「应用」才切换。\n"
 )
 
-#: 主题库备份包（zip）格式标记。区别于单主题分享包：这里一个包里有多个
-#: ``themes/*.json`` + 共用 ``images/`` + ``manifest.json``。
+#: Format marker for theme library backup bundles (zip). Unlike a single-theme share bundle, one bundle holds
+#: multiple ``themes/*.json`` + a shared ``images/`` + ``manifest.json``.
 LIBRARY_ARCHIVE_FORMAT = "neko-theme-studio-library/1"
 
-#: 库备份包里的说明文件。
+#: Readme inside the library backup bundle.
 LIBRARY_ARCHIVE_README = (
     "N.E.K.O 主题工坊 · 主题库备份包\n"
     "\n"
@@ -619,29 +624,29 @@ LIBRARY_ARCHIVE_README = (
     "恢复不会立刻改动你当前的配色；在仓库里点「应用」才切换。\n"
 )
 
-#: 主题仓库条目 id：服务端生成，绝不采用上传文件名（否则就是路径穿越入口）。
+#: Theme library entry id: generated server-side, never taken from the uploaded file name (that would be a path traversal entry point).
 RE_THEME_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
-#: 背景图文件名：服务端按内容哈希生成。
+#: Background image file name: generated server-side from a content hash.
 RE_BG_NAME = re.compile(r"^[a-z0-9]{8,32}\.(?:png|jpg|jpeg|webp|gif)$")
-# 从 theme.json / 仓库条目的原始文本里捞背景图引用（孤儿回收用）。
-#: 两处引用都要认：theme.json / 仓库条目写的是 ``backgrounds/<name>``，
-#: 而内置主题里是可移植写法 ``images/<name>``。早先只匹配前者，结果插件一启动
-#: 就把「只被内置主题引用」的图片当孤儿删掉 —— 预设点开就没有背景图了。
+# Pulls background image references out of the raw text of theme.json / library entries (for orphan cleanup).
+#: Both reference forms must be recognized: theme.json / library entries use ``backgrounds/<name>``,
+#: while built-in themes use the portable ``images/<name>``. It used to match only the former, so on startup
+#: images "referenced only by built-in themes" were deleted as orphans -- presets then opened with no background.
 RE_BG_REF_TEXT = re.compile(
     r"(?:backgrounds|images)/([a-z0-9]{8,32}\.(?:png|jpg|jpeg|webp|gif))"
 )
-#: 背景图变量（值只有两种合法形态：``none`` 或指向本插件 backgrounds/ 的 url()）。
+#: Background image variables (only two valid value shapes: ``none`` or a url() pointing at our own backgrounds/).
 IMAGE_VARS = frozenset({"--nts-chat-bg-image"})
-#: 值里抓文件名（兼容 ``url("images/x.png")`` 与绝对地址两种写法）。
+#: Captures the file name from a value (handles both ``url("images/x.png")`` and absolute URLs).
 RE_BG_VALUE_CAPTURE = re.compile(r"/backgrounds/([A-Za-z0-9._-]{1,80})")
 RE_URL_ANY = re.compile(r'url\(\s*"?([^")\s]+)"?\s*\)')
-#: 绝对地址或裸路径都接受，但必须是本插件的 backgrounds/ 目录。
+#: Absolute URLs and bare paths are both accepted, but they must point at our own backgrounds/ directory.
 RE_BG_URL = re.compile(
     r'^url\(\s*"?(?:https?://(?:127\.0\.0\.1|localhost):[0-9]{2,5})?'
     r"/api/theme_studio/backgrounds/[A-Za-z0-9._-]{1,80}"
     r'"?\s*\)$'
 )
-#: 图片判定（魔数优先，扩展名只用于分享包内文件筛选）。
+#: Image detection (magic bytes first; extensions are only used to filter files inside share bundles).
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 
 
@@ -681,11 +686,11 @@ def _clip_name(value: Any, fallback: str) -> str:
     return fallback
 
 
-#: 面板主题卡片缩略图取哪些变量（v0.1.12）。
+#: Which variables the panel's theme card thumbnails use (v0.1.12).
 #:
-#: 面板不能为了画缩略图把整套 82 个变量都拿过去（主题仓库一屏有十几套，
-#: 每套 16 KB 的 JSON 不划算），这里只摘 7 个最有辨识度的颜色/渐变。
-#: 值全部来自 ``_validate_palette`` 的返回值，仍截断到 300 字符再交给面板。
+#: The panel must not fetch all 82 variables just to draw a thumbnail (a library screen shows a dozen or so
+#: themes, and 16 KB of JSON each is not worth it), so only the 7 most recognizable colors/gradients are picked.
+#: All values come from ``_validate_palette``'s output and are still truncated to 300 chars before going to the panel.
 PREVIEW_VARS = (
     ("bg", "--nts-chat-bg"),
     ("gradient", "--nts-chat-gradient"),
@@ -709,7 +714,7 @@ def _material_badge(raw: Any) -> dict[str, Any] | None:
         return None
     try:
         clean, _ = _materials.normalize_materials(raw)
-    except Exception:  # noqa: BLE001 - 摘要失败不该让整页主题列表崩
+    except Exception:  # noqa: BLE001 - a failed summary must not crash the whole theme list
         return None
     preset = str(clean.get("preset") or "custom")
     quality = str(clean.get("quality") or "balanced")
@@ -810,9 +815,9 @@ def _preset_family(raw: dict, vars_map: dict, dark_map: dict) -> str:
         alpha = _color_alpha(tint)
         chain = str(source.get("--nts-glass-filter") or "")
         blur = re.search(r"blur\(\s*([0-9]+(?:\.[0-9]+)?)px", chain)
-        # 真半透（0.02 < alpha ≤ 0.30）+ 足够强的 backdrop blur 才算玻璃族；
-        # 老主题里大量 ``transparent``/``blur(18px)`` 的写法是为了「不影响原生」，
-        # 把它们判成玻璃族会让分类失去意义。
+        # Only genuinely translucent (0.02 < alpha ≤ 0.30) + a strong enough backdrop blur counts as glassy;
+        # many old themes use ``transparent``/``blur(18px)`` just to "leave native untouched", and
+        # classifying them as glassy would make the categories meaningless.
         if (
             alpha is not None
             and 0.02 < alpha <= 0.30
@@ -820,7 +825,7 @@ def _preset_family(raw: dict, vars_map: dict, dark_map: dict) -> str:
             and float(blur.group(1)) >= 20.0
         ):
             return "glassy"
-    # 亮色模式就是用户第一眼看到的默认形态：亮色底偏暗才归 dark，其余归 light。
+    # Light mode is the default look users see first: only a dark light-mode background counts as dark, everything else is light.
     light_luma = _color_luma((vars_map or {}).get("--nts-chat-bg"))
     if light_luma is not None and light_luma < 0.42:
         return "dark"
@@ -893,7 +898,7 @@ def _theme_tags(value: Any) -> list:
     return out
 
 
-# --------------------------------------------------------------------------- 默认调色板
+# --------------------------------------------------------------------------- default palette
 
 def _default_vars() -> dict[str, str]:
     """Light (``:root``) defaults -- **empty**, deliberately.
@@ -940,40 +945,41 @@ def default_palette() -> dict[str, Any]:
         "updated_at": _now_iso(),
         "vars": _default_vars(),
         "dark_vars": _default_dark_vars(),
-        # 材质默认**未启用**：面板一打开就有完整参数可调，但应用窗口零变化。
+        # Materials are **disabled** by default: the panel has the full param set to tweak right away, but app windows see zero change.
         "materials": _materials.default_materials(),
     }
 
 
-# --------------------------------------------------------------------------- 校验
+# --------------------------------------------------------------------------- validation
 
-#: 只接受固定关键字的变量（值既不是颜色也不是长度，而是 CSS 枚举值）。
-#: ``--nts-chat-bg-fit`` 决定背景图是 ``cover``（铺满、可能裁切）还是 ``contain``
-#: （整图可见、两侧留底色）。白名单整串匹配，绝不接受 ``var()`` / 多余内容。
+#: Variables that accept only fixed keywords (the value is neither a color nor a length but a CSS enum value).
+#: ``--nts-chat-bg-fit`` decides whether the background image is ``cover`` (fills, may crop) or ``contain``
+#: (whole image visible, base color on the sides). Allowlist matched in full; ``var()`` / extra content is never accepted.
 KEYWORD_VARS: dict[str, tuple[str, ...]] = {
     "--nts-chat-bg-fit": ("cover", "contain"),
-    #: v0.8.0：圆角几何形状。``round`` = 普通圆角（原生行为），``continuous`` =
-    #: 连续曲率（超椭圆 / iOS 那种「转角没有突然变直」的过渡）。后者需要
-    #: Chrome 139+ 的原生 ``corner-shape``，旧内核上加载器打的属性还在、但 CSS
-    #: 整块在 ``@supports`` 里不生效 —— 外观退回普通圆角，不会坏。
+    #: v0.8.0: corner geometry. ``round`` = ordinary rounded corners (native behavior), ``continuous`` =
+    #: continuous curvature (superellipse / the iOS-style "no sudden straightening at the corner" transition).
+    #: The latter needs native ``corner-shape`` in Chrome 139+; on older engines the attribute set by the loader
+    #: is still there, but the whole CSS block inside ``@supports`` does not apply -- it falls back to ordinary
+    #: rounded corners without breaking.
     "--nts-corner-style": ("round", "continuous"),
-    #: v0.12.0：背景图位置 / 平铺。各管一条声明（``background-position`` /
-    #: ``background-repeat``），不碰 ``background-image`` 与 ``background-size``，
-    #: 所以和「背景图 / 亮度 / 适应方式」可以任意组合。未设置时那段 CSS 不匹配，
-    #: 外观与应用原生完全一致（居中、不平铺）。
+    #: v0.12.0: background image position / repeat. Each controls one declaration (``background-position`` /
+    #: ``background-repeat``) and leaves ``background-image`` and ``background-size`` alone, so they combine
+    #: freely with "background image / brightness / fit". When unset that CSS block does not match and the
+    #: look is identical to the native app (centered, no repeat).
     "--nts-chat-bg-position": ("center", "top", "bottom", "left", "right"),
     "--nts-chat-bg-repeat": ("no-repeat", "repeat", "repeat-x", "repeat-y"),
 }
 
-#: v0.4.27 新增：背景图适应方式。并进 ``KNOWN_VARS``，三端（后端 / 面板 / loader）同表。
+#: Added in v0.4.27: background image fit. Merged into ``KNOWN_VARS``; all three sides (backend / panel / loader) share the table.
 KNOWN_VARS = KNOWN_VARS | frozenset({"--nts-chat-bg-fit", "--nts-corner-style"})
 
 
 def _value_kind(name: str) -> str:
     if name in KEYWORD_VARS:
         return "keyword"
-    # 光效 / 玻璃拟态一组：必须在默认 "color" 之前判掉，
-    # 否则 0-1 乘子和长度值会被当颜色、整条被拒。
+    # The glow / glassmorphism group must be classified before the default "color",
+    # otherwise 0-1 multipliers and lengths would be treated as colors and rejected outright.
     if name in FILTER_VARS:
         return "filter"
     if name in GRADIENT_VARS:
@@ -1085,7 +1091,7 @@ def _shadow_layer_ok(tokens: list) -> bool:
             lengths += 1
             if lengths > 4:
                 return False
-            # 负值只允许前两个长度（x/y 偏移）；模糊/扩散半径不能为负
+            # Negative values are only allowed for the first two lengths (x/y offset); blur/spread radii cannot be negative
             if token.startswith("-") and lengths > 2:
                 return False
             continue
@@ -1158,7 +1164,7 @@ def _filter_chain_ok(value: str) -> bool:
         if func in seen:
             return False
         seen.add(func)
-        if match.group(0) != token:  # 整串锚定，杜绝大小写/空白技巧
+        if match.group(0) != token:  # fully anchored, ruling out case/whitespace tricks
             return False
         if func == "blur":
             if unit != "px" or number > FILTER_MAX_BLUR_PX:
@@ -1201,8 +1207,8 @@ def _gradient_ok(value: str) -> bool:
             return False
         if not _color_ok(match.group(1)):
             return False
-        # 停止点必须带百分比：这样「面板生成什么、校验就收什么」，
-        # 不会出现 ``#fff`` 这种带浏览器自动分布的值让两端判断分叉。
+        # Stops must carry a percentage: that way "what the panel generates is what validation accepts",
+        # and values like ``#fff`` relying on browser auto-distribution cannot make the two sides disagree.
         if match.group(2) is None or float(match.group(2)) > 100.0:
             return False
     return True
@@ -1218,16 +1224,16 @@ def _is_safe_value(name: str, value: Any) -> bool:
 
     kind = _value_kind(name)
     if kind == "filter":
-        # 先于 RE_FORBIDDEN：滤镜链里没有 url(= / 分号，但保留这条路径更清晰。
+        # Before RE_FORBIDDEN: filter chains contain no url(= / semicolons, but keeping this path separate is clearer.
         return _filter_chain_ok(v)
     if kind == "gradient":
         return _gradient_ok(v)
     if kind == "image":
-        # 背景图的值本身就是 url(...)，必须跳过 RE_FORBIDDEN 的 url( 拦截，
-        # 改由 RE_BG_URL 整串锚定（只允许本插件 backgrounds/ 目录里的文件）。
+        # A background image value is itself url(...), so it must bypass RE_FORBIDDEN's url( block
+        # and is instead fully anchored by RE_BG_URL (only files in our own backgrounds/ directory).
         return v.lower() == "none" or bool(RE_BG_URL.match(v))
     if kind == "keyword":
-        # 只收白名单里的关键字（cover / contain / round / continuous），整串匹配；大小写不敏感。
+        # Only allowlisted keywords (cover / contain / round / continuous), full match; case-insensitive.
         return v.lower() in KEYWORD_VARS[name]
     if RE_FORBIDDEN.search(v):
         return False
@@ -1239,59 +1245,59 @@ def _is_safe_value(name: str, value: Any) -> bool:
             or RE_HSL.match(v)
         )
     if kind == "length":
-        # 负长度在 CSS 里一律非法（``border-radius`` / ``font-size`` 收到负值会把整条
-        # 声明丢掉 → 面板报成功、外观不变）。RE_LENGTH 为了 shadow 的偏移量必须允许
-        # 负号，而 shadow 走的是自己的 token 分支，所以在这里单独拦住即可。
+        # Negative lengths are always invalid here in CSS (``border-radius`` / ``font-size`` drop the whole
+        # declaration on a negative value -> panel reports success, look unchanged). RE_LENGTH must allow a
+        # minus sign for shadow offsets, but shadows take their own token branch, so blocking it here suffices.
         if "-" in v:
             return False
         return bool(RE_LENGTH.match(v) or RE_PERCENT.match(v) or RE_ZERO.match(v))
     if kind == "blur":
-        # 同时接受 `blur(18px)`（CSS 能用的形态）与裸长度 `18px`（契约 §3 的写法），
-        # 裸长度稍后会被规范化为 blur(...)。
-        # 负半径会让 ``backdrop-filter`` 整条失效（静默无变化），而模糊值永远用不到负号。
+        # Accept both `blur(18px)` (the form CSS can use) and a bare length `18px` (the contract §3 form);
+        # bare lengths are normalized to blur(...) later.
+        # A negative radius invalidates the whole ``backdrop-filter`` (silently no change), and blur never needs a minus sign.
         if "-" in v:
             return False
-        # 只收绝对长度：blur(18%) / blur(18vw) 不是合法 CSS，放行就会落盘一个
-        # loader 必丢的值（面板报成功、外观不变）。
+        # Absolute lengths only: blur(18%) / blur(18vw) are not valid CSS; letting them through would persist
+        # a value the loader always drops (panel reports success, look unchanged).
         return bool(RE_BLUR.match(v) or RE_BLUR_BARE.match(v) or RE_ZERO.match(v))
     if kind == "time":
-        # 呼吸周期。裸数字按秒解释；带单位时换算成秒再卡上限。
-        # 只收 s / ms 两种单位：呼吸节奏用不到别的，放宽只会放出无效 CSS。
+        # Breathing period. Bare numbers are seconds; with a unit, convert to seconds then apply the cap.
+        # Only s / ms units: breathing rhythm needs nothing else, and loosening this would only let invalid CSS through.
         if RE_TIME.match(v):
             unit = v[-2:].lower()
             try:
                 seconds = float(v[:-2]) / 1000.0 if unit == "ms" else float(v[:-1])
-            except ValueError:  # pragma: no cover — RE_TIME 已保证是数字
+            except ValueError:  # pragma: no cover - RE_TIME already guarantees a number
                 return False
             return 0.0 <= seconds <= TIME_MAX_SECONDS
         if RE_TIME_BARE.match(v):
             return float(v) <= TIME_MAX_SECONDS
         return False
     if kind == "number":
-        # 契约语义是 0–1 的小数；百分比是面板的友好写法，但只有 0%–100% 有意义
-        # （999% 归一后 >1，loader 会丢弃 → 又变成「能存不能用」）。
+        # The contract semantics are a 0–1 decimal; percentages are the panel's friendly form, but only 0%–100%
+        # is meaningful (999% normalizes to >1, which the loader drops -> "saved but unusable" again).
         if RE_NUMBER.match(v):
             return True
         if not RE_PERCENT.match(v):
             return False
         try:
             return float(v[:-1]) <= 100.0
-        except ValueError:  # pragma: no cover — RE_PERCENT 已保证是数字
+        except ValueError:  # pragma: no cover - RE_PERCENT already guarantees a number
             return False
     if kind == "ratio":
-        # 无单位倍数（行高）。范围 0.8–3.0：小于 0.8 会把多行文字压成一团，
-        # 大于 3.0 在聊天气泡里已经没有可读性。
+        # Unitless multiple (line height). Range 0.8–3.0: below 0.8 multi-line text gets squashed together,
+        # above 3.0 chat bubbles are no longer readable.
         if not RE_RATIO.match(v):
             return False
         return RATIO_MIN <= float(v) <= RATIO_MAX
     if kind == "font":
         return bool(RE_FONT.match(v))
     if kind == "shadow":
-        # box-shadow 的 CSS 语法是 inset? && <length>{2,4} && <color>?。
-        # 只做 token 白名单会放行 0 0 10% #000（百分比不是 box-shadow 的合法长度）、
-        # 1px（长度不足）、1px 2px 3px 4px 5px（长度过多）——浏览器会把整条声明丢掉，
-        # 面板却显示已应用（与「改了没反应」同症状）。
-        # 面板 isSafeShadow / loader isSafeValue 必须逐条同判定（THEME_CONTRACT 9.10b）。
+        # box-shadow CSS grammar is inset? && <length>{2,4} && <color>?.
+        # A plain token allowlist would accept 0 0 10% #000 (percentages are not valid box-shadow lengths),
+        # 1px (too few lengths), 1px 2px 3px 4px 5px (too many) -- the browser drops the whole declaration
+        # while the panel shows it as applied (same symptom as "changed but nothing happened").
+        # The panel's isSafeShadow / loader's isSafeValue must apply identical checks (THEME_CONTRACT 9.10b).
         layers = _split_shadow_layers(v)
         if not layers or len(layers) > SHADOW_MAX_LAYERS:
             return False
@@ -1321,7 +1327,7 @@ def _canonicalize_value(name: str, value: str) -> str:
       declaration is dropped -> "speed filled in but nothing moves".
     """
     if name in KEYWORD_VARS:
-        # 关键字大小写不敏感（CSS 本身也是），统一落盘成小写，面板下拉才能对上。
+        # Keywords are case-insensitive (as in CSS itself); always persisted lowercase so the panel dropdown matches.
         return value.lower()
     if name in BLUR_VARS and RE_BLUR_BARE.match(value):
         return f"blur({value})"
@@ -1330,7 +1336,7 @@ def _canonicalize_value(name: str, value: str) -> str:
     if name in NUMBER_VARS and value.endswith("%"):
         try:
             fraction = round(float(value[:-1]) / 100.0, 4)
-        except ValueError:  # pragma: no cover — 校验阶段已保证是数字
+        except ValueError:  # pragma: no cover - validation already guarantees a number
             return value
         text = f"{fraction:.4f}".rstrip("0").rstrip(".")
         return text or "0"
@@ -1362,21 +1368,21 @@ def _validate_palette(
                 errors.append(f"{label}: 变量名非法已拒绝 {name!r}")
                 continue
             if name not in KNOWN_VARS:
-                # 形式合法但没有规则消费 → 必须报错。否则「报成功的静默空操作」
-                # 会让用户以为改成功了（独立验证者实测过 --nts-nope-var）。
+                # Well-formed but consumed by no rule -> must be an error. Otherwise a "silent no-op reported
+                # as success" makes users think the change worked (an independent verifier tested --nts-nope-var).
                 errors.append(
                     f"{label}: 未知变量名已拒绝 {name!r}（拼写错误？见 README 变量清单）"
                 )
                 continue
             if raw_value is None:
-                # 显式置空 = 删除该键（回退到 N.E.K.O 原生值）。
+                # Explicitly empty = delete the key (fall back to the N.E.K.O native value).
                 continue
             if not isinstance(raw_value, str):
                 errors.append(f"{label}: {name} 的值必须是字符串")
                 continue
             value = raw_value.strip()
             if not value:
-                # 空串 = 删除该键（面板的「清空」语义）。
+                # Empty string = delete the key (the panel's "clear" semantics).
                 continue
             if not _is_safe_value(name, value):
                 errors.append(f"{label}: {name} 的值非法已拒绝 {value!r}")
@@ -1426,7 +1432,7 @@ def _coerce_bool(value: Any) -> bool | None:
     if isinstance(value, int):
         return bool(value)
     if isinstance(value, float):
-        return None if value != value else bool(value)  # NaN → 无法判定
+        return None if value != value else bool(value)  # NaN -> undecidable
     if isinstance(value, str):
         lowered = value.strip().lower()
         if lowered in _TRUE_WORDS:
@@ -1522,10 +1528,10 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
                 if getattr(exc, "winerror", None) not in (5, 32) or attempt == 5:
                     raise
                 time.sleep(0.04 * (attempt + 1))
-        if last_error is not None:  # pragma: no cover - 上面要么 break 要么 raise
+        if last_error is not None:  # pragma: no cover - the loop above either breaks or raises
             raise last_error
     finally:
-        # 替换成功后 tmp 已不存在；失败路径必须自己清理。
+        # After a successful replace tmp no longer exists; the failure path must clean it up itself.
         try:
             if tmp_path.exists():
                 tmp_path.unlink()
@@ -1533,7 +1539,7 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
             pass
 
 
-# --------------------------------------------------------------------------- 插件
+# --------------------------------------------------------------------------- plugin
 
 class ThemeStudioService(NekoPluginBase):
     """Theme Studio: the single authoritative owner of the palette."""
@@ -1546,22 +1552,22 @@ class ThemeStudioService(NekoPluginBase):
         super().__init__(ctx)
         try:
             self.logger = self.enable_file_logging(log_level="INFO")
-        except Exception:  # noqa: BLE001 — 文件日志不可用不应阻止功能
+        except Exception:  # noqa: BLE001 - an unavailable file log must not block functionality
             self.logger = getattr(ctx, "logger", None)
 
-        #: 本体代码树（只读）：loader 两件套等静态资源。
+        #: Host code tree (read-only): static assets such as the two loader files.
         self.plugin_root = PACKAGE_DIR
         self.static_dir = APP_STATIC_DIR
-        #: 可写数据目录：theme.json / themes / backgrounds / presets 缓存 / exports。
+        #: Writable data directory: theme.json / themes / backgrounds / presets cache / exports.
         self.data_dir = Path(data_dir) if data_dir else _default_data_dir()
         self.theme_path = self.data_dir / "theme.json"
-        #: 按时段自动换主题的后台线程状态。
+        #: State of the background thread that switches themes by time of day.
         self._schedule_lock = threading.Lock()
         self._schedule_stop_event = threading.Event()
         self._schedule_thread: threading.Thread | None = None
         self._schedule_last_result: dict[str, Any] = {}
 
-    # ------------------------------------------------------------- 内部工具
+    # ------------------------------------------------------------- internal helpers
 
     def _log(self, level: str, message: str) -> None:
         logger = getattr(self, "logger", None)
@@ -1578,8 +1584,8 @@ class ThemeStudioService(NekoPluginBase):
         if not isinstance(raw, dict):
             return base
 
-        # 老版本的 theme.json 里可能有 "version" 计数字段：这里刻意忽略它，
-        # 下次落盘时自然消失（schema 未变，读旧文件不会报错）。
+        # Old theme.json files may have a "version" counter field: deliberately ignored here, it simply
+        # disappears on the next write (the schema is unchanged, so reading old files does not error).
         name = raw.get("name")
         name = str(name) if isinstance(name, str) and name.strip() else base["name"]
 
@@ -1590,21 +1596,21 @@ class ThemeStudioService(NekoPluginBase):
             else base["updated_at"]
         )
 
-        # 磁盘上的内容也要过滤：文件可能被手工编辑或被其它程序写坏。
+        # On-disk content must be filtered too: the file may have been hand-edited or corrupted by another program.
         clean_vars, clean_dark, errors = _validate_palette(
             raw.get("vars"), raw.get("dark_vars")
         )
         for message in errors:
             self._log("warning", f"theme.json 中被忽略的条目 —— {message}")
 
-        # 材质：缺失 / 老版本 theme.json 都没有这一段 → 补默认（未启用）。
+        # Materials: missing / old theme.json files lack this section -> fill in defaults (disabled).
         clean_materials, material_warnings = _materials.normalize_materials(
             raw.get("materials")
         )
         for message in material_warnings:
             self._log("warning", f"theme.json 的材质设置被修正 —— {message}")
 
-        # 不能直接 bool(...)：字符串 "false" 是真值，会把用户关掉的主题静默重开。
+        # Cannot just bool(...): the string "false" is truthy and would silently re-enable a theme the user turned off.
         raw_enabled = raw.get("enabled", True)
         enabled = _coerce_bool(raw_enabled)
         if enabled is None:
@@ -1632,8 +1638,8 @@ class ThemeStudioService(NekoPluginBase):
             (the normal first-run case).
         """
         try:
-            # 读字节、在下面的解析段里解码：非 UTF-8 内容（UnicodeDecodeError 是
-            # ValueError）要走「解析失败」分支，而不是从这里直接抛出去。
+            # Read bytes and decode in the parsing section below: non-UTF-8 content (UnicodeDecodeError is a
+            # ValueError) must take the "parse failed" branch instead of raising straight out of here.
             text = self.theme_path.read_bytes()
         except FileNotFoundError:
             return default_palette()
@@ -1650,9 +1656,10 @@ class ThemeStudioService(NekoPluginBase):
             self._log("warning", f"theme.json 解析失败，使用默认值：{exc}")
             return default_palette()
 
-    # ---------------------------------------------------------------- 资源指纹
-    # theme.json 里附带的两枚指纹（v0.7.0）：加载器靠它们判断「页面里的 CSS 是不是
-    # 当前磁盘上这份」「窗口里跑的加载器是不是当前版本」，**不必再整份下载** CSS/JS。
+    # ---------------------------------------------------------------- asset fingerprints
+    # The two fingerprints carried in theme.json (v0.7.0): the loader uses them to decide "is the CSS in the page
+    # the one currently on disk" and "is the loader running in the window the current version", **without
+    # downloading** the full CSS/JS again.
     def _asset_meta(self) -> dict[str, str]:
         """Return ``{"css_sha8", "loader_version"}`` of the loader assets.
 
@@ -1738,8 +1745,8 @@ class ThemeStudioService(NekoPluginBase):
     def _write_unlocked(self, palette: dict[str, Any]) -> None:
         """Atomically write theme.json (implemented by the module-level ``_write_json_atomic``)."""
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        # 附上资源指纹（v0.7.0）：加载器据此零下载判断 CSS / 加载器是否过期。
-        # 材质镜像（v0.15.1）：静态路由不经过 entry，磁盘上必须有编译结果。
+        # Attach asset fingerprints (v0.7.0): the loader uses them to tell, with zero downloads, whether the CSS / loader is stale.
+        # Material mirror (v0.15.1): the static route does not go through an entry, so the compiled result must be on disk.
         payload = self._with_asset_meta(self._with_material_cache(palette))
         _write_json_atomic(self.theme_path, payload)
 
@@ -1753,17 +1760,17 @@ class ThemeStudioService(NekoPluginBase):
             try:
                 text = self.theme_path.read_text(encoding="utf-8")
                 parsed = json.loads(text)
-                # v0.7.0：缺资源指纹时补一次。install.ps1 恢复用户调色板是直接把备份
-                # 文件写回来，那份不带 css_sha8 / loader_version —— 不补的话加载器要等
-                # 用户下一次应用主题才拿到指纹，这段时间仍会整份下载 CSS/JS。
-                # 只补指纹，变量与名称一个字不动。
+                # v0.7.0: fill in missing asset fingerprints once. install.ps1 restores the user palette by writing
+                # the backup file straight back, without css_sha8 / loader_version -- without this the loader would
+                # only get fingerprints the next time the user applies a theme, and would keep downloading the full
+                # CSS/JS until then. Only fingerprints are filled; variables and name are left untouched.
                 if '"css_sha8"' not in text and isinstance(parsed, dict):
                     self._write_unlocked(self._normalize(parsed))
                     self._log("info", "已为 theme.json 补上资源指纹（css_sha8 / loader_version）")
                 elif isinstance(parsed, dict):
-                    # v0.15.4：指纹过期同样要补。install 升级了加载器，theme.json 里
-                    # 仍是旧 loader_version，页面内的旧加载器据此认定「远端就是我这一版」
-                    # 而永不升级 —— 只能靠插件启动时把指纹刷新到当前资产。
+                    # v0.15.4: stale fingerprints must be refreshed too. When install upgrades the loader, theme.json
+                    # still has the old loader_version, so the old in-page loader concludes "the remote is my version"
+                    # and never upgrades -- the only fix is refreshing fingerprints to the current assets at startup.
                     meta = self._asset_meta()
                     stale = (
                         parsed.get("css_sha8") != meta["css_sha8"]
@@ -1778,8 +1785,9 @@ class ThemeStudioService(NekoPluginBase):
                             f"已刷新 theme.json 资源指纹（css_sha8={meta['css_sha8']} / "
                             f"loader_version={meta['loader_version']}）",
                         )
-                    # v0.15.1：老 theme.json 里材质已启用但没有编译镜像 —— 加载器读的是
-                    # 磁盘文件，缺镜像就等于材质不生效。启动时补一次，用户不必重新点应用。
+                    # v0.15.1: an old theme.json with materials enabled but no compiled mirror -- the loader reads
+                    # the disk file, so a missing mirror means materials have no effect. Fill it once at startup so
+                    # the user need not click apply again.
                     materials = parsed.get("materials")
                     if (
                         not stale
@@ -1790,12 +1798,12 @@ class ThemeStudioService(NekoPluginBase):
                         self._write_unlocked(self._normalize(parsed))
                         self._log("info", "已为 theme.json 补上材质变量镜像")
             except OSError as exc:
-                # 「读不出来」（被占用 / 权限）≠「内容坏了」：绝不能拿默认值覆盖，
-                # 否则一次瞬时占用就把用户的主题毁掉。保持原样，下次启动再试。
+                # "Cannot read" (locked / permissions) != "content is corrupt": never overwrite with defaults,
+                # or a single transient lock would destroy the user's theme. Leave it as-is and retry next startup.
                 self._log("warning", f"theme.json 暂时不可读（{exc}），保持原样")
                 return
             except ValueError as exc:
-                # 内容确实坏了：先把原文件留档再写默认值，不静默销毁用户数据。
+                # The content really is corrupt: archive the original file before writing defaults; never silently destroy user data.
                 backup = self.theme_path.with_name(self.theme_path.name + ".corrupt")
                 try:
                     os.replace(self.theme_path, backup)
@@ -1803,7 +1811,7 @@ class ThemeStudioService(NekoPluginBase):
                         "warning",
                         f"theme.json 解析失败（{exc}），原文件已备份为 {backup.name}",
                     )
-                except OSError as move_exc:  # pragma: no cover — 备份失败也不阻止恢复
+                except OSError as move_exc:  # pragma: no cover - a failed backup does not block recovery
                     self._log(
                         "warning",
                         f"theme.json 解析失败（{exc}），备份失败（{move_exc}）",
@@ -1827,7 +1835,7 @@ class ThemeStudioService(NekoPluginBase):
         single byte on disk changed).
         """
         with _WRITE_LOCK:
-            # strict：拿不到真实基线就中止，绝不用默认值覆盖用户已保存的调色板。
+            # strict: abort if the real baseline is unavailable; never overwrite the user's saved palette with defaults.
             palette = self._read_unlocked(strict=True)
 
             merged_vars = dict(palette["vars"])
@@ -1835,9 +1843,9 @@ class ThemeStudioService(NekoPluginBase):
 
             clean_vars, clean_dark, errors = _validate_palette(vars_in, dark_in)
 
-            # 删除语义：显式传空串 / None = 回退到 N.E.K.O 原生值。
-            # 注意：**被拒绝**的值不会走到这里（它既不在 clean 里，也不是空值），
-            # 因此旧值会被原样保留 —— 一次误输入不会毁掉已有的好值。
+            # Delete semantics: an explicit empty string / None = fall back to the N.E.K.O native value.
+            # Note: **rejected** values never reach here (they are neither in clean nor empty),
+            # so the old value is kept as-is -- one bad input cannot destroy an existing good value.
             for source, merged in ((vars_in, merged_vars), (dark_in, merged_dark)):
                 if not isinstance(source, dict):
                     continue
@@ -1855,12 +1863,12 @@ class ThemeStudioService(NekoPluginBase):
             palette["vars"] = merged_vars
             palette["dark_vars"] = merged_dark
 
-            # 有几个输入字段真的被接受了。静默丢弃（不在 KNOWN_VARS、值非法）
-            # 的条目不计数 —— 它们既没生效也不该被视为成功。
+            # How many input fields were actually accepted. Silently dropped entries (not in KNOWN_VARS, invalid
+            # value) are not counted -- they took no effect and must not be treated as success.
             accepted = len(clean_vars) + len(clean_dark)
 
             if isinstance(name, str):
-                # 传空串/纯空白 = 恢复默认名（面板清空输入框时走这条），不是错误。
+                # Empty / whitespace-only = restore the default name (the panel takes this path when the input is cleared), not an error.
                 palette["name"] = _clip_name(name, DEFAULT_THEME_NAME)
                 accepted += 1
             elif name is not None:
@@ -1874,23 +1882,24 @@ class ThemeStudioService(NekoPluginBase):
                     palette["enabled"] = coerced
                     accepted += 1
 
-            # 材质是**整份替换**而不是按键合并：面板持有完整参数树，每次保存都
-            # 提交全量；按键合并会让「把某参数改回默认」这种操作无法表达
-            # （缺省键 = 保持不变，与「改回默认」在语义上撞车）。
+            # Materials are **replaced wholesale**, not merged per key: the panel holds the full param tree and
+            # submits all of it on every save; per-key merging would make "reset a param to default" impossible
+            # to express (missing key = keep unchanged, which collides semantically with "reset to default").
             if isinstance(materials_in, dict):
                 clean_materials, material_warnings = _materials.normalize_materials(
                     materials_in
                 )
-                # custom_presets 是用户的素材库，跟五节参数不同：五节是「当前这一套」，
-                # 整份替换才对；预设库要是也整份换，面板漏带一次就把用户存的预设全清空。
-                # 所以按名字合并 —— 删除走 delete_material_preset 那条独立路径。
+                # custom_presets is the user's asset library, unlike the five param sections: those are "the current
+                # set", so wholesale replacement is right; if the preset library were replaced wholesale too, one save
+                # where the panel omits it would wipe all the user's saved presets. So merge by name -- deletion goes
+                # through the separate delete_material_preset path.
                 stored_materials = _materials.normalize_materials(
                     palette.get("materials")
                 )[0]
                 merged_custom = dict(stored_materials.get("custom_presets") or {})
                 merged_custom.update(clean_materials.get("custom_presets") or {})
                 clean_materials["custom_presets"] = merged_custom
-                # 传了自定义预设名却没带库（导出后重新导入的老面板）时，按合并结果补回标签。
+                # When a custom preset name is sent without the library (an old panel re-importing an export), restore the label from the merged result.
                 raw_preset = str((materials_in or {}).get("preset") or "").strip()
                 if (
                     raw_preset
@@ -1899,8 +1908,8 @@ class ThemeStudioService(NekoPluginBase):
                 ):
                     clean_materials["preset"] = raw_preset
                 palette["materials"] = clean_materials
-                # 材质警告是「已钳制生效」，不是「被拒绝」——不能塞进 errors，
-                # 否则面板会对一次成功保存报「拒绝 N 条」。
+                # Material warnings mean "clamped and applied", not "rejected" -- they must not go into errors,
+                # or the panel would report "N rejected" for a successful save.
                 for message in material_warnings:
                     self._log("warning", f"apply_theme 材质被修正 —— {message}")
                 accepted += 1
@@ -1915,7 +1924,7 @@ class ThemeStudioService(NekoPluginBase):
             self._write_unlocked(palette)
             return palette, errors, accepted
 
-    # ------------------------------------------------------------- 生命周期
+    # ------------------------------------------------------------- lifecycle
 
     def startup_sync(self) -> dict[str, Any]:
         """Startup initialization (sync): create dirs and theme.json, collect unused backgrounds, start the schedule thread.
@@ -1925,15 +1934,15 @@ class ThemeStudioService(NekoPluginBase):
         and is stopped by the main server's shutdown hook. Callers run it in a
         worker thread; ``startup()`` is only a plugin-era coroutine wrapper.
         """
-        # 数据目录不可写（权限 / 只读盘）时不能让启动整体失败：否则每次轮询都会
-        # 重试启动并返回 500。读路径在文件缺失时本来就回退默认调色板。
+        # An unwritable data directory (permissions / read-only disk) must not fail startup as a whole: otherwise
+        # every poll would retry startup and return 500. The read path already falls back to the default palette when the file is missing.
         try:
             self._ensure_file()
         except OSError as exc:
             self._log("warning", f"无法初始化 theme.json（{exc}），本次使用默认调色板")
         self._ensure_dirs()
         palette = self._read_unlocked()
-        # 回收没人引用的背景图。失败绝不影响启动。
+        # Clean up unreferenced background images. A failure must never affect startup.
         try:
             self._gc_backgrounds()
         except Exception as exc:  # noqa: BLE001
@@ -1943,8 +1952,8 @@ class ThemeStudioService(NekoPluginBase):
             "主题工坊已就绪，调色板 "
             f"({len(palette['vars'])} 亮色 / {len(palette['dark_vars'])} 暗色变量)",
         )
-        # 按时段自动换主题：后台线程，每 30s 醒一次、只在时段变化时写盘。
-        # 随服务启动一起起（任何窗口的加载器首次轮询就会触发），保证重开应用后仍按时段生效。
+        # Time-of-day theme switching: a background thread that wakes every 30s and writes only when the zone changes.
+        # Started along with the service (triggered by the first poll from any window's loader), so the schedule still applies after the app restarts.
         self._start_schedule_worker()
         return {"status": "ready", "theme_path": str(self.theme_path)}
 
@@ -1954,8 +1963,8 @@ class ThemeStudioService(NekoPluginBase):
 
     @lifecycle(id="shutdown")
     def shutdown(self, **_):
-        # 排程线程是 daemon，进程退出本来也会带走；但明确置位能让 30s 的
-        # 等待立刻结束，应用退出时不会残留一个还在写 theme.json 的线程。
+        # The schedule thread is a daemon and dies with the process anyway; but setting the flag explicitly ends
+        # the 30s wait immediately, so no thread is left writing theme.json when the app exits.
         self._stop_schedule_worker()
         self._log("info", "主题工坊已停止")
         return Ok({"status": "shutdown"})
@@ -2006,7 +2015,7 @@ class ThemeStudioService(NekoPluginBase):
     )
     async def get_theme(self, **_):
         try:
-            # 附带 material_vars：加载器不解析材质参数，只认编译好的变量表。
+            # Include material_vars: the loader does not parse material params, it only reads the compiled variable table.
             return Ok(self._with_material_vars(self._read_unlocked()))
         except Exception as exc:  # noqa: BLE001
             return Err(SdkError(f"读取主题失败：{exc}"))
@@ -2057,7 +2066,7 @@ class ThemeStudioService(NekoPluginBase):
         except (OSError, ValueError):
             raw_diag = None
         if isinstance(raw_diag, dict):
-            # 只回传给面板看的摘要：完整 payload 有几万字，面板用不上。
+            # Return only a summary for the panel: the full payload is tens of thousands of chars the panel does not need.
             diagnostics = {
                 "received_at": str(raw_diag.get("received_at") or ""),
                 "page": str(raw_diag.get("page") or ""),
@@ -2135,8 +2144,8 @@ class ThemeStudioService(NekoPluginBase):
                         {"id": mode, "label": _materials.QUALITY_LABELS[mode]}
                         for mode in _materials.QUALITY_MODES
                     ],
-                    # 六套内置 + custom 一共七张卡：custom 不是「另存的一套值」，
-                    # 而是「回到参数默认值」，所以它的 params 是默认表而不是空表。
+                    # Six built-ins + custom make seven cards: custom is not "a separately saved set of values" but
+                    # "back to param defaults", so its params are the default table, not an empty one.
                     "presets": {
                         preset_id: {
                             "label": _materials.PRESET_LABELS[preset_id],
@@ -2148,8 +2157,8 @@ class ThemeStudioService(NekoPluginBase):
                     "preset_labels": dict(_materials.PRESET_LABELS),
                     "easings": list(_materials.EASINGS),
                     "blur_levels": dict(_materials.BLUR_LEVELS),
-                    # 用户自存的预设：面板按名字列卡片，切换时后端按整套参数铺底，
-                    # 与内置预设走同一条 apply_materials 分支。
+                    # User-saved presets: the panel lists cards by name; on switch the backend lays down the whole
+                    # param set, through the same apply_materials branch as built-in presets.
                     "custom_presets": dict(
                         _materials.normalize_materials(current)[0].get("custom_presets") or {}
                     ),
@@ -2191,8 +2200,8 @@ class ThemeStudioService(NekoPluginBase):
             else:
                 palette = self._read_unlocked()
                 clean, warnings = _materials.normalize_materials(palette.get("materials"))
-            # 注意：这里不看 enabled。预览的意义就是「还没启用也能看效果」，
-            # 启用与否由 get_theme / 加载器的 material_attrs 决定。
+            # Note: enabled is ignored here. The point of preview is "see the effect before enabling";
+            # whether it is enabled is decided by get_theme / the loader's material_attrs.
             light_vars, dark_vars = _materials.compile_materials(clean)
             want_dark = str(mode or "light").strip().lower() == "dark"
             return Ok(
@@ -2275,8 +2284,8 @@ class ThemeStudioService(NekoPluginBase):
             title = str(name or "").strip()[:40]
             if not title:
                 return Err(SdkError("name 不能为空。"))
-            # 删除必须绕开 _apply_and_store 的「预设库按名合并」：合并会把刚删的
-            # 那条又加回来。这里直接改磁盘上的 materials 并原子写。
+            # Deletion must bypass _apply_and_store's "merge preset library by name": merging would add the just-deleted
+            # entry back. Modify materials on disk directly here and write atomically.
             with _WRITE_LOCK:
                 palette = self._read_unlocked(strict=True)
                 clean, _warnings = _materials.normalize_materials(palette.get("materials"))
@@ -2286,7 +2295,7 @@ class ThemeStudioService(NekoPluginBase):
                 stored.pop(title, None)
                 clean["custom_presets"] = stored
                 if clean.get("preset") == title:
-                    # 删掉正在使用的预设：参数保持不动，只把标签退回 custom。
+                    # Deleting the preset in use: params stay as they are, only the label falls back to custom.
                     clean["preset"] = "custom"
                 palette["materials"] = clean
                 palette["updated_at"] = _now_iso()
@@ -2410,7 +2419,7 @@ class ThemeStudioService(NekoPluginBase):
         }
         target = self.data_dir / "diagnostics.json"
         try:
-            # 保留最近 20 次，方便对照「改一版 → 看一次」的因果。
+            # Keep the last 20, to make it easy to correlate "change a version -> look once".
             if target.is_file():
                 try:
                     old = json.loads(target.read_text(encoding="utf-8"))
@@ -2468,7 +2477,7 @@ class ThemeStudioService(NekoPluginBase):
     )
     async def apply_theme(
         self,
-        vars: Any = None,  # noqa: A002 — 名称与契约 input_schema 一致
+        vars: Any = None,  # noqa: A002 - name matches the contract input_schema
         dark_vars: Any = None,
         name: Any = None,
         enabled: Any = None,
@@ -2493,11 +2502,11 @@ class ThemeStudioService(NekoPluginBase):
         )
 
         if errors:
-            # 合法部分已落盘；把被拒绝的条目如实回传给面板展示。
+            # The valid part has been written; report rejected entries back to the panel as-is for display.
             self._log("warning", f"apply_theme 拒绝 {len(errors)} 条：{errors[:3]}")
             if gave_input and accepted == 0:
-                # 一项都没被接受 = 这次调用什么也没做，必须报失败，
-                # 否则调用方只看 status 会以为写成功了。
+                # Nothing accepted = this call did nothing and must report failure,
+                # otherwise a caller looking only at status would think the write succeeded.
                 return Err(SdkError("没有写入任何改动：" + "；".join(errors)))
             return Ok({**self._with_material_vars(palette), "rejected": errors})
         return Ok(self._with_material_vars(palette))
@@ -2515,11 +2524,12 @@ class ThemeStudioService(NekoPluginBase):
         try:
             with _WRITE_LOCK:
                 palette = default_palette()
-                # 自定义材质预设是用户的素材库，不是「当前外观」：恢复默认只清外观，
-                # 预设库照旧保留（与 apply_theme / apply_saved_theme 的合并规则一致）。
-                # 内容坏了（JSON 解析失败）时预设本来就拿不回来，照常重置——重置常用来救坏文件。
-                # 但暂时读不到（被占用 / 权限）时文件可能完好：此时写默认值会把预设库抹掉，
-                # 必须拒绝本次重置，让用户稍后重试。
+                # Custom material presets are the user's asset library, not "the current look": reset only clears
+                # the look and keeps the preset library (same merge rule as apply_theme / apply_saved_theme).
+                # If the content is corrupt (JSON parse failure) the presets are unrecoverable anyway, so reset as
+                # usual -- reset is often used to rescue a broken file. But when the file is temporarily unreadable
+                # (locked / permissions) it may be intact: writing defaults then would wipe the preset library, so
+                # this reset must be refused and the user asked to retry later.
                 try:
                     current = self._read_unlocked(strict=True)
                 except _ThemeUnreadable as exc:
@@ -2556,10 +2566,10 @@ class ThemeStudioService(NekoPluginBase):
     async def export_theme(self, **_):
         try:
             raw = self._read_unlocked()
-            # 磁盘上的 theme.json 带派生镜像（material_vars / material_attrs /
-            # material_compile_version），那是给加载器读的投影。导出的 JSON 是给人看、
-            # 给人改、给人分享的：混进 250 个派生变量只会让文件翻倍并误导用户，
-            # 所以这里只导出事实字段（materials 子树才是材质的唯一真相）。
+            # theme.json on disk carries derived mirrors (material_vars / material_attrs /
+            # material_compile_version), a projection for the loader to read. Exported JSON is for people to read,
+            # edit and share: mixing in 250 derived variables would only double the file and mislead users,
+            # so only the factual fields are exported here (the materials subtree is the single source of truth).
             clean = self._normalize(raw)
             payload = json.dumps(clean, ensure_ascii=False, indent=2, sort_keys=False)
             return Ok(
@@ -2615,11 +2625,11 @@ class ThemeStudioService(NekoPluginBase):
                 if isinstance(record.get("dark_vars"), dict)
                 else {}
             )
-            # 图片没法变成文本：先数出这套主题引用了哪些图（去重后的文件名），
-            # 再把对应变量从导出的 JSON 里摘掉。
-            # 必须在 _validate_palette **之前**从原始记录里数：内置主题存的是可移植的
-            # url("images/<hash>")，而校验只认本机 backgrounds/ 地址，会把它们判非法
-            # 丢掉 —— 先校验再数，面板就会对「含背景图」的主题显示「0 张」。
+            # Images cannot become text: first count which images this theme references (deduplicated file names),
+            # then strip the corresponding variables from the exported JSON.
+            # Must count from the raw record **before** _validate_palette: built-in themes store the portable
+            # url("images/<hash>"), but validation only accepts this machine's backgrounds/ URLs and would drop them
+            # as invalid -- validating first would make the panel show "0 images" for themes that have backgrounds.
             image_names = set()
             image_keys = set()
             for source in (raw_vars, raw_dark):
@@ -2649,8 +2659,8 @@ class ThemeStudioService(NekoPluginBase):
                 "vars": clean_vars,
                 "dark_vars": clean_dark,
             }
-            # 材质子树只在启用时随文本一起分享：没启用时它整份是默认值，
-            # 塞进 JSON 只会让贴出来的内容翻几倍，且对方导入后也不会生效。
+            # The materials subtree is shared with the text only when enabled: when disabled it is all defaults,
+            # and including it would just multiply the pasted content several times without taking effect on import.
             record_materials = record.get("materials")
             if isinstance(record_materials, dict):
                 clean_materials, _material_warnings = _materials.normalize_materials(
@@ -2701,7 +2711,7 @@ class ThemeStudioService(NekoPluginBase):
         if not text:
             return Err(SdkError("导入内容为空。"))
         if len(text) > IMPORT_MAX_CHARS:
-            # input_schema 的 maxLength 只是声明，宿主不一定执行 → 自己兜底。
+            # input_schema's maxLength is only a declaration the host may not enforce -> guard it ourselves.
             return Err(
                 SdkError(f"导入内容过长（{len(text)} 字符，上限 {IMPORT_MAX_CHARS}）。")
             )
@@ -2718,14 +2728,14 @@ class ThemeStudioService(NekoPluginBase):
         if not isinstance(payload_vars, dict) and not isinstance(payload_dark, dict):
             return Err(SdkError("导入内容缺少 vars / dark_vars 字段。"))
 
-        # 导入是「整体替换」而非合并：先清空再写入合法子集。
+        # Import is "wholesale replace", not merge: clear first, then write the valid subset.
         try:
             with _WRITE_LOCK:
-                # strict：读不出旧基线时中止，绝不拿默认值当基线覆盖用户调色板。
+                # strict: abort if the old baseline cannot be read; never use defaults as the baseline and overwrite the user's palette.
                 palette = self._read_unlocked(strict=True)
                 clean_vars, clean_dark, errors = _validate_palette(payload_vars, payload_dark)
 
-                # 同 apply_saved_theme：丢掉指向已删除图片的引用。
+                # Same as apply_saved_theme: drop references to deleted images.
                 clean_vars, gone_light = self._without_missing_images(clean_vars)
                 clean_dark, gone_dark = self._without_missing_images(clean_dark)
                 for gone in (gone_light, gone_dark):
@@ -2734,16 +2744,16 @@ class ThemeStudioService(NekoPluginBase):
                             f"{key}: 引用的背景图已不存在，已回退原生"
                         ]
 
-                # 全被拒 = 这次导入没有任何可用内容。旧实现在这里照样写盘，
-                # 结果「导入成功」却把用户原来的调色板清空（变量全丢、名字还改了）。
-                # 但「只调了材质、一个颜色都没改」的主题是合法的：materials.enabled
-                # 为真就算有内容，否则这种主题导出来就再也导不回去（0.15.39）。
+                # Everything rejected = this import has no usable content. The old implementation still wrote to disk,
+                # so an "import succeeded" wiped the user's existing palette (all variables lost, name changed too).
+                # But a theme that "only tunes materials and changes no color" is valid: materials.enabled being true
+                # counts as content, otherwise such a theme could never be imported back after export (0.15.39).
                 incoming_materials = parsed.get("materials")
                 has_material = (
                     isinstance(incoming_materials, dict)
                     and bool(incoming_materials.get("enabled"))
-                    # 只有「包本身就没带颜色」才放行：带了颜色却全被拒的是坏包，
-                    # 那种情况必须继续拦，否则一次误导入就把用户调色板清空。
+                    # Only allow it when "the bundle carries no colors at all": one that carries colors but has all of
+                    # them rejected is a bad bundle and must still be blocked, or one mistaken import wipes the user's palette.
                     and not payload_vars
                     and not payload_dark
                 )
@@ -2768,15 +2778,15 @@ class ThemeStudioService(NekoPluginBase):
                 if isinstance(parsed.get("enabled"), bool):
                     palette["enabled"] = bool(parsed["enabled"])
 
-                # 材质：导入是整体替换。没带这一段的老主题保留用户当前材质，
-                # 而不是把它清成默认 —— 换一套配色不该顺手重置材质。
+                # Materials: import is a wholesale replace. Old themes without this section keep the user's current
+                # materials instead of clearing them to defaults -- switching color schemes should not reset materials.
                 if isinstance(parsed.get("materials"), dict):
                     (
                         imported_materials,
                         material_warnings,
                     ) = _materials.normalize_materials(parsed["materials"])
-                    # 自定义预设是用户的素材库：与 apply_saved_theme 一样按名字合并，
-                    # 本地独有的预设必须留下，否则导入一份调色板就把它们全清空。
+                    # Custom presets are the user's asset library: merge by name as in apply_saved_theme;
+                    # local-only presets must be kept, or importing one palette would wipe them all.
                     stored_materials = _materials.normalize_materials(
                         palette.get("materials")
                     )[0]
@@ -2801,7 +2811,7 @@ class ThemeStudioService(NekoPluginBase):
             )
         return Ok({**self._with_material_vars(palette), "cleared": cleared})
 
-    # ------------------------------------------------------- 主题仓库 / 背景图
+    # ------------------------------------------------------- theme library / background images
 
     def _library_dir(self) -> Path:
         return self.data_dir / LIBRARY_DIR_NAME
@@ -2816,14 +2826,14 @@ class ThemeStudioService(NekoPluginBase):
     def _preset_path(self, theme_id: str) -> Path:
         return self._presets_dir() / f"{theme_id}.json"
 
-    # -- 「按时段自动换主题」排程 -----------------------------------------
+    # -- "switch theme by time of day" schedule ----------------------------
 
     def _schedule_path(self) -> Path:
         return self.data_dir / SCHEDULE_FILE_NAME
 
     def _schedule_defaults(self) -> dict[str, Any]:
-        # schema 2：多了 weekend_zones（周末另一套时段表）。schema 1 的文件读进来
-        # 时 weekend_zones 会退化成空表 = 和平时一样，不需要迁移脚本。
+        # schema 2: adds weekend_zones (a separate zone table for weekends). When a schema 1 file is read,
+        # weekend_zones degrades to an empty table = same as weekdays, so no migration script is needed.
         return {
             "schema": 2,
             "enabled": False,
@@ -2893,43 +2903,44 @@ class ThemeStudioService(NekoPluginBase):
                     errors.append(f"{label}时段「{zone}」的主题 id 不合法：{value!r}")
                     continue
                 if not self._theme_exists(value):
-                    # drop_missing=False 只给「回写运行时标记」用（_update_schedule_stamp）：
-                    # 那里读盘只是拿基线，如果顺手把失效时段丢掉，再把整份写回去，
-                    # 就等于用户什么都没做、配置却被静默清空 —— tick 只能走 missing
-                    # 分支去抖，永久丢配置。所以这条路径必须原样保留用户值。
+                    # drop_missing=False is only for "writing back runtime stamps" (_update_schedule_stamp):
+                    # that read only fetches a baseline; if it dropped stale zones along the way and wrote the whole
+                    # file back, the config would be silently wiped without the user doing anything -- tick could
+                    # then only debounce via the missing branch and the config would be lost for good. So this path
+                    # must keep user values as-is.
                     if not drop_missing and not strict:
                         target[zone] = value
                         continue
                     errors.append(f"{label}时段「{zone}」引用了不存在的主题：{value}")
-                    # 非严格读（_read_schedule）时把「被丢掉的时段」留一份，
-                    # 面板要据此提醒用户「这套主题已经不在仓库里了」。
+                    # On a non-strict read (_read_schedule) keep a copy of the "dropped zones";
+                    # the panel uses it to tell the user "this theme is no longer in the library".
                     if dropped is not None:
                         dropped.append({"field": field, "zone": zone, "theme_id": value})
                     continue
                 target[zone] = value
 
-        # 「上次按哪个时段切过哪套主题」由后台线程写回，用来避免每 30s 重写一次
-        # theme.json（每次写都会让加载器重绘，没必要）。坏值直接丢弃，不算错误 ——
-        # 它只是运行时标记，不是用户配置。
+        # "Which theme was last switched to for which zone" is written back by the background thread to avoid
+        # rewriting theme.json every 30s (every write makes the loader repaint, needlessly). Bad values are simply
+        # dropped, not treated as errors -- it is only a runtime stamp, not user config.
         last_zone = raw.get("last_zone")
         if isinstance(last_zone, str) and last_zone in SCHEDULE_ZONES:
             schedule["last_zone"] = last_zone
         last_theme = raw.get("last_theme")
         if isinstance(last_theme, str) and RE_THEME_ID.match(last_theme.strip()):
             schedule["last_theme"] = last_theme.strip()
-        # 跨天型边界（周日 23:59 → 周一 00:01）时时段名可能相同（都是 night），
-        # 但两边用的是不同的表，所以「上次切过哪套」必须连天型一起记。
+        # Across a day-kind boundary (Sunday 23:59 -> Monday 00:01) the zone name may be the same (both night),
+        # but the two sides use different tables, so "what was last switched to" must be recorded with the day kind.
         last_day_kind = raw.get("last_day_kind")
         if isinstance(last_day_kind, str) and last_day_kind in SCHEDULE_DAY_KINDS:
             schedule["last_day_kind"] = last_day_kind
-        # 时段的「哪一天那一次」（夜间跨零点算开始那天）。只记时段名的话，只设了
-        # 早晨的排程在第二天早晨会被当成「已经切过」而跳过。
+        # "Which day's occurrence" of the zone (night wrapping midnight counts as the day it started). Recording only
+        # the zone name would make a morning-only schedule be treated as "already switched" and skipped the next morning.
         last_date = raw.get("last_date")
         if isinstance(last_date, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", last_date):
             schedule["last_date"] = last_date
-        # 「上次因为主题不存在而跳过」的指纹（day_kind|zone|theme_id）。它唯一的
-        # 作用是让 warning 只刷一次 —— 以前缺主题时每 30 秒写一条，一天 2880 条，
-        # 真出问题时反而把有用的日志淹了。同样是运行时标记，坏值丢弃。
+        # Fingerprint of "last skipped because the theme did not exist" (day_kind|zone|theme_id). Its only purpose
+        # is to log the warning once -- previously a missing theme logged one every 30 seconds, 2880 a day, drowning
+        # useful logs when something really went wrong. Also a runtime stamp; bad values are dropped.
         last_missing = raw.get("last_missing")
         if isinstance(last_missing, str) and 0 < len(last_missing) <= 200:
             schedule["last_missing"] = last_missing
@@ -2962,10 +2973,10 @@ class ThemeStudioService(NekoPluginBase):
             raw, strict=False, dropped=dropped, drop_missing=drop_missing
         )
         self._schedule_stale = dropped
-        # 去抖：后台线程每 30 秒读一次这份文件，而失效时段不会因为「读」而被改写，
-        # 所以同一组错误会一直被读到。以前这里每 30 秒写一条 warning（一天 2880 条），
-        # 真出问题时反而把有用的日志淹了。同一组错误只记一次；错误消失后签名归零，
-        # 下次再出现（用户又删了一次）还能看到。
+        # Debounce: the background thread reads this file every 30 seconds, and stale zones are not rewritten by a
+        # "read", so the same set of errors keeps being read. This used to log a warning every 30 seconds (2880 a
+        # day), drowning useful logs when something really went wrong. Log each set of errors once; once the errors
+        # disappear the signature resets, so a recurrence (the user deletes again) is still visible.
         signature = "|".join(errors)
         if signature != getattr(self, "_schedule_warn_sig", ""):
             self._schedule_warn_sig = signature
@@ -2989,7 +3000,7 @@ class ThemeStudioService(NekoPluginBase):
         """
         try:
             with _WRITE_LOCK:
-                # 关键：拿基线时不要丢掉「引用了已删除主题」的时段。
+                # Key point: do not drop zones "referencing a deleted theme" when fetching the baseline.
                 fresh = self._read_schedule(drop_missing=False)
                 for key, value in changes.items():
                     if value is None:
@@ -2998,10 +3009,10 @@ class ThemeStudioService(NekoPluginBase):
                         fresh[key] = value
                 self._save_schedule_unlocked(fresh)
         except Exception as exc:  # noqa: BLE001
-            # 标记写不回去最多多重切一次主题，不影响配置本身。
+            # Failing to write back the stamp at worst re-switches the theme once more; the config itself is unaffected.
             self._log("warning", f"自动换主题：写回 schedule.json 失败（{exc}）")
 
-    # -- 「按时段自动换主题」执行 -----------------------------------------
+    # -- "switch theme by time of day" execution ---------------------------
 
     def _schedule_zone_map(self, schedule: dict[str, Any], day_kind: str) -> dict[str, Any]:
         """Pick the zone table for a day kind; an all-empty weekend table means "same as weekdays"."""
@@ -3043,12 +3054,13 @@ class ThemeStudioService(NekoPluginBase):
         if not theme_id:
             return {"action": "unset", "zone": zone, "day_kind": day_kind}
         occurrence = _zone_occurrence_date(stamp, zone)
-        # 「上次已经按这套切过」才跳过。但主题可能已经被删掉了，所以必须再确认它
-        # 还在 —— 否则用户把主题重新导入回来之后，unchanged 会永远短路，自动换主题
-        # 再也恢复不了（这一条是 v0.4.22 修的）。
-        # 还要比「哪一天那一次时段」：只设了早晨时，周一早晨切过、晚上手动换了别的，
-        # 周二早晨仍要再切一次。老 schedule.json 没有 last_date 时按同一次处理，
-        # 不在升级后的第一次检查里突然改掉用户当前的主题。
+        # Skip only if "already switched to this theme last time". But the theme may have been deleted, so confirm it
+        # still exists -- otherwise after the user re-imports the theme, unchanged would short-circuit forever and
+        # auto-switching could never recover (fixed in v0.4.22).
+        # Also compare "which day's occurrence of the zone": with only a morning zone set, if Monday morning switched
+        # and the user manually changed themes in the evening, Tuesday morning must switch again. Old schedule.json
+        # files without last_date are treated as the same occurrence, so the first check after upgrading does not
+        # suddenly change the user's current theme.
         same_stamp = (
             schedule.get("last_zone") == zone
             and schedule.get("last_theme") == theme_id
@@ -3057,8 +3069,8 @@ class ThemeStudioService(NekoPluginBase):
         )
         if not force and same_stamp and self._theme_exists(theme_id):
             if "last_date" not in schedule:
-                # 老文件：把这一次认作「已切过的那次」并补上日期。不补的话，只设了
-                # 一个时段的排程永远不会再推进标记，以后每天都会被判成 unchanged。
+                # Old file: treat this occurrence as "the one already switched" and fill in the date. Otherwise a
+                # schedule with a single zone would never advance its stamp and would be judged unchanged every day.
                 self._update_schedule_stamp(last_date=occurrence)
             return {"action": "unchanged", "zone": zone, "day_kind": day_kind, "theme_id": theme_id}
         if not self._theme_exists(theme_id):
@@ -3069,9 +3081,9 @@ class ThemeStudioService(NekoPluginBase):
                     f"自动换主题：{day_kind}时段「{zone}」指定的主题 {theme_id} 已被删除，"
                     "先保持当前主题不动（重新导入或改选主题后会自动恢复）",
                 )
-            # 把 last_* 一起推进：这样下一轮走 same_stamp 分支时 theme_exists 为假，
-            # 会重新落到这里（但 warning 已被 last_missing 去抖），而主题一旦被找回
-            # 来，same_stamp 为真 + theme_exists 为真 → 走 unchanged 之前会先 apply。
+            # Advance last_* together: on the next round the same_stamp branch sees theme_exists false and lands here
+            # again (but the warning is debounced by last_missing); once the theme is restored, same_stamp true +
+            # theme_exists true -> it applies before reaching unchanged.
             self._update_schedule_stamp(
                 last_zone=zone,
                 last_day_kind=day_kind,
@@ -3083,11 +3095,11 @@ class ThemeStudioService(NekoPluginBase):
         try:
             outcome = self._apply_theme_record(theme_id)
         except Exception as exc:  # noqa: BLE001
-            # 条目本身坏了（例如旧版本存的空配色）时 apply 会一直失败，而排程线程
-            # 每 30s 重试一次 → 一天 2880 条一模一样的 warning，真出问题时反而把
-            # 有用日志淹掉。和「主题被删」一样按指纹去抖：只报第一次。
-            # 注意这里**不**推进 last_zone/last_theme：条目被改好之后下一轮要能
-            # 自动恢复（推进了就会被 same_stamp 判成 unchanged 而永远不再尝试）。
+            # When the entry itself is broken (e.g. an empty palette saved by an old version) apply keeps failing, and
+            # the schedule thread retries every 30s -> 2880 identical warnings a day, drowning useful logs when something
+            # really goes wrong. Debounce by fingerprint as with "theme deleted": report only the first time.
+            # Note last_zone/last_theme are **not** advanced here: once the entry is fixed the next round must recover
+            # automatically (advancing them would make same_stamp judge it unchanged and never retry).
             message = str(exc)
             fingerprint = f"{day_kind}|{zone}|{theme_id}|error:{message[:120]}"
             if schedule.get("last_missing") != fingerprint:
@@ -3100,14 +3112,14 @@ class ThemeStudioService(NekoPluginBase):
                 "theme_id": theme_id,
                 "error": str(exc),
             }
-        # 记下「已按这个时段切过这套主题」，避免每 30s 重写一次 theme.json。
-        # 只合并标记、不写回开始时读到的那份快照（见 _update_schedule_stamp 的说明）。
+        # Record "already switched to this theme for this zone" to avoid rewriting theme.json every 30s.
+        # Only merge the stamp; do not write back the snapshot read at the start (see _update_schedule_stamp).
         self._update_schedule_stamp(
             last_zone=zone,
             last_day_kind=day_kind,
             last_theme=theme_id,
             last_date=occurrence,
-            # 真的切成功了：清掉「缺主题」标记，下次再缺（换了主题又被删）还要能警告。
+            # Actually switched: clear the "missing theme" stamp so a future miss (theme changed then deleted again) still warns.
             last_missing=None,
         )
         name = str((outcome.get("theme") or {}).get("name") or theme_id)
@@ -3137,7 +3149,7 @@ class ThemeStudioService(NekoPluginBase):
                 state = self._schedule_tick()
                 if state.get("action") == "applied":
                     self._schedule_last_result = state
-            except Exception as exc:  # noqa: BLE001 —— 线程不能死
+            except Exception as exc:  # noqa: BLE001 - the thread must not die
                 self._log("warning", f"自动换主题检查异常（已忽略）：{exc}")
             stop.wait(SCHEDULE_TICK_SECONDS)
 
@@ -3192,7 +3204,7 @@ class ThemeStudioService(NekoPluginBase):
         ):
             try:
                 path.mkdir(parents=True, exist_ok=True)
-            except OSError as exc:  # pragma: no cover — 磁盘异常不该让 entry 崩掉
+            except OSError as exc:  # pragma: no cover - a disk error must not crash the entry
                 self._log("warning", f"创建目录失败 {path}：{exc}")
 
     def _background_url(self, filename: str) -> str:
@@ -3254,17 +3266,17 @@ class ThemeStudioService(NekoPluginBase):
         if not bg_dir.is_dir():
             return []
         texts = []
-        # P0（审查 py-review P0-1）：读不到 theme.json 时**必须中止**，绝不能
-        # 「当它没有引用任何图片」继续删。实测 PermissionError 场景下，用户当前
-        # 正在用的背景图会被删掉且没有备份 —— 主题直接变成一片空白。
-        # 宁可这轮不回收（孤儿图只是占几 MB），也不能删活数据。
+        # P0 (review py-review P0-1): if theme.json cannot be read we **must abort**, never carry on deleting
+        # "as if it referenced no images". In a real PermissionError case, the background the user was currently
+        # using got deleted with no backup -- the theme just went blank.
+        # Better to skip cleanup this round (orphan images only take a few MB) than to delete live data.
         if self.theme_path.exists():
             try:
                 texts.append(self.theme_path.read_text(encoding="utf-8", errors="replace"))
             except OSError as exc:
                 self._log("warning", f"背景图回收已跳过：theme.json 暂时不可读（{exc}）")
                 return []
-        # 仓库/预设条目读不出来同样中止：它们也可能引用图片。
+        # Likewise abort if library/preset entries cannot be read: they may reference images too.
         unreadable = False
         for directory in (self._library_dir(), self._presets_dir()):
             if not directory.is_dir():
@@ -3284,8 +3296,8 @@ class ThemeStudioService(NekoPluginBase):
         for text in texts:
             referenced.update(RE_BG_REF_TEXT.findall(text))
         removed = []
-        # 删除改为「移入 .trash」而不是 unlink：误删时用户还能自己捞回来，
-        # 也避免云同步/杀软占用句柄导致的半删除状态。
+        # Deletion "moves into .trash" instead of unlinking: users can recover mistaken deletions themselves,
+        # and it avoids half-deleted states caused by cloud sync / antivirus holding handles.
         trash = bg_dir / ".trash"
         for path in bg_dir.iterdir():
             if not path.is_file() or path.name in referenced:
@@ -3321,20 +3333,20 @@ class ThemeStudioService(NekoPluginBase):
         target = self._backgrounds_dir() / filename
         wrote = False
         try:
-            # 同一张图（预设自带的背景）会在每次 list_themes / apply_saved_theme 时
-            # 走一遍这里：文件已经在了、大小也一样就什么都不用做。
+            # The same image (a preset's bundled background) passes through here on every list_themes / apply_saved_theme:
+            # if the file already exists with the same size there is nothing to do.
             if not target.is_file() or target.stat().st_size != len(data):
-                # tmp 名必须唯一：排程线程 apply 与面板 list_themes/import_background
-                # 可能同时落同一张图，共用一个 <hash>.tmp 时先完成的一方 replace 之后，
-                # 另一方就找不到自己的 tmp（报「保存图片失败」），还会残留 .tmp 文件。
+                # The tmp name must be unique: the schedule thread's apply and the panel's list_themes/import_background
+                # may write the same image concurrently; sharing one <hash>.tmp, after the first finisher replaces it the
+                # other cannot find its tmp (reporting "failed to save image") and a stray .tmp file is left behind.
                 tmp = target.with_name(
                     f"{target.name}.{os.getpid()}-{threading.get_ident()}.tmp"
                 )
                 try:
                     tmp.write_bytes(data)
-                    # os.replace 在 Windows 上会被「目标正被替换 / 杀软正在扫描」顶掉
-                    # （WinError 5 / 32）。同一张图可能由排程线程与面板同时落盘，
-                    # 这里只重试这两类错误，其余 OSError 立刻上抛。
+                    # On Windows os.replace can be knocked back by "target is being replaced / antivirus is scanning"
+                    # (WinError 5 / 32). The same image may be written by the schedule thread and the panel at once;
+                    # only these two errors are retried here, any other OSError is raised immediately.
                     for attempt in range(6):
                         try:
                             os.replace(tmp, target)
@@ -3352,13 +3364,13 @@ class ThemeStudioService(NekoPluginBase):
                             pass
         except OSError as exc:
             raise SdkError(f"保存图片失败：{exc}") from exc
-        # 只在真写盘时记一行；否则每次列主题都会给每张预设图刷一条「已保存」，
-        # 日志里全是没发生的事（实测一次 list_themes 4 行）。
+        # Log a line only on an actual write; otherwise every theme listing would log "saved" for every preset image,
+        # filling the log with things that never happened (measured: 4 lines per list_themes).
         if wrote:
             self._log("info", f"背景图已保存：{filename}（{len(data)} 字节）{label}")
         return filename
 
-    # ------------------------------------------------------------- 仓库读写
+    # ------------------------------------------------------------- library read/write
 
     def _library_items(self) -> list:
         """Library entries (newest saved first); bad files are skipped and logged."""
@@ -3525,7 +3537,7 @@ class ThemeStudioService(NekoPluginBase):
         clean_id = theme_id.strip()
         path = self._library_dir() / f"{clean_id}.json"
         if not path.is_file():
-            # 仓库里没有就再看内置主题 —— 内置主题与应用/导出走同一条路径。
+            # Not in the library -> check built-in themes; built-ins go through the same apply/export path.
             preset = self._preset_path(clean_id)
             if preset.is_file():
                 path = preset
@@ -3539,10 +3551,10 @@ class ThemeStudioService(NekoPluginBase):
             raise SdkError(f"主题仓库条目已损坏：{exc}") from exc
         if not isinstance(raw, dict):
             raise SdkError("主题仓库条目格式不正确。")
-        # 文件名才是仓库主键（_library_items 也按 path.stem 报 id）。记录里的 "id"
-        # 是内容、可被手工改坏；一旦两者不一致，任何「按记录 id 定位」的代码都会
-        # 操作到另一套主题（曾出现 delete_theme("beta") 删掉 alpha.json）。
-        # 统一在读取处把 id 归一成文件名，单点消灭这一类歧义。
+        # The file name is the library's primary key (_library_items also reports id from path.stem). The "id" in the
+        # record is content and can be corrupted by hand; once the two disagree, any code "locating by record id" operates
+        # on a different theme (delete_theme("beta") once deleted alpha.json).
+        # Normalizing id to the file name at read time eliminates this whole class of ambiguity in one place.
         if path.parent == self._library_dir():
             raw["id"] = path.stem
         return raw
@@ -3587,17 +3599,17 @@ class ThemeStudioService(NekoPluginBase):
                 "vars": dict(vars_map),
                 "dark_vars": dict(dark_map),
             }
-            # 材质随主题成套保存：切回这套主题时「配色 + 玻璃质感」必须一起回来，
-            # 否则用户会看到「换个主题连材质都变了」。
-            # 但来源里根本没有材质（纯配色的 JSON / 分享包、老备份）时不能凭空造一份
-            # 出厂材质：那样应用这套主题会把用户当前的材质重置为关闭。缺省就不写，
-            # 应用时走「老条目没有 materials → 保持当前材质」的分支。
+            # Materials are saved together with the theme: switching back to it must restore "colors + glass texture"
+            # together, otherwise users see "switching themes changed the materials too".
+            # But when the source has no materials at all (color-only JSON / share bundle, old backups) we must not
+            # invent factory materials: applying the theme would then reset the user's current materials to off. When
+            # absent, write nothing, and apply takes the "old entry without materials -> keep current materials" branch.
             if isinstance(materials, dict):
                 clean_materials, _material_warnings = _materials.normalize_materials(
                     materials
                 )
                 record["materials"] = clean_materials
-            # 导入别人的主题时把作者写的简介/标签一起留住（面板「自定义」里会展示）。
+            # When importing someone else's theme, keep the author's note/tags too (shown in the panel's "Customize").
             clean_note = _theme_note(note)
             if clean_note:
                 record["note"] = clean_note
@@ -3605,8 +3617,8 @@ class ThemeStudioService(NekoPluginBase):
             if clean_tags:
                 record["tags"] = clean_tags
             path = directory / f"{theme_id}.json"
-            # 唯一临时名 + fsync：断电/崩溃时要么是完整条目，要么什么都没有，
-            # 不会留下半截 JSON 让列表页报「条目已损坏」。
+            # Unique temp name + fsync: on power loss / crash there is either a complete entry or nothing,
+            # never a half-written JSON that makes the list page report "entry corrupted".
             tmp = directory / f".{theme_id}.{os.getpid()}.{threading.get_ident()}.tmp"
             try:
                 with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
@@ -3633,13 +3645,13 @@ class ThemeStudioService(NekoPluginBase):
             "light": light,
             "dark": dark,
             "has_image": has_image,
-            # 摘要也要带简介/标签：面板「保存」成功后直接拿返回值渲染卡片，
-            # 少了这两项就会出现「存完卡片上没有刚写的简介」。
+            # The summary must include note/tags too: after a successful "save" the panel renders the card from the
+            # return value, and without them "the card lacks the note just written".
             "note": _theme_note(record.get("note")),
             "tags": _theme_tags(record.get("tags")),
         }
 
-    # --------------------------------------------------- 分享包（zip）导入导出
+    # --------------------------------------------------- share bundle (zip) import/export
 
     def _guard_export_size(self, data: bytes, *, what: str) -> None:
         """Enforce the size cap ourselves before exporting -- export saying Ok while restore says SdkError is the worst mismatch.
@@ -3684,12 +3696,12 @@ class ThemeStudioService(NekoPluginBase):
             "vars": {key: portable(value) for key, value in vars_map.items()},
             "dark_vars": {key: portable(value) for key, value in dark_map.items()},
         }
-        # 分享包也带上材质：别人导入的是「一套完整外观」，不是只有颜色。
+        # Share bundles carry materials too: recipients import "a complete look", not just colors.
         clean_materials, _material_warnings = _materials.normalize_materials(materials)
         if clean_materials.get("enabled"):
             record["materials"] = clean_materials
-        # 作者写的介绍/标签一起打包：别人导入后，面板「自定义」里能看到出处，
-        # 而不是一条没有说明的匿名配色。
+        # Pack the author's description/tags too: after import, the panel's "Customize" shows the origin
+        # instead of an anonymous, undescribed color scheme.
         clean_note = _theme_note(note)
         if clean_note:
             record["note"] = clean_note
@@ -3713,7 +3725,7 @@ class ThemeStudioService(NekoPluginBase):
         stamp = datetime.now().strftime("%Y%m%d%H%M%S")
         return f"{_safe_archive_name(name)}-{stamp}.zip", payload
 
-    # ------------------------------------------------------- 主题库备份 / 恢复
+    # ------------------------------------------------------- theme library backup / restore
 
     def _library_records_for_backup(self) -> list:
         """Read all usable library entries; bad entries are skipped with a warning so one bad file can't ruin the backup."""
@@ -3732,7 +3744,7 @@ class ThemeStudioService(NekoPluginBase):
                 continue
             theme_id = str(raw.get("id") or path.stem).strip()
             if not RE_THEME_ID.match(theme_id):
-                # 条目的 id 字段被手改成非法值时，退回文件名（同样是服务端生成过的）。
+                # If the entry's id field was hand-edited to an invalid value, fall back to the file name (also server-generated).
                 theme_id = path.stem
             if not RE_THEME_ID.match(theme_id):
                 self._log("warning", f"备份跳过 id 不合法的仓库条目 {path.name}")
@@ -3806,7 +3818,7 @@ class ThemeStudioService(NekoPluginBase):
                 tags = _theme_tags(record.get("tags"))
                 if tags:
                     doc["tags"] = tags
-                # 备份必须连材质一起带走，否则「恢复备份后质感全丢」。
+                # Backups must include materials, otherwise "the texture is all gone after restoring a backup".
                 if isinstance(record.get("materials"), dict):
                     doc["materials"] = record["materials"]
                 archive.writestr(
@@ -3909,8 +3921,8 @@ class ThemeStudioService(NekoPluginBase):
                 return ""
             payload = images.get(basename)
             if payload is None and from_presets:
-                # 内置主题的图随插件一起发布，放在 presets/images/ 下 ——
-                # 写法与分享包内部结构一致（都是 images/<hash>）。
+                # Built-in theme images ship with the package under presets/images/ --
+                # the same layout as inside share bundles (both images/<hash>).
                 for shipped in (
                     self._presets_dir() / "images" / basename,
                     self._presets_dir() / basename,
@@ -3924,15 +3936,15 @@ class ThemeStudioService(NekoPluginBase):
                     else:
                         break
             if payload is None:
-                # 裸 JSON 导入（或 zip 里没带这张图）时，如果本机已经有同名文件
-                # —— 文件名就是内容哈希，同名必然同内容 —— 直接复用它。
-                # 不这么做的话，「复制导出的 JSON 再粘贴导入」会把用户自己的背景图
-                # 静默丢掉，只剩下颜色（真 bug，实测复现）。
+                # On a bare JSON import (or a zip without this image), if a file with the same name already exists
+                # locally -- the name is the content hash, so same name means same content -- reuse it directly.
+                # Otherwise "copy the exported JSON and paste-import it" would silently drop the user's own background
+                # image, leaving only colors (a real bug, reproduced).
                 if RE_BG_NAME.match(basename) and (
                     self._backgrounds_dir() / basename
                 ).is_file():
                     return f'url("{self._background_url(basename)}")'
-                # 确实没有这张图 → 整条丢弃（= 回退原生），绝不把别人的路径写进 theme.json。
+                # The image really is missing -> drop the whole entry (= fall back to native); never write someone else's path into theme.json.
                 self._log("warning", f"分享包里缺少图片 {basename}，该引用已丢弃")
                 return ""
             filename = self._save_background_bytes(payload, label=label)
@@ -3954,12 +3966,12 @@ class ThemeStudioService(NekoPluginBase):
                 else {}
             ),
         }
-        # 材质整段原样带过来：它只含颜色/数值，不含图片引用，不需要 rewrite。
-        # 落盘前的合法性由 _materials.normalize_materials 统一兜底。
+        # Carry the materials section over as-is: it holds only colors/numbers and no image references, so no rewrite.
+        # Validity before writing is guaranteed by _materials.normalize_materials.
         if isinstance(raw.get("materials"), dict):
             out["materials"] = raw["materials"]
-        # 作者写的介绍/标签跟着分享走：面板「自定义」要显示它们，导入时丢掉
-        # 会让「别人分享的主题」看起来像一条没有出处的匿名配色（踩过）。
+        # The author's description/tags travel with the share: the panel's "Customize" shows them, and dropping them on
+        # import makes "a theme someone shared" look like an anonymous color scheme with no origin (happened before).
         note = _theme_note(raw.get("note"))
         if note:
             out["note"] = note
@@ -3975,8 +3987,8 @@ class ThemeStudioService(NekoPluginBase):
                 f"分享包过大（{len(data)} 字节，上限 {ARCHIVE_MAX_BYTES} 字节）。"
             )
         if data[:4] != b"PK\x03\x04":
-            # 裸 JSON（别人直接发 theme.json / 手工精简的 {"vars":{...}}）：
-            # 走与 zip 包内 theme.json 相同的结构校验，再改写图片引用。
+            # Bare JSON (someone sends theme.json directly / a hand-trimmed {"vars":{...}}):
+            # apply the same structural validation as theme.json inside a zip, then rewrite image references.
             parsed = _parse_theme_json(data)
             return self._rewrite_archive_refs(parsed, {}, label=label), "json"
 
@@ -4001,9 +4013,9 @@ class ThemeStudioService(NekoPluginBase):
                 name = info.filename.replace("\\", "/")
                 if name.startswith("/") or ".." in name.split("/") or ":" in name:
                     raise SdkError(f"压缩包里含有非法路径：{name}")
-                # 重名条目（大小写/斜杠差异归一化后撞名）会让后一个静默覆盖前一个，
-                # 攻击者可以用它把「校验过的 theme.json」换成「另一个同名条目」。
-                # 直接拒绝，合法分享包不会出现重名。
+                # Duplicate entries (names colliding after case/slash normalization) let the later one silently override
+                # the earlier, which an attacker could use to swap "the validated theme.json" for "another same-named entry".
+                # Reject outright; legitimate share bundles never contain duplicates.
                 if name in entries:
                     raise SdkError(f"压缩包里有重复文件名：{name}")
                 entries[name] = info.filename
@@ -4071,7 +4083,7 @@ class ThemeStudioService(NekoPluginBase):
         day_kind = _day_kind_for(stamp.weekday())
         zone = _zone_for_hour(stamp.hour)
         zone_map = self._schedule_zone_map(schedule, day_kind)
-        # 「排程里还记着、但仓库里已经没有」的时段：不静默变空，让面板能说明白。
+        # Zones "still in the schedule but no longer in the library": do not silently go empty, let the panel explain.
         stale = [
             {
                 "day_kind": "weekend" if item.get("field") == "weekend_zones" else "weekday",
@@ -4086,11 +4098,11 @@ class ThemeStudioService(NekoPluginBase):
                 "stale": stale,
                 "zones": list(SCHEDULE_ZONES),
                 "day_kinds": list(SCHEDULE_DAY_KINDS),
-                # 面板要画「早晨 06:00–10:00」这类边界文案；边界只有后端这一份，
-                # 与其让前端再写一遍（第三份实现、必然漂移），不如直接给它。
+                # The panel renders boundary text like "morning 06:00–10:00"; the backend holds the only copy of the
+                # boundaries, so hand them over rather than have the frontend rewrite them (a third copy, bound to drift).
                 "windows": _schedule_windows(),
-                # 面板要显示「现在是工作日还是周末、属于哪个时段、该用哪套」，
-                # 与其让前端再算一遍边界（第三份实现），不如直接把判定结果给它。
+                # The panel shows "weekday or weekend now, which zone, which theme applies"; hand over the decision
+                # rather than have the frontend recompute the boundaries (a third implementation).
                 "now": {
                     "zone": zone,
                     "hour": stamp.hour,
@@ -4132,8 +4144,8 @@ class ThemeStudioService(NekoPluginBase):
         if weekend_zones is not None:
             raw["weekend_zones"] = weekend_zones if isinstance(weekend_zones, dict) else {}
         else:
-            # 没传这个字段 = 「沿用已保存的周末表」。老面板（或打开后一直没刷新的
-            # 窗口）保存时不会带它，直接按空表写会把用户配好的周末表凭空清空。
+            # Field absent = "keep the saved weekend table". Old panels (or windows never refreshed since opening)
+            # do not send it when saving, and writing an empty table would wipe the user's configured weekend table.
             try:
                 keep = self._read_schedule().get("weekend_zones")
             except Exception:  # noqa: BLE001
@@ -4156,8 +4168,8 @@ class ThemeStudioService(NekoPluginBase):
             + " weekend_zones="
             + json.dumps(schedule.get("weekend_zones") or {}, ensure_ascii=False),
         )
-        # 存完立刻生效一次，否则用户勾上「启用」后要等到下一个时段边界才看到
-        # 任何变化，会以为没生效。force=True：不受 last_zone 标记抑制。
+        # Apply once immediately after saving, otherwise after ticking "enable" the user would see no change until
+        # the next zone boundary and assume it did not work. force=True: not suppressed by the last_zone stamp.
         applied = None
         if schedule["enabled"]:
             applied = self._schedule_tick(force=True)
@@ -4208,14 +4220,14 @@ class ThemeStudioService(NekoPluginBase):
         **_,
     ):
         try:
-            # 不在这里套 _WRITE_LOCK：``_save_library_item`` 内部已经持锁，外面再套
-            # 一层等于同线程二次加锁 —— 非可重入锁会永久阻塞（真踩过：点「保存」
-            # 之后整个插件的 entry 队列全挂，每条都 30s 超时）。
+            # Do not wrap _WRITE_LOCK here: ``_save_library_item`` already holds it internally, and another layer outside
+            # means locking twice on the same thread -- a non-reentrant lock blocks forever (this really happened: after
+            # clicking "save" the whole plugin entry queue hung, every entry timing out at 30s).
             palette = self._read_unlocked(strict=True)
-            # 空条目守卫：默认/重置后的调色板是空的，存进仓库只会得到一条
-            # 「点一下就把整套配色清空」的陷阱条目（旧版本已经能产生这种条目）。
-            # 这里保存的是**整套配色**，一个可用变量都没有就没有可存的东西；
-            # 只想存材质参数的用户走「材质预设」（save_material_preset），功能不缺。
+            # Empty-entry guard: the default/reset palette is empty, and saving it to the library only yields a trap entry
+            # that "wipes the whole color scheme with one click" (older versions could already produce such entries).
+            # What is saved here is the **whole color scheme**; with no usable variable there is nothing to save.
+            # Users who only want to save material params use "material presets" (save_material_preset), nothing is lost.
             _clean_vars, _clean_dark, _ignored = _validate_palette(
                 palette["vars"], palette["dark_vars"]
             )
@@ -4234,8 +4246,8 @@ class ThemeStudioService(NekoPluginBase):
                 ),
                 vars_map=palette["vars"],
                 dark_map=palette["dark_vars"],
-                # 简介/标签在保存时就能写：面板「保存」框里有「一句话简介」，
-                # 不必先存完再进「编辑」补 —— 分享包原样带走这两项。
+                # Note/tags can be written at save time: the panel's "save" dialog has a "one-line note", so there is
+                # no need to save first and then add it via "edit" -- share bundles carry both as-is.
                 note=note,
                 tags=tags,
                 materials=palette.get("materials"),
@@ -4266,7 +4278,7 @@ class ThemeStudioService(NekoPluginBase):
         half the users can reproduce.
         """
         record = self._load_library_item(theme_id)
-        # 内置主题的背景图是可移植写法（images/<hash>），先改成本机绝对 URL。
+        # Built-in theme backgrounds use the portable form (images/<hash>); rewrite to this machine's absolute URL first.
         local = self._rewrite_archive_refs(
             record,
             {},
@@ -4282,7 +4294,7 @@ class ThemeStudioService(NekoPluginBase):
             clean_vars, clean_dark, errors = _validate_palette(
                 record.get("vars"), record.get("dark_vars")
             )
-            # 仓库条目可能引用一张后来被删掉的背景图；写进 theme.json 只会 404。
+            # A library entry may reference a background image deleted later; writing it into theme.json would only 404.
             clean_vars, gone_light = self._without_missing_images(clean_vars)
             clean_dark, gone_dark = self._without_missing_images(clean_dark)
             for gone in (gone_light, gone_dark):
@@ -4291,8 +4303,8 @@ class ThemeStudioService(NekoPluginBase):
                         f"{key}: 引用的背景图已不存在，已回退原生"
                     ]
             if not clean_vars and not clean_dark:
-                # 旧版本允许保存空调色板，仓库里可能已经躺着这种条目。直接应用会
-                # 把用户当前配色整片清空（面板只显示「已应用」），必须在写盘前拦住。
+                # Older versions allowed saving an empty palette, so such entries may already sit in the library. Applying
+                # one would wipe the user's current colors entirely (the panel just shows "applied"); block it before writing.
                 raise SdkError(
                     f"主题条目 {record.get('name') or theme_id} 没有任何可用的配色变量"
                     "（多为旧版本保存的空条目），已拒绝应用——否则会把当前配色清空。"
@@ -4300,15 +4312,16 @@ class ThemeStudioService(NekoPluginBase):
             palette["vars"] = clean_vars
             palette["dark_vars"] = clean_dark
             palette["name"] = _clip_name(record.get("name"), palette["name"])
-            # 老条目没有 materials 字段 → 保持用户当前材质不动（不要顺手清成默认）。
+            # Old entries without a materials field -> keep the user's current materials untouched (do not reset them to defaults).
             record_materials = record.get("materials")
-            # 材质锁定：用户手调的那套要留住，切主题不覆盖（lock 由面板「跟随主题」开关写）。
+            # Materials locked: keep the user's hand-tuned set; switching themes does not override it (lock is written by the panel's "follow theme" toggle).
             locked_materials = _materials.normalize_materials(
                 palette.get("materials")
             )[0]
             material_applied = False
-            # 只带开关的 materials（内置「非材质版」主题就是 {"enabled": false}）按补丁处理：
-            # 关掉高级材质，但保留用户手调的五节参数 —— 重新打开不该回到出厂默认。
+            # Materials carrying only the switch (built-in "non-material" themes are just {"enabled": false}) are treated
+            # as a patch: turn advanced materials off but keep the user's hand-tuned five sections -- re-enabling should
+            # not go back to factory defaults.
             material_patch = (
                 isinstance(record_materials, dict)
                 and set(record_materials) <= {"enabled", "lock", "version"}
@@ -4332,9 +4345,9 @@ class ThemeStudioService(NekoPluginBase):
                     imported_materials,
                     material_warnings,
                 ) = _materials.normalize_materials(record_materials)
-                # 预设库是素材库，不是「这一套参数」的一部分：应用条目时按名合并，
-                # 本地独有的自定义预设必须留下。整份替换的话，用户点一次
-                # 「应用一套带材质的历史主题」就把自己存的预设全清空了。
+                # The preset library is an asset library, not part of "this param set": merge by name when applying an
+                # entry, and local-only custom presets must be kept. With wholesale replacement, one click on "apply an
+                # older theme with materials" would wipe all the user's saved presets.
                 merged_custom = dict(locked_materials.get("custom_presets") or {})
                 merged_custom.update(imported_materials.get("custom_presets") or {})
                 imported_materials["custom_presets"] = merged_custom
@@ -4365,11 +4378,11 @@ class ThemeStudioService(NekoPluginBase):
             "light": len(clean_vars),
             "dark": len(clean_dark),
             "rejected": errors,
-            # 面板据此决定 toast 文案：主题自带材质被应用（True）/ 材质锁定被跳过（False）。
+            # The panel picks its toast text from this: the theme's own materials were applied (True) / skipped due to lock (False).
             "material_applied": material_applied,
             "material_present": isinstance(record_materials, dict),
             "material_locked": bool(locked_materials.get("lock")),
-            # 应用后高级材质是开还是关：面板据此把「材质已换」和「材质已关闭」说清楚。
+            # Whether advanced materials are on or off after applying: lets the panel distinguish "materials changed" from "materials turned off".
             "material_enabled": bool(
                 (palette.get("materials") or {}).get("enabled")
                 if isinstance(palette.get("materials"), dict)
@@ -4388,9 +4401,9 @@ class ThemeStudioService(NekoPluginBase):
             "type": "object",
             "properties": {
                 "theme_id": {"type": "string", "maxLength": 64},
-                # 面板发的是 id（更自然），CLI/脚本里常用 theme_id。两个都收，
-                # 避免调用方猜参数名 —— 曾因只认 theme_id 导致面板「应用/分享/删除」
-                # 全部报「条目 id 非法」。
+                # The panel sends id (more natural), CLI/scripts often use theme_id. Accept both so callers
+                # need not guess the param name -- accepting only theme_id once made the panel's
+                # "apply/share/delete" all fail with "invalid entry id".
                 "id": {"type": "string", "maxLength": 64},
             },
         },
@@ -4431,9 +4444,9 @@ class ThemeStudioService(NekoPluginBase):
             "type": "object",
             "properties": {
                 "theme_id": {"type": "string", "maxLength": 64},
-                # 面板发的是 id（更自然），CLI/脚本里常用 theme_id。两个都收，
-                # 避免调用方猜参数名 —— 曾因只认 theme_id 导致面板「应用/分享/删除」
-                # 全部报「条目 id 非法」。
+                # The panel sends id (more natural), CLI/scripts often use theme_id. Accept both so callers
+                # need not guess the param name -- accepting only theme_id once made the panel's
+                # "apply/share/delete" all fail with "invalid entry id".
                 "id": {"type": "string", "maxLength": 64},
             },
         },
@@ -4442,8 +4455,8 @@ class ThemeStudioService(NekoPluginBase):
         theme_id = theme_id or id
         try:
             record = self._load_library_item(theme_id)
-            # 用**请求里的 id** 判断/定位：文件名才是仓库主键（_library_items 也按文件名），
-            # 记录里的 "id" 字段只是文件内容，手改过就会指向另一套主题。
+            # Decide/locate by **the id in the request**: the file name is the library's primary key (_library_items uses
+            # it too); the record's "id" field is just file content and, if hand-edited, points at another theme.
             requested = str(theme_id or "").strip()
             if not RE_THEME_ID.match(requested):
                 raise SdkError(f"仓库条目 id 非法，已拒绝删除：{requested!r}")
@@ -4511,7 +4524,7 @@ class ThemeStudioService(NekoPluginBase):
             return Err(SdkError("没有要修改的内容（name / note / tags 都没给）。"))
         try:
             record = self._load_library_item(theme_id)
-            # 同删除入口：文件名才是主键，记录里的 "id" 只是内容。
+            # Same as the delete entry: the file name is the primary key, the record's "id" is just content.
             record_id = str(theme_id or "").strip()
             if not RE_THEME_ID.match(record_id):
                 raise SdkError(f"仓库条目 id 非法，已拒绝修改：{record_id!r}")
@@ -4545,14 +4558,14 @@ class ThemeStudioService(NekoPluginBase):
                         changed.append("note")
                     payload["note"] = clean_note
                 else:
-                    # 传空字符串 = 清掉备注；条目里不留空字段，面板读到的就是「没有备注」。
+                    # Empty string = clear the note; no empty field is kept in the entry, so the panel sees "no note".
                     if "note" in payload:
                         changed.append("note")
                     payload.pop("note", None)
 
             if tags is not None:
                 if isinstance(tags, str):
-                    # 面板发数组；CLI 里手写「暖色,渐变」也接受，省得调用方猜格式。
+                    # The panel sends an array; a hand-written comma-separated string from the CLI is accepted too, so callers need not guess the format.
                     tags = [part for part in re.split(r"[,，、;；\s]+", tags) if part]
                 clean_tags = _theme_tags(tags)
                 if clean_tags:
@@ -4626,11 +4639,11 @@ class ThemeStudioService(NekoPluginBase):
         if len(raw) > ARCHIVE_MAX_BYTES * 2:
             return Err(SdkError("分享包内容过大（base64 超过上限）。"))
         if raw.startswith("data:"):
-            # 容忍 data URL 前缀（面板正常会剥掉，手工调用可能带）。
+            # Tolerate a data URL prefix (the panel normally strips it, manual calls may include it).
             _, _, raw = raw.partition(",")
         try:
             payload = base64.b64decode(raw, validate=True)
-        except Exception:  # noqa: BLE001 — binascii.Error 是 ValueError 的子类
+        except Exception:  # noqa: BLE001 - binascii.Error is a subclass of ValueError
             return Err(SdkError("分享包内容不是合法的 base64。"))
         label = f"来自 {filename or '分享包'}"
         try:
@@ -4638,9 +4651,9 @@ class ThemeStudioService(NekoPluginBase):
             clean_vars, clean_dark, errors = _validate_palette(
                 theme.get("vars"), theme.get("dark_vars")
             )
-            # 别人的 JSON 里常带着「他本机的背景图地址」（旧插件时代是
-            # http://127.0.0.1:48916/plugin/.../backgrounds/...，现在是 /api/theme_studio/...），
-            # 到了本机就是 404 引用。落库前先丢掉，条目上也就不会谎报「含背景图」。
+            # Other people's JSON often carries "background image URLs from their machine" (plugin era:
+            # http://127.0.0.1:48916/plugin/.../backgrounds/..., now /api/theme_studio/...),
+            # which are 404 references here. Drop them before storing, so the entry does not falsely claim "has background".
             clean_vars, gone_light = self._without_missing_images(clean_vars)
             clean_dark, gone_dark = self._without_missing_images(clean_dark)
             for gone in (gone_light, gone_dark):
@@ -4696,9 +4709,9 @@ class ThemeStudioService(NekoPluginBase):
             "type": "object",
             "properties": {
                 "theme_id": {"type": "string", "maxLength": 64},
-                # 面板发的是 id（更自然），CLI/脚本里常用 theme_id。两个都收，
-                # 避免调用方猜参数名 —— 曾因只认 theme_id 导致面板「应用/分享/删除」
-                # 全部报「条目 id 非法」。
+                # The panel sends id (more natural), CLI/scripts often use theme_id. Accept both so callers
+                # need not guess the param name -- accepting only theme_id once made the panel's
+                # "apply/share/delete" all fail with "invalid entry id".
                 "id": {"type": "string", "maxLength": 64},
             },
         },
@@ -4918,8 +4931,8 @@ class ThemeStudioService(NekoPluginBase):
         **_,
     ):
         theme_id = theme_id or id or ""
-        # 参数类型守卫：面板总是送字符串，但入口是公开的（脚本也能调）。
-        # 非字符串直接 .strip() 会抛 AttributeError —— 报错应该是 Err，不是未捕获异常。
+        # Param type guard: the panel always sends strings, but the entry is public (scripts can call it too).
+        # Calling .strip() on a non-string raises AttributeError -- the error should be an Err, not an uncaught exception.
         for _label, _raw in (("kind", kind), ("name", name)):
             if _raw is not None and not isinstance(_raw, str):
                 return Err(
@@ -4932,13 +4945,14 @@ class ThemeStudioService(NekoPluginBase):
             return Err(
                 SdkError(f"不支持的导出格式：{kind}（只能是 zip / json / library）。")
             )
-        # 内置之后面板是普通顶层页面，浏览器下载可用：服务端只产出字节，由面板
-        # 触发下载。不再往桌面 / 下载 / 家目录 / exports/ 写导出文件（那是插件 iframe
-        # 时代没有 allow-downloads 的权宜之计，内置后只会留下用户不知道的文件）。
-        # 导出内置主题时，_current_or_saved 仍可能把随包背景图按内容哈希缓存进
-        # backgrounds/：这是应用自己的数据目录，幂等且会被孤儿回收，不是导出产物。
+        # Now built in, the panel is an ordinary top-level page where browser downloads work: the server only produces
+        # bytes and the panel triggers the download. Export files are no longer written to the desktop / Downloads /
+        # home / exports/ (that was a workaround for the plugin-iframe era without allow-downloads; built in, it would
+        # only leave files the user does not know about).
+        # When exporting a built-in theme, _current_or_saved may still cache the bundled background into backgrounds/
+        # by content hash: that is the app's own data directory, idempotent and subject to orphan cleanup, not an export artifact.
         if kind == "library":
-            # 库备份不需要「当前主题」：一个包里是仓库里所有自定义主题 + 共用图片。
+            # A library backup needs no "current theme": one bundle holds all custom themes in the library + shared images.
             try:
                 filename, payload, count = self._build_library_archive()
             except SdkError as exc:

@@ -1,23 +1,24 @@
-/* 主题工坊面板样式。
-   面板运行在 48916 源的独立 iframe 中，--nts-* 变量是由应用侧加载器注入到
-   48911 窗口的，这里**不能**使用它们；本文件只用面板私有变量与类名。
+/* Theme Studio panel styles.
+   The panel runs in a standalone iframe on the 48916 origin; the --nts-* variables are
+   injected into the 48911 window by the app-side loader, so they must **not** be used here;
+   this file only uses panel-private variables and class names.
 
-   结构：
-     1. 设计变量（含 prefers-color-scheme 暗色）
-     2. 基础 / 布局
-     3. 头部
-     4. 工具栏
-     5. 分组与行
-     6. 通知 / 提示
-     7. 预览
-     8. 调色板 dump
-     9. 底部操作栏
-    10. 按钮 / 弹窗 / toast
-    11. 响应式
-    12. 动效偏好
+   Structure:
+     1. Design tokens (including prefers-color-scheme dark)
+     2. Base / layout
+     3. Header
+     4. Toolbar
+     5. Groups and rows
+     6. Notices / hints
+     7. Preview
+     8. Palette dump
+     9. Bottom action bar
+    10. Buttons / modal / toast
+    11. Responsive
+    12. Motion preferences
 */
 
-/* ============================================================ 1. 设计变量 */
+/* ============================================================ 1. Design tokens */
 :root {
   color-scheme: light dark;
 
@@ -29,10 +30,10 @@
   --border-soft: rgba(18, 44, 68, 0.08);
   --text: #1d3448;
   --text-sub: #587087;
-  /* 对比度按 WCAG AA（小字 4.5:1）算过：faint 5.07、accent 5.18、danger 5.39、ok 5.11、warn 5.40（白底） */
+  /* Contrast checked against WCAG AA (small text 4.5:1): faint 5.07, accent 5.18, danger 5.39, ok 5.11, warn 5.40 (on white) */
   --text-faint: #5a7186;
   --accent: #2470b4;
-  --accent-strong: #1c5f9e;   /* 只有「主按钮 hover / 填充态」用它，深一档 */
+  --accent-strong: #1c5f9e;   /* Only used for primary-button hover / filled state; one step darker */
   --accent-fill: #2470b4;
   --accent-soft: rgba(36, 112, 180, 0.1);
   --accent-line: rgba(36, 112, 180, 0.34);
@@ -64,9 +65,9 @@
     --text: #e5ebf2;
     --text-sub: #9dabb9;
     --text-faint: #8d9aa8;   /* 5.91:1 on --surface */
-    --accent: #5aa9e6;       /* 6.66:1 on --surface，用作文字/描边 */
+    --accent: #5aa9e6;       /* 6.66:1 on --surface; used for text/borders */
     --accent-strong: #2469a8;
-    --accent-fill: #2a74b6;  /* 4.92:1 with white text；填充态不能直接用 --accent（白字只有 2.54） */
+    --accent-fill: #2a74b6;  /* 4.92:1 with white text; filled states can't use --accent directly (white text only gets 2.54) */
     --accent-soft: rgba(90, 169, 230, 0.14);
     --accent-line: rgba(90, 169, 230, 0.42);
     --danger: #e0736f;
@@ -85,7 +86,7 @@
   }
 }
 
-/* ============================================================ 2. 基础 / 布局 */
+/* ============================================================ 2. Base / layout */
 * { box-sizing: border-box; }
 
 [hidden] { display: none !important; }
@@ -120,7 +121,7 @@ body {
   outline-offset: 2px;
 }
 
-/* 读取 / 应用期间顶部的细进度条：非阻塞，只是让人知道「在忙」 */
+/* Thin top progress bar while loading / applying: non-blocking, just signals "busy" */
 body.is-loading::after {
   content: "";
   position: fixed;
@@ -133,7 +134,7 @@ body.is-loading::after {
   animation: slide 1.1s linear infinite;
 }
 
-/* ============================================================ 3. 头部 */
+/* ============================================================ 3. Header */
 .app-header {
   display: flex;
   align-items: flex-start;
@@ -217,7 +218,7 @@ body.is-loading::after {
 
 .pill-mini { padding: 2px 8px; font-size: 11px; box-shadow: none; }
 
-/* ============================================================ 4. 工具栏 */
+/* ============================================================ 4. Toolbar */
 .toolbar {
   display: flex;
   align-items: center;
@@ -369,7 +370,7 @@ body.is-loading::after {
   box-shadow: var(--ring);
 }
 
-/* 自绘开关：原生 checkbox 保留可聚焦性，视觉交给 .switch-track */
+/* Custom switch: the native checkbox stays focusable, visuals are handled by .switch-track */
 .switch {
   position: relative;
   display: inline-flex;
@@ -429,7 +430,7 @@ body.is-loading::after {
 
 .switch input:disabled + .switch-track { opacity: 0.45; }
 
-/* ============================================================ 5. 分组与行 */
+/* ============================================================ 5. Groups and rows */
 .layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 348px;
@@ -724,7 +725,7 @@ body.is-loading::after {
 
 .no-match { border-style: solid; border-color: var(--border-soft); color: var(--text-faint); }
 
-/* ============================================================ 6. 通知 */
+/* ============================================================ 6. Notices */
 .notice {
   display: flex;
   align-items: flex-start;
@@ -777,7 +778,7 @@ body.is-loading::after {
 .notice-close::before { content: "\00d7"; font-size: 15px; line-height: 1; }
 .notice-close:hover { opacity: 1; background: rgba(0, 0, 0, 0.06); }
 
-/* ============================================================ 7. 卡片 / 预览 */
+/* ============================================================ 7. Cards / preview */
 .card {
   border: 1px solid var(--border-soft);
   border-radius: var(--radius);
@@ -931,7 +932,7 @@ body.is-loading::after {
   cursor: default;
 }
 
-/* ============================================================ 8. 调色板 dump */
+/* ============================================================ 8. Palette dump */
 .dump {
   margin: 0;
   padding: 10px 12px;
@@ -947,7 +948,7 @@ body.is-loading::after {
   tab-size: 2;
 }
 
-/* ============================================================ 9. 底部操作栏 */
+/* ============================================================ 9. Bottom action bar */
 .app-footer {
   position: sticky;
   bottom: 0;
@@ -1017,7 +1018,7 @@ kbd {
 .footer-status[data-kind="ok"]::before { background: var(--ok); }
 .footer-status[data-kind="error"]::before { background: var(--danger); }
 
-/* ============================================================ 10. 按钮 */
+/* ============================================================ 10. Buttons */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -1070,7 +1071,7 @@ kbd {
 .btn-ghost { border-color: transparent; background: transparent; color: var(--text-sub); }
 .btn-ghost:hover:not(:disabled) { background: var(--surface-2); color: var(--text); border-color: var(--border-soft); }
 
-/* ------- 弹窗 ------- */
+/* ------- Modal ------- */
 .modal {
   position: fixed;
   inset: 0;
@@ -1182,7 +1183,7 @@ kbd {
 .toast.is-ok { background: rgba(31, 122, 84, 0.96); }
 .toast.is-error { background: rgba(176, 52, 47, 0.96); }
 
-/* ============================================================ 11. 响应式 */
+/* ============================================================ 11. Responsive */
 @media (max-width: 1080px) {
   .layout { grid-template-columns: minmax(0, 1fr) 316px; }
   .row { grid-template-columns: minmax(120px, 176px) 36px minmax(0, 1fr) minmax(92px, 132px) 48px; }
@@ -1214,7 +1215,7 @@ kbd {
   .alpha-label { display: none; }
   .hint { margin-left: 8px; }
   .row-native { display: none; }
-  .row-clear { opacity: 1; }   /* 触摸屏没有 hover，清空按钮必须常显 */
+  .row-clear { opacity: 1; }   /* Touch screens have no hover, so the clear button must stay visible */
   .footer-hint { display: none; }
 }
 
@@ -1236,7 +1237,7 @@ kbd {
   .app-footer .btn { flex: 1 1 auto; }
 }
 
-/* ============================================================ 12. 动效偏好 */
+/* ============================================================ 12. Motion preferences */
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
@@ -1252,9 +1253,9 @@ kbd {
   }
 }
 
-/* ============================================================ 13. 主题仓库
- * 一块独立卡片：保存 / 切换 / 分享 / 导入 zip。条目是 flex 两端对齐，
- * 右侧三个按钮，窄屏时按钮换行到下一排（见 §11 的媒体查询补充）。 */
+/* ============================================================ 13. Theme library
+ * A standalone card: save / switch / share / import zip. Items are flex with space-between,
+ * three buttons on the right that wrap to the next line on narrow screens (see the media-query additions in §11). */
 .library-card { display: flex; flex-direction: column; gap: 8px; }
 
 .lib-save-row {
@@ -1287,8 +1288,8 @@ kbd {
 
 .lib-save-row .btn { flex: 0 0 auto; }
 
-/* 保存区第二行：一句话简介。可选，写清楚「这套主题想表达什么」，
- * 导出分享包时 note 会原样进 theme.json，对方导入后能在卡片上看到。 */
+/* Second row of the save area: a one-line description. Optional; says "what this theme is about".
+ * When exporting a share package the note goes into theme.json verbatim, so the recipient sees it on the card after importing. */
 .lib-save-note textarea {
   width: 100%;
   min-height: 30px;
@@ -1310,9 +1311,9 @@ kbd {
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
-/* 动作行：导入 / 备份 / 恢复 / 壁纸配色 / 变体。
- * 原来这些按钮全挤在名称输入框那一行，把输入框压到只剩 19px 宽（v0.14.0 真机实测），
- * 所以拆成独立一行并允许换行。 */
+/* Action row: import / backup / restore / wallpaper palette / variants.
+ * These buttons used to share the name-input row and squeezed the input down to 19px wide
+ * (measured on a real device in v0.14.0), so they now get their own row and may wrap. */
 .lib-actions-row {
   display: flex;
   flex-wrap: wrap;
@@ -1367,11 +1368,11 @@ kbd {
   width: 100%;
 }
 
-/* 名字一行独占整卡宽：原来左右两栏时 `.lib-main` 只剩 140px（名字可用 71px），
- * 「液态玻璃·水晶」「星辰喵 Starry Meow」都被省略号截断（v0.14.2 修）。 */
+/* The name gets the full card width on its own line: with the old two-column layout `.lib-main` was only 140px
+ * (71px usable for the name), so names like "Liquid Glass · Crystal" and "Starry Meow" were truncated with ellipses (fixed in v0.14.2). */
 .lib-main { width: 100%; }
 
-/* ---- v0.1.12：主题仓库的缩略色板、标签筛选、换个心情 ---- */
+/* ---- v0.1.12: theme library swatch thumbnails, tag filters, "shuffle" ---- */
 
 .card-tools { display: flex; align-items: center; gap: 6px; }
 
@@ -1415,7 +1416,7 @@ kbd {
   gap: 1px;
 }
 
-/* 缩略色板：底色/渐变来自后端校验过的变量，这里只负责裁切与描边。 */
+/* Swatch thumbnail: the fill/gradient comes from backend-validated variables; this only handles clipping and outline. */
 .lib-thumb {
   position: relative;
   flex: 0 0 auto;
@@ -1493,8 +1494,8 @@ kbd {
 }
 
 
-/* 删除的二次确认态：不用 window.confirm（无头环境会阻塞渲染进程），
-   改成按钮就地变色，3 秒内再点一次才删。 */
+/* Delete confirmation state: no window.confirm (it blocks the renderer in headless environments);
+   instead the button changes color in place and only deletes on a second click within 3 seconds. */
 .btn-mini.is-confirm {
   color: var(--danger);
   border-color: var(--danger);
@@ -1509,9 +1510,9 @@ kbd {
   color: var(--text-faint);
 }
 
-/* ============================================================ 13b. 主题库 v0.2.0
- * 风格族 tab / 搜索框 / 收藏星标 / 族徽标 / 分组折叠按钮。
- * 颜色全部走现有主题变量，暗色模式由 @media 里的变量自动适配。 */
+/* ============================================================ 13b. Theme library v0.2.0
+ * Style-family tabs / search box / favorite star / family badge / group collapse button.
+ * All colors use the existing theme variables; dark mode adapts automatically via the variables in @media. */
 .lib-search {
   flex: 1 1 160px;
   min-width: 0;
@@ -1588,14 +1589,14 @@ kbd {
   background: var(--surface);
 }
 
-/* 收藏星标：卡片右上角，占一条右侧留白，不挤压 34×34 缩略色板。 */
+/* Favorite star: top-right of the card, uses the right-side gutter without squeezing the 34x34 swatch. */
 .lib-item {
   position: relative;
   padding-right: 26px;
 }
 
 .lib-fav {
-  /* 收藏按钮：刻意做成有文字的普通操作按钮 —— 之前的 22px 半透明 ☆ 没人找得到。 */
+  /* Favorite button: deliberately a regular labeled action button -- nobody could find the old 22px translucent ☆. */
   letter-spacing: .02em;
   white-space: nowrap;
 }
@@ -1641,7 +1642,7 @@ kbd {
   background: var(--text-faint);
 }
 
-/* 材质徽标：这套主题自带高级材质，切过去材质会一起换（锁定时不换）。 */
+/* Material badge: this theme ships with an advanced material that switches along with it (unless locked). */
 .lib-material-chip {
   display: inline-flex;
   align-items: center;
@@ -1657,14 +1658,14 @@ kbd {
   white-space: nowrap;
 }
 
-/* 配色版主题：显式「无材质」（应用后会关掉高级材质），用中性色区别于材质徽标。 */
+/* Palette-only theme: explicitly "no material" (applying it turns advanced materials off); neutral color to distinguish it from the material badge. */
 .lib-material-chip.is-off {
   color: var(--text-dim, #94a3b8);
   background: rgba(148, 163, 184, 0.12);
   border-color: rgba(148, 163, 184, 0.32);
 }
 
-/* 描述只占一行，完整说明放 title（悬停可见）。 */
+/* The description takes a single line; the full text goes in title (visible on hover). */
 .lib-note {
   max-width: 100%;
   overflow: hidden;
@@ -1680,12 +1681,12 @@ kbd {
   font-style: italic;
 }
 
-/* 变量分组「全部展开 / 全部收起」按钮：和普通 ghost 按钮同外观，只保证不被压扁。 */
+/* Variable-group "Expand all / Collapse all" button: same look as a regular ghost button, just kept from being squashed. */
 .catalog-collapse { flex: 0 0 auto; }
 
-/* ============================================================ 14. 背景图片行
- * 图片行占「色块 + 编辑框」两列，所以 .row 的五列网格对它仍然成立，
- * .image-field 用 grid-column: 2 / span 2 跨过去（内联在 JS 里）。 */
+/* ============================================================ 14. Background image rows
+ * An image row spans the "swatch + editor" columns, so the five-column .row grid still holds;
+ * .image-field spans them with grid-column: 2 / span 2 (set inline in JS). */
 .image-field {
   display: flex;
   align-items: center;
@@ -1703,7 +1704,7 @@ kbd {
   background-size: cover;
   background-position: center center;
   background-repeat: no-repeat;
-  /* 未设置时的斜纹占位，避免看着像「一片空白 = 控件坏了」 */
+  /* Diagonal-stripe placeholder when unset, so it doesn't look like "blank = broken control" */
   background-image: repeating-linear-gradient(
     45deg,
     rgba(18, 44, 68, 0.06) 0 4px,
@@ -1715,7 +1716,7 @@ kbd {
 
 .img-hint { font-size: 11px; color: var(--text-faint); }
 
-/* 屏幕阅读器可读、视觉不可见：file input 必须留在文档里才能被 .click() 触发。 */
+/* Readable by screen readers, visually hidden: the file input must stay in the document so .click() can trigger it. */
 .visually-hidden {
   position: absolute !important;
   width: 1px;
@@ -1737,8 +1738,8 @@ kbd {
 }
 
 /* ==========================================================================
- * 15. 开关行（--nts-bubble-veil 等 type: 'switch' 的变量）
- * 原生 checkbox 太窄，这里放大成一眼能看清的拨杆式外观。
+ * 15. Switch rows (variables with type: 'switch', e.g. --nts-bubble-veil)
+ * The native checkbox is too small, so it's enlarged into a clearly visible toggle switch.
  * ========================================================================== */
 .switch-field { gap: 8px; }
 
@@ -1778,9 +1779,9 @@ kbd {
 .switch-text { font-size: 12px; color: var(--text-sub); }
 
 /* ==========================================================================
- * 16. 安装自检卡（health-card）
- * 用来回答「我已经装上看不到效果」这类问题：把应用侧补丁的每一项结果
- * 直接摊在面板上，而不是只埋在日志里。
+ * 16. Install self-check card (health-card)
+ * Answers questions like "it's installed but I see no effect": every result of the app-side patch
+ * is laid out directly in the panel instead of being buried in logs.
  * ========================================================================== */
 .health-card .health-line {
   margin: 0 0 6px;
@@ -1844,7 +1845,7 @@ kbd {
   padding: 0 3px;
 }
 
-/* ---------------------------------------------------------------- 可读性自检（0.4.9） */
+/* ---------------------------------------------------------------- Readability self-check (0.4.9) */
 .audit-card .card-head { padding-bottom: 2px; }
 .audit-list {
   list-style: none;
@@ -1898,7 +1899,7 @@ kbd {
 .audit-plus { min-width: 54px; text-align: right; font-size: 11px; color: var(--text-faint); }
 .audit-item.is-pass .audit-plus { color: var(--ok, #2f9e63); }
 .audit-item.is-fail .audit-plus { color: var(--warn, #b7791f); font-weight: 600; }
-/* 「自动修正」小按钮：只填建议值，不提交；样式比主按钮轻，避免抢跳转点击。 */
+/* Small "Auto-fix" button: only fills in suggested values, doesn't submit; lighter than the primary button so it doesn't steal the jump-to click. */
 .audit-fix {
   flex: 0 0 auto;
   padding: 2px 7px;
@@ -1921,8 +1922,8 @@ kbd {
 .audit-summary.is-fail::before { content: '⚠ '; }
 .audit-summary.is-pass::before { content: '✓ '; }
 /* ==========================================================================
- * 17. 按时段自动换主题（schedule-card，v0.4.13）
- * 一行一个时段：左边「早晨 06:00–10:00」，右边主题下拉。
+ * 17. Time-based automatic theme switching (schedule-card, v0.4.13)
+ * One time slot per row: "Morning 06:00-10:00" on the left, theme dropdown on the right.
  * ========================================================================== */
 .schedule-switch { margin-left: auto; }
 
@@ -1986,7 +1987,7 @@ kbd {
   color: var(--text-sub);
 }
 
-/* 周末另一套：勾选后才显示第二张表 */
+/* Separate weekend schedule: the second table only shows when checked */
 .schedule-weekend-toggle {
   display: flex;
   align-items: center;
@@ -2003,21 +2004,21 @@ kbd {
 .schedule-rows[hidden] { display: none; }
 .schedule-now.is-idle { color: var(--text-faint); }
 
-/* 窄屏：时段名与下拉框换成上下两行，下拉框才有足够宽度显示完整主题名。 */
+/* Narrow screens: slot name and dropdown stack vertically so the dropdown is wide enough for full theme names. */
 @media (max-width: 720px) {
   .schedule-row { flex-wrap: wrap; }
   .schedule-when { flex: 1 1 100%; flex-direction: row; gap: 8px; align-items: baseline; }
   .schedule-select { flex: 1 1 100%; }
 }
 
-/* 从审计条目跳转到变量行时的短暂高亮 */
+/* Brief highlight when jumping from an audit entry to a variable row */
 .row-wrap.is-flash { animation: nts-row-flash 1.3s ease-out; }
 @keyframes nts-row-flash {
   0%, 40% { background: var(--accent-soft, rgba(76,141,255,.16)); }
   100% { background: transparent; }
 }
 
-/* ===== v0.4.18：首次使用提示 / 主题信息编辑弹窗 / 「编辑」按钮 ===== */
+/* ===== v0.4.18: first-use hint / theme info edit modal / "Edit" button ===== */
 
 .panel-hint {
   display: flex;
@@ -2083,7 +2084,7 @@ kbd {
 
 .lib-meta { letter-spacing: 0.02em; padding: 0 7px; }
 
-/* 背景图适应方式下拉（select 类变量的通用外观） */
+/* Background-image fit dropdown (shared look for select-type variables) */
 .fit-select {
   flex: 1 1 auto;
   min-width: 0;
@@ -2102,17 +2103,18 @@ kbd {
 }
 .fit-select:disabled { opacity: 0.55; }
 
-/* 排程卡：有未保存的选择时，保存按钮带一个星号（v0.5.0）。 */
+/* Schedule card: the save button shows an asterisk when there are unsaved selections (v0.5.0). */
 .btn.is-dirty {
   border-color: var(--accent-line, rgba(76, 141, 255, 0.55));
   color: var(--accent, #4c8dff);
 }
 
-/* ===== 拖拽导入（v0.5.0）=====
- * 拖动文件时给整页盖一层虚线提示，松手即导入。用 body::after 而不是插一个
- * 固定节点：不参与布局、不会被面板的 overflow 裁掉，也不需要清 DOM。 */
+/* ===== Drag-and-drop import (v0.5.0) =====
+ * While dragging a file, overlay the whole page with a dashed hint; dropping imports it. Uses body::after
+ * instead of inserting a fixed node: it doesn't affect layout, isn't clipped by the panel's overflow, and needs no DOM cleanup. */
 body.is-drop-target::after {
-  content: "松开即可导入主题（.zip 分享包 / .json）";
+  /* Text comes from data-drop-label (set by app.js from the i18n bundle). */
+  content: attr(data-drop-label);
   position: fixed;
   inset: 12px;
   z-index: 9999;
@@ -2139,9 +2141,9 @@ body.is-drop-target::after {
   letter-spacing: 0.02em;
 }
 
-/* ===== 待应用改动清单（v0.5.1）=====
- * 清单是「确认改了哪些东西」用的，所以信息密度优先：一行 = 亮/暗标签 + 中文名 +
- * 旧值 → 新值 + 撤销。颜色只用来标方向（新增绿 / 改值强调 / 清空红），不抢注意力。 */
+/* ===== Pending changes list (v0.5.1) =====
+ * The list is for "confirming what changed", so information density comes first: one row = light/dark tag + label +
+ * old value -> new value + undo. Color only marks direction (added green / changed accent / cleared red) without grabbing attention. */
 .changes-card .card-head {
   gap: 10px;
 }
@@ -2269,7 +2271,7 @@ body.is-drop-target::after {
   }
 }
 
-/* ===== v0.10.0：撤销/重做按钮、行内复制粘贴、对比卡 ===== */
+/* ===== v0.10.0: undo/redo buttons, inline copy/paste, compare card ===== */
 
 .row-icon-btn {
   min-width: 30px;
@@ -2282,8 +2284,8 @@ body.is-drop-target::after {
   opacity: .38;
 }
 
-/* 每行最右侧的三个小按钮：复制 / 粘贴 / 清空。做成一组而不是再加一列，
-   是因为变量行是 5 列网格，加列会把所有行的输入框宽度重新算一遍。 */
+/* The three small buttons at the far right of each row: copy / paste / clear. They're a group rather than an extra column
+   because variable rows use a 5-column grid, and adding a column would recompute every row's input width. */
 .row-extra {
   display: flex;
   align-items: center;
@@ -2313,7 +2315,7 @@ body.is-drop-target::after {
   outline: none;
 }
 
-/* 悬停预演时的「当前 → 预演」对比卡 */
+/* "Current -> Preview" compare card shown while hover-previewing */
 .pv-compare {
   margin: 8px 12px 0;
   padding: 8px 10px 6px;
@@ -2398,7 +2400,7 @@ body.is-drop-target::after {
   color: var(--text-faint, #7a8a9a);
 }
 
-/* ===== 快捷调校（v0.12.0）===== */
+/* ===== Quick tuning (v0.12.0) ===== */
 .quick-row { display: flex; align-items: center; gap: 10px; padding: 2px 12px; }
 .quick-row + .quick-row { margin-top: 4px; }
 .quick-label { flex: 0 0 58px; font-size: 12px; color: var(--text-sub, #6b7280); }

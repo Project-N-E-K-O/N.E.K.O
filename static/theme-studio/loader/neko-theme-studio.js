@@ -1,134 +1,190 @@
 /*!
- * neko-theme-studio.js — N.E.K.O 主题工坊 · 浏览器侧运行时
+ * neko-theme-studio.js — N.E.K.O Theme Studio · browser-side runtime
  * ---------------------------------------------------------------------------
- * 职责：把主题工坊产出的调色板 JSON 变成应用各窗口里的 CSS 变量。
+ * Job: turn the palette JSON produced by Theme Studio into CSS variables in
+ * every app window.
  *
- * 背景（为什么是轮询）：
- *   主题工坊面板与聊天窗口可以同时打开，面板改色后窗口要立刻跟着变。轮询是最
- *   简单也最稳的方案：面板 POST 落盘，窗口每 1.5s 拉一次同源的
- *   /api/theme_studio/theme.json。本体内置后不存在跨源问题，也不需要任何插件
- *   端口或宿主唤醒机制。
+ * Background (why polling):
+ *   The Theme Studio panel and the chat window can be open at the same time, and
+ *   the window must follow colour changes immediately. Polling is the simplest
+ *   and most robust option: the panel POSTs to disk, and each window fetches the
+ *   same-origin /api/theme_studio/theme.json every 1.5s. Since this is built into
+ *   the app there is no cross-origin issue and no plugin port or host wake-up
+ *   mechanism is needed.
  *
- * 设计要点：
- *   1. 变量注入 <style>，不写 CSS 文件 → 没有 HTTP 缓存问题。
- *   2. localStorage 缓存 → 启动瞬间即生效，无闪烁；插件服务不可用时主题仍在。
- *   3. fetch 用 cache:'no-store' + 时间戳查询串 → 穿透可能的启发式缓存。
- *   4. 只接受白名单内的值格式与 --nts- 前缀变量名（纵深防御，服务端也校验）。
- *   5. 无依赖、无副作用：任何失败都静默降级，绝不抛错影响宿主应用。
+ * Design points:
+ *   1. Variables are injected into a <style>, not a CSS file -> no HTTP caching issues.
+ *   2. localStorage cache -> applies instantly at startup with no flicker; the
+ *      theme survives even when the service is unavailable.
+ *   3. fetch uses cache:'no-store' + a timestamp query string -> bypasses any
+ *      heuristic caching.
+ *   4. Only whitelisted value formats and --nts- prefixed variable names are
+ *      accepted (defence in depth; the server validates too).
+ *   5. No dependencies, no side effects: every failure degrades silently and
+ *      never throws into the host app.
  */
 (function () {
   'use strict';
 
-  // 重复注入哨兵（v1.5.23）：模板补丁与 self-upgrade 换表都可能让本脚本在同一页面
-  // 执行第二次。没有这道闸门时会出现两份轮询定时器、两套 pointer/scroll 监听，
-  // 变量被重复写入同一 <style>（闪烁 + 白烧 CPU），而且两边状态互不知情。
+  // Double-injection sentinel (v1.5.23): the template patch and the self-upgrade
+  // stylesheet swap can both cause this script to run a second time on the same
+  // page. Without this gate there would be two poll timers, two sets of
+  // pointer/scroll listeners, variables rewritten into the same <style> (flicker +
+  // wasted CPU), and neither copy would know about the other's state.
   if (window.__NTS_LOADER_LOADED__) return;
   window.__NTS_LOADER_LOADED__ = true;
 
-  // ---------------------------------------------------------------- 配置常量
+  // ---------------------------------------------------------------- Config constants
 
   var PLUGIN_ID = 'neko_theme_studio';
   var STYLE_ID = 'nts-dynamic';
   var CACHE_KEY = 'neko.themeStudio.palette';
-  // 自检快照键：见文件末尾 persistSnapshot()。
+  // Self-check snapshot key: see persistSnapshot() at the end of the file.
   var SNAPSHOT_KEY = 'neko.themeStudio.lastDiagnose';
-  // 本体内置：调色板接口与窗口同源，没有插件端口，也没有基础地址覆盖。
+  // Built into the app: the palette API is same-origin with the window; no plugin
+  // port and no base-URL override.
   var API_BASE = '/api/theme_studio';
   var POLL_INTERVAL_MS = 1500;
-  // 调色板请求超时（v0.1.11 P0）。原生 fetch 没有超时：端点假死（TCP 连上但不回
-  // 响应）时 Promise 永远 pending，fetchPalette 的 inflight 就永远是 true，
-  // 1.5s 的轮询被永久卡死 —— 症状是「面板改了色，窗口再也不更新，控制台全静默」。
-  // 超时算一次网络失败，走自愈退避（见 reviveService）。
+  // Palette request timeout (v0.1.11 P0). Native fetch has no timeout: when the
+  // endpoint hangs (TCP connects but never responds) the Promise stays pending
+  // forever, fetchPalette's inflight stays true, and the 1.5s poll is stuck for
+  // good. Symptom: "changed a colour in the panel, the window never updates, the
+  // console is silent". A timeout counts as one network failure and goes through
+  // the self-healing backoff (see reviveService).
   var FETCH_TIMEOUT_MS = 8000;
-  // 插件时代这里放的是「唤醒插件服务」的退避参数（csrf-token → /plugins/refresh
-  // → /plugin/<id>/start）。本体内置后没有需要唤醒的宿主：加载器拉的就是本体自己
-  // 的路由，后端没起来时页面本身也打不开。下面三个常量仅为兼容残留引用而保留。
+  // In the plugin era these were backoff parameters for "waking the plugin
+  // service" (csrf-token -> /plugins/refresh -> /plugin/<id>/start). Built into
+  // the app there is no host to wake: the loader fetches the app's own routes,
+  // and if the backend is down the page itself cannot load. The three constants
+  // below are kept only for compatibility with leftover references.
   var REVIVE_BASE_DELAY_MS = 1200;
   var REVIVE_MAX_DELAY_MS = 30000;
   var REVIVE_MAX_ATTEMPTS = 40;
-  // 自升级：已开窗口里的脚本无法被替换（浏览器已执行完），当磁盘上的加载器比
-  // 本实例新时，唯一的接管办法是重新加载本页面。这是「面板新增了一个变量，用户
-  // 不重启就永远看不到效果」的根治手段 —— 旧脚本会因为白名单里没有该变量而静默
-  // 丢弃值，且 apply_theme 仍返回 succeeded，面板不报错，极难自查。
+  // Self-upgrade: a script in an already-open window cannot be replaced (the
+  // browser has executed it). When the loader on disk is newer than this
+  // instance, the only way to take over is to reload the page. This is the
+  // root fix for "the panel added a variable and the user never sees it without
+  // a restart": the old script silently drops the value because the variable is
+  // not in its whitelist, apply_theme still returns succeeded, the panel shows no
+  // error, and it is very hard to diagnose.
   var SELF_UPGRADE_MIN_INTERVAL_MS = 60000;
-  // 守卫记录「版本@时间戳」。同一个版本在冷却期内不重复重载（防死循环），
-  // 冷却期一过就再试一次 —— 否则一次缓存失误会把本会话的升级能力永久掐死。
+  // The guard records "version@timestamp". The same version is not reloaded again
+  // within the cooldown (prevents reload loops); after the cooldown it tries once
+  // more, otherwise a single cache miss would kill upgrades for the whole session.
   var SELF_UPGRADE_COOLDOWN_MS = 600000;
   var SELF_UPGRADE_GUARD_KEY = 'neko.themeStudio.selfUpgrade';
   var selfUpgradeAt = 0;
   var DEBUG = false;
 
   var VAR_PREFIX = '--nts-';
-  // 脚本自身版本（不是调色板版本）。部署漂移是「面板改了色、本体没反应」的
-  // 常见原因之一：static\neko-theme-studio.js 还是旧的、CSS 已是新的
-  // （或反之），此时门控属性与样式表规则对不上，颜色永远不变且没有报错。
-  // 把它暴露在 diagnose() 里，便于一眼看出是不是版本漂移。
-  // 1.4.0: 打开页面时自检样式表是否陈旧并强制换新；气泡文字色彻底按角色作用域
-  //        （AI 色不再串染用户/工具/系统正文），修复「改 AI 文字色用户文字也变」。
-  // 1.4.2: 值校验不再默认按颜色处理（kind='auto' 兜底），并在检测到磁盘上有更新的
-  //        加载器时自行刷新页面 —— 修复「新加变量在已开窗口里被静默丢弃」。
-  // 1.5.0: theme.json 不再有 version 计数（改用 updated_at 标记 + 原始 JSON 逐字比较）；
-  //        新增 image 类型（--nts-chat-bg-image，聊天背景图）。
-  // 1.5.13: 液态玻璃静态层（契约 _work/FEATURE-CONTRACT-0.2.0.md §2）：rim 边缘反射光、
-  //        sheen 掠光、noise 雾面颗粒，三个变量门控、非玻璃主题零效果；新增
-  //        --nts-glass-rim / --nts-glass-sheen / --nts-glass-noise 的 kind 登记。
-  // 1.5.14: Apple Liquid Glass 材质层（契约 _work/FEATURE-CONTRACT-0.3.0.md）：
-  //        lens 透镜亮环 / thickness 厚度 / specular 指针镜面，滚动收敛与按压形变。
-  // 1.5.15: 光效引擎（契约 _work/FEATURE-CONTRACT-0.4.0.md）：ambient 指针光源、
-  //        glass-dispersion 边缘分光、glass-caustic 流动焦散；修掉 0.3.0 里
-  //        「黑色遮罩盖死镜面/掠光」与「sheen 动画无条件空转」两个缺陷；窗口
-  //        不可见时暂停动画；指针同时写 --nts-light-x/y 供 ambient 使用。
-  // 1.5.16: 修复 0.4.0 的回归 —— 光效层曾挂在 `.compact-export-history-scroll` 上，
-  //        而该表面是 position:static（刻意不加 relative，避免改掉 ::before 磨砂层
-  //        的锚点），absolute + inset:0 的 ::after 于是铺到更外层的定位祖先上，
-  //        表现为历史/导出面板上方多出一整块直角的亮屏。现在只对有确定包含块的
-  //        6 个表面做光效层。
-  // 1.5.17: 0.4.2 修复「每个主题都有一层直角光屏」——根因是光效层/面板装饰层的
-  //        absolute 伪元素挂在 position:static 的宿主上（.composer-input-shell、
-  //        .message-bubble-*、.compact-export-history-scroll），一路逃到
-  //        position:fixed 的 .compact-export-history-anchor 大盒子上铺满。现在
-  //        ensureGlassContainment() 只对计算值为 static 的宿主补 inline relative；
-  //        面板装饰层本身改挂 scroll::after（z-index:-1、圆角 inherit、内发光）。
-  // 1.5.18: 0.4.3 结构性修正「面板下面又多了」——根因是历史消息浮层
-  //        `.compact-export-history-scroll` 根本不是面板：无圆角、无背景、高度按
-  //        `--compact-export-history-region-height` 预留槽位定死，消息少时比气泡
-  //        实际占位更高。0.4.2 把面板级装饰改挂在它的 ::after 上，于是装饰跟着
-  //        铺到气泡下方那块空槽里。现在面板级光效全部改挂紧凑态真实面板
-  //        `.compact-chat-surface-frame::after`（999px 圆角 + overflow:hidden，
-  //        装饰天然被裁进胶囊），磨砂/底色挂它的 ::before；历史浮层只保留气泡级
-  //        装饰。同步移除 scroll 上的 rim box-shadow 与包含块补丁。
-  // 1.5.19: 0.4.8 修「鼠标移动过去不一定有光效动态改变」。四个原因：
-  //        ① 旧版只在 pointermove 时重绘，指针不动而页面在滚（含嵌套滚动容器）/
-  //        窗口 resize / 新消息插入时，高光停在旧坐标 —— 现在滚动走捕获阶段、
-  //        resize 与 DOM 重建后都会重绘；② MutationObserver 旧版是 350ms 防抖，
-  //        聊天流式输出时计时器被无限重置 → 表面列表永不刷新（新气泡没有光效），
-  //        改为 220ms 节流；③ 新插入的表面旧版要等下一次指针移动才拿到坐标，
-  //        现在重建后立刻补一次；④ 旧版 0.1% 字符串比较 + 瞬时跳变，小范围移动
-  //        被吃掉、观感生硬 —— 改为逐帧向目标插值 22%（收敛 0.06% 后停帧）。
-  //        pointermove/pointerdown/pointerover 全部用捕获阶段，组件 stopPropagation
-  //        也不会把指针事件吞掉。
-  //   1.6.40 调色板轮询连续失败时退避（上限 60s）；诊断上报遇 401/403 停止，
-  //          失败后 15s 再试，不再每拍重发。
-  //   1.6.41 自升级重载只在聊天 / 字幕 / 提示 / HUD 窗口进行，编辑器页面不再被自动刷新。
-  //   1.6.42 窗口重新获得焦点 / 变为可见时清掉轮询退避，立即重新拉取。
-  //   1.6.43 同源请求带会话 cookie（远程窗口不再 401）；新调色板直接应用时作废仍在预热的旧调色板。
-  //   1.6.44 预热闸门按调色板内容识别（同一秒两次切换不再停在旧主题）；预热超时放行。
-  //   1.6.45 材质规则放进 @layer nts-theme.materials，不再被调色板层的 !important 覆盖；
-  //          修掉设置页材质段里提前闭合的注释。
-  //   1.6.46 紧凑聊天（/chat）外层包裹在材质开启时保持透明，只有胶囊带材质。
-  //   1.6.47 紧凑聊天外层透明规则不再覆盖 animation，收起 / 展开擦除动画恢复。
-  //   1.6.48 不再给 #react-chat-window-root 写内联 !important 底色（材质层已能覆盖调色板，
-  //          内联值会压过紧凑 /chat 的透明外层）；配了聊天壁纸的模式下材质不接管消息区。
+  // The script's own version (not the palette version). Deployment drift is a
+  // common cause of "changed a colour in the panel, the app did not react":
+  // static\neko-theme-studio.js is old while the CSS is new (or vice versa), so
+  // the gating attributes and stylesheet rules do not line up, and colours never
+  // change with no error. Exposed in diagnose() so version drift is obvious.
+  // 1.4.0: on page open, check whether the stylesheet is stale and force a refresh;
+  //        bubble text colours are fully scoped per role (AI colour no longer bleeds
+  //        into user/tool/system body text), fixing "changing AI text colour also
+  //        changes user text".
+  // 1.4.2: value validation no longer defaults to colour (kind='auto' fallback), and
+  //        the page reloads itself when a newer loader is detected on disk, fixing
+  //        "newly added variables are silently dropped in already-open windows".
+  // 1.5.0: theme.json no longer has a version counter (uses an updated_at stamp plus
+  //        verbatim raw-JSON comparison); new image kind (--nts-chat-bg-image, chat
+  //        background image).
+  // 1.5.13: liquid-glass static layer (contract _work/FEATURE-CONTRACT-0.2.0.md §2):
+  //        rim edge reflection, sheen glint, noise frosted grain; gated by three
+  //        variables, zero effect for non-glass themes; registered kinds for
+  //        --nts-glass-rim / --nts-glass-sheen / --nts-glass-noise.
+  // 1.5.14: Apple Liquid Glass material layer (contract _work/FEATURE-CONTRACT-0.3.0.md):
+  //        lens bright ring / thickness / specular pointer highlight, scroll
+  //        settling and press deformation.
+  // 1.5.15: lighting engine (contract _work/FEATURE-CONTRACT-0.4.0.md): ambient
+  //        pointer light source, glass-dispersion edge splitting, glass-caustic
+  //        flowing caustics; fixed two 0.3.0 defects, "black mask covers specular /
+  //        sheen" and "sheen animation spins unconditionally"; animations pause
+  //        while the window is hidden; the pointer also writes --nts-light-x/y for
+  //        ambient.
+  // 1.5.16: fixed a 0.4.0 regression: the lighting layer used to hang on
+  //        `.compact-export-history-scroll`, which is position:static (deliberately
+  //        not relative, so the ::before frosted layer keeps its anchor), so the
+  //        absolute + inset:0 ::after spread over an outer positioned ancestor,
+  //        showing as a whole square-cornered bright screen above the
+  //        history/export panel. The lighting layer now only goes on the 6 surfaces
+  //        with a definite containing block.
+  // 1.5.17: 0.4.2 fixes "every theme has a square-cornered light screen". Root cause:
+  //        absolute pseudo-elements of the lighting / panel decoration layers hung
+  //        on position:static hosts (.composer-input-shell, .message-bubble-*,
+  //        .compact-export-history-scroll) and escaped all the way to the
+  //        position:fixed .compact-export-history-anchor big box and filled it.
+  //        Now ensureGlassContainment() only adds inline relative to hosts whose
+  //        computed position is static; the panel decoration layer itself moved to
+  //        scroll::after (z-index:-1, border-radius inherit, inner glow).
+  // 1.5.18: 0.4.3 structural fix for "something extra below the panel again". Root
+  //        cause: the history message overlay `.compact-export-history-scroll` is
+  //        not a panel at all: no radius, no background, height fixed by the slot
+  //        reserved via `--compact-export-history-region-height`, taller than the
+  //        bubbles when there are few messages. 0.4.2 moved panel-level decoration
+  //        to its ::after, so the decoration spread into the empty slot below the
+  //        bubbles. Panel-level lighting now all hangs on the real compact panel
+  //        `.compact-chat-surface-frame::after` (999px radius + overflow:hidden,
+  //        so decoration is naturally clipped to the capsule), frosting/base colour
+  //        on its ::before; the history overlay keeps only bubble-level decoration.
+  //        Also removed the rim box-shadow and containing-block patch on scroll.
+  // 1.5.19: 0.4.8 fixes "moving the mouse over does not always update the
+  //        lighting". Four causes:
+  //        (1) the old version only redrew on pointermove, so when the pointer was
+  //        still but the page scrolled (including nested scroll containers) / the
+  //        window resized / new messages were inserted, the highlight stayed at old
+  //        coordinates; now scroll uses the capture phase and resize and DOM
+  //        rebuilds both redraw; (2) the old MutationObserver used a 350ms debounce,
+  //        which streaming chat output reset forever -> the surface list never
+  //        refreshed (new bubbles had no lighting); now a 220ms throttle; (3) newly
+  //        inserted surfaces used to wait for the next pointer move to get
+  //        coordinates, now they get one right after the rebuild; (4) the old 0.1%
+  //        string comparison + instant jumps swallowed small moves and felt stiff;
+  //        now each frame interpolates 22% toward the target (stops once within
+  //        0.06%). pointermove/pointerdown/pointerover all use the capture phase so
+  //        a component's stopPropagation cannot swallow pointer events.
+  //   1.6.40 back off when palette polling fails repeatedly (cap 60s); diagnostic
+  //          reporting stops on 401/403 and retries 15s after a failure instead of
+  //          resending every tick.
+  //   1.6.41 self-upgrade reloads only happen in chat / subtitle / prompt / HUD
+  //          windows; the editor page is no longer auto-reloaded.
+  //   1.6.42 clear the poll backoff and refetch immediately when the window regains
+  //          focus / becomes visible.
+  //   1.6.43 same-origin requests carry the session cookie (remote windows no longer
+  //          get 401); applying a new palette directly invalidates an old palette
+  //          still being warmed.
+  //   1.6.44 the warm-up gate identifies palettes by content (two switches within
+  //          the same second no longer stick on the old theme); warm-up timeout
+  //          lets it through.
+  //   1.6.45 material rules go into @layer nts-theme.materials so the palette
+  //          layer's !important no longer overrides them; fixed a prematurely
+  //          closed comment in the settings-page material section.
+  //   1.6.46 compact chat (/chat) outer wrapper stays transparent while materials
+  //          are on; only the capsule carries the material.
+  //   1.6.47 the compact chat outer transparency rule no longer overrides
+  //          animation; collapse / expand wipe animations work again.
+  //   1.6.48 no longer writes an inline !important background colour on
+  //          #react-chat-window-root (the material layer can already override the
+  //          palette, and the inline value beat the transparent outer layer of
+  //          compact /chat); in modes with a chat wallpaper the material does not
+  //          take over the message area.
   var SCRIPT_VERSION = '1.6.48';
 
-  // 允许的颜色值形态。刻意保守：只放行纯颜色，杜绝把任意 CSS 注进变量。
+  // Allowed colour value shapes. Deliberately conservative: only plain colours, so
+  // arbitrary CSS can never be injected into a variable.
   var RE_HEX = /^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
   var RE_RGB = /^rgba?\(\s*[0-9]{1,3}\s*,\s*[0-9]{1,3}\s*,\s*[0-9]{1,3}\s*(,\s*(0|1|0?\.[0-9]+)\s*)?\)$/i;
   var RE_HSL = /^hsla?\(\s*-?[0-9]{1,3}(\.[0-9]+)?\s*,\s*[0-9]{1,3}(\.[0-9]+)?%\s*,\s*[0-9]{1,3}(\.[0-9]+)?%\s*(,\s*(0|1|0?\.[0-9]+)\s*)?\)$/i;
-  // CSS 命名颜色（含 transparent 与 currentcolor）。不收 inherit/initial/unset/revert：
-  // 那四个会把颜色继承成父级，正文色被带偏就是「串色」投诉的来源。
-  // transparent 必须显式列出：后端 RE_KEYWORD_COLOR 一直收它，但本表漏了，
-  // 于是「把背景设成透明」在面板上显示成功、门控却不生成 —— 声明永远不匹配。
+  // CSS named colours (including transparent and currentcolor). inherit/initial/
+  // unset/revert are not accepted: they make the colour inherit from the parent,
+  // and body text being pulled off is where the "colour bleed" complaints came from.
+  // transparent must be listed explicitly: the backend RE_KEYWORD_COLOR always
+  // accepted it but this table missed it, so "set background to transparent"
+  // showed success in the panel while no gate was generated and the declaration
+  // never matched.
   var COLOR_NAMES = ('transparent aliceblue antiquewhite aqua aquamarine azure beige bisque black blanchedalmond blue' +
     ' blueviolet brown burlywood cadetblue chartreuse chocolate coral cornflowerblue cornsilk crimson' +
     ' currentcolor cyan darkblue darkcyan darkgoldenrod darkgray darkgreen darkgrey darkkhaki darkmagenta' +
@@ -150,29 +206,35 @@
   var RE_PCT = /^[0-9]{1,3}(\.[0-9]+)?%$/;
   var RE_LEN = /^-?[0-9]{1,4}(\.[0-9]+)?(px|rem|em|%|pt|vh|vw)$/i;
   var RE_FONT = /^[A-Za-z0-9\u4e00-\u9fff ,'"\-_.]{1,200}$/;
-  // --nts-chat-blur 的消费方是 `backdrop-filter: var(--nts-chat-blur)`，
-  // 因此值必须是 blur(...) 形态；裸长度会被浏览器整条丢弃。
+  // --nts-chat-blur is consumed as `backdrop-filter: var(--nts-chat-blur)`, so the
+  // value must be in blur(...) form; a bare length makes the browser drop the
+  // whole declaration.
   var RE_BLUR = /^blur\(\s*-?[0-9]{1,4}(\.[0-9]+)?(px|rem|em|pt)\s*\)$/i;
-  // 裸长度里对 blur 合法的写法：blur() 只接受绝对长度，% / vh / vw 会让
-  // backdrop-filter 整条失效。RE_LEN 为 shadow 的偏移量必须放行它们，所以单独用这条
-  // 更严的正则，避免生成 blur(18%) 这种「校验通过、CSS 无效」的值。
+  // Bare lengths that are valid for blur: blur() only accepts absolute lengths;
+  // % / vh / vw invalidate the whole backdrop-filter. RE_LEN must allow them for
+  // shadow offsets, so this stricter regex is used to avoid generating values like
+  // blur(18%) that "pass validation but are invalid CSS".
   var RE_BLUR_BARE = /^-?[0-9]{1,4}(\.[0-9]+)?(px|rem|em|pt)$/i;
-  // --nts-chat-opacity 桥接到原生的 --neko-chat-opacity-factor（乘子），取值 0-1。
-  // 曾经缺失这个 kind，导致面板/后端都接受、而本脚本按颜色校验后静默丢弃 ——
-  // 一个「看起来能调、实际没反应」的死控件（由独立验证者实测发现）。
-  // 允许 1.0 / 1.00 这类零填充写法（用户最自然地把「100%」写成 1.0）；
-  // 仍拒绝 1.5 / 2 / -0.3 这类超出 0-1 的值。
+  // --nts-chat-opacity bridges to the native --neko-chat-opacity-factor (a
+  // multiplier), range 0-1. This kind used to be missing, so the panel/backend
+  // accepted it while this script validated it as a colour and silently dropped it:
+  // a dead control that "looks adjustable but does nothing" (found by an
+  // independent verifier). Zero-padded forms like 1.0 / 1.00 are allowed (users
+  // most naturally write "100%" as 1.0); values outside 0-1 such as 1.5 / 2 / -0.3
+  // are still rejected.
   var RE_NUMBER = /^(?:0|1|0?\.[0-9]+|1\.0+)$/;
-  // 行高：无单位倍数 0.8–3.0（最多两位小数）。与后端 RE_RATIO 逐字相同。
+  // Line height: unitless multiplier 0.8–3.0 (at most two decimals). Identical
+  // to the backend RE_RATIO.
   var RE_RATIO = /^[0-9](?:\.[0-9]{1,2})?$/;
-  // 时间值（v0.1.11，呼吸节奏）：3s / 1.5s / 800ms，裸数字按秒（3 = 3s）。
-  // 上限 60s —— 再长的循环用户看不出"在动"，也没有实际意义。
+  // Time values (v0.1.11, breathing rhythm): 3s / 1.5s / 800ms; bare numbers are
+  // seconds (3 = 3s). Capped at 60s: users cannot tell a longer loop is "moving",
+  // and it has no practical use.
   var RE_TIME = /^(?:(?:0|[1-9][0-9]{0,3})(?:\.[0-9]{1,3})?(?:s|ms))$/i;
   var RE_TIME_BARE = /^(?:0|[1-9][0-9]{0,3})(?:\.[0-9]{1,3})?$/;
   var TIME_MAX_SECONDS = 60;
-  // 百分比乘子解析：返回 0-1 的小数，非法或 >100% 返回 null。
-  // 注意 RE_PCT 的捕获组是小数部分、不是整数部分（早期误用 pm[1] 导致
-  // `50%` 被判非法、`33.3%` 被算成 0.003）。
+  // Percentage multiplier parsing: returns a 0-1 fraction, or null if invalid or
+  // >100%. Note RE_PCT's capture group is the decimal part, not the integer part
+  // (an early misuse of pm[1] rejected `50%` and computed `33.3%` as 0.003).
   var RE_PCT_FULL = /^([0-9]{1,3}(?:\.[0-9]+)?)%$/;
   function pctToFraction(v) {
     var m = RE_PCT_FULL.exec(v);
@@ -183,10 +245,11 @@
   }
 
   /**
-   * 按「括号外空白」切分阴影串（面板 shadowTokens / 后端 _shadow_tokens 同构）。
-   * 早期这里用 v.split(/\s+/)，会把 rgba(0, 0, 0, .35) 拆成 7 个碎 token，
-   * 于是「面板接受、后端落盘、loader 静默丢弃」—— 最常见的 box-shadow 写法
-   * 反而永远不生效。括号不配对返回 []。
+   * Split a shadow string on whitespace outside parentheses (same shape as the
+   * panel's shadowTokens / the backend's _shadow_tokens). This used to be
+   * v.split(/\s+/), which broke rgba(0, 0, 0, .35) into 7 fragments, so "the panel
+   * accepts, the backend saves, the loader silently drops" and the most common
+   * box-shadow form never took effect. Returns [] on unbalanced parentheses.
    */
   function shadowTokens(value) {
     var tokens = [];
@@ -207,10 +270,11 @@
     return tokens;
   }
 
-  // 非颜色项：这些变量允许长度/百分比/字体名/数值，而不是颜色。
-  // 必须与插件端 __init__.py 的 _value_kind()/LENGTH_VARS/BLUR_VARS 保持一致，
-  // 否则面板接受、应用侧静默丢弃（曾实测出两例：blur(24px) 被判非法；
-  // --nts-chat-opacity 缺 number 分支而整项被丢）。
+  // Non-colour entries: these variables take lengths/percentages/font names/numbers
+  // instead of colours. Must stay in sync with _value_kind()/LENGTH_VARS/BLUR_VARS
+  // in the plugin-side __init__.py, otherwise the panel accepts and the app side
+  // silently drops (two real cases: blur(24px) judged invalid; --nts-chat-opacity
+  // dropped entirely for lack of a number branch).
   var NON_COLOR_VARS = {
     '--nts-radius': 'length',
     '--nts-font-size': 'length',
@@ -221,36 +285,45 @@
     '--nts-modal-radius': 'length',
     '--nts-popover-radius': 'length',
     '--nts-rec-radius': 'length',
-    // 聊天背板（消息列表底板）的圆角。和 --nts-radius 分开是因为后者是通用圆角，
-    // 同时打在按钮/输入面板上；背板要能单独变圆而不能连带改圆按钮。
+    // Radius of the chat backplate (message list base). Separate from --nts-radius
+    // because that one is the generic radius also applied to buttons/input panels;
+    // the backplate must be roundable on its own without rounding buttons too.
     '--nts-chat-panel-radius': 'length',
-    // 聊天背景图：值是「none」或指向插件 backgrounds/ 的绝对 url(...)。
-    // 它必须走单独的 image 分支：通用黑名单 RE_BAD 挡 url( 是给颜色值用的。
+    // Chat background image: value is "none" or an absolute url(...) into the
+    // backgrounds/ directory. It needs its own image branch: the generic RE_BAD
+    // blacklist blocks url( for colour values.
     '--nts-chat-bg-image': 'image',
     '--nts-font-family': 'font',
     '--nts-chat-blur': 'blur',
     '--nts-shadow': 'shadow',
     '--nts-chat-opacity': 'number',
-    // 「聊天背景上那层虚化」的总开关（0 = 完全清透，1 = 原生白纱+背景模糊）。
-    // 与 --nts-chat-opacity 同为 0–1 乘子，走同一个 number 分支。
+    // Master switch for "the haze over the chat background" (0 = fully clear,
+    // 1 = native white veil + background blur). A 0–1 multiplier like
+    // --nts-chat-opacity, same number branch.
     '--nts-bubble-veil': 'number',
-    // 背景图亮度：0-1 乘子，1 = 原图，0 = 全黑。值种类 number，走同一个分支。
+    // Background image brightness: 0-1 multiplier, 1 = original, 0 = black.
+    // Kind number, same branch.
     '--nts-chat-bg-image-brightness': 'number',
-    // 背景图适应方式：cover（铺满，可能裁切）/ contain（整图可见，两侧留底色）。
-    // 值种类 keyword —— 只收这两个关键字，别的一律丢弃（不会回退成奇怪尺寸）。
+    // Background image fit: cover (fills, may crop) / contain (whole image
+    // visible, base colour on the sides). Kind keyword: only these two keywords,
+    // anything else is dropped (never falls back to an odd size).
     '--nts-chat-bg-fit': 'keyword',
-    // 圆角几何形状：round（普通圆角）/ continuous（连续曲率 = 超椭圆）。
-    // 同样是 keyword 型 —— 值域写死在 KEYWORD_VALUES 里，别的一律丢弃。
+    // Corner geometry: round (plain radius) / continuous (continuous curvature =
+    // superellipse). Also keyword: the allowed values are fixed in KEYWORD_VALUES,
+    // anything else is dropped.
     '--nts-corner-style': 'keyword',
-    // 背景图顶上那层「雾」= 应用给历史列表容器加的 mask-image 顶部渐隐。
-    // 1 = 与应用原生一致，0 = 渐隐完全取消。与上一个同走 number 分支。
+    // The "fog" at the top of the background image = the mask-image top fade the
+    // app puts on the history list container. 1 = same as native, 0 = fade fully
+    // removed. Same number branch as above.
     '--nts-chat-top-fade': 'number',
-    // ===== 面板边缘光效 / 玻璃拟态（v0.1.11）=====
-    // 全部可选；不配置则整块 CSS 不加载，外观与原生一致。
-    // 挂载点见 targets.js 的 NTS_GLOW：
-    //   外发光 -> anchor::before（scroll 自带 mask-image，外发光只能透出 4px）
-    //   描边/四角/反射/内阴影 -> anchor::after
-    //   磨砂层 -> scroll::before，z-index:-1（夹在容器背景与消息内容之间）
+    // ===== Panel edge lighting / glassmorphism (v0.1.11) =====
+    // All optional; if unset the whole CSS block is not loaded and the look is native.
+    // Mount points: see NTS_GLOW in targets.js:
+    //   outer glow -> anchor::before (scroll has its own mask-image, an outer glow
+    //                 could only show 4px)
+    //   border/corners/reflection/inner shadow -> anchor::after
+    //   frosted layer -> scroll::before, z-index:-1 (between the container
+    //                    background and the message content)
     '--nts-panel-glow-color': 'color',
     '--nts-panel-glow-strength': 'number',
     '--nts-panel-glow-size': 'length',
@@ -264,61 +337,70 @@
     '--nts-panel-glass-blur': 'blur',
     '--nts-panel-sheen': 'number',
     '--nts-panel-inner-glow': 'number',
-    // ===== 液态玻璃 / 自定义渐变（v0.1.11，契约 _work/FEATURE-CONTRACT-0.1.11.md §1）=====
-    // 三端（Python _value_kind / 面板 isSafeValue / 本表）必须同 kind：任一端不认识
-    // 新变量，就会出现「面板能存、加载器静默丢值、用户看到改了没反应」。
-    // 这里的 map 名字虽然叫 NON_COLOR_VARS，但 color 也显式登记：'auto' 兜底会
-    // 额外放行长度值（见 isSafeValue），比后端的 color 判定宽松，登记后才逐字一致。
+    // ===== Liquid glass / custom gradients (v0.1.11, contract _work/FEATURE-CONTRACT-0.1.11.md §1) =====
+    // All three ends (Python _value_kind / panel isSafeValue / this table) must agree
+    // on kind: if any end does not know a new variable, you get "the panel saves,
+    // the loader silently drops, the user sees no change".
+    // Although this map is named NON_COLOR_VARS, colours are registered explicitly
+    // too: the 'auto' fallback additionally allows lengths (see isSafeValue), which
+    // is looser than the backend's colour check; registering makes them match exactly.
     '--nts-glass-filter': 'filter',
     '--nts-glass-tint': 'color',
     '--nts-glass-highlight': 'color',
-    // 液态玻璃静态层（v1.5.13，契约 0.2.0 §1）：rim 是颜色，sheen/noise 是 0~1 强度。
-    // sheen/noise 走 number kind（允许面板/JSON 用 "55%" 写法，sanitizeVars 归一成 0.55）。
-    // 三端（Python _value_kind / 面板 isSafeValue / 本表）必须同 kind，否则又会出现
-    // 「面板能存、加载器静默丢值、用户看到改了没反应」。
+    // Liquid-glass static layer (v1.5.13, contract 0.2.0 §1): rim is a colour,
+    // sheen/noise are 0~1 strengths. sheen/noise use the number kind (the panel/JSON
+    // may write "55%", sanitizeVars normalises it to 0.55). All three ends (Python
+    // _value_kind / panel isSafeValue / this table) must agree on kind, otherwise
+    // "the panel saves, the loader silently drops, the user sees no change" again.
     '--nts-glass-rim': 'color',
     '--nts-glass-sheen': 'number',
     '--nts-glass-noise': 'number',
-    // 液态玻璃材质（v1.5.14，契约 0.3.0 §1）：lens/thickness/specular 都是 0~1 连续量。
-    // 同样是 number kind（面板/JSON 可写 "70%" 或 0.7，sanitizeVars 归一到 0–1）。
+    // Liquid-glass material (v1.5.14, contract 0.3.0 §1): lens/thickness/specular
+    // are all 0~1 continuous values. Also number kind (panel/JSON may write "70%"
+    // or 0.7, sanitizeVars normalises to 0–1).
     '--nts-glass-lens': 'number',
-    // v0.12.0：背景图位置 / 平铺是关键字型；行高是无单位倍数（ratio）。
+    // v0.12.0: background position / repeat are keywords; line height is a
+    // unitless multiplier (ratio).
     '--nts-chat-bg-position': 'keyword',
     '--nts-chat-bg-repeat': 'keyword',
     '--nts-line-height': 'ratio',
     '--nts-glass-thickness': 'number',
     '--nts-glass-specular': 'number',
-    // 光效引擎（v1.5.15，契约 0.4.0 §1）：指针光源 / 边缘分光 / 流动焦散，都是 0~1。
-    // 未配置（absent）== 零效果；配置了非法值 == 整条丢弃并 warn 一次（noteRejected）。
+    // Lighting engine (v1.5.15, contract 0.4.0 §1): pointer light / edge dispersion /
+    // flowing caustics, all 0~1. Unset (absent) == zero effect; an invalid value ==
+    // the entry is dropped and warned once (noteRejected).
     '--nts-ambient-glow': 'number',
     '--nts-glass-dispersion': 'number',
     '--nts-glass-caustic': 'number',
     '--nts-bubble-glass-filter': 'filter',
     '--nts-bubble-glass-tint': 'color',
     '--nts-chat-gradient': 'gradient',
-    // v0.13.0：文字渐变，与背景渐变同一套 linear/radial 校验。
+    // v0.13.0: text gradient, same linear/radial validation as the background gradient.
     '--nts-text-gradient': 'gradient',
     '--nts-panel-gradient': 'gradient',
     '--nts-user-bubble-gradient': 'gradient',
     '--nts-ai-bubble-gradient': 'gradient'
   };
 
-  // 明确拒绝的危险片段。
-  // 注意：这里刻意 **不** 禁用圆括号 —— rgb()/hsl()/var() 合法值本身需要括号。
-  // 安全性由下面每个 kind 的「整串锚定」正则保证：值必须整体匹配某个已知安全形态，
-  // 因此 `)` 不可能被用来提前闭合声明。
+  // Explicitly rejected dangerous fragments.
+  // Note: parentheses are deliberately **not** banned here, since valid
+  // rgb()/hsl()/var() values need them. Safety comes from each kind's fully
+  // anchored regex below: the whole value must match a known safe shape, so `)`
+  // can never be used to close the declaration early.
   var RE_BAD = /[;{}<>\\]|\/\*|\*\/|url\s*:|expression\s*\(|@import|javascript:|&#/i;
 
-  // 聊天背景图：整串锚定成「none」或主题工坊 backgrounds/ 下的 url(...)。
-  // 本体内置后背景图由 /api/theme_studio/backgrounds/ 提供，与窗口同源。
+  // Chat background image: fully anchored to "none" or a url(...) under Theme
+  // Studio's backgrounds/. Built into the app, images are served from
+  // /api/theme_studio/backgrounds/, same-origin with the window.
   var RE_BG_VALUE = /^(?:none|url\(\s*"?(?:https?:\/\/(?:127\.0\.0\.1|localhost):[0-9]{2,5})?\/api\/theme_studio\/backgrounds\/[A-Za-z0-9._-]{1,80}"?\s*\))$/i;
 
-  // ---------------------------------------------------------------- 工具
+  // ---------------------------------------------------------------- Utilities
 
   /**
-   * 调色板的"新旧"标记。theme.json 不再有 version 字段，用 updated_at 充当：
-   * 只用于日志/诊断展示，判等一律靠原始 JSON 文本。
-   * @param {Object} p 调色板
+   * Palette "freshness" stamp. theme.json no longer has a version field, so
+   * updated_at stands in. Only used for logs/diagnostics; equality is always
+   * decided by the raw JSON text.
+   * @param {Object} p palette
    * @returns {string}
    */
   function stampOf(p) {
@@ -327,8 +409,10 @@
   }
 
   /**
-   * 预热闸门用的调色板签名：按内容算，不能只看 updated_at —— 服务端时间戳只精确
-   * 到秒，同一秒里连点两套带图主题时，两份调色板会被当成同一份，停在旧主题上。
+   * Palette signature for the warm-up gate, computed from content rather than
+   * updated_at alone: server timestamps have one-second resolution, so clicking
+   * two image themes within the same second would treat both palettes as the same
+   * one and stick on the old theme.
    */
   function warmKeyOf(p) {
     var text = '';
@@ -337,7 +421,8 @@
     } catch (e) {
       text = stampOf(p);
     }
-    // FNV-1a 32 位：只用来判「是不是同一份」，不需要抗碰撞。
+    // FNV-1a 32-bit: only used to tell "is this the same palette", no collision
+    // resistance needed.
     var h = 0x811c9dc5;
     for (var i = 0; i < text.length; i += 1) {
       h ^= text.charCodeAt(i);
@@ -346,24 +431,28 @@
     return stampOf(p) + '|' + text.length + '|' + h.toString(16);
   }
   /* ===== IMAGE_WARM_BEGIN ===== */
-  // ------------------------------------------------- 背景图预热（v1.5.21）
+  // ------------------------------------------------- Background image warm-up (v1.5.21)
   //
-  // 切换主题时背景图 URL 变了，浏览器要先下载 / 解码新图；CSS 变量一改，旧图
-  // 立刻失效、新图还没到，聊天区就会闪一下空白底色 —— 图越大越明显，第一次
-  // 加载某个主题时最容易看见。
+  // When switching themes the background image URL changes and the browser must
+  // download / decode the new image first; as soon as the CSS variable changes the
+  // old image is gone while the new one has not arrived, so the chat area flashes
+  // a blank base colour. The bigger the image the more visible, especially the
+  // first time a theme is loaded.
   //
-  // 所以「检测到主题真的换了」时先把新图预热，等它们就绪（或超时 1.5s）再改
-  // CSS。首次应用也走这条路：冷启动时缓存里若是带图的主题，同样不该闪。
-  // 只预热本插件自己的 backgrounds/ 目录（受 RE_BG_VALUE 约束），不碰任何外链。
+  // So when "the theme really changed" is detected, warm the new images first and
+  // only change the CSS once they are ready (or after a 1.5s timeout). The first
+  // apply goes the same way: a cached image theme should not flash on cold start
+  // either. Only our own backgrounds/ directory is warmed (constrained by
+  // RE_BG_VALUE); no external links are touched.
   var IMAGE_WARM_TIMEOUT_MS = 1500;
   var warmedImages = Object.create(null);   // url -> 'ok' | 'fail'
   var warmWaiters = Object.create(null);    // url -> [fn]
-  var lastWarmKey = null;   // 上一次「已经决定直接应用」的调色板签名
-  var warmingKey = null;    // 正在预热中的签名
-  var warmPending = null;   // 预热完成后要应用的调色板
-  var warmSeq = 0;          // 预热票号：只有最新一次预热允许回调应用
+  var lastWarmKey = null;   // signature of the last palette we decided to apply directly
+  var warmingKey = null;    // signature currently being warmed
+  var warmPending = null;   // palette to apply once warm-up finishes
+  var warmSeq = 0;          // warm-up ticket: only the latest warm-up may apply in its callback
 
-  /** 取调色板里所有背景图 URL（亮 / 暗两组去重，只认本插件 backgrounds/）。 */
+  /** All background image URLs in a palette (light / dark deduplicated, only our backgrounds/). */
   function imageUrlsOf(p) {
     var out = [];
     var seen = Object.create(null);
@@ -397,8 +486,9 @@
   }
 
   /**
-   * 预热若干图片：全部就绪（成功或失败）或超时后回调一次，且只回调一次。
-   * 已经预热过的 URL 直接跳过，不会重复发请求。
+   * Warm a set of images: call back once, and only once, when all are settled
+   * (success or failure) or on timeout. Already-warmed URLs are skipped, no
+   * duplicate requests.
    */
   function warmImages(urls, done) {
     var pending = 0;
@@ -412,8 +502,10 @@
       try { done(); } catch (e) { /* ignore */ }
     }
     function timeout() {
-      // 超时要「放行」：把还没回来的图记成已处理，否则回调重新进 applyPalette 时
-      // 仍判定需要预热，又开一轮 1.5s —— 图一直不回来，新配色就一直不生效。
+      // A timeout must "let it through": mark images that have not returned as
+      // handled, otherwise when the callback re-enters applyPalette it still
+      // decides to warm and starts another 1.5s round; if an image never returns,
+      // the new palette never takes effect.
       for (var u in unsettled) {
         if (unsettled[u] && !warmedImages[u]) markImageWarmed(u, 'timeout');
       }
@@ -459,23 +551,24 @@
   }
 
   /**
-   * 调色板端点。本体内置后与页面同源，直接用它自己的相对路径，
-   * 不再拼插件服务地址。
+   * Palette endpoint. Built into the app it is same-origin with the page, so the
+   * relative path is used directly instead of building a plugin service URL.
    * @returns {string}
    */
   function themeUrl() {
     return API_BASE + '/theme.json';
   }
 
-  // ---------------------------------------------------------------- 值校验
+  // ---------------------------------------------------------------- Value validation
 
   /**
-   * 判断一个值是否可以安全地写进给定变量。
-   * @param {string} name  CSS 变量名
-   * @param {string} value 候选值
+   * Whether a value can be safely written into the given variable.
+   * @param {string} name  CSS variable name
+   * @param {string} value candidate value
    * @returns {boolean}
    */
-  /** keyword 型变量的值域（与后端 KEYWORD_VARS 一一对应，改一处必须改三处）。 */
+  /** Allowed values for keyword variables (one-to-one with backend KEYWORD_VARS;
+   *  changing one place means changing all three). */
   var KEYWORD_VALUES = {
     '--nts-chat-bg-fit': ['cover', 'contain'],
     '--nts-corner-style': ['round', 'continuous'],
@@ -490,15 +583,18 @@
 
     var kind = NON_COLOR_VARS[name] || 'auto';
     if (kind === 'image') {
-      // 背景图只有两种合法形态，整串锚定；不走 RE_BAD（url( 是它的正常写法）。
+      // A background image has only two valid shapes, fully anchored; it skips
+      // RE_BAD (url( is its normal form).
       return RE_BG_VALUE.test(v);
     }
     if (RE_BAD.test(v)) return false;
 
-    // v0.1.11：两类新值（契约 §2）。都按 token / 停止点白名单整串锚定，
-    // 因此 `url(...)`、`var(...)`、`expression(...)` 与任何多余内容都会被拒。
+    // v0.1.11: two new value kinds (contract §2). Both are fully anchored against
+    // token / colour-stop whitelists, so `url(...)`, `var(...)`, `expression(...)`
+    // and any extra content are rejected.
     if (kind === 'keyword') return (KEYWORD_VALUES[name] || []).indexOf(v.toLowerCase()) >= 0;
-    // 行高是「无单位倍数」，与 0–1 的 number 乘子不同，不能共用 RE_NUMBER。
+    // Line height is a "unitless multiplier", unlike the 0–1 number multiplier,
+    // so it cannot share RE_NUMBER.
     if (kind === 'ratio') {
       if (!RE_RATIO.test(v)) return false;
       var ratio = parseFloat(v);
@@ -508,46 +604,58 @@
     if (kind === 'gradient') return isSafeGradient(v);
 
     if (kind === 'color' || kind === 'auto') {
-      // 'auto' 是给「本版本之后新增、白名单里还没记录」的变量兜底。
-      // 起因是一个真实事故：--nts-chat-panel-radius 加进面板与后端后，用户已开的
-      // 窗口仍跑着旧 loader（浏览器缓存里是上一版脚本），旧 loader 的默认 kind
-      // 是 'color'，于是把 '24px' 当成非法颜色静默丢弃 —— 背景色进去了、圆角没有，
-      // 而 apply_theme 照样返回 succeeded，面板也不报错。要靠用户重启才恢复，
-      // 这正是「面板改了应用里不生效」的一个系统性来源。
-      // 兜底只放行 color 与 length 两种已锚定的安全形态，不降低其它安全性。
+      // 'auto' is the fallback for variables "added after this version and not yet
+      // in the whitelist". It comes from a real incident: after
+      // --nts-chat-panel-radius was added to the panel and backend, the user's open
+      // windows still ran the old loader (previous script in the browser cache),
+      // whose default kind was 'color', so '24px' was silently dropped as an
+      // invalid colour: the background colour applied, the radius did not, and
+      // apply_theme still returned succeeded with no panel error. Only a restart
+      // fixed it, a systemic source of "changed in the panel, no effect in the app".
+      // The fallback only allows the two anchored safe shapes, color and length,
+      // so no other safety is reduced.
       var asColor =
         isNamedColor(v) || RE_HEX.test(v) ||
         RE_RGB.test(v) || RE_HSL.test(v);
       if (asColor) return true;
       if (kind === 'color') {
-        // 刻意**不**支持 `var(--nts-*)` 派生色：面板与后端都只收具体色值，loader 单独放行
-        // 会造出一条只有手改 theme.json 才走得通的路，且「颜色变量引用长度变量」这类
-        // 组合会让声明整条失效（静默无色）。三处校验必须逐字一致，见 THEME_CONTRACT §9.10b。
+        // Deliberately does **not** support `var(--nts-*)` derived colours: the panel
+        // and backend only accept concrete colours; allowing it in the loader alone
+        // would create a path only reachable by hand-editing theme.json, and combos
+        // like "a colour variable referencing a length variable" invalidate the whole
+        // declaration (silently no colour). All three validators must match exactly,
+        // see THEME_CONTRACT §9.10b.
         return false;
       }
-      // kind === 'auto' 且不是颜色 → 再按长度试一次（与下面的 length 分支同判定）
+      // kind === 'auto' and not a colour -> try again as a length (same check as
+      // the length branch below)
       if (v.indexOf('-') !== -1) return false;
       return RE_LEN.test(v) || RE_PCT.test(v) || /^0$/.test(v);
     }
     if (kind === 'length') {
-      // 负长度在 CSS 里一律非法（整条声明被丢掉 → 面板报成功、外观不变）。
-      // 后端 _is_safe_value 与面板 isSafeValue 都单独拦 '-'，这里必须对齐；
-      // RE_LEN 为了 shadow 偏移量才允许负号（shadow 走自己的 token 分支）。
+      // Negative lengths are always invalid here (the whole declaration is
+      // dropped -> the panel reports success, nothing changes). The backend
+      // _is_safe_value and panel isSafeValue both reject '-' separately, so this
+      // must match; RE_LEN only allows a minus sign for shadow offsets (shadow
+      // has its own token branch).
       if (v.indexOf('-') !== -1) return false;
       if (RE_LEN.test(v) || RE_PCT.test(v)) return true;
       if (/^0$/.test(v)) return true;
       return false;
     }
     if (kind === 'blur') {
-      // 面板统一输出 blur(...)，但契约 §3 允许裸长度；两者都收，存原样。
-      // 负模糊值同样非法（backdrop-filter 整条失效），与后端/面板一致拒掉。
+      // The panel always outputs blur(...), but contract §3 allows bare lengths;
+      // both are accepted and stored as-is. Negative blur is invalid too (the
+      // whole backdrop-filter fails), rejected like the backend/panel do.
       if (v.indexOf('-') !== -1) return false;
-      // % / vh / vw 不是合法的 blur 半径（CSS 会丢整条声明），与后端 RE_BLUR_BARE 一致拒掉。
+      // % / vh / vw are not valid blur radii (CSS drops the whole declaration);
+      // rejected, consistent with the backend RE_BLUR_BARE.
       return RE_BLUR.test(v) || RE_BLUR_BARE.test(v) || /^0$/.test(v);
     }
     if (kind === 'time') {
-      // 呼吸周期（v0.1.11）。裸数字按秒（3 = 3s），稍后 sanitizeVars 会补单位。
-      // 只收 s / ms：呼吸节奏用不到其它单位，放宽只会放出无效 CSS。
+      // Breathing period (v0.1.11). Bare numbers are seconds (3 = 3s);
+      // sanitizeVars adds the unit later. Only s / ms: breathing rhythm needs no
+      // other units, and loosening this would only let invalid CSS through.
       if (RE_TIME.test(v)) {
         var unit = v.slice(-2).toLowerCase();
         var sec = unit === 'ms' ? parseFloat(v.slice(0, -2)) / 1000
@@ -559,20 +667,25 @@
     }
     if (kind === 'number') {
       if (RE_NUMBER.test(v)) return true;
-      // 面板的数值输入框允许写百分比（`50%` 表示半透明），后端也接受；
-      // 本脚本早先只认 0-1 小数，于是「面板不标红、落盘成功、这里静默丢弃」。
-      // 现在收 <=100%，并在 sanitizeVars 里归一成小数（乘子语义）。
+      // The panel's number inputs allow percentages (`50%` = half transparent) and
+      // the backend accepts them; this script used to accept only 0-1 decimals, so
+      // "the panel shows no error, saving succeeds, it is silently dropped here".
+      // Now <=100% is accepted and normalised to a fraction in sanitizeVars
+      // (multiplier semantics).
       return pctToFraction(v) !== null;
     }
     if (kind === 'font') {
       return RE_FONT.test(v) && !RE_BAD.test(v);
     }
     if (kind === 'shadow') {
-      // box-shadow 的语法是 <inset>? && <length>{2,4} && <color>?；只做 token
-      // 白名单会放行 '0 0 10% #000'（百分比非法）、'1px'（长度不足）等，
-      // 浏览器整条丢弃 → 面板报成功、外观不变。三处校验必须同判定。
-      // 多层写法（逗号分隔）要先切层再逐层校验；只认单层会把
-      // `0 0 20px rgba(...), 0 0 15px rgba(...)` 整串拒掉 → 门控不设 → 阴影静默消失。
+      // box-shadow syntax is <inset>? && <length>{2,4} && <color>?; a plain token
+      // whitelist would allow '0 0 10% #000' (percentages invalid), '1px' (too few
+      // lengths) etc., which the browser drops entirely -> the panel reports
+      // success, nothing changes. All three validators must agree.
+      // Multi-layer values (comma separated) are split into layers and checked one
+      // by one; accepting only a single layer would reject
+      // `0 0 20px rgba(...), 0 0 15px rgba(...)` entirely -> no gate -> the shadow
+      // silently disappears.
       var layers = shadowLayers(v);
       if (!layers.length || layers.length > 4) return false;
       for (var li = 0; li < layers.length; li++) {
@@ -583,14 +696,16 @@
     return false;
   }
 
-  // --------------------------------------------- 新值类型校验：filter / gradient
+  // --------------------------------------------- New value kind validation: filter / gradient
   //
-  // v0.1.11 新增两类值（契约 §2，Python _filter_chain_ok/_gradient_ok、面板
-  // isSafeFilterChain/isSafeGradient 与这里必须逐字同判定）：
-  //   filter   = 空格分隔的滤镜链，1–4 个 token 且不可重复，blur ≤ 40px、其它 ≤ 400%
-  //   gradient = linear/radial-gradient，2–4 个停止点，整串 ≤ 300 字符
-  // 这两类值会原样拼进 `--nts-*: <值>` 声明，所以必须整串锚定 / 按 token 白名单，
-  // 不能用「看起来像滤镜」的宽松正则（那等于给主题 JSON 开了一条注入通道）。
+  // v0.1.11 adds two value kinds (contract §2; Python _filter_chain_ok/_gradient_ok,
+  // the panel's isSafeFilterChain/isSafeGradient and this code must agree exactly):
+  //   filter   = space-separated filter chain, 1–4 tokens, no repeats, blur ≤ 40px,
+  //              others ≤ 400%
+  //   gradient = linear/radial-gradient, 2–4 colour stops, whole string ≤ 300 chars
+  // These values are spliced verbatim into `--nts-*: <value>` declarations, so they
+  // must be fully anchored / token-whitelisted, never a loose "looks like a filter"
+  // regex (that would open an injection channel through the theme JSON).
   var RE_FILTER_TOKEN = /^(blur|saturate|brightness|contrast|grayscale)\((\d{1,3}(?:\.\d+)?)(px|%)\)$/;
   var FILTER_MAX_TOKENS = 4;
   var FILTER_MAX_CHARS = 120;
@@ -598,8 +713,8 @@
   var FILTER_MAX_PERCENT = 400;
 
   /**
-   * 滤镜链校验（契约 §2.1）。
-   * @param {string} v 例如 `blur(20px) saturate(150%)`
+   * Filter chain validation (contract §2.1).
+   * @param {string} v e.g. `blur(20px) saturate(150%)`
    * @returns {boolean}
    */
   function isSafeFilterChain(v) {
@@ -629,9 +744,10 @@
   var GRADIENT_MAX_CHARS = 300;
 
   /**
-   * 渐变校验（契约 §2.2）：只认 linear / radial，2–4 个停止点，停止点百分比 ≤ 100%。
-   * 顶层逗号切分要数括号深度 —— rgba(0, 0, 0, .5) 里全是逗号。
-   * @param {string} v 例如 `linear-gradient(135deg, #eef4ff 0%, #dfe9ff 100%)`
+   * Gradient validation (contract §2.2): only linear / radial, 2–4 colour stops,
+   * stop percentages ≤ 100%. Top-level comma splitting must track parenthesis
+   * depth, since rgba(0, 0, 0, .5) is full of commas.
+   * @param {string} v e.g. `linear-gradient(135deg, #eef4ff 0%, #dfe9ff 100%)`
    * @returns {boolean}
    */
   function isSafeGradient(v) {
@@ -664,7 +780,7 @@
     return true;
   }
 
-  /** 按「顶层逗号」切多层 box-shadow（后端 _split_shadow_layers 同构）。 */
+  /** Split a multi-layer box-shadow on top-level commas (same shape as the backend _split_shadow_layers). */
   function shadowLayers(value) {
     var layers = [];
     var depth = 0;
@@ -685,7 +801,7 @@
     return layers;
   }
 
-  /** 单层 box-shadow 的 token 校验（与后端 _shadow_layer_ok 同判定）。 */
+  /** Token validation for a single box-shadow layer (same check as the backend _shadow_layer_ok). */
   function shadowLayerOk(toks) {
     if (!toks.length || toks.length > 6) return false;
     var lengths = 0;
@@ -720,10 +836,11 @@
   }
 
   /**
-   * 被拒变量只大声报一次（DEBUG 日志全量）。
-   * v0.1.11 起错误信息必须带变量名 —— 用户看不到面板的校验镜像时，控制台里
-   * 「哪个变量、什么值、按什么 kind 判的」是唯一能自查的线索；不带名字的
-   * 「reject value」等于没说。
+   * A rejected variable is reported loudly only once (DEBUG logs everything).
+   * Since v0.1.11 the message must include the variable name: when the user cannot
+   * see the panel's validation mirror, "which variable, what value, judged as which
+   * kind" in the console is the only self-diagnosis clue; a bare "reject value"
+   * says nothing.
    */
   var warnedReject = Object.create(null);
   function noteRejected(name, value) {
@@ -732,14 +849,14 @@
     warnedReject[name] = 1;
     try {
       var kind = NON_COLOR_VARS[name] || 'color';
-      console.warn('[theme-studio] 变量 ' + name + ' 的值不合法（kind=' + kind + '），已跳过：' +
+      console.warn('[theme-studio] invalid value for variable ' + name + ' (kind=' + kind + '), skipped: ' +
         String(value).slice(0, 120) +
-        '\n  合法形态见 FEATURE-CONTRACT §2；改对后下一轮轮询会自动生效。');
+        '\n  Valid forms: see FEATURE-CONTRACT §2; once fixed it applies on the next poll.');
     } catch (e) { /* ignore */ }
   }
 
   /**
-   * 过滤出一个安全的 vars 对象。
+   * Filter down to a safe vars object.
    * @returns {Object<string,string>}
    */
   function sanitizeVars(src) {
@@ -750,27 +867,31 @@
       if (!isSafeVarName(k)) { log('reject var name', k); continue; }
       if (!isSafeValue(k, src[k])) { noteRejected(k, src[k]); continue; }
       var v = String(src[k]).trim();
-      // 与插件端 normalize_value() 对齐：裸长度补成 blur(...)，否则
-      // `backdrop-filter: 18px` 整条声明非法而被浏览器丢弃。
+      // Matches the plugin-side normalize_value(): wrap bare lengths in blur(...),
+      // otherwise `backdrop-filter: 18px` is an invalid declaration the browser drops.
       if (NON_COLOR_VARS[k] === 'blur' && RE_BLUR_BARE.test(v)) v = 'blur(' + v + ')';
-      // 百分比乘子归一成小数：`50%` → `0.5`。存原样会让 CSS 拿到 `50%` 而整条失效。
+      // Normalise percentage multipliers to fractions: `50%` -> `0.5`. Keeping it
+      // as-is would hand CSS `50%` and invalidate the whole declaration.
       if (NON_COLOR_VARS[k] === 'number') {
         var frac = pctToFraction(v);
         if (frac !== null) v = String(frac);
       }
-      // 时间值补单位：`animation-duration: 3` 是非法 CSS（时长必须带单位），
-      // 不补的话整条 animation 声明被丢弃 → 「节奏填了但不动」。
+      // Add a unit to time values: `animation-duration: 3` is invalid CSS (durations
+      // need a unit); otherwise the whole animation declaration is dropped ->
+      // "rhythm set but nothing moves".
       if (NON_COLOR_VARS[k] === 'time' && RE_TIME_BARE.test(v)) v = v + 's';
       out[k] = v;
     }
     return out;
   }
 
-  // ---------------------------------------------------------------- 注入
+  // ---------------------------------------------------------------- Injection
 
-  // v0.1.11 重复注入哨兵：注入 <style> 前先按固定 id 复用。宿主（或用户手工）
-  // 重复注入本脚本时，第二份实例会命中同一个 id，不会再插一份；同一个 id 下若
-  // 已有多份节点（模板重渲染 / 多次 append），只保留第一份，避免「谁最后写谁生效」。
+  // v0.1.11 double-injection sentinel: reuse the <style> by its fixed id before
+  // injecting. If the host (or the user by hand) injects this script again, the
+  // second instance hits the same id and does not insert another; if several nodes
+  // already share the id (template re-render / repeated append), only the first is
+  // kept, avoiding "whoever writes last wins".
   var lastAppliedCss = '';
   function styleEl() {
     var el = document.getElementById(STYLE_ID);
@@ -779,7 +900,7 @@
         removeDuplicateStyles(el);
         return el;
       }
-      // 同一个 id 被非 <style> 节点占用：让它让位，自己重建一份。
+      // The id is taken by a non-<style> node: remove it and create our own.
       if (el.parentNode) el.parentNode.removeChild(el);
     }
     el = document.createElement('style');
@@ -789,7 +910,7 @@
     return el;
   }
 
-  /** 清掉与 keep 同 id 的多余 <style> 节点。 */
+  /** Remove extra <style> nodes that share keep's id. */
   function removeDuplicateStyles(keep) {
     try {
       var all = document.querySelectorAll('style#' + STYLE_ID);
@@ -801,17 +922,19 @@
     } catch (e) { /* ignore */ }
   }
 
-  /** 注入的 <style> 是否还在 DOM 里、内容是否就是最近一次写入的内容。 */
+  /** Whether the injected <style> is still in the DOM and holds the most recently written content. */
   function styleIntact() {
     if (!lastAppliedCss) return true;
     var el = document.getElementById(STYLE_ID);
     return !!(el && el.parentNode && el.textContent === lastAppliedCss);
   }
 
-  // v0.1.11 CSP 自检：style-src 被 CSP 拦掉时，<style> 节点照样能插进 DOM，但规则
-  // 一条都不生效 —— 变量注入"成功"、外观纹丝不动，且没有任何报错（最容易被误判成
-  // 「插件没生效」）。往注入内容里写一条探针自定义属性，用 getComputedStyle 验证它
-  // 是否真的被解析；不生效时只 warn 一次，不 throw、不重试（CSP 不会自己变好）。
+  // v0.1.11 CSP self-check: when style-src is blocked by CSP, the <style> node is
+  // still inserted into the DOM but none of its rules apply: variable injection
+  // "succeeds", nothing changes, and there is no error (easily misread as "the
+  // plugin does nothing"). Write a probe custom property into the injected content
+  // and verify via getComputedStyle that it was actually parsed; if not, warn once,
+  // no throw, no retry (CSP will not fix itself).
   var PROBE_CSS = ':root{--nts-probe:1}';
   var cspWarned = false;
   function probeStyleApplied() {
@@ -824,7 +947,7 @@
     if (String(got).trim() === '1') return;
     cspWarned = true;
     try {
-      console.warn('[NTS] 主题样式被 CSP 拦截，主题不会生效');
+      console.warn('[NTS] Theme styles are blocked by CSP; the theme will not take effect');
     } catch (e2) { /* ignore */ }
   }
 
@@ -833,35 +956,42 @@
     if (el && el.parentNode) el.parentNode.removeChild(el);
     lastAppliedCss = '';
     clearGates();
-    // v1.6.0：材质层靠 data-nts-mt 门控，撤样式时必须一起撤属性，
-    // 否则 MATERIAL_CSS 仍匹配、只是变量缺失 —— 会退化成"半透明底"视觉残留。
+    // v1.6.0: the material layer is gated by data-nts-mt, so removing styles must
+    // also remove the attributes; otherwise MATERIAL_CSS still matches with the
+    // variables missing and degrades into a leftover "semi-transparent base" look.
     clearMaterialAttrs();
   }
 
-  // ------------------------------------------------------- 门控属性（gates）
+  // ------------------------------------------------------- Gate attributes (gates)
   //
-  // stylesheet 里有一批规则无法用"原生回退值"表达（原生是 gradient、或原生值
-  // 随上下文变化、或需要整组属性一起换）。这些规则统一门控在
-  //   :root[data-nts-<var>]      -- 该变量确实被用户配置过
-  //   :root[data-nts-active]     -- 至少有一个变量被配置过
-  // 上。因此 loader 必须把这些属性同步打到 documentElement，否则那部分规则
-  // 永远不生效（曾实测出该缺陷：只有 data-nts="1"，规则全程空转）。
+  // Some stylesheet rules cannot be expressed with a "native fallback value" (the
+  // native value is a gradient, or varies with context, or a whole group of
+  // properties must change together). Those rules are all gated on
+  //   :root[data-nts-<var>]      -- the user actually configured this variable
+  //   :root[data-nts-active]     -- at least one variable is configured
+  // So the loader must mirror these attributes onto documentElement, otherwise
+  // those rules never apply (a real defect: only data-nts="1" was set and the rules
+  // never matched).
 
-  // v3 起**每一条**生成的规则都门控在按模式分键的属性上：
-  //   :root:not([data-theme="dark"])[data-nts-l-<var>]  -- 该变量在「亮色」组被配置过
-  //   :root[data-theme="dark"][data-nts-d-<var>]        -- 该变量在「暗色」组被配置过
-  // 且不再有任何回退值。原因：回退值是合成量测页里量到的，那不是真实页的计算值
-  // （真实 .chat-body 处于 .chat-surface-mode-compact 下、body 带 .electron-chat-window、
-  // 还有运行时注入的 !important style 层），任何量测回退都会静默改写未配置外观。
-  // 门控后「未配置 == 未加载」是构造性成立的：没有属性 → 选择器不匹配 → 零效果。
+  // Since v3 **every** generated rule is gated on per-mode attributes:
+  //   :root:not([data-theme="dark"])[data-nts-l-<var>]  -- variable configured in the light group
+  //   :root[data-theme="dark"][data-nts-d-<var>]        -- variable configured in the dark group
+  // and there are no fallback values at all. Reason: fallbacks were measured on a
+  // synthetic fixture page, not the real page's computed values (the real
+  // .chat-body sits under .chat-surface-mode-compact, body has
+  // .electron-chat-window, plus runtime-injected !important style layers), so any
+  // measured fallback would silently rewrite unconfigured appearance.
+  // With gating, "unconfigured == not loaded" holds by construction: no attribute
+  // -> selector does not match -> zero effect.
   var GATE_ATTR = 'data-nts-';
   var ACTIVE_ATTR = 'data-nts-active';
-  // 亮色值的限定作用域：非暗色时才是亮色。与生成器的亮色门控前缀保持一致语义。
+  // Scope for light values: light means "not dark". Same semantics as the
+  // generator's light gate prefix.
   var LIGHT_SCOPE = ':root:not([data-theme="dark"])';
-  var gateApplied = null; // Array<string> 上一次打上的属性名，用于精确撤销
+  var gateApplied = null; // Array<string> attribute names set last time, for exact removal
 
-  /** 变量名 + 模式 -> 门控属性名：data-nts-l-foo / data-nts-d-foo
-   *  必须与 gen-css.js 的 gateAttrFor() 完全一致（去掉整个 `--nts-` 前缀）。 */
+  /** Variable name + mode -> gate attribute name: data-nts-l-foo / data-nts-d-foo
+   *  Must match gateAttrFor() in gen-css.js exactly (strips the whole `--nts-` prefix). */
   function gateNameFor(varName, mode) {
     return GATE_ATTR + (mode === 'dark' ? 'd-' : 'l-') + String(varName).replace(/^--nts-/, '');
   }
@@ -872,13 +1002,15 @@
     if (gateApplied) {
       for (var i = 0; i < gateApplied.length; i++) de.removeAttribute(gateApplied[i]);
     } else {
-      // 没有记账时兜底扫描，避免残留陈旧门控（属性变化会触发样式重算）
+      // Without bookkeeping, fall back to a scan so no stale gates are left
+      // (attribute changes trigger a style recalc)
       var names = [];
-      /* 只清「变量门控」：`data-nts-l-<变量>` / `data-nts-d-<变量>`。
-       * 旧实现用裸前缀 `data-nts-` 兜底，会把 loader 自己的状态属性一起删掉
-       * （data-nts-active 有变量被配置 / data-nts-paused 后台暂停 /
-       * data-nts-fade 主题切换渐入）—— 表现为换主题时渐变被掐断、切回前台
-       * 玻璃动画不动。 */
+      /* Only clear "variable gates": `data-nts-l-<var>` / `data-nts-d-<var>`.
+       * The old implementation fell back to the bare `data-nts-` prefix and also
+       * deleted the loader's own state attributes (data-nts-active: some variable
+       * configured / data-nts-paused: paused in background / data-nts-fade: theme
+       * switch fade-in), which showed up as the fade being cut off when switching
+       * themes and glass animations not moving after returning to the foreground. */
       var gatePrefixes = [GATE_ATTR + 'l-', GATE_ATTR + 'd-'];
       for (var j = 0; j < de.attributes.length; j++) {
         var n = de.attributes[j].name;
@@ -890,8 +1022,9 @@
   }
 
   /**
-   * 把当前调色板的变量同步成 documentElement 上的门控属性。
-   * 幂等：集合不变则不碰 DOM（省掉一次整页样式重算）。
+   * Mirror the current palette's variables as gate attributes on documentElement.
+   * Idempotent: if the set is unchanged the DOM is not touched (saves a full-page
+   * style recalc).
    * @param {Object<string,string>} light
    * @param {Object<string,string>} dark
    */
@@ -905,7 +1038,8 @@
       var ks = [];
       for (var k in o) {
         if (!Object.prototype.hasOwnProperty.call(o, k)) continue;
-        // 按 (模式, 变量) 去重：同一个变量可以在两组里都出现，那是两个独立门控。
+        // Dedupe by (mode, variable): the same variable may appear in both groups,
+        // and those are two independent gates.
         var key = mode + '|' + k;
         if (seen[key]) continue;
         seen[key] = 1;
@@ -932,9 +1066,10 @@
     gateApplied = want;
   }
 
-  /** 连续曲率圆角的开关属性：只在调色板里出现 continuous 时打上。
-   *  CSS 侧（gen-css 的 @supports 段）靠 `[data-nts-squircle]` 门控，内核不支持
-   *  `corner-shape` 时整段不生效 —— 所以这里可以无条件按值打属性。 */
+  /** Switch attribute for continuous-curvature corners: set only when the palette
+   *  contains continuous. The CSS side (gen-css's @supports section) is gated on
+   *  `[data-nts-squircle]`, and the whole section is inert when the engine lacks
+   *  `corner-shape`, so the attribute can be set purely by value here. */
   var SQUIRCLE_ATTR = 'data-nts-squircle';
 
   function syncCornerStyle(light, dark) {
@@ -955,51 +1090,66 @@
     }
   }
 
-  // -------------------- 液态玻璃材质层（v1.5.14，契约 0.3.0）
+  // -------------------- Liquid-glass material layer (v1.5.14, contract 0.3.0)
   //
-  // 目标：把 Apple Liquid Glass 的**感知要素**用 CSS 复刻到宿主的功能层上
-  // （顶栏 / 输入框 / 气泡 / 弹层 / 导出区），而不是往页面上堆装饰。
-  // Apple 官方把它描述成「半透明材质，会折射、反射周围内容并随上下文流动」，
-  // 拆开是四层 + 一个动态维度；Chromium 不支持 backdrop-filter 引用 SVG filter，
-  // 所以真位移折射无法做（契约 §2 已论证），这里做感知等价：
+  // Goal: recreate the **perceptual elements** of Apple Liquid Glass in CSS on the
+  // host's functional layers (top bar / input / bubbles / popovers / export area),
+  // rather than piling decoration onto the page. Apple describes it as "a
+  // translucent material that refracts and reflects its surroundings and flows
+  // with context", which breaks down into four layers + one dynamic dimension.
+  // Chromium does not support backdrop-filter referencing an SVG filter, so true
+  // displacement refraction is impossible (argued in contract §2); this is a
+  // perceptual equivalent:
   //
-  //   1 透视  backdrop-filter：来自 --nts-glass-filter（生成 CSS 已写，本层不碰）
-  //   2 染色  background-color：来自 --nts-glass-tint（同上）
-  //   3 边缘  lens 亮环 + thickness 厚度（本层新增，box-shadow 组合）
-  //           上缘 1px 高光、下缘 1px 暗边、四边 1px 半亮；lens 再叠一圈亮环
-  //           与内侧柔光，模拟玻璃边把光「弯」进来的感觉
-  //   4 镜面  specular 径向高光（本层新增，伪元素），位置 --nts-spec-x/--nts-spec-y
-  //           由 initGlassPointer 跟随指针写入 —— 这是 Apple 玻璃最容易被认出来的
-  //           特征：高光随光源/指针移动，而不是固定扫光
-  //   1 动态  沿用 0.2.0 的 sheen 掠光 + noise 颗粒；滚动时 --nts-scroll-k=1
-  //           让镜面高光收敛（「液」随滚动流动）；按压轻微压扁（见第 11 组规则）
+  //   1 see-through  backdrop-filter: from --nts-glass-filter (written by the
+  //                  generated CSS, not touched here)
+  //   2 tint         background-color: from --nts-glass-tint (same)
+  //   3 edge         lens bright ring + thickness (new here, box-shadow combo):
+  //                  1px highlight on top, 1px dark edge at the bottom, 1px
+  //                  half-bright on all sides; lens adds a bright ring and inner
+  //                  soft glow to mimic the glass edge "bending" light inward
+  //   4 specular     radial specular highlight (new here, pseudo-element), position
+  //                  --nts-spec-x/--nts-spec-y written by initGlassPointer to follow
+  //                  the pointer; this is Apple glass's most recognisable trait:
+  //                  the highlight moves with the light source/pointer instead of a
+  //                  fixed sweep
+  //   1 dynamics     keeps 0.2.0's sheen glint + noise grain; while scrolling
+  //                  --nts-scroll-k=1 makes the specular highlight settle ("liquid"
+  //                  flowing with the scroll); slight squash on press (see rule
+  //                  group 11)
   //
-  // 三条硬约束（沿用 0.2.0，契约 §1/§2/§6）：
-  //   1) 所有新变量在旧主题里都没配置 → 每条规则都门控在 data-nts-l/d-glass-* 上，
-  //      没配置 == 零效果（旧主题外观逐像素不变）。
-  //   2) 不写元素自身的 background-image（生成 CSS 已用 !important 占了），
-  //      只用伪元素与 box-shadow 做加法。
-  //   3) 宿主 .composer-input-shell / 消息气泡是 position:static，绝对定位伪元素
-  //      需要定位祖先 → 补 position:relative（无偏移量，不改布局）；不加 isolation。
+  // Three hard constraints (carried over from 0.2.0, contract §1/§2/§6):
+  //   1) No new variable is configured in old themes -> every rule is gated on
+  //      data-nts-l/d-glass-*; unconfigured == zero effect (old themes are
+  //      pixel-identical).
+  //   2) Never write the element's own background-image (the generated CSS
+  //      already claims it with !important); only add via pseudo-elements and
+  //      box-shadow.
+  //   3) The host .composer-input-shell / message bubbles are position:static, and
+  //      absolutely positioned pseudo-elements need a positioned ancestor -> add
+  //      position:relative (no offsets, no layout change); no isolation.
   //
-  // 伪元素槽位（审计 46 个宿主 CSS 文件，脚本 _work/glass_audit.py）：
-  //   ::before + ::after 都空闲 —— .composer-input-shell、.composer-overflow-popover、
-  //       .message-bubble-user、.message-bubble-assistant、.compact-export-history-bubble
-  //       → ::before 做 noise，::after 做 specular + sheen（两层背景，screen 混合）。
-  //   只剩 ::after 空闲 —— .window-topbar（::before 被暗色渐变占用）、
-  //       .compact-export-history-scroll（::before 被面板磨砂层占用）
-  //       → ::after 里叠 specular + sheen + noise 三层（screen / screen / overlay）。
-  //   ::before、::after 都被占用 —— .compact-chat-surface-frame、.composer-icon-button
-  //       → 只做 box-shadow 的 lens + thickness（无镜面伪元素）。
+  // Pseudo-element slots (audit of 46 host CSS files, script _work/glass_audit.py):
+  //   both ::before + ::after free -- .composer-input-shell, .composer-overflow-popover,
+  //       .message-bubble-user, .message-bubble-assistant, .compact-export-history-bubble
+  //       -> ::before does noise, ::after does specular + sheen (two background
+  //       layers, screen blend).
+  //   only ::after free -- .window-topbar (::before taken by the dark gradient),
+  //       .compact-export-history-scroll (::before taken by the panel frosted layer)
+  //       -> ::after stacks specular + sheen + noise (screen / screen / overlay).
+  //   both ::before and ::after taken -- .compact-chat-surface-frame, .composer-icon-button
+  //       -> only box-shadow lens + thickness (no specular pseudo-element).
   //
-  // 门控前缀补 :root:root:root:root，specificity 压过生成的 !important 规则。
-  // data URI 里 # 必须写成 %23 —— 裸 # 会让 CSS 在 url() 中间截断。
+  // The gate prefix adds :root:root:root:root so specificity beats the generated
+  // !important rules. In a data URI # must be written as %23: a bare # truncates
+  // the CSS in the middle of url().
   var GLASS_NOISE_URI = "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/></filter><rect width='120' height='120' filter='url(%23n)' opacity='0.6'/></svg>\")";
 
   var GLASS_CSS = (function () {
     var LIGHT = ':root:not([data-theme=dark])';
     var DARK = ':root[data-theme=dark]';
-    // 与生成器一致：重复 :root 抬高 specificity，压住宿主运行时注入的 !important。
+    // Same as the generator: repeated :root raises specificity to beat the host's
+    // runtime-injected !important.
     var BOOST = ':root:root:root:root';
     var MODES = [
       { pre: LIGHT, key: GATE_ATTR + 'l-' },
@@ -1007,8 +1157,9 @@
     ];
     var lines = [];
 
-    /** 生成「模式 × 门控变量 × 目标」的选择器列表。
-     *  vars 里任一变量在任一模式被配置过，规则就生效；变量各写一条，互不牵连。 */
+    /** Build the selector list for "mode x gate variable x target".
+     *  The rule applies if any variable in vars is configured in any mode; each
+     *  variable gets its own selector, independent of the others. */
     function sel(targets, vars, pseudo) {
       var out = [];
       for (var t = 0; t < targets.length; t++) {
@@ -1026,27 +1177,31 @@
       lines.push(sels.join(',\n') + ' {\n' + body.join('\n') + '\n}');
     }
 
-    // 0–1 变量统一读法：未配置时按 0 算（= 零效果）。
+    // Uniform read for 0–1 variables: unset counts as 0 (= zero effect).
     var V_T = 'var(--nts-glass-thickness, 0)';
     var V_L = 'var(--nts-glass-lens, 0)';
     var V_S = 'var(--nts-glass-specular, 0)';
     var V_D = 'var(--nts-glass-dispersion, 0)';
     var V_A = 'var(--nts-ambient-glow, 0)';
     var V_C = 'var(--nts-glass-caustic, 0)';
-    // 指针光源位置（initGlassPointer 写入，百分比）：ambient 光斑跟着指针走。
+    // Pointer light position (written by initGlassPointer, percentages): the
+    // ambient light spot follows the pointer.
     var LIGHT_AT = 'var(--nts-light-x, 50%) var(--nts-light-y, 0%)';
     var V_K = 'var(--nts-scroll-k, 0)';
     var RIM = 'var(--nts-glass-rim, rgba(255, 255, 255, 0.55))';
 
-    // 镜面高光位置：指针跟随（--nts-spec-x/y，百分比），无指针设备时停在左上。
+    // Specular highlight position: follows the pointer (--nts-spec-x/y,
+    // percentages); rests top-left on devices without a pointer.
     var SPEC_AT = 'var(--nts-spec-x, 28%) var(--nts-spec-y, 14%)';
-    // 滚动时镜面收敛 45%（--nts-scroll-k 由 initGlassPointer 的滚动监听写入）。
+    // Specular settles by 45% while scrolling (--nts-scroll-k is written by
+    // initGlassPointer's scroll listener).
     var SPEC_ALPHA = 'calc(' + V_S + ' * (1 - 0.45 * ' + V_K + '))';
 
     var EDGE = ['rim', 'thickness', 'lens', 'dispersion'];
 
-    // 1) 边缘 + 厚度：由 --nts-glass-highlight outline 占用的 4 个表面。
-    //    用 box-shadow 组合而不是 outline：不抢生成的 !important outline。
+    // 1) Edge + thickness: the 4 surfaces whose outline is taken by
+    //    --nts-glass-highlight. Use a box-shadow combo instead of outline so as not
+    //    to fight the generated !important outline.
     function edgeShadow(withShadowVar) {
       var parts = [
         'inset 0 1px 0 ' + RIM,
@@ -1066,13 +1221,15 @@
     rule(sel(['.window-topbar', '.composer-input-shell', '.compact-chat-surface-frame',
       '.composer-icon-button'], EDGE), edgeShadow(false));
 
-    // 2) 气泡组：追加 var(--nts-shadow)，保住主题投影（override 会顶掉生成规则）。
+    // 2) Bubble group: append var(--nts-shadow) to keep the theme's drop shadow
+    //    (the override would otherwise displace the generated rule).
     rule(sel(['.message-bubble-user', '.message-bubble-assistant',
       '.compact-export-history-bubble'], EDGE), edgeShadow(true));
 
-    // 3) 没有 outline 冲突的表面：rim 保持 outline，lens/thickness 交给 box-shadow。
-    //    0.4.3：`.compact-export-history-scroll` 已移出 —— 它是按预留槽位定高的消息
-    //    列表容器（无圆角），outline + inset 阴影会沿那块空槽画出直角色带。
+    // 3) Surfaces without an outline conflict: rim stays an outline, lens/thickness
+    //    go to box-shadow. 0.4.3: `.compact-export-history-scroll` was removed: it is
+    //    a message list container sized by its reserved slot (no radius), and
+    //    outline + inset shadows would draw a square-cornered band along the empty slot.
     rule(sel(['.composer-overflow-popover'], EDGE), [
       'outline: 1px solid ' + RIM + ' !important;',
       'outline-offset: -1px !important;',
@@ -1081,8 +1238,9 @@
         ' inset 0 1px 0 rgba(255, 255, 255, calc(' + V_T + ' * 0.55)) !important;'
     ]);
 
-    // 4) 焦点兜底：box-shadow rim 会盖掉这两个表面原生用 box-shadow 画的焦点环，
-    //    键盘焦点必须看得见 → 用 outline 补一条（颜色取宿主自己焦点环的 #40c5f1）。
+    // 4) Focus fallback: the box-shadow rim covers the focus ring these two surfaces
+    //    natively draw with box-shadow, and keyboard focus must stay visible -> add
+    //    an outline (colour taken from the host's own focus ring, #40c5f1).
     rule(sel(['.composer-input-shell:focus-within'], ['rim']), [
       'outline: 2px solid rgba(64, 197, 241, 0.62) !important;',
       'outline-offset: 1px !important;'
@@ -1092,10 +1250,12 @@
       'outline-offset: 2px !important;'
     ]);
 
-    // 5) 定位：position:static 的表面需要定位祖先承载伪元素。
-    //    .window-topbar 已 relative；popover absolute、导出气泡 relative，不碰；
-    //    .compact-export-history-scroll 刻意不加 —— 它的 ::before 磨砂层按现有
-    //    定位祖先铺满，改 relative 会让那层的圆角/范围跟着变。
+    // 5) Positioning: position:static surfaces need a positioned ancestor to host
+    //    the pseudo-elements. .window-topbar is already relative; the popover is
+    //    absolute and export bubbles relative, left alone;
+    //    .compact-export-history-scroll is deliberately skipped: its ::before
+    //    frosted layer fills its current positioned ancestor, and making it
+    //    relative would change that layer's radius/extent.
     var FX = ['specular', 'sheen', 'noise'];
     rule(sel(['.composer-input-shell', '.message-bubble-user', '.message-bubble-assistant'],
       ['specular', 'sheen'], null), [
@@ -1124,12 +1284,15 @@
       'mix-blend-mode: overlay !important;'
     ];
 
-    // 6) 合成光效层（0.4.0 重构）：ambient 指针光源 + caustic 焦散 + specular 镜面 + sheen 掠光
-    //    四层全部走自定义属性槽位（--nts-fx-*），任何单个变量被配置都能正确合成、互不覆盖。
-    //    0.3.0 那套「黑色遮罩 + noise 叠层」有真实缺陷：veil alpha = 1 - noise，noise 未配置时
-    //    等于全黑不透明层，把下面的 specular/sheen 整个盖掉（再经 screen 混合等于消失），
-    //    所以顶栏与导出区的镜面/掠光在 0.3.0 里其实经常是死的。0.4.0 移除该写法，
-    //    noise 只保留在 5 个 ::before 空闲的表面上（顶栏/导出区不再支持 noise）。
+    // 6) Composite lighting layer (0.4.0 rework): ambient pointer light + caustic +
+    //    specular + sheen. All four go through custom-property slots (--nts-fx-*),
+    //    so any single configured variable composites correctly without overriding
+    //    the others. 0.3.0's "black mask + noise overlay" had a real defect: veil
+    //    alpha = 1 - noise, so with noise unset it was a fully opaque black layer
+    //    covering the specular/sheen below (and after screen blending it vanished),
+    //    meaning the top bar and export area specular/sheen were often dead in
+    //    0.3.0. 0.4.0 removed that approach; noise is kept only on the 5 surfaces
+    //    with a free ::before (top bar/export area no longer support noise).
     var ambientLayer = 'radial-gradient(64% 120% at ' + LIGHT_AT + ',' +
       ' rgba(255, 255, 255, calc(' + V_A + ' * 0.22)) 0%,' +
       ' rgba(255, 255, 255, calc(' + V_A + ' * 0.07)) 38%,' +
@@ -1147,8 +1310,9 @@
       'pointer-events: none !important;',
       'border-radius: inherit !important;'
     ];
-    // 四个槽位的固定顺序：ambient → caustic → specular → sheen。
-    // 列表长度恒定，所以 background-size/position/blend 的对应关系不会随配置漂移。
+    // Fixed slot order: ambient -> caustic -> specular -> sheen. The list length is
+    // constant, so the background-size/position/blend mapping never drifts with
+    // configuration.
     function fxBody() {
       return FX_STRUCT.concat([
         'background-image: var(--nts-fx-amb, none), var(--nts-fx-caustic, none),' +
@@ -1158,16 +1322,19 @@
         'background-position: 0 0, 50% 50%, 0 0, 120% 0 !important;',
         'background-blend-mode: screen, screen, screen, screen !important;',
         'mix-blend-mode: screen !important;',
-        // 两个动画槽位分开挂：只配 sheen 就只跑掠光，只配 caustic 就只跑焦散。
+        // Two separate animation slots: sheen alone runs only the glint, caustic
+        // alone runs only the caustics.
         'animation: var(--nts-anim-sheen, none), var(--nts-anim-caustic, none) !important;'
       ]);
     }
 
-    // 0.4.1 修复：**不要把 `.compact-export-history-scroll` 放进来**。
-    // 它是 position:static（§5 刻意不加 relative，否则会改掉 ::before 磨砂层的锚点），
-    // 于是这里的 absolute + inset:0 的 ::after 会去找更外层的定位祖先铺满，
-    // 表现为导出/历史面板上方多出一整块直角的亮屏（0.4.0 的 ambient/specular
-    // 一打开就非常明显）。只在有确定包含块的 6 个表面上做光效层。
+    // 0.4.1 fix: **do not add `.compact-export-history-scroll` here**.
+    // It is position:static (§5 deliberately skips relative, which would move the
+    // ::before frosted layer's anchor), so an absolute + inset:0 ::after here would
+    // fill an outer positioned ancestor, showing as a whole square-cornered bright
+    // screen above the export/history panel (very obvious once 0.4.0's
+    // ambient/specular is on). The lighting layer only goes on the 6 surfaces with
+    // a definite containing block.
     var FX_SURFACES = ['.window-topbar', '.composer-input-shell', '.composer-overflow-popover',
       '.message-bubble-user', '.message-bubble-assistant',
       '.compact-export-history-bubble'];
@@ -1181,7 +1348,8 @@
       rule(sel(FX_SURFACES, [FX_PROPS[f][0]], '::after'),
         fxBody().concat([FX_PROPS[f][1] + ': ' + FX_PROPS[f][2] + ' !important;']));
     }
-    // 动画只在对应变量配置时挂（0.3.0 是无条件挂 sheen 动画，sheen=0 时纯浪费）。
+    // Animations attach only when their variable is configured (0.3.0 always
+    // attached the sheen animation, pure waste when sheen=0).
     rule(sel(FX_SURFACES, ['sheen'], '::after'), [
       '--nts-anim-sheen: nts-glass-sheen 7.5s ease-in-out infinite !important;'
     ]);
@@ -1189,7 +1357,8 @@
       '--nts-anim-caustic: nts-glass-caustic 13s ease-in-out infinite !important;'
     ]);
 
-    // 7) 噪声（::before）：只剩 5 个伪元素空闲的表面；顶栏与导出区不参与。
+    // 7) Noise (::before): only the 5 surfaces with a free pseudo-element; the top
+    //    bar and export area are excluded.
     var noiseBody = [
       'content: "" !important;',
       'position: absolute !important;',
@@ -1209,20 +1378,23 @@
       rule(sel([dual[i]], ['noise'], '::before'), noiseBody);
     }
 
-    // 8) 掠光扫过（只动 background-position 的第 4 层 = sheen）。
-    //    60% 之后停在同一位置：带子扫出去后静止一段再回卷，避免硬回弹。
+    // 8) Sheen sweep (only moves the 4th background-position layer = sheen).
+    //    After 60% it holds position: the band sweeps out, rests, then rewinds,
+    //    avoiding a hard snap back.
     lines.push('@keyframes nts-glass-sheen {\n' +
       '  0% { background-position: 0 0, 50% 50%, 0 0, 120% 0; }\n' +
       '  60%, 100% { background-position: 0 0, 50% 50%, 0 0, -40% 0; }\n' +
       '}');
-    // 9) 焦散呼吸（只动 background-size 的第 2 层 = caustic）：
-    //    光斑缓慢胀缩，像水面折出来的光在玻璃后面晃。
+    // 9) Caustic breathing (only animates the 2nd background-size layer = caustic):
+    //    the light spot slowly swells and shrinks, like light refracted off water
+    //    wobbling behind the glass.
     lines.push('@keyframes nts-glass-caustic {\n' +
       '  0%, 100% { background-size: 100% 100%, 240% 240%, 100% 100%, 220% 100%; }\n' +
       '  50% { background-size: 100% 100%, 300% 260%, 100% 100%, 220% 100%; }\n' +
       '}');
 
-    // 9) 「液」：按压时玻璃轻微压扁（只给真正可点的两个表面，避免动到消息气泡的滚动）。
+    // 9) "Liquid": the glass squashes slightly on press (only the two truly clickable
+    //    surfaces, so message bubble scrolling is not affected).
     rule(sel(['.composer-icon-button'], ['thickness'], ':active'), [
       'transform: scale(0.965) !important;'
     ]);
@@ -1230,8 +1402,10 @@
       'transform: scale(0.985) !important;'
     ]);
 
-    // 10) 窗口不可见时暂停所有 NTS 动画（0.4.0 性能项）：后台标签页不再持续合成。
-    //     选择器用 :root[data-nts-paused] + 4 个 :root，压过生成 CSS 里的高特异度规则。
+    // 10) Pause all NTS animations while the window is hidden (0.4.0 performance
+    //     item): background tabs no longer keep compositing. The selector uses
+    //     :root[data-nts-paused] + 4 x :root to beat high-specificity rules in the
+    //     generated CSS.
     var PAUSE_HEAD = ':root[data-nts-paused]:root:root:root:root body ';
     var pauseSel = [];
     for (var q = 0; q < FX_SURFACES.length; q++) {
@@ -1240,21 +1414,25 @@
     for (var n2 = 0; n2 < dual.length; n2++) {
       pauseSel.push(PAUSE_HEAD + dual[n2] + '::before');
     }
-    // 0.4.3：面板装饰层已从历史浮层 (scroll) 迁到紧凑态真实面板
-    // (.compact-chat-surface-frame) 的 ::after，与生成 CSS 的 NTS_GLOW 一致。
+    // 0.4.3: the panel decoration layer moved from the history overlay (scroll) to
+    // the ::after of the real compact panel (.compact-chat-surface-frame),
+    // consistent with NTS_GLOW in the generated CSS.
     pauseSel.push(PAUSE_HEAD + '.compact-chat-surface-frame::after');
     lines.push(pauseSel.join(',\n') + ' { animation-play-state: paused !important; }');
 
-    // 11) 减少动态偏好：停掉扫动/焦散（光带停在视野外，只剩 rim / 厚度 / 镜面，不闪）。
+    // 11) Reduced-motion preference: stop sweep/caustics (the band rests off-view,
+    //     leaving only rim / thickness / specular, no flashing).
     var rmTargets = FX_SURFACES.slice();
     var rmSel = [];
     for (var r = 0; r < rmTargets.length; r++) {
       rmSel.push(':root[' + ACTIVE_ATTR + '] body ' + rmTargets[r] + '::after');
     }
 
-    // 12) 主题切换过渡（v1.5.20）：applyPalette 检测到版本戳变化时给 :root 打 420ms
-    //     的 data-nts-fade，功能层颜色/边框/阴影在 280ms 内渐变而不是硬切。
-    //     初始加载（无 previousStamp）与内容未变都不闪；减少动态偏好里直接关掉。
+    // 12) Theme switch transition (v1.5.20): when applyPalette detects a stamp
+    //     change it sets data-nts-fade on :root for 420ms, so functional-layer
+    //     colours/borders/shadows transition over 280ms instead of cutting hard.
+    //     No flash on initial load (no previousStamp) or when content is unchanged;
+    //     disabled entirely under reduced motion.
     var FADE_SURFACES = ['.window-topbar', '.composer-input-shell', '.compact-chat-surface-frame',
       '.composer-icon-button', '.composer-overflow-popover',
       '.message-bubble-user', '.message-bubble-assistant',
@@ -1274,21 +1452,24 @@
     return lines.join('\n');
   })();
 
-  // 包在 nts-theme 的子层 nts-theme.materials 里：静态调色板表整张在 @layer nts-theme
-  // 内用 !important，而带层的 !important 一律压过不带层的 —— 材质规则若不进层，
-  // 开启材质时背景 / 模糊 / 阴影 / 圆角都会被调色板覆盖。对 !important 来说，
-  // 显式子层又压过父层自己的规则，所以材质赢调色板，同时仍压过宿主无层的 !important。
-  // 这里只有 --nts-mt-* 自定义属性是普通声明，没有别的层定义它们，不受层序影响。
+  // Wrapped in nts-theme's sublayer nts-theme.materials: the whole static palette
+  // sheet uses !important inside @layer nts-theme, and layered !important always
+  // beats unlayered, so if the material rules were not layered, background / blur /
+  // shadow / radius would all be overridden by the palette when materials are on.
+  // For !important, an explicit sublayer beats its parent layer's own rules, so
+  // materials win over the palette while still beating the host's unlayered
+  // !important. Only the --nts-mt-* custom properties here are normal declarations;
+  // no other layer defines them, so layer order does not affect them.
   var MATERIAL_CSS = [
     '@layer nts-theme.materials {',
-    '/* ===== 高级材质层（契约 0.4.0） =====',
-    '   全部规则门控在 :root[data-nts-mt] 上：没有该属性 = 一条都不匹配 = 应用完全保持原始外观。',
-    '   只写 background / border / box-shadow / backdrop-filter / border-radius / animation，',
-    '   不碰 color / display / position / width / height / overflow / z-index / transform ——',
-    '   文本可读性、布局与点击区域都不受材质影响。 */',
+    '/* ===== Advanced material layer (contract 0.4.0) =====',
+    '   Every rule is gated on :root[data-nts-mt]: without that attribute nothing matches and the app keeps its original look.',
+    '   Only writes background / border / box-shadow / backdrop-filter / border-radius / animation,',
+    '   never color / display / position / width / height / overflow / z-index / transform,',
+    '   so text readability, layout and hit areas are unaffected by materials. */',
     ':root[data-nts-mt] { --nts-mt-mx: 50%; --nts-mt-my: 50%; --nts-mt-light-angle: 162deg; }',
     '',
-    '/* ---- 组件级变量绑定（先查组件专属值，缺失则回退全局） ---- */',
+    '/* ---- Per-component variable binding (component-specific value first, falls back to global) ---- */',
     ':root[data-nts-mt] .compact-chat-surface-frame,',
     ':root[data-nts-mt] .chat-window,',
     ':root[data-nts-mt] #react-chat-window-shell {',
@@ -1365,7 +1546,7 @@
     '  --nts-mt-shadow-c: var(--nts-mt-c-shadow-menu, var(--nts-mt-shadow));',
     '}',
     '',
-    '/* ---- 基础面：一次声明，全部走 -c 变量 ---- */',
+    '/* ---- Base surfaces: declared once, everything via the -c variables ---- */',
     ':root[data-nts-mt]:root:root:root:root body .compact-chat-surface-frame,',
     ':root[data-nts-mt]:root:root:root:root body .chat-window,',
     ':root[data-nts-mt]:root:root:root:root body #react-chat-window-shell,',
@@ -1376,8 +1557,10 @@
     ':root[data-nts-mt]:root:root:root:root body .compact-export-history-bubble,',
     ':root[data-nts-mt]:root:root:root:root body .composer-input-shell,',
     ':root[data-nts-mt]:root:root:root:root body .composer-panel,',
-    // 消息区是聊天壁纸的落点（调色板表在 .message-list 上画 --nts-chat-bg-image）。
-    // 材质层带层后会压过那几条规则，所以当前模式配了壁纸时这里不接管消息区。
+    // The message area is where the chat wallpaper lands (the palette sheet paints
+    // --nts-chat-bg-image on .message-list). Being layered, the material layer
+    // would beat those rules, so when the current mode has a wallpaper it does not
+    // take over the message area.
     ':root[data-nts-mt]:not([data-theme="dark"]):not([data-nts-l-chat-bg-image]):root:root:root body .message-list,',
     ':root[data-nts-mt][data-theme="dark"]:not([data-nts-d-chat-bg-image]):root:root:root body .message-list,',
     ':root[data-nts-mt]:root:root:root:root body .window-topbar,',
@@ -1425,7 +1608,7 @@
     '              box-shadow var(--nts-mt-hover-duration) var(--nts-mt-easing) !important;',
     '}',
 
-    '/* 背景模糊只给自身不带 transform / filter 的容器；壳体 / 内层 / 弹出层 / 导出气泡在下方禁模糊组。 */',
+    '/* Backdrop blur only for containers without their own transform / filter; the shell / inner root / popovers / export bubbles are in the no-blur group below. */',
     ':root[data-nts-mt]:root:root:root:root body .compact-chat-surface-frame,',
     ':root[data-nts-mt]:root:root:root:root body .chat-window,',
     ':root[data-nts-mt]:root:root:root:root body .message-bubble-user,',
@@ -1445,16 +1628,16 @@
     '  -webkit-backdrop-filter: blur(var(--nts-mt-blur-c)) saturate(var(--nts-mt-saturation)) brightness(var(--nts-mt-brightness)) contrast(1.03) !important;',
     '  backdrop-filter: blur(var(--nts-mt-blur-c)) saturate(var(--nts-mt-saturation)) brightness(var(--nts-mt-brightness)) contrast(1.03) !important;',
     '}',
-    '/* 聊天窗真正承载底色的是内层 root（调色板层用 !important 给它上实色），',
-    '   材质启用时让它让位，玻璃才能从外壳透出来。 */',
+    '/* The chat window base colour actually lives on the inner root (the palette layer gives it a solid colour with !important);',
+    '   with materials on it steps aside so the glass can show through from the shell. */',
     ':root[data-nts-mt]:root:root:root:root:root body #react-chat-window-root {',
     '  background-color: var(--nts-mt-bg-c, var(--nts-mt-bg)) !important;',
     '  background-image: none !important;',
     '  -webkit-backdrop-filter: none !important;',
     '  backdrop-filter: none !important;',
     '}',
-    '/* 外壳 / 内层 / 弹出层 / 导出气泡自身带 transform、filter 或 will-change（见 audit_mt_backdrop_hazards.py），',
-    '   Chromium 在它们上面做 backdrop-filter 容易整块不绘制：模糊一律撤掉，玻璃靠底色 / 多层背景 / 边框 / 阴影表达。 */',
+    '/* The shell / inner root / popovers / export bubbles carry their own transform, filter or will-change (see audit_mt_backdrop_hazards.py);',
+    '   Chromium often fails to paint them entirely with backdrop-filter, so blur is removed and the glass is expressed via base colour / layered backgrounds / border / shadow. */',
     ':root[data-nts-mt]:root:root:root:root:root body #react-chat-window-shell,',
     ':root[data-nts-mt]:root:root:root:root:root body .composer-icon-popover,',
     ':root[data-nts-mt]:root:root:root:root:root body .compact-export-history-bubble {',
@@ -1462,12 +1645,13 @@
     '  backdrop-filter: none !important;',
     '}',
     '',
-    '/* ---- 设置窗口（api_key_settings.html）：面板里「设置」组件的落点 ----',
-    '   它已并入上面的基础面规则（同一套 9 层背景 + 完整 box-shadow），',
-    '   这样设置窗口与聊天窗才是同一块玻璃。只有圆角要单独收掉 ——',
-    '   全屏窗口加圆角会把内容裁掉；.container 仍从基础面拿 radius-c。 */',
-/* 消息区是整块滚动大面：背后就是同一块窗玻璃，模糊前后看不出差别，
-   但每次滚动都要整块重算 backdrop-filter —— 滚动卡顿的头号来源。背景/圆角/阴影照留。 */
+    '/* ---- Settings window (api_key_settings.html): where the panel "Settings" component lands ----',
+    '   It is merged into the base-surface rule above (same 9-layer background + full box-shadow),',
+    '   so the settings window and the chat window are the same glass. Only the radius is removed separately:',
+    '   a radius on a fullscreen window would clip content; .container still takes radius-c from the base surface. */',
+/* The message area is one large scrolling surface: behind it is the same window glass, so blur makes no
+   visible difference, but every scroll recomputes backdrop-filter for the whole area, the top cause of
+   scroll jank. Background/radius/shadow are kept. */
     ':root[data-nts-mt]:root:root:root body .message-list {',
     '  -webkit-backdrop-filter: none !important;',
     '  backdrop-filter: none !important;',
@@ -1477,8 +1661,8 @@
     '  border-radius: 0 !important;',
     '}',
 
-    '/* 设置页内部：宿主把内容区与配置卡片写死成 #fff，只换外壳还是白，',
-    '   所以内层也要跟随。暗色主题下宿主 dark-mode.css 已有专门规则，这里不抢。 */',
+    '/* Inside the settings page: the host hard-codes the content area and config cards to #fff, so changing only the shell still leaves white,',
+    '   hence the inner parts follow too. In dark theme the host dark-mode.css already has dedicated rules; not overridden here. */',
     ':root[data-nts-mt]:root:root:not([data-theme="dark"]) body.api-key-settings-page .container-content {',
     '  background-color: transparent !important;',
     '}',
@@ -1506,9 +1690,9 @@
     '  border-radius: var(--nts-mt-radius-input) !important;',
     '}',
     '',
-    '/* ---- 省电模式：高频小元素不再参与背景模糊合成 ----',
-    '   气泡/输入/顶栏背后就是半透明的窗口底，模糊前后几乎看不出差别，',
-    '   但一屏二十个气泡就是二十层 backdrop-filter。saver 档干脆不声明。 */',
+    '/* ---- Power saver: frequent small elements no longer take part in backdrop blur compositing ----',
+    '   Behind bubbles/input/top bar is the semi-transparent window base, so blur makes almost no visible difference,',
+    '   but twenty bubbles on screen means twenty backdrop-filter layers. The saver tier simply does not declare it. */',
     ':root[data-nts-mt][data-nts-mt-quality="saver"]:root:root body .message-bubble-user,',
     ':root[data-nts-mt][data-nts-mt-quality="saver"]:root:root body .message-bubble-assistant,',
     ':root[data-nts-mt][data-nts-mt-quality="saver"]:root:root body .message-bubble-tool,',
@@ -1524,7 +1708,7 @@
     '      backdrop-filter: none !important;',
     '}',
 
-    '/* ---- 按钮：体量小，不做噪点/追光，只保留底色/描边/圆角/阴影 ---- */',
+    '/* ---- Buttons: small, so no noise/light tracking; only base colour/border/radius/shadow ---- */',
     ':root[data-nts-mt]:root:root body .composer-icon-button,',
     ':root[data-nts-mt]:root:root body .composer-tool-btn,',
     ':root[data-nts-mt]:root:root body .send-button-circle,',
@@ -1540,7 +1724,7 @@
     '  transition: box-shadow var(--nts-mt-hover-duration) var(--nts-mt-easing) !important;',
     '}',
     '',
-    '/* ---- 动态：染料缓慢流动 + 环境反射扫过（--nts-mt-anim 关闭时是 none） ---- */',
+    '/* ---- Motion: slow dye drift + ambient reflection sweep (none when --nts-mt-anim is off) ---- */',
     '@keyframes nts-mt-drift {',
     '  0%   { background-position: 0 0, 0 0, 0 0, 0 0, center, 0 0, 0 0, 0 0, 0% 50%; }',
     '  50%  { background-position: 0 0, 0 0, 3% 3%, 0 0, center, 0 0, 0 0, 0 0, 100% 50%; }',
@@ -1551,7 +1735,7 @@
     '  animation: var(--nts-mt-anim) !important;',
     '}',
     '',
-    '/* ---- 交互动效：进入 / 展开 / 悬停 / 按压 ---- */',
+    '/* ---- Interaction motion: enter / expand / hover / press ---- */',
     '@keyframes nts-mt-enter { from { opacity: .01; } to { opacity: 1; } }',
     '@keyframes nts-mt-expand { from { opacity: .01; } to { opacity: 1; } }',
     ':root[data-nts-mt] .message-bubble-user,',
@@ -1588,7 +1772,7 @@
     '  transition-duration: var(--nts-mt-press-duration) !important;',
     '}',
     '',
-    '/* ---- 降级：内核不支持背景模糊时，用更实的底色换可读性（不假装有玻璃） ---- */',
+    '/* ---- Fallback: when the engine lacks backdrop blur, trade for readability with a more solid base (no fake glass) ---- */',
     '@supports not ((-webkit-backdrop-filter: blur(2px)) or (backdrop-filter: blur(2px))) {',
     '  :root[data-nts-mt]:root:root body .compact-chat-surface-frame,',
     '  :root[data-nts-mt]:root:root body .message-bubble-user,',
@@ -1600,14 +1784,15 @@
     '      linear-gradient(var(--nts-mt-bg-c), var(--nts-mt-bg-c)),',
     '      var(--nts-mt-inner2), var(--nts-mt-sheen-img), var(--nts-mt-rim-img), var(--nts-mt-spot), var(--nts-mt-noise-img),',
     '      var(--nts-mt-dye) !important;',
-    // 降级段 8 层，必须自带 size/position：否则会继承主规则那份 9 值，
-    // 噪点被套上 ambient-size（拉成色块）、染料失去 drift-size（不再流动）。
+    // The fallback has 8 layers and must carry its own size/position: otherwise it
+    // inherits the main rule's 9 values, the noise gets ambient-size (stretched into
+    // blotches) and the dye loses drift-size (stops drifting).
     '    background-size: auto, auto, auto, auto, auto, auto, auto, var(--nts-mt-drift-size) !important;',
     '    background-position: 0 0, 0 0, 0 0, 0 0, 0 0, 0 0, 0 0, 0% 50% !important;',
     '  }',
     '}',
     '',
-    '/* ---- 系统级减弱动效：材质不做任何流动/进入动画 ---- */',
+    '/* ---- System reduced motion: materials run no drift/enter animations ---- */',
     '@media (prefers-reduced-motion: reduce) {',
     '  :root[data-nts-mt] .compact-chat-surface-frame,',
     '  :root[data-nts-mt] .chat-window,',
@@ -1619,10 +1804,10 @@
     '  :root[data-nts-mt] .modal-dialog { animation: none !important; }',
     '}',
     '',
-    '/* ---- 紧凑聊天（/chat 悬浮胶囊）：外层包裹保持透明 ----',
-    '   宿主 index.css 在紧凑模式下把 root / .chat-window / .composer-panel 等外层设为透明，',
-    '   只让 .compact-chat-surface-frame 这只胶囊有外观。材质层带层后其 !important 会压过',
-    '   宿主那条规则，所以这里按同一范围把外层再收回透明；胶囊本身照常上材质。 */',
+    '/* ---- Compact chat (/chat floating capsule): outer wrappers stay transparent ----',
+    '   In compact mode the host index.css makes outer layers like root / .chat-window / .composer-panel transparent,',
+    '   so only the .compact-chat-surface-frame capsule has an appearance. Being layered, the material !important would beat',
+    '   that host rule, so the outer layers are made transparent again over the same scope; the capsule itself still gets the material. */',
     ':root[data-nts-mt]:root:root:root:root:root body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized) #react-chat-window-root,',
     ':root[data-nts-mt]:root:root:root:root:root body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized) #react-chat-window-root .app-shell,',
     ':root[data-nts-mt]:root:root:root:root:root body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized) #react-chat-window-root .chat-window,',
@@ -1634,47 +1819,60 @@
     '  border: 0 !important;',
     '  -webkit-backdrop-filter: none !important;',
     '  backdrop-filter: none !important;',
-    // 不写 animation：.compact-chat-surface-shell 收起 / 展开时靠宿主的
-    // neko-compact-collapse-wipe / expand-wipe 动画，这里一碰就没了过渡。
+    // No animation here: .compact-chat-surface-shell relies on the host's
+    // neko-compact-collapse-wipe / expand-wipe animations to collapse / expand;
+    // touching it here kills the transition.
     '}',
     '}'
   ].join('\n');
 
-  // -------------------- 液态玻璃：指针镜面高光 + 滚动流动（v1.5.14，2026-11 重写为 v1.5.19）
+  // -------------------- Liquid glass: pointer specular highlight + scroll flow (v1.5.14, rewritten as v1.5.19 in 2026-11)
   //
-  // 只写 CSS 变量，不碰任何宿主/主题声明；rAF 节流，pointermove 用 passive。
-  // 每个玻璃表面记自己的目标位置（百分比）与当前值，逐帧向目标靠 22%，
-  // 所以高光是「滑过去」而不是瞬间跳过去 —— 指针停下后动画自然收敛并停帧。
+  // Only writes CSS variables, never touches host/theme declarations; rAF
+  // throttled, pointermove is passive. Each glass surface tracks its own target
+  // position (percentages) and current value, moving 22% toward the target each
+  // frame, so the highlight "glides" instead of jumping; once the pointer stops
+  // the animation settles and stops producing frames.
   //
-  // v1.5.19 修的四个「鼠标动了却没反应」：
-  //   1. 旧版只在 pointermove 时重绘 —— 指针不动、页面在滚/新消息插入时，
-  //      高光位置还停在旧坐标；现在滚动（捕获阶段，含嵌套滚动容器）、
-  //      resize、DOM 重建后都会重绘。
-  //   2. 旧版 MutationObserver 是 350ms 防抖，聊天流式输出时 DOM 一直在变，
-  //      计时器被无限重置 → 表面列表永不刷新（新气泡没光效）；改成 220ms 节流。
-  //   3. 新插入的表面旧版要等下一次指针移动才拿到坐标；现在重建后立刻补一次。
-  //   4. 旧版按 0.1% 字符串比较跳过写值，小范围移动会被吃掉；现在按数值插值，
-  //      收敛到 0.06% 以内才停帧。
+  // The four "mouse moved but nothing happened" bugs fixed in v1.5.19:
+  //   1. The old version only redrew on pointermove: with the pointer still while
+  //      the page scrolled / new messages were inserted, the highlight stayed at
+  //      old coordinates; now scroll (capture phase, including nested scroll
+  //      containers), resize and DOM rebuilds all redraw.
+  //   2. The old MutationObserver used a 350ms debounce; during streaming chat
+  //      output the DOM keeps changing, the timer was reset forever -> the
+  //      surface list never refreshed (new bubbles had no lighting); now a 220ms
+  //      throttle.
+  //   3. Newly inserted surfaces used to wait for the next pointer move to get
+  //      coordinates; now they get one right after the rebuild.
+  //   4. The old version skipped writes via a 0.1% string comparison, swallowing
+  //      small moves; now it interpolates numerically and stops only once within
+  //      0.06%.
   //
-  // v1.5.20（性能 + 视觉打磨）：
-  //   1. 光效整套休眠：调色板里一个光效变量都没有（非玻璃主题）时，
-  //      refreshGlassPanels / MutationObserver / onGlassPointer 直接返回，
-  //      不再每 220ms 扫 DOM、也不起 rAF —— 普通主题下指针追踪零开销。
-  //   2. 主题切换过渡：applyPalette 检测到版本戳变化时给 :root 打 420ms 的
-  //      data-nts-fade，功能层颜色/边框/阴影在 280ms 内渐变，不再硬切。
-  // -------------------- 包含块修复（v1.5.17）
+  // v1.5.20 (performance + visual polish):
+  //   1. Full lighting hibernation: when the palette has no lighting variable at
+  //      all (non-glass theme), refreshGlassPanels / MutationObserver /
+  //      onGlassPointer return immediately, no DOM scan every 220ms and no rAF:
+  //      zero pointer-tracking cost for normal themes.
+  //   2. Theme switch transition: when applyPalette detects a stamp change it
+  //      sets data-nts-fade on :root for 420ms, so functional-layer
+  //      colours/borders/shadows transition over 280ms instead of cutting hard.
+  // -------------------- Containing block fix (v1.5.17)
   //
-  // 光效层与面板装饰层都是 `position:absolute; inset:0` 的伪元素，依赖宿主元素
-  // 自己是定位祖先。实测（compact 态 neko-chat-window.css）这几个宿主是
-  // `position: static`：.composer-input-shell、.message-bubble-user、
-  // .message-bubble-assistant、.compact-export-history-scroll。它们上面的
-  // absolute 伪元素会一路逃到最近的定位祖先，也就是 position:fixed 的
-  // .compact-export-history-anchor —— 一块比可见面板大、四角笔直的大盒子，
-  // 于是表现为「每个主题都多出一层直角光屏」。
+  // The lighting layer and panel decoration layer are `position:absolute; inset:0`
+  // pseudo-elements that rely on the host element itself being a positioned
+  // ancestor. Measured (compact mode, neko-chat-window.css), these hosts are
+  // `position: static`: .composer-input-shell, .message-bubble-user,
+  // .message-bubble-assistant, .compact-export-history-scroll. Absolute
+  // pseudo-elements on them escape to the nearest positioned ancestor, i.e. the
+  // position:fixed .compact-export-history-anchor, a big square-cornered box
+  // larger than the visible panel, which showed up as "every theme has an extra
+  // square-cornered light screen".
   //
-  // 不能写死在 CSS 里：有的宿主本身就是 absolute（.composer-overflow-popover），
-  // 统一设 relative 会改掉它的定位语义。所以这里只对**计算值为 static** 的元素
-  // 补 inline relative（布局等价，不产生偏移），并打标记避免重复处理。
+  // This cannot be hard-coded in CSS: some hosts are themselves absolute
+  // (.composer-overflow-popover), and forcing relative would change their
+  // positioning semantics. So only elements whose **computed value is static** get
+  // an inline relative (layout-equivalent, no offset), marked to avoid reprocessing.
   var GLASS_CONTAIN_SEL = [
     '.composer-input-shell', '.message-bubble-user',
     '.message-bubble-assistant'
@@ -1687,7 +1885,7 @@
       var el = nodes[i];
       if (el.getAttribute('data-nts-box') === '1') continue;
       var pos = 'static';
-      try { pos = window.getComputedStyle(el).position || 'static'; } catch (e2) { /* 保底当 static */ }
+      try { pos = window.getComputedStyle(el).position || 'static'; } catch (e2) { /* fall back to static */ }
       if (pos === 'static') el.style.position = 'relative';
       el.setAttribute('data-nts-box', '1');
     }
@@ -1699,12 +1897,13 @@
     '.message-bubble-user', '.message-bubble-assistant',
     '.compact-export-history-bubble'
   ].join(',');
-  var GLASS_FOLLOW = 0.22;      // 每帧向指针目标靠的比例（越大越跟手）
-  var GLASS_SNAP = 0.0006;      // 差值小于 0.06% 就吸附，避免无限微动画
-  var GLASS_REBUILD_MS = 220;   // DOM 变动后的重建节流
-  var GLASS_STALE_MS = 900;     // 列表超过这么久没重建，指针一动就补一次
-  // 光效门控：调色板里一个「光效用变量」都没有时，指针追踪整套直接休眠 ——
-  // 非玻璃主题不必每 220ms 扫一遍 DOM，也不跑 rAF（v1.5.20 性能优化）。
+  var GLASS_FOLLOW = 0.22;      // fraction moved toward the pointer target per frame (higher = snappier)
+  var GLASS_SNAP = 0.0006;      // snap when the difference is under 0.06%, avoiding endless micro-animation
+  var GLASS_REBUILD_MS = 220;   // rebuild throttle after DOM changes
+  var GLASS_STALE_MS = 900;     // if the list has not been rebuilt for this long, rebuild on the next pointer move
+  // Lighting gate: when the palette has no "lighting variable" at all, pointer
+  // tracking hibernates entirely; non-glass themes need no DOM scan every 220ms
+  // and no rAF (v1.5.20 performance optimisation).
   var GLASS_FX_VARS = [
     'glass-filter', 'glass-tint', 'glass-highlight', 'glass-rim', 'glass-specular',
     'glass-lens', 'glass-thickness', 'glass-sheen', 'glass-noise', 'ambient-glow',
@@ -1727,8 +1926,9 @@
     return false;
   }
 
-  // 主题切换的短暂过渡（v1.5.20）：应用新主题时给根节点打 420ms 的 data-nts-fade，
-  // 让功能层颜色/边框/阴影在 280ms 内渐变而不是硬切；减少动态时由 CSS 关掉。
+  // Short theme switch transition (v1.5.20): applying a new theme sets
+  // data-nts-fade on the root for 420ms so functional-layer colours/borders/shadows
+  // transition over 280ms instead of cutting hard; CSS disables it under reduced motion.
   var FADE_ATTR = 'data-nts-fade';
   var fadeTimer = 0;
 
@@ -1758,7 +1958,8 @@
   function refreshGlassPanels() {
     glassRebuildTimer = 0;
     glassLastRebuild = Date.now ? Date.now() : new Date().getTime();
-    // 没有光效变量时不清扫 DOM：非玻璃主题下这里每 220ms 都会白跑一次。
+    // No DOM sweep without lighting variables: for non-glass themes this would be
+    // wasted work every 220ms.
     if (!glassFxActive()) { glassPanels = []; return; }
     ensureGlassContainment();
     var nodes = glassNodes();
@@ -1769,16 +1970,18 @@
       for (var j = 0; j < glassPanels.length; j++) {
         if (glassPanels[j].el === el) { keep = glassPanels[j]; break; }
       }
-      // 新表面：cx/cy 留空，第一帧直接落在指针位置（不从 0,0 滑过来）
+      // New surface: cx/cy left empty so the first frame lands on the pointer
+      // position directly (no glide in from 0,0)
       next.push(keep || { el: el, cx: null, cy: null, tx: 0, ty: 0, sx: '', sy: '', lx: '', ly: '' });
     }
     glassPanels = next;
-    // 重建后立刻按当前指针重绘：新挂载的气泡/顶栏不用等用户再动鼠标
+    // Redraw at the current pointer right after rebuilding: newly mounted
+    // bubbles/top bar do not have to wait for the user to move the mouse again
     scheduleGlassSpecular();
   }
 
   function scheduleGlassRebuild() {
-    if (glassRebuildTimer) return; // 节流：持续变动时每 220ms 也一定重建一次
+    if (glassRebuildTimer) return; // throttle: under continuous changes it still rebuilds every 220ms
     glassRebuildTimer = setTimeout(refreshGlassPanels, GLASS_REBUILD_MS);
   }
 
@@ -1808,14 +2011,15 @@
       } else {
         g.cx = tx; g.cy = ty;
       }
-      // 镜面：平滑后的位置（有一点「滑」的惯性）
+      // Specular: smoothed position (a bit of "glide" inertia)
       var sx = glassPct(g.cx), sy = glassPct(g.cy);
       if (sx !== g.sx || sy !== g.sy) {
         g.sx = sx; g.sy = sy;
         g.el.style.setProperty('--nts-spec-x', sx);
         g.el.style.setProperty('--nts-spec-y', sy);
       }
-      // 指针光源：直接用真实指针位置（比镜面更跟手），纵向抬 18% 当作「光源在上方」
+      // Pointer light: uses the raw pointer position (snappier than specular),
+      // raised 18% vertically as if "the light source is above"
       var lx = glassPct(tx), ly = glassPct(Math.max(0, ty - 0.18));
       if (lx !== g.lx || ly !== g.ly) {
         g.lx = lx; g.ly = ly;
@@ -1823,7 +2027,7 @@
         g.el.style.setProperty('--nts-light-y', ly);
       }
     }
-    if (moving) scheduleGlassSpecular(); // 还有差距就继续跑帧，收敛后自动停
+    if (moving) scheduleGlassSpecular(); // keep running frames while there is a gap; stops once settled
   }
 
   function scheduleGlassSpecular() {
@@ -1842,18 +2046,22 @@
       if (glassPanels.length) glassPanels = [];
       return;
     }
-    // 列表可能因为流式消息/切页而陈旧：指针一动就顺带补建一次
+    // The list may be stale due to streaming messages/page switches: rebuild on
+    // pointer movement
     var now = Date.now ? Date.now() : new Date().getTime();
     if (!glassPanels.length || now - glassLastRebuild > GLASS_STALE_MS) scheduleGlassRebuild();
     scheduleGlassSpecular();
   }
 
-  // 滚动会让「表面」在静止的指针下面移动；scroll 不冒泡，所以用捕获阶段接住嵌套滚动容器。
+  // Scrolling moves "surfaces" under a still pointer; scroll does not bubble, so
+  // the capture phase is used to catch nested scroll containers.
   function onGlassScroll() {
     var root = document.documentElement;
-    /* 非玻璃主题不写 --nts-scroll-k：这个变量只驱动玻璃镜面收敛，写它会触发
-     * 整页样式重算，而普通主题的滚动是高频事件。切走时把它归零一次，否则
-     * 下次切回玻璃主题仍停在「已收敛」的静止状态。 */
+    /* Non-glass themes do not write --nts-scroll-k: the variable only drives glass
+     * specular settling, writing it triggers a full-page style recalc, and
+     * scrolling is high-frequency for normal themes. Reset it to 0 once when
+     * switching away, otherwise switching back to a glass theme would stay stuck
+     * in the "settled" still state. */
     if (!glassFxActive()) {
       if (root && root.style && root.style.getPropertyValue('--nts-scroll-k') === '1') {
         root.style.setProperty('--nts-scroll-k', '0');
@@ -1874,7 +2082,7 @@
       if (!root) return;
       if (document.hidden) root.setAttribute('data-nts-paused', '');
       else root.removeAttribute('data-nts-paused');
-    } catch (e) { /* 无 document.hidden 的环境：保持动画 */ }
+    } catch (e) { /* environments without document.hidden: keep animating */ }
     if (!document.hidden) { scheduleGlassRebuild(); scheduleGlassSpecular(); }
   }
 
@@ -1883,40 +2091,45 @@
     if (glassPointerBound) return;
     glassPointerBound = true;
     try {
-      // 捕获阶段：即使某个组件 stopPropagation，指针移动也不会丢
+      // Capture phase: pointer moves are not lost even if a component calls stopPropagation
       document.addEventListener('pointermove', onGlassPointer, { passive: true, capture: true });
       document.addEventListener('pointerdown', onGlassPointer, { passive: true, capture: true });
       document.addEventListener('pointerover', onGlassPointer, { passive: true, capture: true });
-      // 后台标签页暂停所有 NTS 动画：省电，也避免回来后动画相位跳变。
+      // Pause all NTS animations in background tabs: saves power and avoids
+      // animation phase jumps on return.
       document.addEventListener('visibilitychange', syncAnimationPause);
       syncAnimationPause();
       document.addEventListener('scroll', onGlassScroll, { passive: true, capture: true });
       window.addEventListener('scroll', onGlassScroll, { passive: true });
       window.addEventListener('resize', function () { refreshGlassPanels(); }, { passive: true });
-      // 主题库/消息列表会持续增删节点：节流重建表面列表（旧版防抖在流式输出时会饿死）。
+      // The theme library/message list keep adding and removing nodes: throttle
+      // surface list rebuilds (the old debounce starved during streaming output).
       if (window.MutationObserver && document.body) {
         glassObserver = new MutationObserver(function () {
-          if (!glassFxActive()) return; // 非玻璃主题：连重建定时器都不排
+          if (!glassFxActive()) return; // non-glass theme: do not even schedule a rebuild timer
           scheduleGlassRebuild();
         });
         glassObserver.observe(document.body, { childList: true, subtree: true });
       }
-    } catch (e) { /* 极老 WebView：退化成静态高光位置 */ }
+    } catch (e) { /* very old WebView: degrade to a static highlight position */ }
     scheduleGlassSpecular();
   }
 
   /**
-   * 样式表是否真的加载了（href 里带 neko-theme-studio.css 的那张）。
-   * 变量注入成功但样式表没加载时，门控属性照样打上、变量照样解析，
-   * 却没有任何规则使用它们 —— 外观完全不变且控制台全静默。
-   * 这是「面板改了色、本体没反应」最隐蔽的一种形态，必须大声报出来。
+   * Whether the stylesheet is actually loaded (the one whose href contains
+   * neko-theme-studio.css). If variables are injected but the stylesheet is not
+   * loaded, gate attributes are still set and variables still resolve, yet no rule
+   * uses them: nothing changes and the console is silent. This is the most hidden
+   * form of "changed a colour in the panel, the app did not react" and must be
+   * reported loudly.
    */
-  /** 数「真实样式规则」条数，穿透分组规则。
+  /** Count "real style rules", descending into grouping rules.
    *
-   *  v3.1 起整张表被包在 `@layer nts-theme { … }` 里（为了用 layered !important
-   *  压过 index.css 里那几条双 id !important 的原生规则），于是顶层 cssRules
-   *  恒为 1。直接报 .length 会让 diagnose() 看起来"只加载了 1 条规则"，把正常
-   *  状态误判成半残。这里递归展开 @layer / @media / @supports 再计数。 */
+   *  Since v3.1 the whole sheet is wrapped in `@layer nts-theme { … }` (to use
+   *  layered !important to beat the native two-id !important rules in index.css),
+   *  so the top-level cssRules is always 1. Reporting .length directly would make
+   *  diagnose() look like "only 1 rule loaded" and misjudge a healthy state as
+   *  broken. This recursively expands @layer / @media / @supports before counting. */
   function countStyleRules(sheet) {
     var n = 0;
     try {
@@ -1924,14 +2137,14 @@
       if (!rules) return 0;
       for (var i = 0; i < rules.length; i++) {
         var r = rules[i];
-        // 分组规则没有 selectorText，但有 cssRules
+        // Grouping rules have no selectorText but do have cssRules
         if (r.selectorText === undefined && r.cssRules) {
           n += countStyleRules({ cssRules: r.cssRules });
         } else if (r.selectorText !== undefined) {
           n += 1;
         }
       }
-    } catch (e) { /* cross-origin 或无权限 */ }
+    } catch (e) { /* cross-origin or no access */ }
     return n;
   }
 
@@ -1951,7 +2164,7 @@
     return info;
   }
 
-  /** 样式表缺失只大声报一次，避免轮询刷屏。 */
+  /** A missing stylesheet is reported loudly only once, so polling does not spam the console. */
   var warnedNoCss = false;
   function warnIfCssMissing() {
     if (warnedNoCss) return;
@@ -1959,32 +2172,39 @@
     if (info.loaded) return;
     warnedNoCss = true;
     try {
-      console.warn('[theme-studio] 样式表 neko-theme-studio.css 未加载：CSS 变量已经注入，' +
-        '但没有任何规则去使用它们，所以外观不会变化。' +
-        '\n  多半是模板补丁没打上（install.ps1 的 §C），或 /static/css/neko-theme-studio.css 没复制到 static 目录。' +
-        '\n  自查：在应用窗口执行 NekoThemeStudio.diagnose() 看 cssLoaded。');
+      console.warn('[theme-studio] Stylesheet neko-theme-studio.css is not loaded: CSS variables were injected, ' +
+        'but no rule uses them, so nothing will change visually.' +
+        '\n  Most likely the template patch was not applied (install.ps1 §C), or /static/css/neko-theme-studio.css was not copied into the static directory.' +
+        '\n  To check: run NekoThemeStudio.diagnose() in the app window and look at cssLoaded.');
     } catch (e) { /* ignore */ }
   }
 
   /**
-   * 样式表新鲜度自愈（1.4.0）。
+   * Stylesheet freshness self-healing (1.4.0).
    *
-   * 模板里的 <link href="/static/css/neko-theme-studio.css?v=<asset>-<css sha8>">
-   * 会随每次部署变化，但**已经打开的窗口**不会重新加载页面：HTTP 头是
-   * max-age=3600，渲染器还会再缓存一份。于是插件重启、CSS 已更新，用户看到的
-   * 仍是旧规则 —— 这正是「面板里改了色，本体没反应」乃至「旧版的 bug 继续
-   * 生效」的系统性原因（旧版把 AI 文字色挂在无作用域的 .message-block-* 上，
-   * 用户即使已经部署了新 CSS，窗口里跑的还是旧表，串色照旧）。
+   * The template's <link href="/static/css/neko-theme-studio.css?v=<asset>-<css sha8>">
+   * changes with every deployment, but **already-open windows** do not reload the
+   * page: the HTTP header is max-age=3600 and the renderer caches another copy. So
+   * after a restart with updated CSS the user still sees old rules; this is the
+   * systemic cause of "changed a colour in the panel, the app did not react" and
+   * even "old bugs keep happening" (the old version hung the AI text colour on the
+   * unscoped .message-block-*, and even after deploying the new CSS the window
+   * still ran the old sheet, so colours kept bleeding).
    *
-   * 做法：用 cache:'reload' 直接向服务端要当前文件，把它解析成一张构造样式表
-   * 并与页面里已生效的那张比「规则数 + 规则文本长度」签名；不一致说明页面里的
-   * 是旧的 → 把 link 的 href 换成一个带新查询串的 URL 强制换表。签名一致时不动
-   * （正常加载零额外开销，也不会闪一下）。任何一步失败都静默降级。
+   * Approach: fetch the current file from the server with cache:'reload', parse it
+   * into a constructed stylesheet, and compare a "rule count + rule text length"
+   * signature against the sheet active on the page; a mismatch means the page's
+   * sheet is old -> swap the link href for a URL with a new query string to force a
+   * reload. Nothing happens when signatures match (zero extra cost on a normal
+   * load, no flicker). Any failing step degrades silently.
    */
-  // 自愈不能只做一次。这个函数原来用 `sheetChecked` 守成一次性：启动那一刻对不上
-  // 就换表，之后再也不看。但「已经打开的窗口」才是最常见的受害者 —— 用户开着窗口
-  // 时插件被更新，页面里的表永远是旧的，而 1500ms 的调色轮询照样在跑、变量照样在
-  // 更新，于是面板显示成功、窗口纹丝不动。现在改成轮询里按 SHEET_CHECK_MS 节流复检。
+  // Self-healing cannot run only once. This function used to be guarded as
+  // one-shot by `sheetChecked`: swap if mismatched at startup, never look again.
+  // But already-open windows are the most common victims: the plugin gets updated
+  // while the window is open, the page's sheet stays old forever, yet the 1500ms
+  // palette poll keeps running and variables keep updating, so the panel shows
+  // success and the window does not change. Now it is re-checked from the poll,
+  // throttled by SHEET_CHECK_MS.
   var SHEET_CHECK_MS = 15000;
   var lastSheetCheckAt = 0;
   var sheetSwapCount = 0;
@@ -1993,15 +2213,17 @@
       var rules = sheet.cssRules || [];
       var total = 0;
       for (var i = 0; i < rules.length; i++) total += (rules[i].cssText || '').length;
-      // 用「真实样式规则条数 + 全部规则文本长度」做签名：只数顶层时，整表被
-      // @layer 包起来会让条数恒为 1，届时签名只剩文本长度一半信息，换表检测
-      // 会变钝。countStyleRules 会穿透分组规则，签名对包 layer 与不包都可比。
+      // Signature = "real style rule count + total rule text length": counting
+      // only the top level, wrapping the whole sheet in @layer makes the count
+      // always 1, leaving only the text-length half of the signature and dulling
+      // swap detection. countStyleRules descends into grouping rules, so the
+      // signature is comparable whether or not a layer wraps the sheet.
       return countStyleRules(sheet) + ':' + total;
     } catch (e) { return null; }
   }
 
-  function refreshStaleStylesheet(force) {    // 节流：轮询里每 15s 最多复检一次，避免每次心跳都去 fetch 一遍。
-    // force=true（启动时）跳过节流。
+  function refreshStaleStylesheet(force) {    // Throttle: re-check at most every 15s from the poll, not a fetch on every heartbeat.
+    // force=true (at startup) skips the throttle.
     var now = Date.now();
     if (!force && now - lastSheetCheckAt < SHEET_CHECK_MS) return;
     lastSheetCheckAt = now;
@@ -2020,10 +2242,12 @@
       if (!/^https?:/i.test(abs)) return;
     } catch (e) { return; }
 
-    // v0.7.0：先看 theme.json 给的指纹。页面 href 里本来就带 -<css8>（模板补丁写的），
-    // 和磁盘指纹一比就知道要不要动 —— 一致就零下载返回，不一致只换 hash 段让浏览器
-    // 按新 URL 取新文件。只有「页面 href 里没有 hash 段」（老模板）才退回下面的
-    // 下载 + 签名比对。
+    // v0.7.0: check the fingerprint from theme.json first. The page href already
+    // carries -<css8> (written by the template patch), so comparing it with the
+    // on-disk fingerprint tells whether to act: equal -> return with zero download;
+    // different -> only swap the hash segment so the browser fetches the new file at
+    // the new URL. Only when the page href has no hash segment (old template) does it
+    // fall back to the download + signature comparison below.
     if (assetMeta.css8) {
       var pageHash = readSheetHash(href);
       if (pageHash === assetMeta.css8) return;
@@ -2033,15 +2257,15 @@
           sheetSwapCount += 1;
           link.setAttribute('href', swapped);
           try {
-            console.warn('[theme-studio] 样式表不是当前版本（页面 ' + pageHash + ' → 磁盘 ' +
-              assetMeta.css8 + '），已换表（第 ' + sheetSwapCount + ' 次）。');
+            console.warn('[theme-studio] Stylesheet is not the current version (page ' + pageHash + ' -> disk ' +
+              assetMeta.css8 + '), swapped (swap #' + sheetSwapCount + ').');
           } catch (e5) { /* ignore */ }
           return;
         }
       }
     }
 
-    // 找到页面里已经生效的那张表（href 含同名文件即可）。
+    // Find the sheet already active on the page (any href containing the file name).
     var loaded = null;
     try {
       var sheets = document.styleSheets || [];
@@ -2053,7 +2277,8 @@
     var loadedSig = sheetSignature(loaded);
     if (!loadedSig) return;
 
-    // 构造样式表：Chromium 73+ 支持。解析失败就放弃自愈，绝不影响既有样式。
+    // Constructed stylesheets: supported in Chromium 73+. If parsing fails, give up
+    // self-healing; never affect existing styles.
     var probe = null;
     try { probe = new window.CSSStyleSheet(); } catch (e) { return; }
 
@@ -2065,42 +2290,50 @@
       try { probe.replaceSync(css); } catch (e) { return; }
       var serverSig = sheetSignature(probe);
       if (!serverSig || serverSig === loadedSig) return;
-      // 服务端的表与页面上生效的不是同一份（页面是旧的）→ 换表。
-      // 先把上一次换表留下的 nts-refresh 参数剥掉再拼，否则每换一次 URL 就长一截。
+      // The server's sheet differs from the one active on the page (the page is
+      // old) -> swap. Strip the nts-refresh param left by the previous swap before
+      // appending, otherwise the URL grows with every swap.
       var base = abs.replace(/([?&])nts-refresh=\d+/g, '').replace(/[?&]$/, '');
       var sep = base.indexOf('?') === -1 ? '?' : '&';
       var busted = base + sep + 'nts-refresh=' + Date.now();
       sheetSwapCount += 1;
       link.setAttribute('href', busted);
       try {
-        console.warn('[theme-studio] 页面里的 neko-theme-studio.css 与服务器上的不一致（窗口打开后插件更新过），' +
-          '已强制换表（第 ' + sheetSwapCount + ' 次）。');
+        console.warn('[theme-studio] neko-theme-studio.css on the page differs from the server copy (updated after the window opened), ' +
+          'forced a swap (swap #' + sheetSwapCount + ').');
       } catch (e4) { /* ignore */ }
-    })['catch'](function () { /* 静默降级 */ });
+    })['catch'](function () { /* degrade silently */ });
   }
 
   /**
-   * 磁盘上的加载器是否比本实例新？新则重载本页面，让新脚本接管。
+   * Is the loader on disk newer than this instance? If so, reload the page so the
+   * new script takes over.
    *
-   * 为什么必须重载而不是热替换：本脚本是一个已执行的 IIFE，闭包里的
-   * NON_COLOR_VARS 白名单、正则与函数全被冻结。插件新增一个长度类变量后，
-   * 旧实例会把它当颜色拒掉（`log('reject value', ...)` 只在 DEBUG 下可见），
-   * 门控属性永不设置，于是「面板显示已应用、窗口毫无变化」。
-   * 这正是用户反复遇到的「改了不生效」的根因，而且无法靠 CSS 侧补救 ——
-   * 门控属性由本脚本写入，旧脚本不认识新变量就永远不会写。
+   * Why reload instead of hot-swapping: this script is an already-executed IIFE,
+   * and the NON_COLOR_VARS whitelist, regexes and functions in its closure are
+   * frozen. After a new length-type variable is added, the old instance rejects it
+   * as a colour (`log('reject value', ...)` is only visible under DEBUG), the gate
+   * attribute is never set, so "the panel shows applied, the window does not
+   * change". This is the root cause of the recurring "changes do not take effect",
+   * and the CSS side cannot fix it: gate attributes are written by this script, and
+   * an old script that does not know a new variable will never write them.
    *
-   * 安全阀：sessionStorage 记录「触发重载时正在运行的版本」。重载成功后本实例的
-   * SCRIPT_VERSION 变成新版本，与记录不再相等，于是下一轮心跳照常比对 —— 这样
-   * 才可能连续升级多次（1.4.2 → 1.5.0 → 1.5.2 → …）。只有在「重载了却仍然拿回
-   * 同一个旧脚本」（HTTP 缓存没绕开）时两者才会相等，此时停下，避免无限刷新。
-   * 另外两次尝试至少间隔 SELF_UPGRADE_MIN_INTERVAL_MS。
+   * Safety valve: sessionStorage records "the version running when the reload was
+   * triggered". After a successful reload this instance's SCRIPT_VERSION is the new
+   * version and no longer equals the record, so the next heartbeat compares as
+   * usual; this makes several consecutive upgrades possible (1.4.2 -> 1.5.0 ->
+   * 1.5.2 -> ...). They are only equal when "reloaded but got the same old script
+   * back" (HTTP cache not bypassed), and then it stops to avoid endless reloads.
+   * Also, two attempts are at least SELF_UPGRADE_MIN_INTERVAL_MS apart.
    */
-  // ------------------------------------------------- 资源指纹（v0.7.0）
-  // theme.json 现在带 css_sha8 / loader_version（后端 _asset_meta() 算的磁盘指纹）。
-  // 有了它们，两个自愈动作不必再「整份下载再判断」：
-  //   15s 一次下载 158KB CSS 只为比签名、60s 一次下载 126KB JS 只为读一行版本号 ——
-  //   每小时约 45MB/窗口，笔记本上白烧电。字段缺失（旧版插件）时下面的代码原样
-  //   退回旧的下载路径，行为不变。
+  // ------------------------------------------------- Asset fingerprints (v0.7.0)
+  // theme.json now carries css_sha8 / loader_version (on-disk fingerprints from the
+  // backend _asset_meta()). With them, the two self-healing actions no longer need
+  // "download the whole file, then decide":
+  //   downloading 158KB of CSS every 15s just to compare a signature, and 126KB of
+  //   JS every 60s just to read one version line, is about 45MB per window per
+  //   hour, wasting laptop battery. When the fields are missing (older plugin) the
+  //   code below falls back to the old download path unchanged.
   var assetMeta = { css8: '', loaderVersion: '' };
 
   function rememberAssetMeta(p) {
@@ -2116,12 +2349,15 @@
     return m ? m[1] : '';
   }
 
-  // 升级重载的全部「让路」判断与守卫（从 selfUpgradeIfNeeded 里抽出来的，
-  // 逻辑逐字未改 —— 两条路径都必须遵守：草稿不让路、流式输出让路、守卫最后落盘）。
-  // 内置之后加载器挂在 23 个页面上，其中大量是编辑器（情感映射、角色卡、记忆浏览…），
-  // 它们的未保存状态加载器无从得知。只有常驻的聊天 / 浮层窗口才自动重载：
-  // 这些窗口可能跨越一次后端升级一直开着，而它们的「草稿 / 流式输出」让路判断就在下面。
-  // 其余页面不自动重载，下次打开时模板里的 ?v= 自然换成新加载器。
+  // All the "yield" checks and the guard for upgrade reloads (extracted from
+  // selfUpgradeIfNeeded with logic unchanged; both paths must obey them: do not
+  // wipe drafts, yield to streaming output, persist the guard last).
+  // Built into the app, the loader is on 23 pages, many of them editors (emotion
+  // mapping, character cards, memory browser...) whose unsaved state the loader
+  // cannot know. Only the long-lived chat / overlay windows auto-reload: they may
+  // stay open across a backend upgrade, and their "draft / streaming" yield checks
+  // are below. Other pages do not auto-reload; the template's ?v= naturally picks
+  // up the new loader next time they open.
   var AUTO_RELOAD_PATHS = { '/subtitle': 1, '/toast': 1, '/agenthud': 1 };
   function autoReloadAllowed() {
     try {
@@ -2138,8 +2374,9 @@
         log('self-upgrade skipped: page may hold unsaved edits; new loader applies on next open');
         return;
       }
-      // 不能把用户正在输入的草稿刷掉：输入框有内容就先不重载，等下一轮心跳
-      // （节流 60s）再试。同理会话正在流式输出时也让路，避免打断回复。
+      // Must not wipe the draft the user is typing: if the input has content, skip
+      // the reload and retry on the next heartbeat (throttled to 60s). Likewise
+      // yield while a reply is streaming, so it is not interrupted.
       try {
         var ta = document.querySelector('textarea.composer-input, #textInputBox');
         if (ta && ta.value && String(ta.value).trim()) {
@@ -2151,17 +2388,20 @@
           return;
         }
       } catch (e8) { /* ignore */ }
-      // 存「正要离开的版本 + 现在」：重载后新实例的 SCRIPT_VERSION 变成 remote，
-      // 与记录的 gVer 不等，于是下一轮照常比对（这是 1.5.0 卡死的修复点）；
-      // 若重载后版本没变（缓存没绕开），则靠冷却期兜底，不会永久锁死。
-      // 注意：这一行必须在所有「让路」判断之后 —— 以前写在最前面，一旦因为草稿或
-      // 流式输出让路，守卫就已经落盘，冷却期 10 分钟内不会再尝试升级。
+      // Store "the version we are leaving + now": after the reload the new
+      // instance's SCRIPT_VERSION becomes remote, which differs from the recorded
+      // gVer, so the next round compares as usual (this is the fix for the 1.5.0
+      // lockup); if the version did not change after the reload (cache not
+      // bypassed), the cooldown is the fallback, so it never locks permanently.
+      // Note: this line must come after all the "yield" checks. It used to be first,
+      // so yielding for a draft or streaming output had already persisted the guard,
+      // and no upgrade was attempted again within the 10-minute cooldown.
       try {
         window.sessionStorage.setItem(SELF_UPGRADE_GUARD_KEY, SCRIPT_VERSION + '@' + now);
       } catch (e5) { /* ignore */ }
       try {
-        console.warn('[theme-studio] 检测到加载器已升级：本窗口 ' + SCRIPT_VERSION +
-          ' → ' + remote + '，正在重新加载本页面以接管（避免新变量被旧脚本丢弃）。');
+        console.warn('[theme-studio] Loader upgrade detected: this window ' + SCRIPT_VERSION +
+          ' -> ' + remote + ', reloading the page to take over (so new variables are not dropped by the old script).');
       } catch (e6) { /* ignore */ }
       try { window.location.reload(); } catch (e7) { /* ignore */ }
   }
@@ -2176,14 +2416,16 @@
       var gPart = String(guard).split('@');
       var gVer = gPart[0] || '';
       var gAt = parseInt(gPart[1] || '0', 10) || 0;
-      // 同一个版本 + 冷却期内 = 刚重载过却还是这个脚本（缓存没绕开），先停。
-      // 冷却期过后允许再试一次，避免一次缓存失误永久锁死升级能力。
+      // Same version + within cooldown = just reloaded but still got this script
+      // (cache not bypassed), so stop for now. After the cooldown one more try is
+      // allowed, so a single cache miss cannot lock upgrades permanently.
       if (gVer === SCRIPT_VERSION && (now - gAt) < SELF_UPGRADE_COOLDOWN_MS) return;
     }
 
-    // v0.7.0：theme.json 里已经带 loader_version —— 一致就是零下载返回；不一致就
-    // 直接按「新版本已就绪」处理，不必再下载 126KB 的 JS 去正则读一行版本号。
-    // 字段缺失（旧版插件）时下面原样走下载路径。
+    // v0.7.0: theme.json already carries loader_version: equal -> return with zero
+    // download; different -> treat it as "new version ready" directly, no need to
+    // download 126KB of JS to regex out one version line. When the field is missing
+    // (older plugin) the download path below runs unchanged.
     if (assetMeta.loaderVersion && assetMeta.loaderVersion === SCRIPT_VERSION) return;
     if (assetMeta.loaderVersion) {
       selfUpgradeAt = now;
@@ -2203,7 +2445,7 @@
     try {
       url = new URL(src, window.location.href).href;
       if (!/^https?:/i.test(url)) return;
-      // 加时间戳绕开 HTTP 缓存，否则可能拿回同一份旧脚本。
+      // Add a timestamp to bypass the HTTP cache, otherwise the same old script may come back.
       url = url.replace(/([?&])nts-upgrade=\d+/g, '').replace(/[?&]$/, '');
       url += (url.indexOf('?') === -1 ? '?' : '&') + 'nts-upgrade=' + now;
     } catch (e3) { return; }
@@ -2215,18 +2457,20 @@
       return res.text();
     }).then(function (code) {
       if (!code) return;
-      // 比版本号：只有服务端脚本确实更新了才重载，否则会无谓刷新页面。
+      // Compare versions: only reload if the server script really changed,
+      // otherwise the page would reload for nothing.
       var m = /SCRIPT_VERSION\s*=\s*'([^']+)'/.exec(code);
       var remote = m ? m[1] : '';
       if (!remote || remote === SCRIPT_VERSION) return;
       reloadForUpgrade(remote, now);
-    })['catch'](function () { /* 静默降级：拿不到就不升级，行为与旧版一致 */ });
+    })['catch'](function () { /* degrade silently: if unavailable, do not upgrade; same behaviour as before */ });
   }
 
   /**
-   * 当前外观模式。应用的主窗口用 html[data-theme="dark"] 切换暗色
-   * （resources/bin/static/theme-manager.js），部分页面同时挂 .dark 类，
-   * 两者都认；都没有时退回系统配色。
+   * Current appearance mode. The app's main window switches to dark via
+   * html[data-theme="dark"] (resources/bin/static/theme-manager.js), and some pages
+   * also add a .dark class; both are recognised. If neither is present, fall back
+   * to the system colour scheme.
    */
   function currentMode() {
     try {
@@ -2243,10 +2487,12 @@
   }
 
   /**
-   * 「当前模式这一组是空的、另一组却有值」—— 这是最常见的「面板显示已应用、
-   * 本体一点没变」：亮色与暗色两组各管各的（已拍板的需求），用户只配了亮色
-   * 而应用正跑在暗色，于是变量注入了、门控也打上了，可视区域却没有任何规则命中。
-   * 每种组合只提醒一次，切换亮/暗时会重新检查。
+   * "The current mode's group is empty while the other group has values": the most
+   * common "panel shows applied, the app did not change at all". Light and dark
+   * groups are independent (a settled requirement); the user configured only light
+   * while the app runs in dark, so variables are injected and gates set, but no rule
+   * matches in the visible area. Each combination is warned once; switching
+   * light/dark re-checks.
    */
   var warnedMode = {};
   function warnIfModeUncovered(nLight, nDark) {
@@ -2257,12 +2503,12 @@
     var key = mode + ':' + other;
     if (warnedMode[key]) return;
     warnedMode[key] = 1;
-    var zh = (mode === 'dark') ? '暗色' : '亮色';
-    var otherZh = (mode === 'dark') ? '亮色' : '暗色';
+    var zh = (mode === 'dark') ? 'dark' : 'light';
+    var otherZh = (mode === 'dark') ? 'light' : 'dark';
     try {
-      console.warn('[theme-studio] 当前是' + zh + '模式，但调色板里' + zh + '这一组是空的' +
-        '（' + otherZh + '组有 ' + other + ' 项）。两组互不影响，只配一组不会改变另一组的外观 —— ' +
-        '请在主题工坊面板切到「' + zh + '」页签再配一遍，或把应用切到' + otherZh + '模式看看。');
+      console.warn('[theme-studio] The app is in ' + zh + ' mode, but the palette\'s ' + zh + ' group is empty' +
+        ' (the ' + otherZh + ' group has ' + other + ' entries). The groups are independent; configuring one does not change the other\'s appearance. ' +
+        'Switch to the "' + zh + '" tab in the Theme Studio panel and configure it too, or switch the app to ' + otherZh + ' mode.');
     } catch (e) { /* ignore */ }
   }
 
@@ -2274,12 +2520,14 @@
     }
     return buf.join(';');
   }
-  // ------------------------------------------- 高级材质层（v1.6.0）
+  // ------------------------------------------- Advanced material layer (v1.6.0)
   //
-  // 材质变量由后端 materials.compile_materials() 生成：白名单参数、范围钳制、
-  // 枚举收敛，且每条都带 --nts-mt- 前缀。这里只做形态体检（前缀 / 长度 /
-  // 不能含分号花括号注释），不重跑 sanitizeVars —— 后者按"调色板颜色"语义校验，
-  // gradient、多层 shorthand、关键字 none 会被逐条判非法，材质会整体丢失。
+  // Material variables are generated by the backend materials.compile_materials():
+  // whitelisted parameters, clamped ranges, normalised enums, all with the
+  // --nts-mt- prefix. Only a shape check is done here (prefix / length / no
+  // semicolons, braces or comments); sanitizeVars is not re-run, since it validates
+  // with "palette colour" semantics and would reject gradients, multi-layer
+  // shorthands and the keyword none one by one, losing the material entirely.
   var MT_VAR_PREFIX = '--nts-mt-';
   var MT_ATTR = 'data-nts-mt';
   var MT_QUALITY_ATTR = 'data-nts-mt-quality';
@@ -2289,7 +2537,7 @@
   var mtFollow = 0;
   var mtDelay = 60;
 
-  /** 值形态体检：阻断 CSS 注入（分号 / 花括号 / 尖括号 / 注释起始）。 */
+  /** Value shape check: blocks CSS injection (semicolons / braces / angle brackets / comment openers). */
   function mtValueOk(v) {
     if (typeof v !== 'string') return false;
     if (!v || v.length > MT_MAX_VALUE) return false;
@@ -2298,7 +2546,7 @@
     return true;
   }
 
-  /** 取一份材质变量表（mode = light | dark），非法项静默丢弃。 */
+  /** Get one material variable map (mode = light | dark); invalid entries are silently dropped. */
   function materialVarsOf(p, mode) {
     var out = {};
     var src = p && p.material_vars;
@@ -2307,7 +2555,8 @@
     if (!map || typeof map !== 'object') return out;
     for (var k in map) {
       if (!Object.prototype.hasOwnProperty.call(map, k)) continue;
-      // 变量名会被直接拼进 CSS 文本：只认完整的 --nts-mt-* 形状，不能只看前缀。
+      // Variable names are spliced directly into CSS text: require the full
+      // --nts-mt-* shape, not just the prefix.
       if (String(k).indexOf(MT_VAR_PREFIX) !== 0 || !/^--nts-mt-[a-z0-9-]{1,80}$/.test(k)) continue;
       var v = map[k];
       if (typeof v !== 'string') continue;
@@ -2326,7 +2575,7 @@
     return n;
   }
 
-  /** 撤掉材质门控属性与指针变量（= 材质完全不起作用）。 */
+  /** Remove material gate attributes and pointer variables (= materials fully inactive). */
   function clearMaterialAttrs() {
     var de = document.documentElement;
     if (!de) return;
@@ -2343,12 +2592,16 @@
   }
 
   /**
-   * 曾经的「聊天窗内层让位」：调色板层用 !important 给 #react-chat-window-root 上实色，
-   * 不带层的材质规则赢不了，只能写内联 !important。1.6.45 起材质规则在
-   * @layer nts-theme.materials 里，已经稳赢调色板层（MATERIAL_CSS 里有专门的
-   * #react-chat-window-root 规则，紧凑模式也有对应的透明规则），内联覆盖反而会压过
-   * 紧凑 /chat 的透明外层，让胶囊背后多出一块底色。
-   * 所以现在只做清理：撤掉旧版本可能留下的内联值，不再写入。参数保留以兼容调用点。
+   * Formerly "make the chat window inner root step aside": the palette layer gives
+   * #react-chat-window-root a solid colour with !important, which unlayered
+   * material rules could not beat, so an inline !important was written. Since
+   * 1.6.45 the material rules live in @layer nts-theme.materials and reliably beat
+   * the palette layer (MATERIAL_CSS has a dedicated #react-chat-window-root rule,
+   * and compact mode has a matching transparency rule); the inline override would
+   * instead beat the transparent outer layer of compact /chat and leave an extra
+   * patch of base colour behind the capsule.
+   * So now this only cleans up: removes inline values older versions may have left,
+   * never writes. The parameter is kept for call-site compatibility.
    */
   function applyRootBypass(_on) {
     var el = document.querySelector ? document.querySelector('#react-chat-window-root') : null;
@@ -2359,9 +2612,10 @@
   }
 
   /**
-   * 把 material_attrs 同步到 documentElement。
-   * hasVars 为假表示材质未启用 / 无变量 —— 此时必须撤属性，让 MATERIAL_CSS 零匹配。
-   * @param {Object<string,string>} attrs 键名即属性名（data-nts-mt / -quality / -preset）
+   * Mirror material_attrs onto documentElement.
+   * hasVars false means materials are off / have no variables; the attributes must
+   * then be removed so MATERIAL_CSS matches nothing.
+   * @param {Object<string,string>} attrs keys are attribute names (data-nts-mt / -quality / -preset)
    * @param {boolean} hasVars
    */
   function syncMaterialAttrs(attrs, hasVars) {
@@ -2374,7 +2628,8 @@
       if (typeof v === 'string' && v) de.setAttribute(keys[i], v);
       else de.removeAttribute(keys[i]);
     }
-    // 指针追光的两个参数在变量里，读一次缓存，避免每次 pointermove 触发重算。
+    // The two pointer light-tracking parameters live in variables; read and cache
+    // them once so each pointermove does not trigger a recalc.
     if (window.getComputedStyle) {
       var cs = window.getComputedStyle(de);
       var follow = parseFloat(cs.getPropertyValue('--nts-mt-mouse-follow'));
@@ -2386,9 +2641,10 @@
   }
 
   /**
-   * 指针追光：把鼠标位置写进 --nts-mt-mx / -my（百分比）。
-   * 只在鼠标跟随强度 > 0 时写，且按 --nts-mt-mouse-delay 节流，
-   * 大量 pointermove 不会拖动主线程（rAF 合并最后一帧）。
+   * Pointer light tracking: write the mouse position into --nts-mt-mx / -my
+   * (percentages). Only written when mouse-follow strength > 0, throttled by
+   * --nts-mt-mouse-delay, so floods of pointermove do not drag the main thread
+   * (rAF coalesces to the last frame).
    */
   function initMaterialPointer() {
     if (mtPointerBound) return;
@@ -2412,8 +2668,9 @@
         var cy = Math.max(0, Math.min(100, y));
         set('--nts-mt-mx', cx.toFixed(2) + '%');
         set('--nts-mt-my', cy.toFixed(2) + '%');
-        // 光照方向：从面板中心指向指针，sheen 与边缘环带的角度跟着转，
-        // 玻璃才有被光「照到」的方向感（不是固定 162deg 的死高光）。
+        // Light direction: from the panel centre toward the pointer; the sheen and
+        // edge band angles rotate with it, so the glass feels directionally "lit"
+        // (instead of a dead highlight fixed at 162deg).
         var ang = Math.atan2(cy - 50, cx - 50) * 180 / Math.PI;
         if (ang < 0) ang += 360;
         set('--nts-mt-light-angle', ang.toFixed(1) + 'deg');
@@ -2423,31 +2680,37 @@
   }
 
   /**
-   * 应用一个调色板。幂等：内容不变则不写 DOM。
+   * Apply a palette. Idempotent: the DOM is not written if content is unchanged.
    * @param {{vars?:Object,dark_vars?:Object,enabled?:boolean,name?:string,updated_at?:string}} p
    */
-  /* ---------------------------------------------------------------- 诊断上报
-   * 「材质真的注入页面了吗」从宿主外部只能靠推断 —— 而推断不算证据。
-   * 这里把加载器实际观察到的状态回传给插件 entry loader_report，落盘成
-   * static/diagnostics.json：规则数 / 门控属性 / 变量数 / 背板能力 / 指针绑定。
-   * 一分钟最多一次、失败完全静默：诊断永远不能影响主题本身。 */
+  /* ---------------------------------------------------------------- Diagnostic reporting
+   * "Was the material really injected into the page?" can only be inferred from
+   * outside the host, and inference is not evidence. This sends the state the
+   * loader actually observed back to the plugin entry loader_report, persisted as
+   * static/diagnostics.json: rule count / gate attributes / variable count /
+   * backplate capability / pointer binding. At most once a minute, failures fully
+   * silent: diagnostics must never affect the theme itself. */
   var reportAt = 0;
-  // 写入口只对本机开放：远程 / 反代窗口拿到 401/403 后本会话不再上报，
-  // 否则每次重试都会在服务端刷一条越权告警。
+  // The write endpoint is local-only: once a remote / reverse-proxied window gets
+  // 401/403 this session stops reporting, otherwise every retry would log an
+  // unauthorised-access warning on the server.
   var reportBlocked = false;
   function reportRuntime(force) {
     try {
       if (reportBlocked) return;
       var now = Date.now();
       if (!force && reportAt && now - reportAt < 60000) return;
-      // 节流窗口只在**成功写进磁盘后**才占用（见下方 then/catch）：初始化阶段
-      // 插件服务常常比页面晚就绪，第一次必然失败，旧写法把窗口消耗在失败上，
-      // 整个会话就再也等不到第二次上报。
+      // The throttle window is only consumed **after a successful write to disk**
+      // (see then/catch below): during initialisation the service is often ready
+      // later than the page, so the first attempt always fails; the old code spent
+      // the window on that failure and the session never got a second report.
 
-      // v1.6.23：还没真正应用过任何主题就上报，只会写一份「css_len=0 / focus_rules=0」
-      // 的快照，自检读到它会假红（install 之后插件服务重启的那几秒最容易撞上）。
-      // 判据是 lastApply.at —— 正常应用、空调色板、显式禁用三条路径都会写它，
-      // 所以「什么都没应用」不会上报，「已应用」照样能被证明。
+      // v1.6.23: reporting before any theme was actually applied only writes a
+      // "css_len=0 / focus_rules=0" snapshot, which the self-check reads as a false
+      // red (most likely in the few seconds the service restarts after install).
+      // The criterion is lastApply.at: normal apply, empty palette and explicit
+      // disable all write it, so "nothing applied" is not reported while "applied"
+      // can still be proven.
       if (!lastApply || !lastApply.at) {
         reportAt = 0;
         return;
@@ -2495,12 +2758,13 @@
       var apply = lastApply || {};
       var issues = [];
       if (lastError) issues.push(String(lastError).slice(0, 300));
-      if (apply.mt > 0 && !attrs['data-nts-mt']) issues.push('材质变量已注入但门控属性缺失');
-      if (attrs['data-nts-mt'] && rules <= 0) issues.push('门控属性在但 style 规则数为 0');
-      if (!backdrop) issues.push('运行环境不支持 backdrop-filter，材质会走降级背景');
-      // 值级自证：只数「注入几个变量」无法证明窗口里的值是对的（镜像过期、
-      // 门控没打上、变量被覆盖都会让计数照常为正）。读 computed style 采样，
-      // 一眼就能看出环带 / 折光线 / 色散 / 漂移到底有没有落地。
+      if (apply.mt > 0 && !attrs['data-nts-mt']) issues.push('material variables injected but the gate attribute is missing');
+      if (attrs['data-nts-mt'] && rules <= 0) issues.push('gate attribute present but the style rule count is 0');
+      if (!backdrop) issues.push('backdrop-filter is not supported in this environment; materials use the fallback background');
+      // Value-level proof: counting "how many variables were injected" cannot prove
+      // the values in the window are right (a stale mirror, missing gates or
+      // overridden variables all keep the count positive). Sampling computed style
+      // shows at a glance whether rim / refraction lines / dispersion / drift landed.
       var samples = {};
       try {
         var cs = window.getComputedStyle ? window.getComputedStyle(de) : null;
@@ -2514,8 +2778,9 @@
           }
         }
       } catch (e3) { samples = {}; }
-      // 组件级材质是否真的落到元素上：组件别名只在组件选择器命中时才会继承下来，
-      // 全局变量有值不代表组件覆盖在生效。
+      // Whether per-component material really reaches the element: component
+      // aliases are only inherited when the component selector matches, so a value
+      // on the global variable does not mean the component override is in effect.
       try {
         var compEl = null;
         var compHit = '';
@@ -2540,9 +2805,10 @@
             }
           }
         }
-      } catch (e4) { /* 采样失败不影响上报 */ }
-      // v1.6.24：元素级自证 —— 只证明「root 上有变量」不够。用户说「没变化」时，
-      // 必须能回答「这个元素最终算出来的 background-color / backdrop-filter 是什么」。
+      } catch (e4) { /* sampling failure does not affect the report */ }
+      // v1.6.24: element-level proof: proving "the variables are on root" is not
+      // enough. When the user says "nothing changed", we must be able to answer
+      // "what background-color / backdrop-filter did this element end up computing".
       var pageTheme = '';
       var elemSamples = {};
       try {
@@ -2568,7 +2834,8 @@
           elemSamples['__inline_important'] = inlineImp.join(',') || '(none)';
         }
       } catch (e6) { elemSamples = {}; }
-      // v1.6.28：谁在遮住玻璃 —— 把聊天窗内层元素的匹配规则与自身样式采出来。
+      // v1.6.28: who is covering the glass: sample the matching rules and own
+      // styles of the chat window's inner element.
       var rootInfo = {};
       try {
         var rootEl = document.querySelector ? document.querySelector('#react-chat-window-root') : null;
@@ -2611,9 +2878,10 @@
           rootInfo.hits = hits.join(' || ');
         }
       } catch (e7) { rootInfo = {}; }
-      // v1.6.25：分层采样。聊天窗的可见玻璃可能在 .chat-window 或
-      // .compact-chat-surface-frame 上，而不是 #react-chat-window-shell；
-      // 同时数 CSSOM 里命中该元素的规则条数，区分「规则没进样式表」和「进了但没赢」。
+      // v1.6.25: per-layer sampling. The chat window's visible glass may be on
+      // .chat-window or .compact-chat-surface-frame rather than
+      // #react-chat-window-shell; also count CSSOM rules matching the element to
+      // tell "rule never made it into the sheet" from "it did but lost".
       var elem2 = {};
       try {
         var probes2 = ['#react-chat-window-root', '.chat-body', '.chat-surface', '.chat-window',
@@ -2733,8 +3001,8 @@
         appliedAt: apply.at ? new Date(apply.at).toISOString() : '',
         errors: issues
       };
-      // 本体内置：报告直接 POST 给本体自己的入口（同源，不需要 CSRF 令牌，
-      // 也不再走 /runs 的 run_id 轮询）。
+      // Built into the app: the report is POSTed straight to the app's own endpoint
+      // (same-origin, no CSRF token needed, no more /runs run_id polling).
       fetchWithTimeout(API_BASE + '/run/loader_report', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2748,7 +3016,8 @@
         if (!res || !res.ok) throw new Error('report HTTP ' + (res ? res.status : '?'));
         reportAt = now;
       }).catch(function () {
-        // 失败后 15s 再试（不是下一拍 1.5s）：服务没就绪时不要每拍打一次。
+        // Retry 15s after a failure (not on the next 1.5s tick): do not hit the
+        // service every tick while it is not ready.
         reportAt = now - 45000;
       });
     } catch (e) { /* ignore */ }
@@ -2757,9 +3026,11 @@
   function applyPalette(p) {
     if (!p || typeof p !== 'object') return false;
 
-    // 背景图预热闸门（v1.5.21）：主题真的换了 / 首次应用，而新图还没就绪时，
-    // 先把图预热再改 CSS，避免「旧图撤掉、新图未到」的空白闪烁。
-    // 预热完成后会带着同一份调色板再进本函数一次（那时 warmedImages 已就位）。
+    // Background image warm-up gate (v1.5.21): when the theme really changed / on
+    // first apply, and new images are not ready yet, warm them before changing the
+    // CSS, avoiding the blank flash of "old image gone, new image not arrived".
+    // After warm-up this function is re-entered with the same palette (by then
+    // warmedImages is populated).
     if (p.enabled !== false) {
       var warmKey = warmKeyOf(p);
       if (warmKey !== lastWarmKey) {
@@ -2772,9 +3043,11 @@
           if (warmingKey !== warmKey) {
             warmingKey = warmKey;
             warmPending = p;
-            // v1.5.23：每一次预热都有自己的票号。旧实现里 p1 的预热还没结束就来了
-            // p2，p1 的回调会把 warmPending（此时是 p2）直接 apply —— 而 p2 的图
-            // 一张都没预热，闪白照旧，只是换了张图闪。票号对不上就整包丢弃。
+            // v1.5.23: every warm-up has its own ticket. In the old implementation,
+            // if p2 arrived before p1's warm-up finished, p1's callback applied
+            // warmPending (now p2) directly, but none of p2's images were warmed,
+            // so it still flashed white, just with a different image. A mismatched
+            // ticket discards the whole callback.
             var warmToken = (warmSeq += 1);
             log('warming ' + warmUrls.length + ' background image(s) before applying');
             warmImages(warmUrls, function () {
@@ -2794,8 +3067,10 @@
       }
     }
 
-    // 走到这里就是要直接应用 p。若还有一份更早的调色板在等预热，它已经被 p 取代：
-    // 作废它的票号，否则预热完成时会把旧调色板再应用一遍（甚至把刚关掉的主题重新打开）。
+    // Reaching here means p is applied directly. If an earlier palette is still
+    // waiting on warm-up, p supersedes it: invalidate its ticket, otherwise when its
+    // warm-up finishes the old palette would be applied again (even re-enabling a
+    // theme that was just turned off).
     if (warmPending && warmPending !== p) {
       warmSeq += 1;
       warmPending = null;
@@ -2819,13 +3094,14 @@
     var dark = sanitizeVars(p.dark_vars);
     var nLight = Object.keys(light).length;
     var nDark = Object.keys(dark).length;
-    // 高级材质（v1.6.0）：材质是独立子树，与调色板变量并存。
+    // Advanced materials (v1.6.0): materials are an independent subtree that
+    // coexists with palette variables.
     var mtLight = materialVarsOf(p, 'light');
     var mtDark = materialVarsOf(p, 'dark');
     var nMt = countVars(mtLight) + countVars(mtDark);
 
     if (!nLight && !nDark && !nMt) {
-      // 空调色板 + 无材质 = 恢复原样
+      // Empty palette + no materials = restore the original look
       removeStyle();
       currentVersion = stampOf(p);
       lastApply = { light: 0, dark: 0, mt: 0, enabled: true, at: Date.now() };
@@ -2836,34 +3112,43 @@
     var previousStamp = currentVersion;
     var css = '';
     var l = declBlock(light);
-    // 亮色值必须限定在「非暗色」，否则只配了亮色时会渗进暗色模式
-    // （独立验证者反例 CE-B：:root{} 里的亮色值在暗色下依然生效）。
+    // Light values must be scoped to "not dark", otherwise a light-only palette
+    // leaks into dark mode (independent verifier counterexample CE-B: light values
+    // in :root{} still applied in dark mode).
     if (l) css += LIGHT_SCOPE + '{' + l + '}';
     var d = declBlock(dark);
     if (d) css += ':root[data-theme="dark"]{' + d + '}';
-    // 材质变量同样按亮/暗分块，与调色板共用一份 <style>。暗色表是全量的
-    // （暗色缺失时后端已用亮色铺满），所以不会出现"材质半边空"。
+    // Material variables are likewise split into light/dark blocks and share the
+    // palette's <style>. The dark map is complete (the backend fills missing dark
+    // values from light), so materials are never "half empty".
     var ml = declBlock(mtLight);
     if (ml) css += LIGHT_SCOPE + '{' + ml + '}';
     var md = declBlock(mtDark);
     if (md) css += ':root[data-theme="dark"]{' + md + '}';
 
     var el = styleEl();
-    // 探针始终放在最前面：它只用于 CSP 自检，不参与任何门控，也不影响原有变量。
-    // 液态玻璃静态层拼在最后：它是常量字符串、每条规则自带门控，和调色板变量
-    // 一起只写一次 textContent（lastAppliedCss / styleIntact / 去重逻辑都不变）。
-    // v1.6.0：材质层（MATERIAL_CSS）也是常量字符串，与玻璃层一起只写一次 textContent。
+    // The probe always goes first: it is only for the CSP self-check, takes part in
+    // no gating and does not affect existing variables. The liquid-glass static
+    // layer goes last: it is a constant string with each rule self-gated, written
+    // in one textContent together with the palette variables (lastAppliedCss /
+    // styleIntact / dedupe logic unchanged).
+    // v1.6.0: the material layer (MATERIAL_CSS) is also a constant string, written
+    // in the same single textContent as the glass layer.
     css = PROBE_CSS + css + '\n' + GLASS_CSS + '\n' + MATERIAL_CSS;
     if (el.textContent !== css) el.textContent = css;
     lastAppliedCss = css;
-    // 门控属性必须在样式生效前同步（同一帧内 setAttribute 与 <style> 内容变化
-    // 都会被合并进同一次样式重算，不会闪一下未门控的状态）。
+    // Gate attributes must be synced before styles take effect (setAttribute and
+    // <style> content changes in the same frame merge into one style recalc, so no
+    // ungated state flashes).
     setGates(light, dark);
-    // 材质门控属性：nMt 为 0 时撤掉 → MATERIAL_CSS 零匹配 → 应用保持原始外观。
+    // Material gate attributes: removed when nMt is 0 -> MATERIAL_CSS matches
+    // nothing -> the app keeps its original look.
     syncMaterialAttrs(p.material_attrs, nMt > 0);
-    // 主题真的换了（版本戳不同）才做切换过渡；首次应用/内容未变时不闪。
+    // Only transition when the theme really changed (different stamp); no flash on
+    // first apply or unchanged content.
     if (previousStamp && previousStamp !== stampOf(p)) flashThemeSwap();
-    // 玻璃材质层：绑定指针镜面高光 / 滚动流动（幂等；纯 CSS 变量写入，不改声明）
+    // Glass material layer: bind pointer specular highlight / scroll flow
+    // (idempotent; only writes CSS variables, never changes declarations)
     initGlassPointer();
     initMaterialPointer();
     probeStyleApplied();
@@ -2871,31 +3156,34 @@
     warnIfModeUncovered(nLight, nDark);
     currentVersion = stampOf(p);
     lastApply = { light: nLight, dark: nDark, mt: nMt, enabled: true, at: Date.now() };
-    // 应用成功后强制刷新一次自检快照：排查时最需要的正是「应用之后」的门控与
-    // 注入内容状态，若只在启动时抓一次，快照会是空的、看不出问题。
+    // Force a self-check snapshot refresh after a successful apply: what debugging
+    // needs most is the gate and injected-content state "after applying"; captured
+    // only at startup, the snapshot would be empty and show nothing.
     lastSnapAt = 0;
     persistSnapshot();
-    // 主题真的换了就立刻上报（绕过 60s 节流）：面板「运行状态」靠这份上报判断
-    // 「窗口到底应用了没有」，晚一分钟上报会让面板短时间说出与实际相反的结论
-    // —— 用户看到的现象就是「界面是默认的，面板写着上次那套主题」。
+    // Report immediately when the theme really changed (bypassing the 60s
+    // throttle): the panel's "runtime status" relies on this report to judge
+    // "has the window applied it", and reporting a minute late makes the panel
+    // briefly claim the opposite of reality; the user sees "the UI is default but
+    // the panel shows the previous theme".
     reportRuntime(!previousStamp || previousStamp !== stampOf(p));
     return true;
   }
 
-  // ---------------------------------------------------------------- 状态
+  // ---------------------------------------------------------------- State
 
   var currentVersion = null;
   var lastFetchAt = 0;
   var timer = null;
   var inflight = false;
-  /** 最近一次成功应用的摘要（诊断用）。 */
+  /** Summary of the last successful apply (for diagnostics). */
   var lastApply = null;
-  /** 最近一次拉取失败的原文 + 时间（诊断用）。 */
+  /** Raw text + time of the last fetch failure (for diagnostics). */
   var lastError = null;
   var lastErrorAt = 0;
-  /** 已经向控制台大声报过的错误，避免 1.5s 一次的轮询刷屏。 */
+  /** Error already reported loudly to the console, so the 1.5s poll does not spam. */
   var lastWarnedError = null;
-  /** 上次应用成功的调色板原文，用来识别「版本号没变但内容变了」。 */
+  /** Raw text of the last successfully applied palette, to detect "same version, changed content". */
   var lastRaw = null;
 
   function restoreFromCache() {
@@ -2915,25 +3203,31 @@
     try { safeSet(CACHE_KEY, JSON.stringify(p)); } catch (e) { /* ignore */ }
   }
 
-  // ------------------------------------------------- 失败可见性（原「服务自愈」段）
+  // ------------------------------------------------- Failure visibility (formerly the "service self-healing" section)
   //
-  // 插件时代这里是一整条唤醒插件服务的链路（csrf-token → /plugins/refresh →
-  // /plugin/<id>/start），因为加载器跑在本体窗口里、调色板却在另一个端口的插件
-  // 服务上，插件没启动时只能靠外部把服务拉活。本体内置后调色板就是本体自己的
-  // 路由：后端在、接口就在；后端不在，页面本身也打不开。因此这里只保留失败计数
-  // 与诊断字段，供面板「自检」卡片展示。
-  // 插件时代的「用户是否停用本插件」两条探测（/ui/disabled.json 与 /plugins 注册表）
-  // 在本体内置后失去意义：主题工坊不是一个可停用的插件，本体也没有插件注册表。
+  // In the plugin era this was a whole chain for waking the plugin service
+  // (csrf-token -> /plugins/refresh -> /plugin/<id>/start), because the loader ran
+  // in the app window while the palette lived on a plugin service on another port,
+  // and when the plugin was not running only an external kick could revive it.
+  // Built into the app, the palette is the app's own route: if the backend is up
+  // the endpoint is up; if not, the page itself cannot load. So only the failure
+  // counters and diagnostic fields are kept, for the panel's "self-check" card.
+  // The plugin era's two "has the user disabled this plugin" probes
+  // (/ui/disabled.json and the /plugins registry) are meaningless once built in:
+  // Theme Studio is not a disableable plugin and the app has no plugin registry.
   var reviveAt = 0;
   var reviveCount = 0;
   var reviving = false;
   var lastReviveError = null;
-  // 自愈退避的当前间隔（v0.1.11）：1.2s 起，每次失败 ×2，上限 30s；成功后复位。
+  // Current self-healing backoff interval (v0.1.11): starts at 1.2s, x2 per
+  // failure, capped at 30s; reset on success.
   var reviveDelay = REVIVE_BASE_DELAY_MS;
 
   /**
-   * 失败分类（保留给诊断与日志）：网络类失败说明后端没响应，非网络类失败说明
-   * 数据到了但不合法（JSON 坏了、契约不符）。本体内置后两者都只影响日志措辞。
+   * Failure classification (kept for diagnostics and logs): a network failure means
+   * the backend did not respond; a non-network failure means data arrived but was
+   * invalid (broken JSON, contract mismatch). Built into the app, both only affect
+   * log wording.
    */
   function isNetworkFailure(msg) {
     if (!msg) return false;
@@ -2945,33 +3239,37 @@
     return false;
   }
 
-  /** 自愈前置判断（保留旧名字）：只认网络类失败。 */
+  /** Self-healing precondition (old name kept): only network failures count. */
   function shouldRevive(msg) {
     return isNetworkFailure(msg);
   }
 
   /**
-   * 保留这个名字给所有旧调用点（fetchPalette 的失败分支、API.revive）。
-   * 本体内置后没有插件服务可唤醒，轮询本身就是重试机制。
+   * Name kept for all old call sites (fetchPalette's failure branch, API.revive).
+   * Built into the app there is no plugin service to wake; polling itself is the
+   * retry mechanism.
    * @param {string} msg
    */
-  function reviveService(msg) { /* no-op: 本体内置，无插件宿主可唤醒 */ }
+  function reviveService(msg) { /* no-op: built into the app, no plugin host to wake */ }
 
   /**
-   * 带超时的 fetch（v0.1.11 P0）。
-   * 原生 fetch 没有超时：插件端点假死（连接建立了但永不回包）时 Promise 永远
-   * pending，调用方的 inflight 锁就永远不释放 —— 1.5s 轮询被永久卡死，症状是
-   * 「面板改了色，窗口再也不更新，控制台全静默」。用 AbortController 在 8s 后中断，
-   * 并把中断统一成 'timeout <ms>' 错误，便于按「网络类失败」走自愈退避
-   * （与 JSON 解析 / 契约错误区分开，后者不该重启插件服务）。
+   * fetch with a timeout (v0.1.11 P0).
+   * Native fetch has no timeout: when the endpoint hangs (connection established
+   * but no response ever) the Promise stays pending, the caller's inflight lock is
+   * never released, and the 1.5s poll is stuck forever. Symptom: "changed a colour
+   * in the panel, the window never updates, the console is silent". AbortController
+   * aborts after 8s and the abort is normalised into a 'timeout <ms>' error so it is
+   * handled as a "network failure" with self-healing backoff (distinct from JSON
+   * parse / contract errors, which should not restart the plugin service).
    * @param {string} url
-   * @param {Object} opts fetch 选项
+   * @param {Object} opts fetch options
    * @param {number} timeoutMs
    * @returns {Promise<Response>}
    */
   function fetchWithTimeout(url, opts, timeoutMs) {
     var ms = timeoutMs || FETCH_TIMEOUT_MS;
-    // 极老的宿主没有 AbortController：退回普通 fetch（总比完全不发请求好）。
+    // Very old hosts lack AbortController: fall back to plain fetch (better than
+    // not sending a request at all).
     if (typeof window.AbortController !== 'function') return window.fetch(url, opts);
     var ctrl;
     try { ctrl = new window.AbortController(); } catch (e0) { return window.fetch(url, opts); }
@@ -3006,7 +3304,7 @@
     });
   }
 
-  /** 契约错误（数据到达但不合法）每个原因只大声报一次；绝不自愈重启。 */
+  /** Contract errors (data arrived but invalid) are reported loudly once per reason; never trigger a self-healing restart. */
   var warnedContract = Object.create(null);
   function warnContractOnce(reason) {
     lastError = 'contract: ' + reason;
@@ -3014,15 +3312,16 @@
     if (warnedContract[reason]) return;
     warnedContract[reason] = 1;
     try {
-      console.warn('[theme-studio] 插件返回的调色板不合法（' + reason + '），已忽略且不会重启服务。' +
-        '\n  端点：' + themeUrl() +
-        '\n  多半是 theme.json 被手工改坏，或插件/加载器版本不一致。');
+      console.warn('[theme-studio] The returned palette is invalid (' + reason + '); ignored, the service will not be restarted.' +
+        '\n  Endpoint: ' + themeUrl() +
+        '\n  Most likely theme.json was broken by a manual edit, or the backend/loader versions do not match.');
     } catch (e) { /* ignore */ }
   }
 
-  // 连续失败时的退避：主服务重启 / 启动受限模式 / 接口不可用时，不要每个窗口
-  // 每 1.5s 打一次请求。前 3 次照常重试（覆盖短暂抖动），之后按 2 倍退避，
-  // 上限 60s；任何一次成功立即恢复 1.5s 轮询。
+  // Backoff on consecutive failures: while the main service restarts / runs in a
+  // restricted startup mode / the endpoint is unavailable, windows should not each
+  // send a request every 1.5s. The first 3 retries are normal (covering brief
+  // blips), then backoff doubles up to 60s; any success restores the 1.5s poll.
   var POLL_BACKOFF_AFTER = 3;
   var POLL_BACKOFF_MAX_MS = 60000;
   var pollFailStreak = 0;
@@ -3036,7 +3335,8 @@
     pollBackoffUntil = Date.now() + delay;
   }
 
-  // 用户切回窗口时不要还等着最长 60s 的退避：服务多半已经重启好了。
+  // When the user returns to the window, do not keep waiting out a backoff of up
+  // to 60s: the service has most likely finished restarting.
   function clearPollBackoff() {
     if (document.visibilityState === 'hidden') return;
     pollBackoffUntil = 0;
@@ -3051,11 +3351,14 @@
     if (!force && pollBackoffUntil && Date.now() < pollBackoffUntil) return;
     inflight = true;
     var url = themeUrl() + '?_=' + Date.now();
-    // 内置后是同源请求：远程 / Docker / 反代窗口要带上实例访问的会话 cookie，
-    // 否则 InstanceAccessMiddleware 在路由之前就返回 401。
+    // Built in, this is a same-origin request: remote / Docker / reverse-proxied
+    // windows must send the instance-access session cookie, otherwise
+    // InstanceAccessMiddleware returns 401 before routing.
     var opts = { cache: 'no-store', credentials: 'same-origin' };
-    // v0.1.11 P0：无论成功、数据不合法、网络失败还是超时，都在链尾释放 inflight。
-    // 旧实现只在 then/catch 里复位：端点假死（fetch 永远 pending）时轮询永久停摆。
+    // v0.1.11 P0: release inflight at the end of the chain whether it succeeded,
+    // got invalid data, failed on the network or timed out. The old code only reset
+    // it in then/catch, so a hung endpoint (fetch pending forever) stalled polling
+    // permanently.
     var release = function () { inflight = false; };
     var req;
     try {
@@ -3071,39 +3374,44 @@
       lastFetchAt = Date.now();
       pollFailStreak = 0;
       pollBackoffUntil = 0;
-      // 数据到达 = 服务活着：先按成功重置自愈预算（下次真挂了还能再救）。
+      // Data arrived = service alive: reset the self-healing budget as a success
+      // first (so it can recover again if it really goes down next time).
       lastError = null;
       lastWarnedError = null;
       reviveCount = 0;
       reviveAt = 0;
       reviveDelay = REVIVE_BASE_DELAY_MS;
-      // ---- 契约校验（v0.1.11）：数据到达但不合法 → 不触发自愈 ----
-      // 重启插件服务只能救「服务不在」，救不了「返回的 JSON 是坏的」。
+      // ---- Contract validation (v0.1.11): data arrived but invalid -> no self-healing ----
+      // Restarting the plugin service only fixes "service missing", not "the
+      // returned JSON is broken".
       if (!p || typeof p !== 'object' ||
           Object.prototype.toString.call(p) !== '[object Object]') {
-        warnContractOnce('theme.json 不是一个 JSON 对象');
+        warnContractOnce('theme.json is not a JSON object');
         return;
       }
       if (p.schema !== undefined && p.schema !== 1) {
-        warnContractOnce('theme.json 的 schema=' + String(p.schema) + '（本加载器只认 1）');
+        warnContractOnce('theme.json schema=' + String(p.schema) + ' (this loader only accepts 1)');
         return;
       }
       rememberAssetMeta(p);
       var raw = '';
       try { raw = JSON.stringify(p); } catch (e) { raw = ''; }
-      // theme.json 不再有 version 字段（v0.1.5 起）：raw 是服务端返回 JSON 的精确
-      // 文本，逐字相同就是「没变化」。这比版本号更严格 —— 手工改 theme.json、
-      // 重置回同一份内容都能如实反映。
+      // theme.json has no version field (since v0.1.5): raw is the exact text of the
+      // JSON the server returned, and identical text means "unchanged". This is
+      // stricter than a version number: hand-editing theme.json or resetting to the
+      // same content are both reflected accurately.
       if (!force && raw === lastRaw) {
-        // v0.1.11 P1：raw 没变 ≠ 主题还在。宿主模板重渲染 / 清理 DOM / 重新挂 CSP
-        // 都可能删掉注入的 <style>，旧实现只看 raw，于是节点没了也永远不重建
-        // —— 表现为「主题在窗口里彻底消失，只有刷新页面才好」。
+        // v0.1.11 P1: unchanged raw does not mean the theme is still there. Host
+        // template re-renders / DOM cleanup / re-applied CSP can all remove the
+        // injected <style>; the old code only looked at raw, so a missing node was
+        // never rebuilt, showing as "the theme vanished from the window entirely
+        // until the page was refreshed".
         if (!styleIntact()) {
           log('injected style node missing, rebuilding');
           applyPalette(p);
           lastRaw = raw;
         }
-        return; // 无变化
+        return; // unchanged
       }
       applyPalette(p);
       lastRaw = raw;
@@ -3119,18 +3427,20 @@
       lastError = msg;
       lastErrorAt = Date.now();
       notePollFailure();
-      // 轮询每 1.5s 一次，同一个错误只大声报一次，之后走 debug 日志。
+      // Polling runs every 1.5s; the same error is reported loudly only once, then
+      // goes to the debug log.
       if (msg !== lastWarnedError) {
         lastWarnedError = msg;
         try {
-          console.warn('[theme-studio] 拉取调色板失败（保留缓存，窗口内不会应用新主题）：' + msg +
-            '\n  端点：' + url +
-            '\n  接口由本体提供，连不上通常意味着主服务刚重启或页面已被关闭。');
+          console.warn('[theme-studio] Failed to fetch the palette (keeping the cache; no new theme will be applied in this window): ' + msg +
+            '\n  Endpoint: ' + url +
+            '\n  The endpoint is served by the app itself; failing to connect usually means the main service just restarted or the page was closed.');
         } catch (e) { /* ignore */ }
       }
       log('fetch failed (keeping cache)', msg);
-      // 网络类失败 = 本体主服务没响应；非网络类 = 数据到了但不合法。
-      // 两种都只是记一笔，下一轮 1.5s 轮询自然重试。
+      // Network failure = the app's main service did not respond; non-network =
+      // data arrived but was invalid. Both are only recorded; the next 1.5s poll
+      // retries naturally.
       if (isNetworkFailure(msg)) log('network failure, will retry on next poll:', msg);
       else log('non-network failure:', msg);
     }).then(release, release);
@@ -3140,14 +3450,17 @@
     stopPolling();
     timer = window.setInterval(function () {
       if (document.visibilityState === 'hidden') return;
-      // 每次心跳都顺带复检一次样式表新鲜度（内部按 15s 节流）。这样用户在面板里
-      // 改了色，即使窗口是在插件更新之前打开的，也能在十几秒内自己换到新规则表，
-      // 不需要重启应用。
+      // Every heartbeat also re-checks stylesheet freshness (throttled internally
+      // to 15s). So when the user changes colours in the panel, even a window
+      // opened before an update switches to the new rule sheet within seconds,
+      // without restarting the app.
       refreshStaleStylesheet(false);
-      // 顺带检查加载器本身是否已被插件更新（内部 60s 节流 + 会话内一次）。
+      // Also check whether the loader itself has been updated (throttled
+      // internally to 60s + once per session).
       selfUpgradeIfNeeded();
       fetchPalette(false);
-      // 把本窗口的自检状态定期落盘，便于外部排查（内部 60s 节流）。
+      // Periodically persist this window's self-check state for external
+      // debugging (throttled internally to 60s).
       try { if (window.NekoThemeStudio && window.NekoThemeStudio.report) window.NekoThemeStudio.report(); } catch (e9) { /* ignore */ }
     }, POLL_INTERVAL_MS);
   }
@@ -3156,30 +3469,34 @@
     if (timer !== null) { window.clearInterval(timer); timer = null; }
   }
 
-  // ---------------------------------------------------------------- 引导
+  // ---------------------------------------------------------------- Bootstrap
 
-  // 1) 先用手上的缓存立刻渲染，避免启动闪烁。
+  // 1) Render from the cache right away to avoid startup flicker.
   restoreFromCache();
 
-  // 2) 再向插件服务要最新版。
+  // 2) Then ask the service for the latest version.
   function boot() {
-    // 一行「我还活着」——排查「本体到底加载到脚本没有」时控制台一眼可见。
+    // One "I'm alive" line, visible at a glance in the console when checking
+    // "did the app load the script at all".
     try {
-      console.info('[theme-studio] loader v' + SCRIPT_VERSION + ' 已加载，端点 ' + themeUrl());
+      console.info('[theme-studio] loader v' + SCRIPT_VERSION + ' loaded, endpoint ' + themeUrl());
     } catch (e) { /* ignore */ }
 
-    // 先确认样式表是当前版本（否则规则是旧的，注入再正确也不生效）。
-    // 启动时强制检查一次，不看节流。
+    // First make sure the stylesheet is current (otherwise the rules are old and
+    // even correct injection has no effect). Forced once at startup, ignoring the
+    // throttle.
     refreshStaleStylesheet(true);
 
     fetchPalette(true);
     startPolling();
-    // 启动时也查一次加载器新旧：用户可能已经很多天没重启应用，窗口里跑的是
-    // 好几版之前的脚本，新变量全都被静默丢弃。
+    // Also check the loader version at startup: the user may not have restarted
+    // the app for days, so the window may run a script several versions old that
+    // silently drops every new variable.
     selfUpgradeIfNeeded();
 
-    // 应用切换亮/暗（html[data-theme]）时重新检查「当前模式那一组是否为空」，
-    // 否则用户先配亮色、再切暗色，就永远看不到那条提示。
+    // Re-check "is the current mode's group empty" when the app switches
+    // light/dark (html[data-theme]); otherwise a user who configures light and
+    // then switches to dark never sees that hint.
     try {
       if (window.MutationObserver) {
         var mo = new window.MutationObserver(function () {
@@ -3189,19 +3506,20 @@
       }
     } catch (e) { /* ignore */ }
 
-    // 窗口重新获得焦点 / 重新可见 → 立即同步一次（用户刚在面板里改完色）
+    // Window regains focus / becomes visible -> sync immediately (the user just
+    // changed colours in the panel)
     window.addEventListener('focus', function () { fetchPalette(false); }, false);
     document.addEventListener('visibilitychange', function () {
       if (document.visibilityState === 'visible') fetchPalette(false);
     }, false);
 
-    // 同一源的其它窗口改了缓存 → 跟进（应用内多窗口场景）
+    // Another same-origin window changed the cache -> follow it (multi-window app)
     window.addEventListener('storage', function (ev) {
       if (!ev || ev.key !== CACHE_KEY || !ev.newValue) return;
       try {
         var p = JSON.parse(ev.newValue);
         if (!p || p.schema !== 1) return;
-        // 与 fetchPalette 的判等口径保持一致：只比原始 JSON 文本。
+        // Same equality rule as fetchPalette: compare raw JSON text only.
         var raw = '';
         try { raw = JSON.stringify(p); } catch (e0) { raw = ''; }
         if (raw === lastRaw) return;
@@ -3210,8 +3528,9 @@
       } catch (e) { /* ignore */ }
     }, false);
 
-    // 暗色切换后变量本身不用重算（CSS 选择器负责），但给外部一个钩子
-    window.addEventListener('neko-theme-changed', function () { /* no-op, 保留给后续扩展 */ }, false);
+    // Variables need no recompute after a dark-mode switch (CSS selectors handle
+    // it), but expose a hook for external code
+    window.addEventListener('neko-theme-changed', function () { /* no-op, reserved for future extensions */ }, false);
   }
 
   if (document.readyState === 'loading') {
@@ -3220,41 +3539,42 @@
     boot();
   }
 
-  // ---------------------------------------------------------------- 对外 API
+  // ---------------------------------------------------------------- Public API
 
   window.NekoThemeStudio = {
-    /** 立即重新拉取调色板 */
+    /** Refetch the palette immediately */
     refresh: function () { fetchPalette(true); },
-    /** 直接应用一个调色板对象（调试/手工用） */
+    /** Apply a palette object directly (for debugging / manual use) */
     apply: applyPalette,
-    /** 清除本窗口注入的变量（回到应用原生外观；下次轮询会自动重新应用） */
+    /** Clear the variables injected in this window (back to the app's native look; the next poll re-applies automatically) */
     clear: function () {
       removeStyle();
-      // 不清内容判等键的话，轮询会认为「没变化 = 不用重注入」，
-      // 调用 clear() 之后调色板再也不会回来（只有调试 API 会踩到，但很隐蔽）。
+      // Without clearing the content equality key, polling would conclude
+      // "unchanged = no need to re-inject" and the palette would never come back
+      // after clear() (only the debug API hits this, but it is well hidden).
       currentVersion = '';
       lastRaw = null;
       lastApply = null;
     },
-    /** 当前调色板的 updated_at 标记（v0.1.5 起 theme.json 不再有 version 字段） */
+    /** updated_at stamp of the current palette (theme.json has no version field since v0.1.5) */
     get updatedAt() { return currentVersion; },
-    /** 加载器脚本自身版本（部署漂移自查用） */
+    /** The loader script's own version (for spotting deployment drift) */
     scriptVersion: SCRIPT_VERSION,
-    /** 接口基址（本体内置后固定为当前源的 /api/theme_studio） */
+    /** API base (built into the app, fixed to /api/theme_studio on the current origin) */
     get baseUrl() { return API_BASE; },
-    /** 保留接口：本体内置后接口基址固定，忽略外部覆盖。 */
+    /** Kept for compatibility: built into the app the API base is fixed; external overrides are ignored. */
     setBaseUrl: function (u) { /* no-op */ },
-    /** 打开调试日志 */
+    /** Enable debug logging */
     setDebug: function (on) { DEBUG = !!on; },
-    /** 保留接口：插件时代用于叫醒插件服务，本体内置后无宿主可叫醒。 */
+    /** Kept for compatibility: in the plugin era this woke the plugin service; built in, there is no host to wake. */
     revive: function () {
       reviveCount = 0;
       reviveAt = 0;
       reviveDelay = REVIVE_BASE_DELAY_MS;
     },
     /**
-     * 自检：把「加载器 → 本体接口 → CSS」这条链路的运行时状态打成一个对象。
-     * 在应用窗口的 DevTools 里执行 `NekoThemeStudio.diagnose()` 即可。
+     * Self-check: packs the runtime state of the "loader -> app API -> CSS" chain
+     * into one object. Run `NekoThemeStudio.diagnose()` in the app window's DevTools.
      * @returns {{version:*,mode:string,baseUrl:string,endpoint:string,gates:string[],
      *            styleLen:number,lastApply:*,lastFetchAgoMs:*,lastError:*,
      *            hasCache:boolean,bubbleBg:*,bubbleColor:*}}
@@ -3276,8 +3596,9 @@
       var cs = bubble ? (window.getComputedStyle ? window.getComputedStyle(bubble) : null) : null;
       var hasCache = false;
       try { hasCache = !!safeGet(CACHE_KEY); } catch (e) { /* ignore */ }
-      // 样式表是否真的加载了：CSS 没加载时门控属性照样打上，但没有任何规则
-      // 匹配 → 变量生效、元素外观不变（最容易被误判成「插件没生效」）。
+      // Whether the stylesheet is really loaded: without the CSS, gate attributes
+      // are still set but no rule matches -> variables resolve, elements look the
+      // same (easily misread as "the plugin does nothing").
       var cssLoaded = false;
       var cssRules = 0;
       try {
@@ -3301,9 +3622,11 @@
         endpoint: themeUrl(),
         gates: gates,
         styleLen: el ? (el.textContent || '').length : 0,
-        // v0.1.11 自检项：注入节点是否还活着（被宿主删掉时 styleAlive=false）、
-        // 注入样式是否真的生效（CSP 拦截时 cspBlocked=true），以及被值校验拒掉的
-        // 变量名 —— 「面板能存、加载器丢值」时先看 rejectedVars。
+        // v0.1.11 self-check items: whether the injected node is still alive
+        // (styleAlive=false when the host removed it), whether injected styles
+        // actually apply (cspBlocked=true when blocked by CSP), and variable names
+        // rejected by value validation; for "the panel saves, the loader drops",
+        // check rejectedVars first.
         styleAlive: !!(el && el.parentNode),
         styleApplied: lastAppliedCss ? styleIntact() : null,
         cspBlocked: cspWarned,
@@ -3321,8 +3644,9 @@
         hasCache: hasCache,
         reviveCount: reviveCount,
         lastReviveError: lastReviveError,
-        // 样式表自愈状态：sheetSwapCount > 0 说明这个窗口曾经换过表（典型场景是
-        // 窗口开着时插件被更新）。排查「面板改了但窗口不动」时先看这两个数。
+        // Stylesheet self-healing state: sheetSwapCount > 0 means this window has
+        // swapped sheets (typically an update while the window was open). Check
+        // these two numbers first for "changed in the panel, the window did not move".
         sheetSwapCount: sheetSwapCount,
         lastSheetCheckAgoMs: lastSheetCheckAt ? Date.now() - lastSheetCheckAt : null,
         selfUpgradeAt: selfUpgradeAt || null,
@@ -3330,9 +3654,10 @@
           try { return window.sessionStorage.getItem(SELF_UPGRADE_GUARD_KEY) || ''; }
           catch (e) { return ''; }
         })(),
-        // v1.5.19 指针光效自检：panels 是当前挂了光效的表面数，seen=false 表示
-        // 还没收到过 pointermove；sampleSpecX/Y 是第一个表面的镜面位置，
-        // 鼠标移动时它应当跟着变（排查「鼠标动了但没反应」先看这三项）。
+        // v1.5.19 pointer lighting self-check: panels is the number of surfaces
+        // currently carrying lighting, seen=false means no pointermove received yet;
+        // sampleSpecX/Y is the first surface's specular position and should change
+        // as the mouse moves (check these three first for "mouse moved, nothing happened").
         glassPointer: {
           seen: glassPointer.seen,
           x: glassPointer.x,
@@ -3351,10 +3676,11 @@
       isSafeValue: isSafeValue,
       sanitizeVars: sanitizeVars,
       themeUrl: themeUrl,
-      // v0.1.11 新值类型：暴露给自测/排查用（NekoThemeStudio._internals.isSafeFilterChain 等）。
+      // v0.1.11 new value kinds: exposed for self-tests/debugging (NekoThemeStudio._internals.isSafeFilterChain etc.).
       isSafeFilterChain: isSafeFilterChain,
       isSafeGradient: isSafeGradient,
-      // v1.5.19 指针光效：暴露重建/重绘入口，供自测与真机回归脚本调用。
+      // v1.5.19 pointer lighting: expose rebuild/repaint entry points for
+      // self-tests and on-device regression scripts.
       refreshGlassPanels: refreshGlassPanels,
       paintGlassSpecular: paintGlassSpecular,
       glassSurfaces: function () { return glassPanels.length; }
@@ -3363,13 +3689,15 @@
 
   log('runtime ready; endpoint =', themeUrl());
 
-  // ------------------------------------------------- 自检快照落盘（可远程读取）
+  // ------------------------------------------------- Persisted self-check snapshot (readable remotely)
 
-  // 应用聊天窗是 Electron 窗口，没有开 CDP 端口，外部无法连进去看状态；用户也
-  // 未必愿意/会开控制台。但同一个 localStorage 会被 Electron 落盘到
-  // `Local Storage\leveldb`，所以把 diagnose() 快照定期写进去，排查
-  // 「面板显示已应用、窗口毫无变化」时就能直接从磁盘读到那个窗口当时真实的
-  // 门控属性、样式表 href 与注入内容长度，不用再猜。
+  // The app's chat window is an Electron window with no CDP port open, so its state
+  // cannot be inspected from outside, and users may not want to (or know how to)
+  // open the console. But Electron persists that same localStorage to
+  // `Local Storage\leveldb`, so diagnose() snapshots are written there
+  // periodically; when debugging "the panel shows applied, the window does not
+  // change", the window's real gate attributes, stylesheet href and injected
+  // content length can be read straight from disk instead of guessed.
   function rectOf(el) {
     if (!el) return null;
     var b = el.getBoundingClientRect();
@@ -3411,7 +3739,8 @@
         transform: ts.transform,
         ariaLabel: toggle.getAttribute('aria-label') || '',
         imgSrc: img ? (img.getAttribute('src') || '') : '',
-        // 该按钮中心点上有哪些元素（自上而下），能一眼看出是否被别的层盖住
+        // Elements at the button's centre point (top to bottom), showing at a
+        // glance whether another layer covers it
         stack: (function () {
           var b = toggle.getBoundingClientRect();
           var cx = Math.round(b.left + b.width / 2);
@@ -3463,8 +3792,9 @@
         } catch (e2) { return ''; }
       })();
       d.styleText = (document.getElementById(STYLE_ID) || {}).textContent || '';
-      // 「输入框右侧按钮看不到」这类问题，只有真实窗口能回答：把 composer 的
-      // 几何、那个圆形按钮的存在性与覆盖栈一起写进快照，事后从 leveldb 读。
+      // Issues like "the button right of the input is invisible" can only be
+      // answered by the real window: write the composer geometry, the round
+      // button's existence and its stacking into the snapshot, read later from leveldb.
       try {
         d.composer = composerSnapshot();
       } catch (e3) { d.composer = null; }
@@ -3475,9 +3805,11 @@
   window.NekoThemeStudio.report = persistSnapshot;
   persistSnapshot();
 
-  // 诊断上报的自主调度（v1.6.2）：不能只靠 applyPalette 的调用时机 ——
-  // 页面可见性变化、主题未变时都不会再进 applyPalette，诊断就一直是空的。
-  // 启动 5 秒后一次（兜住"插件服务比页面晚就绪"），之后可见时每分钟一次。
+  // Independent scheduling for diagnostic reports (v1.6.2): applyPalette call
+  // timing alone is not enough, since visibility changes and an unchanged theme
+  // never re-enter applyPalette, leaving diagnostics empty. Report once 5 seconds
+  // after startup (covering "the service is ready later than the page"), then
+  // every minute while visible.
   (function () {
     function kickReport() {
       reportRuntime(true);

@@ -7932,5 +7932,1390 @@
         "keepLocal": "Keep this device’s selection",
         "failed": "The model could not load. Your previous selection is retained.",
         "retry": "Retry"
+    },
+    "themeStudio": {
+        "core": {
+            "request": {
+                "timeout": "Request timed out ({{seconds}}s)",
+                "failed": "Operation failed"
+            },
+            "typeLabel": {
+                "color": "Color",
+                "length": "Size",
+                "blur": "Blur",
+                "number": "Number",
+                "font": "Font",
+                "shadow": "Shadow",
+                "image": "Image",
+                "switch": "Toggle",
+                "select": "Mode",
+                "time": "Timing",
+                "ratio": "Line height",
+                "filter": "Filter chain",
+                "gradient": "Gradient"
+            },
+            "audit": {
+                "pair": {
+                    "bodyChat": "Body text / chat background",
+                    "bodyTopbar": "Body text / top bar",
+                    "bodyInput": "Body text / input box",
+                    "bodyGlass": "Body text / panel glass",
+                    "bodyAiBubble": "Body text / AI bubble",
+                    "userBubbleText": "User bubble text",
+                    "sendText": "Send button text",
+                    "subTextChat": "Secondary text / chat background",
+                    "placeholder": "Placeholder",
+                    "chipText": "Chip text",
+                    "linkChat": "Link / chat background"
+                },
+                "fixedOne": "\"{{name}}\" set to {{hex}} ({{ratio}}:1). Click \"Apply\" to take effect",
+                "fixNone": "Nothing could be fixed automatically: the text and background are too close; change the background color manually",
+                "fixedSomeStuck": "Filled in {{fixed}} fixes; {{stuck}} could not be adjusted automatically. Click \"Apply\" to take effect",
+                "fixedAll": "Filled in {{fixed}} fixes. Click \"Apply\" to take effect",
+                "incomplete": "Colors are incomplete; cannot check yet",
+                "groupFail": "{{bad}} / {{total}} below threshold",
+                "groupPass": "All {{total}} pass",
+                "need": "Needs ≥ {{need}}",
+                "jumpDark": "Click to jump to {{key}} (dark)",
+                "jumpLight": "Click to jump to {{key}} (light)",
+                "fixButton": "Auto-fix",
+                "fixButtonTitle": "Pick a passing color based on background brightness (fills the value only, does not apply it)",
+                "fixFailed": "This pair cannot reach {{need}}:1 automatically; change the background color",
+                "light": "Light",
+                "dark": "Dark",
+                "nothingToCompare": "No colors to compare yet: first set basic variables such as \"chat background\" and \"body text\".",
+                "summaryPass": "All {{total}} checks in both sets meet the WCAG thresholds (body 4.5, secondary 3.0).",
+                "summaryFail": "{{bad}} below threshold. Click an item to jump to its variable."
+            },
+            "undo": {
+                "nothingToUndo": "Nothing left to undo",
+                "undone": "Undid the last step",
+                "nothingToRedo": "Nothing left to redo",
+                "redone": "Redone",
+                "undoTitle": "Undo the last change ({{count}} steps available)",
+                "undoTitleEmpty": "Nothing to undo",
+                "redoTitle": "Redo ({{count}} steps available)",
+                "redoTitleEmpty": "Nothing to redo"
+            },
+            "validate": {
+                "badBlur": "Blur only accepts px/rem/em/pt (write 18px or blur(18px))",
+                "badValue": "Invalid value. Enter a valid value or click \"Clear\""
+            }
+        },
+        "catalog": {
+            "groups": {
+                "chatBubbles": "Chat bubbles",
+                "chatWindow": "Chat window",
+                "composer": "Input area",
+                "panels": "Panels / dialogs / menus",
+                "recommendations": "Recommendations / system chips",
+                "global": "Global",
+                "nonColor": "Non-color settings",
+                "panelGlow": "Panel glow / glassmorphism",
+                "liquidGlass": "Liquid glass / gradients",
+                "glassTexture": "Liquid glass texture"
+            },
+            "vars": {
+                "bubble-veil": {
+                    "native": "On",
+                    "label": "Chat background veil",
+                    "hint": "Master switch for the \"white veil + background blur\" layer on bubbles. Off: bubble backgrounds become fully transparent and the blur drops to zero, so the chat background image and color show through completely (higher contrast; useful when a background image looks greyed out or hard to read). On: back to the native N.E.K.O look. Under the hood it's a 0-1 multiplier applied to both the veil opacity and the blur radius."
+                },
+                "user-bubble-bg": {
+                    "label": "User bubble background"
+                },
+                "user-bubble-text": {
+                    "label": "User bubble text"
+                },
+                "user-bubble-border": {
+                    "label": "User bubble border"
+                },
+                "ai-bubble-bg": {
+                    "label": "AI bubble background"
+                },
+                "ai-bubble-text": {
+                    "label": "AI bubble text"
+                },
+                "ai-bubble-border": {
+                    "label": "AI bubble border"
+                },
+                "code-bg": {
+                    "label": "Code block background",
+                    "hint": "Background of inline code and code blocks (.message-markdown-inline-code / .message-markdown-pre). Natively only inline code has a background, code blocks have none. Leave empty to keep the native colors"
+                },
+                "code-text": {
+                    "label": "Code block text",
+                    "hint": "Text color of inline code and code blocks. Native: inline code #22324d, code blocks #1f2c42 (both #c0cce0 in dark mode). Leave empty to keep the native colors"
+                },
+                "image-bg": {
+                    "label": "Image block background",
+                    "hint": "Background of the image wrapper .message-block-image in messages, shown beneath the image. Leave empty to keep native (transparent; only visible when the image itself is transparent or fails to load)"
+                },
+                "tool-bubble-bg": {
+                    "label": "Tool/system bubble background",
+                    "hint": "Shared background of tool and system bubbles (.message-bubble-tool / .message-bubble-system). Natively the tool bubble is a gradient and the system bubble a translucent grey (light rgba(131,148,175,0.14) / dark rgba(80,90,110,0.2)); setting this flattens both into one solid color. Leave empty to keep native"
+                },
+                "tool-bubble-text": {
+                    "label": "Tool/system bubble text",
+                    "hint": "Text color of tool and system bubbles. Native: tool #2b3a50, system #607086 (dark #b8bcc4 / #9aa0ac). Leave empty to keep the native colors"
+                },
+                "status-bg": {
+                    "label": "Status block background",
+                    "hint": "Background of message status blocks (the info / success / warning / error tones of .message-block-status all share this variable). Natively each tone differs (light success rgba(48,161,100,0.12), warning rgba(235,168,52,0.16), error rgba(223,91,91,0.14)); setting this flattens all four into one color. Leave empty to keep native"
+                },
+                "status-text": {
+                    "label": "Status block text",
+                    "hint": "Text color of message status blocks (all four tones share this variable). Natively each tone differs (light success #236845, warning #9a6008, error #a63a3a; dark #5ec790 / #e8b44a / #e07070); setting this flattens all four into one color. Leave empty to keep native"
+                },
+                "chat-bg": {
+                    "label": "Chat window background",
+                    "hint": "Sets the capsule color in the compact capsule layout (the backdrop no longer overrides it). When expanded it also affects #react-chat-window-root and .chat-window. Leave empty to keep native"
+                },
+                "chat-panel-bg": {
+                    "label": "Chat backdrop background",
+                    "hint": "Color of the panel behind the message list: .compact-export-history-scroll in compact mode, .message-list and .chat-body when expanded/fullscreen. Leave empty to keep native (transparent)"
+                },
+                "chat-bg-image": {
+                    "label": "Chat background image",
+                    "hint": "Puts an image on the panel behind the message list. It takes priority over the solid \"Chat backdrop background\" (which stays underneath and shows through transparent areas). Supports png/jpg/webp/gif, up to 4 MB each. Valid values are only none or url(\"…/backgrounds/<file>\"). Leave empty to return to native (no image)"
+                },
+                "chat-bg-image-brightness": {
+                    "label": "Background image brightness",
+                    "hint": "Darkens the whole \"Chat background image\" so it doesn't compete with the text. Range 0-1: 1 = original brightness, 0.6 = 40% darker, 0 = black. Only darkens, never brightens (a black overlay sits on the image and the text is untouched — not a filter on the container, which would also dim bubbles and text). Only applies when a \"Chat background image\" is set; leave empty to keep the original"
+                },
+                "chat-bg-fit": {
+                    "label": "Background image fit",
+                    "options": {
+                        "cover": "Cover (may crop)",
+                        "contain": "Contain (shows background)"
+                    },
+                    "hint": "How the background image fills the chat area. Cover = cover: fills the whole area and crops top/bottom or sides if proportions differ (native behavior, suits most wallpapers). Contain = contain: shrinks the image so all of it is visible, leaving background color on the sides or top/bottom. Only affects the background image. Leave empty for Cover"
+                },
+                "chat-bg-position": {
+                    "label": "Background image position",
+                    "options": {
+                        "center": "Center",
+                        "top": "Top",
+                        "bottom": "Bottom",
+                        "left": "Left",
+                        "right": "Right"
+                    },
+                    "hint": "Where the background image sits in the chat area; only noticeable when the image's proportions differ from the container (or with \"Contain\"). Center = native behavior; Top/Bottom suit wallpapers whose subject is in the upper/lower half. Leave empty for Center"
+                },
+                "chat-bg-repeat": {
+                    "label": "Background image tiling",
+                    "options": {
+                        "no-repeat": "No tiling (single)",
+                        "repeat": "Tile both ways",
+                        "repeat-x": "Tile horizontally",
+                        "repeat-y": "Tile vertically"
+                    },
+                    "hint": "Whether the wallpaper repeats to fill the area. Keep photos on \"No tiling\" (native behavior); fine textures, checks and patterns can tile to fill the area without stretching. When tiling, \"fit\" has no effect (each tile repeats at original size). Leave empty for no tiling"
+                },
+                "corner-style": {
+                    "label": "Corner style",
+                    "options": {
+                        "round": "Round",
+                        "continuous": "Continuous (iOS style)"
+                    },
+                    "hint": "Shape of rounded corners. Round = circular arc (native behavior); Continuous = superellipse, with no abrupt straightening at the corner — the shape Apple devices use. Requires a recent rendering engine (corner-shape, Chrome 139+); where unsupported this setting is ignored without errors and other settings still work. Leave empty for Round"
+                },
+                "chat-top-fade": {
+                    "label": "Top fade",
+                    "hint": "The fade at the very top of the chat history — the source of the \"haze\" at the top of the background image. Range 0-1: 1 = app native (top 28px fades in from transparent, the image top fades with it), 0 = fade fully off and the image's top edge stays sharp, values in between blend linearly. Note: when off, messages scrolled to the top are cut off sharply instead of fading"
+                },
+                "chat-panel-radius": {
+                    "label": "Chat backdrop radius",
+                    "hint": "Corner radius of the panel behind the message list, paired with \"Chat backdrop background\". It's a separate variable — \"General radius\" also rounds buttons and the input box, this only rounds the backdrop. Leave empty to keep native square corners"
+                },
+                "topbar-bg": {
+                    "label": "Top bar background"
+                },
+                "topbar-text": {
+                    "label": "Top bar text"
+                },
+                "chat-blur": {
+                    "label": "Frosted glass blur",
+                    "hint": "Consumed by backdrop-filter in CSS, so it must be written as blur(18px); entering just 18px is expanded to blur(18px) by the backend. Units: px/rem/em/pt only (no % / vh / vw)"
+                },
+                "chat-opacity": {
+                    "label": "Chat surface opacity",
+                    "hint": "Range 0-1. Bridged to --neko-chat-opacity-factor, N.E.K.O's built-in opacity multiplier: it multiplies the alpha of each chat surface's background (natively like rgba(255,255,255,calc(.91 * factor))), so it scales the overall opacity of the chat panel/window without changing any individual color. Leave empty to keep native (factor 1 = 100%). Note: this used to be silently dropped by the app-side loader (no number value type) while the panel reported success; now fixed"
+                },
+                "input-bg": {
+                    "label": "Input area background"
+                },
+                "input-text": {
+                    "label": "Input text"
+                },
+                "input-border": {
+                    "label": "Input area border"
+                },
+                "input-placeholder": {
+                    "label": "Placeholder text"
+                },
+                "button-bg": {
+                    "label": "Tool button background"
+                },
+                "button-text": {
+                    "label": "Tool button text"
+                },
+                "button-hover-bg": {
+                    "label": "Tool button hover",
+                    "hint": "Only applies while hovering a tool button (.composer-tool-btn:hover); the resting state is controlled by \"Tool button background\". Leave empty to keep the native hover color (light #44b7fe1a / dark #44b7fe26)"
+                },
+                "send-bg": {
+                    "label": "Send button background"
+                },
+                "send-text": {
+                    "label": "Send button text"
+                },
+                "panel-bg": {
+                    "label": "Panel background",
+                    "hint": "Applies to the input panel (.composer-panel) and the floating task panel (#agent-task-hud). In the compact capsule layout the app makes the panel itself transparent; there, \"chat background\" is what you see"
+                },
+                "panel-text": {
+                    "label": "Panel text",
+                    "hint": "Applies to text on panel surfaces such as the floating task panel and visit bar; for text inside the input box use \"Input text\". The compact capsule's text color does not follow this (so changing panel text doesn't recolor the capsule too)"
+                },
+                "panel-border": {
+                    "label": "Panel border"
+                },
+                "popover-bg": {
+                    "label": "Popup menu background"
+                },
+                "popover-text": {
+                    "label": "Popup menu text"
+                },
+                "popover-border": {
+                    "label": "Popup menu border"
+                },
+                "modal-bg": {
+                    "label": "Dialog background"
+                },
+                "modal-text": {
+                    "label": "Dialog text"
+                },
+                "accent-bg": {
+                    "label": "Plugin page accent background",
+                    "hint": "Bridged: writes --neko-popup-accent-bg on #agent-plugin-content / #agent-plugin-views, i.e. the hover and selected background of plugin panel tabs (#agent-content-tabs button:hover / [aria-selected=\"true\"]). Leave empty to keep native (the panel's own fallback is light rgba(42,123,196,.08) / selected .10; mode variables light rgba(42,123,196,0.05) / dark rgba(58,159,216,0.1))"
+                },
+                "panel-text-sub": {
+                    "label": "Panel secondary text",
+                    "hint": "Bridged: writes --neko-popup-text-sub on #agent-plugin-content / #agent-plugin-views, used by the tab text and close button at the top of the plugin panel (#agent-content-tabs button / #agent-plugin-close). Leave empty to keep native (the panel also has its own fallback #667582; light #666666 / dark #b0b0b0)"
+                },
+                "overlay-bg": {
+                    "label": "Dialog overlay background",
+                    "hint": "Background of the full-screen overlay .modal-overlay behind dialogs. Natively light mode mostly has no overlay (the common component's rgba(0,0,0,0.5) only applies to a few dialogs), dark mode uses rgba(0,0,0,0.65). Mini-theater and visit dialogs (transparent windows) set transparent !important and are not affected. Leave empty to keep native"
+                },
+                "rec-bg": {
+                    "label": "Recommendation bar background"
+                },
+                "rec-text": {
+                    "label": "Recommendation bar text"
+                },
+                "rec-border": {
+                    "label": "Recommendation bar border",
+                    "hint": "Only applies to .proactive-recommendation-card. Leave empty to keep the native border (light rgba(108,151,174,0.18) / dark rgb(65,84,95))"
+                },
+                "chip-bg": {
+                    "label": "Chip background"
+                },
+                "chip-text": {
+                    "label": "Chip text"
+                },
+                "text-gradient": {
+                    "label": "Text gradient",
+                    "hint": "Replaces the fill of chat body text with a gradient (e.g. linear-gradient(135deg, #6ee7ff 0%, #a78bfa 100%)). Only affects message text blocks, not bubble backgrounds; code blocks and inline code automatically stay solid so they remain readable. Note: once set, \"bubble text color\" no longer applies to body text (the gradient fills it), and light gradients may be hard to read on light backgrounds — pick colors with a wide dark-to-light range. Leave empty for solid text"
+                },
+                "accent": {
+                    "label": "Accent color"
+                },
+                "link": {
+                    "label": "Link color"
+                },
+                "highlight": {
+                    "label": "Selection highlight"
+                },
+                "scrollbar-thumb": {
+                    "label": "Scrollbar thumb"
+                },
+                "scrollbar-track": {
+                    "label": "Scrollbar track"
+                },
+                "radius": {
+                    "label": "General radius (buttons/input panel)",
+                    "hint": "Native values differ per component (top bar 0 / cards 12px / buttons 10px). Leave empty to keep everything native"
+                },
+                "bubble-radius": {
+                    "label": "Chat bubble radius",
+                    "hint": "Only affects the bubbles themselves. Leave empty to keep native (user bubbles have asymmetric 16px/8px corners)"
+                },
+                "shell-radius": {
+                    "label": "Chat window shell radius",
+                    "hint": "Only affects the chat window shell #react-chat-window-shell. Leave empty to keep native"
+                },
+                "card-radius": {
+                    "label": "Plugin card radius",
+                    "hint": "Only affects .agent-plugin-view cards. Leave empty to keep native"
+                },
+                "modal-radius": {
+                    "label": "Dialog radius",
+                    "hint": "Only affects .modal-dialog dialogs. Leave empty to keep native"
+                },
+                "popover-radius": {
+                    "label": "Popover radius",
+                    "hint": "Only affects popovers such as .composer-overflow-popover. Leave empty to keep native"
+                },
+                "rec-radius": {
+                    "label": "Recommendation card radius",
+                    "hint": "Only affects recommendation bubble cards. Leave empty to keep native"
+                },
+                "font-family": {
+                    "label": "Font family"
+                },
+                "font-size": {
+                    "label": "Base font size",
+                    "hint": "Font size of message text; applies to both plain-text and Markdown messages (e.g. 1rem / 17px). Leave empty to keep native"
+                },
+                "line-height": {
+                    "label": "Line height",
+                    "hint": "Line spacing of text in chat bubbles, as a unitless multiplier (1.55 = 1.55 × font size). 1.3 is compact, 1.55 close to native, 1.8 very loose. Because it's a multiplier rather than px, it scales with \"Base font size\", so larger text never ends up with cramped, overlapping lines. Leave empty to keep native"
+                },
+                "shadow": {
+                    "label": "Shadow",
+                    "hint": "E.g. 0 2px 4px rgba(0,0,0,0.1). Applies to 7 card surfaces (user/AI bubbles, input panel, two popovers, dialog, recommendation card), replacing their existing shadows entirely. Leave empty to keep the native shadows"
+                },
+                "panel-glow-color": {
+                    "label": "Glow color",
+                    "hint": "Color shared by the outer glow, corner highlights and inner edge gradient. Any CSS color works (#7ff / dodgerblue / rgb(120,200,255)). Changing it recolors all three"
+                },
+                "panel-glow-strength": {
+                    "label": "Glow strength",
+                    "hint": "0-1 multiplier that scales the outer glow's spread, blur radius and color intensity together. 0 = no glow, 1 = the full \"Glow size\". Leave empty to keep native (no glow)"
+                },
+                "panel-glow-size": {
+                    "label": "Glow size",
+                    "hint": "Base radius of the outer glow (spread ×1, blur ×0.42). The width of the inner edge gradient is derived from it too. 24px is a soft starting point; 40px and above spreads noticeably"
+                },
+                "panel-glow-pulse": {
+                    "label": "Pulse depth",
+                    "hint": "How much the glow strength pulses, 0-1: 0 = steady, 0.5 = brightness varies between 100% and 50%, 1 = from fully dark to fully bright. Empty or 0 attaches no animation (saves a compositing layer)"
+                },
+                "panel-glow-speed": {
+                    "label": "Pulse speed",
+                    "hint": "Duration of one pulse; 3.2s or 800ms both work, and a bare number means seconds (3 becomes 3s). Max 60s. Smaller is faster; 5s or more is a slow pulse. Only matters when \"Pulse depth\" is above 0"
+                },
+                "panel-border-color": {
+                    "label": "Border color",
+                    "hint": "The translucent border around the panel edge. For a glassy highlight use a translucent white (rgba(255,255,255,.55)); for a colored neon edge use a highly saturated color"
+                },
+                "panel-border-width": {
+                    "label": "Border width",
+                    "hint": "Width of the edge border. 1px is a thin highlight; 2-3px or more gives a distinct \"glass frame\" look. Leave empty for no border"
+                },
+                "panel-corner-glow": {
+                    "label": "Corner highlights",
+                    "hint": "0-1 multiplier for the intensity of the four radial highlights in the corners — the easiest way to add depth in glassmorphism. 0 = off, 1 = brightest"
+                },
+                "panel-edge-gradient": {
+                    "label": "Inner edge gradient",
+                    "hint": "0-1 multiplier for the soft light fading inward from the edge (an inset shadow); combined with the outer glow it makes the panel look self-lit. 0 = off"
+                },
+                "panel-sheen": {
+                    "label": "Glass reflection sheen",
+                    "hint": "0-1 multiplier for the diagonal highlight band from the top-left (simulating a glass reflection). 0.3-0.5 looks natural; 1 is noticeably washed out"
+                },
+                "panel-inner-glow": {
+                    "label": "Inner shadow",
+                    "hint": "0-1 multiplier for a faint recessed shadow around the inside of the panel, making it look thicker. 0 = off"
+                },
+                "panel-glass-tint": {
+                    "label": "Glass tint",
+                    "hint": "Translucent glass tint, layered above \"Chat backdrop background\" and below the background image. For frosted glass use a translucent light color like rgba(255,255,255,.14) (rgba(20,30,45,.35) for dark themes)"
+                },
+                "panel-glass-blur": {
+                    "label": "Glass frosting",
+                    "hint": "Blurs the \"Chat background image\" itself (only the image; text is unaffected — it uses a negative layer between the image and the text). Write blur(18px) or just 18px (the backend expands it to blur(18px)); units px/rem/em/pt only"
+                },
+                "glass-filter": {
+                    "label": "UI glass blur",
+                    "hint": "How much the area behind \"glass surfaces\" (top bar, input box shell, popovers) is blurred, written directly as a backdrop-filter chain, e.g. blur(20px) saturate(150%). Up to 4 parts, no repeated filter, blur max 40px, other percentages max 400%. Empty = off; these surfaces keep their native look"
+                },
+                "glass-tint": {
+                    "label": "UI glass tint",
+                    "hint": "Translucent tint on glass surfaces, meant to pair with the blur above: for frosted glass use a translucent color like rgba(255,255,255,0.55). Empty = off; the background follows native"
+                },
+                "glass-highlight": {
+                    "label": "Glass highlight border",
+                    "hint": "Highlight border around glass surfaces; a translucent white gives the feel of light catching a glass edge. Empty = off; no highlight is drawn"
+                },
+                "bubble-glass-filter": {
+                    "label": "Bubble glass blur",
+                    "hint": "Blur behind the user/AI bubbles themselves, usually a bit lighter than the UI glass, e.g. blur(12px) saturate(140%). Empty = off; bubbles keep their native translucency"
+                },
+                "bubble-glass-tint": {
+                    "label": "Bubble glass tint",
+                    "hint": "Translucent tint of bubbles; for a glassy look use a very faint color like rgba(255,255,255,0.18). Empty = off; bubble backgrounds follow native"
+                },
+                "chat-gradient": {
+                    "label": "Chat area gradient",
+                    "hint": "Background gradient of the whole chat area (message list and chat body). Must be linear-gradient(...) or radial-gradient(...) with 2-4 color stops, each with a percentage. Empty = off; the native background is used"
+                },
+                "panel-gradient": {
+                    "label": "Panel gradient",
+                    "hint": "Background gradient of the chat backdrop / export history panel; same format as above, layered over the backdrop's solid color. Empty = off; the panel keeps its native background"
+                },
+                "user-bubble-gradient": {
+                    "label": "User bubble gradient",
+                    "hint": "Gives only the user bubbles a gradient background; the \"angle + start/end color\" quick builder generates one in a click. Empty = off (not set by default); bubbles keep the solid user bubble background"
+                },
+                "ai-bubble-gradient": {
+                    "label": "AI bubble gradient",
+                    "hint": "Gives only the AI bubbles a gradient background. Empty = off (not set by default); AI bubbles keep the solid AI bubble background"
+                },
+                "glass-rim": {
+                    "label": "Glass rim light",
+                    "hint": "Light reflected on glass edges: a bright line around panels/bubbles/the input box, like a polished bevel. Combined with a low glass tint alpha and UI glass blur, the brighter it is the more \"thickness\" the glass shows. Empty = not drawn"
+                },
+                "glass-sheen": {
+                    "label": "Surface sheen",
+                    "hint": "Surface sheen 0–1: 0 = static, 0.3–0.7 sends a highlight band slowly sweeping across the glass (only visible once UI/bubble glass blur is set). Empty = off"
+                },
+                "glass-noise": {
+                    "label": "Frosted grain",
+                    "hint": "Frosted grain 0–1: 0 = smooth, 0.1–0.25 adds a light frosted texture (with glass tint alpha and blur you can still see through while getting a grainy frosted feel). Empty = off"
+                },
+                "glass-lens": {
+                    "label": "Edge lens ring",
+                    "hint": "Edge lens ring 0–1: 0 = none, 0.5–0.8 overlays an inward-curving bright ring plus a soft inner glow on glass edges, mimicking how Apple's Liquid Glass edges \"bend\" light inward. Empty = off"
+                },
+                "glass-thickness": {
+                    "label": "Glass thickness",
+                    "hint": "Glass thickness 0–1: 1px top highlight + 1px dark bottom edge + half-lit sides + outer drop shadow; higher values look more like a solid slab of glass. Empty = off"
+                },
+                "glass-specular": {
+                    "label": "Specular highlight",
+                    "hint": "Specular highlight 0–1: at 0.6–0.8 a soft reflection on the glass follows the mouse pointer (the most recognizable trait of Apple's Liquid Glass); on touch devices it stays at the top-left. Empty = off"
+                },
+                "ambient-glow": {
+                    "label": "Pointer light",
+                    "hint": "Pointer light 0–1: at 0.4–0.7 a soft glow follows the mouse across the glass (the light source moves and the glass reflections move with it — more like real lighting than a single specular spot). Empty = off"
+                },
+                "glass-dispersion": {
+                    "label": "Edge dispersion",
+                    "hint": "Edge dispersion 0–1: at 0.3–0.55 two thin bright lines appear on the glass edge, warm (top-left) and cool (bottom-right), mimicking refraction splitting light into colors. Empty = off"
+                },
+                "glass-caustic": {
+                    "label": "Flowing caustics",
+                    "hint": "Flowing caustics 0–1: at 0.3–0.6 a soft glow behind the glass slowly swells and shrinks, like light from a water surface shimmering through glass; differs from \"Surface sheen\" in both direction and rhythm. Empty = off"
+                }
+            }
+        },
+        "editor": {
+            "group": {
+                "ariaLabel": "{{group}} group (click to expand/collapse)",
+                "changedCount": "{{count}} changed",
+                "totalCount": "{{count}} items"
+            },
+            "groups": {
+                "expandAll": "Expand all",
+                "collapseAll": "Collapse all"
+            },
+            "row": {
+                "nativeValue": "Native {{value}}",
+                "emptyIsNative": "Empty = native",
+                "nativeSyntax": "Native value: {{value}}",
+                "alreadyNative": "This row is already at its native value",
+                "editReverted": "Row change undone",
+                "nativeValueTitle": "Native value: {{value}}",
+                "noUniformNative": "This variable has no single native value",
+                "clear": "Clear",
+                "clearTitle": "Clear this row = revert to the N.E.K.O native value",
+                "clearAria": "Clear {{label}}",
+                "copyTitle": "Copy this row's value (paste it into another row, even in the other light/dark set)",
+                "copyAria": "Copy {{label}}",
+                "pasteTitle": "Paste the last copied (or clipboard) value into this row",
+                "pasteAria": "Paste into {{label}}",
+                "stateCleared": "Cleared",
+                "stateChanged": "Changed",
+                "copyEmpty": "This row is empty (native value); nothing to copy",
+                "copied": "Copied the value of \"{{label}}\": {{value}}",
+                "pasteEmpty": "Nothing to paste from the clipboard (you can also click a row's copy button first)",
+                "pasteRejected": "\"{{label}}\" does not accept this value: {{value}}",
+                "pasted": "Pasted into \"{{label}}\""
+            },
+            "preview": {
+                "filterTitle": "Preview: {{value}} (applies only to the stripes behind the preview strip)",
+                "filterNone": "No filter chain to preview (empty = no effect)",
+                "gradientTitle": "Preview: {{value}}",
+                "gradientNone": "No gradient to preview (empty = no effect)",
+                "filterHost": "Filter preview: the stripes behind are processed by the current filter chain",
+                "gradientHost": "Gradient preview",
+                "modeDark": "Dark",
+                "modeLight": "Light",
+                "hoverSuffix": " · Previewing \"{{name}}\""
+            },
+            "switch": {
+                "label": "Toggle",
+                "nativeTitle": "Native look = on",
+                "nativeOn": "Native: on"
+            },
+            "color": {
+                "swatchAria": "{{label}} color picker",
+                "valueAria": "{{label}} color value",
+                "opacityAria": "{{label}} opacity",
+                "alphaLabel": "Alpha",
+                "alphaNoColor": "The current value has no color (transparent / inherit / empty); enter a color first, then adjust opacity",
+                "alphaTransparent": "The current value has no color (transparent); enter a color first, then adjust opacity",
+                "alphaReuse": "Dragging opacity reuses the previous color"
+            },
+            "image": {
+                "fileAria": "{{label}}: choose image file",
+                "pick": "Choose image",
+                "pickAria": "Choose {{label}}",
+                "clear": "Remove",
+                "clearAria": "Remove {{label}}",
+                "hint": "The image is drawn on top of the background color",
+                "readFailed": "Failed to read the image",
+                "readFailedDetail": "Failed to read the image: {{reason}}",
+                "uploading": "Uploading background image…",
+                "noUrl": "The backend did not return an image URL",
+                "selected": "Background image selected",
+                "uploadFailedDetail": "Background image upload failed: {{reason}}",
+                "uploadFailed": "Background image upload failed",
+                "current": "Current background image",
+                "none": "No background image (follows native)"
+            },
+            "gradient": {
+                "angleAria": "{{label}} gradient angle",
+                "fromAria": "{{label}} start color",
+                "toAria": "{{label}} end color",
+                "generate": "Generate",
+                "generateTitle": "Build a linear-gradient from the angle and start/end colors and put it in the input",
+                "generateAria": "Generate {{label}}",
+                "angle": "Angle"
+            },
+            "freshness": {
+                "reloading": "The panel has been updated to v{{remote}} (this page is still v{{local}}); reloading…"
+            },
+            "compare": {
+                "chatBg": "Chat background",
+                "panelBg": "Panel background",
+                "userBubble": "User bubble",
+                "aiBubble": "AI bubble",
+                "bubbleText": "Bubble text",
+                "accent": "Accent color",
+                "shellRadius": "Shell corner radius",
+                "chatBlur": "Frosted glass blur",
+                "same": "This theme matches the current palette on these items and differs only in details — just check the preview above."
+            },
+            "value": {
+                "empty": "(empty)"
+            },
+            "aiPrompt": {
+                "title": "# N.E.K.O theme: {{name}}",
+                "intro1": "You are a color designer. Below is the theme I'm currently using (CSS variables for the N.E.K.O chat window).",
+                "intro2": "Please improve it and output the **complete** result in the same two-part structure so I can paste it straight back into the panel.",
+                "rulesHeading": "Hard constraints:",
+                "rule1": "1. Use only the variable names that appear below; don't add variables that don't exist, and don't remove any;",
+                "rule2": "2. Colors use #rrggbb / rgba() / transparent; lengths include px; blur is written like blur(18px);",
+                "rule3": "3. The light set goes in vars and the dark set in dark_vars; both must be complete;",
+                "rule4": "4. Body text vs. background contrast at least 4.5:1, secondary text at least 3:1 (the panel checks contrast);",
+                "rule5": "5. Output only one {{fence}}json code block containing {\"name\": \"...\", \"vars\": {...}, \"dark_vars\": {...}}.",
+                "changesHeading": "The {{count}} items I changed this time (focus on these):",
+                "changeLine": "- {{mode}} {{label}}: {{before}} → {{after}}",
+                "currentPalette": "Current palette:",
+                "modalTitle": "AI prompt · {{name}}",
+                "modalHint": "Copy it and paste it into any AI (ChatGPT / Claude / a local model all work). Once it edits per the variable contract, paste the returned JSON back via \"Import\"."
+            },
+            "dump": {
+                "expand": "Expand JSON",
+                "collapse": "Collapse JSON",
+                "saved": "Saved: {{light}} light / {{dark}} dark",
+                "pending": "; plus {{count}} unapplied changes — the JSON above already reflects them (copying it gives the edited result); click \"Apply\" to write them to the server.",
+                "noPending": "; no unapplied changes."
+            },
+            "meta": {
+                "defaultName": "Default"
+            },
+            "changes": {
+                "reverted": "Undid the change to \"{{label}}\"",
+                "revertAllConfirm": "Undo all {{count}} unapplied changes? This cannot be reversed.",
+                "revertedAllNotice": "Undid {{count}} unapplied changes (the palette on the server is untouched).",
+                "revertedAll": "All changes undone",
+                "undo": "Undo",
+                "undoAria": "Undo the change to \"{{label}}\""
+            },
+            "apply": {
+                "withCount": "Apply ({{count}} changes)",
+                "label": "Apply"
+            }
+        },
+        "actions": {
+            "modeHint": {
+                "lightOnly": "Note: only the \"Light\" group changed this time — if the app is in dark mode, nothing will look different (the two groups are independent).",
+                "darkOnly": "Note: only the \"Dark\" group changed this time — if the app is in light mode, nothing will look different (the two groups are independent)."
+            },
+            "savedModeHint": {
+                "lightOnly": "Currently only the \"Light\" group has custom entries (dark mode keeps the native look).",
+                "darkOnly": "Currently only the \"Dark\" group has custom entries (light mode keeps the native look)."
+            },
+            "paletteHint": {
+                "notLoaded": "The palette hasn't been loaded yet; you can still edit, and \"Apply\" will retry loading it.",
+                "empty": "The palette is empty: every component uses the native N.E.K.O look. Fill in any row and apply to see it take effect immediately.",
+                "saved": "{{total}} entries saved (light {{light}} / dark {{dark}}). Empty rows keep the native look; the two groups are independent, so configuring only one leaves the other mode unchanged."
+            },
+            "apply": {
+                "invalidNotice": "{{count}} row(s) have invalid input (red outline); apply was blocked.\nFix the values in the red boxes, or click \"Clear\" on that row.",
+                "invalidShort": "Invalid input, not applied",
+                "noChangesNotice": "Nothing to apply (0 variable changes, name/enabled unchanged, and no invalid red-outlined input).\nValues are recorded as you type — no need to leave the field. If you did change something, \"Revert group\" may have just undone it.",
+                "noChanges": "Nothing to apply",
+                "busy": "Applying…",
+                "partLight": "light: {{count}}",
+                "partDark": "dark: {{count}}",
+                "partEnabled": "theme enabled",
+                "partDisabled": "theme disabled",
+                "partName": "theme name \"{{name}}\"",
+                "partMaterials": "advanced materials",
+                "noVarChanges": "no variable changes",
+                "readbackFailedNote": "Saved, but reading it back failed; the panel is still marked \"not synced\" (change markers kept). Click \"Reload\".",
+                "partialNotice": "Applied ({{counts}}), but the backend rejected {{rejected}} entries; their values were put back in the panel so you can fix them in place:\n",
+                "partialToastRestored": "Applied ({{count}} rejected, restored to panel)",
+                "partialToast": "Applied ({{count}} rejected)",
+                "doneNotice": "Applied and saved to theme.json: {{counts}}",
+                "doneShort": "Applied {{counts}}",
+                "statusPendingFix": " ({{count}} to fix)",
+                "failedNotice": "Apply failed: {{error}}",
+                "failed": "Apply failed"
+            },
+            "readbackFailedSuffix": " (readback failed)",
+            "reset": {
+                "confirm": "Restore the built-in default theme? All current custom colors will be cleared.",
+                "busy": "Resetting…",
+                "done": "Default theme restored.",
+                "doneReadbackFailed": "Default theme restored.\nReading it back failed, so the panel may not show the latest values. Click \"Reload\".",
+                "doneShort": "Reset done",
+                "failedNotice": "Reset failed: {{error}}",
+                "failed": "Reset failed"
+            },
+            "export": {
+                "noFileContent": "The backend returned no file content",
+                "downloadedWithImages": "Downloaded: {{filename}}\n({{kb}} KB, {{images}} background image(s) included)",
+                "downloaded": "Downloaded: {{filename}}\n({{kb}} KB)",
+                "pendingConfirm": "You have {{count}} unapplied change(s).\nThe exported JSON comes from the theme.json saved on disk (without these unapplied changes). Export anyway?",
+                "busy": "Exporting…",
+                "hintPending": "Below is the palette JSON saved in theme.json (without {{count}} unapplied change(s)); copy it to keep or share.",
+                "hint": "Below is the current palette as JSON text; copy it to keep or share.",
+                "doneDownloadedPending": "Exported and downloaded (without unapplied changes)",
+                "doneDownloaded": "Exported and downloaded",
+                "downloadFailed": "File download failed ({{error}}); the JSON text is below for you to copy manually.",
+                "doneNoFile": "Exported (no file written)",
+                "title": "Export theme",
+                "failedNotice": "Export failed: {{error}}",
+                "failed": "Export failed"
+            },
+            "import": {
+                "title": "Import theme",
+                "hint": "Paste palette JSON text. Importing replaces everything; invalid entries are dropped by the backend.",
+                "empty": "Paste something first",
+                "tooLong": "The import is too long ({{length}} characters, limit {{max}}). Remove unnecessary content and try again.",
+                "failed": "Import failed",
+                "failedTooLong": "Import failed: content too long",
+                "textKept": "Your pasted text was kept; edit it and try again.",
+                "busy": "Importing…",
+                "partialNotice": "Imported, but the backend rejected {{count}} entries:\n",
+                "partialToast": "Imported (some entries rejected)",
+                "partialStatus": "Imported ({{count}} rejected)",
+                "partialStatusReadbackFailed": "Imported ({{count}} rejected, readback failed)",
+                "doneNotice": "Imported and saved to theme.json.",
+                "done": "Imported",
+                "failedNotice": "Import failed: {{error}}"
+            },
+            "readbackFailedNote": "Saved, but reading it back failed, so the panel may not show the latest values. Click \"Reload\".",
+            "readbackFailedHint": "Reading it back failed, so the panel may not show the latest values. Click \"Reload\"."
+        },
+        "library": {
+            "family": {
+                "glassy": "Liquid glass",
+                "gradient": "Gradient",
+                "dark": "Dark",
+                "light": "Light",
+                "texture": "Paper",
+                "minimal": "Minimal",
+                "custom": "Custom",
+                "other": "Other",
+                "favorites": "Favorites"
+            },
+            "empty": "The library is empty. Once you like your colors, click \"Save\" to keep them as your own theme; bring in .zip / .json files others share with \"Import\". You can switch back any time, and \"Share\" a theme as a zip.",
+            "item": {
+                "untitled": "Untitled",
+                "builtin": "Built-in",
+                "noTime": "No timestamp",
+                "counts": "Light {{light}} / Dark {{dark}}",
+                "hasImage": "Has background image",
+                "noMaterialTitle": "This theme has no advanced materials; applying it turns advanced materials off (your manual settings are kept)",
+                "noMaterial": "No materials",
+                "materialFallback": "Material",
+                "materialTitle": "Includes advanced materials: {{material}}",
+                "materialOffByDefault": " (off by default in this theme)",
+                "materialChip": "Material · {{material}}",
+                "noNote": "No description · click \"Edit\" to add one; it travels with the theme when shared",
+                "noNoteTitle": "The description shows on the card and is written into the shared package's theme.json",
+                "tagTitle": "Show only \"{{tag}}\" themes",
+                "favOn": "★ Favorited",
+                "favOff": "☆ Favorite",
+                "unfavAria": "Remove {{name}} from favorites",
+                "favAria": "Add {{name}} to favorites",
+                "unfavTitle": "Remove from favorites",
+                "favTitle": "Favorite (listed under \"Favorites\" and pinned to the top of \"All\")",
+                "edit": "Edit",
+                "editTitle": "Change name / note / tags (the id stays the same, so favorites and schedules still find it)",
+                "editAria": "Edit theme info for {{name}}",
+                "apply": "Apply",
+                "applyAria": "Apply theme {{name}}",
+                "share": "Share",
+                "shareTitle": "Export as zip (includes background images)",
+                "shareAria": "Share theme {{name}}",
+                "jsonTitle": "Copy as plain-text JSON (send it over; the other person pastes it in \"Import\")",
+                "jsonAria": "Copy theme JSON for {{name}}",
+                "delete": "Delete",
+                "deleteAria": "Delete theme {{name}}"
+            },
+            "filter": {
+                "all": "All"
+            },
+            "emptyState": {
+                "query": "No themes match \"{{query}}\". Try another word, or click \"All\" to clear the filters.",
+                "favorites": "No favorites yet: click \"☆ Favorite\" under a theme card. Favorites appear at the top of \"All\".",
+                "custom": "No custom themes yet: \"Import package\" brings in .zip / .json files others share, and clicking \"Save\" after tuning your colors stores them here too.",
+                "tag": "No themes tagged \"{{tag}}\". Click \"All\" to see everything.",
+                "family": "No themes in this style yet. Try another style or \"All\"."
+            },
+            "loadFailed": "Failed to load the library: {{error}}",
+            "shuffle": {
+                "none": "No built-in themes to shuffle yet",
+                "picked": "Something different: {{name}}"
+            },
+            "save": {
+                "busy": "Saving to the library…",
+                "currentTheme": "Current theme",
+                "doneWithNote": "Saved \"{{name}}\" to Custom (description included; it travels with the theme when shared)",
+                "done": "Saved \"{{name}}\" to Custom",
+                "doneStatus": "Saved to custom themes",
+                "failedNotice": "Failed to save to the library: {{error}}",
+                "failed": "Save failed",
+                "failedStatus": "Failed to save to the library"
+            },
+            "apply": {
+                "busy": "Switching theme…",
+                "thisTheme": "this theme",
+                "materialOff": "; advanced materials turned off (this theme has none)",
+                "materialSwitched": "; materials switched to the theme's own",
+                "materialLocked": "; materials are locked (your manual settings were kept)",
+                "switched": "Switched to \"{{name}}\"",
+                "doneStatus": "Theme switched",
+                "failedNotice": "Failed to switch theme: {{error}}",
+                "failed": "Switch failed",
+                "failedStatus": "Failed to switch theme"
+            },
+            "share": {
+                "busy": "Packaging…",
+                "noContent": "The backend returned no package content",
+                "doneWithImages": "Exported {{filename}} ({{images}} image(s) included)",
+                "done": "Exported {{filename}}",
+                "doneStatus": "Share package exported",
+                "failedNotice": "Failed to export the share package: {{error}}",
+                "failedStatus": "Failed to export the share package"
+            },
+            "json": {
+                "busy": "Generating theme JSON…",
+                "noContent": "The backend returned no JSON content",
+                "hint": "This is \"{{name}}\" as a plain-text theme (light {{light}} / dark {{dark}}). Send it to someone and they can paste it in \"Import\" to use it.",
+                "imagesStripped": "Note: this theme uses {{count}} background image(s). Images can't go into text, so they were removed from the JSON (the recipient gets a solid background). To share with images, use \"Share\" to export a zip.",
+                "title": "Theme JSON · {{name}}",
+                "doneStatus": "Theme JSON ready; click \"Copy and close\" to copy it",
+                "failedNotice": "Failed to generate theme JSON: {{error}}",
+                "failed": "Generation failed",
+                "failedStatus": "Failed to generate theme JSON"
+            },
+            "meta": {
+                "title": "Edit theme info · {{name}}",
+                "hint": "Only the name, note and tags change. The entry id stays the same — favorites and \"Auto-switch by time\" refer to it, so renaming won't break them.",
+                "nameRequired": "Name can't be empty",
+                "saving": "Saving…",
+                "unchanged": "Nothing changed; left as is",
+                "updated": "Updated \"{{name}}\"",
+                "updatedStatus": "Theme info updated",
+                "failedNotice": "Failed to update theme info: {{error}}",
+                "failed": "Update failed; see the message on the left"
+            },
+            "delete": {
+                "confirmButton": "Confirm delete",
+                "scheduledNotice": "\"{{name}}\" is used by auto-switch ({{slots}}). After deleting it, those slots will keep whatever theme is active and won't switch.",
+                "clickAgainScheduled": "Click \"Confirm delete\" again to delete it (it's used by auto-switch)",
+                "clickAgain": "Click \"Confirm delete\" again to delete it",
+                "busy": "Deleting…",
+                "done": "Deleted",
+                "doneStatus": "Library entry deleted",
+                "failedNotice": "Delete failed: {{error}}",
+                "failed": "Delete failed"
+            },
+            "file": {
+                "readFailed": "Failed to read the file",
+                "readFailedNotice": "Failed to read the file: {{error}}"
+            },
+            "importArchive": {
+                "busy": "Importing share package…",
+                "untitled": "Untitled theme",
+                "doneWithImages": "Imported \"{{name}}\" into the library ({{images}} background image(s) included)",
+                "done": "Imported \"{{name}}\" into the library",
+                "notApplied": "It isn't active yet — click \"Apply\" in the list to switch to it.",
+                "doneShort": "Imported into the library",
+                "failedNotice": "Failed to import the share package: {{error}}",
+                "failedStatus": "Failed to import the share package"
+            },
+            "backup": {
+                "empty": "The library is empty; there's nothing to back up",
+                "busy": "Packaging the library…",
+                "doneTitle": "Library backed up ({{count}} themes)",
+                "restoreHint": "After switching computers or reinstalling, choose this zip in \"Restore backup\" to get the whole set back (adds only, never overwrites).",
+                "done": "Backed up {{count}} themes",
+                "doneStatus": "Library backed up",
+                "failedNotice": "Library backup failed: {{error}}",
+                "failed": "Backup failed",
+                "failedStatus": "Library backup failed"
+            },
+            "restore": {
+                "readFailedNotice": "Failed to read the backup: {{error}}",
+                "busy": "Restoring the library…",
+                "done": "Restored {{count}} themes from the backup into the library",
+                "skippedItem": "· {{name}}: {{reason}}",
+                "skipped": "{{count}} could not be restored:",
+                "notApplied": "Restored themes are only added to the library; click \"Apply\" to switch to one.",
+                "doneShort": "Restored {{count}} themes",
+                "doneStatus": "Library restored",
+                "failedNotice": "Library restore failed: {{error}}",
+                "failed": "Restore failed",
+                "failedStatus": "Library restore failed"
+            },
+            "schedule": {
+                "zone": {
+                    "morning": "Morning",
+                    "day": "Daytime",
+                    "evening": "Evening",
+                    "night": "Night"
+                },
+                "weekend": "Weekend",
+                "weekday": "Weekday",
+                "windowOvernight": "{{start}}–{{end}} (next day)",
+                "optionNone": "(Don't switch, keep as is)",
+                "groupBuiltin": "Built-in themes",
+                "groupCustom": "My themes",
+                "missing": "{{name}} (no longer exists)",
+                "saveDirty": "Save *",
+                "save": "Save",
+                "saveDirtyTitle": "You have unsaved choices (click to save)",
+                "saveTitle": "Save the weekday and weekend time-slot choices",
+                "selectAria": "Theme for {{day}} {{zone}}",
+                "slotLabel": "{{day}} {{zone}}",
+                "nowUnknown": "The current time slot hasn't been loaded yet.",
+                "loading": "Loading…",
+                "notPicked": "None (keep as is)",
+                "nowHead": "It's {{day}} {{zone}} now ({{hour}}:00)",
+                "nowDisabled": "; auto-switch is off.",
+                "nowWillSwitchWeekend": "; it will switch to \"{{theme}}\" (weekend table).",
+                "nowWillSwitch": "; it will switch to \"{{theme}}\".",
+                "nowStale": "; {{count}} slot(s) point to themes no longer in the library (re-import that theme or pick another to fix it).",
+                "nowNotPicked": "; no theme is picked for this slot, so nothing will switch.",
+                "loadFailed": "Failed to load the schedule: {{error}}",
+                "saving": "Saving auto-switch…",
+                "savedSwitched": "Saved and switched to \"{{name}}\"",
+                "savedSwitchedStatus": "Auto-switch is active",
+                "savedDisabled": "Saved (auto-switch is off)",
+                "savedDisabledStatus": "Auto-switch is off",
+                "savedNoTheme": "Saved; no theme picked for the current slot",
+                "savedStatus": "Auto-switch saved",
+                "saveFailedNotice": "Failed to save auto-switch: {{error}}",
+                "saveFailedStatus": "Failed to save auto-switch"
+            }
+        },
+        "sync": {
+            "blockerDirty": "{{count}} unapplied change(s)",
+            "blockerModal": "a dialog is being edited",
+            "blockerBusy": "the previous action is still running",
+            "blockerUnknown": "unfinished operations",
+            "reasonSeparator": ", ",
+            "blockedNotice": "The theme on disk was changed externally (possibly by scheduled switching or another window).\nPanel state: {{reasons}}. To avoid overwriting your edits, it was not refreshed automatically.\nTo catch up now: apply or \"Revert this group\" to clear the panel's edits; to discard them and catch up directly, click \"Reload\".",
+            "blockedToast": "Theme on disk changed; not overwritten automatically",
+            "failureNotice": "The panel failed to read theme.json {{count}} times in a row; following external changes is temporarily unavailable.\nYou can still edit manually; if this persists, check \"Status\" to see whether the theme service is working.",
+            "failureStatus": "External change detection unavailable",
+            "syncedToast": "Synced external change: {{name}}",
+            "syncedStatus": "Synced external change",
+            "loadedNotice": "Loaded current theme: {{light}} light / {{dark}} dark",
+            "loadedStatus": "Loaded · light {{light}} / dark {{dark}}",
+            "loadFailedNotice": "Load failed: {{error}}\n(The theme service may not be responding; you can keep editing, and \"Apply\" will retry.)",
+            "loadFailedStatus": "Load failed",
+            "reloadConfirm": "The panel has {{count}} unapplied change(s).\n\"Reload\" will discard them (cannot be undone). Continue?",
+            "reloadDiscarded": "Reloaded; discarded {{count}} unapplied change(s)."
+        },
+        "misc": {
+            "untitled": "Untitled",
+            "untitledTheme": "Untitled theme",
+            "revertNoneDark": "No changes in the dark group",
+            "revertNoneLight": "No changes in the light group",
+            "revertedDark": "Dark group changes reverted",
+            "revertedLight": "Light group changes reverted",
+            "dropMultiple": "Only one file can be imported at a time; using the first one",
+            "dropUnsupportedNotice": "Only .zip share packages or .json theme files can be dropped here.",
+            "dropUnsupportedToast": "Unsupported file type",
+            "dropBusy": "Busy; drop the file again once this step finishes",
+            "dropReading": "Reading \"{{name}}\"…",
+            "cssBlockLight": "{{name}} · light",
+            "cssBlockDark": "{{name}} · dark",
+            "cssHeader": "{{name}} - exported from N.E.K.O Theme Studio ({{date}})",
+            "cssEmpty": "The current palette is empty; there are no variables to export",
+            "variant": {
+                "warm": "Warmer",
+                "cool": "Cooler",
+                "bright": "Brighter",
+                "deep": "Deeper"
+            },
+            "variantLabel": "Variant · {{label}}",
+            "variantNoColors": "The current palette has no color variables to adjust",
+            "wallpaperFilled": "Filled in {{count}} variables (Ctrl+Z to undo)",
+            "wallpaperGenerated": "Generated a full palette from \"{{label}}\": check how it looks, click \"Apply\" if you like it, or press Ctrl+Z to undo.",
+            "wallpaperDefaultName": "Wallpaper",
+            "wallpaperNotImage": "Please choose an image (png / jpg / webp / gif)",
+            "wallpaperTooLarge": "Image is too large (max 12 MB); compress it and try again",
+            "wallpaperReadFailed": "Could not read this image; try another one",
+            "wallpaperDecodeFailed": "Could not decode this image; try another one",
+            "wallpaperNoColors": "No usable colors found in this image (it may be mostly transparent)",
+            "wallpaperFailed": "Failed to generate palette: {{error}}",
+            "glow": {
+                "low": "Low",
+                "medium": "Medium",
+                "high": "High"
+            },
+            "glowApplied": "Glow intensity set to \"{{label}}\" (four variables, Ctrl+Z to undo)",
+            "font": {
+                "system": "System default",
+                "sans": "Sans-serif",
+                "mono": "Monospace"
+            },
+            "fontApplied": "Font switched to \"{{label}}\" (click \"Apply\" to take effect, Ctrl+Z to undo)",
+            "libraryCount": "{{count}} themes in the library",
+            "materialsLoadFailed": "The material center failed to load (materials.js not ready); refresh the panel to retry.",
+            "dropOverlay": "Drop to import a theme (.zip share package / .json)"
+        },
+        "health": {
+            "help": {
+                "noChange": {
+                    "title": "The theme is set but the UI did not change at all",
+                    "body": "Try in order: (1) make sure you picked colors in the panel and clicked \"Apply\"; (2) fully quit N.E.K.O and reopen it (open windows do not reload by themselves); (3) check the \"Window report\" line: if nothing has ever been reported, the chat window has not been opened yet."
+                },
+                "whyApply": {
+                    "title": "Why do I have to click \"Apply\" after every change?",
+                    "body": "Values in the panel are only a draft; \"Apply\" writes them to theme.json in the data directory. The chat window reads it every 1.5 seconds, so changes usually take effect within seconds."
+                },
+                "lightDark": {
+                    "title": "Light and dark are two independent palettes",
+                    "body": "The \"Light / Dark\" tabs at the top of the panel are independent. If you only changed the dark group, nothing changes while the app is in light mode."
+                },
+                "storage": {
+                    "title": "Where is the theme data stored?",
+                    "body": "Click \"Copy data directory\" on this card: theme.json (current theme), themes/ (theme library), backgrounds/ (background images), schedule.json (scheduled switching), diagnostics.json (loader reports)."
+                },
+                "migrate": {
+                    "title": "Moving to a new machine / reinstalling",
+                    "body": "Use \"Export\" at the bottom of the panel to create a share package (zip, including backgrounds) and import it on the new machine. The whole theme library can also be exported at once instead of one by one."
+                },
+                "background": {
+                    "title": "Why isn't the background image showing?",
+                    "body": "Background images are served by the app backend from backgrounds/ in the data directory. If the panel preview looks right after uploading but the chat window does not change, first check that \"Window report\" shows no errors and the current theme is enabled."
+                },
+                "modalTitle": "Theme not taking effect?",
+                "modalHint": "These are the most common Theme Studio issues. After making changes, quitting and reopening N.E.K.O usually shows the result."
+            },
+            "stateNoService": "Load failed: could not get the theme service status",
+            "key": {
+                "dataDir": "Data directory",
+                "currentTheme": "Current theme",
+                "vars": "Color variables",
+                "library": "Theme library",
+                "backgrounds": "Background images",
+                "loader": "Loader assets",
+                "report": "Window report",
+                "loaderState": "Loader state",
+                "loaderError": "Loader error",
+                "windowMismatch": "Window mismatch",
+                "styleMissing": "Styles not applied",
+                "windowLagging": "Window lagging"
+            },
+            "unknown": "Unknown",
+            "themeEnabled": "{{name}} (enabled)",
+            "themeDisabled": "Factory default colors (theme \"{{name}}\" is disabled; turn on the enable switch and click \"Apply\")",
+            "varsEmpty": "Still the empty factory theme: pick colors and click \"Apply\" for them to take effect",
+            "varsCount": "{{light}} light · {{dark}} dark",
+            "libraryCount": "{{custom}} custom · {{builtin}} built-in",
+            "backgroundCount": "{{count}}",
+            "loaderMissing": "Cannot read the two files under static/theme-studio/loader/",
+            "unknownPage": "Unknown page",
+            "reportStats": " · nts variables {{vars}} · style rules {{rules}}",
+            "loaderDisabled": "The report says the theme is disabled: turn on the panel's enable switch and click \"Apply\"",
+            "windowMismatch": "The reporting window {{page}} has not applied any variables: it still looks default; try refreshing it",
+            "styleMissing": "The report says {{count}} variables were injected but there are 0 style rules: the injected <style> was removed",
+            "windowLagging": "theme.json is already empty but the window still reports the previous {{count}} variables; it will catch up within 1.5 seconds",
+            "noReport": "No report received yet: it appears once the chat window has been opened",
+            "keyLabel": "{{key}}: ",
+            "stateOk": "All good: the theme is in effect",
+            "stateWarn": "Theme service is running, but a few things need attention",
+            "stateBad": "Problem: the theme may not be in effect",
+            "refreshedToast": "Status refreshed",
+            "stateLoadFailed": "Load failed: {{error}}",
+            "verifyMismatch": "The theme was written to theme.json, but the window has not applied it yet. Check \"Window mismatch / Styles not applied\" on the Status card, then refresh that window or restart the app.",
+            "dataDirMissing": "Data directory not loaded yet",
+            "dataDirCopied": "Data directory copied",
+            "dataDirNotice": "Data directory: {{path}}"
+        },
+        "modal": {
+            "copyAndClose": "Copy and close",
+            "save": "Save",
+            "ok": "OK",
+            "copied": "Copied to clipboard",
+            "copyFailedSelected": "Copy failed; the text is selected, press Ctrl+C to copy it manually",
+            "dumpCopied": "Palette JSON copied",
+            "copyFailedManual": "Copy failed; please select the text manually",
+            "cssTitle": "CSS variable snippet · {{name}}",
+            "cssCurrentPalette": "Current palette",
+            "cssHint": "Paste this CSS anywhere: light colors are under :root, dark under :root[data-theme=\"dark\"]. Variable names match the panel's column, and values already include your current edits (no need to \"Apply\" first)."
+        },
+        "guide": {
+            "focusHint": "Keyboard focus is held by the N.E.K.O main window: click the main window once (e.g. the chat input), then come back to type"
+        },
+        "materials": {
+            "mode": {
+                "dark": "Dark",
+                "light": "Light"
+            },
+            "error": {
+                "panelNotReady": "Panel API is not ready yet",
+                "backendDown": "The backend plugin may not be running",
+                "specFailed": "Failed to load the parameter list: {{error}}"
+            },
+            "preview": {
+                "compileFailed": "Preview compile failed: {{error}}",
+                "varCount": "{{count}} variables",
+                "metaLine": " · Preset {{preset}} · Quality {{quality}} · {{mode}}",
+                "readabilityWarn": "Glass base opacity is {{percent}}%, so text on top may be hard to read. Lower “Opacity” or “Tint strength” to restore contrast (the current setting still works, it just looks more solid).",
+                "bgLight": "Backdrop: light",
+                "bgDark": "Backdrop: dark",
+                "title": "Live preview · {{mode}}",
+                "off": "Materials off",
+                "compareTitle": "Show the original material (default parameters) on the right half to compare before and after while dragging sliders",
+                "compare": "Compare",
+                "bgTitle": "Toggle the preview wallpaper: light checks readability in light scenes, dark shows white-glass reflections",
+                "original": "Original",
+                "current": "Current",
+                "compiling": "Compiling preview…"
+            },
+            "nav": {
+                "overview": "Overview",
+                "base": "Base material",
+                "dye": "Glass tint",
+                "light": "Lighting",
+                "refract": "Refraction",
+                "liquid": "Liquid motion",
+                "surface": "Surface",
+                "anim": "Animation",
+                "components": "Components",
+                "presets": "Presets & quality"
+            },
+            "group": {
+                "baseSurface": "Base surface",
+                "dye": "Glass tint",
+                "edge": "Edge light",
+                "inner": "Inner highlight",
+                "ambient": "Ambient reflection",
+                "dynamic": "Dynamic lighting",
+                "refract": "Refraction",
+                "dispersion": "Dispersion",
+                "liquid": "Liquid motion",
+                "noise": "Noise",
+                "radius": "Corner radius",
+                "border": "Border",
+                "shadow": "Shadow",
+                "switches": "Switches",
+                "durations": "Durations",
+                "feedback": "Interaction feedback"
+            },
+            "row": {
+                "clearDarkTitle": "Clear this item's dark override and inherit the light value",
+                "clearDark": "Dark ✕",
+                "on": "On",
+                "off": "Off"
+            },
+            "toast": {
+                "badColor": "Unsupported color format: {{value}} (use #rrggbb or rgb()/rgba())",
+                "presetClearedDark": "Switching presets clears dark overrides: {{count}} cleared (a preset replaces the whole set).",
+                "presetNameEmpty": "Give the preset a name first.",
+                "presetNameTaken": "“{{name}}” matches a built-in preset; pick another name.",
+                "presetSaved": "Saved as “{{name}}”. Click “Apply materials” to write it to disk.",
+                "presetDeleted": "Deleted custom preset “{{name}}”.",
+                "presetDeleteFailed": "Failed to delete preset: {{error}}",
+                "compResetAll": "All components now inherit the global material",
+                "followOn": "Materials will follow theme changes",
+                "followOff": "Materials locked: current settings are kept when switching themes",
+                "reverted": "Material changes discarded",
+                "darkCleared": "Cleared {{count}} dark overrides; everything now inherits light"
+            },
+            "search": {
+                "found": "Found {{count}} (across all views). Clear the search to return to the current view.",
+                "none": "No parameters match “{{query}}”."
+            },
+            "hint": {
+                "darkGlass": "In dark themes the glass base is darkened automatically (keeping your tint): the host's dark-mode text is light and would be unreadable on white, so dark mode shows dark glass.",
+                "lightDark": "Light and dark are tuned separately: dark only stores values that differ from light; everything else inherits light."
+            },
+            "overview": {
+                "status": "Current status",
+                "advanced": "Advanced materials",
+                "enabled": "Enabled",
+                "disabled": "Disabled",
+                "preset": "Material preset",
+                "quality": "Performance mode",
+                "darkOverrides": "Dark overrides",
+                "itemCount": "{{count}}",
+                "components": "Customized components",
+                "paramTotal": "Total parameters",
+                "quickPresets": "Quick presets",
+                "limits": "Scope and limits",
+                "limitsHint": "Advanced materials only affect color, blur, refraction, lighting, corner radius, border and shadow: display/position/size/overflow/z-index are never changed, so layout can't break; text contrast is guarded by the panel's readability check. Turning off the plugin or this switch removes the whole material layer and restores the original theme.",
+                "fallbackHint": "Environments without backdrop-filter (old engines / hardware acceleration disabled) fall back to solid semi-transparent color, so you never get half-rendered frosted glass."
+            },
+            "preset": {
+                "customDesc": "Custom preset · click to apply the whole set"
+            },
+            "presetDesc": {
+                "clear": "Clear glass, light tint",
+                "frosted": "Frosted matte, everyday reading",
+                "liquid": "Apple-style liquid glass: large radius, high saturation, top specular line and inner refraction",
+                "smoke": "Smoky dark tone, low saturation",
+                "soft": "Soft, low contrast, for long sessions",
+                "prism": "Prism dispersion, strong edge light"
+            },
+            "presets": {
+                "builtin": "Material presets",
+                "builtinHint": "A preset replaces the whole parameter set: after switching, all five sections reset to the preset's values, with nothing left over from the previous one.",
+                "mine": "My presets",
+                "delete": "Delete",
+                "mineEmpty": "No custom presets yet. Once the parameters look right, name and save them below (written to theme.json with “Apply materials”).",
+                "namePlaceholder": "Name the current material set (≤40 chars)",
+                "save": "Save as preset",
+                "mineHint": "Deleting a custom preset is written to disk immediately (no “Apply materials” needed); saving is submitted with “Apply materials” and is included in export/share packages.",
+                "quality": "Performance mode",
+                "qualityHint": "Power saver: half blur, no refraction/motion/noise/spotlight. High: stronger edge light and ambient reflection. Ultra: every effect at full.",
+                "reset": "Reset",
+                "resetDefaults": "Restore default material parameters"
+            },
+            "qualityDesc": {
+                "saver": "Battery first, half effects",
+                "balanced": "Balanced, default",
+                "high": "High quality, stronger lighting",
+                "ultra": "Ultra, every effect at full"
+            },
+            "comp": {
+                "inherit": "Inherit global",
+                "preset": "Use preset",
+                "custom": "Custom",
+                "presetNote": "Uses opacity / blur / radius / border / shadow from “{{preset}}”",
+                "inheritNote": "Follows the global material; no component-specific variables",
+                "hint": "Component materials only affect their component: “Inherit global” creates no component variables and never overrides global settings.",
+                "customCount": "{{count}} components customized",
+                "allInherit": "All components follow global",
+                "resetAll": "Inherit global for all",
+                "scopeHint": "Components only override opacity / blur / radius / border / shadow; color stays global so no part clashes with the rest.",
+                "stripHint": "The chips use the component variables directly: “Inherit global” falls back to global values, “Custom” updates instantly (they only illustrate color / radius / blur / border / shadow)."
+            },
+            "head": {
+                "dirty": "{{count}} material changes pending",
+                "clearDarkCount": "Clear dark overrides ({{count}})",
+                "title": "Advanced materials",
+                "searchPlaceholder": "Search parameters (e.g. radius / blur)",
+                "clearDark": "Clear dark overrides",
+                "enable": "Enable",
+                "followTitle": "When on, switching themes replaces the current settings with the theme's own materials; when off, your hand-tuned materials are kept",
+                "follow": "Follow theme",
+                "modeTitle": "Edit light and dark materials separately",
+                "qualityTitle": "Performance mode",
+                "revert": "Revert to saved",
+                "masterOff": "The theme main switch (“Enable theme” at the top of the panel) is off, so advanced materials won't take effect for now."
+            },
+            "sample": {
+                "tag": "Pal",
+                "message": "Live glass material preview",
+                "button": "Button",
+                "dialogTitle": "Dialog title",
+                "dialogBody": "Dialog content uses the “Dialog” component material."
+            }
+        },
+        "page": {
+            "title": "Theme Studio - Project N.E.K.O.",
+            "header": {
+                "title": "Theme Studio",
+                "paletteInfoAria": "Palette info"
+            },
+            "restartHint": {
+                "text": "On first use (or right after updating N.E.K.O), restart the N.E.K.O window once — otherwise the theme won't take effect in the chat interface.",
+                "dismiss": "Got it, don't show again"
+            },
+            "toolbar": {
+                "aria": "Toolbar",
+                "modeAria": "Light / dark mode",
+                "light": "Light",
+                "dark": "Dark",
+                "searchPlaceholder": "Search variables, names, or descriptions…",
+                "searchAria": "Search variables",
+                "searchClear": "Clear search",
+                "onlyDirtyTitle": "Show only variables changed or cleared in this session (including the other mode)",
+                "onlyDirty": "Changes only",
+                "toggleGroupsTitle": "Expand or collapse all variable groups (state is remembered)",
+                "themeName": "Theme name",
+                "themeNamePlaceholder": "Default",
+                "enabledTitle": "When off, the loader injects no styles into the app",
+                "enabled": "Enabled",
+                "undo": "Undo",
+                "redo": "Redo",
+                "revertModeTitle": "Discard unapplied changes in this mode",
+                "revertMode": "Revert mode"
+            },
+            "editor": {
+                "aria": "Variable editor",
+                "closeNotice": "Dismiss notice",
+                "noMatch": "No matching variables. Try another keyword, or turn off “Changes only”."
+            },
+            "preview": {
+                "aria": "Preview",
+                "title": "Live preview",
+                "userMessage": "What do you want to talk about tonight?",
+                "avatar": "N",
+                "aiMessage": "I'm listening~ Want to try a new color scheme?",
+                "link": "This is a link",
+                "chip": "Suggested chip",
+                "inputPlaceholder": "Say something…",
+                "send": "Send",
+                "compareCurrent": "Current",
+                "compareRehearsal": "Preview",
+                "foot": "The preview simulates this panel's edits with inline styles; the app window shows the actual result."
+            },
+            "health": {
+                "title": "Status",
+                "refreshAria": "Reload status",
+                "refreshTitle": "Reload",
+                "copyDirTitle": "Copy the folder containing theme data, for troubleshooting",
+                "copyDir": "Copy data folder",
+                "helpTitle": "View FAQ",
+                "help": "Why isn't it working?",
+                "foot1": "Theme variables are applied by the loader inside the chat window; its most recent diagnostics are shown here. The data folder contains ",
+                "foot2": " (current theme), ",
+                "foot3": " (theme library) and ",
+                "foot4": " (background images)."
+            },
+            "audit": {
+                "title": "Readability check",
+                "fixAllTitle": "Automatically adjust every text color below the threshold until it just passes (only fills in values; takes effect after you click “Apply”)",
+                "fixAll": "Auto-fix all",
+                "recheckTitle": "Re-scan the current colors against WCAG thresholds",
+                "recheck": "Recheck",
+                "foot": "Per WCAG 2.1: body text needs ≥ 4.5:1; secondary text / placeholders / chips / links need ≥ 3.0:1. Click an entry to jump to its variable row; “Auto-fix” only fills in suggested values and doesn't apply them."
+            },
+            "library": {
+                "title": "Theme library",
+                "searchPlaceholder": "Search name / description / tag",
+                "searchAria": "Search theme names, descriptions, or tags",
+                "shuffleTitle": "Switch to a random built-in theme; click again if you don't like it",
+                "shuffle": "Surprise me",
+                "refreshAria": "Refresh library list",
+                "refreshTitle": "Refresh list",
+                "saveNamePlaceholder": "Save as… (leave empty to use the current name)",
+                "saveNameAria": "Library entry name",
+                "saveTitle": "Save the current palette as a “Custom” theme",
+                "save": "Save",
+                "notePlaceholder": "One-line description (optional): what is this theme about? It's included when you share",
+                "noteAria": "Theme description (exported with the share package)",
+                "actionsAria": "Theme library actions",
+                "importTitle": "Import a shared .zip theme package or .json theme file into “Custom”",
+                "import": "Import",
+                "backupTitle": "Pack every theme in “Custom” into one zip on your desktop; get them all back after switching computers or reinstalling",
+                "backup": "Back up all",
+                "restoreTitle": "Restore the theme library from a zip made by “Back up all” (only adds, never overwrites existing themes)",
+                "restore": "Restore backup",
+                "wallpaperTitle": "Pick a wallpaper and auto-generate a full light/dark palette from its main colors (fills the panel only; takes effect after you click “Apply”)",
+                "wallpaper": "From wallpaper",
+                "variantsTitle": "Give the current colors a different mood: warmer / cooler / brighter / deeper (Ctrl+Z to undo)",
+                "variants": "Variants",
+                "familyAria": "Filter themes by style family",
+                "tagsAria": "Filter themes by tag",
+                "foot1": "The zip exported by “Share” contains ",
+                "foot2": " and the background images it uses, so others can grab the whole palette at once with “Import”; sending just ",
+                "foot3": " as a single file also imports fine. Favorites (☆) are listed first under “All”, and the “Favorites” and “Custom” categories let you see just the ones you care about.",
+                "foot4": "“Back up all” packs every theme in “Custom” into one zip (with background images); after switching computers or reinstalling, pick it with “Restore backup” — it only adds, never overwrites."
+            },
+            "quick": {
+                "title": "Quick tuning",
+                "glow": "Glow intensity",
+                "glowLow": "Low",
+                "glowMedium": "Medium",
+                "glowHigh": "High",
+                "font": "Font",
+                "fontAria": "Font presets",
+                "fontSystem": "System default",
+                "fontSans": "Sans-serif",
+                "fontMono": "Monospace",
+                "foot": "These two are one-click fills: they only put a set of variables into the editor, and nothing is written to the server until you click “Apply”; not happy? Ctrl+Z steps back."
+            },
+            "schedule": {
+                "title": "Switch themes by time of day",
+                "enabled": "Enabled",
+                "weekendToggle": "Use a separate schedule on weekends (Sat / Sun)",
+                "foot1": "When the time comes, the plugin rewrites the current theme and every window follows within 1–2 seconds, no app restart needed. Time slots use ",
+                "footLocalTime": "local time",
+                "foot2": "; leave a slot empty to keep whatever theme is in use at the time. Check the weekend option to make Saturday and Sunday different from weekdays (unchecked = reuse the weekday table)."
+            },
+            "changes": {
+                "title": "Pending changes",
+                "revertAllTitle": "Undo all of the changes below (colors saved on the server stay as they are)",
+                "revertAll": "Undo all",
+                "foot": "These changes exist only in this panel; they're written to the server when you click “Apply”. Undoing a single entry reverts only that row."
+            },
+            "dump": {
+                "title": "Current palette",
+                "aiPromptTitle": "Turn the current colors into a prompt and copy it, so any AI can keep refining them",
+                "aiPromptAria": "Copy prompt for AI",
+                "cssSnippetTitle": "Export the current colors as a CSS variables snippet",
+                "cssSnippetAria": "Export CSS variables snippet",
+                "toggleAria": "Collapse or expand palette JSON",
+                "copyAria": "Copy palette JSON",
+                "copyTitle": "Copy JSON"
+            },
+            "footer": {
+                "aria": "Actions",
+                "resetTitle": "Restore the built-in default theme and clear all custom colors",
+                "reset": "Reset",
+                "export": "Export",
+                "import": "Import",
+                "reload": "Reload",
+                "applyHint": "Apply"
+            },
+            "modal": {
+                "name": "Name",
+                "note": "Note",
+                "notePlaceholder": "Describe this palette in one line; leave empty to clear",
+                "tags": "Tags",
+                "tagsPlaceholder": "Comma-separated, up to 4 (12 characters each)",
+                "textAria": "Palette JSON",
+                "cancel": "Cancel"
+            }
+        }
     }
 }
