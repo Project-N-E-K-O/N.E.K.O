@@ -46,10 +46,7 @@ ctypes or a C extension can do all of the above without an audit event.
 
 Rules inside the hook: no IPC, no locks, no blocking and no re-entry. A
 record goes into a lock-free deque; a daemon thread sends batches to the host
-over the plugin's authenticated message uplink. One exception: ``os.exec``
-replaces the process before that thread would run again, so on that event the
-hook sends what is queued itself (non-blocking sends, a bounded lock wait)
-before the exec goes ahead.
+over the plugin's authenticated message uplink.
 
 Whether a use would be refused is judged from the grants the host sent down
 (``ctx.permissions``, the same resolved states the host's own checks use).
@@ -91,7 +88,6 @@ QUEUE_LIMIT = 1024
 BATCH_SIZE = 50
 FLUSH_INTERVAL = 1.0
 _POLL_INTERVAL = 0.1
-_EXEC_FLUSH_WAIT = 0.5
 DEDUP_SECONDS = 60.0
 _DEDUP_LIMIT = 4096
 _LOOKUP_SECONDS = 10.0
@@ -424,7 +420,6 @@ class SystemAuditor:
         self.dropped = 0
         self.errors = 0
         self._stop = threading.Event()
-        self._flush_lock = threading.Lock()
         self._thread: threading.Thread | None = None
 
     # -- configuration ------------------------------------------------------
@@ -450,13 +445,6 @@ class SystemAuditor:
         refusal = None
         try:
             refusal = self._handle(event, args, ident)
-        except Exception:
-            self.errors += 1
-        try:
-            if event == "os.exec" and refusal is None:
-                # The exec replaces this process (and the sender thread with
-                # it): send the queue now or it is lost.
-                self._flush_before_exec()
         except Exception:
             self.errors += 1
         finally:
@@ -817,20 +805,6 @@ class SystemAuditor:
 
     def flush(self) -> None:
         """Send what is queued (on the sender thread, or at close)."""
-        with self._flush_lock:
-            self._flush()
-
-    def _flush_before_exec(self) -> None:
-        # Waits at most for one batch the sender thread is sending; its own
-        # sends do not block (put_nowait).
-        if not self._flush_lock.acquire(timeout=_EXEC_FLUSH_WAIT):
-            return
-        try:
-            self._flush()
-        finally:
-            self._flush_lock.release()
-
-    def _flush(self) -> None:
         sender = self._sender
         while True:
             batch = self.take_batch()
