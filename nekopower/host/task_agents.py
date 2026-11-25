@@ -1372,8 +1372,8 @@ class TaskAgentManager(TreeWork):
         self._handing_back_to: dict[str, int] = {}
         # Commissions of hers that went to the member that works in a project without a
         # leader for being that member's project's, and say something plainly apart from
-        # what it works on (``Verdict.apart``), each with that member: looked at once, as
-        # the commission is queued behind it (``_try_beside``).
+        # what it works on (``Verdict.apart``), each with that member: from where it is
+        # queued (``submit``) to where it is looked at, once (``_try_beside``).
         self._apart: dict[str, str] = {}
         # The queued commissions the user is asked about, or that another member is being
         # made for: whether another member is to do them beside the busy one they wait
@@ -1820,12 +1820,17 @@ class TaskAgentManager(TreeWork):
         stops = self._idle_stops
         if commission.route != "task_agent":
             await self._ledger.update(commission.id, route="task_agent")
+        # Whether it was told apart from what the member it went to works on (``_give_session``):
+        # kept here, and on record only once it is queued behind that member (``_try_beside``).
+        apart: str | None = None
         if not self._closed:
             try:
                 commission = await self._out_of_copy(commission)
                 commission = await self._give_session(commission)
+                apart = self._apart.pop(commission.id, None)
             except asyncio.CancelledError:
                 self._excerpts.pop(commission.id, None)
+                self._apart.pop(commission.id, None)
                 raise
             except Exception as exc:  # noqa: BLE001 - the commission fails with the reason
                 logger.warning("giving commission %s a session failed: %s", commission.id, exc)
@@ -1909,6 +1914,8 @@ class TaskAgentManager(TreeWork):
             # carried on in a copy of the session meanwhile. Where it is not
             # looked at for that, or is not carried on after all, another
             # member may do it beside that session's (``_try_beside``).
+            if apart is not None:
+                self._apart[commission.id] = apart
             if not self._try_carry_on(commission):
                 self._try_beside(commission.id)
             return True
@@ -4530,9 +4537,6 @@ class TaskAgentManager(TreeWork):
         self._tree_commission_changed(commission, previous)
         if commission.status in ENDED_STATUSES:
             self._side_said.pop(commission.id, None)
-        if commission.status != "queued":
-            # Started, or over: no longer one that waits for a busy member (``_try_beside``).
-            self._apart.pop(commission.id, None)
         if (
             commission.status in ENDED_STATUSES
             and previous not in ENDED_STATUSES
@@ -4687,6 +4691,8 @@ class TaskAgentManager(TreeWork):
         if commission is None or commission.route != "task_agent":
             return False
         await self._give_session(commission)
+        # (Taken up again, it is not looked at for another member: ``_try_beside`` is for what is handed over.)
+        self._apart.pop(commission_id, None)
         return commission_id in self._session_of
 
     # -- events -----------------------------------------------------------
@@ -7153,6 +7159,10 @@ class TaskAgentManager(TreeWork):
                 commission_id,
                 "waiting_user",
                 reason="waiting for the user",
+                # Only one at work asks so: a queued one is asked about by ``_ask_beside`` alone
+                # (a session on its way out, whose commission was queued again meanwhile, is
+                # refused as it was before a queued commission could wait for the user at all).
+                only_from=("working",),
                 pending_question=json.dumps(question, ensure_ascii=False),
             )
             if not moved.applied or moved.commission is None:
@@ -10688,7 +10698,8 @@ class TaskAgentManager(TreeWork):
                 return
             holder = self._held_by.get(main)
             stands = await self._ledger.get(holder) if holder is not None else None
-            if stands is None or stands.status not in ("working", "waiting_user"):
+            if stands is None or stands.status not in ("working", "waiting_user") or stands.resting:
+                # (One that rests lets the session go: asked now, it would be taken back in a moment.)
                 return
             told = self._side_said.get(commission_id)
             if told is not None and told[2]:
@@ -10785,6 +10796,10 @@ class TaskAgentManager(TreeWork):
                 )
             # The model it is sent to, by its preset.
             await self.settle_model(member)
+            if commission_id not in self._queue:
+                # Stopped while its member was made: it is over, and is not put on record with
+                # the member (which stays, with nothing to do).
+                return
             await self._ledger.update(commission_id, session_id=member.id)
             # The member's on record from here on, whatever of the rest can be written.
             moved = member
@@ -10796,7 +10811,12 @@ class TaskAgentManager(TreeWork):
                 raise
             except Exception:  # noqa: BLE001 - the note is for the record; the commission is the member's
                 logger.warning("noting that commission %s got a member of its own failed", commission_id, exc_info=True)
-            await self._note_writer(member.id)
+            try:
+                await self._note_writer(member.id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - it is the member's all the same, and is looked at again as it starts
+                logger.warning("noting where the member made for commission %s works failed", commission_id, exc_info=True)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - it waits for the member as it would have

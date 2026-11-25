@@ -166,11 +166,16 @@ class Families:
             if session.id in busy and in_project and session.kind == "line":
                 # All that is under way in a member, as whether it is busy is asked of all its
                 # commissions: an early one that still is may not be among the few latest read above.
-                at_hand = [
-                    item
-                    for item in await self._ledger.select(session_id=session.id, statuses=UNDER_WAY_STATUSES)
-                    if item.id != commission.id and item.parent_id is None
-                ]
+                try:
+                    at_hand = [
+                        item
+                        for item in await self._ledger.select(session_id=session.id, statuses=UNDER_WAY_STATUSES)
+                        if item.id != commission.id and item.parent_id is None
+                    ]
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - held against the latest only, as before it was read whole
+                    logger.warning("reading all that is under way in member %s failed", session.id, exc_info=True)
             agents.append(
                 Agent(
                     id=session.id,

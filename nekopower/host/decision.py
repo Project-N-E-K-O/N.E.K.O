@@ -530,14 +530,15 @@ def read_answer(text: str, active: list[Commission]) -> Triage | None:
         # sentence that shares a word with the commission's title is new work, not an answer
         # that was not understood. (Where it does say one, the words tell which question it
         # answers, should several wait.)
+        question = commission.question() or {}
         says_no_answer = choice is None and not explicit
-        if tokens and not (says_no_answer and _quotes_its_commission(commission.question() or {})):
+        if tokens and not (says_no_answer and _quotes_its_commission(question)):
             question_tokens = token_set(_question_text(commission))
             score = len(tokens & question_tokens) / len(tokens)
         # A plain yes or no shares no word with the question it answers. It
         # still bears on a question that asks for exactly that: a permission,
         # or a confirmation a plugin asked for.
-        asks_yes_or_no = (commission.question() or {}).get("kind") in ("permission", "confirmation")
+        asks_yes_or_no = question.get("kind") in ("permission", "confirmation")
         if asks_yes_or_no and choice is not None:
             score += 0.5
         return score
