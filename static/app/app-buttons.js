@@ -2125,7 +2125,7 @@
         // 串门接管了输入框（转写期间才开始的也算）：和打字一样作为亲人句发给选中的收件人。
         // 普通文字链路会被串门运行时以 VISIT_INPUT_REFUSED_SOURCE 拒收
         if (visitOwnsComposerForAudioMessage()) {
-            return sendAudioTranscriptAsVisitLine(text, payload.requestId);
+            return sendAudioTranscriptAsVisitLine(text, payload);
         }
         var accepted = await mod.sendTextPayload(text, {
             source: 'react-chat-window',
@@ -2140,7 +2140,7 @@
             rerouteToVisit: true
         });
         if (accepted === AUDIO_MESSAGE_VISIT_REROUTE) {
-            return sendAudioTranscriptAsVisitLine(text, payload.requestId);
+            return sendAudioTranscriptAsVisitLine(text, payload);
         }
         if (accepted === false) {
             throw audioMessageRejection(
@@ -2157,14 +2157,26 @@
         );
     }
 
-    // 作为串门台词发出（visit-chat.js 等到回显或拒收才结算）：被拒以 busy 拒绝，草稿保留
-    async function sendAudioTranscriptAsVisitLine(text, requestId) {
-        var outcome = await window.nekoVisitChat.submitAudioTranscript({ text: text, requestId: requestId });
+    // 作为串门台词发出（visit-chat.js 等到回显或拒收才结算）：被拒以 busy 拒绝，草稿保留。
+    // 转写只属于录音时的角色：排队期间换了角色再开始串门，不能发进新角色的串门；
+    // 发送链路等开会话之后也按 expectedLanlanName 再核对一次
+    async function sendAudioTranscriptAsVisitLine(text, payload) {
+        if (payload.target !== currentAudioMessageTarget()) {
+            refreshAudioMessageAvailability();
+            throw audioMessageRejection('stale_target');
+        }
+        var outcome = await window.nekoVisitChat.submitAudioTranscript({
+            text: text, requestId: payload.requestId, expectedLanlanName: payload.target
+        });
         if (outcome === 'empty') {
             showAudioMessageNoSpeech();
             return true;
         }
-        if (outcome !== 'sent') throw audioMessageRejection('busy');
+        if (outcome !== 'sent') {
+            throw audioMessageRejection(
+                payload.target !== currentAudioMessageTarget() ? 'stale_target' : 'busy'
+            );
+        }
         return true;
     }
 

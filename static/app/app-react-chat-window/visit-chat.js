@@ -777,7 +777,7 @@
      * 把一句已过阶段检查的亲人句交出去：出本地气泡、记进等回显的列表、按当前收件人发 WS。
      * 返回 Promise<boolean>：false 表示前端自己没发出去（调用方决定怎么收尾）。
      */
-    function dispatchVisitLine(send, text, requestId, submitMethod) {
+    function dispatchVisitLine(send, text, requestId, submitMethod, expectedLanlanName) {
         var messageId = 'visit-local-' + requestId;
         var appState = window.appState;
         // 页面还没有普通文本会话：这句会先发开会话请求，串门路由只回 ack、并不起普通会话
@@ -788,17 +788,20 @@
         }
         submitSeq += 1;
         pendingLocal.push({ requestId: requestId, messageId: messageId, text: text.trim(), submitSeq: submitSeq });
+        var options = {
+            source: 'neko_visit:' + visit.recipient,
+            visitId: visit.visitId || '',
+            requestId: requestId,
+            // 串门只收文字：待发截图留在输入区，不上传、不清掉
+            ignoreComposerAttachments: true,
+            submitMethod: submitMethod,
+            visitLine: true,
+            skipAvatarInteractionDeferral: true
+        };
+        // 语音消息：发送链路等完开会话、真正发出前再核对一次录音时的角色
+        if (expectedLanlanName) options.expectedLanlanName = expectedLanlanName;
         try {
-            return Promise.resolve(send(text, {
-                source: 'neko_visit:' + visit.recipient,
-                visitId: visit.visitId || '',
-                requestId: requestId,
-                // 串门只收文字：待发截图留在输入区，不上传、不清掉
-                ignoreComposerAttachments: true,
-                submitMethod: submitMethod,
-                visitLine: true,
-                skipAvatarInteractionDeferral: true
-            })).then(function (ok) { return ok !== false; }, function () { return false; });
+            return Promise.resolve(send(text, options)).then(function (ok) { return ok !== false; }, function () { return false; });
         } catch (_) {
             return Promise.resolve(false);
         }
@@ -831,6 +834,9 @@
         var requestId = detail && typeof detail.requestId === 'string' ? detail.requestId : '';
         if (!requestId) return Promise.resolve('refused');
         if (!text || relayCleanIsEmpty(text)) return Promise.resolve('empty');
+        // 录音属于别的角色（排队期间换了角色）：不发进这一场串门
+        var expectedLanlanName = detail && typeof detail.expectedLanlanName === 'string' ? detail.expectedLanlanName : '';
+        if (expectedLanlanName && expectedLanlanName !== currentCatgirl().trim()) return Promise.resolve('refused');
         var refused = blockReason();
         if (refused) {
             toast(refusalToast(refused));
@@ -849,7 +855,7 @@
         return new Promise(function (resolve) {
             var waiter = { settle: resolve, timer: 0 };
             audioLineWaiters.set(requestId, waiter);
-            dispatchVisitLine(send, text, requestId, undefined).then(function (ok) {
+            dispatchVisitLine(send, text, requestId, undefined, expectedLanlanName).then(function (ok) {
                 if (!ok) {
                     markNotDelivered(requestId, true);
                     return;

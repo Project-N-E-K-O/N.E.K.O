@@ -48,14 +48,15 @@ function glueHarness({ visitActive = true, outcomes = ['sent'], text = '你好',
       isActive: () => flags.visitActive,
       async submitAudioTranscript(detail) {
         calls.visit.push(detail);
-        return queue.shift();
+        const next = queue.shift();
+        return typeof next === 'function' ? next(window) : next;
       },
     },
   };
   const mod = {
     async sendTextPayload(sentText, options) {
       calls.sent.push({ text: sentText, options });
-      return typeof sendResult === 'function' ? sendResult(flags) : sendResult;
+      return typeof sendResult === 'function' ? sendResult(flags, window) : sendResult;
     },
   };
   async function fetch(url, init) {
@@ -74,7 +75,8 @@ const payload = { requestId: '1764-abc', target: 'Neko', audio: 'AAAA', sampleRa
 test('during a visit the transcript goes out as a visit line, not ordinary chat text', async () => {
   const { api, calls } = glueHarness();
   assert.equal(await api.sendAudioMessagePayload(payload), true);
-  assert.deepEqual(JSON.parse(JSON.stringify(calls.visit)), [{ text: '你好', requestId: '1764-abc' }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.visit)),
+    [{ text: '你好', requestId: '1764-abc', expectedLanlanName: 'Neko' }]);
   assert.equal(calls.sent.length, 0);
 });
 
@@ -122,6 +124,29 @@ test('a visit that starts while the text is queued reroutes it to the visit line
   assert.equal(await api.sendAudioMessagePayload(payload), true);
   assert.equal(calls.sent.length, 1);
   assert.equal(calls.visit.length, 2);
+});
+
+test('switching characters while queued, then a visit starting, never sends to the new visit', async () => {
+  const { api, calls } = glueHarness({
+    visitActive: false,
+    sendResult: (flags, window) => {
+      window.lanlan_config.lanlan_name = 'Other';
+      flags.visitActive = true;
+      return 'visit_reroute';
+    },
+  });
+  const error = await rejection(api.sendAudioMessagePayload(payload));
+  assert.equal(error.message, 'stale_target');
+  assert.equal(calls.visit.length, 0);
+});
+
+test('a visit line refused after a character switch rejects as stale_target', async () => {
+  // The visit send path refuses when the character changed while it waited.
+  const { api } = glueHarness({
+    outcomes: [(window) => { window.lanlan_config.lanlan_name = 'Other'; return 'refused'; }],
+  });
+  const error = await rejection(api.sendAudioMessagePayload(payload));
+  assert.equal(error.message, 'stale_target');
 });
 
 test('the ordinary send path checks for a visit before the bubble and right before sending', () => {
@@ -418,6 +443,18 @@ test('visit: the visit ending while waiting counts as sent (the line may have ar
   assert.equal(result.value, 'sent');
   assert.equal(h.local('rec-1')[0].status, 'failed');
   assert.equal(h.chat.isActive(), false);
+});
+
+test('visit: a recording made for another character is not sent into this visit', async () => {
+  const h = visitHarness();
+  h.state('started');
+  assert.equal(await h.chat.submitAudioTranscript({ text: '你好', requestId: 'rec-1', expectedLanlanName: '别人' }), 'refused');
+  assert.equal(h.sendCalls.length, 0);
+  // The matching character is forwarded so the send path re-checks it after any wait.
+  h.track(h.chat.submitAudioTranscript({ text: '你好', requestId: 'rec-2', expectedLanlanName: '咪咪' }));
+  await settle();
+  assert.equal(h.sendCalls[0].options.expectedLanlanName, '咪咪');
+  assert.equal(h.sendCalls[0].options.visitLine, true);
 });
 
 test('visit: a second submission of a recording still in flight is not sent twice', async () => {
