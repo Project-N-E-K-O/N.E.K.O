@@ -1212,6 +1212,20 @@ SUPPLEMENT_CUE_PATTERNS = (
     r"\b(?:adem[aá]s|tambi[eé]n|por\s+cierto|en\s+vez\s+de|al[eé]m\s+disso|tamb[eé]m|a\s+prop[oó]sito|em\s+vez\s+de)\b",
 )
 
+# What a sentence that answers whether another member is to do a queued
+# commission says of that choice itself, beside a yes or a no: another one,
+# opening it, waiting, who said so (``decision._says_more_than_an_answer``).
+# Set aside with the yes and the no, not counted among the words that make a
+# sentence new work which says a yes or a no in passing.
+BESIDE_ANSWER_WORD_PATTERNS = (
+    r"另开|再开|新开|开一只|另一只|一只|新的|让它|让另一只|去做|等它|等着|等一下|做完|排队|就行|谢谢|请|用户|说|答应|它|吧",
+    r"\b(?:another|other|new|one|familiar|member|open|start|make|let|it|do|wait|waits|queue|later|busy|the\s+user|user|says|said|answers?|agrees?|allows?|declines?|refuses?|thanks|thank\s+you|please|go\s+for\s+it|for)\b",
+    r"もう一体|別の|新しい|お願い(?:します)?|待って|待ちます|ください|ありがとう",
+    r"하나\s*더|다른|새로|기다릴게|기다려|그렇게|해|부탁|고마워",
+    r"ещё\s+один|другой|подожд\w*|спасибо|пожалуйста",
+    r"\b(?:otro|outro|nuevo|novo|esper\w*|gracias|obrigad[oa]|por\s+favor)\b",
+)
+
 ANSWER_CUE_PATTERNS = (
     r"^\s*(?:回答|回复|回覆|答复|答覆|告诉它|告訴它|告诉使魔|告訴使魔)",
     r"^\s*(?:answer|reply|tell\s+(?:it|the\s+familiar))\b",

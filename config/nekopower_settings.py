@@ -258,6 +258,22 @@ characters makes four. Set where
 ten scenarios and four sentences of the measurements fall apart: those that
 go on with a member's work share four to eight, the others none or one."""
 
+BESIDE_ANSWER_WORDS_MAX = 2
+"""Most words of its own a sentence may say, beside a yes or a no, and be
+taken for the answer to whether another member is to do a queued commission
+(``decision._says_more_than_an_answer``): what says yes or no, what says it
+answers, what speaks of the choice itself (``BESIDE_ANSWER_WORD_PATTERNS``)
+and the question's own words are not counted. One that says more, or adds
+something ("also", "by the way"), is new work that says a yes or a no in passing,
+and is dispatched as such. Owner, 2026-11-25: "three and more" is new work.
+Measured with ``tests/unit/nekopower/fixtures/beside_answer_sentences.json``:
+of 40 requests written by a model that did not know the rule, none is taken
+for an answer (32 were before this was counted); of its 39 answers, 14 are
+taken for new work (3 of them say no yes or no at all, and were before). Of
+the 17 requests written beside the rule, 3 short ones are taken for answers
+(17 were before). With none allowed, 23 of the 39 answers would be new work;
+with three allowed, 7 of the 17 requests would be answers."""
+
 ORCHESTRATOR_APART_MIN_WORDS = 4
 """A sentence is told to be about something else than what a member works
 on only when it says this many words of its own (as the retrieval counts

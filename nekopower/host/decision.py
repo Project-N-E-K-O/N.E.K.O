@@ -367,6 +367,7 @@ class _Cues:
                 "always": _patterns(texts.PERMISSION_ALWAYS_PATTERNS),
                 "once": _patterns(texts.PERMISSION_ONCE_PATTERNS),
                 "capability_question": _patterns(texts.CAPABILITY_QUESTION_PATTERNS),
+                "beside_answer": _patterns(texts.BESIDE_ANSWER_WORD_PATTERNS),
             }
         return cls._loaded[name]
 
@@ -470,6 +471,29 @@ def _quotes_its_commission(question: dict[str, Any]) -> bool:
     return question.get("kind") == "permission" and isinstance(detail, dict) and detail.get("tool") == "beside"
 
 
+def _says_more_than_an_answer(text: str, question_tokens: frozenset[str]) -> bool:
+    """Whether a sentence that says a yes or a no says more than an answer to a question that quotes its commission.
+
+    It adds something (``supplement``), or what says yes or no (and for how
+    long), what says it answers and what speaks of the choice itself
+    (another member, waiting, who said so: ``BESIDE_ANSWER_WORD_PATTERNS``)
+    set aside, more words of its own are left that are not the question's
+    than an answer says (``BESIDE_ANSWER_WORDS_MAX``). It is then new work
+    that says a yes or a no in passing ("make sure the checkout page loads
+    fast"); a long answer is taken for new work as well, which the user
+    sees, with the question still open.
+    """
+    from config.nekopower_settings import BESIDE_ANSWER_WORDS_MAX
+    from nekopower.host.orchestrator import content_tokens
+
+    if has_cue("supplement", text):
+        return True
+    rest = text
+    for name in ("answer", "deny", "session", "always", "once", "beside_answer"):
+        rest = strip_cues(name, rest)
+    return len(content_tokens(rest) - question_tokens) > BESIDE_ANSWER_WORDS_MAX
+
+
 def _single_best(scored: list[tuple[float, Commission]]) -> Commission | None:
     """Return the commission with the highest score when it stands alone at the top."""
     ranked = sorted(scored, key=lambda item: item[0], reverse=True)
@@ -531,9 +555,13 @@ def read_answer(text: str, active: list[Commission]) -> Triage | None:
         # that was not understood. (Where it does say one, the words tell which question it
         # answers, should several wait.)
         question = commission.question() or {}
+        quotes = _quotes_its_commission(question)
         says_no_answer = choice is None and not explicit
-        if tokens and not (says_no_answer and _quotes_its_commission(question)):
-            question_tokens = token_set(_question_text(commission))
+        question_tokens = token_set(_question_text(commission))
+        if quotes and choice is not None and not explicit and _says_more_than_an_answer(text, question_tokens):
+            # New work that says a yes or a no in passing, while this waits: no answer to it.
+            return 0.0
+        if tokens and not (says_no_answer and quotes):
             score = len(tokens & question_tokens) / len(tokens)
         # A plain yes or no shares no word with the question it answers. It
         # still bears on a question that asks for exactly that: a permission,
