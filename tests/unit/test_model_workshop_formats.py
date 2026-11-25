@@ -1383,3 +1383,45 @@ def test_sparse_accessor_preserves_loaded_vertex_layout(tmp_path, stride, sparse
     else:
         with pytest.raises(ModelFormatError, match='unsupported_model_structure'):
             validate_model_bundle(path)
+
+
+@pytest.mark.parametrize('mode', ['absent', *range(7), 7, -1, '4', '5', 5.5, 4.0, True, False, None, {}, []])
+def test_vrm_primitive_mode_matches_loader_support(tmp_path, mode):
+    def graph(data):
+        data['accessors'] = [{'componentType': 5126, 'type': 'VEC3', 'count': 3}]
+        primitive = {'attributes': {'POSITION': 0}}
+        if mode != 'absent': primitive['mode'] = mode
+        data['meshes'] = [{'primitives': [primitive]}]
+        data['nodes'][0]['mesh'] = 0
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
+    if mode == 'absent' or type(mode) in (int, float) and mode in range(7):
+        assert validate_model_bundle(path).model_format == 'vrm'
+    else:
+        with pytest.raises(ModelFormatError): validate_model_bundle(path)
+
+
+@pytest.mark.parametrize('stride,sparse,valid', [(None, False, True), (None, True, True), (8, False, True), (8, True, False)])
+def test_padded_matrix_uses_loader_item_width_for_interleaving(tmp_path, stride, sparse, valid):
+    def graph(data):
+        sparse_accessors(data, count=4, backed=True)
+        data['accessors'][0].update(type='MAT2', componentType=5121)
+        if stride is None: data['bufferViews'][1].pop('byteStride')
+        else: data['bufferViews'][1]['byteStride'] = stride
+        if not sparse: data['accessors'][0].pop('sparse')
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
+    if valid:
+        assert validate_model_bundle(path).model_format == 'vrm'
+    else:
+        with pytest.raises(ModelFormatError, match='unsupported_model_structure'): validate_model_bundle(path)
+
+
+def test_padded_interleaved_matrix_attributes_share_the_conversion_clone(tmp_path):
+    def graph(data):
+        data['buffers'].append({'byteLength': 32, 'uri': 'data:application/octet-stream;base64,' + base64.b64encode(bytes(32)).decode()})
+        data['bufferViews'].append({'buffer': 1, 'byteLength': 32, 'byteStride': 8})
+        data['accessors'] = [{'bufferView': 1, 'componentType': 5121, 'type': 'MAT2', 'count': 4},
+                             {'componentType': 5126, 'type': 'VEC3', 'count': 4}]
+        data['meshes'] = [{'primitives': [{'attributes': {'POSITION': 1, '_A': 0, '_B': 0}, 'mode': 5}]}]
+        data['nodes'][0]['mesh'] = 0
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
+    assert validate_model_bundle(path, format_limits=FormatLimits(vrm_accessor_bytes=210)).model_format == 'vrm'
