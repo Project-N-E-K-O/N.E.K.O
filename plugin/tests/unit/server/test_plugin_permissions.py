@@ -1685,16 +1685,56 @@ def test_the_directory_is_chosen_from_the_paths_the_key_was_made_of(monkeypatch,
     assert permission_service.current_source("demo").channel == "manual"
 
 
+def test_a_config_file_gone_for_a_moment_does_not_file_another_source_under_its_key(monkeypatch, tmp_path):
+    # A and B both exist when the key is made; A vanishes for the lookup and
+    # comes back. The source under that key must still be A's.
+    from plugin.server.infrastructure import config_paths
+
+    first, second = tmp_path / "a" / "plugin.toml", tmp_path / "b" / "plugin.toml"
+    for config in (first, second):
+        config.parent.mkdir()
+        config.write_text("", encoding="utf-8")
+    monkeypatch.setattr(config_paths, "_registered_plugin_config_candidates", lambda _pid: (str(first), str(second)))
+    monkeypatch.setattr(permission_service, "_source_cache", {})
+    manager = SnapshotInstallSources([], by_directory={
+        "a": _lock_entry(channel="manual", directory_name="a"),
+        "b": _lock_entry(channel="builtin", directory_name="b"),
+    })
+    monkeypatch.setattr(install_source_module, "get_install_source_manager", lambda: manager)
+    real_key = permission_service._candidates_key
+    hidden = tmp_path / "a.hidden"
+
+    def key_then_hide(candidates):
+        key = real_key(candidates)
+        first.rename(hidden)
+        return key
+
+    monkeypatch.setattr(permission_service, "_candidates_key", key_then_hide)
+    assert permission_service.current_source("demo").channel == "manual"
+    hidden.rename(first)
+    monkeypatch.setattr(permission_service, "_candidates_key", real_key)
+    assert permission_service.current_source("demo").channel == "manual"
+
+
 def test_busy_registry_is_not_cached(monkeypatch):
     from plugin.server.infrastructure import config_paths
 
     monkeypatch.setattr(permission_service, "_source_cache", {})
     manager = SnapshotInstallSources([_lock_entry(channel="manual")])
     monkeypatch.setattr(install_source_module, "get_install_source_manager", lambda: manager)
-    monkeypatch.setattr(config_paths, "_registered_plugin_config_candidates", lambda _pid: ())
-    monkeypatch.setattr(config_paths, "_resolve_registered_plugin_config_path", lambda *_a: (_ for _ in ()).throw(TimeoutError()))
+    busy = {"on": True}
+
+    def candidates(_pid):
+        if busy["on"]:
+            raise TimeoutError("plugins_read")  # the registry read lock wait
+        return ()
+
+    monkeypatch.setattr(config_paths, "_registered_plugin_config_candidates", candidates)
     assert permission_service.current_source("demo") is None
     assert permission_service._source_cache == {}
+    busy["on"] = False  # once readable, the real answer is used and cached
+    assert permission_service.current_source("demo").channel == "manual"
+    assert "demo" in permission_service._source_cache
 
 
 @pytest.mark.parametrize("registered", [False, True])

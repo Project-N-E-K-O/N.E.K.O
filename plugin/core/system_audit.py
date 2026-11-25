@@ -135,8 +135,14 @@ _SERVICE_PORTS = {"http": 80, "https": 443}
 # "_"; a subset of what the host accepts in a target (capability_gate._TARGET).
 _HOST_NAME = re.compile(r"[\w.\-]{1,253}")
 # A leading shell variable assignment (NAME=value): never a program name.
-_SHELL_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=\S*")
-_SHELL_SPECIAL = frozenset("\\'\"$`")
+# Command-line parsing (_command_program) is by allow-list, ASCII only.
+_ASSIGNMENT_START = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+_PLAIN_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_./:@%+,-]*[ \t]+")
+_WORD = re.compile(r"[^ \t]*")
+# Unquoted: also "\\" and "~" for Windows / home paths; never shell syntax.
+_PLAIN_PROGRAM = re.compile(r"[A-Za-z0-9_./:@%+,~\\-]+")
+# Quoted (e.g. "C:\\Program Files (x86)\\App\\app.exe"): blanks and brackets too.
+_QUOTED_PROGRAM = re.compile(r"[A-Za-z0-9_./:@%+,~\\() -]+")
 _FROZEN = bool(getattr(sys, "frozen", False)) or "__compiled__" in globals()
 
 
@@ -262,30 +268,39 @@ def program_name(value: object, *, command_line: bool = False) -> str:
         return "<unknown>"
     text = value.strip()
     if command_line:
-        # Leading NAME=value words are skipped (their values may be secrets).
-        # A value with quoting, escapes or expansions could run on past the
-        # blank after it, so then nothing is guessed: "<shell>".
-        while True:
-            match = _SHELL_ASSIGNMENT.match(text)
-            if match is None:
-                break
-            if any(char in match.group(0) for char in _SHELL_SPECIAL):
-                return "<shell>"
-            text = text[match.end():].lstrip()
-        if not text:
-            return "<shell>"
-        if text[:1] in ('"', "'"):
-            quote = text[0]
-            end = text.find(quote, 1)
-            if end <= 0:
-                return "<shell>"
-            text = text[1:end]  # the quoted program, blanks and all
-        else:
-            text = text.split(None, 1)[0]
-            if "=" in text or text[:1] in ("$", "`", "(", "{"):
-                return "<shell>"
+        return _command_program(text)
     name = text.replace("\\", "/").rsplit("/", 1)[-1]
     return name[:TARGET_MAX_CHARS] or "<unknown>"
+
+
+def _command_program(text: str) -> str:
+    """The program of a command line, by allow-list: "<shell>" unless clear.
+
+    Leading ``NAME=value`` words are skipped only when the value is plain
+    ASCII (no quoting, escapes, expansions, operators or other blanks) and
+    an ASCII space or tab follows; their values may be secrets. The program
+    word must then be plain too (quoted: without ``$``, backticks or control
+    characters). Anything else could hide where a value ends, so nothing is
+    guessed.
+    """
+    while _ASSIGNMENT_START.match(text):
+        match = _PLAIN_ASSIGNMENT.match(text)
+        if match is None:
+            return "<shell>"
+        text = text[match.end():]
+    if not text:
+        return "<shell>"
+    if text[:1] in ('"', "'"):
+        end = text.find(text[0], 1)
+        program = text[1:end] if end > 0 else ""
+        if not program or not _QUOTED_PROGRAM.fullmatch(program):
+            return "<shell>"
+    else:
+        program = _WORD.match(text).group(0)
+        if not _PLAIN_PROGRAM.fullmatch(program):
+            return "<shell>"
+    name = program.replace("\\", "/").rsplit("/", 1)[-1]
+    return name[:TARGET_MAX_CHARS] or "<shell>"
 
 
 def document_name(value: object) -> str:
@@ -321,15 +336,20 @@ def _is_ip_literal(host: str) -> bool:
 
 
 def _inside_rmtree() -> bool:
-    """Whether the current use comes from ``shutil.rmtree``'s fd-based walk."""
+    """Whether the use was raised by ``shutil.rmtree``'s fd-based walk itself.
+
+    Only the frame that made the call counts, so a plugin's ``onerror`` /
+    ``onexc`` callback running inside rmtree is judged like any other code.
+    """
     frame = sys._getframe(1)
-    for _ in range(_MAX_FRAMES):
-        if frame is None:
-            return False
-        if frame.f_code.co_name.startswith("_rmtree") and frame.f_globals.get("__name__") == "shutil":
-            return True
+    own = globals()
+    while frame is not None and frame.f_globals is own:
         frame = frame.f_back
-    return False
+    return (
+        frame is not None
+        and frame.f_code.co_name.startswith("_rmtree")
+        and frame.f_globals.get("__name__") == "shutil"
+    )
 
 
 class SystemAuditor:

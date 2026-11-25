@@ -192,6 +192,20 @@ def test_rename_records_both_ends_outside(env):
         ("os.system", ("A=$(cat key) curl",), "<shell>"),
         ("os.system", ("A=`cat key` curl",), "<shell>"),
         ("os.system", ('X=1 "/opt/My  Tool/bin/run me" --x',), "run me"),
+        # Allow-list: blanks other than ASCII space / tab, operators, non-ASCII.
+        ("os.system", ("PASSWORD=first\u00a0secret curl x",), "<shell>"),
+        ("os.system", ("PASSWORD=first\u3000secret curl x",), "<shell>"),
+        ("os.system", ("A=1;printf secret",), "<shell>"),
+        ("os.system", ("A=1&&echo secret",), "<shell>"),
+        ("os.system", ("A=1|tee secret",), "<shell>"),
+        ("os.system", ("A=1>secret curl",), "<shell>"),
+        ("os.system", ("A=(x) curl",), "<shell>"),
+        ("os.system", ("A=ok-1.2/x:y@z curl",), "curl"),
+        ("os.system", ("curl;rm -rf x",), "<shell>"),
+        ("os.system", ("密码 x",), "<shell>"),
+        ("os.system", ('"$HOME/bin/tool" x',), "<shell>"),
+        ("_winapi.CreateProcess", (None, '"C:\\Program Files (x86)\\App\\app.exe" /x', None), "app.exe"),
+        ("_winapi.CreateProcess", (None, "C:\\tools\\run.exe /x", None), "run.exe"),
         ("subprocess.Popen", (None, "SECRET=x ./run.sh", None, None), "run.sh"),
         # A document opened with its program: only its extension.
         ("os.startfile", ("C:\\My Docs\\plan for 2027.pdf", None), "*.pdf"),
@@ -266,6 +280,26 @@ def test_unix_socket_and_ipv6(env):
     env.from_plugin("socket.sendto", (None, ("::1", 53, 0, 0)))
     (record,) = env.records()
     assert record["target"] == "[::1]:53" and record["flags"] == ["loopback"]
+
+
+def _shutil_walk(body):
+    """A function named like rmtree's walk, in module ``shutil``, running ``body``."""
+    namespace = {"__name__": "shutil", "body": body}
+    exec(compile("def _rmtree_safe_fd(*args):\n    return body(*args)\n", "<shutil-fake>", "exec"), namespace)
+    return namespace["_rmtree_safe_fd"]
+
+
+def test_only_rmtree_s_own_calls_are_skipped_not_its_callbacks(env, monkeypatch):
+    monkeypatch.chdir(env.outside)  # not exempt: relative names would be judged here
+    # rmtree's walk itself: skipped (its root was judged by "shutil.rmtree").
+    _shutil_walk(env.auditor.hook)("open", ("sub", None, os.O_RDONLY))
+    _shutil_walk(env.auditor.hook)("os.remove", ("f.txt", 5))
+    assert env.records() == []
+    # A plugin onerror callback running inside the walk: judged like any code.
+    _shutil_walk(lambda: env.from_plugin("open", ("notes.txt", "r", 0)))()
+    _shutil_walk(lambda: env.from_plugin("os.remove", ("other.txt", 5)))()
+    targets = [r["target"] for r in env.records()]
+    assert targets[0].endswith("/outside/*.txt") and targets[1] == "<dir_fd>"
 
 
 def test_relative_path_with_dir_fd_is_an_unknown_target(env, monkeypatch):

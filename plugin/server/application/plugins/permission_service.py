@@ -65,14 +65,26 @@ def _registered_candidates(plugin_id: str) -> tuple[object, ...]:
         raise _SourceUnknown from exc
 
 
-def _plugin_directory(plugin_id: str, candidates: tuple[object, ...] | None = None) -> Path | None:
-    """Directory of the loaded plugin, ``None`` when it is not registered."""
+def _plugin_directory(plugin_id: str, candidates: tuple[str, ...] | None = None) -> Path | None:
+    """Directory of the loaded plugin, ``None`` when it is not registered.
+
+    ``candidates`` are config files already resolved and found to exist (the
+    cache key's own paths, see ``_candidates_key``): the first ``plugin.toml``
+    among them is used without looking at the file system again, so the
+    directory always matches the key it is cached under.
+    """
     from plugin.server.infrastructure.config_paths import (
         _resolve_registered_plugin_config_path,
     )
 
+    if candidates is not None:
+        for candidate in candidates:
+            path = Path(candidate)
+            if path.name == "plugin.toml":
+                return path.parent
+        return None
     try:
-        path = _resolve_registered_plugin_config_path(plugin_id, candidates)
+        path = _resolve_registered_plugin_config_path(plugin_id)
     except TimeoutError as exc:
         raise _SourceUnknown from exc
     return path.parent if path is not None else None
