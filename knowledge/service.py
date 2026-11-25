@@ -185,6 +185,22 @@ class KnowledgeUnavailable(Exception):
         self.reason = reason
 
 
+class _ReplanLimitRefusal(KnowledgePackError):
+    """A pack limit refusal with the inputs checked under the mutation lock."""
+
+    def __init__(self, reason: str, keys: Mapping[str, tuple[str, str, int] | None]) -> None:
+        super().__init__(reason)
+        self.replan_keys = keys
+
+
+class _ReplanInputRefusal(ValueError):
+    """An unfittable header retaining the original ValueError contract."""
+
+    def __init__(self, keys: Mapping[str, tuple[str, str, int] | None]) -> None:
+        super().__init__("embedding_input_too_large")
+        self.replan_keys = keys
+
+
 @dataclass(slots=True)
 class ImportJob:
     job_id: str
@@ -2774,6 +2790,7 @@ class KnowledgeService:
 
     async def _replan_vector_inputs(
         self, pack_ids: list[str], *, triggers: Mapping[str, Sequence[tuple[int, str]]] | None = None,
+        specification: Mapping | None = None,
     ) -> None:
         """Rebuild chunks after a tokenizer becomes available, retaining text.
 
@@ -2798,6 +2815,9 @@ class KnowledgeService:
                 fit = self._chunk_fit()
                 if fit is None:
                     return self._registry
+                # A waiter may observe changed capacity after taking the lock.
+                # Cache refusals against this check, never the caller's old key.
+                refusal_keys = {pack_id: self._replan_key(pack_id, specification) for pack_id in targets}
                 planned = []
                 for pack_id in targets:
                     record = self._registry.packs.get(pack_id)
@@ -2807,13 +2827,18 @@ class KnowledgeService:
                     if pack_sha256(raw) != record.pack_sha256:
                         raise KnowledgePackError("pack_file_mismatch")
                     pack = decode_pack_bytes(raw)
-                    chunks = count_pack_chunks(pack, fit=fit)
+                    try:
+                        chunks = count_pack_chunks(pack, fit=fit)
+                    except ValueError as exc:
+                        if str(exc) == "embedding_input_too_large":
+                            raise _ReplanInputRefusal(refusal_keys) from exc
+                        raise
                     if chunks > MAX_CHUNKS_PER_PACK:
-                        raise KnowledgePackError("too_many_chunks")
+                        raise _ReplanLimitRefusal("too_many_chunks", refusal_keys)
                     planned.append((pack, record, chunks))
                 changed = {record.pack_id: chunks for _pack, record, chunks in planned}
                 if sum(changed.get(key, record.chunks) for key, record in self._registry.packs.items()) > MAX_TOTAL_CHUNKS:
-                    raise KnowledgePackError("capacity_chunks")
+                    raise _ReplanLimitRefusal("capacity_chunks", refusal_keys)
                 registry = self._registry
                 for pack, record, chunks in planned:
                     self._store.replace_pack(pack, pack_sha256=record.pack_sha256,
@@ -3024,16 +3049,18 @@ class KnowledgeService:
                         break  # Concurrent replacement removed this batch's rows.
                     refused: set[str] = set()
                     for pack_id in sorted(set(owners.values())):
-                        key = self._replan_key(pack_id, specification)
-                        if key is not None and pack_id in self._refused_replans:
+                        observed_key = self._replan_key(pack_id, specification)
+                        if observed_key is not None and pack_id in self._refused_replans:
                             # Entries whose inputs changed were reopened above.
                             refused.add(pack_id)
                             continue
                         trigger_rows = [(row[0], row[1]) for row, size in zip(rows, counts)
                                         if size > specification["max_length"] and owners.get(row[0]) == pack_id]
                         try:
-                            await self._replan_vector_inputs([pack_id], triggers={pack_id: trigger_rows})
+                            await self._replan_vector_inputs([pack_id], triggers={pack_id: trigger_rows},
+                                                             specification=specification)
                         except KnowledgePackError as exc:
+                            key = exc.replan_keys.get(pack_id) if isinstance(exc, _ReplanLimitRefusal) else None
                             if exc.reason in {"too_many_chunks", "capacity_chunks"} and key is not None:
                                 # Remember the limit refusal: re-tokenizing the
                                 # whole pack every round cannot change it.
@@ -3044,6 +3071,7 @@ class KnowledgeService:
                             if self._pending_chunk_reconcile:
                                 return processed  # Reconcile before planning or encoding another pack.
                         except ValueError as exc:
+                            key = exc.replan_keys.get(pack_id) if isinstance(exc, _ReplanInputRefusal) else None
                             if str(exc) == "embedding_input_too_large" and key is not None:
                                 # An entry header alone exceeds the token budget:
                                 # like a limit refusal, re-tokenizing the pack
