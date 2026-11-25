@@ -61,6 +61,19 @@ describe('recording draft submission', () => {
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:recording');
   });
 
+  it('reports draft activity to the host even while the compact surface is folded', async () => {
+    const onAudioMessageActiveChange = vi.fn();
+    const props = { audioMessageTarget: 'YUI', onComposerAudioMessage: vi.fn(), onAudioMessageActiveChange };
+    const view = render(<App {...props} chatSurfaceMode="compact" />);
+    expect(onAudioMessageActiveChange).toHaveBeenLastCalledWith(false);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Record a voice message' })); });
+    expect(onAudioMessageActiveChange).toHaveBeenLastCalledWith(true);
+    view.rerender(<App {...props} chatSurfaceMode="minimized" />);
+    // The control is gone, but the recording is still held by the root.
+    expect(screen.queryByRole('button', { name: 'Stop and send' })).toBeNull();
+    expect(onAudioMessageActiveChange).toHaveBeenLastCalledWith(true);
+  });
+
   it('discards a draft when its character changes', async () => {
     const send = vi.fn();
     const props = { disabled: false, send, onBusyChange: () => {} };

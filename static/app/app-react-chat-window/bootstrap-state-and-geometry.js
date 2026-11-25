@@ -155,6 +155,8 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
         // 语音消息：宿主给出发送回调和目标角色后，聊天窗才显示麦克风按钮
         onComposerAudioMessage: null,
         audioMessageTarget: '',
+        // 聊天窗报告的录音/试听/发送中状态（迷你窗折叠后控件卸载，DOM 里看不到）
+        audioMessageActive: false,
         onTheaterSubmit: null,
         onTheaterSuggestedInputSelect: null,
         onTheaterEnd: null,

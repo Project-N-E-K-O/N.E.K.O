@@ -279,3 +279,37 @@ test('the shared text send re-checks the character right before sending', () => 
   // After waiting for the text session (and its WebSocket), before the send.
   assert.ok(sessionStart < guard && guard < sendStart);
 });
+
+test('chat-window host: no voice messages while a visit owns the composer', () => {
+  const props = fs.readFileSync(
+    path.join(__dirname, '../../static/app/app-react-chat-window/geometry-and-messages.js'), 'utf8');
+  assert.match(
+    props,
+    /audioMessageTarget: typeof I\.state\.onComposerAudioMessage === 'function' && !visitOwnsComposer/,
+  );
+  assert.ok(props.indexOf('var visitOwnsComposer') < props.indexOf('audioMessageTarget:'));
+  assert.match(props, /onAudioMessageActiveChange: I\.handleAudioMessageActiveChange/);
+});
+
+test('chat-window host: draft activity comes from the chat state, not only the DOM', () => {
+  const dock = fs.readFileSync(
+    path.join(__dirname, '../../static/app/app-react-chat-window/minimize-and-idle-dock.js'), 'utf8');
+  const start = dock.indexOf('function isAudioMessageActive()');
+  const body = dock.slice(start, dock.indexOf('}', dock.indexOf('querySelector', start)));
+  assert.ok(body.indexOf('I.state.audioMessageActive') > 0
+    && body.indexOf('I.state.audioMessageActive') < body.indexOf('querySelector'));
+  const handlers = fs.readFileSync(
+    path.join(__dirname, '../../static/app/app-react-chat-window/message-bundle-actions-and-prompts.js'), 'utf8');
+  const sandbox = { I: { state: { audioMessageActive: false } } };
+  vm.runInNewContext(
+    handlers.slice(
+      handlers.indexOf('    I.handleAudioMessageActiveChange = '),
+      handlers.indexOf('    I.handleComposerScreenshot = '),
+    ),
+    sandbox,
+  );
+  sandbox.I.handleAudioMessageActiveChange(true);
+  assert.equal(sandbox.I.state.audioMessageActive, true);
+  sandbox.I.handleAudioMessageActiveChange('yes');
+  assert.equal(sandbox.I.state.audioMessageActive, false);
+});

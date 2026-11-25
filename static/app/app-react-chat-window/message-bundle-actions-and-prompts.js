@@ -593,6 +593,10 @@
         });
     };
 
+    I.handleAudioMessageActiveChange = function handleAudioMessageActiveChange(active) {
+        I.state.audioMessageActive = active === true;
+    };
+
     I.handleComposerScreenshot = function handleComposerScreenshot() {
         var handled = false;
         if (typeof I.state.onComposerScreenshot === 'function') {

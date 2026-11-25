@@ -145,6 +145,8 @@
     // A voice message in progress keeps the chat surface open. Only the
     // compact minimize button may fold it; recording continues while folded.
     function isAudioMessageActive() {
+        // 以聊天窗报告的状态为准：迷你窗折叠后录音控件已卸载，但草稿仍在
+        if (I.state && I.state.audioMessageActive) return true;
         var shell = I.getShell();
         return !!(shell && shell.querySelector('.audio-message-composer[data-audio-message-active="true"]'));
     }
