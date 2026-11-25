@@ -920,3 +920,24 @@ async def test_dev_dummy_override_runs_through_session(core_config, monkeypatch)
     transcriber = offline.resolve_offline_transcriber("glm")
     assert transcriber.provider_key == "dummy"
     assert isinstance(await transcriber.transcribe(_pcm(1)), str)
+
+
+async def test_segments_are_judged_on_the_recordings_own_frame_grid(http_client) -> None:
+    # 464,160 samples split into two halves; the second half's local 20 ms
+    # grid is offset by 80 samples from the recording's grid. Short pulses in
+    # global frames 730..738 are each cut into two quieter halves locally.
+    import numpy as np
+
+    samples = np.zeros(464_160, dtype="<i2")
+    for frame in (730, 732, 734, 736, 738):
+        start = frame * 320 + 40
+        samples[start:start + 80] = 400
+    audio = samples.tobytes()
+    first, second = offline.split_pcm16_segments(audio, 27_000)
+    assert offline.voiced_frame_count(audio) == 5
+    assert offline.voiced_frame_count(second) == 0  # the local grid misses them
+    client = http_client(_FakeResponse({"text": "嗯"}))
+    assert await _transcriber("glm").transcribe(audio) == "嗯"
+    assert len(client.calls) == 1  # the voiceless first half is still skipped
+    sent_frames = _wav_frames(client.calls[0]["files"]["file"][1])[3]
+    assert sent_frames == len(second) // 2

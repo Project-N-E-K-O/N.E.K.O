@@ -211,16 +211,21 @@ _SILENCE_FRAME_RMS = 200.0
 _MIN_VOICED_FRAMES = 5  # 100 ms
 
 
-def voiced_frame_count(pcm16: bytes) -> int:
-    """Number of 20 ms frames of 16 kHz PCM16 above the speech floor."""
+def _voiced_frame_mask(pcm16: bytes) -> np.ndarray:
+    """Per 20 ms frame of 16 kHz PCM16: whether it is above the speech floor."""
 
     samples = np.frombuffer(pcm16, dtype="<i2").astype(np.float32)
     usable = len(samples) - len(samples) % _SILENCE_FRAME_SAMPLES
     if usable == 0:
-        return 0
+        return np.zeros(0, dtype=bool)
     frames = samples[:usable].reshape(-1, _SILENCE_FRAME_SAMPLES)
-    rms = np.sqrt(np.mean(frames * frames, axis=1))
-    return int(np.count_nonzero(rms >= _SILENCE_FRAME_RMS))
+    return np.sqrt(np.mean(frames * frames, axis=1)) >= _SILENCE_FRAME_RMS
+
+
+def voiced_frame_count(pcm16: bytes) -> int:
+    """Number of 20 ms frames of 16 kHz PCM16 above the speech floor."""
+
+    return int(np.count_nonzero(_voiced_frame_mask(pcm16)))
 
 
 def is_silent_pcm16(pcm16: bytes) -> bool:
@@ -460,13 +465,20 @@ class OfflineAsrTranscriber:
         # split across a segment boundary must not fall below it twice. Once
         # the recording holds speech, only segments with no speech-level frame
         # at all are skipped.
-        if is_silent_pcm16(audio):
+        voiced = _voiced_frame_mask(audio)
+        if int(np.count_nonzero(voiced)) < _MIN_VOICED_FRAMES:
             return ""
-        segments = [
-            segment
-            for segment in split_pcm16_segments(audio, self.spec.max_segment_ms)
-            if voiced_frame_count(segment) > 0
-        ]
+        # Judge segments on the recording's own frame grid: a segment's local
+        # grid can cut a voiced frame in two quieter halves.
+        segments: list[bytes] = []
+        start_sample = 0
+        for segment in split_pcm16_segments(audio, self.spec.max_segment_ms):
+            end_sample = start_sample + len(segment) // PCM16_SAMPLE_WIDTH_BYTES
+            first = start_sample // _SILENCE_FRAME_SAMPLES
+            last = -(-end_sample // _SILENCE_FRAME_SAMPLES)  # ceil
+            if bool(voiced[first:last].any()):
+                segments.append(segment)
+            start_sample = end_sample
         session_language = _resolve_session_language(self.provider_key, language)
         if self.spec.mode == "session":
             texts = await self._transcribe_with_session(segments, session_language)
