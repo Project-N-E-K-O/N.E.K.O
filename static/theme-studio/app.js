@@ -1568,6 +1568,19 @@ function renderAudit(auto) {
  */
 var undoState = { past: [], future: [], limit: 50, lastKey: '', lastAt: 0, applying: false };
 
+/**
+ * Drop the whole undo history, including the coalescing marker: otherwise an edit
+ * to the same row within 900 ms after the reset would be folded into a step that
+ * no longer exists and get no undo entry of its own.
+ */
+function resetUndoHistory() {
+  undoState.past.length = 0;
+  undoState.future.length = 0;
+  undoState.lastKey = '';
+  undoState.lastAt = 0;
+  if (typeof updateUndoButtons === 'function') updateUndoButtons();
+}
+
 function cloneValueMap(map) {
   var out = {};
   if (map && typeof map === 'object') {
@@ -4036,9 +4049,7 @@ async function applyTheme() {
       // A successful save is the undo boundary even when drafts made during the
       // save remain: older snapshots predate the saved values, and restoring
       // them would bring saved drafts back as pending changes.
-      undoState.past = [];
-      undoState.future = [];
-      updateUndoButtons();
+      resetUndoHistory();
     } else {
       // Readback failed: dirty flags must be kept (never clear before reading). The old
       // code cleared edited/cleared first, so a failed readback showed "saved" while
@@ -6156,9 +6167,7 @@ async function reloadPalette(options) {
       clearRgbMemory();
       // Since "Reload" discards unapplied edits, drop the undo stack too: otherwise Ctrl+Z
       // would bring back the edits just discarded.
-      undoState.past.length = 0;
-      undoState.future.length = 0;
-      updateUndoButtons();
+      resetUndoHistory();
     }
     // Update the baseline signature too: otherwise an external-sync poll right after this read would misjudge the same data as "changed".
     if (!materialsDeferred) {
