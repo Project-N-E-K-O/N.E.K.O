@@ -2041,3 +2041,52 @@ def test_legacy_report_fields_keep_their_shape(tmp_path):
     [spot] = report["blind_spots"]
     assert {"type", "file", "line"} <= set(spot)
     assert (spot["type"], spot["file"], spot["line"]) == ("code_exec", "main.py", 2)
+
+
+@pytest.mark.parametrize(
+    "source,permission,basis",
+    [
+        # A relative name is resolved against a literal package, as importlib does.
+        ("import importlib\nimportlib.import_module('.request', 'urllib').urlopen(u)\n",
+         "system.network:connect", "resolved_call"),
+        ("import importlib\nr = importlib.import_module('.request', package='urllib')\nr.urlopen(u)\n",
+         "system.network:connect", "resolved_call"),
+        ("import importlib\nimportlib.import_module('..request', 'urllib.parse').urlopen(u)\n",
+         "system.network:connect", "resolved_call"),
+        # __import__ loads the full name (the hint) but returns the top level.
+        ("__import__('http.server')\n", "system.network:listen", "import_only"),
+        ("__import__('os.path').system('x')\n", "system.process:spawn", "resolved_call"),
+    ],
+)
+def test_literal_imports_resolve_what_python_loads(tmp_path, source, permission, basis):
+    report = _scan(tmp_path, source)
+    assert report["blind_spots"] == []
+    assert _bases(report).get(permission) == basis
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import importlib\nimportlib.import_module('.request', pkg).urlopen(u)\n",
+        "import importlib\nimportlib.import_module('.request').urlopen(u)\n",
+        "import importlib\nimportlib.import_module('..request', 'urllib').urlopen(u)\n",
+        "import importlib\nimportlib.import_module('.request', package=pkg)\n",
+    ],
+)
+def test_relative_literal_imports_without_a_known_package_stay_blind_spots(tmp_path, source):
+    assert "dynamic_import" in {spot["type"] for spot in _scan(tmp_path, source)["blind_spots"]}
+
+
+def test_long_call_chains_are_charged_to_the_analysis_budget(tmp_path):
+    source = "x = obj" + ".f()" * 300 + "\n"
+    assert _scan(tmp_path, source)["status"] == "completed"
+    # Walking a chain for a literal import counts toward the shared budget
+    # and honours the stop event.
+    import ast
+    from threading import Event
+
+    stop = Event()
+    stop.set()
+    chain = ast.parse(source).body[0].value
+    with pytest.raises(capability_analysis._AnalysisBudgetExceeded):
+        capability_analysis._resolve_literal_imports(chain, {}, capability_analysis._AnalysisWalker(stop))

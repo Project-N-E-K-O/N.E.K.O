@@ -241,48 +241,79 @@ def _getattr_reference(node: ast.AST, bindings=None) -> tuple[ast.AST, str] | No
     return None
 
 
-_MODULE_NAME = re.compile(r"\.*[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*|\.+")
+_MODULE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
+_RELATIVE_MODULE_NAME = re.compile(r"(\.+)((?:[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)?)")
 
 
-def _literal_import(node: ast.AST, bindings) -> str | None:
-    """Module a literal dynamic import returns, followed like an import.
+def _absolute_module(name: str, package: str | None) -> str | None:
+    """importlib's resolution of a relative name against a literal package;
+    None when it cannot be proven (no package, or one the dots climb out of)."""
+    match = _RELATIVE_MODULE_NAME.fullmatch(name)
+    if match is None or package is None or not _MODULE_NAME.fullmatch(package):
+        return None
+    level, rest = len(match.group(1)), match.group(2)
+    bits = package.rsplit(".", level - 1)
+    if len(bits) < level:
+        return None
+    base = bits[0]
+    return f"{base}.{rest}" if rest else base
 
-    importlib.import_module("x") (any binding of it, package argument
-    ignored as a relative name is kept relative) returns x; the bare builtin
-    __import__("x.y") with no other argument returns the top-level x. Any
-    other form, a non-literal name or a rebound import function, is None
-    and stays a dynamic_import blind spot.
+
+def _literal_import(node: ast.AST, bindings) -> tuple[str, str] | None:
+    """(module loaded, module returned) of a literal dynamic import, which is
+    followed like an import.
+
+    importlib.import_module("x") (any binding of it) loads and returns x; a
+    relative name is resolved against a literal ``package``. The bare
+    builtin __import__("x.y") with no other argument loads x.y and returns
+    the top-level x. Any other form (a non-literal name or package, a
+    rebound import function) is None and stays a dynamic_import blind spot.
     """
-    if not isinstance(node, ast.Call) or not isinstance(node.func, (ast.Name, ast.Attribute)):
+    if not isinstance(node, ast.Call):
         return None
     func = node.func
+    # Only a plain name or name.attr can resolve to these functions; a cheap
+    # test first, as this runs at every level of every call chain.
+    if isinstance(func, ast.Name):
+        if func.id != "__import__" and func.id not in bindings:
+            return None
+    elif not (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and func.attr == "import_module"):
+        return None
     resolved, external, bound = _resolve_with_origin(_name(func), bindings)
     if bound and external and resolved == "importlib.import_module":
         if any(item.arg not in ("name", "package") for item in node.keywords) or len(node.args) > 2:
             return None
         module = _literal_string(_call_argument(node, 0, "name"))
-    elif isinstance(func, ast.Name) and func.id == "__import__" and bound is None:
+        if module is None:
+            return None
+        if module.startswith("."):
+            package = _call_argument(node, 1, "package")
+            module = _absolute_module(module, _literal_string(package))
+            if module is None:
+                return None
+        elif not _MODULE_NAME.fullmatch(module):
+            return None
+        return module, module
+    if isinstance(func, ast.Name) and func.id == "__import__" and bound is None:
         if len(node.args) != 1 or node.keywords:
             return None
         module = _literal_string(node.args[0])
-        if module is None or module.startswith(".") or not _MODULE_NAME.fullmatch(module):
+        if module is None or not _MODULE_NAME.fullmatch(module):
             return None
-        return module.split(".", 1)[0]
-    else:
-        return None
-    if module is None or not _MODULE_NAME.fullmatch(module):
-        return None
-    return module
+        return module, module.split(".", 1)[0]
+    return None
 
 
-def _resolve_literal_imports(raw_node: ast.AST, bindings) -> tuple[str, bool, bool] | None:
+def _resolve_literal_imports(raw_node: ast.AST, bindings, walker) -> tuple[str, bool, bool] | None:
     """Resolve an attribute / call chain rooted in a literal dynamic import
     (importlib.import_module("os").system()) as if the module were imported."""
     parts = []
     node = raw_node
     while isinstance(node, (ast.Attribute, ast.Call)):
-        module = _literal_import(node, bindings)
-        if module is not None:
+        walker.check()
+        literal = _literal_import(node, bindings)
+        if literal is not None:
+            module = literal[1]
             resolved = module + "".join(reversed(parts))
             if len(resolved) > MAX_REFERENCE_LENGTH:
                 raise _AnalysisBudgetExceeded
@@ -293,6 +324,8 @@ def _resolve_literal_imports(raw_node: ast.AST, bindings) -> tuple[str, bool, bo
         else:
             parts.append("()")
             node = node.func
+        if len(parts) > MAX_REFERENCE_LENGTH:
+            raise _AnalysisBudgetExceeded
     return None
 
 
@@ -597,7 +630,7 @@ def _propagate_assignments(assignments, bindings, walker):
         resolved_bindings = {}
         for key, node in assignments:
             walker.check()
-            literal = _resolve_literal_imports(node, bindings)
+            literal = _resolve_literal_imports(node, bindings, walker)
             if literal is not None:
                 binding = literal[0], literal[1]
                 resolved_bindings[key] = binding
@@ -664,7 +697,7 @@ def _emit_references(nodes, bindings, scope, walker, function=""):
             if getattr_reference is not None:
                 receiver, attribute = getattr_reference
                 raw = _name(receiver)
-                resolved, external, bound = _resolve_literal_imports(receiver, bindings) or (
+                resolved, external, bound = _resolve_literal_imports(receiver, bindings, walker) or (
                     _resolve_with_origin(raw, bindings)
                 )
                 # getattr(x, "f") only retrieves f; getattr(x, "f")() calls it.
@@ -677,7 +710,7 @@ def _emit_references(nodes, bindings, scope, walker, function=""):
                 target = node.func if isinstance(node, ast.Call) else node
                 raw = _name(target)
                 raw_root = _root_name(raw)
-                literal = _resolve_literal_imports(target, bindings)
+                literal = _resolve_literal_imports(target, bindings, walker)
                 if literal is not None:
                     resolved, external, bound = literal
                     via_call_result = False
@@ -693,7 +726,7 @@ def _emit_references(nodes, bindings, scope, walker, function=""):
                     isinstance(node, ast.Call),
                     raw_root=raw_root,
                     via_call_result=via_call_result,
-                    imported=_literal_import(node, bindings) or "",
+                    imported=(_literal_import(node, bindings) or ("",))[0],
                 )
         elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
             # A bare name bound to a data attribute (from os import environ)
