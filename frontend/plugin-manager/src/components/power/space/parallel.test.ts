@@ -2,7 +2,8 @@
 /**
  * Several familiars at work in one project: what a familiar changed in a git worktree of its own and
  * what the user decides on it, one more familiar or a leader for a project, the landing settings,
- * looking for words in what was said, and whose an archived familiar is.
+ * looking for words in what was said, whose an archived familiar is, and whether another is to do
+ * what waits for the one chosen, busy with something else.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, h, markRaw, nextTick, reactive } from 'vue'
@@ -10,7 +11,7 @@ import type { Component } from 'vue'
 import { createI18n } from 'vue-i18n'
 import ElementPlus from 'element-plus'
 import words from '@/i18n/power/en-US'
-import type { Board, BoardCard, SpaceProject, Worktree } from '@/api/console'
+import type { Board, BoardAsk, BoardCard, CommissionRow, SpaceProject, Worktree } from '@/api/console'
 import FamiliarSpace from '@/views/FamiliarSpace.vue'
 import LandingCard from '../LandingCard.vue'
 import CrewTools from './CrewTools.vue'
@@ -24,7 +25,7 @@ const api = vi.hoisted(() => ({
   getProjectBoard: vi.fn(), writeCard: vi.fn(), tellCommission: vi.fn(), answerCommission: vi.fn(), stopCommission: vi.fn(),
   getTranscript: vi.fn(), searchTranscript: vi.fn(), getSessionUsage: vi.fn(),
   listWorktrees: vi.fn(), landWorktree: vi.fn(), discardWorktree: vi.fn(), keepWorktree: vi.fn(), openWorktree: vi.fn(),
-  getLanding: vi.fn(), setLanding: vi.fn(), getTemplates: vi.fn(), addMember: vi.fn(), giveLeader: vi.fn(),
+  getLanding: vi.fn(), setLanding: vi.fn(), getTemplates: vi.fn(), addMember: vi.fn(), giveLeader: vi.fn(), listCommissions: vi.fn(),
   consoleErrorCode: (error: unknown) => (error as { code?: string })?.code ?? null,
 }))
 vi.mock('@/api/console', () => api)
@@ -698,3 +699,78 @@ describe('a familiar of a project that was archived since', () => {
   })
 })
 
+
+describe('what is asked of opening another beside the one chosen, busy with something else', () => {
+  const busy = (over: Partial<BoardCard> = {}) =>
+    card({ state: 'working', commission: { id: 'c1', title: 'Add an export', status: 'working', started_at: 0 }, ...over })
+  const beside = (over: Partial<BoardAsk['detail']> = {}): BoardAsk => ({
+    id: 'q9', kind: 'permission', category: 'open_beside', options: ['always', 'session', 'once', 'deny'],
+    detail: {
+      tool: 'beside', title: 'Write the newsletter', preset: 'general', tree: true, member: 'App/general-2', project: 'App',
+      beside: 'App', beside_session: 's1', at_hand: 'Add an export', ...over,
+    },
+  })
+  const row = (ask: BoardAsk = beside()): CommissionRow => ({
+    id: 'c9', title: 'Write the newsletter', status: 'waiting_user', reason: 'waiting for the user', result: '', source: 'dispatch',
+    route: 'task_agent', project: 'App', lanlan_name: 'Lan', parent_id: null, session_id: null, session: null, runtime: null,
+    plugin_id: null, entry_id: null, created_at: 0, started_at: null, ended_at: null, updated_at: 0, usage: { requests: 0, tokens: 0 }, ask,
+  })
+  const asked = (rows: CommissionRow[] = [row()]) => ({ commissions: rows, more: false })
+  const choice = (option: string) => document.querySelector(`[data-testid="beside-ask"] [data-choice="${option}"]`) as HTMLElement | null
+
+  beforeEach(() => {
+    api.listWorktrees.mockResolvedValue({ worktrees: [] })
+    api.getTemplates.mockResolvedValue({ templates: [] })
+    api.getProjectBoard.mockResolvedValue(board([busy()]))
+    api.listCommissions.mockResolvedValue(asked())
+  })
+
+  it('stands under it, answered with a button, and says why an answer was not taken', async () => {
+    await mount(FamiliarsPane, { project: 'App', selectedId: 's1' })
+    expect(api.listCommissions).toHaveBeenCalledWith({ status: ['waiting_user'] })
+    const asking = document.querySelector('[data-detail="s1"] [data-testid="beside-ask"]')
+    expect(asking?.textContent).toContain('App/general-2')
+    expect(asking?.textContent).toContain(words.home.states.unborn)
+    expect(asking?.textContent).toContain('Add an export')
+
+    api.answerCommission.mockRejectedValueOnce(refusal('not_taken'))
+    await click(choice('deny'))
+    expect(byTest('beside-error')?.textContent).toContain(words.errors.not_taken)
+
+    // On its way, its buttons wait; taken, the board and what is asked are read anew, and it is gone.
+    let arrive: (value: unknown) => void = () => {}
+    api.answerCommission.mockReturnValueOnce(new Promise(done => { arrive = done }))
+    await click(choice('once'))
+    expect(api.answerCommission).toHaveBeenLastCalledWith('c9', { choice: 'once', text: undefined, question_id: 'q9' })
+    expect(choice('deny')?.hasAttribute('disabled')).toBe(true)
+    expect(byTest('beside-error')).toBeNull()
+    const boards = api.getProjectBoard.mock.calls.length
+    api.listCommissions.mockResolvedValue(asked([]))
+    arrive({ success: true })
+    await flush()
+    expect(api.getProjectBoard.mock.calls.length).toBeGreaterThan(boards)
+    expect(byTest('beside-ask')).toBeNull()
+    expect(document.querySelector('[data-detail="s1"] .besides')).toBeNull()
+  })
+
+  it('is not shown with another familiar, and not looked for while the one chosen is at nothing', async () => {
+    api.getProjectBoard.mockResolvedValue(board([busy(), busy({ id: 's3', name: 'App/scout' }), card({ id: 's2', name: 'App/idle' })]))
+    const { state } = await mount(FamiliarsPane, { project: 'App', selectedId: 's3' })
+    expect(api.listCommissions).toHaveBeenCalled()
+    expect(document.querySelector('[data-detail="s3"]')).toBeTruthy()
+    expect(byTest('beside-ask')).toBeNull()
+    api.listCommissions.mockClear()
+    state.props = { project: 'App', selectedId: 's2' }
+    await flush()
+    expect(document.querySelector('[data-detail="s2"]')).toBeTruthy()
+    expect(api.listCommissions).not.toHaveBeenCalled()
+    expect(byTest('beside-ask')).toBeNull()
+  })
+
+  it('is not looked for among the loose ones', async () => {
+    api.getProjectBoard.mockResolvedValue({ ...board([busy()]), loose: [busy({ id: 'l1', name: 'Sort the photos', kind: 'single' })] })
+    await mount(FamiliarsPane, { project: null, selectedId: 'l1' })
+    expect(document.querySelector('[data-detail="l1"]')).toBeTruthy()
+    expect(api.listCommissions).not.toHaveBeenCalled()
+  })
+})

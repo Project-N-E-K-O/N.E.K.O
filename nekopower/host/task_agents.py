@@ -10952,7 +10952,9 @@ class TaskAgentManager(TreeWork):
         at none, and the busy member it waits for is not the one that
         asks. Taken back (``_withdraw_beside``), before it is put or
         after, the answer is a refusal, which whoever asked tells from
-        the user's by ``_Beside.withdrawn``.
+        the user's by ``_Beside.withdrawn``. What the user chose is put
+        on record for the timeline as an answer to any request for
+        approval is (``tool_answered``); nothing is of what was taken back.
         """
         asking = self._asking_beside[commission_id]
         direct = _Session(commission_id)
@@ -11001,6 +11003,12 @@ class TaskAgentManager(TreeWork):
                         "putting commission %s back among the queued failed; it is on record as waiting", commission_id,
                         exc_info=True,
                     )
+            if not asking.withdrawn:
+                # What the user chose, for the timeline, as of any request for approval
+                # (``_ask``). Noted once the commission is back among the queued: the answer
+                # puts nobody to work, starting does. Of what was taken back, nothing: the
+                # user answered nothing.
+                await self._note_tool_answer(commission_id, question, answer)
         finally:
             self._direct_questions.pop(commission_id, None)
         choice = answer.get("choice")

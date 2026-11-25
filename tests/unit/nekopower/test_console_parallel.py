@@ -390,6 +390,18 @@ async def test_what_becomes_of_work_beside_a_busy_member_is_passed_on_with_nothi
     assert given == [{"beside": "open"}, {"beside": "queue"}, {"beside": "ask"}, {"mode": "ask"}, {"inspect": True, "beside": "queue"}]
 
 
+async def test_what_becomes_of_work_beside_a_busy_member_is_set_on_the_host_and_read_back(consoles, tmp_path):
+    console = consoles(tmp_path)
+    assert (await console.get("/landing")).json()["beside"] == "ask"
+    for beside in ("queue", "open", "ask"):
+        assert (await console.post("/landing", {"beside": beside})).json()["beside"] == beside
+        assert (await console.host.landing_settings())["beside"] == beside
+        assert (await console.get("/landing")).json()["beside"] == beside
+    # The others are as they were.
+    shown = (await console.get("/landing")).json()
+    assert (shown["mode"], shown["inspect"]) == ("auto", False)
+
+
 async def test_a_value_of_beside_the_host_does_not_take_is_said_with_its_code(consoles, tmp_path, monkeypatch):
     console = consoles(tmp_path)
 
