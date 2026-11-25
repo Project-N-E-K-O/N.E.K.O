@@ -4,7 +4,7 @@ from playwright.sync_api import expect
 
 @pytest.mark.frontend
 def test_image_settings_real_page_round_trip(mock_page, running_server):
-    mock_page.add_init_script("localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("localStorage.setItem('neko_tutorial_settings', 'true')")
     def seed(route):
         route.fulfill(json={
             "success": True, "coreApi": "free", "assistApi": "free",
