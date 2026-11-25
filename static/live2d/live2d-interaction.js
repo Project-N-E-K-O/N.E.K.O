@@ -546,6 +546,17 @@ function isLive2DPeekHeadInBottomCornerZone(manager, geometry, workArea) {
     return workArea.bottom - headY <= Math.min(workAreaZone, modelZone);
 }
 
+// 让身体留在底边外的侧边探身，只有在落位后头仍看得见时才安全。
+// 拿不到可靠头部时，侧边落位按腰部兜底，只保住腰的高度再整体转身；
+// 腰已经越过底边的话，头会被带到底边附近甚至出屏，这时退回下角。
+function isLive2DPeekSideOverflowSafe(manager, workArea) {
+    if (getLive2DPeekReliableHeadAnchor(manager)) return true;
+    const body = getLive2DPeekBodyRect(manager);
+    // 拿不到腰部时落位不走腰部兜底，会把头夹回工作区内。
+    if (!body || !workArea) return true;
+    return body.bottom <= workArea.bottom;
+}
+
 function getLive2DPeekEdgeContact(manager, model, viewport = null, options = null) {
     const geometry = getLive2DModelGeometryBounds(manager, model);
     const fullViewport = getLive2DPeekViewport(geometry, manager);
@@ -590,7 +601,8 @@ function getLive2DPeekEdgeContact(manager, model, viewport = null, options = nul
     } else if (nearBottom) {
         // 模型比头高得多：只看外框的话，头还在屏幕中下部时脚就已经碰到底边，
         // 侧边探身会被误判成下角。头在中下部时保留侧边，并让身体留在底边外。
-        if (isLive2DPeekHeadInBottomCornerZone(manager, geometry, workArea)) {
+        if (isLive2DPeekHeadInBottomCornerZone(manager, geometry, workArea)
+                || !isLive2DPeekSideOverflowSafe(manager, workArea)) {
             verticalEdge = 'bottom';
         } else {
             allowBottomOverflow = true;
