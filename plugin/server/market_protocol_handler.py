@@ -332,12 +332,30 @@ def _show_notification(message: str, title: str) -> None:
         logger.debug("Failed to show notification: {}", exc)
 
 
+def _project_dotenv_path() -> Path:
+    """Return the repository root .env path matching launcher.py."""
+    return Path(__file__).resolve().parents[2] / ".env"
+
+
+def _load_project_dotenv(dotenv_path: Path | None = None) -> bool:
+    """Load project .env overrides without clobbering existing process environment variables."""
+    from dotenv import load_dotenv
+
+    target = dotenv_path if dotenv_path is not None else _project_dotenv_path()
+    return bool(load_dotenv(target, override=False))
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry point for OS-invoked neko:// protocol handling."""
+    args = sys.argv[1:] if argv is None else list(argv)
+    if not args:
+        print("Usage: python -m plugin.server.market_protocol_handler <neko://...>")
+        return 1
+    _load_project_dotenv()
+    return handle_uri(args[0])
+
+
 # ─── Entry point ──────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python -m plugin.server.market_protocol_handler <neko://...>")
-        sys.exit(1)
-
-    uri = sys.argv[1]
-    sys.exit(handle_uri(uri))
+    sys.exit(main())
