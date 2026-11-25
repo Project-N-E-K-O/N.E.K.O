@@ -933,13 +933,37 @@ def default_runtime_factory(on_event: Callable[[dict[str, Any]], None], host: An
     return SubprocessRuntime(on_event, host=host)
 
 
-def build_answers(questions: list[Any], text: str) -> dict[str, Any]:
+def answer_words(answer: dict[str, Any]) -> str:
+    """Return what the user answered a question with, as one line for the record: what was picked, then the words."""
+    picked = answer.get("selected")
+    labels = [
+        label
+        for group in (picked.values() if isinstance(picked, dict) else ())
+        if isinstance(group, list)
+        for label in group
+        if isinstance(label, str) and label
+    ]
+    said = str(answer.get("text") or "").strip()
+    return "; ".join([*labels, *([said] if said else [])])
+
+
+def build_answers(questions: list[Any], text: str, selected: Any = None) -> dict[str, Any]:
     """Turn the user's reply into the answer shape ``ask_user_question`` expects.
 
     Every question gets the reply as its free-text answer; an option whose
     label occurs in the reply is selected as well.
+
+    ``selected`` is what the user picked with a button, where the answer
+    came from a page that shows the options: for each question, by where it
+    stands among the questions ("0", "1", ...; the ids are the model's own
+    and need not differ), the labels picked. Each question then gets the
+    ones named for it that are options of that question, in the order the
+    question has them, and none is looked for in the reply: the words are
+    what the user added, and may hold the label of an option that was not
+    picked.
     """
     lowered = text.lower()
+    picked = selected if isinstance(selected, dict) else None
     answers = []
     for index, question in enumerate(questions):
         if not isinstance(question, dict):
@@ -949,10 +973,14 @@ def build_answers(questions: list[Any], text: str) -> dict[str, Any]:
             label = option.get("label") if isinstance(option, dict) else option
             if isinstance(label, str) and label:
                 labels.append(label)
-        selected = [label for label in labels if label.lower() in lowered]
+        if picked is not None:
+            mine = picked.get(str(index))
+            chosen = [label for label in labels if label in mine] if isinstance(mine, list) else []
+        else:
+            chosen = [label for label in labels if label.lower() in lowered]
         if not question.get("multi_select"):
-            selected = selected[:1]
-        answers.append({"id": str(question.get("id", index)), "selected": selected, "custom": text})
+            chosen = chosen[:1]
+        answers.append({"id": str(question.get("id", index)), "selected": chosen, "custom": text})
     return {"answers": answers}
 
 
@@ -7031,9 +7059,19 @@ class TaskAgentManager(TreeWork):
         return True
 
     async def answer(
-        self, commission_id: str, text: str, choice: str | None = None, *, question_id: str | None = None
+        self,
+        commission_id: str,
+        text: str,
+        choice: str | None = None,
+        *,
+        question_id: str | None = None,
+        selected: dict[str, list[str]] | None = None,
     ) -> bool:
         """Give the user's answer to a commission that waits for it.
+
+        ``selected`` is which options of the questions put with
+        ``ask_user_question`` the user picked with a button
+        (``build_answers``); nothing else that is asked reads it.
 
         ``question_id`` is which question the answer was read against
         (the ``id`` of what the commission asked, as the ledger had
@@ -7053,7 +7091,7 @@ class TaskAgentManager(TreeWork):
                 # With nothing awaited between this and the answer being
                 # in: whoever asked gets to go on only later.
                 session.at_answer()
-            session.question.set_result({"text": text, "choice": choice})
+            session.question.set_result({"text": text, "choice": choice, "selected": selected})
             return True
         if session.awaiting_prompt and self._runtime_of(session) is not None:
             if not session.run_ended:
@@ -7220,7 +7258,8 @@ class TaskAgentManager(TreeWork):
         choice = answer.get("choice")
         payload: dict[str, Any] = {"question_kind": kind, "choice": choice if isinstance(choice, str) else ""}
         if kind == "questions":
-            payload["text"] = str(answer.get("text") or "")
+            # With what was picked with a button, where the answer came so.
+            payload["text"] = answer_words(answer) if answer.get("selected") else str(answer.get("text") or "")
         try:
             await self._ledger.append_event(commission_id, "tool_answered", payload)
         except asyncio.CancelledError:
@@ -7652,17 +7691,19 @@ class TaskAgentManager(TreeWork):
         questions = list(payload.get("questions") or [])
         answer = await self._ask(session_id, {"kind": "questions", "questions": questions})
         text = str(answer.get("text") or "")
+        answers = build_answers(questions, text, answer.get("selected"))
         live = self._sessions.get(session_id)
-        if live is not None and live.carries_on_for is not None and text.strip():
+        said = answer_words(answer) if answer.get("selected") else text
+        if live is not None and live.carries_on_for is not None and said.strip():
             # What the user answered a copy goes back with the commission,
             # should it be handed back (``_handed_back``), as the answer to
             # a report does. (Not a permission or how much may be used:
             # those are no words for the commission's work.)
             try:
-                await self._ledger.append_event(session_id, "answered", {"text": text, "asked_by_tool": True})
+                await self._ledger.append_event(session_id, "answered", {"text": said, "asked_by_tool": True})
             except Exception:  # noqa: BLE001 - the answer is the tool's all the same
                 logger.warning("noting what the user answered a copy failed", exc_info=True)
-        return build_answers(questions, text)
+        return answers
 
     async def _cb_report(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         # The report arrives as an event as well; that is where it is acted on.

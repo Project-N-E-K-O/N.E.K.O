@@ -70,6 +70,8 @@ _ROW_MAX = 2**63 - 1
 # The longest text a page may send for one field (rules, an entry): what
 # is kept is a file a person wrote, not a store of documents.
 _TEXT_LIMIT = 200_000
+# How many questions an answer may name, and how many options of each: far more than one call asks.
+_SELECTED_LIMIT = 64
 # The longest words a page may look for in what was said.
 _QUERY_LIMIT = 500
 
@@ -765,20 +767,45 @@ def build_console_router(
 
     @router.post("/commissions/{commission_id}/answer")
     async def answer_commission(commission_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """Give the user's answer to a task agent that waits for one: ``choice`` for a question with options, else ``text``."""
+        """Give the user's answer to a task agent that waits for one: ``choice`` for a question with options, else ``text``.
+
+        ``selected`` is which options of the questions it put with
+        ``ask_user_question`` were picked with a button: for each question,
+        by where it stands among them ("0", "1", ...), the labels. A plugin's
+        request for confirmation takes ``choice`` "yes" or "no". ``note`` is a sentence the user added to an
+        answer that is a choice (an approval, a refusal), which takes no
+        words: once the answer is in it is passed on to the task agent as
+        ``/tell`` would, and ``note_taken`` says whether it was.
+        """
         payload = payload or {}
         text = text_of(payload, "text") or ""
+        note = (text_of(payload, "note") or "").strip()
         choice, question_id = payload.get("choice"), payload.get("question_id")
         for value in (choice, question_id):
             if value is not None and not isinstance(value, str):
                 raise _refuse(400, "bad_text", field="choice")
-        if not text.strip() and not choice:
+        selected = payload.get("selected")
+        if selected is not None and not (
+            isinstance(selected, dict)
+            and len(selected) <= _SELECTED_LIMIT
+            and all(
+                isinstance(labels, list)
+                and len(labels) <= _SELECTED_LIMIT
+                and all(isinstance(label, str) and len(label) <= _TEXT_LIMIT for label in labels)
+                for labels in selected.values()
+            )
+        ):
+            raise _refuse(400, "bad_text", field="selected")
+        if not text.strip() and not choice and not any((selected or {}).values()):
             raise _refuse(400, "bad_text", field="text")
         host = await get_host()
-        if not await host.answer(commission_id, text, choice=choice, question_id=question_id):
+        if not await host.answer(commission_id, text, choice=choice, question_id=question_id, selected=selected):
             # It asked nothing, or what it asked was answered or withdrawn meanwhile.
             raise _refuse(409, "not_taken")
-        return {"success": True}
+        if not note:
+            return {"success": True}
+        # The answer is in whatever becomes of this: a note nothing took is said, and is no error.
+        return {"success": True, "note_taken": bool(await host.tell(commission_id, note))}
 
     @router.post("/commissions/{commission_id}/stop")
     async def stop_commission(commission_id: str) -> dict[str, Any]:

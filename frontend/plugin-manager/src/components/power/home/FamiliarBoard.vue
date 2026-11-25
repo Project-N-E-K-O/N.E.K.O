@@ -21,7 +21,11 @@
         </header>
         <div class="members">
           <template v-for="card in hive.members" :key="card.id">
-            <FamiliarCard :card="card" :class="{ sub: hive.led && !card.leader }" @open="open(hive, $event)" />
+            <FamiliarCard
+              :card="card" :class="{ sub: hive.led && !card.leader }" answers
+              :busy="card.commission ? busyOf(card.commission) : ''" :error="card.commission ? failedOf(card.commission) : ''"
+              @open="open(hive, $event)" @answer="card.commission && answer({ id: card.commission.id, ask: card.commission.ask }, $event)"
+            />
             <!-- Whether another is to do what waits for this one, busy with something else: drawn beside it, not there yet. -->
             <BesideAsk
               v-for="item in besidesOf(hive, card.id)" :key="item.id"

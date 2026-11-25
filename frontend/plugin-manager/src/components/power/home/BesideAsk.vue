@@ -13,6 +13,7 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import AskBox from '../AskBox.vue'
+import type { GivenAnswer } from '../ask'
 import type { BesideAsk } from '../colony/useBesideAsks'
 import { FAMILIAR_FACES } from '../powerFormat'
 
@@ -21,7 +22,7 @@ import { FAMILIAR_FACES } from '../powerFormat'
  * it is there: what NekoPower asks of it, answered with a button. Whoever shows it sends the answer.
  */
 defineProps<{ item: BesideAsk; busy: string; error: string }>()
-const emit = defineEmits<{ answer: [given: { text?: string; choice?: string }] }>()
+const emit = defineEmits<{ answer: [given: GivenAnswer] }>()
 const { t } = useI18n()
 </script>
 

@@ -79,6 +79,9 @@
         />
       </div>
 
+      <!-- What it asks is answered whichever view is open: the page may be opened at what was said in it. -->
+      <AskBox v-if="ask" :ask="ask" :busy="busy" @answer="answer" />
+
       <div class="views" role="tablist">
         <button
           v-for="name in VIEWS"
@@ -109,8 +112,6 @@
           <strong>{{ selected.commission.title }}</strong>
           <template v-if="selected.doing"><br>{{ selected.doing }}</template>
         </p>
-
-        <AskBox v-if="ask" :ask="ask" :busy="busy" @answer="answer" />
 
         <div v-if="selected.state === 'working'" class="say">
           <el-input v-model="sentence" :placeholder="t('power.space.familiars.say')" data-testid="familiar-say" @keyup.enter="tell" />
@@ -160,13 +161,16 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { answerCommission, getProjectBoard, stopCommission, tellCommission, writeCard } from '@/api/console'
+import { getProjectBoard, stopCommission, tellCommission, writeCard } from '@/api/console'
 import type { Board, BoardCard } from '@/api/console'
 import AskBox from '../AskBox.vue'
+import { answeringAs, describeAnswerError, saysSomething } from '../ask'
+import type { GivenAnswer } from '../ask'
 import { useBesideAnswers, useBesideAsks } from '../colony/useBesideAsks'
 import BesideAsk from '../home/BesideAsk.vue'
 import FamiliarCard from '../home/FamiliarCard.vue'
 import { describeConsoleError } from '../powerFormat'
+import { sendAnswer } from '../useAskAnswers'
 import CrewTools from './CrewTools.vue'
 import ProjectTrees from './ProjectTrees.vue'
 import TranscriptPane from './TranscriptPane.vue'
@@ -183,6 +187,8 @@ const props = withDefaults(defineProps<{
    * True when it is not said (a switch that is left out would read as false).
    */
   settled?: boolean
+  /** The view a familiar the address names is opened at: `talk` for what was said in it. Its work, when it is not said. */
+  startView?: string
 }>(), { settled: true })
 const emit = defineEmits<{ select: [id: string] }>()
 const { t, te } = useI18n()
@@ -198,7 +204,8 @@ const busy = ref('')
 const sentence = ref('')
 // Which of the three views of the chosen familiar is open: what it has in hand, what was said in it, what it used.
 const VIEWS = ['doing', 'talk', 'usage'] as const
-const view = ref<(typeof VIEWS)[number]>('doing')
+const startingView = (): (typeof VIEWS)[number] => (props.startView === 'talk' ? 'talk' : 'doing')
+const view = ref<(typeof VIEWS)[number]>(startingView())
 // Of one that is not on the board there is no card to show what it is doing.
 const PAST_VIEWS = ['talk', 'usage'] as const
 const pastView = ref<(typeof PAST_VIEWS)[number]>('talk')
@@ -276,7 +283,7 @@ async function load() {
 }
 
 /** Do one thing to the familiar's task, then show where it stands; `done` is said when it took. */
-async function act(name: string, work: () => Promise<unknown>, done = ''): Promise<boolean> {
+async function act(name: string, work: () => Promise<unknown>, done = '', words = describeConsoleError): Promise<boolean> {
   busy.value = name
   note.value = ''
   let took = true
@@ -286,7 +293,7 @@ async function act(name: string, work: () => Promise<unknown>, done = ''): Promi
     note.value = done
   } catch (failure) {
     took = false
-    error.value = describeConsoleError(failure, t, te)
+    error.value = words(failure, t, te)
   }
   const failed = error.value
   await load()
@@ -302,12 +309,15 @@ async function tell() {
   if (await act('tell', () => tellCommission(commission.id, text), t('power.space.familiars.sent'))) sentence.value = ''
 }
 
-async function answer(given: { text?: string; choice?: string }) {
+async function answer(given: GivenAnswer) {
   const commission = selected.value?.commission
-  if (!commission || (!given.choice && !given.text?.trim())) return
-  const name = given.choice ? `choice:${given.choice}` : 'answer'
-  const sent = { ...given, text: given.text?.trim(), question_id: ask.value?.id }
-  await act(name, () => answerCommission(commission.id, sent))
+  // One answer to a question: nothing more is sent while one is on its way.
+  if (!commission || !saysSomething(given) || busy.value) return
+  const asked = ask.value
+  let lost = ''
+  const took = await act(answeringAs(given), async () => { lost = await sendAnswer(commission.id, given, asked, t) }, '', describeAnswerError)
+  // The answer is in; the sentence that was to go with it was not taken.
+  if (took && lost) note.value = lost
 }
 
 async function stop() {
@@ -372,7 +382,7 @@ watch(() => props.selectedId, () => {
   note.value = ''
   treeSaid.value = { tree: '', said: '' }
   sentence.value = ''
-  view.value = 'doing'
+  view.value = startingView()
   pastView.value = 'talk'
 })
 document.addEventListener('visibilitychange', onVisibility)

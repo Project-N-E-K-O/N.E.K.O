@@ -53,16 +53,33 @@
       />
       <span class="tag" :style="member.look === 'unborn' ? UNBORN_TAG : undefined">{{ member.name }}</span>
     </button>
+    <!-- What one that waits for the user asks, above its head and answered there. Beside the familiar's
+         own button, not in it: a press in the card neither picks the familiar up nor opens it. -->
+    <div
+      v-for="member in asking" :key="`ask:${member.id}`"
+      :style="{ ...ASK_SPOT, left: `${at(member.id).x * 100}%`, top: `${at(member.id).y * 100}%` }" :data-ask-of="member.id"
+    >
+      <AskBubble
+        :ask="member.ask!" :name="member.name" :busy="answering?.[member.commission ?? ''] ?? ''" :error="failed?.[member.commission ?? ''] ?? ''"
+        :style="{ bottom: member.leader ? '52px' : '44px' }"
+        @answer="emit('answer', member.id, $event)" @more="emit('ask', member.id)"
+      />
+    </div>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import type { BoardAsk } from '@/api/console'
+import type { GivenAnswer } from '../ask'
 import type { CatLook } from './activity'
 import ColonyFigure from './ColonyFigure.vue'
 import { defaultSpots, intoTerritory, inTerritory, keepSpots, keptSpots, territorySize } from './layout'
 import type { Spot } from './layout'
+
+// Loaded when the first familiar asks something: what the card is drawn with is not part of the first page.
+const AskBubble = defineAsyncComponent(() => import('./AskBubble.vue'))
 
 /** One familiar as the colony draws it. */
 export interface ColonyMember {
@@ -78,6 +95,9 @@ export interface ColonyMember {
   hidden: boolean
   /** The same for a leader and those it started for the commission it has in hand. */
   team?: string | null
+  /** What it asks the user as things stand now, and the commission that asks; not while what happened is replayed. */
+  ask?: BoardAsk | null
+  commission?: string | null
 }
 
 export interface Territory {
@@ -95,8 +115,15 @@ const props = defineProps<{
   canDismiss?: boolean
   /** Set when the familiars are to be put back where they stand by default. */
   tidy?: number
+  /** By the commission that asks: with which button its question is being answered, and why an answer was not taken. */
+  answering?: Record<string, string>
+  failed?: Record<string, string>
 }>()
-const emit = defineEmits<{ open: [id: string]; dismiss: []; holding: [held: boolean] }>()
+const emit = defineEmits<{
+  open: [id: string]; dismiss: []; holding: [held: boolean]
+  /** A question was answered above a familiar's head; or the whole of it is asked for. */
+  answer: [id: string, given: GivenAnswer]; ask: [id: string]
+}>()
 const { t, te } = useI18n()
 
 const land = ref<HTMLElement | null>(null)
@@ -115,6 +142,8 @@ const STROLL_MS = 2800
 const STROLL_REACH = 0.05
 
 const shown = computed(() => props.territory.members.filter(member => !member.hidden))
+/** Those whose question is shown above them. Not the one that is held: it is being carried about. */
+const asking = computed(() => shown.value.filter(member => member.look === 'waiting_user' && member.ask && member.commission && held.value !== member.id))
 const size = computed(() => territorySize(props.territory.members.length))
 const standing = computed(() => defaultSpots(props.territory.members))
 
@@ -163,6 +192,8 @@ const MERGING = new Set<CatLook>(['landing', 'resolving'])
 // One that would be opened, should the user say so: not picked up nor moved with the keys (it stands by
 // the busy one) but pressed, faded, its name framed in dashes. What it asks is said when it is pointed at, not above it: it stands close below the one it
 // would work beside, whose name a bubble would cover. Styled here and not in the stylesheet, as the teams are.
+// Where a question is shown: a point at the middle of the familiar, the card standing on it. Above the others.
+const ASK_SPOT = { position: 'absolute', width: '0', height: '0', zIndex: 3 } as const
 const UNBORN = { cursor: 'pointer' } as const
 const UNBORN_FIGURE = { opacity: 0.45, filter: 'grayscale(1)' } as const
 const UNBORN_TAG = { borderStyle: 'dashed' } as const
@@ -200,7 +231,9 @@ function stateWord(look: CatLook): string {
   return te(key) ? t(key) : look
 }
 function bubble(member: ColonyMember): string {
-  return member.look === 'waiting_user' ? t('power.colony.waitingBubble') : member.said
+  if (member.look !== 'waiting_user') return member.said
+  // What it asks is shown above it with the ways to answer; where that is not known, that it waits.
+  return member.ask && member.commission ? '' : t('power.colony.waitingBubble')
 }
 
 function spotOf(event: PointerEvent): Spot | null {

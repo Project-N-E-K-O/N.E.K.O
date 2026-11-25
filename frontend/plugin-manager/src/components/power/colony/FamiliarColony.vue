@@ -6,6 +6,7 @@
       <span class="muted">{{ t('power.home.emptyHint') }}</span>
     </div>
 
+    <p v-if="said" class="notice notice--warn" role="status" data-testid="colony-ask-notice">{{ said }}</p>
     <!-- Whoever waits for the user is said first, and answered from here. -->
     <ul v-if="position === null && (waiting.length || besides.length)" class="waiting" data-testid="colony-waiting">
       <li v-for="card in waiting" :key="card.id" :data-waiting="card.id">
@@ -39,7 +40,11 @@
           :links="links"
           :can-dismiss="!land.loose && position === null"
           :tidy="tidy"
+          :answering="answering"
+          :failed="failed"
           @open="open(land, $event)"
+          @answer="answerAbove"
+          @ask="asking = $event"
           @dismiss="parting = land.name"
           @holding="onHolding"
         />
@@ -88,9 +93,12 @@
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { answerCommission, archiveProject, getWaits } from '@/api/console'
+import { archiveProject, getWaits } from '@/api/console'
 import type { BoardAsk, BoardCard } from '@/api/console'
+import { answeringAs, describeAnswerError, saysSomething } from '../ask'
 import { askSummary } from '../ask'
+import type { GivenAnswer } from '../ask'
+import { sendAnswer, useAskAnswers } from '../useAskAnswers'
 import { describeConsoleError, familiarLook, familiarName } from '../powerFormat'
 import ActivityFeed from './ActivityFeed.vue'
 import { SAID_SECONDS, clockTime, firstSeen, ghostsOf, sceneAt } from './activity'
@@ -112,6 +120,8 @@ const router = useRouter()
 const describe = (failure: unknown) => describeConsoleError(failure, t, te)
 const { board, loaded, error, load } = useBoard(() => t('power.home.unavailable'), describe)
 const { asks: besides, load: loadBesides } = useBesideAsks(board)
+// What is answered above a familiar's head: each apart, another can be answered meanwhile.
+const { answering, failed, answer: answerOne } = useAskAnswers(() => Promise.all([load(), loadBesides()]))
 const {
   entries, loading: timelineLoading, error: timelineError, whole, dropped, base, wholeFits, fromBeginning,
 } = useTimeline(() => null, describe)
@@ -127,6 +137,8 @@ const asking = ref('')
 const parting = ref('')
 const busy = ref('')
 const actionError = ref('')
+// What is said of an answer that was taken while the sentence added to it was not.
+const said = ref('')
 // Moves on every few seconds, so that what a familiar said a while ago leaves its head.
 const clock = ref(Date.now() / 1000)
 let ticking: ReturnType<typeof setInterval> | null = null
@@ -158,7 +170,8 @@ function member(card: BoardCard): ColonyMember {
   if (position.value === null) {
     // As it stands now; what it said lately stays above it for a while.
     const fresh = at && clock.value - at.saidAt <= SAID_SECONDS ? at.said : ''
-    return { ...base, look: familiarLook(card), said: fresh, hidden: false }
+    const waits = card.commission?.status === 'waiting_user' ? card.commission : null
+    return { ...base, look: familiarLook(card), said: fresh, hidden: false, ask: waits?.ask ?? null, commission: waits?.id ?? null }
   }
   // Replayed: as the entries up to the moment leave it. One that comes in later was not
   // there yet; one the entries never name stood by all along, and so does one from the
@@ -249,7 +262,8 @@ function open(land: Territory, id: string) {
     asking.value = id
     return
   }
-  void router.push({ path: '/familiars/space', query: { project: land.loose ? undefined : land.name, familiar: id } })
+  // To what was said in it: its session, as the user asks for a familiar that is pressed.
+  void router.push({ path: '/familiars/space', query: { project: land.loose ? undefined : land.name, familiar: id, view: 'talk' } })
 }
 
 /** Whom each familiar waits for is read when one is picked up: the lines are drawn only then. */
@@ -300,19 +314,27 @@ function togglePlay() {
   }, STEP_MS)
 }
 
-async function answer(given: { text?: string; choice?: string }) {
+async function answer(given: GivenAnswer) {
   const now = asked.value
-  if (!now || (!given.choice && !given.text?.trim())) return
-  busy.value = given.choice ? `choice:${given.choice}` : 'answer'
+  // One answer to a question: nothing more is sent while one is on its way.
+  if (!now || !saysSomething(given) || busy.value) return
+  busy.value = answeringAs(given)
   actionError.value = ''
+  said.value = ''
   try {
-    await answerCommission(now.commission, { ...given, text: given.text?.trim(), question_id: now.ask?.id })
+    said.value = await sendAnswer(now.commission, given, now.ask, t)
     asking.value = ''
   } catch (failure) {
-    actionError.value = describe(failure)
+    actionError.value = describeAnswerError(failure, t, te)
   }
   busy.value = ''
   await Promise.all([load(), loadBesides()])
+}
+
+/** Answer what a familiar asks from the card above its head. */
+function answerAbove(id: string, given: GivenAnswer) {
+  const commission = byId.value.get(id)?.commission
+  if (commission?.status === 'waiting_user') void answerOne({ id: commission.id, ask: commission.ask }, given)
 }
 
 /** Put the project away into the archive: its familiars leave the colony with it. */

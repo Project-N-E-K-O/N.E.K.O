@@ -1,5 +1,7 @@
 /** What a familiar asks the user while it waits, as the pages word it. */
-import type { BoardAsk } from '@/api/console'
+import { consoleErrorCode } from '@/api/console'
+import type { BoardAsk, CommissionAnswer } from '@/api/console'
+import { describeConsoleError } from './powerFormat'
 
 type Translate = (key: string, named?: Record<string, unknown>) => string
 type Exists = (key: string) => boolean
@@ -16,6 +18,81 @@ function questionLine(item: unknown): string {
 }
 
 const text = (value: unknown) => (typeof value === 'string' ? value : '')
+
+/**
+ * How a question is answered: a request for approval by one of its choices, a plugin's request
+ * for confirmation by yes or no, questions that offer options by picking some, anything else in
+ * words. Words can be added to each (to a choice as a note, which is passed on after it).
+ */
+export type AskShape = 'permission' | 'confirmation' | 'questions' | 'words'
+
+/** One of the questions of an `ask_user_question` call, as the pages show it with its options to pick. */
+export interface AskQuestion {
+  /** What the answer names it by: where it stands among the questions ("0", "1", ...). Its own id is the model's, and need not differ from another's. */
+  id: string
+  text: string
+  options: Array<{ label: string; description: string }>
+  multi: boolean
+}
+
+export function askQuestions(ask: BoardAsk): AskQuestion[] {
+  return (Array.isArray(ask.questions) ? ask.questions : []).flatMap((item, index) => {
+    if (!item || typeof item !== 'object') return []
+    const { question, options, multi_select } = item as { question?: unknown; options?: unknown; multi_select?: unknown }
+    const offered = (Array.isArray(options) ? options : [])
+      .map(option => (option && typeof option === 'object'
+        ? { label: text((option as { label?: unknown }).label).trim(), description: text((option as { description?: unknown }).description).trim() }
+        : { label: String(option ?? '').trim(), description: '' }))
+      .filter(option => option.label)
+    return [{ id: String(index), text: String(question ?? '').trim(), options: offered, multi: multi_select === true }]
+  })
+}
+
+export function askShape(ask: BoardAsk): AskShape {
+  if (ask.options?.length) return 'permission'
+  if (ask.kind === 'confirmation') return 'confirmation'
+  return askQuestions(ask).some(question => question.options.length) ? 'questions' : 'words'
+}
+
+/** What the user gave as the answer, as whoever shows the question hands it on. */
+export type GivenAnswer = Pick<CommissionAnswer, 'text' | 'choice' | 'selected' | 'note'>
+
+/** Whether it says anything: a choice, words, or an option that was picked. */
+export function saysSomething(given: GivenAnswer): boolean {
+  return Boolean(given.choice || given.text?.trim() || Object.values(given.selected ?? {}).some(labels => labels.length))
+}
+
+/** What an answer is being sent as, for the button that shows it is on its way. */
+export const answeringAs = (given: GivenAnswer) => (given.choice ? `choice:${given.choice}` : 'answer')
+
+/** The answer as it is sent: against the question that was shown, so that one put meanwhile does not get it. */
+export function answerBody(given: GivenAnswer, ask: BoardAsk | null | undefined): CommissionAnswer {
+  const selected = Object.fromEntries(Object.entries(given.selected ?? {}).filter(([, labels]) => labels.length))
+  return {
+    text: given.text?.trim() || undefined,
+    choice: given.choice,
+    selected: Object.keys(selected).length ? selected : undefined,
+    note: given.note?.trim() || undefined,
+    question_id: ask?.id,
+  }
+}
+
+/** A plugin's request for confirmation answered with a button: yes or no, with what the user added. */
+export const confirmation = (yes: boolean, added: string): GivenAnswer => ({ choice: yes ? 'yes' : 'no', text: added.trim() || undefined })
+
+/**
+ * How long the buttons of a question that took the place of another are held back, in
+ * milliseconds: a press meant for the one that was there a moment ago must not answer this one.
+ */
+export const SETTLE_MS = 900
+
+/**
+ * Why an answer was not taken, in the pages' words. One that came too late (the question was
+ * answered elsewhere, taken back, or another is put by now) says so: what is shown is read anew.
+ */
+export function describeAnswerError(failure: unknown, t: Translate, te: Exists): string {
+  return consoleErrorCode(failure) === 'not_taken' ? t('power.ask.stale') : describeConsoleError(failure, t, te)
+}
 
 /**
  * Whether NekoPower asks whether another familiar is to do, in a worktree of its own, what waits

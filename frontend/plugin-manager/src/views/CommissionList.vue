@@ -95,11 +95,12 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import {
-  answerCommission, getCommissionUsage, listCommissions, listProjects, stopCommission, tellCommission,
-} from '@/api/console'
+import { getCommissionUsage, listCommissions, listProjects, stopCommission, tellCommission } from '@/api/console'
 import type { CommissionRow, CommissionUsage } from '@/api/console'
 import AskBox from '@/components/power/AskBox.vue'
+import { answeringAs, describeAnswerError, saysSomething } from '@/components/power/ask'
+import type { GivenAnswer } from '@/components/power/ask'
+import { sendAnswer } from '@/components/power/useAskAnswers'
 import { clockTime } from '@/components/power/colony/activity'
 import { describeConsoleError, formatDuration, formatTokens } from '@/components/power/powerFormat'
 
@@ -248,7 +249,7 @@ watch(() => {
   if (key) void readUsage()
 })
 
-async function act(name: string, work: () => Promise<unknown>, done = '') {
+async function act(name: string, work: () => Promise<unknown>, done = '', words = describeConsoleError) {
   busy.value = name
   note.value = ''
   let failed = ''
@@ -256,7 +257,7 @@ async function act(name: string, work: () => Promise<unknown>, done = '') {
     await work()
     note.value = done
   } catch (failure) {
-    failed = describeConsoleError(failure, t, te)
+    failed = words(failure, t, te)
   }
   await load()
   error.value = failed
@@ -271,9 +272,14 @@ async function tell(item: CommissionRow) {
   // Only what was sent is taken away: what was typed since, for this one or another, stays.
   if (sent && draft === mine) sentence.value = ''
 }
-const answer = (item: CommissionRow, given: { text?: string; choice?: string }) =>
-  act(given.choice ? `choice:${given.choice}` : 'answer', () =>
-    answerCommission(item.id, { ...given, text: given.text?.trim(), question_id: item.ask?.id }))
+async function answer(item: CommissionRow, given: GivenAnswer) {
+  // One answer to a question: nothing more is sent while one is on its way.
+  if (!saysSomething(given) || busy.value) return
+  let lost = ''
+  const took = await act(answeringAs(given), async () => { lost = await sendAnswer(item.id, given, item.ask, t) }, '', describeAnswerError)
+  // The answer is in; the sentence that was to go with it was not taken.
+  if (took && lost) note.value = lost
+}
 const stop = (item: CommissionRow) => act('stop', () => stopCommission(item.id), t('power.space.familiars.stopped'))
 
 function openFamiliar(item: CommissionRow) {

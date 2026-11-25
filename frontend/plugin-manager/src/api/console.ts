@@ -404,8 +404,20 @@ export const describeProject = (project: string, description: string) =>
   send<{ project: SpaceProject }>('post', '/console/space/projects/description', { project, description })
 export const tellCommission = (commissionId: string, text: string) =>
   send<{ success: boolean }>('post', `/console/commissions/${encodeURIComponent(commissionId)}/tell`, { text })
-export const answerCommission = (commissionId: string, answer: { text?: string; choice?: string; question_id?: string }) =>
-  send<{ success: boolean }>('post', `/console/commissions/${encodeURIComponent(commissionId)}/answer`, answer)
+/**
+ * Answer what a familiar asks: `choice` for a request for approval, `text` for words, `selected`
+ * for the options of its questions that were picked (by each question's id). `note` is a sentence
+ * added to a choice, passed on to the familiar once the answer is in: `note_taken` says whether it was.
+ */
+export interface CommissionAnswer {
+  text?: string
+  choice?: string
+  question_id?: string
+  selected?: Record<string, string[]>
+  note?: string
+}
+export const answerCommission = (commissionId: string, answer: CommissionAnswer) =>
+  send<{ success: boolean; note_taken?: boolean }>('post', `/console/commissions/${encodeURIComponent(commissionId)}/answer`, answer)
 export const stopCommission = (commissionId: string) =>
   send<{ status: string }>('post', `/console/commissions/${encodeURIComponent(commissionId)}/stop`)
 

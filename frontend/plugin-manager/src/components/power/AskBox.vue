@@ -1,7 +1,23 @@
 <template>
-  <div class="ask" data-testid="familiar-ask">
+  <div class="ask" data-testid="familiar-ask" :data-shape="shape">
     <strong>{{ beside ? t('power.ask.beside.heading') : t('power.space.familiars.asks') }}</strong>
-    <p v-for="(line, index) in lines" :key="index" class="text" data-testid="familiar-asked">{{ line }}</p>
+    <!-- Its questions, each with what it offers to pick from; anything else it asks, as lines. -->
+    <template v-if="shape === 'questions'">
+      <div v-for="(item, index) in questions" :key="item.id" class="question" :data-question="item.id">
+        <p class="text" data-testid="familiar-asked">{{ questions.length > 1 ? `${index + 1}. ${item.text}` : item.text }}</p>
+        <div v-if="item.options.length" class="options" role="group" :aria-label="item.text">
+          <button
+            v-for="option in item.options" :key="option.label" type="button" class="option"
+            :class="{ on: isPicked(item, option.label) }" :aria-pressed="quick ? undefined : isPicked(item, option.label)"
+            :disabled="held" :data-option="option.label" @click="pick(item, option.label)"
+          >
+            <span class="label">{{ option.label }}</span>
+            <span v-if="option.description" class="about">{{ option.description }}</span>
+          </button>
+        </div>
+      </div>
+    </template>
+    <p v-for="(line, index) in shape === 'questions' ? [] : lines" :key="index" class="text" data-testid="familiar-asked">{{ line }}</p>
     <el-alert v-if="warning" :title="warning" type="warning" :closable="false" show-icon class="warning" data-testid="ask-warning" />
 
     <!-- What it wants to be allowed to do, whole: a long command is never shown cut here. -->
@@ -17,41 +33,65 @@
     </dl>
     <p v-if="hint" class="muted hint" data-testid="ask-hint">{{ hint }}</p>
 
-    <div v-if="ask.options?.length" class="choices">
-      <el-button
-        v-for="option in ask.options"
-        :key="option"
-        :type="option !== 'deny' ? 'primary' : beside ? 'info' : 'danger'"
-        plain
-        :loading="busy === `choice:${option}`"
-        :disabled="busy !== ''"
-        :data-choice="option"
-        @click="emit('answer', { choice: option })"
-      >{{ choiceLabel(ask, option, t, te) }}</el-button>
-    </div>
-    <div v-else class="say">
-      <el-input v-model="reply" :placeholder="t('power.space.familiars.answerPlaceholder')" data-testid="familiar-reply" @keyup.enter="send" />
-      <el-button type="primary" :loading="busy === 'answer'" :disabled="!reply.trim() || busy !== ''" data-testid="familiar-answer" @click="send">
-        {{ t('power.space.familiars.answer') }}
-      </el-button>
-    </div>
+    <template v-if="shape === 'permission'">
+      <div class="choices">
+        <el-button
+          v-for="option in ask.options"
+          :key="option"
+          :type="option !== 'deny' ? 'primary' : beside ? 'info' : 'danger'"
+          plain
+          :loading="busy === `choice:${option}`"
+          :disabled="held"
+          :data-choice="option"
+          @click="choose(option)"
+        >{{ choiceLabel(ask, option, t, te) }}</el-button>
+      </div>
+      <!-- A sentence to go with the choice. Not an answer of its own: words alone would be read as a refusal. -->
+      <el-input v-model="reply" class="note" :placeholder="t('power.ask.notePlaceholder')" :aria-label="t('power.ask.noteLabel')" data-testid="familiar-note" />
+    </template>
+    <template v-else>
+      <div v-if="shape === 'confirmation'" class="choices">
+        <el-button type="primary" plain :disabled="held" data-confirm="yes" @click="confirm(true)">{{ t('power.ask.confirm.yes') }}</el-button>
+        <el-button type="danger" plain :disabled="held" data-confirm="no" @click="confirm(false)">{{ t('power.ask.confirm.no') }}</el-button>
+      </div>
+      <div class="say">
+        <el-input
+          v-model="reply" :placeholder="t(shape === 'words' ? 'power.space.familiars.answerPlaceholder' : 'power.ask.addPlaceholder')"
+          data-testid="familiar-reply" @keyup.enter="send"
+        />
+        <el-button type="primary" :loading="busy === 'answer'" :disabled="!ready || held" data-testid="familiar-answer" @click="send">
+          {{ t('power.space.familiars.answer') }}
+        </el-button>
+      </div>
+    </template>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { BoardAsk } from '@/api/console'
-import { askFacts, askLines, askWarning, askWhole, besideHint, choiceLabel, isBeside } from './ask'
+import {
+  SETTLE_MS, askFacts, askLines, askQuestions, askShape, askWarning, askWhole, besideHint, choiceLabel, confirmation, isBeside,
+} from './ask'
+import type { AskQuestion, GivenAnswer } from './ask'
 
 /**
  * What a familiar asks the user while it waits, with what it would do shown
- * whole, and the ways to answer. Whoever shows it sends the answer.
+ * whole, and the ways to answer: buttons for what can be picked, and a line
+ * for words beside them. Whoever shows it sends the answer.
  */
 const props = defineProps<{ ask: BoardAsk; busy: string }>()
-const emit = defineEmits<{ answer: [given: { text?: string; choice?: string }] }>()
+const emit = defineEmits<{ answer: [given: GivenAnswer] }>()
 const { t, te } = useI18n()
 const reply = ref('')
+// Which options of each question are picked, by the question's id.
+const picked = ref<Record<string, string[]>>({})
+// Another question took this one's place a moment ago: its buttons wait, so that a press on
+// its way to the last one does not answer it.
+const settling = ref(false)
+let settled: ReturnType<typeof setTimeout> | null = null
+const held = computed(() => props.busy !== '' || settling.value)
 const copied = ref(false)
 const wholeText = ref<HTMLElement | null>(null)
 
@@ -62,10 +102,37 @@ const warning = computed(() => askWarning(props.ask, t))
 // Whether another familiar is to do what waits for a busy one: refusing it is no danger, it only waits.
 const beside = computed(() => isBeside(props.ask))
 const hint = computed(() => besideHint(props.ask, t, te))
+const shape = computed(() => askShape(props.ask))
+const questions = computed(() => askQuestions(props.ask))
+// One question with one option to pick: pressing the option is the answer, with what was typed.
+const quick = computed(() => questions.value.length === 1 && !questions.value[0].multi)
+const somePicked = computed(() => Object.values(picked.value).some(labels => labels.length))
+const ready = computed(() => Boolean(reply.value.trim()) || (shape.value === 'questions' && somePicked.value))
+
+const isPicked = (item: AskQuestion, label: string) => (picked.value[item.id] ?? []).includes(label)
+function pick(item: AskQuestion, label: string) {
+  if (held.value) return
+  if (quick.value) {
+    emit('answer', { selected: { [item.id]: [label] }, text: reply.value })
+    return
+  }
+  const had = picked.value[item.id] ?? []
+  const now = had.includes(label) ? had.filter(each => each !== label) : item.multi ? [...had, label] : [label]
+  picked.value = { ...picked.value, [item.id]: now }
+}
+function choose(option: string) {
+  if (held.value) return
+  emit('answer', { choice: option, note: reply.value.trim() || undefined })
+}
+function confirm(yes: boolean) {
+  if (held.value) return
+  emit('answer', confirmation(yes, reply.value))
+}
 function send() {
   // Enter sends no more than the button would: nothing while an answer is on its way.
-  if (props.busy !== '' || !reply.value.trim()) return
-  emit('answer', { text: reply.value })
+  if (held.value || !ready.value) return
+  if (shape.value === 'questions' && somePicked.value) emit('answer', { selected: picked.value, text: reply.value })
+  else emit('answer', { text: reply.value })
 }
 async function copy() {
   if (!whole.value) return
@@ -87,8 +154,16 @@ async function copy() {
   }
 }
 // Another question: what was typed for the last one is not its answer.
-watch(() => props.ask.id, () => { reply.value = ''; copied.value = false })
-defineExpose({ clear: () => { reply.value = '' } })
+watch(() => props.ask.id, () => {
+  reply.value = ''
+  picked.value = {}
+  copied.value = false
+  settling.value = true
+  if (settled) clearTimeout(settled)
+  settled = setTimeout(() => { settling.value = false }, SETTLE_MS)
+})
+onBeforeUnmount(() => { if (settled) clearTimeout(settled) })
+defineExpose({ clear: () => { reply.value = ''; picked.value = {} } })
 </script>
 
 <style scoped>
@@ -105,5 +180,15 @@ defineExpose({ clear: () => { reply.value = '' } })
 .facts dd { margin: 0; overflow-wrap: anywhere; white-space: pre-line; }
 .hint { margin: 0 0 8px; line-height: 1.6; }
 .choices { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.choices .el-button { margin-left: 0; }
+.note { margin-top: 8px; }
+.question + .question { margin-top: 8px; }
+.options { display: flex; flex-wrap: wrap; gap: 8px; }
+.option { display: flex; flex-direction: column; gap: 2px; max-width: 100%; padding: 6px 12px; font: inherit; text-align: left; cursor: pointer; color: inherit; border: 1px solid var(--el-border-color); border-radius: 8px; background: var(--el-bg-color); }
+.option:hover:not(:disabled), .option:focus-visible { border-color: var(--el-color-primary); outline: none; }
+.option:disabled { cursor: default; opacity: 0.6; }
+.option.on { border-color: var(--el-color-primary); background: var(--el-color-primary-light-9); }
+.option .label { font-weight: 600; color: var(--el-color-primary); overflow-wrap: anywhere; }
+.option .about { font-size: 12px; color: var(--el-text-color-secondary); overflow-wrap: anywhere; }
 .say { display: flex; gap: 8px; margin-top: 8px; }
 </style>

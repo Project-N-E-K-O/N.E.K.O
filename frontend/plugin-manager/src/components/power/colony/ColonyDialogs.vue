@@ -22,6 +22,7 @@
 import { useI18n } from 'vue-i18n'
 import type { BoardAsk } from '@/api/console'
 import AskBox from '../AskBox.vue'
+import type { GivenAnswer } from '../ask'
 
 /**
  * The two things the colony asks the user in a dialog: an answer for a
@@ -36,7 +37,7 @@ defineProps<{
   parting: string; busy: string; error: string
 }>()
 const emit = defineEmits<{
-  answer: [given: { text?: string; choice?: string }]; part: []; closeAsk: []; closePart: []
+  answer: [given: GivenAnswer]; part: []; closeAsk: []; closePart: []
 }>()
 const { t } = useI18n()
 </script>

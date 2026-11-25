@@ -681,6 +681,82 @@ async def proxy_task_cancel(task_id: str):
         return JSONResponse({"success": False, "error": f"proxy error: {e}"}, status_code=502)
 
 
+@router.get('/commissions/waiting')
+async def proxy_commissions_waiting():
+    """Return what NekoPower commissions ask the user right now, for the chat window to show.
+
+    A page that opens, or comes back after its connection was away, missed
+    the questions put meanwhile; and a task agent's own task agent is not
+    among the tasks of the HUD. Read from the agent process's
+    ``/console/commissions``; of each only what a card of its question
+    needs.
+    """
+    from config import AUTOSTART_CSRF_TOKEN
+
+    try:
+        client = _get_http_client()
+        r = await client.get(
+            f"{TOOL_SERVER_BASE}/console/commissions",
+            params={"status": "waiting_user", "days": "0"},
+            headers={"X-CSRF-Token": AUTOSTART_CSRF_TOKEN},
+            timeout=httpx.Timeout(5.0, connect=1.0),
+        )
+        if not r.is_success:
+            return JSONResponse({"commissions": [], "error": f"tool_server responded {r.status_code}"}, status_code=502)
+        rows = r.json().get("commissions") or []
+        return {
+            "commissions": [
+                {
+                    "id": row.get("id"),
+                    "title": row.get("title") or "",
+                    "lanlan_name": row.get("lanlan_name"),
+                    "route": row.get("route"),
+                    "question": row.get("ask"),
+                }
+                for row in rows
+                if isinstance(row, dict) and row.get("id") and isinstance(row.get("ask"), dict)
+            ]
+        }
+    except Exception as e:
+        return JSONResponse({"commissions": [], "error": f"proxy error: {e}"}, status_code=502)
+
+
+@router.post('/commissions/{commission_id}/answer')
+async def proxy_commission_answer(commission_id: str, payload: dict = Body(...)):
+    """Give the user's answer to a NekoPower commission that waits for one, as the console pages do.
+
+    The chat window and the task HUD are pages of this server; the route
+    that takes the answer is the agent process's
+    ``/console/commissions/{id}/answer``, which asks for the token of this
+    launch. What that route answers is passed back as it is: 409 with
+    ``detail.code`` ``not_taken`` says the question was answered, withdrawn
+    or replaced by another meanwhile.
+    """
+    from urllib.parse import quote
+
+    from config import AUTOSTART_CSRF_TOKEN
+
+    try:
+        client = _get_http_client()
+        r = await client.post(
+            f"{TOOL_SERVER_BASE}/console/commissions/{quote(commission_id, safe='')}/answer",
+            json=payload,
+            headers={"X-CSRF-Token": AUTOSTART_CSRF_TOKEN},
+            # Taking an answer writes the ledger and may hand the task agent a sentence.
+            timeout=httpx.Timeout(10.0, connect=1.0),
+        )
+        try:
+            content = r.json()
+        except ValueError:
+            return JSONResponse({"success": False, "error": f"tool_server responded {r.status_code}"}, status_code=502)
+        return JSONResponse(content, status_code=r.status_code)
+    except httpx.ReadTimeout as e:
+        # It may have been taken all the same: the page reads how things stand before it says so.
+        return JSONResponse({"success": False, "error": f"proxy timeout: {e}"}, status_code=504)
+    except Exception as e:
+        return JSONResponse({"success": False, "error": f"proxy error: {e}"}, status_code=502)
+
+
 @router.get('/builtin/activity')
 async def proxy_builtin_activity():
     """Which commission is using the keyboard and mouse or the browser right now; for the banner."""

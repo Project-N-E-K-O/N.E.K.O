@@ -305,7 +305,7 @@ describe('the question in the colony', () => {
     expect(byTest('colony-ask-title')).toBeNull()
     await click(choice('deny'))
     expect(api.answerCommission).toHaveBeenCalledWith('c9', { choice: 'deny', text: undefined, question_id: 'q9' })
-    expect(byTest('colony-ask-error')?.textContent).toContain(words.errors.not_taken)
+    expect(byTest('colony-ask-error')?.textContent).toContain(words.ask.stale)
   })
 
   it('goes once it is taken back', async () => {
@@ -400,7 +400,7 @@ describe('the question on the board', () => {
     api.answerCommission.mockRejectedValue(refusal('not_taken'))
     await mount(FamiliarBoard)
     await click(choice('deny', byTest('beside-ask')!))
-    expect(byTest('beside-error')?.textContent).toContain(words.errors.not_taken)
+    expect(byTest('beside-error')?.textContent).toContain(words.ask.stale)
     // It can be answered again.
     expect(choice('once', byTest('beside-ask')!)?.hasAttribute('disabled')).toBe(false)
   })
