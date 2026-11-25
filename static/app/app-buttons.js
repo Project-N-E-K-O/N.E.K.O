@@ -1413,7 +1413,11 @@
     function isDeferredSubmissionForStaleTarget(options) {
         var expected = options && options.expectedLanlanName;
         if (typeof expected !== 'string' || !expected) return false;
-        return !(window.lanlan_config && window.lanlan_config.lanlan_name === expected);
+        if (!(window.lanlan_config && window.lanlan_config.lanlan_name === expected)) return true;
+        // 排队期间开始了小剧场的语音消息同样作废（发送链路也会拒绝它）
+        var theaterRuntime = window.nekoTheaterRuntime;
+        return !!(options.audioMessage === true && theaterRuntime
+            && typeof theaterRuntime.isActive === 'function' && theaterRuntime.isActive());
     }
 
     function settleDeferredSubmission(submission, sent) {
@@ -1449,6 +1453,12 @@
             for (var index = 0; index < pending.length; index += 1) {
                 nextPendingIndex = index;
                 var submission = pending[index];
+                if (isDeferredSubmissionForStaleTarget(submission.options)) {
+                    // 已作废的语音消息不进发送链路：不出气泡、不开文本会话
+                    settleDeferredSubmission(submission, false);
+                    nextPendingIndex = index + 1;
+                    continue;
+                }
                 var sent = await sendHandler(submission.text, Object.assign({}, submission.options, {
                     skipAvatarInteractionDeferral: true
                 }));
@@ -3653,6 +3663,12 @@
                 updateReactOptimisticMessageStatus('failed');
                 return false;
             }
+            // 同理，等待期间开始了小剧场：语音消息属于普通聊天，不在演绎中送进普通会话。
+            // 延迟队列直接调用本函数、不经过 sendTextPayload 的剧场分支，也由这里拦下
+            if (options.audioMessage === true && isTheaterRuntimeActive()) {
+                updateReactOptimisticMessageStatus('failed');
+                return false;
+            }
 
             // Send message
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
@@ -3865,6 +3881,11 @@
 
         avatarInteractionTextContinuationState.deferredSendHandler = sendTextPayloadInternal;
         flushDeferredTextSubmissions();
+
+        function isTheaterRuntimeActive() {
+            var theaterRuntime = window.nekoTheaterRuntime;
+            return !!(theaterRuntime && typeof theaterRuntime.isActive === 'function' && theaterRuntime.isActive());
+        }
 
         async function sendTextPayload(rawText, options) {
             options = options || {};

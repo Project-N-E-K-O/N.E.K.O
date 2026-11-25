@@ -403,7 +403,7 @@ test('a queued voice transcript for a switched character is dropped, not retried
   queue.window.lanlan_config.lanlan_name = 'Other'; // switched while the avatar interaction ran
   queue.flushDeferredTextSubmissions();
   await settleQueue();
-  assert.equal(attempts, 1);
+  assert.equal(attempts, 0, 'a void voice message never enters the send path');
   assert.deepEqual(settled, [false]);
   assert.equal(queue.state.deferredTextSubmissions.length, 0);
   assert.equal(queue.state.drainingDeferredTextSubmissions, false);
@@ -512,4 +512,24 @@ test('a voice transcript that lands after a theater started is not submitted as 
   // ordinary typed theater input still reaches handleComposerSubmit.
   const refusal = branch.indexOf('if (options.audioMessage === true) return false;');
   assert.ok(refusal >= 0 && refusal < branch.indexOf("options.source !== 'react-chat-window'"));
+});
+
+test('a queued voice transcript is dropped when a theater started meanwhile; queued text is not', async () => {
+  const sent = [];
+  const queue = deferredQueueHarness(async (text) => { sent.push(text); return true; });
+  const settled = [];
+  queue.queueDeferredTextSubmission('语音', { expectedLanlanName: 'Neko', audioMessage: true }, (ok) => settled.push(ok));
+  queue.queueDeferredTextSubmission('打字', { source: 'react-chat-window' });
+  queue.window.nekoTheaterRuntime = { isActive: () => true };
+  queue.flushDeferredTextSubmissions();
+  await settleQueue();
+  assert.deepEqual(settled, [false]);
+  assert.deepEqual(sent, ['打字']);
+});
+
+test('the shared text send re-checks the theater for voice messages right before sending', () => {
+  const sendStart = source.indexOf('            // Send message\n            if (S.socket && S.socket.readyState === WebSocket.OPEN)');
+  const sessionStart = source.indexOf('await mod._textSessionStartPromise;');
+  const guard = source.indexOf('if (options.audioMessage === true && isTheaterRuntimeActive()) {');
+  assert.ok(sessionStart > 0 && guard > sessionStart && guard < sendStart);
 });
