@@ -35,7 +35,7 @@ from fastapi import Path as PathParam
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 from utils.deployment import has_forwarding_metadata
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json, scrub_non_finite_numbers
 from utils.social_base import social_base_url, validate_http_url
 
 from plugin.server.application.plugins.capability_analysis_service import (
@@ -2592,7 +2592,7 @@ async def market_oauth_status(
                 )
         subject = _extract_auth_subject(auth_user)
         if not await asyncio.to_thread(_oauth_token_snapshot_matches, token_snapshot):
-            return _oauth_status_after_cas_conflict(token_snapshot)
+            return await asyncio.to_thread(_oauth_status_after_cas_conflict, token_snapshot)
         if subject:
             token_data["subject"] = subject
             token_data["subject_pending"] = False
@@ -2601,7 +2601,7 @@ async def market_oauth_status(
             if not await asyncio.to_thread(
                 _write_oauth_token_if_matches, token_snapshot, token_data
             ):
-                return _oauth_status_after_cas_conflict(token_snapshot)
+                return await asyncio.to_thread(_oauth_status_after_cas_conflict, token_snapshot)
             token_snapshot = dict(token_data)
         else:
             token_data["subject"] = None
@@ -2611,7 +2611,7 @@ async def market_oauth_status(
             if not await asyncio.to_thread(
                 _write_oauth_token_if_matches, token_snapshot, token_data
             ):
-                return _oauth_status_after_cas_conflict(token_snapshot)
+                return await asyncio.to_thread(_oauth_status_after_cas_conflict, token_snapshot)
             return MarketOAuthStatusResponse(
                 authenticated=False,
                 auth_state="pending",
@@ -2660,7 +2660,7 @@ async def market_oauth_status(
     if not await asyncio.to_thread(
         _write_oauth_token_if_matches, token_snapshot, token_data
     ):
-        return _oauth_status_after_cas_conflict(token_snapshot)
+        return await asyncio.to_thread(_oauth_status_after_cas_conflict, token_snapshot)
 
     return MarketOAuthStatusResponse(
         authenticated=True,
@@ -2702,7 +2702,9 @@ async def market_oauth_account_summary(
 
     async with _ACCOUNT_SUMMARY_LOCK:
         if not await asyncio.to_thread(_oauth_token_snapshot_matches, token_snapshot):
-            return _account_summary_for_invalidated_snapshot(token_snapshot)
+            return await asyncio.to_thread(
+                _account_summary_for_invalidated_snapshot, token_snapshot
+            )
         cached = _fresh_account_summary(cache_key)
         if cached is not None:
             return MarketOAuthAccountSummaryResponse.model_validate(cached)
@@ -2738,10 +2740,16 @@ async def market_oauth_account_summary(
                 return _unauthenticated_account_summary()
 
             cache_key = _account_summary_cache_key(token_data)
-        if not await asyncio.to_thread(_oauth_token_snapshot_matches, token_snapshot):
-            return _account_summary_for_invalidated_snapshot(token_snapshot)
         summary = _build_account_summary(token_data, auth_user, market_user)
-        _store_account_summary(cache_key, summary)
+        if not await asyncio.to_thread(
+            _store_account_summary_if_snapshot_matches_sync,
+            token_snapshot,
+            cache_key,
+            summary,
+        ):
+            return await asyncio.to_thread(
+                _account_summary_for_invalidated_snapshot, token_snapshot
+            )
         return summary
 
 
@@ -3067,6 +3075,8 @@ def _auth_issuer() -> str:
 
 
 def _write_private_json(path: Path, payload: dict[str, Any]) -> None:
+    if isinstance(payload.get("user"), dict):
+        payload = {**payload, "user": scrub_non_finite_numbers(payload["user"])}
     atomic_write_json(path, payload, ensure_ascii=False, indent=2)
     try:
         path.chmod(0o600)
@@ -3202,6 +3212,40 @@ def _write_oauth_token_if_matches(
         payload["state_revision"] = revision + 1
         _write_private_json(_OAUTH_TOKEN_FILE, payload)
         return True
+
+
+def _commit_refreshed_oauth_token_sync(
+    current: dict[str, Any],
+    refreshed: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Commit refreshed credentials atomically under ``_OAUTH_STATE_FILE_LOCK``."""
+
+    with _OAUTH_STATE_FILE_LOCK:
+        if _write_oauth_token_if_matches(current, refreshed):
+            return refreshed
+        latest = _current_oauth_token_for_same_session_snapshot(current)
+        if latest is None:
+            return None
+        merged = dict(latest)
+        for key in (
+            "access_token",
+            "refresh_token",
+            "token_type",
+            "scope",
+            "expires_at",
+            "auth_url",
+            "issuer",
+            "client_id",
+            "refresh_generation",
+            "updated_at",
+            "refreshed_at",
+        ):
+            if key in refreshed:
+                merged[key] = refreshed[key]
+        merged.pop("market_user_verified_at", None)
+        if _write_oauth_token_if_matches(latest, merged):
+            return merged
+        return None
 
 
 def _unlink_oauth_token_if_matches(snapshot: dict[str, Any]) -> bool:
@@ -3467,37 +3511,13 @@ async def _ensure_valid_oauth_token(
                 return current
             return None
 
-        if not await asyncio.to_thread(
-            _write_oauth_token_if_matches, current, refreshed
-        ):
-            latest = await asyncio.to_thread(
-                _current_oauth_token_for_same_session_snapshot, current
-            )
-            if latest is not None:
-                merged = dict(latest)
-                for key in (
-                    "access_token",
-                    "refresh_token",
-                    "token_type",
-                    "scope",
-                    "expires_at",
-                    "auth_url",
-                    "issuer",
-                    "client_id",
-                    "refresh_generation",
-                    "updated_at",
-                    "refreshed_at",
-                ):
-                    if key in refreshed:
-                        merged[key] = refreshed[key]
-                merged.pop("market_user_verified_at", None)
-                if await asyncio.to_thread(
-                    _write_oauth_token_if_matches, latest, merged
-                ):
-                    return merged
+        committed = await asyncio.to_thread(
+            _commit_refreshed_oauth_token_sync, current, refreshed
+        )
+        if committed is None:
             await _revoke_oauth_token_best_effort(refreshed)
             return None
-        return refreshed
+        return committed
 
 
 def _unlink_if_exists(path: Path) -> None:
@@ -3724,14 +3744,15 @@ def _account_summary_for_invalidated_snapshot(
     )
 
 
-def _account_summary_cache_key(token_data: dict[str, Any]) -> tuple[str, int]:
+def _account_summary_cache_key(token_data: dict[str, Any]) -> tuple[str, str, int]:
     return (
         str(token_data.get("subject") or ""),
+        str(token_data.get("session_id") or ""),
         int(token_data.get("refresh_generation") or 0),
     )
 
 
-def _fresh_account_summary(cache_key: tuple[str, int]) -> dict[str, Any] | None:
+def _fresh_account_summary(cache_key: tuple[str, str, int]) -> dict[str, Any] | None:
     cached = _ACCOUNT_SUMMARY_CACHE
     if not cached or cached.get("key") != cache_key:
         return None
@@ -3742,7 +3763,7 @@ def _fresh_account_summary(cache_key: tuple[str, int]) -> dict[str, Any] | None:
 
 
 def _store_account_summary(
-    cache_key: tuple[str, int],
+    cache_key: tuple[str, str, int],
     summary: MarketOAuthAccountSummaryResponse,
 ) -> None:
     global _ACCOUNT_SUMMARY_CACHE
@@ -3751,6 +3772,20 @@ def _store_account_summary(
         "expires_at": time.time() + _ACCOUNT_SUMMARY_TTL_SECONDS,
         "payload": summary.model_dump(mode="json"),
     }
+
+
+def _store_account_summary_if_snapshot_matches_sync(
+    snapshot: dict[str, Any],
+    cache_key: tuple[str, str, int],
+    summary: MarketOAuthAccountSummaryResponse,
+) -> bool:
+    """Persist account summary cache only while ``snapshot`` is still current."""
+
+    with _OAUTH_STATE_FILE_LOCK:
+        if not _oauth_token_snapshot_matches(snapshot):
+            return False
+        _store_account_summary(cache_key, summary)
+        return True
 
 
 def _clear_account_summary_cache() -> None:

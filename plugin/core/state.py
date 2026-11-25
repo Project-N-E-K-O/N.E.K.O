@@ -1286,6 +1286,14 @@ class GlobalState:
         except Exception:
             return 0
 
+    def _delete_message_plane_record(self, store: str, record: Dict[str, Any]) -> None:
+        try:
+            from plugin.server.messaging.plane_bridge import publish_snapshot
+
+            publish_snapshot(store=store, records=[dict(record)], topic="all", mode="delete")
+        except Exception:
+            pass
+
     def delete_message(self, message_id: str) -> bool:
         if not isinstance(message_id, str) or not message_id:
             return False
@@ -1370,7 +1378,9 @@ class GlobalState:
                     new_store.append(rec)
             self._event_store = new_store
             if removed:
-                self.sync_message_plane_events()
+                self._delete_message_plane_record(
+                    "events", {"event_id": event_id, "trace_id": event_id}
+                )
         if removed:
             try:
                 rev = self._bump_bus_rev("events")
@@ -1399,7 +1409,9 @@ class GlobalState:
                     new_store.append(rec)
             self._lifecycle_store = new_store
             if removed:
-                self.sync_message_plane_lifecycle()
+                self._delete_message_plane_record(
+                    "lifecycle", {"lifecycle_id": lifecycle_id, "trace_id": lifecycle_id}
+                )
         if removed:
             try:
                 rev = self._bump_bus_rev("lifecycle")

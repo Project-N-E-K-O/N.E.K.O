@@ -785,23 +785,18 @@ class MusicPusherPlugin(NekoPluginBase):
             "updated_at": now_iso,
         }
 
-    def _backup_corrupt_file_locked(self, path: Path, reason: str) -> None:
-        degraded = getattr(self, "_degraded_state", None)
-        if degraded is None:
-            degraded = {}
-            self._degraded_state = degraded
+    def _try_backup_corrupt_file_locked(self, path: Path, reason: str) -> str:
         backup_name = f"{path.name}.corrupt.{_utc_now().strftime('%Y%m%dT%H%M%SZ')}.{uuid4().hex[:6]}"
         backup_path = path.with_name(backup_name)
-        recorded_backup = ""
         try:
             os.replace(path, backup_path)
-            recorded_backup = str(backup_path)
             self.logger.error(
                 "MusicPusher backed up corrupt state file {} -> {} (reason={})",
                 path,
                 backup_path,
                 reason,
             )
+            return str(backup_path)
         except OSError as exc:
             self.logger.error(
                 "MusicPusher failed to back up corrupt state file {} (reason={}): {}",
@@ -809,6 +804,14 @@ class MusicPusherPlugin(NekoPluginBase):
                 reason,
                 exc,
             )
+            return ""
+
+    def _backup_corrupt_file_locked(self, path: Path, reason: str) -> None:
+        degraded = getattr(self, "_degraded_state", None)
+        if degraded is None:
+            degraded = {}
+            self._degraded_state = degraded
+        recorded_backup = self._try_backup_corrupt_file_locked(path, reason)
         degraded[path.name] = {"reason": reason, "backup_path": recorded_backup}
 
     def _load_upload_name_map_locked(self) -> None:
@@ -853,6 +856,8 @@ class MusicPusherPlugin(NekoPluginBase):
         self._upload_name_map = cleaned
 
     def _save_upload_name_map_locked(self) -> None:
+        if not self._ensure_corrupt_backup_before_save_locked(self._upload_name_map_file):
+            return
         payload = {
             "entries": self._upload_name_map,
             "updated_at": _iso(),
@@ -921,6 +926,8 @@ class MusicPusherPlugin(NekoPluginBase):
         self._lyrics_map = cleaned
 
     def _save_lyrics_map_locked(self) -> None:
+        if not self._ensure_corrupt_backup_before_save_locked(self._lyrics_map_file):
+            return
         payload = {
             "entries": self._lyrics_map,
             "updated_at": _iso(),
@@ -1183,9 +1190,24 @@ class MusicPusherPlugin(NekoPluginBase):
                 return _safe_text(track.get("title"), stored_filename)
         return ""
 
-    def _should_skip_startup_overwrite_locked(self, path: Path) -> bool:
-        info = getattr(self, "_degraded_state", {}).get(path.name)
-        return isinstance(info, dict) and not info.get("backup_path")
+    def _ensure_corrupt_backup_before_save_locked(self, path: Path) -> bool:
+        degraded = getattr(self, "_degraded_state", {})
+        info = degraded.get(path.name) if isinstance(degraded, dict) else None
+        if not isinstance(info, dict) or info.get("backup_path"):
+            return True
+        if not path.exists():
+            return True
+        recorded_backup = self._try_backup_corrupt_file_locked(
+            path, str(info.get("reason") or "corrupt")
+        )
+        if not recorded_backup:
+            self.logger.error(
+                "Skipping save for {} because corrupt backup failed",
+                path,
+            )
+            return False
+        info["backup_path"] = recorded_backup
+        return True
 
     def _gc_tombstoned_uploads_locked(self) -> bool:
         if self._state_file.name in getattr(self, "_degraded_state", {}):
@@ -1341,6 +1363,8 @@ class MusicPusherPlugin(NekoPluginBase):
             self._tasks = tasks
 
     def _save_state_locked(self) -> None:
+        if not self._ensure_corrupt_backup_before_save_locked(self._state_file):
+            return
         payload = {
             "music_items": self._music_items,
             "tasks": list(self._tasks.values()),
@@ -1804,18 +1828,9 @@ class MusicPusherPlugin(NekoPluginBase):
             self._refresh_upload_urls_in_tasks_locked()
             self._rebuild_music_items_from_uploads_locked()
             self._refresh_upload_urls_in_tasks_locked()
-            for target_file, save_fn in (
-                (self._upload_name_map_file, self._save_upload_name_map_locked),
-                (self._lyrics_map_file, self._save_lyrics_map_locked),
-                (self._state_file, self._save_state_locked),
-            ):
-                if self._should_skip_startup_overwrite_locked(target_file):
-                    self.logger.error(
-                        "Skipping startup overwrite for {} because corrupt backup failed",
-                        target_file,
-                    )
-                    continue
-                save_fn()
+            self._save_upload_name_map_locked()
+            self._save_lyrics_map_locked()
+            self._save_state_locked()
         if self._degraded_state:
             self.logger.error(
                 "MusicPusher started in degraded state; backed up corrupt files: {}",

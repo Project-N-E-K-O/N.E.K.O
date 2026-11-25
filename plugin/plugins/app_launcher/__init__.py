@@ -263,10 +263,14 @@ def _set_autostart_windows(app_id: str, name: str, path: str, enabled: bool) -> 
         return False, f"设置开机自启失败: {str(e)}"
 
 
-def _get_autostart_value_windows(app_id: str) -> tuple[bool, Optional[str]]:
-    """Return ``(exists, registry_value)`` for an app's HKCU Run entry."""
+def _get_autostart_value_windows(app_id: str) -> tuple[str, Optional[str]]:
+    """Return ``(status, registry_value)`` for an app's HKCU Run entry.
+
+    ``status`` is ``"exists"``, ``"missing"``, or ``"unknown"`` so callers can
+    distinguish a confirmed-absent entry from a read error or non-Windows host.
+    """
     if not _is_windows():
-        return False, None
+        return "unknown", None
 
     try:
         import winreg
@@ -280,11 +284,11 @@ def _get_autostart_value_windows(app_id: str) -> tuple[bool, Optional[str]]:
                 winreg.KEY_READ,
             ) as key:
                 value, _ = winreg.QueryValueEx(key, reg_name)
-                return True, value if isinstance(value, str) else None
+                return "exists", value if isinstance(value, str) else None
         except FileNotFoundError:
-            return False, None
+            return "missing", None
     except Exception:
-        return _get_autostart_status_windows(app_id), None
+        return ("exists", None) if _get_autostart_status_windows(app_id) else ("unknown", None)
 
 
 def _restore_autostart_value_windows(app_id: str, value: str) -> tuple[bool, str]:
@@ -1039,8 +1043,8 @@ class AppLauncherPlugin(NekoPluginBase):
             app_name = target.get("name", "未知")
             app_path = target.get("path", "")
             prev_stored_autostart = bool(target.get("autostart", False))
-            had_prev_reg, prev_reg_value = (
-                _get_autostart_value_windows(app_id) if enabled else (False, None)
+            prev_reg_status, prev_reg_value = (
+                _get_autostart_value_windows(app_id) if enabled else ("unknown", None)
             )
 
             success, message = _set_autostart_windows(app_id, app_name, app_path, enabled)
@@ -1062,7 +1066,9 @@ class AppLauncherPlugin(NekoPluginBase):
                                 app_id,
                                 rollback_msg,
                             )
-                    elif not (had_prev_reg or prev_stored_autostart):
+                    elif prev_reg_status == "missing" or (
+                        prev_reg_status == "unknown" and not prev_stored_autostart
+                    ):
                         rollback_ok, rollback_msg = _set_autostart_windows(
                             app_id, app_name, app_path, False
                         )

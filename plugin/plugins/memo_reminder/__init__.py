@@ -73,7 +73,6 @@ _UNRECOVERABLE_PUSH_REASONS = frozenset({
     "invalid_message",
     "invalid_context",
 })
-_MAX_DELIVERY_RETRIES = 20
 
 
 def _is_push_submitted(receipt: object) -> bool:
@@ -423,10 +422,7 @@ class MemoReminderPlugin(NekoPluginBase):
                 else:
                     failed_item = dict(r)
                     retry_count = int(failed_item.get("delivery_retry_count") or 0) + 1
-                    if (
-                        last_reason in _UNRECOVERABLE_PUSH_REASONS
-                        or retry_count > _MAX_DELIVERY_RETRIES
-                    ):
+                    if last_reason in _UNRECOVERABLE_PUSH_REASONS:
                         self.logger.error(
                             "Abandoning reminder {} delivery after {} attempt(s) (reason={})",
                             rid,
@@ -442,6 +438,14 @@ class MemoReminderPlugin(NekoPluginBase):
                         failed_item["next_retry_at"] = (
                             now_phase3 + timedelta(seconds=delay_sec)
                         ).isoformat()
+                        if retry_count in {1, 5, 10} or retry_count % 10 == 0:
+                            self.logger.warning(
+                                "Reminder {} transient delivery failure #{} (reason={}); keeping pending with {}s backoff",
+                                rid,
+                                retry_count,
+                                last_reason,
+                                delay_sec,
+                            )
                         final.append(failed_item)
             merged = [r for r in current if r.get("id") not in processed_ids] + final
             self._save_reminders_unlocked(merged)

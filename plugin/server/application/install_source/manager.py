@@ -25,6 +25,7 @@ root is runtime configuration and tests replace it with ``tmp_path``.
 from __future__ import annotations
 
 import dataclasses
+import errno
 import hashlib
 import json
 import os
@@ -369,6 +370,80 @@ def _atomic_write(lock_path: Path, payload: bytes) -> None:
         # os.replace raises PermissionError, and the following unlink is often denied for the same reason.
         # Suppressing only FileNotFoundError exposes the unlink exception to callers while relegating the real cause
         # to __context__. Match utils/file_utils.atomic_write_text.
+        with suppress(OSError):
+            tmp_path.unlink()
+        raise
+
+
+def _atomic_create_if_missing(lock_path: Path, payload: bytes) -> bool:
+    """Create ``lock_path`` atomically only if it does not already exist.
+
+    Returns ``True`` if this call created the file, or ``False`` if ``lock_path``
+    was created externally before this commit could land.
+    """
+
+    parent = lock_path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    tmp_name = f"plugins.lock.json.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    tmp_path = parent / tmp_name
+
+    try:
+        tmp_path.write_bytes(payload)
+        last_exc: BaseException | None = None
+        for attempt_ms in (0, 50, 100, 200):
+            if attempt_ms:
+                time.sleep(attempt_ms / 1000.0)
+            try:
+                os.link(tmp_path, lock_path)
+                with suppress(OSError):
+                    tmp_path.unlink()
+                return True
+            except FileExistsError:
+                with suppress(OSError):
+                    tmp_path.unlink()
+                return False
+            except NotImplementedError:
+                break
+            except PermissionError as exc:
+                if lock_path.exists():
+                    with suppress(OSError):
+                        tmp_path.unlink()
+                    return False
+                if exc.errno == errno.EPERM:
+                    break
+                last_exc = exc
+                continue
+            except OSError as exc:
+                if exc.errno in {errno.EXDEV, errno.ENOTSUP, errno.EOPNOTSUPP}:
+                    break
+                raise
+        else:
+            assert last_exc is not None
+            raise last_exc
+
+        # Fallback for filesystems where hard links are unsupported: exclusive O_CREAT|O_EXCL create.
+        with suppress(OSError):
+            tmp_path.unlink()
+        try:
+            fd = os.open(
+                lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644
+            )
+        except FileExistsError:
+            return False
+        try:
+            view = memoryview(payload)
+            written = 0
+            while written < len(view):
+                written += os.write(fd, view[written:])
+            os.fsync(fd)
+        except BaseException:
+            os.close(fd)
+            with suppress(OSError):
+                lock_path.unlink()
+            raise
+        os.close(fd)
+        return True
+    except BaseException:
         with suppress(OSError):
             tmp_path.unlink()
         raise
@@ -1212,31 +1287,15 @@ class InstallSourceManager:
             # leftovers from a previous run that was hard-killed between
             # tmp-write and atomic rename.
             _sweep_stale_tmp_files(self.lock_path)
-            try:
-                raw = self.lock_path.read_bytes()
-            except FileNotFoundError:
-                legacy_path = _resolve_legacy_lock_path(self.lock_path)
-                if legacy_path is not None:
-                    try:
-                        raw = legacy_path.read_bytes()
-                        read_path = legacy_path
-                    except FileNotFoundError:
-                        legacy_path = None
-                    except (PermissionError, OSError) as exc:
-                        self._current = LockFile(
-                            schema_version=1,
-                            entries=(),
-                            updated_at=now,
-                            created_at=None,
-                        )
-                        self._enter_read_only_degrade(
-                            reason=f"legacy_read_failed: {exc}"
-                        )
-                        return
-                if legacy_path is None:
+            for _load_attempt in range(2):
+                try:
+                    raw = self.lock_path.read_bytes()
+                    read_path = self.lock_path
+                    break
+                except FileNotFoundError:
                     if self._current.entries:
                         try:
-                            _atomic_write(
+                            created = _atomic_create_if_missing(
                                 self.lock_path, _serialize_lock(self._current)
                             )
                         except OSError as exc:
@@ -1245,6 +1304,8 @@ class InstallSourceManager:
                                 missing_lock=True,
                             )
                             return
+                        if not created:
+                            continue
                         self._clear_degrade()
                         logger.warning(
                             "InstallSourceManager: runtime lock file missing; self-healed from "
@@ -1253,6 +1314,26 @@ class InstallSourceManager:
                             self.lock_path,
                         )
                         return
+
+                    legacy_path = _resolve_legacy_lock_path(self.lock_path)
+                    if legacy_path is not None:
+                        try:
+                            raw = legacy_path.read_bytes()
+                            read_path = legacy_path
+                            break
+                        except FileNotFoundError:
+                            legacy_path = None
+                        except (PermissionError, OSError) as exc:
+                            self._current = LockFile(
+                                schema_version=1,
+                                entries=(),
+                                updated_at=now,
+                                created_at=None,
+                            )
+                            self._enter_read_only_degrade(
+                                reason=f"legacy_read_failed: {exc}"
+                            )
+                            return
                     # First_Startup: empty snapshot with created_at stamped.
                     self._current = LockFile(
                         schema_version=1,
@@ -1266,17 +1347,23 @@ class InstallSourceManager:
                         self.lock_path,
                     )
                     return
-            except (PermissionError, OSError) as exc:
-                # Read failed — degrade with an empty snapshot. Do NOT
-                # stamp created_at so a later recovery can reconcile
-                # against the real on-disk file cleanly.
-                self._current = LockFile(
-                    schema_version=1,
-                    entries=(),
-                    updated_at=now,
-                    created_at=None,
+                except (PermissionError, OSError) as exc:
+                    # Read failed — degrade with an empty snapshot. Do NOT
+                    # stamp created_at so a later recovery can reconcile
+                    # against the real on-disk file cleanly.
+                    self._current = LockFile(
+                        schema_version=1,
+                        entries=(),
+                        updated_at=now,
+                        created_at=None,
+                    )
+                    self._enter_read_only_degrade(reason=f"read_failed: {exc}")
+                    return
+            else:
+                self._enter_read_only_degrade(
+                    reason=f"lock_file_missing: {self.lock_path}",
+                    missing_lock=True,
                 )
-                self._enter_read_only_degrade(reason=f"read_failed: {exc}")
                 return
 
             try:
@@ -1354,6 +1441,8 @@ class InstallSourceManager:
         """
 
         with self._lock:
+            if self._missing_lock_degraded and self.lock_path.exists():
+                self.load()
             if self._read_only:
                 logger.debug("InstallSourceManager: save skipped (degraded)")
                 return
@@ -1410,8 +1499,6 @@ class InstallSourceManager:
             for attempt in range(2):
                 if self._missing_lock_degraded and self.lock_path.exists():
                     self.load()
-                if self._read_only and not self._missing_lock_degraded:
-                    return
 
                 old_lock = self._current
                 disc = self.scanner.scan()
@@ -1479,57 +1566,72 @@ class InstallSourceManager:
                     updated_at=now,
                 )
                 was_missing_lock_degraded = self._missing_lock_degraded
-                if was_missing_lock_degraded and self.lock_path.exists():
-                    self._current = old_lock
-                    self.load()
-                    if attempt == 0 and not self.is_degraded:
-                        continue
+                if was_missing_lock_degraded:
+                    created = _atomic_create_if_missing(
+                        self.lock_path, _serialize_lock(new_lock)
+                    )
+                    if not created:
+                        self._current = old_lock
+                        self.load()
+                        if attempt == 0 and not self.is_degraded:
+                            continue
+                        return
+                    self._clear_degrade()
+                    self._current = new_lock
+                    logger.warning(
+                        "InstallSourceManager: self-healed missing lock during reconcile "
+                        "(%d entries) path=%s",
+                        len(new_lock.entries),
+                        self.lock_path,
+                    )
                     return
 
+                if self._read_only:
+                    # Ordinary degrade (e.g. read_failed): still surface scanned
+                    # plugins in memory without touching the on-disk lock file.
+                    self._current = new_lock
+                    return
+
+                _atomic_write(self.lock_path, _serialize_lock(new_lock))
                 self._current = new_lock
-                if was_missing_lock_degraded:
-                    self._clear_degrade()
-                try:
-                    self.save()
-                except Exception:
-                    self._current = old_lock
-                    if was_missing_lock_degraded:
-                        self._enter_read_only_degrade(
-                            reason=f"lock_file_missing: {self.lock_path}",
-                            missing_lock=True,
-                        )
-                    raise
                 return
 
     # ------------------------------------------------------------------
     # Write-path helpers (tasks 2.4 / 2.5)
     # ------------------------------------------------------------------
 
-    def _publish(self, new_lock: LockFile) -> None:
-        """Persist ``new_lock``, then make it current.
+    def _publish_or_reload_locked(self, new_lock: LockFile) -> bool:
+        """Persist ``new_lock`` before publishing it to ``self._current``.
 
-        Callers hold ``self._lock``. ``new_lock`` is written first, so
-        readers never see an entry that was not written to disk, and a
-        failed write leaves the current snapshot as it was. A degraded
-        manager writes nothing (see ``save``) and still publishes.
+        Callers hold ``self._lock``. Returns ``False`` when ``missing_lock``
+        degrade observes an externally restored lock file before exclusive
+        creation succeeds, signaling the caller to reload and retry on top of
+        the restored snapshot instead of silently dropping the mutation.
         """
 
         if self._missing_lock_degraded:
-            if self.lock_path.exists():
-                logger.debug("InstallSourceManager: save skipped (missing-lock degraded, file reappeared)")
-            else:
-                _atomic_write(self.lock_path, _serialize_lock(new_lock))
-                self._clear_degrade()
-                logger.warning(
-                    "InstallSourceManager: self-healed missing lock on write (%d entries) path=%s",
-                    len(new_lock.entries),
-                    self.lock_path,
-                )
+            created = _atomic_create_if_missing(
+                self.lock_path, _serialize_lock(new_lock)
+            )
+            if not created:
+                self.load()
+                return False
+            self._clear_degrade()
+            logger.warning(
+                "InstallSourceManager: self-healed missing lock on write (%d entries) path=%s",
+                len(new_lock.entries),
+                self.lock_path,
+            )
         elif self._read_only:
             logger.debug("InstallSourceManager: save skipped (degraded)")
         else:
             _atomic_write(self.lock_path, _serialize_lock(new_lock))
         self._current = new_lock
+        return True
+
+    def _publish(self, new_lock: LockFile) -> None:
+        if not self._publish_or_reload_locked(new_lock):
+            raise OSError(f"lock file concurrently reappeared at {self.lock_path}")
 
     @staticmethod
     def _find_entry(
@@ -1662,71 +1764,76 @@ class InstallSourceManager:
 
         # Step 4 + 5: build new entry under the lock and publish.
         with self._lock:
-            old_lock = self._current
-            now = self._now_iso()
-            existing = self._find_entry(old_lock, root_id, directory_name)
+            for _attempt in range(2):
+                if self._missing_lock_degraded and self.lock_path.exists():
+                    self.load()
+                old_lock = self._current
+                now = self._now_iso()
+                existing = self._find_entry(old_lock, root_id, directory_name)
 
-            if existing is None:
-                new_entry = LockEntry(
-                    root_id=root_id,
-                    directory_name=directory_name,
-                    plugin_id=plugin_id,
-                    channel="imported",
-                    reason="user_requested",
-                    installed_at=now,
-                    updated_at=now,
-                    last_seen_at=now,
-                    removed=False,
-                    removed_at=None,
-                    source_detail=detail,
-                    package_id=package_id,
-                    profile_dir=profile_dir,
-                    profile_installed=bool(profile_dir),
-                )
-            else:
-                # Idempotent overwrite: preserve installed_at (Req 9.4)
-                # and only upgrade plugin_id when we've actually read a
-                # non-empty value — never regress a known id back to "".
-                manual_takeover = existing.channel == "manual" and not existing.removed
-                new_entry = dataclasses.replace(
-                    existing,
-                    plugin_id=plugin_id or existing.plugin_id,
-                    channel="imported",
-                    source_detail=detail,
-                    updated_at=now,
-                    last_seen_at=now,
-                    removed=False,
-                    removed_at=None,
-                    package_id=package_id or (
-                        "" if manual_takeover else existing.package_id
-                    ),
-                    profile_dir=profile_dir or (
-                        existing.profile_dir
-                        if not manual_takeover
-                        and not existing.removed
-                        and existing.profile_installed is True
-                        else ""
-                    ),
-                    # Carry the tri-state forward: collapsing a legacy ``None``
-                    # row to ``False`` would make deletion skip the inferred
-                    # profile it still owns on disk.
-                    profile_installed=(
-                        True
-                        if profile_dir
-                        else (
-                            False
-                            if manual_takeover
-                            else existing.profile_installed
-                            if not existing.removed
-                            else False
-                        )
-                    ),
-                )
+                if existing is None:
+                    new_entry = LockEntry(
+                        root_id=root_id,
+                        directory_name=directory_name,
+                        plugin_id=plugin_id,
+                        channel="imported",
+                        reason="user_requested",
+                        installed_at=now,
+                        updated_at=now,
+                        last_seen_at=now,
+                        removed=False,
+                        removed_at=None,
+                        source_detail=detail,
+                        package_id=package_id,
+                        profile_dir=profile_dir,
+                        profile_installed=bool(profile_dir),
+                    )
+                else:
+                    # Idempotent overwrite: preserve installed_at (Req 9.4)
+                    # and only upgrade plugin_id when we've actually read a
+                    # non-empty value — never regress a known id back to "".
+                    manual_takeover = existing.channel == "manual" and not existing.removed
+                    new_entry = dataclasses.replace(
+                        existing,
+                        plugin_id=plugin_id or existing.plugin_id,
+                        channel="imported",
+                        source_detail=detail,
+                        updated_at=now,
+                        last_seen_at=now,
+                        removed=False,
+                        removed_at=None,
+                        package_id=package_id or (
+                            "" if manual_takeover else existing.package_id
+                        ),
+                        profile_dir=profile_dir or (
+                            existing.profile_dir
+                            if not manual_takeover
+                            and not existing.removed
+                            and existing.profile_installed is True
+                            else ""
+                        ),
+                        # Carry the tri-state forward: collapsing a legacy ``None``
+                        # row to ``False`` would make deletion skip the inferred
+                        # profile it still owns on disk.
+                        profile_installed=(
+                            True
+                            if profile_dir
+                            else (
+                                False
+                                if manual_takeover
+                                else existing.profile_installed
+                                if not existing.removed
+                                else False
+                            )
+                        ),
+                    )
 
-            new_lock = self._replace_entry(
-                old_lock, new_entry, updated_at=now
-            )
-            self._publish(new_lock)
+                new_lock = self._replace_entry(
+                    old_lock, new_entry, updated_at=now
+                )
+                if self._publish_or_reload_locked(new_lock):
+                    return
+            raise OSError(f"lock file concurrently reappeared at {self.lock_path}")
 
     # ------------------------------------------------------------------
     # Write path: record_market (design §8.2 / task 2.5)
@@ -1824,87 +1931,92 @@ class InstallSourceManager:
 
         # Step 5 + 6: upsert under the lock and publish.
         with self._lock:
-            old_lock = self._current
-            now = self._now_iso()
-            existing = self._find_entry(old_lock, root_id, directory_name)
-            manual_takeover = bool(
-                existing is not None
-                and not existing.removed
-                and existing.channel == "manual"
-            )
-
-            # Compute previous_version: capture the old market version
-            # when this is a genuine upgrade (different version string).
-            # Imported → market promotion and first install both leave
-            # previous_version=None — there's no prior market version to
-            # record.
-            previous_version: str | None = None
-            if (
-                existing is not None
-                and isinstance(existing.source_detail, SourceDetailMarket)
-                and existing.source_detail.version
-                and existing.source_detail.version != version
-            ):
-                previous_version = existing.source_detail.version
-
-            detail = SourceDetailMarket(
-                plugin_market_id=plugin_market_id,
-                version=version,
-                package_url=package_url,
-                # v2 defaults: legacy record_market is kept for back-compat
-                # with the old test surface; production callers should use
-                # record_market_install / record_market_upgrade which carry
-                # the full evidence (sha256, payload_hash, channel, published_at).
-                package_sha256="",
-                payload_hash=None,
-                channel="stable",
-                published_at=now,
-                previous_version=previous_version,
-            )
-
-            if existing is None:
-                new_entry = LockEntry(
-                    root_id=root_id,
-                    directory_name=directory_name,
-                    plugin_id=plugin_id,
-                    channel="market",
-                    reason="user_requested",
-                    installed_at=now,
-                    updated_at=now,
-                    last_seen_at=now,
-                    removed=False,
-                    removed_at=None,
-                    source_detail=detail,
-                    package_id=package_id,
-                    profile_dir=profile_dir,
-                    profile_installed=bool(profile_dir),
-                )
-            else:
-                # Idempotent overwrite: preserve installed_at (Req 10.4)
-                # and only upgrade plugin_id when we've actually read a
-                # non-empty value — never regress a known id back to "".
-                # This branch also covers the imported → market promotion
-                # case called out in the docstring.
-                new_entry = dataclasses.replace(
-                    existing,
-                    plugin_id=plugin_id or existing.plugin_id,
-                    channel="market",
-                    source_detail=detail,
-                    updated_at=now,
-                    last_seen_at=now,
-                    removed=False,
-                    removed_at=None,
-                    package_id=package_id or (
-                        "" if manual_takeover else existing.package_id
-                    ),
-                    profile_dir=profile_dir,
-                    profile_installed=bool(profile_dir),
+            for _attempt in range(2):
+                if self._missing_lock_degraded and self.lock_path.exists():
+                    self.load()
+                old_lock = self._current
+                now = self._now_iso()
+                existing = self._find_entry(old_lock, root_id, directory_name)
+                manual_takeover = bool(
+                    existing is not None
+                    and not existing.removed
+                    and existing.channel == "manual"
                 )
 
-            new_lock = self._replace_entry(
-                old_lock, new_entry, updated_at=now
-            )
-            self._publish(new_lock)
+                # Compute previous_version: capture the old market version
+                # when this is a genuine upgrade (different version string).
+                # Imported → market promotion and first install both leave
+                # previous_version=None — there's no prior market version to
+                # record.
+                previous_version: str | None = None
+                if (
+                    existing is not None
+                    and isinstance(existing.source_detail, SourceDetailMarket)
+                    and existing.source_detail.version
+                    and existing.source_detail.version != version
+                ):
+                    previous_version = existing.source_detail.version
+
+                detail = SourceDetailMarket(
+                    plugin_market_id=plugin_market_id,
+                    version=version,
+                    package_url=package_url,
+                    # v2 defaults: legacy record_market is kept for back-compat
+                    # with the old test surface; production callers should use
+                    # record_market_install / record_market_upgrade which carry
+                    # the full evidence (sha256, payload_hash, channel, published_at).
+                    package_sha256="",
+                    payload_hash=None,
+                    channel="stable",
+                    published_at=now,
+                    previous_version=previous_version,
+                )
+
+                if existing is None:
+                    new_entry = LockEntry(
+                        root_id=root_id,
+                        directory_name=directory_name,
+                        plugin_id=plugin_id,
+                        channel="market",
+                        reason="user_requested",
+                        installed_at=now,
+                        updated_at=now,
+                        last_seen_at=now,
+                        removed=False,
+                        removed_at=None,
+                        source_detail=detail,
+                        package_id=package_id,
+                        profile_dir=profile_dir,
+                        profile_installed=bool(profile_dir),
+                    )
+                else:
+                    # Idempotent overwrite: preserve installed_at (Req 10.4)
+                    # and only upgrade plugin_id when we've actually read a
+                    # non-empty value — never regress a known id back to "".
+                    # This branch also covers the imported → market promotion
+                    # case called out in the docstring.
+                    new_entry = dataclasses.replace(
+                        existing,
+                        plugin_id=plugin_id or existing.plugin_id,
+                        channel="market",
+                        source_detail=detail,
+                        updated_at=now,
+                        last_seen_at=now,
+                        removed=False,
+                        removed_at=None,
+                        package_id=package_id or (
+                            "" if manual_takeover else existing.package_id
+                        ),
+                        profile_dir=profile_dir,
+                        profile_installed=bool(profile_dir),
+                    )
+
+                new_lock = self._replace_entry(
+                    old_lock, new_entry, updated_at=now
+                )
+                if self._publish_or_reload_locked(new_lock):
+                    return
+            raise OSError(f"lock file concurrently reappeared at {self.lock_path}")
 
     # ------------------------------------------------------------------
     # Write path: record_market_install / record_market_upgrade (design §3.2)
@@ -2000,6 +2112,8 @@ class InstallSourceManager:
             )
 
         with self._lock:
+            if self._missing_lock_degraded and self.lock_path.exists():
+                self.load()
             if self._read_only:
                 raise InstallSourceError(
                     "INSTALL_SOURCE_READ_ONLY",
@@ -2084,11 +2198,9 @@ class InstallSourceManager:
 
             try:
                 new_lock = self._replace_entry(old_lock, new_entry, updated_at=now)
+                _atomic_write(self.lock_path, _serialize_lock(new_lock))
                 self._current = new_lock
-                self.save()
             except Exception as exc:
-                # Roll back the in-memory snapshot so a failed write
-                # doesn't leak a phantom entry to readers.
                 self._current = old_lock
                 raise InstallSourceError(
                     "lock_write_failed",
@@ -2398,27 +2510,32 @@ class InstallSourceManager:
             )
 
         with self._lock:
-            old_lock = self._current
-            existing = self._find_entry(old_lock, root_id, directory_name)
-            if existing is None:
-                logger.warning(
-                    "InstallSourceManager.mark_removed: no lock entry for "
-                    "(root_id=%s, directory=%s), skipping (reason=%s)",
-                    root_id, directory_name, reason,
+            for _attempt in range(2):
+                if self._missing_lock_degraded and self.lock_path.exists():
+                    self.load()
+                old_lock = self._current
+                existing = self._find_entry(old_lock, root_id, directory_name)
+                if existing is None:
+                    logger.warning(
+                        "InstallSourceManager.mark_removed: no lock entry for "
+                        "(root_id=%s, directory=%s), skipping (reason=%s)",
+                        root_id, directory_name, reason,
+                    )
+                    return
+                if existing.removed:
+                    # Already removed — idempotent no-op.
+                    return
+                now = self._now_iso()
+                new_entry = dataclasses.replace(
+                    existing,
+                    removed=True,
+                    removed_at=now,
+                    updated_at=now,
                 )
-                return
-            if existing.removed:
-                # Already removed — idempotent no-op.
-                return
-            now = self._now_iso()
-            new_entry = dataclasses.replace(
-                existing,
-                removed=True,
-                removed_at=now,
-                updated_at=now,
-            )
-            new_lock = self._replace_entry(old_lock, new_entry, updated_at=now)
-            self._publish(new_lock)
+                new_lock = self._replace_entry(old_lock, new_entry, updated_at=now)
+                if self._publish_or_reload_locked(new_lock):
+                    return
+            raise OSError(f"lock file concurrently reappeared at {self.lock_path}")
 
     # ------------------------------------------------------------------
     # Read path: list_entries / to_api_view (task 2.6 / design §11.3 / §12.3)

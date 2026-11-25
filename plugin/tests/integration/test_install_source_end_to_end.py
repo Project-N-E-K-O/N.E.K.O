@@ -636,12 +636,12 @@ def test_runtime_missing_lock_falls_back_to_degrade_if_write_fails_and_heals_on_
 
     # Simulate missing lock + transient write failure -> enters missing_lock read-only degrade.
     lock_path.unlink()
-    real_atomic_write = manager_mod._atomic_write
+    real_atomic_create = manager_mod._atomic_create_if_missing
 
-    def _fail_write(_path: Path, _data: bytes) -> None:
+    def _fail_create(_path: Path, _data: bytes) -> bool:
         raise OSError("read-only media")
 
-    monkeypatch.setattr(manager_mod, "_atomic_write", _fail_write)
+    monkeypatch.setattr(manager_mod, "_atomic_create_if_missing", _fail_create)
     mgr.load()
 
     assert mgr.is_degraded is True
@@ -663,7 +663,7 @@ def test_runtime_missing_lock_falls_back_to_degrade_if_write_fails_and_heals_on_
     assert err_info.value.code == "INSTALL_SOURCE_READ_ONLY"
 
     # Once writable again, record_import self-heals and writes all entries (old + new).
-    monkeypatch.setattr(manager_mod, "_atomic_write", real_atomic_write)
+    monkeypatch.setattr(manager_mod, "_atomic_create_if_missing", real_atomic_create)
     extra_dir = user_root / "extra_imp"
     extra_dir.mkdir(parents=True)
     mgr.record_import(
@@ -673,14 +673,6 @@ def test_runtime_missing_lock_falls_back_to_degrade_if_write_fails_and_heals_on_
     )
     assert mgr.is_degraded is False
     assert lock_path.is_file()
-    assert {e.directory_name for e in mgr.list_entries()} == {
-        "market_plug",
-        "imported_plug",
-        "extra_imp",
-    }
-
-    # Verify restoring an admin backup before reconcile() is not clobbered by stale memory.
-    lock_path.write_bytes(saved_bytes)
     assert {e.directory_name for e in mgr.list_entries()} == {
         "market_plug",
         "imported_plug",
@@ -710,11 +702,15 @@ def test_reconcile_reloads_admin_restored_lock_instead_of_overwriting(
 
     # Force missing_lock degrade via failed self-heal write.
     lock_path.unlink()
-    real_atomic_write = manager_mod._atomic_write
-    monkeypatch.setattr(manager_mod, "_atomic_write", lambda _p, _d: (_ for _ in ()).throw(OSError("busy")))
+    real_atomic_create = manager_mod._atomic_create_if_missing
+    monkeypatch.setattr(
+        manager_mod,
+        "_atomic_create_if_missing",
+        lambda _p, _d: (_ for _ in ()).throw(OSError("busy")),
+    )
     mgr.load()
     assert mgr.is_degraded is True
-    monkeypatch.setattr(manager_mod, "_atomic_write", real_atomic_write)
+    monkeypatch.setattr(manager_mod, "_atomic_create_if_missing", real_atomic_create)
 
     # Admin restores a newer lock file containing an extra imported entry before reconcile runs.
     extra_dir = user_root / "admin_restored"
@@ -740,6 +736,18 @@ def test_reconcile_reloads_admin_restored_lock_instead_of_overwriting(
     assert set(entries) == {"market_plug", "admin_restored"}
     assert entries["admin_restored"].channel == "imported"
 
+    disk_mgr = InstallSourceManager(
+        lock_path=lock_path,
+        builtin_root=mgr.builtin_root,
+        user_root=user_root,
+        scanner=mgr.scanner,
+    )
+    disk_mgr.load()
+    assert {e.directory_name: e.channel for e in disk_mgr.list_entries()} == {
+        "market_plug": "market",
+        "admin_restored": "imported",
+    }
+
 
 def test_reconcile_after_runtime_missing_lock_heals_without_downgrading_provenance(
     tmp_path: Path,
@@ -761,11 +769,15 @@ def test_reconcile_after_runtime_missing_lock_heals_without_downgrading_provenan
     )
 
     lock_path.unlink()
-    real_atomic_write = manager_mod._atomic_write
-    monkeypatch.setattr(manager_mod, "_atomic_write", lambda _p, _d: (_ for _ in ()).throw(OSError("busy")))
+    real_atomic_create = manager_mod._atomic_create_if_missing
+    monkeypatch.setattr(
+        manager_mod,
+        "_atomic_create_if_missing",
+        lambda _p, _d: (_ for _ in ()).throw(OSError("busy")),
+    )
     mgr.load()
     assert mgr.is_degraded is True
-    monkeypatch.setattr(manager_mod, "_atomic_write", real_atomic_write)
+    monkeypatch.setattr(manager_mod, "_atomic_create_if_missing", real_atomic_create)
 
     mgr.reconcile()
     assert mgr.is_degraded is False
@@ -801,10 +813,10 @@ def test_reconcile_rolls_back_snapshot_on_save_failure_when_dir_transiently_miss
     # Simulate a transient scan miss combined with a failing disk write.
     monkeypatch.setattr(mgr.scanner, "scan", lambda: [])
 
-    def _fail_atomic_write(_path: Path, _data: bytes) -> None:
+    def _fail_atomic_create(_path: Path, _data: bytes) -> bool:
         raise OSError("disk full")
 
-    monkeypatch.setattr(manager_mod, "_atomic_write", _fail_atomic_write)
+    monkeypatch.setattr(manager_mod, "_atomic_create_if_missing", _fail_atomic_create)
     mgr.load()
     assert mgr.is_degraded is True
     assert "lock_file_missing" in (mgr.degrade_reason or "")
@@ -854,12 +866,16 @@ def test_non_missing_lock_degrade_not_cleared_by_reconcile_after_missing_lock(
     )
 
     lock_path.unlink()
-    real_atomic_write = manager_mod._atomic_write
-    monkeypatch.setattr(manager_mod, "_atomic_write", lambda _p, _d: (_ for _ in ()).throw(OSError("busy")))
+    real_atomic_create = manager_mod._atomic_create_if_missing
+    monkeypatch.setattr(
+        manager_mod,
+        "_atomic_create_if_missing",
+        lambda _p, _d: (_ for _ in ()).throw(OSError("busy")),
+    )
     mgr.load()
     assert mgr.is_degraded is True
     assert "lock_file_missing" in (mgr.degrade_reason or "")
-    monkeypatch.setattr(manager_mod, "_atomic_write", real_atomic_write)
+    monkeypatch.setattr(manager_mod, "_atomic_create_if_missing", real_atomic_create)
 
     # Supersede missing-lock degrade with an unreadable lock path (directory).
     lock_path.mkdir()
@@ -867,7 +883,143 @@ def test_non_missing_lock_degrade_not_cleared_by_reconcile_after_missing_lock(
     assert mgr.is_degraded is True
     assert "read_failed" in (mgr.degrade_reason or "")
 
-    # reconcile() must not clear the unrelated read_failed degrade.
+    # reconcile() must not clear the unrelated read_failed degrade, but must still scan into memory.
     mgr.reconcile()
     assert mgr.is_degraded is True
     assert "read_failed" in (mgr.degrade_reason or "")
+    assert {e.directory_name for e in mgr.list_entries()} == {"market_plug"}
+
+
+def test_runtime_missing_lock_prefers_memory_over_retained_legacy_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builtin_root = tmp_path / "builtin"
+    custom_exec_root = tmp_path / "legacy" / "plugins"
+    state_root = tmp_path / "state" / "plugins"
+    builtin_root.mkdir(parents=True)
+    custom_exec_root.mkdir(parents=True)
+    monkeypatch.setenv("PLUGIN_CONFIG_ROOT", str(custom_exec_root))
+    monkeypatch.delenv("NEKO_PLUGIN_INSTALL_LOCK_PATH", raising=False)
+    monkeypatch.setattr(settings, "get_plugins_directory", lambda: state_root)
+
+    legacy_lock = custom_exec_root.parent / "plugins.lock.json"
+    v1_dir = custom_exec_root / "v1_plug"
+    v2_dir = custom_exec_root / "v2_plug"
+    v1_dir.mkdir()
+    v2_dir.mkdir()
+
+    scanner = PluginDirectoryScanner(builtin_root, custom_exec_root)
+    legacy_mgr = InstallSourceManager(
+        lock_path=legacy_lock,
+        builtin_root=builtin_root,
+        user_root=custom_exec_root,
+        scanner=scanner,
+    )
+    legacy_mgr.load()
+    legacy_mgr.record_import(
+        directory_path=v1_dir,
+        package_filename="v1.neko-plugin",
+        package_sha256="111",
+    )
+
+    canonical_lock = resolve_lock_path()
+    mgr = InstallSourceManager(
+        lock_path=canonical_lock,
+        builtin_root=builtin_root,
+        user_root=custom_exec_root,
+        scanner=scanner,
+    )
+    mgr.load()
+    assert legacy_lock.is_file()
+    mgr.record_market(
+        directory_path=v2_dir,
+        plugin_market_id="mk-v2",
+        version="2.0.0",
+        package_url="https://example.test/v2.neko-plugin",
+    )
+    assert {e.directory_name for e in mgr.list_entries()} == {"v1_plug", "v2_plug"}
+
+    canonical_lock.unlink()
+    mgr.load()
+    assert canonical_lock.is_file()
+    entries = {e.directory_name: e for e in mgr.list_entries()}
+    assert set(entries) == {"v1_plug", "v2_plug"}
+    assert entries["v2_plug"].channel == "market"
+
+
+def test_record_import_reloads_and_merges_admin_restored_lock_from_missing_lock_degrade(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import plugin.server.application.install_source.manager as manager_mod
+
+    mgr, _, user_root, lock_path = _build_mgr(tmp_path)
+    market_dir = user_root / "market_plug"
+    admin_dir = user_root / "admin_plug"
+    new_imp_dir = user_root / "new_imp"
+    for d in (market_dir, admin_dir, new_imp_dir):
+        d.mkdir(parents=True)
+
+    mgr.load()
+    mgr.record_market(
+        directory_path=market_dir,
+        plugin_market_id="mk-1",
+        version="1.0.0",
+        package_url="https://example.test/mk.neko-plugin",
+    )
+    saved_bytes = lock_path.read_bytes()
+
+    lock_path.unlink()
+    real_atomic_create = manager_mod._atomic_create_if_missing
+    monkeypatch.setattr(
+        manager_mod,
+        "_atomic_create_if_missing",
+        lambda _p, _d: (_ for _ in ()).throw(OSError("busy")),
+    )
+    mgr.load()
+    assert mgr.is_degraded is True
+    monkeypatch.setattr(manager_mod, "_atomic_create_if_missing", real_atomic_create)
+
+    admin_mgr = InstallSourceManager(
+        lock_path=lock_path,
+        builtin_root=mgr.builtin_root,
+        user_root=user_root,
+        scanner=mgr.scanner,
+    )
+    lock_path.write_bytes(saved_bytes)
+    admin_mgr.load()
+    admin_mgr.record_market(
+        directory_path=admin_dir,
+        plugin_market_id="mk-admin",
+        version="2.0.0",
+        package_url="https://example.test/admin.neko-plugin",
+    )
+
+    mgr.record_import(
+        directory_path=new_imp_dir,
+        package_filename="new.neko-plugin",
+        package_sha256="abc",
+    )
+    assert mgr.is_degraded is False
+    disk_mgr = InstallSourceManager(
+        lock_path=lock_path,
+        builtin_root=mgr.builtin_root,
+        user_root=user_root,
+        scanner=mgr.scanner,
+    )
+    disk_mgr.load()
+    assert {e.directory_name: e.channel for e in disk_mgr.list_entries()} == {
+        "market_plug": "market",
+        "admin_plug": "market",
+        "new_imp": "imported",
+    }
+
+
+def test_atomic_create_if_missing_preserves_existing_file(tmp_path: Path) -> None:
+    from plugin.server.application.install_source.manager import _atomic_create_if_missing
+
+    lock_path = tmp_path / "plugins.lock.json"
+    lock_path.write_bytes(b"existing-admin-bytes")
+    assert _atomic_create_if_missing(lock_path, b"new-bytes") is False
+    assert lock_path.read_bytes() == b"existing-admin-bytes"

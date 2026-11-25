@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import threading
-from pathlib import Path
+import uuid
 from unittest.mock import patch
 
 import pytest
 
 from plugin.core.state import GlobalState
-from plugin.message_plane.stores import TopicStore
+from plugin.message_plane.ingest_server import MessagePlaneIngestServer
+from plugin.message_plane.stores import build_default_store_registry
 from plugin.server.application.messages.query_service import MessageQueryService
 
 
@@ -104,52 +105,76 @@ def test_delete_event_and_lifecycle_sync_message_plane_only_when_removed() -> No
         assert gs.delete_event("e1") is True
         pub_snap.assert_called_once_with(
             store="events",
-            records=[{"event_id": "e2", "type": "t2"}],
+            records=[{"event_id": "e1", "trace_id": "e1"}],
             topic="all",
-            mode="replace",
+            mode="delete",
         )
         pub_snap.reset_mock()
 
         assert gs.delete_lifecycle("l1") is True
         pub_snap.assert_called_once_with(
             store="lifecycle",
-            records=[{"lifecycle_id": "l2", "type": "stop"}],
+            records=[{"lifecycle_id": "l1", "trace_id": "l1"}],
             topic="all",
-            mode="replace",
+            mode="delete",
         )
 
 
 def test_event_delete_replays_cleanly_into_topic_store() -> None:
     gs = _new_state()
-    store = TopicStore(name="events", maxlen=100)
-    ops: list[tuple[str, object]] = []
+    registry = build_default_store_registry(maxlen=100, frames_maxlen=10)
+    srv = MessagePlaneIngestServer(
+        endpoint=f"inproc://test_bus_delete_{uuid.uuid4().hex}",
+        stores=registry,
+        pub_server=None,
+        auth_token="test-token",
+    )
+    events_store = registry.get("events")
+    lifecycle_store = registry.get("lifecycle")
+    assert events_store is not None and lifecycle_store is not None
+    # Remote records present only on message_plane must survive local delete_event/delete_lifecycle.
+    events_store.publish("all", {"event_id": "remote-e1", "plugin_id": "remote", "type": "r"})
+    lifecycle_store.publish("all", {"lifecycle_id": "remote-l1", "plugin_id": "remote", "type": "r"})
+    ops: list[tuple[str, str, str, object]] = []
 
     def _rec(*, store: str, record: dict, topic: str = "all") -> None:
-        if store == "events":
-            ops.append(("delta", (topic, dict(record))))
+        ops.append(("delta", store, topic, dict(record)))
 
     def _snap(*, store: str, records: list, topic: str = "all", mode: str = "replace") -> None:
-        if store == "events":
-            ops.append(("snapshot", (topic, [dict(r) for r in records], mode)))
+        ops.append(("snapshot", store, topic, (mode, [dict(r) for r in records])))
 
-    with patch("plugin.server.messaging.plane_bridge.publish_record", side_effect=_rec), patch(
-        "plugin.server.messaging.plane_bridge.publish_snapshot", side_effect=_snap
-    ):
-        gs.append_event_record({"event_id": "e1", "plugin_id": "p", "type": "a"})
-        gs.append_event_record({"event_id": "e2", "plugin_id": "p", "type": "b"})
-        assert gs.delete_event("e1") is True
+    try:
+        with patch("plugin.server.messaging.plane_bridge.publish_record", side_effect=_rec), patch(
+            "plugin.server.messaging.plane_bridge.publish_snapshot", side_effect=_snap
+        ):
+            gs.append_event_record({"event_id": "e1", "plugin_id": "p", "type": "a"})
+            gs.append_event_record({"event_id": "e2", "plugin_id": "p", "type": "b"})
+            gs.append_lifecycle_record({"lifecycle_id": "l1", "plugin_id": "p", "type": "start"})
+            gs.append_lifecycle_record({"lifecycle_id": "l2", "plugin_id": "p", "type": "stop"})
+            assert gs.delete_event("e1") is True
+            assert gs.delete_lifecycle("l1") is True
 
-    for kind, arg in ops:
-        if kind == "delta":
-            topic, rec = arg  # type: ignore[misc]
-            store.publish(topic=topic, payload=rec)
-        else:
-            topic, recs, mode = arg  # type: ignore[misc]
-            assert mode == "replace"
-            store.replace_topic(topic=topic, records=recs)
+        for kind, store_name, topic, arg in ops:
+            if kind == "delta":
+                st = registry.get(store_name)
+                assert st is not None
+                st.publish(topic=topic, payload=arg)  # type: ignore[arg-type]
+            else:
+                mode, recs = arg  # type: ignore[misc]
+                assert mode == "delete"
+                srv._ingest_snapshot(
+                    {"store": store_name, "topic": topic, "mode": mode, "items": recs}
+                )
 
-    recent = store.get_recent("all", 10)
-    assert [item["payload"]["event_id"] for item in recent] == ["e2"]
+        assert [item["payload"]["event_id"] for item in events_store.get_recent("all", 10)] == [
+            "remote-e1",
+            "e2",
+        ]
+        assert [
+            item["payload"]["lifecycle_id"] for item in lifecycle_store.get_recent("all", 10)
+        ] == ["remote-l1", "l2"]
+    finally:
+        srv.close()
 
 
 def test_append_and_extend_filter_tombstoned_nested_message_ids() -> None:

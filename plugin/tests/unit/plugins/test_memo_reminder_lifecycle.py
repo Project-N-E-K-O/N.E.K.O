@@ -443,3 +443,60 @@ def test_phase2_save_error_does_not_skip_phase3(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(plugin, "_save_reminders_unlocked", _fail_phase2_save)
     plugin._fire_due_reminders()
     assert plugin.store.data[_STORE_KEY] == []
+
+
+@pytest.mark.plugin_unit
+def test_transient_failures_past_20_retries_preserve_reminder_and_repeat_budget() -> None:
+    plugin = _plugin()
+    due = _due_iso()
+    plugin._save_reminders([
+        {
+            "id": "once-persist",
+            "message": "别丢了",
+            "trigger_at": due,
+            "created_at": due,
+            "repeat": "once",
+        },
+        {
+            "id": "repeat-persist",
+            "message": "按时吃药",
+            "trigger_at": due,
+            "created_at": due,
+            "repeat": "30s",
+            "max_count": 2,
+            "fire_count": 0,
+        },
+    ])
+    plugin.ctx.push_message = lambda **kwargs: {"submitted": False, "reason": "transport_unavailable"}  # type: ignore[method-assign]
+
+    for attempt in range(1, 26):
+        current = plugin._load_reminders()
+        for item in current:
+            item["next_retry_at"] = _due_iso(1)
+        plugin._save_reminders(current)
+        plugin._fire_due_reminders()
+
+    pending = {r["id"]: r for r in plugin.store.data[_STORE_KEY]}
+    assert set(pending) == {"once-persist", "repeat-persist"}
+    assert pending["once-persist"]["delivery_retry_count"] == 25
+    assert pending["repeat-persist"]["delivery_retry_count"] == 25
+    assert pending["repeat-persist"]["fire_count"] == 0
+    assert pending["repeat-persist"]["max_count"] == 2
+    assert (
+        datetime.fromisoformat(pending["once-persist"]["next_retry_at"])
+        - datetime.now(timezone.utc)
+    ).total_seconds() <= 61.0
+
+    # Recovery after transient outage delivers both without losing budget.
+    for item in pending.values():
+        item["next_retry_at"] = _due_iso(1)
+    plugin._save_reminders(list(pending.values()))
+    plugin.ctx.push_message = lambda **kwargs: (plugin.ctx.pushed.append(kwargs) or {"submitted": True})  # type: ignore[method-assign]
+    plugin._fire_due_reminders()
+
+    remaining = plugin.store.data[_STORE_KEY]
+    assert len(remaining) == 1
+    assert remaining[0]["id"] == "repeat-persist"
+    assert remaining[0]["fire_count"] == 1
+    assert remaining[0]["max_count"] == 2
+    assert len(plugin.ctx.pushed) == 2

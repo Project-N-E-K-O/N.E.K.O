@@ -258,3 +258,17 @@ async def test_corrupt_backup_failure_skips_startup_overwrite(
     assert res.is_ok()
     assert plugin._state_file.read_text(encoding="utf-8") == corrupt_bytes
     assert plugin._degraded_state["scheduler_state.json"]["backup_path"] == ""
+
+    # Shutdown while backup still fails must STILL refuse to overwrite corrupt file.
+    await plugin.on_shutdown()
+    assert plugin._state_file.read_text(encoding="utf-8") == corrupt_bytes
+    assert plugin._degraded_state["scheduler_state.json"]["backup_path"] == ""
+
+    # Once file lock clears, subsequent save (e.g. on_shutdown) backs up corrupt file first.
+    monkeypatch.setattr(music_pusher_mod.os, "replace", real_replace)
+    await plugin.on_shutdown()
+    backup_path_str = plugin._degraded_state["scheduler_state.json"]["backup_path"]
+    assert backup_path_str
+    assert Path(backup_path_str).read_text(encoding="utf-8") == corrupt_bytes
+    saved = json.loads(plugin._state_file.read_text(encoding="utf-8"))
+    assert "tasks" in saved
