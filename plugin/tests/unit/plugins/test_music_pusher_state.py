@@ -272,3 +272,57 @@ async def test_corrupt_backup_failure_skips_startup_overwrite(
     assert Path(backup_path_str).read_text(encoding="utf-8") == corrupt_bytes
     saved = json.loads(plugin._state_file.read_text(encoding="utf-8"))
     assert "tasks" in saved
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_corrupt_backup_failure_rejects_runtime_mutations_without_partial_state_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin = _make_plugin(tmp_path)
+    monkeypatch.setattr(plugin, "_ensure_scheduler_task", lambda: None)
+    plugin._state_file.parent.mkdir(parents=True, exist_ok=True)
+    corrupt_bytes = "{broken state"
+    plugin._state_file.write_text(corrupt_bytes, encoding="utf-8")
+
+    real_replace = music_pusher_mod.os.replace
+
+    def _fail_backup_replace(src: Path, dst: Path) -> None:
+        if ".corrupt." in dst.name:
+            raise PermissionError("file locked")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(music_pusher_mod.os, "replace", _fail_backup_replace)
+    start_res = await plugin.on_start()
+    assert start_res.is_ok()
+
+    # Direct runtime save helpers raise OSError rather than silently returning success.
+    with pytest.raises(OSError, match="failed to back up corrupt"):
+        plugin._save_state_locked()
+    assert plugin._state_file.read_text(encoding="utf-8") == corrupt_bytes
+
+    # Public mutation entries return Err and leave in-memory state unmutated.
+    prev_attach = plugin._attach_prompt_on_push
+    settings_res = await plugin.set_push_settings(attach_prompt_on_push=not prev_attach)
+    assert settings_res.is_err()
+    assert plugin._attach_prompt_on_push is prev_attach
+
+    from datetime import datetime, timedelta, timezone
+
+    future_iso = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+    create_res = await plugin.create_schedule_task(
+        trigger_at=future_iso,
+        name="blocked-task",
+        queue_items=[{"url": "https://example.test/song.mp3", "title": "Song"}],
+    )
+    assert create_res.is_err()
+    assert plugin._tasks == {}
+    assert plugin._state_file.read_text(encoding="utf-8") == corrupt_bytes
+
+    # Once file lock clears, mutation backs up corrupt file and persists cleanly.
+    monkeypatch.setattr(music_pusher_mod.os, "replace", real_replace)
+    ok_res = await plugin.set_push_settings(attach_prompt_on_push=not prev_attach)
+    assert ok_res.is_ok()
+    assert plugin._attach_prompt_on_push is (not prev_attach)
+    assert Path(plugin._degraded_state["scheduler_state.json"]["backup_path"]).read_text(encoding="utf-8") == corrupt_bytes

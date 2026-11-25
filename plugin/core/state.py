@@ -251,6 +251,8 @@ class GlobalState:
         self._deleted_message_ids_order: Deque[str] = deque()
         self._deleted_event_ids_order: Deque[str] = deque()
         self._deleted_lifecycle_ids_order: Deque[str] = deque()
+        self._pending_event_deletes: Dict[str, Dict[str, Any]] = {}
+        self._pending_lifecycle_deletes: Dict[str, Dict[str, Any]] = {}
 
         self._bus_rev_lock = threading.Lock()
         self._bus_rev: Dict[str, int] = {
@@ -897,6 +899,7 @@ class GlobalState:
             if isinstance(eid, str) and eid in self._deleted_event_ids:
                 return
             self._event_store.append(record)
+            self._flush_pending_message_plane_deletes_locked("events")
             try:
                 from plugin.server.messaging.plane_bridge import publish_record
 
@@ -928,6 +931,7 @@ class GlobalState:
                 kept.append(rec)
             if not kept:
                 return 0
+            self._flush_pending_message_plane_deletes_locked("events")
             try:
                 from plugin.server.messaging.plane_bridge import publish_record
 
@@ -952,6 +956,7 @@ class GlobalState:
             if isinstance(lid, str) and lid in self._deleted_lifecycle_ids:
                 return
             self._lifecycle_store.append(record)
+            self._flush_pending_message_plane_deletes_locked("lifecycle")
             try:
                 from plugin.server.messaging.plane_bridge import publish_record
 
@@ -983,6 +988,7 @@ class GlobalState:
                 kept.append(rec)
             if not kept:
                 return 0
+            self._flush_pending_message_plane_deletes_locked("lifecycle")
             try:
                 from plugin.server.messaging.plane_bridge import publish_record
 
@@ -1270,9 +1276,17 @@ class GlobalState:
         try:
             from plugin.server.messaging.plane_bridge import publish_snapshot
 
-            items = self.list_event_records()
-            publish_snapshot(store="events", records=[dict(x) for x in items if isinstance(x, dict)], topic="all", mode="replace")
-            return int(len(items))
+            with self._bus_store_lock:
+                items = list(self._event_store)
+                result = publish_snapshot(
+                    store="events",
+                    records=[dict(x) for x in items if isinstance(x, dict)],
+                    topic="all",
+                    mode="replace",
+                )
+                if result is not False:
+                    self._pending_event_deletes.clear()
+                return int(len(items))
         except Exception:
             return 0
 
@@ -1280,19 +1294,82 @@ class GlobalState:
         try:
             from plugin.server.messaging.plane_bridge import publish_snapshot
 
-            items = self.list_lifecycle_records()
-            publish_snapshot(store="lifecycle", records=[dict(x) for x in items if isinstance(x, dict)], topic="all", mode="replace")
-            return int(len(items))
+            with self._bus_store_lock:
+                items = list(self._lifecycle_store)
+                result = publish_snapshot(
+                    store="lifecycle",
+                    records=[dict(x) for x in items if isinstance(x, dict)],
+                    topic="all",
+                    mode="replace",
+                )
+                if result is not False:
+                    self._pending_lifecycle_deletes.clear()
+                return int(len(items))
         except Exception:
             return 0
 
-    def _delete_message_plane_record(self, store: str, record: Dict[str, Any]) -> None:
+    def _pending_deletes_for_store(self, store: str) -> Optional[Dict[str, Dict[str, Any]]]:
+        if store == "events":
+            return self._pending_event_deletes
+        if store == "lifecycle":
+            return self._pending_lifecycle_deletes
+        return None
+
+    def _flush_pending_message_plane_deletes_locked(self, store: str) -> bool:
+        pending = self._pending_deletes_for_store(store)
+        if not pending:
+            return True
         try:
             from plugin.server.messaging.plane_bridge import publish_snapshot
 
-            publish_snapshot(store=store, records=[dict(record)], topic="all", mode="delete")
+            result = publish_snapshot(
+                store=store,
+                records=[dict(r) for r in pending.values()],
+                topic="all",
+                mode="delete",
+            )
+            if result is False:
+                return False
+            pending.clear()
+            return True
         except Exception:
-            pass
+            return False
+
+    def _delete_message_plane_record(
+        self,
+        store: str,
+        record: Dict[str, Any],
+        *,
+        record_id: str | None = None,
+    ) -> bool:
+        with self._bus_store_lock:
+            pending = self._pending_deletes_for_store(store)
+            if pending is None:
+                try:
+                    from plugin.server.messaging.plane_bridge import publish_snapshot
+
+                    return publish_snapshot(
+                        store=store,
+                        records=[dict(record)],
+                        topic="all",
+                        mode="delete",
+                    ) is not False
+                except Exception:
+                    return False
+            key = record_id
+            if not isinstance(key, str) or not key:
+                for field in ("event_id", "lifecycle_id", "trace_id", "message_id", "id"):
+                    val = record.get(field)
+                    if isinstance(val, str) and val:
+                        key = val
+                        break
+            if isinstance(key, str) and key:
+                if key not in pending:
+                    while len(pending) >= MAX_DELETED_BUS_IDS:
+                        oldest = next(iter(pending))
+                        pending.pop(oldest, None)
+                pending[key] = dict(record)
+            return self._flush_pending_message_plane_deletes_locked(store)
 
     def delete_message(self, message_id: str) -> bool:
         if not isinstance(message_id, str) or not message_id:
@@ -1379,8 +1456,12 @@ class GlobalState:
             self._event_store = new_store
             if removed:
                 self._delete_message_plane_record(
-                    "events", {"event_id": event_id, "trace_id": event_id}
+                    "events",
+                    {"event_id": event_id, "trace_id": event_id},
+                    record_id=event_id,
                 )
+            elif self._pending_event_deletes:
+                self._flush_pending_message_plane_deletes_locked("events")
         if removed:
             try:
                 rev = self._bump_bus_rev("events")
@@ -1410,8 +1491,12 @@ class GlobalState:
             self._lifecycle_store = new_store
             if removed:
                 self._delete_message_plane_record(
-                    "lifecycle", {"lifecycle_id": lifecycle_id, "trace_id": lifecycle_id}
+                    "lifecycle",
+                    {"lifecycle_id": lifecycle_id, "trace_id": lifecycle_id},
+                    record_id=lifecycle_id,
                 )
+            elif self._pending_lifecycle_deletes:
+                self._flush_pending_message_plane_deletes_locked("lifecycle")
         if removed:
             try:
                 rev = self._bump_bus_rev("lifecycle")

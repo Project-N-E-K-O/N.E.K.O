@@ -431,13 +431,15 @@ class TopicStore:
             for event in existing:
                 payload = event.get("payload") if isinstance(event, dict) else None
                 matched = False
+                has_primary_id = False
                 if isinstance(payload, dict):
                     for field in id_fields:
                         val = payload.get(field)
                         if isinstance(val, str) and val:
+                            has_primary_id = True
                             matched = val in clean_ids
                             break
-                if not matched and isinstance(event, dict):
+                if not has_primary_id and isinstance(event, dict):
                     index = event.get("index")
                     if isinstance(index, dict):
                         idx_id = index.get("id")

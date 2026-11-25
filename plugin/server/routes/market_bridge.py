@@ -3511,8 +3511,8 @@ async def _ensure_valid_oauth_token(
                 return current
             return None
 
-        committed = await asyncio.to_thread(
-            _commit_refreshed_oauth_token_sync, current, refreshed
+        committed = await asyncio.shield(
+            asyncio.to_thread(_commit_refreshed_oauth_token_sync, current, refreshed)
         )
         if committed is None:
             await _revoke_oauth_token_best_effort(refreshed)

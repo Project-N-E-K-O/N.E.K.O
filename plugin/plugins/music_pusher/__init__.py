@@ -785,18 +785,23 @@ class MusicPusherPlugin(NekoPluginBase):
             "updated_at": now_iso,
         }
 
-    def _try_backup_corrupt_file_locked(self, path: Path, reason: str) -> str:
+    def _backup_corrupt_file_locked(self, path: Path, reason: str) -> str:
+        degraded = getattr(self, "_degraded_state", None)
+        if degraded is None:
+            degraded = {}
+            self._degraded_state = degraded
         backup_name = f"{path.name}.corrupt.{_utc_now().strftime('%Y%m%dT%H%M%SZ')}.{uuid4().hex[:6]}"
         backup_path = path.with_name(backup_name)
+        recorded_backup = ""
         try:
             os.replace(path, backup_path)
+            recorded_backup = str(backup_path)
             self.logger.error(
                 "MusicPusher backed up corrupt state file {} -> {} (reason={})",
                 path,
                 backup_path,
                 reason,
             )
-            return str(backup_path)
         except OSError as exc:
             self.logger.error(
                 "MusicPusher failed to back up corrupt state file {} (reason={}): {}",
@@ -804,15 +809,8 @@ class MusicPusherPlugin(NekoPluginBase):
                 reason,
                 exc,
             )
-            return ""
-
-    def _backup_corrupt_file_locked(self, path: Path, reason: str) -> None:
-        degraded = getattr(self, "_degraded_state", None)
-        if degraded is None:
-            degraded = {}
-            self._degraded_state = degraded
-        recorded_backup = self._try_backup_corrupt_file_locked(path, reason)
         degraded[path.name] = {"reason": reason, "backup_path": recorded_backup}
+        return recorded_backup
 
     def _load_upload_name_map_locked(self) -> None:
         path = self._upload_name_map_file
@@ -855,8 +853,10 @@ class MusicPusherPlugin(NekoPluginBase):
             }
         self._upload_name_map = cleaned
 
-    def _save_upload_name_map_locked(self) -> None:
-        if not self._ensure_corrupt_backup_before_save_locked(self._upload_name_map_file):
+    def _save_upload_name_map_locked(self, *, allow_skip: bool = False) -> None:
+        if not self._ensure_corrupt_backup_before_save_locked(
+            self._upload_name_map_file, allow_skip=allow_skip
+        ):
             return
         payload = {
             "entries": self._upload_name_map,
@@ -925,8 +925,10 @@ class MusicPusherPlugin(NekoPluginBase):
             }
         self._lyrics_map = cleaned
 
-    def _save_lyrics_map_locked(self) -> None:
-        if not self._ensure_corrupt_backup_before_save_locked(self._lyrics_map_file):
+    def _save_lyrics_map_locked(self, *, allow_skip: bool = False) -> None:
+        if not self._ensure_corrupt_backup_before_save_locked(
+            self._lyrics_map_file, allow_skip=allow_skip
+        ):
             return
         payload = {
             "entries": self._lyrics_map,
@@ -1190,24 +1192,33 @@ class MusicPusherPlugin(NekoPluginBase):
                 return _safe_text(track.get("title"), stored_filename)
         return ""
 
-    def _ensure_corrupt_backup_before_save_locked(self, path: Path) -> bool:
+    def _ensure_corrupt_backup_before_save_locked(
+        self, path: Path, *, allow_skip: bool = False
+    ) -> bool:
         degraded = getattr(self, "_degraded_state", {})
         info = degraded.get(path.name) if isinstance(degraded, dict) else None
         if not isinstance(info, dict) or info.get("backup_path"):
             return True
         if not path.exists():
             return True
-        recorded_backup = self._try_backup_corrupt_file_locked(
+        recorded_backup = self._backup_corrupt_file_locked(
             path, str(info.get("reason") or "corrupt")
         )
-        if not recorded_backup:
+        if recorded_backup:
+            return True
+        if allow_skip:
             self.logger.error(
                 "Skipping save for {} because corrupt backup failed",
                 path,
             )
             return False
-        info["backup_path"] = recorded_backup
-        return True
+        raise OSError(f"Cannot persist {path.name}: failed to back up corrupt state file")
+
+    def _check_state_files_writable_locked(self, *paths: Path) -> str | None:
+        for path in paths:
+            if not self._ensure_corrupt_backup_before_save_locked(path, allow_skip=True):
+                return f"状态文件 {path.name} 损坏且暂无法备份，已拒绝保存以防数据丢失"
+        return None
 
     def _gc_tombstoned_uploads_locked(self) -> bool:
         if self._state_file.name in getattr(self, "_degraded_state", {}):
@@ -1362,8 +1373,10 @@ class MusicPusherPlugin(NekoPluginBase):
 
             self._tasks = tasks
 
-    def _save_state_locked(self) -> None:
-        if not self._ensure_corrupt_backup_before_save_locked(self._state_file):
+    def _save_state_locked(self, *, allow_skip: bool = False) -> None:
+        if not self._ensure_corrupt_backup_before_save_locked(
+            self._state_file, allow_skip=allow_skip
+        ):
             return
         payload = {
             "music_items": self._music_items,
@@ -1828,9 +1841,9 @@ class MusicPusherPlugin(NekoPluginBase):
             self._refresh_upload_urls_in_tasks_locked()
             self._rebuild_music_items_from_uploads_locked()
             self._refresh_upload_urls_in_tasks_locked()
-            self._save_upload_name_map_locked()
-            self._save_lyrics_map_locked()
-            self._save_state_locked()
+            self._save_upload_name_map_locked(allow_skip=True)
+            self._save_lyrics_map_locked(allow_skip=True)
+            self._save_state_locked(allow_skip=True)
         if self._degraded_state:
             self.logger.error(
                 "MusicPusher started in degraded state; backed up corrupt files: {}",
@@ -1883,7 +1896,7 @@ class MusicPusherPlugin(NekoPluginBase):
                     live_task["last_error"] = "插件关闭后任务已停止，请手动继续"
                     live_task["finished_at"] = _iso()
                     live_task["updated_at"] = _iso()
-            self._save_state_locked()
+            self._save_state_locked(allow_skip=True)
 
         self._uninstall_push_mapper()
 
@@ -1978,6 +1991,14 @@ class MusicPusherPlugin(NekoPluginBase):
                 return Err(SdkError("推送超时"))
 
         async with self._state_lock:
+            save_err = self._check_state_files_writable_locked(
+                self._upload_name_map_file,
+                self._lyrics_map_file,
+                self._state_file,
+            )
+            if save_err:
+                self._delete_upload_file_locked(stored_filename)
+                return Err(SdkError(save_err))
             self._music_items.append(created_item)
             self._upsert_upload_name_map_locked(
                 stored_filename=stored_filename,
@@ -2126,6 +2147,14 @@ class MusicPusherPlugin(NekoPluginBase):
 
         if item is not None:
             async with self._state_lock:
+                paths = (
+                    (self._state_file, self._lyrics_map_file)
+                    if lyric_clean
+                    else (self._state_file,)
+                )
+                save_err = self._check_state_files_writable_locked(*paths)
+                if save_err:
+                    return Err(SdkError(save_err))
                 self._music_items.append(item)
                 if lyric_clean:
                     self._bind_lyrics_to_item_locked(
@@ -2261,6 +2290,9 @@ class MusicPusherPlugin(NekoPluginBase):
     )
     async def set_push_settings(self, attach_prompt_on_push: bool, **_):
         async with self._state_lock:
+            save_err = self._check_state_files_writable_locked(self._state_file)
+            if save_err:
+                return Err(SdkError(save_err))
             self._attach_prompt_on_push = bool(attach_prompt_on_push)
             self._save_state_locked()
         return Ok({"attach_prompt_on_push": bool(self._attach_prompt_on_push), "message": "设置成功"})
@@ -2304,6 +2336,17 @@ class MusicPusherPlugin(NekoPluginBase):
 
         async with self._state_lock:
             deleted_item = self._find_music_item_locked(item_id=target)
+            if deleted_item is None and all(
+                str(it.get("item_id") or "") != target for it in self._music_items
+            ):
+                return Ok({"deleted": False, "item_id": target})
+            save_err = self._check_state_files_writable_locked(
+                self._state_file,
+                self._lyrics_map_file,
+                self._upload_name_map_file,
+            )
+            if save_err:
+                return Err(SdkError(save_err))
             before = len(self._music_items)
             self._music_items = [it for it in self._music_items if str(it.get("item_id") or "") != target]
             deleted = len(self._music_items) != before
@@ -2407,6 +2450,9 @@ class MusicPusherPlugin(NekoPluginBase):
             missing_upload = self._missing_upload_reference_in_queue_locked(queue)
             if missing_upload:
                 return Err(SdkError(f"上传音频已不存在，请重新选择: {missing_upload}"))
+            save_err = self._check_state_files_writable_locked(self._state_file)
+            if save_err:
+                return Err(SdkError(save_err))
 
             task_id = f"tsk_{uuid4().hex[:10]}"
             task = {
@@ -2508,6 +2554,14 @@ class MusicPusherPlugin(NekoPluginBase):
                 return Err(SdkError("任务不存在"))
             if str(task.get("status") or "") == "running":
                 return Err(SdkError("任务执行中，暂不允许编辑"))
+            paths = (
+                (self._state_file, self._upload_name_map_file)
+                if next_queue is not None
+                else (self._state_file,)
+            )
+            save_err = self._check_state_files_writable_locked(*paths)
+            if save_err:
+                return Err(SdkError(save_err))
 
             trigger_changed = False
             trigger_updated = False
@@ -2579,6 +2633,14 @@ class MusicPusherPlugin(NekoPluginBase):
         async with self._state_lock:
             if self._active_task_id == target_id:
                 return Err(SdkError("任务执行中，暂不允许删除"))
+            if target_id not in self._tasks:
+                return Ok({"deleted": False, "task_id": target_id})
+            save_err = self._check_state_files_writable_locked(
+                self._state_file,
+                self._upload_name_map_file,
+            )
+            if save_err:
+                return Err(SdkError(save_err))
             deleted = self._tasks.pop(target_id, None) is not None
             if deleted:
                 if self._gc_tombstoned_uploads_locked():
@@ -2612,6 +2674,9 @@ class MusicPusherPlugin(NekoPluginBase):
                 return Err(SdkError("任务不存在"))
             if str(task.get("status") or "") == "running":
                 return Err(SdkError("任务已在执行中"))
+            save_err = self._check_state_files_writable_locked(self._state_file)
+            if save_err:
+                return Err(SdkError(save_err))
 
             task["trigger_at"] = _iso(_utc_now())
             task["status"] = "pending"
@@ -2825,7 +2890,7 @@ class MusicPusherPlugin(NekoPluginBase):
                     task["last_error"] = "任务队列为空"
                     task["updated_at"] = _iso()
                     task["finished_at"] = _iso()
-                    self._save_state_locked()
+                    self._save_state_locked(allow_skip=True)
                     return
 
                 task["status"] = "running"
@@ -2841,7 +2906,7 @@ class MusicPusherPlugin(NekoPluginBase):
                 self._active_track_started_at = None
                 self._active_track_duration = 0
                 target_lanlan = str(task.get("target_lanlan") or "").strip() or self._resolve_target_lanlan({})
-                self._save_state_locked()
+                self._save_state_locked(allow_skip=True)
 
             success_count = 0
             last_error = ""
@@ -2923,7 +2988,7 @@ class MusicPusherPlugin(NekoPluginBase):
                             "track_url": url,
                             "track_title": title,
                         }
-                        self._save_state_locked()
+                        self._save_state_locked(allow_skip=True)
 
                     pushed_track = False
                     track_cancel_event = threading.Event()
@@ -2969,7 +3034,7 @@ class MusicPusherPlugin(NekoPluginBase):
                                     "track_url": "",
                                     "track_title": "",
                                 }
-                                self._save_state_locked()
+                                self._save_state_locked(allow_skip=True)
                         index += 1
                         continue
 
@@ -3030,7 +3095,7 @@ class MusicPusherPlugin(NekoPluginBase):
                         task_done["updated_at"] = _iso()
                         task_done["current_index"] = min(total, max(0, int(index)))
                         task_done["last_error"] = last_error
-                        self._save_state_locked()
+                        self._save_state_locked(allow_skip=True)
             finally:
                 async with self._state_lock:
                     self._active_task_id = None
@@ -3047,4 +3112,4 @@ class MusicPusherPlugin(NekoPluginBase):
                         "track_url": "",
                         "track_title": "",
                     }
-                    self._save_state_locked()
+                    self._save_state_locked(allow_skip=True)

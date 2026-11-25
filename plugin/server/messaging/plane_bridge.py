@@ -271,9 +271,9 @@ class _Bridge:
         topic: str,
         items: list[dict[str, object]],
         mode: str = "replace",
-    ) -> None:
+    ) -> bool:
         if not self._enabled:
-            return
+            return False
         msg = {
             "v": 1,
             "kind": "snapshot",
@@ -287,7 +287,8 @@ class _Bridge:
         try:
             self._q.put_nowait(msg)
         except queue.Full:
-            return
+            return False
+        return True
 
     def _wait_tcp_ready(self, endpoint: str, stop: threading.Event) -> None:
         parsed = _parse_tcp_endpoint(endpoint)
@@ -411,8 +412,8 @@ def publish_snapshot(
     records: list[dict[str, object]],
     topic: str = "all",
     mode: str = "replace",
-) -> None:
-    _bridge.enqueue_snapshot(store=store, topic=topic, items=records, mode=mode)
+) -> bool:
+    return bool(_bridge.enqueue_snapshot(store=store, topic=topic, items=records, mode=mode))
 
 
 # ── Provider frames ────────────────────────────────────────────────────

@@ -23,6 +23,8 @@ def _new_state() -> GlobalState:
     gs._deleted_event_ids_order.clear()
     gs._deleted_lifecycle_ids.clear()
     gs._deleted_lifecycle_ids_order.clear()
+    gs._pending_event_deletes.clear()
+    gs._pending_lifecycle_deletes.clear()
     return gs
 
 
@@ -195,3 +197,82 @@ def test_append_and_extend_filter_tombstoned_nested_message_ids() -> None:
         ]
     ) == 1
     assert [gs._extract_message_id(m) for m in gs.list_message_records()] == ["keep-1"]
+
+
+def test_topic_store_delete_records_prefers_primary_id_over_generic_index() -> None:
+    registry = build_default_store_registry(maxlen=50, frames_maxlen=10)
+    events = registry.get("events")
+    lifecycle = registry.get("lifecycle")
+    assert events is not None and lifecycle is not None
+
+    events.publish("all", {"event_id": "e1", "type": "a"})
+    # Payload has primary event_id="e2" plus a conflicting message_id="e1" copied into index.id.
+    events.publish("all", {"event_id": "e2", "message_id": "e1", "type": "b"})
+    removed_ev = events.delete_records("all", ids={"e1"}, id_fields=("event_id", "trace_id"))
+    assert removed_ev == 1
+    assert [item["payload"]["event_id"] for item in events.get_recent("all", 10)] == ["e2"]
+
+    lifecycle.publish("all", {"lifecycle_id": "l1", "type": "start"})
+    lifecycle.publish("all", {"lifecycle_id": "l2", "message_id": "l1", "type": "stop"})
+    removed_lc = lifecycle.delete_records("all", ids={"l1"}, id_fields=("lifecycle_id", "trace_id"))
+    assert removed_lc == 1
+    assert [item["payload"]["lifecycle_id"] for item in lifecycle.get_recent("all", 10)] == ["l2"]
+
+
+def test_failed_event_delete_is_queued_and_flushed_later() -> None:
+    gs = _new_state()
+    calls: list[tuple[str, str, list[dict]]] = []
+    bridge_ready = {"ok": False}
+
+    def _rec(*, store: str, record: dict, topic: str = "all") -> bool:
+        return True
+
+    def _snap(*, store: str, records: list, topic: str = "all", mode: str = "replace") -> bool:
+        calls.append((store, mode, [dict(r) for r in records]))
+        return bridge_ready["ok"]
+
+    with patch("plugin.server.messaging.plane_bridge.publish_record", side_effect=_rec), patch(
+        "plugin.server.messaging.plane_bridge.publish_snapshot", side_effect=_snap
+    ):
+        gs.append_event_record({"event_id": "e1", "type": "a"})
+        assert gs.delete_event("e1") is True
+        assert calls[-1] == ("events", "delete", [{"event_id": "e1", "trace_id": "e1"}])
+        assert "e1" in gs._pending_event_deletes
+
+        # Bridge recovers; appending next record or retrying delete flushes pending deletes.
+        bridge_ready["ok"] = True
+        gs.append_event_record({"event_id": "e2", "type": "b"})
+        assert gs._pending_event_deletes == {}
+        assert calls[-1] == ("events", "delete", [{"event_id": "e1", "trace_id": "e1"}])
+
+
+def test_sync_message_plane_holds_bus_store_lock_and_clears_pending_deletes() -> None:
+    gs = _new_state()
+    gs._pending_event_deletes["e1"] = {"event_id": "e1", "trace_id": "e1"}
+    gs._pending_lifecycle_deletes["l1"] = {"lifecycle_id": "l1", "trace_id": "l1"}
+
+    saw_lock_held: list[bool] = []
+
+    def _snap(*, store: str, records: list, topic: str = "all", mode: str = "replace") -> bool:
+        # Release check from another thread proves the caller holds _bus_store_lock.
+        acquired = [False]
+
+        def _probe() -> None:
+            got = gs._bus_store_lock.acquire(blocking=False)
+            acquired[0] = got
+            if got:
+                gs._bus_store_lock.release()
+
+        t = threading.Thread(target=_probe)
+        t.start()
+        t.join(timeout=2.0)
+        saw_lock_held.append(not acquired[0])
+        return True
+
+    with patch("plugin.server.messaging.plane_bridge.publish_snapshot", side_effect=_snap):
+        gs.sync_message_plane_events()
+        gs.sync_message_plane_lifecycle()
+
+    assert saw_lock_held == [True, True]
+    assert gs._pending_event_deletes == {}
+    assert gs._pending_lifecycle_deletes == {}

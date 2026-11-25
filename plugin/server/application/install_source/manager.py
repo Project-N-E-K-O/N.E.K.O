@@ -379,7 +379,8 @@ def _atomic_create_if_missing(lock_path: Path, payload: bytes) -> bool:
     """Create ``lock_path`` atomically only if it does not already exist.
 
     Returns ``True`` if this call created the file, or ``False`` if ``lock_path``
-    was created externally before this commit could land.
+    was created externally before this commit could land. Raises ``OSError``
+    without touching ``lock_path`` if exclusive atomic publishing is unsupported.
     """
 
     parent = lock_path.parent
@@ -402,47 +403,32 @@ def _atomic_create_if_missing(lock_path: Path, payload: bytes) -> bool:
                 with suppress(OSError):
                     tmp_path.unlink()
                 return False
-            except NotImplementedError:
-                break
+            except NotImplementedError as exc:
+                raise OSError(
+                    errno.ENOTSUP,
+                    f"hard links unsupported for atomic create of {lock_path}",
+                ) from exc
             except PermissionError as exc:
                 if lock_path.exists():
                     with suppress(OSError):
                         tmp_path.unlink()
                     return False
                 if exc.errno == errno.EPERM:
-                    break
+                    raise OSError(
+                        errno.ENOTSUP,
+                        f"hard links unsupported for atomic create of {lock_path}",
+                    ) from exc
                 last_exc = exc
                 continue
             except OSError as exc:
                 if exc.errno in {errno.EXDEV, errno.ENOTSUP, errno.EOPNOTSUPP}:
-                    break
+                    raise OSError(
+                        errno.ENOTSUP,
+                        f"hard links unsupported for atomic create of {lock_path}",
+                    ) from exc
                 raise
-        else:
-            assert last_exc is not None
-            raise last_exc
-
-        # Fallback for filesystems where hard links are unsupported: exclusive O_CREAT|O_EXCL create.
-        with suppress(OSError):
-            tmp_path.unlink()
-        try:
-            fd = os.open(
-                lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644
-            )
-        except FileExistsError:
-            return False
-        try:
-            view = memoryview(payload)
-            written = 0
-            while written < len(view):
-                written += os.write(fd, view[written:])
-            os.fsync(fd)
-        except BaseException:
-            os.close(fd)
-            with suppress(OSError):
-                lock_path.unlink()
-            raise
-        os.close(fd)
-        return True
+        assert last_exc is not None
+        raise last_exc
     except BaseException:
         with suppress(OSError):
             tmp_path.unlink()
@@ -1175,6 +1161,7 @@ class InstallSourceManager:
         self._read_only: bool = False
         self._degrade_reason: str | None = None
         self._missing_lock_degraded: bool = False
+        self._has_verified_snapshot: bool = False
 
         # Seed an empty snapshot so readers that fire before ``load()``
         # completes (or in tests that skip ``load``) see a consistent
@@ -1293,7 +1280,7 @@ class InstallSourceManager:
                     read_path = self.lock_path
                     break
                 except FileNotFoundError:
-                    if self._current.entries:
+                    if self._has_verified_snapshot:
                         try:
                             created = _atomic_create_if_missing(
                                 self.lock_path, _serialize_lock(self._current)
@@ -1307,6 +1294,7 @@ class InstallSourceManager:
                         if not created:
                             continue
                         self._clear_degrade()
+                        self._has_verified_snapshot = True
                         logger.warning(
                             "InstallSourceManager: runtime lock file missing; self-healed from "
                             "in-memory snapshot (%d entries) path=%s",
@@ -1330,6 +1318,7 @@ class InstallSourceManager:
                                 updated_at=now,
                                 created_at=None,
                             )
+                            self._has_verified_snapshot = False
                             self._enter_read_only_degrade(
                                 reason=f"legacy_read_failed: {exc}"
                             )
@@ -1341,6 +1330,7 @@ class InstallSourceManager:
                         updated_at=now,
                         created_at=now,
                     )
+                    self._has_verified_snapshot = False
                     self._clear_degrade()
                     logger.info(
                         "InstallSourceManager: First_Startup (lock file missing) path=%s",
@@ -1357,6 +1347,7 @@ class InstallSourceManager:
                         updated_at=now,
                         created_at=None,
                     )
+                    self._has_verified_snapshot = False
                     self._enter_read_only_degrade(reason=f"read_failed: {exc}")
                     return
             else:
@@ -1383,6 +1374,7 @@ class InstallSourceManager:
                         )
                         # Keep serving the recovered metadata, but suppress
                         # writes until a later load can complete migration.
+                        self._has_verified_snapshot = False
                         self._enter_read_only_degrade(
                             reason=f"legacy_migration_failed: {exc}"
                         )
@@ -1393,6 +1385,7 @@ class InstallSourceManager:
                             read_path,
                             self.lock_path,
                         )
+                self._has_verified_snapshot = True
                 self._clear_degrade()
                 return
             except InstallSourceError as exc:
@@ -1426,6 +1419,7 @@ class InstallSourceManager:
                     updated_at=now,
                     created_at=now,
                 )
+                self._has_verified_snapshot = False
                 self._clear_degrade()
 
     def save(self) -> None:
@@ -1441,13 +1435,12 @@ class InstallSourceManager:
         """
 
         with self._lock:
-            if self._missing_lock_degraded and self.lock_path.exists():
-                self.load()
             if self._read_only:
                 logger.debug("InstallSourceManager: save skipped (degraded)")
                 return
             payload = _serialize_lock(self._current)
             _atomic_write(self.lock_path, payload)
+            self._has_verified_snapshot = True
 
     # ------------------------------------------------------------------
     # Reconcile (design §6.2 / §6.3)
@@ -1578,6 +1571,7 @@ class InstallSourceManager:
                         return
                     self._clear_degrade()
                     self._current = new_lock
+                    self._has_verified_snapshot = True
                     logger.warning(
                         "InstallSourceManager: self-healed missing lock during reconcile "
                         "(%d entries) path=%s",
@@ -1594,6 +1588,7 @@ class InstallSourceManager:
 
                 _atomic_write(self.lock_path, _serialize_lock(new_lock))
                 self._current = new_lock
+                self._has_verified_snapshot = True
                 return
 
     # ------------------------------------------------------------------
@@ -1617,6 +1612,7 @@ class InstallSourceManager:
                 self.load()
                 return False
             self._clear_degrade()
+            self._has_verified_snapshot = True
             logger.warning(
                 "InstallSourceManager: self-healed missing lock on write (%d entries) path=%s",
                 len(new_lock.entries),
@@ -1626,6 +1622,7 @@ class InstallSourceManager:
             logger.debug("InstallSourceManager: save skipped (degraded)")
         else:
             _atomic_write(self.lock_path, _serialize_lock(new_lock))
+            self._has_verified_snapshot = True
         self._current = new_lock
         return True
 
@@ -2200,6 +2197,7 @@ class InstallSourceManager:
                 new_lock = self._replace_entry(old_lock, new_entry, updated_at=now)
                 _atomic_write(self.lock_path, _serialize_lock(new_lock))
                 self._current = new_lock
+                self._has_verified_snapshot = True
             except Exception as exc:
                 self._current = old_lock
                 raise InstallSourceError(
@@ -2318,26 +2316,59 @@ class InstallSourceManager:
         """
 
         with self._lock:
-            old_lock = self._current
-            if self._find_entry(old_lock, entry.root_id, entry.directory_name) == entry:
-                # Never changed (e.g. the replacement's own write failed):
-                # nothing to write back.
-                return
-            now = self._now_iso()
-            try:
-                self._current = self._replace_entry(old_lock, entry, updated_at=now)
-                self.save()
-            except Exception as exc:
-                self._current = old_lock
-                raise InstallSourceError(
-                    "lock_write_failed",
-                    f"failed to restore install-source entry for {entry.plugin_id}: {exc}",
-                    details={
-                        "plugin_id": entry.plugin_id,
-                        "root_id": entry.root_id,
-                        "directory_name": entry.directory_name,
-                    },
-                ) from exc
+            for _attempt in range(2):
+                if self._missing_lock_degraded and self.lock_path.exists():
+                    self.load()
+                old_lock = self._current
+                if self._find_entry(old_lock, entry.root_id, entry.directory_name) == entry:
+                    # Never changed (e.g. the replacement's own write failed):
+                    # nothing to write back.
+                    return
+                if self._read_only and not self._missing_lock_degraded:
+                    raise InstallSourceError(
+                        "lock_write_failed",
+                        f"failed to restore install-source entry for {entry.plugin_id}: lock is read-only degraded",
+                        details={
+                            "plugin_id": entry.plugin_id,
+                            "root_id": entry.root_id,
+                            "directory_name": entry.directory_name,
+                        },
+                    )
+                now = self._now_iso()
+                new_lock = self._replace_entry(old_lock, entry, updated_at=now)
+                try:
+                    if self._missing_lock_degraded:
+                        created = _atomic_create_if_missing(
+                            self.lock_path, _serialize_lock(new_lock)
+                        )
+                        if not created:
+                            self.load()
+                            continue
+                        self._clear_degrade()
+                    else:
+                        _atomic_write(self.lock_path, _serialize_lock(new_lock))
+                    self._current = new_lock
+                    self._has_verified_snapshot = True
+                    return
+                except Exception as exc:
+                    raise InstallSourceError(
+                        "lock_write_failed",
+                        f"failed to restore install-source entry for {entry.plugin_id}: {exc}",
+                        details={
+                            "plugin_id": entry.plugin_id,
+                            "root_id": entry.root_id,
+                            "directory_name": entry.directory_name,
+                        },
+                    ) from exc
+            raise InstallSourceError(
+                "lock_write_failed",
+                f"failed to restore install-source entry for {entry.plugin_id}: lock file concurrently reappeared",
+                details={
+                    "plugin_id": entry.plugin_id,
+                    "root_id": entry.root_id,
+                    "directory_name": entry.directory_name,
+                },
+            )
 
     def package_id_for_directory(
         self,

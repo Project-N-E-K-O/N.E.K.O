@@ -852,3 +852,76 @@ def test_store_account_summary_if_snapshot_matches_rejects_replaced_session(
         is False
     )
     assert market_bridge_module._fresh_account_summary(key_old) is None
+
+
+@pytest.mark.asyncio
+async def test_ensure_valid_oauth_token_shields_commit_against_task_cancellation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    import json
+    import threading
+    import time
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    token_file = tmp_path / "market_auth.json"
+    monkeypatch.setattr(market_bridge_module, "_OAUTH_TOKEN_FILE", token_file)
+    monkeypatch.setattr(market_bridge_module, "NEKO_AUTH_URL", "https://auth.test")
+    monkeypatch.setattr(market_bridge_module, "MARKET_API_URL", "https://market.test")
+
+    current = {
+        "access_token": "at-old",
+        "refresh_token": "rt-old",
+        "expires_at": time.time() - 60,
+        "auth_url": "https://auth.test",
+        "issuer": "https://auth.test/",
+        "client_id": market_bridge_module._OAUTH_CLIENT_ID,
+        "session_id": "sess-1",
+        "subject": "sub-1",
+        "subject_pending": False,
+        "refresh_generation": 0,
+        "state_revision": 0,
+        "scope": market_bridge_module._OAUTH_SCOPE,
+    }
+    market_bridge_module._write_private_json(token_file, current)
+
+    commit_entered = threading.Event()
+    commit_release = threading.Event()
+    commit_done = threading.Event()
+    real_commit = market_bridge_module._commit_refreshed_oauth_token_sync
+
+    async def _fake_refresh(_tok: dict[str, Any]) -> dict[str, Any]:
+        return dict(
+            current,
+            access_token="at-rotated",
+            refresh_token="rt-rotated",
+            expires_at=time.time() + 3600,
+            refresh_generation=1,
+        )
+
+    def _blocked_commit(cur: dict[str, Any], ref: dict[str, Any]) -> dict[str, Any] | None:
+        commit_entered.set()
+        commit_release.wait(timeout=5.0)
+        try:
+            return real_commit(cur, ref)
+        finally:
+            commit_done.set()
+
+    monkeypatch.setattr(market_bridge_module, "_refresh_oauth_token", _fake_refresh)
+    monkeypatch.setattr(
+        market_bridge_module, "_commit_refreshed_oauth_token_sync", _blocked_commit
+    )
+
+    task = asyncio.create_task(market_bridge_module._ensure_valid_oauth_token())
+    try:
+        assert await asyncio.to_thread(commit_entered.wait, 5.0) is True
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        commit_release.set()
+
+    assert await asyncio.to_thread(commit_done.wait, 5.0) is True
+    saved = json.loads(token_file.read_text(encoding="utf-8"))
+    assert saved["refresh_token"] == "rt-rotated"
