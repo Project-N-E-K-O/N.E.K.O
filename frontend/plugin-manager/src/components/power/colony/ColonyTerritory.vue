@@ -33,10 +33,11 @@
       type="button"
       class="cat"
       :class="[`cat--${member.look}`, { 'cat--waits': WAITS.has(member.look), 'cat--lead': member.leader, 'cat--grabbed': held === member.id }]"
-      :style="{ left: `${at(member.id).x * 100}%`, top: `${at(member.id).y * 100}%` }"
+      :style="{ left: `${at(member.id).x * 100}%`, top: `${at(member.id).y * 100}%`, ...(member.look === 'unborn' ? UNBORN : {}) }"
       :data-cat="member.id"
       :data-look="member.look"
       :aria-label="member.look === 'unborn' ? t('power.colony.unbornLabel', { name: member.name }) : t('power.colony.catLabel', { name: member.name, state: stateWord(member.look) })"
+      :title="member.look === 'unborn' ? t('power.colony.besideTip') : undefined"
       @pointerdown="member.look === 'unborn' || grab(member.id, $event)"
       @pointermove="drag($event)"
       @pointerup="drop($event)"
@@ -44,7 +45,7 @@
       @keydown="nudge(member.id, $event)"
       @click="clicked(member.id, $event)"
     >
-      <span v-if="bubble(member)" class="bubble" :class="{ 'bubble--loud': LOUD.has(member.look) }">{{ bubble(member) }}</span>
+      <span v-if="bubble(member)" class="bubble" :class="{ 'bubble--loud': member.look === 'waiting_user' }">{{ bubble(member) }}</span>
       <!-- Merging what it changed is drawn as work; one not there yet, faded. -->
       <ColonyFigure
         :avatar="member.avatar" :look="MERGING.has(member.look) ? 'working' : member.look" :leader="member.leader"
@@ -141,10 +142,10 @@ const TEAM_NAME = {
 // The looks of one that waits for the user, drawn alike; and of one whose changes are being merged.
 const WAITS = new Set<CatLook>(['waiting_user', 'held', 'unlanded', 'unborn'])
 const MERGING = new Set<CatLook>(['landing', 'resolving'])
-// What is asked now, said loud above it: of a familiar, and of whether one is to be opened.
-const LOUD = new Set<CatLook>(['waiting_user', 'unborn'])
-// One that would be opened, should the user say so: not picked up, faded, its name framed in dashes.
-// Styled here and not in the stylesheet, as the teams are.
+// One that would be opened, should the user say so: not picked up but pressed, faded, its name framed in
+// dashes. What it asks is said when it is pointed at, not above it: it stands close below the one it
+// would work beside, whose name a bubble would cover. Styled here and not in the stylesheet, as the teams are.
+const UNBORN = { cursor: 'pointer' } as const
 const UNBORN_FIGURE = { opacity: 0.45, filter: 'grayscale(1)' } as const
 const UNBORN_TAG = { borderStyle: 'dashed' } as const
 /** The teams of two or more that are there now, each with the box that holds those in it. */
@@ -181,7 +182,6 @@ function stateWord(look: CatLook): string {
   return te(key) ? t(key) : look
 }
 function bubble(member: ColonyMember): string {
-  if (member.look === 'unborn') return t('power.colony.besideBubble')
   return member.look === 'waiting_user' ? t('power.colony.waitingBubble') : member.said
 }
 

@@ -195,7 +195,10 @@ describe('the question in the colony', () => {
     expect(ghost?.closest('[data-territory]')?.getAttribute('data-territory')).toBe('project:Shop')
     expect(ghost?.getAttribute('data-look')).toBe('unborn')
     expect(ghost?.textContent).toContain('Shop/general-2')
-    expect(ghost?.textContent).toContain(words.colony.besideBubble)
+    // What it asks is said when it is pointed at, not in a bubble over the busy one's name.
+    expect(ghost?.getAttribute('title')).toBe(words.colony.besideTip)
+    expect(ghost?.querySelector('.bubble')).toBeNull()
+    expect(ghost?.style.cursor).toBe('pointer')
     expect(ghost?.getAttribute('aria-label')).toBe(words.colony.unbornLabel.replace('{name}', 'Shop/general-2'))
     expect(byTest('board-tally')?.textContent).toContain(words.home.waiting.replace('{count}', '1'))
     // Beside the busy one, as one it started would stand: that one keeps the middle of its territory.

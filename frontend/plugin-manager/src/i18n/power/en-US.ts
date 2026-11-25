@@ -415,7 +415,7 @@ const messages = {
     team: 'One team',
     besideWho: '{name} is busy',
     besideTitle: 'Start another one?',
-    besideBubble: 'Shall I come? ❔',
+    besideTip: 'Not here yet: shall I come? Click to answer',
     unbornLabel: '{name}, not here yet. Press Enter to answer whether to start it.',
   },
   activity: {

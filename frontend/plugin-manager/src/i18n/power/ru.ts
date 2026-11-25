@@ -408,7 +408,7 @@ const messages: PowerMessages = {
     team: 'Одна команда',
     besideWho: '{name} занят',
     besideTitle: 'Позвать ещё одного?',
-    besideBubble: 'Позвать меня? ❔',
+    besideTip: 'Ещё не пришёл: позвать меня? Нажмите, чтобы ответить',
     unbornLabel: '{name}, ещё не пришёл. Нажмите Enter, чтобы ответить, звать ли его.',
   },
   activity: {

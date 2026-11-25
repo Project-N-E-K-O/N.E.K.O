@@ -408,7 +408,7 @@ const messages: PowerMessages = {
     team: '同じチーム',
     besideWho: '{name} は作業中',
     besideTitle: 'もう一体呼びますか？',
-    besideBubble: '呼びますか ❔',
+    besideTip: 'まだ来ていません。呼びますか？クリックして答えます',
     unbornLabel: '{name}、まだ来ていません。呼ぶかどうか Enter キーで答えます。',
   },
   activity: {

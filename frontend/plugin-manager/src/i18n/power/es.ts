@@ -408,7 +408,7 @@ const messages: PowerMessages = {
     team: 'Un equipo',
     besideWho: '{name} está ocupado',
     besideTitle: '¿Llamar a otro?',
-    besideBubble: '¿Vengo? ❔',
+    besideTip: 'Aún no está: ¿vengo? Haz clic para responder',
     unbornLabel: '{name}, aún no está. Pulsa Intro para responder si llamarlo.',
   },
   activity: {

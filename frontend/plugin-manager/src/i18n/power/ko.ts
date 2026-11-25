@@ -408,7 +408,7 @@ const messages: PowerMessages = {
     team: '같은 팀',
     besideWho: '{name} 작업 중',
     besideTitle: '한 마리 더 부를까요?',
-    besideBubble: '부를까요 ❔',
+    besideTip: '아직 합류 전이에요. 부를까요? 눌러서 답해요',
     unbornLabel: '{name}, 아직 합류 전이에요. 부를지 Enter 키로 답해요.',
   },
   activity: {

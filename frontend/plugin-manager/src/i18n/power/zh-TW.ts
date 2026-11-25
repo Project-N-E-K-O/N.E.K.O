@@ -408,7 +408,7 @@ const messages: PowerMessages = {
     team: '同一支隊伍',
     besideWho: '{name} 正忙',
     besideTitle: '要不要另開一隻？',
-    besideBubble: '要叫我來嗎 ❔',
+    besideTip: '還沒入職：要不要叫我來？點一下回答',
     unbornLabel: '{name}，還沒入職。按 Enter 回答要不要另開它。',
   },
   activity: {
