@@ -628,11 +628,9 @@ class _RecordingLogger:
 
 @pytest.fixture
 def execution_log(monkeypatch):
-    import plugin.server.model_gateway.execution as execution_module
-
     log = _RecordingLogger()
-    monkeypatch.setattr(execution_module, "logger", log)
-    monkeypatch.setattr(execution_module, "_warned_drops", set())
+    monkeypatch.setattr("plugin.server.model_gateway.execution.logger", log)
+    monkeypatch.setattr("plugin.server.model_gateway.execution._warned_drops", set())
     return log
 
 

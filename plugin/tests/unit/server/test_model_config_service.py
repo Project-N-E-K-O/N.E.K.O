@@ -739,13 +739,10 @@ class _RecordingLogger:
 
 @pytest.fixture
 def config_logs(monkeypatch):
-    import plugin.server.application.model_config_service as service_module
-    import plugin.server.infrastructure.model_config_store as store_module
-
     service_log, store_log = _RecordingLogger(), _RecordingLogger()
-    monkeypatch.setattr(service_module, "logger", service_log)
-    monkeypatch.setattr(store_module, "logger", store_log)
-    monkeypatch.setattr(store_module, "_reported_retired", set())
+    monkeypatch.setattr("plugin.server.application.model_config_service.logger", service_log)
+    monkeypatch.setattr("plugin.server.infrastructure.model_config_store.logger", store_log)
+    monkeypatch.setattr("plugin.server.infrastructure.model_config_store._reported_retired", set())
     return service_log, store_log
 
 
