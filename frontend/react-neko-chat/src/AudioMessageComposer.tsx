@@ -49,9 +49,10 @@ export function useAudioMessageComposer({ target, disabled, send }: Props) {
       dispose();
     };
   }, [target]);
+  // Disabling (e.g. realtime voice hides the composer) only stops a capture
+  // that holds the microphone. A recorded draft is kept: sending stays blocked
+  // while disabled and the user can send or discard it once it is enabled.
   useEffect(() => {
-    // Disabling or hiding the composer (e.g. realtime voice starting) only stops a capture in
-    // progress. A recorded draft in preview, like one being sent, is kept and can be sent later.
     if (disabled && (phase === 'starting' || phase === 'recording')) cancel();
   }, [disabled]);
 
