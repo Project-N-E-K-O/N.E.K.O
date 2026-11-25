@@ -129,7 +129,15 @@ function home(id: string): Spot {
   const member = byId.value.get(id)
   const by = member?.look === 'unborn' && member.parent ? placed[member.parent] : undefined
   const was = member?.parent ? standing.value[member.parent] : undefined
-  return by && was ? intoTerritory({ x: by.x + spot.x - was.x, y: by.y + spot.y - was.y }) : spot
+  if (!by || !was) return spot
+  const { x, y } = { x: spot.x - was.x, y: spot.y - was.y }
+  // Where that would be outside, as far on another side of it: brought back to the edge, it would
+  // stand on the busy one put there, and cover it. The other way first, then across.
+  for (const [dx, dy] of [[x, y], [-x, -y], [y, -x], [-y, x]] as const) {
+    const there = { x: by.x + dx, y: by.y + dy }
+    if (inTerritory(there)) return there
+  }
+  return intoTerritory({ x: by.x + x, y: by.y + y })
 }
 function at(id: string): Spot {
   const base = home(id)

@@ -236,13 +236,33 @@ describe('the question in the colony', () => {
     expect(followedX).toBeCloseTo(ghostX + movedX - busyX, 6)
     expect(followedY).toBeCloseTo(ghostY + movedY - busyY, 6)
     expect(at(cat('kid'))).toEqual(kid)
-    // Put by the edge, the busy one has the one not there yet within the territory all the same.
-    pointer(cat('shop'), 'pointerdown', 120, 100)
-    pointer(cat('shop'), 'pointermove', 200, 290)
-    pointer(cat('shop'), 'pointerup', 200, 290)
-    await flush()
-    const [edgeX, edgeY] = at(cat('beside:c9'))
-    expect(inTerritory({ x: edgeX / 100, y: edgeY / 100 })).toBe(true)
+  })
+
+  it('stands as far from the busy one put by an edge as ever, and not on top of it', async () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const box = this.hasAttribute('data-colony-gate') ? { left: 300, top: 260, width: 100, height: 40 } : { left: 0, top: 0, width: 400, height: 300 }
+      return { ...box, right: box.left + box.width, bottom: box.top + box.height, x: box.left, y: box.top, toJSON: () => box } as DOMRect
+    })
+    await mount(FamiliarColony)
+    const [busyX, busyY] = at(cat('shop'))
+    const [ghostX, ghostY] = at(cat('beside:c9'))
+    // Below the busy one in the middle.
+    expect(ghostX).toBeCloseTo(busyX, 6)
+    expect(ghostY).toBeGreaterThan(busyY)
+    const away = ghostY - busyY
+    // Above it at the bottom edge; beside it at the far left, where the territory is too narrow for either.
+    for (const [x, y, side] of [[200, 299, 'above'], [1, 156, 'beside']] as const) {
+      const [fromX, fromY] = at(cat('shop')).map((value, index) => (value / 100) * (index ? 300 : 400))
+      pointer(cat('shop'), 'pointerdown', fromX, fromY)
+      pointer(cat('shop'), 'pointermove', x, y)
+      pointer(cat('shop'), 'pointerup', x, y)
+      await flush()
+      const [shopX, shopY] = at(cat('shop'))
+      const [edgeX, edgeY] = at(cat('beside:c9'))
+      expect(inTerritory({ x: edgeX / 100, y: edgeY / 100 })).toBe(true)
+      if (side === 'above') expect([edgeX - shopX, edgeY - shopY].map(value => Math.round(value * 1e6))).toEqual([0, Math.round(-away * 1e6)])
+      else expect([edgeX - shopX, edgeY - shopY].map(value => Math.round(value * 1e6))).toEqual([Math.round(away * 1e6), 0])
+    }
   })
 
   it('is answered with a button from the one not there yet, which is no familiar to open', async () => {
