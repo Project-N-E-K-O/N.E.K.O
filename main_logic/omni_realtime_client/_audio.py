@@ -25,6 +25,30 @@ from ._shared import (
 
 
 class _AudioMixin:
+    def note_pcm16_ingress_activity(self, pcm16: bytes) -> bool:
+        """Publish loud validated PCM16 activity for proactive arbitration.
+
+        This is deliberately narrower than VAD state: callers may invoke it at
+        an earlier ingress boundary than provider admission, but only after the
+        PCM16 contract is known-valid. Provider writes, DSP, transcription and
+        VAD ownership remain on their normal path.
+        """
+        if not isinstance(pcm16, bytes):
+            return False
+        if len(pcm16) % 2:
+            # Preserve the transport's historical np.frombuffer rejection for
+            # malformed PCM16 rather than silently widening its input contract.
+            raise ValueError("PCM16 activity input contains an incomplete sample")
+        if not pcm16:
+            return False
+        samples = np.frombuffer(pcm16, dtype="<i2")
+        local_rms = float(np.sqrt(np.mean(samples.astype(np.float32) ** 2)))
+        threshold = float(getattr(self, "_client_vad_threshold", 500.0))
+        if not np.isfinite(local_rms) or local_rms <= threshold:
+            return False
+        self._user_recent_activity_time = time.time()
+        return True
+
     def _clear_uplink_resampler(self) -> None:
         """Drop the uplink resampler's pending FIR tail (soxr holds ~21ms of
         algorithmic delay at 16k→24k HQ).
