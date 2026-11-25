@@ -370,3 +370,36 @@ def test_upsert_profile_config_rolls_back_first_file_if_second_replace_fails(
         )
     assert exc_info.value.status_code == 500
     assert work_path.read_text(encoding="utf-8") == "[feature]\nx=1\n"
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize("bad_name", ["../plugin", "..\\plugin", "nested/name", ".", ".."])
+def test_profile_writes_reject_path_traversal_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_name: str
+) -> None:
+    from fastapi import HTTPException
+
+    plugin_dir = tmp_path / "demo"
+    plugin_dir.mkdir(parents=True)
+    config_path = plugin_dir / "plugin.toml"
+    manifest_text = "[plugin]\nid='demo'\nentry='demo:Plugin'\n"
+    config_path.write_text(manifest_text, encoding="utf-8")
+    monkeypatch.setattr(module, "get_plugin_config_path", lambda _pid: config_path)
+
+    with pytest.raises(HTTPException) as upsert_exc:
+        module.upsert_profile_config(
+            plugin_id="demo",
+            profile_name=bad_name,
+            config={"feature": {"x": 1}},
+            make_active=False,
+        )
+    assert upsert_exc.value.status_code == 400
+
+    with pytest.raises(HTTPException) as update_exc:
+        module.update_profile_config(
+            plugin_id="demo",
+            profile_name=bad_name,
+            updates={"feature": {"x": 1}},
+        )
+    assert update_exc.value.status_code == 400
+    assert config_path.read_text(encoding="utf-8") == manifest_text

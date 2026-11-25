@@ -289,6 +289,15 @@ def _atomic_dump_toml_pair(
         ) from exc
 
 
+def _validate_profile_name(profile_name: object) -> str:
+    if not isinstance(profile_name, str) or not profile_name.strip():
+        raise HTTPException(status_code=400, detail="profile_name is required")
+    normalized = profile_name.strip()
+    if "/" in normalized or "\\" in normalized or "\x00" in normalized or normalized in {".", ".."}:
+        raise HTTPException(status_code=400, detail="Invalid profile_name")
+    return normalized
+
+
 def _profile_affects_active(
     *,
     base_dir: Path,
@@ -325,8 +334,7 @@ def upsert_profile_config(
     # Reserved tables are read from plugin.toml only and are ignored in a
     # profile; drop them so a save does not keep dead settings around.
     config = strip_reserved_sections(config)
-    if not profile_name:
-        raise HTTPException(status_code=400, detail="profile_name is required")
+    profile_name = _validate_profile_name(profile_name)
 
     lock = _get_plugin_lock(plugin_id)
     config_path = get_plugin_config_path(plugin_id)
@@ -343,9 +351,11 @@ def upsert_profile_config(
         previous_active = _resolve_active_profile_name(plugin_id, profiles_cfg)
 
         raw_path = files_map.get(profile_name)
+        synthesized_default_path = False
         if not isinstance(raw_path, str) or not raw_path.strip():
             raw_path = f"profiles/{profile_name}.toml"
             files_map[profile_name] = raw_path
+            synthesized_default_path = True
 
         if make_active or ("active" not in profiles_cfg or not profiles_cfg.get("active")):
             profiles_cfg["active"] = profile_name
@@ -354,6 +364,8 @@ def upsert_profile_config(
 
         profile_path = resolve_profile_path(raw_path, base_dir)
         if profile_path is None:
+            raise HTTPException(status_code=400, detail="Invalid profile path")
+        if synthesized_default_path and profile_path.parent != (base_dir / "profiles").resolve():
             raise HTTPException(status_code=400, detail="Invalid profile path")
 
         try:
@@ -419,8 +431,7 @@ def update_profile_config(
     # Reserved tables are read from plugin.toml only and are ignored in a
     # profile; drop them so a save does not keep dead settings around.
     updates = strip_reserved_sections(updates)
-    if not profile_name:
-        raise HTTPException(status_code=400, detail="profile_name is required")
+    profile_name = _validate_profile_name(profile_name)
 
     lock = _get_plugin_lock(plugin_id)
     config_path = get_plugin_config_path(plugin_id)
@@ -447,16 +458,18 @@ def update_profile_config(
 
         profiles_cfg, files_map = _normalize_profiles_config(data)
         raw_path = files_map.get(profile_name)
+        synthesized_default_path = False
         if not isinstance(raw_path, str) or not raw_path.strip():
-            if "/" in profile_name or "\\" in profile_name or profile_name in {".", ".."}:
-                raise HTTPException(status_code=400, detail="Invalid profile_name")
             raw_path = f"profiles/{profile_name}.toml"
             files_map[profile_name] = raw_path
+            synthesized_default_path = True
 
         data["config_profiles"] = profiles_cfg
 
         profile_path = resolve_profile_path(raw_path, base_dir)
         if profile_path is None:
+            raise HTTPException(status_code=400, detail="Invalid profile path")
+        if synthesized_default_path and profile_path.parent != (base_dir / "profiles").resolve():
             raise HTTPException(status_code=400, detail="Invalid profile path")
 
         existing_profile: dict[str, object] = {}

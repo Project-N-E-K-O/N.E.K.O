@@ -331,5 +331,33 @@ async def test_memo_reminder_temporary_config_change_uses_new_config_over_stale_
         assert reset_res.is_ok()
         assert plugin._max_reminders == 200
         assert str(plugin._tz) == "Asia/Shanghai"
+
+        # Host full-snapshot replacement where [memo] table was removed completely resets to defaults,
+        # while direct partial calls without old_config keep preserving existing memo settings.
+        custom_res = await plugin.on_config_change(
+            old_config={"memo": {}},
+            new_config={"memo": {"max_reminders": 3, "timezone": "UTC"}},
+            mode="temporary",
+        )
+        assert custom_res.is_ok()
+        assert plugin._max_reminders == 3
+        assert str(plugin._tz) == "UTC"
+
+        partial_no_memo = await plugin.on_config_change(
+            new_config={"other": {"flag": False}},
+            mode="temporary",
+        )
+        assert partial_no_memo.is_ok()
+        assert plugin._max_reminders == 3
+        assert str(plugin._tz) == "UTC"
+
+        full_without_memo = await plugin.on_config_change(
+            old_config={"memo": {"max_reminders": 3, "timezone": "UTC"}},
+            new_config={"other": {"flag": False}},
+            mode="temporary",
+        )
+        assert full_without_memo.is_ok()
+        assert plugin._max_reminders == 200
+        assert str(plugin._tz) == "Asia/Shanghai"
     finally:
         await asyncio.to_thread(plugin.shutdown)

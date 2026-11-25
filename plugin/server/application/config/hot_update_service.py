@@ -84,6 +84,13 @@ async def hot_update_plugin_config(
                 details={"field": "profile"},
             )
         profile_name = profile.strip()
+        if "/" in profile_name or "\\" in profile_name or "\x00" in profile_name or profile_name in {".", ".."}:
+            raise ServerDomainError(
+                code="INVALID_ARGUMENT",
+                message="Invalid profile_name",
+                status_code=400,
+                details={"field": "profile"},
+            )
     host = await asyncio.to_thread(_get_host_sync, plugin_id)
 
     if host is None:

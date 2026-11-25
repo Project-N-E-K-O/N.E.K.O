@@ -303,6 +303,28 @@ async def test_plugin_config_profile_write_handlers_enforce_scope_and_delegate(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("bad_name", ["../plugin", "..\\plugin", "nested/name", ".", ".."])
+async def test_plugin_config_profile_handlers_reject_path_traversal_names(
+    bad_name: str,
+) -> None:
+    send = _Recorder()
+    await _invoke(
+        plugin_config_module.handle_plugin_config_profile_upsert,
+        {
+            "from_plugin": "p1",
+            "request_id": "r-bad-name",
+            "profile_name": bad_name,
+            "config": {"k": 1},
+        },
+        send,
+    )
+    err = send.calls[-1][3]
+    assert err is not None
+    assert err["code"] == "INVALID_ARGUMENT"
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
 async def test_plugin_config_profile_handlers_cancel_on_deadline_and_return_persistence_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

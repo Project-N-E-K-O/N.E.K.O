@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from pydantic import ValidationError
+
+from plugin.config.schema import PluginDependencySchema
 from plugin.server.domain.errors import ServerDomainError
 
 
@@ -104,18 +107,39 @@ def _validate_plugin_dependency(plugin_section: Mapping[object, object]) -> None
 
     for item in dependency_obj:
         dependency_item = _ensure_mapping(item, field="plugin.dependency items")
-        for key in ("id", "entry", "custom_event"):
+        for key in ("id", "entry", "custom_event", "recommended", "supported", "untested"):
             value = dependency_item.get(key)
             if value is not None:
                 _ensure_string(value, field=f"plugin.dependency.{key}")
 
         providers_obj = dependency_item.get("providers")
-        if providers_obj is None:
-            continue
-        if not isinstance(providers_obj, list):
-            _raise_invalid_config("plugin.dependency.providers must be a list")
-        for provider_item in providers_obj:
-            _ensure_string(provider_item, field="plugin.dependency.providers item")
+        if providers_obj is not None:
+            if not isinstance(providers_obj, list):
+                _raise_invalid_config("plugin.dependency.providers must be a list")
+            for provider_item in providers_obj:
+                _ensure_string(provider_item, field="plugin.dependency.providers item")
+
+        conflicts_obj = dependency_item.get("conflicts")
+        if conflicts_obj is not None and not isinstance(conflicts_obj, bool):
+            if not isinstance(conflicts_obj, list):
+                _raise_invalid_config(
+                    "plugin.dependency.conflicts must be a list of strings or a boolean"
+                )
+            for conflict_item in conflicts_obj:
+                _ensure_string(conflict_item, field="plugin.dependency.conflicts item")
+
+        normalized_item: dict[str, object] = {}
+        for key_obj, item_val in dependency_item.items():
+            if not isinstance(key_obj, str):
+                _raise_invalid_config("plugin.dependency item keys must be strings")
+            normalized_item[key_obj] = item_val
+
+        try:
+            PluginDependencySchema.model_validate(normalized_item)
+        except ValidationError as exc:
+            errors = exc.errors()
+            first_msg = str(errors[0].get("msg") or exc) if errors else str(exc)
+            _raise_invalid_config(f"plugin.dependency item is invalid: {first_msg}")
 
 
 def validate_config_updates(*, updates: object) -> dict[str, object]:

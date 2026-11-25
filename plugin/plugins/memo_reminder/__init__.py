@@ -225,13 +225,21 @@ class MemoReminderPlugin(NekoPluginBase):
             self._checker_thread.start()
         self._wake_event.set()
 
-    async def _reload_config(self, cfg: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+    async def _reload_config(
+        self,
+        cfg: Optional[Mapping[str, Any]] = None,
+        *,
+        full_snapshot: bool = False,
+    ) -> Dict[str, Any]:
         if isinstance(cfg, Mapping):
             resolved_cfg: Dict[str, Any] = dict(cfg)
             raw_memo = resolved_cfg.get("memo")
-            if not isinstance(raw_memo, Mapping):
+            if isinstance(raw_memo, Mapping):
+                memo_cfg: Dict[str, Any] = dict(raw_memo)
+            elif full_snapshot:
+                memo_cfg = {}
+            else:
                 return resolved_cfg
-            memo_cfg: Dict[str, Any] = dict(raw_memo)
         else:
             dumped = await self.config.dump(timeout=5.0)
             resolved_cfg = dict(dumped) if isinstance(dumped, Mapping) else {}
@@ -254,8 +262,11 @@ class MemoReminderPlugin(NekoPluginBase):
         return resolved_cfg
 
     @lifecycle(id="config_change")
-    async def on_config_change(self, new_config: Any = None, **_):
-        await self._reload_config(new_config if isinstance(new_config, Mapping) else None)
+    async def on_config_change(self, new_config: Any = None, old_config: Any = None, **_):
+        await self._reload_config(
+            new_config if isinstance(new_config, Mapping) else None,
+            full_snapshot=isinstance(old_config, Mapping),
+        )
         return Ok({"status": "reloaded", "max_reminders": self._max_reminders, "timezone": str(self._tz)})
 
     @lifecycle(id="startup")

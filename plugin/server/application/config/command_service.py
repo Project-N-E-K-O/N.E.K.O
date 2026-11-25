@@ -62,7 +62,15 @@ def _normalize_profile_name(profile_name: object) -> str:
             status_code=400,
             details={},
         )
-    return profile_name.strip()
+    normalized = profile_name.strip()
+    if "/" in normalized or "\\" in normalized or "\x00" in normalized or normalized in {".", ".."}:
+        raise ServerDomainError(
+            code="INVALID_ARGUMENT",
+            message="Invalid profile_name",
+            status_code=400,
+            details={},
+        )
+    return normalized
 
 
 def _normalize_mode(mode: object) -> str:

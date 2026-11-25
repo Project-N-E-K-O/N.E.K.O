@@ -166,7 +166,7 @@ async def test_permanent_update_with_profile_targets_profile_not_base_config(
     assert stopped_res["hot_reloaded"] is False
     assert stopped_res["profile"] == "work"
     assert base_calls == []
-    assert len(profile_calls) == 1
+    assert profile_calls == [("demo", "work", {"feature": {"x": 2}})]
 
     # 2. Host running and profile != active_profile -> updates profile only, skips live reload.
     host = _RunningHost()
@@ -220,12 +220,14 @@ async def test_permanent_update_with_profile_targets_profile_not_base_config(
     assert len(host.sent) == 1
     assert host.sent[0]["replace"] is True
 
-    # 4. Whitespace profile raises INVALID_ARGUMENT.
-    with pytest.raises(ServerDomainError) as exc_info:
-        await module.hot_update_plugin_config(
-            plugin_id="demo",
-            updates={"feature": {"x": 2}},
-            mode="permanent",
-            profile="   ",
-        )
-    assert exc_info.value.code == "INVALID_ARGUMENT"
+    # 4. Whitespace and path-traversal profile names raise INVALID_ARGUMENT.
+    for bad_profile in ("   ", "../plugin", "..\\plugin", "nested/name", ".", ".."):
+        with pytest.raises(ServerDomainError) as exc_info:
+            await module.hot_update_plugin_config(
+                plugin_id="demo",
+                updates={"feature": {"x": 2}},
+                mode="permanent",
+                profile=bad_profile,
+            )
+        assert exc_info.value.code == "INVALID_ARGUMENT"
+        assert exc_info.value.status_code == 400

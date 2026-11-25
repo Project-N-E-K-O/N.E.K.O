@@ -2059,18 +2059,16 @@ class PluginContext:
             raise
 
     async def _refresh_effective_config_after_profile_change(self, *, timeout: float) -> None:
-        self._bump_effective_config_gen()
+        refresh_gen = self._bump_effective_config_gen()
         self._effective_config = None
         self._effective_config_uncertain = False
         try:
-            refreshed = await self.get_own_config(timeout=timeout)
+            await self.get_own_config(timeout=timeout)
         except Exception:
-            self._bump_effective_config_gen()
-            self._effective_config = None
+            if self._current_effective_config_gen() == refresh_gen:
+                self._bump_effective_config_gen()
+                self._effective_config = None
             return
-        config_obj = refreshed.get("config") if isinstance(refreshed, dict) else None
-        if isinstance(config_obj, dict):
-            self._set_effective_config_cache(config_obj)
 
     async def upsert_own_profile_config(
         self,
