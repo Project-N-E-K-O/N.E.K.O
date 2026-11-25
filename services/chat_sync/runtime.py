@@ -659,7 +659,9 @@ class DesktopChatSyncRuntime:
                 continue
             try:
                 await self.models.step(uid, automatic_only=True)
-                await asyncio.to_thread(self.scheduler.success, domain, "model")
+                model_state = await asyncio.to_thread(self.models.store.get, domain)
+                await asyncio.to_thread(self.scheduler.success, domain, "model",
+                                        pending=bool(model_state and model_state.get('pending')))
             except AutomaticRoleInactive:
                 continue
             except Exception as exc:
@@ -1585,7 +1587,7 @@ class DesktopChatSyncRuntime:
                     expected_binding=binding, automatic_only=True)
                 can_apply = lambda: self.profiles.adapter is None or not self.profiles.adapter.busy(name)
                 result = await self.recent_memory.sync(domain, name, request, commit, can_apply=can_apply)
-                await asyncio.to_thread(self.scheduler.success, domain.key(), "pull")
+                await asyncio.to_thread(self.scheduler.success, domain.key(), "pull", pending=result['hasMore'])
                 if result['hasMore']:
                     await commit(self.scheduler.request_check, domain.key(), 'pull')
                     self.wake_scheduler()
@@ -1638,7 +1640,7 @@ class DesktopChatSyncRuntime:
                     expected_binding=binding, automatic_only=True)
                 result = await self.long_term_memory.sync(domain, grant, epoch, request, commit, can_apply=can_apply,
                                                           session_fingerprint=presence)
-                await asyncio.to_thread(self.scheduler.success, domain.key(), 'long_term')
+                await asyncio.to_thread(self.scheduler.success, domain.key(), 'long_term', pending=result['hasMore'])
                 if result['changed'] and can_apply():
                     applied = await self.long_term_memory.adapter.flush(uid)
                     if applied and self.history_changed:

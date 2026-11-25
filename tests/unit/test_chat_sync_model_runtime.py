@@ -545,6 +545,38 @@ async def pending_model_runtime(tmp_path, *, uploaded=False, large=False):
 
 
 @pytest.mark.asyncio
+async def test_unaccepted_model_binding_reports_pending_until_the_cloud_receipt_arrives(tmp_path):
+    runtime, service, _, pending = await pending_model_runtime(tmp_path, uploaded=True)
+    not_ready = [True]
+
+    async def observed(request):
+        if not_ready[0] and request.url.path.endswith('/model-binding') and request.method == 'PUT':
+            return httpx.Response(409, json={'detail': 'media_resource_not_ready'})
+        return await service.request(request)
+
+    await runtime.http.aclose()
+    runtime.http = httpx.AsyncClient(transport=httpx.MockTransport(observed))
+    try:
+        presence = await runtime.session_presence_provider()
+        bindings = runtime.state.bindings()
+        await runtime._automatic_models(bindings, presence)
+        assert runtime.models.store.get(DOMAIN.key())['pending']['uploaded'] is False
+        assert await runtime.models.status(UID) == {'pending': True, 'conflict': False, 'failed': False}
+        assert runtime.scheduler.channel_status(DOMAIN.key())['model'] == {
+            'status': 'waiting', 'lastSuccessAt': None, 'lastError': None,
+        }
+        not_ready[0] = False
+        from services.chat_sync.scheduler import PULL_INTERVAL_MS
+        runtime.test_clock[0] += PULL_INTERVAL_MS
+        await runtime._automatic_models(bindings, presence)
+        assert not (await runtime.models.status(UID)).get('pending')
+        assert runtime.scheduler.channel_status(DOMAIN.key())['model']['status'] == 'success'
+        assert service.puts[-1]['operationId'] == pending['operationId']
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_cloud_choice_retries_the_same_revision_after_a_renderer_failure(tmp_path):
     runtime, service, adapter, _ = await pending_model_runtime(tmp_path, uploaded=True)
     try:

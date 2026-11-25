@@ -431,7 +431,7 @@ def test_sync_settings_separates_healthy_recent_chats_from_a_model_failure():
     """.replace('LABELS', json.dumps(labels)))
 
 
-@pytest.mark.parametrize('issue', ['model_load', 'model_conflict', 'profile_conflict', 'profile_pending', 'model_pending', 'recent_pending', 'binding_pending'])
+@pytest.mark.parametrize('issue', ['model_load', 'model_conflict', 'profile_conflict', 'profile_pending', 'model_pending', 'model_upload_pending', 'recent_pending', 'binding_pending'])
 def test_sync_settings_does_not_report_unresolved_model_or_profile_work_as_successful(issue):
     run_script(r"""(async()=>{
         window.t=(key,values={})=>key+JSON.stringify(values);
@@ -448,7 +448,8 @@ def test_sync_settings_does_not_report_unresolved_model_or_profile_work_as_succe
             binding:{enabled:ISSUE!=='binding_pending',pendingOriginals:ISSUE==='recent_pending'?2:0,
                 channelStatus:{pull:channel,model:channel,profile:channel},
                 profile:{conflict:ISSUE==='profile_conflict',pending:ISSUE==='profile_pending'}}
-        }]}:{failed:ISSUE==='model_load',conflict:ISSUE==='model_conflict',candidate:ISSUE==='model_pending'?{}:null}});
+        }]}:{failed:ISSUE==='model_load',conflict:ISSUE==='model_conflict',candidate:ISSUE==='model_pending'?{}:null,
+            pending:ISSUE==='model_upload_pending'}});
         await window.nekoChatSync.openSettings();
         const modal=body.children[0], shown=modal.children.find(node=>node.className==='chat-sync-status').textContent;
         const label=ISSUE.startsWith('model')?'channelModel':ISSUE.startsWith('profile')?'channelProfile':'channelRecent';
@@ -490,6 +491,45 @@ def test_open_sync_settings_refreshes_without_overlapping_and_stops_when_closed(
         assert.equal(reads,3);
         modal.close();await poll();assert.equal(reads,3);
         assert.deepEqual(clearedIntervals,[1]);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """)
+
+
+def test_model_action_waits_for_an_older_poll_then_reads_its_completed_result():
+    run_script(r"""(async()=>{
+        window.t=(key,values={})=>key+JSON.stringify(values);
+        const create=document.createElement;
+        document.createElement=()=>{
+            const node=create(),query=node.querySelector.bind(node);
+            node.querySelector=selector=>selector==='[data-sync-model]'?node.children.find(child=>'syncModel' in child.dataset):query(selector);
+            return node;
+        };
+        let conflict=true,modelReads=0,writes=0,release;
+        global.fetch=async path=>{
+            if(path.endsWith('/status'))return{ok:true,json:async()=>({characters:[{
+                displayName:'Neko',characterSyncId:original.characterSyncId,binding:{enabled:true}
+            }]})};
+            if(path.endsWith('/model-sync-action')){
+                writes++;conflict=false;return{ok:true,json:async()=>({})};
+            }
+            assert(path.endsWith('/model-sync'));
+            const snapshot={conflict};
+            if(++modelReads===2)await new Promise(resolve=>{release=resolve;});
+            return{ok:true,json:async()=>snapshot};
+        };
+        await window.nekoChatSync.openSettings();
+        const panel=body.children[0].querySelector('[data-sync-model]');
+        const button=panel.children.find(node=>node.textContent==='cloudModel.useCloud{}');
+        const poll=intervals.find(item=>item.delay===5000).callback();
+        await new Promise(resolve=>setImmediate(resolve));
+        assert.equal(typeof release,'function');
+        const action=button.events.click();
+        await new Promise(resolve=>setImmediate(resolve));
+        assert.equal(writes,1);assert.equal(modelReads,2);
+        release();await Promise.all([poll,action]);
+        assert.equal(modelReads,3);
+        assert.equal(panel.children.length,0);
+        assert.equal(writes,1);
     })().catch(error=>{console.error(error);process.exitCode=1;});
     """)
 

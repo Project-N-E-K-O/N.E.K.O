@@ -1732,6 +1732,67 @@ def recent_role_runtime(tmp_path, names, *, chats=None, long_term=False):
     return runtime, service, session
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('channel', ['pull', 'long_term'])
+async def test_deferred_memory_work_remains_waiting_until_a_complete_pass(tmp_path, monkeypatch, channel):
+    from unittest.mock import AsyncMock
+
+    runtime, _, _ = recent_role_runtime(tmp_path, {UID: 'Neko'}, long_term=True)
+    lane = runtime.recent_memory if channel == 'pull' else runtime.long_term_memory
+    monkeypatch.setattr(runtime.long_term_memory.adapter, 'flush', AsyncMock(return_value=False))
+    monkeypatch.setattr(lane, 'sync', AsyncMock(side_effect=[
+        {'changed': False, 'hasMore': True}, {'changed': False, 'hasMore': False},
+    ]))
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Neko')
+        presence = await runtime.session_presence_provider()
+        await runtime._channel_pass(UID, channel, presence=presence)
+        binding, = (await runtime.status())['bindings']
+        assert binding['channelStatus'][channel] == {
+            'status': 'waiting', 'lastSuccessAt': None, 'lastError': None,
+        }
+        await runtime._channel_pass(UID, channel, presence=presence)
+        binding, = (await runtime.status())['bindings']
+        assert binding['channelStatus'][channel]['status'] == 'success'
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_chat_starting_during_long_term_metadata_read_defers_status_without_an_incoming_file(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    runtime, service, _ = recent_role_runtime(tmp_path, {UID: 'Neko'}, long_term=True)
+    busy = [False]
+    runtime.profiles.adapter = SimpleNamespace(busy=lambda _name: busy[0])
+    monkeypatch.setattr(runtime.long_term_memory.adapter, 'flush', AsyncMock(return_value=False))
+
+    async def observed(request):
+        if request.url.path.endswith('/long-term-memory'):
+            assert request.url.params['metadataOnly'] == 'true'
+            busy[0] = True
+            return httpx.Response(200, json={
+                'ownerId': OWNER, 'characterSyncId': UID, 'revision': 1, 'completedAt': 2000,
+            })
+        return await service.request(request)
+
+    await runtime.http.aclose()
+    runtime.http = httpx.AsyncClient(transport=httpx.MockTransport(observed))
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Neko')
+        result = await runtime._long_term_memory_pass(UID, presence=await runtime.session_presence_provider())
+        assert result['hasMore']
+        assert not runtime.long_term_memory.adapter.incoming_path(UID).exists()
+        binding, = (await runtime.status())['bindings']
+        assert binding['channelStatus']['long_term']['status'] == 'waiting'
+        assert binding['channelStatus']['long_term']['lastSuccessAt'] is None
+        assert not binding['localMemoryDiagnostics']
+    finally:
+        await runtime.close()
+
+
 async def run_scheduler_tick(runtime):
     """Run one scheduler decision and wait for the finite channel sweeps it launched."""
     await runtime.scheduler_tick()

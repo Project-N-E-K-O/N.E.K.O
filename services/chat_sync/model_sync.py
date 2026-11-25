@@ -418,11 +418,12 @@ class DesktopModelSync:
         state = await asyncio.to_thread(self.store.get, ChatDomain(binding["owner_id"], uid).key())
         if not state:
             return {}
+        progress = {'pending': True} if state.get('pending') else {}
         current = await self.adapter.read(uid)
         candidate = state.get("candidate")
         if candidate and candidate["expected"] == current["selection"]:
-            return {"candidate": {"token": candidate["token"], "path": candidate["path"], "name": current["name"]}}
-        return {"conflict": bool(state.get("conflict")), "failed": bool(state.get("failed") or state.get("error"))}
+            return {**progress, "candidate": {"token": candidate["token"], "path": candidate["path"], "name": current["name"]}}
+        return {**progress, "conflict": bool(state.get("conflict")), "failed": bool(state.get("failed") or state.get("error"))}
 
     async def finish(self, uid, token, loaded):
         try:

@@ -87,10 +87,17 @@
         return dialog && dialog.open && settingsEpoch === epoch && characterName() === name;
     }
 
-    function refreshStatus() {
+    function refreshStatus(afterWrite) {
         var name = characterName(), epoch = settingsEpoch;
-        if (statusFlight && statusFlight.epoch === epoch) return statusFlight.promise;
-        var flight = {epoch: epoch};
+        if (statusFlight && statusFlight.epoch === epoch && statusFlight.name === name) {
+            if (!afterWrite) return statusFlight.promise;
+            // A read admitted before a write cannot acknowledge that write's result.
+            return statusFlight.promise.catch(function () {}).then(function () {
+                if (!currentSettings(name, epoch)) return false;
+                return refreshStatus();
+            });
+        }
+        var flight = {epoch: epoch, name: name};
         flight.promise = readStatus(name, epoch).finally(function () {
             if (statusFlight === flight) statusFlight = null;
         });
@@ -129,7 +136,7 @@
                     if (entry[0] === 'model' && modelReadError) localErrors.push(modelReadError.message);
                     var needsModelChoice = entry[0] === 'model' && (modelStatus.conflict || modelStatus.failed);
                     var pendingWork = (entry[0] === 'pull' && (binding.pendingOriginals || binding.pendingDeletions))
-                        || (entry[0] === 'model' && modelStatus.candidate)
+                        || (entry[0] === 'model' && (modelStatus.candidate || modelStatus.pending))
                         || (entry[0] === 'profile' && binding.profile &&
                             (binding.profile.dirty || binding.profile.pending || binding.profile.apply_pending));
                     var label = writerRecoveryRequired ? 'channelPaused'
@@ -176,7 +183,10 @@
                         if (!currentSettings(name, epoch) || activeUid !== modelUid || modelActionRunning) return;
                         modelActionRunning = true;
                         button.disabled = true;
-                        try { await api('/characters/' + modelUid + '/model-sync-action', 'POST', { action: action }); await refreshStatus(); }
+                        try {
+                            await api('/characters/' + modelUid + '/model-sync-action', 'POST', { action: action });
+                            if (currentSettings(name, epoch) && activeUid === modelUid) await refreshStatus(true);
+                        }
                         catch (error) {
                             if (currentSettings(name, epoch) && activeUid === modelUid) {
                                 statusNode.textContent = describeError(error);
@@ -227,7 +237,7 @@
             var path = '/characters/' + requestedUid;
             var recovered = await api(path + '/recovery/preview', 'POST');
             if (!currentSettings(requestedName, epoch) || activeUid !== requestedUid) return;
-            await refreshStatus();
+            await refreshStatus(true);
             if (!currentSettings(requestedName, epoch) || activeUid !== requestedUid) return;
             statusNode.textContent = text('recoveryChecked');
             // Earlier local deletions that never reached the cloud stay local only.

@@ -143,12 +143,12 @@ class ChatSyncScheduler:
                 ))
             return True
 
-    def success(self, domain, channel) -> None:
-        """Clear retry/error state only after the exact channel receipt was accepted."""
+    def success(self, domain, channel, *, pending=False) -> None:
+        """Clear accepted transport errors while deferred work remains waiting."""
         with closing(self._connect()) as conn, conn:
             conn.execute("UPDATE scheduler_tasks SET retry_at=0,failures=0,blocked_generation=NULL,"
                          "blocked_session=NULL,last_error=NULL,last_success=? WHERE domain=? AND channel=?",
-                         (self.clock(), domain, channel))
+                         (None if pending else self.clock(), domain, channel))
 
     def record_long_term_capture_error(self, domain, generation, code):
         """Expose fixed local publication diagnostics without gating transport."""
