@@ -46,7 +46,7 @@ class Installer:
         self._locks_guard = threading.Lock()
 
     @contextmanager
-    def lifecycle(self, digest):
+    def lifecycle(self, digest, *, blocking=True):
         # A strong local reference retains the lock while any thread waits/works;
         # deleted models do not leave an ever-growing process-wide lock table.
         with self._locks_guard:
@@ -54,8 +54,12 @@ class Installer:
             if lock is None:
                 lock = threading.RLock()
                 self._locks[digest] = lock
-        with lock:
+        if not lock.acquire(blocking=blocking):
+            raise WorkshopError("model_workshop_busy")
+        try:
             yield
+        finally:
+            lock.release()
 
     @contextmanager
     def mutation(self):

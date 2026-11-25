@@ -337,13 +337,13 @@ def maintain(config):
         return {}  # Availability still isolates every trusted unfinished path.
 
 
-def require_url(config, value: str, *, for_binding: bool = False) -> None:
+def require_url(config, value: str, *, for_binding: bool = False, url_encoded: bool = True) -> None:
     state = snapshot(config)
     if state.paths is not None:
         if for_binding:
             try:
                 parsed = urlsplit(value)
-                raw = unquote(parsed.path, errors="strict").replace("\\", "/")
+                raw = (unquote(parsed.path, errors="strict") if url_encoded else value).replace("\\", "/")
             except ValueError as exc:
                 raise WorkshopError("model_workshop_unsafe_path") from exc
             local_origin = not (parsed.scheme or parsed.netloc) or parsed.hostname in ("localhost", "127.0.0.1", "::1")
@@ -353,12 +353,13 @@ def require_url(config, value: str, *, for_binding: bool = False) -> None:
             state.paths,
             value,
             readable_live2d=getattr(config, "readable_live2d_dir", None),
+            url_encoded=url_encoded,
         )
         if for_binding and path is None:
             # Failed safe mapping is not proof of an external source. Browsers
             # normalize encoded dot segments before fetching a local URL.
             parsed = urlsplit(value)
-            raw = unquote(parsed.path, errors="strict").replace("\\", "/")
+            raw = (unquote(parsed.path, errors="strict") if url_encoded else value).replace("\\", "/")
             local_origin = not (parsed.scheme or parsed.netloc) or parsed.hostname in ("localhost", "127.0.0.1", "::1")
             relative = not parsed.scheme and not parsed.netloc and not raw.startswith("/")
             if local_origin and (relative or raw.startswith((
@@ -380,6 +381,27 @@ def require_identifier(config, kind, value):
     if row is not None:
         state.require(state.paths.root / row["local_entrypoint"])
     return row
+
+
+@contextmanager
+def installed_selection(config, result):
+    """Recheck the exact installation at the synchronous role commit gate.
+
+    Deletion uses this same lifecycle lock. The gate never waits on an active
+    install/delete or retains a thread-owned lock across an asynchronous save.
+    """
+    service = get_service(config)
+    installer = service.installer
+    digest = result["package_sha256"]
+    with installer.lifecycle(digest, blocking=False):
+        state = installer.registry.read()
+        row = state["installed"].get(digest)
+        if (row is None or row["install_id"] != result["install_id"]
+                or state["attempts"].get(digest) != row["install_id"]
+                or installer.registry.status(row) != "installed"):
+            raise WorkshopError("model_market_not_installed")
+        snapshot_for_mutation(config).require(service.paths.root / row["local_entrypoint"])
+        yield
 
 
 def remove_managed_model(config, captured, auxiliary=None):

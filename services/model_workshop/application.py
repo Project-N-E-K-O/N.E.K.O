@@ -11,6 +11,7 @@ from utils.config_manager import get_reserved
 
 from .market import Launch
 from .paths import WorkshopError
+from .runtime import installed_selection
 
 
 async def apply_installed(config, launch: Launch):
@@ -32,10 +33,7 @@ async def apply_installed(config, launch: Launch):
     payload = ({"model_type": "live2d", "live2d": result["name"]}
                if kind == "live2d" else {"model_type": "live3d", kind: result["url"]})
 
-    def guard(actual, characters):
-        if actual is not config:
-            raise WorkshopError("model_market_target_changed")
-        launch.check(config, characters)
+    def check_role(characters):
         # The original save calls this inside its lock. A no-op selection must
         # not write configuration, reset model settings or refresh the runtime.
         avatar = get_reserved(characters["猫娘"][launch.name], "avatar", default={})
@@ -67,6 +65,13 @@ async def apply_installed(config, launch: Launch):
         # This is the role commit gate, distinct from the installer's file gate.
         # Cancellation after this point reports the real save result, not rollback.
         launch.phase = "applying"
+
+    def guard(actual, characters):
+        if actual is not config:
+            raise WorkshopError("model_market_target_changed")
+        launch.check(config, characters)
+        with installed_selection(config, result):
+            return check_role(characters)
 
     raw = json.dumps(payload).encode()
 

@@ -697,9 +697,13 @@ def _vrm(resources: _Resources) -> None:
                 _index(accessor, accessors, entry)
             if "indices" in primitive:
                 _index(primitive["indices"], accessors, entry)
-                draw_count += accessors[primitive["indices"]]["count"]
+                primitive_count = accessors[primitive["indices"]]["count"]
             else:
-                draw_count += max((accessors[index]["count"] for index in primitive["attributes"].values()), default=0)
+                primitive_count = max((accessors[index]["count"] for index in primitive["attributes"].values()), default=0)
+            # GLTFLoader converts strips/fans into a triangle index list before drawing.
+            if primitive.get("mode", 4) in (5, 6):
+                primitive_count = 3 * max(0, primitive_count - 2)
+            draw_count += primitive_count
             if "material" in primitive:
                 _index(primitive["material"], materials, entry)
             morphs = primitive.get("targets", [])

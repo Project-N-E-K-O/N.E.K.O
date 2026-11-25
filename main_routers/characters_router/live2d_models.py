@@ -296,6 +296,8 @@ def _resolve_live2d_model_binding(model_identifier: str, *, item_id: str = "") -
     resolved_source = "steam_workshop" if normalized_item_id else (_derive_live2d_asset_source(normalized_model) or "local_imported")
     resolved_source_id = normalized_item_id
     binding_model_path = normalized_model or resolved_model_path
+    input_url_encoded = normalized_model.startswith("/") or bool(urlparse(normalized_model).scheme)
+    binding_url_encoded = input_url_encoded
 
     # Keep external links bound to their original locations; do not rebind them to local or Workshop directories.
     if resolved_source == "manual_external":
@@ -315,6 +317,8 @@ def _resolve_live2d_model_binding(model_identifier: str, *, item_id: str = "") -
         if matching_model is not None:
             matched_path = str(matching_model.get("path") or "").strip().replace("\\", "/")
             binding_model_path = matched_path or binding_model_path
+            if matched_path:
+                binding_url_encoded = False  # Discovery supplies filesystem spellings.
             resolved_model_path = _normalize_live2d_catalog_path(matched_path) or resolved_model_path
             resolved_source = _derive_live2d_asset_source(matched_path) or resolved_source
             resolved_source_id = normalized_item_id or str(matching_model.get("item_id") or "").strip()
@@ -324,14 +328,15 @@ def _resolve_live2d_model_binding(model_identifier: str, *, item_id: str = "") -
         logger.debug("解析 Live2D 模型绑定时查找模型目录失败: %s", exc)
 
     # Keep unavailable results outside the catalog compatibility fallback.
-    require_url(get_config_manager(), normalized_model)
+    require_url(get_config_manager(), normalized_model, url_encoded=input_url_encoded)
     # Apply ownership checks to the resolved target: a bare name may have
     # resolved to an unrelated builtin/Steam model in the existing catalog.
     # The persisted spelling drops URL prefixes; retain the source-qualified
     # identity for this check, including legacy Steam name + item_id bindings.
     if resolved_source == "steam_workshop" and resolved_source_id:
         binding_model_path = f"/workshop/{resolved_source_id}/{resolved_model_path}"
-    require_url(get_config_manager(), binding_model_path, for_binding=True)
+        binding_url_encoded = False
+    require_url(get_config_manager(), binding_model_path, for_binding=True, url_encoded=binding_url_encoded)
     return resolved_model_path, resolved_source_id, resolved_source
 
 

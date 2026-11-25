@@ -266,3 +266,22 @@ async def test_encoded_local_prefix_escape_cannot_bypass_pending_binding(applica
         assert response.json()['error_code'].startswith('model_workshop_')
         assert config.load_characters() == saved
         assert harness.module.lanlan_basic_config is before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('name', ['100%FF', '100%20literal', '%2e%2e'])
+async def test_ordinary_raw_live2d_names_save_after_workshop_initialization(application, owner, no_network, tmp_path, monkeypatch, name):
+    app, config = application
+    from utils import config_manager
+    monkeypatch.setattr(config_manager, 'get_config_manager', lambda *args, **kwargs: config)
+    for path, raw in live2d_files().items():
+        target = config.live2d_dir / name / path
+        target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(raw)
+    async with main_character_runtime(config, {NAME: 'idle', OTHER: 'idle'}) as harness:
+        shared_state.init_shared_state(role_state=harness.module.role_state, steamworks=None,
+            templates=None, config_manager=config, init_one_catgirl=harness.module.init_one_catgirl)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
+            response = await client.put('/api/characters/catgirl/l2d/' + NAME, json={'model_type': 'live2d', 'live2d': name})
+        assert response.status_code == 200 and response.json().get('success'), response.text
+        avatar = get_reserved(config.load_characters()['猫娘'][NAME], 'avatar')
+        assert avatar['live2d']['model_path'] == name + '/Avatar.model3.json'

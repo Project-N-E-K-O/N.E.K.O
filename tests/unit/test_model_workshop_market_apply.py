@@ -21,12 +21,14 @@ from utils.character_memory import character_config_mutation_lock
 
 
 @pytest.mark.asyncio
-async def test_active_live2d_literal_percent_name_skips_save_and_voice_checks(application, owner, no_network, tmp_path, monkeypatch):
+@pytest.mark.parametrize("entry", ["Avatar%20name.model3.json", "Avatar%FF.model3.json"])
+async def test_active_live2d_literal_percent_name_skips_save_and_voice_checks(application, owner, no_network, tmp_path, monkeypatch, entry):
     from tests.unit.test_model_workshop_formats import live2d_files, make_native_bundle
+    from utils import config_manager
 
     _, config = application
+    monkeypatch.setattr(config_manager, 'get_config_manager', lambda *args, **kwargs: config)
     files = live2d_files()
-    entry = 'Avatar%20name.model3.json'
     files[entry] = files.pop('Avatar.model3.json')
     path = make_native_bundle(tmp_path, entry=entry, files=files)
     record = install(owner, path)['result']
@@ -36,6 +38,7 @@ async def test_active_live2d_literal_percent_name_skips_save_and_voice_checks(ap
         first = Launches().create(config)
         first.result, first.phase = _public_result(config, record), 'installed'
         await apply_installed(config, first)
+        assert get_reserved(config.load_characters()['猫娘'][NAME], 'avatar', 'live2d', 'model_path').endswith('/' + entry)
         second = Launches().create(config)
         second.result, second.phase = _public_result(config, record), 'installed'
         before = config.get_runtime_config_path('characters.json').read_bytes()
@@ -322,3 +325,55 @@ async def test_pending_auth_at_save_is_retryable_without_reinstall(application, 
         monkeypatch.setattr(market, '_account_witness', original)
         assert (await driver.apply(config, row.request_id, row.operation_id))['phase'] == 'saved'
         await driver.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kind', ['live2d', 'vrm', 'pmx', 'pmd'])
+@pytest.mark.parametrize('change', ['deleted', 'reinstalled', 'missing_resource'])
+async def test_stale_installation_cannot_replace_the_current_avatar(application, owner, no_network, tmp_path, kind, change):
+    from services.model_workshop import runtime
+    _, config = application
+    package, _ = bundle_path(tmp_path, kind)
+    record = install(owner, package)['result']
+    launch = Launches().create(config)
+    launch.result, launch.phase = _public_result(config, record), 'installed'
+    if change == 'missing_resource':
+        (owner.paths.root / record['files'][-1]['local_path']).unlink()
+    else:
+        await asyncio.to_thread(runtime.remove_managed_model, config, record)
+        if change == 'reinstalled': assert install(owner, package)['phase'] == 'completed'
+    before = config.get_runtime_config_path('characters.json').read_bytes()
+    async with main_character_runtime(config, {NAME: 'idle', OTHER: 'idle'}) as harness:
+        shared_state.init_shared_state(role_state=harness.module.role_state, config_manager=config,
+            steamworks=None, templates=None, init_one_catgirl=harness.module.init_one_catgirl)
+        with pytest.raises(WorkshopError, match='model_market_not_installed'):
+            await apply_installed(config, launch)
+    assert config.get_runtime_config_path('characters.json').read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_apply_does_not_wait_on_an_active_model_lifecycle(application, owner, no_network, tmp_path):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    _, config = application
+    package, _ = bundle_path(tmp_path)
+    record = install(owner, package)['result']
+    launch = Launches().create(config)
+    launch.result, launch.phase = _public_result(config, record), 'installed'
+    entered, release = threading.Event(), threading.Event()
+    def holding():
+        with owner.installer.lifecycle(record['package_sha256']):
+            entered.set(); release.wait(5)
+    before = config.get_runtime_config_path('characters.json').read_bytes()
+    async with main_character_runtime(config, {NAME: 'idle', OTHER: 'idle'}) as harness:
+        shared_state.init_shared_state(role_state=harness.module.role_state, config_manager=config,
+            steamworks=None, templates=None, init_one_catgirl=harness.module.init_one_catgirl)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            running = pool.submit(holding)
+            try:
+                assert await asyncio.to_thread(entered.wait, 5)
+                with pytest.raises(WorkshopError, match='model_workshop_busy'):
+                    await apply_installed(config, launch)
+            finally:
+                release.set(); await asyncio.to_thread(running.result, 5)
+    assert config.get_runtime_config_path('characters.json').read_bytes() == before
