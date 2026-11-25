@@ -3721,8 +3721,17 @@
 
             // 语音消息转写出的文本只属于录音时的角色：开会话、连 WebSocket 的等待期间若切换了角色，
             // 就不发进新角色的会话。其他调用方不传 expectedLanlanName，不受影响
+            // 下面两种拒绝都发生在已记下「回复在途」之后：这句没发出，撤掉它自己的记录
+            // （只撤本次请求的，别的请求的记录不动），否则会被当成还在等回复
+            function forgetRefusedSubmission() {
+                if (requestId && window._lastSubmittedRequestId === requestId) {
+                    window._lastSubmittedText = '';
+                    window._lastSubmittedRequestId = '';
+                }
+            }
             if (typeof options.expectedLanlanName === 'string' && options.expectedLanlanName
                     && !(window.lanlan_config && window.lanlan_config.lanlan_name === options.expectedLanlanName)) {
+                forgetRefusedSubmission();
                 updateReactOptimisticMessageStatus('failed');
                 return false;
             }
@@ -3747,6 +3756,7 @@
             // 等待期间开始了小剧场：语音消息属于普通聊天，不能送进普通会话（串门由上面改道）。
             // 延迟队列直接调用本函数、不经过 sendTextPayload 的入口检查，也由这里拦下
             if (options.audioMessage === true && isTheaterOwningChat()) {
+                forgetRefusedSubmission();
                 updateReactOptimisticMessageStatus('failed');
                 return false;
             }

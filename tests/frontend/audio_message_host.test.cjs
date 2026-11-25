@@ -563,3 +563,19 @@ this.check = isTheaterOwningChat;`, sandbox);
   sandbox.window.nekoTheaterRuntime = { isActive: () => true };
   assert.equal(sandbox.check(), true);
 });
+
+test('a voice message refused after the session wait stops counting as awaiting a reply', () => {
+  const start = source.indexOf('            function forgetRefusedSubmission() {');
+  const helper = source.slice(start, source.indexOf('\n            }\n', start) + 15);
+  const window = { _lastSubmittedText: '语音', _lastSubmittedRequestId: 'r1' };
+  const sandbox = { window, requestId: 'r1' };
+  vm.runInNewContext(`${helper}\nforgetRefusedSubmission();`, sandbox);
+  assert.deepEqual([window._lastSubmittedText, window._lastSubmittedRequestId], ['', '']);
+  // Another request's tracking is left alone.
+  const other = { _lastSubmittedText: '别的', _lastSubmittedRequestId: 'r2' };
+  vm.runInNewContext(`${helper}\nforgetRefusedSubmission();`, { window: other, requestId: 'r1' });
+  assert.deepEqual([other._lastSubmittedText, other._lastSubmittedRequestId], ['别的', 'r2']);
+  // Both refusals (character switched, theater started) run it before failing.
+  const guards = source.slice(start, source.indexOf('            // Send message\n', start));
+  assert.equal(guards.match(/forgetRefusedSubmission\(\);\s*updateReactOptimisticMessageStatus\('failed'\);\s*return false;/g).length, 2);
+});
