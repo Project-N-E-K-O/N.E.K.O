@@ -283,6 +283,10 @@ class PluginCommunicationResourceManager:
         if self._rpc_peer is not None:
             await self._rpc_peer.aclose()
         self._rpc_peer = None
+        from plugin.server.application.plugins import capability_gate
+
+        # Lost system-use counts still held for this plugin: no later batch.
+        capability_gate.flush_system_use_loss(self.plugin_id)
 
     # ── pending futures ──────────────────────────────────────────
 

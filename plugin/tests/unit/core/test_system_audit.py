@@ -215,6 +215,21 @@ def test_connect_from_another_thread_pairs_the_lookup_by_port(env):
     assert unpaired["target"] == "192.0.2.2:80"
 
 
+@pytest.mark.parametrize("ip", ["192.0.2.10", "2001:db8:ffff:ffff:ffff:ffff:ffff:ffff"])
+def test_a_long_host_name_never_pushes_the_address_out(env, ip):
+    host = "a" * 185 + ".example.invalid"
+    env.from_plugin("socket.getaddrinfo", (host, 443, 0, 1, 0))
+    env.from_plugin("socket.connect", (None, (ip, 443, 0, 0) if ":" in ip else (ip, 443)))
+    (record,) = env.records()
+    shown = f"[{ip}]" if ":" in ip else ip
+    assert len(record["target"]) <= system_audit.TARGET_MAX_CHARS
+    assert record["target"].endswith(f"({shown}):443") and record["target"].startswith("aaaa")
+    # The host side keeps it whole.
+    from plugin.server.application.plugins import capability_gate
+
+    assert capability_gate._system_use_target(record["target"]) == record["target"]
+
+
 def test_unix_socket_and_ipv6(env):
     env.from_plugin("socket.connect", (None, "/run/app.sock"))
     env.from_plugin("socket.sendto", (None, ("::1", 53, 0, 0)))
@@ -257,6 +272,38 @@ def test_symlink_out_of_the_data_dir_is_recorded_at_its_target(env):
     # Removing the link itself only touches the data directory.
     env.from_plugin("os.remove", (str(link), -1))
     assert len(env.records()) == 1
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="needs unprivileged symlinks")
+def test_a_retargeted_directory_link_is_seen_at_once(env):
+    inside = env.data_dir / "v1"
+    inside.mkdir()
+    link = env.data_dir / "current"
+    os.symlink(inside, link)
+    env.from_plugin("open", (str(link / "state.json"), "w", os.O_WRONLY))
+    assert env.records() == []
+    (inside / "sub").mkdir()
+    env.from_plugin("open", (str(link / "sub" / "deep.json"), "w", os.O_WRONLY))  # link above the parent
+    assert env.records() == []
+    os.remove(link)
+    (env.outside / "sub").mkdir()
+    os.symlink(env.outside, link)  # now points out of the data directory
+    env.from_plugin("open", (str(link / "state.json"), "w", os.O_WRONLY))
+    env.from_plugin("open", (str(link / "sub" / "deep.json"), "w", os.O_WRONLY))
+    first, second = env.records()
+    assert first["target"].endswith("/outside/*.json") and second["target"].endswith("/sub/*.json")
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="needs unprivileged symlinks")
+def test_a_directory_replaced_by_a_link_is_seen(env):
+    plain = env.data_dir / "plain"
+    plain.mkdir()
+    env.from_plugin("open", (str(plain / "a.txt"), "w", os.O_WRONLY))  # remembered as plain
+    os.rmdir(plain)
+    os.symlink(env.outside, plain)
+    env.from_plugin("open", (str(plain / "a.txt"), "w", os.O_WRONLY))
+    (record,) = env.records()
+    assert record["target"].endswith("/outside/*.txt")
 
 
 @pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="needs unprivileged symlinks")

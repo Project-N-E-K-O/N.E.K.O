@@ -1555,8 +1555,13 @@ class SnapshotInstallSources(FakeInstallSources):
     def snapshot(self):
         return self.current
 
-    def list_entries(self, *, include_removed=False):
+    def entry_for_directory(self, directory_path, *, include_removed=False, snapshot=None):
+        return super().entry_for_directory(directory_path, include_removed=include_removed)
+
+    def list_entries(self, *, include_removed=False, snapshot=None):
         self.lookups += 1
+        if snapshot is not None and isinstance(snapshot, list):
+            return [e for e in snapshot if include_removed or not e.removed]
         return super().list_entries(include_removed=include_removed)
 
 
@@ -1618,3 +1623,29 @@ def test_busy_registry_is_not_cached(monkeypatch):
     monkeypatch.setattr(config_paths, "_resolve_registered_plugin_config_path", lambda *_a: (_ for _ in ()).throw(TimeoutError()))
     assert permission_service.current_source("demo") is None
     assert permission_service._source_cache == {}
+
+
+def test_cached_source_comes_from_the_snapshot_it_is_keyed_by(monkeypatch):
+    # Publish B, fail to save, roll back to the same snapshot object A: what
+    # is cached under A must be A's source, not B's read in between.
+    from plugin.server.infrastructure import config_paths
+
+    monkeypatch.setattr(config_paths, "_registered_plugin_config_candidates", lambda _pid: ())
+    monkeypatch.setattr(permission_service, "_source_cache", {})
+    snapshot_a = [_lock_entry(channel="manual")]
+    manager = SnapshotInstallSources(snapshot_a)
+    manager.current = snapshot_a
+    entries_b = [_lock_entry(channel="builtin")]
+    real_list = manager.list_entries
+
+    def list_during_publish(*, include_removed=False, snapshot=None):
+        manager.entries = entries_b  # B published while we read
+        try:
+            return real_list(include_removed=include_removed, snapshot=snapshot)
+        finally:
+            manager.entries = snapshot_a  # rolled back: snapshot() is A again
+
+    manager.list_entries = list_during_publish
+    monkeypatch.setattr(install_source_module, "get_install_source_manager", lambda: manager)
+    assert permission_service.current_source("demo").channel == "manual"
+    assert permission_service._source_cache["demo"][3].channel == "manual"

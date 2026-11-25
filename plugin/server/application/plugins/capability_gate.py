@@ -319,6 +319,17 @@ def _system_use_entry(plugin_id: str, item: object, mode: str) -> dict | None:
     }
 
 
+def flush_system_use_loss(plugin_id: str) -> None:
+    """Report what is still counted as lost for ``plugin_id`` (its connection
+    is closing, so no later batch would carry it). Never raises."""
+    try:
+        state = _system_use_budget.pop(plugin_id, None)
+        if state is not None and state[2]:
+            call_audit.record({"kind": "system_use_lost", "plugin": plugin_id, "count": state[2]})
+    except Exception as exc:
+        logger.warning("system use loss flush failed: error_type={}", type(exc).__name__)
+
+
 def record_system_uses(plugin_id: str, message: object) -> int:
     """Audit one ``SYSTEM_AUDIT`` batch from ``plugin_id``'s process.
 

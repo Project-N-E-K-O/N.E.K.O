@@ -141,7 +141,7 @@ def current_source(plugin_id: str) -> PluginSource | None:
     ):
         return cached[3]
     try:
-        source = _resolve_source(plugin_id, manager, candidates)
+        source = _resolve_source(plugin_id, manager, candidates, snapshot)
     except _SourceUnknown:
         return None  # not cached: a busy registry or lock error is not an answer
     if snapshot is None:
@@ -152,13 +152,18 @@ def current_source(plugin_id: str) -> PluginSource | None:
     return source
 
 
-def _resolve_source(plugin_id: str, manager, candidates: tuple[object, ...]) -> PluginSource | None:
+def _resolve_source(
+    plugin_id: str, manager, candidates: tuple[object, ...], snapshot: object = None
+) -> PluginSource | None:
+    """The source from ``snapshot`` (the one the cache entry is keyed by),
+    never a later state of the manager; the current one when it is None."""
     from plugin.server.application.install_source import InstallSourceError
 
+    pinned = {"snapshot": snapshot} if snapshot is not None else {}
     directory = _plugin_directory(plugin_id, candidates)
     if directory is not None:
         try:
-            entry = manager.entry_for_directory(directory)
+            entry = manager.entry_for_directory(directory, **pinned)
         except InstallSourceError as exc:
             raise _SourceUnknown from exc
         # The directory key is exact; an empty plugin_id only means the
@@ -172,7 +177,7 @@ def _resolve_source(plugin_id: str, manager, candidates: tuple[object, ...]) -> 
     # active entry and only trusts a unique match.
     matches = [
         entry
-        for entry in manager.list_entries(include_removed=False)
+        for entry in manager.list_entries(include_removed=False, **pinned)
         if entry.plugin_id == plugin_id
     ]
     if len(matches) != 1:

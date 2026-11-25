@@ -185,3 +185,26 @@ async def test_uplink_routes_system_audit_under_the_connection_identity(monkeypa
     await manager._route_message({"type": "SYSTEM_AUDIT", "plugin_id": "someone-else", "items": []})
     ((plugin_id, msg),) = calls
     assert plugin_id == "demo" and msg["plugin_id"] == "demo"
+
+
+def test_loss_still_pending_is_written_when_the_plugin_disconnects(written):
+    capability_gate.record_system_uses("demo", {"items": [], "dropped": 1})
+    capability_gate.record_system_uses("demo", {"items": [], "dropped": 4})  # same window: held
+    assert [e["count"] for e in written if e["kind"] == "system_use_lost"] == [1]
+    capability_gate.flush_system_use_loss("demo")
+    assert [e["count"] for e in written if e["kind"] == "system_use_lost"] == [1, 4]
+    capability_gate.flush_system_use_loss("demo")  # nothing left: nothing written
+    assert len([e for e in written if e["kind"] == "system_use_lost"]) == 2
+
+
+async def test_communication_shutdown_flushes_pending_loss(monkeypatch):
+    flushed = []
+    monkeypatch.setattr(capability_gate, "flush_system_use_loss", flushed.append)
+    manager = PluginCommunicationResourceManager(plugin_id="demo", transport=object())  # type: ignore[arg-type]
+
+    async def nothing(**_kwargs):
+        return None
+
+    monkeypatch.setattr(manager, "_shutdown_local", nothing)
+    await manager.shutdown(timeout=0.1)
+    assert flushed == ["demo"]

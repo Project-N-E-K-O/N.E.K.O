@@ -354,7 +354,7 @@ class SystemAuditor:
         self._queue: collections.deque[dict] = collections.deque()
         self._dedup: dict[tuple, float] = {}
         self._frame_kinds: dict[str, int] = {}
-        self._real_dirs: dict[str, str] = {}
+        self._plain_dirs: set[str] = set()
         self._lookups: collections.deque[tuple[float, str, int | None]] = collections.deque(maxlen=64)
         self._thread_lookup: dict[int, tuple[float, str, int | None]] = {}
         self.dropped = 0
@@ -465,9 +465,8 @@ class SystemAuditor:
         """Where ``path`` really lands (symlinks resolved; the link itself
         when the operation does not follow it), not case-normalised.
 
-        Resolved parent directories are cached: one ``lstat`` per use instead
-        of one per level. A directory turned into a symlink after it was
-        first seen is missed; the hook only constrains honest plugins.
+        Parent directories without any symlink are remembered, so a use
+        costs a couple of ``lstat`` calls instead of one per level.
         ``realpath`` / ``lstat`` raise no audit event.
         """
         if ".." in path.replace("\\", "/").split("/"):
@@ -482,12 +481,17 @@ class SystemAuditor:
         parent, name = os.path.split(absolute)
         if follow and os.path.islink(absolute):
             return os.path.realpath(absolute)
-        resolved = self._real_dirs.get(parent)
-        if resolved is None:
-            resolved = os.path.realpath(parent)
-            if len(self._real_dirs) > 4096:
-                self._real_dirs.clear()
-            self._real_dirs[parent] = resolved
+        # Only directories with no symlink anywhere on their path are cached
+        # (their resolved form is themselves); a hit re-checks that the
+        # directory has not become a link since. A path through a symlink is
+        # resolved on every use, so retargeting the link is seen at once.
+        if parent in self._plain_dirs and not os.path.islink(parent):
+            return os.path.join(parent, name)
+        resolved = os.path.realpath(parent)
+        if os.path.normcase(resolved) == os.path.normcase(parent):
+            if len(self._plain_dirs) > 4096:
+                self._plain_dirs.clear()
+            self._plain_dirs.add(parent)
         return os.path.join(resolved, name)
 
     def _exempt(self, path: str, read: bool) -> bool:
@@ -594,10 +598,17 @@ class SystemAuditor:
         # The name is paired by thread / port and time and can be wrong, so
         # the address actually connected to is always kept next to it.
         host = self._host_for(port, ident)
-        shown = f"[{ip}]" if ":" in ip else ip
+        address = f"[{ip}]" if ":" in ip else ip
+        suffix = f":{port}" if port is not None else ""
+        shown = address
         if host:
-            shown = f"{host}({shown})"
-        return [(NETWORK_CONNECT, f"{shown}:{port}" if port is not None else shown, flags)]
+            # The address and port always fit (the host caps targets at
+            # TARGET_MAX_CHARS); a long name is shortened instead.
+            room = TARGET_MAX_CHARS - len(address) - len(suffix) - 2
+            if room >= 8:
+                name = host if len(host) <= room else host[:room - 1] + "…"
+                shown = f"{name}({address})"
+        return [(NETWORK_CONNECT, (shown + suffix)[:TARGET_MAX_CHARS], flags)]
 
     # -- attribution --------------------------------------------------------
 
