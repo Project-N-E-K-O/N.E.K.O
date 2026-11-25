@@ -1356,13 +1356,25 @@
 
   /* ---------------- 对外接口 ---------------- */
 
-  function sync(palette) {
+  /**
+   * 把磁盘上的材质设为新基线。
+   * options.submitted：保存时提交的那份快照（保存路径才传）。等待保存 / 回读期间
+   * 用户又改了材质（CURRENT 已不等于提交的快照）时，只更新基线、保留这些新改动，
+   * 不能被回读值静默覆盖。
+   */
+  function sync(palette, options) {
     MASTER_ON = !(palette && palette.enabled === false);
     var materials = palette && palette.materials;
     if (!materials || typeof materials !== 'object') return;
-    CURRENT = ensureSections(clone(materials));
+    var keepEdits = !!(options && Object.prototype.hasOwnProperty.call(options, 'submitted') &&
+      CURRENT && !same(CURRENT, options.submitted));
     BASELINE = ensureSections(clone(materials));
-    DIRTY = false;
+    if (keepEdits) {
+      DIRTY = !same(CURRENT, BASELINE);
+    } else {
+      CURRENT = ensureSections(clone(materials));
+      DIRTY = false;
+    }
     if (MOUNTED) {
       renderHeadState();
       renderBadge();

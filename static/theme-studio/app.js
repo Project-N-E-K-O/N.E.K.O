@@ -3653,6 +3653,13 @@ function restoreRejected(rejected, sentLight, sentDark) {
   return restored;
 }
 
+/** 材质中心当前编辑值的快照（不论是否有改动）；没挂载时返回 null。 */
+function materialsSnapshot() {
+  var api = window.NekoMaterials;
+  if (!api || typeof api.snapshot !== 'function') return null;
+  try { return api.snapshot() || null; } catch (error) { return null; }
+}
+
 /** 材质中心的当前编辑值；没改动/没挂载时返回 null（后端据此保持磁盘材质不变）。 */
 function currentMaterialsPayload() {
   var api = window.NekoMaterials;
@@ -3665,11 +3672,11 @@ function currentMaterialsPayload() {
 }
 
 /** 把磁盘上的 palette 推给材质中心，让它的「已保存」基线跟上磁盘。 */
-function syncMaterials(palette) {
+function syncMaterials(palette, options) {
   var api = window.NekoMaterials;
   if (!api || typeof api.sync !== 'function') return;
   try {
-    api.sync(palette || state.palette);
+    api.sync(palette || state.palette, options);
   } catch (error) {
     // 材质中心渲染出错不能拖垮主面板：它只是面板的一部分。
   }
@@ -3739,12 +3746,14 @@ async function applyTheme() {
   if (nameChanged) args.name = name || DEFAULT_THEME_NAME;
 
   setBusy(true, '正在应用…');
+  // 提交时刻的材质快照：保存 / 回读期间材质控件仍可编辑，之后的改动要留在面板里。
+  var materialsAtSubmit = materialsSnapshot();
   try {
     var result = await callPlugin('apply_theme', args);
     var rejected = result && result.rejected;
     // 写入成功后必须回读，且要检查返回值：silent 失败被吞时面板还停在旧值，
     // 文案却显示「已应用」—— 用户看到的和磁盘不一致。
-    var reloaded = await reloadPalette({ silent: true });
+    var reloaded = await reloadPalette({ silent: true, materialsSubmitted: materialsAtSubmit });
     if (reloaded) {
       // 只有回读成功才认为「面板 = 磁盘」，此时才清脏标记与非法态。
       state.edited = { light: {}, dark: {} };
@@ -5748,7 +5757,11 @@ async function reloadPalette(options) {
     renderPaletteHint();
     // 材质子树跟着磁盘刷新：导入/重置/应用之后，材质中心的「已保存」基线
     // 必须一起更新，否则它一直显示「N 项待应用」。
-    if (!materialsDeferred) syncMaterials(palette);
+    // 保存路径会带上提交时的材质快照：等待期间又改的材质只更新基线、不被覆盖。
+    var materialsSyncOptions = (options && Object.prototype.hasOwnProperty.call(options, 'materialsSubmitted'))
+      ? { submitted: options.materialsSubmitted }
+      : undefined;
+    if (!materialsDeferred) syncMaterials(palette, materialsSyncOptions);
     syncAll();
     applyFilters();
     renderAudit(true);
@@ -6336,7 +6349,10 @@ function rgbToHsl(r, g, b) {
   return { h: h * 360, s: s, l: l };
 }
 
-function hslToRgb(h, s, l) {
+/* 名字不能叫 hslToRgb：文件前面 parseColor 用的同名函数接收百分比、返回数组，
+ * 函数声明会被这一份整体覆盖，结果输入 hsl(...) 颜色得到 rgba(NaN, ...)。
+ * 这一份接收 0-1 的饱和度 / 亮度，返回 {r, g, b}，只给快捷调校与壁纸取色用。 */
+function hslFractionToRgb(h, s, l) {
   var hh = ((h % 360) + 360) % 360 / 360;
   if (s === 0) {
     var gray = Math.round(l * 255);
@@ -6495,7 +6511,7 @@ function shiftColorValue(value, step) {
   var hue = (hsl.h + step.dh + 360) % 360;
   var sat = Math.min(1, Math.max(0, hsl.s + step.ds));
   var light = Math.min(0.97, Math.max(0.03, hsl.l + step.dl));
-  var rgb = hslToRgb(hue, sat, light);
+  var rgb = hslFractionToRgb(hue, sat, light);
   if (alpha < 0.999) {
     return 'rgba(' + rgb.r + ', ' + rgb.g + ', ' + rgb.b + ', ' + Math.round(alpha * 1000) / 1000 + ')';
   }

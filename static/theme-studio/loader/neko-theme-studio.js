@@ -113,7 +113,9 @@
   //   1.6.42 窗口重新获得焦点 / 变为可见时清掉轮询退避，立即重新拉取。
   //   1.6.43 同源请求带会话 cookie（远程窗口不再 401）；新调色板直接应用时作废仍在预热的旧调色板。
   //   1.6.44 预热闸门按调色板内容识别（同一秒两次切换不再停在旧主题）；预热超时放行。
-  var SCRIPT_VERSION = '1.6.44';
+  //   1.6.45 材质规则放进 @layer nts-theme.materials，不再被调色板层的 !important 覆盖；
+  //          修掉设置页材质段里提前闭合的注释。
+  var SCRIPT_VERSION = '1.6.45';
 
   // 允许的颜色值形态。刻意保守：只放行纯颜色，杜绝把任意 CSS 注进变量。
   var RE_HEX = /^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
@@ -1268,7 +1270,13 @@
     return lines.join('\n');
   })();
 
+  // 包在 nts-theme 的子层 nts-theme.materials 里：静态调色板表整张在 @layer nts-theme
+  // 内用 !important，而带层的 !important 一律压过不带层的 —— 材质规则若不进层，
+  // 开启材质时背景 / 模糊 / 阴影 / 圆角都会被调色板覆盖。对 !important 来说，
+  // 显式子层又压过父层自己的规则，所以材质赢调色板，同时仍压过宿主无层的 !important。
+  // 这里只有 --nts-mt-* 自定义属性是普通声明，没有别的层定义它们，不受层序影响。
   var MATERIAL_CSS = [
+    '@layer nts-theme.materials {',
     '/* ===== 高级材质层（契约 0.4.0） =====',
     '   全部规则门控在 :root[data-nts-mt] 上：没有该属性 = 一条都不匹配 = 应用完全保持原始外观。',
     '   只写 background / border / box-shadow / backdrop-filter / border-radius / animation，',
@@ -1462,7 +1470,7 @@
     '  border-radius: 0 !important;',
     '}',
 
-    '/* 设置页内部：宿主把内容区与配置卡片写死成 #fff，只换外壳还是白， */',
+    '/* 设置页内部：宿主把内容区与配置卡片写死成 #fff，只换外壳还是白，',
     '   所以内层也要跟随。暗色主题下宿主 dark-mode.css 已有专门规则，这里不抢。 */',
     ':root[data-nts-mt]:root:root:not([data-theme="dark"]) body.api-key-settings-page .container-content {',
     '  background-color: transparent !important;',
@@ -1602,6 +1610,7 @@
     '  :root[data-nts-mt] .composer-overflow-popover,',
     ':root[data-nts-mt] .composer-icon-popover,',
     '  :root[data-nts-mt] .modal-dialog { animation: none !important; }',
+    '}',
     '}'
   ].join('\n');
 
