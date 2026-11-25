@@ -307,6 +307,13 @@ def _run_first_peek_notice_harness(
             showStatusToast(message, durationMs) {{
               if (toastKind === 'bridge') {{
                 // ipcRenderer.send('neko:show-toast', ...): shown in another window.
+                // The toast window may still drop it for a higher-priority one,
+                // and the send returns no delivery result to this page.
+                if (dropNextToast) {{
+                  dropNextToast = false;
+                  notices.push({{ message, durationMs, dropped: true }});
+                  return;
+                }}
                 notices.push({{ message, durationMs }});
                 return;
               }}
@@ -470,6 +477,20 @@ def test_first_edge_peek_notice_via_desktop_toast_bridge_shows_once_per_launch()
 
     assert outcome["beforeAnchor"] == 0
     assert outcome["firstNotices"] == ONE_NOTICE
+    assert outcome["sessionShown"] == "1"
+    assert outcome["reloadedNotices"] == []
+    assert outcome["restartedNotices"] == ONE_NOTICE
+
+
+def test_first_edge_peek_notice_dropped_behind_desktop_bridge_counts_as_shown() -> None:
+    # Intended trade-off: the bridge is a one-way IPC send, so the page cannot
+    # tell when the toast window drops the notice. It counts as shown for this
+    # launch rather than retrying on every peek, and the next launch shows it.
+    outcome = _run_first_peek_notice_harness(toast_kind="bridge", drop_first_toast=True)
+
+    assert outcome["firstNotices"] == [
+        {"message": FIRST_PEEK_MESSAGE, "durationMs": 10000, "dropped": True},
+    ]
     assert outcome["sessionShown"] == "1"
     assert outcome["reloadedNotices"] == []
     assert outcome["restartedNotices"] == ONE_NOTICE

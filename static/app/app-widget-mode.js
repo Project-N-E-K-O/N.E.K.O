@@ -7,11 +7,13 @@
     const API_STATE = '/api/widget-mode/state';
     const API_ENABLED = '/api/widget-mode/enabled';
     const API_STEALTH_ENABLED = '/api/widget-mode/stealth-enabled';
-    // Shown on the first edge peek of every app launch, so a model that just
+    // Shown on the first edge peek of each pet window, so a model that just
     // slid into the screen edge is not mistaken for a missing one, even by a
-    // user who missed the notice last time. Kept in sessionStorage: it survives
-    // a reload of the same pet window but starts empty in a new one (an app
-    // restart, or the shell rebuilding its windows).
+    // user who missed the notice last time. Kept in sessionStorage, which is
+    // scoped to the pet window: it survives a reload of that window but starts
+    // empty in a new one. The desktop shell has a single pet window and only
+    // creates a new one on an app restart or when it rebuilds its windows, so
+    // in practice this is once per app launch.
     const FIRST_PEEK_NOTICE_SESSION_KEY = 'neko_widget_mode_first_peek_notice_shown';
     // Earlier builds remembered the notice forever in localStorage; that flag
     // must no longer suppress it.
@@ -182,7 +184,9 @@
         // Only the page's own DOM toast renders into #status-toast-text. A
         // replacement (the desktop shell's IPC bridge) shows the notice in
         // another window, so this page's DOM can never confirm it; treat the
-        // hand-off as shown instead of retrying on every peek.
+        // hand-off as shown instead of retrying on every peek. The bridge is a
+        // one-way IPC send with no delivery result, so a notice the toast window
+        // drops for a higher-priority one also counts as shown this launch.
         if (showStatusToast.__nekoDomStatusToast !== true) return true;
         try {
             const textEl = document.getElementById('status-toast-text');
