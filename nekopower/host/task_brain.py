@@ -345,7 +345,12 @@ class TaskBrain:
     async def settle(self) -> None:
         """Wait for everything running in the background (second rounds, calls)."""
         while self._tasks:
-            await asyncio.gather(*list(self._tasks), return_exceptions=True)
+            tasks = list(self._tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
+            # Drop the finished tasks here rather than wait for their discard done-callbacks:
+            # since Python 3.12 gather() over tasks that are all done completes without yielding,
+            # so those queued callbacks would never run and this loop would spin forever.
+            self._tasks.difference_update(tasks)
         if self._task_agents is not None:
             await self._task_agents.settle()
 

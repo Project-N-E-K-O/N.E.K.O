@@ -610,7 +610,12 @@ class SpaceKeeper:
     async def settle(self) -> None:
         """Wait until everything started so far is done. For tests."""
         while self._tasks:
-            await asyncio.gather(*list(self._tasks), return_exceptions=True)
+            tasks = list(self._tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
+            # Drop the finished tasks here rather than wait for their discard done-callbacks:
+            # since Python 3.12 gather() over tasks that are all done completes without yielding,
+            # so those queued callbacks would never run and this loop would spin forever.
+            self._tasks.difference_update(tasks)
 
     async def aclose(self) -> None:
         """Stop what is under way. A review cut off here is made by a later round of tidying.

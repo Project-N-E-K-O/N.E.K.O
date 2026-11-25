@@ -1,4 +1,3 @@
-import asyncio
 import json
 import threading
 from types import SimpleNamespace
@@ -22,6 +21,7 @@ from tests.support.asr_fakes import (
 from tests.unit.asr_runtime._scenarios import (
     _start_runtime_with_callback_candidates,
 )
+from tests.support.task_sets import wait_task_set_empty
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit_fast]
 
@@ -320,11 +320,7 @@ async def test_restart_default_attempts_follow_single_attempt_policy(
     assert runtime._asr_lifecycle.provider_policy.connect_max_attempts == 1
 
     await runtime._restart_transport()
-    while runtime._asr_runtime._asr_close_tasks:
-        await asyncio.gather(
-            *tuple(runtime._asr_runtime._asr_close_tasks),
-            return_exceptions=True,
-        )
+    await wait_task_set_empty(runtime._asr_runtime._asr_close_tasks, return_exceptions=True)
 
     assert len(candidates) == 1
     candidates[0].connect.assert_awaited_once_with()
@@ -355,11 +351,7 @@ async def test_restart_default_attempts_follow_soniox_policy_ladder(
     assert runtime._asr_lifecycle.provider_policy.connect_max_attempts == 3
 
     await runtime._restart_transport()
-    while runtime._asr_runtime._asr_close_tasks:
-        await asyncio.gather(
-            *tuple(runtime._asr_runtime._asr_close_tasks),
-            return_exceptions=True,
-        )
+    await wait_task_set_empty(runtime._asr_runtime._asr_close_tasks, return_exceptions=True)
 
     assert len(candidates) == 3
     for candidate in candidates:
@@ -385,11 +377,7 @@ async def test_restart_explicit_attempt_override_beats_policy(monkeypatch) -> No
     )
 
     await runtime._restart_transport(max_attempts=1)
-    while runtime._asr_runtime._asr_close_tasks:
-        await asyncio.gather(
-            *tuple(runtime._asr_runtime._asr_close_tasks),
-            return_exceptions=True,
-        )
+    await wait_task_set_empty(runtime._asr_runtime._asr_close_tasks, return_exceptions=True)
 
     assert len(candidates) == 1
     candidates[0].connect.assert_awaited_once_with()

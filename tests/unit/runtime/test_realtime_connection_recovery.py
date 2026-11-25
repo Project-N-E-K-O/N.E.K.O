@@ -16,6 +16,7 @@ from main_logic.omni_realtime_client import OmniRealtimeClient, TurnDetectionMod
 from main_logic.omni_realtime_client import _response_arbiter as _arbiter_module
 from main_logic.omni_realtime_client._transport import _classify_peer_close
 from main_logic.provider_failure_signals import CODES_REQUIRING_MSG_DETAIL
+from tests.support.task_sets import wait_task_set_empty
 
 
 pytestmark = [
@@ -80,19 +81,7 @@ async def _start_receiver(client: OmniRealtimeClient, ws: _ControlledWs):
 
 
 async def _settle_background_tasks(client: OmniRealtimeClient) -> None:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + 2.0
-    while client._bg_tasks:
-        pending = set(client._bg_tasks)
-        await asyncio.wait_for(
-            asyncio.gather(*pending),
-            timeout=max(0.0, deadline - loop.time()),
-        )
-        # ``_bg_tasks`` is emptied by each task's ``discard`` done-callback,
-        # which runs on a later loop iteration. Since Python 3.12, gather()
-        # over tasks that are all already done completes without yielding, so
-        # without this the loop would spin forever before those callbacks run.
-        await asyncio.sleep(0)
+    await asyncio.wait_for(wait_task_set_empty(client._bg_tasks), timeout=2.0)
 
 
 def _make_manager(session=None) -> LLMSessionManager:

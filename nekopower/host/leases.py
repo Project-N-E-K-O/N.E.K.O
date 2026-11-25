@@ -222,4 +222,9 @@ class BuiltinLeases:
     async def settle(self) -> None:
         """Wait for the cleanups started by releases so far."""
         while self._cleanups:
-            await asyncio.gather(*list(self._cleanups), return_exceptions=True)
+            cleanups = list(self._cleanups)
+            await asyncio.gather(*cleanups, return_exceptions=True)
+            # Drop the finished cleanups here rather than wait for their discard done-callbacks:
+            # since Python 3.12 gather() over tasks that are all done completes without yielding,
+            # so those queued callbacks would never run and this loop would spin forever.
+            self._cleanups.difference_update(cleanups)
