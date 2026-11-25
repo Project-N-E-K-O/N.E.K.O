@@ -400,7 +400,7 @@ class DesktopModelSync:
                                 digest.update(chunk)
                                 output.write(chunk)
             except httpx.HTTPError:
-                raise ValueError("chat_sync_unavailable") from None
+                raise ValueError("chat_sync_network_unavailable") from None
             if count != package["size"] or digest.hexdigest() != package["sha256"]:
                 raise ValueError("invalid_cloud_model_hash")
             await guard()
@@ -525,7 +525,7 @@ class DesktopModelSync:
                 try:
                     response = await client.put(signed["url"], headers=signed["headers"], content=chunks())
                 except httpx.HTTPError:
-                    raise ValueError("chat_sync_unavailable") from None
+                    raise ValueError("chat_sync_network_unavailable") from None
                 if response.status_code not in {200, 201, 204}:
                     raise OSError("cloud_model_upload_unavailable")
             # A mutable cache file must not publish bytes changed after the preflight hash.

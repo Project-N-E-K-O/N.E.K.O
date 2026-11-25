@@ -20,7 +20,7 @@ def run_script(assertions: str) -> None:
         const vm = require('node:vm');
         const assert = require('node:assert/strict');
         // Like a real document, a load event with no registered listener does nothing.
-        const documentEvents = {DOMContentLoaded(){}}, windowEvents = {}, intervals = [], dispatchedEvents = [];
+        const documentEvents = {DOMContentLoaded(){}}, windowEvents = {}, intervals = [], dispatchedEvents = [], clearedIntervals=[];
         function element() {
             return {children:[],events:{},dataset:{},open:false, setAttribute(){},
                 appendChild(child){this.children.push(child);}, addEventListener(name,callback){this.events[name]=callback;},
@@ -31,11 +31,11 @@ def run_script(assertions: str) -> None:
                         selector==='[data-history-action]'?!!child.dataset.historyAction:
                         selector.includes('"'+(child.dataset.syncAction||child.dataset.historyAction)+'"'));},
                 querySelector(selector){return this.querySelectorAll(selector)[0];},
-                showModal(){this.open=true;},close(){this.open=false;}};
+                showModal(){this.open=true;},close(){this.open=false;if(this.events.close)this.events.close();}};
         }
         const headerButton=element(), body=element();
         global.window = { addEventListener(name,callback) {windowEvents[name]=callback;}, dispatchEvent(event){dispatchedEvents.push(event);return true;}, confirm(){return true;},
-            setInterval(callback,delay){intervals.push({callback,delay});return intervals.length;},clearInterval(){},
+            setInterval(callback,delay){intervals.push({callback,delay});return intervals.length;},clearInterval(id){clearedIntervals.push(id);},
             lanlan_config: { lanlan_name: 'Neko' }, t(key,values) { return values && values.name ? key+':'+values.name
                 :values && typeof values.count==='number'?key+':'+values.count:key; } };
         global.document = { addEventListener(name,callback) {documentEvents[name]=callback;},
@@ -236,7 +236,7 @@ def test_model_action_failure_is_visible_only_in_its_current_dialog(action, cont
         reject(new Error('chat_sync_unavailable'));
         await pending;
         assert.equal(button.disabled,false);
-        if(CONTEXT==='same')assert(status.textContent.includes('chatSync.errorNetwork')&&status.textContent.includes('chat_sync_unavailable'));
+        if(CONTEXT==='same')assert(status.textContent.includes('chatSync.errorNetwork')&&status.textContent.includes('chat_sync_network_unavailable'));
         else assert.equal(status.textContent,before);
     })().catch(error=>{console.error(error);process.exitCode=1;});
     """.replace('ACTION', json.dumps(action)).replace('CONTEXT', json.dumps(context)))
@@ -340,7 +340,9 @@ def test_model_flight_and_action_error_in_a_real_chromium_page():
 @pytest.mark.parametrize('code,key', [
     ('chat_sync_account_mismatch', 'errorAccountMismatch'),
     ('chat_sync_writer_recovery_required', 'errorWriterRecovery'),
-    ('chat_sync_unavailable', 'errorNetwork'),
+    ('chat_sync_unavailable', 'errorUnavailable'),
+    ('chat_sync_network_unavailable', 'errorNetwork'),
+    ('chat_sync_internal_error', 'errorInternal'),
     ('chat_sync_retry_later', 'errorRetryLater'),
     ('chat_sync_session_changed', 'errorSessionChanged'),
     ('long_term_archive_subject_unavailable', 'errorArchiveSubject'),
@@ -402,6 +404,142 @@ def test_sync_settings_reports_pending_work():
         assert(shown.includes('chatSync.pending')&&shown.includes('"originals":3')&&shown.includes('"deletions":2'));
     })().catch(error=>{console.error(error);process.exitCode=1;});
     """)
+
+
+def test_sync_settings_separates_healthy_recent_chats_from_a_model_failure():
+    labels = json.loads((ROOT / 'static/locales/en.json').read_text(encoding='utf-8'))['chatSync']
+    run_script(r"""(async()=>{
+        const labels=LABELS;
+        window.t=(key,values={})=>labels[key.replace('chatSync.','')].replace(/{{(.*?)}}/g,(_,name)=>values[name]);
+        global.fetch=async path=>({ok:true,json:async()=>path.endsWith('/status')?{characters:[{
+            displayName:'Neko',characterSyncId:original.characterSyncId,binding:{enabled:true,
+                lastSyncError:'chat_sync_internal_error',channelStatus:{
+                    pull:{status:'success',lastSuccessAt:1000},
+                    model:{status:'error',lastError:'chat_sync_internal_error'}
+                }}
+        }]}:{}});
+        await window.nekoChatSync.openSettings();
+        const modal=body.children[0], shown=modal.children.find(node=>node.className==='chat-sync-status').textContent;
+        assert(shown.includes('Recent chats: Last sync succeeded'));
+        assert(shown.includes('Model: Needs attention'));
+        assert(shown.includes('Long-term memory: Waiting for sync'));
+        assert(shown.includes(labels.errorInternal));
+        assert(!shown.includes(labels.errorNetwork));
+        assert.equal(shown.split('chat_sync_internal_error').length,2);
+        assert.equal(modal.querySelector('[data-sync-action="recover"]').disabled,true);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('LABELS', json.dumps(labels)))
+
+
+@pytest.mark.parametrize('issue', ['model_load', 'model_conflict', 'profile_conflict', 'profile_pending', 'model_pending', 'recent_pending', 'binding_pending'])
+def test_sync_settings_does_not_report_unresolved_model_or_profile_work_as_successful(issue):
+    run_script(r"""(async()=>{
+        window.t=(key,values={})=>key+JSON.stringify(values);
+        // These cases exercise the model panel as well as the status summary.
+        const create=document.createElement;
+        document.createElement=()=>{
+            const node=create(),query=node.querySelector.bind(node);
+            node.querySelector=selector=>selector==='[data-sync-model]'?node.children.find(child=>'syncModel' in child.dataset):query(selector);
+            return node;
+        };
+        const channel={status:'success',lastSuccessAt:1000};
+        global.fetch=async path=>({ok:true,json:async()=>path.endsWith('/status')?{characters:[{
+            displayName:'Neko',characterSyncId:original.characterSyncId,syncPending:ISSUE==='binding_pending',
+            binding:{enabled:ISSUE!=='binding_pending',pendingOriginals:ISSUE==='recent_pending'?2:0,
+                channelStatus:{pull:channel,model:channel,profile:channel},
+                profile:{conflict:ISSUE==='profile_conflict',pending:ISSUE==='profile_pending'}}
+        }]}:{failed:ISSUE==='model_load',conflict:ISSUE==='model_conflict',candidate:ISSUE==='model_pending'?{}:null}});
+        await window.nekoChatSync.openSettings();
+        const modal=body.children[0], shown=modal.children.find(node=>node.className==='chat-sync-status').textContent;
+        const label=ISSUE.startsWith('model')?'channelModel':ISSUE.startsWith('profile')?'channelProfile':'channelRecent';
+        assert(shown.includes('"channel":"chatSync.'+label+'{}","status":"chatSync.'+
+            (ISSUE.endsWith('_pending')?'channelWaiting':'channelError')+'{}"'));
+        if(!['recent_pending','binding_pending'].includes(ISSUE))
+            assert(shown.includes('"channel":"chatSync.channelRecent{}","status":"chatSync.channelSuccess{}"'));
+        if(ISSUE==='model_conflict'){
+            const panel=modal.querySelector('[data-sync-model]'),button=panel.children.find(node=>node.textContent==='cloudModel.useCloud{}');
+            await intervals.find(item=>item.delay===5000).callback();
+            assert.equal(panel.children.find(node=>node.textContent==='cloudModel.useCloud{}'),button);
+        }
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('ISSUE', json.dumps(issue)))
+
+
+def test_open_sync_settings_refreshes_without_overlapping_and_stops_when_closed():
+    run_script(r"""(async()=>{
+        window.t=(key,values={})=>key+JSON.stringify(values);
+        let healthy=false,release,reads=0;
+        global.fetch=async path=>{
+            assert(path.endsWith('/status'));reads++;
+            if(reads===2)await new Promise(resolve=>{release=resolve;});
+            return{ok:true,json:async()=>({characters:[{displayName:'Neko',characterSyncId:original.characterSyncId,
+                binding:{lastSyncError:healthy?null:'chat_sync_internal_error'}}]})};
+        };
+        await window.nekoChatSync.openSettings();
+        const modal=body.children[0], shown=()=>modal.children.find(node=>node.className==='chat-sync-status').textContent;
+        assert(shown().includes('errorInternal'));
+        const poll=intervals.find(item=>item.delay===5000).callback;
+        healthy=true;
+        const first=poll(),second=poll();
+        assert.equal(reads,2);release();await Promise.all([first,second]);
+        assert(!shown().includes('errorInternal'));
+        document.visibilityState='hidden';await poll();assert.equal(reads,2);
+        document.visibilityState='visible';
+        await documentEvents['neko:chat-sync-history-changed']();
+        await new Promise(resolve=>setImmediate(resolve));
+        assert.equal(reads,3);
+        modal.close();await poll();assert.equal(reads,3);
+        assert.deepEqual(clearedIntervals,[1]);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """)
+
+
+@pytest.mark.parametrize('old_result', ['success', 'failure'])
+def test_sync_status_cannot_overwrite_a_reopened_dialog_for_the_same_character(old_result):
+    run_script(r"""(async()=>{
+        window.t=(key,values={})=>key+JSON.stringify(values);
+        let release,reject,reads=0;
+        global.fetch=async()=>{
+            if(++reads===1)return await new Promise((resolve,fail)=>{release=resolve;reject=fail;});
+            return{ok:true,json:async()=>({characters:[{displayName:'Neko',characterSyncId:original.characterSyncId}]})};
+        };
+        const first=window.nekoChatSync.openSettings('Neko');
+        body.children[0].close();
+        await window.nekoChatSync.openSettings('Neko');
+        const node=body.children[0].children.find(node=>node.className==='chat-sync-status'), before=node.textContent;
+        if(RESULT==='failure')reject(new Error('private transport error'));
+        else release({ok:true,json:async()=>({characters:[] ,writerRecoveryRequired:true})});
+        await first;
+        assert.equal(node.textContent,before);
+        assert.equal(intervals.filter(item=>item.delay===5000).length,2);
+        assert.deepEqual(clearedIntervals,[1]);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('RESULT', json.dumps(old_result)))
+
+
+@pytest.mark.parametrize('failure,key', [('network', 'errorNetwork'), ('json', 'errorInternal')])
+def test_sync_status_distinguishes_local_response_failures_from_transport_failures(failure, key):
+    run_script(r"""(async()=>{
+        window.t=(key,values={})=>key+JSON.stringify(values);
+        global.fetch=async()=>{
+            if(FAILURE==='network')throw new TypeError('private transport information');
+            return {ok:false,json:async()=>{throw new SyntaxError('private server response');}};
+        };
+        await window.nekoChatSync.openSettings();
+        const shown=body.children[0].children.find(node=>node.className==='chat-sync-status').textContent;
+        assert(shown.includes(KEY));assert(!shown.includes('private'));
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('FAILURE', json.dumps(failure)).replace('KEY', json.dumps(key)))
+
+
+def test_channel_status_labels_exist_in_all_eight_locales():
+    keys = {'channelRecent', 'channelLongTerm', 'channelProfile', 'channelModel', 'channelStatus',
+            'channelSuccess', 'channelWaiting', 'channelError', 'channelDisabled', 'channelPaused',
+            'errorUnavailable', 'errorInternal'}
+    for language in ('en', 'ja', 'ko', 'zh-CN', 'zh-TW', 'ru', 'pt', 'es'):
+        labels = json.loads((ROOT / 'static/locales' / (language + '.json')).read_text(encoding='utf-8'))['chatSync']
+        assert all(isinstance(labels.get(key), str) and labels[key] for key in keys), language
+        assert set(re.findall(r'{{(.*?)}}', labels['channelStatus'])) == {'channel', 'status'}
 
 
 @pytest.mark.parametrize('transport_error', [None, 'chat_sync_login_required', 'chat_sync_unavailable'])

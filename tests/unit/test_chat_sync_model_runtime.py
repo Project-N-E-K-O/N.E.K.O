@@ -149,8 +149,8 @@ async def test_automatic_model_failure_outside_adapter_vocabulary_records_the_re
         with closing(runtime.scheduler._connect()) as conn:
             task = conn.execute("SELECT * FROM scheduler_tasks WHERE domain=? AND channel='model'", (key,)).fetchone()
         assert (task['failures'], task['blocked_generation']) == (1, generation)
-        assert task['last_error'] == 'chat_sync_unavailable'
-        assert runtime.scheduler.last_error(key) == 'chat_sync_unavailable'
+        assert task['last_error'] == 'chat_sync_internal_error'
+        assert runtime.scheduler.last_error(key) == 'chat_sync_internal_error'
         # The pass still reaches its own cleanup after the failure.
         assert len(cleanups) >= 2
         # A hint only clears the poll interval: the failure itself keeps the role out.
@@ -186,7 +186,7 @@ async def test_expected_automatic_model_failure_stays_out_of_the_console(tmp_pat
         capsys.readouterr()
         await runtime._automatic_models(runtime.state.bindings(), presence)
         assert 'model_step_unavailable' not in capsys.readouterr().out
-        assert runtime.scheduler.last_error(DOMAIN.key()) == 'chat_sync_unavailable'
+        assert runtime.scheduler.last_error(DOMAIN.key()) == 'chat_sync_internal_error'
     finally:
         await runtime.close()
 
@@ -581,7 +581,7 @@ async def test_metadata_revision_survives_a_failed_full_record_read(tmp_path):
             return await service.request(request)
         await runtime.http.aclose()
         runtime.http = httpx.AsyncClient(transport=httpx.MockTransport(observed))
-        with pytest.raises(ValueError, match='^chat_sync_unavailable$'):
+        with pytest.raises(ValueError, match='^chat_sync_network_unavailable$'):
             await runtime.models.step(UID)
         assert runtime.models.store.get(DOMAIN.key())['seen_revision'] == 3
         offline = False
@@ -761,7 +761,7 @@ async def test_successful_model_check_clears_persisted_transport_error_only(tmp_
 
         await runtime.http.aclose()
         runtime.http = httpx.AsyncClient(transport=httpx.MockTransport(observed))
-        with pytest.raises(ValueError, match='^chat_sync_unavailable$'):
+        with pytest.raises(ValueError, match='^chat_sync_network_unavailable$'):
             await runtime.models.step(UID)
         assert runtime.models.store.get(DOMAIN.key())['error'] is True
         assert (await runtime.models.status(UID))['failed'] is True
@@ -828,7 +828,7 @@ async def test_model_download_distinguishes_transport_loss_from_server_rejection
     model = SimpleNamespace(store=SimpleNamespace(path=tmp_path / 'profiles.sqlite3'))
     package = {'sha256': 'f' * 64, 'size': 4, 'resource': {'url': 'https://oss.example/model.zip'}}
     error = ValueError if status is None else OSError
-    message = 'chat_sync_unavailable' if status is None else 'cloud_model_download_unavailable'
+    message = 'chat_sync_network_unavailable' if status is None else 'cloud_model_download_unavailable'
     with pytest.raises(error, match='^' + message + '$'):
         await DesktopModelSync.download(model, DOMAIN, None, package, guard)
     assert not list((tmp_path / 'model-packages').glob('*.part'))
@@ -996,7 +996,7 @@ async def test_changed_model_checks_a_lost_ack_before_publishing_the_current_sel
     runtime, service, adapter, pending = await pending_model_runtime(tmp_path)
     service.lose_ack = True
     try:
-        with pytest.raises(ValueError, match='chat_sync_unavailable'):
+        with pytest.raises(ValueError, match='chat_sync_network_unavailable'):
             await runtime.models.step(UID)
         assert service.model == pending['record'] and service.model_revision == 2
         adapter.path = '/C.model3.json'
@@ -1016,7 +1016,7 @@ async def test_unchanged_model_retries_a_lost_ack_with_the_identical_envelope(tm
     runtime, service, _, pending = await pending_model_runtime(tmp_path)
     service.lose_ack = True
     try:
-        with pytest.raises(ValueError, match='chat_sync_unavailable'):
+        with pytest.raises(ValueError, match='chat_sync_network_unavailable'):
             await runtime.models.step(UID)
         await runtime.models.step(UID)
         assert service.puts == [{field: pending[field] for field in ('operationId', 'baseRevision', 'record')}] * 2
@@ -1039,7 +1039,7 @@ async def test_changed_pending_model_keeps_unknown_operation_when_cloud_cannot_b
                 raise httpx.ReadError('synthetic state query unavailable')
     service.hook = unavailable
     try:
-        with pytest.raises(ValueError, match='chat_sync_unavailable'):
+        with pytest.raises(ValueError, match='chat_sync_network_unavailable'):
             await runtime.models.step(UID)
         assert runtime.models.store.get(DOMAIN.key())['pending'] == pending
         assert service.puts == [] and service.resources == []

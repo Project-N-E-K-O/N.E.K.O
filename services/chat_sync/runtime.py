@@ -1104,7 +1104,7 @@ class DesktopChatSyncRuntime:
                 # Internal prototype response bound, not a final per-message cap.
                 payload = json.loads(raw)
         except httpx.HTTPError:
-            raise ValueError("chat_sync_unavailable") from None
+            raise ValueError("chat_sync_network_unavailable") from None
         except (TypeError, json.JSONDecodeError, UnicodeError, RecursionError):
             raise ValueError("invalid_chat_sync_response") from None
         if not isinstance(payload, dict):
@@ -1137,6 +1137,9 @@ class DesktopChatSyncRuntime:
             ))
             binding["lastSyncError"] = await asyncio.to_thread(
                 self.scheduler.last_error, ChatDomain(binding["owner_id"], binding["character_uid"]).key(),
+            )
+            binding["channelStatus"] = await asyncio.to_thread(
+                self.scheduler.channel_status, ChatDomain(binding["owner_id"], binding["character_uid"]).key(),
             )
             recent_name = await self._recent_diagnostic_name(binding)
             binding["localMemoryDiagnostics"] = await asyncio.to_thread(self._local_memory_diagnostics, binding, recent_name)
@@ -1422,7 +1425,7 @@ class DesktopChatSyncRuntime:
                             self.state.queue_new_role(uid, {**request, "error": code})
                 await asyncio.to_thread(block)
             elif code in {"chat_sync_account_mismatch", "chat_sync_login_required", "chat_sync_session_changed",
-                          "chat_sync_session_unavailable", "chat_sync_unavailable", "chat_sync_retry_later",
+                          "chat_sync_session_unavailable", "chat_sync_unavailable", "chat_sync_network_unavailable", "chat_sync_retry_later",
                           "chat_sync_service_rejected", "chat_sync_writer_recovery_required"}:
                 def remember():
                     with self.writer.locked():

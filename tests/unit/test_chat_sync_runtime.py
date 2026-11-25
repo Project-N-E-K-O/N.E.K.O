@@ -138,6 +138,26 @@ def setup_runtime(tmp_path, service=None, *, fixed_service_url=None, recent_memo
 
 
 @pytest.mark.asyncio
+async def test_runtime_status_keeps_recent_success_visible_alongside_model_failure(tmp_path):
+    runtime, _, _ = setup_runtime(tmp_path)
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Neko')
+        runtime.scheduler.claim(DOMAIN.key(), 'pull', 1, 'synthetic-session')
+        runtime.scheduler.success(DOMAIN.key(), 'pull')
+        runtime.scheduler.failure(DOMAIN.key(), 'model', 1, 'synthetic-session', ValueError('private local detail'))
+        binding, = (await runtime.status())['bindings']
+        assert binding['channelStatus']['pull'] == {
+            'status': 'success', 'lastSuccessAt': runtime.test_clock[0], 'lastError': None,
+        }
+        assert binding['channelStatus']['model']['lastError'] == 'chat_sync_internal_error'
+        assert binding['lastSyncError'] == 'chat_sync_internal_error'
+        assert 'private local detail' not in json.dumps(binding)
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("case,expected", [
     ("saved_unverified", "chat_sync_session_unavailable"),
     ("rejected", "chat_sync_login_required"),
@@ -1017,7 +1037,7 @@ def test_response_loss_reuses_persisted_binding_request(tmp_path):
                 raise httpx.ReadError("synthetic response loss")
 
         service.on_request = lose_first_response
-        with pytest.raises(ValueError, match="chat_sync_unavailable"):
+        with pytest.raises(ValueError, match="chat_sync_network_unavailable"):
             await runtime.enable(UID, "Neko")
         first_body = service.requests[-1].content
         assert runtime.state.binding(UID)["enabled"] == 0
@@ -1363,7 +1383,7 @@ def test_local_https_still_rejects_invalid_server_identity(tmp_path, local_tls_f
             try:
                 host = "127.0.0.1" if failure == "wrong-hostname" else "localhost"
                 await runtime.configure(f"https://{host}:{port}")
-                with pytest.raises(ValueError, match="^chat_sync_unavailable$"):
+                with pytest.raises(ValueError, match="^chat_sync_network_unavailable$"):
                     await runtime._identity("synthetic-local-token")
                 assert requests == []
                 assert runtime.state.bindings() == []
@@ -1924,7 +1944,7 @@ async def test_status_counts_a_recent_memory_operation_frozen_by_a_lost_receipt(
         (tmp_path / "memory" / "Neko" / "recent.json").write_text(json.dumps([memo, second, third]), encoding="utf-8")
         service.lose_receipt = True
         await run_scheduler_tick(runtime)
-        assert runtime.scheduler.last_error(DOMAIN.key()) == "chat_sync_unavailable"
+        assert runtime.scheduler.last_error(DOMAIN.key()) == "chat_sync_network_unavailable"
         # Two new entries and one removal stay frozen in the same unacknowledged operation.
         assert await progress() == {"pendingOriginals": 2, "pendingDeletions": 1, "cursor": 1, "hasSealedBatch": True}
         runtime.test_clock[0] += 5_000

@@ -9,6 +9,8 @@
     var operationRunning = false;
     var writerRecoveryRequired = false;
     var foregroundWakeRunning = false;
+    var settingsEpoch = 0, statusFlight = null, settingsTimer = null;
+    var modelActionRunning = false, recoveryNotice = '';
 
     function text(key, values) {
         // All visible labels use the same eight-locale namespace.
@@ -23,7 +25,10 @@
             chat_sync_login_required: 'loginRequired',
             chat_sync_session_changed: 'errorSessionChanged',
             chat_sync_session_unavailable: 'errorSessionUnavailable',
-            chat_sync_unavailable: 'errorNetwork',
+            chat_sync_unavailable: 'errorUnavailable',
+            chat_sync_network_unavailable: 'errorNetwork',
+            chat_sync_internal_error: 'errorInternal',
+            invalid_chat_sync_response: 'errorUnavailable',
             chat_sync_pull_timeout: 'errorNetwork',
             long_term_memory_capacity_exceeded: 'errorLongTermCapacity',
             long_term_memory_evidence_capacity_exceeded: 'errorLongTermEvidenceCapacity',
@@ -59,15 +64,16 @@
 
     async function api(path, method, body) {
         // Only the local backend handles OAuth; the browser never receives its bearer.
-        var response = await fetch('/api/chat-sync' + path, {
+        var response;
+        try { response = await fetch('/api/chat-sync' + path, {
             method: method || 'GET', cache: 'no-store',
             headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
             body: body === undefined ? undefined : JSON.stringify(body)
-        });
+        }); } catch (_) { throw new Error('chat_sync_network_unavailable'); }
         var result;
         try { result = await response.json(); }
-        catch (_) { throw new Error('chat_sync_unavailable'); }
-        if (!response.ok) throw new Error(result && typeof result.detail === 'string' ? result.detail : 'chat_sync_unavailable');
+        catch (_) { throw new Error('chat_sync_internal_error'); }
+        if (!response.ok) throw new Error(result && typeof result.detail === 'string' ? result.detail : 'chat_sync_internal_error');
         return result;
     }
 
@@ -77,20 +83,71 @@
         recover.setAttribute('aria-busy', String(operationRunning));
     }
 
-    async function refreshStatus() {
-        var name = characterName();
+    function currentSettings(name, epoch) {
+        return dialog && dialog.open && settingsEpoch === epoch && characterName() === name;
+    }
+
+    function refreshStatus() {
+        var name = characterName(), epoch = settingsEpoch;
+        if (statusFlight && statusFlight.epoch === epoch) return statusFlight.promise;
+        var flight = {epoch: epoch};
+        flight.promise = readStatus(name, epoch).finally(function () {
+            if (statusFlight === flight) statusFlight = null;
+        });
+        statusFlight = flight;
+        return flight.promise;
+    }
+
+    async function readStatus(name, epoch) {
         var state = await api('/status');
-        if (characterName() !== name) return false;
+        if (!currentSettings(name, epoch)) return false;
         var role = state.characters.find(function (item) { return item.displayName === name; });
         activeUid = role ? role.characterSyncId : null;
         var binding = role && role.binding;
         writerRecoveryRequired = !!(state.writerRecoveryRequired || (binding && binding.writerRecoveryRequired));
+        var modelPanel = dialog.querySelector('[data-sync-model]'), modelStatus = {}, modelReadError = null;
+        if (modelPanel && activeUid && binding && binding.enabled) {
+            modelStatus = await api('/characters/' + activeUid + '/model-sync').catch(function (error) {
+                modelReadError = error; return {};
+            });
+            if (!currentSettings(name, epoch)) return false;
+        }
         var diagnostics = binding && binding.localMemoryDiagnostics || [];
         var isNotice = function (code) { return Object.prototype.hasOwnProperty.call(notices, code); };
-        var errors = [role && role.syncSetupError, role && role.syncSetupDiagnostic, binding && binding.lastSyncError]
-            .concat(diagnostics.filter(function (code) { return !isNotice(code); })).filter(Boolean);
-        statusNode.textContent = errors.length ? Array.from(new Set(errors)).map(describeError).join('\n')
-            : text(writerRecoveryRequired ? 'writerRecoveryRequired' : 'recoveryNotRequired');
+        var channels = binding && binding.channelStatus;
+        var lines = [], channelErrors = new Set(), assignedDiagnostics = new Set();
+        if (channels) {
+            [['pull', 'channelRecent'], ['long_term', 'channelLongTerm'], ['profile', 'channelProfile'], ['model', 'channelModel']]
+                .forEach(function (entry) {
+                    var channel = channels[entry[0]] || {}, localErrors = [];
+                    diagnostics.filter(function (code) {
+                        return !isNotice(code) && (entry[0] === 'pull' ? code.startsWith('recent_')
+                            : entry[0] === 'long_term' && code.startsWith('long_term_'));
+                    }).forEach(function (code) { localErrors.push(code); assignedDiagnostics.add(code); });
+                    if (channel.lastError) { localErrors.unshift(channel.lastError); channelErrors.add(channel.lastError); }
+                    if (entry[0] === 'profile' && binding.profile && binding.profile.conflict) localErrors.push('character_profile_conflict');
+                    if (entry[0] === 'model' && modelReadError) localErrors.push(modelReadError.message);
+                    var needsModelChoice = entry[0] === 'model' && (modelStatus.conflict || modelStatus.failed);
+                    var pendingWork = (entry[0] === 'pull' && (binding.pendingOriginals || binding.pendingDeletions))
+                        || (entry[0] === 'model' && modelStatus.candidate)
+                        || (entry[0] === 'profile' && binding.profile &&
+                            (binding.profile.dirty || binding.profile.pending || binding.profile.apply_pending));
+                    var label = writerRecoveryRequired ? 'channelPaused'
+                        : !binding.enabled ? (role.syncEnabled || role.syncPending ? 'channelWaiting' : 'channelDisabled')
+                        : localErrors.length || needsModelChoice ? 'channelError' : pendingWork ? 'channelWaiting'
+                        : channel.status === 'success' && channel.lastSuccessAt != null ? 'channelSuccess' : 'channelWaiting';
+                    lines.push(text('channelStatus', {channel: text(entry[1]), status: text(label)}));
+                    Array.from(new Set(localErrors)).forEach(function (code) { lines.push(describeError(code)); });
+                });
+        }
+        var errors = [role && role.syncSetupError, role && role.syncSetupDiagnostic,
+            binding && !channelErrors.has(binding.lastSyncError) && binding.lastSyncError,
+            !channels && modelReadError && modelReadError.message]
+            .concat(diagnostics.filter(function (code) { return !isNotice(code) && !assignedDiagnostics.has(code); })).filter(Boolean);
+        if (errors.length) lines.push(Array.from(new Set(errors)).map(describeError).join('\n'));
+        if (recoveryNotice) lines.push(recoveryNotice);
+        else if (writerRecoveryRequired || !errors.length) lines.push(text(writerRecoveryRequired ? 'writerRecoveryRequired' : 'recoveryNotRequired'));
+        statusNode.textContent = lines.join('\n');
         Array.from(new Set(diagnostics.filter(isNotice))).forEach(function (code) {
             statusNode.textContent += '\n' + text(notices[code]);
         });
@@ -102,28 +159,30 @@
             }
         }
         updateControls();
-        var modelPanel = dialog.querySelector('[data-sync-model]');
         if (modelPanel) {
+            // Preserve focus and listeners when a background read finds the same choices.
+            var signature = JSON.stringify([epoch, activeUid, !!(binding && binding.enabled), !!modelStatus.conflict, !!modelStatus.failed]);
+            if (modelPanel._syncStatus === signature) return true;
+            modelPanel._syncStatus = signature;
             modelPanel.replaceChildren();
             if (activeUid && binding && binding.enabled) {
-                var modelUid = activeUid, modelName = characterName();
-                var modelStatus = await api('/characters/' + modelUid + '/model-sync').catch(function () { return {}; });
-                if (!dialog.open || activeUid !== modelUid || characterName() !== modelName) return false;
+                var modelUid = activeUid;
                 function modelButton(key, action) {
                     var button = document.createElement('button');
                     button.type = 'button';
                     button.className = 'chat-sync-button' + (action === 'local' ? ' chat-sync-secondary' : '');
                     button.textContent = window.t('cloudModel.' + key);
                     button.addEventListener('click', async function () {
-                        if (!dialog.open || activeUid !== modelUid || characterName() !== modelName) return;
+                        if (!currentSettings(name, epoch) || activeUid !== modelUid || modelActionRunning) return;
+                        modelActionRunning = true;
                         button.disabled = true;
                         try { await api('/characters/' + modelUid + '/model-sync-action', 'POST', { action: action }); await refreshStatus(); }
                         catch (error) {
-                            if (dialog.open && activeUid === modelUid && characterName() === modelName) {
+                            if (currentSettings(name, epoch) && activeUid === modelUid) {
                                 statusNode.textContent = describeError(error);
                             }
                         }
-                        finally { button.disabled = false; }
+                        finally { button.disabled = false; modelActionRunning = false; }
                     });
                     modelPanel.appendChild(button);
                 }
@@ -139,26 +198,44 @@
         return true;
     }
 
+    function stopSettingsRefresh() {
+        if (settingsTimer !== null) window.clearInterval(settingsTimer);
+        settingsTimer = null;
+    }
+
+    function refreshOpenSettings() {
+        if (!dialog || !dialog.open || document.visibilityState === 'hidden' || operationRunning || modelActionRunning) return;
+        var name = characterName(), epoch = settingsEpoch;
+        return refreshStatus().catch(function (error) {
+            if (currentSettings(name, epoch)) statusNode.textContent = describeError(error);
+        });
+    }
+
+    function startSettingsRefresh() {
+        if (settingsTimer === null && dialog && dialog.open) settingsTimer = window.setInterval(refreshOpenSettings, 5000);
+    }
+
     async function recoverSync() {
         if (operationRunning || !dialog.open || !writerRecoveryRequired || !activeUid) return;
-        var requestedName = characterName(), requestedUid = activeUid;
+        var requestedName = characterName(), requestedUid = activeUid, epoch = settingsEpoch;
         operationRunning = true;
         updateControls();
         try {
-            if (!await refreshStatus() || !dialog.open || characterName() !== requestedName
+            if (!await refreshStatus() || !currentSettings(requestedName, epoch)
                     || activeUid !== requestedUid || !writerRecoveryRequired) return;
             statusNode.textContent = text('working');
             var path = '/characters/' + requestedUid;
             var recovered = await api(path + '/recovery/preview', 'POST');
-            if (!dialog.open || characterName() !== requestedName || activeUid !== requestedUid) return;
+            if (!currentSettings(requestedName, epoch) || activeUid !== requestedUid) return;
             await refreshStatus();
-            if (!dialog.open || characterName() !== requestedName || activeUid !== requestedUid) return;
+            if (!currentSettings(requestedName, epoch) || activeUid !== requestedUid) return;
             statusNode.textContent = text('recoveryChecked');
             // Earlier local deletions that never reached the cloud stay local only.
             var kept = recovered.deletions.count;
             if (kept) statusNode.textContent += '\n' + text('recoveryCloudCopiesKept', { count: kept });
+            recoveryNotice = statusNode.textContent;
         } catch (error) {
-            if (dialog.open && characterName() === requestedName && activeUid === requestedUid) {
+            if (currentSettings(requestedName, epoch) && activeUid === requestedUid) {
                 statusNode.textContent = describeError(error);
             }
         } finally {
@@ -227,18 +304,25 @@
         modelPanel.className = 'chat-sync-model';
         modelPanel.dataset.syncModel = '';
         dialog.appendChild(modelPanel);
-        dialog.addEventListener('close', function () { settingsCharacterName = null; });
+        dialog.addEventListener('close', function () {
+            settingsCharacterName = null; settingsEpoch++; stopSettingsRefresh();
+        });
         document.body.appendChild(dialog);
     }
 
     window.nekoChatSync = {
         openSettings: async function (name) {
+            var epoch = ++settingsEpoch;
+            recoveryNotice = '';
             settingsCharacterName = name || null;
             if (!dialog) buildDialog();
             dialog.showModal();
             statusNode.textContent = text('working');
             dialog.querySelector('[data-sync-action="recover"]').disabled = true;
-            try { await refreshStatus(); } catch (error) { statusNode.textContent = describeError(error); }
+            startSettingsRefresh();
+            try { await refreshStatus(); } catch (error) {
+                if (dialog.open && settingsEpoch === epoch) statusNode.textContent = describeError(error);
+            }
         },
         describeError: describeError,
         notifyMediaChanged: refreshReadyModel,
@@ -353,6 +437,7 @@
     }
     document.addEventListener('neko:chat-sync-history-changed', function () {
         flushMemoryRefresh();
+        refreshOpenSettings();
         return refreshReadyModel().catch(function () { /* A later foreground wake retries. */ });
     });
     document.addEventListener('DOMContentLoaded', function () {
@@ -364,6 +449,9 @@
             if (document.visibilityState !== 'hidden') refreshReadyModel().catch(function () {});
         }, 30000);
     });
-    document.addEventListener('visibilitychange', foregroundCatchup);
-    window.addEventListener('pageshow', foregroundCatchup);
+    document.addEventListener('visibilitychange', function () { refreshOpenSettings(); return foregroundCatchup(); });
+    window.addEventListener('pageshow', function () {
+        startSettingsRefresh(); refreshOpenSettings(); return foregroundCatchup();
+    });
+    window.addEventListener('pagehide', function () { settingsEpoch++; stopSettingsRefresh(); });
 })();
