@@ -30,7 +30,12 @@ from typing import Any, Protocol
 
 import httpx
 
-from ._shared import AsrRequestFailure, is_auth_rejection, provider_status_code
+from ._shared import (
+    RETRY_LATER_STATUSES,
+    AsrRequestFailure,
+    is_auth_rejection,
+    provider_status_code,
+)
 
 
 class HttpResponse(Protocol):
@@ -92,7 +97,7 @@ async def post_wav_transcription(
             f"{provider_label} transcription request was rejected",
             kind=(
                 "rate_limited"
-                if status == 429
+                if status in RETRY_LATER_STATUSES
                 else "rejected"
                 if status is not None and 400 <= status < 500
                 else "failed"

@@ -333,6 +333,9 @@ export const chatWindowPropsSchema = z.object({
   onComposerAudioMessage: hostCallback([z.object({
     requestId: z.string(), target: z.string(), audio: z.string(), sampleRateHz: z.number(),
   })], z.custom<Promise<unknown>>(value => typeof (value as PromiseLike<unknown> | null)?.then === 'function')).optional(),
+  // 录音、试听或发送中为 true。迷你窗折叠后录音控件会卸载但草稿仍在，宿主据此判断，不能看 DOM。
+  // 第二个参数是阶段（starting / recording / preview / sending / idle）：宿主据此只停掉占用麦克风的录音。
+  onAudioMessageActiveChange: hostCallback([z.boolean(), z.string()]).optional(),
   inputPlaceholder: z.string().optional(),
   sendButtonLabel: z.string().optional(),
 

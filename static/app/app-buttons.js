@@ -1399,11 +1399,27 @@
             && !!avatarInteractionTextContinuationState.interactionId;
     }
 
-    function queueDeferredTextSubmission(text, options) {
+    function queueDeferredTextSubmission(text, options, settle) {
         avatarInteractionTextContinuationState.deferredTextSubmissions.push({
             text: String(text || ''),
-            options: Object.assign({}, options || {})
+            options: Object.assign({}, options || {}),
+            // 可选：发送最终成功 / 放弃时回调（语音消息据此保留或清除草稿）
+            settle: typeof settle === 'function' ? settle : null
         });
+    }
+
+    // 带 expectedLanlanName 的提交（语音消息）在角色切换后再也不可能发出：
+    // 视为永久取消，不能放回队列重试（否则会立即重刷，形成不让出主线程的死循环）
+    function isDeferredSubmissionForStaleTarget(options) {
+        var expected = options && options.expectedLanlanName;
+        if (typeof expected !== 'string' || !expected) return false;
+        return !(window.lanlan_config && window.lanlan_config.lanlan_name === expected);
+    }
+
+    function settleDeferredSubmission(submission, sent) {
+        if (submission && typeof submission.settle === 'function') {
+            try { submission.settle(sent); } catch (_) { /* 回调方自行处理 */ }
+        }
     }
 
     function flushDeferredTextSubmissions() {
@@ -1437,7 +1453,15 @@
                     skipAvatarInteractionDeferral: true
                 }));
                 if (sent === false) {
-                    queueDeferredTextSubmission(submission.text, submission.options);
+                    // 角色已换的语音文本永久作废；其他等结果的调用方也直接收到失败，
+                    // 由它保留草稿让用户重发，而不是在队列里无限重试
+                    if (submission.settle || isDeferredSubmissionForStaleTarget(submission.options)) {
+                        settleDeferredSubmission(submission, false);
+                    } else {
+                        queueDeferredTextSubmission(submission.text, submission.options, submission.settle);
+                    }
+                } else {
+                    settleDeferredSubmission(submission, sent);
                 }
                 nextPendingIndex = index + 1;
             }
@@ -1949,6 +1973,273 @@
     mod.normalizeAvatarInteractionPayload = normalizeAvatarInteractionPayload;
     mod.sendAvatarInteractionPayload = sendAvatarInteractionPayload;
 
+    // ===== 语音消息：录音 -> 离线 ASR 转写 -> 按普通文字消息发送（不保存原音） =====
+    var AUDIO_MESSAGE_API = '/api/audio-message';
+    // 后端返回这些错误码时，当前线路在用户改配置前都不会成功：收起麦克风按钮
+    var AUDIO_MESSAGE_ROUTE_ERRORS = {
+        ASR_OFFLINE_NOT_SUPPORTED: true,
+        ASR_CREDENTIALS_MISSING: true,
+        ASR_CREDENTIALS_REJECTED: true,
+        ASR_DEPENDENCY_MISSING: true,
+        ASR_BACKEND_BLOCKED: true,
+        ASR_UNKNOWN_CORE: true,
+        ASR_INVALID_CONFIG: true
+    };
+    var audioMessageAvailabilitySeq = 0;
+    var audioMessageCheckedTarget = null;
+    // 期望交给聊天窗的目标，以及聊天窗实际接受的目标（有草稿时收起会被推迟）
+    var audioMessageDesiredTarget = null;
+    var audioMessageAppliedTarget = null;
+    // 状态查询确认能转写的目标；实时语音期间不交给聊天窗
+    var audioMessageSupportedTarget = '';
+    var audioMessageRealtimeBusy = false;
+
+    // 串门接管了输入框：语音消息的转写文本只能作为串门台词发出
+    function visitOwnsComposerForAudioMessage() {
+        var visitChat = window.nekoVisitChat;
+        return !!(visitChat && typeof visitChat.isActive === 'function' && visitChat.isActive()
+            && typeof visitChat.submitAudioTranscript === 'function');
+    }
+
+    // 普通文字链路发现串门已接管输入框（排队或开会话期间才开始的）时，不发出、返回这个值，
+    // 由语音消息改走串门链路
+    var AUDIO_MESSAGE_VISIT_REROUTE = 'visit_reroute';
+
+    function audioMessageRejection(message) {
+        var error = new Error(message || 'failed');
+        error.name = 'AudioMessageRejected';
+        return error;
+    }
+
+    // 实时语音开着或正在启动时不提供语音消息：两路同时采集麦克风，实时识别会把这段录音
+    // 也当成语音输入，有的手机上新开的采集还会让实时那一路没声音。桌面端此时整个输入框
+    // 已经隐藏，这里主要防移动端（移动端开实时语音时输入框保持可见）。
+    function isRealtimeVoiceBusy() {
+        var state = window.appState;
+        return !!((state && (state.isRecording || state.voiceChatActive || state.voiceStartPending))
+            || window.isMicStarting === true);
+    }
+
+    function applyAudioMessageTarget(target, options) {
+        var host = window.reactChatWindowHost;
+        if (!host || typeof host.setAudioMessageTarget !== 'function') return;
+        audioMessageDesiredTarget = target;
+        // 角色没变、只是线路不可用时保留草稿：用户改好设置后可以直接重发这条录音。
+        // 实时语音开始时只停掉正在采集的录音（stopCapture），试听 / 发送中的草稿留到请求结束
+        var stopCapture = !!(options && options.stopCapture);
+        var keepDraft = !target && !stopCapture && !!audioMessageAppliedTarget
+            && audioMessageAppliedTarget === currentAudioMessageTarget();
+        if (host.setAudioMessageTarget(target, { keepDraft: keepDraft, stopCapture: stopCapture }) !== false) {
+            audioMessageAppliedTarget = target;
+        }
+    }
+
+    function applySupportedAudioMessageTarget() {
+        audioMessageRealtimeBusy = isRealtimeVoiceBusy();
+        applyAudioMessageTarget(
+            audioMessageRealtimeBusy ? '' : audioMessageSupportedTarget,
+            { stopCapture: audioMessageRealtimeBusy }
+        );
+    }
+
+    function currentAudioMessageTarget() {
+        var config = window.lanlan_config;
+        return config && typeof config.lanlan_name === 'string' ? config.lanlan_name.trim() : '';
+    }
+
+    async function audioMessageMutationHeaders(forceRefresh) {
+        var headers = { 'Content-Type': 'application/json' };
+        var security = window.nekoLocalMutationSecurity;
+        if (security && typeof security.getMutationHeaders === 'function') {
+            try {
+                if (forceRefresh && typeof security.refreshToken === 'function') {
+                    await security.refreshToken();
+                }
+                Object.assign(headers, await security.getMutationHeaders());
+            } catch (_) { /* 被拒时后端返回 csrf_validation_failed，下面重试一次 */ }
+        }
+        return headers;
+    }
+
+    async function requestAudioMessageTranscript(payload) {
+        var body = JSON.stringify({
+            requestId: payload.requestId,
+            target: payload.target,
+            audio: payload.audio,
+            sampleRateHz: payload.sampleRateHz
+        });
+        for (var attempt = 0; attempt < 2; attempt++) {
+            var response = await fetch(AUDIO_MESSAGE_API + '/transcribe', {
+                method: 'POST',
+                headers: await audioMessageMutationHeaders(attempt > 0),
+                body: body
+            });
+            var data = null;
+            try { data = await response.json(); } catch (_) { data = null; }
+            if (attempt === 0 && data && data.error_code === 'csrf_validation_failed') continue;
+            return { ok: !!(response.ok && data && data.ok === true), data: data || {} };
+        }
+        return { ok: false, data: { error_code: 'csrf_validation_failed' } };
+    }
+
+    // 聊天窗 onComposerAudioMessage 的实现。成功（含"没识别到语音"）时 resolve，草稿随之清除；
+    // 拒绝时 message 为 'busy' 提示稍后重试，其余为一般失败。重试沿用同一 requestId，
+    // 后端据此合并进行中的转写、复用已出的转写结果，不会重复计费。
+    async function sendAudioMessagePayload(payload) {
+        if (!payload || typeof payload.requestId !== 'string' || typeof payload.audio !== 'string') {
+            throw audioMessageRejection('invalid');
+        }
+        if (payload.target !== currentAudioMessageTarget()) {
+            refreshAudioMessageAvailability();
+            throw audioMessageRejection('stale_target');
+        }
+        var result;
+        try {
+            result = await requestAudioMessageTranscript(payload);
+        } catch (error) {
+            console.warn('[AudioMessage] 转写请求失败:', error);
+            throw audioMessageRejection('network');
+        }
+        if (!result.ok) {
+            var code = String(result.data.error_code || 'failed');
+            console.warn('[AudioMessage] 转写失败:', code);
+            if (code === 'ASR_RATE_LIMITED') throw audioMessageRejection('busy');
+            if (AUDIO_MESSAGE_ROUTE_ERRORS[code]) {
+                // 收起麦克风（草稿还在时推迟到草稿结束）；后端记住了被拒的 key，换 key 前状态查询不会再报可用
+                audioMessageSupportedTarget = '';
+                applyAudioMessageTarget('');
+                refreshAudioMessageAvailability();
+            }
+            throw audioMessageRejection(code);
+        }
+        // 转写期间切换了角色：文本不能发到新角色的会话里
+        if (payload.target !== currentAudioMessageTarget()) {
+            refreshAudioMessageAvailability();
+            throw audioMessageRejection('stale_target');
+        }
+        // 转写期间开始了实时语音：发文字会开文本会话、顶掉刚开的语音会话。草稿留着，之后再发
+        if (isRealtimeVoiceBusy()) throw audioMessageRejection('busy');
+        var text = typeof result.data.text === 'string' ? result.data.text.trim() : '';
+        if (!text) {
+            showAudioMessageNoSpeech();
+            return true;
+        }
+        // 串门接管了输入框（转写期间才开始的也算）：和打字一样作为亲人句发给选中的收件人。
+        // 普通文字链路会被串门运行时以 VISIT_INPUT_REFUSED_SOURCE 拒收
+        if (visitOwnsComposerForAudioMessage()) {
+            return sendAudioTranscriptAsVisitLine(text, payload);
+        }
+        var accepted = await mod.sendTextPayload(text, {
+            source: 'react-chat-window',
+            requestId: payload.requestId,
+            // 语音消息只发转写文本，不带走输入框里待发送的图片
+            ignoreComposerAttachments: true,
+            // 发送链路在开会话之后、真正发出前再核对一次角色
+            expectedLanlanName: payload.target,
+            // 头像互动进行中时文字会先排队：等真正发出（或因换角色被放弃）的结果再决定草稿去留
+            awaitDeferredSend: true,
+            // 排队或开会话期间串门接管了输入框：不按普通文字发出，交回来改走串门链路
+            rerouteToVisit: true
+        });
+        if (accepted === AUDIO_MESSAGE_VISIT_REROUTE) {
+            return sendAudioTranscriptAsVisitLine(text, payload);
+        }
+        if (accepted === false) {
+            throw audioMessageRejection(
+                payload.target !== currentAudioMessageTarget() ? 'stale_target' : 'busy'
+            );
+        }
+        return true;
+    }
+
+    function showAudioMessageNoSpeech() {
+        window.showStatusToast(
+            window.t ? window.t('chat.audioMessageNoSpeech') : 'No speech was recognised in the recording.',
+            4000
+        );
+    }
+
+    // 作为串门台词发出（visit-chat.js 等到回显或拒收才结算）：被拒以 busy 拒绝，草稿保留。
+    // 转写只属于录音时的角色：排队期间换了角色再开始串门，不能发进新角色的串门；
+    // 发送链路等开会话之后也按 expectedLanlanName 再核对一次
+    async function sendAudioTranscriptAsVisitLine(text, payload) {
+        if (payload.target !== currentAudioMessageTarget()) {
+            refreshAudioMessageAvailability();
+            throw audioMessageRejection('stale_target');
+        }
+        var outcome = await window.nekoVisitChat.submitAudioTranscript({
+            text: text, requestId: payload.requestId, expectedLanlanName: payload.target
+        });
+        if (outcome === 'empty') {
+            showAudioMessageNoSpeech();
+            return true;
+        }
+        if (outcome !== 'sent') {
+            throw audioMessageRejection(
+                payload.target !== currentAudioMessageTarget() ? 'stale_target' : 'busy'
+            );
+        }
+        return true;
+    }
+
+    // 只有当前线路能离线转写时才把目标角色交给聊天窗（聊天窗据此显示麦克风按钮）
+    async function refreshAudioMessageAvailability() {
+        var host = window.reactChatWindowHost;
+        if (!host || typeof host.setAudioMessageTarget !== 'function') return;
+        var target = currentAudioMessageTarget();
+        var seq = ++audioMessageAvailabilitySeq;
+        audioMessageCheckedTarget = target;
+        var supported = false;
+        if (target) {
+            try {
+                var response = await fetch(
+                    AUDIO_MESSAGE_API + '/status?target=' + encodeURIComponent(target),
+                    { cache: 'no-store' }
+                );
+                var data = response.ok ? await response.json() : null;
+                supported = !!(data && data.supported === true);
+            } catch (error) {
+                console.warn('[AudioMessage] 查询可用性失败:', error);
+            }
+        }
+        if (seq !== audioMessageAvailabilitySeq) return;
+        audioMessageSupportedTarget = supported ? target : '';
+        applySupportedAudioMessageTarget();
+    }
+
+    function bindAudioMessageHost(host) {
+        if (typeof host.setOnComposerAudioMessage !== 'function'
+                || typeof host.setAudioMessageTarget !== 'function') {
+            return;
+        }
+        host.setOnComposerAudioMessage(sendAudioMessagePayload);
+        refreshAudioMessageAvailability();
+        if (mod._audioMessageWatchBound) return;
+        mod._audioMessageWatchBound = true;
+        // 切换角色、开关实时语音都不发事件：每秒本地比对一次，角色名变了才去查状态；
+        // 回到窗口时也查一次，覆盖在设置页刚填好 key 的情况
+        window.setInterval(function () {
+            if (currentAudioMessageTarget() !== audioMessageCheckedTarget) {
+                refreshAudioMessageAvailability();
+            } else if (isRealtimeVoiceBusy() !== audioMessageRealtimeBusy) {
+                // 实时语音开始：停掉正在进行的录音并收起；结束：恢复麦克风
+                applySupportedAudioMessageTarget();
+            } else if (audioMessageDesiredTarget !== null
+                    && audioMessageDesiredTarget !== audioMessageAppliedTarget) {
+                // 被推迟的收起：草稿结束后再试
+                applyAudioMessageTarget(audioMessageDesiredTarget, {
+                    stopCapture: audioMessageRealtimeBusy && !audioMessageDesiredTarget
+                });
+            }
+        }, 1000);
+        window.addEventListener('focus', function () {
+            refreshAudioMessageAvailability();
+        });
+    }
+
+    mod.sendAudioMessagePayload = sendAudioMessagePayload;
+    mod.refreshAudioMessageAvailability = refreshAudioMessageAvailability;
+
     function clearReactChatWindowHostBindingPoll() {
         if (!mod._reactChatWindowHostBindingPollId) {
             return;
@@ -2005,6 +2296,8 @@
         host.setOnAvatarInteraction(function (payload) {
             return mod.sendAvatarInteractionPayload(payload);
         });
+
+        bindAudioMessageHost(host);
 
         mod._boundReactChatWindowHost = host;
         mod.syncPendingComposerAttachments();
@@ -3139,6 +3432,14 @@
 
         async function sendTextPayloadInternal(rawText, options) {
             options = options || {};
+            // 语音消息排在头像互动队列里时串门开始了：普通文字会被串门拒收，交回去改走串门链路
+            if (options.rerouteToVisit === true && visitOwnsComposerForAudioMessage()) {
+                return AUDIO_MESSAGE_VISIT_REROUTE;
+            }
+            // 语音消息排队期间开始了实时语音：不发（开文本会话会顶掉语音会话），由宿主保留草稿
+            if (options.rerouteToVisit === true && isRealtimeVoiceBusy()) {
+                return false;
+            }
             var text = String(typeof rawText === 'string' ? rawText : '').trim();
             var extraImageDataUrls = normalizeExternalImageDataUrls(options.extraImageDataUrls);
             var hasExtraImages = extraImageDataUrls.length > 0;
@@ -3401,6 +3702,32 @@
                 }
             }
 
+            // 语音消息转写出的文本只属于录音时的角色：开会话、连 WebSocket 的等待期间若切换了角色，
+            // 就不发进新角色的会话。其他调用方不传 expectedLanlanName，不受影响
+            if (typeof options.expectedLanlanName === 'string' && options.expectedLanlanName
+                    && !(window.lanlan_config && window.lanlan_config.lanlan_name === options.expectedLanlanName)) {
+                updateReactOptimisticMessageStatus('failed');
+                return false;
+            }
+            // 开会话等待期间串门接管了输入框：撤掉普通用户气泡，交回去改走串门链路（串门那边会出自己的气泡）
+            if (options.rerouteToVisit === true && visitOwnsComposerForAudioMessage()) {
+                if (reactOptimisticMessageId && window.reactChatWindowHost
+                        && typeof window.reactChatWindowHost.removeMessage === 'function') {
+                    window.reactChatWindowHost.removeMessage(reactOptimisticMessageId);
+                }
+                // 这句没发出：撤掉它记下的「回复在途」（只撤自己的，别的请求的记录不动）
+                if (requestId && window._lastSubmittedRequestId === requestId) {
+                    window._lastSubmittedText = '';
+                    window._lastSubmittedRequestId = '';
+                }
+                // 这次开会话时串门已在接管：那多半只是串门路由的 ack、并没起普通会话（同 markTextSubmissionRefused）。
+                // 撤回标记，串门句会自己发开会话请求并由 visit-chat 记下、串门结束时撤掉，之后普通聊天照常显式开会话
+                if (startedTextSessionHere && S.isTextSessionActive === true) {
+                    S.isTextSessionActive = false;
+                }
+                return AUDIO_MESSAGE_VISIT_REROUTE;
+            }
+
             // Send message
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
                 try {
@@ -3487,6 +3814,12 @@
                                 await window.appChat.ensureUserDisplayName();
                             } catch (nameError) {
                                 console.warn('[Chat] preload user display name failed:', nameError);
+                            }
+                            // 等用户名期间切换了角色（串门句会走到这里）：录音时角色的转写不再发出
+                            if (typeof options.expectedLanlanName === 'string' && options.expectedLanlanName
+                                    && !(window.lanlan_config && window.lanlan_config.lanlan_name === options.expectedLanlanName)) {
+                                updateReactOptimisticMessageStatus('failed');
+                                return false;
                             }
                         }
 
@@ -3654,10 +3987,16 @@
                         && requestChatAutoCollapseAfterAcceptedEnter(deferredOptions, deferredOptions.requestId)) {
                     deferredOptions.autoCollapseAfterEnterRequested = true;
                 }
-                queueDeferredTextSubmission(text, deferredOptions);
                 textInputBox.value = '';
                 textInputComposing = false;
                 lastTextCompositionEndAt = 0;
+                if (deferredOptions.awaitDeferredSend === true) {
+                    // 调用方（语音消息）要等真正发出的结果，而不是"已排队"
+                    return new Promise(function (resolve) {
+                        queueDeferredTextSubmission(text, deferredOptions, resolve);
+                    });
+                }
+                queueDeferredTextSubmission(text, deferredOptions);
                 return true;
             }
 

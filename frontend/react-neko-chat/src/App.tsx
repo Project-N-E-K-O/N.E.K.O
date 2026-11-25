@@ -908,6 +908,12 @@ export default function ChatWindowRoot(props: ChatWindowProps) {
   const surfaceProps = { ...props, composerDisabled: !!props.composerDisabled || audioComposer.active,
     audioMessageControl, audioMessageActive: audioComposer.active,
   };
+  // The host must know about a draft even while the folded compact surface
+  // has unmounted the control, so it reports activity from the root hook.
+  const onAudioMessageActiveChange = props.onAudioMessageActiveChange;
+  useEffect(() => {
+    onAudioMessageActiveChange?.(audioComposer.active, audioComposer.phase);
+  }, [audioComposer.active, audioComposer.phase, onAudioMessageActiveChange]);
   useReplyTailPresentation(
     props.messages || [], false, undefined, false, '', '', true,
     props.chatSurfaceMode === 'full',
