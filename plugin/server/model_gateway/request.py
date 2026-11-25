@@ -326,6 +326,10 @@ def prepare_chat_request(slot: ModelSlot, body: object) -> dict:
     # (e.g. deeply nested) value must not reach copy.deepcopy.
     request = copy.deepcopy({key: value for key, value in source.items() if key not in DROPPED_FIELDS})
     for message in request["messages"]:
+        if message["role"] == "developer":
+            # Most providers reject the newer "developer" role; N.E.K.O never
+            # sends it upstream (it accepts it from plugins as a system message).
+            message["role"] = "system"
         if message["role"] == "assistant":
             for field in ("audio", "function_call", "annotations"):
                 message.pop(field, None)

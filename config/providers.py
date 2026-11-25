@@ -26,6 +26,7 @@ hard-coding their own.
 from __future__ import annotations
 
 import copy
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
@@ -160,6 +161,10 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "qwen3.7-flash": EXTRA_BODY_OPENAI,
     "qwen3.7-flash-2026-07-15": EXTRA_BODY_OPENAI,
     "qwen3.8-flash": EXTRA_BODY_OPENAI,
+    # Subscriptions & plans (Bailian Token Plan): same DashScope dialect as the family;
+    # not yet tested with a real plan key.
+    "qwen3.8-max": EXTRA_BODY_OPENAI,
+    "qwen4-max": EXTRA_BODY_OPENAI,
     # Non-realtime omni models (realtime has -realtime suffix and WebSocket, bypassing this table):
     # same protocol as ordinary text models with additional audio/video input and text-only output; thinking defaults on,
     # and enable_thinking=False works (observed 2026-10-07).
@@ -172,6 +177,9 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "glm-5v-turbo": EXTRA_BODY_CLAUDE,
     "glm-5.1": EXTRA_BODY_CLAUDE,
     "glm-5.2": EXTRA_BODY_CLAUDE,
+    # GLM Coding Plan defaults; family dialect, not yet tested with a real plan key.
+    "glm-5.3": EXTRA_BODY_CLAUDE,
+    "glm-5.4": EXTRA_BODY_CLAUDE,
     # glm-5.3-flash always thinks: thinking.type=disabled returns 400 code 1210
     # ("始终思考，不支持关闭思考；请使用 low、high 或 max", observed 2026-11-22).
     # reasoning_effort=low is the floor, for ordinary and focused turns alike.
@@ -181,10 +189,20 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "kimi-k2.5": EXTRA_BODY_CLAUDE,
     "kimi-k2.6": EXTRA_BODY_CLAUDE,
     "kimi-k3": EXTRA_BODY_KIMI_K3,
+    # K3.1 Pro cannot turn thinking off (Kimi docs); low effort is the floor. Listed for
+    # the plan gateways that offer it (OpenCode Go, Ollama Cloud); not yet tested there.
+    "kimi-k3.1-pro": EXTRA_BODY_KIMI_K3_THINKING,
     # MiniMax family.
     "MiniMax-M2.5": EXTRA_BODY_MINIMAX,
     "MiniMax-M2.7": EXTRA_BODY_MINIMAX,
     "MiniMax-M3": EXTRA_BODY_CLAUDE,
+    # MiniMax M Plan default; same dialect as M3, not yet tested with a real plan key.
+    "MiniMax-M3.1-Flash": EXTRA_BODY_CLAUDE,
+    # MiMo V2.6 (V2.5 was retired 2026-10-21). MiMo documents a `thinking` request
+    # field; the thinking.type form is assumed, not yet tested with a real key.
+    "mimo-v2.6-pro": EXTRA_BODY_CLAUDE,
+    "mimo-v2.6-flash": EXTRA_BODY_CLAUDE,
+    "mimo-v2.6-pro-ultraspeed": EXTRA_BODY_CLAUDE,
     "MiniMax-Text-01": EXTRA_BODY_MINIMAX,
     # Silicon
     "zai-org/GLM-4.6V": EXTRA_BODY_OPENAI,
@@ -211,6 +229,9 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "deepseek-v4-flash": EXTRA_BODY_CLAUDE,
     "deepseek-v4-flash-vision-exp": EXTRA_BODY_CLAUDE,
     "deepseek-v4-pro": EXTRA_BODY_CLAUDE,
+    # The V4.1 Flash id that plan gateways (Bailian Token Plan, Ark and Qianfan plans,
+    # Ollama Cloud) list; same dialect as the official endpoint, not yet tested there.
+    "deepseek-v4.1-flash": EXTRA_BODY_CLAUDE,
     # Step
     "step-2-mini": {"tools": [{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
     # reasoning_effort lacks none; thinking cannot disable, so ordinary and focused modes both use low.
@@ -235,6 +256,10 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "doubao-seed-2-0-pro-260215": EXTRA_BODY_CLAUDE,
     "doubao-seed-2-0-lite-260428": EXTRA_BODY_CLAUDE,
     "doubao-seed-2-0-mini-260428": EXTRA_BODY_CLAUDE,
+    # Ark Coding Plan ids; Ark's thinking.type dialect, not yet tested with a real plan key.
+    "doubao-seed-2.1-pro": EXTRA_BODY_CLAUDE,
+    "doubao-seed-2.1-lite": EXTRA_BODY_CLAUDE,
+    "doubao-seed-2.0-mini": EXTRA_BODY_CLAUDE,
     # Gemini family.
     "gemini-2.5-flash": EXTRA_BODY_GEMINI,
     "gemini-2.5-flash-lite": EXTRA_BODY_GEMINI,
@@ -502,12 +527,31 @@ _ATLASCLOUD_REASONING = RouterReasoningConfig(
     },
     efforts=ATLASCLOUD_REASONING_EFFORT,
 )
+# Subscription plan gateways that list upstream models under their own ids. They pass
+# the vendor's thinking knob through (assumed; not yet tested with real plan keys), so
+# only the ids are mapped onto registry entries; the body is sent unchanged.
+_TENCENT_TOKEN_PLAN_REASONING = RouterReasoningConfig(
+    strip_prefixes=("",),
+    model_aliases={
+        "deepseek-v4.1-flash-1017": "deepseek-v4.1-flash",
+        "deepseek-v4-pro-0813": "deepseek-v4-pro",
+        "minimax-m3": "MiniMax-M3",
+    },
+)
+_LOWERCASE_MINIMAX_REASONING = RouterReasoningConfig(
+    strip_prefixes=("",),
+    model_aliases={"minimax-m3": "MiniMax-M3"},
+)
+
 ROUTER_REASONING: dict[str, RouterReasoningConfig] = {
     "router.requesty.ai": _REQUESTY_REASONING,
     "router.eu.requesty.ai": _REQUESTY_REASONING,
     "api.opper.ai": _OPPER_REASONING,
     "api.orcarouter.ai": _ORCAROUTER_REASONING,
     "api.atlascloud.ai": _ATLASCLOUD_REASONING,
+    "tokenhub.tencentmaas.com": _TENCENT_TOKEN_PLAN_REASONING,
+    "ollama.com": _LOWERCASE_MINIMAX_REASONING,
+    "opencode.ai": _LOWERCASE_MINIMAX_REASONING,
 }
 
 
@@ -873,6 +917,20 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
         requires_header=False,
         min_cache_tokens=1024,
         cached_token_field="prompt_tokens_details.cached_tokens",
+    ),
+    # OpenCode Go asks every request of a session to carry the same x-opencode-session
+    # header. The value is made once per process, so when the main and agent servers
+    # run as separate processes each sends its own; whether OpenCode wants one value
+    # across processes is on the PR's list of checks with a real subscription.
+    "opencode_go": CacheProviderConfig(
+        provider_id="opencode_go",
+        name="OpenCode Go",
+        base_url="https://opencode.ai/inference/go/openai/v1",
+        base_url_pattern="opencode.ai/inference/go",
+        cache_mode="upstream",
+        requires_header=True,
+        header_name="x-opencode-session",
+        header_value=f"ses_{uuid.uuid4().hex}",
     ),
 }
 

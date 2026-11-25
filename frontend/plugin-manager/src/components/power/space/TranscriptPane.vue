@@ -10,6 +10,45 @@
       </el-button>
     </div>
     <template v-else-if="loaded">
+      <!-- Words looked for in all of it; each place found is opened whole, in its own words. -->
+      <form class="search" role="search" @submit.prevent="search">
+        <el-input v-model="query" size="small" clearable :placeholder="t('power.transcript.search')" data-testid="transcript-query" @clear="endSearch" />
+        <el-button size="small" native-type="submit" :loading="searching" :disabled="!query.trim()" data-testid="transcript-search">
+          {{ t('power.transcript.searchGo') }}
+        </el-button>
+        <el-button v-if="found" size="small" text data-testid="transcript-search-end" @click="endSearch">{{ t('power.transcript.searchEnd') }}</el-button>
+      </form>
+      <template v-if="found">
+        <p class="muted" data-testid="transcript-found">
+          {{ found.total ? t('power.transcript.found', { count: found.total }) : t('power.transcript.foundNone') }}
+          <template v-if="found.total > found.hits.length"> {{ t('power.transcript.foundShown', { count: found.hits.length }) }}</template>
+          <template v-if="!found.whole"> {{ t('power.transcript.foundPart') }}</template>
+        </p>
+        <article v-for="hit in found.hits" :key="hit.at" class="hit" :data-hit="hit.at">
+          <header>
+            <span class="who">{{ who({ role: hit.role, tool: hit.tool, failed: false }) }}</span>
+            <time v-if="hit.time" class="muted">{{ clockTime(hit.time, true) }}</time>
+            <span class="grow" />
+            <el-button size="small" link type="primary" :loading="opening === hit.at" :data-hit-open="hit.at" @click="openHit(hit.at)">
+              {{ shownHit === hit.at ? t('power.transcript.hitClose') : t('power.transcript.hitOpen') }}
+            </el-button>
+          </header>
+          <p v-if="shownHit !== hit.at" class="text">{{ hit.excerpt }}</p>
+          <template v-else-if="hitEntry">
+            <!-- Cut where it is too long to show whole: where the words were found is said all the same. -->
+            <template v-if="hitEntry.cut || hitEntry.calls.some(call => call.cut)">
+              <p class="muted" data-testid="transcript-hit-cut">{{ t('power.transcript.hitCut') }}</p>
+              <p class="text">{{ hit.excerpt }}</p>
+            </template>
+            <p v-if="hitEntry.text" class="text">{{ hitEntry.text }}</p>
+            <details v-for="(call, index) in hitEntry.calls" :key="index" class="call">
+              <summary>{{ t('power.transcript.calls', { tool: call.name }) }}</summary>
+              <pre>{{ call.arguments }}</pre>
+            </details>
+          </template>
+        </article>
+      </template>
+      <template v-else>
       <div class="more">
         <el-button v-if="before !== null" size="small" :loading="loading" data-testid="transcript-earlier" @click="earlier">
           {{ t('power.transcript.earlier') }}
@@ -42,6 +81,7 @@
           size="small" link type="primary" :loading="opening === entry.at" :data-whole="entry.at" @click="open(entry)"
         >{{ t('power.transcript.whole') }}</el-button>
       </article>
+      </template>
     </template>
   </section>
 </template>
@@ -49,8 +89,8 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { getTranscript } from '@/api/console'
-import type { TranscriptEntry } from '@/api/console'
+import { getTranscript, searchTranscript } from '@/api/console'
+import type { TranscriptEntry, TranscriptSearch } from '@/api/console'
 import { clockTime } from '../colony/activity'
 import { describeConsoleError } from '../powerFormat'
 
@@ -66,7 +106,17 @@ const unreadable = ref('')
 const error = ref('')
 let turn = 0
 
-function who(entry: TranscriptEntry): string {
+// What was looked for, what was found, and the place found that is open whole.
+const query = ref('')
+const searching = ref(false)
+const found = ref<TranscriptSearch | null>(null)
+const shownHit = ref<number | null>(null)
+const hitEntry = ref<TranscriptEntry | null>(null)
+let searchTurn = 0
+// Which place was asked to be opened whole last: an answer for an earlier one is not shown.
+let hitTurn = 0
+
+function who(entry: Pick<TranscriptEntry, 'role' | 'tool' | 'failed'>): string {
   if (entry.role === 'tool_result') {
     return t(entry.failed ? 'power.transcript.roles.tool_failed' : 'power.transcript.roles.tool_result', { tool: entry.tool || '' })
   }
@@ -123,8 +173,66 @@ async function open(entry: TranscriptEntry) {
   }
 }
 
+async function search() {
+  const words = query.value.trim()
+  if (!words) return
+  // Another search, or another familiar (which ends this one), makes what this one finds stale;
+  // so does it what was asked to be opened of what was found before.
+  const mine = ++searchTurn
+  ++hitTurn
+  opening.value = null
+  searching.value = true
+  try {
+    const answer = await searchTranscript(props.sessionId, words)
+    if (mine !== searchTurn) return
+    found.value = answer
+    shownHit.value = null
+    hitEntry.value = null
+    error.value = ''
+  } catch (failure) {
+    if (mine === searchTurn) error.value = describeConsoleError(failure, t, te)
+  } finally {
+    if (mine === searchTurn) searching.value = false
+  }
+}
+
+function endSearch() {
+  ++searchTurn
+  ++hitTurn
+  opening.value = null
+  searching.value = false
+  found.value = null
+  shownHit.value = null
+  hitEntry.value = null
+  query.value = ''
+}
+
+/** Show one place found whole, where it was said; asked again, fold it back to its line. */
+async function openHit(at: number) {
+  if (shownHit.value === at) {
+    shownHit.value = null
+    hitEntry.value = null
+    return
+  }
+  // Another familiar ends the search, and what it found with it.
+  const mine = ++hitTurn
+  opening.value = at
+  try {
+    const page = await getTranscript(props.sessionId, { at })
+    if (mine !== hitTurn) return
+    hitEntry.value = page.entries[0] ?? null
+    shownHit.value = hitEntry.value ? at : null
+    error.value = ''
+  } catch (failure) {
+    if (mine === hitTurn) error.value = describeConsoleError(failure, t, te)
+  } finally {
+    if (mine === hitTurn) opening.value = null
+  }
+}
+
 watch(() => props.sessionId, () => {
   // Another familiar: nothing of the one before stays, neither why that one could not be read.
+  endSearch()
   entries.value = []
   before.value = null
   loaded.value = false
@@ -137,6 +245,11 @@ watch(() => props.sessionId, () => {
 
 <style scoped>
 .talk { display: flex; flex-direction: column; gap: 8px; }
+.search { display: flex; align-items: center; gap: 6px; }
+.search .el-input { max-width: 320px; }
+.search .el-button + .el-button { margin-left: 0; }
+.hit { padding: 6px 12px; border-left: 2px solid var(--el-color-primary-light-5); }
+.hit header { display: flex; gap: 8px; align-items: baseline; }
 .more { display: flex; align-items: center; gap: 8px; }
 .grow { flex: 1; }
 .muted { margin: 0; color: var(--el-text-color-secondary); font-size: 12px; }

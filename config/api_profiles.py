@@ -348,13 +348,14 @@ DEFAULT_ASSIST_API_PROFILES = {
             "https://token-plan-sgp.xiaomimimo.com/v1",
             "https://token-plan-ams.xiaomimimo.com/v1",
         ],
-        'CONVERSATION_MODEL': "mimo-v2.5",
-        'MEMORY_MODEL': "mimo-v2.5",
-        'RECOGNITION_MODEL': "mimo-v2.5",
-        'DECISION_MODEL': "mimo-v2.5",
+        # mimo-v2.5 was retired on 2026-10-21; MiMo names mimo-v2.6-flash as its replacement.
+        'CONVERSATION_MODEL': "mimo-v2.6-flash",
+        'MEMORY_MODEL': "mimo-v2.6-flash",
+        'RECOGNITION_MODEL': "mimo-v2.6-flash",
+        'DECISION_MODEL': "mimo-v2.6-flash",
         'DECISION_PROTOCOL': "chat_fallback",
-        'VISION_MODEL': "mimo-v2.5",
-        'AGENT_MODEL': "mimo-v2.5",
+        'VISION_MODEL': "mimo-v2.6-flash",
+        'AGENT_MODEL': "mimo-v2.6-flash",
     },
 }
 

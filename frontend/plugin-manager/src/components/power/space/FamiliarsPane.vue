@@ -1,6 +1,11 @@
 <template>
   <section class="panel" data-testid="familiars-pane">
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon class="block" data-testid="familiars-error" />
+    <!-- Of a project: one more familiar for it, and a leader where it has none. Not of the loose ones. -->
+    <template v-if="project !== null && loaded && !error">
+      <CrewTools :project="project" :has-leader="hasLeader" :lanlan-name="lanlanName" @changed="crewChanged" />
+      <ProjectTrees :project="project" :refresh="board?.revision" />
+    </template>
     <el-empty v-if="loaded && !members.length && !selectedId" :description="t('power.space.familiars.empty')" />
 
     <div v-if="members.length" class="members">
@@ -61,6 +66,10 @@
           <dt>{{ t('power.space.familiars.context') }}</dt><dd>{{ selected.context_tokens.toLocaleString() }}</dd>
         </div>
       </dl>
+
+      <!-- It works in a git worktree of its own, or left what it changed there for the user. -->
+      <TreeActions v-if="selected.tree" :key="selected.tree.id" :tree="selected.tree" :title="selected.commission?.title" @changed="treeChanged" />
+      <p v-if="treeSaid.said && selected.tree?.id !== treeSaid.tree" class="muted" role="status" data-testid="tree-said">{{ treeSaid.said }}</p>
 
       <div class="views" role="tablist">
         <button
@@ -148,7 +157,10 @@ import type { Board, BoardCard } from '@/api/console'
 import AskBox from '../AskBox.vue'
 import FamiliarCard from '../home/FamiliarCard.vue'
 import { describeConsoleError } from '../powerFormat'
+import CrewTools from './CrewTools.vue'
+import ProjectTrees from './ProjectTrees.vue'
 import TranscriptPane from './TranscriptPane.vue'
+import TreeActions from './TreeActions.vue'
 import UsagePane from './UsagePane.vue'
 
 /** The familiars of a project, or with `project` null those that belong to none; and the one chosen, up close. */
@@ -170,6 +182,8 @@ const error = ref('')
 // Why the card was not taken, for its editor alone: reading the board anew neither clears nor sets it.
 const cardError = ref('')
 const note = ref('')
+// What came of the last thing done to its worktree: said after the worktree is gone from its card as well.
+const treeSaid = ref({ tree: '', said: '' })
 const busy = ref('')
 const sentence = ref('')
 // Which of the three views of the chosen familiar is open: what it has in hand, what was said in it, what it used.
@@ -197,6 +211,8 @@ const members = computed<BoardCard[]>(() => {
   return (now.projects ?? []).find(project => project.name === props.project)?.members ?? []
 })
 const hasLeader = computed(() => members.value.some(card => card.leader))
+// Whose familiars they are: a new one of the project is that character's as well.
+const lanlanName = computed(() => members.value.find(card => card.lanlan_name)?.lanlan_name ?? null)
 const selected = computed(() => members.value.find(card => card.id === props.selectedId) ?? null)
 // The one the address names is not on the board. Known only once the board was read, of the
 // project the address means: a board that could not be read, or another project's, holds nobody.
@@ -308,6 +324,19 @@ async function saveCard() {
   editing.value = false
 }
 
+function treeChanged(tree: string, said: string) {
+  treeSaid.value = { tree, said }
+  void load()
+}
+
+/** One more familiar, or a leader, was made: shown at once, and up close. */
+async function crewChanged(sessionId: string) {
+  const project = props.project
+  await load()
+  // Another project was opened meanwhile: the new one is not among its familiars.
+  if (props.project === project) emit('select', sessionId)
+}
+
 function onVisibility() {
   if (!document.hidden && alive) void load()
 }
@@ -321,6 +350,7 @@ watch(() => props.selectedId, () => {
   // The editor was opened for the one the user has left.
   editing.value = false
   note.value = ''
+  treeSaid.value = { tree: '', said: '' }
   sentence.value = ''
   view.value = 'doing'
   pastView.value = 'talk'

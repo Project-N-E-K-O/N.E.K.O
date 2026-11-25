@@ -64,8 +64,10 @@ the same as a module-top one.
 
 A new top-level package fails the gate until it is placed in ``LAYERS``.
 Its files are listed with ``git ls-files`` so untracked local scratch
-directories never trip the check; without git (e.g. an exported source
-tree) the filesystem is walked instead.
+directories never trip the check. The filesystem is walked instead when the
+repository root is not the top of a git work tree (an exported source tree,
+one unpacked inside another checkout, a bare repository) or git is missing
+or fails.
 
 Suppression
 -----------
@@ -91,6 +93,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import os
 import subprocess
 import sys
 from collections import defaultdict
@@ -479,42 +482,65 @@ def _parse_file(path: Path) -> ast.Module | None:
 # ---------------------------------------------------------------------------
 
 
+# Variables that point git at a repository other than the one ``cwd`` is in;
+# they are set inside git hooks, for example. Dropped for the calls below even
+# when they point at this repository: a checkout whose git directory is found
+# only through them is then walked as plain folders (untracked folders may be
+# reported; nothing is missed). The same list is in
+# scripts/check_no_temperature.py; change both together.
+GIT_LOCATION_VARS = frozenset(
+    {
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_PREFIX",
+    }
+)
+
+
+def _git_env() -> Dict[str, str]:
+    return {key: value for key, value in os.environ.items() if key not in GIT_LOCATION_VARS}
+
+
 def _tracked_python_files(root: Path) -> Optional[List[str]]:
     """Return the ``root``-relative POSIX paths of the .py files git tracks
     under ``root``, or ``None`` when git is missing or ``root`` is not the top
     of its own work tree.
     """
-    # An exported tree unpacked inside some other checkout would otherwise get
-    # that outer repository's (empty) listing and silently skip the check.
+    # Output is read as bytes: git prints paths as UTF-8, whatever the locale.
+    env = _git_env()
     try:
-        toplevel = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            cwd=str(root),
-            capture_output=True,
-            timeout=60,
-            check=False,
+        # Exactly "true" and an empty line at the top of a work tree, so the
+        # checkout's own path is never decoded or compared. A subfolder adds
+        # "../" (an exported tree unpacked inside some other checkout would
+        # otherwise get that outer repository's empty listing); a bare
+        # repository or a ``.git`` folder prints "false", where ls-files would
+        # still list an index that does not describe the files there.
+        top = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree", "--show-cdup"],
+            cwd=str(root), env=env, capture_output=True, timeout=60, check=False,
         )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if toplevel.returncode != 0:
-        return None
-    top = toplevel.stdout.decode("utf-8", errors="surrogateescape").strip()
-    if not top or Path(top).resolve() != root.resolve():
-        return None
-    try:
+        if top.returncode != 0 or top.stdout.split() != [b"true"]:
+            return None
+        # No pathspec: GIT_LITERAL_PATHSPECS / GIT_GLOB_PATHSPECS would change
+        # what one matches. Python picks the .py files instead.
         result = subprocess.run(
-            ["git", "ls-files", "-z", "--", "*.py"],
-            cwd=str(root),
-            capture_output=True,
-            timeout=60,
-            check=False,
+            ["git", "ls-files", "-z"],
+            cwd=str(root), env=env, capture_output=True, timeout=60, check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
     if result.returncode != 0:
         return None
-    output = result.stdout.decode("utf-8", errors="surrogateescape")
-    return [rel for rel in output.split("\0") if rel]
+    return [
+        raw.decode("utf-8", errors="surrogateescape")
+        for raw in result.stdout.split(b"\0")
+        if raw.endswith(b".py")
+    ]
 
 
 def find_unregistered_packages(root: Path, known: Set[str]) -> List[Tuple[str, str]]:
@@ -523,8 +549,8 @@ def find_unregistered_packages(root: Path, known: Set[str]) -> List[Tuple[str, s
 
     Dot-directories, ``UNLAYERED_TOP_LEVEL`` and anything ``EXCLUDE_DIRS``
     skips are ignored. Files come from ``git ls-files`` so untracked local
-    scratch directories cannot fail the gate; when git is unavailable the
-    filesystem is walked instead.
+    scratch directories cannot fail the gate; when ``_tracked_python_files``
+    cannot list them, the filesystem is walked instead.
     """
 
     def is_candidate(name: str) -> bool:

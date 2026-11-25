@@ -103,7 +103,7 @@ defineExpose({ clear: () => { reply.value = '' } })
 .facts { margin: 0 0 8px; font-size: 12px; }
 .facts div { display: flex; gap: 8px; }
 .facts dt { flex: none; color: var(--el-text-color-secondary); }
-.facts dd { margin: 0; overflow-wrap: anywhere; }
+.facts dd { margin: 0; overflow-wrap: anywhere; white-space: pre-line; }
 .choices { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .say { display: flex; gap: 8px; margin-top: 8px; }
 </style>
