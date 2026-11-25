@@ -342,6 +342,36 @@ test('visit: without a verdict the line counts as sent; a late refusal marks it 
   assert.equal(h.local('rec-1')[0].status, 'failed');
 });
 
+test('visit: the echo timeout starts only after the line was actually sent', async () => {
+  // Opening the text session first can take longer than the echo timeout.
+  let finishSend;
+  const h = visitHarness({ sendResult: () => new Promise((resolve) => { finishSend = resolve; }) });
+  h.state('started');
+  const result = h.track(h.chat.submitAudioTranscript({ text: '你好', requestId: 'rec-1' }));
+  await settle();
+  h.advance(20000);
+  await settle();
+  assert.equal(result.done, false, 'still waiting for the send itself');
+  finishSend(false); // the session never came up
+  await settle();
+  assert.equal(result.value, 'refused');
+  assert.equal(h.local('rec-1').length, 0);
+
+  const slow = visitHarness({ sendResult: () => new Promise((resolve) => { finishSend = resolve; }) });
+  slow.state('started');
+  const sent = slow.track(slow.chat.submitAudioTranscript({ text: '你好', requestId: 'rec-2' }));
+  await settle();
+  slow.advance(20000);
+  finishSend(true);
+  await settle();
+  slow.advance(9999);
+  await settle();
+  assert.equal(sent.done, false);
+  slow.advance(1);
+  await settle();
+  assert.equal(sent.value, 'sent');
+});
+
 test('visit: the visit ending while waiting counts as sent (the line may have arrived)', async () => {
   const h = visitHarness();
   h.state('started');

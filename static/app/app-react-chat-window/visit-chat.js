@@ -847,12 +847,18 @@
         var host = getHost();
         if (host && typeof host.removeMessage === 'function') host.removeMessage('visit-local-' + requestId);
         return new Promise(function (resolve) {
-            audioLineWaiters.set(requestId, {
-                settle: resolve,
-                timer: setTimeout(function () { settleAudioLine(requestId, 'sent'); }, AUDIO_LINE_VERDICT_MS)
-            });
+            var waiter = { settle: resolve, timer: 0 };
+            audioLineWaiters.set(requestId, waiter);
             dispatchVisitLine(send, text, requestId, undefined).then(function (ok) {
-                if (!ok) markNotDelivered(requestId, true);
+                if (!ok) {
+                    markNotDelivered(requestId, true);
+                    return;
+                }
+                // 真正发出去之后才开始等回显：发送前可能还要先开文本会话（自带更长的超时），
+                // 那段时间里按已发出处理会清掉草稿，之后开会话失败就没法再报被拒
+                if (audioLineWaiters.get(requestId) === waiter) {
+                    waiter.timer = setTimeout(function () { settleAudioLine(requestId, 'sent'); }, AUDIO_LINE_VERDICT_MS);
+                }
             });
         });
     };
