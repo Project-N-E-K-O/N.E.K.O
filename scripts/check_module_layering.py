@@ -91,6 +91,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import os
 import subprocess
 import sys
 from collections import defaultdict
@@ -475,42 +476,59 @@ def _parse_file(path: Path) -> ast.Module | None:
 # ---------------------------------------------------------------------------
 
 
+# Variables that point git at a repository other than the one ``cwd`` is in;
+# they are set inside git hooks, for example. Dropped for the calls below.
+GIT_LOCATION_VARS = frozenset(
+    {
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_PREFIX",
+    }
+)
+
+
+def _git_env() -> Dict[str, str]:
+    return {key: value for key, value in os.environ.items() if key not in GIT_LOCATION_VARS}
+
+
 def _tracked_python_files(root: Path) -> Optional[List[str]]:
     """Return the ``root``-relative POSIX paths of the .py files git tracks
     under ``root``, or ``None`` when git is missing or ``root`` is not the top
     of its own work tree.
     """
-    # An exported tree unpacked inside some other checkout would otherwise get
-    # that outer repository's (empty) listing and silently skip the check.
+    # Output is read as bytes: git prints paths as UTF-8, whatever the locale.
+    env = _git_env()
     try:
-        toplevel = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            cwd=str(root),
-            capture_output=True,
-            timeout=60,
-            check=False,
+        # Empty when ``root`` is the top of its work tree, so the checkout's own
+        # path is never decoded or compared. An exported tree unpacked inside
+        # some other checkout would otherwise get that outer repository's
+        # (empty) listing and silently skip the check.
+        cdup = subprocess.run(
+            ["git", "rev-parse", "--show-cdup"],
+            cwd=str(root), env=env, capture_output=True, timeout=60, check=False,
         )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if toplevel.returncode != 0:
-        return None
-    top = toplevel.stdout.decode("utf-8", errors="surrogateescape").strip()
-    if not top or Path(top).resolve() != root.resolve():
-        return None
-    try:
+        if cdup.returncode != 0 or cdup.stdout.strip():
+            return None
+        # No pathspec: GIT_LITERAL_PATHSPECS / GIT_GLOB_PATHSPECS would change
+        # what one matches. Python picks the .py files instead.
         result = subprocess.run(
-            ["git", "ls-files", "-z", "--", "*.py"],
-            cwd=str(root),
-            capture_output=True,
-            timeout=60,
-            check=False,
+            ["git", "ls-files", "-z"],
+            cwd=str(root), env=env, capture_output=True, timeout=60, check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
     if result.returncode != 0:
         return None
-    output = result.stdout.decode("utf-8", errors="surrogateescape")
-    return [rel for rel in output.split("\0") if rel]
+    return [
+        raw.decode("utf-8", errors="surrogateescape")
+        for raw in result.stdout.split(b"\0")
+        if raw.endswith(b".py")
+    ]
 
 
 def find_unregistered_packages(root: Path, known: Set[str]) -> List[Tuple[str, str]]:
