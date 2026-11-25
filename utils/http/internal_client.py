@@ -48,6 +48,7 @@ Call `aclose_internal_http_client()` at process shutdown to release the pool.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable
 import logging
 import os
 import threading
@@ -164,7 +165,22 @@ def _trusted_internal_service_ports() -> set[int]:
     return ports
 
 
-def _should_attach_internal_service_proof(request: httpx.Request) -> bool:
+def _normalize_extra_trusted_ports(extra_trusted_ports: Iterable[int] | None) -> frozenset[int]:
+    """Validate optional per-client trusted loopback ports into a ``frozenset[int]``."""
+    if extra_trusted_ports is None:
+        return frozenset()
+    return frozenset(
+        port
+        for port in extra_trusted_ports
+        if isinstance(port, int) and not isinstance(port, bool) and 0 < port <= 65535
+    )
+
+
+def _should_attach_internal_service_proof(
+    request: httpx.Request,
+    *,
+    extra_trusted_ports: frozenset[int] = frozenset(),
+) -> bool:
     """Return True when a request targets a trusted loopback internal service under proxy/remote mode."""
     from utils.deployment import is_behind_proxy, is_remote_backend_deployment
     from utils.instance_access import INTERNAL_SERVICE_HEADER
@@ -188,12 +204,16 @@ def _should_attach_internal_service_proof(request: httpx.Request) -> bool:
         except ValueError:
             return False
     port = _httpx_signing_port(request)
-    return port is not None and port in _trusted_internal_service_ports()
+    return port is not None and (port in _trusted_internal_service_ports() or port in extra_trusted_ports)
 
 
-async def attach_internal_service_proof(request: httpx.Request) -> None:
+async def attach_internal_service_proof(
+    request: httpx.Request,
+    *,
+    extra_trusted_ports: frozenset[int] = frozenset(),
+) -> None:
     """Attach port-bound signed internal-service header on loopback hops when proxy/remote mode is active."""
-    if not _should_attach_internal_service_proof(request):
+    if not _should_attach_internal_service_proof(request, extra_trusted_ports=extra_trusted_ports):
         return
     from filelock import Timeout as FileLockTimeout
     from utils.instance_access import INTERNAL_SERVICE_HEADER, instance_key, internal_service_proof
@@ -216,9 +236,13 @@ async def attach_internal_service_proof(request: httpx.Request) -> None:
 _attach_internal_service_proof = attach_internal_service_proof
 
 
-def attach_internal_service_proof_sync(request: httpx.Request) -> None:
+def attach_internal_service_proof_sync(
+    request: httpx.Request,
+    *,
+    extra_trusted_ports: frozenset[int] = frozenset(),
+) -> None:
     """Sync variant of attach_internal_service_proof for blocking httpx.Client callers."""
-    if not _should_attach_internal_service_proof(request):
+    if not _should_attach_internal_service_proof(request, extra_trusted_ports=extra_trusted_ports):
         return
     from filelock import Timeout as FileLockTimeout
     from utils.instance_access import INTERNAL_SERVICE_HEADER, instance_key, internal_service_proof
@@ -238,9 +262,29 @@ def attach_internal_service_proof_sync(request: httpx.Request) -> None:
         ) from exc
 
 
-def internal_service_event_hooks(*, sync: bool = False) -> dict[str, list]:
+def _build_internal_service_request_hook(*, sync: bool, extra_trusted_ports: frozenset[int]):
+    if not extra_trusted_ports:
+        return attach_internal_service_proof_sync if sync else attach_internal_service_proof
+    if sync:
+        def _sync_hook(request: httpx.Request) -> None:
+            attach_internal_service_proof_sync(request, extra_trusted_ports=extra_trusted_ports)
+
+        return _sync_hook
+
+    async def _async_hook(request: httpx.Request) -> None:
+        await attach_internal_service_proof(request, extra_trusted_ports=extra_trusted_ports)
+
+    return _async_hook
+
+
+def internal_service_event_hooks(
+    *,
+    sync: bool = False,
+    extra_trusted_ports: Iterable[int] | None = None,
+) -> dict[str, list]:
     """Return an httpx event_hooks mapping that signs loopback internal requests."""
-    hook = attach_internal_service_proof_sync if sync else attach_internal_service_proof
+    normalized_extra = _normalize_extra_trusted_ports(extra_trusted_ports)
+    hook = _build_internal_service_request_hook(sync=sync, extra_trusted_ports=normalized_extra)
     return {"request": [hook]}
 
 
@@ -248,9 +292,11 @@ def merge_internal_service_event_hooks(
     event_hooks: dict | None = None,
     *,
     sync: bool = False,
+    extra_trusted_ports: Iterable[int] | None = None,
 ) -> dict[str, list]:
     """Return a copy of event_hooks with the internal-service request hook appended."""
-    hook = attach_internal_service_proof_sync if sync else attach_internal_service_proof
+    normalized_extra = _normalize_extra_trusted_ports(extra_trusted_ports)
+    hook = _build_internal_service_request_hook(sync=sync, extra_trusted_ports=normalized_extra)
     merged: dict[str, list] = {
         key: list(value) for key, value in (event_hooks or {}).items()
     }

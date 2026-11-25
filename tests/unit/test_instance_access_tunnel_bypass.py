@@ -217,7 +217,12 @@ def test_internal_service_proof_rejects_forged_expired_wrong_path_and_forwarded_
     assert local_client.post("/private", headers={INTERNAL_SERVICE_HEADER: valid_proof}).status_code == 401
     wrong_path_proof = internal_service_proof(KEY, "GET", "/other", port=MAIN_SERVER_PORT)
     assert local_client.get("/private", headers={INTERNAL_SERVICE_HEADER: wrong_path_proof}).status_code == 401
-    wrong_port_proof = internal_service_proof(KEY, "GET", "/private", port=USER_PLUGIN_SERVER_PORT)
+    wrong_port = (
+        USER_PLUGIN_SERVER_PORT
+        if USER_PLUGIN_SERVER_PORT != MAIN_SERVER_PORT
+        else (MAIN_SERVER_PORT + 1 if MAIN_SERVER_PORT < 65535 else MAIN_SERVER_PORT - 1)
+    )
+    wrong_port_proof = internal_service_proof(KEY, "GET", "/private", port=wrong_port)
     assert local_client.get("/private", headers={INTERNAL_SERVICE_HEADER: wrong_port_proof}).status_code == 401
     portless_proof = internal_service_proof(KEY, "GET", "/private")
     assert local_client.get("/private", headers={INTERNAL_SERVICE_HEADER: portless_proof}).status_code == 401
@@ -3319,3 +3324,67 @@ async def test_task_tool_post_treats_signing_error_as_not_delivered(monkeypatch:
 
     assert (answer, may_have_arrived) == (None, False)
     assert transport_called is False
+
+
+async def test_core_config_update_logs_warning_and_keeps_save_on_401_notify(monkeypatch: pytest.MonkeyPatch):
+    """Non-2xx response from agent_server /notify_config_changed must log non-fatal warning without rolling back config."""
+    import asyncio
+    import json
+    from utils import config_manager as config_manager_module
+    from main_routers.config_router import core_config
+
+    manager = config_manager_module.get_config_manager("N.E.K.O")
+    manager.config_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(config_manager_module, "get_config_manager", lambda *a, **k: manager)
+    manager.save_json_config(
+        "core_config.json",
+        {"coreApi": "qwen", "assistApi": "qwen", "coreApiKey": "old-key", "enableCustomApi": True},
+    )
+    manager._core_config_cache = None
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    class _FakeCoreRequest:
+        def __init__(self):
+            from types import SimpleNamespace
+            from starlette.datastructures import Headers
+            from main_routers.system_router._shared import AUTOSTART_CSRF_TOKEN
+
+            self.method = "POST"
+            self.base_url = "http://testserver/"
+            self.url = SimpleNamespace(path="/api/config/core_api")
+            self.headers = Headers({
+                "content-type": "application/json",
+                "origin": "http://testserver",
+                "x-csrf-token": AUTOSTART_CSRF_TOKEN,
+            })
+
+        async def json(self):
+            return {"coreApi": "qwen", "assistApi": "qwen", "enableCustomApi": True, "coreApiKey": "new-key-401"}
+
+    def _deny_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"detail": "instance_authorization_required"}, request=request)
+
+    real_client = httpx.AsyncClient
+
+    def _mock_client(*_args, **kwargs):
+        return real_client(transport=httpx.MockTransport(_deny_handler), **kwargs)
+
+    info_logs: list[str] = []
+    warn_logs: list[str] = []
+    monkeypatch.setattr(core_config, "get_session_manager", lambda: {})
+    monkeypatch.setattr(core_config, "get_initialize_character_data", lambda: _noop)
+    monkeypatch.setattr(core_config, "ensure_default_yui_voice_for_free_api", _noop)
+    monkeypatch.setattr(core_config, "_auto_resolve_provider_urls_for_save", _noop)
+    monkeypatch.setattr(core_config, "_core_api_save_lock", asyncio.Lock())
+    monkeypatch.setattr(httpx, "AsyncClient", _mock_client)
+    monkeypatch.setattr(core_config.logger, "info", lambda msg, *a, **k: info_logs.append(str(msg)))
+    monkeypatch.setattr(core_config.logger, "warning", lambda msg, *a, **k: warn_logs.append(str(msg)))
+
+    res = await core_config.update_core_config(_FakeCoreRequest())
+    assert res["success"] is True
+    saved_core_cfg = json.loads((manager.config_dir / "core_config.json").read_text(encoding="utf-8"))
+    assert saved_core_cfg["coreApiKey"] == "new-key-401"
+    assert not any("已通知 agent_server 刷新 CUA 适配器" in m for m in info_logs)
+    assert any("HTTP 401" in m for m in warn_logs)

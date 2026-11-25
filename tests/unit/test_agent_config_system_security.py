@@ -1014,17 +1014,26 @@ async def test_plugin_console_switch_passes_real_main_server_middleware_stack_be
 
     main_base = f"http://127.0.0.1:{config.MAIN_SERVER_PORT}"
     # Exercise real app.main_server.app without entering lifespan context to avoid leaking global hooks.
-    main_client = httpx.AsyncClient(
+    # Keep production console_proxy._http() factory intact and inject ASGITransport only on its client creation.
+    real_async_client = httpx.AsyncClient
+    unsigned_client = real_async_client(
         transport=httpx.ASGITransport(app=main_server.app, client=("127.0.0.1", 54321)),
         base_url=main_base,
     )
-    monkeypatch.setattr(console_proxy, "_http", lambda: main_client)
+
+    def _patched_console_async_client(*args, **kwargs):
+        if "transport" not in kwargs:
+            kwargs["transport"] = httpx.ASGITransport(app=main_server.app, client=("127.0.0.1", 54321))
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(console_proxy, "_client", None)
+    monkeypatch.setattr(console_proxy.httpx, "AsyncClient", _patched_console_async_client)
 
     plugin_app = FastAPI()
     plugin_app.include_router(console_proxy.router)
     plugin_app.add_middleware(HostOriginGuardMiddleware)
     plugin_page = "http://127.0.0.1:48916"
-    plugin_client = httpx.AsyncClient(
+    plugin_client = real_async_client(
         transport=httpx.ASGITransport(app=plugin_app, client=("127.0.0.1", 1234)),
         base_url=plugin_page,
         headers={"Origin": plugin_page, "X-CSRF-Token": mutation_auth.AUTOSTART_CSRF_TOKEN},
@@ -1033,6 +1042,7 @@ async def test_plugin_console_switch_passes_real_main_server_middleware_stack_be
     try:
         resp = await plugin_client.post("/console/switch", json={"enabled": True})
         assert resp.status_code == 200 and resp.json() == {"success": True}
+        assert console_proxy._client is not None and bool(console_proxy._client._event_hooks.get("request"))
         assert len(tool_requests) == 1
         assert json.loads(tool_requests[0].content) == {
             "command": "set_agent_enabled",
@@ -1041,7 +1051,7 @@ async def test_plugin_console_switch_passes_real_main_server_middleware_stack_be
         }
 
         # Control check: Origin triggers InstanceAccessMiddleware 401 when NEKO_BEHIND_PROXY=true.
-        rejected = await main_client.post(
+        rejected = await unsigned_client.post(
             "/api/agent/command",
             json={"command": "set_agent_enabled", "enabled": True},
             headers={"Origin": main_base, "X-CSRF-Token": mutation_auth.AUTOSTART_CSRF_TOKEN},
@@ -1049,6 +1059,7 @@ async def test_plugin_console_switch_passes_real_main_server_middleware_stack_be
         assert rejected.status_code == 401
         assert "instance_authorization_required" in rejected.text
     finally:
+        await console_proxy.close_console_proxy()
         await plugin_client.aclose()
-        await main_client.aclose()
+        await unsigned_client.aclose()
         await tool_client.aclose()

@@ -287,7 +287,6 @@ async def test_switch_succeeds_through_full_main_middleware_stack_behind_proxy(
     from main_routers.system_router import _shared as system_shared
     from utils.asgi_body_limit import InboundBodySizeLimitMiddleware
     from utils.instance_access import InstanceAccessMiddleware
-    from utils.internal_http_client import internal_service_event_hooks
 
     monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
     monkeypatch.delenv("NEKO_ACTIVITY_TRACKER_REMOTE", raising=False)
@@ -323,21 +322,25 @@ async def test_switch_succeeds_through_full_main_middleware_stack_behind_proxy(
     main_app.add_middleware(HostOriginGuardMiddleware)
 
     main_base = f"http://127.0.0.1:{config.MAIN_SERVER_PORT}"
-    main_client = httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=main_app, client=("127.0.0.1", 54321)),
-        base_url=main_base,
-        event_hooks=internal_service_event_hooks(),
-    )
-    unsigned_client = httpx.AsyncClient(
+    real_async_client = httpx.AsyncClient
+    unsigned_client = real_async_client(
         transport=httpx.ASGITransport(app=main_app, client=("127.0.0.1", 54321)),
         base_url=main_base,
     )
-    monkeypatch.setattr(console_proxy, "_http", lambda: main_client)
+
+    def _patched_console_async_client(*args, **kwargs):
+        if "transport" not in kwargs:
+            kwargs["transport"] = httpx.ASGITransport(app=main_app, client=("127.0.0.1", 54321))
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(console_proxy, "_client", None)
+    monkeypatch.setattr(console_proxy.httpx, "AsyncClient", _patched_console_async_client)
 
     try:
         async with _client(app, _page_changes()) as client:
             answer = await client.post("/console/switch", json={"enabled": True})
         assert answer.status_code == 200 and answer.json() == {"success": True}
+        assert console_proxy._client is not None and bool(console_proxy._client._event_hooks.get("request"))
         assert len(tool_requests) == 1
         assert json.loads(tool_requests[0].content) == {
             "command": "set_agent_enabled",
@@ -354,6 +357,6 @@ async def test_switch_succeeds_through_full_main_middleware_stack_behind_proxy(
         assert rejected.status_code == 401
         assert "instance_authorization_required" in rejected.text
     finally:
+        await console_proxy.close_console_proxy()
         await unsigned_client.aclose()
-        await main_client.aclose()
         await tool_client.aclose()
