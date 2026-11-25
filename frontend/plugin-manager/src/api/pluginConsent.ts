@@ -27,6 +27,19 @@ export interface AnalysisBlindSpot {
   type: string
   file: string | null
   line: number | null
+  /** native_loader; a minimal marker until a shared risk-tier table exists. */
+  high_risk?: boolean
+  /** not_analyzed only: why the part was not read. */
+  reason?: string
+  /** not_analyzed only: a list cut short, this many more were left out. */
+  omitted?: number
+}
+/** Counted blind spots of one file, without lines. */
+export interface AnalysisBlindSpotFile {
+  file: string
+  count: number
+  types: Record<string, number>
+  high_risk: boolean
 }
 export interface CapabilityAnalysis {
   status: AnalysisStatus
@@ -39,7 +52,12 @@ export interface CapabilityAnalysis {
   files_analyzed?: number
   /** Keyed by permission id; absent on reports that failed or are still pending. */
   permissions?: Record<string, AnalyzedPermission>
+  /** Counted blind spots, with lines (developer details). */
   blind_spots?: AnalysisBlindSpot[]
+  /** The same blind spots summed up per file; newer servers only. */
+  blind_spot_files?: AnalysisBlindSpotFile[]
+  /** Parts the scan did not read: a hint, never counted; newer servers only. */
+  not_analyzed?: AnalysisBlindSpot[]
 }
 export interface PluginConsent {
   plugin_id: string

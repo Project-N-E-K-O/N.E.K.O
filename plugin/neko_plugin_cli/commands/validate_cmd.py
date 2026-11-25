@@ -1327,20 +1327,35 @@ def _check_permission_usage(
     sources = read_capability_sources(
         plugin_dir, include=include
     )
-    report = analyze_capabilities(plugin_dir, declarations=declarations, sources=sources)
+    # context_loss is developer-only: requested here, never in the host's report.
+    report = analyze_capabilities(
+        plugin_dir, declarations=declarations, sources=sources, include_context_loss=True
+    )
     found = compare_declarations(report)
     issues.extend(_permission_issue(issue) for issue in found)
 
     by_type: dict[str, list[dict]] = {}
-    for spot in report.get("blind_spots") or []:
+    omitted: dict[str, int] = {}
+    for spot in [
+        *(report.get("blind_spots") or []),
+        *(report.get("context_loss") or []),
+        *(report.get("not_analyzed") or []),
+    ]:
+        if spot.get("omitted"):
+            # Not listed one by one (see _skipped_parts); counted as "+n".
+            omitted[spot["type"]] = omitted.get(spot["type"], 0) + spot["omitted"]
+            continue
         by_type.setdefault(spot["type"], []).append(spot)
+    for kind in omitted:
+        by_type.setdefault(kind, [])
     for kind, spots in by_type.items():
         shown = [
             f"{spot['file']}:{spot['line']}" if spot.get("line") else (spot.get("file") or plugin_dir.name)
             for spot in spots[:3]
         ]
-        if len(spots) > len(shown):
-            shown.append(f"+{len(spots) - len(shown)}")
+        more = len(spots) - len(shown) + omitted.get(kind, 0)
+        if more:
+            shown.append(f"+{more}")
         reasons = sorted({spot["reason"] for spot in spots if spot.get("reason")})
         suffix = f"; {', '.join(reasons)}" if reasons else ""
         texts = permission_messages.texts(

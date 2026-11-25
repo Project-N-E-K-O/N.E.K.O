@@ -172,7 +172,10 @@ def test_narrowing_must_be_a_subset_of_the_declarations():
 
 # An empty [permissions] table: the plugin opted in, so definite undeclared
 # use is an error (without the table it is a transition warning).
-def _scan(tmp_path: Path, source: str, manifest: str = "[permissions]\n", **files: str) -> dict:
+def _scan(
+    tmp_path: Path, source: str, manifest: str = "[permissions]\n", *, developer: bool = False, **files: str
+) -> dict:
+    """``developer`` adds context_loss, as neko-plugin check asks for."""
     (tmp_path / "main.py").write_text(source, encoding="utf-8")
     for name, text in files.items():
         path = tmp_path / name
@@ -180,7 +183,12 @@ def _scan(tmp_path: Path, source: str, manifest: str = "[permissions]\n", **file
         path.write_text(text, encoding="utf-8")
     if manifest:
         (tmp_path / "plugin.toml").write_text(manifest, encoding="utf-8")
-    return analyze_capabilities(tmp_path)
+    return analyze_capabilities(tmp_path, include_context_loss=developer)
+
+
+def _all_spots(report: dict) -> list[dict]:
+    """Counted blind spots, not_analyzed hints and (developer) context_loss."""
+    return [*report["blind_spots"], *report["not_analyzed"], *report.get("context_loss", [])]
 
 
 def _bases(report: dict) -> dict[str, str]:
@@ -529,11 +537,8 @@ def test_file_access_and_open_modes(tmp_path, call, expected, mode):
         ("import runpy\nrunpy.run_path('x.py')", "code_exec"),
         ("import ctypes\nctypes.CDLL('libc.so.6')", "native_loader"),
         ("from ctypes import cdll\ncdll.LoadLibrary('x')", "native_loader"),
-        ("import threading\nthreading.Thread(target=f).start()", "context_loss"),
-        ("from concurrent.futures import ThreadPoolExecutor\nThreadPoolExecutor()", "context_loss"),
-        ("async def f(loop, pool):\n    await loop.run_in_executor(pool, g)", "context_loss"),
-        ("import importlib\nimportlib.import_module('subprocess')", "dynamic_import"),
-        ("__import__('os')", "dynamic_import"),
+        ("import importlib\nimportlib.import_module(name)", "dynamic_import"),
+        ("__import__(name)", "dynamic_import"),
         ("import sys\nsys.modules['os']", "dynamic_import"),
         ("from os import *", "dynamic_import"),
     ],
@@ -558,23 +563,27 @@ def test_statically_known_forms_are_not_blind_spots(tmp_path, source):
     assert _scan(tmp_path, source)["blind_spots"] == []
 
 
-def test_unscanned_parts_are_blind_spots_without_changing_status(tmp_path):
+def test_unscanned_parts_are_not_analyzed_hints_without_changing_status(tmp_path):
     (tmp_path / "vendor").mkdir()
     (tmp_path / "vendor" / "lib.py").write_text("import socket", encoding="utf-8")
     report = _scan(tmp_path, "x = 1", **{"ui/panel.tsx": "export default 1", "node_modules/a.js": "1"})
     assert report["status"] == "completed"
     assert report["permissions"] == {}
-    assert [(spot["type"], spot["reason"], spot["file"]) for spot in report["blind_spots"]] == [
+    # A hint only: not a counted blind spot.
+    assert report["blind_spots"] == [] and report["blind_spot_files"] == []
+    assert [(spot["type"], spot["reason"], spot["file"]) for spot in report["not_analyzed"]] == [
+        ("not_analyzed", "skipped_dir", "node_modules"),
         ("not_analyzed", "non_python", "ui/panel.tsx"),
         ("not_analyzed", "vendor", "vendor"),
     ]
 
 
-def test_analysis_warnings_become_not_analyzed_blind_spots(tmp_path):
+def test_analysis_warnings_become_not_analyzed_hints(tmp_path):
     report = _scan(tmp_path, "x = 1", **{"bad.py": "def broken("})
     assert report["status"] == "partial"
-    assert {"type": "not_analyzed", "file": "bad.py", "line": None, "reason": "source_unreadable"} in report["blind_spots"]
-    assert scan_note(report) == "blind_spots"
+    assert {"type": "not_analyzed", "file": "bad.py", "line": None, "reason": "source_unreadable"} in report["not_analyzed"]
+    assert report["blind_spots"] == []
+    assert scan_note(report) == "not_analyzed"
 
 
 def test_report_carries_declarations_from_plugin_toml(tmp_path):
@@ -689,7 +698,8 @@ def test_summary_labels_each_row_with_its_source():
     [
         ("completed", [], "no_extra_usage"),
         ("completed", [{"type": "code_exec"}], "blind_spots"),
-        ("partial", [], "blind_spots"),
+        ("partial", [], "not_analyzed"),
+        ("partial", [{"type": "native_loader"}], "blind_spots"),
         ("unavailable", [], "unavailable"),
         ("failed", [], "unavailable"),
     ],
@@ -1019,8 +1029,9 @@ def test_a_truncated_tree_walk_is_a_blind_spot(tmp_path, monkeypatch):
     for index in range(5):
         (tmp_path / f"data_{index}.txt").write_text("x", encoding="utf-8")
     report = _scan(tmp_path, "x = 1\n")
-    assert {"type": "not_analyzed", "file": None, "line": None, "reason": "budget_exceeded"} in report["blind_spots"]
-    assert scan_note(report) == "blind_spots"
+    assert {"type": "not_analyzed", "file": None, "line": None, "reason": "budget_exceeded"} in report["not_analyzed"]
+    assert report["blind_spots"] == []
+    assert scan_note(report) == "not_analyzed"
 
 
 def test_source_revision_changes_when_non_python_code_is_added(tmp_path):
@@ -1340,7 +1351,8 @@ def test_unreadable_directories_mark_the_inventory_incomplete(tmp_path, monkeypa
 def test_not_analyzed_survives_the_blind_spot_cap(tmp_path, monkeypatch):
     monkeypatch.setattr(capability_analysis, "MAX_BLIND_SPOTS", 2)
     report = _scan(tmp_path, "\n".join(f"eval(x{i})" for i in range(5)) + "\n", **{"ui/panel.tsx": "1"})
-    assert any(spot["type"] == "not_analyzed" for spot in report["blind_spots"])
+    assert len(report["blind_spots"]) == 2
+    assert any(spot["type"] == "not_analyzed" for spot in report["not_analyzed"])
 
 
 def test_cli_only_counts_module_level_sdk_imports_for_decorators(tmp_path):
@@ -1457,7 +1469,7 @@ def test_qualified_or_aliased_getattr_stays_a_blind_spot(tmp_path, source):
 
 def test_nested_vendor_directories_are_not_analyzed(tmp_path):
     report = _scan(tmp_path, "x = 1\n", **{"helpers/vendor/network.py": "import socket\n"})
-    assert {"type": "not_analyzed", "file": "helpers/vendor", "line": None, "reason": "vendor"} in report["blind_spots"]
+    assert {"type": "not_analyzed", "file": "helpers/vendor", "line": None, "reason": "vendor"} in report["not_analyzed"]
 
 
 @pytest.mark.parametrize(
@@ -1627,12 +1639,13 @@ def test_test_named_files_that_ship_are_not_analyzed_blind_spots(tmp_path):
     )
     assert report["status"] == "completed"
     assert report["permissions"] == {}
-    assert [(spot["reason"], spot["file"]) for spot in report["blind_spots"]] == [
+    assert [(spot["reason"], spot["file"]) for spot in report["not_analyzed"]] == [
         ("test_source", "net_test.py"),
         ("test_source", "tests/helper.py"),
         ("vendor", "vendor"),
     ]
-    assert scan_note(report) == "blind_spots"
+    assert report["blind_spots"] == []
+    assert scan_note(report) == "not_analyzed"
     assert report["capabilities"] == []
 
 
@@ -1660,8 +1673,8 @@ def test_unused_declarations_are_only_info_when_part_of_the_plugin_was_not_read(
     declared = {"system.env:read": {"declared": "ask", "findings": [], "basis": "declared_only"}}
     [issue] = compare_declarations(_report(declared, status="partial"))
     assert (issue.severity, issue.code) == ("info", "declared_unused")
-    unread = [{"type": "not_analyzed", "reason": "test_source", "file": "a_test.py", "line": None}]
-    [issue] = compare_declarations(_report(declared, blind_spots=unread))
+    unread = {"type": "not_analyzed", "reason": "test_source", "file": "a_test.py", "line": None}
+    [issue] = compare_declarations({**_report(declared), "not_analyzed": [unread]})
     assert issue.severity == "info"
     [issue] = compare_declarations(_report(declared, blind_spots=[{"type": "code_exec"}]))
     assert issue.severity == "warning"
@@ -1761,15 +1774,17 @@ def test_default_executor_keeps_the_context(tmp_path, call):
     ],
 )
 def test_other_executors_and_threads_still_lose_the_context(tmp_path, source):
-    report = _scan(tmp_path, source)
+    report = _scan(tmp_path, source, developer=True)
     assert report["status"] == "completed"
-    assert report["blind_spots"]
-    assert {spot["type"] for spot in report["blind_spots"]} == {"context_loss"}
+    assert report["context_loss"]
+    assert {spot["type"] for spot in report["context_loss"]} == {"context_loss"}
+    # Developer-only: never a counted blind spot.
+    assert report["blind_spots"] == []
 
 
 def test_process_pool_executor_is_still_a_context_loss_blind_spot(tmp_path):
-    report = _scan(tmp_path, "from concurrent.futures import ProcessPoolExecutor\nProcessPoolExecutor()")
-    assert [spot["type"] for spot in report["blind_spots"]] == ["context_loss"]
+    report = _scan(tmp_path, "from concurrent.futures import ProcessPoolExecutor\nProcessPoolExecutor()", developer=True)
+    assert [spot["type"] for spot in report["context_loss"]] == ["context_loss"]
 
 
 def test_importing_multiprocessing_alone_is_a_weak_hint(tmp_path):
@@ -1880,3 +1895,147 @@ def test_path_excludes_do_not_hide_the_subtree_they_do_not_exclude(tmp_path, exc
     blind = " ".join(message.splitlines()[0] for message in info if "(not scanned" in message.splitlines()[0])
     assert shipped in blind
     assert not any(message.startswith("the code scan found no use beyond") for message in info)
+
+
+# --- blind spots by kind: counted, per-file summary, hints, developer-only ---------------
+
+
+def test_context_loss_is_left_out_of_the_default_report(tmp_path):
+    source = "import threading\nthreading.Thread(target=print).start()\n"
+    report = _scan(tmp_path, source)
+    assert "context_loss" not in report
+    assert report["blind_spots"] == [] and report["blind_spot_files"] == []
+    assert scan_note(report) == "no_extra_usage"
+    assert summarize_permissions(report)["blind_spot_types"] == []
+    developer = _scan(tmp_path, source, developer=True)
+    assert [(spot["type"], spot["line"]) for spot in developer["context_loss"]] == [("context_loss", 2)]
+
+
+def test_cli_still_shows_context_loss_to_the_developer(tmp_path):
+    plugin_dir = _plugin(tmp_path, "import threading\nthreading.Thread(target=print).start()\n", "[permissions]\n")
+    info = _issues(plugin_dir, "info")
+    assert [message for message in info if message.startswith("worker.py:2: ") and "asyncio.to_thread" in message]
+    # Not a counted blind spot, so no blind-spot sentence.
+    assert not [message for message in info if message.startswith("the code scan has known blind spots")]
+
+
+def test_not_analyzed_parts_are_never_counted(tmp_path):
+    report = _scan(tmp_path, "x = 1\n", **{"ui/panel.vue": "<template/>", "tests/test_a.py": "x = 1\n"})
+    assert report["blind_spots"] == [] and report["blind_spot_files"] == []
+    assert {spot["reason"] for spot in report["not_analyzed"]} == {"non_python", "test_source"}
+    summary = summarize_permissions(report)
+    assert summary["blind_spot_types"] == []
+    assert not [row for row in summary["rows"] if row["source"] == "unconfirmed"]
+    # Still no claim that the scan saw everything.
+    assert scan_note(report) == "not_analyzed"
+
+
+@pytest.mark.parametrize(
+    "source,basis",
+    [
+        ("import importlib\nsp = importlib.import_module('subprocess')\nsp.run(['ls'])\n", "resolved_call"),
+        ("from importlib import import_module as im\nim('subprocess').run(['ls'])\n", "resolved_call"),
+        ("import importlib\nimportlib.import_module(name='subprocess').run(['ls'])\n", "resolved_call"),
+        ("__import__('subprocess').run(['ls'])\n", "resolved_call"),
+        ("__import__('subprocess.x').run(['ls'])\n", "resolved_call"),
+        ("import importlib\ngetattr(importlib.import_module('subprocess'), 'run')(['ls'])\n", "resolved_call"),
+        (
+            "import importlib\nclass P:\n    def __init__(self):\n        self.sp = importlib.import_module('subprocess')\n"
+            "    def go(self):\n        self.sp.run(['ls'])\n",
+            "resolved_call",
+        ),
+        ("import importlib\nsp = importlib.import_module('subprocess')\n", "import_only"),
+        ("import importlib\nimportlib.import_module('subprocess')\n", "import_only"),
+    ],
+)
+def test_literal_import_module_is_followed_like_an_import(tmp_path, source, basis):
+    report = _scan(tmp_path, source)
+    assert report["blind_spots"] == []
+    assert _bases(report) == {"system.process:spawn": basis}
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import importlib\nimportlib.import_module(name)\n",
+        "import importlib\nimportlib.import_module('sub' + 'process')\n",
+        "__import__('subprocess', fromlist=['run'])\n",
+        "import builtins\nbuiltins.__import__('subprocess')\n",
+        "import importlib\nimportlib.import_module('not a module')\n",
+    ],
+)
+def test_non_literal_dynamic_imports_stay_blind_spots(tmp_path, source):
+    assert [spot["type"] for spot in _scan(tmp_path, source)["blind_spots"]] == ["dynamic_import"]
+
+
+def test_a_plugin_defined_import_module_is_not_followed(tmp_path):
+    source = "def import_module(x):\n    return x\nsp = import_module('subprocess')\nsp.run(['ls'])\n"
+    assert "system.process:spawn" not in _scan(tmp_path, source)["permissions"]
+
+
+def test_counted_blind_spots_are_summed_up_per_file_without_lines(tmp_path, monkeypatch):
+    monkeypatch.setattr(capability_analysis, "MAX_BLIND_SPOTS", 2)
+    report = _scan(
+        tmp_path,
+        "eval(a)\neval(b)\nimport ctypes\nctypes.CDLL(p)\nimport threading\nthreading.Thread().start()\n",
+        **{"b.py": "exec(c)\n", "ui/x.ts": "1"},
+    )
+    # The rows (with lines) are capped; the per-file counts are not.
+    assert len(report["blind_spots"]) == 2
+    assert report["blind_spot_files"] == [
+        {"file": "b.py", "count": 1, "types": {"code_exec": 1}, "high_risk": False},
+        {"file": "main.py", "count": 3, "types": {"code_exec": 2, "native_loader": 1}, "high_risk": True},
+    ]
+
+
+def test_native_loader_is_marked_high_risk(tmp_path):
+    report = _scan(tmp_path, "import ctypes\nctypes.CDLL(p)\neval(x)\n")
+    assert {(spot["type"], spot["high_risk"]) for spot in report["blind_spots"]} == {
+        ("native_loader", True),
+        ("code_exec", False),
+    }
+    assert capability_analysis.HIGH_RISK_BLIND_SPOT_TYPES == frozenset({"native_loader"})
+
+
+def test_environment_and_package_directories_are_listed_as_not_analyzed(tmp_path):
+    report = _scan(
+        tmp_path, "x = 1\n",
+        **{".venv/lib/a.py": "x = 1\n", "venv/b.py": "x = 1\n", "web/node_modules/c.js": "1", ".git/d": "x"},
+    )
+    assert [(spot["reason"], spot["file"]) for spot in report["not_analyzed"]] == [
+        ("skipped_dir", ".venv"),
+        ("skipped_dir", "venv"),
+        ("skipped_dir", "web/node_modules"),
+    ]
+
+
+def test_a_cut_short_not_analyzed_list_says_how_many_were_left_out(tmp_path, monkeypatch):
+    monkeypatch.setattr(capability_analysis, "_MAX_NON_PYTHON_REPORTED", 2)
+    report = _scan(tmp_path, "x = 1\n", **{f"p{index}/vendor/a.py": "x = 1\n" for index in range(5)})
+    vendor = [spot for spot in report["not_analyzed"] if spot["reason"] == "vendor"]
+    assert [spot["file"] for spot in vendor] == ["p0/vendor", "p1/vendor", None]
+    assert vendor[-1]["omitted"] == 3
+    plugin_dir = _plugin(tmp_path / "cli", "x = 1\n", "[permissions]\n")
+    for index in range(5):
+        (plugin_dir / f"p{index}" / "vendor").mkdir(parents=True)
+    [message] = [m for m in _issues(plugin_dir, "info") if "(not scanned" in m.splitlines()[0]]
+    assert message.startswith("p0/vendor, p1/vendor, +3: ")
+
+
+def test_unscanned_rows_without_a_file_do_not_hide_each_other(tmp_path, monkeypatch):
+    monkeypatch.setattr(capability_analysis, "_MAX_TREE_ENTRIES", 3)
+    for index in range(5):
+        (tmp_path / f"data_{index}.txt").write_text("x", encoding="utf-8")
+    sources = capability_analysis.read_capability_sources(tmp_path)
+    sources.skipped.append({"reason": "unreadable", "file": None})
+    report = analyze_capabilities(tmp_path, sources=sources)
+    assert {spot["reason"] for spot in report["not_analyzed"] if spot["file"] is None} >= {"budget_exceeded", "unreadable"}
+
+
+def test_legacy_report_fields_keep_their_shape(tmp_path):
+    report = _scan(tmp_path, "from plugin.sdk.plugin import NekoPluginBase\neval(x)\n")
+    for key in ("status", "capabilities", "evidence", "warnings", "files_analyzed", "permissions", "blind_spots"):
+        assert key in report
+    [spot] = report["blind_spots"]
+    assert {"type", "file", "line"} <= set(spot)
+    assert (spot["type"], spot["file"], spot["line"]) == ("code_exec", "main.py", 2)

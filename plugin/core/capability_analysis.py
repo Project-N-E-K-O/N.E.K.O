@@ -28,7 +28,10 @@ CAPABILITIES = tuple(sorted(spec.legacy_name for spec in PERMISSIONS.values() if
 # 5: permission ids, declarations, blind spots; legacy capabilities unchanged.
 # 6: run_in_executor(None, ...) is no longer a context_loss blind spot.
 # 7: system.network:listen (servers moved out of system.network:connect).
-ANALYZER_VERSION = 7
+# 8: blind spots split into user-facing (blind_spots, blind_spot_files),
+#    not_analyzed hints and developer-only context_loss; literal
+#    import_module("x") followed like an import.
+ANALYZER_VERSION = 8
 MAX_FILES = 500
 MAX_SOURCE_BYTES = 10 * 1024 * 1024
 MAX_FILE_BYTES = 1024 * 1024
@@ -238,6 +241,60 @@ def _getattr_reference(node: ast.AST, bindings=None) -> tuple[ast.AST, str] | No
     return None
 
 
+_MODULE_NAME = re.compile(r"\.*[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*|\.+")
+
+
+def _literal_import(node: ast.AST, bindings) -> str | None:
+    """Module a literal dynamic import returns, followed like an import.
+
+    importlib.import_module("x") (any binding of it, package argument
+    ignored as a relative name is kept relative) returns x; the bare builtin
+    __import__("x.y") with no other argument returns the top-level x. Any
+    other form, a non-literal name or a rebound import function, is None
+    and stays a dynamic_import blind spot.
+    """
+    if not isinstance(node, ast.Call) or not isinstance(node.func, (ast.Name, ast.Attribute)):
+        return None
+    func = node.func
+    resolved, external, bound = _resolve_with_origin(_name(func), bindings)
+    if bound and external and resolved == "importlib.import_module":
+        if any(item.arg not in ("name", "package") for item in node.keywords) or len(node.args) > 2:
+            return None
+        module = _literal_string(_call_argument(node, 0, "name"))
+    elif isinstance(func, ast.Name) and func.id == "__import__" and bound is None:
+        if len(node.args) != 1 or node.keywords:
+            return None
+        module = _literal_string(node.args[0])
+        if module is not None and not module.startswith("."):
+            module = module.split(".", 1)[0]
+    else:
+        return None
+    if module is None or not _MODULE_NAME.fullmatch(module):
+        return None
+    return module
+
+
+def _resolve_literal_imports(raw_node: ast.AST, bindings) -> tuple[str, bool, bool] | None:
+    """Resolve an attribute / call chain rooted in a literal dynamic import
+    (importlib.import_module("os").system()) as if the module were imported."""
+    parts = []
+    node = raw_node
+    while isinstance(node, (ast.Attribute, ast.Call)):
+        module = _literal_import(node, bindings)
+        if module is not None:
+            resolved = module + "".join(reversed(parts))
+            if len(resolved) > MAX_REFERENCE_LENGTH:
+                raise _AnalysisBudgetExceeded
+            return resolved, not _sdk_module(module), True
+        if isinstance(node, ast.Attribute):
+            parts.extend((node.attr, "."))
+            node = node.value
+        else:
+            parts.append("()")
+            node = node.func
+    return None
+
+
 @dataclass(frozen=True, eq=False)
 class _Reference:
     """One resolved reference, with what the permission scan needs on top."""
@@ -266,6 +323,9 @@ class _Reference:
     # (tok = os.environ.get()), whose own line is already the evidence. Other
     # stored call results (p = Path(); p.write_text()) still count.
     via_call_result: bool = False
+    # A literal dynamic import (importlib.import_module("x")): the module,
+    # reported like an import; the call itself is not a blind spot.
+    imported: str = ""
 
 
 def _resolved_references(tree, walker: _AnalysisWalker):
@@ -536,6 +596,12 @@ def _propagate_assignments(assignments, bindings, walker):
         resolved_bindings = {}
         for key, node in assignments:
             walker.check()
+            literal = _resolve_literal_imports(node, bindings)
+            if literal is not None:
+                binding = literal[0], literal[1]
+                resolved_bindings[key] = binding
+                bindings[key] = binding
+                continue
             value = _name(node)
             if not value or _references_binding(value, key):
                 continue
@@ -597,7 +663,9 @@ def _emit_references(nodes, bindings, scope, walker, function=""):
             if getattr_reference is not None:
                 receiver, attribute = getattr_reference
                 raw = _name(receiver)
-                resolved, external, bound = _resolve_with_origin(raw, bindings)
+                resolved, external, bound = _resolve_literal_imports(receiver, bindings) or (
+                    _resolve_with_origin(raw, bindings)
+                )
                 # getattr(x, "f") only retrieves f; getattr(x, "f")() calls it.
                 yield _Reference(
                     node, resolved + "." + attribute, external, bound, function,
@@ -605,16 +673,26 @@ def _emit_references(nodes, bindings, scope, walker, function=""):
                     raw_root=_root_name(raw),
                 )
             else:
-                raw = _name(node.func if isinstance(node, ast.Call) else node)
-                resolved, external, bound = _resolve_with_origin(raw, bindings)
+                target = node.func if isinstance(node, ast.Call) else node
+                raw = _name(target)
                 raw_root = _root_name(raw)
+                literal = _resolve_literal_imports(target, bindings)
+                if literal is not None:
+                    resolved, external, bound = literal
+                    via_call_result = False
+                else:
+                    resolved, external, bound = _resolve_with_origin(raw, bindings)
+                    via_call_result = (
+                        bool(bound)
+                        and raw_root != raw
+                        and _is_data_read_result(_resolve(raw_root, bindings)[0])
+                    )
                 yield _Reference(
                     node, resolved, external, bound, function,
                     isinstance(node, ast.Call),
                     raw_root=raw_root,
-                    via_call_result=bool(bound)
-                    and raw_root != raw
-                    and _is_data_read_result(_resolve(raw_root, bindings)[0]),
+                    via_call_result=via_call_result,
+                    imported=_literal_import(node, bindings) or "",
                 )
         elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
             # A bare name bound to a data attribute (from os import environ)
@@ -682,6 +760,17 @@ BLIND_SPOT_TYPES = (
     "context_loss",
     "not_analyzed",
 )
+# Blind spots that are counted and shown to users. context_loss is only for
+# developers (neko-plugin check); not_analyzed is a hint, never counted.
+COUNTED_BLIND_SPOT_TYPES = (
+    "dynamic_import",
+    "reflective_access",
+    "code_exec",
+    "native_loader",
+)
+# Minimal high-risk marker for the permission panel. A shared risk-tier table
+# for permissions and blind spots is planned to replace this set.
+HIGH_RISK_BLIND_SPOT_TYPES = frozenset({"native_loader"})
 
 _MODELS = "plugin_sdk.models:invoke"
 _NETWORK = "system.network:connect"
@@ -946,6 +1035,9 @@ _NOT_ANALYZED_WARNINGS = frozenset(
 # Non-Python code the scan does not read (hosted UI scripts and the like).
 _NON_PYTHON_CODE_SUFFIXES = frozenset({".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".vue"})
 _NON_PYTHON_SKIPPED_DIRS = frozenset({".git", "node_modules", "__pycache__", ".venv", "venv", "vendor"})
+# Skipped directories that may hold code the plugin ships or runs; listed as
+# not analyzed. vendor/ has its own reason; .git and __pycache__ are not code.
+_LISTED_SKIPPED_DIRS = frozenset({".venv", "venv", "node_modules"})
 # Files and directories visited; generous so asset-heavy plugins finish.
 _MAX_TREE_ENTRIES = 20000
 _MAX_NON_PYTHON_REPORTED = 20
@@ -1069,9 +1161,14 @@ def _reference_permissions(reference: _Reference) -> list[tuple[str, str, dict]]
     return results
 
 
-def _import_hints(node: ast.Import | ast.ImportFrom) -> dict[str, set[str]]:
-    """Permission -> the _IMPORT_HINTS prefixes the import matched."""
-    if isinstance(node, ast.ImportFrom):
+def _import_hints(node: ast.Import | ast.ImportFrom | str) -> dict[str, set[str]]:
+    """Permission -> the _IMPORT_HINTS prefixes the import matched.
+
+    A string is a module a literal dynamic import returns.
+    """
+    if isinstance(node, str):
+        modules = [node]
+    elif isinstance(node, ast.ImportFrom):
         # The imported name may be a submodule (from http import server).
         modules = (
             [node.module, *(f"{node.module}.{item.name}" for item in node.names)]
@@ -1107,10 +1204,11 @@ def _reference_blind_spot(reference: _Reference) -> str | None:
     name = None if reference.via_call_result else _origin_name(reference)
     method = reference.method
     if name is not None:
-        # Even a literal target is not followed by the scan, so it is a blind
-        # spot either way; so is reaching modules through sys.modules.
+        # A non-literal target is not followed by the scan, so it is a blind
+        # spot; so is reaching modules through sys.modules.
         if reference.is_call and name in _DYNAMIC_IMPORT_CALLS:
-            return "dynamic_import"
+            # A literal module is followed like an import (see _literal_import).
+            return None if reference.imported else "dynamic_import"
         # Reaching modules through sys.modules (lookups, copies, views,
         # aliases) is dynamic; only a membership test ("x" in sys.modules) is not.
         if _matches(name, ("sys.modules",)) and not reference.membership:
@@ -1181,7 +1279,8 @@ def skipped_inventory(
     stop: Event | None = None,
     include: Callable[[Path, bool], bool] | None = None,
 ) -> dict:
-    """What the Python scan does not read: vendor/, non-Python code files and
+    """What the Python scan does not read: vendor/, environment and package
+    directories (.venv/, venv/, node_modules/), non-Python code files and
     test-named Python files (tests/, test_*.py, *_test.py, conftest.py).
 
     Bounded by _MAX_TREE_ENTRIES; ``truncated`` tells the walk stopped early.
@@ -1190,7 +1289,8 @@ def skipped_inventory(
     prunes directories it rejects before they count toward the bound.
     """
     inventory: dict = {
-        "vendor": [], "non_python": [], "test_source": [], "truncated": False, "unreadable": False,
+        "vendor": [], "skipped_dir": [], "non_python": [], "test_source": [],
+        "truncated": False, "unreadable": False,
     }
     try:
         visited = 0
@@ -1205,6 +1305,11 @@ def skipped_inventory(
             # The Python scan skips vendor/ at any depth; list each one.
             inventory["vendor"].extend(
                 (base / name).relative_to(root).as_posix() for name in sorted(directories) if name == "vendor"
+            )
+            inventory["skipped_dir"].extend(
+                (base / name).relative_to(root).as_posix()
+                for name in sorted(directories)
+                if name in _LISTED_SKIPPED_DIRS
             )
             visited += len(directories)
             if visited > _MAX_TREE_ENTRIES:
@@ -1237,18 +1342,26 @@ def skipped_inventory(
 def _skipped_parts(
     root: Path, stop: Event | None, include: Callable[[Path, bool], bool] | None = None
 ) -> list[dict]:
-    """Blind-spot rows for vendor/, non-Python code and test-named files, bounded.
+    """not_analyzed rows for vendor/, skipped environment and package
+    directories, non-Python code and test-named files, bounded per reason;
+    a reason cut short gets one more row with ``file`` None and ``omitted``.
 
     ``include`` drops paths the caller does not compare (see
     read_capability_sources).
     """
     inventory = skipped_inventory(root, stop, include)
     skipped: list[dict] = []
-    for reason, is_dir in (("vendor", True), ("non_python", False), ("test_source", False)):
+    for reason, is_dir in (
+        ("vendor", True), ("skipped_dir", True), ("non_python", False), ("test_source", False),
+    ):
         files = inventory[reason]
         if include is not None:
             files = [relative for relative in files if include(Path(relative), is_dir)]
         skipped.extend({"reason": reason, "file": relative} for relative in files[:_MAX_NON_PYTHON_REPORTED])
+        if len(files) > _MAX_NON_PYTHON_REPORTED:
+            skipped.append(
+                {"reason": reason, "file": None, "omitted": len(files) - _MAX_NON_PYTHON_REPORTED}
+            )
     if inventory["truncated"]:
         skipped.append({"reason": "budget_exceeded", "file": None})
     if inventory["unreadable"]:
@@ -1307,7 +1420,15 @@ class _PermissionCollector:
         self.findings: dict[str, dict[tuple[str, int], dict]] = {}
         self.import_hints: dict[str, dict] = {}
         self.import_hint_prefixes: dict[str, set[str]] = {}
+        # Counted blind spots, context_loss and not_analyzed hints are kept
+        # apart; each per-reference kind has its own cap.
         self.blind_spots: dict[tuple[str, str | None, int | None], dict] = {}
+        self.context_loss: dict[tuple[str, str | None, int | None], dict] = {}
+        self.not_analyzed: dict[tuple[str | None, str | None], dict] = {}
+        # file -> blind-spot type -> count; not capped, so the per-file
+        # summary stays exact when the row list is cut at MAX_BLIND_SPOTS.
+        self.file_counts: dict[str, dict[str, int]] = {}
+        self._counted: set[tuple[str, str | None, int | None]] = set()
 
     def add_finding(self, permission: str, basis: str, row: dict) -> None:
         rows = self.findings.setdefault(permission, {})
@@ -1325,30 +1446,51 @@ class _PermissionCollector:
             rows[key] = {**row, "basis": basis}
 
     def add_blind_spot(self, kind: str, file: str | None, line: int | None, **extra) -> None:
-        key = (kind, file, line)
-        # Unscanned parts are always kept; per-reference spots share the cap.
-        if key in self.blind_spots or (kind != "not_analyzed" and len(self.blind_spots) >= MAX_BLIND_SPOTS):
+        if kind == "not_analyzed":
+            # Unscanned parts are always kept, one row per file and reason.
+            self.not_analyzed.setdefault(
+                (file, extra.get("reason")), {"type": kind, "file": file, "line": None, **extra}
+            )
             return
-        self.blind_spots[key] = {"type": kind, "file": file, "line": line, **extra}
+        key = (kind, file, line)
+        if kind == "context_loss":
+            if key not in self.context_loss and len(self.context_loss) < MAX_BLIND_SPOTS:
+                self.context_loss[key] = {"type": kind, "file": file, "line": line, **extra}
+            return
+        if key not in self._counted:
+            self._counted.add(key)
+            counts = self.file_counts.setdefault(file or "", {})
+            counts[kind] = counts.get(kind, 0) + 1
+        if key in self.blind_spots or len(self.blind_spots) >= MAX_BLIND_SPOTS:
+            return
+        self.blind_spots[key] = {
+            "type": kind, "file": file, "line": line, **extra,
+            "high_risk": kind in HIGH_RISK_BLIND_SPOT_TYPES,
+        }
+
+    def _add_import_hints(self, relative: str, reference: _Reference, hints: dict[str, set[str]]) -> None:
+        for permission, prefixes in hints.items():
+            self.import_hint_prefixes.setdefault(permission, set()).update(prefixes)
+            self.import_hints.setdefault(
+                permission,
+                {
+                    "file": relative,
+                    "line": reference.node.lineno,
+                    "function": reference.function,
+                    "method": "import",
+                    "basis": BASIS_IMPORT_ONLY,
+                },
+            )
 
     def scan(self, relative: str, reference: _Reference) -> None:
         node = reference.node
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             if isinstance(node, ast.ImportFrom) and any(item.name == "*" for item in node.names):
                 self.add_blind_spot("dynamic_import", relative, node.lineno, method="import *")
-            for permission, prefixes in _import_hints(node).items():
-                self.import_hint_prefixes.setdefault(permission, set()).update(prefixes)
-                self.import_hints.setdefault(
-                    permission,
-                    {
-                        "file": relative,
-                        "line": node.lineno,
-                        "function": reference.function,
-                        "method": "import",
-                        "basis": BASIS_IMPORT_ONLY,
-                    },
-                )
+            self._add_import_hints(relative, reference, _import_hints(node))
             return
+        if reference.imported:
+            self._add_import_hints(relative, reference, _import_hints(reference.imported))
         row = {
             "file": relative,
             "line": node.lineno,
@@ -1361,13 +1503,14 @@ class _PermissionCollector:
         if kind:
             self.add_blind_spot(kind, relative, node.lineno, method=reference.method)
 
-    def report(self, declarations: PermissionDeclarations, warnings, skipped) -> tuple[dict, list[dict]]:
+    def report(self, declarations: PermissionDeclarations, warnings, skipped) -> tuple[dict, dict]:
         for warning in warnings:
             code = warning.get("code")
             if code in _NOT_ANALYZED_WARNINGS:
                 self.add_blind_spot("not_analyzed", warning.get("file"), None, reason=code)
         for item in skipped:
-            self.add_blind_spot("not_analyzed", item.get("file"), None, reason=item["reason"])
+            extra = {key: value for key, value in item.items() if key not in ("file", "reason")}
+            self.add_blind_spot("not_analyzed", item.get("file"), None, reason=item["reason"], **extra)
         for permission, row in self.import_hints.items():
             if permission in self.findings:
                 continue
@@ -1392,11 +1535,34 @@ class _PermissionCollector:
                 "findings": rows,
                 "basis": basis,
             }
-        blind_spots = sorted(
-            self.blind_spots.values(),
-            key=lambda row: (row["file"] or "", row["line"] or 0, row["type"]),
-        )
-        return permissions, blind_spots
+        def ordered(rows):
+            return sorted(rows, key=lambda row: (row["file"] or "", row["line"] or 0, row["type"]))
+
+        files = []
+        for file in sorted(self.file_counts):
+            types = {
+                kind: self.file_counts[file][kind]
+                for kind in COUNTED_BLIND_SPOT_TYPES
+                if kind in self.file_counts[file]
+            }
+            files.append(
+                {
+                    "file": file,
+                    "count": sum(types.values()),
+                    "types": types,
+                    "high_risk": any(kind in HIGH_RISK_BLIND_SPOT_TYPES for kind in types),
+                }
+            )
+        spots = {
+            "blind_spots": ordered(self.blind_spots.values()),
+            "blind_spot_files": files,
+            "not_analyzed": sorted(
+                self.not_analyzed.values(),
+                key=lambda row: (row["file"] is None, row["file"] or "", row.get("reason") or ""),
+            ),
+            "context_loss": ordered(self.context_loss.values()),
+        }
+        return permissions, spots
 
 
 def analyze_capabilities(
@@ -1405,7 +1571,17 @@ def analyze_capabilities(
     stop: Event | None = None,
     sources: CapabilitySources | None = None,
     declarations: PermissionDeclarations | None = None,
+    include_context_loss: bool = False,
 ) -> dict:
+    """Static permission and capability report for one plugin directory.
+
+    ``blind_spots`` lists the counted blind spots with their lines (the
+    evidence for developer details); ``blind_spot_files`` sums them up per
+    file without lines, for user-facing views. ``not_analyzed`` lists parts
+    the scan did not read, a hint that is never counted. ``context_loss``
+    (threads, pools, loops the plugin makes) is only added with
+    ``include_context_loss``, for ``neko-plugin check``.
+    """
     walker = _AnalysisWalker(stop)
     sources = sources if sources is not None else read_capability_sources(root, stop=stop)
     if declarations is None:
@@ -1449,8 +1625,8 @@ def analyze_capabilities(
     except (_AnalysisBudgetExceeded, RecursionError):
         warnings.append({"code": "budget_exceeded"})
     status = "partial" if warnings else "completed" if count else "unavailable"
-    permissions, blind_spots = collector.report(declarations, warnings, sources.skipped)
-    return {
+    permissions, spots = collector.report(declarations, warnings, sources.skipped)
+    report = {
         "status": status,
         "capabilities": sorted(capabilities),
         "evidence": evidence,
@@ -1460,8 +1636,13 @@ def analyze_capabilities(
         "declarations": declarations.status,
         "invalid_declarations": sorted(declarations.invalid),
         "permissions": permissions,
-        "blind_spots": blind_spots,
+        "blind_spots": spots["blind_spots"],
+        "blind_spot_files": spots["blind_spot_files"],
+        "not_analyzed": spots["not_analyzed"],
     }
+    if include_context_loss:
+        report["context_loss"] = spots["context_loss"]
+    return report
 
 
 def compare_declarations(report: dict) -> list[PermissionIssue]:
@@ -1480,9 +1661,7 @@ def compare_declarations(report: dict) -> list[PermissionIssue]:
         return []
     issues: list[PermissionIssue] = []
     status = report.get("status")
-    unread = status == "partial" or any(
-        spot.get("type") == "not_analyzed" for spot in report.get("blind_spots") or []
-    )
+    unread = status == "partial" or bool(report.get("not_analyzed"))
     # Ids whose entry is itself invalid already have an error of their own.
     invalid = set(report.get("invalid_declarations") or [])
     for permission, item in (report.get("permissions") or {}).items():
@@ -1522,15 +1701,19 @@ def compare_declarations(report: dict) -> list[PermissionIssue]:
 def scan_note(report: dict) -> str:
     """Which user-facing scan sentence applies: never a safety claim.
 
-    "no_extra_usage": completed, no blind spots and nothing beyond the
-    declarations; "completed": the same but with undeclared findings;
-    "blind_spots": known blind spots or partial; "unavailable" otherwise.
+    "no_extra_usage": completed, no blind spots, every part read and nothing
+    beyond the declarations; "completed": the same but with undeclared
+    findings; "blind_spots": counted blind spots; "not_analyzed": none of
+    those, but the scan was partial or skipped parts (a hint, no sentence);
+    "unavailable" otherwise. context_loss never changes the note.
     """
     status = report.get("status")
     if status not in ("completed", "partial"):
         return "unavailable"
-    if report.get("blind_spots") or status == "partial":
+    if report.get("blind_spots"):
         return "blind_spots"
+    if status == "partial" or report.get("not_analyzed"):
+        return "not_analyzed"
     undeclared = any(
         item.get("findings") and item.get("declared") is None
         for item in (report.get("permissions") or {}).values()
@@ -1544,8 +1727,8 @@ def summarize_permissions(report: dict) -> dict:
     """Summary rows, each labelled with where it comes from.
 
     ``declared`` rows are the author's own statement, ``detected`` rows come
-    from the scan only, ``unconfirmed`` rows are blind-spot types the scan
-    could not see through. The three sources are never merged into one row.
+    from the scan only, ``unconfirmed`` rows are counted blind-spot types the
+    scan could not see through (not context_loss or not_analyzed). The three sources are never merged into one row.
     """
     declared: list[dict] = []
     detected: list[dict] = []
@@ -1568,6 +1751,9 @@ def summarize_permissions(report: dict) -> dict:
                 }
             )
     rows = declared + detected
-    blind_types = sorted({row["type"] for row in report.get("blind_spots") or []}, key=BLIND_SPOT_TYPES.index)
+    blind_types = sorted(
+        {row["type"] for row in report.get("blind_spots") or [] if row.get("type") in COUNTED_BLIND_SPOT_TYPES},
+        key=COUNTED_BLIND_SPOT_TYPES.index,
+    )
     rows.extend({"type": kind, "source": "unconfirmed"} for kind in blind_types)
     return {"rows": rows, "note": scan_note(report), "blind_spot_types": blind_types}
