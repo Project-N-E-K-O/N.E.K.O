@@ -282,8 +282,10 @@ describe('a familiar up close', () => {
     const asking = card({ state: 'waiting_user', commission: { id: 'c1', title: 'Book the train', status: 'waiting_user', started_at: 0, ask: { id: 'q3', kind: 'questions', questions } } })
     const { container } = await show([asking])
     const lines = [...container.querySelectorAll('[data-testid="familiar-asked"]')].map(line => line.textContent)
-    expect(lines).toEqual(['1. Which day? (Friday / Saturday)', '2. Window seat?'])
-    // Answered in words, like a question that is one.
+    expect(lines).toEqual(['1. Which day?', '2. Window seat?'])
+    // What it offers is there to press, said once: not printed into the question as well.
+    expect([...container.querySelectorAll('[data-option]')].map(option => option.getAttribute('data-option'))).toEqual(['Friday', 'Saturday'])
+    // And it can be answered in words, like a question that is one.
     expect(byTest('familiar-reply')).toBeTruthy()
   })
 

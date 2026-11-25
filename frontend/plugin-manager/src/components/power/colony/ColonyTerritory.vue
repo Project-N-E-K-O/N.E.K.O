@@ -60,10 +60,16 @@
       :style="{ ...ASK_SPOT, left: `${at(member.id).x * 100}%`, top: `${at(member.id).y * 100}%` }" :data-ask-of="member.id"
     >
       <AskBubble
+        v-if="cardOpen(member.id)"
         :ask="member.ask!" :name="member.name" :busy="answering?.[member.commission ?? ''] ?? ''" :error="failed?.[member.commission ?? ''] ?? ''"
-        :style="{ bottom: member.leader ? '52px' : '44px' }"
+        :below="below(member.id)" :style="below(member.id) ? { top: '40px' } : { bottom: member.leader ? '52px' : '44px' }"
         @answer="emit('answer', member.id, $event)" @more="emit('ask', member.id)"
       />
+      <!-- Several wait at once: their cards would cover one another, so each is a label until it is pressed. -->
+      <button
+        v-else type="button" :style="{ ...ASK_LABEL, bottom: member.leader ? '52px' : '44px' }" data-testid="ask-label"
+        :aria-label="t('power.colony.askLabel', { name: member.name })" @pointerdown.stop @click.stop="opened = member.id"
+      >{{ t('power.colony.waitingBubble') }}</button>
     </div>
   </section>
 </template>
@@ -194,6 +200,15 @@ const MERGING = new Set<CatLook>(['landing', 'resolving'])
 // would work beside, whose name a bubble would cover. Styled here and not in the stylesheet, as the teams are.
 // Where a question is shown: a point at the middle of the familiar, the card standing on it. Above the others.
 const ASK_SPOT = { position: 'absolute', width: '0', height: '0', zIndex: 3 } as const
+// How many cards a territory shows at once before they are folded into labels; and how near the top
+// (in pixels) a familiar stands for its card to go below it.
+const CARDS_AT_ONCE = 2
+const CARD_ROOM = 150
+const ASK_LABEL = {
+  position: 'absolute', left: '50%', transform: 'translateX(-50%)', padding: '0 8px', font: 'inherit', fontSize: '11px', fontWeight: '600',
+  lineHeight: '1.6', whiteSpace: 'nowrap', cursor: 'pointer', color: '#fff', border: '1px solid var(--el-color-warning)',
+  borderRadius: '9px', background: 'var(--el-color-warning)',
+} as const
 const UNBORN = { cursor: 'pointer' } as const
 const UNBORN_FIGURE = { opacity: 0.45, filter: 'grayscale(1)' } as const
 const UNBORN_TAG = { borderStyle: 'dashed' } as const
@@ -226,6 +241,10 @@ const heldLinks = computed(() => {
   return [...related].filter(other => here.has(other))
 })
 
+// The one whose card is open while several wait; '' for none.
+const opened = ref('')
+const cardOpen = (id: string) => asking.value.length <= CARDS_AT_ONCE || opened.value === id
+const below = (id: string) => at(id).y * size.value.height < CARD_ROOM
 function stateWord(look: CatLook): string {
   const key = `power.home.states.${look}`
   return te(key) ? t(key) : look

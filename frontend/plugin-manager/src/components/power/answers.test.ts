@@ -275,6 +275,34 @@ describe('where the cards are shown', () => {
     expect(opened).toEqual(['s1'])
   })
 
+  it('folds the cards into labels when several wait at once, and puts one near the top below its familiar', async () => {
+    const members = ['s1', 's2', 's3'].map((id, index) => member({ id, name: id, ask: permission({ id: `q${index}` }), commission: `c${index}` }))
+    const { container, state } = await mount(ColonyTerritory, { territory: { key: 'project:blog', name: 'blog', loose: false, members } })
+    await flush()
+    // Three cards would cover one another: each is a label, opened by pressing it, one at a time.
+    expect(container.querySelectorAll('[data-ask-bubble]').length).toBe(0)
+    expect(container.querySelectorAll('[data-testid="ask-label"]').length).toBe(3)
+    await press(container.querySelector('[data-ask-of="s2"] [data-testid="ask-label"]'))
+    // The card is loaded when the first one is shown.
+    await vi.dynamicImportSettled()
+    await flush()
+    expect(container.querySelector('[data-ask-of="s2"] [data-ask-bubble]')).toBeTruthy()
+    await press(container.querySelector('[data-ask-of="s3"] [data-testid="ask-label"]'))
+    expect([...container.querySelectorAll('[data-ask-bubble]')].map(card => card.closest('[data-ask-of]')?.getAttribute('data-ask-of'))).toEqual(['s3'])
+    // Two fit: both are shown.
+    state.props = { territory: { key: 'project:blog', name: 'blog', loose: false, members: members.slice(0, 2) } }
+    await flush()
+    expect(container.querySelectorAll('[data-ask-bubble]').length).toBe(2)
+    expect(container.querySelectorAll('[data-testid="ask-label"]').length).toBe(0)
+    // Where the familiar stands decides on which side of it the card is.
+    // Near the top (within what a card takes up, 150 pixels) it goes below; the two here stand apart in height.
+    const height = parseFloat((container.querySelector('[data-territory]') as HTMLElement).style.height)
+    const sides = [...container.querySelectorAll('[data-ask-of]')].map(spot =>
+      [(parseFloat((spot as HTMLElement).style.top) / 100) * height < 150, spot.querySelector('[data-ask-bubble]')!.classList.contains('below')])
+    expect(sides.every(([high, under]) => high === under)).toBe(true)
+    expect(new Set(sides.map(([, under]) => under)).size).toBeGreaterThanOrEqual(1)
+  })
+
   it('answers in the card of the board, where pressing the card itself still opens the familiar', async () => {
     const card = {
       id: 's1', name: 'Tabby', preset: 'worker', avatar: 'worker', label: '', title: '', duty: '', doing: '', state: 'waiting_user', leader: false,

@@ -1,7 +1,7 @@
 <template>
   <!-- Above the head of a familiar that waits for the user: what it asks in a line or two, answered from here. -->
   <div
-    class="ask-bubble" :data-ask-bubble="ask.id ?? ''" :data-shape="shape" role="group" :aria-label="t('power.colony.askLabel', { name })"
+    class="ask-bubble" :class="{ below }" :data-ask-bubble="ask.id ?? ''" :data-shape="shape" role="group" :aria-label="t('power.colony.askLabel', { name })"
     @pointerdown.stop @pointerup.stop @keydown.stop
   >
     <p class="line" :title="whole" data-testid="bubble-asked">{{ line }}</p>
@@ -50,7 +50,8 @@ import type { GivenAnswer } from '../ask'
  * would run shown whole, an approval that holds from now on, questions with much to pick from)
  * is behind "more", where whoever shows this opens the whole question.
  */
-const props = defineProps<{ ask: BoardAsk; name: string; busy: string; error: string }>()
+/** `below`: it stands under the familiar and not above it (one that stands near the top, where a card above would be cut off). */
+const props = defineProps<{ ask: BoardAsk; name: string; busy: string; error: string; below?: boolean }>()
 const emit = defineEmits<{ answer: [given: GivenAnswer]; more: [] }>()
 const { t, te } = useI18n()
 
@@ -104,6 +105,8 @@ onBeforeUnmount(() => { if (settled) clearTimeout(settled) })
 <style scoped>
 .ask-bubble { position: absolute; left: 50%; bottom: 0; transform: translateX(-50%); width: 216px; padding: 6px 8px; display: flex; flex-direction: column; gap: 5px; font-size: 12px; line-height: 1.45; text-align: left; cursor: default; user-select: text; border: 1.5px solid var(--el-color-warning); border-radius: 10px; background: var(--el-bg-color); box-shadow: 0 4px 12px rgb(0 0 0 / 12%); }
 .ask-bubble::after { content: ''; position: absolute; left: 50%; bottom: -6px; width: 9px; height: 9px; transform: translateX(-50%) rotate(45deg); background: var(--el-bg-color); border-right: 1.5px solid var(--el-color-warning); border-bottom: 1.5px solid var(--el-color-warning); }
+.ask-bubble.below { bottom: auto; top: 0; }
+.ask-bubble.below::after { bottom: auto; top: -6px; border: 0; border-left: 1.5px solid var(--el-color-warning); border-top: 1.5px solid var(--el-color-warning); }
 .line { margin: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
 .picks { display: flex; flex-wrap: wrap; gap: 4px; }
 .pick { max-width: 100%; padding: 2px 8px; font: inherit; font-size: 11px; line-height: 1.6; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--el-color-primary); border: 1px solid var(--el-color-primary); border-radius: 6px; background: var(--el-bg-color); }
