@@ -192,10 +192,14 @@
     }
 
     async function chooseTier(plan, tier, model) {
-        const owner = state.tiers[tier] && state.tiers[tier].claimed_by;
+        const info = state.tiers[tier] || {};
+        // Ticked under another plan, on or off: moving it takes it away from there.
+        const owner = info.assigned_to || info.claimed_by;
         if (model && owner && owner !== plan.id) {
-            const question = t('moveConfirm', '{{feature}} is taken over by {{from}} now. Let {{to}} take it over instead?',
-                { feature: tierLabel(tier), from: planName(owner), to: planName(plan.id) });
+            const vars = { feature: tierLabel(tier), from: planName(owner), to: planName(plan.id) };
+            const question = entryOf(owner).enabled
+                ? t('moveConfirm', '{{feature}} is taken over by {{from}} now. Let {{to}} take it over instead?', vars)
+                : t('moveConfirmOff', '{{feature}} is ticked under {{from}} (that subscription is off). Let {{to}} take it over instead?', vars);
             const confirmed = typeof window.showConfirm === 'function'
                 ? await window.showConfirm(question, t('title', 'Subscriptions & plans'))
                 : window.confirm(question);
@@ -240,8 +244,10 @@
                     }
                 }
                 if (!model) {
-                    checkbox.checked = false;
                     say(plan.id, t('error.no_model', 'Choose a model first.'), 'error');
+                    // Drawn again from the last confirmed state: the box unticked, an empty
+                    // model list disabled again.
+                    render();
                     return;
                 }
                 return chooseTier(plan, tier, model);

@@ -1328,6 +1328,7 @@
       "takenBy": "Ahora la gestiona {{plan}}",
       "ownSettingWins": "Configurada por separado en «Modelos por función»; se usa esa configuración",
       "moveConfirm": "{{from}} se encarga ahora de {{feature}}. ¿Quieres que pase a {{to}}?",
+      "moveConfirmOff": "{{feature}} está marcado en {{from}} (esa suscripción está desactivada). ¿Pasarlo a {{to}}?",
       "keyLabel": "Clave de {{plan}}",
       "keySaved": "Clave guardada (introduce otra para reemplazarla)",
       "keyFromGeneral": "Se usa la clave correspondiente ya introducida en esta página",

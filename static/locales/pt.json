@@ -1328,6 +1328,7 @@
       "takenBy": "Agora assumida por {{plan}}",
       "ownSettingWins": "Configurada separadamente em «Modelos por função»; essa configuração é usada",
       "moveConfirm": "{{from}} assume {{feature}} agora. Passar para {{to}}?",
+      "moveConfirmOff": "{{feature}} está marcado em {{from}} (essa assinatura está desativada). Passar para {{to}}?",
       "keyLabel": "Chave de {{plan}}",
       "keySaved": "Chave salva (informe outra para substituir)",
       "keyFromGeneral": "Usando a chave correspondente já informada nesta página",

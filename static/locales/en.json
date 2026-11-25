@@ -1328,6 +1328,7 @@
       "takenBy": "Now taken over by {{plan}}",
       "ownSettingWins": "Set up under Per-Feature Models; that setting is used instead",
       "moveConfirm": "{{feature}} is taken over by {{from}} now. Let {{to}} take it over instead?",
+      "moveConfirmOff": "{{feature}} is ticked under {{from}} (that subscription is off). Let {{to}} take it over instead?",
       "keyLabel": "{{plan}} key",
       "keySaved": "Key saved (enter a new one to replace it)",
       "keyFromGeneral": "Using the matching key already entered on this page",

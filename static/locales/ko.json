@@ -1328,6 +1328,7 @@
       "takenBy": "현재 {{plan}} 구독이 맡고 있음",
       "ownSettingWins": "'기능별 모델 지정'에서 따로 지정되어 있어 구독이 맡지 않습니다",
       "moveConfirm": "{{feature}} 기능은 현재 {{from}} 구독이 맡고 있습니다. {{to}} 구독으로 바꿀까요?",
+      "moveConfirmOff": "{{feature}}은(는) {{from}}에 선택되어 있습니다(이 구독은 꺼져 있음). {{to}}이(가) 맡도록 바꿀까요?",
       "keyLabel": "{{plan}} 키",
       "keySaved": "키 저장됨 (새 키를 입력하면 교체됩니다)",
       "keyFromGeneral": "이 페이지에 이미 입력한 해당 키를 사용 중",

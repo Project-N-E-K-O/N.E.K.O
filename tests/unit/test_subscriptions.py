@@ -86,6 +86,23 @@ def test_a_plan_left_with_no_tier_turns_off_in_the_same_write(tmp_path):
     assert store.read()["plans"]["mimo_token_plan"]["enabled"] is False
 
 
+def test_turning_a_plan_on_is_checked_inside_the_same_write(tmp_path):
+    store = SubscriptionStore(tmp_path / "subscriptions.json")
+    store.set_tier("chatgpt", "conversation", "gpt-x")
+    seen = []
+
+    def refuse(entry):
+        seen.append(dict(entry["tiers"]))
+        raise SubscriptionError("refused")
+
+    with pytest.raises(SubscriptionError):
+        store.set_enabled("chatgpt", True, precheck=refuse)
+    assert seen == [{"conversation": "gpt-x"}]
+    assert store.read()["plans"]["chatgpt"]["enabled"] is False
+    store.set_enabled("chatgpt", True, precheck=lambda entry: None)
+    assert store.read()["plans"]["chatgpt"]["enabled"] is True
+
+
 def test_removing_a_key_turns_the_plan_off_and_keys_are_masked(tmp_path):
     store = SubscriptionStore(tmp_path / "subscriptions.json")
     store.set_key("mimo_token_plan", "tp-secret", "sgp")
@@ -360,6 +377,19 @@ def test_turning_chatgpt_off_after_sign_out_never_fails_the_sign_out(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_status_names_the_plan_a_tier_is_ticked_under_even_while_it_is_off(config_manager, client_factory):
+    cm = config_manager
+    _write_core(cm, BASE_CORE)
+    make, _ = client_factory
+    prefix = "/api/config/subscriptions"
+    async with make() as client:
+        await client.post(f"{prefix}/chatgpt/tier", json={"tier": "conversation", "model": "gpt-x"})
+        row = (await client.get(prefix)).json()["tiers"]["conversation"]
+        assert row["assigned_to"] == "chatgpt" and row["claimed_by"] is None
+        assert (await client.get(prefix)).json()["tiers"]["memory"]["assigned_to"] is None
+
+
+@pytest.mark.asyncio
 async def test_routes_name_a_damaged_file_and_a_failed_save(config_manager, client_factory, monkeypatch):
     from utils.subscriptions.store import SubscriptionStore
 
@@ -443,7 +473,7 @@ async def test_a_tier_set_up_in_full_is_reported_as_own_setting(config_manager, 
         await client.post("/api/config/subscriptions/chatgpt/tier", json={"tier": "conversation", "model": "gpt-x"})
         status = (await client.post("/api/config/subscriptions/chatgpt/enable", json={"enabled": True})).json()
     row = status["tiers"]["conversation"]
-    assert row == {"effective": None, "claimed_by": "chatgpt", "own_setting": True}
+    assert row == {"assigned_to": "chatgpt", "effective": None, "claimed_by": "chatgpt", "own_setting": True}
 
 
 # ---------------------------------------------------------------------------

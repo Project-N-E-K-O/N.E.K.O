@@ -117,11 +117,19 @@ def _status() -> dict[str, Any]:
             "uses_general_provider_key": fallback_key,
         })
 
+    # Which plan each tier is ticked under, on or off (a tier belongs to one plan).
+    assigned = {}
+    for plan_id, entry in state["plans"].items():
+        for tier in entry.get("tiers", {}):
+            assigned.setdefault(tier, plan_id)
+
     tiers = {}
     for tier in TEXT_TIERS:
         resolved = config_manager.get_model_api_config(tier, _core_config=snapshot)
         claimed_by = (overlay.get(tier) or {}).get("subscription")
         tiers[tier] = {
+            # The plan the tier is ticked under, even while that plan is off.
+            "assigned_to": assigned.get(tier),
             # The subscription the tier's requests actually go to (directly or by following).
             "effective": resolved.get("subscription"),
             # The subscription that took this tier in the panel.
@@ -176,17 +184,25 @@ def _set_enabled(plan_id: str, plan: dict[str, Any], enabled: bool) -> None:
     from utils.subscriptions import get_store
     from utils.subscriptions.overlay import plan_key
 
-    store = get_store()
-    if enabled:
-        entry = store.read()["plans"].get(plan_id, {})
-        if plan["auth"] == "chatgpt_oauth":
-            if not _chatgpt_connected():
-                _refuse("not_signed_in", "Continue with ChatGPT before turning this on.")
-        elif not plan_key(plan, entry, get_config_manager().get_core_config()):
+    if not enabled:
+        get_store().set_enabled(plan_id, False)
+        return
+    if plan["auth"] == "chatgpt_oauth":
+        if not _chatgpt_connected():
+            _refuse("not_signed_in", "Continue with ChatGPT before turning this on.")
+        snapshot = None
+    else:
+        snapshot = get_config_manager().get_core_config()
+
+    def precheck(entry: dict[str, Any]) -> None:
+        # Checked on the entry as it is inside the write, so a key removed or the last
+        # tier taken away by another tab meanwhile cannot leave the plan on.
+        if snapshot is not None and not plan_key(plan, entry, snapshot):
             _refuse("missing_key", "Enter this plan's key before turning it on.")
         if not any(tier in plan["tiers"] for tier in entry.get("tiers", {})):
             _refuse("no_tiers", "Choose at least one feature for this subscription.")
-    store.set_enabled(plan_id, enabled)
+
+    get_store().set_enabled(plan_id, True, precheck=precheck)
 
 
 @router.post("/subscriptions/{plan_id}/enable", dependencies=[Depends(local_only)])

@@ -134,9 +134,14 @@ class SubscriptionStore:
             plan_id, {"enabled": False, "tiers": {}, "api_key": "", "region": ""}
         )
 
-    def set_enabled(self, plan_id: str, enabled: bool) -> None:
+    def set_enabled(self, plan_id: str, enabled: bool, precheck=None) -> None:
+        """Switch a plan; ``precheck(entry)`` runs in the same locked write and raises to refuse."""
+
         def mutate(value):
-            self._entry(value, plan_id)["enabled"] = bool(enabled)
+            entry = self._entry(value, plan_id)
+            if enabled and precheck is not None:
+                precheck(entry)
+            entry["enabled"] = bool(enabled)
 
         self._change(mutate)
 

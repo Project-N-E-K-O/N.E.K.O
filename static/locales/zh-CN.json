@@ -1328,6 +1328,7 @@
       "takenBy": "目前由 {{plan}} 接管",
       "ownSettingWins": "已在「按功能单独指定模型」里单独指定，订阅不接管",
       "moveConfirm": "{{feature}}目前由 {{from}} 接管，改由 {{to}} 接管吗？",
+      "moveConfirmOff": "{{feature}}已勾选在 {{from}} 上（这个订阅没开），改由 {{to}} 接管吗？",
       "keyLabel": "{{plan}} 的 Key",
       "keySaved": "已保存 Key（输入新的可替换）",
       "keyFromGeneral": "正在使用本页已填的对应 Key",
