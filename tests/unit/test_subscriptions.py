@@ -372,6 +372,9 @@ async def test_routes_name_a_damaged_file_and_a_failed_save(config_manager, clie
         path.write_text("{broken", encoding="utf-8")
         damaged = await client.post(f"{prefix}/chatgpt/tier", json={"tier": "conversation", "model": "gpt-x"})
         assert damaged.status_code == 400 and damaged.json()["detail"]["code"] == "unreadable"
+        path.write_bytes(bytes([0xFF, 0xFE]) + b" not utf-8")
+        damaged = await client.post(f"{prefix}/chatgpt/tier", json={"tier": "conversation", "model": "gpt-x"})
+        assert damaged.status_code == 400 and damaged.json()["detail"]["code"] == "unreadable"
         path.unlink()
 
         def held(self, value):

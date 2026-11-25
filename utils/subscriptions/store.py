@@ -89,6 +89,10 @@ class SubscriptionStore:
             text = self.path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return _empty()
+        except UnicodeDecodeError:
+            raise SubscriptionError(
+                "Subscription settings are unreadable. Fix or remove subscriptions.json.", "unreadable"
+            ) from None
         try:
             value = json.loads(text)
         except ValueError:
