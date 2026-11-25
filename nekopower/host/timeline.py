@@ -603,6 +603,16 @@ _STANDING: dict[str, str] = {"working": "working", "waiting_user": "waiting_user
 _STANDING_ORDER: tuple[str, ...] = ("waiting_user", "working", "resting", "queued")
 
 
+# The events that put a commission in a session, with the field of each that names the session:
+# opened in it, gone on in a copy, handed back from a copy, called off from one, taken back from one.
+_IN_SESSION: dict[str, str] = {
+    "opened": "session_id",
+    "carried_on_in_copy": "session_id",
+    "handed_back": "to",
+    "not_carried_on": "of",
+    "back_from_copy": "to",
+}
+
 # How long before a place in the timeline a commission may have ended by the clock and still have
 # been under way there: the clock may have been set back meanwhile.
 _CLOCK_SLACK_SECONDS = 3600.0
@@ -658,13 +668,15 @@ def read_before(conn: sqlite3.Connection, *, after: str, limit: int, count_most:
         ).fetchone()
         if found is None:
             continue
-        # The session it was opened in last by then: it may have gone on in a copy, or come back
-        # from one, since; the one on record now is that of now.
-        opened = conn.execute(
-            "SELECT payload FROM events WHERE commission_id = ? AND type = 'opened' AND rowid <= ? ORDER BY seq DESC LIMIT 1",
-            (row["id"], events),
+        # The session it was in by then: the last of the events that put it in one (it may have
+        # gone on in a copy, or come back from one, since); the one on record now is that of now.
+        types = ", ".join("?" for _ in _IN_SESSION)
+        moved = conn.execute(
+            f"SELECT type, payload FROM events WHERE commission_id = ? AND type IN ({types}) AND rowid <= ? "
+            "ORDER BY seq DESC LIMIT 1",
+            (row["id"], *_IN_SESSION, events),
         ).fetchone()
-        then = _load(opened["payload"]).get("session_id") if opened is not None else None
+        then = _load(moved["payload"]).get(_IN_SESSION[moved["type"]]) if moved is not None else None
         moves.append((found, then if isinstance(then, str) and then else found["session_id"]))
     standing: dict[str, tuple[str, float, str, int]] = {}
     for row, session_id in moves:

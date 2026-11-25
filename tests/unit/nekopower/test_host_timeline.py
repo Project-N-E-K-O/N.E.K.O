@@ -1355,6 +1355,21 @@ async def test_one_is_where_it_was_opened_by_then_not_where_it_is_now(ledger):
     assert _looks(await _before(ledger, (await ledger.timeline(limit=0))["latest"])) == {main.id: ("working", commission.id)}
     # And at the place before that, still where it was then.
     assert _looks(await _before(ledger, place)) == {copy.id: ("working", commission.id)}
+    # Taken back into the session it was copied from, and waiting there for its turn, with no
+    # opening written: in that session, not in the copy that is closed.
+    await ledger.append_event(commission.id, "carried_on_in_copy", {"session_id": copy.id, "of": main.id})
+    in_copy = (await ledger.timeline(limit=0))["latest"]
+    await ledger.append_event(commission.id, "back_from_copy", {"to": main.id, "copy": copy.id})
+    assert (await ledger.transition(commission.id, "queued")).applied
+    assert _looks(await _before(ledger, in_copy)) == {copy.id: ("working", commission.id)}
+    assert _looks(await _before(ledger, (await ledger.timeline(limit=0))["latest"])) == {main.id: ("queued", commission.id)}
+    for kind, payload, where in (
+        ("handed_back", {"to": main.id, "copy": copy.id}, main.id),
+        ("carried_on_in_copy", {"session_id": copy.id, "of": main.id}, copy.id),
+        ("not_carried_on", {"of": main.id, "copy": copy.id}, main.id),
+    ):
+        await ledger.append_event(commission.id, kind, payload)
+        assert _looks(await _before(ledger, (await ledger.timeline(limit=0))["latest"])) == {where: ("queued", commission.id)}
     # One never opened anywhere: where it is on record.
     other = await _working(ledger, await _session(ledger, "other"), "other")
     assert _looks(await _before(ledger, (await ledger.timeline(limit=0))["latest"]))[other.session_id] == ("working", other.id)
