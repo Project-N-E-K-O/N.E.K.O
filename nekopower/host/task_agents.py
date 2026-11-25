@@ -10705,7 +10705,11 @@ class TaskAgentManager(TreeWork):
             if told is not None and told[2]:
                 # Answered by looking, with nothing changed: no member is opened for that.
                 return
-            if not (await self._template_of(kept)).changes_files:
+            # What the busy one can change goes by the tools its run was opened with, as where it is
+            # noted to change files (``_note_writer``): its preset may say otherwise by now.
+            live = self._sessions.get(holder)
+            opened = live.changes_files if live is not None and live.session_id == main else None
+            if not (opened if opened is not None else (await self._template_of(kept)).changes_files):
                 return
             if not (await asyncio.to_thread(self.templates.resolve, WORKING_PRESET, kept.project)).changes_files:
                 return
@@ -10727,6 +10731,7 @@ class TaskAgentManager(TreeWork):
         asking = self._asking_beside[commission_id] = _Beside(main, asyncio.get_running_loop().create_future())
         moved: Session | None = None
         started = False
+        handed: list[_Handed] = []
         try:
             asked = False
             if choice == BESIDE_ASK:
@@ -10824,6 +10829,18 @@ class TaskAgentManager(TreeWork):
         finally:
             self._asking_beside.pop(commission_id, None)
             if moved is not None and commission_id in self._queue:
+                # What was written to the busy member and handed to this commission to take along,
+                # as what that member was at (``hand_over``: what it was at is over, its session not
+                # yet let go of), is the busy member's: given back below, for whatever that one is
+                # at next. What the user said to the commission goes with it.
+                notes = self._notes.get(commission_id, [])
+                handed = [note for note in notes if isinstance(note, _Handed)]
+                if handed:
+                    rest = [note for note in notes if not isinstance(note, _Handed)]
+                    if rest:
+                        self._notes[commission_id] = rest
+                    else:
+                        self._notes.pop(commission_id, None)
                 # The member's here as well, with nothing awaited between this and its place
                 # being taken: started at once where a place is free, else next in the
                 # queue, for the member. (Stopped meanwhile, it is in no queue any more.)
@@ -10839,6 +10856,9 @@ class TaskAgentManager(TreeWork):
                     self._handing_back_to.pop(main, None)
             if self._queue and len(self._sessions) < self.limit and not self._closed:
                 self._spawn(self._start_next())
+            if handed:
+                # Pending again (whatever this is cancelled by: the ledger has them as handed over).
+                await asyncio.shield(self._put_back([wake for note in handed for wake in note.wakes]))
         if started:
             await self._launch(commission_id)
 

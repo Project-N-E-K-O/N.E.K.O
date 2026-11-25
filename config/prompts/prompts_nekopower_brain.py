@@ -1267,7 +1267,7 @@ PERMISSION_ALWAYS_PATTERNS = (
 
 PERMISSION_ONCE_PATTERNS = (
     r"就这一次|就這一次|这一次|這一次|可以|好的|好吧|行|同意|允许|允許|批准|没问题|沒問題|嗯",
-    r"\b(?:yes|yeah|yep|ok|okay|sure|allow|allowed|approve|approved|agree[sd]?|go\s+ahead|fine|just\s+this\s+once)\b",
+    r"\b(?:yes|yeah|yep|ok|okay|sure|allow|allowed|approve|approved|go\s+ahead|fine|just\s+this\s+once)\b",
     r"今回だけ|はい|いいよ|いいです|許可|どうぞ|オーケー",
     r"이번만|네|예|좋아|허락|허용|그래",
     r"\bда\b|можно|разреш|хорошо|только\s+в\s+этот\s+раз|ладно",

@@ -132,8 +132,14 @@ def _links(*turns: list[Any]) -> dict[str, ScriptedLLM]:
 
 
 async def _asked(host: Any, commission_id: str) -> dict[str, Any]:
-    """Wait until the user is asked about a commission, and return what is asked."""
+    """Wait until the user is asked about a commission, on record and put to them, and return what is asked."""
     commission = await wait_status(host, commission_id, "waiting_user")
+
+    async def put() -> bool:
+        # (Put to the user in a write of its own, after the commission is on record as waiting.)
+        return any(item.payload.get("task_id") == commission_id for item in await outbox(host, "question"))
+
+    await wait_until(put, what="the question being put to the user")
     return commission.question()
 
 
@@ -390,8 +396,12 @@ async def test_new_work_said_while_the_user_is_asked_is_not_taken_for_an_answer_
     answered = read_answer("yes, go ahead with the links", [waiting])
     assert (answered.kind, answered.targets, answered.choice) == ("answer", [two.commission_id], "once")
     assert read_answer("no", [waiting]).choice == "deny"
-    # (As she may put it when she passes the answer on, in words of her own.)
-    assert read_answer("the user agrees to another familiar doing it", [waiting]).choice == "once"
+    # Read off the words that say yes or no, and no others ("agree" is none: an Agree button is new work).
+    # Put in other words, it is new work unless it is said as an answer, which is then one not understood.
+    assert read_answer("implement an Agree button in the checkout", [waiting]) is None
+    assert read_answer("the user agrees to another familiar doing it", [waiting]) is None
+    unclear = read_answer("answer: the user agrees", [waiting])
+    assert (unclear.kind, unclear.targets, unclear.choice) == ("answer", [two.commission_id], None)
     assert read_answer("the user does not agree to that", [waiting]).choice == "deny"
     # Any other request for approval is read as it was: a word shared with what it asks makes a sentence its answer.
     asked = json.loads(waiting.pending_question)
@@ -684,6 +694,58 @@ async def test_stopped_while_its_member_is_being_made_it_takes_no_place(hosts, t
     host.release.set()
 
 
+async def test_what_is_written_to_the_busy_member_is_not_taken_along_to_the_member_made_beside_it(hosts, tmp_path):
+    from nekopower.host.task_agents import _Handed
+    from tests.unit.nekopower.test_host_session_messages import _note
+
+    # The new member at work until ``links_go`` is set.
+    links_go, links_wait = _gate()
+    host, _trees, _workdir, one, scripts, _seen = await _busy(
+        hosts, tmp_path, _links([links_wait, *_report("links repaired")])
+    )
+    manager = host.task_agents
+    main = await _session_of(host, one.commission_id)
+    # What waits for a session is handed over by hand here, as the host does it.
+    await host.wakes.close()
+    go, held_up = asyncio.Event(), asyncio.Event()
+    create = host.ledger.create_session
+
+    async def making(**values: Any) -> Any:
+        if values.get("seat") == "tree":
+            held_up.set()
+            await go.wait()
+        return await create(**values)
+
+    host.ledger.create_session = making
+    two = await _dispatch(host, APART)
+    await _asked(host, two.commission_id)
+    assert await host.tell(two.commission_id, "use relative links only")
+    assert await host.answer(two.commission_id, "yes", choice="once")
+    await wait_until(held_up.is_set, what="its member being made")
+
+    # Meanwhile what the busy member is at is over (its session not yet let go of), and a note is written to
+    # that member: it is handed to the commission that waits there, to take along.
+    assert (await host.ledger.transition(one.commission_id, "blocked", reason="stuck")).applied
+    sender = types.SimpleNamespace(session_id=main.id, id=None, status="done")
+    await _note(host.ledger, sender, main.id, "Check the footer as well.")
+    [wake] = await host.ledger.wakes_pending(session_id=main.id)
+    assert (await manager.hand_over(main.id, None, [wake])).outcome == "handed"
+    assert [type(note) for note in manager._notes[two.commission_id]] == [str, _Handed]
+    go.set()
+    await wait_until(lambda: len(scripts["broken links"].requests) >= 1, what="the new member being at work")
+
+    # The new member was told what the user said to the commission, and not what was written to the busy one,
+    # which waits for that member again: at once, and not only once the commission is over (which gives back
+    # what was handed to it and never got into a session).
+    assert (await host.ledger.get(two.commission_id)).session_id != main.id
+    told = _said_to(scripts["broken links"])
+    assert "use relative links only" in told and "Check the footer as well." not in told
+    assert [item.id for item in await host.ledger.wakes_pending(session_id=main.id)] == [wake.id]
+    links_go.set()
+    await wait_status(host, two.commission_id, "done")
+    host.release.set()
+
+
 async def test_two_that_are_opened_at_once_do_not_both_take_the_last_room_for_a_member(hosts, tmp_path, monkeypatch):
     host, _trees, _workdir, one, scripts, _seen = await _busy(
         hosts, tmp_path, {**_links(), "invoice": ScriptedLLM([_report("template written")])}
@@ -693,15 +755,24 @@ async def test_two_that_are_opened_at_once_do_not_both_take_the_last_room_for_a_
     await host.set_landing_settings(beside="open")
     monkeypatch.setattr(settings, "PROJECT_MEMBERS_MAX", 2)
     create = host.ledger.create_session
+    first, go = asyncio.Event(), asyncio.Event()
 
-    async def slow(**values: Any) -> Any:
-        # Long enough for the other one to count the members meanwhile, were it let to.
-        await asyncio.sleep(0.3)
+    async def held(**values: Any) -> Any:
+        # The first member made is held up until the other commission is seen to wait for it.
+        if values.get("seat") == "tree" and not first.is_set():
+            first.set()
+            await go.wait()
         return await create(**values)
 
-    host.ledger.create_session = slow
+    host.ledger.create_session = held
     two = await _filed(host, APART)
-    three = await _filed(host, APART_TOO)
+    await wait_until(first.is_set, what="a member being made")
+    filing = asyncio.ensure_future(_filed(host, APART_TOO))
+    # The other waits to be placed until that member is made (it would count the members meanwhile,
+    # and find room for one, were it let to; and then it would never wait for that).
+    await wait_until(lambda: manager.families.placing._waiters, what="the other one waiting for the member to be made")
+    go.set()
+    three = await filing
     await _settled(host)
 
     # One member more, which is all the project may have: the other commission waits for the busy one.
@@ -954,11 +1025,11 @@ async def test_allowed_for_good_another_member_is_opened_without_asking_again(ho
 @pytest.mark.parametrize(
     "meanwhile",
     [
-        "a_leader", "the_holder_is_over", "the_holder_rests", "told_to_be_a_side_question", "the_member_only_reads",
-        "the_new_one_would_only_read",
+        "a_leader", "the_holder_is_over", "the_holder_rests", "told_to_be_a_side_question",
+        "the_member_was_opened_to_only_read", "the_member_only_reads_by_its_preset", "the_new_one_would_only_read",
     ],
 )
-async def test_nobody_is_asked_where_it_no_longer_holds_by_the_time_it_is_looked_at(hosts, tmp_path, meanwhile):
+async def test_nobody_is_asked_where_it_no_longer_holds_by_the_time_it_is_looked_at(hosts, tmp_path, caplog, meanwhile):
     async def a_worker(host: Any) -> None:
         # The member the user gave the project, of another preset than the one that would be opened beside it.
         await host.open_member("Lan", "Shop site", preset="worker")
@@ -987,24 +1058,41 @@ async def test_nobody_is_asked_where_it_no_longer_holds_by_the_time_it_is_looked
         assert (await host.ledger.get(one.commission_id)).resting and manager._held_by.get(main.id) == one.commission_id
     elif meanwhile == "told_to_be_a_side_question":
         manager._side_said[two.commission_id] = ("", (), True)
+    elif meanwhile == "the_member_was_opened_to_only_read":
+        # Its run has no tool that changes files, though its preset has by now (changed since it was opened):
+        # what the run has counts, as where it is noted to change files (``_note_writer``).
+        live = manager._sessions[one.commission_id]
+        assert live.session_id == main.id and live.changes_files is True
+        live.changes_files = False
     else:
         template_of, resolve = manager._template_of, manager.templates.resolve
 
+        def read_only(template: Any) -> Any:
+            # (What it changes is said of the tools it is opened without.)
+            made = dataclasses.replace(template, withhold=(*template.withhold, "write", "edit", "bash", "pwsh"))
+            assert not made.changes_files
+            return made
+
         async def reads(kept: Any) -> Any:
-            return dataclasses.replace(await template_of(kept), changes_files=False)
+            found = await template_of(kept)
+            return read_only(found) if kept.id == main.id else found
 
         def reading(preset: str, project: Any = None) -> Any:
             found = resolve(preset, project)
-            return dataclasses.replace(found, changes_files=False) if preset == "general" else found
+            return read_only(found) if preset == "general" else found
 
-        if meanwhile == "the_member_only_reads":
+        if meanwhile == "the_member_only_reads_by_its_preset":
+            # What its run has is not known yet (as while it is being started): its preset says.
+            manager._sessions[one.commission_id].changes_files = None
             manager._template_of = reads
         else:
             manager.templates.resolve = reading
     go.set()
     await wait_until(lambda: not manager._asking_beside and two.commission_id not in manager._apart, what="the look")
-    await asyncio.sleep(0.2)
+    await _settled(host)
 
+    # Not asked for what it found, and not for a look that failed on the way.
+    assert not [record for record in caplog.records if "for another member to do it failed" in record.getMessage()]
     assert await outbox(host, "question") == [] and manager._asking_beside == {}
     assert (await host.ledger.get(two.commission_id)).status == "queued"
     assert len([member for member in await _members(host) if member.kind == "line"]) == 1 and trees.made == []
