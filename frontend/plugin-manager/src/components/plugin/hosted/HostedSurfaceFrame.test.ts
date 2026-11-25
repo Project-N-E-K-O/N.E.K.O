@@ -962,6 +962,47 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
     )
   })
 
+  it('releases the parseDocument confirmation gate when cancelled while ElMessageBox.confirm never settles', async () => {
+    const frame = await mountFrame()
+    await frame.setSurface(makeDocumentSurface())
+    elementPlusMocks.ElMessageBox.confirm.mockImplementationOnce(() => new Promise<never>(() => {}))
+
+    frame.dispatchRequest(parseDocumentRequest(
+      new File(['first'], 'first.pdf', { type: 'application/pdf' }),
+      { requestId: 'parse-never-settles', userInitiated: true },
+    ))
+    await flushPromises()
+    expect(elementPlusMocks.ElMessageBox.confirm).toHaveBeenCalledTimes(1)
+
+    frame.dispatchRequest({ type: 'neko-hosted-surface-cancel', requestId: 'parse-never-settles' })
+    await flushPromises()
+    expect(elementPlusMocks.ElMessageBox.close).toHaveBeenCalledTimes(1)
+    expect(apiMocks.parseHostedDocument).not.toHaveBeenCalled()
+
+    elementPlusMocks.ElMessageBox.confirm.mockResolvedValueOnce('confirm')
+    apiMocks.parseHostedDocument.mockResolvedValueOnce({
+      ok: true,
+      document: { name: 'second.pdf', sourceType: 'pdf', content: 'ok' },
+    })
+
+    frame.dispatchRequest(parseDocumentRequest(
+      new File(['second'], 'second.pdf', { type: 'application/pdf' }),
+      { requestId: 'parse-after-cancel', userInitiated: true },
+    ))
+    await flushPromises()
+
+    expect(elementPlusMocks.ElMessageBox.confirm).toHaveBeenCalledTimes(2)
+    expect(apiMocks.parseHostedDocument).toHaveBeenCalledTimes(1)
+    expect(frame.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: 'parse-after-cancel', ok: true }),
+      '*',
+    )
+    expect(frame.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: 'parse-never-settles' }),
+      '*',
+    )
+  })
+
   it('aborts an in-flight upload when the surface changes', async () => {
     let signal: AbortSignal | undefined
     apiMocks.parseHostedDocument.mockImplementation((_file: File, options: { signal: AbortSignal }) => {

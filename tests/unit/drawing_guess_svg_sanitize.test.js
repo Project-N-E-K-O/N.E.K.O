@@ -265,6 +265,35 @@ test('F04B-002: drawing-guess sanitizes AI SVG across showAiDrawing, renderSumma
   assert.equal(sandbox.sanitizeAiDrawingSvgMarkup('<svg><unclosed>'), '');
 });
 
+test('F04B-003: transform sanitizer preserves valid transform lists and rejects unsafe transforms', () => {
+  const harness = createSvgDomHarness();
+  const validSvg = [
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 180">',
+    '<g transform="translate(10 20),scale(2)">',
+    '<rect x="5" y="5" width="20" height="20" transform="scale(1e-2) rotate(45 .5 -.25)"/>',
+    '<polygon points="0,0 1e1,5 20,1.5e1" transform="matrix(1, 0, 0, 1, 10, -20)"/>',
+    '</g>',
+    '</svg>',
+  ].join('');
+  const sanitizedValid = harness.sandbox.sanitizeAiDrawingSvgMarkup(validSvg);
+  assert.ok(sanitizedValid.includes('transform="translate(10 20),scale(2)"'));
+  assert.ok(sanitizedValid.includes('transform="scale(1e-2) rotate(45 .5 -.25)"'));
+  assert.ok(sanitizedValid.includes('points="0,0 1e1,5 20,1.5e1"'));
+  assert.ok(sanitizedValid.includes('transform="matrix(1, 0, 0, 1, 10, -20)"'));
+
+  const invalidTransformSvg = [
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">',
+    '<g transform="translate(10 20),">',
+    '<rect x="0" y="0" width="10" height="10" transform="scale(eee)"/>',
+    '<circle cx="10" cy="10" r="5" transform="expression(alert(1))"/>',
+    '<path d="M0 0 L10 10" transform="translate(10,,20)"/>',
+    '</g>',
+    '</svg>',
+  ].join('');
+  const sanitizedInvalid = harness.sandbox.sanitizeAiDrawingSvgMarkup(invalidTransformSvg);
+  assert.ok(!sanitizedInvalid.includes('transform='));
+});
+
 test('F04B-002: sanitizer fails closed when DOMParser is unavailable', () => {
   const harness = createSvgDomHarness({ includeParser: false });
   assert.equal(harness.sandbox.sanitizeAiDrawingSvgElement('<svg><path d="M0 0"/></svg>'), null);

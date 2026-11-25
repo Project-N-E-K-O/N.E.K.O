@@ -2646,6 +2646,19 @@
     ellipse: { cx: 'cx', cy: 'cy', rx: 'rx', ry: 'ry' }
   };
 
+  var AI_SVG_NUMBER_PATTERN = '[-+]?(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:[eE][-+]?\\d+)?';
+  var AI_SVG_ARG_SEP_PATTERN = '(?:\\s+(?:,\\s*)?|,\\s*)';
+  var AI_SVG_TRANSFORM_ITEM_PATTERN =
+    '(?:translate|scale|rotate|skewX|skewY|matrix)\\(\\s*' +
+    AI_SVG_NUMBER_PATTERN +
+    '(?:' + AI_SVG_ARG_SEP_PATTERN + AI_SVG_NUMBER_PATTERN + ')*' +
+    '\\s*\\)';
+  var AI_SVG_TRANSFORM_LIST_RE = new RegExp(
+    '^' +
+    AI_SVG_TRANSFORM_ITEM_PATTERN +
+    '(?:(?:\\s*,\\s*|\\s*)' + AI_SVG_TRANSFORM_ITEM_PATTERN + ')*$'
+  );
+
   function isSafeAiSvgAttributeValue(attrName, rawValue) {
     if (rawValue === null || rawValue === undefined) return false;
     var value = String(rawValue).trim();
@@ -2661,8 +2674,8 @@
     if (attrName === 'aria-hidden' || attrName === 'focusable') return value === 'true' || value === 'false';
     if (attrName === 'role') return /^[a-zA-Z-]{1,32}$/.test(value);
     if (attrName === 'd') return /^[MmZzLlHhVvCcSsQqTtAaEe0-9.,+\-\s]+$/.test(value);
-    if (attrName === 'points') return /^[0-9.,+\-\s]+$/.test(value);
-    if (attrName === 'transform') return /^(?:(?:translate|scale|rotate|skewX|skewY|matrix)\(\s*[-+\d.,\s]+\)\s*)+$/.test(value);
+    if (attrName === 'points') return /^[0-9.,+\-eE\s]+$/.test(value);
+    if (attrName === 'transform') return AI_SVG_TRANSFORM_LIST_RE.test(value);
     if (attrName === 'stroke-linecap') return /^(?:butt|round|square)$/.test(value);
     if (attrName === 'stroke-linejoin') return /^(?:miter|round|bevel)$/.test(value);
     if (attrName === 'fill-rule' || attrName === 'clip-rule') return /^(?:nonzero|evenodd)$/.test(value);

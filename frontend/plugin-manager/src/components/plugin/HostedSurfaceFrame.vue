@@ -152,6 +152,7 @@ let componentMounted = false
 let parseDocumentConfirmPending = false
 let parseDocumentConfirmToken = 0
 let pendingParseDocumentConfirmRequestId: string | null = null
+let cancelPendingParseDocumentConfirmWaiter: (() => void) | null = null
 const cancelledParseDocumentConfirmRequestIds = new Set<string>()
 const hostedDocumentControllers = new Map<string, AbortController>()
 const hostedActionControllers = new Map<string, AbortController>()
@@ -164,6 +165,23 @@ function closePendingParseDocumentConfirm() {
   } catch {
     // Ignore close errors when no active message box instance exists.
   }
+}
+
+function releasePendingParseDocumentConfirm(requestIdToCancel?: string) {
+  const hadPendingConfirm = parseDocumentConfirmPending
+  const targetRequestId = requestIdToCancel ?? pendingParseDocumentConfirmRequestId
+  const cancelWaiter = cancelPendingParseDocumentConfirmWaiter
+  if (targetRequestId) {
+    cancelledParseDocumentConfirmRequestIds.add(targetRequestId)
+  }
+  parseDocumentConfirmToken += 1
+  parseDocumentConfirmPending = false
+  pendingParseDocumentConfirmRequestId = null
+  cancelPendingParseDocumentConfirmWaiter = null
+  if (hadPendingConfirm) {
+    closePendingParseDocumentConfirm()
+  }
+  cancelWaiter?.()
 }
 
 function readContextInOrder() {
@@ -183,16 +201,7 @@ function readContextInOrder() {
 }
 
 function abortAllHostedRequests(reason: string) {
-  const hadPendingConfirm = parseDocumentConfirmPending
-  if (pendingParseDocumentConfirmRequestId) {
-    cancelledParseDocumentConfirmRequestIds.add(pendingParseDocumentConfirmRequestId)
-  }
-  parseDocumentConfirmToken += 1
-  parseDocumentConfirmPending = false
-  pendingParseDocumentConfirmRequestId = null
-  if (hadPendingConfirm) {
-    closePendingParseDocumentConfirm()
-  }
+  releasePendingParseDocumentConfirm()
   for (const controller of contextControllers) controller.abort(reason)
   contextControllers.clear()
   contextQueue = Promise.resolve()
@@ -561,8 +570,7 @@ function handleMessage(event: MessageEvent) {
   if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-cancel') {
     const requestId = typeof data.requestId === 'string' ? data.requestId : ''
     if (requestId && requestId === pendingParseDocumentConfirmRequestId) {
-      cancelledParseDocumentConfirmRequestIds.add(requestId)
-      closePendingParseDocumentConfirm()
+      releasePendingParseDocumentConfirm(requestId)
     }
     hostedDocumentControllers.get(requestId)?.abort('client-cancelled')
     hostedActionControllers.get(requestId)?.abort('client-cancelled')
@@ -703,15 +711,27 @@ async function handleHostedRequest(data: any) {
       parseDocumentConfirmPending = true
       pendingParseDocumentConfirmRequestId = requestId
       cancelledParseDocumentConfirmRequestIds.delete(requestId)
+      let confirmCancelledByHost = false
+      const confirmCancelPromise = new Promise<never>((_, reject) => {
+        cancelPendingParseDocumentConfirmWaiter = () => {
+          confirmCancelledByHost = true
+          reject(new Error('parse_document_confirm_cancelled'))
+        }
+      })
+      confirmCancelPromise.catch(() => {})
       try {
-        await ElMessageBox.confirm(
-          t('plugins.ui.parseDocumentConfirm', { plugin: props.pluginId, file: safeFileName }),
-          t('common.confirm'),
-          { type: 'warning' },
+        const confirmPromise = Promise.resolve(
+          ElMessageBox.confirm(
+            t('plugins.ui.parseDocumentConfirm', { plugin: props.pluginId, file: safeFileName }),
+            t('common.confirm'),
+            { type: 'warning' },
+          ),
         )
+        confirmPromise.catch(() => {})
+        await Promise.race([confirmPromise, confirmCancelPromise])
       } catch {
         const wasCancelled = cancelledParseDocumentConfirmRequestIds.delete(requestId)
-        if (!isCurrentRequest() || wasCancelled) {
+        if (confirmCancelledByHost || !isCurrentRequest() || wasCancelled) {
           return
         }
         respond({
@@ -724,6 +744,7 @@ async function handleHostedRequest(data: any) {
         if (parseDocumentConfirmToken === confirmToken) {
           parseDocumentConfirmPending = false
           pendingParseDocumentConfirmRequestId = null
+          cancelPendingParseDocumentConfirmWaiter = null
         }
       }
       const wasCancelled = cancelledParseDocumentConfirmRequestIds.delete(requestId)
