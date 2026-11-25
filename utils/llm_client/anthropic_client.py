@@ -764,6 +764,9 @@ class ChatAnthropic:
         model: str = "",
         base_url: str | None = None,
         api_key: str | None = None,
+        # Keyword-only from here: removing ``temperature`` (once the fourth
+        # parameter) must not let an old positional call shift into ``streaming``.
+        *,
         streaming: bool = False,
         max_retries: int = 2,
         extra_body: dict | None = None,
