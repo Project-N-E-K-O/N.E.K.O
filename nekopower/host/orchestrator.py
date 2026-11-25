@@ -603,10 +603,19 @@ def apart_from(sentence: str, member: Agent, bars: Bars, project: str = "") -> b
     name (``project``) left out. Counted as ``clear_member`` counts,
     with no weights. No model is asked. A sentence that says few words
     of its own (``Bars.apart_words``) is not: it names nothing by
-    itself, and goes on with what was said before.
+    itself, and goes on with what was said before. Nor is one that
+    points back at something or adds to it (as ``relation_by_words``
+    reads it): said beside a member at work, that is most likely about
+    its work, in words of its own. What goes on with the work in other
+    words and with none of these is told apart all the same: words
+    alone do not tell (``beside_scenarios_independent.json``).
     """
+    from nekopower.host.decision import has_cue
+
     words = content_tokens(sentence) - token_set(project)
     if len(words) < bars.apart_words or named_member(sentence, [member], bars, project) is not None:
+        return False
+    if _has("refers_back", sentence) or has_cue("supplement", sentence):
         return False
     shared = words & token_set("\n".join([*_lines_of_agent(member), *member.at_hand]))
     return len(shared) < bars.min_hits

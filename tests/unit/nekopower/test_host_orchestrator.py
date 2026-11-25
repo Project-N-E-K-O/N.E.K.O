@@ -649,6 +649,54 @@ def test_the_sentences_said_beside_a_busy_member_are_told_apart_as_measured() ->
         case["id"]: orch.apart_from(case["sentence"], members[case["member"]], bars, members[case["member"]].project or "")
         for case in data["cases"]
     }
-    # As it was measured: every one that is about something else is told apart, and none that goes on is.
-    assert {case["id"] for case in data["cases"] if case["truth"] == "else"} == {name for name, apart in told.items() if apart}
-    assert len(told) == 38 and sum(told.values()) == 18
+    # As it was measured: none that goes on with the member's work is told apart; of those that are about
+    # something else, all but two, which say a word that adds to something ("change it to") and wait as before.
+    apart = {name for name, found in told.items() if found}
+    assert {case["id"] for case in data["cases"] if case["truth"] == "else"} - apart == {"ledger-6", "recipes-5"}
+    assert not {case["id"] for case in data["cases"] if case["truth"] == "same"} & apart
+    assert len(told) == 38 and len(apart) == 16
+
+
+def test_sentences_written_without_knowing_the_rule_are_told_apart_as_measured() -> None:
+    import json
+    from pathlib import Path
+
+    path = Path(__file__).parent / "fixtures" / "beside_scenarios_independent.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    bars = orch.Bars()
+    members = {
+        name: orch.Agent(
+            id=name, project=item["project"], title=item["title"], duty=item["duty"], summary=item["summary"],
+            done=tuple(orch.Done(title=one["title"], result=one["result"]) for one in item["done"]),
+            at_hand=tuple(item["at_hand"]),
+        )
+        for name, item in data["members"].items()
+    }
+    apart = {
+        case["id"]
+        for case in data["cases"]
+        if orch.apart_from(case["sentence"], members[case["member"]], bars, members[case["member"]].project or "")
+    }
+    truth = {kind: {case["id"] for case in data["cases"] if case["truth"] == kind} for kind in ("same", "else")}
+    assert (len(truth["same"]), len(truth["else"])) == (24, 24)
+    # What the rule gets wrong on sentences it was not set on, kept as it was measured. Five of the 24 that go on
+    # with the member's work are told apart (the user is asked about another member for them): they say it in
+    # words the member's card and work do not have, and point back at nothing.
+    assert truth["same"] & apart == {"mod_crops-4", "mod_crops-5", "wed_seat-2", "jp_notes-5", "homesrv_backup-3"}
+    # Six of the 24 that are about something else are not (they wait for the member, as before).
+    assert truth["else"] - apart == {
+        "thesis_lit-4", "shop_copy-4", "jp_notes-2", "kakeibo_csv-4", "homesrv_backup-4", "blog_md-4",
+    }
+
+
+def test_a_sentence_that_points_back_or_adds_to_something_is_not_told_apart() -> None:
+    writer = orch.Agent(
+        id="writer", project="thesis", title="Chapter three", duty="Writes the chapters of the thesis",
+        at_hand=("tighten the survey of related work",),
+    )
+    bars = orch.Bars()
+    plain = "set up a script that makes a nightly backup to the cloud"
+    assert orch.apart_from(plain, writer, bars, "thesis")
+    # Pointing back ("those"), and adding ("also"): about what was said before, in words of its own.
+    assert not orch.apart_from(f"{plain} for those files from earlier", writer, bars, "thesis")
+    assert not orch.apart_from(f"also {plain}", writer, bars, "thesis")

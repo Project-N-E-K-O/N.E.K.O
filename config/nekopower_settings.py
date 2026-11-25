@@ -268,7 +268,11 @@ nothing by itself and goes on with what was said before. Set on the 38
 sentences of ``tests/unit/nekopower/fixtures/beside_scenarios.json``: with
 four, none of the twenty that go on with the member's work is told apart and
 none of the eighteen that are about something else is missed; with three,
-three of the twenty are told apart."""
+three of the twenty are told apart. (Those sentences were written by whoever
+set this. On 48 written afterwards by a model that did not know the rule, 10
+of the 24 that go on with the member's work were told apart; with sentences
+that point back or add to something left out as well, 5 of them are, and 2
+of the eighteen above are missed: ``orchestrator.apart_from``.)"""
 
 LEADER_AT_MEMBERS = 3
 """A project gets a leader when this many task agents would be its members,
