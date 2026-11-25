@@ -1327,6 +1327,9 @@ class TaskAgentManager(TreeWork):
         # was asked of, what it was asked about and what it said: asked once
         # for the same words (``_is_side_question``).
         self._side_question_judge: Callable[[str, str, str], Awaitable[bool | None]] | None = None
+        # What tells whether work told apart from what a busy member is at goes on with it
+        # all the same (``set_beside_judge``).
+        self._beside_judge: Callable[[str, str, str, list[str]], Awaitable[bool | None]] | None = None
         # Where her commissions go, and the members and leaders of projects.
         from nekopower.host.families import Families
 
@@ -1687,6 +1690,17 @@ class TaskAgentManager(TreeWork):
         match what is there is a new loose one, and no model is asked.
         """
         self.families.set_judge(judge)
+
+    def set_beside_judge(self, judge: Callable[[str, str, str, list[str]], Awaitable[bool | None]] | None) -> None:
+        """Set what tells whether a commission goes on with what a busy member is at (``LexicalDecisionModel.goes_on_with``).
+
+        It is given what was dispatched, the user's words (with what they said
+        to it since), the member's name and what it has under way. Asked once,
+        before the user is asked whether another member is to do it, or one is
+        opened for it with nobody asked (``_beside``). Without one, the words
+        alone tell it (``orchestrator.apart_from``).
+        """
+        self._beside_judge = judge
 
     def set_side_question_judge(self, judge: Callable[[str, str, str], Awaitable[bool | None]] | None) -> None:
         """Set what tells whether a commission is a side question (``LexicalDecisionModel.side_question``).
@@ -10747,6 +10761,14 @@ class TaskAgentManager(TreeWork):
         if not waits():
             # (The member came free while that was read, say: nobody is asked about what need not wait.)
             return
+        goes_on = await self._goes_on_with(commission, kept)
+        if goes_on or (goes_on is None and choice == BESIDE_OPEN):
+            # It goes on with what the busy one is at, as the small model says (the words alone
+            # did not tell), or that is not told where nobody would be asked: it waits for that
+            # one, as it would have. (Not told where the user is asked, the user tells.)
+            return
+        if not waits():
+            return
         # What the user says is waited for here (``_ask_beside``), and taken back by
         # resolving it (``_withdraw_beside``).
         asking = self._asking_beside[commission_id] = _Beside(main, asyncio.get_running_loop().create_future())
@@ -10891,6 +10913,31 @@ class TaskAgentManager(TreeWork):
                 await asyncio.shield(self._put_back([wake for note in handed for wake in note.wakes]))
         if started:
             await self._launch(commission_id)
+
+    async def _goes_on_with(self, commission: Commission, kept: Session) -> bool | None:
+        """Whether a commission goes on with what the busy member ``kept`` is at, as the judge says (``set_beside_judge``).
+
+        None when that is not told: no judge, what the member is at could not
+        be read, or the request failed.
+        """
+        from nekopower.host.ledger import UNDER_WAY_STATUSES
+
+        judge = self._beside_judge
+        if judge is None:
+            return None
+        try:
+            at_hand = [
+                " - ".join(dict.fromkeys(words for words in (item.title, item.dispatch_text) if words))
+                for item in await self._ledger.select(session_id=kept.id, statuses=UNDER_WAY_STATUSES)
+                if item.id != commission.id and item.parent_id is None
+            ]
+            said = "\n".join([commission.user_text, *self._said_meanwhile(commission.id)]).strip()
+            return await judge(commission.dispatch_text, said, kept.name, at_hand)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - not told
+            logger.warning("telling whether commission %s goes on with what its member is at failed", commission.id, exc_info=True)
+            return None
 
     async def _ask_beside(self, commission_id: str, ask: PermissionAsk) -> str:
         """Put to the user whether another member is to do a queued commission, and wait; the ``Asker`` for ``_beside``.

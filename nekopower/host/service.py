@@ -296,6 +296,11 @@ class NekoPowerHost:
         judge = getattr(decision, "side_question", None)
         if judge is not None:
             self.task_agents.set_side_question_judge(judge)
+        # Whether work told apart from what a busy member is at goes on with it all
+        # the same, before another member is opened for it: one request of the small model.
+        beside = getattr(decision, "goes_on_with", None)
+        if beside is not None:
+            self.task_agents.set_beside_judge(beside)
         # Where a new commission belongs, when its words neither name nor
         # clearly match what is there: one request of the small model.
         belongs = getattr(decision, "belongs", None)

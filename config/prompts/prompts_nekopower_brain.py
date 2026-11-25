@@ -1070,7 +1070,7 @@ PERMISSION_CATEGORY_TEXTS = {
            "managed_delivery_arguments": "传递任务输入 {detail}", "managed_delivery_result": "交付任务结果 {detail}",
            "managed_delivery_value": "交付给程序的结果 {detail}", "managed_delivery_content": "交付给模型看的内容 {detail}",
            "usage_limit": "再用约 {more} token 接着办，用到了会再问一次（这件事已经用了 {used} token，到了一件事的用量上限）",
-           "open_session": "另开一只能改文件的使魔来办这件事：{detail}", "open_session_tree": "另开一只能改文件的使魔来办这件事，它在一份独立的副本里改，做完合回项目目录（副本建不成时排队在项目目录里改）：{detail}", "open_beside": "另开一只能改文件的使魔，和正忙的那只同时办这件事：它在一份独立的副本里改，做完合回项目目录（副本建不成时排队在项目目录里改）：{detail}",
+           "open_session": "另开一只能改文件的使魔来办这件事：{detail}", "open_session_tree": "另开一只能改文件的使魔来办这件事，它在一份独立的副本里改，做完合回项目目录（副本建不成时排队在项目目录里改）：{detail}", "open_beside": "另开一只能改文件的使魔同时办这件事，在独立副本里改，做完合回项目目录（副本建不成时排队在项目目录里改）：{detail}",
            "open_session_team": "为这件事组一支队伍：{count} 只使魔同时改文件，各在独立的副本里改，做完合回项目目录（{detail}）",
            "plugin_entry": "调用 {detail}", "other": "使用 {detail}"},
     'zh-TW': {"run_command": "執行命令 {detail}", "outside_write": "在工作目錄以外寫檔案 {detail}",
@@ -1079,7 +1079,7 @@ PERMISSION_CATEGORY_TEXTS = {
               "managed_delivery_arguments": "傳遞工作輸入 {detail}", "managed_delivery_result": "交付工作結果 {detail}",
               "managed_delivery_value": "交付給程式的結果 {detail}", "managed_delivery_content": "交付給模型看的內容 {detail}",
               "usage_limit": "再用約 {more} token 接著辦，用到了會再問一次（這件事已經用了 {used} token，到了一件事的用量上限）",
-              "open_session": "另開一隻能改檔案的使魔來辦這件事：{detail}", "open_session_tree": "另開一隻能改檔案的使魔辦這件事，在獨立副本裡改，做完合回專案目錄（建不成副本就在專案目錄裡排隊改）：{detail}", "open_beside": "另開一隻能改檔案的使魔，和正忙的那隻同時辦這件事：在獨立副本裡改，做完合回專案目錄（建不成副本就在專案目錄裡排隊改）：{detail}",
+              "open_session": "另開一隻能改檔案的使魔來辦這件事：{detail}", "open_session_tree": "另開一隻能改檔案的使魔辦這件事，在獨立副本裡改，做完合回專案目錄（建不成副本就在專案目錄裡排隊改）：{detail}", "open_beside": "另開一隻使魔同時辦這件事，在獨立副本裡改，做完合回專案目錄（建不成副本就在專案目錄裡排隊改）：{detail}",
               "open_session_team": "為這件事組一支隊伍：{count} 隻使魔同時改檔案，各在獨立的副本裡改，做完合回專案目錄（{detail}）",
               "plugin_entry": "呼叫 {detail}", "other": "使用 {detail}"},
     'en': {"run_command": "run the command {detail}", "outside_write": "write the file {detail} outside the working directory",
@@ -1091,7 +1091,7 @@ PERMISSION_CATEGORY_TEXTS = {
            "managed_delivery_arguments": "send task input {detail}", "managed_delivery_result": "deliver a task result {detail}",
            "managed_delivery_value": "deliver a result to the program {detail}", "managed_delivery_content": "deliver content to the model {detail}",
            "usage_limit": "go on with about {more} more tokens, after which it asks again (it has used {used} tokens, the limit set for one task)",
-           "mcp_server": "use the MCP server {detail}", "open_session": "start another familiar that can change files for this task: {detail}", "open_session_tree": "start another familiar that can change files for this task; it works in a copy of its own, merged back into the project folder when it is done (in the project folder itself, in its turn, where no copy can be made): {detail}", "open_beside": "start another familiar that can change files to do this beside the busy one; it works in a copy of its own, merged back into the project folder when it is done (in the project folder itself, in its turn, where no copy can be made): {detail}",
+           "mcp_server": "use the MCP server {detail}", "open_session": "start another familiar that can change files for this task: {detail}", "open_session_tree": "start another familiar that can change files for this task; it works in a copy of its own, merged back into the project folder when it is done (in the project folder itself, in its turn, where no copy can be made): {detail}", "open_beside": "start another familiar beside the busy one for this task; it works in a copy of its own, merged back into the project folder when it is done (in the project folder itself, in its turn, where no copy can be made): {detail}",
            "open_session_team": "form a team for this task: {count} familiars change files at the same time, each in a copy of its own, merged back into the project folder when done ({detail})",
            "plugin_entry": "call {detail}", "other": "use {detail}"},
     'ja': {"run_command": "コマンド {detail} の実行", "outside_write": "作業ディレクトリ外のファイル {detail} への書き込み",
@@ -1100,7 +1100,7 @@ PERMISSION_CATEGORY_TEXTS = {
            "managed_delivery_arguments": "作業の入力を渡す {detail}", "managed_delivery_result": "作業の結果を渡す {detail}",
            "managed_delivery_value": "プログラムに結果を渡す {detail}", "managed_delivery_content": "モデルに内容を渡す {detail}",
            "usage_limit": "さらに約 {more} token を使って続けること（使い切ったらもう一度確認します。この用件はすでに {used} token を使い、1 件あたりの使用量の上限に達しました）",
-           "open_session": "ファイルを変更できる使い魔をもう一体呼んでこの件を任せること：{detail}", "open_session_tree": "ファイルを変更できる使い魔をもう一体呼ぶこと（専用のコピーで作業し終われば反映。作れなければプロジェクトのフォルダーで順番に変更）：{detail}", "open_beside": "ファイルを変更できる使い魔をもう一体呼び、作業中の使い魔と並行してこの件を任せること（専用のコピーで作業し終われば反映。作れなければプロジェクトのフォルダーで順番に変更）：{detail}",
+           "open_session": "ファイルを変更できる使い魔をもう一体呼んでこの件を任せること：{detail}", "open_session_tree": "ファイルを変更できる使い魔をもう一体呼ぶこと（専用のコピーで作業し終われば反映。作れなければプロジェクトのフォルダーで順番に変更）：{detail}", "open_beside": "使い魔をもう一体呼んで並行して任せること（専用のコピーで作業し終われば反映。作れなければプロジェクトのフォルダーで順番に変更）：{detail}",
            "open_session_team": "チームを組むこと：使い魔 {count} 体が各自のコピーで同時にファイルを変更し、終われば反映（{detail}）",
            "plugin_entry": "{detail} の呼び出し", "other": "{detail} の利用"},
     'ko': {"run_command": "명령 {detail} 실행", "outside_write": "작업 디렉터리 밖의 파일 {detail} 쓰기",
@@ -1109,7 +1109,7 @@ PERMISSION_CATEGORY_TEXTS = {
            "managed_delivery_arguments": "작업 입력 전달 {detail}", "managed_delivery_result": "작업 결과 전달 {detail}",
            "managed_delivery_value": "프로그램에 결과 전달 {detail}", "managed_delivery_content": "모델에 내용 전달 {detail}",
            "usage_limit": "약 {more} token을 더 써서 계속하기(다 쓰면 다시 묻습니다. 이 일은 이미 {used} token을 써서 한 건의 사용량 한도에 이르렀습니다)",
-           "open_session": "파일을 바꿀 수 있는 사역마를 하나 더 불러 이 일을 맡기기: {detail}", "open_session_tree": "파일을 바꿀 수 있는 사역마를 하나 더 부르기(자기 사본에서 작업하고 끝나면 프로젝트 폴더에 반영, 사본을 못 만들면 프로젝트 폴더에서 차례대로 작업): {detail}", "open_beside": "파일을 바꿀 수 있는 사역마를 하나 더 불러 바쁜 사역마와 나란히 이 일을 맡기기(자기 사본에서 작업하고 끝나면 프로젝트 폴더에 반영, 사본을 못 만들면 프로젝트 폴더에서 차례대로 작업): {detail}",
+           "open_session": "파일을 바꿀 수 있는 사역마를 하나 더 불러 이 일을 맡기기: {detail}", "open_session_tree": "파일을 바꿀 수 있는 사역마를 하나 더 부르기(자기 사본에서 작업하고 끝나면 프로젝트 폴더에 반영, 사본을 못 만들면 프로젝트 폴더에서 차례대로 작업): {detail}", "open_beside": "사역마를 하나 더 불러 동시에 맡기기(자기 사본에서 작업하고 끝나면 프로젝트 폴더에 반영, 사본을 못 만들면 프로젝트 폴더에서 차례대로 작업): {detail}",
            "open_session_team": "이 일을 위해 팀 꾸리기: 사역마 {count}마리가 동시에 파일을 바꾸며, 각자 자기 사본에서 작업하고 끝나면 프로젝트 폴더에 반영합니다({detail})",
            "plugin_entry": "{detail} 호출", "other": "{detail} 사용"},
     'ru': {"run_command": "выполнить команду {detail}", "outside_write": "записать файл {detail} вне рабочего каталога",
@@ -1120,7 +1120,7 @@ PERMISSION_CATEGORY_TEXTS = {
            "managed_delivery_arguments": "передать входные данные задачи {detail}", "managed_delivery_result": "передать результат задачи {detail}",
            "managed_delivery_value": "передать результат программе {detail}", "managed_delivery_content": "передать данные модели {detail}",
            "usage_limit": "продолжить, израсходовав ещё около {more} токенов, после чего будет новый запрос (на задачу уже ушло {used} токенов, это предел для одной задачи)",
-           "mcp_server": "использовать MCP-сервер {detail}", "open_session": "вызвать ещё одного фамильяра, который может менять файлы, для этой задачи: {detail}", "open_session_tree": "вызвать ещё одного фамильяра, который может менять файлы, для этой задачи; он работает в собственной копии, а по окончании изменения вносятся в папку проекта (если копию создать нельзя, он работает в папке проекта в свою очередь): {detail}", "open_beside": "вызвать ещё одного фамильяра, который может менять файлы, чтобы он занялся этой задачей параллельно с занятым; он работает в собственной копии, а по окончании изменения вносятся в папку проекта (если копию создать нельзя, он работает в папке проекта в свою очередь): {detail}",
+           "mcp_server": "использовать MCP-сервер {detail}", "open_session": "вызвать ещё одного фамильяра, который может менять файлы, для этой задачи: {detail}", "open_session_tree": "вызвать ещё одного фамильяра, который может менять файлы, для этой задачи; он работает в собственной копии, а по окончании изменения вносятся в папку проекта (если копию создать нельзя, он работает в папке проекта в свою очередь): {detail}", "open_beside": "вызвать ещё одного фамильяра параллельно с занятым для этой задачи; он работает в собственной копии, а по окончании изменения вносятся в папку проекта (если копию создать нельзя, он работает в папке проекта в свою очередь): {detail}",
            "open_session_team": "собрать для этой задачи команду: {count} фамильяров одновременно меняют файлы, каждый в собственной копии, а по окончании изменения вносятся в папку проекта ({detail})",
            "plugin_entry": "вызвать {detail}", "other": "использовать {detail}"},
     'es': {"run_command": "ejecutar el comando {detail}", "outside_write": "escribir el archivo {detail} fuera del directorio de trabajo",
@@ -1132,7 +1132,7 @@ PERMISSION_CATEGORY_TEXTS = {
            "managed_delivery_arguments": "enviar los datos de entrada de la tarea {detail}", "managed_delivery_result": "entregar el resultado de la tarea {detail}",
            "managed_delivery_value": "entregar el resultado al programa {detail}", "managed_delivery_content": "entregar contenido al modelo {detail}",
            "usage_limit": "seguir gastando unos {more} tokens más, tras lo cual volverá a preguntar (ya ha gastado {used} tokens, el límite fijado para una tarea)",
-           "mcp_server": "usar el servidor MCP {detail}", "open_session": "iniciar otro familiar que puede cambiar archivos para esta tarea: {detail}", "open_session_tree": "iniciar otro familiar que puede cambiar archivos para esta tarea; trabaja en una copia propia que se fusiona en la carpeta del proyecto al terminar (si no se puede crear la copia, trabaja en la carpeta del proyecto cuando le toque): {detail}", "open_beside": "iniciar otro familiar que puede cambiar archivos para hacer esta tarea a la vez que el que está ocupado; trabaja en una copia propia que se fusiona en la carpeta del proyecto al terminar (si no se puede crear la copia, trabaja en la carpeta del proyecto cuando le toque): {detail}",
+           "mcp_server": "usar el servidor MCP {detail}", "open_session": "iniciar otro familiar que puede cambiar archivos para esta tarea: {detail}", "open_session_tree": "iniciar otro familiar que puede cambiar archivos para esta tarea; trabaja en una copia propia que se fusiona en la carpeta del proyecto al terminar (si no se puede crear la copia, trabaja en la carpeta del proyecto cuando le toque): {detail}", "open_beside": "iniciar otro familiar junto al ocupado para esta tarea; trabaja en una copia propia que se fusiona en la carpeta del proyecto al terminar (si no se puede crear la copia, trabaja en la carpeta del proyecto cuando le toque): {detail}",
            "open_session_team": "formar un equipo para esta tarea: {count} familiares cambian archivos a la vez, cada uno en una copia propia que se fusiona en la carpeta del proyecto al terminar ({detail})",
            "plugin_entry": "llamar a {detail}", "other": "usar {detail}"},
     'pt': {"run_command": "executar o comando {detail}", "outside_write": "gravar o arquivo {detail} fora do diretório de trabalho",
@@ -1144,7 +1144,7 @@ PERMISSION_CATEGORY_TEXTS = {
            "managed_delivery_arguments": "enviar os dados de entrada da tarefa {detail}", "managed_delivery_result": "entregar o resultado da tarefa {detail}",
            "managed_delivery_value": "entregar o resultado ao programa {detail}", "managed_delivery_content": "entregar conteúdo ao modelo {detail}",
            "usage_limit": "continuar gastando cerca de mais {more} tokens, e depois perguntará de novo (já gastou {used} tokens, o limite definido para uma tarefa)",
-           "mcp_server": "usar o servidor MCP {detail}", "open_session": "iniciar outro familiar que pode alterar arquivos para esta tarefa: {detail}", "open_session_tree": "iniciar outro familiar que pode alterar arquivos para esta tarefa; ele trabalha em uma cópia própria, mesclada na pasta do projeto ao terminar (se a cópia não puder ser criada, trabalha na pasta do projeto na sua vez): {detail}", "open_beside": "iniciar outro familiar que pode alterar arquivos para fazer esta tarefa ao mesmo tempo que o que está ocupado; ele trabalha em uma cópia própria, mesclada na pasta do projeto ao terminar (se a cópia não puder ser criada, trabalha na pasta do projeto na sua vez): {detail}",
+           "mcp_server": "usar o servidor MCP {detail}", "open_session": "iniciar outro familiar que pode alterar arquivos para esta tarefa: {detail}", "open_session_tree": "iniciar outro familiar que pode alterar arquivos para esta tarefa; ele trabalha em uma cópia própria, mesclada na pasta do projeto ao terminar (se a cópia não puder ser criada, trabalha na pasta do projeto na sua vez): {detail}", "open_beside": "iniciar outro familiar junto ao ocupado para esta tarefa; ele trabalha em uma cópia própria, mesclada na pasta do projeto ao terminar (se a cópia não puder ser criada, trabalha na pasta do projeto na sua vez): {detail}",
            "open_session_team": "formar uma equipe para esta tarefa: {count} familiares alteram arquivos ao mesmo tempo, cada um em uma cópia própria, mesclada na pasta do projeto ao terminar ({detail})",
            "plugin_entry": "chamar {detail}", "other": "usar {detail}"},
 }
@@ -1511,6 +1511,28 @@ def build_side_question_request(*, task: str, user_said: str, waiting_for: str =
         lines.append(f"What the user said: {user_said}")
     if waiting_for.strip():
         lines.append(f'The agent is waiting for the user to answer: "{waiting_for.strip()}"')
+    return "\n".join(lines)
+
+
+TASK_BRAIN_BESIDE_PROMPT = (
+    "You are an automation assessment agent. In a project, one agent is busy with some work. A new request "
+    "for the same project has come in and waits for that agent. Another agent could take the new request at "
+    "once, in a separate copy of the project, knowing nothing of what the busy agent is doing.\n"
+    "Say whether the new request goes on with the busy agent's work: it continues, extends, corrects or "
+    "depends on that work, or names what that work is making. Then it has to wait for that agent.\n"
+    "Otherwise it is separate work that another agent can do on its own.\n"
+    "When unsure, it goes on with the busy agent's work.\n"
+    'Reply with JSON only: {"goes_on": true} or {"goes_on": false}.'
+)
+
+
+def build_beside_request(*, task: str, user_said: str, busy: str, at_hand: list[str]) -> str:
+    """Return the user message of that question: the request, the user's own words when they differ, and what the busy agent is at."""
+    lines = [f"New request: {task}"]
+    if user_said and user_said.strip() != task.strip():
+        lines.append(f"What the user said: {user_said}")
+    lines.append(f"The busy agent: {busy}")
+    lines.extend(f"It is working on: {item}" for item in at_hand if item.strip())
     return "\n".join(lines)
 
 

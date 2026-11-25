@@ -379,6 +379,44 @@ async def test_stopped_while_the_user_is_asked_it_is_over_and_nothing_is_made(ho
     assert scripts["broken links"].requests == [] and host.task_agents._handing_back_to == {}
 
 
+@pytest.mark.parametrize("told", ["goes_on", "apart", "not_told"])
+@pytest.mark.parametrize("beside", ["ask", "open"])
+async def test_the_small_model_is_asked_once_whether_it_goes_on_with_what_the_busy_one_is_at(hosts, tmp_path, beside, told):
+    host, trees, _workdir, one, _scripts, _seen = await _busy(hosts, tmp_path, _links())
+    main = await _session_of(host, one.commission_id)
+    model = host.decision._llm
+    model.beside = [
+        {"goes_on": True} if told == "goes_on" else {"goes_on": False} if told == "apart" else RuntimeError("away")
+    ]
+    await host.set_landing_settings(beside=beside)
+    two = await _dispatch(host, APART)
+
+    # Told apart by its words, it goes to the small model once more: separate work, or on with the busy one's?
+    # Not told (the request failed), the user tells where asked; where nobody is asked, nothing is opened.
+    opened = told == "apart" or (told == "not_told" and beside == "ask")
+    if beside == "ask" and opened:
+        await _asked(host, two.commission_id)
+    elif opened:
+        await wait_until(lambda: len(model.beside_calls) == 1, what="the small model being asked")
+        await wait_status(host, two.commission_id, "working", "done")
+    else:
+        await wait_until(lambda: len(model.beside_calls) == 1, what="the small model being asked")
+        await _settled(host)
+
+    [request] = model.beside_calls
+    asked = request[-1]["content"]
+    assert APART in asked and FIRST in asked and main.name in asked
+    if opened:
+        assert len(await _members(host)) == 2 if beside == "open" else len(await outbox(host, "question")) == 1
+    else:
+        waiting = await host.ledger.get(two.commission_id)
+        assert (waiting.status, waiting.session_id) == ("queued", main.id)
+        assert await outbox(host, "question") == [] and len(await _members(host)) == 1 and trees.made == []
+    # However it went, it is done in the end: by the member made for it, or by the busy one once it is free.
+    host.release.set()
+    await wait_status(host, two.commission_id, "done")
+
+
 # What is read wrongly of the sentences said while the user is asked (``BESIDE_ANSWER_WORDS_MAX``), by name.
 _READ_WRONGLY = {
     # Answers taken for new work: they say more than a yes or a no (the user then sees a new commission,
@@ -1188,6 +1226,8 @@ async def test_it_waits_for_the_member_as_ever_where_no_other_is_to_be_had(hosts
     assert await outbox(host, "question") == [] and host.task_agents.queued == [two.commission_id]
     assert [member.id for member in await _members(host)] == [main.id]
     assert host.task_agents._apart == {}
+    # (Nor is the small model asked whether it goes on with the busy one's work: that costs a request.)
+    assert host.decision._llm.beside_calls == []
     host.release.set()
     done = await wait_status(host, two.commission_id, "done")
     assert done.session_id == main.id and (workdir / "links.txt").exists() and trees.made == []

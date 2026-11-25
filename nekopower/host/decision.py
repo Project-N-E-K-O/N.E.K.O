@@ -77,6 +77,10 @@ TIER_COARSE = "coarse"
 # Whether a commission is a side question (``LexicalDecisionModel.side_question``):
 # on the small tier, like the coarse screen.
 TIER_SIDE_QUESTION = "side_question"
+# Whether a commission goes on with what a busy member is at, before another
+# member is opened for it (``LexicalDecisionModel.goes_on_with``): the small
+# tier as well, kept apart for what is counted of it.
+TIER_BESIDE = "beside"
 TIER_FINE = "fine"
 # Where a commission belongs (``LexicalDecisionModel.belongs``): one request
 # on the tier the settings name (``ORCHESTRATOR_MODEL_SLOT``), metered under
@@ -308,11 +312,16 @@ class ConfiguredDecisionLLM:
             TURN_CHECK_OUTPUT_MAX_TOKENS,
         )
 
-        from config.nekopower_settings import ORCHESTRATOR_OUTPUT_MAX_TOKENS, SIDE_QUESTION_OUTPUT_MAX_TOKENS
+        from config.nekopower_settings import (
+            BESIDE_JUDGE_OUTPUT_MAX_TOKENS,
+            ORCHESTRATOR_OUTPUT_MAX_TOKENS,
+            SIDE_QUESTION_OUTPUT_MAX_TOKENS,
+        )
 
         budget = {
             TIER_COARSE: AGENT_PLUGIN_COARSE_MAX_TOKENS,
             TIER_SIDE_QUESTION: SIDE_QUESTION_OUTPUT_MAX_TOKENS,
+            TIER_BESIDE: BESIDE_JUDGE_OUTPUT_MAX_TOKENS,
             TIER_TURN_CHECK: TURN_CHECK_OUTPUT_MAX_TOKENS,
             TIER_SHORT_DESCRIPTION: AGENT_PLUGIN_SHORTDESC_MAX_TOKENS,
             TIER_REVIEW: TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS,
@@ -841,6 +850,49 @@ class LexicalDecisionModel:
             return None
         decision = parse_json_object(raw or "")
         verdict = decision.get("side_question") if decision is not None else None
+        return verdict if isinstance(verdict, bool) else None
+
+    async def goes_on_with(self, dispatch_text: str, user_text: str, busy: str, at_hand: Sequence[str]) -> bool | None:
+        """Say whether a commission goes on with what a busy member is at. None when it cannot be told.
+
+        One request on the small tier (``TIER_BESIDE``), asked only where
+        the user would be asked whether another member is to do it, or one
+        would be opened for it with nobody asked (``TaskAgentManager._beside``),
+        once its words tell it apart from what the member is at. ``busy`` is
+        the member's name, ``at_hand`` what it has under way. What is too long
+        to be shown whole is not asked about, and neither is anything told
+        by an answer that cannot be read.
+        """
+        from config.nekopower_settings import (
+            BESIDE_JUDGE_AT_HAND_MAX_TOKENS,
+            DISPATCH_TEXT_MAX_TOKENS,
+            DISPATCH_USER_TEXT_MAX_TOKENS,
+        )
+        from config.prompts.prompts_nekopower_brain import TASK_BRAIN_BESIDE_PROMPT, build_beside_request
+        from utils.tokenize import count_tokens
+
+        if (
+            count_tokens(dispatch_text) > DISPATCH_TEXT_MAX_TOKENS
+            or count_tokens(user_text) > DISPATCH_USER_TEXT_MAX_TOKENS
+            or count_tokens("\n".join(at_hand)) > BESIDE_JUDGE_AT_HAND_MAX_TOKENS
+        ):
+            return None
+        messages = [
+            {"role": "system", "content": TASK_BRAIN_BESIDE_PROMPT},
+            {
+                "role": "user",
+                "content": build_beside_request(task=dispatch_text, user_said=user_text, busy=busy, at_hand=at_hand),
+            },
+        ]
+        try:
+            raw = await self._llm.complete(TIER_BESIDE, messages)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - not told
+            logger.warning("telling whether a commission goes on with a busy member's work failed: %s", type(exc).__name__)
+            return None
+        decision = parse_json_object(raw or "")
+        verdict = decision.get("goes_on") if decision is not None else None
         return verdict if isinstance(verdict, bool) else None
 
     async def belongs(self, messages: list[dict[str, Any]]) -> str | None:

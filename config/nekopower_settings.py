@@ -854,6 +854,16 @@ TASK_AGENT_FORK_PENDING_QUESTION_MAX_TOKENS = 300
 """How much of the question a project's session waits for the user to answer
 the message that opens a copy of it says (``TASK_AGENT_COPY_SESSION_WAITS``)."""
 
+BESIDE_JUDGE_OUTPUT_MAX_TOKENS = 64
+"""What the small model may write when it is asked whether a commission goes on
+with what a busy member is at (``LexicalDecisionModel.goes_on_with``): one
+line of JSON, with room to spare."""
+
+BESIDE_JUDGE_AT_HAND_MAX_TOKENS = 400
+"""How much of what the busy member is at the small model is shown
+(``LexicalDecisionModel.goes_on_with``): more than that, and it is not asked,
+the commission waiting for the member as it would have."""
+
 SIDE_QUESTION_OUTPUT_MAX_TOKENS = 64
 """What the small model may write when it is asked whether a commission is a
 side question (``LexicalDecisionModel.side_question``): one line of JSON, with
