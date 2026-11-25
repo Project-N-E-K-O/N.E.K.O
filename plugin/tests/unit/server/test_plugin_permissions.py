@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -1611,6 +1612,34 @@ def test_a_config_file_appearing_is_looked_up_again(monkeypatch, tmp_path):
     first.write_text("", encoding="utf-8")  # the earlier candidate now wins
     permission_service.current_source("demo")
     assert directories[-1] == first.parent.resolve()
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="needs unprivileged symlinks")
+def test_a_switched_symlink_on_the_config_path_is_looked_up_again(monkeypatch, tmp_path):
+    from plugin.server.infrastructure import config_paths
+
+    for name in ("a", "b"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "plugin.toml").write_text("", encoding="utf-8")
+    link = tmp_path / "link"
+    os.symlink(tmp_path / "a", link)
+    monkeypatch.setattr(config_paths, "_registered_plugin_config_candidates", lambda _pid: (str(link / "plugin.toml"),))
+    monkeypatch.setattr(permission_service, "_source_cache", {})
+    manager = SnapshotInstallSources([_lock_entry(channel="manual")])
+    monkeypatch.setattr(install_source_module, "get_install_source_manager", lambda: manager)
+    directories = []
+    real = permission_service._plugin_directory
+    monkeypatch.setattr(
+        permission_service, "_plugin_directory",
+        lambda pid, candidates=None: directories.append(real(pid, candidates)) or directories[-1],
+    )
+    permission_service.current_source("demo")
+    permission_service.current_source("demo")
+    assert directories == [(tmp_path / "a").resolve()]
+    os.remove(link)
+    os.symlink(tmp_path / "b", link)  # both files exist; the directory changed
+    permission_service.current_source("demo")
+    assert directories[-1] == (tmp_path / "b").resolve()
 
 
 def test_busy_registry_is_not_cached(monkeypatch):

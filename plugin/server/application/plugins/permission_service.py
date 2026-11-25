@@ -82,22 +82,29 @@ def _plugin_directory(plugin_id: str, candidates: tuple[object, ...] | None = No
 # each exists, source). The source is worked out from exactly these inputs;
 # the install-source lock is copy-on-write (every change publishes a new
 # snapshot object), so a different snapshot, manager, registration or a
-# config file appearing / disappearing means it is worked out again (one stat
-# per candidate). Spares the per-use path resolution, logging and lock-entry
+# config file appearing / disappearing or a symlink on its path switched
+# means it is worked out again (a stat and a realpath per candidate). Spares the per-use path resolution, logging and lock-entry
 # lookup in the host's checks.
 _source_cache: dict[str, tuple[object, object, tuple[object, ...], PluginSource | None]] = {}
 _SOURCE_CACHE_LIMIT = 1024
 
 
 def _candidates_key(candidates: tuple[object, ...]) -> tuple[object, ...]:
-    """The candidates and whether each is a file now: which one is used depends on it."""
-    present = []
+    """The candidates and where each really is now (None when it is not a file).
+
+    Which one is used, and its directory, depends on both: a config file
+    appearing, or a symlink on its path switched to another directory, is a
+    different input.
+    """
+    resolved = []
     for candidate in candidates:
         try:
-            present.append(candidate is not None and os.path.isfile(candidate))
-        except (TypeError, ValueError):
-            present.append(False)
-    return (candidates, tuple(present))
+            resolved.append(
+                os.path.realpath(candidate) if candidate is not None and os.path.isfile(candidate) else None
+            )
+        except (TypeError, ValueError, OSError):
+            resolved.append(None)
+    return (candidates, tuple(resolved))
 
 
 def _source_of(entry) -> PluginSource | None:
