@@ -64,7 +64,7 @@ const ASSIST_PROVIDERS = {
         recognition_model: 'kimi-for-coding',
         agent_model: 'kimi-for-coding',
     },
-    mimo: { conversation_model: 'mimo-v2.5' },
+    mimo: { conversation_model: 'mimo-v2.6-flash' },
     openai: { conversation_model: 'gpt-5.6-luna' },
 };
 const CORE_PROVIDERS = {
@@ -299,7 +299,7 @@ test('named and custom slots fall back the same way as the backend snapshot', ()
     assert.equal(context.resolveSlotModelState('memory').defaultModelId, 'qwen3.8-flash');
 
     setSlot('agent', 'mimo');
-    assert.equal(context.resolveSlotModelState('agent').defaultModelId, 'mimo-v2.5');
+    assert.equal(context.resolveSlotModelState('agent').defaultModelId, 'mimo-v2.6-flash');
 
     setSlot('conversation', 'custom');
     assert.equal(context.resolveSlotModelState('conversation').defaultModelId, 'google/gemini-2.5-flash');

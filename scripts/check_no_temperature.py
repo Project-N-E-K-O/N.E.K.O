@@ -357,6 +357,7 @@ def _exemption_for(rel: str | None) -> str | None:
 
 # Variables that point git at a repository other than the one ``cwd`` is in;
 # they are set inside git hooks, for example. Dropped for the calls below.
+# The same list is in scripts/check_module_layering.py; change both together.
 GIT_LOCATION_VARS = frozenset(
     {
         "GIT_DIR",

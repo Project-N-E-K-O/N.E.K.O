@@ -325,7 +325,7 @@ class TestSchemaValidation:
                 "mimo": {
                     "name": "MiMo",
                     "openrouter_url": "https://api.xiaomimimo.com/v1",
-                    "conversation_model": "mimo-v2.5",
+                    "conversation_model": "mimo-v2.6-flash",
                 }
             }
         }
@@ -344,7 +344,7 @@ class TestSchemaValidation:
 
         assert result["success"] is True
         assert result["resolved_url"] == "https://token-plan-sgp.xiaomimimo.com/v1"
-        assert calls == [("https://token-plan-sgp.xiaomimimo.com/v1", "tp-token-plan", "mimo-v2.5")]
+        assert calls == [("https://token-plan-sgp.xiaomimimo.com/v1", "tp-token-plan", "mimo-v2.6-flash")]
 
     async def test_builtin_non_mimo_assist_rejects_token_plan_url_override(self):
         """MiMo Token Plan override must not affect other built-in assist APIs."""
@@ -381,7 +381,7 @@ class TestSchemaValidation:
                 "mimo": {
                     "name": "MiMo",
                     "openrouter_url": "https://api.xiaomimimo.com/v1",
-                    "conversation_model": "mimo-v2.5",
+                    "conversation_model": "mimo-v2.6-flash",
                 }
             }
         }

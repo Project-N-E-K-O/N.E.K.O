@@ -37,7 +37,7 @@ def _establish_free_config(page: Page):
 
 
 def _open_free_settings(page: Page, server: str):
-    page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     page.goto(f"{server}/api_key")
     expect(page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
     _establish_free_config(page)
