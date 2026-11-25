@@ -22,7 +22,10 @@ Python docs):
   flags) and the ``os.*`` file events listed in ``_FS_EVENTS``, for paths
   outside the plugin's own directory, storage directory and shared directory
   (reads of the time zone and MIME type files the standard library loads
-  itself are exempt too).
+  itself are exempt too). A path is judged where it really lands (symlinks
+  resolved). A relative path with a ``dir_fd`` is recorded as ``<dir_fd>``;
+  ``os.open(..., dir_fd=)`` raises ``open`` without the descriptor, so that one
+  form is judged against the current directory.
 
 **Not covered: ``system.env:read``.** Python raises no audit event when the
 environment is read (only ``os.putenv`` / ``os.unsetenv``), so reads of
@@ -82,6 +85,7 @@ AUDITED_PERMISSIONS = frozenset({NETWORK_CONNECT, PROCESS_SPAWN, FS_READ, FS_WRI
 QUEUE_LIMIT = 1024
 BATCH_SIZE = 50
 FLUSH_INTERVAL = 1.0
+_POLL_INTERVAL = 0.1
 DEDUP_SECONDS = 60.0
 _DEDUP_LIMIT = 4096
 _LOOKUP_SECONDS = 10.0
@@ -97,23 +101,28 @@ _OTHER, _PLUGIN, _HOST = 0, 1, 2
 _HOST_PACKAGES = frozenset({"plugin", "utils", "config"})
 _IMPORT_MODULES = frozenset({"importlib._bootstrap", "importlib._bootstrap_external"})
 
-# File events: event name -> (permission, indexes of the path arguments).
-_FS_EVENTS: dict[str, tuple[str, tuple[int, ...]]] = {
-    "os.listdir": (FS_READ, (0,)),
-    "os.scandir": (FS_READ, (0,)),
-    "os.remove": (FS_WRITE, (0,)),
-    "os.rename": (FS_WRITE, (0, 1)),  # also os.replace
-    "os.mkdir": (FS_WRITE, (0,)),
-    "os.rmdir": (FS_WRITE, (0,)),
-    "os.chmod": (FS_WRITE, (0,)),
-    "os.chown": (FS_WRITE, (0,)),
-    "os.truncate": (FS_WRITE, (0,)),
-    "os.utime": (FS_WRITE, (0,)),
-    "os.link": (FS_WRITE, (1,)),
-    "os.symlink": (FS_WRITE, (1,)),
-    "shutil.rmtree": (FS_WRITE, (0,)),
+# File events: event name -> (permission, paths). Each path is (index of the
+# path argument, index of its dir_fd argument or None, whether the operation
+# follows a symlink in the last component). Argument orders as CPython raises
+# them (os.rename is also os.replace).
+_FS_EVENTS: dict[str, tuple[str, tuple[tuple[int, int | None, bool], ...]]] = {
+    "os.listdir": (FS_READ, ((0, None, True),)),
+    "os.scandir": (FS_READ, ((0, None, True),)),
+    "os.remove": (FS_WRITE, ((0, 1, False),)),
+    "os.rename": (FS_WRITE, ((0, 2, False), (1, 3, False))),
+    "os.mkdir": (FS_WRITE, ((0, 2, False),)),
+    "os.rmdir": (FS_WRITE, ((0, 1, False),)),
+    "os.chmod": (FS_WRITE, ((0, 2, True),)),
+    "os.chown": (FS_WRITE, ((0, 3, True),)),
+    "os.truncate": (FS_WRITE, ((0, None, True),)),
+    "os.utime": (FS_WRITE, ((0, 3, True),)),
+    "os.link": (FS_WRITE, ((1, 3, False),)),
+    "os.symlink": (FS_WRITE, ((1, 2, False),)),
+    "shutil.rmtree": (FS_WRITE, ((0, 1, False),)),
 }
 _DIRECTORY_EVENTS = frozenset({"os.listdir", "os.scandir", "os.mkdir", "os.rmdir", "shutil.rmtree"})
+# Without a path these list the current directory; with an int, a directory fd.
+_LISTING_EVENTS = frozenset({"os.listdir", "os.scandir"})
 _SPAWN_EVENTS = frozenset({
     "subprocess.Popen", "os.system", "os.exec", "os.spawn", "os.posix_spawn", "os.fork",
     "os.forkpty", "os.startfile", "os.startfile/2", "pty.spawn", "_winapi.CreateProcess",
@@ -126,6 +135,11 @@ _FROZEN = bool(getattr(sys, "frozen", False)) or "__compiled__" in globals()
 
 def _norm(path: str) -> str:
     return os.path.normcase(os.path.abspath(path))
+
+
+def _forms(path: str) -> set[str]:
+    """A directory as written and with its symlinks resolved."""
+    return {_norm(path), os.path.normcase(os.path.realpath(path))}
 
 
 def _under(path: str, roots: tuple[str, ...]) -> bool:
@@ -145,15 +159,15 @@ def interpreter_directories() -> list[str]:
         try:
             directories.append(sysconfig.get_path(key))
         except Exception:
-            pass
+            pass  # not available here: nothing to exempt
     try:
         directories.extend(site.getsitepackages())
     except Exception:
-        pass
+        pass  # not available here: nothing to exempt
     try:
         directories.append(site.getusersitepackages())
     except Exception:
-        pass
+        pass  # not available here: nothing to exempt
     if _FROZEN:
         # The standard library and dependencies ship next to the launcher.
         directories.append(os.path.dirname(sys.executable))
@@ -172,13 +186,13 @@ def system_read_paths() -> list[str]:
 
         paths.extend(zoneinfo.TZPATH)
     except Exception:
-        pass
+        pass  # not available here: nothing to exempt
     try:
         import mimetypes
 
         paths.extend(mimetypes.knownfiles)
     except Exception:
-        pass
+        pass  # not available here: nothing to exempt
     return paths
 
 
@@ -193,14 +207,16 @@ def redact_path(path: str, *, directory: bool = False, home: str | None = None) 
     home = os.path.expanduser("~") if home is None else home
     text = os.path.abspath(path)
     anchor = ""
-    if home and len(home) > 1 and (text == home or text.startswith(home.rstrip(os.sep) + os.sep)):
-        anchor, text = "~", text[len(home.rstrip(os.sep)):]
+    folded, home_folded = os.path.normcase(text), os.path.normcase(home or "").rstrip(os.sep)
+    if len(home_folded) > 1 and (folded == home_folded or folded.startswith(home_folded + os.sep)):
+        anchor, text = "~", text[len(home_folded):]
     drive, rest = os.path.splitdrive(text)
     parts = [part for part in rest.replace("\\", "/").split("/") if part]
     if not anchor:
         anchor = drive + "/" if drive else "/"
-        for index, part in enumerate(parts[:2]):
-            if part.lower() in ("users", "home") and index + 1 < len(parts):
+        # Any level: /mnt/c/Users/<name>, /Volumes/Disk/Users/<name>.
+        for index, part in enumerate(parts[:-1]):
+            if part.lower() in ("users", "home"):
                 parts[index + 1] = "<user>"
                 break
     name = None
@@ -223,8 +239,12 @@ def redact_path(path: str, *, directory: bool = False, home: str | None = None) 
     return result[:TARGET_MAX_CHARS]
 
 
-def program_name(value: object) -> str:
-    """The program's base name only; arguments are never recorded."""
+def program_name(value: object, *, command_line: bool = False) -> str:
+    """The program's base name only; arguments are never recorded.
+
+    ``value`` is a path (or an argv whose first item is one) unless
+    ``command_line``: only a command-line string is cut at the first blank.
+    """
     if isinstance(value, (list, tuple)):
         value = value[0] if value else ""
     if isinstance(value, os.PathLike):
@@ -234,14 +254,27 @@ def program_name(value: object) -> str:
     if not isinstance(value, str):
         return "<unknown>"
     text = value.strip()
-    if text[:1] in ('"', "'"):
-        quote = text[0]
-        end = text.find(quote, 1)
-        text = text[1:end] if end > 0 else text[1:]
-    else:
-        text = text.split()[0] if text.split() else ""
+    if command_line:
+        if text[:1] in ('"', "'"):
+            quote = text[0]
+            end = text.find(quote, 1)
+            text = text[1:end] if end > 0 else text[1:]
+        else:
+            text = text.split()[0] if text.split() else ""
     name = text.replace("\\", "/").rsplit("/", 1)[-1]
     return name[:TARGET_MAX_CHARS] or "<unknown>"
+
+
+def document_name(value: object) -> str:
+    """A document opened with its associated program: ``*`` plus its extension."""
+    if isinstance(value, os.PathLike):
+        value = os.fspath(value)
+    if isinstance(value, bytes):
+        value = os.fsdecode(value)
+    if not isinstance(value, str):
+        return "<unknown>"
+    extension = os.path.splitext(value.replace("\\", "/").rsplit("/", 1)[-1])[1]
+    return "*" + extension if 1 < len(extension) <= 10 and extension[1:].isalnum() else "*"
 
 
 def _port(value: object) -> int | None:
@@ -264,6 +297,18 @@ def _is_ip_literal(host: str) -> bool:
     return True
 
 
+def _inside_rmtree() -> bool:
+    """Whether the current use comes from ``shutil.rmtree``'s fd-based walk."""
+    frame = sys._getframe(1)
+    for _ in range(_MAX_FRAMES):
+        if frame is None:
+            return False
+        if frame.f_code.co_name.startswith("_rmtree") and frame.f_globals.get("__name__") == "shutil":
+            return True
+        frame = frame.f_back
+    return False
+
+
 class SystemAuditor:
     """The hook's state for one plugin process. ``hook`` is what is installed."""
 
@@ -279,36 +324,41 @@ class SystemAuditor:
     ) -> None:
         self._plugin_dir = _norm(os.fspath(plugin_dir))
         self._project_root = _norm(os.fspath(project_root)) if project_root is not None else None
-        exempt = {self._plugin_dir}
+        exempt = _forms(self._plugin_dir)
         for directory in exempt_dirs:
             try:
-                exempt.add(_norm(os.fspath(directory)))
+                exempt |= _forms(os.fspath(directory))
             except Exception:
-                pass
+                pass  # an unusable directory exempts nothing
         self._exempt_dirs = tuple(sorted(exempt))
         # The interpreter's directories are exempt for reading only: a plugin
         # writing into site-packages (or next to a frozen launcher) is recorded.
         read_exempt = set()
         for path in (*interpreter_directories(), *system_read_paths()):
             try:
-                read_exempt.add(_norm(path))
+                read_exempt |= _forms(path)
             except Exception:
-                pass
+                pass  # an unusable path exempts nothing
         self._read_exempt = tuple(sorted(read_exempt))
         self._permissions = permissions
         self._sender = sender
         self._home = os.path.expanduser("~") if home is None else home
+        try:
+            real_home = os.path.realpath(self._home)
+        except Exception:
+            real_home = self._home  # unresolvable: matched as written only
+        self._real_home = real_home if os.path.normcase(real_home) != os.path.normcase(self._home) else None
         self._active = True
         self._busy: set[int] = set()
         self._internal_threads: set[int] = set()
         self._queue: collections.deque[dict] = collections.deque()
         self._dedup: dict[tuple, float] = {}
         self._frame_kinds: dict[str, int] = {}
+        self._real_dirs: dict[str, str] = {}
         self._lookups: collections.deque[tuple[float, str, int | None]] = collections.deque(maxlen=64)
         self._thread_lookup: dict[int, tuple[float, str, int | None]] = {}
         self.dropped = 0
         self.errors = 0
-        self._wake = threading.Event()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -381,15 +431,27 @@ class SystemAuditor:
             return [(permission, target, ())] if target else []
         spec = _FS_EVENTS.get(event)
         if spec is not None:
-            permission, indexes = spec
+            permission, paths = spec
+            listing = event in _LISTING_EVENTS
             uses = []
-            for index in indexes:
-                if index < len(args):
-                    target = self._fs_target(
-                        args[index], directory=event in _DIRECTORY_EVENTS, read=permission == FS_READ,
-                    )
-                    if target:
-                        uses.append((permission, target, ()))
+            for index, fd_index, follow in paths:
+                path = args[index] if index < len(args) else None
+                dir_fd = args[fd_index] if fd_index is not None and fd_index < len(args) else None
+                if (isinstance(dir_fd, int) and dir_fd >= 0 or isinstance(path, int)) and _inside_rmtree():
+                    # shutil.rmtree's own descriptor walk: its root was
+                    # judged by the "shutil.rmtree" event already.
+                    continue
+                if listing and path is None:
+                    path = os.getcwd()  # raises no audit event
+                elif listing and isinstance(path, int):
+                    uses.append((permission, "<fd>", ()))  # a directory descriptor: unknown target
+                    continue
+                target = self._fs_target(
+                    path, directory=event in _DIRECTORY_EVENTS, read=permission == FS_READ,
+                    dir_fd=dir_fd, follow=follow,
+                )
+                if target:
+                    uses.append((permission, target, ()))
             return uses
         if event in _SPAWN_EVENTS:
             return [(PROCESS_SPAWN, self._spawn_target(event, args), ())]
@@ -399,7 +461,40 @@ class SystemAuditor:
 
     # -- targets ------------------------------------------------------------
 
-    def _fs_target(self, path: object, *, directory: bool, read: bool = False) -> str | None:
+    def _real(self, path: str, *, follow: bool) -> str:
+        """Where ``path`` really lands (symlinks resolved; the link itself
+        when the operation does not follow it), not case-normalised.
+
+        Resolved parent directories are cached: one ``lstat`` per use instead
+        of one per level. A directory turned into a symlink after it was
+        first seen is missed; the hook only constrains honest plugins.
+        ``realpath`` / ``lstat`` raise no audit event.
+        """
+        if ".." in path.replace("\\", "/").split("/"):
+            # abspath folds ".." before symlinks are seen: resolve it all.
+            if follow:
+                return os.path.realpath(path)
+            parent, name = os.path.split(path.rstrip("/\\") or path)
+            if name in ("", ".", ".."):
+                return os.path.realpath(path)
+            return os.path.join(os.path.realpath(parent or "."), name)
+        absolute = os.path.abspath(path)
+        parent, name = os.path.split(absolute)
+        if follow and os.path.islink(absolute):
+            return os.path.realpath(absolute)
+        resolved = self._real_dirs.get(parent)
+        if resolved is None:
+            resolved = os.path.realpath(parent)
+            if len(self._real_dirs) > 4096:
+                self._real_dirs.clear()
+            self._real_dirs[parent] = resolved
+        return os.path.join(resolved, name)
+
+    def _exempt(self, path: str, read: bool) -> bool:
+        return _under(path, self._exempt_dirs) or (read and _under(path, self._read_exempt))
+
+    def _fs_target(self, path: object, *, directory: bool, read: bool = False,
+                   dir_fd: object = None, follow: bool = True) -> str | None:
         if path is None or isinstance(path, int):
             return None
         if isinstance(path, os.PathLike):
@@ -408,10 +503,23 @@ class SystemAuditor:
             path = os.fsdecode(path)
         if not isinstance(path, str) or not path:
             return None
-        normalized = _norm(path)
-        if _under(normalized, self._exempt_dirs) or (read and _under(normalized, self._read_exempt)):
+        if isinstance(dir_fd, int) and dir_fd >= 0 and not os.path.isabs(path):
+            # Relative to a directory descriptor: where it lands is unknown,
+            # so it is recorded rather than judged by the current directory.
+            return "<dir_fd>"
+        # Judged where it really lands, so a symlink in the data directory
+        # cannot lead out of it (and an alias of it is still the data directory).
+        real = self._real(path, follow=follow)
+        key = os.path.normcase(real)
+        if self._exempt(key, read):
             return None
-        return redact_path(path, directory=directory, home=self._home)
+        shown = real
+        if self._real_home is not None:
+            real_home = os.path.normcase(self._real_home).rstrip(os.sep)
+            if key == real_home or key.startswith(real_home + os.sep):
+                # Home is itself a link: show it under the home it was reached by.
+                shown = self._home.rstrip(os.sep) + real[len(real_home):]
+        return redact_path(shown, directory=directory, home=self._home)
 
     @staticmethod
     def _spawn_target(event: str, args: tuple) -> str:
@@ -419,16 +527,23 @@ class SystemAuditor:
             return "<fork>"
         if event == "subprocess.Popen":
             executable, argv = (args + (None, None))[:2]
-            return program_name(executable if executable else argv)
-        if event in ("os.exec", "os.posix_spawn", "os.startfile", "os.startfile/2"):
+            if executable:
+                return program_name(executable)
+            # A string is a shell command (or a Windows command line).
+            return program_name(argv, command_line=isinstance(argv, (str, bytes)))
+        if event in ("os.startfile", "os.startfile/2"):
+            return document_name(args[0] if args else None)
+        if event in ("os.exec", "os.posix_spawn", "pty.spawn"):
             return program_name(args[0] if args else None)
         if event == "os.spawn":
             return program_name(args[1] if len(args) > 1 else None)
         if event == "_winapi.CreateProcess":
-            application, command_line = (args + (None, None))[:2]
-            return program_name(application if application else command_line)
-        # os.system, pty.spawn
-        return program_name(args[0] if args else None)
+            application, command = (args + (None, None))[:2]
+            if application:
+                return program_name(application)
+            return program_name(command, command_line=True)
+        # os.system
+        return program_name(args[0] if args else None, command_line=True)
 
     def _remember_lookup(self, event: str, args: tuple, ident: int) -> None:
         host = args[0] if args else None
@@ -475,11 +590,13 @@ class SystemAuditor:
             if ipaddress.ip_address(ip.split("%", 1)[0]).is_loopback:
                 flags = ("loopback",)
         except ValueError:
-            pass
+            pass  # not an IP literal: not loopback
+        # The name is paired by thread / port and time and can be wrong, so
+        # the address actually connected to is always kept next to it.
         host = self._host_for(port, ident)
-        shown = host or ip
-        if ":" in shown:
-            shown = f"[{shown}]"
+        shown = f"[{ip}]" if ":" in ip else ip
+        if host:
+            shown = f"{host}({shown})"
         return [(NETWORK_CONNECT, f"{shown}:{port}" if port is not None else shown, flags)]
 
     # -- attribution --------------------------------------------------------
@@ -557,12 +674,12 @@ class SystemAuditor:
         now = time.monotonic()
         if now - self._dedup.get(key, -DEDUP_SECONDS) < DEDUP_SECONDS:
             return
+        if len(self._queue) >= QUEUE_LIMIT:
+            self.dropped += 1
+            return  # not marked as recorded: the next use is tried again
         if len(self._dedup) > _DEDUP_LIMIT:
             self._dedup.clear()
         self._dedup[key] = now
-        if len(self._queue) >= QUEUE_LIMIT:
-            self.dropped += 1
-            return
         self._queue.append({
             "permission": permission,
             "event": event,
@@ -572,8 +689,8 @@ class SystemAuditor:
             "enforcing": REFUSES_SYSTEM_USES and would_deny and "unattributed" not in flags,
             "flags": list(flags),
         })
-        if len(self._queue) >= BATCH_SIZE:
-            self._wake.set()
+        # No wake-up from here: Event.set takes a lock, and the hook takes none.
+        # The sender polls the queue length.
 
     # -- sending ------------------------------------------------------------
 
@@ -611,14 +728,20 @@ class SystemAuditor:
     def _run(self) -> None:
         ident = threading.get_ident()
         self._internal_threads.add(ident)
+        last = time.monotonic()
         try:
-            while not self._stop.is_set():
-                self._wake.wait(FLUSH_INTERVAL)
-                self._wake.clear()
+            while not self._stop.wait(_POLL_INTERVAL):
+                if len(self._queue) < BATCH_SIZE and time.monotonic() - last < FLUSH_INTERVAL:
+                    continue
+                last = time.monotonic()
                 try:
                     self.flush()
                 except Exception:
                     self.errors += 1
+            try:
+                self.flush()  # stopping: send the rest from this thread too
+            except Exception:
+                self.errors += 1
         finally:
             self._internal_threads.discard(ident)
 
@@ -632,15 +755,19 @@ class SystemAuditor:
         """Stop recording, send what is queued, stop the sender thread."""
         self._active = False
         self._stop.set()
-        self._wake.set()
         thread = self._thread
         if thread is not None:
             thread.join(timeout)
-        if thread is None or not thread.is_alive():
+        if thread is not None and thread.is_alive():
+            # The sender is stuck in a send: what is still queued is lost.
+            self.dropped += len(self._queue)
+            self._queue.clear()
+            return
+        if thread is None:
             try:
                 self.flush()
             except Exception:
-                pass
+                self.errors += 1
 
 
 _HANDLED_EVENTS = frozenset({
@@ -685,6 +812,7 @@ __all__ = [
     "install",
     "installed",
     "interpreter_directories",
+    "document_name",
     "program_name",
     "redact_path",
 ]

@@ -8,6 +8,7 @@ import pytest
 from plugin import settings
 from plugin.core.communication import PluginCommunicationResourceManager
 from plugin.server.application.plugins import call_audit, capability_gate
+from tests.fake_clock import patch_module_clock
 
 pytestmark = pytest.mark.plugin_unit
 
@@ -94,15 +95,68 @@ def test_lost_records_and_the_per_minute_budget(written, monkeypatch):
     assert capability_gate.record_system_uses("other", {"items": items[:1]}) == 1
 
 
-def test_batch_size_is_capped(written, monkeypatch):
+def test_loss_is_reported_once_a_window_and_carried_over(written, monkeypatch):
+    clock = [1000.0]
+    patch_module_clock(monkeypatch, capability_gate, monotonic=lambda: clock[0])
+    for _ in range(50):
+        capability_gate.record_system_uses("demo", {"items": [], "dropped": 1})
+    lost = [e for e in written if e["kind"] == "system_use_lost"]
+    assert lost == [{"kind": "system_use_lost", "plugin": "demo", "count": 1}]
+    clock[0] += capability_gate._SYSTEM_USE_WINDOW
+    capability_gate.record_system_uses("demo", {"items": []})
+    lost = [e for e in written if e["kind"] == "system_use_lost"]
+    assert lost[-1]["count"] == 49 and len(lost) == 2
+
+
+def test_batch_size_is_capped_and_the_rest_counted(written, monkeypatch):
     monkeypatch.setattr(capability_gate, "_SYSTEM_USE_BATCH_LIMIT", 2)
     assert capability_gate.record_system_uses("demo", {"items": [_item()] * 5}) == 2
+    assert written[-1] == {"kind": "system_use_lost", "plugin": "demo", "count": 3}
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        _item(permission=[]),
+        _item(permission={"a": 1}),
+        _item(flags=[[1], "loopback"]),
+        _item(reason=["x"]),
+        _item(event=["x"], target={"x": 1}),
+    ],
+)
+def test_unhashable_fields_skip_or_clean_one_item_and_keep_the_budget(written, monkeypatch, bad):
+    monkeypatch.setattr(capability_gate, "_SYSTEM_USE_PER_MINUTE", 3)
+    batch = {"items": [_item(target="a:1"), bad, _item(target="b:1")]}
+    first = capability_gate.record_system_uses("demo", batch)
+    assert first >= 2
+    # The budget was saved: a repeated batch cannot write past it.
+    for _ in range(5):
+        capability_gate.record_system_uses("demo", batch)
+    assert len([e for e in written if e["kind"] == "system_use"]) == 3
+    for entry in written:
+        if entry["kind"] == "system_use":
+            assert entry["flags"] in (["plugin_reported"], ["loopback", "plugin_reported"])
+            assert entry["reason"] in (None, "undecided")
+
+
+def test_budget_is_saved_when_writing_fails(monkeypatch):
+    monkeypatch.setattr(capability_gate, "_system_use_budget", {})
+    calls = []
+
+    def failing(entry):
+        calls.append(entry)
+        if len(calls) == 2:
+            raise RuntimeError("disk")
+
+    monkeypatch.setattr(call_audit, "record", failing)
+    capability_gate.record_system_uses("demo", {"items": [_item(target="a:1"), _item(target="b:1")]})
+    assert capability_gate._system_use_budget["demo"][1] == 2
 
 
 def test_system_use_entries_cannot_evict_decisions(monkeypatch, tmp_path):
     monkeypatch.setattr(call_audit, "audit_directory", lambda: tmp_path)
-    monkeypatch.setattr(call_audit, "_ring", call_audit.deque(maxlen=1000))
-    monkeypatch.setattr(call_audit, "_decision_ring", call_audit.deque(maxlen=500))
+    monkeypatch.setattr(call_audit, "_ring", call_audit.deque(maxlen=3))
+    monkeypatch.setattr(call_audit, "_decision_ring", call_audit.deque(maxlen=3))
     monkeypatch.setattr(call_audit, "_system_use_ring", call_audit.deque(maxlen=3))
     monkeypatch.setattr(call_audit, "_listener", None)
     monkeypatch.setattr(call_audit, "_abandoned", None)
@@ -113,9 +167,12 @@ def test_system_use_entries_cannot_evict_decisions(monkeypatch, tmp_path):
         call_audit.record({"kind": "forward"})
         for index in range(10):
             call_audit.record({"kind": "system_use", "plugin": "demo", "n": index})
+        for index in range(10):
+            call_audit.record({"kind": "system_use_lost", "plugin": "demo", "count": index})
         kinds = [entry["kind"] for entry in call_audit.entries()]
         assert kinds.count("decision") == 1 and kinds.count("forward") == 1
-        assert kinds.count("system_use") == 3 and kinds[0] == "system_use"
+        assert len(call_audit._system_use_ring) == 3
+        assert kinds[0] == "system_use_lost"
     finally:
         call_audit.close()
         call_audit.reopen()

@@ -15,7 +15,6 @@ import os
 import socket
 import subprocess
 import sys
-import textwrap
 import threading
 from pathlib import Path
 
@@ -173,6 +172,16 @@ def test_rename_records_both_ends_outside(env):
         ("os.posix_spawn", ("/bin/true", ["true"], None), "true"),
         ("os.fork", (), "<fork>"),
         ("_winapi.CreateProcess", (None, '"C:\\Program Files\\App\\app.exe" --x', None), "app.exe"),
+        ("_winapi.CreateProcess", ("C:\\Program Files\\App\\app.exe", "app --x", None), "app.exe"),
+        # Paths with blanks are taken whole; only command lines are cut.
+        ("subprocess.Popen", ("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", ["x"], None, None),
+         "Google Chrome"),
+        ("subprocess.Popen", (None, ["/opt/My App/bin/tool", "-x"], None, None), "tool"),
+        ("os.exec", ("/opt/My App/bin/tool", ["tool"], None), "tool"),
+        ("os.posix_spawn", ("/opt/My App/run", ["run"], None), "run"),
+        ("os.system", ("/usr/bin/env FOO=1 tool",), "env"),
+        # A document opened with its program: only its extension.
+        ("os.startfile", ("C:\\My Docs\\plan for 2027.pdf", None), "*.pdf"),
     ],
 )
 def test_spawn_records_the_program_name_only(env, event, args, program):
@@ -190,7 +199,7 @@ def test_connect_uses_the_host_name_resolved_before(env):
     finally:
         sock.close()
     named, loopback = env.records()
-    assert named["permission"] == NETWORK_CONNECT and named["target"] == "example.invalid:443"
+    assert named["permission"] == NETWORK_CONNECT and named["target"] == "example.invalid(192.0.2.10):443"
     assert loopback["target"] == "127.0.0.1:8080" and loopback["flags"] == ["loopback"]
 
 
@@ -202,7 +211,7 @@ def test_connect_from_another_thread_pairs_the_lookup_by_port(env):
     env.from_plugin("socket.connect", (None, ("192.0.2.1", 443)))
     env.from_plugin("socket.connect", (None, ("192.0.2.2", 80)))
     paired, unpaired = env.records()
-    assert paired["target"] == "api.example.invalid:443"
+    assert paired["target"] == "api.example.invalid(192.0.2.1):443"
     assert unpaired["target"] == "192.0.2.2:80"
 
 
@@ -211,6 +220,74 @@ def test_unix_socket_and_ipv6(env):
     env.from_plugin("socket.sendto", (None, ("::1", 53, 0, 0)))
     (record,) = env.records()
     assert record["target"] == "[::1]:53" and record["flags"] == ["loopback"]
+
+
+def test_relative_path_with_dir_fd_is_an_unknown_target(env, monkeypatch):
+    # The current directory is the data directory; the descriptor may be anywhere.
+    monkeypatch.chdir(env.data_dir)
+    env.from_plugin("os.remove", ("report.txt", 7))
+    env.from_plugin("os.rename", ("a.txt", "b.txt", 7, -1))
+    targets = [r["target"] for r in env.records()]
+    assert targets == ["<dir_fd>"]  # rename's destination resolves in the data directory
+    env.from_plugin("os.remove", (str(env.outside / "abs.txt"), 7))  # absolute: dir_fd ignored
+    assert env.records()[-1]["target"].endswith("outside/*.txt")
+
+
+def test_listing_without_a_path_uses_the_current_directory(env, monkeypatch):
+    monkeypatch.chdir(env.outside)
+    env.from_plugin("os.listdir", (None,))
+    env.from_plugin("os.scandir", (5,))
+    first, second = env.records()
+    assert first["permission"] == FS_READ and first["target"].endswith("/outside")
+    assert second["target"] == "<fd>"
+    monkeypatch.chdir(env.data_dir)
+    env.from_plugin("os.scandir", (None,))
+    assert len(env.records()) == 2
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="needs unprivileged symlinks")
+def test_symlink_out_of_the_data_dir_is_recorded_at_its_target(env):
+    secret = env.outside / "secret.key"
+    secret.write_text("x", encoding="utf-8")
+    link = env.data_dir / "innocent.txt"
+    os.symlink(secret, link)
+    env.from_plugin("open", (str(link), "r", 0))
+    (record,) = env.records()
+    assert record["permission"] == FS_READ and record["target"].endswith("outside/*.key")
+    # Removing the link itself only touches the data directory.
+    env.from_plugin("os.remove", (str(link), -1))
+    assert len(env.records()) == 1
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="needs unprivileged symlinks")
+def test_dot_dot_after_a_symlink_is_resolved_before_judging(env):
+    deep = env.outside / "deep"
+    deep.mkdir()
+    os.symlink(deep, env.data_dir / "link")
+    # abspath alone would fold this to <data>/x.txt; it really is <outside>/x.txt.
+    env.from_plugin("open", (str(env.data_dir / "link" / ".." / "x.txt"), "w", os.O_WRONLY))
+    (record,) = env.records()
+    assert record["target"].endswith("/outside/*.txt")
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="needs unprivileged symlinks")
+def test_a_linked_home_is_still_shown_as_home(tmp_path):
+    real_home = tmp_path / "disk" / "someone"
+    (real_home / "Documents").mkdir(parents=True)
+    os.symlink(real_home, tmp_path / "home")
+    env = Env(tmp_path)  # home=tmp_path/"home"
+    env.from_plugin("open", (str(tmp_path / "home" / "Documents" / "plan.txt"), "r", 0))
+    (record,) = env.records()
+    assert record["target"] == "~/Documents/*.txt" and "someone" not in record["target"]
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="needs unprivileged symlinks")
+def test_data_dir_reached_through_a_symlink_is_still_exempt(tmp_path):
+    env = Env(tmp_path)
+    alias = tmp_path / "alias"
+    os.symlink(env.data_dir, alias)
+    env.from_plugin("open", (str(alias / "state.db"), "w", os.O_WRONLY))
+    assert env.records() == []
 
 
 def test_repeats_are_recorded_once_a_minute(env):
@@ -421,6 +498,52 @@ def test_queue_is_bounded(env, monkeypatch):
     assert env.sent[0]["dropped"] == 2 and env.auditor.dropped == 0
 
 
+def test_a_use_dropped_on_a_full_queue_is_tried_again(env, monkeypatch):
+    monkeypatch.setattr(system_audit, "QUEUE_LIMIT", 1)
+    env.from_plugin("open", (str(env.outside / "a" / "x.txt"), "r", 0))
+    env.from_plugin("open", (str(env.outside / "b" / "x.txt"), "r", 0))  # full: dropped
+    env.auditor.flush()
+    env.from_plugin("open", (str(env.outside / "b" / "x.txt"), "r", 0))
+    assert [r["target"].rsplit("/", 2)[-2] for r in env.records()] == ["b"]
+
+
+def test_close_with_a_stuck_sender_counts_the_queue_as_lost(env):
+    release, sending = threading.Event(), threading.Event()
+
+    def stuck(_message):
+        sending.set()
+        release.wait(5)
+
+    env.auditor._sender = stuck
+    for index in range(system_audit.BATCH_SIZE + 3):
+        env.from_plugin("open", (str(env.outside / f"d{index}" / "x.txt"), "r", 0))
+    env.auditor.start()
+    assert sending.wait(5)  # the sender took the first batch and blocks in send
+    env.auditor.close(timeout=0.2)
+    assert env.auditor.dropped >= 3 and env.records() == []
+    release.set()
+
+
+def test_the_hook_takes_no_lock_to_wake_the_sender(env, monkeypatch):
+    # Any Event / Lock used from the hook would show up as a call here.
+    calls = []
+
+    class Spy:
+        def __init__(self, *args, **kwargs):
+            calls.append("created")
+
+        def __getattr__(self, name):
+            calls.append(name)
+            return lambda *a, **k: None
+
+    monkeypatch.setattr(system_audit.threading, "Event", Spy)
+    monkeypatch.setattr(system_audit.threading, "Lock", Spy)
+    monkeypatch.setattr(system_audit.threading, "Condition", Spy)
+    for index in range(system_audit.BATCH_SIZE + 1):
+        env.from_plugin("open", (str(env.outside / f"d{index}" / "x.txt"), "r", 0))
+    assert calls == [] and len(env.records()) == system_audit.BATCH_SIZE + 1
+
+
 def test_failed_send_counts_the_batch_as_lost(env):
     def full(_message):
         raise OSError("uplink busy")
@@ -439,15 +562,19 @@ def test_deactivated_auditor_does_nothing(env):
 
 # ---------------------------------------------------------------- helpers
 
+# On Windows a rooted path without a drive gets the current drive.
+_POSIX = pytest.mark.skipif(os.name == "nt", reason="POSIX path semantics")
+
 
 @pytest.mark.parametrize(
     ("path", "directory", "expected"),
     [
         ("{home}/Documents/diary/2026/secret plans.docx", False, "~/Documents/diary/2026/*.docx"),
         ("{home}/a/b/c/d/e.txt", False, "~/a/b/…/d/*.txt"),
-        ("/home/someone/x/key", False, "/home/<user>/x/*"),
-        ("/etc/ssh", True, "/etc/ssh"),
-        ("/srv/data/archive.tar.verylongextension", False, "/srv/data/*"),
+        pytest.param("/home/someone/x/key", False, "/home/<user>/x/*", marks=_POSIX),
+        pytest.param("/mnt/c/Users/alice/x.txt", False, "/mnt/c/…/<user>/*.txt", marks=_POSIX),
+        pytest.param("/etc/ssh", True, "/etc/ssh", marks=_POSIX),
+        pytest.param("/srv/data/archive.tar.verylongextension", False, "/srv/data/*", marks=_POSIX),
     ],
 )
 def test_redact_path(tmp_path, path, directory, expected):
@@ -459,10 +586,14 @@ def test_redact_windows_user_directory():
     if os.name != "nt":
         pytest.skip("Windows path semantics")
     assert redact_path(r"C:\Users\someone\x.txt", home=r"D:\h") == "C:/Users/<user>/*.txt"
+    assert redact_path(r"E:\Data\Users\someone\x.txt", home=r"D:\h") == "E:/Data/Users/<user>/*.txt"
 
 
 def test_program_name():
     assert program_name(["/usr/bin/python3", "-c", "x"]) == "python3"
+    assert program_name("/opt/My App/tool") == "tool"
+    assert program_name("/opt/My App/tool --x", command_line=True) == "My"
+    assert program_name('"/opt/My App/tool" --x', command_line=True) == "tool"
     assert program_name(Path("/opt/tool")) == "tool"
     assert program_name(None) == "<unknown>"
     assert program_name("") == "<unknown>"
@@ -504,6 +635,11 @@ if mode == "observe":
     # and the .pyc write happen inside importlib.
     sys.path.insert(0, {libdir!r})
     import helper_mod_for_audit
+    # Cleaning its own data: rmtree's descriptor walk must not be recorded.
+    import shutil
+    os.makedirs(os.path.join(data_dir, "tree", "a", "b"))
+    open(os.path.join(data_dir, "tree", "a", "b", "f.txt"), "w").close()
+    shutil.rmtree(os.path.join(data_dir, "tree"))
 elif mode == "refuse":
     try:
         open(os.path.join(outside, "x.txt"), "w")
@@ -558,8 +694,9 @@ def test_real_hook_records_each_kind(tmp_path):
     assert (FS_READ, "os.listdir", "outside") in seen
     assert (PROCESS_SPAWN, "subprocess.Popen", Path(sys.executable).name) in seen
     connects = [r for r in result["records"] if r["permission"] == NETWORK_CONNECT]
-    assert connects and all(r["target"].startswith("localhost:") for r in connects)
+    assert connects and all(r["target"].startswith(("localhost(127.0.0.1):", "localhost([::1]):")) for r in connects)
     # Nothing about the data directory, the interpreter or the import of the SDK.
+    assert not [r for r in result["records"] if r["target"] in ("<fd>", "<dir_fd>") or "tree" in r["target"]]
     assert all(
         "own" not in r["target"] and "site-packages" not in r["target"] and "libdir" not in r["target"]
         for r in result["records"]

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import copy
 import itertools
+import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -77,17 +78,26 @@ def _plugin_directory(plugin_id: str, candidates: tuple[object, ...] | None = No
     return path.parent if path is not None else None
 
 
-# plugin_id -> (manager, lock snapshot, registered config paths, source).
-# The source is worked out from exactly these inputs; the install-source
-# lock is copy-on-write (every change publishes a new snapshot object), so
-# a different snapshot, manager or registration means it is worked out again.
-# Spares the per-use path resolution and file checks in the host's checks.
+# plugin_id -> (manager, lock snapshot, registered config paths and whether
+# each exists, source). The source is worked out from exactly these inputs;
+# the install-source lock is copy-on-write (every change publishes a new
+# snapshot object), so a different snapshot, manager, registration or a
+# config file appearing / disappearing means it is worked out again (one stat
+# per candidate). Spares the per-use path resolution, logging and lock-entry
+# lookup in the host's checks.
 _source_cache: dict[str, tuple[object, object, tuple[object, ...], PluginSource | None]] = {}
 _SOURCE_CACHE_LIMIT = 1024
 
 
-def clear_source_cache() -> None:
-    _source_cache.clear()
+def _candidates_key(candidates: tuple[object, ...]) -> tuple[object, ...]:
+    """The candidates and whether each is a file now: which one is used depends on it."""
+    present = []
+    for candidate in candidates:
+        try:
+            present.append(candidate is not None and os.path.isfile(candidate))
+        except (TypeError, ValueError):
+            present.append(False)
+    return (candidates, tuple(present))
 
 
 def _source_of(entry) -> PluginSource | None:
@@ -123,10 +133,11 @@ def current_source(plugin_id: str) -> PluginSource | None:
         snapshot = manager.snapshot()
     except Exception:
         snapshot = None
+    key = _candidates_key(candidates)
     cached = _source_cache.get(plugin_id)
     if (
         snapshot is not None and cached is not None and cached[0] is manager
-        and cached[1] is snapshot and cached[2] == candidates
+        and cached[1] is snapshot and cached[2] == key
     ):
         return cached[3]
     try:
@@ -137,7 +148,7 @@ def current_source(plugin_id: str) -> PluginSource | None:
         return source
     if len(_source_cache) >= _SOURCE_CACHE_LIMIT:
         _source_cache.clear()
-    _source_cache[plugin_id] = (manager, snapshot, candidates, source)
+    _source_cache[plugin_id] = (manager, snapshot, key, source)
     return source
 
 

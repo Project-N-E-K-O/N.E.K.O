@@ -1105,7 +1105,7 @@ def _install_system_audit(
         try:
             exempt_dirs.append(resolve_plugin_log_directory())
         except Exception:
-            pass
+            pass  # no log directory known: its files are simply not exempt
         auditor = system_audit.SystemAuditor(
             plugin_dir=Path(config_path).parent,
             exempt_dirs=exempt_dirs,
@@ -1126,7 +1126,7 @@ def _close_system_audit(auditor: Any | None) -> None:
     try:
         auditor.close()
     except Exception:
-        pass
+        pass  # shutting down: losing the last records must not stop the exit
 
 
 def _plugin_process_runner(
@@ -1269,6 +1269,7 @@ def _plugin_process_runner(
                          "/ 请在普通插件中用 include_router() 挂载。"
                          "/ 通常プラグインから include_router() でマウントしてください。",
             })
+            _close_system_audit(system_auditor)
             try:
                 ctx.close()
             except Exception as e:
@@ -1621,6 +1622,7 @@ def _plugin_process_runner(
         _send_startup_result(startup_error)
         if startup_error is not None and startup_failure_policy == "fail":
             logger.info("[Plugin Process] Startup failed with policy='fail'; skipping auto-start work")
+            _close_system_audit(system_auditor)
             try:
                 ctx.close()
             except Exception as e:

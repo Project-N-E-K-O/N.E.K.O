@@ -1583,6 +1583,31 @@ def test_current_source_is_cached_until_the_lock_or_registration_changes(monkeyp
     assert manager.lookups == 3
 
 
+def test_a_config_file_appearing_is_looked_up_again(monkeypatch, tmp_path):
+    from plugin.server.infrastructure import config_paths
+
+    first, second = tmp_path / "a" / "plugin.toml", tmp_path / "b" / "plugin.toml"
+    second.parent.mkdir()
+    second.write_text("", encoding="utf-8")
+    monkeypatch.setattr(config_paths, "_registered_plugin_config_candidates", lambda _pid: (str(first), str(second)))
+    monkeypatch.setattr(permission_service, "_source_cache", {})
+    manager = SnapshotInstallSources([_lock_entry(channel="manual")])
+    monkeypatch.setattr(install_source_module, "get_install_source_manager", lambda: manager)
+    directories = []
+    real = permission_service._plugin_directory
+    monkeypatch.setattr(
+        permission_service, "_plugin_directory",
+        lambda pid, candidates=None: directories.append(real(pid, candidates)) or directories[-1],
+    )
+    permission_service.current_source("demo")
+    permission_service.current_source("demo")
+    assert directories == [second.parent.resolve()]
+    first.parent.mkdir()
+    first.write_text("", encoding="utf-8")  # the earlier candidate now wins
+    permission_service.current_source("demo")
+    assert directories[-1] == first.parent.resolve()
+
+
 def test_busy_registry_is_not_cached(monkeypatch):
     from plugin.server.infrastructure import config_paths
 

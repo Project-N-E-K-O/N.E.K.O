@@ -26,12 +26,13 @@ MAX_BYTES = 4 * 1024 * 1024
 BACKUP_COUNT = 3
 
 _ring: deque[tuple[int, dict]] = deque(maxlen=1000)
-_write_order = itertools.count()  # shared by both rings; timestamps can tie
+_write_order = itertools.count()  # shared by all rings; timestamps can tie
 # Decisions get their own ring so frequent forward entries cannot evict them.
 _decision_ring: deque[tuple[int, dict]] = deque(maxlen=500)
 # A plugin process reports its own system.* uses; they get a third ring so a
 # busy (or misbehaving) plugin cannot evict the host's decisions either.
 _system_use_ring: deque[tuple[int, dict]] = deque(maxlen=500)
+_SYSTEM_USE_KINDS = frozenset({"system_use", "system_use_lost"})
 _listener: logging.handlers.QueueListener | None = None
 _lock = threading.Lock()
 _closed = False
@@ -117,7 +118,7 @@ def record(entry: dict) -> None:
     """Keep ``entry`` in the ring and queue it for the file; never raises."""
     item = {"ts": datetime.now(timezone.utc).isoformat(), **entry}
     kind = entry.get("kind")
-    ring = _decision_ring if kind == "decision" else _system_use_ring if kind == "system_use" else _ring
+    ring = _decision_ring if kind == "decision" else _system_use_ring if kind in _SYSTEM_USE_KINDS else _ring
     ring.append((next(_write_order), item))
     try:
         # Check and enqueue (non-blocking) under the lock close() takes, so
