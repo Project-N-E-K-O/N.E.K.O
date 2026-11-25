@@ -1226,6 +1226,21 @@ BESIDE_ANSWER_WORD_PATTERNS = (
     r"\b(?:otro|outro|nuevo|novo|esper\w*|gracias|obrigad[oa]|por\s+favor)\b",
 )
 
+# What a sentence that answers whether a project's leader may start another
+# member that changes files says of that choice, on top of
+# ``BESIDE_ANSWER_WORD_PATTERNS``: the familiar, its changing files, the work
+# handed to it, the user doing it themself, who said so (its question,
+# ``open_session`` in ``PERMISSION_CATEGORY_TEXTS``, says "another familiar
+# that can change files"). Set aside the same way, for that question only.
+HAND_OVER_ANSWER_WORD_PATTERNS = (
+    r"使魔|能改文件|改文件|能改檔案|改檔案|能改|交给|交給|我自己来|我自己來|自己来|自己來|我自己|自己|我来|我來",
+    r"\b(?:familiars?|change|changes|changing|files?|hand|give|lead|leader|myself)\b",
+    r"使い魔|ファイル|変更|変えさせ|変えて|任せ(?:て|る|ます)?|自分で|自分|ユーザー|と言って(?:います)?|言って",
+    r"사역마|파일|바꾸게|바꿔|바꾸|맡겨|맡기|내가|제가|사용자|한대요|한대|주세요|줘",
+    r"фамильяр\w*|файл\w*|менять|меняет|сам|сама",
+    r"\b(?:familiar(?:es)?|archivos?|arquivos?|cambiar|alterar|yo\s+mismo|eu\s+mesmo)\b",
+)
+
 ANSWER_CUE_PATTERNS = (
     r"^\s*(?:回答|回复|回覆|答复|答覆|告诉它|告訴它|告诉使魔|告訴使魔)",
     r"^\s*(?:answer|reply|tell\s+(?:it|the\s+familiar))\b",

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import fields
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -1076,6 +1077,148 @@ def test_a_yes_goes_to_the_one_question_it_can_answer():
     triage = read_answer("可以", active)
 
     assert triage is not None and (triage.kind, triage.targets) == ("answer", ["c2"])
+
+
+def _asked_by_the_leader(title: str, tool: str = "hand_over") -> Commission:
+    """A leader's commission asking the user whether it may start another member that changes files (``_hand_over``)."""
+    question = {
+        "kind": "permission", "category": "open_session", "key": None,
+        "detail": {"tool": tool, "title": title, "preset": "worker", "tree": True},
+        "options": ["always", "session", "once", "deny"], "id": "q1",
+    }
+    return commission(
+        "c1", title.split(" <- ")[-1], status="waiting_user", pending_question=json.dumps(question, ensure_ascii=False)
+    )
+
+
+# What is read wrongly of the sentences said while a leader asks (``HAND_OVER_ANSWER_WORDS_MAX``), by name.
+_READ_WRONGLY_FOR_THE_LEADER = {
+    # Answers taken for new work: they say more than a yes or a no (the user then sees a new commission,
+    # with the question still open), or no yes or no at all.
+    ("self", "answers"): ["the user declines", "지금은 하지 마, 헤더는 내가 고칠게"],
+    ("independent", "answers"): [
+        "Allow it for the rest of this task, I don't want to be asked again until the header's done.",
+        "Deny it. I'd rather the lead handles the header itself.", "Not now, wait until I've backed up the site first.",
+        "就这一次，下次还得问我", "这次任务里都允许吧，页头弄完之前别再问了", "以后一律允许，这种事不用每次问我",
+        "拒绝。让领头的那只自己改页头就行", "先别了，页头我晚点自己来改", "让它改文件没关系，页头的活就交给它吧",
+        "等我先把网站备份一下再说，现在先不要开", "主人说可以，仅此一次",
+        "この作業のあいだはずっと許可で。ヘッダーが終わるまでもう聞かなくていいよ",
+        "これからは常に許可でいいよ。毎回聞かなくて大丈夫", "だめ、使い魔はこれ以上増やさないで",
+        "拒否で。ヘッダーはリーダーの使い魔に自分でやらせて", "やめとく。ヘッダーはあとで自分で直すから",
+        "ファイルを変更してもかまわないよ、ヘッダーの作業ならどうぞ",
+        "ちょっと待って、先にサイトのバックアップを取りたいから、今はまだ呼ばないで",
+        "ご主人様が「今回だけならいいよ」だって", "リーダーに、その件は新しい子に任せていいって伝えて",
+        "응", "이번 한 번만 허락할게", "이 작업 하는 동안은 계속 허락해. 헤더 끝날 때까지 다시 묻지 마",
+        "앞으로는 항상 허락으로 해 줘. 매번 안 물어봐도 돼", "거절할게. 헤더는 리더 사역마가 직접 하게 해",
+        "됐어, 헤더는 나중에 내가 직접 고칠게", "파일 바꿔도 괜찮아, 헤더 작업이면 해도 돼",
+        "잠깐만, 먼저 사이트 백업부터 할 테니까 지금은 아직 부르지 마", "주인님이 이번 한 번만 괜찮대",
+        "리더한테 그 일은 새 사역마한테 맡겨도 된다고 전해 줘",
+    ],
+    # New work taken for an answer: short, with little but a yes or a no beside what it asks for.
+    ("self", "new_work"): ["别忘了更新 README"],
+    ("independent", "new_work"): [],
+}
+
+
+@pytest.mark.parametrize("written_by", ["self", "independent"])
+def test_what_is_said_while_a_leader_asks_to_start_another_member_is_read_as_measured(written_by):
+    sentences = json.loads((Path(__file__).parent / "fixtures" / "hand_over_answer_sentences.json").read_text("utf-8"))
+    read: dict[str, Triage | None] = {}
+    for lang, said in sentences[written_by].items():
+        # Asked in the user's language: what the member is to do, and the commission's title, are the user's words.
+        waiting = _asked_by_the_leader(sentences["questions"][lang])
+        read.update({text: read_answer(text, [waiting]) for kind in ("answers", "new_work") for text in said[kind]})
+
+    def wrongly(kind: str, as_answer: bool) -> list[str]:
+        return [
+            text for said in sentences[written_by].values() for text in said[kind] if (read[text] is not None) == as_answer
+        ]
+
+    assert wrongly("answers", False) == _READ_WRONGLY_FOR_THE_LEADER[(written_by, "answers")]
+    assert wrongly("new_work", True) == _READ_WRONGLY_FOR_THE_LEADER[(written_by, "new_work")]
+    # What is read as an answer says which choice it is: none is an answer that was not understood.
+    assert all(answer.choice for answer in read.values() if answer is not None)
+
+
+def test_how_much_a_leaders_question_may_be_answered_with_is_a_setting_of_its_own(monkeypatch):
+    # Says no, and more: who is to do it instead, and when.
+    said = "Deny it. I'd rather the lead handles the header itself, later, once the backup of the site is done."
+    asked = _asked_by_the_leader("Rebuilds the header and its menu <- redo the header of the shop site")
+    beside = _asked_by_the_leader("redo the header of the shop site", tool="beside")
+    assert read_answer(said, [asked]) is None and read_answer(said, [beside]) is None
+
+    monkeypatch.setattr("config.nekopower_settings.HAND_OVER_ANSWER_WORDS_MAX", 20)
+    assert read_answer(said, [asked]).choice == "deny"
+    # The other question that quotes its commission goes by its own.
+    assert read_answer(said, [beside]) is None
+    monkeypatch.setattr("config.nekopower_settings.BESIDE_ANSWER_WORDS_MAX", 20)
+    assert read_answer(said, [beside]).choice == "deny"
+
+
+@pytest.mark.parametrize(
+    ("said", "choice"),
+    [
+        ("да, пусть фамильяр меняет файлы", "once"),
+        ("sí, puede cambiar archivos", "once"),
+        ("sim, eu mesmo deixo alterar arquivos", "once"),
+        ("不用，我來改檔案就好", "deny"),
+    ],
+)
+def test_what_an_answer_to_a_leader_says_of_the_choice_is_set_aside_in_the_languages_not_measured(said, choice):
+    # Russian, Spanish, Portuguese, traditional Chinese: the familiar, its changing files, the user doing it.
+    waiting = _asked_by_the_leader("Rebuilds the header and its menu <- redo the header of the shop site")
+    assert read_answer(said, [waiting]).choice == choice
+
+
+@pytest.mark.parametrize("tool", ["hand_over", "beside"])
+def test_new_work_said_while_another_member_is_asked_about_answers_no_other_question_waiting_beside_it(tool):
+    asked = _asked_by_the_leader("Rebuilds the header and its menu <- redo the header of the shop site", tool=tool)
+    command = {
+        "kind": "permission", "category": "shell", "key": None, "detail": {"tool": "bash", "command": "npm run build"},
+        "options": ["always", "session", "once", "deny"], "id": "q2",
+    }
+    other = commission("c2", "build the shop site", status="waiting_user", pending_question=json.dumps(command))
+    said = "yes, start the new familiar to rebuild the header because mobile navigation is broken"
+
+    # Alone, the other question is read as it was: its yes.
+    assert (read_answer(said, [other]).targets, read_answer(said, [other]).choice) == (["c2"], "once")
+    # Beside a question about another member, which takes it for new work, it is new work: the yes it says
+    # in passing allows no command (nor does "this session", which every request for approval offers).
+    assert read_answer(said, [asked, other]) is None
+    assert read_answer(f"allow it for this session, {said}", [asked, other]) is None
+    # One that names what the other asks may answer that after all: the user is asked which.
+    named = read_answer("yes, run npm run build", [asked, other])
+    assert (named.kind, sorted(named.targets), named.choice) == ("ambiguous", ["c1", "c2"], None)
+    # A plain yes is still for the user to say which.
+    plain = read_answer("yes", [asked, other])
+    assert (plain.kind, sorted(plain.targets)) == ("ambiguous", ["c1", "c2"])
+    # What says no yes or no is held against the other question by its words, as it was.
+    unclear = read_answer("the npm run build one", [asked, other])
+    assert (unclear.kind, unclear.targets, unclear.choice) == ("answer", ["c2"], None)
+    # And what says it answers is an answer, however much it says.
+    answered = read_answer(f"answer: {said}", [asked])
+    assert (answered.kind, answered.targets, answered.choice) == ("answer", ["c1"], "once")
+
+
+def test_new_work_said_while_a_leader_asks_is_not_taken_for_its_answer():
+    waiting = _asked_by_the_leader(
+        "Rebuilds the header and its menu <- redo the header of the shop site so the menu fits on phones"
+    )
+
+    # It shares words with what is asked (the shop site, the header) and says no answer: new work.
+    for said in ("make the logo in the header of the shop site link back home", "what about the menu"):
+        assert read_answer(said, [waiting]) is None
+    # A yes or a no in passing does not answer it either: it would have refused the member (or allowed it).
+    assert read_answer("no rush, but rename the images folder of the shop site", [waiting]) is None
+    assert read_answer("ok, and translate the about page of the shop site into Japanese", [waiting]) is None
+    # What answers it is read as it was, with the choice it says.
+    answered = read_answer("yes", [waiting])
+    assert (answered.kind, answered.targets, answered.choice) == ("answer", ["c1"], "once")
+    assert read_answer("no, don't let another one change files", [waiting]).choice == "deny"
+    assert read_answer("allow it for this session", [waiting]).choice == "session"
+    # What says it answers is an answer, understood or not.
+    unclear = read_answer("answer: the header one", [waiting])
+    assert (unclear.kind, unclear.targets, unclear.choice) == ("answer", ["c1"], None)
 
 
 # ---------------------------------------------------------------------------

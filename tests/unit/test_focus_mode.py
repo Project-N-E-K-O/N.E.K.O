@@ -628,12 +628,15 @@ def test_silicon_preset_slots_send_the_thinking_params_each_model_accepts():
 
     The recognition slot is the exception: Qwen3-VL-30B-A3B-Instruct (replacing
     Qwen3.5-35B-A3B, which replaced delisted Ling-mini-2.0) never thinks, and
-    SiliconFlow rejects enable_thinking for it with a 400, so it must send nothing."""
+    SiliconFlow rejects enable_thinking for it with a 400, so it must send nothing.
+    So is the decision slot: Kev-4B is served on SiliconFlow's native decisions
+    endpoint (POST /v1/systemone), never on chat completions, and sends no extra_body."""
     import json
     from pathlib import Path
 
     from config.api_profiles import DEFAULT_ASSIST_API_PROFILES
     from config.providers import EXTRA_BODY_OPENAI, MODELS_EXTRA_BODY_MAP, get_extra_body
+    from utils.decision_client.schema import infer_decision_protocol
 
     recognition = "Qwen/Qwen3-VL-30B-A3B-Instruct"
     root = Path(__file__).resolve().parents[2]
@@ -642,8 +645,11 @@ def test_silicon_preset_slots_send_the_thinking_params_each_model_accepts():
     py_slots = {k: v for k, v in DEFAULT_ASSIST_API_PROFILES["silicon"].items() if k.endswith("_MODEL")}
     assert json_slots["recognition_model"] == py_slots["RECOGNITION_MODEL"] == recognition
     base_url = shipped["assist_api_providers"]["silicon"]["openrouter_url"]
+    decision = json_slots["decision_model"]
+    assert decision == py_slots["DECISION_MODEL"]
+    assert infer_decision_protocol(decision, base_url) == "systemone"
     for model in set(json_slots.values()) | set(py_slots.values()):
-        if model == recognition:
+        if model in (recognition, decision):
             assert model not in MODELS_EXTRA_BODY_MAP
             assert get_extra_body(model, base_url) == {}
             continue
