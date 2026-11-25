@@ -1522,7 +1522,13 @@ async def test_deny_stops_a_running_plugin_without_deadlock(
 
 @pytest.mark.parametrize(
     ("code", "expected"),
-    [("pass", 0), ("import importlib\nimportlib.import_module(name)\n", 1)],
+    [
+        ("pass", 0),
+        ("import importlib\nimportlib.import_module(name)\n", 1),
+        # Developer-only context_loss and a followed literal import are not counted.
+        ("import threading\nthreading.Thread(target=print).start()\n", 0),
+        ("import importlib\nimportlib.import_module('json')\n", 0),
+    ],
 )
 def test_summary_counts_blind_spots_of_the_cached_report(tmp_path, reports, monkeypatch, code, expected):
     root = tmp_path / "demo"
