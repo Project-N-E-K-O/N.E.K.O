@@ -1950,6 +1950,34 @@ class PluginContext:
             return self.query_memory_async(lanlan_name=lanlan_name, query=query, timeout=timeout)
         return self.query_memory_sync(lanlan_name=lanlan_name, query=query, timeout=timeout)
 
+    def _apply_write_result_cache_if_current(
+        self,
+        *,
+        write_gen: int,
+        config_obj: Dict[str, Any],
+    ) -> None:
+        if self._current_effective_config_gen() == write_gen:
+            self._set_effective_config_cache(config_obj)
+        else:
+            self._effective_config_uncertain = True
+
+    def _rollback_write_cache_if_current(
+        self,
+        *,
+        write_gen: int,
+        old_effective_config: Any,
+        old_effective_config_uncertain: bool,
+    ) -> None:
+        if self._current_effective_config_gen() != write_gen:
+            return
+        if isinstance(old_effective_config, dict):
+            self._set_effective_config_cache(old_effective_config)
+        else:
+            self._bump_effective_config_gen()
+            self._effective_config = None
+            self._refresh_instance_runtime_config({})
+        self._effective_config_uncertain = old_effective_config_uncertain
+
     async def update_own_config(self, updates: Dict[str, Any], timeout: float = 10.0) -> Dict[str, Any]:
         if not isinstance(updates, dict):
             raise TypeError("updates must be a dict")
@@ -1961,6 +1989,7 @@ class PluginContext:
         )
         optimistic_config = self._merge_config_copy(old_effective_config, updates)
         self._set_effective_config_cache(optimistic_config)
+        write_gen = self._current_effective_config_gen()
         # Keep config writes from blocking plugin actions; timeouts fall back to the optimistic in-memory config.
         request_timeout = min(float(timeout), 4.5)
         request_deadline = time.monotonic() + request_timeout
@@ -1979,11 +2008,15 @@ class PluginContext:
             config_obj = payload.get("config") if isinstance(payload, dict) else None
             if isinstance(config_obj, dict):
                 if payload.get("persisted") is False:
-                    self._set_effective_config_cache(optimistic_config)
+                    if self._current_effective_config_gen() == write_gen:
+                        self._set_effective_config_cache(optimistic_config)
                     payload = dict(payload)
                     payload["config"] = copy.deepcopy(optimistic_config)
                 else:
-                    self._set_effective_config_cache(config_obj)
+                    self._apply_write_result_cache_if_current(
+                        write_gen=write_gen,
+                        config_obj=config_obj,
+                    )
             return payload
         except TimeoutError:
             self._effective_config_uncertain = True
@@ -2001,13 +2034,11 @@ class PluginContext:
             self._effective_config_uncertain = True
             raise
         except Exception:
-            if isinstance(old_effective_config, dict):
-                self._set_effective_config_cache(old_effective_config)
-            else:
-                self._bump_effective_config_gen()
-                self._effective_config = None
-                self._refresh_instance_runtime_config({})
-            self._effective_config_uncertain = old_effective_config_uncertain
+            self._rollback_write_cache_if_current(
+                write_gen=write_gen,
+                old_effective_config=old_effective_config,
+                old_effective_config_uncertain=old_effective_config_uncertain,
+            )
             raise
 
     async def replace_own_config(self, config: Dict[str, Any], timeout: float = 10.0) -> Dict[str, Any]:
@@ -2021,6 +2052,7 @@ class PluginContext:
         )
         optimistic_config = copy.deepcopy(config)
         self._set_effective_config_cache(optimistic_config)
+        write_gen = self._current_effective_config_gen()
         request_timeout = float(timeout)
         request_deadline = time.monotonic() + request_timeout
         try:
@@ -2037,7 +2069,10 @@ class PluginContext:
             )
             config_obj = payload.get("config") if isinstance(payload, dict) else None
             if isinstance(config_obj, dict):
-                self._set_effective_config_cache(config_obj)
+                self._apply_write_result_cache_if_current(
+                    write_gen=write_gen,
+                    config_obj=config_obj,
+                )
             return payload
         except TimeoutError:
             # No response does not prove that the atomic replace lost its
@@ -2049,13 +2084,11 @@ class PluginContext:
             self._effective_config_uncertain = True
             raise
         except Exception:
-            if isinstance(old_effective_config, dict):
-                self._set_effective_config_cache(old_effective_config)
-            else:
-                self._bump_effective_config_gen()
-                self._effective_config = None
-                self._refresh_instance_runtime_config({})
-            self._effective_config_uncertain = old_effective_config_uncertain
+            self._rollback_write_cache_if_current(
+                write_gen=write_gen,
+                old_effective_config=old_effective_config,
+                old_effective_config_uncertain=old_effective_config_uncertain,
+            )
             raise
 
     async def _refresh_effective_config_after_profile_change(self, *, timeout: float) -> None:

@@ -662,3 +662,132 @@ async def test_context_failed_stale_profile_refresh_does_not_clear_newer_profile
     release_first_get.set()
     await first_refresh
     assert ctx._effective_config == {"profile": "work"}
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ("update", "replace"))
+async def test_context_failed_write_does_not_rollback_over_newer_profile_refresh(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "demo" / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+    )
+    instance = _Instance()
+    ctx._instance = instance
+    ctx._effective_config = {"profile": "home"}
+    ctx._effective_config_uncertain = True
+
+    write_started = asyncio.Event()
+    release_write = asyncio.Event()
+
+    async def _no_local(**_kwargs: object) -> None:
+        return None
+
+    async def _fake_rpc(
+        *,
+        method_name: str,
+        request_type: str,
+        request_data: dict[str, object],
+        timeout: float,
+        wrap_result: bool,
+    ) -> dict[str, object]:
+        del method_name, request_data, timeout, wrap_result
+        if request_type in {"PLUGIN_CONFIG_UPDATE", "PLUGIN_CONFIG_REPLACE"}:
+            write_started.set()
+            await release_write.wait()
+            raise RuntimeError("rejected")
+        if request_type == "PLUGIN_CONFIG_PROFILE_ACTIVATE":
+            return {"config_profiles": {"active": "work"}}
+        if request_type == "PLUGIN_CONFIG_GET":
+            return {"config": {"profile": "work"}}
+        raise AssertionError(f"Unexpected RPC {request_type}")
+
+    ctx._get_local_config_payload = _no_local  # type: ignore[method-assign]
+    ctx._send_request_and_wait_async = _fake_rpc  # type: ignore[method-assign]
+
+    pending_write = asyncio.create_task(
+        ctx.update_own_config({"draft": 1})
+        if operation == "update"
+        else ctx.replace_own_config({"profile": "home", "draft": 1})
+    )
+    await write_started.wait()
+
+    await ctx.set_own_active_profile("work")
+    assert ctx._effective_config == {"profile": "work"}
+    assert ctx._effective_config_uncertain is False
+
+    release_write.set()
+    with pytest.raises(RuntimeError, match="rejected"):
+        await pending_write
+
+    assert ctx._effective_config == {"profile": "work"}
+    assert ctx._effective_config_uncertain is False
+    assert instance.refreshed[-1] == {"profile": "work"}
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ("update", "replace"))
+async def test_context_stale_write_success_does_not_overwrite_newer_profile_refresh(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "demo" / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+    )
+    instance = _Instance()
+    ctx._instance = instance
+    ctx._effective_config = {"profile": "home"}
+
+    write_started = asyncio.Event()
+    release_write = asyncio.Event()
+
+    async def _no_local(**_kwargs: object) -> None:
+        return None
+
+    async def _fake_rpc(
+        *,
+        method_name: str,
+        request_type: str,
+        request_data: dict[str, object],
+        timeout: float,
+        wrap_result: bool,
+    ) -> dict[str, object]:
+        del method_name, request_data, timeout, wrap_result
+        if request_type in {"PLUGIN_CONFIG_UPDATE", "PLUGIN_CONFIG_REPLACE"}:
+            write_started.set()
+            await release_write.wait()
+            return {"config": {"profile": "home", "draft": 1}}
+        if request_type == "PLUGIN_CONFIG_PROFILE_ACTIVATE":
+            return {"config_profiles": {"active": "work"}}
+        if request_type == "PLUGIN_CONFIG_GET":
+            return {"config": {"profile": "work"}}
+        raise AssertionError(f"Unexpected RPC {request_type}")
+
+    ctx._get_local_config_payload = _no_local  # type: ignore[method-assign]
+    ctx._send_request_and_wait_async = _fake_rpc  # type: ignore[method-assign]
+
+    pending_write = asyncio.create_task(
+        ctx.update_own_config({"draft": 1})
+        if operation == "update"
+        else ctx.replace_own_config({"profile": "home", "draft": 1})
+    )
+    await write_started.wait()
+
+    await ctx.set_own_active_profile("work")
+    assert ctx._effective_config == {"profile": "work"}
+
+    release_write.set()
+    payload = await pending_write
+    assert payload == {"config": {"profile": "home", "draft": 1}}
+    assert ctx._effective_config == {"profile": "work"}
+    assert ctx._effective_config_uncertain is True
+    assert instance.refreshed[-1] == {"profile": "work"}
