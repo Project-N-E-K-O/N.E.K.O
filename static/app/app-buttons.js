@@ -2032,8 +2032,18 @@
             var code = String(result.data.error_code || 'failed');
             console.warn('[AudioMessage] 转写失败:', code);
             if (code === 'ASR_RATE_LIMITED') throw audioMessageRejection('busy');
-            if (AUDIO_MESSAGE_ROUTE_ERRORS[code]) refreshAudioMessageAvailability();
+            if (AUDIO_MESSAGE_ROUTE_ERRORS[code]) {
+                // 先收起按钮；后端记住了被拒的 key，换 key 前状态查询不会再报可用
+                var host = window.reactChatWindowHost;
+                if (host && typeof host.setAudioMessageTarget === 'function') host.setAudioMessageTarget('');
+                refreshAudioMessageAvailability();
+            }
             throw audioMessageRejection(code);
+        }
+        // 转写期间切换了角色：文本不能发到新角色的会话里
+        if (payload.target !== currentAudioMessageTarget()) {
+            refreshAudioMessageAvailability();
+            throw audioMessageRejection('stale_target');
         }
         var text = typeof result.data.text === 'string' ? result.data.text.trim() : '';
         if (!text) {

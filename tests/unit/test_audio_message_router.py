@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
-from main_logic.asr_client.offline import AsrOfflineError, OfflineAsrStatus
+from main_logic.asr_client.offline import AsrOfflineError
 from main_routers import audio_message_router as router_module
 
 
@@ -23,6 +23,11 @@ class _FakeTranscriber:
         self.outcomes = outcomes
         self.calls: list[dict[str, Any]] = []
         self.provider_key = "glm"
+        self.fingerprint = "old-key"
+
+    @property
+    def credential_fingerprint(self) -> str:
+        return self.fingerprint
 
     async def transcribe(self, pcm16: bytes, **kwargs: Any) -> str:
         self.calls.append({"bytes": len(pcm16), **kwargs})
@@ -166,20 +171,34 @@ def test_mutation_guard_is_enforced(env) -> None:
 
 
 def test_status_reports_offline_capability(env, monkeypatch) -> None:
-    seen: list[Any] = []
+    assert env["client"].get("/api/audio-message/status", params={"target": "Neko"}).json() == {
+        "supported": True,
+        "provider": "glm",
+        "error_code": None,
+    }
+    assert env["resolved"] == [("glm", "auto")]
 
-    def status(core_type: str, *, provider_preference: str | None = None):
-        seen.append((core_type, provider_preference))
-        return OfflineAsrStatus(supported=False, provider_key="step", error_code="ASR_OFFLINE_NOT_SUPPORTED")
+    def unsupported(core_type: str, *, provider_preference: str | None = None):
+        raise AsrOfflineError("ASR_OFFLINE_NOT_SUPPORTED", provider_key="step")
 
-    monkeypatch.setattr(router_module, "get_offline_asr_status", status)
-    response = env["client"].get("/api/audio-message/status", params={"target": "Neko"})
-    assert response.json() == {
+    monkeypatch.setattr(router_module, "resolve_offline_transcriber", unsupported)
+    assert env["client"].get("/api/audio-message/status", params={"target": "Neko"}).json() == {
         "supported": False,
         "provider": "step",
         "error_code": "ASR_OFFLINE_NOT_SUPPORTED",
     }
-    assert seen == [("glm", "auto")]
+
+
+def test_a_rejected_key_stays_unsupported_until_it_is_replaced(env) -> None:
+    env["transcriber"].outcomes.append(AsrOfflineError("ASR_CREDENTIALS_REJECTED", provider_key="glm"))
+    rejected = env["client"].post("/api/audio-message/transcribe", json=_payload())
+    assert rejected.json()["error_code"] == "ASR_CREDENTIALS_REJECTED"
+    # The key is still present, so route resolution alone would say "supported".
+    status = env["client"].get("/api/audio-message/status", params={"target": "Neko"}).json()
+    assert status == {"supported": False, "provider": "glm", "error_code": "ASR_CREDENTIALS_REJECTED"}
+
+    env["transcriber"].fingerprint = "new-key"
+    assert env["client"].get("/api/audio-message/status", params={"target": "Neko"}).json()["supported"] is True
 
 
 async def test_concurrent_retry_joins_the_running_transcription() -> None:
@@ -248,3 +267,55 @@ async def test_route_context_uses_the_character_session(monkeypatch) -> None:
     context = await router_module._route_context("Unknown")
     assert context["core_type"] == "qwen"
     assert context["language"] is None
+
+
+async def test_failure_after_the_caller_left_is_not_replayed_to_retries() -> None:
+    cache = router_module._TranscriptCache()
+    release = asyncio.Event()
+    attempts = 0
+
+    async def flaky() -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            await release.wait()
+            raise AsrOfflineError("ASR_OFFLINE_TIMEOUT")
+        return "重试成功"
+
+    first = asyncio.create_task(cache.transcribe("k", flaky))
+    await asyncio.sleep(0)
+    first.cancel()  # the client disconnected mid-transcription
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    release.set()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert await cache.transcribe("k", flaky) == "重试成功"
+    assert attempts == 2
+
+
+async def test_success_after_the_caller_left_is_cached_and_expires() -> None:
+    cache = router_module._TranscriptCache()
+    release = asyncio.Event()
+
+    async def slow() -> str:
+        await release.wait()
+        return "后台完成"
+
+    first = asyncio.create_task(cache.transcribe("k", slow))
+    await asyncio.sleep(0)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    release.set()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    stored_at, value = cache._entries["k"]
+    assert value == "后台完成"  # settled to a plain transcript, so it can expire
+    # Age the entry past its TTL instead of faking the clock.
+    cache._entries["k"] = (stored_at - router_module._CACHE_TTL_SECONDS - 1, value)
+
+    async def fresh() -> str:
+        return "重新转写"
+
+    assert await cache.transcribe("k", fresh) == "重新转写"

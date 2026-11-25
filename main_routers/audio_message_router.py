@@ -26,7 +26,6 @@ from fastapi.responses import JSONResponse
 
 from main_logic.asr_client.offline import (
     AsrOfflineError,
-    get_offline_asr_status,
     resolve_offline_transcriber,
 )
 from main_routers.system_router import _validate_local_mutation_request
@@ -82,32 +81,52 @@ class _TranscriptCache:
         for key in [k for k in finished if k in self._entries][: max(0, excess)]:
             del self._entries[key]
 
+    def _settle(self, key: str, task: asyncio.Task[str]) -> None:
+        """Record a finished task's outcome, whoever is still waiting on it.
+
+        Runs as the task's own done callback, so a caller that disconnected
+        mid-transcription cannot leave a failure cached as a task (every retry
+        would replay it) or a success that never expires.
+        """
+
+        if self._entries.get(key, (0.0, None))[1] is not task:
+            return
+        if task.cancelled() or task.exception() is not None:
+            # Failures are not cached: a retry transcribes again.
+            del self._entries[key]
+        else:
+            self._entries[key] = (time.monotonic(), task.result())
+
     async def transcribe(self, key: str, start: Callable[[], Awaitable[str]]) -> str:
         now = time.monotonic()
         self._prune(now)
         entry = self._entries.get(key)
         if entry is not None:
             value = entry[1]
-            return value if isinstance(value, str) else await asyncio.shield(value)
+            if isinstance(value, str):
+                return value
+            if not value.done():
+                return await asyncio.shield(value)
+            # Finished but not yet settled (its callback is queued).
+            self._settle(key, value)
+            if key in self._entries:
+                return self._entries[key][1]  # type: ignore[return-value]
         task: asyncio.Task[str] = asyncio.ensure_future(start())
         self._entries[key] = (now, task)
-        try:
-            # Shielded: a client that disconnects must not cancel the request
-            # that a retry with the same ID may join.
-            text = await asyncio.shield(task)
-        except BaseException:
-            if task.done() and self._entries.get(key, (0.0, None))[1] is task:
-                # Failures are not cached: a retry transcribes again.
-                del self._entries[key]
-            raise
-        self._entries[key] = (time.monotonic(), text)
-        return text
+        task.add_done_callback(lambda done: self._settle(key, done))
+        # Shielded: a client that disconnects must not cancel the request
+        # that a retry with the same ID may join.
+        return await asyncio.shield(task)
 
     def clear(self) -> None:
         self._entries.clear()
+        _REJECTED_CREDENTIALS.clear()
 
 
 _CACHE = _TranscriptCache()
+# Fingerprints (never the keys) of credentials a provider refused while
+# transcribing a voice message; cleared when the same credential works again.
+_REJECTED_CREDENTIALS: set[str] = set()
 
 
 def _error(code: str, status_code: int | None = None) -> JSONResponse:
@@ -140,21 +159,36 @@ async def _route_context(target: str) -> dict:
     }
 
 
+def _offline_status(core_type: str, provider_preference: str | None) -> dict:
+    try:
+        transcriber = resolve_offline_transcriber(
+            core_type,
+            provider_preference=provider_preference,
+        )
+    except AsrOfflineError as exc:
+        return {"supported": False, "provider": exc.provider_key, "error_code": exc.code}
+    if transcriber.credential_fingerprint in _REJECTED_CREDENTIALS:
+        # Route resolution only proves a key is present; this one was already
+        # refused by the provider, so offer voice messages again only once
+        # the key is replaced (a different fingerprint).
+        return {
+            "supported": False,
+            "provider": transcriber.provider_key,
+            "error_code": "ASR_CREDENTIALS_REJECTED",
+        }
+    return {"supported": True, "provider": transcriber.provider_key, "error_code": None}
+
+
 @router.get("/status")
 async def get_audio_message_status(target: str = ""):
     """Whether voice messages can be transcribed for this character now."""
 
     context = await _route_context(target)
-    status = await asyncio.to_thread(
-        get_offline_asr_status,
+    return await asyncio.to_thread(
+        _offline_status,
         context["core_type"],
-        provider_preference=context["provider_preference"],
+        context["provider_preference"],
     )
-    return {
-        "supported": status.supported,
-        "provider": status.provider_key,
-        "error_code": status.error_code,
-    }
 
 
 @router.post("/transcribe")
@@ -211,11 +245,18 @@ async def transcribe_audio_message(request: Request):
             provider_preference=context["provider_preference"],
         )
         began = time.monotonic()
-        text = await transcriber.transcribe(
-            pcm16,
-            sample_rate_hz=SAMPLE_RATE_HZ,
-            language=context["language"],
-        )
+        fingerprint = transcriber.credential_fingerprint
+        try:
+            text = await transcriber.transcribe(
+                pcm16,
+                sample_rate_hz=SAMPLE_RATE_HZ,
+                language=context["language"],
+            )
+        except AsrOfflineError as exc:
+            if exc.code == "ASR_CREDENTIALS_REJECTED" and fingerprint:
+                _REJECTED_CREDENTIALS.add(fingerprint)
+            raise
+        _REJECTED_CREDENTIALS.discard(fingerprint)
         logger.info(
             "audio message transcribed provider=%s audio_ms=%d elapsed_ms=%d chars=%d",
             transcriber.provider_key,

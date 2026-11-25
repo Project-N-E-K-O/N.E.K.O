@@ -111,7 +111,8 @@ test('a route that cannot transcribe rejects and hides the microphone', async ()
   assert.equal(error.message, 'ASR_CREDENTIALS_MISSING');
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(calls.fetch[1].url, '/api/audio-message/status?target=Neko');
-  assert.deepEqual(calls.targets, ['']);
+  // Hidden at once, then confirmed by the status check.
+  assert.deepEqual(calls.targets, ['', '']);
   assert.equal(calls.sent.length, 0);
 });
 
@@ -169,4 +170,28 @@ test('binding installs the handler and offers the target only when supported', a
   const unsupported = harness({ responses: [{ status: 200, body: { supported: false } }] });
   await unsupported.api.refreshAudioMessageAvailability();
   assert.deepEqual(unsupported.calls.targets, ['']);
+});
+
+test('switching characters while transcribing drops the text instead of sending it', async () => {
+  const context = harness({ responses: [{ status: 200, body: { ok: true, text: '给旧角色的话' } }] });
+  const pending = context.api.sendAudioMessagePayload(payload);
+  context.window.lanlan_config.lanlan_name = 'Other';
+  const error = await rejection(pending);
+  assert.equal(error.name, 'AudioMessageRejected');
+  assert.equal(error.message, 'stale_target');
+  assert.equal(context.calls.sent.length, 0);
+});
+
+test('a rejected key hides the microphone at once', async () => {
+  const { api, calls } = harness({
+    responses: [
+      { status: 409, body: { ok: false, error_code: 'ASR_CREDENTIALS_REJECTED' } },
+      { status: 200, body: { supported: false, error_code: 'ASR_CREDENTIALS_REJECTED' } },
+    ],
+  });
+  const error = await rejection(api.sendAudioMessagePayload(payload));
+  assert.equal(error.message, 'ASR_CREDENTIALS_REJECTED');
+  assert.equal(calls.targets[0], '');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls.targets, ['', '']);
 });

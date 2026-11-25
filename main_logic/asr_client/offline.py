@@ -39,6 +39,7 @@ code, so callers never parse exception text.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import math
 import unicodedata
@@ -400,6 +401,19 @@ class OfflineAsrTranscriber:
     @property
     def _api_key(self) -> str:
         return self._selection._api_key
+
+    @property
+    def credential_fingerprint(self) -> str:
+        """A short one-way digest of provider + credential ("" without one).
+
+        Lets callers remember that a credential was rejected (and notice when
+        it is replaced) without ever holding the key itself.
+        """
+
+        if not self._api_key:
+            return ""
+        digest = hashlib.sha256(f"{self.provider_key}:{self._api_key}".encode())
+        return digest.hexdigest()[:16]
 
     async def transcribe(
         self,
