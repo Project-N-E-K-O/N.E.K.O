@@ -1524,6 +1524,7 @@
             "fetchTooltip": "Fetch the list of available models from the provider",
             "loading": "Fetching model list…",
             "noMatch": "No matching models",
+            "decisionTag": "Native decision",
             "more": "{{count}} more models; type a keyword to filter",
             "unavailable": {
                 "noProvider": "Select a provider first",
@@ -1707,11 +1708,13 @@
         "mimoTokenPlanKeyLabel": "MiMo Token Plan Key",
         "mimoTokenPlanKeyPlaceholder": "Enter Token Plan key (tp-xxxxx)",
         "mimoTokenPlanKeyHint": "When enabled, MiMo uses only this Token Plan key and endpoint; the normal MiMo API key is locked.",
-        "bailianWorkspaceIdLabel": "Bailian workspace ID (decision model)",
-        "bailianWorkspaceIdPlaceholder": "e.g. llm-xxxxxxxx",
-        "bailianWorkspaceIdHint": "If left empty, a regular chat model stands in for the decision model. The workspace ID is the first part of your API Host (e.g. llm-xxx). Find it on the Workspace management page of the Bailian (Model Studio) console or in the popup shown when you create an API key. You can also paste the whole API Host.",
+        "bailianWorkspaceIdLabel": "Bailian API Host (decision model)",
+        "bailianWorkspaceIdPlaceholder": "e.g. ws-xxxxxxxxxxxxxxxx.ap-southeast-1.maas.aliyuncs.com",
+        "bailianWorkspaceIdHint": "If left empty, a regular chat model stands in for the decision model. Open the Workspace management page of the Bailian (Model Studio) console, copy the value in the API Host column (like ws-xxxx.ap-southeast-1.maas.aliyuncs.com) and paste it here; the popup shown when you create an API key has it too. The workspace ID at its start also works on its own, using the region of your API key.",
         "bailianWorkspaceIdDocLink": "View official docs",
-        "bailianWorkspaceIdInvalid": "Invalid Bailian workspace ID: use only letters, digits and -, up to 63 characters",
+        "bailianWorkspaceIdInvalid": "Invalid Bailian API Host: paste the API Host from the console (like ws-xxxx.ap-southeast-1.maas.aliyuncs.com) or only the workspace ID",
+        "bailianWorkspaceConsoleLink": "Open the Workspace page",
+        "bailianWorkspaceRegionUnsupported": "This API Host's region ({{region}}) has no decision model, so decisions use a chat model",
         "mimoApiKeyLockedByTokenPlan": "MiMo Token Plan is enabled; this key is not used"
     },
     "live2d": {
@@ -6333,12 +6336,13 @@
             "unknown": "Unknown error",
             "backend_unavailable": "Backend service unavailable",
             "invalid_response": "Invalid response format",
-            "invalid_workspace_id": "Invalid Bailian workspace ID",
+            "invalid_workspace_id": "Invalid Bailian API Host",
+            "workspace_mismatch": "The API Host and the API key belong to different Bailian workspaces",
             "token_plan_key_mismatch": "This looks like a regular Bailian key. Token Plan needs its dedicated key starting with sk-sp-",
             "token_plan_url_invalid": "The Token Plan URL must be an https address on an official Token Plan domain"
         },
         "decisionFallback": {
-            "workspace_missing": "No Bailian workspace ID yet; a chat model stands in for the decision model",
+            "workspace_missing": "No Bailian API Host yet; a chat model stands in for the decision model",
             "region_unsupported": "No native decision endpoint in this region; a chat model stands in for the decision model"
         },
         "status": {

@@ -49,6 +49,10 @@ class FakeDecisionLLM:
         # (the last one repeats); kept apart from what the other tests count.
         self.side: list[Any] = [{"side_question": True}]
         self.side_calls: list[list[dict[str, Any]]] = []
+        # Answers of whether work told apart from what a busy member is at goes on with it
+        # all the same, like ``side`` (the last one repeats); kept apart as well.
+        self.beside: list[Any] = [{"goes_on": False}]
+        self.beside_calls: list[list[dict[str, Any]]] = []
         # Answers of where a new commission belongs (the orchestrator's one
         # request), like ``fine``: the last one repeats. Kept apart as well:
         # asked only where a commission's words match something that is
@@ -84,6 +88,12 @@ class FakeDecisionLLM:
         if tier == "side_question":
             self.side_calls.append([dict(message) for message in messages])
             answer = self.side[min(len(self.side_calls) - 1, len(self.side) - 1)]
+            if isinstance(answer, BaseException):
+                raise answer
+            return answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)
+        if tier == "beside":
+            self.beside_calls.append([dict(message) for message in messages])
+            answer = self.beside[min(len(self.beside_calls) - 1, len(self.beside) - 1)]
             if isinstance(answer, BaseException):
                 raise answer
             return answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)

@@ -13,6 +13,8 @@ import type { SceneStanding, TimelineEntry } from '@/api/console'
 export type CatLook =
   | 'working' | 'waiting_user' | 'idle' | 'asleep' | 'compacting' | 'resting' | 'queued'
   | 'landing' | 'resolving' | 'held' | 'unlanded'
+  // Not there yet: the one that would be opened beside a busy one, should the user say so.
+  | 'unborn'
 
 export interface SceneCat {
   look: CatLook

@@ -35,6 +35,7 @@ from pydantic import BaseModel
 
 from utils.http.url import same_endpoint
 from utils.config_manager import _as_bool
+from utils.decision_client.openrouter_catalog import is_openrouter_url
 
 
 _MODEL_LIST_TIMEOUT_SECONDS = 15.0
@@ -246,6 +247,54 @@ async def _fetch_models(url: str, api_key: str, provider_type: str) -> dict[str,
     return {"success": True, "models": models, "resolved_url": url}
 
 
+async def _fetch_openrouter_decision_entries() -> list[dict[str, str]]:
+    """OpenRouter's decision models, or ``[]`` when the list cannot be fetched."""
+    from utils.decision_client.openrouter_catalog import fetch_openrouter_decision_models
+
+    try:
+        # httpx timeouts bound each step, not the whole request; keep the total in budget.
+        return await asyncio.wait_for(fetch_openrouter_decision_models(), timeout=_MODEL_LIST_TIMEOUT_SECONDS)
+    except Exception as exc:
+        logger.info("[ModelList] OpenRouter 决策模型列表拉取失败: %s", type(exc).__name__)
+        return []
+
+
+def _with_openrouter_decision_models(
+    result: dict[str, Any], fallback_url: str, decision_entries: list[dict[str, str]]
+) -> dict[str, Any]:
+    """Add OpenRouter's decision models (absent from its default list) ahead of the rest.
+
+    When the decision list could not be fetched (*decision_entries* is empty),
+    the chat list is kept and only the IDs the built-in catalog already knows
+    are tagged.
+    """
+    if not result.get("success") and not decision_entries:
+        return result
+    merged = _normalize_model_entries(
+        [*decision_entries, *(result.get("models") or [])], strip_gemini_prefix=False
+    )
+    resolved_url = result.get("resolved_url") or fallback_url
+    return _tag_decision_models({"success": True, "models": merged, "resolved_url": resolved_url}, resolved_url)
+
+
+def _tag_decision_models(result: dict[str, Any], url: str) -> dict[str, Any]:
+    """Mark models that use a native decision API on *url* with ``decision: true`` and list them first.
+
+    Uses the same protocol rule as the runtime decision slot, so a tagged model
+    is one the slot would call natively.
+    """
+    from utils.decision_client.schema import infer_decision_protocol, is_native_decision_protocol
+
+    if not result.get("success"):
+        return result
+    models = [dict(entry) for entry in result.get("models") or []]
+    for entry in models:
+        if is_native_decision_protocol(infer_decision_protocol(entry["id"], url)):
+            entry["decision"] = True
+    models.sort(key=lambda entry: (not entry.get("decision"), entry["id"].lower()))
+    return {**result, "models": models}
+
+
 @router.post("/list_models")
 async def list_models(req: ModelListRequest) -> dict:
     """List the models an upstream endpoint offers, for the model ID pickers."""
@@ -271,15 +320,29 @@ async def list_models(req: ModelListRequest) -> dict:
     if "urls" not in target:
         return target
 
-    result = await race_candidate_requests(
-        target["urls"],
-        lambda url: _fetch_models(url, target["api_key"], target["provider_type"]),
-        timeout=_MODEL_LIST_TIMEOUT_SECONDS,
-        prefer_configured_order=True,
-        timeout_result=_failure("timeout", "拉取模型列表超时"),
-    )
-    if (req.provider_key or "").strip():
-        result.pop("check_url", None)
+    # The decision slot on OpenRouter also needs the decision models, which are not
+    # in its default list. Fetch them alongside, so both share one time budget that
+    # stays below the page's request timeout.
+    decision_task = None
+    if (req.model_type or "").strip() == "decision" and is_openrouter_url(target["urls"][0]):
+        decision_task = asyncio.create_task(_fetch_openrouter_decision_entries())
+    try:
+        result = await race_candidate_requests(
+            target["urls"],
+            lambda url: _fetch_models(url, target["api_key"], target["provider_type"]),
+            timeout=_MODEL_LIST_TIMEOUT_SECONDS,
+            prefer_configured_order=True,
+            timeout_result=_failure("timeout", "拉取模型列表超时"),
+        )
+        if (req.provider_key or "").strip():
+            result.pop("check_url", None)
+        if decision_task is not None:
+            result = _with_openrouter_decision_models(result, target["urls"][0], await decision_task)
+        elif (req.model_type or "").strip() == "decision":
+            result = _tag_decision_models(result, result.get("resolved_url") or target["urls"][0])
+    finally:
+        if decision_task is not None and not decision_task.done():
+            decision_task.cancel()
     if result.get("success"):
         logger.info(
             "[ModelList] %s 拉取到 %d 个模型",

@@ -1,0 +1,503 @@
+{
+  "_about": "A second set of sentences said of a project while the member that works there is busy, each with whether it goes on with that member's work (same) or is about something else (else). Written by a model that was told what the two mean and nothing of the rule (orchestrator.apart_from), which was set on beside_scenarios.json before these were written: what the rule gets wrong here is what it gets wrong, and the test that reads this file says how much.",
+  "members": {
+    "thesis_lit": {
+      "project": "Master's thesis",
+      "title": "Lit review",
+      "duty": "Keeps the literature review chapter and its citations in order.",
+      "summary": "Drafted sections 2.1 and 2.2 of the literature review on urban heat islands and cleaned up the Zotero library.",
+      "done": [
+        {
+          "title": "Deduplicate Zotero library",
+          "result": "Merged 34 duplicate entries, 212 references left"
+        },
+        {
+          "title": "Draft section 2.1 on measurement methods",
+          "result": "1,400 words, 18 sources cited"
+        }
+      ],
+      "at_hand": [
+        "Rewrite section 2.3 on green roofs",
+        "Section 2.3 about green roofs reads like a list of papers. Rewrite it so it actually argues something, and group the studies by climate zone"
+      ]
+    },
+    "mod_crops": {
+      "project": "Stardew mod",
+      "title": "New crops",
+      "duty": "Adds the new crops and their data to the mod.",
+      "summary": "Added six new crops with sprites and seed shop entries.",
+      "done": [
+        {
+          "title": "Add saffron and tea crop data",
+          "result": "Both grow correctly in fall, seeds sold at Pierre's"
+        },
+        {
+          "title": "Fix crop sprite sheet offsets",
+          "result": "Growth stages no longer show the wrong frame"
+        }
+      ],
+      "at_hand": [
+        "Balance sell prices for the new crops",
+        "The new crops are way too profitable compared to vanilla, go through all six and bring gold per day roughly in line with ancient fruit or lower"
+      ]
+    },
+    "shop_copy": {
+      "project": "手工皂小店",
+      "title": "详情页文案",
+      "duty": "负责店里商品详情页的文字和卖点梳理。",
+      "summary": "已经写完三款冷制皂的详情页文案，统一了成分说明的格式。",
+      "done": [
+        {
+          "title": "写艾草皂详情页",
+          "result": "文案已上架，分卖点、成分、用法三段"
+        },
+        {
+          "title": "统一成分表写法",
+          "result": "所有商品成分按含量从高到低列"
+        }
+      ],
+      "at_hand": [
+        "重写洋甘菊皂的详情页",
+        "洋甘菊那款详情页太干了，全是成分，没人看得下去，帮我重写一版，突出敏感肌能用，语气软一点"
+      ]
+    },
+    "wed_seat": {
+      "project": "婚礼筹备",
+      "title": "宾客名单",
+      "duty": "管宾客名单、回执统计和座位安排。",
+      "summary": "汇总了两边亲友名单共168人，已发出电子请柬并在统计回执。",
+      "done": [
+        {
+          "title": "合并男女方宾客名单",
+          "result": "去重后168人，标了亲属/同学/同事"
+        },
+        {
+          "title": "发电子请柬",
+          "result": "已发出，目前回复112人"
+        }
+      ],
+      "at_hand": [
+        "排座位表",
+        "酒店那边说一桌十个人一共十八桌，帮我把座位排一下，同学同事尽量按圈子坐，我舅舅和我姑姑别放一桌"
+      ]
+    },
+    "jp_notes": {
+      "project": "日语学习笔记",
+      "title": "N2语法卡片",
+      "duty": "把语法笔记整理成能复习的卡片。",
+      "summary": "已把第1到6课的语法点做成Anki卡片，每张带例句和易混点。",
+      "done": [
+        {
+          "title": "整理第1-6课语法卡片",
+          "result": "共87张，已导出成Anki牌组"
+        },
+        {
+          "title": "给卡片加易混对比",
+          "result": "ようだ/らしい/そうだ等12组加了对比栏"
+        }
+      ],
+      "at_hand": [
+        "整理第7课语法卡片",
+        "第7课的笔记我拍照传上去了，字有点乱，帮我把里面的语法点做成卡片，格式跟之前一样，例句不够的你补两句"
+      ]
+    },
+    "kakeibo_csv": {
+      "project": "家計簿アプリ",
+      "title": "CSV取り込み",
+      "duty": "銀行やカードの明細を取り込む機能を担当。",
+      "summary": "楽天カードと三井住友銀行のCSVを読み込めるようにした。",
+      "done": [
+        {
+          "title": "楽天カードCSVの取り込み",
+          "result": "Shift_JISに対応、日付と金額を正しく読める"
+        },
+        {
+          "title": "重複明細のスキップ",
+          "result": "同じ日付・金額・店名の行は二重登録しない"
+        }
+      ],
+      "at_hand": [
+        "PayPay明細の取り込み対応",
+        "PayPayの利用履歴CSVも読めるようにして。列の並びが他と違うのと、ポイント払いの行があるのでそれは支出に入れないで"
+      ]
+    },
+    "homesrv_backup": {
+      "project": "自宅サーバー",
+      "title": "バックアップ",
+      "duty": "NASのデータのバックアップまわり。",
+      "summary": "写真フォルダを外付けHDDへ毎晩コピーする仕組みを作った。",
+      "done": [
+        {
+          "title": "写真フォルダの夜間バックアップ",
+          "result": "毎日3時にrsyncで外付けHDDへ、初回420GB完了"
+        },
+        {
+          "title": "失敗時の通知",
+          "result": "バックアップが落ちたらDiscordに通知が来る"
+        }
+      ],
+      "at_hand": [
+        "クラウドへの二重バックアップ設定",
+        "外付けだけだと火事とかで終わるから、大事なフォルダだけBackblazeにも上げるようにして。月の料金が1000円超えないくらいで"
+      ]
+    },
+    "blog_md": {
+      "project": "블로그 엔진",
+      "title": "마크다운 렌더링",
+      "duty": "글 본문을 마크다운에서 HTML로 바꾸는 부분 담당.",
+      "summary": "기본 마크다운 변환과 코드 블록 하이라이트를 붙였다.",
+      "done": [
+        {
+          "title": "코드 블록 문법 강조",
+          "result": "언어를 지정하면 색이 입혀짐, 다크 테마도 대응"
+        },
+        {
+          "title": "이미지 지연 로딩",
+          "result": "본문 이미지에 lazy 속성 자동 추가"
+        }
+      ],
+      "at_hand": [
+        "각주 문법 지원",
+        "글에 각주 달 수 있게 해줘. [^1] 이런 식으로 쓰면 글 맨 아래에 모아서 보여주고, 번호 누르면 왔다 갔다 할 수 있게"
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "thesis_lit-1",
+      "member": "thesis_lit",
+      "sentence": "Also the green roof part should mention that Toronto bylaw study, I forget who wrote it but it's in Zotero",
+      "truth": "same",
+      "note": "Adds a source to the section being rewritten right now"
+    },
+    {
+      "id": "thesis_lit-2",
+      "member": "thesis_lit",
+      "sentence": "Can you check what the grad school wants on the title page? There's some template I'm supposed to follow",
+      "truth": "else",
+      "note": "Formatting rules for title page, unrelated to the review chapter"
+    },
+    {
+      "id": "thesis_lit-3",
+      "member": "thesis_lit",
+      "sentence": "Wait, half of those papers are really about planted walls and street trees, not anything on top of buildings. Pull them out into their own bit",
+      "truth": "same",
+      "note": "Restructures the same section, just described in other words"
+    },
+    {
+      "id": "thesis_lit-4",
+      "member": "thesis_lit",
+      "sentence": "My roof sensor logs from July have gaps, something like 40 missing hours. Can those be interpolated before I run the regression?",
+      "truth": "else",
+      "note": "Shares 'roof' but is data cleaning, not literature writing"
+    },
+    {
+      "id": "thesis_lit-5",
+      "member": "thesis_lit",
+      "sentence": "make it shorter too",
+      "truth": "same",
+      "note": "Bare follow-up, only makes sense for the rewrite underway"
+    },
+    {
+      "id": "thesis_lit-6",
+      "member": "thesis_lit",
+      "sentence": "Draft an email to my advisor asking to move Thursday's meeting to next week",
+      "truth": "else",
+      "note": "Separate admin errand, needs no chapter context"
+    },
+    {
+      "id": "mod_crops-1",
+      "member": "mod_crops",
+      "sentence": "The Nexus page description is still placeholder text, write a proper one",
+      "truth": "else",
+      "note": "Mod page writing, independent of price balancing"
+    },
+    {
+      "id": "mod_crops-2",
+      "member": "mod_crops",
+      "sentence": "Saffron can stay a bit overpowered, it only grows in fall anyway",
+      "truth": "same",
+      "note": "Gives an exception for the balancing pass in progress"
+    },
+    {
+      "id": "mod_crops-3",
+      "member": "mod_crops",
+      "sentence": "Crop the banner image to 1920x400, it's getting cut off on the mod page",
+      "truth": "else",
+      "note": "'Crop' here means image trimming, unrelated to plant data"
+    },
+    {
+      "id": "mod_crops-4",
+      "member": "mod_crops",
+      "sentence": "Don't forget the keg and jar stuff. If the wine and jelly made from these still earn silly money the nerf is pointless",
+      "truth": "same",
+      "note": "Extends the profitability nerf to processed goods, different wording"
+    },
+    {
+      "id": "mod_crops-5",
+      "member": "mod_crops",
+      "sentence": "same treatment for the two fruit trees pls",
+      "truth": "same",
+      "note": "Short request to repeat what the worker is doing now"
+    },
+    {
+      "id": "mod_crops-6",
+      "member": "mod_crops",
+      "sentence": "I want a new NPC, a travelling botanist who shows up on Fridays. Start on her dialogue and schedule",
+      "truth": "else",
+      "note": "New character work, a separate feature another worker could build"
+    },
+    {
+      "id": "shop_copy-1",
+      "member": "shop_copy",
+      "sentence": "洋甘菊那款再加一句孕妇可用，我问过供应商了",
+      "truth": "same",
+      "note": "Adds a selling point to the page being rewritten"
+    },
+    {
+      "id": "shop_copy-2",
+      "member": "shop_copy",
+      "sentence": "双十一的满减怎么设比较划算？帮我算算，别亏本就行",
+      "truth": "else",
+      "note": "Promotion pricing maths, nothing to do with product copy"
+    },
+    {
+      "id": "shop_copy-3",
+      "member": "shop_copy",
+      "sentence": "介绍别写太长啊，手机上翻三屏就没人看了",
+      "truth": "same",
+      "note": "Constraint on the same copy, called 介绍 instead of 详情页"
+    },
+    {
+      "id": "shop_copy-4",
+      "member": "shop_copy",
+      "sentence": "洋甘菊精油快用完了，帮我比一下那几家的进货价，顺便看看起订量",
+      "truth": "else",
+      "note": "Shares 洋甘菊 but is raw material purchasing, not copywriting"
+    },
+    {
+      "id": "shop_copy-5",
+      "member": "shop_copy",
+      "sentence": "另外两款也照这个调子改一下",
+      "truth": "same",
+      "note": "Elliptical, depends on the tone the worker is setting"
+    },
+    {
+      "id": "shop_copy-6",
+      "member": "shop_copy",
+      "sentence": "有个客人说收到的皂是碎的，还发了图，帮我想想怎么回她比较好",
+      "truth": "else",
+      "note": "Customer service reply, separate from page rewriting"
+    },
+    {
+      "id": "wed_seat-1",
+      "member": "wed_seat",
+      "sentence": "誓词我写了个初稿，太肉麻了，帮我改改",
+      "truth": "else",
+      "note": "Vow editing, unrelated to guests or seating"
+    },
+    {
+      "id": "wed_seat-2",
+      "member": "wed_seat",
+      "sentence": "主桌留给双方父母和爷爷奶奶，别排别人",
+      "truth": "same",
+      "note": "Direct rule for the seating chart being arranged"
+    },
+    {
+      "id": "wed_seat-3",
+      "member": "wed_seat",
+      "sentence": "对了我大学室友那几个都要带家属，人数你加上，谁挨着谁也得重新看看",
+      "truth": "same",
+      "note": "Changes headcount and placement, phrased without seating vocabulary"
+    },
+    {
+      "id": "wed_seat-4",
+      "member": "wed_seat",
+      "sentence": "每桌放的喜糖和伴手礼选哪种好？预算一桌两百以内",
+      "truth": "else",
+      "note": "Shares 桌 but is about choosing favours and budget"
+    },
+    {
+      "id": "wed_seat-5",
+      "member": "wed_seat",
+      "sentence": "小朋友那几个也一样，单独弄",
+      "truth": "same",
+      "note": "Very short, only meaningful within the seating arrangement"
+    },
+    {
+      "id": "wed_seat-6",
+      "member": "wed_seat",
+      "sentence": "婚车订几辆合适？接亲路线也帮我看一下，早上别堵在高架上",
+      "truth": "else",
+      "note": "Transport planning, independent of the guest list work"
+    },
+    {
+      "id": "jp_notes-1",
+      "member": "jp_notes",
+      "sentence": "第7课里「にあたって」和「に際して」我老搞混，这两张卡片加个对比",
+      "truth": "same",
+      "note": "Adds detail to the lesson 7 cards being made"
+    },
+    {
+      "id": "jp_notes-2",
+      "member": "jp_notes",
+      "sentence": "推荐一本N1的语法书吧，考完N2想接着学",
+      "truth": "else",
+      "note": "Shares 语法 but is a book recommendation, separate errand"
+    },
+    {
+      "id": "jp_notes-3",
+      "member": "jp_notes",
+      "sentence": "你自己加的那些句子别太书面，最好是日剧里会说的那种",
+      "truth": "same",
+      "note": "Refers to the supplemented examples using different words"
+    },
+    {
+      "id": "jp_notes-4",
+      "member": "jp_notes",
+      "sentence": "帮我找几篇NHK Easy的新闻，我想每天读一篇练阅读",
+      "truth": "else",
+      "note": "Reading practice material, unrelated to grammar cards"
+    },
+    {
+      "id": "jp_notes-5",
+      "member": "jp_notes",
+      "sentence": "8、9课也一起弄了吧",
+      "truth": "same",
+      "note": "Extends the current card job to more lessons"
+    },
+    {
+      "id": "jp_notes-6",
+      "member": "jp_notes",
+      "sentence": "12月考试的准考证什么时候能打印？帮我查一下",
+      "truth": "else",
+      "note": "Exam logistics lookup, no card context needed"
+    },
+    {
+      "id": "kakeibo_csv-1",
+      "member": "kakeibo_csv",
+      "sentence": "月ごとの円グラフ、色が見づらいから変えたい",
+      "truth": "else",
+      "note": "Chart colours, a separate UI task from importing"
+    },
+    {
+      "id": "kakeibo_csv-2",
+      "member": "kakeibo_csv",
+      "sentence": "PayPayのチャージの行も支出じゃないから除外でお願い",
+      "truth": "same",
+      "note": "Another row rule for the PayPay import underway"
+    },
+    {
+      "id": "kakeibo_csv-3",
+      "member": "kakeibo_csv",
+      "sentence": "あと友だちから送ってもらったお金は収入のほうに入れといて",
+      "truth": "same",
+      "note": "Handling of received transfers in that import, no keyword reused"
+    },
+    {
+      "id": "kakeibo_csv-4",
+      "member": "kakeibo_csv",
+      "sentence": "PayPay銀行の口座、残高の初期値ってどこで設定するんだっけ",
+      "truth": "else",
+      "note": "Shares PayPay but asks about account balance settings"
+    },
+    {
+      "id": "kakeibo_csv-5",
+      "member": "kakeibo_csv",
+      "sentence": "d払いも同じ感じで",
+      "truth": "same",
+      "note": "Short ask to repeat the same import work elsewhere"
+    },
+    {
+      "id": "kakeibo_csv-6",
+      "member": "kakeibo_csv",
+      "sentence": "来年から食費を月4万に抑えたいんだけど、予算を決める画面ってまだないよね？作ってほしい",
+      "truth": "else",
+      "note": "New budget screen feature, independent of statement import"
+    },
+    {
+      "id": "homesrv_backup-1",
+      "member": "homesrv_backup",
+      "sentence": "Backblazeに上げる前に暗号化はしといてね",
+      "truth": "same",
+      "note": "Requirement for the cloud upload being configured"
+    },
+    {
+      "id": "homesrv_backup-2",
+      "member": "homesrv_backup",
+      "sentence": "Jellyfin入れて映画をテレビで見られるようにしたい",
+      "truth": "else",
+      "note": "Media server install, unrelated to backups"
+    },
+    {
+      "id": "homesrv_backup-3",
+      "member": "homesrv_backup",
+      "sentence": "動画は容量食うから外していいや、書類とスキャンしたやつだけ送って",
+      "truth": "same",
+      "note": "Narrows what gets sent offsite, described in other words"
+    },
+    {
+      "id": "homesrv_backup-4",
+      "member": "homesrv_backup",
+      "sentence": "家族用の共有フォルダ、妹のアカウントだけ読み取り専用にしたいんだけどできる？",
+      "truth": "else",
+      "note": "Shares フォルダ but concerns user permissions on a share"
+    },
+    {
+      "id": "homesrv_backup-5",
+      "member": "homesrv_backup",
+      "sentence": "それ、週1でいいよ",
+      "truth": "same",
+      "note": "Bare pronoun, sets frequency of the job in hand"
+    },
+    {
+      "id": "homesrv_backup-6",
+      "member": "homesrv_backup",
+      "sentence": "ルーターのポート開けずに外からつなぐ方法ない？Tailscaleとか聞いたことあるけど",
+      "truth": "else",
+      "note": "Remote access networking, a separate setup task"
+    },
+    {
+      "id": "blog_md-1",
+      "member": "blog_md",
+      "sentence": "각주에 마우스 올리면 내용이 툴팁으로 뜨면 좋겠어",
+      "truth": "same",
+      "note": "Extra behaviour for the footnote feature being built"
+    },
+    {
+      "id": "blog_md-2",
+      "member": "blog_md",
+      "sentence": "RSS 피드가 최신 글 10개만 나오는데 20개로 늘려줘",
+      "truth": "else",
+      "note": "Feed setting change, unrelated to body rendering"
+    },
+    {
+      "id": "blog_md-3",
+      "member": "blog_md",
+      "sentence": "아 그리고 밑에 모이는 주석들 글씨는 본문보다 좀 작게 해줘",
+      "truth": "same",
+      "note": "Styles the collected footnotes, called 주석 instead of 각주"
+    },
+    {
+      "id": "blog_md-4",
+      "member": "blog_md",
+      "sentence": "README를 마크다운으로 새로 써줘, 설치 방법 위주로 간단하게",
+      "truth": "else",
+      "note": "Shares 마크다운 but is documentation writing, not the renderer"
+    },
+    {
+      "id": "blog_md-5",
+      "member": "blog_md",
+      "sentence": "표 안에서도 되게 해줘",
+      "truth": "same",
+      "note": "Names nothing, means footnotes should work inside tables"
+    },
+    {
+      "id": "blog_md-6",
+      "member": "blog_md",
+      "sentence": "관리자 로그인에 2단계 인증 붙이고 싶은데 어떤 방식이 제일 간단할까",
+      "truth": "else",
+      "note": "Admin login security, a wholly separate area"
+    }
+  ]
+}
