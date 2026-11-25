@@ -159,7 +159,14 @@ test('the ordinary send path checks for a visit before the bubble and right befo
   const send = body.indexOf('            // Send message\n            if (S.socket && S.socket.readyState === WebSocket.OPEN)');
   assert.ok(first > 0 && first < bubble, 'checked before any bubble is drawn (queued submissions)');
   assert.ok(sessionWait < second && second < send, 'checked again after the text session wait');
-  assert.ok(body.slice(second, send).includes('removeMessage(reactOptimisticMessageId)'));
+  const reroute = body.slice(second, send);
+  assert.ok(reroute.includes('removeMessage(reactOptimisticMessageId)'));
+  // The unsent line drops only its own in-flight reply record...
+  assert.match(reroute, /if \(requestId && window\._lastSubmittedRequestId === requestId\) \{\s*window\._lastSubmittedText = '';\s*window\._lastSubmittedRequestId = '';/);
+  // ...and a session flag set by what was likely only the visit's ack is handed back,
+  // so the visit line registers it and the visit end clears it.
+  assert.match(reroute, /if \(startedTextSessionHere && S\.isTextSessionActive === true\) \{\s*S\.isTextSessionActive = false;/);
+  assert.ok(reroute.indexOf('S.isTextSessionActive = false') < reroute.indexOf('return AUDIO_MESSAGE_VISIT_REROUTE'));
   // Visit lines are not React-window sends, so they still wait for the user
   // name after the first character check: the check runs again after that wait.
   const nameWait = body.indexOf('await window.appChat.ensureUserDisplayName();');
@@ -305,7 +312,7 @@ function visitHarness({ sendResult = true } = {}) {
     return result;
   }
   const local = (id) => messages.filter((message) => message.id === `visit-local-${id}`);
-  return { I, chat, messages, rollbacks, toasts, sendCalls, state, echo, advance, track, local };
+  return { I, chat, appState: win.appState, messages, rollbacks, toasts, sendCalls, state, echo, advance, track, local };
 }
 
 test('visit: the transcript is sent to the selected recipient and resolves on the echo', async () => {
@@ -462,6 +469,21 @@ test('visit: a recording made for another character is not sent into this visit'
   await settle();
   assert.equal(h.sendCalls[0].options.expectedLanlanName, '咪咪');
   assert.equal(h.sendCalls[0].options.visitLine, true);
+});
+
+test('visit: a session opened for a voice visit line is released when the visit ends', async () => {
+  let appState = null;
+  const h = visitHarness({ sendResult: () => { appState.isTextSessionActive = true; return true; } });
+  // The rerouted send handed the flag back (false); the visit line opens the session.
+  appState = h.appState;
+  appState.isTextSessionActive = false;
+  h.state('started');
+  h.track(h.chat.submitAudioTranscript({ text: '你好', requestId: 'rec-1' }));
+  await settle();
+  h.echo('rec-1', '你好');
+  assert.equal(appState.isTextSessionActive, true);
+  h.chat.handleFrame({ type: 'visit_state_change', action: 'ended', visit_id: VID, side: 'host', reason: 'normal', ts: 2 });
+  assert.equal(appState.isTextSessionActive, false, 'the next ordinary message opens a real session');
 });
 
 test('visit: a second submission of a recording still in flight is not sent twice', async () => {

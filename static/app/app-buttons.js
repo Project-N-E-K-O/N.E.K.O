@@ -3707,6 +3707,16 @@
                         && typeof window.reactChatWindowHost.removeMessage === 'function') {
                     window.reactChatWindowHost.removeMessage(reactOptimisticMessageId);
                 }
+                // 这句没发出：撤掉它记下的「回复在途」（只撤自己的，别的请求的记录不动）
+                if (requestId && window._lastSubmittedRequestId === requestId) {
+                    window._lastSubmittedText = '';
+                    window._lastSubmittedRequestId = '';
+                }
+                // 这次开会话时串门已在接管：那多半只是串门路由的 ack、并没起普通会话（同 markTextSubmissionRefused）。
+                // 撤回标记，串门句会自己发开会话请求并由 visit-chat 记下、串门结束时撤掉，之后普通聊天照常显式开会话
+                if (startedTextSessionHere && S.isTextSessionActive === true) {
+                    S.isTextSessionActive = false;
+                }
                 return AUDIO_MESSAGE_VISIT_REROUTE;
             }
 
