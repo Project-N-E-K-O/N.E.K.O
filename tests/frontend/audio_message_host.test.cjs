@@ -230,6 +230,62 @@ test('hiding the microphone waits for an open draft so the recording survives', 
   assert.deepEqual(calls.targets, ['Neko', '']);
 });
 
+test('realtime voice withdraws the microphone, stops a recording in progress, and gives it back afterwards', async () => {
+  const context = harness({ responses: [{ status: 200, body: { supported: true } }] });
+  const { api, calls, host, window } = context;
+  window.appState = { isRecording: false, voiceChatActive: false, voiceStartPending: false };
+  api.bindAudioMessageHost(host);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls.targets, ['Neko']);
+
+  host.draftOpen = true; // a voice message is being recorded
+  window.appState.isRecording = true; // realtime voice starts (mobile keeps the composer visible)
+  calls.intervals[0]();
+  assert.equal(calls.keepDraft.at(-1), false, 'the second microphone capture must stop');
+  assert.deepEqual(calls.targets, ['Neko', '']);
+  calls.intervals[0](); // nothing changes while realtime voice stays on
+  assert.deepEqual(calls.targets, ['Neko', '']);
+
+  host.draftOpen = false;
+  window.appState.isRecording = false;
+  calls.intervals[0]();
+  assert.deepEqual(calls.targets, ['Neko', '', 'Neko']);
+});
+
+test('realtime voice that is on or starting keeps the microphone hidden when availability is checked', async () => {
+  for (const busy of [{ appState: { voiceChatActive: true } }, { appState: { voiceStartPending: true } }, { isMicStarting: true }]) {
+    const context = harness({ responses: [{ status: 200, body: { supported: true } }] });
+    Object.assign(context.window, busy);
+    await context.api.refreshAudioMessageAvailability();
+    assert.deepEqual(context.calls.targets, [''], JSON.stringify(busy));
+  }
+});
+
+test('a microphone withdrawn for a route error does not come back when realtime voice ends', async () => {
+  let answerStatus;
+  const context = harness({
+    responses: [
+      { status: 200, body: { supported: true } },
+      { status: 409, body: { ok: false, error_code: 'ASR_CREDENTIALS_MISSING' } },
+      // The follow-up status check is still in flight while realtime voice toggles.
+      { status: 200, body: new Promise((resolve) => { answerStatus = resolve; }) },
+    ],
+  });
+  const { api, calls, host, window } = context;
+  window.appState = { isRecording: false };
+  api.bindAudioMessageHost(host);
+  await new Promise((resolve) => setImmediate(resolve));
+  await rejection(api.sendAudioMessagePayload(payload));
+  window.appState.isRecording = true;
+  calls.intervals[0]();
+  window.appState.isRecording = false;
+  calls.intervals[0]();
+  assert.equal(calls.targets.includes('Neko', 1), false, 'the failed route must not be offered again');
+  answerStatus({ supported: false, error_code: 'ASR_CREDENTIALS_MISSING' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls.targets.at(-1), '');
+});
+
 test('switching to a character without offline ASR does not keep the old draft', async () => {
   const context = harness({
     responses: [

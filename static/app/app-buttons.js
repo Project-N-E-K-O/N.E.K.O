@@ -1990,6 +1990,9 @@
     // 期望交给聊天窗的目标，以及聊天窗实际接受的目标（有草稿时收起会被推迟）
     var audioMessageDesiredTarget = null;
     var audioMessageAppliedTarget = null;
+    // 状态查询确认能转写的目标；实时语音期间不交给聊天窗
+    var audioMessageSupportedTarget = '';
+    var audioMessageRealtimeBusy = false;
 
     function audioMessageRejection(message) {
         var error = new Error(message || 'failed');
@@ -1997,16 +2000,35 @@
         return error;
     }
 
-    function applyAudioMessageTarget(target) {
+    // 实时语音开着或正在启动时不提供语音消息：两路同时采集麦克风，实时识别会把这段录音
+    // 也当成语音输入，有的手机上新开的采集还会让实时那一路没声音。桌面端此时整个输入框
+    // 已经隐藏，这里主要防移动端（移动端开实时语音时输入框保持可见）。
+    function isRealtimeVoiceBusy() {
+        var state = window.appState;
+        return !!((state && (state.isRecording || state.voiceChatActive || state.voiceStartPending))
+            || window.isMicStarting === true);
+    }
+
+    function applyAudioMessageTarget(target, options) {
         var host = window.reactChatWindowHost;
         if (!host || typeof host.setAudioMessageTarget !== 'function') return;
         audioMessageDesiredTarget = target;
-        // 角色没变、只是线路不可用时保留草稿：用户改好设置后可以直接重发这条录音
+        // 角色没变、只是线路不可用时保留草稿：用户改好设置后可以直接重发这条录音。
+        // 实时语音开始时不保留：正在进行的录音必须停下
         var keepDraft = !target && !!audioMessageAppliedTarget
-            && audioMessageAppliedTarget === currentAudioMessageTarget();
+            && audioMessageAppliedTarget === currentAudioMessageTarget()
+            && !(options && options.discardDraft);
         if (host.setAudioMessageTarget(target, { keepDraft: keepDraft }) !== false) {
             audioMessageAppliedTarget = target;
         }
+    }
+
+    function applySupportedAudioMessageTarget() {
+        audioMessageRealtimeBusy = isRealtimeVoiceBusy();
+        applyAudioMessageTarget(
+            audioMessageRealtimeBusy ? '' : audioMessageSupportedTarget,
+            { discardDraft: audioMessageRealtimeBusy }
+        );
     }
 
     function currentAudioMessageTarget() {
@@ -2073,6 +2095,7 @@
             if (code === 'ASR_RATE_LIMITED') throw audioMessageRejection('busy');
             if (AUDIO_MESSAGE_ROUTE_ERRORS[code]) {
                 // 收起麦克风（草稿还在时推迟到草稿结束）；后端记住了被拒的 key，换 key 前状态查询不会再报可用
+                audioMessageSupportedTarget = '';
                 applyAudioMessageTarget('');
                 refreshAudioMessageAvailability();
             }
@@ -2130,7 +2153,8 @@
             }
         }
         if (seq !== audioMessageAvailabilitySeq) return;
-        applyAudioMessageTarget(supported ? target : '');
+        audioMessageSupportedTarget = supported ? target : '';
+        applySupportedAudioMessageTarget();
     }
 
     function bindAudioMessageHost(host) {
@@ -2142,11 +2166,14 @@
         refreshAudioMessageAvailability();
         if (mod._audioMessageWatchBound) return;
         mod._audioMessageWatchBound = true;
-        // 切换角色不发事件：每秒本地比对一次角色名，变了才去查状态；
+        // 切换角色、开关实时语音都不发事件：每秒本地比对一次，角色名变了才去查状态；
         // 回到窗口时也查一次，覆盖在设置页刚填好 key 的情况
         window.setInterval(function () {
             if (currentAudioMessageTarget() !== audioMessageCheckedTarget) {
                 refreshAudioMessageAvailability();
+            } else if (isRealtimeVoiceBusy() !== audioMessageRealtimeBusy) {
+                // 实时语音开始：停掉正在进行的录音并收起；结束：恢复麦克风
+                applySupportedAudioMessageTarget();
             } else if (audioMessageDesiredTarget !== null
                     && audioMessageDesiredTarget !== audioMessageAppliedTarget) {
                 // 被推迟的收起：草稿结束后再试
