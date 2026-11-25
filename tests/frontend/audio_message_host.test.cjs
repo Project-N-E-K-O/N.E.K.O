@@ -530,6 +530,34 @@ test('a queued voice transcript is dropped when a theater started meanwhile; que
 test('the shared text send re-checks the theater for voice messages right before sending', () => {
   const sendStart = source.indexOf('            // Send message\n            if (S.socket && S.socket.readyState === WebSocket.OPEN)');
   const sessionStart = source.indexOf('await mod._textSessionStartPromise;');
-  const guard = source.indexOf('if (options.audioMessage === true && isTheaterRuntimeActive()) {');
+  const guard = source.indexOf('if (options.audioMessage === true && isOrdinaryChatTakenOver()) {', sessionStart);
   assert.ok(sessionStart > 0 && guard > sessionStart && guard < sendStart);
+});
+
+test('a queued voice transcript is dropped when a visit took over the composer meanwhile', async () => {
+  const sent = [];
+  const queue = deferredQueueHarness(async (text) => { sent.push(text); return true; });
+  const settled = [];
+  queue.queueDeferredTextSubmission('语音', { expectedLanlanName: 'Neko', audioMessage: true }, (ok) => settled.push(ok));
+  queue.queueDeferredTextSubmission('打字', { source: 'react-chat-window' });
+  queue.window.nekoVisitChat = { isActive: () => true };
+  queue.flushDeferredTextSubmissions();
+  await settleQueue();
+  assert.deepEqual(settled, [false]);
+  assert.deepEqual(sent, ['打字']);
+});
+
+test('voice messages are refused at the send entry while a visit or theater owns the chat', () => {
+  const entry = source.indexOf('        async function sendTextPayload(rawText, options) {');
+  const body = source.slice(entry, source.indexOf('var theaterRuntime = window.nekoTheaterRuntime;', entry));
+  assert.match(body, /if \(options\.audioMessage === true && isOrdinaryChatTakenOver\(\)\) return false;/);
+  const helper = source.slice(source.indexOf('    function isOrdinaryChatTakenOver() {'), source.indexOf('    // 带 expectedLanlanName 的提交'));
+  const sandbox = { window: {} };
+  vm.runInNewContext(`${helper}\nthis.check = isOrdinaryChatTakenOver;`, sandbox);
+  assert.equal(sandbox.check(), false);
+  sandbox.window.nekoVisitChat = { isActive: () => true };
+  assert.equal(sandbox.check(), true);
+  sandbox.window.nekoVisitChat = { isActive: () => false };
+  sandbox.window.nekoTheaterRuntime = { isActive: () => true };
+  assert.equal(sandbox.check(), true);
 });

@@ -1408,16 +1408,25 @@
         });
     }
 
+    // 语音消息只属于普通聊天：小剧场或串门接管普通聊天时，都不能把它发进普通会话
+    // （串门运行时会以 VISIT_INPUT_REFUSED_SOURCE 拒收，草稿却已被当作发出而清掉）
+    function isOrdinaryChatTakenOver() {
+        var theaterRuntime = window.nekoTheaterRuntime;
+        if (theaterRuntime && typeof theaterRuntime.isActive === 'function' && theaterRuntime.isActive()) {
+            return true;
+        }
+        var visitChat = window.nekoVisitChat;
+        return !!(visitChat && typeof visitChat.isActive === 'function' && visitChat.isActive());
+    }
+
     // 带 expectedLanlanName 的提交（语音消息）在角色切换后再也不可能发出：
     // 视为永久取消，不能放回队列重试（否则会立即重刷，形成不让出主线程的死循环）
     function isDeferredSubmissionForStaleTarget(options) {
         var expected = options && options.expectedLanlanName;
         if (typeof expected !== 'string' || !expected) return false;
         if (!(window.lanlan_config && window.lanlan_config.lanlan_name === expected)) return true;
-        // 排队期间开始了小剧场的语音消息同样作废（发送链路也会拒绝它）
-        var theaterRuntime = window.nekoTheaterRuntime;
-        return !!(options.audioMessage === true && theaterRuntime
-            && typeof theaterRuntime.isActive === 'function' && theaterRuntime.isActive());
+        // 排队期间开始了小剧场或串门的语音消息同样作废（发送链路也会拒绝它）
+        return options.audioMessage === true && isOrdinaryChatTakenOver();
     }
 
     function settleDeferredSubmission(submission, sent) {
@@ -3663,9 +3672,9 @@
                 updateReactOptimisticMessageStatus('failed');
                 return false;
             }
-            // 同理，等待期间开始了小剧场：语音消息属于普通聊天，不在演绎中送进普通会话。
-            // 延迟队列直接调用本函数、不经过 sendTextPayload 的剧场分支，也由这里拦下
-            if (options.audioMessage === true && isTheaterRuntimeActive()) {
+            // 同理，等待期间开始了小剧场或串门：语音消息属于普通聊天，不能送进普通会话。
+            // 延迟队列直接调用本函数、不经过 sendTextPayload 的入口检查，也由这里拦下
+            if (options.audioMessage === true && isOrdinaryChatTakenOver()) {
                 updateReactOptimisticMessageStatus('failed');
                 return false;
             }
@@ -3882,13 +3891,10 @@
         avatarInteractionTextContinuationState.deferredSendHandler = sendTextPayloadInternal;
         flushDeferredTextSubmissions();
 
-        function isTheaterRuntimeActive() {
-            var theaterRuntime = window.nekoTheaterRuntime;
-            return !!(theaterRuntime && typeof theaterRuntime.isActive === 'function' && theaterRuntime.isActive());
-        }
-
         async function sendTextPayload(rawText, options) {
             options = options || {};
+            // 转写期间小剧场或串门接管了普通聊天：语音消息不再发送
+            if (options.audioMessage === true && isOrdinaryChatTakenOver()) return false;
             var text = String(typeof rawText === 'string' ? rawText : '').trim();
             var extraImageDataUrls = normalizeExternalImageDataUrls(options.extraImageDataUrls);
             var hasExtraImages = extraImageDataUrls.length > 0;
