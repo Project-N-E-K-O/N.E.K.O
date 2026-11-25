@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
+import math
 from pathlib import Path
 import threading
 import time
@@ -20,12 +21,15 @@ GITHUB_DOWNLOAD_SOURCES = (
     ("github-direct", "https://github.com/"),
     ("gh-proxy-com", "https://gh-proxy.com/"),
     ("gh-proxy-org", "https://gh-proxy.org/"),
-    ("hk-gh-proxy-org", "https://hk.gh-proxy.org/"),
     ("cdn-gh-proxy-org", "https://cdn.gh-proxy.org/"),
     ("edgeone-gh-proxy-org", "https://edgeone.gh-proxy.org/"),
 )
 _MIRRORS = GITHUB_DOWNLOAD_SOURCES[1:]
 _MIRROR_IDS = frozenset(source_id for source_id, _ in _MIRRORS)
+# Mirrors that were offered once and have since gone away. A preference that
+# still names one falls back to the default mirror instead of being rejected,
+# so a saved setting or an old page keeps working.
+_RETIRED_MIRROR_IDS = frozenset({"hk-gh-proxy-org"})
 DownloadMode = Literal["auto", "direct", "specified"]
 
 
@@ -33,6 +37,9 @@ DownloadMode = Literal["auto", "direct", "specified"]
 class DownloadPreferences:
     mode: DownloadMode = "auto"
     specified_source_id: str = "gh-proxy-com"
+
+
+_DEFAULT_MIRROR_ID = DownloadPreferences.specified_source_id
 
 
 def preferences_path() -> Path:
@@ -64,6 +71,9 @@ def load_preferences() -> tuple[DownloadPreferences, bool]:
 def validate_preferences(mode: str, source_id: str) -> DownloadPreferences:
     if mode not in ("auto", "direct", "specified"):
         raise ValueError("Unknown package download mode")
+    if source_id in _RETIRED_MIRROR_IDS:
+        logger.info("download source {} was retired; using {}", source_id, _DEFAULT_MIRROR_ID)
+        source_id = _DEFAULT_MIRROR_ID
     if source_id not in _MIRROR_IDS:
         raise ValueError("Unknown GitHub download source")
     return DownloadPreferences(mode=mode, specified_source_id=source_id)  # type: ignore[arg-type]
@@ -96,6 +106,16 @@ _HALF_LIFE = 24 * 3600.0
 _FAILURE_HALF_LIFE = 1800.0
 _FAILURE_PENALTY = 2.0
 _SMOOTHING = 0.4
+# Bounds for persisted and observed values. Anything beyond them is either a
+# corrupt file or a measurement glitch, and would only distort the ranking.
+_MAX_LATENCY = 600.0
+_MAX_THROUGHPUT = 100.0 * _PRIOR_THROUGHPUT
+_MAX_FAILURES = 1000.0
+_MAX_SAMPLES = 1_000_000
+# Statistics stamped this far past the local clock are treated as corrupt.
+_FUTURE_TOLERANCE = 300.0
+# 2 ** -1000 is still a normal float; past it a decay factor is flushed to zero.
+_MAX_HALVINGS = 1000.0
 
 
 @dataclass
@@ -158,39 +178,112 @@ def _ensure_loaded() -> None:
     _loaded = True
     try:
         raw = read_json_tolerating_replace(route_stats_path())
-        for source_id, values in raw["routes"].items():
-            _routes[str(source_id)] = RouteStats(
-                latency=_positive(values.get("latency")),
-                throughput=_positive(values.get("throughput")),
-                failures=max(0.0, float(values.get("failures", 0.0))),
-                samples=max(0, int(values.get("samples", 0))),
-                updated=float(values.get("updated", 0.0)),
-            )
+        routes = raw["routes"].items()
     except FileNotFoundError:
-        pass
-    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        return
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, ArithmeticError) as exc:
         logger.warning("ignoring unreadable package route statistics: {}", exc)
-        _routes.clear()
+        return
+    now = time.time()
+    for source_id, values in routes:
+        source_id = str(source_id)
+        if source_id in _RETIRED_MIRROR_IDS:
+            continue
+        try:
+            _routes[source_id] = _parse_route(values, now)
+        except (ValueError, TypeError, AttributeError, ArithmeticError) as exc:
+            # One corrupt route must not cost the others their history.
+            logger.warning("dropping corrupt statistics of download route {}: {}", source_id, exc)
 
 
-def _positive(value: Any) -> float | None:
-    return float(value) if isinstance(value, (int, float)) and value > 0 else None
+def _parse_route(values: Any, now: float) -> RouteStats:
+    if not isinstance(values, dict):
+        raise TypeError("route statistics are not an object")
+    updated = _finite(values.get("updated", 0.0), "updated")
+    if updated < 0 or updated > now + _FUTURE_TOLERANCE:
+        raise ValueError(f"updated {updated!r} is outside the valid range")
+    samples = values.get("samples", 0)
+    if isinstance(samples, bool) or not isinstance(samples, (int, float)):
+        raise TypeError("samples is not a number")
+    return RouteStats(
+        latency=_sample(_optional(values.get("latency"), "latency"), _MAX_LATENCY),
+        throughput=_sample(_optional(values.get("throughput"), "throughput"), _MAX_THROUGHPUT),
+        failures=min(_MAX_FAILURES, max(0.0, _finite(values.get("failures", 0.0), "failures"))),
+        samples=min(_MAX_SAMPLES, max(0, int(_finite(samples, "samples")))),
+        updated=updated,
+    )
+
+
+def _finite(value: Any, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{name} is not a number")
+    number = float(value)  # OverflowError for an integer beyond float range
+    if not math.isfinite(number):
+        raise ValueError(f"{name} is not finite")
+    return number
+
+
+def _optional(value: Any, name: str) -> float | None:
+    return None if value is None else _finite(value, name)
+
+
+def _sample(value: Any, limit: float) -> float | None:
+    """A usable positive measurement capped at ``limit``, or None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    if not math.isfinite(number) or number <= 0:
+        return None
+    return min(number, limit)
 
 
 def _blend(previous: float | None, value: float | None) -> float | None:
     if value is None:
         return previous
-    return value if previous is None else previous + (value - previous) * _SMOOTHING
+    if previous is None or not math.isfinite(previous):
+        return value
+    return previous + (value - previous) * _SMOOTHING
+
+
+def _decay(age: float, half_life: float) -> float:
+    """``0.5 ** (age / half_life)``, flushed to zero before it turns subnormal.
+
+    Windows' C runtime reports a subnormal pow() result as a range error,
+    which CPython raises as OverflowError: a route last updated about 21 days
+    earlier made the failure decay raise and aborted the whole install.
+    """
+    halvings = max(0.0, age) / half_life
+    return 0.0 if halvings >= _MAX_HALVINGS else 0.5 ** halvings
+
+
+_PRIOR_ESTIMATE = RouteEstimate(_PRIOR_LATENCY, _PRIOR_THROUGHPUT, 0.0)
 
 
 def estimate_route(source_id: str, *, now: float | None = None) -> RouteEstimate:
+    """The expected behaviour of one route; the prior when its history is unusable."""
     _ensure_loaded()
     stats = _routes.get(source_id)
     if stats is None or not stats.samples:
-        return RouteEstimate(_PRIOR_LATENCY, _PRIOR_THROUGHPUT, 0.0)
-    age = max(0.0, (now if now is not None else time.time()) - stats.updated)
-    confidence = 0.5 ** (age / _HALF_LIFE) * min(1.0, stats.samples / 3)
-    failures = stats.failures * 0.5 ** (age / _FAILURE_HALF_LIFE)
+        return _PRIOR_ESTIMATE
+    try:
+        estimate = _estimate_from(stats, now if now is not None else time.time())
+        if not (math.isfinite(estimate.confidence)
+                and math.isfinite(estimate.seconds_for(TYPICAL_PACKAGE_BYTES))):
+            raise ValueError(f"non-finite estimate {estimate!r}")
+    except Exception as exc:
+        # One bad history must not stop the other routes from being ranked.
+        logger.warning("ignoring statistics of download route {}: {!r}", source_id, exc)
+        return _PRIOR_ESTIMATE
+    return estimate
+
+
+def _estimate_from(stats: RouteStats, now: float) -> RouteEstimate:
+    age = now - stats.updated
+    confidence = _decay(age, _HALF_LIFE) * min(1.0, stats.samples / 3)
+    failures = stats.failures * _decay(age, _FAILURE_HALF_LIFE)
 
     def toward_prior(value: float | None, prior: float) -> float:
         return prior if value is None else prior + (value - prior) * confidence
@@ -208,11 +301,12 @@ def route_generation() -> int:
 def _record(observation: RouteObservation, now: float) -> None:
     stats = _routes.setdefault(observation.source_id, RouteStats())
     if stats.updated:
-        stats.failures *= 0.5 ** (max(0.0, now - stats.updated) / _FAILURE_HALF_LIFE)
-    stats.latency = _blend(stats.latency, observation.latency)
-    stats.throughput = _blend(stats.throughput, observation.throughput)
-    stats.failures += 1.0 if observation.failed else 0.0
-    stats.samples += 1
+        stats.failures *= _decay(now - stats.updated, _FAILURE_HALF_LIFE)
+    stats.latency = _blend(stats.latency, _sample(observation.latency, _MAX_LATENCY))
+    stats.throughput = _blend(stats.throughput, _sample(observation.throughput, _MAX_THROUGHPUT))
+    stats.failures = min(_MAX_FAILURES, stats.failures + (1.0 if observation.failed else 0.0))
+    stats.samples = min(_MAX_SAMPLES, stats.samples + 1)
+    # Stamped with the commit time itself, never a later one.
     stats.updated = now
 
 
@@ -282,11 +376,15 @@ def download_candidates(url: str, preferences: DownloadPreferences) -> list[tupl
     if preferences.mode == "specified":
         return [next(item for item in mirrors if item[0] == preferences.specified_source_id)]
     now = time.time()
+    candidates = [direct, *mirrors]
+    # Scored before sorting: estimate_route never raises, and a failure inside
+    # a sort key would abort the whole ranking rather than one route.
+    seconds = {key: estimate_route(key, now=now).seconds_for(TYPICAL_PACKAGE_BYTES)
+               for key, _ in candidates}
     # sorted() is stable: equal estimates keep the declared order. With no
     # history that puts direct and the first mirrors into the opening race,
     # which opens unmeasured routes together and keeps the first to answer.
-    return sorted([direct, *mirrors], key=lambda candidate: estimate_route(
-        candidate[0], now=now).seconds_for(TYPICAL_PACKAGE_BYTES))
+    return sorted(candidates, key=lambda candidate: seconds[candidate[0]])
 
 
 def warmup_urls(candidates: list[tuple[str, str]]) -> list[str]:

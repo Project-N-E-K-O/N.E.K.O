@@ -1497,7 +1497,8 @@ class MarketDownloadPreferences(BaseModel):
 
     @model_validator(mode="after")
     def _validate_preferences(self) -> "MarketDownloadPreferences":
-        validate_preferences(self.mode, self.specified_source_id)
+        # A retired mirror sent by an old page maps to the default one.
+        self.specified_source_id = validate_preferences(self.mode, self.specified_source_id).specified_source_id
         return self
 
 
