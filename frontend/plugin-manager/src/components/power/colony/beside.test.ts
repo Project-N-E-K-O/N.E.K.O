@@ -17,6 +17,7 @@ import { askFacts, askLines, askSummary, besideHint, choiceLabel, isBeside } fro
 import FamiliarBoard from '../home/FamiliarBoard.vue'
 import LandingCard from '../LandingCard.vue'
 import FamiliarColony from './FamiliarColony.vue'
+import { inTerritory } from './layout'
 import { BESIDE_POLL_MS, besideAsksOf, mayBeAsked } from './useBesideAsks'
 
 const api = vi.hoisted(() => ({
@@ -78,6 +79,13 @@ async function mount(component: Component, props: Record<string, unknown> = {}) 
 const byTest = (id: string) => document.querySelector(`[data-testid="${id}"]`) as HTMLElement | null
 const cat = (id: string) => document.querySelector(`[data-cat="${id}"]`) as HTMLElement | null
 const choice = (option: string, within: ParentNode = document) => within.querySelector(`[data-choice="${option}"]`) as HTMLElement | null
+function pointer(element: Element | null, type: string, x: number, y: number) {
+  expect(element).toBeTruthy()
+  const event = new MouseEvent(type, { bubbles: true, clientX: x, clientY: y, button: 0 })
+  Object.defineProperty(event, 'pointerId', { value: 1 })
+  element!.dispatchEvent(event)
+}
+const at = (element: HTMLElement | null) => [parseFloat(element?.style.left ?? ''), parseFloat(element?.style.top ?? '')]
 async function click(element: Element | null | undefined) {
   expect(element).toBeTruthy()
   ;(element as HTMLElement).click()
@@ -205,6 +213,38 @@ describe('the question in the colony', () => {
     expect([cat('shop')?.style.left, cat('shop')?.style.top]).toEqual(['50%', '52%'])
   })
 
+  it('stands by the busy one where the user put that one', async () => {
+    // Every territory is 400 by 300 at the top left; the gate is the 100 by 40 at its bottom right.
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const box = this.hasAttribute('data-colony-gate') ? { left: 300, top: 260, width: 100, height: 40 } : { left: 0, top: 0, width: 400, height: 300 }
+      return { ...box, right: box.left + box.width, bottom: box.top + box.height, x: box.left, y: box.top, toJSON: () => box } as DOMRect
+    })
+    // With one the busy one started: that one stays where it stands, as ever.
+    api.getBoard.mockResolvedValue(board([card(), card({ id: 'kid', name: 'Shop/general', kind: 'child', parent: 'shop', state: 'idle', commission: null })]))
+    await mount(FamiliarColony)
+    const [busyX, busyY] = at(cat('shop'))
+    const [ghostX, ghostY] = at(cat('beside:c9'))
+    const kid = at(cat('kid'))
+    pointer(cat('shop'), 'pointerdown', 200, 156)
+    pointer(cat('shop'), 'pointermove', 120, 100)
+    pointer(cat('shop'), 'pointerup', 120, 100)
+    await flush()
+    const [movedX, movedY] = at(cat('shop'))
+    expect(movedX).toBeCloseTo(30, 6)
+    expect(movedY).toBeCloseTo(100 / 3, 6)
+    const [followedX, followedY] = at(cat('beside:c9'))
+    expect(followedX).toBeCloseTo(ghostX + movedX - busyX, 6)
+    expect(followedY).toBeCloseTo(ghostY + movedY - busyY, 6)
+    expect(at(cat('kid'))).toEqual(kid)
+    // Put by the edge, the busy one has the one not there yet within the territory all the same.
+    pointer(cat('shop'), 'pointerdown', 120, 100)
+    pointer(cat('shop'), 'pointermove', 200, 290)
+    pointer(cat('shop'), 'pointerup', 200, 290)
+    await flush()
+    const [edgeX, edgeY] = at(cat('beside:c9'))
+    expect(inTerritory({ x: edgeX / 100, y: edgeY / 100 })).toBe(true)
+  })
+
   it('is answered with a button from the one not there yet, which is no familiar to open', async () => {
     api.answerCommission.mockResolvedValue({ success: true })
     await mount(FamiliarColony)
@@ -306,11 +346,32 @@ describe('the question on the board', () => {
     expect(byTest('beside-ask')).toBeNull()
   })
 
+  it('takes an answer to another question while the answer to one is on its way', async () => {
+    api.listCommissions.mockResolvedValue(asked([row(), row({ id: 'c8', title: 'Price the tea', ask: beside({ id: 'q8' }) })]))
+    let arrive: (value: unknown) => void = () => {}
+    api.answerCommission.mockImplementation((id: string) => (id === 'c9' ? new Promise(done => { arrive = done }) : Promise.resolve({ success: true })))
+    await mount(FamiliarBoard)
+    const [first, second] = [...document.querySelectorAll('[data-testid="beside-ask"]')] as HTMLElement[]
+    await click(choice('once', first))
+    // The first is on its way: its buttons wait, the other's do not.
+    expect(choice('deny', first)?.hasAttribute('disabled')).toBe(true)
+    expect(choice('deny', second)?.hasAttribute('disabled')).toBe(false)
+    await click(choice('deny', second))
+    expect(api.answerCommission).toHaveBeenCalledWith('c8', { choice: 'deny', text: undefined, question_id: 'q8' })
+    // The first is still on its way.
+    expect(choice('deny', first)?.hasAttribute('disabled')).toBe(true)
+    arrive({ success: true })
+    await flush()
+    expect(api.answerCommission).toHaveBeenCalledTimes(2)
+  })
+
   it('says why an answer was not taken, beside the question', async () => {
     api.answerCommission.mockRejectedValue(refusal('not_taken'))
     await mount(FamiliarBoard)
     await click(choice('deny', byTest('beside-ask')!))
     expect(byTest('beside-error')?.textContent).toContain(words.errors.not_taken)
+    // It can be answered again.
+    expect(choice('once', byTest('beside-ask')!)?.hasAttribute('disabled')).toBe(false)
   })
 
   it('stands at the end of its project where the busy one is not on the board', async () => {

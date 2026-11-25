@@ -66,8 +66,9 @@ let timer: ReturnType<typeof setTimeout> | null = null
 let alive = true
 let turn = 0
 const { asks: besides, load: loadBesides } = useBesideAsks(board)
-// The question being answered, and with which button; why one was not taken, by its commission.
-const answering = ref<{ id: string; what: string } | null>(null)
+// By its commission: with which button a question is being answered, and why an answer was not taken.
+// Each apart: another question can be answered while the answer to one is on its way.
+const answering = ref<Record<string, string>>({})
 const failed = ref<Record<string, string>>({})
 
 const hives = computed<Hive[]>(() => {
@@ -98,18 +99,19 @@ function besidesOf(hive: Hive, sessionId: string | null): Beside[] {
   return besides.value.filter(item => hive.key === `project:${item.project}`
     && (sessionId === null ? !hive.members.some(card => card.id === item.beside) : item.beside === sessionId))
 }
-const busyOf = (item: Beside) => (answering.value?.id === item.id ? answering.value.what : '')
+const busyOf = (item: Beside) => answering.value[item.id] ?? ''
+const without = (kept: Record<string, string>, id: string) => Object.fromEntries(Object.entries(kept).filter(([key]) => key !== id))
 
 async function answer(item: Beside, given: { text?: string; choice?: string }) {
-  if (answering.value || (!given.choice && !given.text?.trim())) return
-  answering.value = { id: item.id, what: given.choice ? `choice:${given.choice}` : 'answer' }
-  failed.value = Object.fromEntries(Object.entries(failed.value).filter(([id]) => id !== item.id))
+  if (!given.choice && !given.text?.trim()) return
+  answering.value = { ...answering.value, [item.id]: given.choice ? `choice:${given.choice}` : 'answer' }
+  failed.value = without(failed.value, item.id)
   try {
     await answerCommission(item.id, { ...given, text: given.text?.trim(), question_id: item.ask.id })
   } catch (failure) {
     failed.value = { ...failed.value, [item.id]: describeConsoleError(failure, t, te) }
   }
-  answering.value = null
+  answering.value = without(answering.value, item.id)
   await Promise.all([load(), loadBesides()])
 }
 

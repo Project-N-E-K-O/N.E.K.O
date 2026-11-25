@@ -118,8 +118,18 @@ const shown = computed(() => props.territory.members.filter(member => !member.hi
 const size = computed(() => territorySize(props.territory.members.length))
 const standing = computed(() => defaultSpots(props.territory.members))
 
+const byId = computed(() => new Map(props.territory.members.map(member => [member.id, member])))
+
 function home(id: string): Spot {
-  return placed[id] ?? standing.value[id] ?? { x: 0.5, y: 0.5 }
+  const own = placed[id]
+  if (own) return own
+  const spot = standing.value[id] ?? { x: 0.5, y: 0.5 }
+  // The one that would be opened beside a busy one stands by it where the user put that one: it is
+  // told apart from the others only by where it stands. (Not put anywhere by the user itself.)
+  const member = byId.value.get(id)
+  const by = member?.look === 'unborn' && member.parent ? placed[member.parent] : undefined
+  const was = member?.parent ? standing.value[member.parent] : undefined
+  return by && was ? intoTerritory({ x: by.x + spot.x - was.x, y: by.y + spot.y - was.y }) : spot
 }
 function at(id: string): Spot {
   const base = home(id)
