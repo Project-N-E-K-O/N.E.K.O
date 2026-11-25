@@ -298,7 +298,9 @@ pygetwindow==0.0.9
 pygments==2.21.0
     # via rich
 pyjwt==2.15.1
-    # via bilibili-api-dev
+    # via
+    #   bilibili-api-dev
+    #   n-e-k-o
 pymsgbox==1.0.9
     # via pyautogui
 pyobjc==12.1 ; sys_platform == 'darwin'

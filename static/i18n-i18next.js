@@ -29,7 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    const LOCALE_VERSION = '2026-11-24-theme-studio-menu';
+    // 主题工坊菜单项与 main 的千问 Token Plan TTS 等文案合并后刷新语言包缓存。
+    const LOCALE_VERSION = '2026-11-25-theme-studio-main-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

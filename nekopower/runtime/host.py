@@ -151,6 +151,18 @@ Each of these five is offered when its callback is there.
     preset that cannot be used, the user did not allow another task agent
     that writes) raises with the reason.
 
+``start_team``  (tool ``start_team``)
+    Payload: ``{"parts": [{"name": str | None, "preset": str | None,
+    "description": str, "brief": str}], "inspect": bool}``. Result:
+    ``{"message": str, "started": [str]}``: the task agents that were
+    started, by the names the session waits for them with. Not always one
+    for each part: one for which no directory of its own could be made is
+    not started, and ``message`` names it. The
+    session that called it keeps the commission. For the leader of a
+    project only, as ``hand_over``. A team that is not started (the user
+    did not allow task agents that write, nowhere for them to write side by
+    side, too many at work) raises with the reason.
+
 ``budget``  (no tool)
     Asked before every model request of a run, between two steps: whether
     what the session works on may use more. Payload: ``{}``. Result:
@@ -197,6 +209,7 @@ HOST_CALLS: tuple[str, ...] = (
     *SUBAGENT_CALLS,
     *SESSION_CALLS,
     "hand_over",
+    "start_team",
     "budget",
     "task_control_begin",
 )
@@ -236,6 +249,7 @@ class HostCallbacks:
     wake_schedule: HostCallback | None = None
     session_ask: HostCallback | None = None
     hand_over: HostCallback | None = None
+    start_team: HostCallback | None = None
     budget: HostCallback | None = None
     execution_action: HostCallback | None = None
     native_execution_action: HostCallback | None = None

@@ -468,7 +468,7 @@ async def _invoke_emotion_tier(prompt: str, *, timeout: float, label: str) -> st
     model = cfg.get('model')
     api_key = cfg.get('api_key')
     base_url = cfg.get('base_url')
-    if not model or not api_key:
+    if not model or (not api_key and cfg.get('provider_type') != 'chatgpt'):
         _report_failure(label, 'emotion_model_or_api_key_missing')
         return None
 
@@ -476,7 +476,6 @@ async def _invoke_emotion_tier(prompt: str, *, timeout: float, label: str) -> st
     try:
         llm = await create_chat_llm_async(
             model, base_url, api_key,
-            temperature=0.4,
             max_completion_tokens=512,
             timeout=timeout,  # same budget the asyncio.wait_for below enforces
             provider_type=cfg.get('provider_type'),
@@ -521,7 +520,7 @@ async def _invoke_capable_tier(prompt: str, *, timeout: float, label: str) -> st
     model = cfg.get('model')
     api_key = cfg.get('api_key')
     base_url = cfg.get('base_url')
-    if not model or not api_key:
+    if not model or (not api_key and cfg.get('provider_type') != 'chatgpt'):
         _report_failure(label, 'summary_model_or_api_key_missing')
         return None
 
@@ -529,7 +528,6 @@ async def _invoke_capable_tier(prompt: str, *, timeout: float, label: str) -> st
     try:
         llm = await create_chat_llm_async(
             model, base_url, api_key,
-            temperature=0.3,
             max_completion_tokens=128,
             timeout=timeout,  # same budget the asyncio.wait_for below enforces
             provider_type=cfg.get('provider_type'),

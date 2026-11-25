@@ -1070,7 +1070,8 @@ PERMISSION_CATEGORY_TEXTS = {
            "managed_delivery_arguments": "传递任务输入 {detail}", "managed_delivery_result": "交付任务结果 {detail}",
            "managed_delivery_value": "交付给程序的结果 {detail}", "managed_delivery_content": "交付给模型看的内容 {detail}",
            "usage_limit": "再用约 {more} token 接着办，用到了会再问一次（这件事已经用了 {used} token，到了一件事的用量上限）",
-           "open_session": "另开一只能改文件的使魔来办这件事：{detail}",
+           "open_session": "另开一只能改文件的使魔来办这件事：{detail}", "open_session_tree": "另开一只能改文件的使魔来办这件事，它在一份独立的副本里改，做完合回项目目录（副本建不成时排队在项目目录里改）：{detail}",
+           "open_session_team": "为这件事组一支队伍：{count} 只使魔同时改文件，各在独立的副本里改，做完合回项目目录（{detail}）",
            "plugin_entry": "调用 {detail}", "other": "使用 {detail}"},
     'zh-TW': {"run_command": "執行命令 {detail}", "outside_write": "在工作目錄以外寫檔案 {detail}",
               "outside_read": "讀取工作目錄以外的檔案 {detail}", "workdir_files": "讀寫工作目錄裡的檔案 {detail}",
@@ -1078,7 +1079,8 @@ PERMISSION_CATEGORY_TEXTS = {
               "managed_delivery_arguments": "傳遞工作輸入 {detail}", "managed_delivery_result": "交付工作結果 {detail}",
               "managed_delivery_value": "交付給程式的結果 {detail}", "managed_delivery_content": "交付給模型看的內容 {detail}",
               "usage_limit": "再用約 {more} token 接著辦，用到了會再問一次（這件事已經用了 {used} token，到了一件事的用量上限）",
-              "open_session": "另開一隻能改檔案的使魔來辦這件事：{detail}",
+              "open_session": "另開一隻能改檔案的使魔來辦這件事：{detail}", "open_session_tree": "另開一隻能改檔案的使魔辦這件事，在獨立副本裡改，做完合回專案目錄（建不成副本就在專案目錄裡排隊改）：{detail}",
+              "open_session_team": "為這件事組一支隊伍：{count} 隻使魔同時改檔案，各在獨立的副本裡改，做完合回專案目錄（{detail}）",
               "plugin_entry": "呼叫 {detail}", "other": "使用 {detail}"},
     'en': {"run_command": "run the command {detail}", "outside_write": "write the file {detail} outside the working directory",
            "outside_read": "read the file {detail} outside the working directory",
@@ -1089,7 +1091,8 @@ PERMISSION_CATEGORY_TEXTS = {
            "managed_delivery_arguments": "send task input {detail}", "managed_delivery_result": "deliver a task result {detail}",
            "managed_delivery_value": "deliver a result to the program {detail}", "managed_delivery_content": "deliver content to the model {detail}",
            "usage_limit": "go on with about {more} more tokens, after which it asks again (it has used {used} tokens, the limit set for one task)",
-           "mcp_server": "use the MCP server {detail}", "open_session": "start another familiar that can change files for this task: {detail}",
+           "mcp_server": "use the MCP server {detail}", "open_session": "start another familiar that can change files for this task: {detail}", "open_session_tree": "start another familiar that can change files for this task; it works in a copy of its own, merged back into the project folder when it is done (in the project folder itself, in its turn, where no copy can be made): {detail}",
+           "open_session_team": "form a team for this task: {count} familiars change files at the same time, each in a copy of its own, merged back into the project folder when done ({detail})",
            "plugin_entry": "call {detail}", "other": "use {detail}"},
     'ja': {"run_command": "コマンド {detail} の実行", "outside_write": "作業ディレクトリ外のファイル {detail} への書き込み",
            "outside_read": "作業ディレクトリ外のファイル {detail} の読み取り", "workdir_files": "作業ディレクトリ内の {detail} の読み書き",
@@ -1097,7 +1100,8 @@ PERMISSION_CATEGORY_TEXTS = {
            "managed_delivery_arguments": "作業の入力を渡す {detail}", "managed_delivery_result": "作業の結果を渡す {detail}",
            "managed_delivery_value": "プログラムに結果を渡す {detail}", "managed_delivery_content": "モデルに内容を渡す {detail}",
            "usage_limit": "さらに約 {more} token を使って続けること（使い切ったらもう一度確認します。この用件はすでに {used} token を使い、1 件あたりの使用量の上限に達しました）",
-           "open_session": "ファイルを変更できる使い魔をもう一体呼んでこの件を任せること：{detail}",
+           "open_session": "ファイルを変更できる使い魔をもう一体呼んでこの件を任せること：{detail}", "open_session_tree": "ファイルを変更できる使い魔をもう一体呼ぶこと（専用のコピーで作業し終われば反映。作れなければプロジェクトのフォルダーで順番に変更）：{detail}",
+           "open_session_team": "チームを組むこと：使い魔 {count} 体が各自のコピーで同時にファイルを変更し、終われば反映（{detail}）",
            "plugin_entry": "{detail} の呼び出し", "other": "{detail} の利用"},
     'ko': {"run_command": "명령 {detail} 실행", "outside_write": "작업 디렉터리 밖의 파일 {detail} 쓰기",
            "outside_read": "작업 디렉터리 밖의 파일 {detail} 읽기", "workdir_files": "작업 디렉터리 안의 {detail} 읽기/쓰기",
@@ -1105,7 +1109,8 @@ PERMISSION_CATEGORY_TEXTS = {
            "managed_delivery_arguments": "작업 입력 전달 {detail}", "managed_delivery_result": "작업 결과 전달 {detail}",
            "managed_delivery_value": "프로그램에 결과 전달 {detail}", "managed_delivery_content": "모델에 내용 전달 {detail}",
            "usage_limit": "약 {more} token을 더 써서 계속하기(다 쓰면 다시 묻습니다. 이 일은 이미 {used} token을 써서 한 건의 사용량 한도에 이르렀습니다)",
-           "open_session": "파일을 바꿀 수 있는 사역마를 하나 더 불러 이 일을 맡기기: {detail}",
+           "open_session": "파일을 바꿀 수 있는 사역마를 하나 더 불러 이 일을 맡기기: {detail}", "open_session_tree": "파일을 바꿀 수 있는 사역마를 하나 더 부르기(자기 사본에서 작업하고 끝나면 프로젝트 폴더에 반영, 사본을 못 만들면 프로젝트 폴더에서 차례대로 작업): {detail}",
+           "open_session_team": "이 일을 위해 팀 꾸리기: 사역마 {count}마리가 동시에 파일을 바꾸며, 각자 자기 사본에서 작업하고 끝나면 프로젝트 폴더에 반영합니다({detail})",
            "plugin_entry": "{detail} 호출", "other": "{detail} 사용"},
     'ru': {"run_command": "выполнить команду {detail}", "outside_write": "записать файл {detail} вне рабочего каталога",
            "outside_read": "прочитать файл {detail} вне рабочего каталога", "workdir_files": "читать или записывать {detail} в рабочем каталоге",
@@ -1115,7 +1120,8 @@ PERMISSION_CATEGORY_TEXTS = {
            "managed_delivery_arguments": "передать входные данные задачи {detail}", "managed_delivery_result": "передать результат задачи {detail}",
            "managed_delivery_value": "передать результат программе {detail}", "managed_delivery_content": "передать данные модели {detail}",
            "usage_limit": "продолжить, израсходовав ещё около {more} токенов, после чего будет новый запрос (на задачу уже ушло {used} токенов, это предел для одной задачи)",
-           "mcp_server": "использовать MCP-сервер {detail}", "open_session": "вызвать ещё одного фамильяра, который может менять файлы, для этой задачи: {detail}",
+           "mcp_server": "использовать MCP-сервер {detail}", "open_session": "вызвать ещё одного фамильяра, который может менять файлы, для этой задачи: {detail}", "open_session_tree": "вызвать ещё одного фамильяра, который может менять файлы, для этой задачи; он работает в собственной копии, а по окончании изменения вносятся в папку проекта (если копию создать нельзя, он работает в папке проекта в свою очередь): {detail}",
+           "open_session_team": "собрать для этой задачи команду: {count} фамильяров одновременно меняют файлы, каждый в собственной копии, а по окончании изменения вносятся в папку проекта ({detail})",
            "plugin_entry": "вызвать {detail}", "other": "использовать {detail}"},
     'es': {"run_command": "ejecutar el comando {detail}", "outside_write": "escribir el archivo {detail} fuera del directorio de trabajo",
            "outside_read": "leer el archivo {detail} fuera del directorio de trabajo",
@@ -1126,7 +1132,8 @@ PERMISSION_CATEGORY_TEXTS = {
            "managed_delivery_arguments": "enviar los datos de entrada de la tarea {detail}", "managed_delivery_result": "entregar el resultado de la tarea {detail}",
            "managed_delivery_value": "entregar el resultado al programa {detail}", "managed_delivery_content": "entregar contenido al modelo {detail}",
            "usage_limit": "seguir gastando unos {more} tokens más, tras lo cual volverá a preguntar (ya ha gastado {used} tokens, el límite fijado para una tarea)",
-           "mcp_server": "usar el servidor MCP {detail}", "open_session": "iniciar otro familiar que puede cambiar archivos para esta tarea: {detail}",
+           "mcp_server": "usar el servidor MCP {detail}", "open_session": "iniciar otro familiar que puede cambiar archivos para esta tarea: {detail}", "open_session_tree": "iniciar otro familiar que puede cambiar archivos para esta tarea; trabaja en una copia propia que se fusiona en la carpeta del proyecto al terminar (si no se puede crear la copia, trabaja en la carpeta del proyecto cuando le toque): {detail}",
+           "open_session_team": "formar un equipo para esta tarea: {count} familiares cambian archivos a la vez, cada uno en una copia propia que se fusiona en la carpeta del proyecto al terminar ({detail})",
            "plugin_entry": "llamar a {detail}", "other": "usar {detail}"},
     'pt': {"run_command": "executar o comando {detail}", "outside_write": "gravar o arquivo {detail} fora do diretório de trabalho",
            "outside_read": "ler o arquivo {detail} fora do diretório de trabalho",
@@ -1137,7 +1144,8 @@ PERMISSION_CATEGORY_TEXTS = {
            "managed_delivery_arguments": "enviar os dados de entrada da tarefa {detail}", "managed_delivery_result": "entregar o resultado da tarefa {detail}",
            "managed_delivery_value": "entregar o resultado ao programa {detail}", "managed_delivery_content": "entregar conteúdo ao modelo {detail}",
            "usage_limit": "continuar gastando cerca de mais {more} tokens, e depois perguntará de novo (já gastou {used} tokens, o limite definido para uma tarefa)",
-           "mcp_server": "usar o servidor MCP {detail}", "open_session": "iniciar outro familiar que pode alterar arquivos para esta tarefa: {detail}",
+           "mcp_server": "usar o servidor MCP {detail}", "open_session": "iniciar outro familiar que pode alterar arquivos para esta tarefa: {detail}", "open_session_tree": "iniciar outro familiar que pode alterar arquivos para esta tarefa; ele trabalha em uma cópia própria, mesclada na pasta do projeto ao terminar (se a cópia não puder ser criada, trabalha na pasta do projeto na sua vez): {detail}",
+           "open_session_team": "formar uma equipe para esta tarefa: {count} familiares alteram arquivos ao mesmo tempo, cada um em uma cópia própria, mesclada na pasta do projeto ao terminar ({detail})",
            "plugin_entry": "chamar {detail}", "other": "usar {detail}"},
 }
 
@@ -1672,6 +1680,338 @@ LEADER_AGENT_CHANGES_FILES = (
 HAND_OVER_AGENTS_AT_WORK = (
     "task agents you started for this commission are still at work; wait for them with "
     "wait_agent, then hand it over"
+)
+# What hand_over is refused with when its project has as many members that
+# take work as it may. Rendered with str.format (most, names).
+HAND_OVER_TOO_MANY_MEMBERS = (
+    "this project has {most} members that take work, which is as many as it may have; hand over "
+    "to one of them: {names}"
+)
+
+# ---------------------------------------------------------------------------
+# Task agents that change files side by side: each in a git worktree of the
+# project's directory, whose changes the host merges back (``tree_work.py``).
+# ---------------------------------------------------------------------------
+
+# Added to the message that opens a commission worked on in a git worktree.
+# Rendered with str.format (tree, project).
+TASK_AGENT_IN_TREE = (
+    "You work on this commission in a directory of your own: {tree}. It is a git worktree the "
+    "host made just now from the project's directory as it stood, changes that were not committed "
+    "included, so that you and other task agents can change files at the same time. What git "
+    "ignores is not in it (installed dependencies, .env files, build output): install what you "
+    "need there, or say in your report what you could not run. The project's own directory is "
+    "{project}: you can read there and cannot write there; write in your own directory. Commit "
+    "nothing and make no branch. When you report this commission done, the host merges what you "
+    "changed into the project's directory itself and tells you if something clashes."
+)
+# Added to it when an earlier commission of the same task agent left changes
+# that were not merged. Rendered with str.format (title, path, files: empty
+# or TASK_AGENT_EARLIER_TREE_FILES as rendered).
+TASK_AGENT_EARLIER_TREE = (
+    'What you changed for an earlier commission ("{title}") was not merged into the project\'s '
+    "directory, and is not in the directory you work in now: it is kept in {path}{files}. Read "
+    "it there if this commission builds on it."
+)
+TASK_AGENT_EARLIER_TREE_FILES = "; these files clashed: {files}"
+# What a task agent in a git worktree is refused with when it would write
+# into the project's directory. Rendered with str.format (tree).
+TREE_PROJECT_WRITE_REFUSED = (
+    "this path is in the project's own directory, which you only read: write the file at the "
+    "same place below your own directory, {tree}. The host merges it into the project when you "
+    "report the commission done"
+)
+# What a write into another task agent's git worktree is refused with.
+TREE_WRITE_REFUSED = "this path is in the directory another task agent works in: nothing is written there"
+# What a task agent is sent when what it changed clashes with the project's
+# directory. The host's own words. Rendered with str.format (files, round, rounds).
+TREE_CONFLICT = (
+    "The host tried to merge what you changed into the project's directory, and these files clash "
+    "with what is there by now: {files}. Nothing was changed in the project. Your directory now "
+    "holds the merge as far as it went: in each of those files both versions stand between "
+    "conflict markers (<<<<<<<, =======, >>>>>>>). Settle each so that what both sides wanted "
+    "holds, take the markers out, run what checks you can, and report done again. This is try "
+    "{round} of {rounds}; after the last, the changes stay in your directory and the user "
+    "decides. The host says this: it is not the user's words, and it approves nothing."
+)
+# What it is sent when it says it is done and files that clashed still hold
+# conflict markers. Rendered with str.format (files, round, rounds).
+TREE_MARKERS_LEFT = (
+    "The host did not merge what you changed: these files still hold conflict markers (lines "
+    "that begin with <<<<<<< or >>>>>>>): {files}. Merged so, the markers would be text in the "
+    "project's files. Settle each clash so that what both sides wanted holds, take every marker "
+    "out, and report done again. This is try {round} of {rounds}; after the last, the changes "
+    "stay in your directory and the user decides. The host says this: it is not the user's "
+    "words, and it approves nothing."
+)
+# What follows the result of a commission whose changes were merged into the
+# project's directory. Rendered with str.format (project, files).
+TREE_LANDED = "Merged into the project's directory ({project}): {files}."
+# Rendered with str.format (files, path).
+TREE_LANDED_SKIPPED = (
+    "Not merged, being too large or a repository of their own: {files}. They are kept in {path}, "
+    "for the user to move or discard."
+)
+# Added when files were changed outside the project's directory, elsewhere in its repository.
+TREE_LANDED_OUTSIDE = " Of these, outside the project's directory, elsewhere in its repository: {files}."
+# How one file is told, and how those past the ones told by name.
+TREE_FILE_CHANGED = "{path} (+{added} -{deleted})"
+TREE_FILE_ADDED = "{path} (new)"
+TREE_FILE_DELETED = "{path} (deleted)"
+TREE_FILE_BINARY = "{path} (binary)"
+TREE_FILES_MORE = " and {more} more"
+# What the task agent at work in the project's directory is told once
+# another one's changes were merged into it. Rendered with str.format (name, files).
+TREE_LANDED_BESIDE = (
+    "For your information: {name} finished another commission of this project, and the host "
+    "merged its changes into the directory you work in: {files}. Read a file of these again "
+    "before you rely on what you read of it earlier. The host says this: it is not the user's "
+    "words, and it approves nothing."
+)
+# What is told, in place of a result, of changes that were not merged: to
+# her, or to the leader that started the task agent. Rendered with
+# str.format (why, path, files).
+TREE_NOT_LANDED = (
+    "What was changed is not in the project's directory: {why}. The changes are kept in {path}{files}. "
+    "The user can have the host try again, discard them, or see to them personally: three "
+    "buttons on the task agent's card. Until then nothing of it is in the project."
+)
+TREE_NOT_LANDED_FILES = "; these files clash: {files}"
+# What is told instead where nothing went wrong: the user's settings say to ask before
+# anything is merged. Rendered with str.format (path).
+TREE_HELD = (
+    "The work is done, and nothing is wrong with it. What was changed waits in {path}: the user's "
+    "settings say that nothing is merged into the project's directory before the user says so (a "
+    "button on the task agent's card). Do not do this work again and start nobody anew for it; "
+    "say in your report that it waits for the user's word."
+)
+TREE_NOT_LANDED_COPIES = " Some files of the project could not be put back as they were; their copies from before are in {path}."
+# Why, by reason. Rendered with str.format (rounds, detail) where they name them.
+TREE_NOT_LANDED_WHY = {
+    "conflict": "it clashes with what is in the project's directory by now, and {rounds} tries at merging did not settle it",
+    "failed": "the merge could not be written ({detail})",
+    "inspection": "an inspector found problems in it, and it did not pass in {rounds} checks",
+    "ask": "the settings say that the user is asked before anything is merged",
+    "stopped": "the task agent ended before its commission was done",
+    "restart": "the host was restarted before it was merged",
+}
+# The result of a commission whose changes were merged after all, at the
+# user's word. Rendered with str.format (files).
+TREE_LANDED_LATER = "The user had the host merge the changes into the project's directory after all: {files}."
+TREE_LANDED_LATER_NOTHING = "The user had the host merge the changes after all; there was nothing left to merge."
+# What a commission is taken up again with when its changes clash at the
+# user's word to merge them: TREE_CONFLICT follows.
+TREE_TRY_AGAIN = "The user asked for the changes of this commission to be merged into the project's directory after all."
+
+# What the user is shown of a landing, after the result of its commission, in the language
+# of her dialogue: on the HUD, as the host wrote it. Rendered with str.format (files; more;
+# files; files, path).
+TREE_LANDED_TEXTS = {
+    'zh': {"landed": "已合回项目目录：{files}", "more": " 等另外 {more} 个",
+           "outside": "\n其中在项目目录以外（仓库里别处）：{files}",
+           "skipped": "\n有文件没合回（太大，或者本身是一个仓库）：{files}。它们留在：{path}"},
+    'zh-TW': {"landed": "已合回專案目錄：{files}", "more": " 等另外 {more} 個",
+              "outside": "\n其中在專案目錄以外（倉庫裡別處）：{files}",
+              "skipped": "\n有檔案沒合回（太大，或者本身是一個倉庫）：{files}。它們留在：{path}"},
+    'en': {"landed": "Merged into the project folder: {files}", "more": " and {more} more",
+           "outside": "\nOf these, outside the project folder (elsewhere in its repository): {files}",
+           "skipped": "\nNot merged (too large, or a repository of their own): {files}. They are kept in: {path}"},
+    'ja': {"landed": "プロジェクトフォルダーに反映しました：{files}", "more": " ほか {more} 件",
+           "outside": "\nこのうちプロジェクトフォルダーの外（リポジトリ内の別の場所）：{files}",
+           "skipped": "\n反映していないファイル（大きすぎるか、それ自体がリポジトリ）：{files}。ここに残してあります：{path}"},
+    'ko': {"landed": "프로젝트 폴더에 반영했습니다: {files}", "more": " 외 {more}개",
+           "outside": "\n이 중 프로젝트 폴더 밖(저장소의 다른 곳): {files}",
+           "skipped": "\n반영하지 않은 파일(너무 크거나 그 자체가 저장소): {files}. 여기에 남아 있습니다: {path}"},
+    'ru': {"landed": "Внесено в папку проекта: {files}", "more": " и ещё {more}",
+           "outside": "\nИз них вне папки проекта (в другом месте репозитория): {files}",
+           "skipped": "\nНе внесено (слишком большие или сами являются репозиторием): {files}. Они лежат здесь: {path}"},
+    'es': {"landed": "Aplicado en la carpeta del proyecto: {files}", "more": " y {more} más",
+           "outside": "\nDe ellos, fuera de la carpeta del proyecto (en otra parte del repositorio): {files}",
+           "skipped": "\nSin aplicar (demasiado grandes, o son un repositorio propio): {files}. Quedan en: {path}"},
+    'pt': {"landed": "Aplicado na pasta do projeto: {files}", "more": " e mais {more}",
+           "outside": "\nDestes, fora da pasta do projeto (em outra parte do repositório): {files}",
+           "skipped": "\nNão aplicados (grandes demais, ou são um repositório próprio): {files}. Ficam em: {path}"},
+}
+
+# What the user is shown of changes that were not merged, by reason, in the
+# language of her dialogue: on the HUD, as the host wrote it.
+TREE_NOT_LANDED_TEXTS = {
+    'zh': {"conflict": "这件事办完了，但改动和项目目录现在的内容撞了，使魔合了 {rounds} 轮没合上，还没有合回去。",
+           "failed": "这件事办完了，但改动没能写回项目目录。",
+           "inspection": "这件事办完了，但监工猫验收 {rounds} 轮都没过，改动还没有合回去。",
+           "ask": "这件事办完了，改动先留在副本里，等你说合回还是不要。",
+           "stopped": "这件事没办完就停了，已经改的内容留在副本里，没有合回去。",
+           "restart": "喵能力重启时这件事的改动还没合回去，留在副本里。",
+           "where": "改动在：{path}", "files": "撞了的文件：{files}",
+           "copies": "项目目录里有文件没能恢复原样，原件留在：{path}",
+           "choices": "可以在使魔的卡片上选：再试一次、不要了、我自己处理。",
+           "choices_ask": "可以在使魔的卡片上选：合回、不要了。"},
+    'zh-TW': {"conflict": "這件事辦完了，但改動和專案目錄現在的內容撞了，使魔合了 {rounds} 輪沒合上，還沒有合回去。",
+              "failed": "這件事辦完了，但改動沒能寫回專案目錄。",
+              "inspection": "這件事辦完了，但監工貓驗收 {rounds} 輪都沒過，改動還沒有合回去。",
+              "ask": "這件事辦完了，改動先留在副本裡，等你說合回還是不要。",
+              "stopped": "這件事沒辦完就停了，已經改的內容留在副本裡，沒有合回去。",
+              "restart": "喵能力重新啟動時這件事的改動還沒合回去，留在副本裡。",
+              "where": "改動在：{path}", "files": "撞了的檔案：{files}",
+              "copies": "專案目錄裡有檔案沒能恢復原樣，原件留在：{path}",
+              "choices": "可以在使魔的卡片上選：再試一次、不要了、我自己處理。",
+              "choices_ask": "可以在使魔的卡片上選：合回、不要了。"},
+    'en': {"conflict": "The work is done, but its changes clash with what is in the project folder now. The familiar tried {rounds} times to merge them and could not, so they are not merged yet.",
+           "failed": "The work is done, but its changes could not be written into the project folder.",
+           "inspection": "The work is done, but the inspector did not pass it in {rounds} rounds, so its changes are not merged yet.",
+           "ask": "The work is done. Its changes wait in a copy until you say whether to merge them.",
+           "stopped": "The work stopped before it was done. What was changed so far is kept in a copy and not merged.",
+           "restart": "NekoPower restarted before the changes of this task were merged. They are kept in a copy.",
+           "where": " The changes are in: {path}", "files": " Files that clash: {files}",
+           "copies": " Some files in the project folder could not be put back; the originals are in: {path}",
+           "choices": " On the familiar's card you can choose: try again, discard, or handle it yourself.",
+           "choices_ask": " On the familiar's card you can choose: merge, or discard."},
+    'ja': {"conflict": "作業は終わりましたが、変更がプロジェクトフォルダーの今の内容とぶつかりました。使い魔が {rounds} 回マージを試みても解決できず、まだ反映されていません。",
+           "failed": "作業は終わりましたが、変更をプロジェクトフォルダーに書き戻せませんでした。",
+           "inspection": "作業は終わりましたが、監督猫の検収が {rounds} 回とも通らず、変更はまだ反映されていません。",
+           "ask": "作業は終わりました。変更はコピーに置いたまま、反映するかどうかの指示を待っています。",
+           "stopped": "作業は終わる前に止まりました。それまでの変更はコピーに残してあり、反映されていません。",
+           "restart": "NekoPower の再起動時に、この作業の変更はまだ反映されていませんでした。コピーに残してあります。",
+           "where": "変更の場所：{path}", "files": "ぶつかったファイル：{files}",
+           "copies": "プロジェクトフォルダーの一部のファイルを元に戻せませんでした。元のファイルはここにあります：{path}",
+           "choices": "使い魔のカードで「もう一度試す」「破棄する」「自分で対応する」を選べます。",
+           "choices_ask": "使い魔のカードで「反映する」「破棄する」を選べます。"},
+    'ko': {"conflict": "작업은 끝났지만 변경 내용이 프로젝트 폴더의 현재 내용과 충돌했습니다. 사역마가 {rounds}번 병합을 시도했지만 해결하지 못해 아직 반영되지 않았습니다.",
+           "failed": "작업은 끝났지만 변경 내용을 프로젝트 폴더에 쓰지 못했습니다.",
+           "inspection": "작업은 끝났지만 감독 고양이의 검수를 {rounds}번 모두 통과하지 못해 변경 내용이 아직 반영되지 않았습니다.",
+           "ask": "작업이 끝났습니다. 변경 내용은 사본에 둔 채, 반영할지 말지 말씀해 주시기를 기다리고 있습니다.",
+           "stopped": "작업이 끝나기 전에 멈췄습니다. 그때까지의 변경 내용은 사본에 남아 있고 반영되지 않았습니다.",
+           "restart": "NekoPower가 다시 시작될 때 이 작업의 변경 내용이 아직 반영되지 않았습니다. 사본에 남아 있습니다.",
+           "where": " 변경 내용 위치: {path}", "files": " 충돌한 파일: {files}",
+           "copies": " 프로젝트 폴더의 일부 파일을 원래대로 되돌리지 못했습니다. 원본은 여기에 있습니다: {path}",
+           "choices": " 사역마 카드에서 다시 시도, 버리기, 직접 처리 중에서 고를 수 있습니다.",
+           "choices_ask": " 사역마 카드에서 반영 또는 버리기를 고를 수 있습니다."},
+    'ru': {"conflict": "Работа сделана, но изменения конфликтуют с тем, что сейчас лежит в папке проекта. Фамильяр {rounds} раза пытался их слить и не смог, поэтому они ещё не внесены.",
+           "failed": "Работа сделана, но изменения не удалось записать в папку проекта.",
+           "inspection": "Работа сделана, но инспектор не принял её за {rounds} захода, поэтому изменения ещё не внесены.",
+           "ask": "Работа сделана. Изменения лежат в копии и ждут, пока вы скажете, вносить их или нет.",
+           "stopped": "Работа остановилась, не дойдя до конца. То, что уже изменено, лежит в копии и не внесено.",
+           "restart": "NekoPower перезапустился до того, как изменения этой задачи были внесены. Они лежат в копии.",
+           "where": " Изменения здесь: {path}", "files": " Конфликтующие файлы: {files}",
+           "copies": " Некоторые файлы в папке проекта не удалось вернуть в прежний вид; оригиналы лежат здесь: {path}",
+           "choices": " На карточке фамильяра можно выбрать: попробовать ещё раз, отказаться или разобраться самому.",
+           "choices_ask": " На карточке фамильяра можно выбрать: внести или отказаться."},
+    'es': {"conflict": "El trabajo está hecho, pero sus cambios chocan con lo que hay ahora en la carpeta del proyecto. El familiar intentó fusionarlos {rounds} veces sin lograrlo, así que aún no están aplicados.",
+           "failed": "El trabajo está hecho, pero sus cambios no se pudieron escribir en la carpeta del proyecto.",
+           "inspection": "El trabajo está hecho, pero el inspector no lo aprobó en {rounds} rondas, así que sus cambios aún no están aplicados.",
+           "ask": "El trabajo está hecho. Sus cambios esperan en una copia hasta que digas si se aplican.",
+           "stopped": "El trabajo se detuvo antes de terminar. Lo cambiado hasta entonces queda en una copia, sin aplicar.",
+           "restart": "NekoPower se reinició antes de aplicar los cambios de esta tarea. Quedan en una copia.",
+           "where": " Los cambios están en: {path}", "files": " Archivos en conflicto: {files}",
+           "copies": " Algunos archivos de la carpeta del proyecto no se pudieron dejar como estaban; los originales están en: {path}",
+           "choices": " En la tarjeta del familiar puedes elegir: reintentar, descartar o encargarte tú.",
+           "choices_ask": " En la tarjeta del familiar puedes elegir: aplicar o descartar."},
+    'pt': {"conflict": "O trabalho está feito, mas as alterações conflitam com o que há agora na pasta do projeto. O familiar tentou mesclá-las {rounds} vezes sem conseguir, então ainda não foram aplicadas.",
+           "failed": "O trabalho está feito, mas as alterações não puderam ser gravadas na pasta do projeto.",
+           "inspection": "O trabalho está feito, mas o inspetor não o aprovou em {rounds} rodadas, então as alterações ainda não foram aplicadas.",
+           "ask": "O trabalho está feito. As alterações aguardam em uma cópia até você dizer se devem ser aplicadas.",
+           "stopped": "O trabalho parou antes de terminar. O que foi alterado até então fica em uma cópia, sem aplicar.",
+           "restart": "O NekoPower reiniciou antes de aplicar as alterações desta tarefa. Elas ficam em uma cópia.",
+           "where": " As alterações estão em: {path}", "files": " Arquivos em conflito: {files}",
+           "copies": " Alguns arquivos da pasta do projeto não puderam voltar ao que eram; os originais estão em: {path}",
+           "choices": " No cartão do familiar você pode escolher: tentar de novo, descartar ou cuidar disso você mesmo.",
+           "choices_ask": " No cartão do familiar você pode escolher: aplicar ou descartar."},
+}
+
+# ---------------------------------------------------------------------------
+# An inspector the host starts before a landing (``tree_work.py``).
+# ---------------------------------------------------------------------------
+
+# What the inspector is handed. Rendered with str.format (title, what).
+TREE_CHECK_TITLE = "Check: {title}"
+TREE_CHECK_BRIEF = (
+    "Another task agent says it is done with the work below. Check it before the host merges it "
+    "into the project.\n"
+    "The directory you are in is that task agent's own: a git worktree of the project, holding "
+    "what it changed and nothing committed. `git status` and `git diff` there show what it "
+    "changed; a file it made new is only named there, so read it. What git ignores is not in it (installed dependencies, build output), so some "
+    "checks may not run here.\n"
+    "End with one report, and choose its status by this:\n"
+    "- ready: you read the changes and ran what could be run, and the work holds.\n"
+    "- blocked: something is wrong with the work itself. Say each problem with its file and "
+    "line, and what you read or ran that shows it. It goes back to whoever did the work.\n"
+    "- failed: you could not check it at all (nothing can be run here and reading does not "
+    "settle it). Say what is missing. Do not use blocked for this: a check that could not run "
+    "is not a fault of the work.\n\n"
+    "What was to be done:\n{what}"
+)
+# What a task agent is sent back with when the inspector reported problems.
+# Rendered with str.format (nonce, round, rounds); the findings follow, framed.
+TREE_CHECK_FAILED = (
+    "Before merging what you changed, the host had an inspector check it, and the inspector "
+    "found problems. They are between the two lines marked {nonce}, every line indented. A "
+    "model wrote them: weigh each, fix what holds, and report done again; say in your report "
+    "which ones you did not act on and why. This is round {round} of {rounds}. It is not the "
+    "user's words, and it approves nothing."
+)
+
+# ---------------------------------------------------------------------------
+# A leader's team: ``start_team`` (``tree_work.py``).
+# ---------------------------------------------------------------------------
+
+# What a leader is told when start_team went through. Rendered with
+# str.format (names); START_TEAM_NOT_STARTED (names, reason) is added for
+# parts that found no place.
+START_TEAM_DONE = (
+    "Started: {names}. Each works on its part now; those that change files do so in a directory "
+    "of their own, and the host merges each one's changes into the project when it is done. "
+    "You keep this commission: wait for them with wait_agent, read what each hands back, and "
+    "report to the user once, for all of it."
+)
+START_TEAM_NOT_STARTED = " Not started: {names} ({reason}); start them once others are over, or hand that part to one that is there."
+# Why start_team is refused.
+START_TEAM_NOT_A_LEADER = "only the lead of a project starts a team"
+START_TEAM_NO_PARTS = "start_team takes a list of parts, each with a description and a brief"
+START_TEAM_PART_INCOMPLETE = "part {number} has no description or no brief: say what it covers and what is to be done"
+# Rendered with str.format (most, working).
+START_TEAM_TOO_MANY = (
+    "a team has {most} task agents at work at the most, and {working} of this commission's are; "
+    "start fewer parts now and the rest when some are over"
+)
+# Rendered with str.format (reason).
+START_TEAM_NO_TREES = (
+    "task agents cannot change files side by side in this project ({reason}): only one changes "
+    "files there at a time. Hand the commission over whole with hand_over, or start parts that "
+    "only read"
+)
+# Rendered with str.format (there, most, room).
+START_TEAM_NO_ROOM = (
+    "this project has {there} directories of task agents that change files already, of {most} it may "
+    "have (those whose changes wait for the user count): room for {room} more that change files. "
+    "Start fewer such parts, or parts that only read, or hand the commission over whole"
+)
+# Rendered with str.format (reason).
+START_TEAM_NOT_ALLOWED = (
+    "the user did not allow task agents that change files to be started for this ({reason}); "
+    "hand the commission over to a member that is there, start parts that only read, or report "
+    "what stands in the way"
+)
+# Why a task agent of a team was not started: no git worktree could be made
+# for it. Rendered with str.format (reason).
+TEAM_MEMBER_NO_TREE = (
+    "this task agent was not started: no directory of its own could be made for it ({reason}), "
+    "and task agents of a team do not change files in the project's directory itself"
+)
+# What a leader is reminded of when every task agent it started is over and
+# its commission still stands. The host's own words. Rendered with str.format (members).
+TEAM_STALLED = (
+    "Every task agent you started for this commission is over, and the commission is still "
+    "yours: {members}. Read what they handed back, start what is still missing, or report to "
+    "the user. The host says this: it is not the user's words, and it approves nothing."
+)
+TEAM_STALLED_MEMBER = "{name} ({outcome})"
+# What a leader's report that the commission is done is refused with while
+# task agents of its team are still at work. Rendered with str.format (count, names).
+TEAM_STILL_AT_WORK = (
+    "not reported: {count} of the task agents you started for this commission are still at work "
+    "({names}), and what they are changing is not in the project yet. Reporting it done now would "
+    "stop them half way. Wait for them with wait_agent and read what each hands back, or stop "
+    "the ones you no longer want with interrupt_agent; then report"
 )
 
 # Added to the message that opens a commission worked on in a copy of a

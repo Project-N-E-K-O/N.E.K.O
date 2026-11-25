@@ -1,4 +1,10 @@
-"""First-run decisions: consent queries and serialized decision commands."""
+"""First-run decisions: consent queries and serialized decision commands.
+
+Decisions are read from and written to the permission store (see
+``permission_service``), the same records the host's permission checks and
+the plugin process use. ``plugin_consents.json`` is no longer read or
+written here; uninstalling a plugin still removes its entry from it.
+"""
 
 from __future__ import annotations
 
@@ -13,7 +19,8 @@ from plugin.server.application.plugins.capability_analysis_service import (
     read_report,
 )
 from plugin.server.application.plugins.permission_service import (
-    mirror_consent_decision,
+    consent_record,
+    record_consent_decision,
 )
 from plugin.server.application.plugins.operation_lock import (
     serialized_plugin_operation,
@@ -40,7 +47,7 @@ def _consent_view(
         version = str(meta.get("version") or "")
     else:
         root, version = plugin_source(plugin_id)
-    record = consent_store.read(plugin_id)
+    record = consent_record(plugin_id)
     report = read_report(plugin_id, root, version, verify_revision=verify_revision)
     return record, report, derive_consent(record, report), version
 
@@ -119,50 +126,21 @@ def consent_notices() -> list[dict]:
     return notices
 
 
-async def _decide_with_mirror(
+async def _record_decision(
     plugin_id: str,
     decision: str | None,
     capabilities: list[str] | None = None,
-    version: str = "",
     *,
     newly_approved: list[str] | None = None,
 ) -> None:
-    """Write a consent decision, keeping the permission store in step.
-
-    Transitional: the permission-store mirror goes with the consent dialog.
-    The mirror runs first; if the consent write then fails, the mirror is
-    undone, so a failed request leaves this plugin's records in both files
-    unchanged (a first-use import of the legacy file may still be saved).
-    """
-    undo = await asyncio.to_thread(
-        mirror_consent_decision,
+    """Store a consent decision in the permission store."""
+    await asyncio.to_thread(
+        record_consent_decision,
         plugin_id,
         decision,
         capabilities or [],
         newly_approved=newly_approved,
     )
-    try:
-        if decision is None:
-            await asyncio.to_thread(consent_store.delete, plugin_id)
-        else:
-            await asyncio.to_thread(
-                consent_store.decide, plugin_id, decision, capabilities or [], version
-            )
-    except BaseException as exc:
-        # serialized_plugin_operation already shields cancellation once the
-        # lock is held; BaseException keeps the undo even if that changes.
-        try:
-            await asyncio.to_thread(undo)
-        except Exception as undo_exc:
-            if isinstance(exc, ServerDomainError):
-                exc.details["permission_rollback"] = "incomplete"
-            logger.error(
-                "consent write failed and the permission store could not be "
-                "rolled back: plugin_id={}, error={}",
-                plugin_id,
-                type(undo_exc).__name__,
-            )
-        raise
 
 
 @serialized_plugin_operation
@@ -182,11 +160,10 @@ async def approve_plugin(
         )
     capabilities = set(details["approved_capabilities"])
     capabilities.update(unconfirmed)
-    await _decide_with_mirror(
+    await _record_decision(
         plugin_id,
         "approved",
         sorted(capabilities),
-        details["version"],
         newly_approved=sorted(unconfirmed),
     )
     return await asyncio.to_thread(consent_details, plugin_id)
@@ -198,8 +175,8 @@ async def deny_plugin(plugin_id: str) -> dict:
         PluginLifecycleService,
     )
 
-    details = await asyncio.to_thread(consent_details, plugin_id)
-    await _decide_with_mirror(plugin_id, "denied", [], details["version"])
+    await asyncio.to_thread(consent_details, plugin_id)
+    await _record_decision(plugin_id, "denied")
 
     try:
         await PluginLifecycleService().stop_plugin(plugin_id)
@@ -211,7 +188,7 @@ async def deny_plugin(plugin_id: str) -> dict:
 
 @serialized_plugin_operation
 async def revoke_plugin(plugin_id: str) -> dict:
-    await _decide_with_mirror(plugin_id, None)
+    await _record_decision(plugin_id, None)
     return await asyncio.to_thread(consent_details, plugin_id)
 
 
@@ -220,7 +197,7 @@ def denied_plugin_ids(plugin_ids) -> set[str]:
         return {
             plugin_id
             for plugin_id in plugin_ids
-            if consent_store.read(plugin_id).get("decision") == "denied"
+            if consent_record(plugin_id).get("decision") == "denied"
         }
     except ServerDomainError as exc:
         logger.warning(
@@ -234,4 +211,7 @@ def forget_plugin(plugin_id: str) -> None:
     try:
         capability_analysis_service.analysis_service.forget(plugin_id)
     finally:
+        # The only write left to plugin_consents.json: the permission store
+        # imports it again whenever its own file is missing, so an
+        # uninstalled plugin's entry must not stay behind.
         consent_store.delete(plugin_id)

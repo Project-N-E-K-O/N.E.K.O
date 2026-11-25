@@ -16,6 +16,7 @@ from plugin.server.domain.model_config import ModelSlot
 
 from .errors import ModelGatewayError
 from .observation import AttemptObservation
+from .request import DROPPED_FIELDS
 
 _FALLBACK_ERRORS = frozenset({
     "upstream_connection_error", "upstream_timeout", "upstream_rate_limited", "upstream_error",
@@ -27,6 +28,32 @@ _FALLBACK_ERRORS = frozenset({
 # so a stalled primary still leaves time to switch within the same deadline.
 _PRIMARY_BUDGET_SHARE = 2 / 3
 logger = get_logger("server.model_gateway.execution")
+# (plugin, usage, field) already warned about. Usage ids are each plugin's own
+# names, so the plugin is part of the key: a plugin that sends a dropped field
+# on every call logs once per process, and another plugin with the same usage
+# name still gets its own warning.
+_warned_drops: set[tuple[str, str, str]] = set()
+
+
+def _warn_dropped_fields(call: ResolvedModelCall, body: object) -> None:
+    """Request preparation dropped these fields; tell the user which plugin sent one.
+
+    Called just before a validated request is sent (after quota reservation),
+    so a rejected request (busy, shutting down, invalid, out of quota)
+    neither logs nor uses up the report.
+    """
+    if not isinstance(body, dict):
+        return
+    for field_name in sorted(DROPPED_FIELDS & body.keys()):
+        key = (call.plugin_id, call.usage_id, field_name)
+        if key in _warned_drops:
+            continue
+        _warned_drops.add(key)
+        logger.warning(
+            "Plugin {} sent {} for model usage {}; it was dropped (plugin model requests carry "
+            "no temperature, the provider default applies). Reported once per process",
+            call.plugin_id, field_name, call.usage_id,
+        )
 
 
 @dataclass(frozen=True)
@@ -321,6 +348,17 @@ class ModelExecutor:
 
     async def _attempts(self, call, body, attempts, deadline, stream, started):
         slot_id, slot = call.slot_id, call.slot
+
+        async def before_attempt(attempt_slot_id: str, attempt_slot: ModelSlot) -> None:
+            # Runs once the request was admitted and passed validation, right
+            # before a real upstream send. The caller's own step (quota
+            # reservation) goes first: only a request that will really be sent
+            # reports what preparation dropped (deduplicated, so a fallback
+            # attempt does not repeat it).
+            if call.before_attempt is not None:
+                await call.before_attempt(attempt_slot_id, attempt_slot)
+            _warn_dropped_fields(call, body)
+
         primary_cutoff = None
         if call.fallback_slot is not None and call.fallback_slot_id is not None:
             primary_cutoff = started + (deadline.when() - started) * _PRIMARY_BUDGET_SHARE
@@ -328,7 +366,7 @@ class ModelExecutor:
             try:
                 return await self._attempt(
                     slot_id, slot, body, attempts, deadline, stream, primary_cutoff if index == 0 else None,
-                    call.before_attempt,
+                    before_attempt,
                 )
             except ModelGatewayError as exc:
                 if (

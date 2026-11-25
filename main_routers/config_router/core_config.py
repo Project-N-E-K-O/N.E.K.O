@@ -25,7 +25,9 @@ import asyncio
 import json
 from copy import deepcopy
 from fastapi import Request
+from fastapi.responses import JSONResponse
 from ..shared_state import get_session_manager, get_initialize_character_data
+from ..system_router._shared import _validate_local_mutation_request
 from utils.file_utils import read_json_async
 from utils.cloudsave_runtime import MaintenanceModeError
 from utils.config_manager import ensure_default_yui_voice_for_free_api
@@ -35,7 +37,7 @@ from utils.decision_client.workspace import (
     normalize_workspace_id,
     safe_workspace_id,
 )
-from config.api_profiles import ASSIST_WORKSPACE_ID_FIELDS
+from config.api_profiles import ASSIST_WORKSPACE_ID_FIELDS, TTS_KEY_BOOK_FIELDS
 
 
 CORE_CONFIG_SECRET_SENTINEL = "__NEKO_SECRET_MASKED__"
@@ -73,7 +75,8 @@ CORE_CONFIG_ASSIST_API_KEY_FIELDS = (
     'assistApiKeyQwen', 'assistApiKeyQwenIntl', 'assistApiKeyOpenai',
     'assistApiKeyDeepseek', 'assistApiKeyGlm', 'assistApiKeyStep',
     'assistApiKeySilicon', 'assistApiKeyGemini', 'assistApiKeyKimi',
-    'assistApiKeyDoubao', 'assistApiKeyDoubaoTts', 'assistApiKeyMinimax',
+    'assistApiKeyDoubao', 'assistApiKeyDoubaoTts', 'assistApiKeyQwenTokenPlan',
+    'assistApiKeyMinimax',
     'assistApiKeyMinimaxIntl', 'assistApiKeyMimo',
     'assistApiKeyMimoTokenPlan', 'assistApiKeyElevenlabs', 'assistApiKeyGrok',
     'assistApiKeyClaude', 'assistApiKeyKimiCode', 'assistApiKeyOpenrouter',
@@ -273,9 +276,11 @@ async def get_core_config_api():
         _fallback_providers = (
             {_core_api_provider, _assist_api_provider} & _core_capable_providers
         )
-        _doubao_tts_shared_key = ''
-        if str(core_cfg.get('ttsModelProvider') or '').strip() == 'doubao_tts':
-            _doubao_tts_shared_key = core_cfg.get('ttsModelApiKey', '')
+        # A TTS-only provider with its own Key Book entry shares the TTS slot key while selected.
+        _tts_slot_provider = str(core_cfg.get('ttsModelProvider') or '').strip()
+
+        def _tts_shared_key(provider: str) -> str:
+            return core_cfg.get('ttsModelApiKey', '') if _tts_slot_provider == provider else ''
 
         def _fb(provider: str) -> str:
             """Fall back to coreApiKey only when the provider matches the user-selected coreApi/assistApi."""
@@ -305,7 +310,8 @@ async def get_core_config_api():
             "assistApiKeyKimiCode": core_cfg.get('assistApiKeyKimiCode', '') or _fb('kimi_code'),
             "assistApiKeyDeepseek": core_cfg.get('assistApiKeyDeepseek', '') or _fb('deepseek'),
             "assistApiKeyDoubao": core_cfg.get('assistApiKeyDoubao', '') or _fb('doubao'),
-            "assistApiKeyDoubaoTts": core_cfg.get('assistApiKeyDoubaoTts', '') or _doubao_tts_shared_key,
+            "assistApiKeyDoubaoTts": core_cfg.get('assistApiKeyDoubaoTts', '') or _tts_shared_key('doubao_tts'),
+            "assistApiKeyQwenTokenPlan": core_cfg.get('assistApiKeyQwenTokenPlan', '') or _tts_shared_key('qwen_token_plan'),
             # MiniMax/MiMo are assist-only TTS providers, so coreApiKey may be incompatible;
             # do not fall back and inject an invalid TTS credential causing 401.
             "assistApiKeyMinimax": core_cfg.get('assistApiKeyMinimax', ''),
@@ -410,7 +416,33 @@ async def update_core_config(request: Request):
     """Update the core config (API keys); the snapshot-to-write section runs one save at a time."""
     save_lock_held = False
     try:
-        data = await request.json()
+        media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if media_type != "application/json":
+            return JSONResponse(
+                {"success": False, "error": "Content-Type must be application/json"},
+                status_code=415,
+            )
+        try:
+            data = await request.json()
+        except (ValueError, UnicodeDecodeError, RecursionError):
+            return JSONResponse({"success": False, "error": "无效的JSON数据"}, status_code=400)
+        if not isinstance(data, dict):
+            return JSONResponse({"success": False, "error": "无效的数据"}, status_code=400)
+        # Legacy desktop shell (N.E.K.O.-PC pet-preference-actions.js) posts
+        # {"disableTts": bool} via same-origin JSON fetch without X-CSRF-Token (#4019 P2).
+        is_legacy_disable_tts_toggle = (
+            len(data) == 1
+            and "disableTts" in data
+            and isinstance(data["disableTts"], bool)
+        )
+        validation_error = _validate_local_mutation_request(
+            request,
+            payload=data,
+            error_defaults={"success": False},
+            require_csrf=not is_legacy_disable_tts_toggle,
+        )
+        if validation_error is not None:
+            return validation_error
         if not data:
             return {"success": False, "error": "无效的数据"}
         # A settings page opened before the upgrade still posts the old tier names.
@@ -575,7 +607,7 @@ async def update_core_config(request: Request):
                 raise TypeError("API Key必须是字符串类型")
             return value.strip()
 
-        # Allow missing coreApiKey only when custom APIs are enabled
+        # Allow missing coreApiKey only when custom APIs are enabled or toggling disableTts alone
         if enable_custom_api:
             # coreApiKey is optional with custom APIs enabled
             if 'coreApiKey' in data:
@@ -585,6 +617,9 @@ async def update_core_config(request: Request):
                     return {"success": False, "error": str(exc)}
                 if api_key is not None:
                     core_cfg['coreApiKey'] = api_key
+        elif is_legacy_disable_tts_toggle:
+            # Single-field disableTts toggle never edits provider/key fields; preserve stored credentials.
+            pass
         else:
             # Require coreApiKey when custom APIs are disabled
             if 'coreApiKey' not in data and not core_uses_free_provider:
@@ -683,16 +718,23 @@ async def update_core_config(request: Request):
                 return {"success": False, "error": "disableTts must be a boolean"}
             core_cfg['disableTts'] = data['disableTts']
 
-        # Capture the stored provider and whether either Doubao TTS credential
+        # Capture the stored provider and whether either credential of a TTS
+        # provider with its own Key Book entry (Doubao Speech, Bailian Token Plan)
         # was explicitly changed before applying the submitted model fields.
         # A masked value means "keep existing"; an empty string is an explicit
         # clear and must remain distinguishable from that no-op.
         stored_tts_model_provider = str(
             core_cfg.get('ttsModelProvider') or ''
-        ).strip()
-        doubao_tts_key_was_explicitly_updated = (
-            'assistApiKeyDoubaoTts' in data
-            and not is_core_config_secret_placeholder(data['assistApiKeyDoubaoTts'])
+        ).strip().lower()
+        # The slot key as stored, before the submitted model fields overwrite it.
+        stored_tts_slot_key = str(core_cfg.get('ttsModelApiKey') or '').strip()
+        _incoming_tts_provider = str(data.get('ttsModelProvider', '') or '').strip()
+        # A partial update that omits ttsModelProvider keeps the stored provider.
+        _effective_tts_provider = str(data.get('ttsModelProvider', stored_tts_model_provider) or '').strip().lower()
+        _tts_book_field = TTS_KEY_BOOK_FIELDS.get(_effective_tts_provider, '')
+        tts_book_key_was_explicitly_updated = bool(_tts_book_field) and (
+            _tts_book_field in data
+            and not is_core_config_secret_placeholder(data[_tts_book_field])
         )
         tts_model_key_was_explicitly_updated = (
             'ttsModelApiKey' in data
@@ -743,9 +785,6 @@ async def update_core_config(request: Request):
                 except ValueError as exc:
                     return {"success": False, "error": str(exc)}
 
-        _incoming_tts_provider = str(data.get('ttsModelProvider', '') or '').strip()
-        _effective_tts_provider = str(data.get('ttsModelProvider', stored_tts_model_provider) or '').strip()
-
         # Custom API configuration: Provider / Url / Id / ApiKey per model type
         for mt in CORE_CONFIG_MODEL_TYPES:
             for suffix in ['Provider', 'Url', 'Id', 'ApiKey']:
@@ -758,6 +797,21 @@ async def update_core_config(request: Request):
                         apply_core_config_secret_update(core_cfg, data, field)
                     else:
                         core_cfg[field] = data[field]
+        # ChatGPT (subscription) signs in with OAuth and has an account-specific model
+        # catalog: only the slots it declares, an explicit model, its fixed endpoint, no key.
+        from utils.api_config_loader import get_config as _get_api_config
+        chatgpt_slots = set(
+            _get_api_config().get('assist_api_providers', {}).get('chatgpt', {}).get('supported_model_types', [])
+        )
+        for mt in CORE_CONFIG_MODEL_TYPES:
+            if core_cfg.get(f'{mt}ModelProvider') == 'chatgpt':
+                if mt not in chatgpt_slots:
+                    return {"success": False, "error": "ChatGPT plan usage supports text slots only"}
+                model_id = core_cfg.get(f'{mt}ModelId')
+                if not isinstance(model_id, str) or not model_id.strip():
+                    return {"success": False, "error": "Select an available ChatGPT model before saving"}
+                core_cfg[f'{mt}ModelUrl'] = 'https://api.openai.com/v1'
+                core_cfg[f'{mt}ModelApiKey'] = ''
         _drop_retired_model_fields(core_cfg)
         # Lazy migration after retiring gptsovitsEnabled, at the save boundary, symmetric with #1842 voice_id:
         # ttsModelProvider=='gptsovits' is the sole GSV-enabled truth; old gptsovitsEnabled remains only
@@ -767,21 +821,53 @@ async def update_core_config(request: Request):
         # disable GSV. Partial updates omitting ttsModelProvider retain the flag for legacy users who never resave.
         if _incoming_tts_provider and _incoming_tts_provider != 'gptsovits':
             core_cfg['gptsovitsEnabled'] = False
-        if _incoming_tts_provider == 'doubao_tts':
-            doubao_key = str(core_cfg.get('assistApiKeyDoubaoTts') or '').strip()
-            if doubao_tts_key_was_explicitly_updated:
+        if (
+            stored_tts_model_provider in TTS_KEY_BOOK_FIELDS
+            and _effective_tts_provider != stored_tts_model_provider
+        ):
+            # Leaving a Key Book-backed provider: older configs kept its only key in
+            # the shared slot. Move it to that provider's own Key Book field before
+            # the slot is cleared or replaced, so switching back still works.
+            previous_book_field = TTS_KEY_BOOK_FIELDS[stored_tts_model_provider]
+            slot_key = stored_tts_slot_key
+            previous_book_explicitly_updated = (
+                previous_book_field in data
+                and not is_core_config_secret_placeholder(data[previous_book_field])
+            )
+            if (
+                slot_key
+                and not is_core_config_secret_placeholder(slot_key)
+                and not str(core_cfg.get(previous_book_field) or '').strip()
+                and not previous_book_explicitly_updated
+            ):
+                core_cfg[previous_book_field] = slot_key
+        if _tts_book_field:
+            book_key = str(core_cfg.get(_tts_book_field) or '').strip()
+            if tts_book_key_was_explicitly_updated:
                 # The dedicated Key Book field is authoritative when the user
                 # explicitly edits it, including an explicit empty-string clear.
-                core_cfg['ttsModelApiKey'] = doubao_key
+                core_cfg['ttsModelApiKey'] = book_key
             elif not tts_model_key_was_explicitly_updated:
-                if doubao_key and not is_core_config_secret_placeholder(doubao_key):
-                    core_cfg['ttsModelApiKey'] = doubao_key
-                elif stored_tts_model_provider != 'doubao_tts':
+                if book_key and not is_core_config_secret_placeholder(book_key):
+                    core_cfg['ttsModelApiKey'] = book_key
+                elif stored_tts_model_provider != _effective_tts_provider:
                     # Switching from another provider must not reuse its shared
-                    # model key as a Doubao credential. When already on Doubao,
-                    # however, masked/no-op saves preserve the legacy key stored
-                    # only in ttsModelApiKey.
+                    # model key as this provider's credential. When already on
+                    # it, however, masked/no-op saves preserve the legacy key
+                    # stored only in ttsModelApiKey.
                     core_cfg['ttsModelApiKey'] = ''
+        elif (
+            stored_tts_model_provider in TTS_KEY_BOOK_FIELDS
+            and _effective_tts_provider != stored_tts_model_provider
+            # Still the stored value: omitted, masked, or ignored by the new provider
+            # (DeepSeek drops submitted slot fields). A new key the user typed stays.
+            and str(core_cfg.get('ttsModelApiKey') or '').strip() == stored_tts_slot_key
+        ):
+            # The slot holds the previous provider's mirrored Key Book key (already
+            # moved to its Key Book above when it was the only copy). Leaving for
+            # another provider (e.g. custom with its own URL) without a new key must
+            # not carry that credential to the new endpoint.
+            core_cfg['ttsModelApiKey'] = ''
         if 'ttsVoiceId' in data:
             core_cfg['ttsVoiceId'] = data['ttsVoiceId']
 

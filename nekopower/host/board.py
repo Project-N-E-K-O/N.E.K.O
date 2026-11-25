@@ -40,6 +40,20 @@ model is asked and no runtime. Not every session is on it (see
 * ``idle``         - open in a runtime with nothing to do;
 * ``asleep``       - no runtime has it open.
 
+Four more are of a session that changes files in a git worktree
+(``tree_work.py``), which ``tree`` on its card tells of:
+
+* ``landing``      - its commission is done, and what it changed is on its
+  way into the project's directory (being checked, waiting for its turn,
+  or being merged);
+* ``resolving``    - that clashed, and it merges what clashed;
+* ``held``         - it is done and waits for the user to say that it lands;
+* ``unlanded``     - it was not landed, and the user decides what becomes of
+  what it changed.
+
+The first two stand in for ``working`` while its commission is under way,
+the other two for ``idle`` or ``asleep`` once it has none in hand.
+
 The state is the session's; how the commission in hand stands is said by
 ``commission.status``. So a session whose commission rests until a time it
 set, or waits for its turn, is ``asleep`` with a commission whose status is
@@ -70,14 +84,25 @@ from collections.abc import Awaitable, Callable
 from pathlib import PurePath
 from typing import Any
 
-from nekopower.host.ledger import PROJECT_KINDS, BoardRows, Commission, Ledger, Session
+from nekopower.host.ledger import PROJECT_KINDS, BoardRows, Commission, Ledger, Session, Tree
 from nekopower.host.paths import DEFAULT_PROJECT, SpacePaths
 from nekopower.host.space import PROJECT_ARCHIVED, Project, TaskAgentSpace
 from nekopower.host.templates import SHADOW, Listed, TemplateStore
 
 logger = logging.getLogger(__name__)
 
-STATES: tuple[str, ...] = ("working", "waiting_user", "idle", "asleep", "compacting")
+STATES: tuple[str, ...] = (
+    "working", "waiting_user", "idle", "asleep", "compacting",
+    # Of a session that changes files in a git worktree (``tree`` on its card says which):
+    # what it changed is on its way into the project's directory; it merges what clashed
+    # there; it is done and waits for the user to say that it lands; it was not landed, and
+    # the user decides what becomes of it.
+    "landing", "resolving", "held", "unlanded",
+)
+# How a git worktree stands, by which the state of its session is told instead of by
+# its commission: while that is under way, and once it is over.
+_TREE_AT_WORK: frozenset[str] = frozenset({"landing", "resolving"})
+_TREE_WAITS: frozenset[str] = frozenset({"held", "unlanded"})
 
 # Tool calls that say nothing of what a session is at: its reports, and the
 # todo list, which is read for the item in progress instead.
@@ -221,9 +246,24 @@ def card_of(
     calls: tuple[dict[str, Any], ...],
     template: Listed | None,
     model: str | None,
+    tree: Tree | None = None,
+    team: str | None = None,
 ) -> dict[str, Any]:
-    """Return the card of one session."""
+    """Return the card of one session.
+
+    ``tree`` is the git worktree to show with it (``tree_of``); ``team``
+    what its team is told by, for a leader that started one and for the
+    task agents of it.
+    """
     found = template.template if template is not None else None
+    state = state_of(session, commission)
+    if tree is not None:
+        if tree.state in _TREE_AT_WORK and state == "working" and commission is not None and tree.commission_id == commission.id:
+            # (One that waits for the user's answer meanwhile shows as waiting.)
+            state = tree.state
+        elif tree.state in _TREE_WAITS and commission is None and state in ("idle", "asleep"):
+            # (A session that is being summed up shows as that.)
+            state = tree.state
     return {
         "id": session.id,
         "name": session.name,
@@ -243,11 +283,13 @@ def card_of(
         "summary": session.summary,
         "summary_by": session.summary_by,
         "doing": doing_of(commission, calls),
-        "state": state_of(session, commission),
+        "state": state,
         "leader": session.kind == "project",
         # Who started it, or of which session it is a copy.
         "parent": session.parent_id or session.forked_from,
-        "team": None,
+        # The same for a leader and the task agents it started for the commission
+        # it is at (the id of that commission); None for a session of no team.
+        "team": team,
         # The name of the model it is sent to and nothing else of it: never
         # its address or key. Its own, as it was settled (``role_models.py``);
         # the task agent model's for one that was not settled yet.
@@ -259,9 +301,43 @@ def card_of(
         "usage": {**{name: getattr(session, name) for name in _USAGE}, "tokens": session.tokens},
         "context_tokens": session.context_tokens,
         "last_active_at": session.last_active_at,
-        "tree": None,
+        # The git worktree it changes files in, or left for the user to decide on:
+        # where it is, how it stands (``ledger.TREE_STATES``), how often it was sent
+        # back to merge (``rounds``) or with what an inspector found (``checks``), the
+        # files that clashed last, why it was not landed (``tree_work.TREE_REASONS``),
+        # and the commission it was made for. None for a session with none.
+        "tree": (
+            {
+                "id": tree.id, "path": tree.path, "workdir": tree.workdir, "state": tree.state,
+                "rounds": tree.rounds, "checks": tree.checks, "conflicts": list(tree.conflicts),
+                "reason": tree.reason, "project_dir": tree.project_dir, "commission_id": tree.commission_id,
+            }
+            if tree is not None
+            else None
+        ),
         "commission": _commission_of(commission),
     }
+
+
+def tree_of(trees: list[Tree], commission: Commission | None) -> Tree | None:
+    """Return the git worktree a session's card shows, of those on record for the session; None for none.
+
+    The one its commission in hand is worked on in (before one of that
+    commission the user sees to personally); else the oldest that
+    waits for the user (held back, or not landed); else one the user
+    sees to personally. Never one the user discarded, which is only
+    waiting to be removed.
+    """
+    trees = [tree for tree in trees if tree.state != "discarding"]
+    if commission is not None:
+        mine = [tree for tree in trees if tree.commission_id == commission.id]
+        for tree in sorted(mine, key=lambda tree: tree.state == "kept"):
+            return tree
+    for wanted in (_TREE_WAITS, frozenset({"kept"})):
+        for tree in trees:
+            if tree.state in wanted:
+                return tree
+    return None
 
 
 def _day_start(now: float) -> float:
@@ -432,6 +508,25 @@ class Board:
             logger.warning("reading the templates for the board failed", exc_info=True)
             whole, templates = False, {}
 
+        # The git worktrees on record, by the session each was made for.
+        trees: dict[str, list[Tree]] = {}
+        try:
+            for tree in await self._ledger.trees():
+                if tree.session_id:
+                    trees.setdefault(tree.session_id, []).append(tree)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - the cards are shown without them
+            logger.warning("reading the git worktrees for the board failed", exc_info=True)
+            whole = False
+        # Leaders that have task agents they started on the board: a team, told by the
+        # commission the leader is at (by the leader itself while it is at none).
+        teams = {
+            by_id[session.parent_id].id: (rows.in_hand[session.parent_id].id if session.parent_id in rows.in_hand else session.parent_id)
+            for session in rows.sessions
+            if session.kind == "child" and session.parent_id in by_id and by_id[session.parent_id].kind == "project"
+        }
+
         def card(session: Session) -> dict[str, Any]:
             commission = rows.in_hand.get(session.id)
             scope = session.project if session.project != DEFAULT_PROJECT else None
@@ -441,6 +536,8 @@ class Board:
                 rows.tool_calls.get(commission.id, ()) if commission is not None else (),
                 templates.get(scope, {}).get(session.preset),
                 model,
+                tree=tree_of(trees.get(session.id, []), commission),
+                team=teams.get(session.id) or (teams.get(session.parent_id or "") if session.kind == "child" else None),
             )
 
         # Every lead with what is shown under it, in the order they were read.

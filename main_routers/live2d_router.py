@@ -41,8 +41,10 @@ from urllib.parse import unquote
 
 from fastapi import APIRouter, Request, File, UploadFile
 from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 
 from .shared_state import get_config_manager
+from .system_router._shared import _validate_local_mutation_request
 from .workshop_router import get_subscribed_workshop_items
 from contextlib import suppress
 
@@ -54,6 +56,7 @@ from utils.frontend_utils import (
     find_models,
     find_workshop_item_by_id,
     find_workshop_item_model_file,
+    is_valid_live2d_model_name as _is_valid_live2d_model_name,
     model_url_dir,
 )
 from utils.live2d_model_refs import is_unsafe_model_ref as _is_unsafe_model_ref
@@ -137,6 +140,76 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _iter_live2d_search_roots() -> list[pathlib.Path]:
+    """Collect candidate Live2D search root directories safely."""
+    roots: list[pathlib.Path] = [pathlib.Path("static"), pathlib.Path("static") / "live2d"]
+    try:
+        workshop_root = get_workshop_path()
+        if isinstance(workshop_root, (str, os.PathLike)):
+            roots.append(pathlib.Path(workshop_root))
+    except Exception:
+        pass
+    try:
+        for ws_dir in _resolve_workshop_search_dirs():
+            if isinstance(ws_dir, (str, os.PathLike)):
+                roots.append(pathlib.Path(ws_dir))
+    except Exception:
+        pass
+    try:
+        config_mgr = get_config_manager()
+    except Exception:
+        config_mgr = None
+    if config_mgr is not None:
+        for attr in ("live2d_dir", "readable_live2d_dir"):
+            try:
+                candidate = getattr(config_mgr, attr, None)
+                if isinstance(candidate, (str, os.PathLike)):
+                    roots.append(pathlib.Path(candidate))
+            except Exception:
+                pass
+        try:
+            project_root = getattr(config_mgr, "project_root", None)
+            if isinstance(project_root, (str, os.PathLike)):
+                roots.append(pathlib.Path(project_root) / "static")
+                roots.append(pathlib.Path(project_root) / "static" / "live2d")
+        except Exception:
+            pass
+        try:
+            workshop_fn = getattr(config_mgr, "get_workshop_path", None)
+            if callable(workshop_fn):
+                ws = workshop_fn()
+                if isinstance(ws, (str, os.PathLike)):
+                    roots.append(pathlib.Path(ws))
+        except Exception:
+            pass
+    return roots
+
+
+def _is_live2d_search_root(model_dir: str | os.PathLike) -> bool:
+    """Return True if ``model_dir`` resolves to one of the Live2D search roots."""
+    try:
+        resolved_model_dir = pathlib.Path(model_dir).resolve()
+    except (OSError, RuntimeError):
+        return True
+    for root in _iter_live2d_search_roots():
+        try:
+            if resolved_model_dir == root.resolve():
+                return True
+        except (OSError, RuntimeError):
+            continue
+    return False
+
+
+def _resolve_safe_model_directory(model_name: str) -> tuple[str | None, str | None]:
+    """Resolve a validated Live2D model directory, rejecting dot names and search roots."""
+    if not _is_valid_live2d_model_name(model_name):
+        return None, None
+    model_dir, url_prefix = find_model_directory(model_name)
+    if not model_dir or _is_live2d_search_root(model_dir):
+        return None, None
+    return model_dir, url_prefix
+
+
 def _resolve_model_url_to_file_path(path: str, config_manager) -> Path | None:
     normalized_path = str(path or "").strip().replace("\\", "/")
     if not normalized_path:
@@ -218,7 +291,7 @@ def _resolve_sync_model_file(path: str, config_manager) -> Path | None:
             return None
         candidate = direct.resolve()
         return candidate if candidate.is_relative_to(Path(root).resolve()) and candidate.is_file() else None
-    directory, _ = find_model_directory(parts[0])
+    directory, _ = _resolve_safe_model_directory(parts[0])
     if not directory:
         return None
     root = Path(directory).resolve()
@@ -680,7 +753,7 @@ def get_model_config(model_name: str):
     """
     try:
         # Find model directory under static or user documents.
-        model_dir, url_prefix = find_model_directory(model_name)
+        model_dir, url_prefix = _resolve_safe_model_directory(model_name)
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
@@ -724,7 +797,7 @@ async def update_model_config(model_name: str, request: Request):
         data = await request.json()
         
         # Find model directory under static or user documents.
-        model_dir, url_prefix = find_model_directory(model_name)
+        model_dir, url_prefix = _resolve_safe_model_directory(model_name)
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
@@ -772,7 +845,7 @@ def get_emotion_mapping(model_name: str):
     """
     try:
         # Find model directory under static or user documents.
-        model_dir, url_prefix = find_model_directory(model_name)
+        model_dir, url_prefix = _resolve_safe_model_directory(model_name)
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
@@ -882,7 +955,7 @@ async def update_emotion_mapping(model_name: str, request: Request):
             return JSONResponse(status_code=400, content={"success": False, "error": "无效的数据"})
 
         # Find model directory under static or user documents.
-        model_dir, url_prefix = find_model_directory(model_name)
+        model_dir, url_prefix = _resolve_safe_model_directory(model_name)
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
@@ -1182,7 +1255,7 @@ def get_model_files(model_name: str):
     """
     try:
         # Find model directory under static or user documents.
-        model_dir, url_prefix = find_model_directory(model_name)
+        model_dir, url_prefix = _resolve_safe_model_directory(model_name)
         
         if not model_dir or not os.path.exists(model_dir):
             return {"success": False, "error": f"模型 {model_name} 不存在"}
@@ -1231,7 +1304,7 @@ def get_model_parameters(model_name: str):
     """
     try:
         # Find model directory.
-        model_dir, url_prefix = find_model_directory(model_name)
+        model_dir, url_prefix = _resolve_safe_model_directory(model_name)
         
         if not model_dir or not os.path.exists(model_dir):
             return {"success": False, "error": f"模型 {model_name} 不存在"}
@@ -1289,7 +1362,7 @@ async def save_model_parameters(model_name: str, request: Request):
     """
     try:
         # Find model directory.
-        model_dir, url_prefix = find_model_directory(model_name)
+        model_dir, url_prefix = _resolve_safe_model_directory(model_name)
         
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": f"模型 {model_name} 不存在"})
@@ -1326,7 +1399,7 @@ def load_model_parameters(model_name: str):
     """
     try:
         # Find model directory.
-        model_dir, url_prefix = find_model_directory(model_name)
+        model_dir, url_prefix = _resolve_safe_model_directory(model_name)
         
         if not model_dir or not os.path.exists(model_dir):
             return {"success": False, "error": f"模型 {model_name} 不存在"}
@@ -1368,6 +1441,9 @@ def get_model_config_by_id(model_id: str):
     - config: model config dict
     """
     try:
+        if not _is_valid_live2d_model_name(model_id):
+            return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
+
         # Find model directory under static or user documents.
         try:
             model_dir, url_prefix = find_workshop_item_by_id(model_id)
@@ -1376,7 +1452,7 @@ def get_model_config_by_id(model_id: str):
             model_dir = ""
             logger.warning(f"通过model_id查找失败: {e}")
 
-        if not model_dir or not os.path.exists(model_dir):
+        if not model_dir or _is_live2d_search_root(model_dir) or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
         # Find .model3.json (directly in the item first, then nested), inside the item only.
@@ -1413,6 +1489,9 @@ async def update_model_config_by_id(model_id: str, request: Request):
     - config: updated model config dict
     """
     try:
+        if not _is_valid_live2d_model_name(model_id):
+            return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
+
         data = await request.json()
         
         # Find model directory under static or user documents.
@@ -1423,7 +1502,7 @@ async def update_model_config_by_id(model_id: str, request: Request):
             model_dir = ""
             logger.warning(f"通过model_id查找失败: {e}")
 
-        if not model_dir or not os.path.exists(model_dir):
+        if not model_dir or _is_live2d_search_root(model_dir) or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
         # Find .model3.json (directly in the item first, then nested), inside the item only.
@@ -1474,7 +1553,7 @@ def get_model_files_by_id(model_id: str):
     """
     try:
         # Reject invalid model_id directly.
-        if not model_id or model_id.lower() == 'undefined':
+        if not _is_valid_live2d_model_name(model_id) or model_id.lower() == 'undefined':
             logger.warning("接收到无效的model_id请求，返回失败")
             return {"success": False, "error": "无效的模型ID"}
         
@@ -1485,6 +1564,8 @@ def get_model_files_by_id(model_id: str):
         # First try Workshop item_id.
         try:
             model_dir, url_prefix = find_workshop_item_by_id(model_id)
+            if model_dir and _is_live2d_search_root(model_dir):
+                model_dir = None
             logger.debug(f"通过model_id {model_id} 查找模型目录: {model_dir}")
         except Exception as e:
             logger.warning(f"通过model_id查找失败: {e}")
@@ -1496,7 +1577,7 @@ def get_model_files_by_id(model_id: str):
         if not model_dir or not os.path.exists(model_dir):
             logger.info(f"尝试将 {model_id} 作为模型名称回退查找")
             try:
-                model_dir, url_prefix = find_model_directory(model_id)
+                model_dir, url_prefix = _resolve_safe_model_directory(model_id)
                 logger.debug(f"作为模型名称查找的目录: {model_dir}")
             except Exception as e:
                 logger.warning(f"作为模型名称查找失败: {e}")
@@ -1570,11 +1651,74 @@ def get_model_files_by_id(model_id: str):
 # Steam Workshop management API routes.
 # Ensure route registered correctly.
 
-@router.post('/upload_model')
+class _Live2dUploadGuardedRoute(APIRoute):
+    """Reject unauthenticated or cross-site Live2D uploads before multipart parsing."""
+
+    def get_route_handler(self):
+        downstream = super().get_route_handler()
+
+        async def guarded(request: Request):
+            if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+                rejected = _validate_local_mutation_request(
+                    request,
+                    error_defaults={"success": False},
+                )
+                if rejected is not None:
+                    return rejected
+            return await downstream(request)
+
+        return guarded
+
+
+upload_router = APIRouter(route_class=_Live2dUploadGuardedRoute)
+
+
+def _is_windows() -> bool:
+    """Return True when running on Windows."""
+    return os.name == "nt"
+
+
+def _sanitize_live2d_upload_relpath(raw_filename: str | None) -> pathlib.PurePosixPath | None:
+    """Validate and sanitize a multipart upload filename into a relative POSIX path."""
+    if not isinstance(raw_filename, str) or not raw_filename:
+        return None
+    windows = _is_windows()
+    if "\x00" in raw_filename or (windows and ":" in raw_filename):
+        return None
+    if raw_filename.startswith(("/", "\\")):
+        return None
+    normalized = raw_filename.replace("\\", "/")
+    parts = normalized.split("/")
+    if not parts:
+        return None
+    for part in parts:
+        if part in ("", ".", ".."):
+            return None
+        if windows and any(ch in part for ch in '<>:"|?*'):
+            return None
+    return pathlib.PurePosixPath(*parts)
+
+
+async def _run_cancellation_safe_io(func, *args, **kwargs):
+    """Run blocking filesystem I/O in a worker and wait for it before propagating cancellation."""
+    task = asyncio.ensure_future(asyncio.to_thread(func, *args, **kwargs))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait({task})
+        raise
+
+
+async def _write_staged_upload_bytes(target_file_path: pathlib.Path, content: bytes) -> None:
+    """Write staged upload bytes without letting cancellation exit TemporaryDirectory early."""
+    await _run_cancellation_safe_io(target_file_path.write_bytes, content)
+
+
+@upload_router.post('/upload_model')
 async def upload_live2d_model(files: list[UploadFile] = File(...)):
-    """
-    Upload a Live2D model to the user documents directory.
-    """
+    """Upload a Live2D model to the user documents directory."""
     import shutil
     import tempfile
     
@@ -1586,23 +1730,25 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
         # Create temporary directory for uploaded files.
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = pathlib.Path(temp_dir)
+            resolved_temp = temp_path.resolve()
             
             # Save all uploads there, preserving directory layout.
             for file in files:
-                # Extract directory layout from file-relative paths.
-                file_path = file.filename
-                # Ensure safe paths, removing dangerous components.
-                file_path = file_path.replace('\\', '/').lstrip('/')
-                if not file_path or file_path.startswith(("/", "../")) or "/../" in f"/{file_path}":
+                rel_path = _sanitize_live2d_upload_relpath(file.filename)
+                if rel_path is None:
                     return JSONResponse(status_code=400, content={"success": False, "error": "非法文件路径"})
                 
-                target_file_path = temp_path / file_path
+                target_file_path = temp_path / rel_path
+                resolved_target = target_file_path.resolve()
+                if not resolved_target.is_relative_to(resolved_temp) or resolved_target == resolved_temp:
+                    return JSONResponse(status_code=400, content={"success": False, "error": "非法文件路径"})
                 target_file_path.parent.mkdir(parents=True, exist_ok=True)
+                if not target_file_path.resolve().is_relative_to(resolved_temp):
+                    return JSONResponse(status_code=400, content={"success": False, "error": "非法文件路径"})
                 
-                # Save file.
-                with open(target_file_path, 'wb') as f:
-                    content = await file.read()
-                    f.write(content)
+                # Save file via asyncio.to_thread to avoid blocking the event loop.
+                content = await file.read()
+                await _write_staged_upload_bytes(target_file_path, content)
             
             # Recursively find .model3.json in temp directory.
             model_json_files = list(temp_path.rglob('*.model3.json'))
@@ -1617,7 +1763,11 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
             
             # Determine model root, parent of .model3.json.
             model_root_dir = model_json_file.parent
+            if model_root_dir.resolve() == resolved_temp:
+                return JSONResponse(status_code=400, content={"success": False, "error": "模型文件必须位于模型子目录中"})
             model_name = model_root_dir.name
+            if not _is_valid_live2d_model_name(model_name):
+                return JSONResponse(status_code=400, content={"success": False, "error": "非法模型名称"})
             
             # Get user-documents live2d directory.
             config_mgr = get_config_manager()
@@ -1626,6 +1776,13 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
             
             # Target directory.
             target_model_dir = user_live2d_dir / model_name
+            resolved_user_dir = user_live2d_dir.resolve()
+            resolved_target_dir = target_model_dir.resolve()
+            if (
+                not resolved_target_dir.is_relative_to(resolved_user_dir)
+                or resolved_target_dir == resolved_user_dir
+            ):
+                return JSONResponse(status_code=400, content={"success": False, "error": "非法模型路径"})
             
             # Existing target: error or overwrite; choose error here.
             if target_model_dir.exists():
@@ -1638,10 +1795,10 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
                     })
                 else:
                     logger.info(f"清理残留的无效模型目录: {target_model_dir}")
-                    await asyncio.to_thread(shutil.rmtree, target_model_dir, ignore_errors=True)
+                    await _run_cancellation_safe_io(shutil.rmtree, target_model_dir, ignore_errors=True)
 
             # Copy model root to user-documents live2d directory.
-            await asyncio.to_thread(shutil.copytree, model_root_dir, target_model_dir)
+            await _run_cancellation_safe_io(shutil.copytree, model_root_dir, target_model_dir)
 
             # After upload iterate all *.motion3.json files,
             # empty Segments=[] for official whitelist and model-declared .model3.json LipSync parameters.
@@ -1762,7 +1919,7 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 
-@router.post('/upload_file/{model_name}')
+@upload_router.post('/upload_file/{model_name}')
 async def upload_file_to_model(model_name: str, file: UploadFile = File(...), file_type: str = "motion"):
     """
     Upload a single motion or expression file to the specified model.
@@ -1772,6 +1929,11 @@ async def upload_file_to_model(model_name: str, file: UploadFile = File(...), fi
     - file_type: file type, must be "motion" or "expression"
     """
     try:
+        if not _is_valid_live2d_model_name(model_name):
+            if file:
+                await file.close()
+            return JSONResponse(status_code=400, content={"success": False, "error": "非法模型名称"})
+
         if not file:
             return JSONResponse(status_code=400, content={"success": False, "error": "没有上传文件"})
         
@@ -1806,25 +1968,57 @@ async def upload_file_to_model(model_name: str, file: UploadFile = File(...), fi
         # Validate JSON.
         try:
             json.loads(file_content.decode('utf-8'))
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
             return JSONResponse(status_code=400, content={"success": False, "error": "文件内容不是有效的 JSON 格式"})
 
         # Find model directory.
-        model_dir, _url_prefix = find_model_directory(model_name)
+        model_dir, _url_prefix = _resolve_safe_model_directory(model_name)
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
-        
-        # Create target subdirectory if absent.
+
+        resolved_model_dir = pathlib.Path(model_dir).resolve()
         target_dir = pathlib.Path(model_dir) / target_subdir
+        if target_dir.is_symlink() or (target_dir.exists() and not target_dir.is_dir()):
+            return JSONResponse(status_code=400, content={"success": False, "error": "非法目标目录"})
+        resolved_target_dir = target_dir.resolve()
+        if not resolved_target_dir.is_relative_to(resolved_model_dir) or resolved_target_dir == resolved_model_dir:
+            return JSONResponse(status_code=400, content={"success": False, "error": "非法目标目录"})
+
+        # Create target subdirectory if absent.
         target_dir.mkdir(parents=True, exist_ok=True)
+        resolved_target_dir = target_dir.resolve()
+        if (
+            target_dir.is_symlink()
+            or not resolved_target_dir.is_relative_to(resolved_model_dir)
+            or resolved_target_dir == resolved_model_dir
+        ):
+            return JSONResponse(status_code=400, content={"success": False, "error": "非法目标目录"})
         
         # Basename only, avoiding traversal.
-        safe_filename = pathlib.Path(filename).name
-        
+        safe_filename = pathlib.Path(filename.replace("\\", "/")).name
+        if (
+            not safe_filename
+            or safe_filename in {".", ".."}
+            or "\x00" in safe_filename
+            or (_is_windows() and any(ch in safe_filename for ch in '<>:"|?*'))
+        ):
+            return JSONResponse(status_code=400, content={"success": False, "error": "非法文件名"})
+
         target_file_path = target_dir / safe_filename
+        resolved_target_file = target_file_path.resolve()
+        if (
+            target_file_path.is_symlink()
+            or not resolved_target_file.is_relative_to(resolved_model_dir)
+            or not resolved_target_file.is_relative_to(resolved_target_dir)
+        ):
+            return JSONResponse(status_code=400, content={"success": False, "error": "非法文件路径"})
+
+        def _write_exclusive(path_obj: pathlib.Path, data: bytes) -> None:
+            with open(path_obj, 'xb') as f:
+                f.write(data)
+
         try:
-            with open(target_file_path, 'xb') as f:
-                f.write(file_content)
+            await asyncio.to_thread(_write_exclusive, target_file_path, bytes(file_content))
         except FileExistsError:
             return JSONResponse(status_code=400, content={"success": False, "error": f"文件 {safe_filename} 已存在"})
         
@@ -1852,7 +2046,7 @@ def open_model_directory(model_name: str):
     try:
         import sys
         # Find model directory.
-        model_dir, url_prefix = find_model_directory(model_name)
+        model_dir, url_prefix = _resolve_safe_model_directory(model_name)
         
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": f"模型目录不存在: {model_dir}"})
@@ -1878,8 +2072,11 @@ def delete_model(model_name: str):
     - model_name: model name (without path or extension)
     """
     try:
+        if not _is_valid_live2d_model_name(model_name):
+            return JSONResponse(status_code=400, content={"success": False, "error": "非法模型名称"})
+
         # Find model directory.
-        model_dir, _url_prefix = find_model_directory(model_name)
+        model_dir, _url_prefix = _resolve_safe_model_directory(model_name)
         
         # If find_model_directory fails, search user-import directory directly as deletion fallback.
         if not model_dir or not os.path.exists(model_dir):
@@ -1891,7 +2088,7 @@ def delete_model(model_name: str):
                     # Validate path safety against traversal.
                     fallback_real = os.path.realpath(str(fallback_dir))
                     live2d_real = os.path.realpath(str(config_mgr.live2d_dir))
-                    if os.path.commonpath([fallback_real, live2d_real]) == live2d_real:
+                    if fallback_real != live2d_real and os.path.commonpath([fallback_real, live2d_real]) == live2d_real:
                         model_dir = str(fallback_dir)
                         _url_prefix = '/user_live2d'
                         logger.info(f"通过降级路径找到用户模型: {model_dir}")
@@ -1915,7 +2112,7 @@ def delete_model(model_name: str):
             user_live2d_dir = os.path.realpath(str(config_mgr.live2d_dir))
             try:
                 common = os.path.commonpath([user_live2d_dir, model_dir_real])
-                if common == user_live2d_dir:
+                if common == user_live2d_dir and model_dir_real != user_live2d_dir:
                     is_user_model = True
             except ValueError:
                 pass
@@ -1927,7 +2124,7 @@ def delete_model(model_name: str):
                     readable_live2d_real = os.path.realpath(str(readable_live2d))
                     try:
                         common = os.path.commonpath([readable_live2d_real, model_dir_real])
-                        if common == readable_live2d_real:
+                        if common == readable_live2d_real and model_dir_real != readable_live2d_real:
                             is_user_model = True
                             _model_in_readonly_dir = True  # Inside CFA-protected read-only directory.
                     except ValueError:
@@ -2079,3 +2276,6 @@ def get_user_models():
     except Exception as e:
         logger.error(f"获取用户模型列表失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+
+router.include_router(upload_router)

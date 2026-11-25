@@ -91,6 +91,7 @@ from .connectivity import (  # noqa: F401
     _test_websocket,
     _test_vllm_omni_ws_handshake,
     _test_doubao_tts_connectivity,
+    _test_qwen_token_plan_tts_connectivity,
     _normalize_provider_url_candidates,
     _looks_like_anthropic_messages_url,
     _normalize_provider_type,
@@ -106,3 +107,5 @@ from .model_catalog import (  # noqa: F401
     ModelListRequest,
     list_models,
 )
+
+from . import chatgpt  # noqa: F401  # Register local OAuth routes.

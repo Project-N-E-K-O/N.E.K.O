@@ -662,6 +662,9 @@ def _emote_template_multipart_preflight(scope):
 # exact paths get the archive cap's base64 size (4/3) plus 1 MiB of JSON headroom; every
 # other route stays at 16 MiB.
 from main_routers.emote_template_router import MAX_MULTIPART_BODY_BYTES as EMOTE_MAX_MULTIPART_BODY_BYTES
+from main_routers.workshop_router.preview_cards import (  # noqa: E402
+    WORKSHOP_PREVIEW_MAX_MULTIPART_BODY_BYTES,
+)
 
 _non_multipart_body_limits = {
     "/api/memory/external_import/preview": EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES,
@@ -674,6 +677,9 @@ app.add_middleware(
     multipart_methods=("POST", "PUT"),
     max_multipart_body_bytes=AVATAR_TOOL_MAX_MULTIPART_BODY_BYTES,
     multipart_preflight=_avatar_tool_multipart_preflight,
+    multipart_path_limits={
+        "/api/steam/workshop/upload-preview-image": WORKSHOP_PREVIEW_MAX_MULTIPART_BODY_BYTES,
+    },
 )
 app.add_middleware(
     InboundBodySizeLimitMiddleware,
