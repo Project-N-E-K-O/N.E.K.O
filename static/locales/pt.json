@@ -1510,6 +1510,7 @@
             "fetchTooltip": "Buscar a lista de modelos disponíveis no provedor",
             "loading": "Buscando a lista de modelos…",
             "noMatch": "Nenhum modelo correspondente",
+            "decisionTag": "Decisão nativa",
             "more": "Mais {{count}} modelos; digite uma palavra-chave para filtrar",
             "unavailable": {
                 "noProvider": "Selecione um provedor primeiro",
@@ -1693,11 +1694,13 @@
         "mimoTokenPlanKeyLabel": "Chave do MiMo Token Plan",
         "mimoTokenPlanKeyPlaceholder": "Insira a chave do Token Plan (tp-xxxxx)",
         "mimoTokenPlanKeyHint": "Quando ativado, o MiMo usa apenas esta chave e o endpoint do Token Plan; a chave normal da API MiMo fica bloqueada.",
-        "bailianWorkspaceIdLabel": "ID do espaço de trabalho do Bailian (modelo de decisão)",
-        "bailianWorkspaceIdPlaceholder": "ex.: llm-xxxxxxxx",
-        "bailianWorkspaceIdHint": "Se ficar vazio, um modelo de chat comum é usado no lugar do modelo de decisão. O ID do espaço de trabalho é a primeira parte do seu API Host (ex.: llm-xxx). Você o encontra na página de gerenciamento de espaços de trabalho do console do Bailian (Model Studio) ou na janela exibida ao criar uma chave de API. Também é possível colar o API Host inteiro.",
+        "bailianWorkspaceIdLabel": "API Host do Bailian (modelo de decisão)",
+        "bailianWorkspaceIdPlaceholder": "ex.: ws-xxxxxxxxxxxxxxxx.ap-southeast-1.maas.aliyuncs.com",
+        "bailianWorkspaceIdHint": "Se ficar vazio, um modelo de chat comum é usado no lugar do modelo de decisão. Abra a página de gerenciamento de espaços de trabalho do console do Bailian (Model Studio), copie o valor da coluna API Host (como ws-xxxx.ap-southeast-1.maas.aliyuncs.com) e cole aqui; ele também aparece na janela exibida ao criar uma chave de API. Só o ID do espaço de trabalho do início também funciona; nesse caso vale a região da sua chave de API.",
         "bailianWorkspaceIdDocLink": "Ver a documentação oficial",
-        "bailianWorkspaceIdInvalid": "ID do espaço de trabalho do Bailian inválido: use apenas letras, dígitos e -, até 63 caracteres",
+        "bailianWorkspaceIdInvalid": "API Host do Bailian inválido: cole o API Host do console (como ws-xxxx.ap-southeast-1.maas.aliyuncs.com) ou apenas o ID do espaço de trabalho",
+        "bailianWorkspaceConsoleLink": "Abrir a página de espaços de trabalho",
+        "bailianWorkspaceRegionUnsupported": "A região deste API Host ({{region}}) não tem modelo de decisão, então as decisões usam um modelo de chat",
         "mimoApiKeyLockedByTokenPlan": "MiMo Token Plan está ativado; esta chave não é usada"
     },
     "live2d": {
@@ -6320,12 +6323,13 @@
             "unknown": "Erro desconhecido",
             "backend_unavailable": "Serviço de backend indisponível",
             "invalid_response": "Formato de resposta inválido",
-            "invalid_workspace_id": "ID do espaço de trabalho do Bailian inválido",
+            "invalid_workspace_id": "API Host do Bailian inválido",
+            "workspace_mismatch": "O API Host e a chave de API pertencem a espaços de trabalho do Bailian diferentes",
             "token_plan_key_mismatch": "Parece uma chave comum do Bailian. O Token Plan precisa da chave dedicada que começa com sk-sp-",
             "token_plan_url_invalid": "O endereço do Token Plan deve ser um endereço https em um domínio oficial do Token Plan"
         },
         "decisionFallback": {
-            "workspace_missing": "Sem ID do espaço de trabalho do Bailian: um modelo de chat substitui o modelo de decisão",
+            "workspace_missing": "Sem API Host do Bailian: um modelo de chat substitui o modelo de decisão",
             "region_unsupported": "Esta região não tem API nativa de decisão: um modelo de chat é usado"
         },
         "status": {

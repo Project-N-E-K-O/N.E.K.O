@@ -1510,6 +1510,7 @@
             "fetchTooltip": "プロバイダーから利用可能なモデル一覧を取得します",
             "loading": "モデル一覧を取得中…",
             "noMatch": "一致するモデルがありません",
+            "decisionTag": "ネイティブ意思決定",
             "more": "ほかに {{count}} 件のモデルがあります。キーワードで絞り込めます",
             "unavailable": {
                 "noProvider": "先にプロバイダーを選択してください",
@@ -1693,11 +1694,13 @@
         "mimoTokenPlanKeyLabel": "MiMo Token Plan キー",
         "mimoTokenPlanKeyPlaceholder": "Token Plan キーを入力（tp-xxxxx）",
         "mimoTokenPlanKeyHint": "有効にすると、MiMo はこの Token Plan キーとエンドポイントのみを使用し、通常の MiMo API キーはロックされます。",
-        "bailianWorkspaceIdLabel": "Bailian ワークスペース ID（意思決定モデル）",
-        "bailianWorkspaceIdPlaceholder": "例: llm-xxxxxxxx",
-        "bailianWorkspaceIdHint": "未入力の場合、意思決定モデルの代わりに通常のチャットモデルを使います。ワークスペース ID は API Host の先頭部分（例: llm-xxx）で、Bailian（Model Studio）コンソールのワークスペース管理ページか、API キー作成時のポップアップで確認できます。API Host をそのまま貼り付けても構いません。",
+        "bailianWorkspaceIdLabel": "Bailian API Host（意思決定モデル）",
+        "bailianWorkspaceIdPlaceholder": "例: ws-xxxxxxxxxxxxxxxx.ap-southeast-1.maas.aliyuncs.com",
+        "bailianWorkspaceIdHint": "未入力の場合、意思決定モデルの代わりに通常のチャットモデルを使います。Bailian（Model Studio）コンソールのワークスペース管理ページを開き、「API Host」列の値（例: ws-xxxx.ap-southeast-1.maas.aliyuncs.com）をコピーして貼り付けてください。API キー作成時のポップアップにも表示されます。先頭のワークスペース ID だけでも使え、その場合のリージョンは API キーのリージョンになります。",
         "bailianWorkspaceIdDocLink": "公式ドキュメントを見る",
-        "bailianWorkspaceIdInvalid": "ワークスペース ID の形式が正しくありません：英数字と - のみ、63 文字以内で入力してください",
+        "bailianWorkspaceIdInvalid": "API Host の形式が正しくありません：コンソールの API Host（例: ws-xxxx.ap-southeast-1.maas.aliyuncs.com）か、ワークスペース ID だけを入力してください",
+        "bailianWorkspaceConsoleLink": "ワークスペース管理ページを開く",
+        "bailianWorkspaceRegionUnsupported": "この API Host のリージョン（{{region}}）には意思決定モデルがないため、チャットモデルで判断します",
         "mimoApiKeyLockedByTokenPlan": "MiMo Token Plan が有効です。このキーは使用されません"
     },
     "live2d": {
@@ -6320,12 +6323,13 @@
             "unknown": "不明なエラー",
             "backend_unavailable": "バックエンドサービスが利用できません",
             "invalid_response": "レスポンス形式が不正です",
-            "invalid_workspace_id": "Bailian ワークスペース ID の形式が無効です",
+            "invalid_workspace_id": "Bailian API Host の形式が無効です",
+            "workspace_mismatch": "API Host と API キーが別の Bailian ワークスペースのものです",
             "token_plan_key_mismatch": "百炼の通常キーのようです。Token Plan には sk-sp- で始まる専用キーが必要です",
             "token_plan_url_invalid": "Token Plan の URL は公式 Token Plan ドメインの https アドレスである必要があります"
         },
         "decisionFallback": {
-            "workspace_missing": "Bailian ワークスペース ID が未入力のため、意思決定モデルの代わりにチャットモデルを使用中",
+            "workspace_missing": "Bailian API Host が未入力のため、意思決定モデルの代わりにチャットモデルを使用中",
             "region_unsupported": "この地域には意思決定モデルのネイティブ API がないため、チャットモデルを使用中"
         },
         "status": {

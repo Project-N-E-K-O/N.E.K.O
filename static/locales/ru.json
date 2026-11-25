@@ -1510,6 +1510,7 @@
             "fetchTooltip": "Загрузить список доступных моделей у провайдера",
             "loading": "Загрузка списка моделей…",
             "noMatch": "Подходящих моделей нет",
+            "decisionTag": "Нативные решения",
             "more": "Ещё моделей: {{count}}; введите ключевое слово для фильтрации",
             "unavailable": {
                 "noProvider": "Сначала выберите провайдера",
@@ -1693,11 +1694,13 @@
         "mimoTokenPlanKeyLabel": "Ключ MiMo Token Plan",
         "mimoTokenPlanKeyPlaceholder": "Введите ключ Token Plan (tp-xxxxx)",
         "mimoTokenPlanKeyHint": "Если включено, MiMo использует только этот ключ и endpoint Token Plan; обычный ключ MiMo API блокируется.",
-        "bailianWorkspaceIdLabel": "ID рабочего пространства Bailian (модель решений)",
-        "bailianWorkspaceIdPlaceholder": "например, llm-xxxxxxxx",
-        "bailianWorkspaceIdHint": "Если поле пустое, вместо модели решений используется обычная чат-модель. ID рабочего пространства — это первая часть вашего API Host (например, llm-xxx). Его можно найти на странице управления рабочими пространствами в консоли Bailian (Model Studio) или во всплывающем окне при создании API-ключа. Можно вставить и весь API Host целиком.",
+        "bailianWorkspaceIdLabel": "API Host Bailian (модель решений)",
+        "bailianWorkspaceIdPlaceholder": "например, ws-xxxxxxxxxxxxxxxx.ap-southeast-1.maas.aliyuncs.com",
+        "bailianWorkspaceIdHint": "Если поле пустое, вместо модели решений используется обычная чат-модель. Откройте страницу управления рабочими пространствами в консоли Bailian (Model Studio), скопируйте значение из столбца API Host (вида ws-xxxx.ap-southeast-1.maas.aliyuncs.com) и вставьте сюда; оно есть и во всплывающем окне при создании API-ключа. Можно указать только ID рабочего пространства из начала адреса — тогда регион берётся из региона API-ключа.",
         "bailianWorkspaceIdDocLink": "Открыть официальную документацию",
-        "bailianWorkspaceIdInvalid": "Неверный ID рабочего пространства Bailian: допустимы только буквы, цифры и -, не более 63 символов",
+        "bailianWorkspaceIdInvalid": "Неверный API Host Bailian: вставьте API Host из консоли (вида ws-xxxx.ap-southeast-1.maas.aliyuncs.com) или только ID рабочего пространства",
+        "bailianWorkspaceConsoleLink": "Открыть страницу рабочих пространств",
+        "bailianWorkspaceRegionUnsupported": "В регионе этого API Host ({{region}}) нет модели решений, поэтому решения принимает чат-модель",
         "mimoApiKeyLockedByTokenPlan": "MiMo Token Plan включен; этот ключ не используется"
     },
     "live2d": {
@@ -6320,12 +6323,13 @@
             "unknown": "Неизвестная ошибка",
             "backend_unavailable": "Бэкенд-сервис недоступен",
             "invalid_response": "Неверный формат ответа",
-            "invalid_workspace_id": "Неверный формат ID рабочего пространства Bailian",
+            "invalid_workspace_id": "Неверный формат API Host Bailian",
+            "workspace_mismatch": "API Host и API-ключ относятся к разным рабочим пространствам Bailian",
             "token_plan_key_mismatch": "Похоже на обычный ключ Bailian. Для Token Plan нужен отдельный ключ, начинающийся с sk-sp-",
             "token_plan_url_invalid": "Адрес Token Plan должен быть https-адресом на официальном домене Token Plan"
         },
         "decisionFallback": {
-            "workspace_missing": "ID рабочего пространства Bailian не указан: вместо модели решений используется чат-модель",
+            "workspace_missing": "API Host Bailian не указан: вместо модели решений используется чат-модель",
             "region_unsupported": "В этом регионе нет нативного API модели решений: используется чат-модель"
         },
         "status": {

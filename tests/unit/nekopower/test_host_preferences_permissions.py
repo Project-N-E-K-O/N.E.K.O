@@ -637,6 +637,8 @@ async def test_defaults_of_the_design(store):
         "mcp_server": "first_ask",
         # Another task agent that can change files, opened beside the ones a project has.
         "open_session": "first_ask",
+        # Another member for work that waits for a busy one, in a project without a leader.
+        "open_beside": "first_ask",
     }
     assert DEFAULT_MODES == dict.fromkeys(effective_modes, "auto")
     assert (await store.snapshot())["categories"] == DEFAULT_MODES

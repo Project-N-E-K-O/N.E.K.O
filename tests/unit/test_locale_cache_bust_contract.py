@@ -66,6 +66,8 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-11-25-bailian-api-host",
+        "2026-11-25-theme-studio-backup-skipped-images",
         "2026-11-25-theme-studio-panel-i18n",
         "2026-11-25-theme-studio-subscriptions-merge",
         "2026-11-25-subscriptions-panel",
@@ -640,7 +642,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "657a51ff360f8005a40cde833e2227c99327db268cb57424437a4bb23ca358f7"
+LOCALE_KEY_SIGNATURE = "9d36779be79c58352acfa32da69685fd9c3ce5903ddc79b78cf688c9317cc099"
 
 
 _BUMP_INSTRUCTIONS = (

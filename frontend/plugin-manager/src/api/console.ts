@@ -326,11 +326,20 @@ export interface Landing {
   skipped?: string[]
 }
 
+/**
+ * What becomes of work that waits for a familiar busy with something else, in a project without a
+ * leader: `ask` the user whether another is to do it in a worktree of its own, `open` another
+ * without asking, `queue` it behind the busy one.
+ */
+export type BesideChoice = 'ask' | 'open' | 'queue'
+
 export interface LandingSettings {
   /** `auto`: what a familiar changed is merged as soon as it is done; `ask`: it waits for the user. */
   mode: 'auto' | 'ask'
   /** Whether an inspector looks at what was changed before every landing. */
   inspect: boolean
+  /** Missing where the service has no such setting. */
+  beside?: BesideChoice
   /** How many worktrees a project may have, those the user sees to included; no setting of the user's. */
   worktrees_per_project?: number
 }

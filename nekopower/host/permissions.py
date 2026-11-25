@@ -92,6 +92,9 @@ AUTO_POLICY: dict[str, str] = {
     # Another task agent that can change files, opened beside the ones a
     # project has (``OPEN_SESSION``).
     "open_session": "first_ask",
+    # Another member opened in a project without a leader, for work that waits
+    # for a busy one and is about something else (``OPEN_BESIDE``).
+    "open_beside": "first_ask",
 }
 DEFAULT_MODES = dict.fromkeys(AUTO_POLICY, "auto")
 
@@ -121,6 +124,12 @@ DENIED_NO_ANSWER = "permission denied: the request for approval could not be ans
 # change files. Asked first by default; "always" allows it from then on, and
 # with ``deny`` none is opened. One that reads only is not asked about.
 OPEN_SESSION = "open_session"
+
+# In a project without a leader, work that waits for a busy member and is about
+# something else is done by another member opened beside it, in a git worktree
+# of its own (``TaskAgentManager._beside``). A category of its own (the owner,
+# 2026-11-25): allowed for good, it allows that alone, and not what a leader opens.
+OPEN_BESIDE = "open_beside"
 
 # Not a category of the settings: asked each time it comes up, whatever the
 # settings say of the browser (``PermissionGate.ask_each_time``).

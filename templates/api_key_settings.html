@@ -238,25 +238,30 @@
                                 style="max-width: 600px; width: 100%;">
                             <em data-i18n="api.mimoTokenPlanKeyHint" style="font-weight: normal; color: #888; font-size: 0.85em;">启用 Token Plan 时只使用此 Key，不使用普通 MiMo API Key</em>
                         </div>
-                        <!-- 百炼业务空间 ID：决策模型用 qwen / qwen_intl 时显示（见 updateBailianWorkspaceControls） -->
+                        <!-- 百炼 API Host（业务空间专属域名）：决策模型用 qwen / qwen_intl 时显示（见 updateBailianWorkspaceControls） -->
                         <div id="bailianWorkspaceRow" class="field-row" style="display: none;">
                             <label for="bailianWorkspaceIdInput">
-                                <span data-i18n="api.bailianWorkspaceIdLabel">百炼业务空间 ID（决策模型）</span>
+                                <span data-i18n="api.bailianWorkspaceIdLabel">百炼 API Host（决策模型）</span>
                             </label>
                             <input type="text" id="bailianWorkspaceIdInput"
                                 data-i18n-placeholder="api.bailianWorkspaceIdPlaceholder"
-                                placeholder="例如 llm-xxxxxxxx" value="" maxlength="200"
+                                placeholder="例如 ws-xxxxxxxxxxxxxxxx.cn-beijing.maas.aliyuncs.com" value="" maxlength="512"
                                 autocomplete="off" spellcheck="false"
-                                aria-describedby="bailianWorkspaceIdHint bailianWorkspaceIdError"
+                                aria-describedby="bailianWorkspaceIdHint bailianWorkspaceIdError bailianWorkspaceRegionNote"
                                 style="max-width: 600px; width: 100%;">
                             <em id="bailianWorkspaceIdHint" style="font-weight: normal; color: #888; font-size: 0.85em;">
-                                <span data-i18n="api.bailianWorkspaceIdHint">没填时，决策模型用普通聊天模型代替。业务空间 ID 就是 API Host 最前面那一段（如 llm-xxx），可在百炼控制台「业务空间管理」页或创建 API Key 的弹窗里找到，也可以直接粘贴整个 API Host。</span>
+                                <span data-i18n="api.bailianWorkspaceIdHint">没填时，决策模型用普通聊天模型代替。打开百炼控制台的「业务空间管理」页，复制「API Host」那一列（形如 ws-xxxx.cn-beijing.maas.aliyuncs.com）粘贴到这里；创建 API Key 的弹窗里也有。只填前面的业务空间 ID 也行，地域按 API Key 所在地域。</span>
+                                <a id="bailianWorkspaceConsoleLink" href="https://bailian.console.aliyun.com/cn-beijing/settings/workspace"
+                                    target="_blank" rel="noopener noreferrer"
+                                    data-i18n="api.bailianWorkspaceConsoleLink">打开业务空间管理页</a>
                                 <a id="bailianWorkspaceIdDocLink" href="https://help.aliyun.com/zh/model-studio/regions#h2_migrate_domain"
                                     target="_blank" rel="noopener noreferrer"
                                     data-i18n="api.bailianWorkspaceIdDocLink">查看官方说明</a>
                             </em>
                             <em id="bailianWorkspaceIdError" role="alert" data-i18n="api.bailianWorkspaceIdInvalid"
-                                style="display: none; font-weight: normal; color: #c0392b; font-size: 0.85em;">百炼业务空间 ID 格式不对：只能包含字母、数字和 -，最长 63 个字符</em>
+                                style="display: none; font-weight: normal; color: #c0392b; font-size: 0.85em;">百炼 API Host 格式不对：请粘贴控制台里的 API Host（如 ws-xxxx.cn-beijing.maas.aliyuncs.com），或只填业务空间 ID</em>
+                            <em id="bailianWorkspaceRegionNote" role="status"
+                                style="display: none; font-weight: normal; color: #b9770e; font-size: 0.85em;"></em>
                         </div>
                         <div class="field-row" style="margin-top: 10px;">
                             <label class="disable-tts-toggle">
@@ -1041,7 +1046,7 @@
 
     <!-- Independent revision forces existing clients off the previously cached
          API-key settings script after a settings-display behavior change. -->
-    <script src="/static/js/api_key_settings.js?v={{ static_asset_version }}-api-key-mask-v9"></script>
+    <script src="/static/js/api_key_settings.js?v={{ static_asset_version }}-api-key-mask-v10"></script>
 
 
     <script src="/static/tutorial/core/guide-helpers.js?v={{ static_asset_version }}"></script>

@@ -258,6 +258,38 @@ characters makes four. Set where
 ten scenarios and four sentences of the measurements fall apart: those that
 go on with a member's work share four to eight, the others none or one."""
 
+BESIDE_ANSWER_WORDS_MAX = 2
+"""Most words of its own a sentence may say, beside a yes or a no, and be
+taken for the answer to whether another member is to do a queued commission
+(``decision._says_more_than_an_answer``): what says yes or no, what says it
+answers, what speaks of the choice itself (``BESIDE_ANSWER_WORD_PATTERNS``)
+and the question's own words are not counted. One that says more, or adds
+something ("also", "by the way"), is new work that says a yes or a no in passing,
+and is dispatched as such. Owner, 2026-11-25: "three and more" is new work.
+Measured with ``tests/unit/nekopower/fixtures/beside_answer_sentences.json``:
+of 40 requests written by a model that did not know the rule, none is taken
+for an answer (32 were before this was counted); of its 39 answers, 14 are
+taken for new work (3 of them say no yes or no at all, and were before). Of
+the 17 requests written beside the rule, 3 short ones are taken for answers
+(17 were before). With none allowed, 23 of the 39 answers would be new work;
+with three allowed, 7 of the 17 requests would be answers."""
+
+ORCHESTRATOR_APART_MIN_WORDS = 4
+"""A sentence is told to be about something else than what a member works
+on only when it says this many words of its own (as the retrieval counts
+them, the project's name left out) and shares fewer than
+``ORCHESTRATOR_MIN_HITS`` of them with that member's card, what it did lately
+and what it is at. One that says less ("do that for the tables too") names
+nothing by itself and goes on with what was said before. Set on the 38
+sentences of ``tests/unit/nekopower/fixtures/beside_scenarios.json``: with
+four, none of the twenty that go on with the member's work is told apart and
+none of the eighteen that are about something else is missed; with three,
+three of the twenty are told apart. (Those sentences were written by whoever
+set this. On 48 written afterwards by a model that did not know the rule, 10
+of the 24 that go on with the member's work were told apart; with sentences
+that point back or add to something left out as well, 5 of them are, and 2
+of the eighteen above are missed: ``orchestrator.apart_from``.)"""
+
 LEADER_AT_MEMBERS = 3
 """A project gets a leader when this many task agents would be its members,
 those that take no more work counted: the third is the leader's to start.
@@ -821,6 +853,16 @@ the places of all task agents only."""
 TASK_AGENT_FORK_PENDING_QUESTION_MAX_TOKENS = 300
 """How much of the question a project's session waits for the user to answer
 the message that opens a copy of it says (``TASK_AGENT_COPY_SESSION_WAITS``)."""
+
+BESIDE_JUDGE_OUTPUT_MAX_TOKENS = 64
+"""What the small model may write when it is asked whether a commission goes on
+with what a busy member is at (``LexicalDecisionModel.goes_on_with``): one
+line of JSON, with room to spare."""
+
+BESIDE_JUDGE_AT_HAND_MAX_TOKENS = 400
+"""How much of what the busy member is at the small model is shown
+(``LexicalDecisionModel.goes_on_with``): more than that, and it is not asked,
+the commission waiting for the member as it would have."""
 
 SIDE_QUESTION_OUTPUT_MAX_TOKENS = 64
 """What the small model may write when it is asked whether a commission is a

@@ -296,6 +296,11 @@ class NekoPowerHost:
         judge = getattr(decision, "side_question", None)
         if judge is not None:
             self.task_agents.set_side_question_judge(judge)
+        # Whether work told apart from what a busy member is at goes on with it all
+        # the same, before another member is opened for it: one request of the small model.
+        beside = getattr(decision, "goes_on_with", None)
+        if beside is not None:
+            self.task_agents.set_beside_judge(beside)
         # Where a new commission belongs, when its words neither name nor
         # clearly match what is there: one request of the small model.
         belongs = getattr(decision, "belongs", None)
@@ -1648,8 +1653,8 @@ class NekoPowerHost:
     async def landing_settings(self) -> dict[str, Any]:
         """Return what the user set about landing, with how many git worktrees a project may have.
 
-        ``{"mode": "auto" | "ask", "inspect": bool, "worktrees_per_project": int}``
-        (``landing_settings.py``). The last is no setting of the user's:
+        ``{"mode": "auto" | "ask", "inspect": bool, "beside": "ask" | "open" | "queue",
+        "worktrees_per_project": int}`` (``landing_settings.py``). The last is no setting of the user's:
         it is for a page to say when a project has as many as it may
         (those the user sees to personally count, ``worktrees()`` lists
         them), which is when its next task agent works in the project's
@@ -1659,19 +1664,26 @@ class NekoPowerHost:
 
         return {**await self.task_agents.landing.get(), "worktrees_per_project": WORKTREES_PER_PROJECT}
 
-    async def set_landing_settings(self, *, mode: Any = None, inspect: Any = None) -> dict[str, Any]:
+    async def set_landing_settings(
+        self, *, mode: Any = None, inspect: Any = None, beside: Any = None
+    ) -> dict[str, Any]:
         """Set what is given of the landing settings and return them as they stand.
 
         ``mode``: ``auto`` (what a task agent changed in its git
         worktree is merged into the project's directory when its
         commission is done) or ``ask`` (it waits there for the user to
         say so); ``inspect``: whether an inspector looks at what was
-        changed before every landing. Raises ``ValueError("bad_mode")``
-        or ``ValueError("bad_inspect")``.
+        changed before every landing; ``beside``: what becomes of work
+        that waits for a member busy with something else, in a project
+        without a leader: ``ask`` (the user is asked whether another
+        member is to do it in a git worktree of its own), ``open``
+        (another does, with nobody asked) or ``queue`` (it waits).
+        Raises ``ValueError("bad_mode")``, ``ValueError("bad_inspect")``
+        or ``ValueError("bad_beside")``.
         """
         from config.nekopower_settings import WORKTREES_PER_PROJECT
 
-        stands = await self.task_agents.landing.put(mode=mode, inspect=inspect)
+        stands = await self.task_agents.landing.put(mode=mode, inspect=inspect, beside=beside)
         return {**stands, "worktrees_per_project": WORKTREES_PER_PROJECT}
 
     async def derive_leader(self, project: str, lanlan_name: str) -> dict[str, Any]:

@@ -907,6 +907,7 @@ def test_every_prompt_table_sent_to_a_model_is_under_that_check():
         "TURN_CHECK_PROMPT",
         "PLUGIN_SHORT_DESCRIPTION_SYSTEM_PROMPT",
         "TASK_BRAIN_SIDE_QUESTION_PROMPT",
+        "TASK_BRAIN_BESIDE_PROMPT",
         "ORCHESTRATOR_PROMPT",
     }
 
@@ -933,6 +934,13 @@ def test_the_side_question_prompt_opens_as_the_analyzers_did():
     from config.prompts.prompts_nekopower_brain import TASK_BRAIN_SIDE_QUESTION_PROMPT
 
     assert "automation assessment agent" in TASK_BRAIN_SIDE_QUESTION_PROMPT.splitlines()[0]
+
+
+def test_the_prompt_of_whether_work_goes_on_with_a_busy_member_opens_as_the_analyzers_did():
+    # One text for every language, like the side question's, on the same small model.
+    from config.prompts.prompts_nekopower_brain import TASK_BRAIN_BESIDE_PROMPT
+
+    assert "automation assessment agent" in TASK_BRAIN_BESIDE_PROMPT.splitlines()[0]
 
 
 @pytest.mark.parametrize(
