@@ -1293,23 +1293,46 @@ async def transcribe_pcm16_locally(
         )
 
     skip = threading.Event()
+    handoff_lock = threading.Lock()
+    started = False
+    returned = False
+
+    def give_back() -> None:
+        # Exactly once: from the decoder after it ran (or skipped) the call,
+        # or from the caller when it stopped waiting before the decoder
+        # reached the call, so a backlog of abandoned calls never holds the
+        # process-wide decode slots that realtime sessions also need.
+        nonlocal returned
+        with handoff_lock:
+            if returned:
+                return
+            returned = True
+        pool.release_decode()
+        pool.release(spec)
 
     def decode() -> str:
+        nonlocal started
+        with handoff_lock:
+            skipped = skip.is_set()
+            started = not skipped
         try:
-            if skip.is_set():
+            if skipped:
                 return ""
             return _transcribe_pcm16(model, pcm16, whisper_language, initial_prompt)
         finally:
-            # The decoder runs every submitted call (see _DaemonSerialExecutor),
-            # so slot and lease are always given back here exactly once.
-            pool.release_decode()
-            pool.release(spec)
+            give_back()
+
+    def stop_waiting() -> None:
+        with handoff_lock:
+            skip.set()
+            reached_decoder = started
+        if not reached_decoder:
+            give_back()
 
     try:
         concurrent_future = pool.decoder_executor().submit(decode)
     except BaseException:
-        pool.release_decode()
-        pool.release(spec)
+        give_back()
         raise
     decode_future = asyncio.wrap_future(concurrent_future)
     decode_future.add_done_callback(_consume_decode_outcome)
@@ -1319,14 +1342,14 @@ async def transcribe_pcm16_locally(
             # is skipped cheaply once the caller stops waiting.
             return await asyncio.shield(decode_future)
     except TimeoutError as exc:
-        skip.set()
+        stop_waiting()
         raise AsrRequestFailure(
             "ASR_LOCAL_TRANSCRIBE_TIMEOUT",
             "faster-whisper transcription timed out",
             kind="timeout",
         ) from exc
     except asyncio.CancelledError:
-        skip.set()
+        stop_waiting()
         raise
     except Exception as exc:
         raise AsrRequestFailure(

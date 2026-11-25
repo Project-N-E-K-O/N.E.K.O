@@ -284,6 +284,43 @@ async def test_one_failed_segment_cancels_its_sibling(http_client) -> None:
     assert client.closed
 
 
+class _SlowHttpClient:
+    """Answers every request after a delay, tracking concurrency."""
+
+    def __init__(self, delay: float) -> None:
+        self.delay = delay
+        self.in_flight = 0
+        self.max_in_flight = 0
+        self.calls = 0
+
+    async def post(self, url: str, **kwargs: Any) -> _FakeResponse:
+        self.calls += 1
+        index = self.calls
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        try:
+            await asyncio.sleep(self.delay)
+        finally:
+            self.in_flight -= 1
+        return _FakeResponse({"text": f"s{index}"})
+
+    async def aclose(self) -> None:
+        pass
+
+
+async def test_long_recording_bounds_concurrent_requests(monkeypatch) -> None:
+    client = _SlowHttpClient(delay=0.05)
+    monkeypatch.setattr(offline, "_create_http_client", lambda _timeout: client)
+    # Six 27 s segments, each well within its own budget, but the whole
+    # recording takes about three request rounds: waiting for a slot must not
+    # count against a segment's budget.
+    transcriber = _transcriber("glm", request_timeout_ms=80)
+    text = await transcriber.transcribe(_pcm(6 * 27))
+    assert client.calls == 6
+    assert client.max_in_flight == offline._MAX_CONCURRENT_SEGMENT_REQUESTS
+    assert sorted(text.split(" ")) == [f"s{i}" for i in range(1, 7)]
+
+
 # --------------------------------------------------------------------------
 # OpenAI / xAI native file endpoints
 
@@ -493,6 +530,50 @@ async def test_faster_whisper_load_timeout(monkeypatch, whisper_pool) -> None:
         release.set()
     assert caught.value.code == "ASR_OFFLINE_TIMEOUT"
     assert caught.value.provider_code == "ASR_LOCAL_MODEL_LOAD_TIMEOUT"
+
+
+async def test_faster_whisper_cancelled_queued_call_returns_its_slot(monkeypatch, whisper_pool) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    class _BlockingModel:
+        def transcribe(self, audio: Any, **kwargs: Any):
+            started.set()
+            release.wait(5)
+            segment = SimpleNamespace(text="done", no_speech_prob=0.0, avg_logprob=-0.1)
+            return iter([segment]), SimpleNamespace()
+
+    monkeypatch.setattr(faster_whisper, "_load_whisper_model", lambda spec: _BlockingModel())
+    spec = faster_whisper._model_spec_from_env()
+
+    def call() -> Any:
+        return faster_whisper.transcribe_pcm16_locally(
+            _pcm(1), load_timeout_seconds=5, decode_timeout_seconds=5
+        )
+
+    running = asyncio.create_task(call())
+    try:
+        assert await asyncio.to_thread(started.wait, 5)
+        queued = asyncio.create_task(call())
+        for _ in range(100):
+            if whisper_pool._decode_slots_used == 2:
+                break
+            await asyncio.sleep(0.01)
+        assert whisper_pool._decode_slots_used == 2
+        assert whisper_pool.lease_count(spec) == 2
+        queued.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await queued
+        # Given back at once, not when the running decode finishes.
+        assert whisper_pool._decode_slots_used == 1
+        assert whisper_pool.lease_count(spec) == 1
+    finally:
+        release.set()
+    assert await running == "done"
+    # The skipped call still passes through the decoder; nothing is returned twice.
+    await asyncio.to_thread(whisper_pool.decoder_executor().submit(lambda: None).result, 5)
+    assert whisper_pool._decode_slots_used == 0
+    assert whisper_pool.lease_count(spec) == 0
 
 
 async def test_faster_whisper_decode_failure(monkeypatch, whisper_pool) -> None:

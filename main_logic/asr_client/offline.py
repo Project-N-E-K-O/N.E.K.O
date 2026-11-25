@@ -153,6 +153,10 @@ _AVAILABILITY_CODES: dict[_AsrProviderAvailability, str] = {
 _OPENAI_TRANSCRIPTION_URL = "https://api.openai.com/v1/audio/transcriptions"
 _XAI_TRANSCRIPTION_URL = "https://api.x.ai/v1/stt"
 
+# Segment requests of one recording in flight at once. A voice message needs
+# at most two; a long recording must not open hundreds of provider requests.
+_MAX_CONCURRENT_SEGMENT_REQUESTS = 2
+
 # A realtime session accepts at most one second per ``stream_audio`` call.
 _SESSION_CHUNK_BYTES = PCM16_SAMPLE_RATE_HZ * PCM16_SAMPLE_WIDTH_BYTES
 
@@ -441,12 +445,19 @@ class OfflineAsrTranscriber:
                         provider_code="ASR_GEMINI_SDK_UNAVAILABLE",
                     ) from exc
 
+            slots = asyncio.Semaphore(
+                _MAX_CONCURRENT_SEGMENT_REQUESTS if backend.concurrent else 1
+            )
+
             async def run_segment(segment: bytes) -> str:
                 try:
-                    if not backend.outer_timeout:
-                        return await backend.request(self, segment, language, client)
-                    async with asyncio.timeout(timeout_seconds):
-                        return await backend.request(self, segment, language, client)
+                    # The time budget starts once the segment holds a slot, so
+                    # waiting behind earlier segments never counts against it.
+                    async with slots:
+                        if not backend.outer_timeout:
+                            return await backend.request(self, segment, language, client)
+                        async with asyncio.timeout(timeout_seconds):
+                            return await backend.request(self, segment, language, client)
                 except AsrRequestFailure as exc:
                     raise _failure_error(self.provider_key, exc) from exc
                 except TimeoutError as exc:
