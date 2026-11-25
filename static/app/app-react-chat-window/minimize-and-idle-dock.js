@@ -142,6 +142,13 @@
         shell.classList.add('is-idle-docked');
     }
 
+    // A voice message in progress keeps the chat surface open. Only the
+    // compact minimize button may fold it; recording continues while folded.
+    function isAudioMessageActive() {
+        var shell = I.getShell();
+        return !!(shell && shell.querySelector('.audio-message-composer[data-audio-message-active="true"]'));
+    }
+
     function finishIdleDockMinimize(shell) {
         if (I.isIdleDockPlaygroundBlocked()) {
             I.suspendIdleDockForPlayground();
@@ -1089,6 +1096,9 @@
         // （getIdleDockTarget 的 isLegacyFullMinimizedBall 守卫只能阻止 dock 定位，
         // 阻止不了 setChatSurfaceMode('minimized') 本身）。
         if (I.getCurrentChatSurfaceMode() === 'full' || isLegacyFullMinimizedBall()) return;
+        // setChatSurfaceMode would reject this minimize, but the fallback below
+        // would still force the shell into its minimized look.
+        if (!I.minimized && isAudioMessageActive()) return;
 
         var parkedRestore = I.idleDockParkedRestore;
         I.idleDockParkedRestore = null;
@@ -1520,7 +1530,7 @@
         var nextMinimized = normalized === 'minimized';
         var previousMinimized = previousMode === 'minimized';
         if (nextMinimized && !previousMinimized && transitionOptions.fromCompactMinimizeButton !== true
-                && I.getShell()?.querySelector('.audio-message-composer[data-audio-message-active="true"]')) {
+                && isAudioMessageActive()) {
             return previousMode;
         }
         if (previousMode === normalized) {
