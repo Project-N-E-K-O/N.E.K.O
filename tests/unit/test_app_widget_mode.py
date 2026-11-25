@@ -246,7 +246,13 @@ def _run_first_peek_notice_harness(
     storage_throws: bool = False,
     drop_first_toast: bool = False,
     i18n_echoes_key: bool = False,
+    toast_kind: str = "dom",
 ) -> dict:
+    # toast_kind="dom": the page's own toast (bootstrap-goodbye-and-toasts.js),
+    # marked and rendering into #status-toast-text.
+    # toast_kind="bridge": the desktop shell's IPC bridge, which replaces
+    # window.showStatusToast, carries no page marker and never touches this DOM.
+    assert toast_kind in ("dom", "bridge")
     script = textwrap.dedent(
         f"""
         const fs = require('fs');
@@ -254,6 +260,7 @@ def _run_first_peek_notice_harness(
         const source = fs.readFileSync({json.dumps(str(APP_WIDGET_MODE_PATH))}, 'utf8');
 
         let dropNextToast = {json.dumps(drop_first_toast)};
+        const toastKind = {json.dumps(toast_kind)};
         function load(storage) {{
           const listeners = new Map();
           const notices = [];
@@ -275,6 +282,11 @@ def _run_first_peek_notice_harness(
             }},
             t(key, options) {{ return {json.dumps(i18n_echoes_key)} ? key : 'i18n:' + key; }},
             showStatusToast(message, durationMs) {{
+              if (toastKind === 'bridge') {{
+                // ipcRenderer.send('neko:show-toast', ...): shown in another window.
+                notices.push({{ message, durationMs }});
+                return;
+              }}
               // Mirrors the real toast: a higher-priority notice on screen
               // makes it drop this one without rendering anything.
               if (dropNextToast) {{
@@ -286,6 +298,9 @@ def _run_first_peek_notice_harness(
               notices.push({{ message, durationMs }});
             }},
           }};
+          if (toastKind === 'dom') {{
+            Object.defineProperty(win.showStatusToast, '__nekoDomStatusToast', {{ value: true }});
+          }}
           const context = {{
             window: win,
             document: {{
@@ -408,3 +423,27 @@ def test_first_edge_peek_notice_never_shows_a_raw_i18n_key() -> None:
     message = outcome["firstNotices"][0]["message"]
     assert message != "settings.widgetMode.firstPeekNotice"
     assert "贴边探身" in message
+
+
+def test_first_edge_peek_notice_via_desktop_toast_bridge_shows_once() -> None:
+    # The desktop shell forwards window.showStatusToast to a separate toast
+    # window, so the pet page's #status-toast-text never holds the notice.
+    outcome = _run_first_peek_notice_harness(None, toast_kind="bridge")
+
+    assert outcome["beforeAnchor"] == 0
+    assert outcome["firstNotices"] == [
+        {"message": "i18n:settings.widgetMode.firstPeekNotice", "durationMs": 10000}
+    ]
+    assert outcome["reloadedNotices"] == []
+    assert outcome["stored"] == "1"
+
+
+def test_page_status_toast_is_marked_as_the_dom_implementation() -> None:
+    source = (
+        PROJECT_ROOT / "static" / "app" / "app-ui" / "bootstrap-goodbye-and-toasts.js"
+    ).read_text(encoding="utf-8")
+    marker = "Object.defineProperty(I.showStatusToast, '__nekoDomStatusToast'"
+    assert marker in source
+    assert source.index(marker) < source.index(
+        "window.showStatusToast = I.showStatusToast;"
+    )

@@ -169,7 +169,13 @@
     }
 
     function isStatusToastShowing(message) {
-        if (typeof window.showStatusToast !== 'function') return true;
+        const showStatusToast = window.showStatusToast;
+        if (typeof showStatusToast !== 'function') return true;
+        // Only the page's own DOM toast renders into #status-toast-text. A
+        // replacement (the desktop shell's IPC bridge) shows the notice in
+        // another window, so this page's DOM can never confirm it; treat the
+        // hand-off as shown instead of retrying on every peek.
+        if (showStatusToast.__nekoDomStatusToast !== true) return true;
         try {
             const textEl = document.getElementById('status-toast-text');
             return !!(textEl && textEl.textContent === message);
