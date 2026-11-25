@@ -7353,7 +7353,7 @@
         "retry": "重试"
     },
   "modelWorkshop": {
-    "title": "导入分享模型",
+    "title": "模型工坊",
     "help": "选择从模型市场下载的 .neko-model.zip 包（最大 500 MiB）。支持 Live2D、VRM、MMD；不会创建角色。关闭页面后，已受理任务仍会继续。",
     "fileLabel": "模型包",
     "start": "开始导入",

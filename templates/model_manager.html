@@ -63,28 +63,13 @@
         </div>
 
         {% if model_workshop_enabled | default(false) %}
-        <!-- Main renders this local-only panel together with the N3 router and body guard. -->
-        <details id="model-workshop-panel" class="model-workshop-panel">
-            <!-- Keep the native disclosure while reusing the manager's existing import artwork. -->
-            <summary><img src="/static/icons/import_model_button_icon.png?v=1" alt="" aria-hidden="true" draggable="false"><span data-i18n="modelWorkshop.title"></span></summary>
-            <p data-i18n="modelWorkshop.help"></p>
-            <label for="model-workshop-file" data-i18n="modelWorkshop.fileLabel"></label>
-            <input id="model-workshop-file" data-workshop="file" type="file" accept=".neko-model.zip">
-            <button data-workshop="start" type="button" data-i18n="modelWorkshop.start" disabled></button>
-            <progress data-workshop="progress" aria-labelledby="model-workshop-status" hidden></progress>
-            <p id="model-workshop-status" data-workshop="status" role="status" aria-live="polite"></p>
-            <button data-workshop="cancel" type="button" data-i18n="modelWorkshop.cancel" hidden></button>
-            <button data-workshop="retry" type="button" data-i18n="modelWorkshop.retry" hidden></button>
-            <div data-workshop="result" hidden>
-                <dl>
-                    <dt data-i18n="modelWorkshop.name"></dt><dd data-workshop="display_name"></dd>
-                    <dt data-i18n="modelWorkshop.attribution"></dt><dd data-workshop="attribution"></dd>
-                    <dt data-i18n="modelWorkshop.license"></dt><dd data-workshop="license"></dd>
-                </dl>
-                <p data-i18n="modelWorkshop.unverified"></p>
-            </div>
-            <button data-workshop="view" type="button" data-i18n="modelWorkshop.view" hidden></button>
-        </details>
+        <!-- Reuse the existing import artwork; the original local import stays separate. -->
+        <section id="model-workshop-panel" class="control-group model-workshop-panel">
+            <button id="model-workshop-btn" class="btn btn-primary" data-workshop="start" type="button" data-i18n-title="modelWorkshop.title">
+                <img src="/static/icons/import_model_button_icon.png?v=1" class="import-icon" alt="" aria-hidden="true" draggable="false" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
+                <span class="round-stroke-text" data-i18n="modelWorkshop.title" data-text=""></span>
+            </button>
+        </section>
         {% endif %}
 
         <div class="control-group">

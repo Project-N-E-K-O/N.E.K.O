@@ -7353,7 +7353,7 @@
         "retry": "Reintentar"
     },
   "modelWorkshop": {
-    "title": "Importar modelo compartido",
+    "title": "Taller de modelos",
     "help": "Elige un paquete .neko-model.zip del mercado (máximo 500 MiB). Compatible con Live2D, VRM y MMD; no crea personajes. Las tareas aceptadas continúan al cerrar la página.",
     "fileLabel": "Paquete de modelo",
     "start": "Iniciar importación",

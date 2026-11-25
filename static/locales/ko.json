@@ -7353,7 +7353,7 @@
         "retry": "다시 시도"
     },
   "modelWorkshop": {
-    "title": "공유 모델 가져오기",
+    "title": "모델 공방",
     "help": "모델 마켓의 .neko-model.zip 패키지(최대 500 MiB)를 선택하세요. Live2D, VRM, MMD를 지원하며 캐릭터를 만들지 않습니다. 접수된 작업은 페이지를 닫아도 계속됩니다.",
     "fileLabel": "모델 패키지",
     "start": "가져오기 시작",

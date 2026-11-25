@@ -7353,7 +7353,7 @@
         "retry": "再試行"
     },
   "modelWorkshop": {
-    "title": "共有モデルをインポート",
+    "title": "モデル工房",
     "help": "モデルマーケットの .neko-model.zip（最大 500 MiB）を選択します。Live2D・VRM・MMD に対応し、キャラクターは作成しません。受理済みのタスクはページを閉じても続行します。",
     "fileLabel": "モデルパッケージ",
     "start": "インポート開始",

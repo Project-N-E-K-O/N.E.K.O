@@ -1522,6 +1522,15 @@ async def on_shutdown():
         from services.model_workshop.runtime import close_all as close_model_workshop
         from services.model_workshop.tasks import _drain_sync as drain_model_workshop_io
         workshop_shutdown_cancellation = None
+        # Stop network receivers before releasing the installer's root owner;
+        # a disconnected HTTP caller does not own these accepted background jobs.
+        from main_routers.model_market_router import connected_downloads
+        try:
+            await connected_downloads.close()
+        except asyncio.CancelledError as exc:
+            workshop_shutdown_cancellation = exc
+        except Exception as exc:
+            logger.error("model market download shutdown failed: %s", exc)
         try:
             await drain_model_workshop_io(close_model_workshop)
         except asyncio.CancelledError as exc:

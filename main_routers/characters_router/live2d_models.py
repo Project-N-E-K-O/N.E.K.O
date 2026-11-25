@@ -860,6 +860,15 @@ async def update_catgirl_l2d(name: str, request: Request):
         async with character_config_mutation_lock:
             characters = await _config_manager.aload_characters()
 
+            # Only the in-process market caller supplies this guard. Revalidate
+            # its captured target inside the same lock as the real avatar save;
+            # ordinary HTTP model/parameter edits retain their existing path.
+            market_guard = getattr(request.state, 'model_workshop_guard', None)
+            if market_guard is not None and market_guard(_config_manager, characters):
+                # Only the internal workshop guard can confirm this exact asset
+                # is already active. Ordinary HTTP saves keep their original behavior.
+                return JSONResponse(content={'success': True})
+
             # Ensure the neko configuration exists.
             if '猫娘' not in characters:
                 characters['猫娘'] = {}
@@ -1037,6 +1046,11 @@ async def update_catgirl_l2d(name: str, request: Request):
 
             # Save the configuration.
             await await_retirement(_config_manager.asave_characters(characters))
+            # The connected import distinguishes persistence from a later
+            # runtime-refresh failure; external HTTP callers have no callback.
+            market_saved = getattr(request.state, 'model_workshop_saved', None)
+            if market_saved is not None:
+                market_saved()
         # Telemetry: which avatar type the user actively picks (live2d / vrm / mmd / pngtuber).
         # Complements the startup snapshot, which misses a switch until the next launch.
         try:

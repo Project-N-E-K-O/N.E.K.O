@@ -200,6 +200,49 @@ def real_package(tmp_path, kind):
     return make_native_bundle(tmp_path, kind=kind, entry=entry, files=files)
 
 
+def legacy_import_and_preview(page, url, package, kind):
+    """Keep N3 compatibility/GPU coverage through its still-supported local API.
+
+    The removed manual panel is not recreated for tests. The actual native
+    selectors and their voice restrictions still drive this explicit preview.
+    """
+    token = page.request.get(url + '/api/config/page_config').json()['autostart_csrf_token']
+    accepted = page.request.post(url + '/api/model-market/imports',
+        headers={'Origin': url, 'X-CSRF-Token': token},
+        multipart={'file': {'name': package.name, 'mimeType': 'application/zip', 'buffer': package.read_bytes()}})
+    assert accepted.status == 202, accepted.text()
+    task = accepted.json()['task_id']; deadline = time.monotonic() + 60
+    while True:
+        status = page.request.get(url + '/api/model-market/tasks/' + task).json()
+        if status['phase'] in {'completed', 'failed', 'cancelled'}: break
+        assert time.monotonic() < deadline
+        time.sleep(.02)
+    assert status['phase'] == 'completed', status
+    installed = status['result']
+    # Reopen the actual manager so its catalog includes the compatibility import.
+    # Flipping away/back would start its ordinary remembered-model load, racing
+    # the explicit preview below. Keep the real loader's concurrency guard intact.
+    page.reload()
+    page.wait_for_function("document.querySelector('#model-workshop-panel')?.dataset.mounted === 'true'", timeout=90000)
+    modes = [] if kind == 'live2d' else ['live3d']
+    for mode in modes:
+        page.locator('#model-type-select').select_option(mode, force=True)
+        if page.request.get(url + '/api/characters/catgirl/' + NAME + '/voice_mode_status').json()['is_voice_mode']:
+            return installed
+        page.wait_for_function("mode => document.getElementById(mode === 'live2d' ? 'live2d-model-select-wrapper' : 'vrm-model-select-wrapper').style.display !== 'none'", arg=mode)
+    selector = '#model-select' if kind == 'live2d' else '#vrm-model-select'
+    page.wait_for_function('''data => Array.from(document.querySelector(data.selector).options).some(option =>
+        option.dataset.workshopInstallId === data.installed.install_id
+        || new URL(option.dataset.path || option.dataset.modelPath || option.value, location.href).href
+            === new URL(data.installed.url, location.href).href)''', arg={'selector':selector, 'installed':installed})
+    value = page.evaluate('''data => Array.from(document.querySelector(data.selector).options).find(option =>
+        option.dataset.workshopInstallId === data.installed.install_id
+        || new URL(option.dataset.path || option.dataset.modelPath || option.value, location.href).href
+            === new URL(data.installed.url, location.href).href).value''', {'selector':selector, 'installed':installed})
+    page.locator(selector).select_option(value, force=True)
+    return installed
+
+
 @pytest.mark.parametrize('kind', ['live2d', 'vrm', 'mmd', 'pmd'])
 def test_full_manager_renders_imported_model_and_reopens_saved_binding(full_manager_app, tmp_path, kind):
     from playwright.sync_api import sync_playwright
@@ -223,13 +266,8 @@ def test_full_manager_renders_imported_model_and_reopens_saved_binding(full_mana
             skip = page.locator('#neko-page-tutorial-skip-btn')
             if skip.is_visible():
                 skip.click()
-            page.locator('#model-workshop-panel summary').click()
-            page.locator('[data-workshop="file"]').set_input_files(package)
-            page.locator('[data-workshop="start"]').click()
-            page.wait_for_function("document.querySelector('[data-workshop=view]').hidden === false", timeout=90000)
+            installed = legacy_import_and_preview(page, url, package, kind)
             assert applied == []
-            installed = page.request.get(url + '/api/model-market/installed').json()['items'][0]
-            page.locator('[data-workshop="view"]').click()
             ready = MODEL_READY
             page.wait_for_function(ready, arg={'kind':kind,'url':installed['url']}, timeout=60000)
             page.wait_for_function("!isModelManagerSettingsWaiting() && !document.getElementById('save-position-btn').disabled")
@@ -292,11 +330,7 @@ def test_imported_preview_obeys_existing_audio_mode_lock(full_manager_app, tmp_p
             # neither the page guard nor model-preview receiver is replaced.
             status = page.request.get(url + '/api/characters/catgirl/' + NAME + '/voice_mode_status').json()
             assert status['is_voice_mode'] is True
-            page.locator('#model-workshop-panel summary').click()
-            page.locator('[data-workshop=file]').set_input_files(real_package(tmp_path, kind))
-            page.locator('[data-workshop=start]').click()
-            page.wait_for_function("!document.querySelector('[data-workshop=view]').hidden", timeout=60000)
-            page.locator('[data-workshop=view]').click()
+            legacy_import_and_preview(page, url, real_package(tmp_path, kind), kind)
             page.wait_for_function("document.querySelector('#status-text')?.textContent === window.t('live2d.cannotChangeModelInVoiceMode')")
             assert page.evaluate('window.live2dManager._lastLoadedModelPath') == '/static/mao_pro/mao_pro.model3.json'
             assert cfg.load_characters()['猫娘'][NAME]['_reserved']['avatar']['asset_source'] == 'builtin'

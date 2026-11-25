@@ -1,83 +1,3 @@
-/* The workshop inherits the existing manager artwork and popup tokens only;
-   its selectors never restyle legacy upload/save controls or lock the manager. */
-.model-workshop-panel {
-    box-sizing: border-box;
-    width: min(100%, var(--model-manager-control-width));
-    min-width: 0;
-    pointer-events: auto;
-    border: 1px solid transparent;
-    border-radius: var(--button-border-radius);
-    color: var(--neko-popup-text, #333);
-    font-size: 13px;
-    line-height: 1.65;
-    overflow-wrap: anywhere;
-}
-.model-workshop-panel[open] {
-    padding: 12px;
-    border-color: var(--neko-popup-accent-border);
-    background: var(--neko-popup-bg);
-    box-shadow: var(--neko-popup-shadow);
-}
-.model-workshop-panel summary {
-    box-sizing: border-box;
-    min-height: 50px;
-    padding: 8px 12px;
-    border-radius: var(--button-border-radius);
-    background: url('/static/icons/bar_bg_2.png') center / 100% 100% no-repeat;
-    color: var(--neko-popup-active);
-    cursor: pointer;
-    font-size: 15px;
-    font-weight: 700;
-    line-height: 30px;
-    list-style-position: inside;
-}
-.model-workshop-panel[open] summary { margin: -12px -12px 12px; }
-.model-workshop-panel summary img { width: 28px; height: 28px; margin-right: 5px; vertical-align: middle; pointer-events: none; }
-.model-workshop-panel p, .model-workshop-panel dl { margin: 10px 0; }
-.model-workshop-panel > p, .model-workshop-panel [data-workshop="result"] > p { color: var(--neko-popup-text-sub); }
-.model-workshop-panel label { display: block; margin-top: 12px; font-weight: 700; }
-.model-workshop-panel input, .model-workshop-panel progress { width: 100%; min-width: 0; box-sizing: border-box; }
-.model-workshop-panel input[type="file"] { margin: 6px 0; padding: 3px 0; color: var(--neko-popup-text-sub); font: inherit; font-size: 12px; }
-.model-workshop-panel input::file-selector-button {
-    min-height: 34px;
-    margin-right: 6px;
-    padding: 6px 10px;
-    border: 1px solid var(--neko-popup-accent-border);
-    border-radius: var(--button-border-radius);
-    background: var(--neko-popup-accent-bg);
-    color: var(--neko-popup-active);
-    cursor: pointer;
-    font: inherit;
-}
-.model-workshop-panel button {
-    width: 100%;
-    min-height: 38px;
-    margin: 5px 0;
-    padding: 7px 12px;
-    border: 1px solid var(--neko-popup-accent-border);
-    border-radius: var(--button-border-radius);
-    background: var(--neko-popup-accent-bg);
-    color: var(--neko-popup-active);
-    font: inherit;
-    font-weight: 700;
-    cursor: pointer;
-    overflow-wrap: anywhere;
-}
-.model-workshop-panel button[data-workshop="start"], .model-workshop-panel button[data-workshop="view"] { background: #44b7fe; color: #fff; }
-.model-workshop-panel button:hover:not(:disabled), .model-workshop-panel input::file-selector-button:hover { filter: brightness(0.96); }
-.model-workshop-panel button:disabled { opacity: 0.5; cursor: not-allowed; }
-.model-workshop-panel progress { height: 8px; margin: 10px 0 0; accent-color: #44b7fe; }
-.model-workshop-panel dt { font-weight: 700; color: var(--neko-popup-active); }
-.model-workshop-panel dd { margin: 0 0 8px; white-space: pre-wrap; }
-.model-workshop-panel [data-workshop="result"] { padding-top: 8px; border-top: 1px solid var(--neko-popup-separator); }
-.model-workshop-panel [hidden] { display: none !important; }
-/* Match the existing blue manager glass in dark mode; shared text tokens supply contrast. */
-[data-theme="dark"] .model-workshop-panel summary {
-    background-image: linear-gradient(180deg, rgba(29, 58, 77, 0.65), rgba(37, 37, 37, 0.55)), url('/static/icons/bar_bg_2.png');
-    background-color: var(--neko-popup-accent-bg);
-    color: var(--neko-popup-text);
-}
-
 /* 定义本地字体 */
 @font-face {
     font-family: 'Comic Neue';
@@ -557,7 +477,8 @@ body.model-manager-page #pngtuber-container .pngtuber-image {
 }
 
 /* 导入模型按钮样式（参考返回主页按钮模式） */
-#upload-btn {
+#upload-btn,
+#model-workshop-btn {
     background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
     background-color: transparent !important;
     border: none !important;
@@ -581,7 +502,8 @@ body.model-manager-page #pngtuber-container .pngtuber-image {
     transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease !important;
 }
 
-#upload-btn .import-icon {
+#upload-btn .import-icon,
+#model-workshop-btn .import-icon {
     display: block !important;
     position: absolute;
     left: 10px;
@@ -632,7 +554,8 @@ body.model-manager-page #pngtuber-container .pngtuber-image {
     display: flex;
 }
 
-#upload-btn:hover:not(:disabled) {
+#upload-btn:hover:not(:disabled),
+#model-workshop-btn:hover:not(:disabled) {
     background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
     background-color: transparent;
     opacity: 0.9;
@@ -640,7 +563,8 @@ body.model-manager-page #pngtuber-container .pngtuber-image {
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1) !important;
 }
 
-#upload-btn:active:not(:disabled) {
+#upload-btn:active:not(:disabled),
+#model-workshop-btn:active:not(:disabled) {
     background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
     background-color: transparent !important;
     transform: translateY(1px) scale(0.98) !important;
@@ -3569,6 +3493,7 @@ input:checked + .toggle-slider:before {
 /* 所有语言共用同一套宽度，避免翻译文本改变按钮尺寸 */
 #backToMainBtn,
 #upload-btn,
+#model-workshop-btn,
 #model-type-select-btn,
 #live2d-model-select-btn,
 #motion-select-btn,
@@ -3590,6 +3515,7 @@ input:checked + .toggle-slider:before {
 
 #backToMainBtn,
 #upload-btn,
+#model-workshop-btn,
 #model-type-select-btn,
 #live2d-model-select-btn,
 #motion-select-btn,
@@ -3730,6 +3656,7 @@ input:checked + .toggle-slider:before {
 
 #backToMainBtn span:not(.dropdown-arrow),
 #upload-btn span:not(.dropdown-arrow),
+#model-workshop-btn span:not(.dropdown-arrow),
 #model-type-select-btn span:not(.dropdown-arrow),
 #live2d-model-select-btn span:not(.dropdown-arrow),
 #motion-select-btn span:not(.dropdown-arrow),
