@@ -372,6 +372,54 @@ async def test_stopped_while_the_user_is_asked_it_is_over_and_nothing_is_made(ho
     assert scripts["broken links"].requests == [] and host.task_agents._handing_back_to == {}
 
 
+async def test_what_is_said_to_one_that_was_stopped_is_not_taken_while_what_was_asked_is_still_taken_back(hosts, tmp_path):
+    host, _trees, _workdir, _one, _scripts, _seen = await _busy(hosts, tmp_path, _links())
+    manager = host.task_agents
+    two = await _dispatch(host, APART)
+    await _asked(host, two.commission_id)
+    # Held where what was asked is taken back: at the move back among the queued, which a stopped one is refused.
+    go, taking_back, transition = asyncio.Event(), asyncio.Event(), host.ledger.transition
+
+    async def held(commission_id: str, status: str, **values: Any) -> Any:
+        if commission_id == two.commission_id and status == "queued":
+            taking_back.set()
+            await go.wait()
+        return await transition(commission_id, status, **values)
+
+    host.ledger.transition = held
+    await host.abort(two.commission_id)
+    await wait_until(taking_back.is_set, what="what was asked being taken back")
+    assert two.commission_id in manager._asking_beside
+
+    # Over: nothing is given to it any more, and nothing is kept for it.
+    assert not await host.tell(two.commission_id, "use relative links only")
+    assert two.commission_id not in manager._notes
+    go.set()
+    await _settled(host)
+    host.release.set()
+
+
+async def test_another_member_works_where_the_commission_would_have_been_worked_on_had_it_waited(hosts, tmp_path):
+    host, _trees, workdir, one, scripts, _seen = await _busy(hosts, tmp_path, _links())
+    main = await _session_of(host, one.commission_id)
+    # As one that was a session of its own before it became the project's: it keeps the directory it had,
+    # and what waits for it is worked on there.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    await host.ledger.update_session(main.id, workdir=str(elsewhere))
+    await host.set_landing_settings(beside="open")
+
+    two = await _dispatch(host, APART)
+    await wait_until(lambda: len(scripts["broken links"].requests) >= 1, what="the other member being at work")
+
+    # In a worktree of that directory, to be landed there: who does it changed, not where it lands.
+    other = await _session_of(host, two.commission_id)
+    (tree,) = await host.ledger.trees()
+    assert other.id != main.id and other.workdir == str(elsewhere) != str(workdir)
+    assert (tree.session_id, tree.project_dir) == (other.id, str(elsewhere))
+    host.release.set()
+
+
 async def test_what_is_said_to_it_while_the_user_is_asked_goes_along_with_the_work(hosts, tmp_path):
     host, _trees, _workdir, _one, scripts, _seen = await _busy(hosts, tmp_path, _links([*_report("links repaired")]))
     two = await _dispatch(host, APART)
@@ -773,6 +821,12 @@ async def test_what_a_member_is_at_is_read_whole_however_many_commissions_ended_
     main = await _session_of(host, one.commission_id)
     # Of each session the latest commission only is read for what it did: one that ended after the one it is at began.
     monkeypatch.setattr(settings, "ORCHESTRATOR_COMMISSIONS_EACH", 1)
+    # One that waits for it, with words of the user's that her dispatch does not have; and one that ended after both.
+    waiting, _created = await host.ledger.create(
+        lanlan_name="Lan", title="banner", dispatch_text="redo the banner", user_text="paint the banner teal please",
+        source="dispatch", project="Shop site", lang="en",
+    )
+    await host.ledger.update(waiting.id, session_id=main.id)
     later, _created = await host.ledger.create(
         lanlan_name="Lan", title="tidy the readme", dispatch_text="tidy the readme", source="dispatch",
         project="Shop site", lang="en",
@@ -787,8 +841,10 @@ async def test_what_a_member_is_at_is_read_whole_however_many_commissions_ended_
 
     member = standing.agent(main.id)
     assert [done.title for done in member.done] == ["tidy the readme"]
-    # What it is at is among what a sentence is held against, though it is not among the latest read.
+    # What it is at is among what a sentence is held against, though it is not among the latest read:
+    # the title, what she dispatched and what the user said, of each commission under way in it.
     assert FIRST in member.at_hand
+    assert {"banner", "redo the banner", "paint the banner teal please"} <= set(member.at_hand)
     host.release.set()
 
 

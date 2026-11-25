@@ -115,7 +115,8 @@ class Agent:
     # Looked at for a member of a project that has a leader only: what goes on with the work of
     # one that cannot is the leader's to hand out, since it may be something that member cannot do.
     changes_files: bool = True
-    # What it is at this moment, or is to do next: the words of the commissions under way in it.
+    # What it is at this moment, or is to do next: the words of the commissions under way in it
+    # (their titles, what she dispatched and what the user said).
     # Looked at only for whether a sentence is about something else than its work (``apart_from``).
     at_hand: tuple[str, ...] = ()
 

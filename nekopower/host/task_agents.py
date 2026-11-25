@@ -6588,10 +6588,12 @@ class TaskAgentManager(TreeWork):
             return True
         if session is not None and self._runtime_of(session) is not None and session.awaiting_prompt:
             return await self.answer(commission_id, text)
-        if commission_id in self._asking_beside:
+        if commission_id in self._asking_beside and commission.status == "waiting_user":
             # Not started yet, the user being asked whether another member is to do it: this
             # is no answer to that (which is a choice), and goes along with the work when it
-            # is given, as what is said to any commission that is queued.
+            # is given, as what is said to any commission that is queued. (Only while it
+            # waits so: one stopped a moment ago, whose question is still being taken back,
+            # is over, and takes nothing.)
             self._notes.setdefault(commission_id, []).append(text)
             await self._ledger.append_event(commission_id, "told", {"text": text, "queued": True})
             return True
@@ -10717,20 +10719,26 @@ class TaskAgentManager(TreeWork):
             async with self.families.placing:
                 if await self._ledger.lead_session(commission.lanlan_name, kept.project) is not None:
                     return
-                if await self._permissions.forbidden(OPEN_SESSION) or not await room(commission, kept):
-                    # (Forbidden since it was looked at, where nobody is asked: a ``deny`` set while the
-                    # user is asked is seen to by the gate.)
+                if not await room(commission, kept):
                     return
-                if not waits():
-                    # (A session that came free meanwhile takes it, as it would have.)
+                name = await self._ledger.member_name(
+                    commission.lanlan_name, str(kept.project), f"{kept.project}/{model_name(WORKING_PRESET)}"
+                )
+                # Looked at last, with nothing but the making itself awaited after: forbidden since it
+                # was looked at (where nobody is asked: a ``deny`` set while the user is asked is seen
+                # to by the gate), or no longer waiting (a session that came free meanwhile takes it,
+                # as it would have).
+                if await self._permissions.forbidden(OPEN_SESSION) or not waits():
                     return
                 member = await self._ledger.create_session(
-                    name=await self._ledger.member_name(
-                        commission.lanlan_name, str(kept.project), f"{kept.project}/{model_name(WORKING_PRESET)}"
-                    ),
+                    name=name,
                     lanlan_name=commission.lanlan_name,
                     kind="line",
                     project=kept.project,
+                    # Where the commission would have been worked on had it waited (``_start``): the
+                    # busy member's directory, which is its project's but for a member that was a
+                    # session of its own before it became the project's, and kept the one it had.
+                    # Another member changes who does it and when, not where what it changes lands.
                     workdir=kept.workdir or commission.workdir,
                     preset=WORKING_PRESET,
                     duty=commission.title,
