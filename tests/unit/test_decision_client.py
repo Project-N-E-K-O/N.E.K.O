@@ -2117,6 +2117,10 @@ def test_core_api_save_validates_workspace_hosts(clean_user_data_dir, _core_conf
         assert saved["assistWorkspaceHostQwen"] == full
         assert saved["assistWorkspaceHostQwenIntl"] == ""
         got = asyncio.run(router.get_core_config_api())
+    # A full host sent under the legacy name is saved as sent, even with the same ID.
+    same_id_other_region = "ws-full.cn-beijing.maas.aliyuncs.com"
+    assert _save({"assistWorkspaceIdQwen": same_id_other_region})["success"] is True
+    assert cm.load_json_config("core_config.json", {})["assistWorkspaceHostQwen"] == same_id_other_region
     # A different ID typed there replaces it; clearing it there clears it.
     assert _save({"assistWorkspaceIdQwen": "ws-other"})["success"] is True
     assert cm.load_json_config("core_config.json", {})["assistWorkspaceHostQwen"] == "ws-other"

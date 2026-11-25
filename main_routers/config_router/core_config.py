@@ -699,10 +699,12 @@ async def update_core_config(request: Request):
                     "field": submitted_field,
                 }
             if submitted_field == legacy_field:
-                # An old page only knows the ID: the same ID it was given keeps the
-                # saved full host (and its region) instead of replacing it.
+                # An old page only knows the ID: the same bare ID it was given keeps
+                # the saved full host (and its region) instead of replacing it. A full
+                # host sent under the legacy name is saved as sent; it never equals a
+                # bare ID, so its region is not dropped.
                 current = stored_workspace_host(core_cfg, field, legacy_field)
-                if submitted and workspace_id_of(submitted) == workspace_id_of(current):
+                if submitted and submitted == workspace_id_of(current):
                     submitted = current
             core_cfg[field] = submitted
             # The host field replaces the legacy one, which would otherwise come back once it is cleared.
