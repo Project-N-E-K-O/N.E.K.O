@@ -155,6 +155,10 @@ SHUTDOWN_MODULE_ORDER = (
 MERGED_SERVER_READY_TIMEOUT = 30.0
 MERGED_SERVER_READY_POLL_INTERVAL = 0.25
 MERGED_SERVER_SHUTDOWN_ORDER = ("Main", "Memory", "Agent")
+# Desktop-owned HTTP work can outlive its connection while the desktop waits
+# for us to exit. Bound transport draining before running application cleanup,
+# within (rather than instead of) each service's shutdown budget.
+MERGED_CONNECTION_DRAIN_TIMEOUT = 1.0
 
 #: Set by ``run_merged_servers`` while the in-process servers are running, so an
 #: owner-death teardown can drive the ordered shutdown instead of hard-exiting
@@ -1253,6 +1257,7 @@ def run_merged_servers() -> int:
     for _app, _port, _name in _apps:
         cfg = uvicorn.Config(
             app=_app, host="127.0.0.1", port=_port,
+            timeout_graceful_shutdown=MERGED_CONNECTION_DRAIN_TIMEOUT,
             log_level="error", **_proxy_kw,
         )
         servers.append(uvicorn.Server(cfg))
@@ -1270,6 +1275,8 @@ def run_merged_servers() -> int:
 
     _exiting = False
     _shutdown_watchdog_started = False
+    _merged_loop = None
+    _shutdown_wakeup = None
 
     def _begin_merged_shutdown(*, reason: str = "signal") -> bool:
         nonlocal _exiting, _shutdown_watchdog_started
@@ -1304,6 +1311,12 @@ def run_merged_servers() -> int:
                 target=_watchdog, daemon=True, name="merged-shutdown-watchdog",
             ).start()
             _shutdown_watchdog_started = True
+        # Owner-death requests may arrive on the monitor thread. Wake the
+        # coordinator even if no server has finished yet, so its ordered
+        # deadlines also cover a stuck first service. Pre-loop requests are
+        # picked up by _serve_all below.
+        if _merged_loop is not None:
+            _merged_loop.call_soon_threadsafe(_shutdown_wakeup.set)
         return True
 
     def _on_exit_signal(_sig, _frame):
@@ -1351,6 +1364,14 @@ def run_merged_servers() -> int:
     _merged_shutdown_request = _begin_merged_shutdown
 
     async def _serve_all() -> None:
+        nonlocal _merged_loop, _shutdown_wakeup
+        _shutdown_wakeup = asyncio.Event()
+        _merged_loop = asyncio.get_running_loop()
+        if _exiting:
+            _shutdown_wakeup.set()
+        shutdown_waiter = asyncio.create_task(
+            _shutdown_wakeup.wait(), name="merged-shutdown-request",
+        )
         # Start all uvicorn.Server instances concurrently.
         tasks = {
             name: asyncio.create_task(
@@ -1390,7 +1411,10 @@ def run_merged_servers() -> int:
 
                 # A single service returning is either an intentional coordinated
                 # shutdown or a topology-wide failure. Never leave two ports alive.
-                await asyncio.wait(tasks.values(), return_when=asyncio.FIRST_COMPLETED)
+                await asyncio.wait(
+                    [*tasks.values(), shutdown_waiter],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
                 if not _exiting:
                     unexpected_exit = _completed_merged_server(tasks) or "unknown server exit"
                     _begin_merged_shutdown(reason="server_exit")
@@ -1406,6 +1430,8 @@ def run_merged_servers() -> int:
             if failures:
                 raise RuntimeError("Merged shutdown failures: " + ", ".join(failures))
         finally:
+            shutdown_waiter.cancel()
+            await asyncio.gather(shutdown_waiter, return_exceptions=True)
             for server in servers:
                 server.should_exit = True
             for task in tasks.values():
@@ -2525,6 +2551,80 @@ def _take_teardown_snapshot_once() -> None:
     _teardown_descendants = _merge_descendant_snapshots(current, _running_descendants)
 
 
+#: How long cleanup_servers waits for a child to acknowledge its shutdown event
+#: before moving on to the bounded waits and escalation that follow. A live
+#: child acknowledges within milliseconds; this only runs out when the child can
+#: no longer answer, and the request itself has been delivered by then.
+SHUTDOWN_REQUEST_ACK_SECONDS = 2.0
+
+_SHUTDOWN_REQUEST_POLL_SECONDS = 0.05
+_SHUTDOWN_REQUEST_EXIT_GRACE_SECONDS = 0.2
+
+
+def _request_server_shutdown(server_name: str, proc, shutdown_evt, timeout: float | None = None) -> bool:
+    """Set a child's shutdown event without letting that child block the launcher.
+
+    ``multiprocessing.Event.set()`` wakes every thread sleeping in ``wait()`` and
+    then waits, with no timeout, for each one to acknowledge. A group-wide signal
+    (Ctrl+Break, a process manager stopping the group) reaches the children at the
+    same instant as the launcher, so a child may already be finalizing its
+    interpreter when we get here: its daemon ``*-shutdown-watch`` thread is still
+    registered as a sleeper but will never run again, and the acknowledgement
+    never comes. Called inline, ``set()`` then hangs the launcher for good, after
+    every server has in fact exited.
+
+    So ``set()`` runs on a daemon thread and this waits for it only until it
+    returns, the child is gone, or the budget runs out. A thread left behind stays
+    parked inside ``set()`` and dies with the launcher; nothing else here touches
+    that event again. Returns True when the request was acknowledged.
+    """
+    if timeout is None:
+        timeout = SHUTDOWN_REQUEST_ACK_SECONDS
+    done = threading.Event()
+    errors: list[Exception] = []
+
+    def _set() -> None:
+        # done is set in finally either way, so anything not caught here only
+        # costs the error message, never the bounded wait below.
+        try:
+            shutdown_evt.set()
+        except Exception as exc:  # reported by the caller's thread below
+            errors.append(exc)
+        finally:
+            done.set()
+
+    try:
+        threading.Thread(target=_set, name="neko-shutdown-request", daemon=True).start()
+    except RuntimeError as exc:
+        _teardown_print(f"[Launcher] {server_name} shutdown request could not be sent: {exc}")
+        return False
+
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    try:
+        while not done.wait(_SHUTDOWN_REQUEST_POLL_SECONDS):
+            if not proc.is_alive():
+                # A child that acknowledged and then exited at once looks the
+                # same from here until our set() thread is scheduled again;
+                # give it a moment so only a real non-answer is reported.
+                done.wait(max(0.0, min(_SHUTDOWN_REQUEST_EXIT_GRACE_SECONDS, deadline - time.monotonic())))
+                break
+            if time.monotonic() >= deadline:
+                break
+    except KeyboardInterrupt:
+        _teardown_print(f"[Launcher] {server_name} shutdown request interrupted, continuing cleanup")
+        return False
+
+    if not done.is_set():
+        _teardown_print(
+            f"[Launcher] {server_name} did not acknowledge the shutdown request; continuing cleanup"
+        )
+        return False
+    if errors:
+        _teardown_print(f"[Launcher] {server_name} shutdown request failed: {errors[0]}")
+        return False
+    return True
+
+
 def cleanup_servers():
     """Clean up all server processes"""
     global _cleanup_done
@@ -2552,7 +2652,10 @@ def cleanup_servers():
                 # First request graceful child exits.
                 if proc.is_alive():
                     if shutdown_evt is not None:
-                        shutdown_evt.set()
+                        # Never inline: set() waits without a timeout for the
+                        # child to acknowledge, and a child already on its way
+                        # out never does.
+                        _request_server_shutdown(server['name'], proc, shutdown_evt)
                     if shutdown_complete_evt is not None:
                         try:
                             shutdown_complete_evt.wait(timeout=graceful_timeout)

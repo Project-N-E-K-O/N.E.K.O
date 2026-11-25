@@ -73,6 +73,7 @@ def hooks(monkeypatch, *, blocked=False, fail_initialization=False):
         "importlib": SimpleNamespace(import_module=lambda _: SimpleNamespace(runtime=SimpleNamespace())),
         "configure_default_executor": lambda *_args, **_kwargs: None, "logger": Mock(),
         "init_shared_state": lambda **_kwargs: None, "set_steamworks_initializer": lambda _: None,
+        "_register_legacy_vision_notice": lambda _: None,
         "os": SimpleNamespace(environ={}), "_start_debug_health_watchdog": lambda: None,
         "_loop_stall_watchdog": object(),
         "get_storage_startup_blocking_reason": lambda _: "selection_required" if blocked else None,

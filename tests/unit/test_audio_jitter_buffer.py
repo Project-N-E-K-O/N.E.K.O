@@ -180,7 +180,13 @@ def test_realtime_workers_guard_interrupt_close_windows():
         end = source.index("continue", start)
         block = source[start:end]
         assert block.index(".begin_interrupt()") < block.index("receive_task.cancel()"), provider
-        assert block.index("receive_task.cancel()") < block.index("ws.close"), provider
+        # The socket closes inline or through the preconnect spare's tracked
+        # close (Grok); either way only after the receiver is cancelled.
+        # Comments are dropped so a commented-out close never counts.
+        code = "\n".join(line.split("#", 1)[0] for line in block.splitlines())
+        closes = [i for i in (code.find("ws.close("), code.find(".close_tracked(ws)")) if i >= 0]
+        assert closes, f"{provider}: the interrupt never closes its socket"
+        assert code.index("receive_task.cancel()") < min(closes), provider
 
     elevenlabs = REALTIME_WORKERS["elevenlabs"].read_text(encoding="utf-8")
     interrupt_start = elevenlabs.index('if sid == "__interrupt__":')
@@ -223,14 +229,19 @@ def test_realtime_workers_flush_tail_before_normal_receiver_cancel():
         source = REALTIME_WORKERS[provider].read_text(encoding="utf-8")
         branch_marker = (
             "is_new_speech = current_speech_id != sid"
-            if provider in {"step", "free"}
+            if provider in {"step", "free", "qwen"}
             else "if current_speech_id != sid:"
         )
         start = source.index(branch_marker)
         end = source.index("receive_task = asyncio.create_task", start)
         block = source[start:end]
+        # Only the flush guarding the normal receiver cancel counts: the
+        # branch may flush elsewhere first (qwen does for a reconnect after
+        # partial audio), which must not satisfy this check.
+        guard = block.index("if receive_task and not receive_task.done():")
+        cancel = block.index("receive_task.cancel()", guard)
         flush_call = "qwen_audio_jitter.flush()" if provider == "qwen" else "audio_jitter.flush()"
-        assert block.index(flush_call) < block.index("receive_task.cancel()"), provider
+        assert flush_call in block[guard:cancel], provider
 
     elevenlabs = REALTIME_WORKERS["elevenlabs"].read_text(encoding="utf-8")
     close_start = elevenlabs.index("async def _close_ws")

@@ -80,7 +80,7 @@
 
 ## 测试里起子进程
 
-- ⚠️ 用 `subprocess` 起 `scripts/check_*.py` 这类守卫脚本时，给子进程设 `PYTHONIOENCODING=utf-8`（现成写法见 `tests/unit/nekoclaw/test_guard_coverage.py` 的 `_GUARD_ENV`），并且断言报告里的文字，不只断言退出码。
+- ⚠️ 用 `subprocess` 起 `scripts/check_*.py` 这类守卫脚本时，给子进程设 `PYTHONIOENCODING=utf-8`（现成写法见 `tests/unit/nekopower/test_guard_coverage.py` 的 `_GUARD_ENV`），并且断言报告里的文字，不只断言退出码。
   - 根因：输出接到管道时，子进程按机器的 ANSI 代码页编码 stdout。CI 的 Windows 机器是 cp1252，守卫脚本的报告里有箭头这类字符，`print` 抛 `UnicodeEncodeError`，进程以退出码 1 结束、stdout 是空的。退出码恰好和「发现违规」一样，只断言退出码的用例会假绿。中文系统的代码页能编码这些字符，所以本机复现不了。
   - 本地复现 CI 的情况：`PYTHONIOENCODING=cp1252 uv run python scripts/check_xxx.py <有违规的目录>`。
   - 这类「本机过、CI 红」先去下载 CI 日志看原文，不要猜。

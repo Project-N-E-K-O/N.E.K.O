@@ -65,7 +65,7 @@
 - 重 SDK 一律「函数内延迟 import + 后台预热」：在首次用到的函数里 import，并登记进 `utils/module_warmup.py`，由服务就绪后的后台线程预先 import。`scripts/check_startup_import_lazy.py`（CI）禁止名单里的模块回到模块顶层。模块顶层的重计算同理（例：大批正则改成首次使用时编译，`tests/unit/test_startup_lazy_directive_patterns.py`）。
 - **插件生命周期（全量元数据扫描加逐个自启动）不在启动链路上。** `plugin/server/http_app.py::build_plugin_server_app(manage_lifecycle=False)` 默认不认领生命周期；嵌在 agent 进程里时由 `user_plugin_enabled` 开关在外部驱动，只有独立入口才传 `True`。⚠️ 这个参数默认值的方向是有意的：反过来错只是「独立服务里插件不自启」，一眼能看出来；这一侧错了，全量扫描回到端口绑定之前，没有任何报错。守护：`plugin/tests/unit/server/test_plugin_lifecycle_ownership.py`。不要再用「import 时读环境变量」来决定这件事，那依赖两处相距很远的代码的先后顺序。
 - 区域探测（`awarmup_region_check`）：主服务和记忆服务在放行请求之前等它（有上限；用自定义 API 的用户不探测、零等待），因为会话一开始路由就定了。agent 进程里它是后台任务，不挡启动。
-- agent 进程启动时只登记 NekoClaw 宿主，不构建任何东西；`mount_nekoclaw_host` 必须没有 I/O。
+- agent 进程启动时只登记 NekoPower 宿主，不构建任何东西；`mount_nekopower_host` 必须没有 I/O。
 - 记忆服务启动：事件日志的对账是**等到完成**的（它必须在 outbox 重放之前，理由见事件日志文档）；outbox 重放只派生任务、不等；其余周期任务靠 `app/memory_server/gates.py` 里错开的 `_INITIAL_DELAY_*` 在启动之后才第一次跑。
 
 往启动路径上加东西之前：

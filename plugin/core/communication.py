@@ -7,14 +7,17 @@ media uplink so large payloads cannot block results, status, or stop commands.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, ClassVar, Dict, Optional, TypeVar
 
-from plugin._types.entry_metadata import entry_contract_fields
+from plugin._types.entry_metadata import MAX_SCHEMA_DEPTH, entry_contract_fields, schema_depth_exceeds
 from plugin._types.exceptions import PluginExecutionError
+from plugin.core.call_registry import CallLink, current_delivery_link
 from plugin.core.rpc import RpcPeer, RpcRemoteError
+from plugin.sdk.shared.permissions.runtime import PERMISSIONS_UPDATE
 from plugin.core.zmq_transport import (
     CH_COMM,
     CH_MSG,
@@ -324,8 +327,9 @@ class PluginCommunicationResourceManager:
         if prefix is None:
             return
         args = request.get("args", {})
-        context = args.get("_ctx", {}) if isinstance(args, dict) else {}
-        run_id = context.get("run_id") if operation == "TRIGGER" and isinstance(context, dict) else None
+        context = args.get("_ctx", {}) if isinstance(args, Mapping) else {}
+        raw_run_id = context.get("run_id") if operation == "TRIGGER" and isinstance(context, Mapping) else None
+        run_id = raw_run_id.strip() if isinstance(raw_run_id, str) and raw_run_id.strip() else None
         await self.transport.send_command({"type": "CANCEL_RUN", "run_id": run_id or f"{prefix}:{request['request_id']}"})
 
     async def _send_command_and_wait_local(self, req_id: str, msg: dict, timeout: float | None, error_context: str) -> Any:
@@ -346,16 +350,58 @@ class PluginCommunicationResourceManager:
         )
 
     async def trigger(self, entry_id: str, args: dict, timeout: float | None = PLUGIN_TRIGGER_TIMEOUT) -> Any:
-        return await self._run_on_owner_loop(self._trigger_local(entry_id, args, timeout))
+        # Read the call site's link on its own loop, then pass it explicitly.
+        return await self._run_on_owner_loop(
+            self._trigger_local(entry_id, args, timeout, call_link=current_delivery_link())
+        )
 
-    async def _trigger_local(self, entry_id: str, args: dict, timeout: float | None = PLUGIN_TRIGGER_TIMEOUT) -> Any:
+    async def _trigger_local(
+        self,
+        entry_id: str,
+        args: dict,
+        timeout: float | None = PLUGIN_TRIGGER_TIMEOUT,
+        *,
+        call_link: CallLink | None = None,
+    ) -> Any:
         req_id = str(uuid.uuid4())
         self.logger.debug(
             "[CommManager] TRIGGER plugin_id={}, entry_id={}, req_id={}",
             self.plugin_id, entry_id, req_id,
         )
         msg = {"type": "TRIGGER", "req_id": req_id, "entry_id": entry_id, "args": args, "timeout": timeout}
-        return await self._send_command_and_wait_local(req_id, msg, timeout, f"entry {entry_id}")
+        return await self._send_delivery(
+            req_id, msg, timeout, f"entry {entry_id}",
+            event_type="plugin_entry", event_id=entry_id, call_link=call_link,
+        )
+
+    async def _send_delivery(
+        self,
+        req_id: str,
+        msg: dict,
+        timeout: float | None,
+        error_context: str,
+        *,
+        event_type: str,
+        event_id: str,
+        call_link: CallLink | None,
+    ) -> Any:
+        """Send one TRIGGER / TRIGGER_CUSTOM, registered for the call chain."""
+        from plugin.server.application.plugins import capability_gate
+
+        record = capability_gate.begin_call(self.plugin_id, req_id, event_type, event_id, call_link)
+        if record is None:
+            return await self._send_command_and_wait_local(req_id, msg, timeout, error_context)
+        # Next to args, never inside them: entry arguments and _ctx are unchanged.
+        msg["_call_chain"] = capability_gate.chain_payload(record)
+        started = time.monotonic()
+        failure: BaseException | None = None
+        try:
+            return await self._send_command_and_wait_local(req_id, msg, timeout, error_context)
+        except BaseException as exc:
+            failure = exc
+            raise
+        finally:
+            capability_gate.end_call(record, capability_gate.result_code(failure), started)
 
     async def trigger_custom_event(
         self,
@@ -365,7 +411,9 @@ class PluginCommunicationResourceManager:
         timeout: float = PLUGIN_TRIGGER_TIMEOUT,
     ) -> Any:
         return await self._run_on_owner_loop(
-            self._trigger_custom_event_local(event_type, event_id, args, timeout)
+            self._trigger_custom_event_local(
+                event_type, event_id, args, timeout, call_link=current_delivery_link()
+            )
         )
 
     async def get_ui_context(self, context_id: str = "main", timeout: float = 5.0) -> Any:
@@ -386,6 +434,8 @@ class PluginCommunicationResourceManager:
         event_id: str,
         args: dict,
         timeout: float = PLUGIN_TRIGGER_TIMEOUT,
+        *,
+        call_link: CallLink | None = None,
     ) -> Any:
         req_id = str(uuid.uuid4())
         self.logger.info(
@@ -400,8 +450,9 @@ class PluginCommunicationResourceManager:
             "args": args,
             "timeout": timeout,
         }
-        return await self._send_command_and_wait_local(
+        return await self._send_delivery(
             req_id, msg, timeout, f"custom event {event_type}.{event_id}",
+            event_type=event_type, event_id=event_id, call_link=call_link,
         )
 
     async def send_freeze_command(self, timeout: float = PLUGIN_TRIGGER_TIMEOUT) -> Dict[str, Any]:
@@ -455,6 +506,20 @@ class PluginCommunicationResourceManager:
             await self.transport.send_command(msg)
         except Exception as e:
             raise RuntimeError(f"Failed to push BUS_CHANGE to plugin {self.plugin_id}: {e}") from e
+
+    async def push_permissions(self, snapshot: Dict[str, Any]) -> None:
+        await self._run_on_owner_loop(self._push_permissions_local(snapshot))
+
+    async def _push_permissions_local(self, snapshot: Dict[str, Any]) -> None:
+        msg = {
+            "type": PERMISSIONS_UPDATE,
+            "revision": snapshot.get("revision"),
+            "states": dict(snapshot.get("states") or {}),
+        }
+        try:
+            await self.transport.send_command(msg)
+        except Exception as e:
+            raise RuntimeError(f"Failed to push PERMISSIONS_UPDATE to plugin {self.plugin_id}: {e}") from e
 
     async def send_stop_command(self, timeout: float = 0.5) -> None:
         await self._run_on_owner_loop(self._send_stop_command_local(timeout))
@@ -729,6 +794,12 @@ class PluginCommunicationResourceManager:
         se = self._shutdown_event
         if se and se.is_set():
             return
+        if msg.get("type") == "MESSAGE_PUSH":
+            # Internal field: never forwarded, whatever either side's setting.
+            parent = msg.pop("_rpc_parent_request_id", None)
+            from plugin.server.application.plugins import capability_gate
+
+            capability_gate.check(self.plugin_id, parent, capability_gate.MESSAGES_PUSH, "MESSAGE_PUSH")
         await self._forward_message(msg)
 
     def _publish_message_to_plane(self, msg: Dict[str, Any]) -> bool:
@@ -921,6 +992,14 @@ class PluginCommunicationResourceManager:
                 if not meta_dict:
                     self.logger.warning("ENTRY_UPDATE register missing meta: {}", msg)
                     return
+                # Same bound the SDK enforces at registration: every later copy
+                # or projection of the schema (GET /plugins, previews) recurses.
+                if schema_depth_exceeds(meta_dict.get("output_schema")):
+                    self.logger.warning(
+                        "ENTRY_UPDATE register rejected: output_schema nests deeper than {} levels: entry_id={}, plugin_id={}",
+                        MAX_SCHEMA_DEPTH, entry_id, plugin_id,
+                    )
+                    return
                 ipc_metadata = {
                     **(meta_dict.get("metadata") if isinstance(meta_dict.get("metadata"), dict) else {}),
                     "_dynamic": True,
@@ -995,12 +1074,16 @@ class PluginCommunicationResourceManager:
 
         Errors are logged but never re-raised — the plugin already
         committed locally, and a transient ``main_server`` outage
-        shouldn't crash the plugin's uplink consumer. The plugin can
-        observe success/failure later via list_tools or by issuing a
-        re-register.
+        shouldn't crash the plugin's uplink consumer. Plugins that need
+        the real outcome use ``register_llm_tool_async``, which goes
+        through the request-response handler in
+        ``plugin/server/messaging/handlers/llm_tools.py`` instead.
         """
         try:
-            from plugin.server.messaging.llm_tool_registry import register_remote_tool
+            from plugin.server.messaging.llm_tool_registry import (
+                parse_register_request,
+                register_remote_tool,
+            )
 
             incoming_pid = msg.get("plugin_id")
             if incoming_pid and incoming_pid != self.plugin_id:
@@ -1010,34 +1093,15 @@ class PluginCommunicationResourceManager:
                 )
                 return
 
-            name = msg.get("name")
-            if not isinstance(name, str) or not name:
-                self.logger.warning("LLM_TOOL_REGISTER missing name: {}", msg)
+            fields = parse_register_request(msg)
+            if fields is None:
+                self.logger.warning("LLM_TOOL_REGISTER missing or invalid name: {}", msg.get("name"))
                 return
 
-            description = msg.get("description") or ""
-            parameters = msg.get("parameters")
-            if not isinstance(parameters, dict):
-                parameters = {"type": "object", "properties": {}}
-            timeout_seconds = msg.get("timeout_seconds")
-            if not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0:
-                timeout_seconds = 30.0
-            role = msg.get("role")
-            if role is not None and not isinstance(role, str):
-                role = None
-
-            await register_remote_tool(
-                plugin_id=self.plugin_id,
-                name=name,
-                description=str(description),
-                parameters=parameters,
-                timeout_seconds=float(timeout_seconds),
-                role=role,
-                **({"reply_tail": True} if msg.get("reply_tail") is True else {}),
-            )
+            await register_remote_tool(plugin_id=self.plugin_id, **fields)
             self.logger.info(
                 "LLM tool registered with main_server: plugin={} name={}",
-                self.plugin_id, name,
+                self.plugin_id, fields["name"],
             )
         except Exception:
             self.logger.exception("Failed to handle LLM_TOOL_REGISTER")
@@ -1045,7 +1109,10 @@ class PluginCommunicationResourceManager:
     async def _handle_llm_tool_unregister(self, msg: Dict[str, Any]) -> None:
         """Handle an LLM_TOOL_UNREGISTER IPC notification from a plugin."""
         try:
-            from plugin.server.messaging.llm_tool_registry import unregister_remote_tool
+            from plugin.server.messaging.llm_tool_registry import (
+                parse_unregister_request,
+                unregister_remote_tool,
+            )
 
             incoming_pid = msg.get("plugin_id")
             if incoming_pid and incoming_pid != self.plugin_id:
@@ -1055,22 +1122,15 @@ class PluginCommunicationResourceManager:
                 )
                 return
 
-            name = msg.get("name")
-            if not isinstance(name, str) or not name:
-                self.logger.warning("LLM_TOOL_UNREGISTER missing name: {}", msg)
+            fields = parse_unregister_request(msg)
+            if fields is None:
+                self.logger.warning("LLM_TOOL_UNREGISTER missing or invalid name: {}", msg.get("name"))
                 return
-            role = msg.get("role")
-            if role is not None and not isinstance(role, str):
-                role = None
 
-            await unregister_remote_tool(
-                plugin_id=self.plugin_id,
-                name=name,
-                role=role,
-            )
+            await unregister_remote_tool(plugin_id=self.plugin_id, **fields)
             self.logger.info(
                 "LLM tool unregistered from main_server: plugin={} name={}",
-                self.plugin_id, name,
+                self.plugin_id, fields["name"],
             )
         except Exception:
             self.logger.exception("Failed to handle LLM_TOOL_UNREGISTER")

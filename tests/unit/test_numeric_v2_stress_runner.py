@@ -231,7 +231,7 @@ async def test_stress_preflight_reports_effective_projection_without_private_tex
     }
     assert result["models"]["scope"] == "preflight_snapshot"
     assert result["models"]["slots"]["conversation"]["model"] == "model-conversation"
-    assert result["models"]["slots"]["summary"]["model"] == "model-summary"
+    assert result["models"]["slots"]["memory"]["model"] == "model-memory"
     assert result["runtime"]["module_options"] == await options()
     assert result["runtime"]["tts"] is False
     assert result["runtime"]["entrypoint"] == "execute_numeric_v2_turn"
@@ -291,7 +291,7 @@ async def test_stress_preflight_async_configuration_failure_does_not_echo_creden
     )
     assert result["models"]["slots"] == {
         slot: {"status": "unavailable", "error_type": "ValueError"}
-        for slot in ("conversation", "summary")
+        for slot in ("conversation", "memory")
     }
     assert "PRIVATE_" not in json.dumps(result, ensure_ascii=False)
 

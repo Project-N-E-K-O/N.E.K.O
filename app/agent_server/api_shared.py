@@ -65,7 +65,11 @@ from ._shared import (  # noqa: F401
     PLUGIN_NAME_CACHE_TTL,
     _get_throttled_logger,
     _bump_state_revision,
+    _put_switch_off,
     _set_capability,
+    _capability_ticket_now,
+    _capability_latest_answer,
+    MODEL_SETUP_REASONS,
     _track_background_task,
     _create_tracked_task,
     _now_iso,
@@ -91,12 +95,11 @@ from .plugin_host import (  # noqa: F401
 from .capabilities import (  # noqa: F401
     _browser_dependency_status,
     _keyboard_mouse_availability,
+    _browser_availability,
     _model_images_status,
-    _probe_lost_a_race,
     _close_browser,
-    _try_refresh_model_probe,
-    _llm_check_lock,
-    _fire_agent_llm_connectivity_check,
+    _refresh_tool_capabilities,
+    _refresh_tool_capabilities_and_tell,
     _agent_flags_snapshot,
     _collect_agent_status_snapshot,
     _emit_agent_status_update,
@@ -105,19 +108,19 @@ from .results import (  # noqa: F401
     _emit_main_event,
     _send_main_event,
 )
-from .nekoclaw_builtins import provider as builtin_provider  # noqa: F401
-from .nekoclaw_mount import (  # noqa: F401
+from .nekopower_builtins import provider as builtin_provider  # noqa: F401
+from .nekopower_mount import (  # noqa: F401
     HUD_ACTIVE,
     hud,
     hud_task,
     ledger_exists,
-    mount_nekoclaw_host,
-    nekoclaw_on,
+    mount_nekopower_host,
+    nekopower_on,
     peek_host,
     ready_host,
     restore_hud,
     send_report,
-    shutdown_nekoclaw_host,
+    shutdown_nekopower_host,
     stop_everything,
 )
 

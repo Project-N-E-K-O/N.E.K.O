@@ -65,8 +65,8 @@ emoji_pattern2 = re.compile("["
 emotion_pattern = re.compile('<(.*?)>')
 
 
-def _turn_to_check(messages: list[dict]) -> tuple[str, str, bool] | None:
-    """Return ``(user_text, reply_text, has_attachments)`` of the latest exchange, or None.
+def _turn_to_check(messages: list[dict]) -> tuple[str, str, bool, str | None] | None:
+    """Return the latest exchange, attachment flag and optional archived input reference.
 
     The latest user message and everything she said after it. None when there
     is no user message or she said nothing in reply: there is nothing to
@@ -89,7 +89,16 @@ def _turn_to_check(messages: list[dict]) -> tuple[str, str, bool] | None:
     )
     if not reply_text.strip():
         return None
-    return user_text, reply_text, bool(user_message.get("attachments"))
+    metadata = user_message.get("metadata")
+    source_ref = None
+    if isinstance(metadata, dict):
+        proof = metadata.get("chat_original_source")
+        record_id = proof.get("recordId") if isinstance(proof, dict) else None
+        if record_id:
+            source_ref = f"chat_original:{record_id}"
+        elif metadata.get(MEMORY_MESSAGE_ID_KEY):
+            source_ref = f"memory_message:{metadata[MEMORY_MESSAGE_ID_KEY]}"
+    return user_text, reply_text, bool(user_message.get("attachments")), source_ref
 
 
 async def _publish_turn_check_with_fallback(lanlan_name: str, trigger: str, messages: list[dict], *, conversation_id: str | None = None, language: str | None = None) -> bool:
@@ -111,7 +120,7 @@ async def _publish_turn_check_with_fallback(lanlan_name: str, trigger: str, mess
         turn = _turn_to_check(messages)
         if turn is None:
             return False
-        user_text, reply_text, has_attachments = turn
+        user_text, reply_text, has_attachments, source_ref = turn
         if not user_text.strip():
             # A turn of images only: nothing in words to hold her reply against.
             return False
@@ -141,6 +150,7 @@ async def _publish_turn_check_with_fallback(lanlan_name: str, trigger: str, mess
             conversation_id=conversation_id,
             external_intent=external_intent,
             language=language,
+            **({"source_message_ref": source_ref} if source_ref else {}),
         )
         if sent:
             logger.debug("[%s] turn check forwarded with ack: trigger=%s", lanlan_name, trigger)

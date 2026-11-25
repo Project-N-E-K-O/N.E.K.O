@@ -139,12 +139,12 @@ Supporting machinery:
   - VMC-protocol pose output to external apps;
   - Steam Workshop sharing for models, voices and character cards.
 - **Agent**:
-  - she hands tasks to NekoClaw: a one-step task calls a plugin directly, and a multi-step task goes to a familiar that can use plugins, MCP tools, computer use and browser use;
+  - she hands tasks to NekoPower: a one-step task calls a plugin directly, and a multi-step task goes to a familiar that can use plugins, MCP tools, computer use and browser use;
   - the companion keeps talking to you while a task runs.
 - **Plugins**:
   - a plugin SDK with a `neko-plugin` CLI and a Vue plugin manager;
   - a plugin market and a knowledge-pack market;
-  - built-in plugins for web search, MCP, music, reminders, WeChat, Minecraft and more.
+  - built-in plugins for web search, MCP, music, reminders, Minecraft and more.
 - **Cloud**: a free hosted route covers realtime voice, text, vision, agent models and TTS, with no key required.
 
 </details>

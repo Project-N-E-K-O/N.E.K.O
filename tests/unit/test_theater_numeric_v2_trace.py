@@ -21,7 +21,6 @@ from utils.llm_client import HumanMessage, SystemMessage
 class Client:
     model = "trace-test-model"
     max_completion_tokens = 300
-    temperature = 0.5
     api_key = "SECRET_AUTH"
 
     def __init__(self, content="原始回复", error=None):

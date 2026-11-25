@@ -34,6 +34,7 @@ function isAvatarFramedSettingsWindowUrl(finalUrl) {
             || finalUrl.startsWith('/api_key')
             || finalUrl.startsWith('/voice_identity')
             || finalUrl.startsWith('/memory_browser')
+            || finalUrl.startsWith('/emote_maker')
         );
 }
 
@@ -398,16 +399,10 @@ function injectPopupStyles(prefix) {
  * 创建弹出框（按 buttonId 区分类型）
  */
 function createPopup(manager, prefix, buttonId) {
-    // 去重守卫：如果同 ID 弹窗已存在，先移除旧的及其侧面板
+    // 幂等守卫：同 ID 弹窗已存在时直接复用，避免销毁按钮闭包引用的原节点及其侧面板
     const existingPopup = document.getElementById(`${prefix}-popup-${buttonId}`);
     if (existingPopup) {
-        const existingId = existingPopup.id;
-        document.querySelectorAll(`[data-neko-sidepanel-owner="${existingId}"]`).forEach(panel => {
-            clearAvatarSidePanelHoverState(panel);
-            panel.remove();
-        });
-        if (existingPopup._hideTimeoutId) { clearTimeout(existingPopup._hideTimeoutId); }
-        existingPopup.remove();
+        return existingPopup;
     }
 
     const popup = document.createElement('div');
@@ -538,7 +533,8 @@ function createSettingsPopupContent(manager, prefix, popup) {
 
     const settingsToggles = [
         { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled', hasInterval: true, intervalKey: 'proactiveChatInterval', defaultInterval: getAvatarPopupDefaultInterval('DEFAULT_PROACTIVE_CHAT_INTERVAL', AVATAR_POPUP_FALLBACK_PROACTIVE_CHAT_INTERVAL), controlStyle: 'slider' },
-        { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '隐私模式', labelKey: 'settings.toggles.proactiveVision', tooltipKey: 'settings.toggles.proactiveVisionTooltip', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: getAvatarPopupDefaultInterval('DEFAULT_PROACTIVE_VISION_INTERVAL', AVATAR_POPUP_FALLBACK_PROACTIVE_VISION_INTERVAL), inverted: true, controlStyle: 'slider' }
+        { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '隐私模式', labelKey: 'settings.toggles.proactiveVision', tooltipKey: 'settings.toggles.proactiveVisionTooltip', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: getAvatarPopupDefaultInterval('DEFAULT_PROACTIVE_VISION_INTERVAL', AVATAR_POPUP_FALLBACK_PROACTIVE_VISION_INTERVAL), inverted: true, controlStyle: 'slider' },
+        { id: 'capture-self-ui-mask', label: window.t ? window.t('settings.toggles.captureSelfUiMask') : '截图遮住聊天记录', labelKey: 'settings.toggles.captureSelfUiMask', tooltipKey: 'settings.toggles.captureSelfUiMaskTooltip', storageKey: 'captureSelfUiMaskEnabled', controlStyle: 'slider' }
     ];
 
     settingsToggles.forEach(toggle => {
@@ -698,6 +694,8 @@ function dispatchAvatarPopupNavigateEvent(item, finalUrl, windowName, source) {
 function createSettingsMenuButton(manager, prefix, config) {
     const btn = document.createElement('div');
     btn.className = `${prefix}-settings-menu-item`;
+    btn.tabIndex = 0;
+    btn.setAttribute('role', 'button');
     markAvatarPopupActionElement(btn, 'settings-menu');
     setAvatarPopupActionDebugMetadata(btn, config, 'settings-button');
     var btnAnchorId = createMenuAnchorId(prefix, config && config.id);
@@ -1077,6 +1075,14 @@ function createCharacterSettingsSidePanel(manager, prefix) {
 function createSidePanelMenuItem(manager, prefix, item) {
     const menuItem = document.createElement('div');
     menuItem.id = `${prefix}-sidepanel-${item.id}`;
+    menuItem.setAttribute('role', 'button');
+    menuItem.tabIndex = 0;
+    menuItem.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        event.stopPropagation();
+        menuItem.click();
+    });
     markAvatarPopupActionElement(menuItem, 'sidepanel-menu');
     setAvatarPopupActionDebugMetadata(menuItem, item, 'sidepanel-menu');
     Object.assign(menuItem.style, {
@@ -1195,6 +1201,8 @@ function createSidePanelMenuItem(manager, prefix, item) {
                         windowName = 'neko_voice_identity';
                     } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/memory_browser')) {
                         windowName = 'neko_memory_browser';
+                    } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/emote_maker')) {
+                        windowName = 'neko_emote_maker';
                     }
                     features = getAvatarNavigationWindowFeatures(finalUrl);
                 }
@@ -1518,7 +1526,9 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     };
     checkbox.updateStyle = updateRowStyle;
     updateRowStyle();
-    checkbox.addEventListener('change', updateRowStyle);
+    // Looked up at call time: updateStyle is replaced below once the switch
+    // and the mode row exist.
+    checkbox.addEventListener('change', () => checkbox.updateStyle());
 
     const label = document.createElement('span');
     label.textContent = window.t ? window.t('settings.toggles.mouseTracking') : '跟踪鼠标';
@@ -1537,9 +1547,7 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     const handleTrackingChange = () => {
         const enabled = !checkbox.checked;
         checkbox.checked = enabled;
-        updateRowStyle();
-        updateTrackingModeToggleState();
-        trackingClickArea.setAttribute('aria-checked', String(enabled));
+        checkbox.updateStyle();
         // 必须先跑回调写 window.mouseTrackingEnabled，再 save——saveSettings 是从该
         // 全局变量读值落盘的，顺序反了会把切换前的旧值持久化（刷新后看着像被重置）
         if (typeof manager._onMouseTrackingToggle === 'function') {
@@ -1618,6 +1626,15 @@ function createAnimationSettingsSidePanel(manager, prefix) {
 
     // 初始化跟踪模式按钮状态
     updateTrackingModeToggleState();
+
+    // Popup re-sync (createSettingsPopupShowSync) sets checkbox.checked and
+    // calls updateStyle: keep the switch's aria-checked and the mode row's
+    // enabled state in step with it, as handleTrackingChange does.
+    checkbox.updateStyle = () => {
+        updateRowStyle();
+        trackingClickArea.setAttribute('aria-checked', String(checkbox.checked));
+        updateTrackingModeToggleState();
+    };
 
     const handleModeChange = () => {
         if (checkbox.checked !== true) return;
@@ -2208,7 +2225,8 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
     sidePanel._stopHoverPointerTracking = stopPointerTracking;
 
     const isHoveringAnchorOrPanel = () => {
-        return anchorEl.matches(':hover') || sidePanel.matches(':hover');
+        return anchorEl.matches(':hover, :focus-visible') || sidePanel.matches(':hover, :focus-visible')
+            || Boolean(sidePanel.querySelector(':focus-visible'));
     };
 
     const isPointerInTransferBridge = () => {
@@ -2290,6 +2308,27 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
     };
 
     anchorEl.addEventListener('mouseenter', expandPanel);
+    const focusPanel = () => {
+        expandPanel();
+        if (isTutorialHoverDisabled()) return;
+        sidePanel.querySelector('button, input, select, a[href], [tabindex="0"]')?.focus();
+    };
+    anchorEl.addEventListener('keydown', (event) => {
+        if (event.target !== anchorEl || !['Enter', ' ', 'ArrowRight'].includes(event.key)) return;
+        if (event.key !== 'ArrowRight' && anchorEl.getAttribute('role') === 'switch') return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        focusPanel();
+    }, true);
+    sidePanel.addEventListener('keydown', (event) => {
+        if (event.key !== 'Escape') return;
+        event.preventDefault();
+        event.stopPropagation();
+        sidePanel._collapse();
+        anchorEl.focus();
+    });
+    anchorEl.addEventListener('focusout', collapsePanel);
+    sidePanel.addEventListener('focusout', collapsePanel);
     anchorEl.addEventListener('mousemove', rememberPointerPosition);
     anchorEl.addEventListener('mouseleave', collapsePanel);
     sidePanel.addEventListener('mouseenter', () => {
@@ -2853,6 +2892,8 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         checkbox.checked = window.proactiveChatEnabled;
     } else if (toggle.id === 'proactive-vision' && typeof window.proactiveVisionEnabled !== 'undefined') {
         checkbox.checked = toggle.inverted ? !window.proactiveVisionEnabled : window.proactiveVisionEnabled;
+    } else if (toggle.id === 'capture-self-ui-mask' && typeof window.captureSelfUiMaskEnabled !== 'undefined') {
+        checkbox.checked = window.captureSelfUiMaskEnabled !== false;
     } else if (toggle.id === 'fullscreen-tracking' && typeof window.live2dFullscreenTrackingEnabled !== 'undefined') {
         checkbox.checked = window.live2dFullscreenTrackingEnabled;
     } else if (toggle.id === 'auto-cat' && window.nekoAutoGoodbye && typeof window.nekoAutoGoodbye.isAutoCatEnabled === 'function') {
@@ -3043,6 +3084,19 @@ function createSettingsToggleItem(manager, prefix, toggle) {
             } else if (!isChecked && typeof window.stopProactiveChatSchedule === 'function') {
                 window.stopProactiveChatSchedule();
             }
+            // Proactive vision (voice-call viewing, text-chat screenshots) needs
+            // this switch too; acquire the stream on this click, since it was
+            // released when the switch went off and later captures never prompt.
+            if (isChecked && typeof window.acquireProactiveVisionAfterUserEnable === 'function') {
+                window.acquireProactiveVisionAfterUserEnable();
+            }
+        } else if (toggle.id === 'capture-self-ui-mask') {
+            // Read by app-capture-mask.js on every frame; other windows pick
+            // it up through the shared settings snapshot (storage event).
+            window.captureSelfUiMaskEnabled = isChecked;
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
+            }
         } else if (toggle.id === 'proactive-vision') {
             const visionEnabled = toggle.inverted ? !isChecked : isChecked;
             window.proactiveVisionEnabled = visionEnabled;
@@ -3050,13 +3104,19 @@ function createSettingsToggleItem(manager, prefix, toggle) {
                 window.saveNEKOSettings();
             }
             if (visionEnabled) {
-                if (typeof window.acquireProactiveVisionStream === 'function') {
-                    window.acquireProactiveVisionStream();
+                // Same click entry as the two switches: it prefetches the screen
+                // stream only when something will use it (speech heartbeat or
+                // text-chat screenshots), skips an open manual-share picker or
+                // a pending acquisition, and sends a frame once it arrives.
+                if (typeof window.acquireProactiveVisionAfterUserEnable === 'function') {
+                    window.acquireProactiveVisionAfterUserEnable();
                 }
                 if (typeof window.resetProactiveChatBackoff === 'function') {
                     window.resetProactiveChatBackoff();
                 }
-                if (typeof window.isRecording !== 'undefined' && window.isRecording) {
+                if (typeof window.isRecording !== 'undefined' && window.isRecording
+                    && typeof window.canProactiveVisionRunDuringSpeech === 'function'
+                    && window.canProactiveVisionRunDuringSpeech() === true) {
                     if (typeof window.startProactiveVisionDuringSpeech === 'function') {
                         window.startProactiveVisionDuringSpeech();
                     }
@@ -3369,6 +3429,8 @@ const AvatarPopupMixin = {
                                 windowName = 'neko_voice_identity';
                             } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/memory_browser')) {
                                 windowName = 'neko_memory_browser';
+                            } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/emote_maker')) {
+                                windowName = 'neko_emote_maker';
                             }
                             features = getAvatarNavigationWindowFeatures(finalUrl);
                         }
@@ -3406,7 +3468,7 @@ const AvatarPopupMixin = {
 
         // 新增的核心方法
         ManagerProto.showPopup = function (buttonId, popup) {
-            const isVisible = popup.style.display === 'flex';
+            const isVisible = popup.style.display === 'flex' && !popup._hideTimeoutId;
             const popupUi = window.AvatarPopupUI || null;
             if (typeof popup._showToken !== 'number') popup._showToken = 0;
 

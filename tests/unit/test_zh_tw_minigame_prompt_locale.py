@@ -162,7 +162,7 @@ def _run_passive_guard(monkeypatch, *, session_language, request_body=None):
     monkeypatch.setattr(gr_runtime, "_find_game_route_state_for_session", lambda *a, **k: None)
     monkeypatch.setattr(
         gr_runtime,
-        "_get_game_route_summary_llm_info",
+        "_get_game_route_recognition_llm_info",
         lambda *a, **k: {
             "model": "m",
             "base_url": "http://localhost",

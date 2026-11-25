@@ -1542,3 +1542,96 @@ async def test_galgame_plugin_install_stream_route_returns_404_before_stream_for
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Textractor install task 'missing-stream-task' not found"
+
+
+@pytest.mark.asyncio
+async def test_install_status_treats_cancel_requested_as_non_terminal_until_run_finishes(
+    plugin_ui_async_client: AsyncClient,
+    registered_galgame_plugin_meta,
+    galgame_install_runtime_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F0320: cancel_requested does not persist terminal canceled or short-circuit succeeded."""
+    task_id = "task-cancel-requested-succeeds"
+    statuses = iter(["cancel_requested", "succeeded"])
+
+    def _fake_get_run(run_id: str) -> RunRecord:
+        st = next(statuses)
+        return RunRecord(
+            run_id=run_id,
+            task_id=run_id,
+            plugin_id="galgame_plugin",
+            entry_id="galgame_install_textractor",
+            status=st,
+            created_at=1.0,
+            updated_at=2.0,
+        )
+
+    monkeypatch.setattr(galgame_install_route_module.run_service, "get_run", _fake_get_run)
+
+    first = await plugin_ui_async_client.get(
+        f"/plugin/galgame_plugin/ui-api/textractor/install/{task_id}"
+    )
+    assert first.status_code == 200
+    first_body = first.json()
+    assert first_body["status"] == "cancel_requested"
+    assert first_body["completed_at"] is None
+    assert install_task_module.load_install_task_state(
+        task_id, kind="textractor", plugin_id="galgame_plugin"
+    ) is None
+
+    second = await plugin_ui_async_client.get(
+        f"/plugin/galgame_plugin/ui-api/textractor/install/{task_id}"
+    )
+    assert second.status_code == 200
+    second_body = second.json()
+    assert second_body["status"] == "completed"
+    assert second_body["completed_at"] is not None
+    persisted = install_task_module.load_install_task_state(
+        task_id, kind="textractor", plugin_id="galgame_plugin"
+    )
+    assert persisted is not None
+    assert persisted["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_install_stream_continues_past_cancel_requested_until_terminal_state(
+    plugin_ui_async_client: AsyncClient,
+    registered_galgame_plugin_meta,
+    galgame_install_runtime_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F0320: SSE stream emits cancel_requested and continues until final terminal status."""
+    task_id = "task-stream-cancel-requested"
+    # First call is the route's pre-stream existence check; subsequent calls drive SSE frames.
+    statuses = iter(["cancel_requested", "cancel_requested", "succeeded"])
+
+    def _fake_get_run(run_id: str) -> RunRecord:
+        st = next(statuses)
+        return RunRecord(
+            run_id=run_id,
+            task_id=run_id,
+            plugin_id="galgame_plugin",
+            entry_id="galgame_install_textractor",
+            status=st,
+            created_at=1.0,
+            updated_at=2.0,
+        )
+
+    monkeypatch.setattr(galgame_install_route_module.run_service, "get_run", _fake_get_run)
+
+    async def _fast_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(galgame_install_route_module.asyncio, "sleep", _fast_sleep)
+
+    response = await plugin_ui_async_client.get(
+        f"/plugin/galgame_plugin/ui-api/textractor/install/{task_id}/stream"
+    )
+    assert response.status_code == 200
+    events = [
+        json.loads(line[len("data: "):])
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert [ev["status"] for ev in events] == ["cancel_requested", "completed"]

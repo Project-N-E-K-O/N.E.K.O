@@ -719,7 +719,7 @@ def test_model_configuration_is_explicit_and_request_budget_has_no_hidden_retry(
         return Client()
     monkeypatch.setattr(llm_client, "create_chat_llm", create)
     options = dict(max_tokens=16000, max_retries=1, response_format={"type":"json_object"},
-                   thinking={"type":"disabled"}, operation="numeric_v2_mainline_generation", temperature=.35)
+                   thinking={"type":"disabled"}, operation="numeric_v2_mainline_generation")
     with pytest.raises(WorkshopError, match="workshop_model_required"):
         NekoWorkshopModel({})([], **options)
     with pytest.raises(WorkshopError, match="workshop_model_endpoint_required"):
@@ -1224,5 +1224,86 @@ def test_fixed_narration_generation_import_export_and_author_update(tmp_path):
         checked = sdk.validate(edited['project_id'], base_revision=edited['revision'])
         exported = sdk.export(edited['project_id'], base_revision=checked['revision'])
         assert json.loads(exported.json_bytes)['nodes'][0]['story_beat']['fixed_narrations'][0]['text'].endswith('作者追加原文。')
+    finally:
+        host.sdk.close()
+
+
+def test_draft_branch_path_accepts_omitted_ending_goal_defaults_and_rejects_invalid_shape(tmp_path):
+    from pydantic import ValidationError
+    from .test_numeric_v2_branch import (
+        branchable_project, _path_result_from_context, _ending_goal, _character_state,
+    )
+
+    def model(messages, **options):
+        context = prompt_payload(messages[1]["content"])
+        if options["operation"] == "numeric_v2_branch_ending":
+            return json.dumps({
+                "condition_key": context["condition_candidates"][0]["key"],
+                "title": "没有寄出的信",
+                "summary": "两人公开误会的来源，并决定共同承担后果。",
+                "opening_scene": "没有寄出的信静静放在晨光下。",
+                "ordered_goals": [_ending_goal("结局开场已经展示旧信公开和两人共同承担后果")],
+                "irreversible_facts": ["误会来源已经公开"],
+                "character_state": _character_state(),
+                "catgirl_situation": "她不再独自保守秘密。",
+                "tone": "释然",
+            }, ensure_ascii=False)
+        path_result = _path_result_from_context(context)
+        for index, scene in enumerate(path_result["scenes"]):
+            scene["completion_facts"] = [{
+                "id": "evidence_presented",
+                "description": "猫娘已展示带日期的证据。",
+                "value_type": "bool",
+                "target_value": True,
+                "visibility": "public",
+            }]
+            path_result["transitions"][index + 1]["trigger_fact_ids"] = ["evidence_presented"]
+        return json.dumps(path_result, ensure_ascii=False)
+
+    host = open_workshop(TestConfig(tmp_path), model_call=model)
+    try:
+        data = branchable_project()
+        project = host.sdk.import_story(data["story"])
+        project = host.sdk.set_mainline_order(
+            project["project_id"],
+            base_revision=project["revision"],
+            node_ids=data["authoring"]["mainline_node_ids"],
+        )
+        pid, revision = project["project_id"], project["revision"]
+        ending = host.sdk.draft_branch_ending(
+            pid,
+            base_revision=revision,
+            source_node_id="main_1",
+            ending_direction="两人公开真相并共同承担代价。",
+            condition_selection={"mode": "recommend"},
+        )["draft"]
+        confirmed = deepcopy(ending["ending"])
+        for defaulted_key in ("owner", "delivery_type", "evidence_mode", "anchors", "sources", "timing", "dialogue_policy_after"):
+            confirmed["ordered_goals"][0].pop(defaulted_key, None)
+        draft = host.sdk.draft_branch_path(
+            pid,
+            base_revision=revision,
+            endpoint_mode="new_ending",
+            ending_draft_id=ending["draft_id"],
+            ending=confirmed,
+            direction="",
+            length=1,
+        )["draft"]
+        assert "fixed_narrations" not in draft["new_ending"]
+        assert draft["new_ending"]["ordered_goals"][0]["timing"] == "opening"
+        assert draft["new_ending"]["ordered_goals"][0]["sources"] == ["opening"]
+
+        bad = deepcopy(ending["ending"])
+        bad["ordered_goals"][0]["timing"] = "turn"
+        with pytest.raises(ValidationError):
+            host.sdk.draft_branch_path(
+                pid,
+                base_revision=revision,
+                endpoint_mode="new_ending",
+                ending_draft_id=ending["draft_id"],
+                ending=bad,
+                direction="",
+                length=1,
+            )
     finally:
         host.sdk.close()

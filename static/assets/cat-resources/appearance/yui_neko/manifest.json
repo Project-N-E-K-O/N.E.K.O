@@ -160,6 +160,62 @@
         "artLayout": "wide-centered"
       }
     },
+    "action.cat1.banana": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-banana.webp",
+        "media_type": "image/webp"
+      }],
+      "metadata": {
+        "wideArt": true,
+        "artLayout": "wide-centered"
+      }
+    },
+    "action.cat1.catnip_1": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-catnip-1.webp",
+        "media_type": "image/webp"
+      }]
+    },
+    "action.cat1.catnip_2": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-catnip-2.webp",
+        "media_type": "image/webp"
+      }]
+    },
+    "action.cat1.cry": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-sad-3.webp",
+        "media_type": "image/webp"
+      }]
+    },
+    "action.cat1.ninjutsu": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-ninjutsu.webp",
+        "media_type": "image/webp"
+      }],
+      "metadata": {
+        "wideArt": true,
+        "artLayout": "wide-centered"
+      }
+    },
+    "action.cat1.wag_1": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-wag-1.webp",
+        "media_type": "image/webp"
+      }]
+    },
+    "action.cat1.wag_2": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-wag-2.webp",
+        "media_type": "image/webp"
+      }]
+    },
+    "action.cat1.oiia": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-oiia.webp",
+        "media_type": "image/webp"
+      }]
+    },
     "action.cat1.wave": {
       "resources": [{
         "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-wave.webp",
@@ -168,7 +224,13 @@
     },
     "action.cat1.sad": {
       "resources": [{
-        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-sad.webp",
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-sad-1.webp",
+        "media_type": "image/webp"
+      }]
+    },
+    "action.cat1.sad_2": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-sad-2.webp",
         "media_type": "image/webp"
       }]
     },

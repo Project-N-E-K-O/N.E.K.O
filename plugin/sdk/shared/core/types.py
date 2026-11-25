@@ -20,6 +20,8 @@ from .cards import ChatCard, PluginView
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
+    from .call_chain_view import CallChainView
+    from ..permissions.state import PermissionState
 
 
 JsonScalar: TypeAlias = str | int | float | bool | None
@@ -167,9 +169,29 @@ class ReplyTailProtocol(Protocol):
     async def cancel(self, context: dict, *, registration_id: str, timeout: float = 5.0) -> dict: ...
 
 
+class PermissionSubscriptionProtocol(Protocol):
+    def cancel(self) -> None: ...
+
+    def unsubscribe(self) -> None: ...
+
+
+class PluginPermissionsProtocol(Protocol):
+    def get(self, permission: str) -> "PermissionState": ...
+
+    def on_change(
+        self, callback: Callable[[str, "PermissionState"], object]
+    ) -> PermissionSubscriptionProtocol: ...
+
+
 class PluginContextProtocol(Protocol):
     @property
     def images(self) -> PluginImagesProtocol: ...
+
+    @property
+    def permissions(self) -> PluginPermissionsProtocol: ...
+
+    @property
+    def call_chain(self) -> "CallChainView": ...
 
     @property
     def models(self) -> PluginModelsProtocol: ...

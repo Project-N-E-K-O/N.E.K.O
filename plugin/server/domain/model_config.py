@@ -16,6 +16,18 @@ from pydantic import (
 from plugin.config.schema import ModelCapability, PluginModelUsageId
 
 SECRET_MASK = "__NEKO_SECRET_MASKED__"
+
+# Main-app model tiers a host-follow slot may follow. Plugins and task agents
+# are one thing in the main app, so plugins draw only on the familiar (agent)
+# tiers; the chat, memory and voice tiers stay the main app's own. Each value
+# is the ``model_type`` passed to ``ConfigManager.get_model_api_config``;
+# adding a tier here (and to ``HostApi``) is all a new followable tier needs.
+HOST_API_MODEL_TYPES: dict[str, str] = {
+    "agent_advanced": "agent_advanced",
+    "agent": "agent",
+    "agent_small": "agent_small",
+}
+HostApi = Literal["agent_advanced", "agent", "agent_small"]
 MAX_OUTPUT_TOKENS = 1_000_000
 SlotId = Annotated[StrictStr, Field(pattern=r"^slot_[0-9a-f]{32}$")]
 PluginId = Annotated[StrictStr, Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$")]
@@ -29,20 +41,39 @@ def secret_preview(value: str) -> str:
     return ("••••••" if value == "******" else "******") if preview == value else preview
 
 
+# Fields a slot's defaults no longer have. Plugin model requests carry no
+# temperature (scripts/check_no_temperature.py), so a saved document or
+# an older client may still carry one: it is dropped here instead of failing
+# validation. The store and the service log a warning when they see it.
+RETIRED_DEFAULT_FIELDS = frozenset({"temperature"})
+
+
+def has_retired_defaults(defaults: object) -> bool:
+    return isinstance(defaults, dict) and not RETIRED_DEFAULT_FIELDS.isdisjoint(defaults)
+
+
 class ModelDefaults(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
 
-    temperature: float | None = Field(default=None, ge=0, le=2)
     max_output_tokens: int | None = Field(default=None, ge=1, le=MAX_OUTPUT_TOKENS)
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_retired_fields(cls, value: object) -> object:
+        if has_retired_defaults(value):
+            return {key: item for key, item in value.items() if key not in RETIRED_DEFAULT_FIELDS}
+        return value
 
 
 class ModelSlot(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
 
     name: str = Field(min_length=1, max_length=128)
-    protocol: Literal["openai_chat", "anthropic_messages"]
-    base_url: str = Field(min_length=1, max_length=2048)
-    model: str = Field(min_length=1, max_length=256)
+    source: Literal["manual", "host_follow"] = "manual"
+    host_api: HostApi | None = None
+    protocol: Literal["openai_chat", "anthropic_messages"] = "openai_chat"
+    base_url: str = Field(default="", max_length=2048)
+    model: str = Field(default="", max_length=256)
     api_key: str = Field(default="", max_length=4096, repr=False)
     capabilities: list[ModelCapability] = Field(default_factory=lambda: ["text"])
     defaults: ModelDefaults = Field(default_factory=ModelDefaults)
@@ -50,10 +81,16 @@ class ModelSlot(BaseModel):
     fallback_slot_id: SlotId | None = None
 
     @model_validator(mode="after")
-    def validate_protocol_defaults(self) -> ModelSlot:
-        temperature = self.defaults.temperature
-        if self.protocol == "anthropic_messages" and temperature is not None and temperature > 1:
-            raise ValueError("Anthropic default temperature must not exceed 1")
+    def validate_source_fields(self) -> ModelSlot:
+        if self.source == "host_follow":
+            if self.host_api is None:
+                raise ValueError("A host-follow slot must select a main-app model tier")
+            if self.base_url or self.model or self.api_key:
+                raise ValueError("A host-follow slot must not store endpoint, model or credentials")
+        elif self.host_api is not None:
+            raise ValueError("Only a host-follow slot may set host_api")
+        elif not self.base_url or not self.model:
+            raise ValueError("A manual slot requires base_url and model")
         return self
 
     @field_validator("name", "model", "api_key", mode="before")
@@ -75,6 +112,9 @@ class ModelSlot(BaseModel):
     @classmethod
     def normalize_url(cls, value: str) -> str:
         value = value.strip()
+        if not value:
+            # Host-follow slots store no endpoint; source validation enforces non-empty for manual slots.
+            return value
         if any(char.isspace() or ord(char) < 32 for char in value):
             raise ValueError("base_url must be an HTTP(S) base URL")
         try:
@@ -104,6 +144,9 @@ class PluginModelsConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     schema_version: Literal[1] = 1
+    # Highest default-slot seeding generation already applied. Persisted so a
+    # user-deleted default slot is never resurrected by a later list call.
+    seed_version: int = Field(default=0, ge=0)
     slots: dict[SlotId, ModelSlot] = Field(default_factory=dict)
     bindings: dict[PluginId, dict[PluginModelUsageId, SlotId]] = Field(default_factory=dict)
 

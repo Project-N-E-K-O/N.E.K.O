@@ -30,6 +30,7 @@ from utils.llm_client import (  # noqa: F401
     LLMStreamChunk,
     ThinkingStreamStripper,
     chat_retry_error_types,
+    chat_retry_error_types_snapshot,
     strip_thinking_segments,
     create_chat_llm,
     create_chat_llm_async,
@@ -59,21 +60,18 @@ _LLM_RETRY_ERROR_TYPES: tuple[type[BaseException], ...] | None = None
 
 def _llm_retry_error_types() -> tuple[type[BaseException], ...]:
     global _LLM_RETRY_ERROR_TYPES
-    if _LLM_RETRY_ERROR_TYPES is None:
-        from openai import AuthenticationError
+    if _LLM_RETRY_ERROR_TYPES is not None:
+        return _LLM_RETRY_ERROR_TYPES
+    from openai import AuthenticationError
 
-        _LLM_RETRY_ERROR_TYPES = (
-            AuthenticationError,
-            *chat_retry_error_types(),
-        )
-    return _LLM_RETRY_ERROR_TYPES
+    retry_types, final = chat_retry_error_types_snapshot()
+    types = (AuthenticationError, *retry_types)
+    # The Anthropic classes appear once an Anthropic client has loaded the SDK;
+    # caching before all of them are there would leave the rest out for good.
+    if final:
+        _LLM_RETRY_ERROR_TYPES = types
+    return types
 
-_GENAI_NATIVE_BASE_URL_HINTS = (
-    "generativelanguage.googleapis.com",
-    "aiplatform.googleapis.com",
-)
-
-_GENAI_NATIVE_MODEL_HINTS = ("gemini",)
 
 _SENTENCE_END_CHARS = '.!?。！？…'
 
@@ -309,3 +307,29 @@ def _same_route(
         (api_key_a or None) == (api_key_b or None)
         and (provider_type_a or None) == (provider_type_b or None)
     )
+
+
+def _note_legacy_vision(client, where: str) -> None:
+    """Log/announce that this session sends images to a retired vision config.
+
+    Only a session built with an ``image_choice`` carrying a separate vision
+    route has one (see ``utils.legacy_vision``); others do nothing.
+    """
+    choice = getattr(client, "_image_choice", None)
+    if choice is None or choice.legacy is None:
+        return
+    from utils.legacy_vision import note_legacy_vision_use
+    note_legacy_vision_use(choice, where)
+
+
+def _chat_route_config(client) -> dict:
+    """The chat model's settings, as ``utils.legacy_vision`` keys a refusal by."""
+    choice = getattr(client, "_image_choice", None)
+    if choice is not None:
+        return choice.conversation
+    return {
+        "model": getattr(client, "model", None),
+        "base_url": getattr(client, "base_url", None),
+        "api_key": getattr(client, "api_key", None),
+        "provider_type": getattr(client, "provider_type", None),
+    }

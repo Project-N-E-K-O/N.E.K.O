@@ -26,6 +26,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from config import CHARACTER_NICKNAME_FIELD_KEYS
 from config.prompts.prompts_visit import get_family_neutral_term, get_visit_speaker_header
 from utils.language_utils import get_global_language_full
 
@@ -61,21 +62,45 @@ class CharacterContext:
         return value if isinstance(value, str) else None
 
 
+def _resolve_master_nickname_raw(master: Mapping[str, Any]) -> str | None:
+    """Return the first non-empty string nickname from ``master``, checking localized keys."""
+    for key in CHARACTER_NICKNAME_FIELD_KEYS:
+        raw = master.get(key)
+        if isinstance(raw, str) and raw.strip():
+            return raw
+    folded: dict[str, str] = {}
+    for k, v in master.items():
+        if isinstance(v, str) and v.strip():
+            folded.setdefault(str(k).casefold(), v)
+    for key in CHARACTER_NICKNAME_FIELD_KEYS:
+        raw = folded.get(key.casefold())
+        if raw is not None:
+            return raw
+    return None
+
+
 def family_names_of(master: Mapping[str, Any] | None) -> tuple[str, ...]:
     """Profile name and nicknames of the family member, deduplicated, in profile order."""
     if not isinstance(master, Mapping):
         return ()
     out: list[str] = []
-    for key in ("档案名", "昵称"):
-        raw = master.get(key)
-        if not isinstance(raw, str):
-            continue
-        if key == "档案名":
-            parts = [raw, *(p for p in _PROFILE_NAME_SPLIT_RE.split(raw.strip())
-                            if len(p.strip()) >= _NAME_PART_MIN_CHARS)]
-        else:
-            parts = _NICKNAME_SPLIT_RE.split(raw)
+    raw_profile = master.get("档案名")
+    if isinstance(raw_profile, str):
+        parts = [
+            raw_profile,
+            *(
+                p
+                for p in _PROFILE_NAME_SPLIT_RE.split(raw_profile.strip())
+                if len(p.strip()) >= _NAME_PART_MIN_CHARS
+            ),
+        ]
         for part in parts:
+            name = part.strip()
+            if name and name not in out:
+                out.append(name)
+    raw_nickname = _resolve_master_nickname_raw(master)
+    if isinstance(raw_nickname, str):
+        for part in _NICKNAME_SPLIT_RE.split(raw_nickname):
             name = part.strip()
             if name and name not in out:
                 out.append(name)

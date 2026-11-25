@@ -507,7 +507,12 @@ function openCardMakerFromModelManager(lanlanName, options = {}) {
                 return window.opener.openManagedPopup(url, MODEL_MANAGER_CARD_MAKER_WINDOW_NAME, features);
             }
             if (typeof window.opener.openOrFocusWindow === 'function') {
-                return window.opener.openOrFocusWindow(url, MODEL_MANAGER_CARD_MAKER_WINDOW_NAME, features);
+                return window.opener.openOrFocusWindow(
+                    url,
+                    MODEL_MANAGER_CARD_MAKER_WINDOW_NAME,
+                    features,
+                    { navigateOnReuse: true }
+                );
             }
             const openedByParent = window.opener.open(url, MODEL_MANAGER_CARD_MAKER_WINDOW_NAME, features);
             if (openedByParent && typeof window.opener.requestOpenedWindowRestore === 'function') {
@@ -520,7 +525,12 @@ function openCardMakerFromModelManager(lanlanName, options = {}) {
     }
 
     if (typeof window.openOrFocusWindow === 'function') {
-        return window.openOrFocusWindow(url, MODEL_MANAGER_CARD_MAKER_WINDOW_NAME, features);
+        return window.openOrFocusWindow(
+            url,
+            MODEL_MANAGER_CARD_MAKER_WINDOW_NAME,
+            features,
+            { navigateOnReuse: true }
+        );
     }
     return window.open(url, MODEL_MANAGER_CARD_MAKER_WINDOW_NAME, features);
 }

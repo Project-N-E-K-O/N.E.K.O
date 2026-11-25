@@ -7,13 +7,38 @@ from typing import Any, TypeVar
 
 from pydantic import ValidationError
 
+from plugin.logging_config import get_logger
 from plugin.server.domain.errors import ServerDomainError
-from plugin.server.domain.model_config import PluginModelsConfig
+from plugin.server.domain.model_config import PluginModelsConfig, has_retired_defaults
 from utils.file_utils import read_json_tolerating_replace
 
 CONFIG_FILENAME = "plugin_models.json"
 _write_lock = threading.RLock()
 T = TypeVar("T")
+logger = get_logger("server.model_config_store")
+# Slot ids already reported for a retired default, so a document read on every
+# request logs each slot once per process rather than on every call.
+_reported_retired: set[str] = set()
+
+
+def _report_retired_defaults(raw: object) -> None:
+    slots = raw.get("slots") if isinstance(raw, dict) else None
+    if not isinstance(slots, dict):
+        return
+    for slot_id, slot in slots.items():
+        if (
+            isinstance(slot_id, str)
+            and slot_id not in _reported_retired
+            and isinstance(slot, dict)
+            and has_retired_defaults(slot.get("defaults"))
+        ):
+            _reported_retired.add(slot_id)
+            logger.warning(
+                "Model slot {} has a saved default temperature; it is ignored (plugin model "
+                "requests carry no temperature, the provider default applies) and is "
+                "removed the next time plugin model settings are saved",
+                slot_id,
+            )
 
 
 class ModelConfigStore:
@@ -37,6 +62,7 @@ class ModelConfigStore:
             raise ServerDomainError(
                 "MODEL_CONFIG_READ_FAILED", "Plugin model configuration could not be read", 500
             ) from exc
+        _report_retired_defaults(raw)
         try:
             return PluginModelsConfig.model_validate(raw)
         except ValidationError as exc:

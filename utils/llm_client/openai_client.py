@@ -14,6 +14,7 @@
 """OpenAI-compatible chat client."""
 
 from __future__ import annotations
+import inspect
 import weakref
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
@@ -77,7 +78,9 @@ class ChatOpenAI:
         model: str = "",
         base_url: str | None = None,
         api_key: str | None = None,
-        temperature: float | None = None,
+        # Keyword-only from here: removing ``temperature`` (once the fourth
+        # parameter) must not let an old positional call shift into ``streaming``.
+        *,
         streaming: bool = False,
         max_retries: int = 2,
         extra_body: dict | None = None,
@@ -99,12 +102,8 @@ class ChatOpenAI:
         # the caller wants to suppress tools mid-conversation).
         self.tools = list(tools) if tools else None
         self.tool_choice = tool_choice
-        # Project rule: never send temperature. default=None omits request field,
-        # leaving model defaults. o1/o3/gpt-5-thinking/Claude extended-thinking reject
-        # this parameter and can pass through; ordinary models use defaults too, avoiding hard-to-reproduce
-        # regressions from temperature drift between tasks. Callers must no longer pass temperature=
-        # (CI enforced by scripts/check_no_temperature.py).
-        self.temperature = temperature
+        # Project rule: this client never sends a temperature; every provider
+        # uses its own default (scripts/check_no_temperature.py enforces it in CI).
         self.extra_body: dict = extra_body or {}
         self.max_completion_tokens = max_completion_tokens
         self.max_tokens = max_tokens
@@ -168,11 +167,6 @@ class ChatOpenAI:
             "messages": _normalize_messages(messages),
             "stream": stream,
         }
-        # Project convention: default=None omits temperature. Retain branch only
-        # for backwards-compatible explicit `temperature=0` (0.0 valid, so test None
-        # rather than truthiness); actual callers must no longer pass this parameter.
-        if self.temperature is not None:
-            p["temperature"] = self.temperature
         # Provider-aware routing of token-limit field:
         #   Anthropic SDK / Anthropic-compat endpoints → max_tokens
         #   OpenAI-compat endpoints → whatever config.providers registers for the
@@ -368,59 +362,71 @@ class ChatOpenAI:
         stream = await self._aclient.chat.completions.create(
             **self._params(messages, stream=True, **overrides)
         )
-        async for chunk in stream:
-            choice = chunk.choices[0] if chunk.choices else None
-            delta = choice.delta if choice else None
-            content = delta.content if delta and delta.content else ""
-            tool_call_deltas: list[dict] | None = None
-            if delta is not None:
-                raw_tool_calls = getattr(delta, "tool_calls", None) or []
-                if raw_tool_calls:
-                    tool_call_deltas = []
-                    for tc in raw_tool_calls:
-                        # SDK objects → plain dicts. ``index`` ties fragments
-                        # of the same call together across chunks.
-                        fn = getattr(tc, "function", None)
-                        frag = {
-                            "index": getattr(tc, "index", 0),
-                            "id": getattr(tc, "id", "") or "",
-                            "type": getattr(tc, "type", "function") or "function",
-                            "function": {
-                                "name": getattr(fn, "name", "") if fn else "",
-                                "arguments": getattr(fn, "arguments", "") if fn else "",
-                            },
-                        }
-                        # Nonstandard ``extra_content``: Gemini OpenAI-compatible
-                        # endpoints (including lanlan.app overseas free routes) put thought_signature
-                        # here and require verbatim return with the tool call next turn; dropping it
-                        # consistently yields 400 INVALID_ARGUMENT. Pass through only, without parsing:
-                        # preserve whatever other providers put here too.
-                        extra_content = _plain_dict(getattr(tc, "extra_content", None))
-                        if extra_content:
-                            frag["extra_content"] = extra_content
-                        tool_call_deltas.append(frag)
-            # Thinking models place reasoning in nonstandard ``delta.reasoning_content``
-            # (openai-python BaseModel extra=allow permits unknown fields via
-            # getattr). Ordinary endpoints lack it; getattr returns None.
-            reasoning_content = (
-                getattr(delta, "reasoning_content", None) if delta else None
-            )
-            finish_reason = getattr(choice, "finish_reason", None) if choice else None
-            if content or tool_call_deltas or finish_reason or reasoning_content:
-                yield LLMStreamChunk(
-                    content=content,
-                    tool_call_deltas=tool_call_deltas,
-                    finish_reason=finish_reason,
-                    reasoning_content=reasoning_content,
+        try:
+            async for chunk in stream:
+                choice = chunk.choices[0] if chunk.choices else None
+                delta = choice.delta if choice else None
+                content = delta.content if delta and delta.content else ""
+                tool_call_deltas: list[dict] | None = None
+                if delta is not None:
+                    raw_tool_calls = getattr(delta, "tool_calls", None) or []
+                    if raw_tool_calls:
+                        tool_call_deltas = []
+                        for tc in raw_tool_calls:
+                            # SDK objects → plain dicts. ``index`` ties fragments
+                            # of the same call together across chunks.
+                            fn = getattr(tc, "function", None)
+                            frag = {
+                                "index": getattr(tc, "index", 0),
+                                "id": getattr(tc, "id", "") or "",
+                                "type": getattr(tc, "type", "function") or "function",
+                                "function": {
+                                    "name": getattr(fn, "name", "") if fn else "",
+                                    "arguments": getattr(fn, "arguments", "") if fn else "",
+                                },
+                            }
+                            # Nonstandard ``extra_content``: Gemini OpenAI-compatible
+                            # endpoints (including lanlan.app overseas free routes) put thought_signature
+                            # here and require verbatim return with the tool call next turn; dropping it
+                            # consistently yields 400 INVALID_ARGUMENT. Pass through only, without parsing:
+                            # preserve whatever other providers put here too.
+                            extra_content = _plain_dict(getattr(tc, "extra_content", None))
+                            if extra_content:
+                                frag["extra_content"] = extra_content
+                            tool_call_deltas.append(frag)
+                # Thinking models place reasoning in nonstandard ``delta.reasoning_content``
+                # (openai-python BaseModel extra=allow permits unknown fields via
+                # getattr). Ordinary endpoints lack it; getattr returns None.
+                reasoning_content = (
+                    getattr(delta, "reasoning_content", None) if delta else None
                 )
-            # Terminal chunk with usage info (stream_options={"include_usage": True})
-            if chunk.usage is not None:
-                usage_dict = chunk.usage.model_dump()
-                yield LLMStreamChunk(
-                    content="",
-                    usage_metadata=usage_dict,
-                    response_metadata={"token_usage": usage_dict},
-                )
+                finish_reason = getattr(choice, "finish_reason", None) if choice else None
+                if content or tool_call_deltas or finish_reason or reasoning_content:
+                    yield LLMStreamChunk(
+                        content=content,
+                        tool_call_deltas=tool_call_deltas,
+                        finish_reason=finish_reason,
+                        reasoning_content=reasoning_content,
+                    )
+                # Terminal chunk with usage info (stream_options={"include_usage": True})
+                if chunk.usage is not None:
+                    usage_dict = chunk.usage.model_dump()
+                    yield LLMStreamChunk(
+                        content="",
+                        usage_metadata=usage_dict,
+                        response_metadata={"token_usage": usage_dict},
+                    )
+        finally:
+            close_fn = getattr(stream, "aclose", None)
+            if not callable(close_fn):
+                close_fn = getattr(stream, "close", None)
+            if callable(close_fn):
+                try:
+                    res = close_fn()
+                    if inspect.isawaitable(res):
+                        await res
+                except Exception:
+                    pass
 
     @staticmethod
     def collect_tool_calls(deltas_per_chunk: list[list[dict] | None]) -> list[ToolCallAggregate]:

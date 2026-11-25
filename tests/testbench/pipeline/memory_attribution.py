@@ -191,7 +191,7 @@ async def _llm_refine(
             type(exc).__name__, exc,
         )
 
-    llm = _llm_for_memory(session, temperature=0.0)
+    llm = _llm_for_memory(session)
     raw = ""
     try:
         resp = await llm.ainvoke(prompt)

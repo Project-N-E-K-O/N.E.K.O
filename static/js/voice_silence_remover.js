@@ -177,7 +177,7 @@ async function useTrimmedAudio() {
         if (data.success && data.has_changes) {
             // 裁剪成功
             _silenceState.trimmedAudioBase64 = data.audio_base64;
-            _silenceState.trimmedFilename = data.filename;
+            _silenceState.trimmedFilename = normalizeTrimmedWavFilename(data.filename);
             _silenceState.trimmedMd5 = data.md5;
             _silenceState.useTrimmedForUpload = true;
 
@@ -301,6 +301,15 @@ function stopProgressPolling() {
     }
 }
 
+function normalizeTrimmedWavFilename(rawFilename) {
+    const trimmed = String(rawFilename || '').trim();
+    if (!trimmed) {
+        return 'trimmed_audio.wav';
+    }
+    const base = trimmed.replace(/\.[^./\\]+$/, '');
+    return `${base || 'trimmed_audio'}.wav`;
+}
+
 /**
  * 下载裁剪后的音频
  */
@@ -319,7 +328,7 @@ function downloadTrimmedAudio() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = _silenceState.trimmedFilename || 'trimmed_audio.wav';
+    a.download = normalizeTrimmedWavFilename(_silenceState.trimmedFilename);
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -341,7 +350,7 @@ function _replaceFileInputWithTrimmed(data) {
         ia[i] = byteString.charCodeAt(i);
     }
 
-    const filename = _silenceState.trimmedFilename || 'trimmed_audio.wav';
+    const filename = normalizeTrimmedWavFilename(_silenceState.trimmedFilename || (data && data.filename));
     const blob = new Blob([ab], { type: 'audio/wav' });
     const trimmedFile = new File([blob], filename, { type: 'audio/wav' });
 

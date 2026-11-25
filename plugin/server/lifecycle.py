@@ -562,7 +562,9 @@ class ServerLifecycleService:
         try:
             install_source_manager = get_install_source_manager()
             if install_source_manager is not None:
-                await StartupReconciler(install_source_manager).run()
+                await StartupReconciler(
+                    install_source_manager, prune_uninstalled_grants=True
+                ).run()
         except Exception as exc:
             logger.error(
                 "install-source reconciliation after layout migration failed: "
@@ -585,6 +587,14 @@ class ServerLifecycleService:
         # so it must be released after restart or every plugin startup returns 409.
         from plugin.server.application.plugins import lifecycle_service as _lifecycle_module
         _lifecycle_module._operations_shutting_down = False
+        from plugin.server.application.plugins import call_audit
+        call_audit.reopen()
+        from plugin.core.capability_policy import startup_notices
+        for notice in startup_notices():
+            logger.warning("{}", notice)
+        # Keeps running plugins' ctx.permissions in step with the store.
+        from plugin.server.application.plugins.permission_push import permission_push_service
+        permission_push_service.start()
 
         try:
             emit_lifecycle_event({"type": "server_startup_begin", "plugin_id": "server", "time": now_iso()})
@@ -999,6 +1009,11 @@ class ServerLifecycleService:
             await hosts_stopped.wait()
             await plugin_router.stop()
 
+        async def _stop_permission_push():
+            from plugin.server.application.plugins.permission_push import permission_push_service
+
+            await permission_push_service.stop()
+
         async def _stop_hosts():
             try:
                 return await self._shutdown_hosts()
@@ -1011,6 +1026,7 @@ class ServerLifecycleService:
             "hosts": asyncio.create_task(_stop_hosts()),
             "bus_subscriptions": asyncio.create_task(_stop_bus()),
             "router": asyncio.create_task(_stop_router()),
+            "permission_push": asyncio.create_task(_stop_permission_push()),
         }
 
         results = await asyncio.gather(*parallel_tasks.values(), return_exceptions=True)
@@ -1023,6 +1039,17 @@ class ServerLifecycleService:
 
         # Phase 3: resource cleanup
         self._close_conversation_service()
+        # Hosts are stopped. The audit writer is a daemon thread: give it a
+        # bounded flush and never let it hold up shutdown.
+        try:
+            from plugin.server.application.plugins import call_audit
+
+            # Tagged with this run, so if it is still waiting for the lock
+            # after a restart has reopened the audit, it does nothing.
+            if not await asyncio.to_thread(call_audit.close, 1.0, call_audit.generation()):
+                logger.warning("plugin call audit flush did not finish before shutdown")
+        except Exception as exc:
+            logger.warning("plugin call audit flush failed: error_type={}", type(exc).__name__)
         try:
             await asyncio.wait_for(asyncio.to_thread(state.close_plugin_resources), timeout=0.5)
         except asyncio.TimeoutError:

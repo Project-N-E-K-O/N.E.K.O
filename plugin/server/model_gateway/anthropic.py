@@ -23,7 +23,6 @@ _REQUEST_FIELDS = {
     "stream",
     "max_tokens",
     "max_completion_tokens",
-    "temperature",
     "top_p",
     "stop",
     "tools",
@@ -131,8 +130,6 @@ def prepare_request(request: dict[str, Any]) -> dict[str, Any]:
         raise _unsupported("n")
     if request.get("response_format", {"type": "text"}) != {"type": "text"}:
         raise _unsupported("response_format")
-    if request.get("temperature", 0) > 1:
-        raise _unsupported("temperature")
 
     body: dict[str, Any] = {
         "model": request["model"],
@@ -203,9 +200,8 @@ def prepare_request(request: dict[str, Any]) -> dict[str, Any]:
         )
     if system:
         body["system"] = system
-    for key in ("temperature", "top_p"):
-        if key in request:
-            body[key] = request[key]
+    if "top_p" in request:
+        body["top_p"] = request["top_p"]
     if "stop" in request:
         stop = request["stop"]
         body["stop_sequences"] = [stop] if isinstance(stop, str) else stop

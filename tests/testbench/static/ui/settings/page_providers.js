@@ -31,7 +31,7 @@ export async function renderProvidersPage(host) {
       el('th', {}, i18n('settings.providers.columns.name')),
       el('th', {}, i18n('settings.providers.columns.base_url')),
       el('th', {}, i18n('settings.providers.columns.conversation_model')),
-      el('th', {}, i18n('settings.providers.columns.summary_model')),
+      el('th', {}, i18n('settings.providers.columns.memory_model')),
       el('th', {}, i18n('settings.providers.columns.api_key')),
     ),
   ));

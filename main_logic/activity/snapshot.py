@@ -273,7 +273,7 @@ class ActivitySnapshot:
     propensity_reasons: list[tuple[str, dict]] = field(default_factory=list)
 
     # --- System signals (the raw evidence) ---
-    system_idle_seconds: float = 0.0         # GetLastInputInfo, system-wide
+    system_idle_seconds: float | None = 0.0  # GetLastInputInfo, system-wide (None when unknown)
     cpu_avg_30s: float = 0.0                 # psutil rolling avg
     cpu_instant: float = 0.0                 # last poll
     active_window: WindowObservation | None = None

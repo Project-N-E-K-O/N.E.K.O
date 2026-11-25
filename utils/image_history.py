@@ -40,15 +40,29 @@ def replace_history_text(
     ]
 
 
-def without_image_pixels(content: Any) -> Any:
-    """Remove pixels once and keep a receipt alongside the original text."""
+def without_image_pixels(content: Any, keep: Any = None) -> Any:
+    """Remove pixels once and keep a receipt alongside the original text.
+
+    ``keep`` optionally names image positions (0-based, counting image blocks
+    only) whose pixels stay; the receipt then counts only the removed ones.
+    """
     count = image_count(content)
     if not count:
         return content
-    parts = [
-        part
-        for part in content
-        if not (isinstance(part, dict) and part.get("type") == "image_url")
-    ]
-    parts.append({"type": "text", "text": image_receipt(count)})
+    keep = frozenset(keep or ())
+    parts = []
+    removed = 0
+    image_index = 0
+    for part in content:
+        if isinstance(part, dict) and part.get("type") == "image_url":
+            if image_index in keep:
+                parts.append(part)
+            else:
+                removed += 1
+            image_index += 1
+            continue
+        parts.append(part)
+    if not removed:
+        return content
+    parts.append({"type": "text", "text": image_receipt(removed)})
     return parts

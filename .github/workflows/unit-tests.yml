@@ -2,7 +2,7 @@ name: Unit Tests
 
 # Repo-wide pytest gate for tests/unit.
 #
-# Until now nothing in CI ran this directory: plugin-tests.yml covered
+# Until #2492 nothing in CI ran this directory: plugin-tests.yml covered
 # plugin/tests plus two hand-listed root files, and everything else in
 # tests/unit only ever ran when someone happened to run it locally. A PR could
 # therefore add thousands of lines of tests that never executed in CI, and an
@@ -11,10 +11,30 @@ name: Unit Tests
 # suite guarding that file was green-by-omission, and the sweep that followed
 # found 18 pre-existing failures on main, two of them real product bugs.
 #
-# No paths filter on purpose. tests/unit reads Python packages, static/,
-# templates/ and frontend sources, so any useful filter would approximate
-# "everything"; an over-narrow one reintroduces exactly the failure mode above
-# — the PR gate runs the unmarked remainder while dedicated shards cover classified tests.
+# Two layers, because the full suite outgrew the PR loop:
+#
+# * Full suite, after merge only. `Unit pytest (Windows)` runs every unmarked
+#   file (~1470 files, ~57k tests): 28-32 minutes of pytest, ~41 minutes per
+#   job. Nobody waited for it on a PR any more, so it was a gate in name only
+#   and sat red on main unnoticed. It now runs on push to main and on demand.
+#   When it fails, main-red-reporter.yml opens (or updates) a `main-red`
+#   issue naming the failed tests and every commit since the last green run,
+#   and a `--lf` re-run below tells a flaky failure from a real one.
+#
+# * Related tests, on every PR. scripts/ci/select_related_tests.py reads the
+#   PR's diff (from the merge-base) and the repository's import graph — test
+#   helpers included — and picks the unmarked test files that can reach a
+#   changed file, plus tests that name a changed file literally. Global files
+#   (pyproject.toml, uv.lock, pytest.ini, the root conftests, this workflow,
+#   the selector itself) select everything. The selection is split into at
+#   most four Windows shards of ~30% of the full suite each, so even a full
+#   selection finishes in about 15 minutes. `Unit pytest (related)` is the
+#   one stable check that summarises them; it always runs, also when nothing
+#   was selected, so it can be a required check.
+#
+# Still no paths filter on purpose: the PR layer must report on every PR, and
+# the selector — not a hand-written filter — decides what a change touches.
+# Tests carrying a shard marker run in unit-test-shards.yml on every PR.
 on:
   pull_request:
     branches: [main]
@@ -27,23 +47,28 @@ permissions:
 
 concurrency:
   group: unit-tests-${{ github.ref }}
-  cancel-in-progress: false
+  # A new push to a PR supersedes the old related run. On main a running full
+  # suite is never cancelled, but GitHub keeps only one pending run per group:
+  # a later merge replaces the run still waiting, so when merges come faster
+  # than the suite runs, some commits get no full run of their own. That is
+  # why main-red-reporter.yml names every commit since the last green run.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   unit-pytest:
     name: Unit pytest (Windows)
+    # Full suite: push to main and manual runs only (see the header).
+    if: github.event_name != 'pull_request'
     # windows-latest for the same reason as plugin-tests.yml: parts of the
     # suite exercise win32 paths, and Windows is the product's primary desktop
     # platform. It is also where the command-line length limit that silently
     # broke the cat-mind harness lives, so the guard against it stays honest.
     runs-on: windows-latest
-    # Measured on this runner, not extrapolated from a dev box: the
-    # parallelised run takes 14m32s (4m33s of it before the first test, while
-    # each worker imports the app and collects all 24621 tests), against 19m11s
-    # serial. A 15-minute cap killed it one second before the summary printed.
-    # Keep enough headroom for slow Windows-hosted runners while the suite is
-    # still collected and executed as one job. Sharding can reduce this later.
-    timeout-minutes: 45
+    # The suite alone takes 28-32 minutes here and the job ~41; the `--lf`
+    # re-run after a failure may add up to its own 15-minute cap. Nothing waits
+    # on this job any more, so the ceiling only has to stop a hung run without
+    # cutting a slow runner off in the middle of the re-run.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v5
 
@@ -88,6 +113,7 @@ jobs:
         run: uv pip install kaldi-native-fbank==1.22.3
 
       - name: Run unit test suite
+        id: full-suite
         # Separate pytest process from plugin/tests, which carries its own
         # pytest.ini.
         #
@@ -102,8 +128,7 @@ jobs:
         # Parallel brings that to 14m32s. Less than the 3.6x a 20-core dev box
         # shows, because this runner has 4 vCPUs and every worker pays a full
         # app import plus a full collection before its first test: 4m33s of the
-        # 14m32s is startup that the serial run did once. Sharding across jobs
-        # is what actually fixes that; this is the part that needs no new job.
+        # 14m32s is startup that the serial run did once.
         # loadfile (not the default `load`) keeps every test of a file together
         # on one worker in declaration order, so the seed pinned in pytest.ini
         # still reproduces and the process-global cleanup in
@@ -115,7 +140,203 @@ jobs:
         # workers while preserving coverage of the remaining unit suite.
         # Keep fixtures outside the checkout: source scanners must not read
         # generated test files, and storage tests need paths outside the project.
-        run: uv run pytest tests/unit -q -n auto --dist loadfile --basetemp "${{ runner.temp }}/neko-unit-suite" -m "not unit_fast and not runtime and not integration_serial and not frontend_contract"
+        #
+        # The related shards below must run with the same options and the same
+        # -m expression; test_select_related_tests.py checks they agree.
+        #
+        # The JUnit report (xunit1, so every case names its file) is what the
+        # PR selector balances its shards by; see the upload step below.
+        run: uv run pytest tests/unit -q -n auto --dist loadfile --basetemp "${{ runner.temp }}/neko-unit-suite" -m "not unit_fast and not runtime and not integration_serial and not frontend_contract" --junitxml "${{ runner.temp }}/unit-junit/full.xml" -o junit_family=xunit1
+
+      - name: Upload test durations for PR shard planning
+        # Kept on failure too: a red run still measured every file it ran.
+        if: always() && github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-durations
+          path: ${{ runner.temp }}/unit-junit/full.xml
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Re-run failed tests once (flaky check)
+        # Runs only the tests the full run recorded as failed (`--lf` reads
+        # .pytest_cache; files without failures are not even collected) and
+        # `--lfnf none` keeps an empty record from re-running everything. The
+        # job stays red either way: the verdict is for main-red-reporter.yml,
+        # which reads the NEKO_LF_RERUN_RESULT line from this job's log and
+        # labels the issue `flaky` when the re-run passed.
+        if: failure() && steps.full-suite.outcome == 'failure'
+        timeout-minutes: 15
+        shell: pwsh
+        run: |
+          uv run pytest tests/unit -q -n 0 --lf --lfnf none --basetemp "${{ runner.temp }}/neko-unit-rerun" -m "not unit_fast and not runtime and not integration_serial and not frontend_contract"
+          $rc = $LASTEXITCODE
+          $verdict = if ($rc -eq 0) { 'passed' } else { 'failed' }
+          Write-Host "NEKO_LF_RERUN_RESULT=$verdict (pytest exit $rc)"
+          $lines = @(
+            '### Flaky check (`--lf` re-run)',
+            '',
+            "Re-running only the failed tests exited with ${rc}: **$verdict**.",
+            $(if ($verdict -eq 'passed') { 'The failures did not reproduce; treat them as flaky until proven otherwise.' } else { 'The failures reproduced.' })
+          )
+          $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          exit 0
+
+  select-related:
+    name: Select related unit tests
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read  # to download the durations artifact of a main run
+    outputs:
+      mode: ${{ steps.select.outputs.mode }}
+      count: ${{ steps.select.outputs.count }}
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The merge-base needs history; blob:none keeps that to commits and
+          # trees, since the diff only reads names.
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Fetch test durations from the latest full run on main
+        # Best effort: without them the selector balances by test count.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for id in $(gh run list -R "$GITHUB_REPOSITORY" --workflow unit-tests.yml --branch main --event push --status completed --limit 10 --json databaseId --jq '.[].databaseId'); do
+            if gh run download "$id" -R "$GITHUB_REPOSITORY" -n unit-durations -D "$RUNNER_TEMP/unit-durations"; then
+              echo "Using test durations from run $id"
+              exit 0
+            fi
+          done
+          echo "No durations artifact found on main; balancing by test count."
+
+      - name: Select tests from the PR diff
+        id: select
+        # Static analysis only (ast + text); imports nothing from the app, so
+        # it needs no dependencies. On any diff failure it falls back to the
+        # full selection, never to an empty one.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: >-
+          python scripts/ci/select_related_tests.py
+          --base "$BASE_SHA" --head "$HEAD_SHA"
+          --out-dir related-tests
+          --github-output "$GITHUB_OUTPUT"
+          --summary "$GITHUB_STEP_SUMMARY"
+          --durations "$RUNNER_TEMP/unit-durations"
+
+      - name: Upload selection
+        if: steps.select.outputs.count != '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: related-tests
+          path: related-tests/
+          if-no-files-found: error
+          retention-days: 7
+
+  unit-pytest-related-shard:
+    name: Unit pytest (related shard ${{ matrix.shard }})
+    needs: select-related
+    if: needs.select-related.outputs.count != '0'
+    runs-on: windows-latest
+    # ~30% of the full suite per shard: ~10 minutes of pytest plus setup.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.select-related.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Install test-only native dependencies
+        # Same pins as the full job above (checked by test_select_related_tests.py).
+        # One command: PowerShell only fails a step on its last native exit
+        # code, so a failed first install would otherwise pass silently and
+        # leave the rapidocr tests to skip.
+        run: uv pip install pyclipper==1.4.0 kaldi-native-fbank==1.22.3
+
+      - name: Download selection
+        uses: actions/download-artifact@v4
+        with:
+          name: related-tests
+          path: related-tests
+
+      - name: Run related tests (shard ${{ matrix.shard }})
+        # The file list goes in through pytest's `@file` argument: hundreds of
+        # paths on the command line would hit the Windows length limit. Same
+        # options and -m expression as the full job. Exit code 5 ("no tests
+        # collected") means every selected test carried a shard marker on the
+        # function level, which unit-test-shards.yml already runs.
+        shell: pwsh
+        run: |
+          uv run pytest "@related-tests/shard-${{ matrix.shard }}.args" -q -n auto --dist loadfile --basetemp "${{ runner.temp }}/neko-unit-related" -m "not unit_fast and not runtime and not integration_serial and not frontend_contract" --junitxml "${{ runner.temp }}/unit-junit/shard-${{ matrix.shard }}.xml" -o junit_family=xunit1
+          if ($LASTEXITCODE -eq 5) { exit 0 }
+          exit $LASTEXITCODE
+
+      - name: Upload shard report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-junit-related-${{ matrix.shard }}
+          path: ${{ runner.temp }}/unit-junit/shard-${{ matrix.shard }}.xml
+          if-no-files-found: ignore
+          retention-days: 7
+
+  unit-pytest-related:
+    # The stable, required check for PRs: green when every shard passed or
+    # nothing was selected, red when selection or any shard failed.
+    name: Unit pytest (related)
+    needs: [select-related, unit-pytest-related-shard]
+    if: always() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check related test results
+        env:
+          SELECT_RESULT: ${{ needs.select-related.result }}
+          SHARD_RESULT: ${{ needs.unit-pytest-related-shard.result }}
+          MODE: ${{ needs.select-related.outputs.mode }}
+          COUNT: ${{ needs.select-related.outputs.count }}
+        run: |
+          echo "selection: $SELECT_RESULT (mode=$MODE, files=$COUNT); shards: $SHARD_RESULT"
+          if [ "$SELECT_RESULT" != "success" ]; then
+            echo "::error::Selecting related tests failed."
+            exit 1
+          fi
+          if [ "$COUNT" = "0" ]; then
+            echo "No unit test depends on this change."
+            exit 0
+          fi
+          if [ "$SHARD_RESULT" != "success" ]; then
+            echo "::error::Related unit tests did not pass ($SHARD_RESULT)."
+            exit 1
+          fi
 
   plugin-manager-vitest:
     name: Plugin manager vitest
@@ -223,3 +444,7 @@ jobs:
       - name: Run VRM emotion load-state regression suites
         timeout-minutes: 5
         run: node --test tests/frontend/vrm_emotion_manager.test.cjs tests/frontend/vrm_emotion_source.test.cjs
+
+      - name: Run Live2D emotion manager regression suite
+        timeout-minutes: 5
+        run: node --test tests/frontend/pr23_live2d_emotion_manager.test.cjs

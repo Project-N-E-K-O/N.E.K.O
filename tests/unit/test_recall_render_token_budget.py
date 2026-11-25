@@ -764,6 +764,7 @@ def test_the_entry_point_has_no_runtime_switch():
 _QUERY_MEMORY_ROUTE_DEFINITION = "app/memory_server/routes.py"
 _KNOWN_RECALL_CLIENTS = {
     "main_logic/core/tool_calling.py",
+    "plugin/server/application/messages/memory_query_service.py",
 }
 _STRUCTURED_RECALL_CLIENTS = {
     "plugin/server/application/memory/__init__.py",

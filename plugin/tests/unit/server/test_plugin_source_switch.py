@@ -549,3 +549,298 @@ async def test_switch_failure_before_lock_commit_does_not_restore_lock_metadata(
 
 async def _async_value(value):
     return value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scenario", ["running_start_fails", "cleanup_fails", "cleanup_fails_after_denial", "stopped_succeeds"]
+)
+@pytest.mark.parametrize("builtin_resolvable", [True, False], ids=["resolved", "unresolved"])
+async def test_switch_keeps_builtin_grants_with_the_builtin_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str, builtin_resolvable: bool
+) -> None:
+    """Legacy grants are bound to the builtin before the switch; a failed
+    switch restores them, a committed one discards them for the new source.
+
+    ``unresolved``: the builtin's source cannot be looked up when the legacy
+    record is imported, so the switch binds it from its confirmed plan."""
+    import json
+
+    from plugin.server.application.plugins import permission_service
+    from plugin.server.infrastructure.plugin_permissions import (
+        PluginPermissionStore,
+        PluginSource,
+    )
+
+    class _Manager:
+        def get_runtime_config_path(self, name: str) -> Path:
+            return tmp_path / "perm" / name
+
+        def save_json_config(self, name: str, data: object) -> None:
+            path = self.get_runtime_config_path(name)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data), encoding="utf-8")
+
+    legacy = tmp_path / "perm" / "plugin_consents.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "plugins": {
+                    "study_companion": {
+                        "decision": "approved",
+                        "approved_capabilities": ["memory.read"],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    lock_value: object = {"source": "builtin"}
+    sources = {
+        "builtin": PluginSource("builtin") if builtin_resolvable else None,
+        "market": PluginSource("market", "mk-study"),
+    }
+
+    def _current(_plugin_id: str) -> PluginSource | None:
+        return sources[lock_value["source"]]  # type: ignore[index]
+
+    monkeypatch.setattr(permission_service, "current_source", _current)
+    store = PluginPermissionStore(_Manager(), source_resolver=_current)
+    monkeypatch.setattr(permission_service, "permission_store", store)
+
+    exec_root = tmp_path / "exec"
+    staging = exec_root / ".study_companion.staging-test"
+    target = exec_root / "study_companion"
+    staging.mkdir(parents=True)
+    (staging / "plugin.toml").write_text("new", encoding="utf-8")
+    builtin_config = tmp_path / "builtin" / "study_companion" / "plugin.toml"
+    builtin_config.parent.mkdir(parents=True)
+    builtin_config.write_text("builtin", encoding="utf-8")
+    running = scenario in ("running_start_fails", "cleanup_fails", "cleanup_fails_after_denial")
+    if scenario == "cleanup_fails_after_denial":
+        # The user denied the plugin; a grant decided per permission stays.
+        builtin = sources["builtin"] or PluginSource("builtin")
+        store.apply_legacy_decision("study_companion", "denied", source=builtin)
+        store.decide(
+            "study_companion", "plugin_sdk.main_agent.memory:read", "granted", source=builtin
+        )
+        record = store.read("study_companion")
+        assert record.get("legacy_denied") is True
+        assert record["permissions"]["plugin_sdk.main_agent.memory:read"]["state"] == "granted"
+    if scenario in ("cleanup_fails", "cleanup_fails_after_denial"):
+        def _cannot_remove(_path: Path) -> None:
+            raise OSError("directory in use")
+
+        monkeypatch.setattr(source_switch_module, "_remove_owned_directory_sync", _cannot_remove)
+    plugins_backup = copy.deepcopy(state.plugins)
+
+    async def refresh() -> None:
+        source = target if target.exists() else builtin_config.parent
+        with state.acquire_plugins_write_lock():
+            state.plugins["study_companion"] = {"config_path": str(source / "plugin.toml")}
+
+    async def is_running(_plugin_id: str) -> bool:
+        return running
+
+    async def stop(_plugin_id: str) -> None:
+        nonlocal running
+        running = False
+
+    async def start(plugin_id: str) -> None:
+        # Like the real start: reconcile the source first.
+        nonlocal running
+        permission_service.reconcile_permission_source(plugin_id)
+        if target.exists():
+            raise RuntimeError("market failed to start")
+        running = True
+
+    async def commit_lock() -> None:
+        nonlocal lock_value
+        lock_value = {"source": "market"}
+
+    async def restore_lock(snapshot: object) -> None:
+        nonlocal lock_value
+        lock_value = snapshot
+
+    request = SourceSwitchRequest(
+        plugin_id="study_companion",
+        staged_plugin_dir=staging,
+        target_plugin_dir=target,
+        confirmation_token="token",
+    )
+    callbacks = dict(
+        rebuild_plan=lambda: _async_value(_plan("token")),
+        read_lock_snapshot=lambda: _async_value(lock_value),
+        commit_lock=commit_lock,
+        restore_lock=restore_lock,
+        clear_user_source=lambda: _async_value(None),
+        refresh_registry=refresh,
+        validate_promoted_source=lambda: _async_value(None),
+        is_running=is_running,
+        stop=stop,
+        start=start,
+    )
+    try:
+        if scenario == "running_start_fails":
+            with pytest.raises(SourceSwitchError) as exc_info:
+                await switch_builtin_source(request, **callbacks)
+            assert exc_info.value.rollback_code == "override_rollback_completed"
+            record = store.read("study_companion")
+            assert record["source"] == {"channel": "builtin", "fingerprint": None}
+            assert "plugin_sdk.main_agent.memory:read" in record["permissions"]
+        elif scenario == "cleanup_fails":
+            # The Market code could not be removed: the builtin's grants must
+            # not be put back for it; the rollback is incomplete.
+            with pytest.raises(SourceSwitchError) as exc_info:
+                await switch_builtin_source(request, **callbacks)
+            assert target.exists()
+            assert exc_info.value.rollback_code == "override_rollback_incomplete"
+            assert store.read("study_companion") == {}
+        elif scenario == "cleanup_fails_after_denial":
+            # Dropped as a source change would: approvals go, the denial stays.
+            with pytest.raises(SourceSwitchError) as exc_info:
+                await switch_builtin_source(request, **callbacks)
+            assert target.exists()
+            assert exc_info.value.rollback_code == "override_rollback_incomplete"
+            record = store.read("study_companion")
+            assert record["permissions"] == {}
+            assert record.get("legacy_denied") is True
+            assert permission_service.consent_record("study_companion")["decision"] == "denied"
+        else:
+            await switch_builtin_source(request, **callbacks)
+            # The install owner's post-commit reconciliation.
+            permission_service.reconcile_permission_source("study_companion")
+            record = store.read("study_companion")
+            assert record["source"] == {"channel": "market", "fingerprint": "mk-study"}
+            assert record["permissions"] == {}
+    finally:
+        with state.acquire_plugins_write_lock():
+            state.plugins.clear()
+            state.plugins.update(plugins_backup)
+
+
+@pytest.mark.asyncio
+async def test_switch_rollback_without_a_snapshot_is_incomplete_even_when_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The source switches inside the transaction, so a concurrent first-use
+    import can bind grants to the Market source; without a snapshot the
+    rollback cannot claim the builtin's grants are back."""
+    from plugin.server.application.plugins import permission_service
+
+    monkeypatch.setattr(
+        permission_service,
+        "snapshot_permissions",
+        lambda _plugin_id: permission_service.PermissionSnapshot("unavailable"),
+    )
+    exec_root = tmp_path / "exec"
+    staging = exec_root / ".study_companion.staging-test"
+    target = exec_root / "study_companion"
+    staging.mkdir(parents=True)
+    (staging / "plugin.toml").write_text("new", encoding="utf-8")
+    plugins_backup = copy.deepcopy(state.plugins)
+
+    async def failing_validation() -> None:
+        raise RuntimeError("promoted source rejected")
+
+    try:
+        with pytest.raises(SourceSwitchError) as exc_info:
+            await switch_builtin_source(
+                SourceSwitchRequest(
+                    plugin_id="study_companion",
+                    staged_plugin_dir=staging,
+                    target_plugin_dir=target,
+                    confirmation_token="token",
+                ),
+                rebuild_plan=lambda: _async_value(_plan("token")),
+                read_lock_snapshot=lambda: _async_value({"source": "builtin"}),
+                commit_lock=lambda: _async_value(None),
+                restore_lock=lambda _snapshot: _async_value(None),
+                clear_user_source=lambda: _async_value(None),
+                refresh_registry=lambda: _async_value(None),
+                validate_promoted_source=failing_validation,
+                is_running=lambda _plugin_id: _async_value(False),
+                stop=lambda _plugin_id: _async_value(None),
+                start=lambda _plugin_id: _async_value(None),
+            )
+        assert exc_info.value.rollback_code == "override_rollback_incomplete"
+    finally:
+        with state.acquire_plugins_write_lock():
+            state.plugins.clear()
+            state.plugins.update(plugins_backup)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("code", "proceeds"),
+    [
+        ("PLUGIN_PERMISSIONS_WRITE_FAILED", False),
+        ("PLUGIN_PERMISSIONS_READ_FAILED", False),
+        ("PLUGIN_PERMISSIONS_CORRUPT", True),
+        ("PLUGIN_PERMISSIONS_UNSUPPORTED_VERSION", True),
+    ],
+)
+async def test_switch_stops_unchanged_when_the_builtin_binding_cannot_be_saved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: str, proceeds: bool
+) -> None:
+    """Binding grants to the builtin happens before anything changes; when it
+    cannot be saved the switch stops there. A damaged or newer store holds no
+    usable grant, so it does not stop the switch."""
+    from plugin.server.application.plugins import permission_service
+    from plugin.server.domain.errors import ServerDomainError
+
+    def cannot_bind(_plugin_id, _source):
+        raise ServerDomainError(code, "permission store unavailable", 503)
+
+    monkeypatch.setattr(permission_service.permission_store, "bind_unbound_source", cannot_bind)
+    exec_root = tmp_path / "exec"
+    staging = exec_root / ".study_companion.staging-test"
+    target = exec_root / "study_companion"
+    staging.mkdir(parents=True)
+    (staging / "plugin.toml").write_text("new", encoding="utf-8")
+    calls: list[str] = []
+    plugins_backup = copy.deepcopy(state.plugins)
+
+    async def refresh() -> None:
+        with state.acquire_plugins_write_lock():
+            state.plugins["study_companion"] = {"config_path": str(target / "plugin.toml")}
+
+    async def record(name: str) -> None:
+        calls.append(name)
+
+    request = SourceSwitchRequest(
+        plugin_id="study_companion",
+        staged_plugin_dir=staging,
+        target_plugin_dir=target,
+        confirmation_token="token",
+    )
+    callbacks = dict(
+        rebuild_plan=lambda: _async_value(_plan("token")),
+        read_lock_snapshot=lambda: _async_value({"source": "builtin"}),
+        commit_lock=lambda: record("commit_lock"),
+        restore_lock=lambda _snapshot: record("restore_lock"),
+        clear_user_source=lambda: record("clear_user_source"),
+        refresh_registry=refresh,
+        validate_promoted_source=lambda: _async_value(None),
+        is_running=lambda _plugin_id: _async_value(True),
+        stop=lambda _plugin_id: record("stop"),
+        start=lambda _plugin_id: record("start"),
+    )
+    try:
+        if proceeds:
+            result = await switch_builtin_source(request, **callbacks)
+            assert result.code == "override_completed"
+            assert calls == ["stop", "commit_lock", "start"]
+        else:
+            with pytest.raises(ServerDomainError) as exc_info:
+                await switch_builtin_source(request, **callbacks)
+            assert exc_info.value.code == code
+            assert calls == []
+            assert staging.is_dir()
+            assert not target.exists()
+    finally:
+        with state.acquire_plugins_write_lock():
+            state.plugins.clear()
+            state.plugins.update(plugins_backup)

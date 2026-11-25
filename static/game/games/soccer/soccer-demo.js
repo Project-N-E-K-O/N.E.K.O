@@ -1138,6 +1138,11 @@
         _renderGameVoiceChatControl();
         try {
           const state = await soccerGame.voice.toggle();
+          // The route this command was addressed to ended while it ran. Its
+          // reply describes that route, not the current one, and its ok:false
+          // does not mean the host microphone is off; the state stream carries
+          // the current route's truth, so do not paint this over it.
+          if (state && state.reason === 'route_superseded') return;
           _renderGameVoiceChatControl(state);
           soccerSessionDebugLog('info', 'voice', 'game_voice_control_toggle', '小游戏语音对话开关完成', {
             active: state.active === true,

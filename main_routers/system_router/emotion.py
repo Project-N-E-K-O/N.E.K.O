@@ -937,17 +937,18 @@ async def emotion_analysis(request: Request):
         model = data.get('model')
         
         # Use parameters or defaults, reading safely with .get() to avoid KeyError.
-        emotion_config = await _config_manager.aget_model_api_config('emotion')
+        emotion_config = await _config_manager.aget_model_api_config('recognition')
         emotion_api_key = emotion_config.get('api_key')
-        emotion_model = emotion_config.get('model')
+        recognition_model = emotion_config.get('model')
         emotion_base_url = emotion_config.get('base_url')
         emotion_provider_type = emotion_config.get('provider_type')
         
         # Prefer request parameters, then configuration.
         api_key = api_key or emotion_api_key
-        model = model or emotion_model
+        model = model or recognition_model
         
-        if not api_key:
+        # Subscription authentication is resolved by the shared client factory.
+        if not api_key and emotion_provider_type != 'chatgpt':
             return {"error": "情绪分析模型配置缺失: API密钥未提供且配置中未设置默认密钥"}
         
         if not model:
@@ -976,7 +977,6 @@ async def emotion_analysis(request: Request):
             emotion_base_url,
             api_key,
             provider_type=emotion_provider_type,
-            temperature=0.3,
             # Gemini may return Markdown requiring more tokens.
             max_completion_tokens=EMOTION_ANALYSIS_MAX_TOKENS,
             timeout=30,

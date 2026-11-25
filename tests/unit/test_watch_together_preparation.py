@@ -1,3 +1,4 @@
+import json
 import asyncio
 from types import SimpleNamespace
 
@@ -309,3 +310,461 @@ async def test_missing_vision_prevents_paid_speech_probe(tmp_path, monkeypatch):
     await asyncio.gather(*preparation.tasks)
     assert not probes
     assert preparation.jobs[result['id']]['status'] == 'error'
+
+
+def _provider_connection_failure():
+    """Synthetic SDK error wrapping a transport error wrapping an OSError."""
+    import errno
+    import httpx
+    import openai
+    request = httpx.Request('POST', 'https://user:pw@free.example.test:8443/v1/chat/completions?api_key=sk-secretquery')
+    try:
+        try:
+            try:
+                raise ConnectionResetError(errno.ECONNRESET, 'Connection reset by peer')
+            except ConnectionResetError as reset:
+                raise httpx.ReadError(
+                    'read failed for https://free.example.test/v1/chat?token=tok-123 '
+                    'with Authorization: Bearer abc.def-ghi and sk-live1234567890 '
+                    'access_key=AKIA999 payload data:image/jpeg;base64,/9j/AAAA', request=request) from reset
+        except httpx.ReadError as read:
+            raise openai.APIConnectionError(request=request) from read
+    except openai.APIConnectionError as exc:
+        return exc
+
+
+def test_error_cause_chain_keeps_types_and_errno_but_redacts_secrets():
+    chain = preparation.error_cause_chain(_provider_connection_failure())
+    assert [layer['type'] for layer in chain] == ['APIConnectionError', 'ReadError', 'ConnectionResetError']
+    import errno
+    assert [layer['errno'] for layer in chain] == [None, None, errno.ECONNRESET]
+    text = ' '.join(layer['message'] for layer in chain)
+    assert 'https://free.example.test ' in text
+    for secret in ('/v1/chat', 'token=tok-123', 'abc.def-ghi', 'sk-live', 'AKIA999', '/9j/AAAA', 'user:pw', 'secretquery'):
+        assert secret not in text
+    assert 'Authorization: ***' in text and 'sk-***' in text and 'access_key=***' in text and 'data:***' in text
+
+
+def test_error_cause_chain_is_bounded_and_survives_cycles():
+    def nested(depth):
+        exc = ValueError('level 0')
+        for level in range(1, depth):
+            outer = RuntimeError(f'level {level}')
+            outer.__cause__ = exc
+            exc = outer
+        return exc
+    assert len(preparation.error_cause_chain(nested(10))) == preparation.MAX_CAUSE_DEPTH == 4
+    assert [layer['message'] for layer in preparation.error_cause_chain(nested(2))] == ['level 1', 'level 0']
+    first, second = RuntimeError('a'), RuntimeError('b')
+    first.__context__, second.__context__ = second, first
+    assert len(preparation.error_cause_chain(first)) == 2
+
+
+def test_error_message_is_truncated_after_redaction():
+    # Redacting first lets the text after a long key survive the length cap.
+    assert preparation.redact_error_message('sk-' + 'k' * 300 + ' tail') == 'sk-*** tail'
+    long = preparation.redact_error_message('y' * 500)
+    assert long == 'y' * preparation.MAX_CAUSE_MESSAGE_CHARS + '…'
+
+
+@pytest.mark.asyncio
+async def test_failed_preparation_prints_and_stores_redacted_detail(tmp_path, monkeypatch, capsys):
+    failure = _provider_connection_failure()
+    class Engine:
+        def __init__(self, *args, **kwargs):
+            self.vision_endpoint = {'host': 'free.example.test', 'model': 'vision-model-1'}
+            self.last_vision_request = {'window_start': 0, 'images': 22, 'image_bytes': 1500000,
+                                        'text_chars': 9000, 'request_bytes': 1520000}
+        async def vision_config(self):
+            return {}
+        async def prepare(self, *args, **kwargs):
+            raise failure
+    monkeypatch.setattr(preparation, 'Engine', Engine)
+    monkeypatch.setattr(preparation, 'application_library', lambda: SimpleNamespace(root=tmp_path))
+    monkeypatch.setattr(preparation, 'tasks', set())
+    monkeypatch.setattr(preparation, 'jobs', {})
+    manager = SimpleNamespace(preflight_game_speech_audio=speech_ready,
+                              game_speech_audio_cache_identity=lambda *args, **kwargs: ('key', 'voice'))
+    result = await preparation.prepare('video', manager, 'cat')
+    await asyncio.gather(*preparation.tasks)
+    job = preparation.jobs[result['id']]
+    assert job['error'] == 'APIConnectionError'
+    detail = job['error_detail']
+    assert detail['vision_host'] == 'free.example.test'
+    assert detail['vision_model'] == 'vision-model-1'
+    assert detail['last_vision_request']['images'] == 22
+    assert [layer['type'] for layer in detail['chain']] == ['APIConnectionError', 'ReadError', 'ConnectionResetError']
+    printed = capsys.readouterr().out
+    assert 'Watch preparation failed: APIConnectionError' in printed
+    assert 'ConnectionResetError' in printed and '"request_bytes": 1520000' in printed
+    assert 'sk-live' not in printed and 'abc.def-ghi' not in printed
+
+
+@pytest.mark.asyncio
+async def test_failure_before_engine_exists_still_reports_chain(tmp_path, monkeypatch):
+    class Engine:
+        def __init__(self, *args, **kwargs):
+            raise OSError(28, 'No space left on device')
+    monkeypatch.setattr(preparation, 'Engine', Engine)
+    monkeypatch.setattr(preparation, 'application_library', lambda: SimpleNamespace(root=tmp_path))
+    monkeypatch.setattr(preparation, 'tasks', set())
+    monkeypatch.setattr(preparation, 'jobs', {})
+    manager = SimpleNamespace(preflight_game_speech_audio=speech_ready,
+                              game_speech_audio_cache_identity=lambda *args, **kwargs: ('key', 'voice'))
+    result = await preparation.prepare('video', manager, 'cat')
+    await asyncio.gather(*preparation.tasks)
+    detail = preparation.jobs[result['id']]['error_detail']
+    assert detail == {'chain': [{'type': 'OSError', 'message': '[Errno 28] No space left on device', 'errno': 28}]}
+
+
+def test_error_message_hides_home_directory(monkeypatch):
+    monkeypatch.setenv('HOME', '/home/alice')
+    monkeypatch.setenv('USERPROFILE', '/home/alice')
+    message = preparation.redact_error_message("[Errno 2] No such file: '/home/alice/Documents/N.E.K.O/x.jpg'")
+    assert message == "[Errno 2] No such file: '~/Documents/N.E.K.O/x.jpg'"
+
+
+@pytest.mark.parametrize('raw,leak,kept', [
+    ('headers x-api-key: abc123 sent', 'abc123', 'x-api-key: ***'),
+    ('{"api_key": "AIzaSyXYZ"}', 'AIzaSyXYZ', '"api_key": ***}'),
+    ("{'api_key': 'abc'}", "'abc'", "'api_key': ***}"),
+    ("api_key='abc def' next", 'def', "api_key=*** next"),
+    ('Cookie: session=abc123', 'abc123', 'Cookie: ***'),
+    ('Cookie: theme=dark; sessionid=private123\nnext', 'private123', 'Cookie: ***\nnext'),
+    ('set-cookie: a=1; sid=zzz9; Path=/', 'zzz9', 'set-cookie: ***'),
+    ('Cookie: "sessionid=private123; theme=dark" next', 'private123', 'Cookie: ***'),
+    ("Cookie:  'sid=" + 'V' * 300 + "' next", 'VVV', 'Cookie:  ***'),
+    ('Cookie: theme="dark"; sessionid=private123\nnext', 'private123', 'Cookie: ***\nnext'),
+    ("{'Cookie': 'a=1', 'Set-Cookie': 'sid=q9'}", 'q9', "'Cookie': ***"),
+    ('Cookie: "sid=' + 'W' * 3000, 'WWW', 'Cookie: ***'),
+    ("api_key='" + 'T' * 300 + "' tail", 'TTT', 'api_key=*** tail'),
+    ('token="' + 'U' * 3000, 'UUU', 'token=***'),
+    ('api_key = abc rest', 'abc rest', 'api_key = *** rest'),
+    ('password=hunter2&x=1', 'hunter2', 'password=***'),
+    ('client_secret=s3cr3t', 's3cr3t', 'client_secret=***'),
+    ('Authorization: Basic dXNlcjpwYXNz', 'dXNlcjpwYXNz', 'Authorization: ***'),
+    ('authorization=Bearer tok', 'tok', 'authorization=***'),
+    ('proxy said bearer abc.def', 'abc.def', 'Bearer ***'),
+])
+def test_error_message_masks_common_credential_formats(raw, leak, kept):
+    message = preparation.redact_error_message(raw)
+    assert leak not in message
+    assert kept in message
+
+
+def test_provider_status_errors_keep_status_but_not_the_echoed_body():
+    import httpx
+    import openai
+    request = httpx.Request('POST', 'https://api.example.test/v1/chat/completions')
+    body = {'error': {'message': 'content flagged: 私密弹幕内容', 'code': 'content_filter'}}
+    response = httpx.Response(400, request=request, json=body)
+    exc = openai.BadRequestError('Error code: 400 - ' + str(body), response=response, body=body['error'])
+    [layer] = preparation.error_cause_chain(exc)
+    assert layer == {'type': 'BadRequestError', 'errno': None, 'status_code': 400,
+                     'code': 'content_filter', 'message': None}
+
+
+def test_windows_home_paths_are_hidden_even_when_repr_escaped(monkeypatch):
+    monkeypatch.setattr(preparation.os.path, 'expanduser', lambda _path: 'C:\\Users\\bob')
+    message = preparation.redact_error_message(OSError(2, 'No such file', 'C:\\Users\\bob\\AppData\\x.jpg'))
+    assert 'bob' not in message
+    assert message.startswith("[Errno 2] No such file: '~")
+
+
+def test_huge_messages_are_bounded_before_redaction():
+    import time
+    started = time.perf_counter()
+    for raw in ('a-' * 200000, 'data:' * 50000, 'x' * 400000):
+        assert len(preparation.redact_error_message(raw)) <= preparation.MAX_CAUSE_MESSAGE_CHARS + 1
+    # Linear-time redaction takes milliseconds; the unbounded patterns took seconds.
+    assert time.perf_counter() - started < 2
+
+
+def test_unprintable_exception_keeps_its_type():
+    class Broken(Exception):
+        def __str__(self):
+            raise RuntimeError('broken __str__')
+    assert preparation.error_cause_chain(Broken()) == [{'type': 'Broken', 'errno': None, 'message': None}]
+
+
+@pytest.mark.asyncio
+async def test_failure_detail_errors_still_end_the_job(tmp_path, monkeypatch):
+    class Engine:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError('boom')
+    def broken_detail(*args, **kwargs):
+        raise TypeError('detail failed')
+    monkeypatch.setattr(preparation, 'preparation_error_detail', broken_detail)
+    monkeypatch.setattr(preparation, 'Engine', Engine)
+    monkeypatch.setattr(preparation, 'application_library', lambda: SimpleNamespace(root=tmp_path))
+    monkeypatch.setattr(preparation, 'tasks', set())
+    monkeypatch.setattr(preparation, 'jobs', {})
+    manager = SimpleNamespace(preflight_game_speech_audio=speech_ready,
+                              game_speech_audio_cache_identity=lambda *args, **kwargs: ('key', 'voice'))
+    result = await preparation.prepare('video', manager, 'cat')
+    await asyncio.gather(*preparation.tasks)
+    job = preparation.jobs[result['id']]
+    assert job['status'] == 'error' and job['error'] == 'RuntimeError'
+    assert job['error_detail'] == {'chain': [{'type': 'RuntimeError'}], 'detail_error': 'TypeError'}
+
+
+def test_endpoint_fields_are_typed_and_bounded():
+    engine = SimpleNamespace(vision_endpoint={'host': 5, 'model': 'm-sk-abc ' + 'x' * 300}, last_vision_request={})
+    detail = preparation.preparation_error_detail(ValueError('x'), engine)
+    assert detail['vision_host'] is None
+    assert len(detail['vision_model']) <= 100
+    assert detail['last_vision_request'] == {}
+
+
+def test_cause_chain_ignores_exception_truthiness():
+    class Empty(Exception):
+        def __len__(self):
+            return 0
+    inner = Empty('inner')
+    outer = RuntimeError('outer')
+    outer.__cause__ = inner
+    inner.__cause__ = ValueError('root')
+    assert [layer['type'] for layer in preparation.error_cause_chain(outer)] == ['RuntimeError', 'Empty', 'ValueError']
+
+
+def test_cause_chain_honours_from_none():
+    try:
+        try:
+            raise ValueError('inner secret content')
+        except ValueError:
+            raise RuntimeError('outer') from None
+    except RuntimeError as exc:
+        chain = preparation.error_cause_chain(exc)
+    assert chain == [{'type': 'RuntimeError', 'errno': None, 'message': 'outer'}]
+
+
+def test_openai_status_error_hides_the_suppressed_httpx_error():
+    import httpx
+    import openai
+    request = httpx.Request('POST', 'https://api.example.test/v1/chat/completions')
+    response = httpx.Response(413, request=request, json={'error': {'message': 'echoed 弹幕', 'code': 'too_large'}})
+    try:
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError:
+            # Same shape as the SDK: ``raise self._make_status_error_from_response(...) from None``.
+            raise openai.APIStatusError('Error code: 413', response=response, body={'code': 'too_large'}) from None
+    except openai.APIStatusError as exc:
+        chain = preparation.error_cause_chain(exc)
+    assert [layer['type'] for layer in chain] == ['APIStatusError']
+    assert chain[0]['status_code'] == 413
+
+
+def test_lone_surrogates_do_not_break_utf8_output():
+    message = preparation.redact_error_message('bad-\udcff-name')
+    assert message.encode('utf-8') == b'bad-\\udcff-name'
+
+
+@pytest.mark.asyncio
+async def test_surrogate_in_failure_detail_still_prints_and_persists(tmp_path, monkeypatch, capsys):
+    class Engine:
+        def __init__(self, root, *args, **kwargs):
+            self.root = root
+        async def vision_config(self):
+            return {}
+        async def prepare(self, job, *args, **kwargs):
+            (self.root / job['id']).mkdir(parents=True)
+            raise RuntimeError('decoded name frame-\udcff.jpg')
+    imported = []
+    monkeypatch.setattr(preparation, 'Engine', Engine)
+    monkeypatch.setattr(preparation, 'application_library', lambda: SimpleNamespace(
+        root=tmp_path, import_sources=lambda *args, **kwargs: imported.append(True)))
+    monkeypatch.setattr(preparation, 'tasks', set())
+    monkeypatch.setattr(preparation, 'jobs', {})
+    manager = SimpleNamespace(preflight_game_speech_audio=speech_ready,
+                              game_speech_audio_cache_identity=lambda *args, **kwargs: ('key', 'voice'))
+    result = await preparation.prepare('video', manager, 'cat')
+    await asyncio.gather(*preparation.tasks)
+    job = preparation.jobs[result['id']]
+    assert job['stage'] == 'Preparation failed' and imported
+    saved = json.loads((tmp_path / 'preparations' / result['id'] / 'timeline.json').read_text(encoding='utf-8'))
+    assert saved['error_detail']['chain'][0]['message'] == 'decoded name frame-\\udcff.jpg'
+    assert 'Watch preparation failed: RuntimeError' in capsys.readouterr().out
+
+
+def test_illegal_header_value_errors_hide_the_raw_value():
+    import h11
+    with pytest.raises(h11.LocalProtocolError) as caught:
+        h11.Request(method='POST', target='/v1', headers=[('Host', 'x'), ('x-api-key', ' private-credential ')])
+    [layer] = preparation.error_cause_chain(caught.value)
+    assert layer == {'type': 'LocalProtocolError', 'errno': None, 'message': 'Illegal header value ***'}
+
+
+def test_configured_credentials_are_masked_anywhere_before_truncation():
+    key = ' plain-credential-1234 '
+    # The stripped key, glued to other characters, as transports often print it.
+    assert preparation.redact_error_message("value b'plain-credential-1234'", secrets=(key,)) == "value b'***'"
+    tail = preparation.redact_error_message('handshake failed for' + key + 'end', secrets=(key,))
+    assert tail == 'handshake failed for***end'
+    # A key straddling the length cap is masked before the cut, never left in part.
+    cut = preparation.redact_error_message('y' * 190 + key.strip() + 'z' * 50, secrets=(key,))
+    assert cut == 'y' * 190 + '***' + 'z' * 7 + '…'
+    # Short keys are masked only as whole words.
+    assert preparation.redact_error_message('abc12 b\'abc12\' xabc12 abc12-x localhost', secrets=('abc12', 'local')) == \
+        "*** b'***' xabc12 abc12-x localhost"
+
+
+@pytest.mark.asyncio
+async def test_failure_detail_masks_the_engine_credentials(tmp_path, monkeypatch):
+    class Engine:
+        def __init__(self, *args, **kwargs):
+            self.diagnostic_secrets = ('raw-vision-key-777',)
+            self.vision_endpoint = {'host': 'api.example.test:8443', 'model': 'm'}
+        async def vision_config(self):
+            return {}
+        async def prepare(self, *args, **kwargs):
+            raise RuntimeError("Illegal  stuff b'raw-vision-key-777'")
+    monkeypatch.setattr(preparation, 'Engine', Engine)
+    monkeypatch.setattr(preparation, 'application_library', lambda: SimpleNamespace(root=tmp_path))
+    monkeypatch.setattr(preparation, 'tasks', set())
+    monkeypatch.setattr(preparation, 'jobs', {})
+    manager = SimpleNamespace(preflight_game_speech_audio=speech_ready,
+                              game_speech_audio_cache_identity=lambda *args, **kwargs: ('key', 'voice'))
+    result = await preparation.prepare('video', manager, 'cat')
+    await asyncio.gather(*preparation.tasks)
+    detail = preparation.jobs[result['id']]['error_detail']
+    assert detail['chain'][0]['message'] == "Illegal  stuff b'***'"
+    assert 'diagnostic_secrets' not in json.dumps(detail) and 'raw-vision-key' not in json.dumps(detail)
+
+
+def test_numeric_provider_error_codes_are_kept():
+    import httpx
+    import openai
+    response = httpx.Response(400, request=httpx.Request('POST', 'https://api.example.test/v1'), json={})
+    exc = openai.APIStatusError('Error code: 400', response=response, body=None)
+    exc.code = 1301
+    assert preparation.error_cause_chain(exc)[0]['code'] == '1301'
+    exc.code = True
+    assert preparation.error_cause_chain(exc)[0]['code'] is None
+
+
+def test_message_urls_keep_port_and_ipv6_brackets():
+    assert preparation.redact_error_message('GET http://[::1]:8000/v1/x failed') == 'GET http://[::1]:8000 failed'
+    assert preparation.redact_error_message('proxy https://p.example.test:3128/a?b=c') == 'proxy https://p.example.test:3128'
+
+
+def test_forward_slash_windows_home_is_hidden(monkeypatch):
+    monkeypatch.setattr(preparation.os.path, 'expanduser', lambda _path: 'C:\\Users\\bob')
+    assert preparation.redact_error_message('ffmpeg: C:/Users/bob/Videos/a.mp4: No such file') == \
+        'ffmpeg: ~/Videos/a.mp4: No such file'
+
+
+@pytest.mark.parametrize('render', [
+    lambda key: repr(key.encode('utf-8')),
+    repr,
+    lambda key: __import__('urllib.parse').parse.quote(key, safe=''),
+])
+def test_configured_credentials_are_masked_in_escaped_forms(render):
+    key = 'caf\u00e9\\cred/+=1234'
+    message = preparation.redact_error_message('sent ' + render(key) + ' end', secrets=(key,))
+    assert 'cred' not in message and '1234' not in message
+
+
+@pytest.mark.parametrize('raw,expected', [
+    ('Failed to connect to http://localhost:8000.', 'Failed to connect to http://localhost:8000.'),
+    ('(https://api.x.com:443) bad', '(https://api.x.com:443) bad'),
+    ('proxy http://127.0.0.1:7890/v1?key=x, retry', 'proxy http://127.0.0.1:7890, retry'),
+    ('bad port http://host:99999999/v1 end', 'bad port http://host end'),
+])
+def test_message_urls_survive_trailing_punctuation_and_bad_ports(raw, expected):
+    assert preparation.redact_error_message(raw) == expected
+
+
+def test_vision_endpoint_is_reported_only_with_a_vision_request():
+    endpoint = {'host': 'api.example.test', 'model': 'vision-1'}
+    speech = SimpleNamespace(vision_endpoint=endpoint, last_vision_request=None)
+    assert preparation.preparation_error_detail(RuntimeError('tts'), speech) == {
+        'chain': [{'type': 'RuntimeError', 'errno': None, 'message': 'tts'}]}
+    vision = SimpleNamespace(vision_endpoint=endpoint, last_vision_request={'images': 1})
+    detail = preparation.preparation_error_detail(RuntimeError('net'), vision)
+    assert detail['vision_host'] == 'api.example.test' and detail['last_vision_request'] == {'images': 1}
+
+
+@pytest.mark.asyncio
+async def test_save_failure_replaces_the_earlier_failure_detail(tmp_path, monkeypatch):
+    class Engine:
+        def __init__(self, root, *args, **kwargs):
+            self.root = root
+        async def vision_config(self):
+            return {}
+        async def prepare(self, job, *args, **kwargs):
+            (self.root / job['id']).mkdir(parents=True)
+            raise RuntimeError('preparation broke')
+    def fail_import(*args, **kwargs):
+        raise OSError(28, 'No space left on device')
+    monkeypatch.setattr(preparation, 'Engine', Engine)
+    monkeypatch.setattr(preparation, 'application_library', lambda: SimpleNamespace(root=tmp_path, import_sources=fail_import))
+    monkeypatch.setattr(preparation, 'tasks', set())
+    monkeypatch.setattr(preparation, 'jobs', {})
+    manager = SimpleNamespace(preflight_game_speech_audio=speech_ready,
+                              game_speech_audio_cache_identity=lambda *args, **kwargs: ('key', 'voice'))
+    result = await preparation.prepare('video', manager, 'cat')
+    await asyncio.gather(*preparation.tasks)
+    job = preparation.jobs[result['id']]
+    assert job['stage_key'] == 'saveFailed' and job['error'] == 'OSError'
+    assert job['error_detail'] == {'chain': [{'type': 'OSError', 'errno': 28, 'message': '[Errno 28] No space left on device'}]}
+
+
+@pytest.mark.parametrize('raw,expected', [
+    ('connect http://[::1] failed', 'connect http://[::1] failed'),
+    ('connect http://[::1]. retry', 'connect http://[::1]. retry'),
+    ('connect http://[::1]:8000/v1/x.', 'connect http://[::1]:8000.'),
+    ('(see [http://h.test:1/x])', '(see [http://h.test:1])'),
+])
+def test_message_urls_keep_ipv6_brackets_and_give_back_sentence_brackets(raw, expected):
+    assert preparation.redact_error_message(raw) == expected
+
+
+@pytest.mark.parametrize('key', ['https', 'token'])
+def test_short_keys_do_not_disable_the_url_and_label_rules(key):
+    message = 'GET https://user:privatepass@host.test/private-id?sid=s1 token=privatetok'
+    redacted = preparation.redact_error_message(message, secrets=(key,))
+    assert 'privatepass' not in redacted and 'private-id' not in redacted and 'privatetok' not in redacted
+
+
+@pytest.mark.parametrize('key', ['a', '1', '123', '1234', '12345678'[:7]])
+def test_placeholder_keys_do_not_mask_ordinary_words_or_ports(key):
+    message = 'Failed to establish a new connection to http://h:1234/x 123 1'
+    assert preparation.redact_error_message(message, secrets=(key,)) == \
+        'Failed to establish a new connection to http://h:1234 123 1'
+
+
+def test_short_key_floor_still_masks_real_short_keys():
+    assert preparation.redact_error_message('auth abcd failed', secrets=('abcd',)) == 'auth *** failed'
+    assert preparation.redact_error_message('auth ab12 failed', secrets=('ab12',)) == 'auth *** failed'
+
+
+def test_ipv6_host_keeps_brackets_when_the_port_is_invalid():
+    assert preparation.redact_error_message('GET http://[::1]:70000/v1 x') == 'GET http://[::1] x'
+
+
+@pytest.mark.asyncio
+async def test_save_failure_detail_masks_the_key_without_vision_fields(tmp_path, monkeypatch):
+    class Engine:
+        def __init__(self, root, *args, **kwargs):
+            self.root = root
+            self.diagnostic_secrets = ('saved-key-123456',)
+            self.vision_endpoint = {'host': 'api.example.test', 'model': 'm'}
+            self.last_vision_request = {'images': 3}
+        async def vision_config(self):
+            return {}
+        async def prepare(self, job, *args, **kwargs):
+            (self.root / job['id']).mkdir(parents=True)
+            raise RuntimeError('vision broke')
+    def fail_import(*args, **kwargs):
+        raise RuntimeError('db rejected saved-key-123456')
+    monkeypatch.setattr(preparation, 'Engine', Engine)
+    monkeypatch.setattr(preparation, 'application_library', lambda: SimpleNamespace(root=tmp_path, import_sources=fail_import))
+    monkeypatch.setattr(preparation, 'tasks', set())
+    monkeypatch.setattr(preparation, 'jobs', {})
+    manager = SimpleNamespace(preflight_game_speech_audio=speech_ready,
+                              game_speech_audio_cache_identity=lambda *args, **kwargs: ('key', 'voice'))
+    result = await preparation.prepare('video', manager, 'cat')
+    await asyncio.gather(*preparation.tasks)
+    assert preparation.jobs[result['id']]['error_detail'] == {
+        'chain': [{'type': 'RuntimeError', 'errno': None, 'message': 'db rejected ***'}]}

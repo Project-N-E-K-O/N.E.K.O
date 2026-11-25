@@ -231,9 +231,9 @@ def _tokenize(text: str, stop_names: list[str] | None) -> list[str]:
 #
 # Same scan-aware admission as ``_VEC_CACHE`` (a scan never evicts what it
 # touched itself), bounded by ``HYBRID_RECALL_TOKEN_CACHE_MAX_BYTES``.
-# Unlike ``_VEC_CACHE`` this one takes a lock: the passive path scores in a
-# worker thread while ``recall_memory`` scores on the event loop. The lock
-# covers only the dict operations, never the tokenizing.
+# Like ``_VEC_CACHE`` it takes a lock: the passive path and ``hybrid_recall``
+# both run BM25 in worker threads, so two scans can tokenize concurrently.
+# The lock covers only the dict operations, never the tokenizing.
 _TOKEN_SEP = "\x00"
 _TOKEN_CACHE: OrderedDict[tuple[tuple[str, ...], str], tuple[str, int]] = OrderedDict()
 _TOKEN_CACHE_BYTES = 0
@@ -484,8 +484,14 @@ def _bm25_scores(
 # not "the cache costs more than it saves" — and it needs a corpus far past
 # the point where archive sharding (#2716) is the actual answer.
 #
-# No lock, same reasoning as ``_POOL_CACHE``: dict ops are atomic under the
-# GIL, and recall runs on the memory_server event loop.
+# ``_VEC_CACHE_LOCK`` guards the dict and the byte counter. Readers are no
+# longer confined to the event loop: the passive turn context builds its
+# matrix in a worker thread, and ``_cosine_rank`` / the recall reranker /
+# reflection scoring do their decode passes in worker threads too, so two
+# scans can interleave. Single dict ops are atomic under the GIL, but
+# "pop previous, evict, admit, add bytes" is a sequence that must not
+# interleave with another scan's. The lock covers only those dict operations,
+# never the decode — the same discipline as ``_TOKEN_CACHE_LOCK``.
 #
 # ⚠️ Same discipline as the pool cache: never hand out a stored vector that a
 # caller could mutate in place. Consumers only read (``vstack`` copies), and
@@ -494,6 +500,7 @@ def _bm25_scores(
 # entry = (model_id, text, text_stamp, embedding, vector, norm, nbytes)
 _VEC_CACHE: OrderedDict[str, tuple[str, str, Any, str, Any, float, int]] = OrderedDict()
 _VEC_CACHE_BYTES = 0
+_VEC_CACHE_LOCK = threading.Lock()
 
 # Per-entry bookkeeping that ``sys.getsizeof`` on the payload does not see:
 # the 7-tuple, the OrderedDict link node, the ndarray object header. Measured
@@ -527,20 +534,21 @@ def _cached_doc_vector(doc: dict, text, model_id: str, state: '_ScanState'):
     cacheable = isinstance(did, str) and bool(did) and isinstance(emb, str)
 
     if cacheable:
-        cached = _VEC_CACHE.get(did)
-        if (
-            cached is not None
-            and cached[0] == model_id
-            # Identity comparison, not equality: same str object implies same sha256,
-            # avoiding actual computation (delta argument point2 above).
-            and cached[1] is text
-            and doc.get('embedding_text_sha256') == cached[2]
-            and doc.get('embedding_model_id') == model_id
-            and cached[3] == emb
-        ):
-            _VEC_CACHE.move_to_end(did)
-            state.touched += 1
-            return cached[4], cached[5]
+        with _VEC_CACHE_LOCK:
+            cached = _VEC_CACHE.get(did)
+            if (
+                cached is not None
+                and cached[0] == model_id
+                # Identity comparison, not equality: same str object implies same sha256,
+                # avoiding actual computation (delta argument point2 above).
+                and cached[1] is text
+                and doc.get('embedding_text_sha256') == cached[2]
+                and doc.get('embedding_model_id') == model_id
+                and cached[3] == emb
+            ):
+                _VEC_CACHE.move_to_end(did)
+                state.touched += 1
+                return cached[4], cached[5]
 
     # Decode once to obtain vector instead of decoding in is_cached_embedding_valid for dimension check,
     # discarding it, then decoding again via decode_embedding. Two base64 decodes + two
@@ -563,23 +571,24 @@ def _cached_doc_vector(doc: dict, text, model_id: str, state: '_ScanState'):
         + _VEC_ENTRY_OVERHEAD_BYTES
     )
 
-    previous = _VEC_CACHE.pop(did, None)
-    if previous is not None:
-        _VEC_CACHE_BYTES -= previous[6]
-    while (
-        _VEC_CACHE
-        and _VEC_CACHE_BYTES + nbytes > HYBRID_RECALL_VEC_CACHE_MAX_BYTES
-        # Never evict entries touched by this scan itself, the mechanism of naive LRU self-destruction.
-        # Hits/admissions both move_to_end; all touched entries are at tail. Until the entire cache
-        # has been touched, head must be from a previous scan and is safely evictable.
-        and state.touched < len(_VEC_CACHE)
-    ):
-        _, evicted = _VEC_CACHE.popitem(last=False)
-        _VEC_CACHE_BYTES -= evicted[6]
-    if _VEC_CACHE_BYTES + nbytes <= HYBRID_RECALL_VEC_CACHE_MAX_BYTES:
-        _VEC_CACHE[did] = (model_id, text, stamp, emb, cvec, cnorm, nbytes)
-        _VEC_CACHE_BYTES += nbytes
-        state.touched += 1
+    with _VEC_CACHE_LOCK:
+        previous = _VEC_CACHE.pop(did, None)
+        if previous is not None:
+            _VEC_CACHE_BYTES -= previous[6]
+        while (
+            _VEC_CACHE
+            and _VEC_CACHE_BYTES + nbytes > HYBRID_RECALL_VEC_CACHE_MAX_BYTES
+            # Never evict entries touched by this scan itself, the mechanism of naive LRU self-destruction.
+            # Hits/admissions both move_to_end; all touched entries are at tail. Until the entire cache
+            # has been touched, head must be from a previous scan and is safely evictable.
+            and state.touched < len(_VEC_CACHE)
+        ):
+            _, evicted = _VEC_CACHE.popitem(last=False)
+            _VEC_CACHE_BYTES -= evicted[6]
+        if _VEC_CACHE_BYTES + nbytes <= HYBRID_RECALL_VEC_CACHE_MAX_BYTES:
+            _VEC_CACHE[did] = (model_id, text, stamp, emb, cvec, cnorm, nbytes)
+            _VEC_CACHE_BYTES += nbytes
+            state.touched += 1
     return cvec, cnorm
 
 
@@ -587,16 +596,147 @@ def _invalidate_vec_cache() -> None:
     """Drop every decoded vector. Tests and ``_invalidate_pool_cache`` only."""
     global _VEC_CACHE_BYTES
 
-    _VEC_CACHE.clear()
-    _VEC_CACHE_BYTES = 0
+    with _VEC_CACHE_LOCK:
+        _VEC_CACHE.clear()
+        _VEC_CACHE_BYTES = 0
+
+
+# The fields ``decode_valid_cached_embedding`` / ``_cached_doc_vector`` read.
+_EMBEDDING_VIEW_KEYS = (
+    'id', 'embedding', 'embedding_text_sha256', 'embedding_model_id',
+)
+
+
+def embedding_views(entries: list[dict], text_of) -> list[tuple[dict, object]]:
+    """Snapshot what a cached-vector decode reads, on the calling thread.
+
+    The decode pass runs in a worker thread while the event loop keeps
+    serving other coroutines, some of which re-stamp entries' embedding
+    fields. Copying just these fields here, in one synchronous step, means
+    the worker can never see a half-written embedding triple. ``text`` is
+    the caller's own string object, so ``_VEC_CACHE``'s identity check still
+    hits.
+    """
+    return [
+        ({key: entry.get(key) for key in _EMBEDDING_VIEW_KEYS}, text_of(entry))
+        for entry in entries
+    ]
+
+
+def decode_cached_vectors(
+    views: list[tuple[dict, object]],
+    model_id: str,
+    target_dim: int | None,
+) -> tuple[list, list[float], int | None]:
+    """Each view's validated cached vector (or None), its L2 norm, and the dim.
+
+    One decode per row at most, served from ``hybrid_recall._VEC_CACHE``
+    when the row is unchanged: the verdict is exactly
+    ``is_cached_embedding_valid`` and the vector exactly what
+    ``decode_embedding`` would return. A vector whose size differs from
+    ``target_dim`` comes back as None; when ``target_dim`` is None the first
+    valid vector fixes it. Runs in a worker thread.
+    """
+    state = _ScanState()
+    vectors: list = []
+    norms: list[float] = []
+    for view, text in views:
+        cvec, cnorm = _cached_doc_vector(view, text, model_id, state)
+        if cvec is not None:
+            if target_dim is None:
+                target_dim = int(cvec.size)
+            elif cvec.size != target_dim:
+                cvec, cnorm = None, 0.0
+        vectors.append(cvec)
+        norms.append(cnorm)
+    return vectors, norms, target_dim
+
+
+def _score_pool_cosine(
+    pool: list[dict],
+    model_id: str,
+    qarr,
+    qnorm: float,
+    target_dim: int,
+    limit: int | None,
+) -> tuple[list[tuple[dict, float]], int]:
+    """The CPU half of ``_cosine_rank``; runs in a worker thread.
+
+    Returns ``(ranking, scored)``: ``ranking`` is ``[(doc, cosine)]``
+    strongest first, ties in pool order (what a stable full sort gives),
+    cut to the top ``limit`` when given; ``scored`` counts every doc that
+    got a cosine, before the cut.
+    """
+    import numpy as np
+
+    from memory._embeddings.ranking import stable_top_indices
+
+    # ── Batch scoring: decode loop collects vectors; one matrix operation computes dot products ──
+    #
+    # Per-row ``np.linalg.norm`` + ``np.dot`` on 5000 documents cause ~30k
+    # Python↔numpy dispatches (~10µs fixed overhead each, dwarfing BLAS work).
+    # Collect (doc, vec, norm) during decode, vstack into (n, dim), then
+    # one matmul preserves semantics (skip cnorm<=0 and dimension mismatches).
+    #
+    # Norm comes with vector from ``_cached_doc_vector``; unchanged vectors necessarily have unchanged
+    # norms. Recomputing whole-pool ``norm(axis=1)`` wastes ~3ms at 5000 rows. Cache misses
+    # compute once during already-required decoding, where extra norm cost is negligible.
+    vecs: list = []
+    rows: list[dict] = []
+    row_norms: list[float] = []
+    state = _ScanState()
+    for doc in pool:
+        text = doc.get('text', '') or ''
+        cvec, cnorm = _cached_doc_vector(doc, text, model_id, state)
+        if cvec is None or cvec.size != target_dim:
+            continue
+        rows.append(doc)
+        vecs.append(cvec)
+        row_norms.append(cnorm)
+
+    if not rows:
+        return [], 0
+
+    mat = np.vstack(vecs).astype(np.float32, copy=False)
+    norms = np.asarray(row_norms, dtype=np.float32)
+    # Previous cnorm<=0 skipped rows; matrix version masks them too,
+    # substituting divisor1.0 so zero vectors produce0 rather than NaN before keep removes them.
+    keep = norms > 0
+    safe_norms = np.where(keep, norms, 1.0)
+    sims = (mat @ qarr) / (qnorm * safe_norms)
+
+    kept = np.flatnonzero(keep)
+    kept_sims = sims[kept]
+    # Only the head is ever read (``HYBRID_RECALL_BUDGET_EACH`` rows), so
+    # select it instead of sorting the whole pool. ``stable_top_indices``
+    # keeps the stable-sort tie order, so the head is the same rows in the
+    # same order the full ``sort(reverse=True)`` used to produce.
+    order = stable_top_indices(kept_sims, limit)
+    ranking = [
+        (rows[int(kept[i])], float(kept_sims[i]))
+        for i in order
+    ]
+    return ranking, int(kept.size)
 
 
 async def _cosine_rank(
     query: str,
     pool: list[dict],
+    *,
+    limit: int | None = None,
+    stats: dict | None = None,
 ) -> list[tuple[dict, float]]:
     """Embed query, compute cosine vs each doc with a valid cached
-    embedding. Returns ``[(doc, cosine)]`` sorted DESC.
+    embedding. Returns ``[(doc, cosine)]`` sorted DESC (ties in pool
+    order), cut to the first ``limit`` rows when ``limit`` is given.
+    ``stats['scored']`` receives the number of docs that got a cosine
+    before that cut (the log's "scored" count).
+
+    The decode + matrix product runs in a worker thread: on a cold cache
+    it decodes the whole pool, which must not stall the event loop. The
+    worker reads ``pool`` rows while the loop keeps running, so ``pool``
+    must hold rows private to this call (``hybrid_recall`` passes
+    ``_tag_tier``'s shallow copies), never live store entries.
 
     Skips docs with no / invalid cached embedding (no fallthrough — we
     don't have an LLM rerank to bail to). Returns ``[]`` when:
@@ -638,47 +778,13 @@ async def _cosine_rank(
 
         target_dim = parse_dim_from_model_id(model_id) or int(qarr.size)
 
-        # ── Batch scoring: decode loop collects vectors; one matrix operation computes dot products ──
-        #
-        # Per-row ``np.linalg.norm`` + ``np.dot`` on 5000 documents cause ~30k
-        # Python↔numpy dispatches (~10µs fixed overhead each, dwarfing BLAS work).
-        # Collect (doc, vec, norm) during decode, vstack into (n, dim), then
-        # one matmul preserves semantics (skip cnorm<=0 and dimension mismatches).
-        #
-        # Norm comes with vector from ``_cached_doc_vector``; unchanged vectors necessarily have unchanged
-        # norms. Recomputing whole-pool ``norm(axis=1)`` wastes ~3ms at 5000 rows. Cache misses
-        # compute once during already-required decoding, where extra norm cost is negligible.
-        vecs: list = []
-        rows: list[dict] = []
-        row_norms: list[float] = []
-        state = _ScanState()
-        for doc in pool:
-            text = doc.get('text', '') or ''
-            cvec, cnorm = _cached_doc_vector(doc, text, model_id, state)
-            if cvec is None or cvec.size != target_dim:
-                continue
-            rows.append(doc)
-            vecs.append(cvec)
-            row_norms.append(cnorm)
-
-        if not rows:
-            return []
-
-        mat = np.vstack(vecs).astype(np.float32, copy=False)
-        norms = np.asarray(row_norms, dtype=np.float32)
-        # Previous cnorm<=0 skipped rows; matrix version masks them too,
-        # substituting divisor1.0 so zero vectors produce0 rather than NaN before keep removes them.
-        keep = norms > 0
-        safe_norms = np.where(keep, norms, 1.0)
-        sims = (mat @ qarr) / (qnorm * safe_norms)
-
-        scored: list[tuple[dict, float]] = [
-            (doc, float(cos))
-            for doc, cos, ok in zip(rows, sims, keep)
-            if ok
-        ]
-
-        scored.sort(key=lambda p: p[1], reverse=True)
+        # The worker reads pool rows but never writes them; the shared
+        # ``_VEC_CACHE`` it fills is guarded by ``_VEC_CACHE_LOCK``.
+        scored, scored_count = await asyncio.to_thread(
+            _score_pool_cosine, pool, model_id, qarr, qnorm, target_dim, limit,
+        )
+        if stats is not None:
+            stats['scored'] = scored_count
         return scored
     except Exception as exc:
         logger.warning(
@@ -1214,7 +1320,105 @@ def _overlaps_window(entry: dict, win_start, win_end) -> bool:
     return s < win_end and e >= win_start
 
 
+def _embedding_service_state() -> str:
+    """Short label for the embedding service state, for the recall log line.
+
+    ``ready`` / ``disabled:<reason>`` / ``not_ready:init`` /
+    ``not_ready:loading``. INIT ("load never requested yet") and LOADING
+    ("load in progress") are split on purpose: ``not_ready:init`` that
+    persists long after startup means nobody will ever load this instance.
+    Reading state does not load or throw (pure properties); failures degrade
+    to ``unknown(<exc>)`` without affecting recall.
+    """
+    try:
+        from memory.embeddings import get_embedding_service
+        svc = get_embedding_service()
+        if svc.is_available():
+            return "ready"
+        if svc.is_disabled():
+            return "disabled:%s" % svc.disable_reason()
+        state_name = getattr(svc, "state_name", None)
+        return "not_ready:%s" % state_name() if callable(state_name) else "not_ready"
+    except Exception as exc:  # noqa: BLE001
+        return "unknown(%s)" % type(exc).__name__
+
+
 # ── public entry ──────────────────────────────────────────────────────
+
+
+def _prepare_recall_pools(
+    active_facts: list[dict],
+    active_reflections: list[dict],
+    archive_facts: list[dict],
+    persona_left_out: list[dict],
+    *,
+    lanlan_name: str,
+    subjects,
+    include_legacy_private: bool | None,
+    time_window: tuple | None,
+) -> tuple[list[dict], list[dict]]:
+    """Build ``(bm25_pool, embedding_pool)`` from the loaded rows.
+
+    Archive overlap removal, tier tagging (private shallow copies), scope
+    filtering, the optional time window and the hard filter — the same steps,
+    in the same order, ``hybrid_recall`` used to run inline.
+
+    Runs in a worker thread while the event loop keeps serving other
+    coroutines. The four lists must be snapshots the caller took on the
+    event loop, never the stores' own lists: writers reshape FactStore's
+    cached list in place (``facts[:] = ...``) from the loop, and iterating it
+    here would skip rows. The rows inside are still the stores' own dicts.
+    That is no new exposure: writers already mutate those rows from worker
+    threads (``amark_absorbed`` / ``asave_facts`` run under
+    ``asyncio.to_thread``), and under the GIL ``_tag_tier``'s single
+    ``dict(row)`` copies each one whole. The worst case is a field update on
+    one row landing between two other rows' copies; the path is read-only,
+    so nothing of that persists past the answer.
+    """
+    archive_facts = _drop_archive_overlap(archive_facts, active_facts, lanlan_name)
+
+    facts_tagged = _tag_tier(active_facts, 'fact')
+    refl_tagged = _tag_tier(active_reflections, 'reflection')
+    arch_tagged = _tag_tier(archive_facts, 'fact_archive')
+    persona_tagged = _tag_tier(persona_left_out, 'persona')
+
+    # Security boundary: scope filtering happens before any BM25/cosine/RRF
+    # scoring. A group caller never searches the private/global corpus and then
+    # hides results afterwards. With no subjects, missing scope keeps the legacy
+    # private behaviour; explicit subjects exclude legacy rows by default.
+    from memory.scopes import filter_entries_for_subjects
+    facts_tagged = filter_entries_for_subjects(
+        facts_tagged, subjects, include_legacy_private=include_legacy_private,
+    )
+    refl_tagged = filter_entries_for_subjects(
+        refl_tagged, subjects, include_legacy_private=include_legacy_private,
+    )
+    arch_tagged = filter_entries_for_subjects(
+        arch_tagged, subjects, include_legacy_private=include_legacy_private,
+    )
+    persona_tagged = filter_entries_for_subjects(
+        persona_tagged, subjects, include_legacy_private=include_legacy_private,
+    )
+
+    # Joint semantic + time retrieval: given time_window, hard-filter candidate pool by event time
+    # before subsequent BM25/cosine scoring.
+    if time_window is not None:
+        ws, we = time_window
+        facts_tagged = [d for d in facts_tagged if _overlaps_window(d, ws, we)]
+        refl_tagged = [d for d in refl_tagged if _overlaps_window(d, ws, we)]
+        arch_tagged = [d for d in arch_tagged if _overlaps_window(d, ws, we)]
+        persona_tagged = [d for d in persona_tagged if _overlaps_window(d, ws, we)]
+
+    bm25_pool_raw = facts_tagged + refl_tagged + arch_tagged + persona_tagged
+    embedding_pool_raw = facts_tagged + refl_tagged + persona_tagged
+
+    # Hard filter (drop score<0 / suppressed / terminal reflection / protected).
+    # Imported lazily so a circular-import-safe boot path stays viable.
+    from memory.recall import MemoryRecallReranker
+    return (
+        MemoryRecallReranker._hard_filter(bm25_pool_raw),
+        MemoryRecallReranker._hard_filter(embedding_pool_raw),
+    )
 
 
 async def hybrid_recall(
@@ -1291,9 +1495,6 @@ async def hybrid_recall(
     )
     active_facts = active_facts or []
     active_reflections = active_reflections or []
-    archive_facts = _drop_archive_overlap(
-        archive_facts or [], active_facts, lanlan_name,
-    )
     # Persona entries the private render leaves out of the system prompt
     # (over its budget) are recallable like any other memory; the ones it
     # keeps are already in front of the model.
@@ -1308,46 +1509,22 @@ async def hybrid_recall(
             logger.debug("[hybrid_recall] persona residency skipped: %s", exc)
             persona_left_out = []
 
-    facts_tagged = _tag_tier(active_facts, 'fact')
-    refl_tagged = _tag_tier(active_reflections, 'reflection')
-    arch_tagged = _tag_tier(archive_facts, 'fact_archive')
-    persona_tagged = _tag_tier(persona_left_out, 'persona')
-
-    # Security boundary: scope filtering happens before any BM25/cosine/RRF
-    # scoring. A group caller never searches the private/global corpus and then
-    # hides results afterwards. With no subjects, missing scope keeps the legacy
-    # private behaviour; explicit subjects exclude legacy rows by default.
-    from memory.scopes import filter_entries_for_subjects
-    facts_tagged = filter_entries_for_subjects(
-        facts_tagged, subjects, include_legacy_private=include_legacy_private,
+    # Everything between loading and scoring is synchronous and linear in the
+    # pool (archive included): ~1 ms on a 1k-row keyword pool, ~130 ms at
+    # 100k rows. It runs in a worker thread on list snapshots taken here, in
+    # one synchronous step: some writers shrink FactStore's cached list in
+    # place from the event loop (``facts[:] = ...``), and a worker iterating
+    # the live list would silently skip untouched rows. Copying the pointers
+    # costs well under a millisecond even at 100k rows.
+    bm25_pool, embedding_pool = await asyncio.to_thread(
+        _prepare_recall_pools,
+        list(active_facts), list(active_reflections),
+        list(archive_facts or []), list(persona_left_out),
+        lanlan_name=lanlan_name,
+        subjects=subjects,
+        include_legacy_private=include_legacy_private,
+        time_window=time_window,
     )
-    refl_tagged = filter_entries_for_subjects(
-        refl_tagged, subjects, include_legacy_private=include_legacy_private,
-    )
-    arch_tagged = filter_entries_for_subjects(
-        arch_tagged, subjects, include_legacy_private=include_legacy_private,
-    )
-    persona_tagged = filter_entries_for_subjects(
-        persona_tagged, subjects, include_legacy_private=include_legacy_private,
-    )
-
-    # Joint semantic + time retrieval: given time_window, hard-filter candidate pool by event time
-    # before subsequent BM25/cosine scoring.
-    if time_window is not None:
-        ws, we = time_window
-        facts_tagged = [d for d in facts_tagged if _overlaps_window(d, ws, we)]
-        refl_tagged = [d for d in refl_tagged if _overlaps_window(d, ws, we)]
-        arch_tagged = [d for d in arch_tagged if _overlaps_window(d, ws, we)]
-        persona_tagged = [d for d in persona_tagged if _overlaps_window(d, ws, we)]
-
-    bm25_pool_raw = facts_tagged + refl_tagged + arch_tagged + persona_tagged
-    embedding_pool_raw = facts_tagged + refl_tagged + persona_tagged
-
-    # Hard filter (drop score<0 / suppressed / terminal reflection / protected).
-    # Imported lazily so a circular-import-safe boot path stays viable.
-    from memory.recall import MemoryRecallReranker
-    bm25_pool = MemoryRecallReranker._hard_filter(bm25_pool_raw)
-    embedding_pool = MemoryRecallReranker._hard_filter(embedding_pool_raw)
 
     # stop_names: strip master/neko nicknames so high-DF entity names do not
     # dominate BM25 IDF.
@@ -1358,11 +1535,31 @@ async def hybrid_recall(
         logger.debug("[hybrid_recall] collect_stop_names skipped: %s", exc)
         stop_names = []
 
-    # Score. BM25 is sync + cheap (≤ few-hundred docs, pure-Python loop);
-    # cosine is async (embed_batch). Run cosine first so the BM25 work
-    # can proceed while embedding model warms (if first call).
-    cosine_scored_task = asyncio.create_task(_cosine_rank(query, embedding_pool))
-    bm25_scored = _bm25_rank(query, bm25_pool, stop_names=stop_names)
+    # Score. Cosine is async (embed_batch, then scoring in a worker thread);
+    # start it first so it runs while BM25 does.
+    # Only the first HYBRID_RECALL_BUDGET_EACH cosine rows are ever read
+    # (threshold filter keeps a prefix of a DESC ranking, then [:BUDGET_EACH]).
+    cosine_stats: dict = {}
+    cosine_scored_task = asyncio.create_task(_cosine_rank(
+        query, embedding_pool, limit=HYBRID_RECALL_BUDGET_EACH, stats=cosine_stats,
+    ))
+    # BM25 is a pure-Python loop over the whole keyword pool (archive
+    # included): a few ms today, but ~0.2 s at 38k rows and over 1 s at 99k,
+    # so it runs in a worker thread like the passive path's ``_bm25_scores``
+    # does. The pool rows are ``_tag_tier``'s private copies and
+    # ``_TOKEN_CACHE`` is locked, so the worker shares nothing mutable.
+    # A thread cannot be interrupted: if this call is cancelled (only when the
+    # client goes away), the BM25 scan still runs to completion in the default
+    # executor and its result is dropped.
+    try:
+        bm25_scored = await asyncio.to_thread(
+            _bm25_rank, query, bm25_pool, stop_names=stop_names,
+        )
+    except BaseException:
+        # However this call leaves (cancelled, failed, interrupted), the cosine
+        # task is no longer awaited by anyone: stop it instead of orphaning it.
+        cosine_scored_task.cancel()
+        raise
     if budget_ms is None:
         cosine_scored = await cosine_scored_task
     else:
@@ -1418,14 +1615,7 @@ async def hybrid_recall(
     # vectors, requiring embeddings.py logs to distinguish,
     # historically absent from Memory log file. Reading service state does not load or
     # throw (pure properties); failures degrade to unknown without affecting recall.
-    try:
-        from memory.embeddings import get_embedding_service
-        _svc = get_embedding_service()
-        emb_state = "ready" if _svc.is_available() else (
-            "disabled:%s" % _svc.disable_reason() if _svc.is_disabled() else "not_ready"
-        )
-    except Exception as exc:  # noqa: BLE001
-        emb_state = "unknown(%s)" % type(exc).__name__
+    emb_state = _embedding_service_state()
     # union pool size for observability — bm25 pool is the superset.
     # `passed` = items surviving the per-side threshold; `thresh` is the
     # Cutoff constant. Previously log put `passed` count into `(>thresh %d)`,
@@ -1437,7 +1627,8 @@ async def hybrid_recall(
         lanlan_name,
         len(bm25_pool), len(embedding_pool),
         len(bm25_scored), len(bm25_top), HYBRID_RECALL_BM25_THRESHOLD,
-        len(cosine_scored), len(cosine_top), HYBRID_RECALL_COSINE_THRESHOLD,
+        cosine_stats.get('scored', len(cosine_scored)), len(cosine_top),
+        HYBRID_RECALL_COSINE_THRESHOLD,
         emb_state,
         len(results), elapsed_ms,
     )

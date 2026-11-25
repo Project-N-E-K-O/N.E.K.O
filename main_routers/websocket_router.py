@@ -993,6 +993,22 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                         message,
                     )
                     continue
+                if message.get("action") == "screen_share_stopped":
+                    # stopRecording() tears the share down before its
+                    # pause_session, so a superseded recorder sends this too:
+                    # closing it here would lose that pause. Only the socket
+                    # that still owns voice may clear frames (its own share);
+                    # any other old socket's notice is dropped.
+                    if _owns_voice_connection():
+                        session_manager[lanlan_name].handle_screen_share_stopped()
+                    continue
+                if message.get("action") == "proactive_vision_invalidate":
+                    # Every open window runs the switch sync, a superseded
+                    # one included. Ending in-flight screen access only takes
+                    # access away, so apply it; closing this socket over it
+                    # would add a close (and a reconnect) to each toggle.
+                    session_manager[lanlan_name].invalidate_proactive_vision_rounds()
+                    continue
                 if _is_voice_path_message(message) and _owns_voice_connection():
                     await _dispatch_voice_message_while_superseded(message)
                     continue
@@ -1063,6 +1079,19 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 session_manager[lanlan_name].update_proactive_vision_consent(
                     message.get("enabled")
                 )
+                continue
+
+            if action == "proactive_vision_invalidate":
+                # Proactive Chat or its Screen Share option went off: rounds
+                # already in flight must stop using the screen.
+                session_manager[lanlan_name].invalidate_proactive_vision_rounds()
+                continue
+
+            if action == "screen_share_stopped":
+                # The frontend's manual screen share ended (any way: stop
+                # button, the browser/system ending the track, a capture
+                # failure, the voice session ending). Forget its frames.
+                session_manager[lanlan_name].handle_screen_share_stopped()
                 continue
 
             if action == "goodbye_state":
@@ -1326,6 +1355,16 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 # its task started later.
                 message = _stamp_user_input_ingress(message)
                 stream_mgr = session_manager[lanlan_name]
+                if input_type in {"screen", "camera"}:
+                    # Screen consent at arrival, before validation awaits: a
+                    # revocation meanwhile must still reach this frame.
+                    # Server-owned, like the ingress time above.
+                    message = {
+                        **message,
+                        "_visual_input_consent_epoch": getattr(
+                            stream_mgr, "_screen_consent_revocation_epoch", 0
+                        ),
+                    }
                 _record_stream_engagement_ingress(
                     stream_mgr,
                     message,

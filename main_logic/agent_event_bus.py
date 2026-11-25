@@ -646,12 +646,13 @@ async def publish_turn_check_reliably(
     conversation_id: Optional[str] = None,
     external_intent: Optional[float] = None,
     language: Optional[str] = None,
+    source_message_ref: Optional[str] = None,
 ) -> bool:
     """Reliably ask the agent process to check a finished turn: event_id + ack, with short retries.
 
     Sent for a turn in which she called no task tool. The agent process decides
     whether the turn is worth a look at all and what follows (see
-    ``nekoclaw.host.task_brain.TaskBrain.check_turn``). A request sent again
+    ``nekopower.host.task_brain.TaskBrain.check_turn``). A request sent again
     after a slow acknowledgement carries the same ``event_id``, which the
     agent process uses to check the turn once.
 
@@ -680,6 +681,8 @@ async def publish_turn_check_reliably(
         }
         if conversation_id:
             event["conversation_id"] = conversation_id
+        if source_message_ref:
+            event["source_message_ref"] = source_message_ref
         # Only an optimization hint; omitted when None so the gate lets the turn through.
         if external_intent is not None:
             event["external_intent"] = external_intent

@@ -329,3 +329,18 @@ def test_edge_uses_event_time_not_now(store):
         "SELECT first_seen FROM device_steam_edges WHERE device_id='deviceAAAAAAAAAAAA'"
     ).fetchone()["first_seen"]
     assert fs == old, "边时间戳应取事件观测时间，而非回填运行时刻"
+
+
+def test_telemetry_setup_sh_references_live_admin_route_and_client_module():
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[2]
+    setup_text = (repo_root / "local_server" / "telemetry_server" / "deploy" / "setup.sh").read_text(encoding="utf-8")
+    server_text = (repo_root / "local_server" / "telemetry_server" / "server.py").read_text(encoding="utf-8")
+    reporting_text = (repo_root / "utils" / "token_tracker" / "reporting.py").read_text(encoding="utf-8")
+
+    assert "/api/v1/admin/dashboard" not in setup_text
+    assert "/api/v1/admin/stats" in setup_text
+    assert '"/api/v1/admin/stats"' in server_text
+    assert "utils/token_tracker/reporting.py" in setup_text
+    assert "_TELEMETRY_SERVER_URL" in reporting_text

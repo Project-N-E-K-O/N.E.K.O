@@ -4,7 +4,7 @@ from playwright.sync_api import expect
 
 @pytest.mark.frontend
 def test_image_settings_real_page_round_trip(mock_page, running_server):
-    mock_page.add_init_script("localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("localStorage.setItem('neko_tutorial_settings', 'true')")
     def seed(route):
         route.fulfill(json={
             "success": True, "coreApi": "free", "assistApi": "free",
@@ -38,15 +38,15 @@ def test_image_settings_real_page_round_trip(mock_page, running_server):
         document.getElementById('custom-api-container').style.display = 'grid';
     }""")
     mock_page.set_viewport_size({"width": 1280, "height": 1000})
-    # Existing pairs retain their columns; image generation sits beside mini-games.
-    for left, right in [("conversation", "vision"), ("summary", "correction"), ("emotion", "omni"), ("agent", "tts"), ("game", "image")]:
+    # Cards pair up two per row.
+    for left, right in [("conversation", "memory"), ("recognition", "decision"), ("omni", "tts"), ("agent-advanced", "agent"), ("agent-small", "game")]:
         bounds = mock_page.evaluate("""([left, right]) => {
             const box = type => document.getElementById(type + '-model-content').parentElement.getBoundingClientRect();
             const a = box(left), b = box(right);
             return {sameRow: Math.abs(a.top - b.top) < 1, ordered: a.left < b.left};
         }""", [left, right])
         assert bounds == {"sameRow": True, "ordered": True}
-    for model in ["correction", "omni", "tts", "image"]:
+    for model in ["memory", "decision", "tts", "agent", "game", "image"]:
         mock_page.evaluate("type => toggleModelConfig(type)", model)
         mock_page.wait_for_function("""type => {
             const outer = document.getElementById('custom-api-container').getBoundingClientRect();

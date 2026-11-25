@@ -33,7 +33,17 @@ function createSettingsPopupShowSync(prefix) {
         syncCheckbox(popup.querySelector(`#${prefix}-proactive-chat`), window.proactiveChatEnabled);
         // proactive-vision 走 inverted（"隐私模式" UI 显示），与 avatar-ui-popup.js 对齐
         syncCheckbox(popup.querySelector(`#${prefix}-proactive-vision`), window.proactiveVisionEnabled, true);
-        syncCheckbox(popup.querySelector(`#${prefix}-mouse-tracking-toggle`), window.mouseTrackingEnabled);
+        // Same reading as the mask module: only an explicit false is off.
+        syncCheckbox(popup.querySelector(`#${prefix}-capture-self-ui-mask`),
+            typeof window.captureSelfUiMaskEnabled === 'undefined' ? undefined : window.captureSelfUiMaskEnabled !== false);
+        // Same source as the checkbox at creation: each avatar type's own
+        // getMouseTrackingState (MMD reads its cursorFollow, not the global).
+        const mouseTracking = this && typeof this._getMouseTrackingState === 'function'
+            ? this._getMouseTrackingState()
+            : window.mouseTrackingEnabled;
+        // The switch lives in the animation settings side panel, which is
+        // appended to document.body, not to the popup.
+        syncCheckbox(document.querySelector(`#${prefix}-mouse-tracking-toggle`), mouseTracking);
         if (window.CHAT_MODE_CONFIG) {
             window.CHAT_MODE_CONFIG.forEach(config => {
                 const cb = document.querySelector(`#${prefix}-proactive-${config.mode}-chat`);
@@ -57,6 +67,7 @@ if (typeof Live2DManager !== 'undefined') {
         animationDurationMs: AVATAR_POPUP_ANIMATION_DURATION_MS,
         characterMenuItems: [
             { id: 'general', label: '通用设置', labelKey: 'settings.menu.general', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', url: '/character_card_manager' },
+            { id: 'emote-maker', label: '表情包制作', labelKey: 'settings.menu.emoteMaker', icon: '/static/icons/emoji_icon.png', action: 'navigate', url: '/emote_maker' },
             { id: 'live2d-manage', label: '模型管理', labelKey: 'settings.menu.modelSettings', icon: '/static/icons/character_icon.png', action: 'navigate', urlBase: '/model_manager' },
             { id: 'voice-clone', label: '声音克隆', labelKey: 'settings.menu.voiceClone', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_clone' }
         ],
@@ -84,6 +95,7 @@ const _vrmPopupConfig = {
     animationDurationMs: AVATAR_POPUP_ANIMATION_DURATION_MS,
     characterMenuItems: [
         { id: 'general', label: '通用设置', labelKey: 'settings.menu.general', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', url: '/character_card_manager' },
+        { id: 'emote-maker', label: '表情包制作', labelKey: 'settings.menu.emoteMaker', icon: '/static/icons/emoji_icon.png', action: 'navigate', url: '/emote_maker' },
         { id: 'vrm-manage', label: '模型管理', labelKey: 'settings.menu.modelSettings', icon: '/static/icons/character_icon.png', action: 'navigate', urlBase: '/model_manager' },
         { id: 'voice-clone', label: '声音克隆', labelKey: 'settings.menu.voiceClone', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_clone' }
     ],
@@ -164,6 +176,7 @@ const _mmdPopupConfig = {
     animationDurationMs: AVATAR_POPUP_ANIMATION_DURATION_MS,
     characterMenuItems: [
         { id: 'general', label: '通用设置', labelKey: 'settings.menu.general', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', url: '/character_card_manager' },
+        { id: 'emote-maker', label: '表情包制作', labelKey: 'settings.menu.emoteMaker', icon: '/static/icons/emoji_icon.png', action: 'navigate', url: '/emote_maker' },
         { id: 'mmd-manage', label: '模型管理', labelKey: 'settings.menu.modelSettings', icon: '/static/icons/character_icon.png', action: 'navigate', urlBase: '/model_manager' },
         { id: 'voice-clone', label: '声音克隆', labelKey: 'settings.menu.voiceClone', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_clone' }
     ],
@@ -181,7 +194,14 @@ const _mmdPopupConfig = {
         console.log(`[MMD] 跟踪鼠标已${enabled ? '开启' : '关闭'}`);
     },
     getMouseTrackingState: function() {
-        return this.cursorFollow ? this.cursorFollow.enabled : false;
+        // Before the model (and its cursorFollow) is loaded, show the saved
+        // global setting instead of "off".
+        return this.cursorFollow ? this.cursorFollow.enabled : window.mouseTrackingEnabled !== false;
+    },
+    // Same show-time refresh as Live2D / VRM: a setting changed in another
+    // window must not leave a stale checkbox here.
+    overrides: {
+        _onPopupShow: createSettingsPopupShowSync('mmd')
     }
 };
 

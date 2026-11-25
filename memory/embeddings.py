@@ -66,6 +66,7 @@ import os
 import platform
 import re
 import sys
+import threading
 import time
 from typing import Any
 
@@ -1082,6 +1083,11 @@ class EmbeddingService:
     def disable_reason(self) -> str:
         return self._disable_reason.value
 
+    def state_name(self) -> str:
+        """Lifecycle state as a short string (``init`` / ``loading`` /
+        ``ready`` / ``disabled`` / ``closed``), for diagnostics only."""
+        return self._state.value
+
     def model_id(self) -> str | None:
         """Canonical id stamped into ``embedding_model_id`` cache fields.
         Returns None when the service is permanently DISABLED — callers
@@ -1529,18 +1535,37 @@ class _DisabledError(Exception):
 # ── module-level singleton accessor ──────────────────────────────────
 
 _SERVICE: EmbeddingService | None = None
+# Guards construction / teardown of ``_SERVICE``. At memory-server startup
+# the embedding warmup worker and the knowledge runtime each call
+# ``get_embedding_service()`` from their own ``asyncio.to_thread`` worker.
+# Without the lock both can see ``None`` and build separate instances; only
+# the worker's copy ever gets ``request_load()``, so if the other copy wins
+# the global slot, every reader sees a service stuck in INIT for the whole
+# process lifetime.
+_SERVICE_LOCK = threading.Lock()
 
 
 def get_embedding_service() -> EmbeddingService:
     """Return the process-wide singleton, lazily constructed.
 
-    Construction reads from ``config`` and the user's app-data dir. The
-    service ctor itself is cheap (no model load, no disk IO beyond psutil
-    sampling), so we don't bother short-circuiting on the lock outside.
+    Construction reads from ``config`` and the user's app-data dir (CPU
+    feature probes, RAM sampling, model-dir file checks). It is cheap but
+    not instant, and it may run on several threads at once, so creation is
+    serialized: a lock-free fast path for the common already-built case,
+    then a re-check under ``_SERVICE_LOCK`` before building.
+
+    A caller on the event-loop thread (e.g. hybrid_recall) that arrives while
+    another thread is building waits on the lock for the rest of that build.
+    That is the same short, one-time cost it would have paid building the
+    service itself before the lock existed, so it is accepted here.
     """
     global _SERVICE
-    _SERVICE = _service_lifecycle.get_or_create(_SERVICE, _build_default_service)
-    return _SERVICE
+    service = _SERVICE
+    if service is not None:
+        return service
+    with _SERVICE_LOCK:
+        _SERVICE = _service_lifecycle.get_or_create(_SERVICE, _build_default_service)
+        return _SERVICE
 
 
 def reset_embedding_service_for_tests() -> None:
@@ -1551,18 +1576,28 @@ def reset_embedding_service_for_tests() -> None:
     detection can verify the warning is emitted on its synthetic boot.
     """
     global _SERVICE, _VNNI_DECISION_LOGGED
-    _SERVICE = _service_lifecycle.reset_for_tests()
+    with _SERVICE_LOCK:
+        _SERVICE = _service_lifecycle.reset_for_tests()
     _VNNI_DECISION_LOGGED = False
 
 
 async def release_embedding_service() -> None:
     """Release the process singleton and its native session references."""
     global _SERVICE
-    service = _SERVICE
+    with _SERVICE_LOCK:
+        service = _SERVICE
     if service is not None:
+        # Awaited outside the (thread) lock. Until the clear below, callers
+        # racing with shutdown get the closing instance, whose operations
+        # already return None. After the clear, a late caller would lazily
+        # build a fresh, never-loaded instance; the process is exiting, so
+        # that is tolerated rather than guarded with a "released" flag.
         await service.close()
-    if _SERVICE is service:
-        _SERVICE = None
+    # Compare-and-clear under the same lock as construction, so we never
+    # drop an instance that another thread installed meanwhile.
+    with _SERVICE_LOCK:
+        if _SERVICE is service:
+            _SERVICE = None
 
 
 def _build_default_service() -> EmbeddingService:

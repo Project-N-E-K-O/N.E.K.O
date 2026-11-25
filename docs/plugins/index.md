@@ -74,4 +74,4 @@ Read [Build Plugins with Coding Agents](./coding-agents) if you want an AI codin
 - [Examples](./examples) — Complete working examples
 - [Adapters & Concurrency](./advanced) — Adapter gateways, async entries, and thread safety
 - [LLM Tool Calling](./tool-calling) — Register plugin functions for the LLM to invoke during conversations
-- [Best Practices](./best-practices) — Error handling, testing, code organization
+- [Best Practices](./best-practices) — Error handling, code organization

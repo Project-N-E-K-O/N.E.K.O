@@ -12,7 +12,7 @@ N.E.K.O/
 ├── main_logic/              # 对话、客户端、TTS、总线
 ├── main_routers/            # 主 FastAPI 路由
 ├── memory/                  # fact/recall/persona/reflection/event/outbox
-├── nekoclaw/                # 任务大脑与宿主（host/）、agent runtime（runtime/）、键鼠与浏览器工具（builtin/）
+├── nekopower/                # 任务大脑与宿主（host/）、agent runtime（runtime/）、键鼠与浏览器工具（builtin/）
 ├── plugin/                  # SDK、host/server、内置插件、工具
 ├── services/                # 领域服务：聊天同步、小剧场运行时
 ├── utils/config_manager/    # 可写配置与存储包

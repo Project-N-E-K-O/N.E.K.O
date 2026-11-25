@@ -19,7 +19,7 @@ from playwright.sync_api import Page, expect
 def _goto_and_wait(mock_page: Page, running_server: str):
     """Navigate to /api_key, skip tutorial, and wait for loading overlay to disappear."""
     # Skip the tutorial overlay that blocks interactions
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     url = f"{running_server}/api_key"
     mock_page.goto(url)
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
@@ -165,10 +165,16 @@ def test_provider_switch_key_reresolution(mock_page: Page, running_server: str):
     game_defaults = mock_page.evaluate("""() => ({
         gameMain: getDefaultProviderForModelType('gameMain'),
         gameSummary: getDefaultProviderForModelType('gameSummary'),
+        agentSmall: getDefaultProviderForModelType('agentSmall'),
+        agentAdvanced: getDefaultProviderForModelType('agentAdvanced'),
+        gameRecognition: getDefaultProviderForModelType('gameRecognition'),
     })""")
     assert game_defaults == {
         "gameMain": "follow_conversation",
-        "gameSummary": "follow_summary",
+        "gameSummary": "follow_memory",
+        "agentSmall": "follow_recognition",
+        "agentAdvanced": "follow_agent",
+        "gameRecognition": "follow_recognition",
     }
 
     game_fold_state = mock_page.evaluate("""() => {
@@ -294,13 +300,14 @@ def test_custom_api_test_button(mock_page: Page, running_server: str):
     summary_count = mock_page.evaluate("""() => {
         return document.querySelectorAll('.connectivity-summary-light').length;
     }""")
-    assert summary_count == 10, "Summary lights should cover all custom model slots"
+    # Twelve slots: the retired vision slot has no card or light any more.
+    assert summary_count == 12, "Summary lights should cover all custom model slots"
 
     tooltip_state = mock_page.evaluate("""() => {
         const summaryLight = document.querySelector('.connectivity-summary-light[data-model-type="conversation"]');
         const coreInput = document.getElementById('apiKeyInput');
         const coreLight = coreInput?.closest('.connectivity-input-row')?.querySelector('.connectivity-light');
-        const label = window.t ? window.t('api.conversationModelConfig', '文本聊天模型') : '文本聊天模型';
+        const label = window.t ? window.t('api.conversationModelConfig', '聊天模型') : '聊天模型';
         const status = window.t ? window.t('connectivity.status.connected', '已连通') : '已连通';
         const modelIdLabel = window.t ? window.t('api.modelId', '模型ID') : '模型ID';
         return {
@@ -347,13 +354,15 @@ def test_custom_api_summary_lights_navigate_to_model_config(mock_page: Page, run
     )""")
     assert target_ids == {
         "conversation": "conversation-model-content",
-        "summary": "summary-model-content",
+        "memory": "memory-model-content",
         "gameMain": "game-main-model-content",
         "gameSummary": "game-summary-model-content",
-        "correction": "correction-model-content",
-        "emotion": "emotion-model-content",
-        "vision": "vision-model-content",
+        "recognition": "recognition-model-content",
+        "decision": "decision-model-content",
         "agent": "agent-model-content",
+        "agentSmall": "agent-small-model-content",
+        "agentAdvanced": "agent-advanced-model-content",
+        "gameRecognition": "game-recognition-model-content",
         "omni": "omni-model-content",
         "tts": "tts-model-content",
     }
@@ -479,6 +488,172 @@ def test_custom_api_deduplicates_same_custom_endpoint_and_model(mock_page: Page,
 
     assert len(matching_requests) == 1
     assert matching_requests[0]["provider_type"] == "openai_compatible"
+
+
+@pytest.mark.frontend
+def test_incomplete_small_familiar_custom_tests_the_recognition_connection(mock_page: Page, running_server: str):
+    """Custom small familiar without both URL and model is the whole recognition slot at runtime;
+    the connectivity check must test that same connection, not the half-filled inputs."""
+    _goto_and_wait(mock_page, running_server)
+    _wait_for_lights_settled(mock_page, timeout=15000)
+
+    state = mock_page.evaluate("""() => {
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        enableCustomApi.checked = true;
+        if (typeof toggleCustomApi === 'function') toggleCustomApi();
+        enableCustomApi.dispatchEvent(new Event('change', { bubbles: true }));
+        const set = (id, value) => {
+            const el = document.getElementById(id);
+            el.value = value;
+            el.dispatchEvent(new Event(el.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));
+        };
+        set('recognitionModelProvider', 'custom');
+        set('recognitionModelUrl', 'https://emotion.test/v1');
+        set('recognitionModelId', 'emotion-model');
+        set('recognitionModelApiKey', 'sk-emotion-test');
+        set('agentSmallModelProvider', 'custom');
+        set('agentSmallModelUrl', 'https://emotion.test/v1');
+        set('agentSmallModelId', '');
+        set('agentSmallModelApiKey', '');
+        const pick = r => ({ url: r.url, key: r.key, model: r.model, providerType: r.providerType });
+        const recognition = pick(ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: 'recognition' }));
+        const incomplete = pick(ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: 'agentSmall' }));
+        set('agentSmallModelId', 'own-model');
+        const complete = pick(ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: 'agentSmall' }));
+        return { recognition, incomplete, complete };
+    }""")
+
+    assert state["incomplete"] == state["recognition"]
+    assert state["recognition"]["key"] == "sk-emotion-test"
+    assert state["complete"]["model"] == "own-model"
+    assert state["complete"]["url"] == "https://emotion.test/v1"
+    assert state["complete"]["key"] == ""
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("slot, source", [("agentAdvanced", "agent"), ("gameRecognition", "recognition")])
+def test_incomplete_whole_follow_custom_tests_the_followed_connection(mock_page: Page, running_server: str, slot, source):
+    """The advanced familiar and minigame recognition slots, like the small familiar one, are the
+    whole followed slot until their URL and model are both set; the check must test that one."""
+    _goto_and_wait(mock_page, running_server)
+    _wait_for_lights_settled(mock_page, timeout=15000)
+
+    state = mock_page.evaluate("""([slot, source]) => {
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        enableCustomApi.checked = true;
+        if (typeof toggleCustomApi === 'function') toggleCustomApi();
+        enableCustomApi.dispatchEvent(new Event('change', { bubbles: true }));
+        const set = (id, value) => {
+            const el = document.getElementById(id);
+            el.value = value;
+            el.dispatchEvent(new Event(el.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));
+        };
+        set(`${source}ModelProvider`, 'custom');
+        set(`${source}ModelUrl`, 'https://source.test/v1');
+        set(`${source}ModelId`, 'source-model');
+        set(`${source}ModelApiKey`, 'sk-source-test');
+        set(`${slot}ModelProvider`, 'custom');
+        set(`${slot}ModelUrl`, 'https://draft.test/v1');
+        set(`${slot}ModelId`, '');
+        set(`${slot}ModelApiKey`, '');
+        const pick = r => ({ url: r.url, key: r.key, model: r.model });
+        const followed = pick(ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: source }));
+        const incomplete = pick(ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: slot }));
+        set(`${slot}ModelId`, 'own-model');
+        const complete = pick(ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: slot }));
+        return { followed, incomplete, complete };
+    }""", [slot, source])
+
+    assert state["incomplete"] == state["followed"]
+    assert state["followed"]["key"] == "sk-source-test"
+    assert state["complete"] == {"url": "https://draft.test/v1", "key": "", "model": "own-model"}
+
+
+@pytest.mark.frontend
+def test_follow_chain_keeps_the_source_cache_identity_under_mimo_token_plan(mock_page: Page, running_server: str):
+    """agentSmall=follow_recognition with emotion=follow_assist on MiMo Token Plan is one connection:
+    the follower must reuse the source cacheId, not re-derive it from its own dropdown value."""
+    _goto_and_wait(mock_page, running_server)
+    _wait_for_lights_settled(mock_page, timeout=15000)
+    mock_page.wait_for_selector('#assistApiSelect option[value="mimo"]', state='attached', timeout=30000)
+
+    state = mock_page.evaluate("""() => {
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        enableCustomApi.checked = true;
+        if (typeof toggleCustomApi === 'function') toggleCustomApi();
+        enableCustomApi.dispatchEvent(new Event('change', { bubbles: true }));
+        const set = (id, value) => {
+            const el = document.getElementById(id);
+            el.value = value;
+            el.dispatchEvent(new Event(el.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));
+        };
+        set('assistApiSelect', 'mimo');
+        set('assistApiKeyInput', 'sk-mimo-test');
+        const toggle = document.getElementById('useMimoTokenPlan');
+        toggle.checked = true;
+        toggle.dispatchEvent(new Event('change', { bubbles: true }));
+        set('mimoTokenPlanKeyInput', 'tp-mimo-test');
+        set('recognitionModelProvider', 'follow_assist');
+        set('agentSmallModelProvider', 'follow_recognition');
+        const resolve = mt => ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: mt });
+        return { recognition: resolve('recognition').cacheId, small: resolve('agentSmall').cacheId };
+    }""")
+
+    assert state["recognition"]
+    assert "mimo_token_plan" in state["recognition"]
+    assert state["small"] == state["recognition"]
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("slot, source", [
+    ("agentSmall", "recognition"), ("gameRecognition", "recognition"), ("agentAdvanced", "agent"),
+])
+def test_incomplete_whole_follow_custom_light_moves_with_the_followed_slot(mock_page: Page, running_server: str, slot, source):
+    """An incomplete custom whole-follow slot tests its source connection, so editing the source
+    endpoint or key must move its light too, while its own drafted fields stay put."""
+    _goto_and_wait(mock_page, running_server)
+    _wait_for_lights_settled(mock_page, timeout=15000)
+
+    mock_page.evaluate("""([slot, source]) => {
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        enableCustomApi.checked = true;
+        if (typeof toggleCustomApi === 'function') toggleCustomApi();
+        enableCustomApi.dispatchEvent(new Event('change', { bubbles: true }));
+        const set = (id, value) => {
+            const el = document.getElementById(id);
+            el.value = value;
+            el.dispatchEvent(new Event(el.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));
+        };
+        set(`${source}ModelProvider`, 'custom');
+        set(`${source}ModelUrl`, 'https://source-old.test/v1');
+        set(`${source}ModelId`, 'source-model');
+        set(`${source}ModelApiKey`, 'sk-source-test');
+        set(`${slot}ModelProvider`, 'custom');
+        set(`${slot}ModelUrl`, 'https://draft.test/v1');
+        set(`${slot}ModelId`, '');
+    }""", [slot, source])
+    mock_page.wait_for_timeout(600)
+
+    for change_id, value in ((f"{source}ModelUrl", "https://source-new.test/v1"), (f"{source}ModelApiKey", "sk-source-new")):
+        mock_page.evaluate("""([id, value]) => {
+            const el = document.getElementById(id);
+            el.value = value;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+        }""", [change_id, value])
+        mock_page.wait_for_timeout(600)
+        state = mock_page.evaluate("""([slot, source]) => {
+            const cacheId = ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: source }).cacheId;
+            const summary = document.querySelector(`.connectivity-summary-light[data-model-type="${slot}"]`);
+            return {
+                hasSummary: !!summary,
+                onNewKey: (ConnectivityManager.keyLightsMap[cacheId] || []).includes(summary),
+                draftUrl: document.getElementById(`${slot}ModelUrl`).value,
+                provider: document.getElementById(`${slot}ModelProvider`).value,
+            };
+        }""", [slot, source])
+        assert state == {
+            "hasSummary": True, "onNewKey": True, "draftUrl": "https://draft.test/v1", "provider": "custom",
+        }, change_id
 
 
 # ---------------------------------------------------------------------------

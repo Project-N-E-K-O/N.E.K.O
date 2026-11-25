@@ -28,7 +28,18 @@ from .content_gate import (
     claim_content_folder,
 )
 from .meta import calculate_content_hash, read_workshop_meta, write_workshop_meta
-from .preview_cards import find_preview_image_in_folder
+from .preview_cards import (
+    _PREVIEW_EXTENSION_TO_FORMATS,
+    _PREVIEW_FORMAT_TO_EXTENSION,
+    WORKSHOP_STANDARD_PREVIEW_EXTENSIONS,
+    _assert_direct_preview_target,
+    _assert_workshop_path,
+    _cleanup_consumed_preview_staging,
+    _is_path_inside_preview_staging,
+    _paths_overlap_by_samefile,
+    _verify_preview_image_file,
+    find_preview_image_in_folder,
+)
 from .ugc import (
     UnsupportedUGCDetailsError,
     _query_ugc_details_batch,
@@ -48,6 +59,10 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from ..shared_state import ensure_steamworks as get_steamworks, get_config_manager
 from utils.file_utils import atomic_write_json_async, read_json_async
+from utils.frontend_utils import (
+    _resolve_workshop_search_dirs,
+    is_valid_live2d_model_name as _is_valid_live2d_model_name,
+)
 from utils.workshop_utils import (
     get_workshop_path_async,
 )
@@ -105,43 +120,34 @@ async def _validate_existing_workshop_item(steamworks, item_id: int) -> tuple[bo
 @router.get('/check-upload-status')
 async def check_upload_status(item_path: str = None):
     try:
-        # Validate path parameters.
         if not item_path:
             return JSONResponse(content={
                 "success": False,
                 "error": "未提供物品文件夹路径"
             }, status_code=400)
-        
-        # Security: use get_workshop_path() as the base directory.
-        base_workshop_folder = os.path.abspath(
-            os.path.normpath(await get_workshop_path_async())
-        )
-        
-        # Windows paths: ensure correct separators.
-        if os.name == 'nt':  # Windows.
-            # Decode and process Windows paths.
-            decoded_item_path = unquote(item_path)
-            # Replace forward slashes with backslashes for Windows path format.
+
+        base_workshop_folder = await get_workshop_path_async()
+        decoded_item_path = unquote(item_path)
+        if "\x00" in decoded_item_path:
+            return JSONResponse(content={
+                "success": False,
+                "error": "无效的物品文件夹路径"
+            }, status_code=400)
+
+        if os.name == 'nt':
             decoded_item_path = decoded_item_path.replace('/', '\\')
-            # Handle possible double encoding.
-            if decoded_item_path.startswith('\\\\'):
-                decoded_item_path = decoded_item_path[2:]  # Remove redundant leading backslashes.
-        else:
-            decoded_item_path = unquote(item_path)
-        
-        # Resolve relative paths against the base directory.
-        if not os.path.isabs(decoded_item_path):
-            full_path = os.path.join(base_workshop_folder, decoded_item_path)
-        else:
-            full_path = decoded_item_path
-            full_path = os.path.normpath(full_path)
-        
-        # Security: verify the path is within the base directory.
-        if not full_path.startswith(base_workshop_folder):
+
+        candidate_path = (
+            decoded_item_path
+            if os.path.isabs(decoded_item_path)
+            else os.path.join(base_workshop_folder, decoded_item_path)
+        )
+        try:
+            full_path = _assert_workshop_path(candidate_path, base_workshop_folder)
+        except PermissionError:
             logger.warning(f'路径遍历尝试被拒绝: {item_path}')
             return JSONResponse(content={"success": False, "error": "访问被拒绝: 路径不在允许的范围内"}, status_code=403)
-        
-        # Verify path existence.
+
         if not os.path.exists(full_path) or not os.path.isdir(full_path):
             return JSONResponse(content={
                 "success": False,
@@ -203,7 +209,7 @@ async def prepare_workshop_upload(request: Request):
         model_type = data.get('modelType', 'live2d')  # Added: model type live2d/vrm/mmd.
         chara_file_name = data.get('fileName', 'character.chara.json')
         character_card_name = data.get('character_card_name')  # Added: character-card name.
-        
+
         if not isinstance(chara_data, dict) or not chara_data or not model_name:
             return JSONResponse({
                 "success": False,
@@ -297,7 +303,14 @@ async def prepare_workshop_upload(request: Request):
             chara_data[model_type] = packaged_model.relative_to(package_root).as_posix()
             chara_data.pop('mmd' if model_type == 'vrm' else 'vrm', None)
         else:
-            # Live2D: use existing behavior.
+            # Live2D: reject dot/traversal model names and search-root escapes before copying.
+            if not _is_valid_live2d_model_name(model_name):
+                await asyncio.to_thread(shutil.rmtree, temp_item_dir, ignore_errors=True)
+                return JSONResponse({
+                    "success": False,
+                    "error": "非法模型名称"
+                }, status_code=400)
+
             model_dir, _ = find_model_directory(model_name)
             if not model_dir or not os.path.exists(model_dir):
                 # Clean up temporary directories.
@@ -306,7 +319,48 @@ async def prepare_workshop_upload(request: Request):
                     "success": False,
                     "error": f"模型目录不存在: {model_name}"
                 }, status_code=404)
-            
+
+            resolved_model_dir = Path(model_dir).resolve()
+            model_roots: list[Path] = [Path("static"), Path("static") / "live2d"]
+            if isinstance(base_workshop_path, (str, os.PathLike)):
+                model_roots.append(Path(base_workshop_path))
+            try:
+                for ws_dir in _resolve_workshop_search_dirs():
+                    if isinstance(ws_dir, (str, os.PathLike)):
+                        model_roots.append(Path(ws_dir))
+            except Exception:
+                pass
+            try:
+                config_mgr = get_config_manager()
+                for attr in ("live2d_dir", "readable_live2d_dir"):
+                    val = getattr(config_mgr, attr, None)
+                    if isinstance(val, (str, os.PathLike)):
+                        model_roots.append(Path(val))
+                proj_root = getattr(config_mgr, "project_root", None)
+                if isinstance(proj_root, (str, os.PathLike)):
+                    model_roots.append(Path(proj_root) / "static")
+                    model_roots.append(Path(proj_root) / "static" / "live2d")
+            except Exception:
+                pass
+            if any(resolved_model_dir == root.resolve() for root in model_roots):
+                await asyncio.to_thread(shutil.rmtree, temp_item_dir, ignore_errors=True)
+                return JSONResponse({
+                    "success": False,
+                    "error": "非法模型名称"
+                }, status_code=400)
+
+            resolved_temp_item_dir = Path(temp_item_dir).resolve()
+            model_dest_path = (resolved_temp_item_dir / model_name).resolve()
+            if (
+                not model_dest_path.is_relative_to(resolved_temp_item_dir)
+                or model_dest_path == resolved_temp_item_dir
+            ):
+                await asyncio.to_thread(shutil.rmtree, temp_item_dir, ignore_errors=True)
+                return JSONResponse({
+                    "success": False,
+                    "error": "非法模型名称"
+                }, status_code=400)
+
             # Copy the entire model directory to the temporary directory.
             model_dest_dir = os.path.join(temp_item_dir, model_name)
             await asyncio.to_thread(shutil.copytree, model_dir, model_dest_dir, dirs_exist_ok=True)
@@ -357,6 +411,46 @@ async def prepare_workshop_upload(request: Request):
         }, status_code=500)
 
 
+# Module-level alias so tests can simulate Windows' case-insensitive
+# comparison without patching the shared ``os.path`` module.
+_normcase = os.path.normcase
+
+
+def _resolve_workshop_export_child(path: str, workshop_export_dir: str) -> tuple[str, str, bool]:
+    """Resolve ``path`` and check that it is an ordinary direct child of WorkshopExport.
+
+    Returns ``(resolved_path, resolved_root, allowed)``. The root itself and
+    the shared ``_preview_staging`` directory are never allowed: deleting the
+    root would wipe every exported item, and deleting ``_preview_staging`` would
+    wipe previews staged by other uploads. Preview staging detection delegates
+    to ``_is_path_inside_preview_staging`` (with case-insensitive and
+    ``samefile`` checks for macOS/Windows, plus reserved-name ``casefold()``
+    rejection), and ``realpath`` drops trailing separators and resolves
+    symlinks so links targeting the root, ``_preview_staging``, or outside
+    paths are rejected.
+    """
+    resolved = os.path.realpath(os.path.normpath(path))
+    root = os.path.realpath(os.path.normpath(workshop_export_dir))
+    norm_resolved = _normcase(resolved)
+    norm_root = _normcase(root)
+    staging_literal = os.path.join(root, "_preview_staging")
+    staging_resolved = os.path.realpath(staging_literal)
+    is_preview_staging = (
+        os.path.basename(resolved).casefold() == "_preview_staging"
+        or norm_resolved in {_normcase(staging_literal), _normcase(staging_resolved)}
+        or _paths_overlap_by_samefile(resolved, staging_resolved)
+        or _is_path_inside_preview_staging(
+            resolved, os.path.dirname(root), normcase_fn=_normcase
+        )
+    )
+    allowed = (
+        norm_resolved != norm_root
+        and _normcase(os.path.dirname(resolved)) == norm_root
+        and not is_preview_staging
+    )
+    return resolved, root, allowed
+
+
 def _delete_content_folder(temp_folder: str) -> None:
     """Delete a temp folder only when no publisher or pair writer owns it."""
     import shutil
@@ -380,32 +474,32 @@ async def cleanup_temp_folder(request: Request):
                 "error": "缺少临时目录路径"
             }, status_code=400)
         
-        # Security: ensure the temporary directory is under WorkshopExport.
+        # Security: only a direct child of WorkshopExport (the item_xxx folder
+        # created by prepare-upload) may be deleted -- never the root itself.
         base_workshop_path = await get_workshop_path_async()
         workshop_export_dir = os.path.join(base_workshop_path, 'WorkshopExport')
-        
-        # Normalize with realpath to resolve symlinks and relative paths.
-        temp_folder = os.path.realpath(os.path.normpath(temp_folder))
-        workshop_export_dir = os.path.realpath(os.path.normpath(workshop_export_dir))
-        
-        # Verify containment under WorkshopExport using the more reliable commonpath.
-        try:
-            common_path = os.path.commonpath([temp_folder, workshop_export_dir])
-            if common_path != workshop_export_dir:
-                return JSONResponse({
-                    "success": False,
-                    "error": f"临时目录路径不在允许的范围内。临时目录: {temp_folder}, 允许路径: {workshop_export_dir}"
-                }, status_code=403)
-        except ValueError:
-            # commonpath raises ValueError for paths on different drives.
+        temp_folder, workshop_export_dir, allowed = _resolve_workshop_export_child(
+            temp_folder, workshop_export_dir
+        )
+        if not allowed:
+            # Keep server paths out of the response; the log has the details.
+            logger.warning(f"拒绝清理不在允许范围内的临时目录: {temp_folder}（允许: {workshop_export_dir} 下的子目录）")
             return JSONResponse({
                 "success": False,
-                "error": "临时目录路径不在允许的范围内（路径验证失败）"
+                "error": "临时目录路径不在允许的范围内"
             }, status_code=403)
         
         # Delete the temporary directory.
         if os.path.exists(temp_folder):
             await asyncio.to_thread(_delete_content_folder, temp_folder)
+            # rmtree runs with ignore_errors=True, so verify it actually went
+            # away (locked files on Windows, or a plain file instead of a dir).
+            if os.path.exists(temp_folder):
+                logger.warning(f"临时目录删除后仍然存在: {temp_folder}")
+                return JSONResponse({
+                    "success": False,
+                    "error": "临时目录删除失败"
+                }, status_code=500)
             logger.info(f"临时目录已删除: {temp_folder}")
             return JSONResponse({
                 "success": True,
@@ -462,14 +556,60 @@ async def publish_to_workshop(request: Request):
         tags = data.get('tags', [])
         change_note = data.get('change_note', '初始发布')
         character_card_name = data.get('character_card_name')  # Added: character-card name.
-        
+        consumed_staged_preview = ""
+
+        # Validate Steam UTF-8 byte limits before touching the content folder or calling CreateItem.
+        from steamworks.interfaces.workshop import (
+            WORKSHOP_DESCRIPTION_MAX_BYTES,
+            WORKSHOP_TITLE_MAX_BYTES,
+        )
+        if isinstance(title, str):
+            title_byte_len = len(title.encode('utf-8'))
+            if title_byte_len > WORKSHOP_TITLE_MAX_BYTES:
+                return JSONResponse(
+                    content={
+                        "success": False,
+                        "error": "标题过长",
+                        "message": (
+                            f"创意工坊标题不能超过 {WORKSHOP_TITLE_MAX_BYTES} 字节"
+                            f"（约 42 个汉字），当前为 {title_byte_len} 字节"
+                        ),
+                    },
+                    status_code=400,
+                )
+        if isinstance(description, str):
+            desc_byte_len = len(description.encode('utf-8'))
+            if desc_byte_len > WORKSHOP_DESCRIPTION_MAX_BYTES:
+                return JSONResponse(
+                    content={
+                        "success": False,
+                        "error": "简介过长",
+                        "message": (
+                            f"创意工坊简介不能超过 {WORKSHOP_DESCRIPTION_MAX_BYTES} 字节"
+                            f"（约 2666 个汉字），当前为 {desc_byte_len} 字节"
+                        ),
+                    },
+                    status_code=400,
+                )
+
+        workshop_base = await get_workshop_path_async()
         # Improved path normalization handles paths correctly in all cases.
         content_folder = unquote(content_folder)
+        if "\x00" in content_folder:
+            return JSONResponse(content={
+                "success": False,
+                "error": "无效路径",
+                "message": "内容文件夹路径包含非法字符"
+            }, status_code=400)
+        # Unify separators before containment validation so POSIX backslash segments cannot slip past.
+        if os.name == 'nt':
+            content_folder = content_folder.replace('/', '\\')
+        else:
+            content_folder = content_folder.replace('\\', '/')
+
         # Security: verify content_folder is in the allowed area.
         try:
-            content_folder = _assert_under_base(
-                content_folder, await get_workshop_path_async()
-            )
+            content_folder = _assert_workshop_path(content_folder, workshop_base)
         except PermissionError:
             return JSONResponse(content={
                 "success": False,
@@ -477,16 +617,12 @@ async def publish_to_workshop(request: Request):
                 "message": "指定的内容文件夹不在允许的范围内"
             }, status_code=403)
 
-        # Use correct separators for Windows paths.
-        if os.name == 'nt':
-            # Normalize all separators to backslashes.
-            content_folder = content_folder.replace('/', '\\')
-            # Remove potentially invalid prefixes.
-            if content_folder.startswith('\\\\'):
-                content_folder = content_folder[2:]
-        else:
-            # Non-Windows systems use forward slashes.
-            content_folder = content_folder.replace('\\', '/')
+        if _is_path_inside_preview_staging(content_folder, workshop_base):
+            return JSONResponse(content={
+                "success": False,
+                "error": "权限错误",
+                "message": "指定的内容文件夹不能位于或包含预览暂存目录"
+            }, status_code=403)
         
         # Verify the content folder exists and is a directory.
         if not os.path.exists(content_folder):
@@ -545,76 +681,184 @@ async def publish_to_workshop(request: Request):
                             "workshop_item_id": str(existing_item_id),
                         }, status_code=409)
         
-        # Process the preview-image path.
+        # Process the preview-image path (preserve literal percent sequences returned by /upload-preview-image).
         if preview_image:
-            preview_image = unquote(preview_image)
+            preview_image = str(preview_image)
+            if "\x00" in preview_image:
+                return JSONResponse(content={
+                    "success": False,
+                    "error": "预览图片无效",
+                    "message": "预览图片路径包含非法字符"
+                }, status_code=400)
             if os.name == 'nt':
                 preview_image = preview_image.replace('/', '\\')
-                if preview_image.startswith('\\\\'):
-                    preview_image = preview_image[2:]
             else:
                 preview_image = preview_image.replace('\\', '/')
-            
-            # Verify preview-image existence.
+
+            try:
+                preview_image = _assert_workshop_path(preview_image, workshop_base)
+            except PermissionError:
+                return JSONResponse(content={
+                    "success": False,
+                    "error": "权限错误",
+                    "message": "预览图片路径不在工坊目录范围内，请点击「选择文件」上传本地图片"
+                }, status_code=403)
+
+            # Verify preview-image existence; do not silently fall back when an explicit preview expired or vanished.
             if not os.path.exists(preview_image):
-                # If the specified preview is missing, search for a default preview in the content folder.
-                logger.warning(f'指定的预览图片不存在，尝试在内容文件夹中查找: {preview_image}')
-                auto_preview = find_preview_image_in_folder(content_folder)
-                if auto_preview:
-                    logger.info(f'找到自动预览图片: {auto_preview}')
-                    preview_image = auto_preview
-                else:
-                    logger.warning('无法找到预览图片')
-                    preview_image = ''
-            
+                return JSONResponse(content={
+                    "success": False,
+                    "error": "预览图片不存在",
+                    "message": "指定的预览图片已过期或不存在，请重新上传"
+                }, status_code=400)
+
             if preview_image and not os.path.isfile(preview_image):
                 return JSONResponse(content={
                     "success": False,
                     "error": "预览图片无效",
-                    "message": f"预览图片路径不是有效的文件: {preview_image}"
+                    "message": "预览图片路径不是有效的文件"
                 }, status_code=400)
-            
+
             # Copy the preview into the content folder with canonical name preview.*.
             if preview_image:
-                # Get the original file extension.
                 file_extension = os.path.splitext(preview_image)[1].lower()
-                # Build the canonical preview path within the content folder.
-                new_preview_path = os.path.join(content_folder, f'preview{file_extension}')
-                
-                # Copy the preview into the content folder.
+                if file_extension not in WORKSHOP_STANDARD_PREVIEW_EXTENSIONS:
+                    return JSONResponse(content={
+                        "success": False,
+                        "error": "预览图片无效",
+                        "message": "预览图片格式不支持"
+                    }, status_code=400)
                 try:
-                    import shutil
-                    await asyncio.to_thread(shutil.copy2, preview_image, new_preview_path)
-                    logger.info(f'预览图片已复制到内容文件夹并统一命名: {new_preview_path}')
-                    # Use the new canonical preview path.
-                    preview_image = new_preview_path
-                except Exception as e:
-                    logger.error(f'复制预览图片到内容文件夹失败: {e}')
-                    # If copying fails, continue with the original path.
-                    logger.warning(f'继续使用原始预览图片路径: {preview_image}')
+                    await asyncio.to_thread(_verify_preview_image_file, preview_image)
+                except Exception:
+                    return JSONResponse(content={
+                        "success": False,
+                        "error": "预览图片无效",
+                        "message": "预览图片文件无效或已损坏"
+                    }, status_code=400)
+
+                try:
+                    new_preview_path = _assert_direct_preview_target(
+                        content_folder,
+                        f'preview{file_extension}',
+                    )
+                except PermissionError:
+                    return JSONResponse(content={
+                        "success": False,
+                        "error": "权限错误",
+                        "message": "预览图片路径不在允许的范围内"
+                    }, status_code=403)
+                if os.path.normcase(os.path.realpath(preview_image)) != os.path.normcase(os.path.realpath(new_preview_path)):
+                    source_preview = preview_image
+                    if os.path.isdir(new_preview_path):
+                        return JSONResponse(content={
+                            "success": False,
+                            "error": "预览图片无效",
+                            "message": "内容文件夹中已存在同名预览目录，无法写入预览图片"
+                        }, status_code=400)
+                    else:
+                        try:
+                            import shutil
+                            await asyncio.to_thread(shutil.copy2, source_preview, new_preview_path)
+                            logger.info(f'预览图片已复制到内容文件夹并统一命名: {new_preview_path}')
+                            preview_image = new_preview_path
+                            consumed_staged_preview = source_preview
+                        except Exception as e:
+                            logger.error(f'复制预览图片到内容文件夹失败: {e}')
+                            if os.path.isfile(source_preview):
+                                logger.warning(f'继续使用已验证的源预览图片路径: {source_preview}')
+                                preview_image = source_preview
+                            else:
+                                return JSONResponse(content={
+                                    "success": False,
+                                    "error": "预览图片处理失败",
+                                    "message": "无法复制预览图片到内容文件夹"
+                                }, status_code=500)
         else:
             # If no preview is specified, try automatic discovery.
             auto_preview = find_preview_image_in_folder(content_folder)
             if auto_preview:
+                try:
+                    auto_preview = _assert_workshop_path(auto_preview, content_folder)
+                except PermissionError:
+                    return JSONResponse(content={
+                        "success": False,
+                        "error": "权限错误",
+                        "message": "预览图片路径不在允许的范围内"
+                    }, status_code=403)
                 logger.info(f'自动找到预览图片: {auto_preview}')
                 preview_image = auto_preview
-                
-                # Ensure automatically discovered previews also use preview.*.
+
                 if preview_image:
-                    # Get the original file extension.
                     file_extension = os.path.splitext(preview_image)[1].lower()
-                    # Rename if not already canonical.
-                    if not os.path.basename(preview_image).startswith('preview.'):
-                        new_preview_path = os.path.join(content_folder, f'preview{file_extension}')
+                    detected_format = ""
+                    if file_extension not in WORKSHOP_STANDARD_PREVIEW_EXTENSIONS:
+                        logger.warning(f'自动发现的预览图片格式不支持，将不带预览继续发布: {preview_image}')
+                        preview_image = ''
+                    else:
                         try:
-                            import shutil
-                            await asyncio.to_thread(shutil.copy2, preview_image, new_preview_path)
-                            logger.info(f'自动找到的预览图片已统一命名: {new_preview_path}')
-                            preview_image = new_preview_path
+                            detected_format = await asyncio.to_thread(
+                                _verify_preview_image_file,
+                                preview_image,
+                                require_extension_match=False,
+                            )
                         except Exception as e:
-                            logger.error(f'重命名自动预览图片失败: {e}')
-                            # If renaming fails, continue with the original path.
-                            logger.warning(f'继续使用原始预览图片路径: {preview_image}')
+                            logger.warning(f'自动发现的预览图片无效或已损坏，将不带预览继续发布 ({preview_image}): {e}')
+                            preview_image = ''
+                    if preview_image:
+                        allowed_for_ext = _PREVIEW_EXTENSION_TO_FORMATS.get(file_extension, set())
+                        target_extension = (
+                            file_extension
+                            if detected_format in allowed_for_ext
+                            else _PREVIEW_FORMAT_TO_EXTENSION.get(detected_format, file_extension)
+                        )
+                        needs_canonical_copy = (
+                            not os.path.basename(preview_image).lower().startswith('preview.')
+                            or detected_format not in allowed_for_ext
+                        )
+                        if needs_canonical_copy:
+                            try:
+                                new_preview_path = _assert_direct_preview_target(
+                                    content_folder,
+                                    f'preview{target_extension}',
+                                )
+                            except PermissionError:
+                                return JSONResponse(content={
+                                    "success": False,
+                                    "error": "权限错误",
+                                    "message": "预览图片路径不在允许的范围内"
+                                }, status_code=403)
+                            if os.path.isdir(new_preview_path):
+                                logger.warning(f'目标预览路径为目录，将不带预览继续发布: {new_preview_path}')
+                                preview_image = ''
+                            elif detected_format not in allowed_for_ext and os.path.exists(new_preview_path):
+                                if not os.path.isfile(new_preview_path):
+                                    logger.warning(f'目标预览路径不是有效文件，将不带预览继续发布: {new_preview_path}')
+                                    preview_image = ''
+                                else:
+                                    try:
+                                        await asyncio.to_thread(_verify_preview_image_file, new_preview_path)
+                                        logger.warning(f'目标预览文件已存在且有效，直接使用: {new_preview_path}')
+                                        preview_image = new_preview_path
+                                    except Exception as e:
+                                        logger.warning(f'目标预览文件无效或已损坏，将不带预览继续发布 ({new_preview_path}): {e}')
+                                        preview_image = ''
+                            else:
+                                try:
+                                    import shutil
+                                    await asyncio.to_thread(shutil.copy2, preview_image, new_preview_path)
+                                    logger.info(f'自动找到的预览图片已统一命名: {new_preview_path}')
+                                    preview_image = new_preview_path
+                                except Exception as e:
+                                    logger.error(f'重命名自动预览图片失败: {e}')
+                                    if os.path.isfile(preview_image):
+                                        logger.warning(f'继续使用已验证的自动预览图片路径: {preview_image}')
+                                    else:
+                                        return JSONResponse(content={
+                                            "success": False,
+                                            "error": "预览图片处理失败",
+                                            "message": "无法处理自动发现的预览图片"
+                                        }, status_code=500)
 
         # Record information about the upload content.
         logger.info(f"准备发布创意工坊物品: {title}")
@@ -636,7 +880,7 @@ async def publish_to_workshop(request: Request):
             }, status_code=503)
         
         # Run blocking Steamworks API calls in the thread pool.
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             published_file_id = await loop.run_in_executor(
                 None,
@@ -710,6 +954,17 @@ async def publish_to_workshop(request: Request):
             except Exception as e:
                 logger.error(f"更新 .workshop_meta.json 失败: {e}")
                 # Log errors without blocking the successful response.
+
+        if consumed_staged_preview:
+            try:
+                await asyncio.to_thread(
+                    _cleanup_consumed_preview_staging,
+                    consumed_staged_preview,
+                    workshop_base,
+                    content_folder=content_folder,
+                )
+            except Exception:
+                pass
         
         return JSONResponse(content={
             "success": True,
@@ -751,7 +1006,9 @@ def _preflight_and_publish(
     with claim_content_folder(content_folder, purpose=PUBLISH_PURPOSE):
         try:
             voice_ref = resolve_voice_reference_serialized(content_folder)
-        except (ValueError, FileNotFoundError) as e:
+        # PermissionError: reference_audio resolves outside content_folder
+        # (escape or another drive); the pair is invalid just like a bad manifest.
+        except (ValueError, FileNotFoundError, PermissionError) as e:
             raise _VoicePreflightError(str(e)) from e
         if voice_ref:
             logger.info(
@@ -778,7 +1035,17 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
         try:
             # Import inside the function so enums are available in its scope.
             from steamworks.enums import EWorkshopFileType, ERemoteStoragePublishedFileVisibility, EItemUpdateStatus
-    
+            from steamworks.interfaces.workshop import (
+                WORKSHOP_DESCRIPTION_MAX_BYTES,
+                WORKSHOP_TITLE_MAX_BYTES,
+            )
+
+            # Guard direct non-HTTP callers as well so CreateItem is never invoked for oversized metadata.
+            if isinstance(title, str) and len(title.encode('utf-8')) > WORKSHOP_TITLE_MAX_BYTES:
+                raise AttributeError(f'title exceeds {WORKSHOP_TITLE_MAX_BYTES} UTF-8 bytes')
+            if isinstance(description, str) and description and len(description.encode('utf-8')) > WORKSHOP_DESCRIPTION_MAX_BYTES:
+                raise AttributeError(f'description exceeds {WORKSHOP_DESCRIPTION_MAX_BYTES} UTF-8 bytes')
+
             # Prefer the item ID from .workshop_meta.json.
             item_id = None
             if character_card_name:

@@ -15,21 +15,35 @@
 
 """PR-only check: frontend i18n locale files must be modified in lockstep.
 
-Two groups, one rule each. Diff is computed against the merge-base of HEAD
-and the base ref (default ``origin/main``). On a regular ``main`` push or
-when nothing in the watched folders changed, this script is a no-op.
+Three kinds of group, one rule each. Diff is computed against the
+merge-base of HEAD and the base ref (default ``origin/main``). On a regular
+``main`` push or when nothing in the watched folders changed, this script is
+a no-op.
 
 Group 1 — static/locales/*.json
    When ANY file in static/locales/ changes, ALL 8 language files must
-   change AND every hunk header (``@@ -OLD,COUNT +NEW,COUNT @@``) must
-   match across all 8. The locale JSONs are line-aligned by convention
-   (the same key sits on the same line across languages); strict alignment
-   catches "added a key in zh-CN but forgot the others" at the diff stage.
+   change. After the change, every file must have the same JSON structure
+   (same key paths, value types, and array lengths). The locale JSONs are
+   line-aligned by convention; comparing the resulting shape catches
+   "added a key in zh-CN but forgot the others" while still allowing a
+   single language to receive translation-only value updates.
 
 Group 2 — frontend/plugin-manager/src/i18n/locales/*.ts
-   Same rule but for plugin-manager TS locales. ``yuiGuide.ts`` is
-   excluded from the group because it's a domain-scoped guide that
-   intentionally ships single-language only.
+   Same rule but for plugin-manager TS locales: all 8 files must change and
+   every hunk header (``@@ -OLD,COUNT +NEW,COUNT @@``) must match.
+   ``yuiGuide.ts`` is excluded from the group because it's a domain-scoped
+   guide that intentionally ships single-language only.
+
+Group 3 — frontend/plugin-manager/src/i18n/<module>/*.ts
+   Message modules split into one file per language (``power/``,
+   ``authoring/`` ...). Every subdirectory of ``src/i18n/`` holding any of the
+   8 locale files is discovered automatically and checked as its own group:
+   when one of its locale files changes, all 8 must change. These files are
+   not line-aligned (the en-US file carries the shared type, translations
+   wrap differently), so hunk ranges are not compared; matching key sets are
+   enforced by the type annotations and ``src/i18n/localeSplit.test.ts``.
+   Other files there (``index.ts``, ``shared.ts``, ``testing.ts``, tests) are
+   not part of the group.
 
 Suppression
 -----------
@@ -47,6 +61,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -55,10 +70,16 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+_PLUGIN_MANAGER_LOCALE_FILES = [
+    "en-US.ts", "es.ts", "ja.ts", "ko.ts",
+    "pt.ts", "ru.ts", "zh-CN.ts", "zh-TW.ts",
+]
+
 GROUPS: list[dict[str, object]] = [
     {
         "name": "static/locales",
         "dir": "static/locales",
+        "format": "json",
         "files": [
             "en.json", "es.json", "ja.json", "ko.json",
             "pt.json", "ru.json", "zh-CN.json", "zh-TW.json",
@@ -67,13 +88,60 @@ GROUPS: list[dict[str, object]] = [
     {
         "name": "plugin-manager i18n locales",
         "dir": "frontend/plugin-manager/src/i18n/locales",
-        "files": [
-            "en-US.ts", "es.ts", "ja.ts", "ko.ts",
-            "pt.ts", "ru.ts", "zh-CN.ts", "zh-TW.ts",
-        ],
+        "files": _PLUGIN_MANAGER_LOCALE_FILES,
         # yuiGuide.ts intentionally excluded — domain-scoped single-language guide.
     },
+    {
+        # A trailing "/*" expands to one group per subdirectory holding any of
+        # the files (see _expand_groups); directories listed above are skipped.
+        "name": "plugin-manager i18n",
+        "dir": "frontend/plugin-manager/src/i18n/*",
+        "files": _PLUGIN_MANAGER_LOCALE_FILES,
+        # Split modules are not line-aligned; only require all 8 to change.
+        "align": False,
+    },
 ]
+
+
+def _expand_groups(
+    groups: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Replace each ``<dir>/*`` group with one per matching subdirectory.
+
+    Subdirectories are read from the HEAD tree, the same snapshot the diff
+    is taken from, so uncommitted working-tree changes cannot hide a group.
+    """
+    explicit = {
+        str(g["dir"]).rstrip("/")
+        for g in groups if not str(g["dir"]).endswith("/*")
+    }
+    expanded: list[dict[str, object]] = []
+    for group in groups:
+        pattern = str(group["dir"])
+        if not pattern.endswith("/*"):
+            expanded.append(group)
+            continue
+        parent = pattern[:-2]
+        prefix = f"{parent}/"
+        files = set(group["files"])  # type: ignore[arg-type]
+        listing = _git(
+            "ls-tree", "-r", "-z", "--name-only", "HEAD", "--", prefix,
+        )
+        children: set[str] = set()
+        for path in listing.split("\0"):
+            if not path.startswith(prefix):
+                continue
+            child, _, name = path[len(prefix):].partition("/")
+            if child and name in files:
+                children.add(child)
+        for child in sorted(children):
+            rel = f"{prefix}{child}"
+            if rel in explicit:
+                continue
+            expanded.append(
+                {**group, "name": f"{group['name']} {child}/", "dir": rel}
+            )
+    return expanded
 
 
 def _git(*args: str, check: bool = True) -> str:
@@ -120,6 +188,64 @@ def _file_diff(base: str, path: str) -> str:
     return _git("diff", "--unified=0", f"{base}...HEAD", "--", path)
 
 
+def _json_shape(value, prefix: str = "$") -> dict[str, str]:
+    """Map every JSON path to its type/array length, ignoring scalar values."""
+    shape: dict[str, str] = {}
+    if isinstance(value, dict):
+        shape[prefix] = "object"
+        for key in sorted(value):
+            shape.update(_json_shape(value[key], f"{prefix}.{key}"))
+    elif isinstance(value, list):
+        shape[prefix] = f"list[{len(value)}]"
+        for index, item in enumerate(value):
+            shape.update(_json_shape(item, f"{prefix}[{index}]"))
+    elif isinstance(value, bool):
+        shape[prefix] = "bool"
+    elif isinstance(value, str):
+        shape[prefix] = "string"
+    elif isinstance(value, (int, float)):
+        shape[prefix] = "number"
+    elif value is None:
+        shape[prefix] = "null"
+    else:
+        shape[prefix] = type(value).__name__
+    return shape
+
+
+def _head_json_shape(path: str) -> dict[str, str]:
+    try:
+        return _json_shape(json.loads(_git("show", f"HEAD:{path}")))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{path}: invalid JSON at HEAD: {exc}") from exc
+
+
+def _compare_json_shapes(files: list[str]) -> list[str]:
+    errors: list[str] = []
+    try:
+        shapes = {path: _head_json_shape(path) for path in files}
+    except ValueError as exc:
+        return [f"[static/locales] {exc}"]
+
+    ref_file = files[0]
+    ref_shape = shapes[ref_file]
+    for path in files[1:]:
+        shape = shapes[path]
+        if shape != ref_shape:
+            diffs = sorted(
+                key for key in set(ref_shape) | set(shape)
+                if ref_shape.get(key) != shape.get(key)
+            )[:5]
+            detail = ", ".join(
+                f"{key}: {ref_shape.get(key, 'missing')} != {shape.get(key, 'missing')}"
+                for key in diffs
+            )
+            errors.append(
+                f"[static/locales] JSON structure in {path} differs from "
+                f"{ref_file}: {detail}"
+            )
+    return errors
+
+
 def _check_group(group: dict, base: str, changed: set[str]) -> list[str]:
     errors: list[str] = []
     dir_prefix = str(group["dir"]).rstrip("/") + "/"
@@ -138,6 +264,13 @@ def _check_group(group: dict, base: str, changed: set[str]) -> list[str]:
             f"All locales in the group must be edited together."
         )
         return errors  # alignment check is meaningless when files are missing
+
+    if group.get("align") is False:
+        return errors
+
+    if group.get("format") == "json":
+        errors.extend(_compare_json_shapes(files_in_group))
+        return errors
 
     hunks_by_file: dict[str, list[tuple[int, int, int, int]]] = {}
     for f in files_in_group:
@@ -161,7 +294,8 @@ def _check_group(group: dict, base: str, changed: set[str]) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Verify all locale files in a group change in lockstep "
-                    "(same set of hunk ranges, no language left behind).",
+                    "(no language left behind; the plugin-manager locales/ "
+                    "must also touch the same hunk ranges).",
     )
     parser.add_argument(
         "--base",
@@ -187,7 +321,7 @@ def main(argv: list[str] | None = None) -> int:
 
     changed = _changed_files(args.base)
     all_errors: list[str] = []
-    for group in GROUPS:
+    for group in _expand_groups(GROUPS):
         all_errors.extend(_check_group(group, args.base, changed))
 
     if all_errors:
@@ -195,8 +329,10 @@ def main(argv: list[str] | None = None) -> int:
             print(e)
         print(
             f"\n{len(all_errors)} i18n-sync violation(s) found.\n"
-            "Locale files within each group must move together — same set of "
-            "line ranges modified across all languages.",
+            "Locale files within each group must move together: every "
+            "language is changed; static/locales/ must keep one JSON "
+            "structure and the plugin-manager locales/ the same modified line "
+            "ranges (split message dirs are not line-aligned).",
             file=sys.stderr,
         )
         return 1

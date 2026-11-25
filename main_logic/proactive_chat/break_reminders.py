@@ -299,14 +299,14 @@ async def _deliver_break_reminder_via_llm(
     # crashing the whole proactive_chat round, and the source pending stays
     # armed for the next attempt once config is fixed.
     try:
-        correction_config = await config_manager.aget_model_api_config("correction")
-        correction_model = correction_config.get("model")
-        correction_base_url = correction_config.get("base_url")
-        correction_api_key = correction_config.get("api_key")
-        correction_provider_type = correction_config.get("provider_type")
-        if not correction_model or not correction_api_key:
+        chat_config = await config_manager.aget_model_api_config("conversation")
+        chat_model = chat_config.get("model")
+        chat_base_url = chat_config.get("base_url")
+        chat_api_key = chat_config.get("api_key")
+        chat_provider_type = chat_config.get("provider_type")
+        if not chat_model or (not chat_api_key and chat_provider_type != 'chatgpt'):
             logger.warning(
-                "[%s] break reminder skipped: correction model misconfigured",
+                "[%s] break reminder skipped: conversation model misconfigured",
                 lanlan_name,
             )
             return BreakReminderDeliveryResult()
@@ -358,7 +358,7 @@ async def _deliver_break_reminder_via_llm(
 
     print(
         f"\n{'=' * 60}\n[BREAK-REMINDER] channel={channel} lang={lang} "
-        f"model={correction_model}\n{'=' * 60}\n{system_prompt}\n{'=' * 60}\n"
+        f"model={chat_model}\n{'=' * 60}\n{system_prompt}\n{'=' * 60}\n"
     )
 
     from utils.token_tracker import set_call_type
@@ -372,11 +372,10 @@ async def _deliver_break_reminder_via_llm(
     try:
         async with asyncio.timeout(timeout_seconds):
             async with await create_chat_llm_async(
-                correction_model,
-                correction_base_url,
-                correction_api_key,
-                provider_type=correction_provider_type,
-                temperature=1.0,
+                chat_model,
+                chat_base_url,
+                chat_api_key,
+                provider_type=chat_provider_type,
                 max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                 streaming=True,
                 timeout=timeout_seconds,
@@ -506,11 +505,10 @@ async def _deliver_break_reminder_via_llm(
         try:
             async with asyncio.timeout(regen_timeout):
                 async with await create_chat_llm_async(
-                    correction_model,
-                    correction_base_url,
-                    correction_api_key,
-                    provider_type=correction_provider_type,
-                    temperature=1.0,
+                    chat_model,
+                    chat_base_url,
+                    chat_api_key,
+                    provider_type=chat_provider_type,
                     max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                     timeout=regen_timeout,
                 ) as regen_llm:

@@ -35,6 +35,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import tomllib
 from pathlib import Path
 
@@ -631,7 +632,9 @@ def test_a_spawn_that_keeps_stalling_reports_every_attempt():
     assert isinstance(excinfo.value, NodeHarnessSpawnTimeout)
     message = str(excinfo.value)
     for index in range(1, attempts + 1):
-        assert f"attempt {index}:" in message, f"每次尝试都得各自列出来：{message}"
+        assert f"attempt {index} (never reached the script):" in message, (
+            f"每次尝试都得各自列出来，并写明有没有跑到脚本：{message}"
+        )
     assert message.count("stdout=") == attempts and message.count("stderr=") == attempts, (
         f"每次尝试各自吐了什么必须跟着错误一起报出来：{message}"
     )
@@ -1343,3 +1346,311 @@ def test_the_exit_code_has_exactly_one_definition():
     assert "= 87;" not in node_harness._PRELOAD_SOURCE, (
         "预载不该再自带一个 87 的字面量，否则和 Python 常量会各改各的"
     )
+
+
+def _spawn_recorder(events):
+    def _fake_run(argv, **kwargs):
+        events.append(("spawn", argv[0]))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    return _fake_run
+
+
+@pytest.mark.parametrize("entry", [run_node_script, run_node_stdin])
+def test_the_node_binary_is_read_through_before_its_first_spawn(monkeypatch, tmp_path, entry):
+    """A fresh Windows runner pages node in from a disk nobody has read yet.
+
+    The frontend-contract shard's first test spent its whole 65s ceiling there:
+    node had reached the script, wrote nothing, and the watchdog never fired,
+    because a page fault blocks the thread the timer would run on.  Reading the
+    binary once, before the first spawn, is what keeps that cost out of every
+    attempt's budget -- so it must happen first, and from both entry points.
+    """
+    binary = tmp_path / "node.exe"
+    binary.write_bytes(b"\0" * 16)
+    events = []
+    monkeypatch.setattr(node_harness, "_prewarmed_binaries", set())
+    monkeypatch.setattr(
+        node_harness, "_read_through", lambda path: events.append(("read", path))
+    )
+    monkeypatch.setattr(node_harness.subprocess, "run", _spawn_recorder(events))
+
+    entry(str(binary), "0;", timeout=3)
+
+    assert events == [("read", str(binary)), ("spawn", str(binary))], (
+        "第一次 spawn 之前必须先把 node 本体读一遍，否则冷盘的缺页又算进脚本预算里"
+    )
+
+
+def test_the_node_binary_is_read_through_once_per_process(monkeypatch, tmp_path):
+    """Warming is a one-off; every later call goes straight to spawning.
+
+    Under ``pytest -n auto`` each worker is its own process and warms once; the
+    calls after that must not re-read 87 MB per harness.
+    """
+    binary = tmp_path / "node.exe"
+    binary.write_bytes(b"\0" * 16)
+    events = []
+    monkeypatch.setattr(node_harness, "_prewarmed_binaries", set())
+    monkeypatch.setattr(
+        node_harness, "_read_through", lambda path: events.append(("read", path))
+    )
+    monkeypatch.setattr(node_harness.subprocess, "run", _spawn_recorder(events))
+
+    run_node_script(str(binary), "0;", timeout=3)
+    run_node_stdin(str(binary), "0;", timeout=3)
+    run_node_script(str(binary), "0;", timeout=3)
+
+    assert [kind for kind, _ in events] == ["read", "spawn", "spawn", "spawn"]
+
+
+def test_warming_reads_the_whole_binary(monkeypatch, tmp_path):
+    """Only a full read puts the parts node faults on later into the cache.
+
+    One ``read`` call would warm the first chunk and leave the rest as cold as
+    before, which no test that merely checks warming "happened" would notice.
+    """
+    payload = bytes(range(256)) * 5
+    binary = tmp_path / "node.exe"
+    binary.write_bytes(payload)
+    seen = []
+    real_open = open
+
+    class _Counting:
+        def __init__(self, handle):
+            self._handle = handle
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._handle.close()
+
+        def read(self, size):
+            chunk = self._handle.read(size)
+            seen.append(len(chunk))
+            return chunk
+
+    monkeypatch.setattr(node_harness, "_PREWARM_CHUNK_BYTES", 100)
+    monkeypatch.setattr(
+        node_harness,
+        "open",
+        lambda path, *args, **kwargs: _Counting(real_open(path, *args, **kwargs)),
+        raising=False,
+    )
+
+    node_harness._read_through(str(binary))
+
+    assert sum(seen) == len(payload), "只读了一部分，剩下的页面照样冷着"
+    assert len(seen) > 2, "要分块读到文件尾，而不是一次 read 了事"
+
+
+def test_a_binary_that_cannot_be_read_still_gets_spawned(monkeypatch):
+    """Warming is an optimisation, never a new way to fail.
+
+    A bare ``"node"`` or a path that does not exist is for ``subprocess`` to
+    report, exactly as it did before warming existed.
+    """
+    events = []
+    monkeypatch.setattr(node_harness, "_prewarmed_binaries", set())
+    monkeypatch.setattr(node_harness.subprocess, "run", _spawn_recorder(events))
+
+    run_node_script("definitely-not-a-node-binary", "0;", timeout=3)
+
+    assert events == [("spawn", "definitely-not-a-node-binary")]
+
+
+def test_a_second_thread_waits_for_the_binary_to_finish_warming(monkeypatch, tmp_path):
+    """The read happens under the lock, so a racing thread spawns warm, not cold.
+
+    Called one after the other, every entry point already finds the binary
+    warm; only two threads at once show whether the second one waits for the
+    read or slips past it while the first is still reading.  Releasing the lock
+    before the read, or dropping it, lets the second thread spawn a node that
+    pages itself in cold -- inside its budget, which is the stall this exists
+    to keep out.
+    """
+    binary = tmp_path / "node.exe"
+    binary.write_bytes(b"\0" * 16)
+    events = []
+    reading = threading.Event()
+    release = threading.Event()
+
+    def _slow_read(path):
+        events.append("read-start")
+        reading.set()
+        release.wait(10)
+        events.append("read-end")
+
+    def _fake_run(argv, **kwargs):
+        events.append("spawn")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(node_harness, "_prewarmed_binaries", set())
+    monkeypatch.setattr(node_harness, "_read_through", _slow_read)
+    monkeypatch.setattr(node_harness.subprocess, "run", _fake_run)
+
+    first = threading.Thread(
+        target=run_node_script, args=(str(binary), "0;"), kwargs={"timeout": 3}
+    )
+    second = threading.Thread(
+        target=run_node_stdin, args=(str(binary), "0;"), kwargs={"timeout": 3}
+    )
+    first.start()
+    try:
+        assert reading.wait(10), "first thread never started warming"
+        # Deterministic half: while the first read is still in flight the
+        # guard must be held, or nothing makes a racing thread wait for it.
+        # A timed join alone cannot prove the second thread got that far.
+        grabbed = node_harness._prewarm_guard.acquire(blocking=False)
+        if grabbed:
+            node_harness._prewarm_guard.release()
+        second.start()
+        second.join(0.5)
+        early = list(events)
+    finally:
+        release.set()
+        first.join(10)
+        if second.ident is not None:
+            second.join(10)
+
+    assert not grabbed, "预读进行中锁却是空的，并发的第二条线程不会等它读完"
+    assert "spawn" not in early, (
+        f"第一条线程还在预读，第二条就启动了 node，冷盘开销又回到脚本预算里: {early}"
+    )
+    assert events == ["read-start", "read-end", "spawn", "spawn"], events
+
+
+def _stall_after_start(times):
+    """A fake ``subprocess.run`` whose first ``times`` runs reach the script, then stall."""
+    calls = []
+    ok = subprocess.CompletedProcess(["node"], 0, "ok", "")
+
+    def _fake_run(argv, **kwargs):
+        calls.append(argv)
+        if len(calls) <= times:
+            marker = kwargs["env"][node_harness._MARKER_ENV]
+            with open(marker, "w", encoding="utf-8"):
+                pass  # the preload's "reached the script" signal
+            raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
+        return ok
+
+    return calls, ok, _fake_run
+
+
+def test_a_rerun_safe_script_that_stalls_after_starting_is_retried(monkeypatch):
+    """An in-memory harness has nothing outside node to repeat, so it is re-run.
+
+    A Windows runner once held such a settings harness for 60s after node had
+    reached it, without the watchdog firing; the same script takes ~0.1s.
+    """
+    calls, ok, fake = _stall_after_start(times=1)
+    monkeypatch.setattr(node_harness.subprocess, "run", fake)
+    result = run_node_script("node", "process.stdout.write('ok');", timeout=3, rerun_safe=True)
+    assert result is ok
+    assert len(calls) == 2
+
+
+def test_a_script_not_marked_rerun_safe_is_still_not_retried_after_starting(monkeypatch):
+    calls, _ok, fake = _stall_after_start(times=1)
+    monkeypatch.setattr(node_harness.subprocess, "run", fake)
+    with pytest.raises(NodeHarnessSpawnTimeout) as excinfo:
+        run_node_script("node", "process.stdout.write('ok');", timeout=3)
+    assert len(calls) == 1, "没声明可重跑的脚本，跑起来后卡住必须原样报出来"
+    assert excinfo.value.started is True
+
+
+def test_a_rerun_safe_script_that_keeps_stalling_after_starting_gets_one_rerun(monkeypatch):
+    """A real top-level hang stalls every run; each costs a full ceiling, so stop after one rerun."""
+    calls, _ok, fake = _stall_after_start(times=99)
+    monkeypatch.setattr(node_harness.subprocess, "run", fake)
+    with pytest.raises(NodeHarnessSpawnTimeout) as excinfo:
+        run_node_script("node", "process.stdout.write('ok');", timeout=3, rerun_safe=True)
+    assert len(calls) == 1 + node_harness._STARTED_RERUNS
+    assert excinfo.value.attempts_started == [True] * len(calls)
+    assert "stalled again after it was re-run" in str(excinfo.value), str(excinfo.value)
+
+
+def test_each_attempt_reports_whether_it_reached_the_script(monkeypatch):
+    calls = []
+
+    def _fake_run(argv, **kwargs):
+        calls.append(argv)
+        if len(calls) >= 2:  # the first never reaches the script, the rest do
+            marker = kwargs["env"][node_harness._MARKER_ENV]
+            with open(marker, "w", encoding="utf-8"):
+                pass
+        raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
+
+    monkeypatch.setattr(node_harness.subprocess, "run", _fake_run)
+    with pytest.raises(NodeHarnessSpawnTimeout) as excinfo:
+        run_node_script("node", "process.stdout.write('ok');", timeout=3, rerun_safe=True)
+    error = excinfo.value
+    assert error.attempts_started == [False, True, True]
+    text = str(error)
+    assert "attempt 1 (never reached the script)" in text, text
+    assert "attempt 2 (reached the script)" in text, text
+
+
+def test_the_in_memory_settings_harness_is_marked_rerun_safe(monkeypatch):
+    from tests.support import websocket_source_harness
+
+    seen = {}
+
+    def _record(node_path, script, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(["node"], 0, "", "")
+
+    monkeypatch.setattr(websocket_source_harness.shutil, "which", lambda name: "node")
+    monkeypatch.setattr(websocket_source_harness, "run_node_script", _record)
+    websocket_source_harness._run_settings_node_harness("process.stdout.write('ok');")
+    assert seen.get("rerun_safe") is True
+
+
+
+@pytest.mark.parametrize(("flags", "expected"), [
+    ([False, False, True], "1 of 3 attempts reached the harness script"),
+    ([True, False, False], "1 of 3 attempts reached the harness script"),
+    ([False, True], "1 of 2 attempts reached the harness script"),
+    ([True, True], "stalled again after it was re-run"),
+    ([True, False, True], "2 of 3 attempts reached the harness script"),
+    ([False, False, False], "never reached the harness script"),
+])
+def test_the_diagnosis_looks_at_every_attempt(flags, expected):
+    attempts = [subprocess.TimeoutExpired(["node"], 3, output="", stderr="") for _ in flags]
+    error = NodeHarnessSpawnTimeout(
+        ["node"], 3, attempts, started=flags[-1], rerun_safe=True, attempts_started=flags,
+    )
+    text = str(error)
+    assert expected in text, text
+    if expected != "stalled again after it was re-run":
+        assert "stalled again after it was re-run" not in text, text
+
+
+
+def test_a_non_rerun_safe_start_after_spawn_stalls_keeps_the_not_retried_explanation():
+    attempts = [subprocess.TimeoutExpired(["node"], 3, output="", stderr="") for _ in range(2)]
+    error = NodeHarnessSpawnTimeout(
+        ["node"], 3, attempts, started=True, rerun_safe=False, attempts_started=[False, True],
+    )
+    text = str(error)
+    assert "After 1 attempt(s) that never reached it" in text, text
+    assert "Not retried" in text, text
+    assert "point at the runner" not in text, text
+
+
+def test_default_flags_mark_only_the_last_attempt_as_started():
+    attempts = [subprocess.TimeoutExpired(["node"], 3, output="", stderr="") for _ in range(3)]
+    error = NodeHarnessSpawnTimeout(["node"], 3, attempts, started=True)
+    assert error.attempts_started == [False, False, True]
+    assert "3 of 3" not in str(error)
+
+
+
+def test_every_attempt_is_reported_even_with_short_flags():
+    attempts = [subprocess.TimeoutExpired(["node"], 3, output="", stderr="") for _ in range(3)]
+    error = NodeHarnessSpawnTimeout(["node"], 3, attempts, started=True, attempts_started=[True])
+    assert error.attempts_started == [False, False, True], "aligned on the last attempt"
+    text = str(error)
+    for index in (1, 2, 3):
+        assert f"attempt {index} (" in text, text

@@ -59,6 +59,7 @@ calls* — RFC §3.4 stays unchanged in shape.
 """  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 
@@ -68,7 +69,6 @@ try:
     from memory.embeddings import (
         decode_embedding,
         get_embedding_service,
-        is_cached_embedding_valid,
         parse_dim_from_model_id,
     )
 except ImportError:
@@ -79,7 +79,6 @@ except ImportError:
     from memory.embeddings_fallback import (
         decode_embedding,
         get_embedding_service,
-        is_cached_embedding_valid,
         parse_dim_from_model_id,
         _warn_once,
     )
@@ -378,32 +377,22 @@ class MemoryRecallReranker:
         embedded_obs: list[dict] = []
         embedded_decoded: list = []
         unembedded: list[dict] = []
-        for o in observations:
-            # ``observations`` already passed through ``_hard_filter``,
-            # which guarantees every entry is a dict with non-empty
-            # text — no need for a defensive isinstance check here.
-            text = o.get('text', '')
-            if not is_cached_embedding_valid(o, text, model_id):
-                unembedded.append(o)
-                continue
-            cvec = decode_embedding(o.get('embedding'))
-            # A row that passes is_cached_embedding_valid but fails to
-            # decode (corrupt base64, or a future format we don't
-            # know) falls through to the unembedded pool rather than
-            # crashing the rerank.  is_cached_embedding_valid already
-            # tries to decode and checks dim, so this branch is mainly
-            # defence-in-depth for racey writes between validity check
-            # and rerank.
-            if cvec is None or cvec.size == 0:
-                unembedded.append(o)
-                continue
-            if target_dim is None:
-                target_dim = int(cvec.size)
-            elif cvec.size != target_dim:
-                # Mixed dims under a single model_id should be
-                # impossible (model_id encodes dim), but defend
-                # against it: drop to unembedded so the matmul stays
-                # rectangular.
+        # ``observations`` already passed through ``_hard_filter``, which
+        # guarantees every entry is a dict with non-empty text. One decode
+        # per row (the validity check's own vector, cached across calls),
+        # in a worker thread so a cold pool does not stall the event loop.
+        # A row without a valid vector, or whose dim disagrees with the
+        # first valid row's (impossible under one model_id, but keeps the
+        # matmul rectangular), falls through to the unembedded pool.
+        from memory.hybrid_recall import decode_cached_vectors, embedding_views
+        decoded, _norms, target_dim = await asyncio.to_thread(
+            decode_cached_vectors,
+            embedding_views(observations, lambda o: o.get('text', '')),
+            model_id,
+            target_dim,
+        )
+        for o, cvec in zip(observations, decoded):
+            if cvec is None:
                 unembedded.append(o)
                 continue
             embedded_obs.append(o)
@@ -526,20 +515,17 @@ class MemoryRecallReranker:
 
         target_dim = parse_dim_from_model_id(model_id)
 
-        # Decode candidate embeddings once, build (N, D)
-        indexed_decoded: list[tuple[int, "np.ndarray"]] = []
-        for i, o in enumerate(survivors):
-            text = o.get('text', '')
-            if not is_cached_embedding_valid(o, text, model_id):
-                continue
-            cvec = decode_embedding(o.get('embedding'))
-            if cvec is None or cvec.size == 0:
-                continue
-            if target_dim is None:
-                target_dim = int(cvec.size)
-            elif cvec.size != target_dim:
-                continue
-            indexed_decoded.append((i, cvec))
+        # Decode candidate embeddings once (cached, in a worker thread), build (N, D)
+        from memory.hybrid_recall import decode_cached_vectors, embedding_views
+        decoded, _norms, target_dim = await asyncio.to_thread(
+            decode_cached_vectors,
+            embedding_views(survivors, lambda o: o.get('text', '')),
+            model_id,
+            target_dim,
+        )
+        indexed_decoded: list[tuple[int, "np.ndarray"]] = [
+            (i, cvec) for i, cvec in enumerate(decoded) if cvec is not None
+        ]
 
         if not indexed_decoded:
             return []
@@ -637,21 +623,25 @@ class MemoryRecallReranker:
         # The id-keyed indirection prevents the LLM from inventing
         # ids that aren't in the candidate set.
         from config import (
+            DECISION_STATE_MAX_TOKENS,
             RECALL_PER_CANDIDATE_MAX_TOKENS,
             RECALL_CANDIDATES_TOTAL_MAX_TOKENS,
         )
-        from utils.tokenize import truncate_to_tokens
+        from utils.tokenize import count_tokens, truncate_to_tokens
         cand_lines = []
+        cand_entries: list[tuple[str, str]] = []
         id_to_obs: dict[str, dict] = {}
         for c in candidates:
             cid = c.get('id') or c.get('raw_id')
-            if not cid:
+            if not cid or cid in id_to_obs:
                 continue
             id_to_obs[cid] = c
             score = c.get('score', 0.0)
             # Truncate each candidate text to RECALL_PER_CANDIDATE_MAX_TOKENS.
             txt = truncate_to_tokens(c.get('text', '') or '', RECALL_PER_CANDIDATE_MAX_TOKENS)
-            cand_lines.append(f"[{cid}] (score={score:.2f}) {txt}")
+            line = f"[{cid}] (score={score:.2f}) {txt}"
+            cand_lines.append(line)
+            cand_entries.append((cid, line))
         if not cand_lines:
             return []
 
@@ -668,7 +658,168 @@ class MemoryRecallReranker:
         )
 
         set_call_type("memory_recall_rerank")
-        api_config = await config_manager.aget_model_api_config('summary')
+        decision_config: dict | None = None
+        try:
+            decision_config = await config_manager.aget_model_api_config('decision')
+        except Exception:
+            decision_config = None
+
+        from utils.decision_client import (
+            DecisionClient,
+            ScoreQuestion,
+            get_decision_adapter,
+            is_native_decision_protocol,
+        )
+
+        # Fast path: native zero-output Decisions API (e.g. Qwen decision-model-preview,
+        # Gemini gemini-decision-1, OpenAI gpt-6-luna, OpenRouter Decisions). Evaluates
+        # bounded candidates in one parallel forward pass (~150-250ms, 0 output tokens)
+        # and falls through to the `emotion` chat-LLM rerank path on any error or cooldown.
+        if (
+            isinstance(decision_config, dict)
+            and is_native_decision_protocol(decision_config.get('decision_protocol'))
+            and decision_config.get('model')
+        ):
+            try:
+                # Cap the native query portion so state_header never consumes the
+                # entire DECISION_STATE_MAX_TOKENS budget; emotion chat fallback
+                # continues to use the original query_text.
+                native_query_budget = max(256, DECISION_STATE_MAX_TOKENS // 4)
+                native_query_text = truncate_to_tokens(query_text, native_query_budget)
+                state_header = f"Query:\n{native_query_text}\n\nCandidates:\n"
+                header_tokens = count_tokens(state_header)
+                avail_tokens = max(
+                    1,
+                    DECISION_STATE_MAX_TOKENS - header_tokens - 64,
+                )
+                native_lines: list[str] = []
+                native_candidate_ids: list[str] = []
+                used_tokens = 0
+                for cid, line in cand_entries:
+                    line_tokens = count_tokens(line) + 1
+                    if used_tokens + line_tokens > avail_tokens:
+                        if not native_lines:
+                            native_lines.append(truncate_to_tokens(line, avail_tokens))
+                            native_candidate_ids.append(cid)
+                        break
+                    native_lines.append(line)
+                    native_candidate_ids.append(cid)
+                    used_tokens += line_tokens
+
+                # The native endpoint answers at most 16 questions per request (one
+                # question per candidate here). Split into batches of that size and
+                # send them concurrently; each batch's state carries only its own
+                # candidate lines, so the total input stays the packed budget above
+                # plus one query header per extra batch.
+                # Protocols without a documented cap keep a single request.
+                per_request_cap = getattr(
+                    get_decision_adapter(decision_config.get('decision_protocol')),
+                    'MAX_QUESTIONS_PER_REQUEST',
+                    None,
+                )
+                batch_size = max(1, per_request_cap or len(native_candidate_ids))
+                line_by_cid = dict(zip(native_candidate_ids, native_lines))
+                batches = [
+                    native_candidate_ids[i:i + batch_size]
+                    for i in range(0, len(native_candidate_ids), batch_size)
+                ]
+                dec_client = DecisionClient(config_manager=config_manager)
+
+                async def _batch_call(batch_ids: list[str]):
+                    batch_state = state_header + "\n".join(line_by_cid[cid] for cid in batch_ids)
+                    batch_questions = {
+                        cid: ScoreQuestion(
+                            instructions=(
+                                f"Rate how relevant memory candidate [{cid}] is for answering or "
+                                "supporting the Query above. Higher evidence score in parentheses "
+                                "indicates stronger user confirmation."
+                            ),
+                            levels=(
+                                "irrelevant",
+                                "weakly_relevant",
+                                "relevant",
+                                "highly_relevant",
+                            ),
+                        )
+                        for cid in batch_ids
+                    }
+                    batch_resp = await dec_client.decide(
+                        state=batch_state,
+                        questions=batch_questions,
+                        config=decision_config,
+                        timeout=2.0,
+                        allow_fallback=False,
+                        respect_cooldown=True,
+                        call_type="memory_recall_rerank",
+                    )
+                    # A batch with no usable score (e.g. every question refused)
+                    # fails the whole pass right away, like a single unsplit request
+                    # would; raising here lets the sibling batches be cancelled now
+                    # instead of after they finish.
+                    batch_answers = batch_resp.answers or {}
+                    if not any(
+                        batch_answers.get(cid) is not None
+                        and batch_answers[cid].score_norm is not None
+                        for cid in batch_ids
+                    ):
+                        raise RuntimeError("native decision batch returned no valid scores")
+                    return batch_answers
+
+                # Keep native decision total latency tightly capped (2.0s; typical
+                # native latency is ~150-250ms) so upstream's ~5s query_memory budget
+                # still leaves room for the emotion chat fallback on timeout. Outer
+                # wait_for (2.2s) gives DecisionClient's inner 2.0s timeout priority
+                # so transient timeouts reliably trigger the 60s cooldown cache.
+                # Batches run concurrently, so the cap is unchanged; any failed batch
+                # fails the whole native pass (no half-native, half-coarse order) and
+                # the batches still in flight are cancelled instead of left running.
+                batch_tasks = [asyncio.ensure_future(_batch_call(batch_ids)) for batch_ids in batches]
+                try:
+                    batch_responses = await asyncio.wait_for(asyncio.gather(*batch_tasks), timeout=2.2)
+                finally:
+                    pending_batches = [task for task in batch_tasks if not task.done()]
+                    for task in pending_batches:
+                        task.cancel()
+                    if pending_batches:
+                        await asyncio.gather(*pending_batches, return_exceptions=True)
+                native_answers: dict = {}
+                for batch_answers in batch_responses:
+                    native_answers.update(batch_answers)
+                if native_answers:
+                    scored_rows: list[tuple[float, int, str]] = []
+                    for idx, cid in enumerate(native_candidate_ids):
+                        ans = native_answers.get(cid)
+                        if ans is not None and ans.score_norm is not None:
+                            scored_rows.append((float(ans.score_norm), idx, cid))
+                    if scored_rows:
+                        scored_rows.sort(key=lambda item: (-item[0], item[1]))
+                        ranked_native: list[dict] = []
+                        seen_native: set[str] = set()
+                        for _score, _idx, cid in scored_rows:
+                            ranked_native.append(id_to_obs[cid])
+                            seen_native.add(cid)
+                            if len(ranked_native) >= budget:
+                                break
+                        if len(ranked_native) < budget:
+                            for c in candidates:
+                                cid = c.get('id') or c.get('raw_id')
+                                if cid in seen_native or not cid:
+                                    continue
+                                ranked_native.append(c)
+                                seen_native.add(cid)
+                                if len(ranked_native) >= budget:
+                                    break
+                        return ranked_native
+            except Exception as exc:
+                logger.warning(
+                    "[MemoryRecall] native decision rerank failed (%s); falling back to emotion chat LLM",
+                    type(exc).__name__,
+                )
+
+        # Non-native providers and native fallback rerank on the `emotion` (small) tier:
+        # recall sits on the user's reply path with an 8 s budget, so latency beats depth
+        # here; the rerank only orders candidates that coarse ranking already found.
+        api_config = await config_manager.aget_model_api_config('recognition')
         # timeout=8: recall runs in query_memory, whose upstream plugin/core/context.py
         # defaults to 5 s. Local 8 s allows connection/one failure; timeout raises
         # APITimeoutError, with outer handlers already falling back to coarse ranks.

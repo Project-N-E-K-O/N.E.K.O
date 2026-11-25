@@ -1646,3 +1646,189 @@ async def test_signal_user_activity_end_gpt_manual_clears_uplink_resampler():
     assert "input_audio_buffer.commit" in types_sent
     assert "response.create" in types_sent
     fake_resampler.clear.assert_called_once()
+
+
+@pytest.mark.unit
+async def test_connect_dispatches_by_api_type_with_custom_model_name():
+    """api_type='openai' with a custom model name must enter GPT dialect and 24kHz uplink."""
+    client = _make_manual_client(
+        model="custom-proxy-voice-v1",
+        api_type="openai",
+        base_url="wss://proxy.example.test/realtime",
+    )
+    assert client._uplink_sample_rate == 24000
+    assert client._supports_native_image is True
+    assert client._is_glm_realtime() is False
+
+    session = await _run_connect_and_capture_session(client)
+    assert session is not None
+    assert session.get("type") == "realtime"
+    assert session["audio"]["input"]["format"] == {"type": "audio/pcm", "rate": 24000}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("api_type", ["qwen", "qwen_intl"])
+async def test_connect_api_type_qwen_ignores_conflicting_model_substrings(api_type):
+    """Explicit qwen/qwen_intl api_type must win over 'gpt'/'glm' substrings in model name."""
+    client = _make_manual_client(
+        model="custom-gpt-glm-alias",
+        api_type=api_type,
+        base_url="wss://dashscope.example.test/realtime",
+    )
+    assert client._uplink_sample_rate == 16000
+    assert client._is_glm_realtime() is False
+
+    session = await _run_connect_and_capture_session(client)
+    assert session is not None
+    assert "repetition_penalty" in session
+    assert session.get("type") != "realtime"
+    assert "beta_fields" not in session
+
+
+@pytest.mark.unit
+async def test_connect_local_freeform_model_does_not_enter_free_dialect():
+    """api_type='local' with 'free' in model name must not enter the 'free' dialect."""
+    client = _make_manual_client(
+        model="freeform-realtime",
+        api_type="local",
+        base_url="wss://custom.example.test/realtime",
+    )
+    with pytest.raises(ValueError, match="Invalid model"):
+        await _run_connect_and_capture_session(client)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_apply_tools_to_session_uses_resolved_dialect_for_inferred_free_route():
+    """Fallback free route (api_type='', model='free-model', lanlan.tech) must push tools mid-session."""
+    from main_logic.tool_calling import ToolDefinition
+
+    client = OmniRealtimeClient(
+        base_url="wss://lanlan.tech/ws",
+        api_key="sk-test",
+        model="free-model",
+        api_type="",
+        tool_definitions=[ToolDefinition("ping", "ping tool")],
+        on_tool_call=AsyncMock(),
+    )
+    assert client._supports_tools_wire is True
+
+    sent_events: list[dict] = []
+
+    async def fake_send(payload):
+        sent_events.append(json.loads(payload))
+
+    mock_ws = AsyncMock()
+    mock_ws.send = AsyncMock(side_effect=fake_send)
+    with patch("websockets.connect", new_callable=AsyncMock) as mock_connect:
+        mock_connect.return_value = mock_ws
+        try:
+            await client.connect(instructions="You are helpful.", native_audio=True)
+            sent_events.clear()
+            await client.apply_tools_to_session()
+        finally:
+            await client.close()
+
+    updates = [e for e in sent_events if e.get("type") == "session.update"]
+    assert len(updates) == 1
+    tools = updates[0]["session"]["tools"]
+    assert any(t.get("type") == "function" and t.get("function", {}).get("name") == "ping" for t in tools)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_tool_results_openai_realtime_omits_call_id_for_fallback_glm_model():
+    """GLM with api_type='' and model='glm-realtime' must omit call_id from function_call_output."""
+    from main_logic.tool_calling import ToolResult
+
+    client = OmniRealtimeClient(
+        base_url="wss://glm.example.test/realtime",
+        api_key="sk-test",
+        model="glm-realtime",
+        api_type="",
+    )
+    assert client._supports_tools_wire is True
+
+    sent_events: list[dict] = []
+
+    async def fake_send(payload):
+        sent_events.append(json.loads(payload))
+
+    mock_ws = AsyncMock()
+    mock_ws.send = AsyncMock(side_effect=fake_send)
+    with patch("websockets.connect", new_callable=AsyncMock) as mock_connect:
+        mock_connect.return_value = mock_ws
+        try:
+            await client.connect(instructions="You are helpful.", native_audio=True)
+            sent_events.clear()
+            await client._send_tool_results_openai_realtime(
+                [ToolResult(call_id="glm_r1_0", name="ping", output={"ok": True})]
+            )
+        finally:
+            await client.close()
+
+    item_creates = [e for e in sent_events if e.get("type") == "conversation.item.create"]
+    assert len(item_creates) == 1
+    item = item_creates[0]["item"]
+    assert item["type"] == "function_call_output"
+    assert "call_id" not in item
+
+
+@pytest.mark.unit
+def test_tooling_realtime_dialect_falls_back_on_minimal_double():
+    """Minimal _ToolingMixin test doubles without _resolved_realtime_dialect fall back to _api_type."""
+    from main_logic.omni_realtime_client._tools import _ToolingMixin
+
+    class _MinimalDouble(_ToolingMixin):
+        def __init__(self, api_type: str):
+            self._api_type = api_type
+
+    assert _MinimalDouble("openai")._tooling_realtime_dialect() == "gpt"
+    assert _MinimalDouble("qwen_intl")._tooling_realtime_dialect() == "qwen"
+
+
+@pytest.mark.unit
+def test_whitespace_padded_api_type_matches_realtime_dialect_and_provider_flags():
+    gemini_client = OmniRealtimeClient(
+        base_url="wss://generativelanguage.googleapis.com",
+        api_key="sk-test",
+        model="gemini-2.5-flash",
+        api_type=" gemini ",
+    )
+    assert gemini_client._realtime_dialect == "gemini"
+    assert gemini_client._is_gemini is True
+    assert gemini_client._has_server_vad is False
+
+    free_client = OmniRealtimeClient(
+        base_url="wss://www.lanlan.tech/api/v1/realtime",
+        api_key="sk-test",
+        model="free-model",
+        api_type=" free ",
+    )
+    assert free_client._realtime_dialect == "free"
+    assert free_client._is_free_provider is True
+
+
+@pytest.mark.unit
+async def test_unrecognized_api_type_falls_back_to_model_dialect_without_entering_free():
+    gpt_client = _make_manual_client(
+        model="gpt-realtime",
+        api_type="custom",
+        base_url="wss://custom.example.test/realtime",
+    )
+    assert gpt_client._realtime_dialect == "gpt"
+    assert gpt_client._uplink_sample_rate == 24000
+
+    session = await _run_connect_and_capture_session(gpt_client)
+    assert session is not None
+    assert session.get("type") == "realtime"
+    assert session["audio"]["input"]["format"] == {"type": "audio/pcm", "rate": 24000}
+
+    freeform_client = _make_manual_client(
+        model="freeform-realtime",
+        api_type="custom",
+        base_url="wss://custom.example.test/realtime",
+    )
+    assert freeform_client._realtime_dialect == ""
+    with pytest.raises(ValueError, match="Invalid model"):
+        await _run_connect_and_capture_session(freeform_client)

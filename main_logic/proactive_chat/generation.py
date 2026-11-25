@@ -16,12 +16,12 @@
 """Parsers and output guards for proactive Phase 1/2 generation."""
 
 import asyncio
-from contextlib import suppress
+from contextlib import aclosing, suppress
 import logging
 import unicodedata
 import re
 from dataclasses import dataclass
-from functools import partial
+from functools import lru_cache, partial
 from itertools import zip_longest
 from typing import Any, Callable
 
@@ -61,6 +61,7 @@ from utils.llm_client import (
     SystemMessage,
     ThinkingStreamStripper,
     chat_retry_error_types,
+    chat_retry_error_types_snapshot,
     create_chat_llm_async,
 )
 from utils.logger_config import get_module_logger
@@ -324,6 +325,8 @@ class ProactiveModelConfig:
     vision_api_key: str = ""
     vision_provider_type: str | None = None
     vision_is_custom: bool = False
+    # utils.legacy_vision.ImageModelChoice behind the vision_* fields, if any.
+    image_choice: Any = None
 
     @property
     def has_vision_model(self) -> bool:
@@ -332,6 +335,36 @@ class ProactiveModelConfig:
         return bool(
             self.vision_model and (self.vision_api_key or self.vision_is_custom)
         )
+
+
+def _chat_image_refusal_hook(model_config: ProactiveModelConfig) -> Callable[[], None] | None:
+    """Remember a screenshot refusal when the screenshot went to the chat model itself.
+
+    A refusal from a separately configured (retired) vision route says nothing
+    about the chat model, so no hook is returned for it.
+    """
+    choice = model_config.image_choice
+    if choice is not None:
+        if choice.using_legacy:
+            return None
+    elif (
+        model_config.vision_model != model_config.conversation_model
+        or (model_config.vision_base_url or None) != (model_config.conversation_base_url or None)
+        or (model_config.vision_api_key or None) != (model_config.conversation_api_key or None)
+        or (model_config.vision_provider_type or None) != (model_config.conversation_provider_type or None)
+    ):
+        return None
+    chat = {
+        "model": model_config.conversation_model,
+        "base_url": model_config.conversation_base_url,
+        "api_key": model_config.conversation_api_key,
+        "provider_type": model_config.conversation_provider_type,
+    }
+
+    def mark() -> None:
+        from utils.legacy_vision import mark_chat_image_refused
+        mark_chat_image_refused(chat, "proactive screenshot")
+    return mark
 
 
 @dataclass(frozen=True, slots=True)
@@ -377,12 +410,14 @@ class Phase2PromptContext:
 def _proactive_llm_retry_error_types() -> tuple[type[BaseException], ...]:
     """Lazily resolve optional provider exception types."""
     global _PROACTIVE_LLM_RETRY_ERROR_TYPES
-    if _PROACTIVE_LLM_RETRY_ERROR_TYPES is None:
-        _PROACTIVE_LLM_RETRY_ERROR_TYPES = (
-            asyncio.TimeoutError,
-            *chat_retry_error_types(),
-        )
-    return _PROACTIVE_LLM_RETRY_ERROR_TYPES
+    if _PROACTIVE_LLM_RETRY_ERROR_TYPES is not None:
+        return _PROACTIVE_LLM_RETRY_ERROR_TYPES
+    retry_types, final = chat_retry_error_types_snapshot()
+    types = (asyncio.TimeoutError, *retry_types)
+    # Cache only once every Anthropic class is known (see chat_retry_error_types_snapshot).
+    if final:
+        _PROACTIVE_LLM_RETRY_ERROR_TYPES = types
+    return types
 
 
 def _proactive_vision_consent_checker(
@@ -418,7 +453,6 @@ async def _check_proactive_vision_consent(
 async def _make_proactive_llm(
     model_config: ProactiveModelConfig,
     *,
-    temperature: float = 1.0,
     max_completion_tokens: int = PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
     use_vision: bool = False,
     disable_thinking: bool = True,
@@ -442,6 +476,11 @@ async def _make_proactive_llm(
         await _check_proactive_vision_consent(live_consent_check)
     require_current_round()
     if use_vision and model_config.has_vision_model:
+        if model_config.image_choice is not None:
+            # The screenshot is about to be sent: only now is a retired,
+            # separately configured vision route actually used.
+            from utils.legacy_vision import note_legacy_vision_use
+            note_legacy_vision_use(model_config.image_choice, "proactive screenshot")
         model = model_config.vision_model
         base_url = model_config.vision_base_url
         api_key = model_config.vision_api_key
@@ -455,7 +494,6 @@ async def _make_proactive_llm(
     from config import DIALOG_LLM_STREAM_TIMEOUT_SECONDS
 
     kwargs: dict[str, Any] = {
-        "temperature": temperature,
         "max_completion_tokens": max_completion_tokens,
         "streaming": True,
         "timeout": DIALOG_LLM_STREAM_TIMEOUT_SECONDS,
@@ -490,7 +528,6 @@ async def _llm_call_with_retry(
     lanlan_name: str,
     system_prompt: str,
     label: str,
-    temperature: float = 1.0,
     max_completion_tokens: int = PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS,
     timeout: float = 16.0,
     use_vision: bool = False,
@@ -528,7 +565,6 @@ async def _llm_call_with_retry(
         try:
             async with await _make_proactive_llm(
                 model_config,
-                temperature=temperature,
                 max_completion_tokens=max_completion_tokens,
                 use_vision=use_vision,
                 disable_thinking=disable_thinking,
@@ -875,6 +911,7 @@ async def _run_phase2_generation(
         screenshot_b64=screenshot_b64,
         log=active_logger,
         on_model_reply=on_model_reply,
+        on_image_refused=_chat_image_refusal_hook(model_config),
     )
     if generated.result is not None:
         return Phase2GuardedOutput(result=generated.result)
@@ -994,6 +1031,7 @@ async def _generate_phase2_stream(
     screenshot_b64: str | None,
     log: logging.Logger | None = None,
     on_model_reply: Callable[[], None] | None = None,
+    on_image_refused: Callable[[], None] | None = None,
 ) -> Phase2Generation:
     """Run the guarded Phase 2 stream and preserve its legacy abort semantics.
 
@@ -1060,98 +1098,98 @@ async def _generate_phase2_stream(
     try:
         async with asyncio.timeout(25.0):
             async with await make_llm(
-                temperature=1.0,
                 max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                 use_vision=phase2_use_vision,
                 disable_thinking=phase2_disable_thinking,
             ) as llm:
-                async for chunk in llm.astream(messages):
-                    if on_model_reply is not None:
-                        on_model_reply()
-                        on_model_reply = None
-                    if mgr.state.is_proactive_preempted(proactive_sid):
-                        print(
-                            f"[{lanlan_name}] Phase 2 astream chunk 前检测到抢占，abort"
-                        )
-                        _abort(PROACTIVE_REASON_DELIVERY_PREEMPTED)
-                        break
-                    content = chunk.content if hasattr(chunk, "content") else ""
-                    if thinking_stripper is not None and content:
-                        content = thinking_stripper.feed(content)
-                    if not content:
-                        continue
-
-                    if not tag_parsed:
-                        buffer += content
-                        if "[PASS]" in buffer.upper():
-                            _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
+                async with aclosing(llm.astream(messages)) as stream:
+                    async for chunk in stream:
+                        if on_model_reply is not None:
+                            on_model_reply()
+                            on_model_reply = None
+                        if mgr.state.is_proactive_preempted(proactive_sid):
+                            print(
+                                f"[{lanlan_name}] Phase 2 astream chunk 前检测到抢占，abort"
+                            )
+                            _abort(PROACTIVE_REASON_DELIVERY_PREEMPTED)
                             break
-                        parsed = _parse_proactive_phase2_prefix(buffer)
-                        if parsed is None:
-                            # Recovery needs the complete output: a chunk may
-                            # end inside a label, separator, or ordinary path.
-                            # Bound pending data by the provider's generation
-                            # budget; the cleaned body keeps its stricter limit.
-                            if (
-                                sum(buffer.count(mark) for mark in ("|", "｜")) >= 2
-                                or count_tokens(buffer)
-                                > PROACTIVE_PHASE2_GENERATE_MAX_TOKENS
-                            ):
-                                _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
-                                break
+                        content = chunk.content if hasattr(chunk, "content") else ""
+                        if thinking_stripper is not None and content:
+                            content = thinking_stripper.feed(content)
+                        if not content:
                             continue
-                        cleaned, source_tag = parsed
-                        tag_parsed = True
-                        buffer = ""
 
-                        if (
-                            source_tag == "PASS"
-                            or "[PASS]" in cleaned.upper()
-                            or _text_is_pass_sentinel(cleaned)
-                        ):
-                            print(f"[{lanlan_name}] Phase 2 流式检测到 PASS，abort")
-                            _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
-                            break
-
-                        if cleaned.strip():
-                            combined = pass_probe + cleaned
-                            if "[PASS]" in combined.upper():
-                                print(
-                                    f"[{lanlan_name}] Phase 2 流式检测到 [PASS]，abort"
-                                )
+                        if not tag_parsed:
+                            buffer += content
+                            if "[PASS]" in buffer.upper():
                                 _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
                                 break
-                            safe_text = (
-                                combined[:-pass_probe_len]
-                                if len(combined) > pass_probe_len
-                                else ""
-                            )
-                            pass_probe = (
-                                combined[-pass_probe_len:]
-                                if len(combined) >= pass_probe_len
-                                else combined
-                            )
-                            if await _emit_safe(safe_text):
-                                break
-                        continue
+                            parsed = _parse_proactive_phase2_prefix(buffer)
+                            if parsed is None:
+                                # Recovery needs the complete output: a chunk may
+                                # end inside a label, separator, or ordinary path.
+                                # Bound pending data by the provider's generation
+                                # budget; the cleaned body keeps its stricter limit.
+                                if (
+                                    sum(buffer.count(mark) for mark in ("|", "｜")) >= 2
+                                    or count_tokens(buffer)
+                                    > PROACTIVE_PHASE2_GENERATE_MAX_TOKENS
+                                ):
+                                    _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
+                                    break
+                                continue
+                            cleaned, source_tag = parsed
+                            tag_parsed = True
+                            buffer = ""
 
-                    combined = pass_probe + content
-                    if "[PASS]" in combined.upper():
-                        print(f"[{lanlan_name}] Phase 2 流式检测到内嵌 [PASS]，abort")
-                        _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
-                        break
-                    safe_text = (
-                        combined[:-pass_probe_len]
-                        if len(combined) > pass_probe_len
-                        else ""
-                    )
-                    pass_probe = (
-                        combined[-pass_probe_len:]
-                        if len(combined) >= pass_probe_len
-                        else combined
-                    )
-                    if safe_text and await _emit_safe(safe_text):
-                        break
+                            if (
+                                source_tag == "PASS"
+                                or "[PASS]" in cleaned.upper()
+                                or _text_is_pass_sentinel(cleaned)
+                            ):
+                                print(f"[{lanlan_name}] Phase 2 流式检测到 PASS，abort")
+                                _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
+                                break
+
+                            if cleaned.strip():
+                                combined = pass_probe + cleaned
+                                if "[PASS]" in combined.upper():
+                                    print(
+                                        f"[{lanlan_name}] Phase 2 流式检测到 [PASS]，abort"
+                                    )
+                                    _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
+                                    break
+                                safe_text = (
+                                    combined[:-pass_probe_len]
+                                    if len(combined) > pass_probe_len
+                                    else ""
+                                )
+                                pass_probe = (
+                                    combined[-pass_probe_len:]
+                                    if len(combined) >= pass_probe_len
+                                    else combined
+                                )
+                                if await _emit_safe(safe_text):
+                                    break
+                            continue
+
+                        combined = pass_probe + content
+                        if "[PASS]" in combined.upper():
+                            print(f"[{lanlan_name}] Phase 2 流式检测到内嵌 [PASS]，abort")
+                            _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
+                            break
+                        safe_text = (
+                            combined[:-pass_probe_len]
+                            if len(combined) > pass_probe_len
+                            else ""
+                        )
+                        pass_probe = (
+                            combined[-pass_probe_len:]
+                            if len(combined) >= pass_probe_len
+                            else combined
+                        )
+                        if safe_text and await _emit_safe(safe_text):
+                            break
     except (asyncio.TimeoutError, Exception) as exc:
         active_logger.warning(
             "[%s] Phase 2 流式调用异常: %s: %s",
@@ -1159,6 +1197,11 @@ async def _generate_phase2_stream(
             type(exc).__name__,
             exc,
         )
+        if phase2_use_vision and on_image_refused is not None:
+            from utils.legacy_vision import is_image_unsupported_error
+            if is_image_unsupported_error(exc):
+                # Phase 2 never retries; later rounds talk without the screenshot.
+                on_image_refused()
         _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
 
     if pass_probe and not aborted:
@@ -1209,7 +1252,6 @@ async def _generate_phase2_stream(
             try:
                 async with asyncio.timeout(20.0):
                     async with await make_llm(
-                        temperature=1.0,
                         max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                         use_vision=phase2_use_vision,
                         disable_thinking=phase2_disable_thinking,
@@ -1714,7 +1756,6 @@ async def _guard_phase2_output(
         try:
             async with asyncio.timeout(20.0):
                 async with await make_llm(
-                    temperature=1.0,
                     max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                     use_vision=phase2_use_vision,
                     disable_thinking=phase2_disable_thinking,
@@ -1756,7 +1797,10 @@ async def _guard_phase2_output(
 
         cleaned = (regen_text or "").strip()
         cleaned, regen_source_tag = _parse_proactive_phase2_prefix(cleaned, final=True)
-        cleaned = _strip_proactive_intent_label_leak(cleaned)
+        cleaned, regen_leak_tag = _strip_proactive_screen_tag_leak(cleaned)
+        if regen_leak_tag == "PASS" or not regen_source_tag:
+            regen_source_tag = regen_leak_tag
+        cleaned = _strip_proactive_intent_label_leak(cleaned.strip())
         if (
             regen_source_tag == "PASS"
             or (expects_source_tag and not regen_source_tag)
@@ -2355,6 +2399,12 @@ def _get_proactive_context_leak_labels() -> frozenset[str]:
     )
 
 
+def _get_proactive_context_leak_label_patterns() -> tuple[re.Pattern[str], ...]:
+    from config.prompts.prompts_activity import get_proactive_intent_leak_label_patterns
+
+    return get_proactive_intent_leak_label_patterns()
+
+
 def _get_proactive_context_slash_leak_labels() -> frozenset[str]:
     return _get_proactive_context_leak_labels() | frozenset(
         label.casefold() for label in _PROACTIVE_OBSERVED_SLASH_PREFIX_LABELS
@@ -2430,17 +2480,64 @@ def _strip_proactive_label_tail(rest: str) -> str:
     return body.lstrip()
 
 
+@lru_cache(maxsize=32)
+def _compile_label_prefix_pattern(pattern: re.Pattern[str]) -> re.Pattern[str]:
+    pattern_text = pattern.pattern
+    if pattern_text.endswith("$"):
+        return re.compile(pattern_text[:-1], pattern.flags)
+    return pattern
+
+
+def _match_label_pattern_prefix(text: str, pattern: re.Pattern[str]) -> str | None:
+    """Match a compiled full-line label pattern as a same-line prefix."""
+    prefix_pattern = _compile_label_prefix_pattern(pattern)
+    match = prefix_pattern.match(text)
+    if not match:
+        return None
+    end = match.end()
+    balance = 0
+    for ch in text[:end]:
+        if ch in "(（":
+            balance += 1
+        elif ch in ")）":
+            balance -= 1
+    while balance > 0 and end < len(text) and text[end] not in "\r\n":
+        ch = text[end]
+        if ch in "(（":
+            balance += 1
+        elif ch in ")）":
+            balance -= 1
+        end += 1
+    if balance != 0:
+        return None
+    candidate = text[:end]
+    if not pattern.match(candidate):
+        return None
+    return candidate
+
+
+def _matches_label_pattern_exact(text: str, pattern: re.Pattern[str]) -> bool:
+    """Match a compiled full-line label pattern only across the exact segment with balanced parens."""
+    return _match_label_pattern_prefix(text, pattern) == text
+
+
 def _strip_proactive_label_slash_prefix(
     body: str,
     labels: frozenset[str],
+    label_patterns: tuple[re.Pattern[str], ...] = (),
 ) -> str | None:
     """Strip a known label using an ASCII or full-width slash separator."""
     if not body:
         return None
+    best_len = -1
+    best_rest: str | None = None
+
     folded = body.casefold()
     for label in sorted(labels, key=len, reverse=True):
         if not label:
             continue
+        if len(label) <= best_len:
+            break
         if folded.startswith(label):
             rest = _normalize_proactive_label_gap(body[len(label) :])
             sep = re.match(
@@ -2449,13 +2546,56 @@ def _strip_proactive_label_slash_prefix(
                 rest,
             )
             if sep:
-                return _strip_proactive_label_tail(rest)
-        if body.startswith(tuple(_PROACTIVE_SLASHES)) and folded[1:].startswith(
-            label
-        ):
-            rest = _normalize_proactive_label_gap(body[1 + len(label) :])
-            if _label_prefix_boundary_ok(label, rest):
-                return _strip_proactive_label_tail(rest)
+                best_len = len(label)
+                best_rest = rest
+                break
+
+    if label_patterns:
+        for pattern in label_patterns:
+            matched = _match_label_pattern_prefix(body, pattern)
+            if matched and len(matched) > best_len:
+                rest = _normalize_proactive_label_gap(body[len(matched) :])
+                sep = re.match(
+                    rf"{_PROACTIVE_HSPACE_PATTERN}*"
+                    rf"[{re.escape(_PROACTIVE_SLASHES)}]",
+                    rest,
+                )
+                if sep:
+                    best_len = len(matched)
+                    best_rest = rest
+
+    if best_rest is not None:
+        return _strip_proactive_label_tail(best_rest)
+
+    if body.startswith(tuple(_PROACTIVE_SLASHES)):
+        after_slash = body[1:]
+        folded_after = folded[1:]
+        for label in sorted(labels, key=len, reverse=True):
+            if not label:
+                continue
+            if len(label) <= best_len:
+                break
+            if folded_after.startswith(label):
+                rest = _normalize_proactive_label_gap(after_slash[len(label) :])
+                if _label_prefix_boundary_ok(label, rest):
+                    best_len = len(label)
+                    best_rest = rest
+                    break
+
+        if label_patterns:
+            for pattern in label_patterns:
+                matched = _match_label_pattern_prefix(after_slash, pattern)
+                if matched and len(matched) > best_len:
+                    rest = _normalize_proactive_label_gap(
+                        after_slash[len(matched) :]
+                    )
+                    if _label_prefix_boundary_ok(matched, rest):
+                        best_len = len(matched)
+                        best_rest = rest
+
+        if best_rest is not None:
+            return _strip_proactive_label_tail(best_rest)
+
     return None
 
 
@@ -2591,6 +2731,7 @@ def _strip_proactive_known_prefix_tag_leak(text: str) -> tuple[str, str]:
     body = _PROACTIVE_LEADING_IGNORABLE_RE.sub("", text, count=1)
     recovered_tag = ""
     context_labels = _get_proactive_context_leak_labels()
+    label_patterns = _get_proactive_context_leak_label_patterns()
 
     # Bounded peeling handles stacked new-line prefixes without allowing a
     # malformed response to turn this guard into an unbounded rewrite loop.
@@ -2598,15 +2739,20 @@ def _strip_proactive_known_prefix_tag_leak(text: str) -> tuple[str, str]:
         cleaned = _strip_proactive_label_slash_prefix(
             body,
             context_labels,
+            label_patterns,
         )
         source_tag = "CHAT"
         if cleaned is None:
             # A whole context-label line is framing, independently of whether
             # the next line starts with prose, a route or another source tag.
             first, newline, rest = body.partition("\n")
-            if newline and first.strip(
+            stripped_first = first.strip(
                 _PROACTIVE_HORIZONTAL_SPACES + "\r" + _PROACTIVE_LEADING_INVISIBLES
-            ).casefold() in context_labels:
+            )
+            if newline and (
+                stripped_first.casefold() in context_labels
+                or any(_matches_label_pattern_exact(stripped_first, p) for p in label_patterns)
+            ):
                 cleaned = rest
         if cleaned is None:
             source_prefix = _strip_proactive_source_prefix(body)
@@ -2696,6 +2842,61 @@ def _strip_proactive_screen_tag_leak(text: str) -> tuple[str, str]:
 # CJK + ASCII brackets). Stripped from both ends before matching so e.g.
 # "**屏幕细节轻问**" / "【回忆线索】" still resolve to the bare label.
 _INTENT_LABEL_DECOR = "*-•◦·#`_~【】「」[]《》（）() \t"
+_INTENT_LABEL_DECOR_NO_PARENS = "*-•◦·#`_~【】「」[]《》 \t"
+
+
+def _strip_balanced_outer_parens(text: str) -> str:
+    """Strip outer parentheses only when a single pair wraps the entire text."""
+    out = text.strip()
+    pairs = (("(", ")"), ("（", "）"))
+    changed = True
+    while changed and len(out) >= 2:
+        changed = False
+        for open_ch, close_ch in pairs:
+            if out.startswith(open_ch) and out.endswith(close_ch):
+                depth = 0
+                wraps_all = True
+                for idx, ch in enumerate(out):
+                    if ch == open_ch:
+                        depth += 1
+                    elif ch == close_ch:
+                        depth -= 1
+                        if depth == 0 and idx < len(out) - 1:
+                            wraps_all = False
+                            break
+                if wraps_all and depth == 0:
+                    out = out[1:-1].strip()
+                    changed = True
+                    break
+    return out
+
+
+def _strip_outer_intent_decor(segment: str) -> str:
+    """Strip outer decor while keeping balanced inner parens such as '(due ...)'."""
+    out = segment.strip().strip(_INTENT_LABEL_DECOR_NO_PARENS)
+    out = out.rstrip("：:").strip(_INTENT_LABEL_DECOR_NO_PARENS)
+    out = _strip_balanced_outer_parens(out)
+    out = out.strip().strip(_INTENT_LABEL_DECOR_NO_PARENS)
+    out = out.rstrip("：:").strip(_INTENT_LABEL_DECOR_NO_PARENS)
+    return out.strip()
+
+
+def _matches_intent_leak_label(
+    segment: str,
+    labels: frozenset[str],
+    label_patterns: tuple[re.Pattern[str], ...],
+) -> bool:
+    norm_exact = segment.strip().strip(_INTENT_LABEL_DECOR)
+    norm_exact = norm_exact.rstrip("：:").strip(_INTENT_LABEL_DECOR).strip()
+    if norm_exact.casefold() in labels:
+        return True
+    if label_patterns:
+        norm_patterned = _strip_outer_intent_decor(segment)
+        if norm_patterned and any(
+            _matches_label_pattern_exact(norm_patterned, p) for p in label_patterns
+        ):
+            return True
+    return False
 
 
 def _strip_proactive_intent_label_leak(text: str) -> str:
@@ -2722,21 +2923,21 @@ def _strip_proactive_intent_label_leak(text: str) -> str:
     if not text:
         return text
     labels = _get_proactive_context_leak_labels()
-    if not labels:
+    label_patterns = _get_proactive_context_leak_label_patterns()
+    if not labels and not label_patterns:
         return text
     slash_labels = _get_proactive_context_slash_leak_labels()
-
-    def _norm(segment: str) -> str:
-        out = segment.strip().strip(_INTENT_LABEL_DECOR)
-        out = out.rstrip("：:").strip(_INTENT_LABEL_DECOR)
-        return out.strip()
 
     # Bounded peel — a handful of stacked labels at most; never loop the body.
     for _ in range(4):
         body = text.lstrip()
         if not body:
             break
-        slash_cleaned = _strip_proactive_label_slash_prefix(body, slash_labels)
+        slash_cleaned = _strip_proactive_label_slash_prefix(
+            body,
+            slash_labels,
+            label_patterns,
+        )
         if slash_cleaned is not None:
             text = slash_cleaned
             continue
@@ -2745,29 +2946,29 @@ def _strip_proactive_intent_label_leak(text: str) -> str:
         rest = "" if nl == -1 else body[nl + 1 :]
 
         # Case 1: the whole first line is a label, with real content after it.
-        if rest.strip() and _norm(first).casefold() in labels:
+        if rest.strip() and _matches_intent_leak_label(first, labels, label_patterns):
             text = rest
             continue
 
-        # Case 2: "<label>：<content>" sharing one line. Take the EARLIEST
-        # colon (full- or half-width), not full-width-first — otherwise a
-        # half-width separator followed by a full-width colon in the body
-        # (e.g. "Memory cues: ...：...") would split on the wrong colon and
-        # leave the leading label unstripped.
-        sep_idx = -1
-        for sep in ("：", ":"):
-            idx = first.find(sep)
-            if idx > 0 and (sep_idx == -1 or idx < sep_idx):
-                sep_idx = idx
-        if sep_idx > 0:
-            cand = _norm(first[:sep_idx]).casefold()
-            after = first[sep_idx + 1 :].strip()
-            if cand in labels and (after or rest.strip()):
-                if after:
-                    text = after + ("\n" + rest if rest else "")
-                else:
-                    text = rest
+        # Case 2: "<label>：<content>" sharing one line. Check colons from
+        # earliest to latest so mixed colons split on the earliest matching
+        # label, while colons inside a templated label (e.g. time in {due})
+        # still allow the terminating colon to match.
+        matched_after = None
+        for idx, ch in enumerate(first):
+            if idx <= 0 or ch not in ("：", ":"):
                 continue
+            if _matches_intent_leak_label(first[:idx], labels, label_patterns):
+                after = first[idx + 1 :].strip()
+                if after or rest.strip():
+                    matched_after = after
+                break
+        if matched_after is not None:
+            if matched_after:
+                text = matched_after + ("\n" + rest if rest else "")
+            else:
+                text = rest
+            continue
         break
     return text
 

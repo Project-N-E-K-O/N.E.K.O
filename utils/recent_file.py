@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -39,12 +40,15 @@ import stat
 import tempfile
 import threading
 import time
+import weakref
 from contextlib import contextmanager
 from typing import Any, Iterator
 
 from filelock import FileLock, Timeout as FileLockTimeout
 
 from utils.file_utils import atomic_write_json
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "RECENT_IDEMPOTENCY_META_KEY",
@@ -140,7 +144,9 @@ class _RecentFileLock:
         # deleted directories or colliding when two character folders merge.
         key = hashlib.sha256(os.fsencode(os.path.realpath(path))).hexdigest()
         user = str(os.getuid()) if hasattr(os, 'getuid') else 'user'
-        self._file = FileLock(os.path.join(tempfile.gettempdir(), f'neko-recent-locks-{user}', key + '.lock'), thread_local=False)
+        self._file_path = os.path.join(tempfile.gettempdir(), f'neko-recent-locks-{user}', key + '.lock')
+        self._file = self._new_file_lock()
+        _FORK_RESET_LOCKS.add(self)
         # (thread ident, thread name, monotonic acquire time) of the current owner, for stall reports.
         self._holder: tuple[int, str, float] | None = None
 
@@ -251,7 +257,29 @@ class _RecentFileLock:
     def __exit__(self, *args):
         self.release()
 
+    def _new_file_lock(self):
+        return FileLock(self._file_path, thread_local=False)
 
+    def _reset_after_fork(self):
+        """Give a fork child its own FileLock and, unless the forking thread holds it, a fresh gate.
+
+        filelock 4 rejects instances inherited across fork. A gate another parent
+        thread held at fork time would stay locked forever: that thread does not
+        exist in the child. A gate the forking thread holds is kept so its release works.
+        """
+        # In-process state first: it cannot fail, so a failed FileLock rebuild below
+        # never leaves the child with a gate it inherited.
+        holder = self._holder
+        if not (holder is not None and holder[0] == threading.get_ident()):
+            self._thread = threading.Lock()
+            self._holder = None
+        self._file = self._new_file_lock()
+
+
+# Every _RecentFileLock, including any a caller still references outside _LOCKS.
+_FORK_RESET_LOCKS: weakref.WeakSet = weakref.WeakSet()
+# (exception type name, message) of rebuilds that failed in this fork child; see _reset_file_locks_after_fork.
+_FORK_RESET_FAILURES: list = []
 _LOCKS: dict[str, _RecentFileLock] = {}
 _LOCKS_GUARD = threading.Lock()
 _PENDING: dict[str, list[Any]] = {}
@@ -262,6 +290,48 @@ _GENERATIONS: dict[str, int] = {}
 _CONTENT_VERSIONS: dict[str, int] = {}
 _CHANGE_LISTENERS: set = set()
 _NEXT_GENERATION = 1
+
+
+def _reset_file_locks_after_fork() -> None:
+    """Rebuild cached cross-process locks in a fork child (Linux ``multiprocessing`` default).
+
+    The launcher may populate this registry (cloudsave import at startup) before it
+    forks the servers. Since filelock 4 an inherited FileLock raises on use, so each
+    lock gets a fresh one (see ``_RecentFileLock._reset_after_fork``). The parent's
+    on-disk lock state is unaffected: a lock it still holds keeps excluding the child
+    through the new descriptor. The child runs only the forking thread, so the set is
+    iterated without the guard.
+    Spawn children (and every child on Windows) re-import this module and never run
+    the hook. Forkserver workers are forked from the server process, so they run it
+    only if that process imported this module.
+    """
+    # CPython only prints an at-fork hook's exception, so one failure must not leave the rest inherited.
+    global _LOCKS_GUARD, _PENDING_GUARD
+    # Module guards first: one another parent thread held at fork would never be released
+    # here. Replacing them is safe even if the forking thread holds one: its `with` block
+    # releases the object it acquired. Every reader looks the names up at call time.
+    _LOCKS_GUARD = threading.Lock()
+    _PENDING_GUARD = threading.Lock()
+    _FORK_RESET_FAILURES.clear()  # A grandchild must not inherit its parent's record.
+    for lock in list(_FORK_RESET_LOCKS):
+        try:
+            lock._reset_after_fork()
+        except Exception as exc:
+            # No output here: a write to a full, unread stdout pipe would block the hook
+            # and the child's start. A lock left unrebuilt still fails loudly on use
+            # (filelock raises "inherited across fork"); the cause is kept for inspection.
+            # A summary, not the exception: its traceback would keep the object and this frame alive.
+            try:
+                message = str(exc)
+            except Exception:  # A failing __str__ must not stop the remaining rebuilds.
+                message = '<unprintable exception>'
+            _FORK_RESET_FAILURES.append((type(exc).__name__, message))
+
+
+# Only locks are rebuilt, not module state: fork children that may inherit it mid-update (plugin
+# processes) never import this module, as tests/unit/test_plugin_does_not_import_fork_unsafe_state.py checks.
+if hasattr(os, 'register_at_fork'):
+    os.register_at_fork(after_in_child=_reset_file_locks_after_fork)
 
 
 def subscribe_recent_changes(callback):
@@ -673,10 +743,8 @@ def write_recent_payload_unlocked(path: Any, payload: Any, *, receipt: tuple[str
     ``atomic_write_json`` creates the parent directory itself, so callers do not
     need a separate ``makedirs`` step.
 
-    A raised exception means the target was NOT replaced: ``_replace_with_busy_retry``
-    is the last statement in ``atomic_write_text`` and everything after it only
-    cleans up the temp file. Callers rely on that to retry a failed batch without
-    any deduplication.
+    Callers replay their batch on a write failure. Once the history file is
+    replaced, report publication to callers even if directory sync failed.
 
     Every rewrite of a recent file goes through here, so this is also where
     keyed entries leaving the file are recorded: before the replace, the keys
@@ -698,7 +766,12 @@ def write_recent_payload_unlocked(path: Any, payload: Any, *, receipt: tuple[str
         text = json.dumps(payload, indent=2, ensure_ascii=False)
         receipts[key] = {"token": token, "before": _recent_text_hash_unlocked(path),
                          "after": hashlib.sha256(text.encode("utf-8")).hexdigest(), "applied": None}
-        write_recent_sidecar_unlocked(path, _write_receipts_filename(path), receipts)
+        write_recent_sidecar_unlocked(
+            path,
+            _write_receipts_filename(path),
+            receipts,
+            strict_dir_sync=True,
+        )
     retire_removed_keyed_entries(path, None, payload)
     atomic_write_json(path, payload, indent=2, ensure_ascii=False)
     with _LOCKS_GUARD:
@@ -718,15 +791,26 @@ def recent_sidecar_path(path: Any, filename: str) -> str:
     return os.path.join(os.path.dirname(os.fspath(path)), filename)
 
 
-def write_recent_sidecar_unlocked(path: Any, filename: str, payload: Any) -> None:
+def write_recent_sidecar_unlocked(
+    path: Any,
+    filename: str,
+    payload: Any,
+    *,
+    strict_dir_sync: bool = False,
+) -> None:
     """Atomically replace a recent.json sidecar. The caller MUST already hold the lock.
 
     Sidecars (such as theater retraction tombstones) are serialized with the
     recent.json critical section so a check-then-write against the history file
     sees a consistent sidecar. They do not bump the recent content version.
     """
+    extra = {"strict_dir_sync": True} if strict_dir_sync else {}
     atomic_write_json(
-        recent_sidecar_path(path, filename), payload, indent=2, ensure_ascii=False,
+        recent_sidecar_path(path, filename),
+        payload,
+        indent=2,
+        ensure_ascii=False,
+        **extra,
     )
 
 

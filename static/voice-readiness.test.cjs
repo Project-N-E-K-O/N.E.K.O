@@ -966,7 +966,27 @@ test('a cancelled browser stop acknowledgement releases its own late token', asy
     receive({origin:h.root.location.origin,source:h.root.opener,data:{type:'neko-voice-enrollment-stopped',operationId:messages[0].operationId,stopped:true,token:'late-token'}});
     await pending;
     assert.equal(messages[1].type,'neko-voice-enrollment-release');assert.equal(messages[1].token,'late-token');
+    assert.equal(h.calls.find(call=>call.url==='/audio/check/isolation/release').config.keepalive,true);
     assert.equal(h.calls.some(call=>call.url==='/audio/check'),false);assert.equal(h.controller.canStart(),false);
+});
+
+test('an HTTP isolation ticket arriving after close is released with keepalive', async () => {
+    const ticket = deferred();
+    const h = harness({ requestRouter: async url => {
+        if (url === '/resources') return { can_enroll: true, resources: {} };
+        if (url === '/audio/check/isolation') return ticket.promise;
+        if (url === '/audio/check/isolation/release') return { released: true };
+        throw new Error('closed trial must not upload audio');
+    } });
+    await h.controller.refreshResources();
+    const testing = h.elements.get('voice-identity-test').emit('click');
+    await h.controller.close();
+    ticket.resolve({ token: 'late-http-ticket' }); await testing;
+    const release = h.calls.find(call => call.url === '/audio/check/isolation/release');
+    assert.equal(JSON.parse(release.config.body).token, 'late-http-ticket');
+    assert.equal(release.config.keepalive, true);
+    assert.equal(h.hooks.stream(), null);
+    assert.equal(h.controller.canStart(), false);
 });
 
 for (const rejected of [true, false]) {
@@ -1108,6 +1128,394 @@ function isolationHarness(stopFailure = false) {
     return {controller,receive:request=>receive(request),sent,timers,ack,S,root,document};
 }
 
+test('capture preparation waits for the desktop enrollment window to finish closing', async () => {
+    const h = isolationHarness(); const closing = deferred();
+    h.root.nekoVoiceEnrollment.close = () => closing.promise;
+    let prepared = false;
+    const preparing = h.controller.prepareCapture().then(() => { prepared = true; });
+    await Promise.resolve(); assert.equal(prepared, false);
+    closing.resolve({ closed: true }); await preparing;
+    assert.equal(prepared, true); assert.equal(h.S.isRecording, false);
+    assert.equal(h.sent.length, 0, 'page cleanup must run before a voice session is requested');
+});
+
+for (const timeoutFirst of [false, true]) {
+    test(`overlapping capture preparations retain independent release waiters${timeoutFirst ? ' after the first times out' : ''}`, async () => {
+        const h = isolationHarness();
+        const begin = h.receive({ operationId: 'shared-preview' });
+        await new Promise(resolve => setImmediate(resolve));
+        h.root.nekoVoiceEnrollment.close = async () => ({ closed: true });
+        const before = new Set(h.timers.keys());
+        let firstReady = false; let secondReady = false;
+        const first = h.controller.prepareCapture().then(() => { firstReady = true; });
+        const firstDone = timeoutFirst ? assert.rejects(first, /voice_control_timeout/) : first;
+        await new Promise(resolve => setImmediate(resolve));
+        const firstTimer = [...h.timers.entries()].find(([id]) => !before.has(id))[1];
+        const second = h.controller.prepareCapture().then(() => { secondReady = true; }, () => {});
+        await new Promise(resolve => setImmediate(resolve));
+        if (timeoutFirst) { firstTimer.fn(); await firstDone; }
+        h.ack(h.sent[0]); const result = await begin;
+        const release = h.receive({ event: 'release', operationId: 'shared-preview', token: result.token });
+        h.ack(h.sent[1]); await release;
+        try {
+            await new Promise(resolve => setImmediate(resolve));
+            assert.equal(secondReady, true, 'an older waiter must not clear the successor resolver');
+            if (!timeoutFirst) assert.equal(firstReady, true, 'release must wake every pending preparation');
+        } finally {
+            for (const timer of [...h.timers.values()]) if (timer.delay === 13000) timer.fn();
+            await second; await firstDone;
+        }
+        assert.equal(h.timers.size, 0);
+    });
+}
+
+for (const cancelled of [false, true]) {
+    test(`the microphone button waits for enrollment cleanup before starting the server${cancelled ? ' and honors cancellation' : ''}`, async () => {
+        const source = fs.readFileSync(path.join(__dirname, 'app/app-buttons.js'), 'utf8');
+        const marker = "micButton.addEventListener('click', async function () {";
+        const start = source.indexOf(marker) + marker.length;
+        const end = source.indexOf('// Timeout (15s)', start);
+        assert.ok(start >= marker.length && end > start);
+        const closing = deferred(); const sent = []; let cleanupCalls = 0;
+        const S = { isRecording: false, socket: { readyState: 1, send: raw => sent.push(JSON.parse(raw)) } };
+        const classes = { contains: () => false, add() {}, remove() {} };
+        const window = {
+            showStatusToast() {}, showVoicePreparingToast() {}, syncFloatingMicButtonState() {}, dispatchEvent() {},
+            nekoVoiceCaptureReadiness: { prepareCapture() { cleanupCalls++; return closing.promise; } },
+            claimSessionStart: () => ({}), sessionStartSuperseded: () => false, ensureWebSocketOpen: async () => {}, sessionStartRequestId: () => 'voice-start'
+        };
+        const sandbox = { window, S, mod: {}, U: { isMobile: () => false },
+            document: { getElementById: () => ({ classList: classes }) }, micButton: { classList: classes, disabled: false },
+            muteButton: {}, screenButton: {}, stopButton: {}, resetSessionButton: {}, returnSessionButton: {},
+            WebSocket: { OPEN: 1 }, clearTimeout() {}, CustomEvent: class {},
+        };
+        vm.runInNewContext('window.click = async function () {' + source.slice(start, end) + '} catch (error) { throw error; }};', sandbox);
+        const clicking = window.click();
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(cleanupCalls, 1); assert.equal(sent.length, 0);
+        if (cancelled) {
+            S.voiceSessionStartEpoch++;
+            const rejected = assert.rejects(clicking, /Voice start cancelled/);
+            closing.resolve(); await rejected;
+            assert.equal(sent.length, 0);
+        } else {
+            closing.resolve(); await clicking;
+            assert.equal(sent.length, 1); assert.equal(sent[0].action, 'start_session'); assert.equal(sent[0].input_type, 'audio');
+        }
+    });
+}
+
+test('browser capture preparation closes the passed-trial page and waits for its preview acknowledgement', async () => {
+    const events = new Map(); let controller; let closed = false; const cleanup = deferred(); const sent = [];
+    const socket = { readyState: 1, send(raw) { sent.push(JSON.parse(raw)); } };
+    const S = { socket, isRecording: false };
+    const root = { crypto, t: key => key, addEventListener(name, fn) { events.set(name, fn); }, setTimeout, clearTimeout };
+    const document = { readyState: 'complete', body: element(), documentElement: element(), createElement: element };
+    vm.runInNewContext(ownerSource, { window: root, document, crypto, Set, Map });
+    controller = root.createVoiceCaptureReadiness(S, async () => {});
+    const child = { opener: root, closed: false, nekoBeforeWindowClose: () => cleanup.promise,
+        close() { this.closed = true; closed = true; }, postMessage() {} };
+    const message = data => events.get('message')({ origin: 'http://localhost:48911', source: child, data });
+    root.location = { origin: 'http://localhost:48911' };
+    const preview = message({ type: 'neko-voice-enrollment-prepare', operationId: 'browser-trial' });
+    await new Promise(resolve => setImmediate(resolve));
+    controller.controlResult({ ...sent[0], ok: true, token: 'browser-token', ttl_seconds: 60 }, socket); await preview;
+    const release = message({ type: 'neko-voice-enrollment-release', operationId: 'browser-trial', token: 'browser-token' });
+    await release;
+    let prepared = false;
+    const preparing = controller.prepareCapture().then(() => { prepared = true; });
+    assert.equal(closed, false);
+    cleanup.resolve(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(closed, true); assert.equal(prepared, false);
+    controller.controlResult({ ...sent[1], ok: true }, socket); await preparing;
+    assert.equal(prepared, true); assert.equal(controller.blocked(), false);
+});
+
+function browserCaptureHarness(cleanup) {
+    const events = new Map(); const timers = new Map(); let sequence = 0;
+    const root = { crypto, location: { origin: 'http://localhost:48911' }, t: key => key,
+        addEventListener(name, fn) { events.set(name, fn); },
+        setTimeout(fn, delay) { const id = ++sequence; timers.set(id, { fn, delay }); return id; },
+        clearTimeout(id) { timers.delete(id); } };
+    const document = { readyState: 'complete', body: element(), documentElement: element(), createElement: element };
+    vm.runInNewContext(ownerSource, { window: root, document, crypto, Set, Map });
+    const controller = root.createVoiceCaptureReadiness({ socket: { readyState: 1 }, isRecording: false }, async () => {});
+    const child = { opener: root, closed: false, nekoBeforeWindowClose: cleanup, close() { this.closed = true; } };
+    events.get('message')({ origin: root.location.origin, source: child,
+        data: { type: 'neko-voice-enrollment-opened', operationId: 'browser-page' } });
+    return { controller, child, timers };
+}
+
+test('browser page cleanup failure still closes its microphone window', async () => {
+    const h = browserCaptureHarness(async () => { throw new Error('cleanup_failed'); });
+    await assert.rejects(h.controller.prepareCapture(), /cleanup_failed/);
+    assert.equal(h.child.closed, true);
+    assert.equal(h.timers.size, 0);
+});
+
+test('browser page cleanup timeout closes the page and rejects voice startup', async () => {
+    const cleanup = deferred(); const h = browserCaptureHarness(() => cleanup.promise);
+    const preparing = h.controller.prepareCapture();
+    const rejected = assert.rejects(preparing, /voice_control_timeout/);
+    const timeout = [...h.timers.values()].find(timer => timer.delay === 13000);
+    assert.ok(timeout, 'waiting for a page hook must have its own deadline');
+    timeout.fn(); await rejected;
+    assert.equal(h.child.closed, true);
+    assert.equal(h.timers.size, 0);
+    cleanup.resolve();
+});
+
+for (const timeout of [false, true]) {
+    test(`browser cleanup ${timeout ? 'timeout' : 'failure'} closes every page and releases the surviving preview before rejecting`, async () => {
+        const events = new Map(); const timers = new Map(); const sent = []; let sequence = 0; let secondCleanup = 0;
+        const socket = { readyState: 1, send(raw) { sent.push(JSON.parse(raw)); } };
+        const root = { crypto, location: { origin: 'http://localhost:48911' }, t: key => key,
+            addEventListener(name, fn) { events.set(name, fn); },
+            setTimeout(fn, delay) { const id = ++sequence; timers.set(id, { fn, delay }); return id; },
+            clearTimeout(id) { timers.delete(id); } };
+        const document = { readyState: 'complete', body: element(), documentElement: element(), createElement: element };
+        vm.runInNewContext(ownerSource, { window: root, document, crypto, Set, Map });
+        const controller = root.createVoiceCaptureReadiness({ socket, isRecording: false }, async () => {});
+        const first = { opener: root, closed: false, close() { this.closed = true; },
+            nekoBeforeWindowClose: () => timeout ? new Promise(() => {}) : Promise.reject(new Error('first_cleanup_failed')) };
+        const stream = trackStream();
+        const second = { opener: root, closed: false, postMessage() {}, close() { this.closed = true; input.stop(stream); },
+            async nekoBeforeWindowClose() { secondCleanup++; input.stop(stream); } };
+        const message = (child, data) => events.get('message')({ origin: root.location.origin, source: child, data });
+        await message(first, { type: 'neko-voice-enrollment-opened', operationId: 'first-page' });
+        const preview = message(second, { type: 'neko-voice-enrollment-prepare', operationId: 'second-preview' });
+        await new Promise(resolve => setImmediate(resolve));
+        controller.controlResult({ ...sent[0], ok: true, token: 'second-token', ttl_seconds: 60 }, socket); await preview;
+        let closeError;
+        const closing = controller.prepareCapture().catch(error => { closeError = error; });
+        await new Promise(resolve => setImmediate(resolve));
+        if (timeout) {
+            const deadline = [...timers.values()].find(timer => timer.delay === 13000);
+            assert.ok(deadline); deadline.fn(); await new Promise(resolve => setImmediate(resolve));
+        }
+        try {
+            assert.equal(first.closed, true);
+            assert.equal(second.closed, true, 'a failing page must not skip the next microphone window');
+            assert.equal(secondCleanup, 1);
+            assert.equal(stream.track.readyState, 'ended');
+            assert.equal(sent[1]?.event, 'preview_end');
+            assert.equal(sent[1].token, 'second-token');
+            assert.equal(closeError, undefined, 'report the page error after the surviving preview is released');
+            controller.controlResult({ ...sent[1], ok: true }, socket); await closing;
+            assert.equal(closeError.message, timeout ? 'voice_control_timeout' : 'first_cleanup_failed');
+            assert.equal(controller.blocked(), false);
+            assert.equal(timers.size, 0);
+        } finally {
+            if (sent[1]?.event === 'preview_end') controller.controlResult({ ...sent[1], ok: true }, socket);
+            await closing;
+        }
+    });
+}
+
+for (const closeBeforeAcknowledgement of [false, true]) {
+    test(`browser voice startup releases a pending preview when its page is ${closeBeforeAcknowledgement ? 'closed' : 'closing'}`, async () => {
+        const events = new Map(); const timers = new Map(); const sent = []; const replies = [];
+        const cleanup = deferred(); let sequence = 0;
+        const socket = { readyState: 1, send(raw) { sent.push(JSON.parse(raw)); } };
+        const root = { crypto, location: { origin: 'http://localhost:48911' }, t: key => key,
+            addEventListener(name, fn) { events.set(name, fn); },
+            setTimeout(fn, delay) { const id = ++sequence; timers.set(id, { fn, delay }); return id; },
+            clearTimeout(id) { timers.delete(id); } };
+        const document = { readyState: 'complete', body: element(), documentElement: element(), createElement: element };
+        vm.runInNewContext(ownerSource, { window: root, document, crypto, Set, Map });
+        const controller = root.createVoiceCaptureReadiness({ socket, isRecording: false }, async () => {});
+        const child = { opener: root, closed: false, nekoBeforeWindowClose: () => cleanup.promise,
+            close() { this.closed = true; }, postMessage(message) { replies.push(message); } };
+        const preview = events.get('message')({ origin: root.location.origin, source: child,
+            data: { type: 'neko-voice-enrollment-prepare', operationId: 'pending-browser-trial' } });
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(sent[0].event, 'preview_begin');
+        let prepared = false;
+        const preparing = controller.prepareCapture().then(() => { prepared = true; });
+        if (closeBeforeAcknowledgement) {
+            cleanup.resolve(); await new Promise(resolve => setImmediate(resolve));
+            assert.equal(child.closed, true);
+        }
+        controller.controlResult({ ...sent[0], ok: true, token: 'late-browser-token', ttl_seconds: 60 }, socket);
+        await new Promise(resolve => setImmediate(resolve));
+        try {
+            assert.equal(sent[1]?.event, 'preview_end', 'the parent must release a token the closing page cannot own');
+            assert.equal(sent[1].token, 'late-browser-token');
+            assert.equal(replies.length, 0, 'a closing page must not receive a new trial token');
+            assert.equal(prepared, false, 'voice must still wait for release acknowledgement');
+            controller.controlResult({ ...sent[1], ok: true }, socket);
+            await preview;
+            cleanup.resolve(); await preparing;
+            assert.equal(child.closed, true);
+            assert.equal(controller.blocked(), false);
+            assert.equal(timers.size, 0);
+        } finally {
+            cleanup.resolve();
+        }
+    });
+}
+
+test('browser voice startup releases a preview reply queued to a child that closes before receiving it', async () => {
+    const events = new Map(); const timers = new Map(); const sent = []; const queued = []; let sequence = 0;
+    const socket = { readyState: 1, send(raw) { sent.push(JSON.parse(raw)); } };
+    const root = { crypto, location: { origin: 'http://localhost:48911' }, t: key => key,
+        addEventListener(name, fn) { events.set(name, fn); },
+        setTimeout(fn, delay) { const id = ++sequence; timers.set(id, { fn, delay }); return id; },
+        clearTimeout(id) { timers.delete(id); } };
+    const document = { readyState: 'complete', body: element(), documentElement: element(), createElement: element };
+    vm.runInNewContext(ownerSource, { window: root, document, crypto, Set, Map });
+    const controller = root.createVoiceCaptureReadiness({ socket, isRecording: false }, async () => {});
+    const child = { opener: root, closed: false, nekoBeforeWindowClose: async () => {},
+        close() { this.closed = true; }, postMessage(message) { queued.push(message); } };
+    const preview = events.get('message')({ origin: root.location.origin, source: child,
+        data: { type: 'neko-voice-enrollment-prepare', operationId: 'queued-browser-trial' } });
+    await new Promise(resolve => setImmediate(resolve));
+    controller.controlResult({ ...sent[0], ok: true, token: 'queued-browser-token', ttl_seconds: 60 }, socket);
+    await preview;
+    assert.equal(queued[0].token, 'queued-browser-token', 'postMessage queues delivery before the child can claim the token');
+    let prepared = false;
+    const preparing = controller.prepareCapture().then(() => { prepared = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(child.closed, true);
+    assert.equal(sent[1]?.event, 'preview_end', 'the parent must release its closed child\'s unclaimed token');
+    assert.equal(sent[1].token, 'queued-browser-token');
+    assert.equal(prepared, false);
+    controller.controlResult({ ...sent[1], ok: true }, socket);
+    await preparing;
+    assert.equal(controller.blocked(), false);
+    assert.equal(timers.size, 0);
+});
+
+test('closing an input test stops capture immediately and waits for server-owned isolation release', async () => {
+    const capture = deferred(); const release = deferred(); const h = harness({ captureGate: capture,
+        requestRouter: async url => {
+            if (url === '/resources') return { can_enroll: true, resources: {} };
+            if (url === '/audio/check/isolation') return { token: 'owned-preview' };
+            if (url === '/audio/check/isolation/release') return release.promise;
+            throw new Error('stale trial must not upload audio');
+        }
+    });
+    await h.controller.refreshResources();
+    const testing = h.elements.get('voice-identity-test').emit('click');
+    while (!h.hooks.stream()) await new Promise(resolve => setImmediate(resolve));
+    const stream = h.hooks.stream(); let closed = false;
+    const closing = h.controller.close().then(() => { closed = true; });
+    assert.equal(stream.track.readyState, 'ended');
+    await Promise.resolve(); assert.equal(closed, false);
+    release.resolve({ released: true }); await closing;
+    capture.resolve(); await testing;
+    assert.equal(h.calls.some(call => call.url === '/audio/check'), false);
+    assert.equal(h.controller.canStart(), false);
+});
+
+for (const desktop of [false, true]) {
+    test(`closing waits for a trial's already pending ${desktop ? 'desktop' : 'HTTP'} isolation release`, async () => {
+        const release = deferred(); let releaseCalls = 0;
+        const h = harness({ requestRouter: async (url, config) => {
+            if (url === '/resources') return { can_enroll: true, resources: {} };
+            if (url === '/audio/check/isolation') return { token: 'trial-token' };
+            if (url === '/audio/check') return { accepted: true, audio_contract: { revision: 1 } };
+            if (url === '/audio/check/isolation/release') { releaseCalls++; return release.promise; }
+            throw new Error('unexpected request: ' + url);
+        } });
+        if (desktop) h.root.nekoVoiceEnrollment = {
+            prepare: async ({ operationId }) => ({ operationId, stopped: true, token: 'trial-token' }),
+            release: () => { releaseCalls++; return release.promise; }
+        };
+        await h.controller.refreshResources();
+        const testing = h.elements.get('voice-identity-test').emit('click');
+        while (!releaseCalls) await new Promise(resolve => setImmediate(resolve));
+        let closed = false;
+        const closing = h.controller.close().then(() => { closed = true; });
+        try {
+            await new Promise(resolve => setImmediate(resolve));
+            assert.equal(closed, false, 'clearing the local token does not confirm the pending release');
+            assert.equal(releaseCalls, 1, 'closing must share the existing release');
+            if (!desktop) assert.equal(h.calls.find(call => call.url === '/audio/check/isolation/release').config.keepalive, true);
+        } finally {
+            release.resolve({ released: true }); await testing; await closing;
+        }
+        assert.equal(closed, true);
+    });
+}
+
+for (const desktop of [false, true]) {
+    test(`closing times out a stalled ${desktop ? 'desktop' : 'HTTP'} isolation release without confirming readiness`, async () => {
+        const capture = deferred(); const release = deferred();
+        const h = harness({ captureGate: capture, requestRouter: async url => {
+            if (url === '/resources') return { can_enroll: true, resources: {} };
+            if (url === '/audio/check/isolation') return { token: 'stalled-ticket' };
+            if (url === '/audio/check/isolation/release') return release.promise;
+            throw new Error('a closed trial must not upload');
+        } });
+        if (desktop) h.root.nekoVoiceEnrollment = {
+            prepare: async ({ operationId }) => ({ operationId, stopped: true, token: 'stalled-ticket' }),
+            release: () => release.promise
+        };
+        await h.controller.refreshResources();
+        const testing = h.elements.get('voice-identity-test').emit('click');
+        while (!h.hooks.stream()) await new Promise(resolve => setImmediate(resolve));
+        const stream = h.hooks.stream(); const timers = new Map();
+        h.root.setTimeout = (fn, delay) => { const id = {}; timers.set(id, { fn, delay }); return id; };
+        h.root.clearTimeout = id => timers.delete(id);
+        const closing = h.controller.close();
+        try {
+            assert.equal(stream.track.readyState, 'ended');
+            const deadline = [...timers.values()].find(timer => timer.delay === 13000);
+            assert.ok(deadline, 'manual close needs a deadline even without the parent closing the page');
+            deadline.fn();
+            await assert.rejects(closing, /voice_control_timeout/);
+            assert.equal(h.controller.canStart(), false, 'a timeout must not confirm server cleanup');
+            assert.equal([...timers.values()].some(timer => timer.delay === 13000), false);
+            assert.equal(h.calls.some(call => call.url === '/audio/check'), false);
+        } finally {
+            release.resolve({ released: true }); capture.resolve();
+            await testing; await closing.catch(() => {});
+        }
+    });
+}
+
+test('closing times out a stalled resource cancellation and lets the window close', async () => {
+    const poll = deferred(); const cancellation = deferred();
+    const h = harness({ requestRouter: async url => {
+        if (url === '/resources') return { can_enroll: true, resources: {} };
+        if (url === '/resources/operations') return { operation_id: 'stalled-cancel' };
+        if (url.endsWith('/start')) return {};
+        if (url.endsWith('/cancel')) return cancellation.promise;
+        if (url === '/resources/operations/stalled-cancel') return poll.promise;
+        throw new Error('unexpected request: ' + url);
+    } });
+    await h.controller.refreshResources();
+    const preparing = h.elements.get('voice-identity-prepare').emit('click');
+    while (!h.calls.some(call => call.url === '/resources/operations/stalled-cancel')) await new Promise(resolve => setImmediate(resolve));
+    const timers = new Map();
+    h.root.setTimeout = (fn, delay) => { const id = {}; timers.set(id, { fn, delay }); return id; };
+    h.root.clearTimeout = id => timers.delete(id);
+    const closing = h.controller.close();
+    try {
+        const deadline = [...timers.values()].find(timer => timer.delay === 13000);
+        assert.ok(deadline, 'resource cancellation must not block the close button indefinitely');
+        deadline.fn();
+        await assert.rejects(closing, /voice_control_timeout/);
+        assert.equal([...timers.values()].some(timer => timer.delay === 13000), false);
+        assert.equal(h.calls.find(call => call.url.endsWith('/cancel')).config.keepalive, true);
+    } finally {
+        cancellation.resolve({ state: 'cancelled' }); poll.resolve({ state: 'cancelled' });
+        await preparing; await closing.catch(() => {});
+    }
+});
+
+test('successful close clears its deadline and remains idempotent', async () => {
+    const h = harness(); const timers = new Map();
+    h.root.setTimeout = (fn, delay) => { const id = {}; timers.set(id, { fn, delay }); return id; };
+    h.root.clearTimeout = id => timers.delete(id);
+    const closing = h.controller.close();
+    assert.equal([...timers.values()].filter(timer => timer.delay === 13000).length, 1);
+    assert.equal(h.controller.close(), closing);
+    await closing;
+    assert.equal([...timers.values()].some(timer => timer.delay === 13000), false);
+});
+
 test('a shared preview acknowledgement cannot make another window release the owner ticket', async () => {
     const owner = isolationHarness();
     const observer = isolationHarness();
@@ -1212,6 +1620,33 @@ test('unconfirmed cancellation retains its ID and retry exit without allowing a 
     await h.elements.get('voice-identity-resource-cancel').emit('click');
     assert.equal(cancellations, 2); assert.equal(h.elements.get('voice-identity-resource-cancel').hidden, true);
     assert.equal(h.elements.get('voice-identity-prepare').disabled, false);
+});
+
+test('closing a resource operation skips page snapshots after cancellation', async () => {
+    const poll = deferred(); const snapshot = deferred(); let snapshots = 0; let statuses = 0;
+    const h = harness({ status: async () => { statuses++; }, requestRouter: async url => {
+        if (url === '/resources') return ++snapshots === 1 ? { can_enroll: true, resources: {} } : snapshot.promise;
+        if (url === '/resources/operations') return { operation_id: 'closing-resource' };
+        if (url.endsWith('/start')) return {};
+        if (url.endsWith('/cancel')) return { state: 'cancelled' };
+        if (url === '/resources/operations/closing-resource') return poll.promise;
+        throw new Error('unexpected resource request: ' + url);
+    } });
+    await h.controller.refreshResources();
+    const preparing = h.elements.get('voice-identity-prepare').emit('click');
+    while (!h.calls.some(call => call.url === '/resources/operations/closing-resource')) await new Promise(resolve => setImmediate(resolve));
+    let closed = false;
+    const closing = h.controller.close().then(() => { closed = true; });
+    try {
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(closed, true, 'closing must not wait for snapshots of a disappearing page');
+        assert.equal(snapshots, 1);
+        assert.equal(statuses, 0);
+        assert.equal(h.calls.find(call => call.url.endsWith('/cancel')).config.keepalive, true);
+    } finally {
+        snapshot.resolve({ can_enroll: true, resources: {} }); poll.resolve({ state: 'cancelled' });
+        await closing; await preparing;
+    }
 });
 
 test('pagehide cancels the known operation with keepalive even while start receipt is pending', async () => {
@@ -1392,6 +1827,7 @@ test('a confirmed server failure permits an explicit new microphone attempt', as
     const h=isolationHarness(); const pending=h.receive({operationId:'rejected'});
     await new Promise(resolve => setImmediate(resolve)); h.ack(h.sent[0],{ok:false,reason:'preview_unavailable'});
     const result = await pending; assert.equal(result.stopped,false); assert.equal(result.physicalStopped,true); assert.equal(result.reason,'preview_unavailable');
+    assert.equal(result.isolationDenied, true, 'the desktop coordinator must learn that no preview ticket was granted');
     assert.equal(h.controller.blocked(),false); assert.equal(h.S.isRecording,false);
 });
 
@@ -1399,6 +1835,7 @@ test('a lost begin acknowledgement is bounded and its late token is compensated'
     const h=isolationHarness(); const pending=h.receive({operationId:'late'});
     await new Promise(resolve => setImmediate(resolve)); const timeout=[...h.timers.values()].find(timer=>timer.delay===13000);
     timeout.fn(); const result = await pending; assert.equal(result.stopped,false); assert.equal(result.physicalStopped,true); assert.equal(result.reason,'voice_control_timeout');
+    assert.equal(result.isolationDenied, false, 'an acknowledgement timeout cannot prove that the server rejected the preview');
     assert.equal(h.controller.blocked(),true);
     h.ack(h.sent[0]); assert.equal(h.sent[1].event,'preview_end');
     h.ack(h.sent[1]); await Promise.resolve();

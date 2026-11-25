@@ -180,7 +180,7 @@ def test_cat_mind_return_lifecycle_uses_committed_and_completed_boundaries():
 
     viewport_guard = handler.index("if (!preReturnViewportReady.ready) {")
     commit = handler.index("I.publishCatLocalActive(false")
-    show_model = handler.index("modelDisplayReady = await I.showCurrentModel()")
+    show_model = handler.index("modelDisplayReady = await I.showCurrentModel(")
     show_model_guard = handler.index("if (modelDisplayReady === false) {")
     composer_restore = handler.index(
         "postGoodbyeChatComposerHiddenState(false, 'return-complete')"
@@ -389,16 +389,16 @@ def test_cat_mind_runners_report_results_without_legacy_entries():
     assert sleep_stop_block.index("_stopNekoIdleSoundAudio(_nekoIdleSleepSoundState);") < sleep_stop_block.index(
         "_reportNekoCatMindStateActionResult("
     )
-    assert "_clearNekoIdleThoughtBubbleForTier(tier);" in sleep_stop_block
+    assert "_clearNekoIdleThoughtBubbleForTier(tier, options.poppingAudio);" in sleep_stop_block
     social_ended_block = social_block.split("audio.addEventListener('ended', () => {", 1)[1].split(
         "}, { once: true });",
         1,
     )[0]
     assert "_isNekoCatMindStateActionRunCurrent(_nekoIdleCat1AmbientSoundState, run, audio)" in social_ended_block
     assert social_ended_block.index("_isNekoCatMindStateActionRunCurrent") < social_ended_block.index(
-        "_clearNekoIdleThoughtBubbleForTier(_NEKO_IDLE_TIER_CAT1);"
+        "_clearNekoIdleThoughtBubbleForTier(_NEKO_IDLE_TIER_CAT1, audio);"
     )
-    assert social_ended_block.index("_clearNekoIdleThoughtBubbleForTier(_NEKO_IDLE_TIER_CAT1);") < social_ended_block.index(
+    assert social_ended_block.index("_clearNekoIdleThoughtBubbleForTier(_NEKO_IDLE_TIER_CAT1, audio);") < social_ended_block.index(
         "_reportNekoCatMindStateActionRunResult("
     )
 
@@ -747,7 +747,7 @@ def test_cat_mind_phase3_provider_gates_are_stronger_than_legacy_entries():
     assert "_dryRunNekoCatMindCat1ButtonProvider(_NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN" in play_provider_block
     assert "_isNekoCatMindCat1NearChat(button)" in play_provider_block
     assert "near_chat_unavailable" in play_provider_block
-    assert "_canNekoCatMindControlPlayYarn()" in play_provider_block
+    assert "_canNekoCatMindControlPlayYarn(button)" in play_provider_block
     assert "play_yarn_unavailable" in play_provider_block
 
     sleep_provider_block = source.split("function _dryRunNekoCatMindSleepFeedbackProvider", 1)[1].split(

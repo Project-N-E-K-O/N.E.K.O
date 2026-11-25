@@ -121,6 +121,9 @@ FOCUSED_VIDEO_MIN_DWELL_SECONDS = 120.0
 WINDOW_SWITCH_TRANSITION_THRESHOLD = 5
 WINDOW_HISTORY_LOOKBACK_SECONDS = 300
 
+# Allow a brief gap between foreground samples while idle signals still arrive.
+_MISSING_WINDOW_GRACE_SECONDS = 15.0
+
 # How long a state has to remain "new" to be considered ``transitioned_recently``.
 TRANSITION_RECENT_WINDOW_SECONDS = 30.0
 
@@ -323,7 +326,9 @@ def observation_from_system(
     rather than the domain (e.g. "Notion"). User overrides from
     ``ActivityPreferences`` apply on top of the static keyword DB.
     """
-    if sys_snap.window_title is None and sys_snap.process_name is None:
+    has_title = bool(sys_snap.window_title and sys_snap.window_title.strip())
+    has_proc = bool(sys_snap.process_name and sys_snap.process_name.strip())
+    if not sys_snap.os_signals_available or (not has_title and not has_proc):
         return None
 
     is_browser = is_browser_process(sys_snap.process_name)
@@ -367,9 +372,10 @@ def observation_from_system(
 
 @dataclass(frozen=True, slots=True)
 class _WindowEntry:
-    """One observed window-state event (a category change), with its start time."""
+    """One observed window-state event (a category change or signal loss), with its start time."""
     timestamp: float
-    observation: WindowObservation
+    observation: WindowObservation | None
+    counts_as_switch: bool = True
 
 
 # ── State machine ──────────────────────────────────────────────────
@@ -383,8 +389,8 @@ class ActivityStateMachine:
 
     Expected call pattern:
 
-        sm.update_window(observation_from_system(collector.snapshot()))
         sm.update_system(collector.snapshot())
+        sm.update_window(observation_from_system(collector.snapshot()))
         sm.update_user_message(time.time())
         ...
         snap = sm.get_snapshot(now=time.time())
@@ -473,6 +479,7 @@ class ActivityStateMachine:
         self._window_history: deque[_WindowEntry] = deque(maxlen=WINDOW_BUFFER_MAXLEN)
         self._current_window: WindowObservation | None = None
         self._current_window_started_at: float = 0.0
+        self._window_missing_since: float | None = None
 
         # System (from singleton collector)
         self._latest_system: SystemSnapshot | None = None
@@ -528,9 +535,31 @@ class ActivityStateMachine:
             sensitive content never reaches downstream consumers
             (prompt rendering, LLM enrichment, conversation buffers).
         """
+        ts = now if now is not None else time.time()
+        if (
+            obs is None and self._current_window is not None
+            and self._latest_system is not None and self._latest_system.os_signals_available
+        ):
+            if self._window_missing_since is None:
+                self._window_missing_since = ts
+            if ts - self._window_missing_since < _MISSING_WINDOW_GRACE_SECONDS:
+                return
+
+        missing_since = self._window_missing_since
+        self._window_missing_since = None
+        # The next sample after a long gap can already contain a window. End
+        # the old dwell at the first miss before starting the recovered window.
+        if obs is None or (
+            missing_since is not None and ts - missing_since >= _MISSING_WINDOW_GRACE_SECONDS
+        ):
+            if self._current_window is not None:
+                ended_at = ts if missing_since is None else missing_since
+                self._window_history.append(_WindowEntry(timestamp=ended_at, observation=None))
+            self._current_window = None
+            self._current_window_started_at = 0.0
+            self._own_app_freeze_started_at = None
         if obs is None:
             return
-        ts = now if now is not None else time.time()
 
         if obs.category == 'own_app':
             # Transparent: previous window stays the active observation.
@@ -566,6 +595,10 @@ class ActivityStateMachine:
             )
 
         prev = self._current_window
+        if prev is None and len(self._window_history) >= 2:
+            # A loss boundary closes the previous dwell. Compare the last
+            # observed window to distinguish recovery from an actual switch.
+            prev = self._window_history[-2].observation
         # Include intensity / genre in the equivalence check: when a user
         # hot-reloads ``user_game_overrides`` while the same game stays
         # foreground, the new observation has identical
@@ -581,10 +614,10 @@ class ActivityStateMachine:
             and prev.intensity == obs.intensity
             and prev.genre == obs.genre
         )
-        if not same:
+        if not same or self._current_window is None:
             self._current_window = obs
             self._current_window_started_at = ts
-            self._window_history.append(_WindowEntry(timestamp=ts, observation=obs))
+            self._window_history.append(_WindowEntry(timestamp=ts, observation=obs, counts_as_switch=not same))
 
     def recent_window_trail(
         self, *, now: float, limit: int = 3, max_age_seconds: float | None = None,
@@ -621,7 +654,11 @@ class ActivityStateMachine:
             end = raw_entries[i + 1].timestamp if i + 1 < len(raw_entries) else now
             obs = entry.observation
             if obs is not None and obs.canonical and obs.category != 'private':
-                trail.append((obs.canonical, max(0.0, end - entry.timestamp)))
+                dwell = max(0.0, end - entry.timestamp)
+                if not entry.counts_as_switch and trail and trail[-1][0] == obs.canonical:
+                    trail[-1] = (obs.canonical, trail[-1][1] + dwell)
+                else:
+                    trail.append((obs.canonical, dwell))
         return trail[-limit:]
 
     def update_system(self, sys_snap: SystemSnapshot) -> None:
@@ -726,6 +763,9 @@ class ActivityStateMachine:
         ):
             effective_state = 'stale_returning'
 
+        sys_snap = self._latest_system
+        os_available = bool(sys_snap is not None and sys_snap.os_signals_available)
+
         # Game tag pass-through is needed to resolve propensity for gaming
         # subtypes (casual → open). Compute it here BEFORE the propensity
         # lookup; the full assignment to game_intensity / game_genre
@@ -734,6 +774,7 @@ class ActivityStateMachine:
         _pre_genre: GameGenre | None = None
         if (
             effective_state == 'gaming'
+            and os_available
             and self._current_window is not None
         ):
             _pre_intensity = self._current_window.intensity  # type: ignore[assignment]
@@ -750,20 +791,23 @@ class ActivityStateMachine:
         # active_window entirely — even the sanitized canonical we kept
         # internally for state-machine bookkeeping shouldn't ride out
         # to the prompt or LLM enrichment.
-        active_window = self._current_window
+        active_window = self._current_window if os_available else None
         if effective_state == 'private':
             active_window = None
 
         # Switch rate over the lookback window
-        switch_rate = sum(
-            1 for entry in self._window_history
-            if ts - entry.timestamp <= self._window_history_lookback_seconds
+        switch_rate = (
+            sum(
+                1 for entry in self._window_history
+                if entry.observation is not None and entry.counts_as_switch
+                and ts - entry.timestamp <= self._window_history_lookback_seconds
+            )
+            if os_available else 0
         )
 
-        sys_snap = self._latest_system
-        idle_seconds = sys_snap.idle_seconds if sys_snap else 0.0
-        cpu_avg = sys_snap.cpu_avg_30s if sys_snap else 0.0
-        cpu_now = sys_snap.cpu_instant if sys_snap else 0.0
+        idle_seconds = sys_snap.idle_seconds if (os_available and sys_snap is not None) else None
+        cpu_avg = sys_snap.cpu_avg_30s if (os_available and sys_snap is not None) else 0.0
+        cpu_now = sys_snap.cpu_instant if (os_available and sys_snap is not None) else 0.0
 
         secs_since_user = (
             ts - self._last_user_msg_at if self._last_user_msg_at else None
@@ -855,19 +899,25 @@ class ActivityStateMachine:
 
     def _classify_state(self, now: float) -> ActivityState:
         sys_snap = self._latest_system
+        os_available = bool(sys_snap is not None and sys_snap.os_signals_available)
 
         # 1. away — system-wide input idle dominates everything else.
         # OS idle is the only signal that survives the user walking away.
         # ``private`` deliberately does NOT win here: a privacy-app
         # window left open while the user walked away is just an idle
         # situation; nobody's looking at the secrets right now.
-        if sys_snap is not None and sys_snap.idle_seconds >= self._away_idle_seconds:
+        if (
+            os_available
+            and sys_snap is not None
+            and sys_snap.idle_seconds is not None
+            and sys_snap.idle_seconds >= self._away_idle_seconds
+        ):
             return 'away'
 
         # 2. private — sensitive app foreground, user actively present.
         # Wins above voice/gaming/work/etc so the AI never proactively
         # speaks while the password manager / banking app is up.
-        win = self._current_window
+        win = self._current_window if os_available else None
         if win is not None and win.category == 'private':
             return 'private'
 
@@ -901,6 +951,7 @@ class ActivityStateMachine:
             win is not None and win.category == 'unknown'
             and sys_snap is not None and sys_snap.gpu_utilization is not None
             and sys_snap.gpu_utilization >= self._gaming_gpu_threshold_percent
+            and sys_snap.idle_seconds is not None
             and sys_snap.idle_seconds <= self._gaming_gpu_max_idle_seconds
         ):
             return 'gaming'
@@ -915,7 +966,9 @@ class ActivityStateMachine:
                 and (now - self._last_user_msg_at) <= self._focused_work_recent_input_seconds
             )
             recent_system_active = (
-                sys_snap is not None
+                os_available
+                and sys_snap is not None
+                and sys_snap.idle_seconds is not None
                 and sys_snap.idle_seconds < self._focused_work_recent_input_seconds
             )
             if dwell >= self._focused_work_min_dwell_seconds and (recent_input or recent_system_active):
@@ -948,12 +1001,14 @@ class ActivityStateMachine:
         # a flurry of window switches recently. Note this still produces
         # ``open`` propensity (per user clarification — screen channel
         # always allowed); only the source-weight layer should care.
-        switches = sum(
-            1 for entry in self._window_history
-            if now - entry.timestamp <= self._window_history_lookback_seconds
-        )
-        if switches >= self._window_switch_transition_threshold:
-            return 'transitioning'
+        if os_available:
+            switches = sum(
+                1 for entry in self._window_history
+                if entry.observation is not None and entry.counts_as_switch
+                and now - entry.timestamp <= self._window_history_lookback_seconds
+            )
+            if switches >= self._window_switch_transition_threshold:
+                return 'transitioning'
 
         # 9. idle — at the computer (not away) but no clear bucket.
         return 'idle'
@@ -973,11 +1028,18 @@ class ActivityStateMachine:
         reasons: list[tuple[str, dict]] = []
         win = self._current_window
         sys_snap = self._latest_system
+        os_available = bool(sys_snap is not None and sys_snap.os_signals_available)
 
         if state == 'away':
             reasons.append((
                 'state_away',
-                {'idle_seconds': int(sys_snap.idle_seconds) if sys_snap else 0},
+                {
+                    'idle_seconds': (
+                        int(sys_snap.idle_seconds)
+                        if sys_snap is not None and sys_snap.idle_seconds is not None
+                        else 0
+                    )
+                },
             ))
         elif state == 'stale_returning':
             reasons.append(('state_stale_returning', {}))
@@ -1027,7 +1089,7 @@ class ActivityStateMachine:
         # CPU reason stays at the hardcoded 70 — there's no per-instance
         # CPU threshold to thread through (CPU only ever shows up as
         # supplementary context, never gates a state).
-        if sys_snap and sys_snap.cpu_avg_30s > 70:
+        if os_available and sys_snap is not None and sys_snap.cpu_avg_30s > 70:
             reasons.append(('high_cpu', {'cpu_percent': int(sys_snap.cpu_avg_30s)}))
         # Boundary: matches the classifier's ``>=`` at line 809 so a GPU
         # value sitting exactly on the threshold gets the explanatory
@@ -1035,7 +1097,9 @@ class ActivityStateMachine:
         # Otherwise the prompt would see "user is gaming" without the
         # GPU evidence sentence, which reads inconsistent.
         if (
-            sys_snap and sys_snap.gpu_utilization is not None
+            os_available
+            and sys_snap is not None
+            and sys_snap.gpu_utilization is not None
             and sys_snap.gpu_utilization >= self._gaming_gpu_threshold_percent
         ):
             reasons.append(('high_gpu', {'gpu_percent': int(sys_snap.gpu_utilization)}))

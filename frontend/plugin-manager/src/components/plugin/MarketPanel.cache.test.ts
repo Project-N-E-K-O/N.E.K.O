@@ -25,6 +25,10 @@ vi.mock('@/api/marketBridge', () => ({
   fetchBridge: vi.fn(),
   ensureBridgeToken: vi.fn(),
   readErrorCode: vi.fn(),
+  MARKET_AUTH_CHANGED_EVENT: 'neko-market-auth-changed',
+}))
+vi.mock('@/api/marketFeedback', () => ({
+  fetchMarketFeedback: vi.fn(async () => ({ by_plugin: [] })),
 }))
 vi.mock('@/api/market', () => ({
   fetchMarketCatalog: vi.fn(),

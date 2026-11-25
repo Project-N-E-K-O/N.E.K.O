@@ -775,6 +775,11 @@
                 ? detail.tier
                 : I.IDLE_DOCK_TIER_NONE;
 
+            if (I.isIdleDockPlaygroundBlocked()) {
+                I.suspendIdleDockForPlayground();
+                return;
+            }
+
             var overlay = I.getOverlay();
             if (!overlay || overlay.hidden || I.isElectronChatWindow()) return;
 
@@ -786,9 +791,20 @@
             }
 
             if (I.hasIdleDockPendingOrActive()) {
+                // Waking up on her own is not the user coming back: keep the chat
+                // minimized where it is and leave the reopen for the real return.
+                var catWokeUpAlone = detail.source === 'cat-sleep-wake-demotion';
                 I.exitIdleDock({
-                    preserveCurrentPosition: I.idleDockActive && detail.source === 'return-ball-drag-demotion',
+                    preserveCurrentPosition: I.idleDockActive && (
+                        detail.source === 'return-ball-drag-demotion' || catWokeUpAlone
+                    ),
+                    parkRestoreForReturn: catWokeUpAlone,
                 });
+                return;
+            }
+
+            if (I.idleDockParkedRestore && detail.tier === I.IDLE_DOCK_TIER_NONE) {
+                I.exitIdleDock({});
                 return;
             }
 
@@ -805,6 +821,11 @@
                 I.idleDockTier = currentTier === I.IDLE_DOCK_TIER_CAT2 || currentTier === I.IDLE_DOCK_TIER_CAT3
                     ? currentTier
                     : I.IDLE_DOCK_TIER_NONE;
+            }
+
+            if (I.isIdleDockPlaygroundBlocked()) {
+                I.suspendIdleDockForPlayground();
+                return;
             }
 
             var overlay = I.getOverlay();
@@ -852,8 +873,8 @@
                 return;
             }
             I.setGoodbyeComposerHidden(false, 'return-complete');
-            if (I.hasElectronIdleDockPendingOrActive()) { I.exitElectronIdleDock(); }
-            if (I.hasIdleDockPendingOrActive()) { I.exitIdleDock(); return; }
+            if (I.hasElectronIdleDockPendingOrActive() || I.electronIdleDockParkedRestoreBounds) { I.exitElectronIdleDock(); }
+            if (I.hasIdleDockPendingOrActive() || I.idleDockParkedRestore) { I.exitIdleDock(); return; }
             I.clearIdleDockState();
         });
 
@@ -954,6 +975,8 @@
         removeMessage: I.removeMessage,
         clearGuideMessages: I.clearGuideMessages,
         clearMessages: I.clearMessages,
+        captureSwitchSnapshot: I.captureSwitchSnapshot,
+        restoreSwitchSnapshot: I.restoreSwitchSnapshot,
         getState: I.getStateSnapshot,
         setOnMessageAction: function (handler) {
             I.state.onMessageAction = typeof handler === 'function' ? handler : null;
