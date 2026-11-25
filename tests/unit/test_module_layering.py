@@ -502,6 +502,29 @@ def test_tree_inside_another_checkout_falls_back_to_the_filesystem(
 
 @pytest.mark.unit
 @pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+@pytest.mark.parametrize("layout", ["bare_repository", "dot_git_folder"])
+def test_directory_without_a_work_tree_falls_back_to_the_filesystem(
+    script_module, tmp_path, layout,
+) -> None:
+    """A bare repository or a ``.git`` folder has no work tree. Git still
+    reads an index there (an empty one, or the enclosing checkout's), which
+    must not stand in for the files under the directory."""
+    if layout == "bare_repository":
+        root = tmp_path / "bare"
+        root.mkdir()
+        _git(root, "init", "-q", "--bare")
+    else:
+        _git_tree(tmp_path / "repo")
+        root = tmp_path / "repo" / ".git"
+    _write_tree(root)
+
+    assert script_module._tracked_python_files(root) is None
+    found = script_module.find_unregistered_packages(root, {"registered"})
+    assert [directory for directory, _ in found] == ["newpkg"]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 @pytest.mark.parametrize(
     "variables",
     [("GIT_DIR",), ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")],

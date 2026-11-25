@@ -504,15 +504,17 @@ def _tracked_python_files(root: Path) -> Optional[List[str]]:
     # Output is read as bytes: git prints paths as UTF-8, whatever the locale.
     env = _git_env()
     try:
-        # Empty when ``root`` is the top of its work tree, so the checkout's own
-        # path is never decoded or compared. An exported tree unpacked inside
-        # some other checkout would otherwise get that outer repository's
-        # (empty) listing and silently skip the check.
-        cdup = subprocess.run(
-            ["git", "rev-parse", "--show-cdup"],
+        # Exactly "true" and an empty line at the top of a work tree, so the
+        # checkout's own path is never decoded or compared. A subfolder adds
+        # "../" (an exported tree unpacked inside some other checkout would
+        # otherwise get that outer repository's empty listing); a bare
+        # repository or a ``.git`` folder prints "false", where ls-files would
+        # still list an index that does not describe the files there.
+        top = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree", "--show-cdup"],
             cwd=str(root), env=env, capture_output=True, timeout=60, check=False,
         )
-        if cdup.returncode != 0 or cdup.stdout.strip():
+        if top.returncode != 0 or top.stdout.split() != [b"true"]:
             return None
         # No pathspec: GIT_LITERAL_PATHSPECS / GIT_GLOB_PATHSPECS would change
         # what one matches. Python picks the .py files instead.
