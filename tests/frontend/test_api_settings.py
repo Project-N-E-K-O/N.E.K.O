@@ -1698,6 +1698,39 @@ def test_editable_tts_defaults_are_cleared_when_switching_to_custom(
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize("intermediate_provider", ["qwen_token_plan", "vllm_omni"])
+def test_custom_tts_voice_survives_round_trip_through_another_provider(
+    mock_page: Page, running_server: str, intermediate_provider,
+):
+    """custom -> another provider -> custom restores the custom voice with URL / model."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#ttsModelProvider option[value='qwen_token_plan']", state="attached", timeout=10000)
+
+    result = mock_page.evaluate("""
+        async (intermediate) => {
+            document.getElementById('enableCustomApi').checked = true;
+            toggleCustomApi();
+            const provider = document.getElementById('ttsModelProvider');
+            const fields = ['ttsModelUrl', 'ttsModelId', 'ttsVoiceId'].map(id => document.getElementById(id));
+            provider.value = 'custom';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            fields[0].value = 'https://tts.example.com/v1';
+            fields[1].value = 'my-model';
+            fields[2].value = 'my-voice';
+            provider.value = intermediate;
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            provider.value = 'custom';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            return fields.map(f => f.value);
+        }
+    """, intermediate_provider)
+
+    assert result == ["https://tts.example.com/v1", "my-model", "my-voice"]
+
+
+@pytest.mark.frontend
 @pytest.mark.parametrize("intermediate_provider", [None, "gptsovits"])
 def test_deepseek_tts_preserves_saved_custom_slot_in_ui(
     mock_page: Page, running_server: str, intermediate_provider,

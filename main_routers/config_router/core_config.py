@@ -725,12 +725,12 @@ async def update_core_config(request: Request):
         # clear and must remain distinguishable from that no-op.
         stored_tts_model_provider = str(
             core_cfg.get('ttsModelProvider') or ''
-        ).strip()
+        ).strip().lower()
         # The slot key as stored, before the submitted model fields overwrite it.
         stored_tts_slot_key = str(core_cfg.get('ttsModelApiKey') or '').strip()
         _incoming_tts_provider = str(data.get('ttsModelProvider', '') or '').strip()
         # A partial update that omits ttsModelProvider keeps the stored provider.
-        _effective_tts_provider = str(data.get('ttsModelProvider', stored_tts_model_provider) or '').strip()
+        _effective_tts_provider = str(data.get('ttsModelProvider', stored_tts_model_provider) or '').strip().lower()
         _tts_book_field = TTS_KEY_BOOK_FIELDS.get(_effective_tts_provider, '')
         tts_book_key_was_explicitly_updated = bool(_tts_book_field) and (
             _tts_book_field in data

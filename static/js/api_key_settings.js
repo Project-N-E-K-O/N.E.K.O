@@ -1730,6 +1730,8 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
             url: urlInput.value,
             model: modelIdInput.value,
             key: getRealKey(keyInput),
+            // The next provider fills in its own default voice; keep the custom one.
+            voice: voiceInput ? voiceInput.value : undefined,
         };
     }
     // Also remember follow modes that return early below.
@@ -1958,6 +1960,9 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
         if (provider === 'custom' && _customTtsDraft && !_isLoadingSavedConfig) {
             urlInput.value = _customTtsDraft.url;
             modelIdInput.value = _customTtsDraft.model;
+            if (voiceInput && typeof _customTtsDraft.voice === 'string') {
+                voiceInput.value = _customTtsDraft.voice;
+            }
             setMaskedInput(keyInput, _customTtsDraft.key);
             _customTtsDraft = null;
         }

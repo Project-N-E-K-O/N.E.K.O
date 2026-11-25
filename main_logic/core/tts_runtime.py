@@ -742,7 +742,12 @@ class TtsRuntimeMixin:
     def _resolve_qwen_token_plan_runtime_config(core_config: dict) -> tuple[str, str]:
         # The Token Plan worker reads its slot from core_config.json, not tts_custom,
         # so its endpoint and model must be part of the runtime identity explicitly.
-        if str(core_config.get('ttsModelProvider') or '').strip().lower() != 'qwen_token_plan':
+        # Same selection fields as the worker's is_selected (TTS_PROVIDER / ttsProvider
+        # or ttsModelProvider).
+        if not any(
+            str(core_config.get(field) or '').strip().lower() == 'qwen_token_plan'
+            for field in ('TTS_PROVIDER', 'ttsProvider', 'ttsModelProvider')
+        ):
             return ('', '')
         return (
             str(core_config.get('ttsModelUrl') or '').strip()

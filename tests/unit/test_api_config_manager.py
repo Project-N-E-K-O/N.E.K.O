@@ -2383,6 +2383,9 @@ class TestGptsovitsEnabledSaveMigration:
     @pytest.mark.parametrize('previous_provider, book_field', [
         ('qwen_token_plan', 'assistApiKeyQwenTokenPlan'),
         ('doubao_tts', 'assistApiKeyDoubaoTts'),
+        # Stored ids are matched case-insensitively, like the snapshot builder does.
+        ('QWEN_TOKEN_PLAN', 'assistApiKeyQwenTokenPlan'),
+        (' Doubao_TTS ', 'assistApiKeyDoubaoTts'),
     ])
     @pytest.mark.parametrize('submitted_key', ['omitted', 'masked'])
     def test_update_core_config_leaving_keybook_tts_provider_drops_mirrored_key(

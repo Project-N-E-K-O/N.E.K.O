@@ -170,14 +170,20 @@ def test_fallback_voice_change_restarts_worker(manager, name):
     assert first != second
 
 
+@pytest.mark.parametrize("selected_by", [
+    {"ttsModelProvider": "qwen_token_plan"},
+    # The worker is also selected through TTS_PROVIDER / ttsProvider alone.
+    {"TTS_PROVIDER": "qwen_token_plan"},
+    {"ttsProvider": " Qwen_Token_Plan "},
+])
 @pytest.mark.parametrize("field, value", [
     ("ttsModelId", "qwen-audio-3.0-tts-flash"),
     ("ttsModelUrl", "https://token-plan.maas.qianwenaiapi.com"),
 ])
-def test_token_plan_endpoint_or_model_change_restarts_worker(manager, field, value):
+def test_token_plan_endpoint_or_model_change_restarts_worker(manager, field, value, selected_by):
     # The Token Plan slot is not in tts_custom, so the runtime key must carry it itself.
     base = {
-        "ttsModelProvider": "qwen_token_plan", "assistApiKeyQwenTokenPlan": "sk-sp-key",
+        **selected_by, "assistApiKeyQwenTokenPlan": "sk-sp-key",
         "ttsModelUrl": "https://token-plan.cn-beijing.maas.aliyuncs.com",
         "ttsModelId": "qwen-audio-3.0-tts-plus", "ttsVoiceId": "longanlingxin",
     }
