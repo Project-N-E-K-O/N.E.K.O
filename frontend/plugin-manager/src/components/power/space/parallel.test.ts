@@ -755,15 +755,14 @@ describe('what is asked of opening another beside the one chosen, busy with some
 
   it('is not shown with another familiar, and not looked for while the one chosen is at nothing', async () => {
     api.getProjectBoard.mockResolvedValue(board([busy(), busy({ id: 's3', name: 'App/scout' }), card({ id: 's2', name: 'App/idle' })]))
-    const { state } = await mount(FamiliarsPane, { project: 'App', selectedId: 's3' })
-    expect(api.listCommissions).toHaveBeenCalled()
-    expect(document.querySelector('[data-detail="s3"]')).toBeTruthy()
-    expect(byTest('beside-ask')).toBeNull()
-    api.listCommissions.mockClear()
-    state.props = { project: 'App', selectedId: 's2' }
-    await flush()
+    const { state } = await mount(FamiliarsPane, { project: 'App', selectedId: 's2' })
     expect(document.querySelector('[data-detail="s2"]')).toBeTruthy()
     expect(api.listCommissions).not.toHaveBeenCalled()
+    // Another that is at something is chosen: looked for, and not shown with it.
+    state.props = { project: 'App', selectedId: 's3' }
+    await flush()
+    expect(document.querySelector('[data-detail="s3"]')).toBeTruthy()
+    expect(api.listCommissions).toHaveBeenCalled()
     expect(byTest('beside-ask')).toBeNull()
   })
 
