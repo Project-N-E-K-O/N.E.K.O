@@ -144,7 +144,8 @@
             loadError.hidden = true;
             render();
         } catch (error) {
-            if (ticket !== loadTicket) return;
+            // A change that succeeded meanwhile already shows the current state.
+            if (ticket !== loadTicket || version !== stateVersion) return;
             loadError.textContent = error.message;
             loadError.hidden = false;
         }
