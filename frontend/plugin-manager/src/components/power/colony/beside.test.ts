@@ -236,6 +236,17 @@ describe('the question in the colony', () => {
     expect(followedX).toBeCloseTo(ghostX + movedX - busyX, 6)
     expect(followedY).toBeCloseTo(ghostY + movedY - busyY, 6)
     expect(at(cat('kid'))).toEqual(kid)
+    // Not moved with the keys either: it goes on standing by the busy one.
+    cat('beside:c9')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))
+    await flush()
+    expect(at(cat('beside:c9'))).toEqual([followedX, followedY])
+    pointer(cat('shop'), 'pointerdown', 120, 100)
+    pointer(cat('shop'), 'pointermove', 160, 120)
+    pointer(cat('shop'), 'pointerup', 160, 120)
+    await flush()
+    const [againX, againY] = at(cat('shop'))
+    expect(at(cat('beside:c9'))[0]).toBeCloseTo(ghostX + againX - busyX, 6)
+    expect(at(cat('beside:c9'))[1]).toBeCloseTo(ghostY + againY - busyY, 6)
   })
 
   it('stands as far from the busy one put by an edge as ever, and not on top of it', async () => {

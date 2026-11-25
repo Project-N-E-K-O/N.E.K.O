@@ -42,7 +42,7 @@
       @pointermove="drag($event)"
       @pointerup="drop($event)"
       @pointercancel="cancel($event)"
-      @keydown="nudge(member.id, $event)"
+      @keydown="member.look === 'unborn' || nudge(member.id, $event)"
       @click="clicked(member.id, $event)"
     >
       <span v-if="bubble(member)" class="bubble" :class="{ 'bubble--loud': member.look === 'waiting_user' }">{{ bubble(member) }}</span>
@@ -160,8 +160,8 @@ const TEAM_NAME = {
 // The looks of one that waits for the user, drawn alike; and of one whose changes are being merged.
 const WAITS = new Set<CatLook>(['waiting_user', 'held', 'unlanded', 'unborn'])
 const MERGING = new Set<CatLook>(['landing', 'resolving'])
-// One that would be opened, should the user say so: not picked up but pressed, faded, its name framed in
-// dashes. What it asks is said when it is pointed at, not above it: it stands close below the one it
+// One that would be opened, should the user say so: not picked up nor moved with the keys (it stands by
+// the busy one) but pressed, faded, its name framed in dashes. What it asks is said when it is pointed at, not above it: it stands close below the one it
 // would work beside, whose name a bubble would cover. Styled here and not in the stylesheet, as the teams are.
 const UNBORN = { cursor: 'pointer' } as const
 const UNBORN_FIGURE = { opacity: 0.45, filter: 'grayscale(1)' } as const
