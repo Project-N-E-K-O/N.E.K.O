@@ -7,7 +7,7 @@
  * moment, for replaying them. An entry of a kind this page does not know
  * changes nothing and is listed by the name of its kind.
  */
-import type { TimelineEntry } from '@/api/console'
+import type { SceneStanding, TimelineEntry } from '@/api/console'
 
 /** How a familiar is drawn. */
 export type CatLook =
@@ -25,6 +25,8 @@ export interface SceneCat {
 export const SAID_SECONDS = 30
 
 const SAYS = new Set(['reported', 'message', 'asked_session', 'asked_user'])
+// How the host says a familiar stood where the entries begin.
+const LOOKS_AT_START = new Set(['working', 'waiting_user', 'resting', 'queued'])
 
 function put(cats: Map<string, SceneCat>, id: string | null | undefined, look?: CatLook): SceneCat | null {
   if (!id) return null
@@ -47,10 +49,16 @@ function put(cats: Map<string, SceneCat>, id: string | null | undefined, look?: 
  * says that it was. A session is at one commission at a time: another that
  * waits for its turn in it, or is called off there, leaves it as it stands.
  */
-export function sceneAt(entries: TimelineEntry[], index: number): Map<string, SceneCat> {
+export function sceneAt(entries: TimelineEntry[], index: number, base: SceneStanding[] = []): Map<string, SceneCat> {
   const cats = new Map<string, SceneCat>()
   // The commission each session is at, by session.
   const atWork = new Map<string, string | null>()
+  // How they stood where the entries begin, when that is not the beginning of the record.
+  for (const standing of base) {
+    if (!LOOKS_AT_START.has(standing.look)) continue
+    put(cats, standing.session_id, standing.look as CatLook)
+    atWork.set(standing.session_id, standing.commission_id)
+  }
   const busyWithAnother = (entry: TimelineEntry) =>
     Boolean(entry.session_id) && atWork.has(entry.session_id as string) && atWork.get(entry.session_id as string) !== entry.commission_id
   const last = Math.min(index, entries.length - 1)
@@ -65,6 +73,12 @@ export function sceneAt(entries: TimelineEntry[], index: number): Map<string, Sc
         if (id) atWork.set(id, entry.commission_id)
         break
       case 'asked_user': put(cats, id, 'waiting_user'); break
+      // Answered: at work again (what a tool asked is answered so; a report's answer is followed by `started`).
+      case 'answered': {
+        const cat = busyWithAnother(entry) ? null : put(cats, id)
+        if (cat?.look === 'waiting_user') cat.look = 'working'
+        break
+      }
       case 'resting': put(cats, id, 'resting'); break
       case 'rest_over': put(cats, id, 'idle'); break
       case 'ended':
@@ -195,6 +209,11 @@ export function describeEntry(
   const who = nameOf(entry.session_id)
   const peer = entry.peer?.type === 'user' ? t('power.activity.you') : nameOf(entry.peer?.session_id)
   let text = entry.text
+  // What a tool asked answered with a choice (allow once, deny): said in words.
+  const choice = entry.detail?.choice
+  if (entry.kind === 'answered' && !text && typeof choice === 'string' && te(`power.space.familiars.choices.${choice}`)) {
+    text = t(`power.space.familiars.choices.${choice}`)
+  }
   if (entry.kind === 'asked_user' && entry.detail?.question_kind === 'permission') {
     // A request for approval is recorded by its kind (and, of an MCP server, which): said in words here.
     const [category, ...rest] = text.split(':')

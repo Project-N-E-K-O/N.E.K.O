@@ -1040,6 +1040,94 @@ describe('the colony on the home page', () => {
     expect(byTest('timeline-capped')).toBeNull()
   })
 
+  it('says from the start that only the latest are kept when more came before than reading from the beginning would hold', async () => {
+    api.getTimelineStart.mockResolvedValue({ after: 'e50.m2', latest: 'e99.m9', before: 2999, scene: [] })
+    api.getTimeline.mockReset()
+    api.getTimeline.mockResolvedValue({ entries: [], next: 'e99.m9', more: false, latest: 'e99.m9' })
+    api.getTimeline.mockResolvedValueOnce({ entries: story.slice(0, 2), next: 'e99.m9', more: false, latest: 'e99.m9' })
+    await mount(FamiliarColony)
+    // 2999 before and 2 held: from the beginning would be more than is kept, and end the same.
+    expect(byTest('replay-whole')).toBeNull()
+    expect(byTest('timeline-capped')?.textContent).toBe(words.activity.onlyLatest.replace('{count}', '3000'))
+    cleanup?.()
+    // As many as are kept: offered.
+    api.getTimelineStart.mockResolvedValue({ after: 'e50.m2', latest: 'e99.m9', before: 2998, scene: [] })
+    api.getTimeline.mockResolvedValueOnce({ entries: story.slice(0, 2), next: 'e99.m9', more: false, latest: 'e99.m9' })
+    await mount(FamiliarColony)
+    expect(byTest('replay-whole')).toBeTruthy()
+    expect(byTest('timeline-capped')).toBeNull()
+  })
+
+  it('having read from the beginning, does not take what lay before where it began for more than is kept', async () => {
+    api.getTimelineStart.mockResolvedValue({ after: 'e50.m2', latest: 'e99.m9', before: 2998, scene: [] })
+    api.getTimeline.mockReset()
+    api.getTimeline.mockResolvedValue({ entries: [], next: 'e99.m9', more: false, latest: 'e99.m9' })
+    api.getTimeline.mockResolvedValueOnce({ entries: story.slice(0, 2), next: 'e99.m9', more: false, latest: 'e99.m9' })
+    await mount(FamiliarColony)
+    api.getTimeline.mockResolvedValueOnce({ entries: story.slice(0, 3), next: 'e99.m9', more: false, latest: 'e99.m9' })
+    byTest('replay-whole')!.click()
+    await flush()
+    // All of it is held: nothing is said of only the latest being kept.
+    expect(byTest('timeline-capped')).toBeNull()
+  })
+
+  it('no longer replays from where the entries began once the first of them were let go', async () => {
+    const step = (n: number) => entry('reported', { session_id: 'kid', commission_id: 'c2', at: n, cursor: `e${n}.m0`, text: `step ${n}` })
+    api.getTimelineStart.mockResolvedValue({ after: 'e50.m2', latest: 'e99.m9', before: 0, scene: [
+      { session_id: 'lead', commission_id: 'c1', look: 'waiting_user', since: 1 },
+    ] })
+    api.getTimeline.mockReset()
+    api.getTimeline.mockResolvedValue({ entries: [], next: 'e9.m0', more: false, latest: 'e9.m0' })
+    api.getTimeline.mockResolvedValueOnce({ entries: Array.from({ length: 3001 }, (_, n) => step(n)), next: 'e9.m0', more: false, latest: 'e9.m0' })
+    await mount(FamiliarColony)
+    const slider = byTest('replay-slider') as HTMLInputElement
+    slider.value = '0'
+    slider.dispatchEvent(new Event('input', { bubbles: true }))
+    await flush()
+    // What it was at where the entries began is not where they begin now.
+    expect(cat('lead')?.getAttribute('data-look')).toBe('idle')
+  })
+
+  it('replays from how the familiars stood where the entries begin', async () => {
+    api.getTimelineStart.mockResolvedValue({ after: 'e50.m2', latest: 'e99.m9', before: 40, scene: [
+      { session_id: 'lead', commission_id: 'c1', look: 'waiting_user', since: 1 },
+      { session_id: 'kid', commission_id: 'c2', look: 'working', since: 2 },
+    ] })
+    api.getTimeline.mockReset()
+    api.getTimeline.mockResolvedValue({ entries: [], next: 'e99.m9', more: false, latest: 'e99.m9' })
+    api.getTimeline.mockResolvedValueOnce({ next: 'e99.m9', more: false, latest: 'e99.m9', entries: [
+      entry('reported', { session_id: 'kid', commission_id: 'c2', at: 10, cursor: 'e60.m0', text: 'the template is in' }),
+      entry('answered', { at: 20, cursor: 'e61.m0', detail: { asked_by_tool: true, choice: 'once' } }),
+    ] })
+    await mount(FamiliarColony)
+    const slider = byTest('replay-slider') as HTMLInputElement
+    slider.value = '0'
+    slider.dispatchEvent(new Event('input', { bubbles: true }))
+    await flush()
+    // Asking and at work already when the entries begin, not idle.
+    expect(cat('lead')?.getAttribute('data-look')).toBe('waiting_user')
+    expect(cat('kid')?.getAttribute('data-look')).toBe('working')
+    slider.value = '1'
+    slider.dispatchEvent(new Event('input', { bubbles: true }))
+    await flush()
+    // Answered: at work again.
+    expect(cat('lead')?.getAttribute('data-look')).toBe('working')
+    // Read from the beginning: how they stood where the last stretch began is no part of it.
+    api.getTimeline.mockResolvedValueOnce({ next: 'e99.m9', more: false, latest: 'e99.m9', entries: [
+      entry('reported', { session_id: 'lead', commission_id: 'c1', at: 1, cursor: 'e1.m0', text: 'first' }),
+      entry('reported', { session_id: 'lead', commission_id: 'c1', at: 2, cursor: 'e2.m0', text: 'second' }),
+    ] })
+    // Back to now first: while a moment is shown, that is what is offered.
+    byTest('replay-now')!.click()
+    await flush()
+    byTest('replay-whole')!.click()
+    await flush()
+    slider.value = '0'
+    slider.dispatchEvent(new Event('input', { bubbles: true }))
+    await flush()
+    expect(cat('kid')?.getAttribute('data-look')).toBe('idle')
+  })
+
   it('says that only the latest are kept, and offers no reading from the beginning, when more happened than is held', async () => {
     const step = (n: number) => entry('reported', { at: n, cursor: `e${n}.m0`, text: `step ${n}` })
     api.getTimelineStart.mockResolvedValue({ after: 'e50.m2', latest: 'e99.m9' })
@@ -1166,6 +1254,40 @@ describe('several familiars at work in one project', () => {
     // Ended otherwise: at rest, whatever it was before.
     const done = [entry('started', { ...kid }), entry('landing_conflict', { ...kid }), entry('ended', { ...kid, detail: { outcome: 'failed' } })]
     expect(sceneAt(done, 2).get('kid')?.look).toBe('idle')
+  })
+
+  it('replays from how they stood where the entries begin, and an answer to what a tool asked puts it back to work', () => {
+    const base = [
+      { session_id: 'kid', commission_id: 'k1', look: 'waiting_user', since: 1 },
+      { session_id: 'queued', commission_id: 'q1', look: 'queued', since: 1 },
+      { session_id: 'odd', commission_id: 'o1', look: 'dancing', since: 1 },
+      { session_id: '', commission_id: 'x', look: 'working', since: 1 },
+    ]
+    const lines = [
+      entry('reported', { session_id: 'lead', text: 'x' }),
+      entry('answered', { session_id: 'kid', commission_id: 'k1', detail: { asked_by_tool: true, choice: 'once' } }),
+      entry('ended', { session_id: 'kid', commission_id: 'k1', detail: { outcome: 'done' } }),
+    ]
+    const first = sceneAt(lines, 0, base)
+    expect(first.get('kid')?.look).toBe('waiting_user')
+    expect(first.get('queued')?.look).toBe('queued')
+    // What the host has no look for, or names nobody, is passed over.
+    expect(first.has('odd')).toBe(false)
+    expect(first.has('')).toBe(false)
+    expect(sceneAt(lines, 1, base).get('kid')?.look).toBe('working')
+    // Ended from what it was at where the entries begin.
+    expect(sceneAt(lines, 2, base).get('kid')?.look).toBe('idle')
+    // Without where they stood: not there until named.
+    expect(sceneAt(lines, 0).has('kid')).toBe(false)
+    // An answer of another commission than the one it is at changes nothing.
+    const other = [entry('answered', { session_id: 'kid', commission_id: 'k9' })]
+    expect(sceneAt(other, 0, base).get('kid')?.look).toBe('waiting_user')
+    // A choice is said in words.
+    const said = describeEntry(entry('answered', { session_id: 'kid', text: '', detail: { choice: 'once' } }), nameOf, t, te)
+    expect(said).toBe(t('power.activity.kinds.answered', { who: 'Kid', text: words.space.familiars.choices.once }))
+    // Words that were answered are said as they are.
+    expect(describeEntry(entry('answered', { session_id: 'kid', text: 'the blue one', detail: { choice: 'once' } }), nameOf, t, te))
+      .toBe(t('power.activity.kinds.answered', { who: 'Kid', text: 'the blue one' }))
   })
 
   it('frames those of one team together, and none for a team of one or of nobody', async () => {

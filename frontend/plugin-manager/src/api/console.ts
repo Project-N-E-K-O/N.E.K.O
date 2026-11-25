@@ -475,8 +475,21 @@ export const getTimeline = (params: { project?: string | null; after?: string; l
   if (params.limit) query.limit = params.limit
   return get<TimelinePage>('/console/timeline', query)
 }
-/** Where to begin reading for what happened lately: `after` is empty when that is the beginning of the record. */
-export const getTimelineStart = () => get<{ after: string; latest: string }>('/console/timeline/start')
+/** How a familiar stood where a page begins reading: it was at something already. */
+export interface SceneStanding {
+  session_id: string
+  commission_id: string
+  look: 'working' | 'waiting_user' | 'resting' | 'queued' | (string & {})
+  since: number
+}
+
+/**
+ * Where to begin reading for what happened lately: `after` is empty when that is the beginning of
+ * the record. `before` is how many entries come before it, `scene` how the familiars stood there.
+ * (Missing from a service from before they were added.)
+ */
+export const getTimelineStart = () =>
+  get<{ after: string; latest: string; before?: number; scene?: SceneStanding[] }>('/console/timeline/start')
 export const getWaits = (project?: string | null) =>
   get<{ waits: Wait[]; more: boolean }>('/console/waits', project ? { project } : undefined)
 
