@@ -82,7 +82,6 @@ class Installer:
         with self.mutation():
             stage = self.stage(attempt)
             stage.mkdir(mode=0o700)  # Exclusive server-generated name.
-            sync_directory(stage.parent)
             journal = dict(
                 schema=JOURNAL_SCHEMA,
                 task_id=attempt,
@@ -91,7 +90,17 @@ class Installer:
                 record=None,
                 object_identity=None,
             )
-            self.save_journal(journal)
+            try:
+                sync_directory(stage.parent)
+                self.save_journal(journal)
+            except BaseException:
+                # An uncertain durable journal retains its recovery evidence.
+                if not os.path.lexists(self.journal_path(attempt)):
+                    try:
+                        self.cleanup_private_stage(journal)
+                    except (OSError, WorkshopError):
+                        pass  # Keep the original receive error if cleanup also fails.
+                raise
             return journal
 
     def save_journal(self, journal):
@@ -218,8 +227,14 @@ class Installer:
                     for parent in path.parents
                     if parent == target or target in parent.parents
                 )
+            # os.walk enumerates before yielding; retain versions from before
+            # enumeration so a newly added entry cannot hide behind a new stamp.
+            for directory in allowed_dirs:
+                identity(directory)
+                versions[directory] = _resource_version(directory.lstat())
             for parent, dirs, files in os.walk(target, followlinks=False):
-                versions[Path(parent)] = _resource_version(Path(parent).lstat())
+                if versions[Path(parent)] != _resource_version(Path(parent).lstat()):
+                    raise WorkshopError("model_workshop_recovery_conflict")
                 for name in dirs:
                     path = Path(parent) / name
                     if identity(path)[2] != stat.S_IFDIR or path not in allowed_dirs:
@@ -278,9 +293,15 @@ class Installer:
                     and attempts.get(bundle.sha256) == previous["install_id"]
                     and self.registry.status(previous) == "installed"
                 ):
-                    self.cleanup_private_stage(journal)
-                    return dict(previous, status="installed", already_installed=True)
+                    try:
+                        self.cleanup_private_stage(journal)
+                    except (OSError, WorkshopError):
+                        pass  # The completed record remains authoritative.
+                    return dict(previous, status="installed", already_installed=True,
+                                compatibility_warnings=[item.as_dict() for item in bundle.compatibility_warnings],
+                                compatibility_warning_count=bundle.compatibility_warning_count)
                 # An unresolved older publication must be recovered, never replaced by a retry.
+                reserved = dict(rows)
                 for other in self.registry.journals():
                     if (
                         other["task_id"] != journal["task_id"]
@@ -290,6 +311,8 @@ class Installer:
                         if previous and previous["install_id"] == other["task_id"]:
                             continue  # A completed attempt outranks its cleanup residue.
                         raise WorkshopError("model_workshop_recovery_conflict")
+                    if other["phase"] == "committing" and other["task_id"] != journal["task_id"]:
+                        reserved.setdefault(other["record"]["package_sha256"], other["record"])
                 target = self.paths.checked(record["target"])
                 if os.path.lexists(target):
                     raise WorkshopError("model_workshop_install_conflict")
@@ -298,7 +321,8 @@ class Installer:
                     raise WorkshopError("model_workshop_publication_unsupported")
                 rows[bundle.sha256] = record
                 attempts[bundle.sha256] = journal["task_id"]
-                self.registry.check_capacity(rows, attempts)
+                reserved[bundle.sha256] = record
+                self.registry.check_capacity(reserved, attempts)
                 self.cancelled(event)
                 commit_gate()  # Atomically wins/loses against a concurrent cancel request.
                 # Persist the current logical attempt before recording publication intent.
@@ -331,9 +355,11 @@ class Installer:
                 # Once completed, residual logs cannot revoke later local edits.
                 try:
                     self.cleanup_private_stage(journal)
-                except OSError:
-                    pass
-                return dict(record, status="installed", already_installed=False)
+                except (OSError, WorkshopError):
+                    pass  # Completion is durable; leave conflicting cleanup evidence for recovery.
+                return dict(record, status="installed", already_installed=False,
+                            compatibility_warnings=[item.as_dict() for item in bundle.compatibility_warnings],
+                            compatibility_warning_count=bundle.compatibility_warning_count)
 
     def _discard_unpublished(self, journal, rows, attempts):
         """Release only this failed attempt, keeping recovery evidence until saved."""

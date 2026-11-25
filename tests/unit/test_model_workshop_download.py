@@ -177,8 +177,7 @@ async def test_unrelated_unsafe_model_does_not_block_the_selected_package(flow, 
     if original:
         assert value['result']['install_id'] == original['install_id']
     assert resource.is_symlink() and outside.read_bytes() == b'preserve outside file'
-    with pytest.raises(WorkshopError, match='unsafe_path'):
-        flow.owner.installer.registry.status(other)
+    assert flow.owner.installer.registry.status(other) == 'missing'
 
 
 @pytest.mark.asyncio
@@ -323,3 +322,32 @@ async def test_cancelled_shutdown_still_drains_actual_reader(flow):
         await closing
     assert not flow.driver.jobs and all(body.closed for body in flow.bodies)
     assert not flow.owner.installer.registry.installed()
+
+
+@pytest.mark.asyncio
+async def test_pending_auth_read_keeps_installed_operation_and_connection(flow, monkeypatch):
+    from services.model_workshop import market
+    row = await opened(flow)
+    await select(flow, row); await settled(flow)
+    value = flow.driver.launches.get(row['request_id'])
+    original = market._account_witness
+    monkeypatch.setattr(market, '_account_witness', lambda: (_ for _ in ()).throw(WorkshopError('market_auth_pending')))
+    status = flow.driver.status(flow.config, row['request_id'])
+    assert status['phase'] == 'installed' and value.connection.error is None
+    monkeypatch.setattr(market, '_account_witness', original)
+    assert flow.driver.status(flow.config, row['request_id'])['phase'] == 'installed'
+
+
+@pytest.mark.asyncio
+async def test_auth_pending_after_install_does_not_block_the_result(flow, monkeypatch):
+    from services.model_workshop import market
+    row = await opened(flow)
+    original = download.public_result
+    def completed(*args):
+        result = original(*args)
+        monkeypatch.setattr(market, '_account_witness', lambda: (_ for _ in ()).throw(WorkshopError('market_auth_pending')))
+        return result
+    monkeypatch.setattr(download, 'public_result', completed)
+    await select(flow, row); await settled(flow)
+    value = flow.driver.launches.get(row['request_id'])
+    assert value.phase == 'installed' and value.connection.error is None

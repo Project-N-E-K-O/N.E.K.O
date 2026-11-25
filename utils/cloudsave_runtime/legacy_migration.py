@@ -817,7 +817,7 @@ def import_legacy_runtime_root_if_needed(config_manager) -> dict[str, Any]:
         ):
             continue
 
-        from utils.model_workshop_storage import ModelWorkshopStorageError, inspect_model_workshop_metadata
+        from utils.model_workshop_storage import ModelWorkshopStorageError, inspect_model_workshop_metadata, model_workshop_has_user_content
         try:
             inspect_model_workshop_metadata(source_root)
         except ModelWorkshopStorageError as error:
@@ -835,6 +835,11 @@ def import_legacy_runtime_root_if_needed(config_manager) -> dict[str, Any]:
         )
         if target_has_user_content and not should_repair:
             continue
+        if (target_has_user_content and model_workshop_has_user_content(source_root / "model_workshop")
+                and os.path.lexists(target_root / "model_workshop")):
+            logger.warning("Legacy runtime import deferred: model workshop roots conflict")
+            return {"migrated": False, "source": str(source_root), "copied_paths": [],
+                    "backup_path": "", "repair_reason": "", "result": "legacy_root_model_workshop_root_conflict"}
 
         temp_root = target_root.parent / f".{target_root.name}.bootstrap-import"
         if temp_root.exists():

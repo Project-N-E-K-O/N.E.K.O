@@ -32,18 +32,22 @@ _ACCOUNT_FILE = Path.home() / ".neko" / "market_auth.json"
 
 def _account_witness():
     """Read the login session, excluding token refresh and pending subject discovery."""
-    try:
-        data = read_json(_ACCOUNT_FILE, 64 * 1024)
+    for attempt in range(3):
+        try:
+            data = read_json(_ACCOUNT_FILE, 64 * 1024)
+        except (OSError, WorkshopError, ValueError) as error:
+            # OAuth truncates then rewrites this file. Retry that short window,
+            # retaining a soft failure if the bounded reads cannot obtain it.
+            if attempt < 2:
+                time.sleep(0.02)
+                continue
+            raise WorkshopError("market_auth_pending") from error
         if data is None:
             return None
         keys = ("session_id", "client_id", "auth_url")
         if any(data.get(key) is not None and not isinstance(data[key], str) for key in keys):
-            raise ValueError("invalid account session")
+            raise WorkshopError("market_auth_required")
         return tuple(data.get(key) for key in keys)
-    except (OSError, WorkshopError, ValueError) as error:
-        # OAuth currently truncates then rewrites this file. A temporary read
-        # failure refuses this request; normal polling can retry after the write.
-        raise WorkshopError("market_auth_pending") from error
 
 
 def _witness(config):

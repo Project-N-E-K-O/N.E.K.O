@@ -298,3 +298,27 @@ async def test_status_during_own_write_and_ready_after_competing_edit(applicatio
             await driver.ready(config, row.request_id, row.operation_id)
         assert not driver.status(config, row.request_id)['can_select']
         await driver.close()
+
+
+@pytest.mark.asyncio
+async def test_pending_auth_at_save_is_retryable_without_reinstall(application, owner, no_network, tmp_path, monkeypatch):
+    from services.model_workshop.download import ConnectedDownloads
+    from services.model_workshop import market
+    _, config = application
+    async with main_character_runtime(config, {NAME: 'idle', OTHER: 'idle'}) as harness:
+        shared_state.init_shared_state(role_state=harness.module.role_state, config_manager=config,
+            steamworks=None, templates=None, init_one_catgirl=harness.module.init_one_catgirl)
+        driver = ConnectedDownloads(); row = driver.launches.create(config)
+        row, _ = driver.launches.select(config, row.request_id, 1, 'a' * 64, 1, '1' * 32)
+        package, _ = bundle_path(tmp_path)
+        row.result, row.phase = _public_result(config, install(owner, package)['result']), 'installed'
+        before = config.get_runtime_config_path('characters.json').read_bytes()
+        original = market._account_witness
+        monkeypatch.setattr(market, '_account_witness', lambda: (_ for _ in ()).throw(WorkshopError('market_auth_pending')))
+        with pytest.raises(WorkshopError, match='market_auth_pending'):
+            await driver.apply(config, row.request_id, row.operation_id)
+        assert row.phase == 'installed' and row.connection.error is None
+        assert config.get_runtime_config_path('characters.json').read_bytes() == before
+        monkeypatch.setattr(market, '_account_witness', original)
+        assert (await driver.apply(config, row.request_id, row.operation_id))['phase'] == 'saved'
+        await driver.close()

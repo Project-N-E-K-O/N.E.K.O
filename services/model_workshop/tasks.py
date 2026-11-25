@@ -141,13 +141,11 @@ class WorkshopTasks:
 
     def status(self, attempt):
         with self._condition:
-            task = self._task(attempt)
-            return dict(
-                task_id=task.task_id,
-                phase=task.phase,
-                result=task.result,
-                error=task.error,
-            )
+            return self._snapshot(self._task(attempt))
+
+    @staticmethod
+    def _snapshot(task):
+        return dict(task_id=task.task_id, phase=task.phase, result=task.result, error=task.error)
 
     def _progress(self, task, value):
         with self._condition:
@@ -266,7 +264,7 @@ class WorkshopTasks:
                     with self.installer.mutation():
                         self.installer.cleanup_private_stage(journal)
                 except (OSError, WorkshopError):
-                    pass
+                    pass  # Keep the original task failure and its recovery evidence.
             with self._condition:
                 task.error = (
                     str(exc)
@@ -282,10 +280,14 @@ class WorkshopTasks:
     def wait(self, attempt, timeout=None):
         """Used by shutdown/tests, not by task polling HTTP handlers."""
         with self._condition:
-            event = self._task(attempt).done
-        if not event.wait(timeout):
+            task = self._task(attempt)
+        return self._wait(task, timeout)
+
+    def _wait(self, task, timeout=None):
+        if not task.done.wait(timeout):
             raise TimeoutError("model_workshop_task_pending")
-        return self.status(attempt)
+        with self._condition:
+            return self._snapshot(task)
 
     def request_cancel(self, attempt):
         """A queued job acknowledges cancellation without waiting behind another install."""
@@ -293,11 +295,13 @@ class WorkshopTasks:
             task = self._task(attempt)
             if task.phase not in TERMINAL and task.phase != "committing":
                 task.cancel.set()
-        return self.status(attempt)
+            return self._snapshot(task)
 
     def cancel(self, attempt):
-        self.request_cancel(attempt)
-        return self.wait(attempt)
+        with self._condition:
+            task = self._task(attempt)
+            self.request_cancel(attempt)
+        return self._wait(task)
 
     def begin_upload(self):
         """Reserve an HTTP parser without retaining a thread lock across await."""

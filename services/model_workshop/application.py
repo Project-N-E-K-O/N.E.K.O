@@ -85,8 +85,10 @@ async def apply_installed(config, launch: Launch):
             # overwrite a newer binding by trying to "undo" this real save.
             launch.error = "model_market_refresh_failed"
             return launch.public()
-        launch.phase = "blocked"
-        raise WorkshopError(data.get("error_code") or "model_market_apply_failed")
+        code = data.get("error_code") or "model_market_apply_failed"
+        if code != "market_auth_pending":
+            launch.phase = "blocked"
+        raise WorkshopError(code)
     if launch.phase != "completed":
         launch.phase = "saved"
     return launch.public()

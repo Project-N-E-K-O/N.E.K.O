@@ -309,3 +309,19 @@ def test_rejected_csrf_token_is_reloaded_for_the_next_explicit_attempt(page):
     button.click()
     page.wait_for_function('testState.opened.length === 1')
     assert len(reads) == 2
+
+
+def test_edit_during_restored_csrf_fetch_cannot_send_apply(page):
+    state = network(page, 'installed')
+    held = []
+    page.route('**/api/config/page_config', lambda route: held.append(route))
+    page.evaluate('(value) => sessionStorage.setItem("neko.modelWorkshop.launch", value)', REQUEST)
+    with page.expect_request('**/api/config/page_config'):
+        mounted(page)
+    page.evaluate('testState.dirty = true')
+    page.locator('#editor').fill('edited while token was pending')
+    with page.expect_request(re.compile(r'/(apply|invalidate)$')) as following:
+        held[0].fulfill(json={'autostart_csrf_token': 'test-native-only'})
+    assert following.value.url.endswith('/invalidate')
+    assert '/' + REQUEST + '/apply' not in state['writes']
+    assert not page.evaluate('testState.applied')

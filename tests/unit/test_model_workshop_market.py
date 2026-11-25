@@ -184,10 +184,8 @@ def test_atomic_account_file_refresh_retries_without_revoking_the_connection(con
         return value
     monkeypatch.setattr(market, "read_json", read)
     row = market.Launches().create(config)
-    with pytest.raises(WorkshopError, match="market_auth_pending"):
-        row.check(config)
-    assert row.connection.error is None
     row.check(config)
+    assert row.connection.error is None
     assert count == 3
 
 
@@ -211,7 +209,7 @@ def test_transient_nonatomic_token_write_does_not_permanently_revoke_pairing(con
     path.write_text(json.dumps({'session_id': 'login', 'subject': 'user'}))
     row = market.Launches().create(config)
     path.write_text('{')
-    with pytest.raises(WorkshopError): row.check(config)
+    with pytest.raises(WorkshopError, match='market_auth_pending'): row.check(config)
     assert row.connection.error is None
     path.write_text(json.dumps({'session_id': 'login', 'subject': 'user'}))
     row.check(config)

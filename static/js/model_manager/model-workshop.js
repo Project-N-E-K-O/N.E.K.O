@@ -34,7 +34,7 @@
             terminal = true; remember(invalidated && requestId ? 'blocked:' + requestId : null);
             clearTimeout(timer); start.disabled = false;
         }
-        async function request(suffix, body) {
+        async function request(suffix, body, guard) {
             const headers = {};
             if (body !== undefined) {
                 if (!token) {
@@ -44,6 +44,7 @@
                 }
                 headers['X-CSRF-Token'] = token; headers['Content-Type'] = 'application/json';
             }
+            if (guard && !await guard()) throw Object.assign(new Error('edited'), { code: 'model_market_target_changed' });
             const response = await fetch('/api/model-market/launch' + suffix, { method: body === undefined ? 'GET' : 'POST',
                 body: body === undefined ? undefined : JSON.stringify(body), headers, credentials: 'same-origin',
                 redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(15000) });
@@ -81,7 +82,8 @@
             start.disabled = !idleReady;
             if (data.phase === 'installed') {
                 // Removing inline UI must not remove the edit/role authorization gate.
-                if (!stopped) await accept(await request('/' + requestId + '/apply', { operation_id: operation }));
+                if (!stopped) await accept(await request('/' + requestId + '/apply', { operation_id: operation },
+                    async () => await host.current(context, data.character_name) && !invalidated && !stopped));
                 return;
             }
             if (data.phase === 'saved' && !idleReady) {

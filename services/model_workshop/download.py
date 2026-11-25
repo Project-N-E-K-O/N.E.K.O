@@ -221,14 +221,14 @@ class ConnectedDownloads:
                 row.phase, row.error = state["phase"], state.get("error")
                 return
             row.result = public_result(config, state["result"])
+            row.phase = "installed"
             try:
                 row.check(config)
             except WorkshopError as error:
                 # An installed resource is retained, but stale authorization
                 # can never proceed to the separate, guarded role-save stage.
-                row.phase, row.error = "blocked", str(error)
-            else:
-                row.phase = "installed"
+                if str(error) != "market_auth_pending":
+                    row.phase, row.error = "blocked", str(error)
 
     def status(self, config, request_id, operation_id=None):
         row = self.launches.get(request_id, operation_id)
@@ -241,12 +241,14 @@ class ConnectedDownloads:
             try:
                 current.check_connection(config)
             except WorkshopError as error:
-                current.connection.error = str(error)
+                if str(error) != "market_auth_pending":
+                    current.connection.error = str(error)
         if row.phase in {"browsing", "installed"}:
             try:
                 row.check(config)
             except WorkshopError as error:
-                row.phase, row.error = "blocked", str(error)
+                if str(error) != "market_auth_pending":
+                    row.phase, row.error = "blocked", str(error)
         return row.public()
 
     async def apply(self, config, request_id, operation_id):
@@ -273,6 +275,8 @@ class ConnectedDownloads:
                 try:
                     await apply_installed(config, row)
                 except Exception as error:
+                    if isinstance(error, WorkshopError) and str(error) == "market_auth_pending":
+                        return  # The next local apply retries its locked authorization.
                     row.error = str(error) if isinstance(error, WorkshopError) else "model_market_apply_failed"
                     # Persistence callbacks are authoritative even on refresh failure.
                     if row.phase != "saved":
@@ -285,6 +289,8 @@ class ConnectedDownloads:
             raise WorkshopError("model_market_not_installed")
         if job is not None:
             await asyncio.shield(job)
+        if row.phase == "installed":
+            raise WorkshopError("market_auth_pending")
         return row.public()
 
     def cancel(self, request_id, operation_id):
