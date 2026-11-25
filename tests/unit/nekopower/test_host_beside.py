@@ -229,7 +229,7 @@ async def test_work_apart_from_what_a_busy_member_is_at_is_asked_about_and_done_
 
     # Asked as for any task agent that changes files opened beside the ones a project has, with which it would be.
     assert (question["kind"], question["category"], question["options"]) == (
-        "permission", "open_session", ["always", "session", "once", "deny"],
+        "permission", "open_beside", ["always", "session", "once", "deny"],
     )
     assert question["detail"] == {
         "tool": "beside",
@@ -628,8 +628,8 @@ async def test_taken_back_before_it_is_put_nothing_is_put_to_the_user(hosts, tmp
 
     async def held(category: str, key: str | None = None) -> str:
         nonlocal reads
-        reads += category == "open_session"
-        if category == "open_session" and reads > 1:
+        reads += category == "open_beside"
+        if category == "open_beside" and reads > 1:
             await go.wait()
         return await read(category, key)
 
@@ -1129,7 +1129,7 @@ async def test_it_waits_for_the_member_as_ever_where_no_other_is_to_be_had(hosts
     if why == "set_to_queue":
         await host.set_landing_settings(beside="queue")
     elif why.startswith("forbidden"):
-        await host.permission_store.set_mode("open_session", "deny")
+        await host.permission_store.set_mode("open_beside", "deny")
         if why.endswith("open"):
             await host.set_landing_settings(beside="open")
     elif why == "no_worktree":
@@ -1160,7 +1160,9 @@ async def test_allowed_for_good_another_member_is_opened_without_asking_again(ho
     assert await host.answer(two.commission_id, "always", choice="always")
     # (It said it is done, and what it changed waits for the first one to be between two steps.)
     await wait_until(lambda: two.commission_id in host.task_agents._dones, what="the second one saying it is done")
-    assert (await host.permission_store.snapshot())["categories"]["open_session"] == "allow"
+    # Allowed for good: that alone, and not what a leader opens (a category of its own).
+    categories = (await host.permission_store.snapshot())["categories"]
+    assert (categories["open_beside"], categories["open_session"]) == ("allow", "auto")
     second = await _session_of(host, two.commission_id)
 
     # Held against the member last in use, which is the one made a moment ago and still busy.
@@ -1276,7 +1278,7 @@ async def test_forbidden_while_it_is_looked_at_no_member_is_opened_with_nobody_a
         found = await forbidden(category, key)
         if looks == 1 and when == "right_after_the_first_look":
             # Allowed when it was first looked at, and forbidden right after.
-            await host.permission_store.set_mode("open_session", "deny")
+            await host.permission_store.set_mode("open_beside", "deny")
         return found
 
     async def naming(lanlan_name: str, project: str, wanted: str) -> str:
@@ -1284,7 +1286,7 @@ async def test_forbidden_while_it_is_looked_at_no_member_is_opened_with_nobody_a
         named += 1
         if named == 2 and when == "while_the_member_is_named":
             # Forbidden while the member that is about to be made is named: the last thing read before it is.
-            await host.permission_store.set_mode("open_session", "deny")
+            await host.permission_store.set_mode("open_beside", "deny")
         return await member_name(lanlan_name, project, wanted)
 
     gate.forbidden = then_denied
@@ -1356,7 +1358,7 @@ async def test_allowed_after_a_while_nothing_is_made_where_it_no_longer_holds(ho
         monkeypatch.setattr(settings, "PROJECT_MEMBERS_MAX", 1)
     elif meanwhile == "forbidden":
         # Set since it was asked: that wins over the answer, and is no refusal by the user.
-        await host.permission_store.set_mode("open_session", "deny")
+        await host.permission_store.set_mode("open_beside", "deny")
     elif meanwhile == "a_leader":
         # The project has a leader by now, which says who does what.
         assert (await host.derive_leader("Shop site", "Lan"))["made"] is True

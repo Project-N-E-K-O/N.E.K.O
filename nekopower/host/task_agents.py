@@ -101,6 +101,7 @@ from nekopower.host.permissions import (
     DENIED_BY_SETTINGS,
     DENIED_BY_USER,
     GrantScope,
+    OPEN_BESIDE,
     OPEN_SESSION,
     SPACE_COMMAND,
     USAGE_LIMIT,
@@ -10650,7 +10651,7 @@ class TaskAgentManager(TreeWork):
         user set says what becomes of it (``landing_settings.py``,
         ``beside``). ``queue``: it waits, as it did before. ``ask``: the
         user is asked, as for any task agent that can change files opened
-        beside the ones a project has (``OPEN_SESSION``, by whose setting
+        beside the ones a project has (``OPEN_BESIDE``, by whose setting
         none is opened where that is forbidden, and none is asked about
         where it is allowed). ``open``: another is opened with nobody
         asked, unless that setting forbids it.
@@ -10733,7 +10734,7 @@ class TaskAgentManager(TreeWork):
                 return
             if not (await asyncio.to_thread(self.templates.resolve, WORKING_PRESET, kept.project)).changes_files:
                 return
-            if await self._permissions.forbidden(OPEN_SESSION) or not await room(commission, kept):
+            if await self._permissions.forbidden(OPEN_BESIDE) or not await room(commission, kept):
                 return
             name = await self._ledger.member_name(
                 commission.lanlan_name, str(kept.project), f"{kept.project}/{model_name(WORKING_PRESET)}"
@@ -10757,7 +10758,7 @@ class TaskAgentManager(TreeWork):
             if choice == BESIDE_ASK:
                 decision = await self._permissions.check(
                     commission_id,
-                    OPEN_SESSION,
+                    OPEN_BESIDE,
                     detail={
                         "tool": "beside",
                         "title": commission.title,
@@ -10805,7 +10806,7 @@ class TaskAgentManager(TreeWork):
                 # was looked at (where nobody is asked: a ``deny`` set while the user is asked is seen
                 # to by the gate), or no longer waiting (a session that came free meanwhile takes it,
                 # as it would have).
-                if await self._permissions.forbidden(OPEN_SESSION) or not waits():
+                if await self._permissions.forbidden(OPEN_BESIDE) or not waits():
                     return
                 if not asked and self._said_meanwhile(commission_id):
                     # More was said to it since it was told apart, which goes with it and may say
