@@ -1915,6 +1915,7 @@ def test_doubao_tts_keybook_saves_independent_speech_key(mock_page: Page, runnin
     expect(mock_page.locator("label[data-i18n='api.keyBook.doubao_tts']")).not_to_have_text("api.keyBook.doubao_tts")
     assert mock_page.locator("#assistApiSelect option[value='doubao_tts']").count() == 0
     expect(mock_page.locator("#assistApiSelect option[value='doubao']")).to_be_attached()
+    expect(mock_page.locator("#coreApiSelect option[value='free']")).to_be_attached()
 
     payload = mock_page.evaluate("""
         async () => {
@@ -1939,6 +1940,7 @@ def test_doubao_tts_keybook_saves_independent_speech_key(mock_page: Page, runnin
         }
     """)
 
+    assert payload is not None, "save_button_down returned before calling saveApiKey"
     assert payload["assistApiKeyDoubaoTts"] == "doubao-speech-key"
 
 
