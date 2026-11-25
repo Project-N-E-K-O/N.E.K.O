@@ -1314,11 +1314,7 @@ class _TransportMixin:
         # Observe ownership on every frame, not only on frames the local onset
         # gate accepts: server VAD may commit an utterance the gate never heard.
         self._note_input_route_identity_frame(ingress_route_identity)
-        raw_samples = np.frombuffer(audio_chunk, dtype=np.int16)
-        raw_loud = False
-        if len(raw_samples) > 0:
-            local_rms = np.sqrt(np.mean(raw_samples.astype(np.float32) ** 2))
-            raw_loud = local_rms > self._client_vad_threshold
+        raw_loud = self.note_pcm16_ingress_activity(audio_chunk)
         if raw_loud:
             # Publish user engagement before waiting on the shared admission
             # boundary. A proactive callback holding that lock must see speech
@@ -1326,7 +1322,6 @@ class _TransportMixin:
             # all VAD state transitions and provider writes remain serialized
             # below.
             self._last_local_loud_time = audio_timeline_at
-            self._user_recent_activity_time = time.time()
             handoff_input_sequence = self._note_voice_handoff_input_open()
 
         # Detect input sample rate based on chunk size

@@ -7,6 +7,8 @@ import inspect
 import logging
 import math
 import multiprocessing
+import multiprocessing.context
+import sys
 import time
 from collections import OrderedDict
 from collections.abc import Callable
@@ -35,7 +37,56 @@ from .contracts import (
 )
 
 _HOST_POLL_INTERVAL_SECONDS = 0.005
+_FAILED_BOOTSTRAP_REAP_TIMEOUT_MS = 5_000
 _HostOperation = Literal["load", "score", "close"]
+
+
+if sys.platform == "win32":
+    import _winapi
+    from multiprocessing import popen_spawn_win32
+
+    class _ReapingSpawnPopen(popen_spawn_win32.Popen):
+        """Windows spawn that kills a child whose bootstrap never arrived.
+
+        CPython starts the Windows child *before* pickling the process object
+        into its bootstrap pipe. When that pickling fails (an unpicklable
+        factory, say), the half-started child keeps running and the parent's
+        finalizer closes the pipe's read handle. The child later duplicates
+        that handle *by value* from this process; by then the value can name
+        another live pipe, typically the next host's bootstrap pipe, and the
+        orphan reads away its bytes, so a healthy spawn dies with
+        ``UnpicklingError``. Kill and wait for the child before the handle is
+        released, so the value cannot be recycled while it still matters.
+        """
+
+        def __init__(self, process_obj: BaseProcess) -> None:
+            try:
+                super().__init__(process_obj)
+            except BaseException:
+                handle = getattr(self, "_handle", None)
+                if handle is not None:
+                    try:
+                        _winapi.TerminateProcess(handle, 1)
+                        _winapi.WaitForSingleObject(
+                            handle, _FAILED_BOOTSTRAP_REAP_TIMEOUT_MS
+                        )
+                    except OSError:
+                        pass
+                    finalizer = getattr(self, "finalizer", None)
+                    if finalizer is not None:
+                        finalizer()
+                raise
+
+
+class _BackendHostProcess(multiprocessing.context.SpawnProcess):
+    """Spawn process that never leaves a half-started child behind."""
+
+    @staticmethod
+    def _Popen(process_obj: BaseProcess) -> Any:
+        if sys.platform == "win32":
+            return _ReapingSpawnPopen(process_obj)
+        # POSIX spawn pickles the whole payload before it starts the child.
+        return multiprocessing.context.SpawnProcess._Popen(process_obj)
 
 
 class _BackendHostError(RuntimeError):
@@ -143,7 +194,7 @@ class _BackendProcessHost:
         context = multiprocessing.get_context("spawn")
         parent_connection, child_connection = context.Pipe(duplex=True)
         pcm_buffer = context.RawArray("B", max_pcm_bytes)
-        process = context.Process(
+        process = _BackendHostProcess(
             target=_backend_host_main,
             args=(factory, child_connection, pcm_buffer),
             name="speaker-shadow-backend",
