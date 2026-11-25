@@ -135,6 +135,15 @@ def safe_workspace_host(value: Any) -> str:
         return ""
 
 
+def workspace_id_of(value: Any) -> str:
+    """The workspace ID part of a host or bare ID, or ``""`` when unset or invalid."""
+    try:
+        parsed = parse_workspace_host(value)
+    except InvalidWorkspaceHostError:
+        return ""
+    return parsed.workspace_id if parsed else ""
+
+
 def stored_workspace_host(core_cfg: Mapping[str, Any], host_field: str, legacy_id_field: str) -> str:
     """Read the stored workspace host, falling back to the legacy ID-only field.
 

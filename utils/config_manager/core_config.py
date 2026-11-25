@@ -154,8 +154,22 @@ class CoreConfigMixin:
         aget_core_config): resolution is then pure dict work and needs no thread hop.
         """
         if core_config is not None:
-            return self.get_model_api_config(model_type, _core_config=core_config)
-        return await asyncio.to_thread(self.get_model_api_config, model_type)
+            result = self.get_model_api_config(model_type, _core_config=core_config)
+        else:
+            result = await asyncio.to_thread(self.get_model_api_config, model_type)
+        if model_type == 'decision' and isinstance(result, dict):
+            # Whether an OpenRouter model is a decision model was just decided from the
+            # catalog; keep it current for later lookups. Scheduled here, on the event loop
+            # (resolution ran in a thread), because callers such as memory recall only call
+            # the decision client once the slot already resolved to a native protocol.
+            from utils.decision_client.openrouter_catalog import (
+                is_openrouter_url,
+                schedule_refresh_if_stale,
+            )
+
+            if is_openrouter_url(result.get('decision_url') or result.get('base_url')):
+                schedule_refresh_if_stale()
+        return result
 
     def _read_core_config_file(self):
         """Parsed ``core_config.json`` (runtime copy, else the bundled one).

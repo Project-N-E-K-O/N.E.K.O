@@ -2096,7 +2096,28 @@ def test_core_api_save_validates_workspace_hosts(clean_user_data_dir, _core_conf
     assert got["success"] is True
     assert got["assistWorkspaceHostQwen"] == "llm-legacy"
     assert got["assistWorkspaceHostQwenIntl"] == ""
-    assert "assistWorkspaceIdQwen" not in got
+    assert got["assistWorkspaceIdQwen"] == "llm-legacy"
+    assert got["assistWorkspaceIdQwenIntl"] == ""
+
+    # A settings page loaded before the upgrade reads the ID-only fields and posts
+    # them back unchanged on every save: that must not clear or shorten the host.
+    full = "ws-full.ap-southeast-1.maas.aliyuncs.com"
+    cm.save_json_config("core_config.json", {**stored, "assistWorkspaceHostQwen": full})
+    cm._core_config_cache = None
+    got = asyncio.run(router.get_core_config_api())
+    assert got["assistWorkspaceIdQwen"] == "ws-full"
+    for _ in range(2):
+        assert _save({"assistWorkspaceIdQwen": got["assistWorkspaceIdQwen"],
+                      "assistWorkspaceIdQwenIntl": got["assistWorkspaceIdQwenIntl"]})["success"] is True
+        saved = cm.load_json_config("core_config.json", {})
+        assert saved["assistWorkspaceHostQwen"] == full
+        assert saved["assistWorkspaceHostQwenIntl"] == ""
+        got = asyncio.run(router.get_core_config_api())
+    # A different ID typed there replaces it; clearing it there clears it.
+    assert _save({"assistWorkspaceIdQwen": "ws-other"})["success"] is True
+    assert cm.load_json_config("core_config.json", {})["assistWorkspaceHostQwen"] == "ws-other"
+    assert _save({"assistWorkspaceIdQwen": ""})["success"] is True
+    assert cm.load_json_config("core_config.json", {})["assistWorkspaceHostQwen"] == ""
     cm.save_json_config("core_config.json", {**stored, "assistWorkspaceHostQwen": "ws-x.evil.com"})
     cm._core_config_cache = None
     got = asyncio.run(router.get_core_config_api())
@@ -2556,14 +2577,10 @@ async def test_model_list_adds_openrouter_decision_models_first_for_the_decision
         "models": [{"id": "anthropic/claude-haiku-4.5"}, {"id": "openai/gpt-6-luna"}],
     }
     fetched = [{"id": "newlab/decider-7", "name": "NewLab: Decider 7"}, {"id": "baseten/joey-1"}]
-    with patch(
-        "utils.decision_client.openrouter_catalog.fetch_openrouter_decision_models",
-        AsyncMock(return_value=fetched),
-    ):
-        from utils.decision_client import openrouter_catalog as catalog
+    from utils.decision_client import openrouter_catalog as catalog
 
-        catalog._remember(fetched, catalog.time.monotonic())
-        merged = await model_catalog._with_openrouter_decision_models(chat, "https://openrouter.ai/api/v1")
+    catalog._remember(fetched, catalog.time.monotonic())
+    merged = model_catalog._with_openrouter_decision_models(chat, "https://openrouter.ai/api/v1", fetched)
     assert merged["success"] is True
     assert [m["id"] for m in merged["models"]] == [
         "baseten/joey-1", "newlab/decider-7", "anthropic/claude-haiku-4.5", "openai/gpt-6-luna",
@@ -2576,20 +2593,105 @@ async def test_model_list_adds_openrouter_decision_models_first_for_the_decision
         "utils.decision_client.openrouter_catalog.fetch_openrouter_decision_models",
         AsyncMock(side_effect=RuntimeError("offline")),
     ):
-        offline = await model_catalog._with_openrouter_decision_models(
-            {**chat, "models": [{"id": "openai/gpt-6-luna-decisions"}, {"id": "openai/gpt-6-luna"}]},
-            "https://openrouter.ai/api/v1",
-        )
+        assert await model_catalog._fetch_openrouter_decision_entries() == []
+    offline = model_catalog._with_openrouter_decision_models(
+        {**chat, "models": [{"id": "openai/gpt-6-luna-decisions"}, {"id": "openai/gpt-6-luna"}]},
+        "https://openrouter.ai/api/v1",
+        [],
+    )
     assert [(m["id"], m.get("decision", False)) for m in offline["models"]] == [
         ("openai/gpt-6-luna-decisions", True), ("openai/gpt-6-luna", False),
     ]
     # Both lists failed: the original failure is returned unchanged.
     failure = {"success": False, "error_code": "timeout", "error": "t"}
-    with patch(
-        "utils.decision_client.openrouter_catalog.fetch_openrouter_decision_models",
-        AsyncMock(side_effect=RuntimeError("offline")),
-    ):
-        assert await model_catalog._with_openrouter_decision_models(failure, "https://openrouter.ai/api/v1") is failure
+    assert model_catalog._with_openrouter_decision_models(failure, "https://openrouter.ai/api/v1", []) is failure
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_model_list_fetches_openrouter_decision_models_alongside_the_chat_list(
+    clean_user_data_dir, monkeypatch,
+):
+    """Both lists share one time budget below the page's 20 s request timeout."""
+    import asyncio
+    import time
+
+    from main_routers.config_router import model_catalog
+
+    monkeypatch.setattr(model_catalog, "_MODEL_LIST_TIMEOUT_SECONDS", 0.6)
+    monkeypatch.setattr(model_catalog, "_resolve_provider_target", lambda *_a: {
+        "urls": ["https://openrouter.ai/api/v1"], "api_key": "k", "provider_type": "openai_compatible",
+    })
+
+    async def _chat(url, api_key, provider_type):
+        await asyncio.sleep(0.4)
+        return {"success": True, "models": [{"id": "openai/gpt-6-luna"}], "resolved_url": url}
+
+    monkeypatch.setattr(model_catalog, "_fetch_models", _chat)
+
+    async def _decisions(*_a, **_kw):
+        await asyncio.sleep(0.4)
+        return [{"id": "baseten/joey-1"}]
+
+    req = model_catalog.ModelListRequest(provider_key="openrouter", model_type="decision")
+    with patch("utils.decision_client.openrouter_catalog.fetch_openrouter_decision_models", _decisions):
+        started = time.perf_counter()
+        result = await model_catalog.list_models(req)
+        elapsed = time.perf_counter() - started
+    assert elapsed < 0.7, elapsed  # sequential would take 0.8 s
+    assert [(m["id"], m.get("decision", False)) for m in result["models"]] == [
+        ("baseten/joey-1", True), ("openai/gpt-6-luna", False),
+    ]
+
+    # A decision list slower than the budget is dropped; the chat list still arrives in time.
+    async def _hang(*_a, **_kw):
+        await asyncio.sleep(30)
+
+    with patch("utils.decision_client.openrouter_catalog.fetch_openrouter_decision_models", _hang):
+        started = time.perf_counter()
+        result = await model_catalog.list_models(req)
+        elapsed = time.perf_counter() - started
+    assert elapsed < 1.0, elapsed
+    assert result["success"] is True
+    assert [m["id"] for m in result["models"]] == ["openai/gpt-6-luna"]
+
+    # Other slots, and other providers, never fetch the decision list.
+    calls = AsyncMock(return_value=[])
+    with patch("utils.decision_client.openrouter_catalog.fetch_openrouter_decision_models", calls):
+        await model_catalog.list_models(model_catalog.ModelListRequest(provider_key="openrouter", model_type="memory"))
+        monkeypatch.setattr(model_catalog, "_resolve_provider_target", lambda *_a: {
+            "urls": ["https://api.deepseek.com/v1"], "api_key": "k", "provider_type": "openai_compatible",
+        })
+        await model_catalog.list_models(req)
+    assert calls.await_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_decision_config_lookup_schedules_openrouter_catalog_refresh(clean_user_data_dir):
+    """Memory recall reads the decision config before it ever calls the decision client."""
+    from utils.config_manager import get_config_manager
+
+    cm = get_config_manager("N.E.K.O")
+    cm.config_dir.mkdir(parents=True, exist_ok=True)
+    cfg_path = cm.get_config_path("core_config.json")
+
+    def _set_cfg(data):
+        cfg_path.write_text(json.dumps(data), encoding="utf-8")
+        cm._core_config_cache = None
+
+    with patch("utils.decision_client.openrouter_catalog.schedule_refresh_if_stale") as mock_refresh:
+        _set_cfg({"coreApi": "qwen", "assistApi": "openrouter", "assistApiKeyOpenrouter": "sk-or"})
+        cfg = await cm.aget_model_api_config("decision")
+        assert cfg["decision_protocol"] == "openrouter_decisions"
+        assert mock_refresh.call_count == 1
+        await cm.aget_model_api_config("decision", core_config=cm.get_core_config())
+        assert mock_refresh.call_count == 2
+        await cm.aget_model_api_config("memory")
+        assert mock_refresh.call_count == 2
+        _set_cfg({"coreApi": "qwen", "assistApi": "deepseek", "assistApiKeyDeepseek": "sk-ds"})
+        await cm.aget_model_api_config("decision")
+        assert mock_refresh.call_count == 2
 
 
 @pytest.mark.asyncio

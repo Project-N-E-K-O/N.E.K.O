@@ -247,23 +247,30 @@ async def _fetch_models(url: str, api_key: str, provider_type: str) -> dict[str,
     return {"success": True, "models": models, "resolved_url": url}
 
 
-async def _with_openrouter_decision_models(result: dict[str, Any], fallback_url: str) -> dict[str, Any]:
+async def _fetch_openrouter_decision_entries() -> list[dict[str, str]]:
+    """OpenRouter's decision models, or ``[]`` when the list cannot be fetched."""
+    from utils.decision_client.openrouter_catalog import fetch_openrouter_decision_models
+
+    try:
+        # httpx timeouts bound each step, not the whole request; keep the total in budget.
+        return await asyncio.wait_for(fetch_openrouter_decision_models(), timeout=_MODEL_LIST_TIMEOUT_SECONDS)
+    except Exception as exc:
+        logger.info("[ModelList] OpenRouter 决策模型列表拉取失败: %s", type(exc).__name__)
+        return []
+
+
+def _with_openrouter_decision_models(
+    result: dict[str, Any], fallback_url: str, decision_entries: list[dict[str, str]]
+) -> dict[str, Any]:
     """Add OpenRouter's decision models (absent from its default list) ahead of the rest.
 
     Decision entries carry ``decision: true`` so the picker can tag them. When
-    the decision list cannot be fetched, the chat list is kept and only the
-    IDs the built-in catalog already knows are tagged.
+    the decision list could not be fetched (*decision_entries* is empty), the
+    chat list is kept and only the IDs the built-in catalog already knows are
+    tagged.
     """
-    from utils.decision_client.openrouter_catalog import (
-        fetch_openrouter_decision_models,
-        is_openrouter_decision_model,
-    )
+    from utils.decision_client.openrouter_catalog import is_openrouter_decision_model
 
-    try:
-        decision_entries = await fetch_openrouter_decision_models()
-    except Exception as exc:
-        logger.info("[ModelList] OpenRouter 决策模型列表拉取失败: %s", type(exc).__name__)
-        decision_entries = []
     if not result.get("success") and not decision_entries:
         return result
     merged = _normalize_model_entries(
@@ -301,19 +308,27 @@ async def list_models(req: ModelListRequest) -> dict:
     if "urls" not in target:
         return target
 
-    result = await race_candidate_requests(
-        target["urls"],
-        lambda url: _fetch_models(url, target["api_key"], target["provider_type"]),
-        timeout=_MODEL_LIST_TIMEOUT_SECONDS,
-        prefer_configured_order=True,
-        timeout_result=_failure("timeout", "拉取模型列表超时"),
-    )
-    if (req.provider_key or "").strip():
-        result.pop("check_url", None)
-    if (req.model_type or "").strip() == "decision" and is_openrouter_url(
-        result.get("resolved_url") or target["urls"][0]
-    ):
-        result = await _with_openrouter_decision_models(result, target["urls"][0])
+    # The decision slot on OpenRouter also needs the decision models, which are not
+    # in its default list. Fetch them alongside, so both share one time budget that
+    # stays below the page's request timeout.
+    decision_task = None
+    if (req.model_type or "").strip() == "decision" and is_openrouter_url(target["urls"][0]):
+        decision_task = asyncio.create_task(_fetch_openrouter_decision_entries())
+    try:
+        result = await race_candidate_requests(
+            target["urls"],
+            lambda url: _fetch_models(url, target["api_key"], target["provider_type"]),
+            timeout=_MODEL_LIST_TIMEOUT_SECONDS,
+            prefer_configured_order=True,
+            timeout_result=_failure("timeout", "拉取模型列表超时"),
+        )
+        if (req.provider_key or "").strip():
+            result.pop("check_url", None)
+        if decision_task is not None:
+            result = _with_openrouter_decision_models(result, target["urls"][0], await decision_task)
+    finally:
+        if decision_task is not None and not decision_task.done():
+            decision_task.cancel()
     if result.get("success"):
         logger.info(
             "[ModelList] %s 拉取到 %d 个模型",

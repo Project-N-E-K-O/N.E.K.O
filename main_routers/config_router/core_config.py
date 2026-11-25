@@ -36,6 +36,7 @@ from utils.decision_client.workspace import (
     InvalidWorkspaceHostError,
     normalize_workspace_host,
     stored_workspace_host,
+    workspace_id_of,
 )
 from config.api_profiles import ASSIST_WORKSPACE_HOST_FIELDS, TTS_KEY_BOOK_FIELDS
 
@@ -331,6 +332,13 @@ async def get_core_config_api():
             # Bailian workspace hosts are not secrets; an invalid stored value reads as unset.
             **{
                 file_field: stored_workspace_host(core_cfg, file_field, legacy_field)
+                for file_field, legacy_field in CORE_CONFIG_WORKSPACE_HOST_FIELDS
+            },
+            # A settings page loaded before the host field existed reads only the
+            # ID-only field and posts it back on save; give it the saved host's ID
+            # so that save does not clear the workspace.
+            **{
+                legacy_field: workspace_id_of(stored_workspace_host(core_cfg, file_field, legacy_field))
                 for file_field, legacy_field in CORE_CONFIG_WORKSPACE_HOST_FIELDS
             },
             "mcpToken": core_cfg.get('mcpToken', ''),
@@ -683,13 +691,20 @@ async def update_core_config(request: Request):
             # The value becomes part of a hostname: reject anything that is not a
             # workspace ID or a Bailian workspace API Host instead of cleaning it up.
             try:
-                core_cfg[field] = normalize_workspace_host(data[submitted_field])
+                submitted = normalize_workspace_host(data[submitted_field])
             except InvalidWorkspaceHostError:
                 return {
                     "success": False,
                     "error": "INVALID_WORKSPACE_HOST",
                     "field": submitted_field,
                 }
+            if submitted_field == legacy_field:
+                # An old page only knows the ID: the same ID it was given keeps the
+                # saved full host (and its region) instead of replacing it.
+                current = stored_workspace_host(core_cfg, field, legacy_field)
+                if submitted and workspace_id_of(submitted) == workspace_id_of(current):
+                    submitted = current
+            core_cfg[field] = submitted
             # The host field replaces the legacy one, which would otherwise come back once it is cleared.
             core_cfg.pop(legacy_field, None)
         if 'openclawUrl' in data:
