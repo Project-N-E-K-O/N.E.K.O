@@ -40,6 +40,9 @@ class FormatLimits:
     vrm_accessor_bytes: int = 256 * 1024 * 1024
     vrm_instanced_vertices: int = 5000000
     live2d_physics_work: int = 3000000
+    mmd_morph_bytes: int = 256 * 1024 * 1024
+    mmd_ik_iterations: int = 4096
+    mmd_ik_work: int = 100000
 
 
 def _require(condition, path: str, code: str = "invalid_model_structure") -> None:
@@ -617,6 +620,9 @@ def _vrm(resources: _Resources) -> None:
     for camera in cameras:
         _require(isinstance(camera, dict) and camera.get("type") in ("perspective", "orthographic"), entry)
         _require(isinstance(camera.get(camera["type"]), dict), entry)
+    light_extension = extensions.get("KHR_lights_punctual", {})
+    _require(isinstance(light_extension, dict) and isinstance(light_extension.get("lights", []), list), entry)
+    lights = light_extension.get("lights", [])
     accessor_clones = []
     for accessor in accessors:
         _require(isinstance(accessor, dict), entry)
@@ -817,6 +823,14 @@ def _vrm(resources: _Resources) -> None:
         for field, table in (("mesh", meshes), ("skin", skins), ("camera", cameras)):
             if field in node:
                 _index(node[field], table, entry)
+        light = node.get("extensions", {}).get("KHR_lights_punctual")
+        if light is not None:
+            _require(isinstance(light, dict), entry)
+            if "light" in light:
+                definition = lights[_index(light["light"], lights, entry)]
+                _require(isinstance(definition, dict) and definition.get("type") in ("directional", "point", "spot"), entry)
+                if definition["type"] == "spot":
+                    _require(isinstance(definition.get("spot", {}), dict), entry)
         instances = 1
         instancing = node.get("extensions", {}).get("EXT_mesh_gpu_instancing")
         if instancing is not None and "mesh" in node:
@@ -984,6 +998,7 @@ def _pmx(resources: _Resources, reader: _MmdReader) -> None:
         _require(0 <= count <= indices and count % 3 == 0, path)
         covered += count
     _require(covered == indices, path)
+    ik_work = 0
     for _ in range(reader.count(minimum=26 + bone)):
         reader.text()
         reader.text()
@@ -999,8 +1014,14 @@ def _pmx(resources: _Resources, reader: _MmdReader) -> None:
         if flags & 8192:
             reader.skip(4)
         if flags & 32:
-            reader.skip(bone + 8)
-            for _ in range(reader.count(minimum=bone + 1)):
+            reader.skip(bone)
+            iterations = reader.scalar("i")
+            reader.skip(4)
+            links = reader.count(minimum=bone + 1)
+            ik_work += iterations * links
+            _require(0 <= iterations <= resources.limits.mmd_ik_iterations
+                     and ik_work <= resources.limits.mmd_ik_work, path, "model_accessor_budget_exceeded")
+            for _ in range(links):
                 reader.skip(bone)
                 limited = reader.scalar("B")
                 _require(limited in (0, 1), path)
@@ -1011,12 +1032,19 @@ def _pmx(resources: _Resources, reader: _MmdReader) -> None:
                    3: vertex + 16, 4: vertex + 16, 5: vertex + 16,
                    6: vertex + 16, 7: vertex + 16, 8: material + 113,
                    9: morph + 4, 10: rigid + 25}
+    dense_morphs = 0
     for _ in range(reader.count(minimum=14)):
         reader.text()
         reader.text()
         reader.skip(1)
         kind = reader.scalar("B")
         _require(kind in morph_sizes, path)
+        if kind in (0, 1):
+            # buildGeometry copies every position for each vertex/group morph,
+            # including empty morphs. Sparse offset counts do not bound this cost.
+            dense_morphs += 1
+            _require(vertices * dense_morphs * 12 <= resources.limits.mmd_morph_bytes,
+                     path, "model_accessor_budget_exceeded")
         width = morph_sizes[kind]
         reader.skip(reader.count(minimum=width) * width)
     for _ in range(reader.count(minimum=13)):
@@ -1094,11 +1122,19 @@ def _pmd(resources: _Resources, reader: _MmdReader) -> None:
     # The remaining sections are still consumed so truncation cannot hide after textures.
     bones = reader.count("H", 39)
     reader.skip(bones * 39)
+    ik_work = 0
     for _ in range(reader.count("H", 11)):
         reader.skip(4)
         links = reader.scalar("B")
-        reader.skip(6 + links * 2)
+        iterations = reader.scalar("H")
+        ik_work += iterations * links
+        _require(iterations <= resources.limits.mmd_ik_iterations
+                 and ik_work <= resources.limits.mmd_ik_work, path, "model_accessor_budget_exceeded")
+        reader.skip(4 + links * 2)
     morphs = reader.count("H", 25)
+    # PmdReader removes its base morph, then converts the rest to vertex morphs.
+    _require(vertices * max(0, morphs - 1) * 12 <= resources.limits.mmd_morph_bytes,
+             path, "model_accessor_budget_exceeded")
     for _ in range(morphs):
         reader.text(20)
         count = reader.count("I", 16)
