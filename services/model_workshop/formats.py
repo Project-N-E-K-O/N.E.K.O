@@ -630,18 +630,23 @@ def _vrm(resources: _Resources) -> None:
             # glTF aligns every matrix column to four bytes for small components.
             columns = int(shape[-1])
             element_size = columns * ((columns * component + 3) // 4 * 4)
+            item_bytes = columns * columns * component
         else:
             element_size = component * (1 if shape == "SCALAR" else int(shape[-1]))
+            item_bytes = element_size
         _require(count * element_size <= resources.limits.vrm_accessor_bytes, entry, "model_accessor_budget_exceeded")
         view = None
+        interleaved = False
         if "bufferView" in accessor:
             view = views[_index(accessor["bufferView"], views, entry)]
             offset = _uint(accessor.get("byteOffset", 0), entry)
             stride = view.get("byteStride", element_size)
+            # The loader compares explicit stride with the unpadded item width.
+            interleaved = view.get("byteStride", item_bytes) != item_bytes
             _require(offset % component == 0 and stride >= element_size, entry)
             # GLTFLoader.loadAccessor constructs count complete interleaved
             # strides, including padding after the last logical element.
-            if stride != element_size:
+            if interleaved:
                 _require((offset // stride) * stride + count * stride <= view["byteLength"], entry)
                 _require(offset % stride + element_size <= stride, entry)
             else:
@@ -652,7 +657,7 @@ def _vrm(resources: _Resources) -> None:
         # Geometry.clone() copies ordinary arrays independently. Interleaved
         # attributes share a clone of their backing view, including stride padding.
         clone_size = count * (view.get("byteStride", element_size) if view is not None else element_size)
-        clone_view = accessor["bufferView"] if view is not None and view.get("byteStride", element_size) != element_size and "sparse" not in accessor else None
+        clone_view = accessor["bufferView"] if interleaved and "sparse" not in accessor else None
         accessor_clones.append((clone_size, clone_view))
         if view is None or "sparse" in accessor:
             # Sparse data over an existing view clones private backing storage.
@@ -662,8 +667,7 @@ def _vrm(resources: _Resources) -> None:
         if "sparse" in accessor:
             # GLTFLoader copies a sparse interleaved array into a plain attribute
             # without deinterleaving it, changing its count and vertex layout.
-            _require(view is None or view.get("byteStride", element_size) == element_size,
-                     entry, "unsupported_model_structure")
+            _require(not interleaved, entry, "unsupported_model_structure")
             # This bundled GLTFLoader writes sparse items through setX/Y/Z/W;
             # matrix widths above four components are explicitly unsupported.
             _require(shape not in ("MAT3", "MAT4"), entry, "unsupported_model_structure")
@@ -709,6 +713,8 @@ def _vrm(resources: _Resources) -> None:
         draw_count = 0
         for primitive in mesh["primitives"]:
             _require(isinstance(primitive, dict) and isinstance(primitive.get("attributes"), dict), entry)
+            mode = primitive.get("mode", 4)
+            _require(type(mode) in (int, float) and mode in range(7), entry)
             for accessor in primitive["attributes"].values():
                 _index(accessor, accessors, entry)
             if "indices" in primitive:
@@ -717,7 +723,7 @@ def _vrm(resources: _Resources) -> None:
             else:
                 primitive_count = max((accessors[index]["count"] for index in primitive["attributes"].values()), default=0)
             # GLTFLoader converts strips/fans into a triangle index list before drawing.
-            if primitive.get("mode", 4) in (5, 6):
+            if mode in (5, 6):
                 primitive_count = 3 * max(0, primitive_count - 2)
             draw_count += primitive_count
             if "material" in primitive:
@@ -729,7 +735,7 @@ def _vrm(resources: _Resources) -> None:
                     _require(isinstance(morph, dict), entry)
                     for index in morph.values():
                         _index(index, accessors, entry)
-            if primitive.get("mode", 4) in (5, 6):
+            if mode in (5, 6):
                 # toTrianglesDrawMode clones each primitive's geometry even when
                 # its source accessors are shared, then allocates triangle indices.
                 clone_indices = list(primitive["attributes"].values())

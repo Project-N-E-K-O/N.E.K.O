@@ -32,6 +32,7 @@ import json
 import os
 import logging
 from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 from config import MONITOR_SERVER_PORT, MONITOR_HOST, MONITOR_TOKEN, MONITOR_VIEWER_TOKEN, DEFAULT_LIVE2D_MODEL_NAME
 from app.monitor_auth import (
     MonitorAuthMiddleware,
@@ -212,7 +213,8 @@ async def get_page_config(lanlan_name: str = ""):
         # Do not let the historical fallback reconstruct an unfinished URL.
         from services.model_workshop.runtime import require_url, require_identifier
         from services.model_workshop.tasks import _drain_sync
-        await _drain_sync(lambda: require_url(_config_manager, live2d_model_path))
+        url_encoded = live2d_model_path.startswith('/') or bool(urlsplit(live2d_model_path).scheme)
+        await _drain_sync(lambda: require_url(_config_manager, live2d_model_path, url_encoded=url_encoded))
         await _drain_sync(lambda: require_identifier(_config_manager, 'live2d', live2d))
         # Find all models
         models = await _drain_sync(find_models)

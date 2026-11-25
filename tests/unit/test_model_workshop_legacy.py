@@ -525,3 +525,42 @@ def test_old_upload_cannot_clean_a_directory_published_before_reservation(legacy
     response = _legacy_upload(client, kind, target.name)
     assert response.status_code == 500, response.text
     assert (target / 'other-owner.txt').read_bytes() == b'keep'
+
+
+@pytest.mark.parametrize('name', ['100%FF', '100%E4', '100%20literal', '%2e%2e'])
+def test_monitor_page_config_preserves_raw_persisted_live2d_paths(legacy, monkeypatch, name):
+    _, config, service = legacy
+    model = config.live2d_dir / name / 'Avatar.model3.json'
+    model.parent.mkdir(); model.write_text('{}')
+    config.aget_character_data = AsyncMock(return_value=(None, 'Role', None,
+        {'Role': {'live2d': name + '/Avatar.model3.json'}}, None, None, None, None, None))
+    monkeypatch.setattr(monitor, '_config_manager', config)
+    monkeypatch.setattr(monitor_auth, 'MONITOR_TOKEN', 'monitor-test-secret')
+    with TestClient(monitor.app) as client:
+        response = client.get('/api/config/page_config', headers={'Authorization': 'Bearer monitor-test-secret'})
+    assert response.status_code == 200
+    data = response.json()
+    assert data['success'], data
+    assert name in data['model_path']
+    assert service._writer is not None
+
+
+@pytest.mark.parametrize('form', ['raw', 'url', 'loopback'])
+def test_monitor_page_config_still_rejects_unfinished_bindings(legacy, tmp_path, monkeypatch, form):
+    _, config, service = legacy
+    package, _ = bundle_path(tmp_path)
+    fail_registration(service, monkeypatch)
+    result = install(service, package)
+    row = journal(service, result['task_id'])['record']
+    local = row['local_entrypoint'].removeprefix('live2d/')
+    value = local if form == 'raw' else '/user_live2d/' + local
+    if form == 'loopback': value = 'http://127.0.0.1:12345' + value
+    config.aget_character_data = AsyncMock(return_value=(None, 'Role', None,
+        {'Role': {'live2d': value}}, None, None, None, None, None))
+    monkeypatch.setattr(monitor, '_config_manager', config)
+    monkeypatch.setattr(monitor_auth, 'MONITOR_TOKEN', 'monitor-test-secret')
+    with TestClient(monitor.app) as client:
+        response = client.get('/api/config/page_config', headers={'Authorization': 'Bearer monitor-test-secret'})
+    assert not response.json()['success']
+    assert service.installer.journal_path(result['task_id']).exists()
+    assert service._writer is not None
