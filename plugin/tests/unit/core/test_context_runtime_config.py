@@ -664,6 +664,31 @@ async def test_context_failed_stale_profile_refresh_does_not_clear_newer_profile
     assert ctx._effective_config == {"profile": "work"}
 
 
+async def _wait_for_checkpoint_or_task_failure(
+    event: asyncio.Event,
+    task: asyncio.Task[object],
+    *,
+    timeout: float = 5.0,
+) -> None:
+    waiter = asyncio.create_task(event.wait())
+    try:
+        done, _ = await asyncio.wait(
+            {waiter, task},
+            timeout=timeout,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if not done:
+            raise TimeoutError("Timed out waiting for async checkpoint")
+        if task in done and not event.is_set():
+            await task
+            raise AssertionError("Task finished before reaching checkpoint")
+        await waiter
+    finally:
+        if not waiter.done():
+            waiter.cancel()
+            await asyncio.gather(waiter, return_exceptions=True)
+
+
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ("update", "replace"))
@@ -715,15 +740,21 @@ async def test_context_failed_write_does_not_rollback_over_newer_profile_refresh
         if operation == "update"
         else ctx.replace_own_config({"profile": "home", "draft": 1})
     )
-    await write_started.wait()
+    try:
+        await _wait_for_checkpoint_or_task_failure(write_started, pending_write)
 
-    await ctx.set_own_active_profile("work")
-    assert ctx._effective_config == {"profile": "work"}
-    assert ctx._effective_config_uncertain is False
+        await ctx.set_own_active_profile("work")
+        assert ctx._effective_config == {"profile": "work"}
+        assert ctx._effective_config_uncertain is False
 
-    release_write.set()
-    with pytest.raises(RuntimeError, match="rejected"):
-        await pending_write
+        release_write.set()
+        with pytest.raises(RuntimeError, match="rejected"):
+            await pending_write
+    finally:
+        release_write.set()
+        if not pending_write.done():
+            pending_write.cancel()
+        await asyncio.gather(pending_write, return_exceptions=True)
 
     assert ctx._effective_config == {"profile": "work"}
     assert ctx._effective_config_uncertain is False
@@ -780,14 +811,253 @@ async def test_context_stale_write_success_does_not_overwrite_newer_profile_refr
         if operation == "update"
         else ctx.replace_own_config({"profile": "home", "draft": 1})
     )
-    await write_started.wait()
+    try:
+        await _wait_for_checkpoint_or_task_failure(write_started, pending_write)
 
-    await ctx.set_own_active_profile("work")
-    assert ctx._effective_config == {"profile": "work"}
+        await ctx.set_own_active_profile("work")
+        assert ctx._effective_config == {"profile": "work"}
 
-    release_write.set()
-    payload = await pending_write
+        release_write.set()
+        payload = await pending_write
+    finally:
+        release_write.set()
+        if not pending_write.done():
+            pending_write.cancel()
+        await asyncio.gather(pending_write, return_exceptions=True)
+
     assert payload == {"config": {"profile": "home", "draft": 1}}
     assert ctx._effective_config == {"profile": "work"}
     assert ctx._effective_config_uncertain is True
     assert instance.refreshed[-1] == {"profile": "work"}
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_order", ("b_then_a", "a_then_b"))
+async def test_context_overlapping_failed_writes_restore_original_config(
+    tmp_path: Path,
+    fail_order: str,
+) -> None:
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "demo" / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+    )
+    instance = _Instance()
+    ctx._instance = instance
+    ctx._effective_config = {"profile": "home"}
+
+    a_started = asyncio.Event()
+    b_started = asyncio.Event()
+    release_a = asyncio.Event()
+    release_b = asyncio.Event()
+
+    async def _fake_rpc(
+        *,
+        method_name: str,
+        request_type: str,
+        request_data: dict[str, object],
+        timeout: float,
+        wrap_result: bool,
+    ) -> dict[str, object]:
+        del method_name, timeout, wrap_result
+        assert request_type == "PLUGIN_CONFIG_UPDATE"
+        updates = request_data["updates"]
+        assert isinstance(updates, dict)
+        if "draft_a" in updates:
+            a_started.set()
+            await release_a.wait()
+            raise RuntimeError("write A rejected")
+        if "draft_b" in updates:
+            b_started.set()
+            await release_b.wait()
+            raise RuntimeError("write B rejected")
+        raise AssertionError(f"Unexpected updates {updates}")
+
+    ctx._send_request_and_wait_async = _fake_rpc  # type: ignore[method-assign]
+
+    task_a = asyncio.create_task(ctx.update_own_config({"draft_a": 1}))
+    task_b: asyncio.Task[object] | None = None
+    try:
+        await _wait_for_checkpoint_or_task_failure(a_started, task_a)
+        assert ctx._effective_config == {"profile": "home", "draft_a": 1}
+
+        task_b = asyncio.create_task(ctx.update_own_config({"draft_b": 2}))
+        await _wait_for_checkpoint_or_task_failure(b_started, task_b)
+        assert ctx._effective_config == {"profile": "home", "draft_a": 1, "draft_b": 2}
+
+        if fail_order == "b_then_a":
+            release_b.set()
+            with pytest.raises(RuntimeError, match="write B rejected"):
+                await task_b
+            assert ctx._effective_config == {"profile": "home", "draft_a": 1}
+
+            release_a.set()
+            with pytest.raises(RuntimeError, match="write A rejected"):
+                await task_a
+        else:
+            release_a.set()
+            with pytest.raises(RuntimeError, match="write A rejected"):
+                await task_a
+            assert ctx._effective_config == {"profile": "home", "draft_b": 2}
+
+            release_b.set()
+            with pytest.raises(RuntimeError, match="write B rejected"):
+                await task_b
+    finally:
+        release_a.set()
+        release_b.set()
+        for t in (task_a, task_b):
+            if t is not None:
+                if not t.done():
+                    t.cancel()
+                await asyncio.gather(t, return_exceptions=True)
+
+    assert ctx._effective_config == {"profile": "home"}
+    assert ctx._effective_config_uncertain is False
+    assert instance.refreshed[-1] == {"profile": "home"}
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_context_precommit_effective_read_does_not_block_replace_own_config(
+    tmp_path: Path,
+) -> None:
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "demo" / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+    )
+    instance = _Instance()
+    ctx._instance = instance
+    ctx._effective_config = {"profile": "home"}
+
+    replace_started = asyncio.Event()
+    release_replace = asyncio.Event()
+
+    async def _local_payload(*, payload_type: str, **_kwargs: object) -> dict[str, object] | None:
+        if payload_type == "effective":
+            return {"config": {"profile": "home"}}
+        return None
+
+    async def _fake_rpc(
+        *,
+        method_name: str,
+        request_type: str,
+        request_data: dict[str, object],
+        timeout: float,
+        wrap_result: bool,
+    ) -> dict[str, object]:
+        del method_name, request_data, timeout, wrap_result
+        assert request_type == "PLUGIN_CONFIG_REPLACE"
+        replace_started.set()
+        await release_replace.wait()
+        return {"config": {"profile": "work", "persisted": True}}
+
+    ctx._get_local_config_payload = _local_payload  # type: ignore[method-assign]
+    ctx._send_request_and_wait_async = _fake_rpc  # type: ignore[method-assign]
+
+    pending_replace = asyncio.create_task(ctx.replace_own_config({"profile": "work"}))
+    try:
+        await _wait_for_checkpoint_or_task_failure(replace_started, pending_replace)
+
+        read_payload = await ctx.get_own_effective_config(None)
+        assert read_payload == {"config": {"profile": "home"}}
+        assert ctx._effective_config == {"profile": "work"}
+
+        release_replace.set()
+        replace_payload = await pending_replace
+    finally:
+        release_replace.set()
+        if not pending_replace.done():
+            pending_replace.cancel()
+        await asyncio.gather(pending_replace, return_exceptions=True)
+
+    assert replace_payload == {"config": {"profile": "work", "persisted": True}}
+    assert ctx._effective_config == {"profile": "work", "persisted": True}
+    assert ctx._effective_config_uncertain is False
+    assert instance.refreshed[-1] == {"profile": "work", "persisted": True}
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_cls", (TimeoutError, asyncio.CancelledError))
+async def test_context_replace_timeout_or_cancel_invalidates_inflight_precommit_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error_cls: type[BaseException],
+) -> None:
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "demo" / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+    )
+    instance = _Instance()
+    ctx._instance = instance
+    ctx._effective_config = {"profile": "home"}
+
+    read_started = asyncio.Event()
+    release_read = asyncio.Event()
+    disk_state: dict[str, object] = {"profile": "home"}
+
+    class _QueryService:
+        async def get_plugin_effective_config(
+            self,
+            *,
+            plugin_id: str,
+            profile_name: str | None = None,
+        ) -> dict[str, object]:
+            assert plugin_id == "demo"
+            assert profile_name is None
+            read_started.set()
+            await release_read.wait()
+            return {"config": {"profile": "home"}}
+
+        async def get_plugin_config(self, *, plugin_id: str) -> dict[str, object]:
+            assert plugin_id == "demo"
+            return {"plugin_id": plugin_id, "config": dict(disk_state)}
+
+    async def _failing_replace(
+        *,
+        method_name: str,
+        request_type: str,
+        request_data: dict[str, object],
+        timeout: float,
+        wrap_result: bool,
+    ) -> dict[str, object]:
+        del method_name, request_data, timeout, wrap_result
+        assert request_type == "PLUGIN_CONFIG_REPLACE"
+        raise error_cls("replace failed or cancelled")
+
+    monkeypatch.setattr(config_application, "ConfigQueryService", _QueryService)
+    ctx._send_request_and_wait_async = _failing_replace  # type: ignore[method-assign]
+
+    slow_read = asyncio.create_task(ctx.get_own_effective_config(None))
+    try:
+        await _wait_for_checkpoint_or_task_failure(read_started, slow_read)
+
+        with pytest.raises(error_cls):
+            await ctx.replace_own_config({"profile": "work"})
+        assert ctx._effective_config == {"profile": "work"}
+        assert ctx._effective_config_uncertain is True
+
+        disk_state = {"profile": "work", "persisted": True}
+        release_read.set()
+        stale_read = await slow_read
+    finally:
+        release_read.set()
+        if not slow_read.done():
+            slow_read.cancel()
+        await asyncio.gather(slow_read, return_exceptions=True)
+
+    assert stale_read == {"config": {"profile": "home"}}
+    assert ctx._effective_config == {"profile": "work"}
+    assert ctx._effective_config_uncertain is True
+
+    fresh = await ctx.get_own_config()
+    assert fresh["config"] == {"profile": "work", "persisted": True}
+    assert ctx._effective_config == {"profile": "work", "persisted": True}
+    assert ctx._effective_config_uncertain is False
