@@ -1103,7 +1103,9 @@ def _install_system_audit(
             resolve_plugin_shared_dir(plugin_id),
         ]
         try:
-            exempt_dirs.append(resolve_plugin_log_directory())
+            # Only this process's own plugin log directory: the log root also
+            # holds the host's logs, other plugins' and the call-chain audit.
+            exempt_dirs.append(resolve_plugin_log_directory(log_subdir="plugin"))
         except Exception:
             pass  # no log directory known: its files are simply not exempt
         auditor = system_audit.SystemAuditor(

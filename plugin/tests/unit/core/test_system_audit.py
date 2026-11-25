@@ -38,13 +38,30 @@ pytestmark = pytest.mark.plugin_unit
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
 PLUGIN_CODE = '''
+import asyncio
+
 def call(hook, event, args):
     hook(event, args)
+
+async def use_in_inner_task(hook, event, args):
+    async def inner():
+        hook(event, args)
+    await asyncio.wait_for(inner(), 5)
 '''
 
 OTHER_CODE = '''
+import asyncio
+
 def call(hook, event, args):
     hook(event, args)
+
+async def _inner(hook, event, args):
+    hook(event, args)
+
+async def connect_via_inner_task(hook, event, args):
+    # What clients such as aiohttp / anyio do: the use happens in a task
+    # the library created, whose coroutine chain is library code only.
+    await asyncio.wait_for(_inner(hook, event, args), 5)
 '''
 
 # Stands in for SDK / host code: a ``plugin.*`` module under the project root.
@@ -54,6 +71,16 @@ def call(hook, event, args):
 
 def dispatch(handler, *args):
     return handler(*args)
+
+def run(coroutine):
+    import asyncio
+    return asyncio.run(coroutine)  # like the plugin runner in plugin.core.host
+
+async def own_inner_task(hook, event, args):
+    import asyncio
+    async def inner():
+        hook(event, args)
+    await asyncio.wait_for(inner(), 5)
 '''
 
 
@@ -459,6 +486,21 @@ def test_standard_library_data_files_are_exempt_for_reading_only(env):
     assert env.records() == []
     env.from_plugin("open", (mimetypes.knownfiles[0], "w", os.O_WRONLY))
     assert [r["permission"] for r in env.records()] == [FS_WRITE]
+
+
+def test_a_use_in_a_library_created_task_is_unattributed_not_dropped(env):
+    # The task's stack ends at the event loop; below it is the host runner,
+    # which did not make this use.
+    env.host.run(env.other.connect_via_inner_task(env.auditor.hook, "socket.connect", (None, ("192.0.2.1", 443))))
+    (record,) = env.records()
+    assert record["target"] == "192.0.2.1:443" and record["flags"] == ["unattributed"]
+
+
+def test_tasks_keep_their_own_plugin_or_host_attribution(env):
+    env.host.run(env.plugin.use_in_inner_task(env.auditor.hook, "socket.connect", (None, ("192.0.2.2", 443))))
+    env.host.run(env.host.own_inner_task(env.auditor.hook, "socket.connect", (None, ("192.0.2.3", 443))))
+    (record,) = env.records()  # the plugin's; the SDK's own task is exempt
+    assert record["target"] == "192.0.2.2:443" and record["flags"] == []
 
 
 def test_host_code_is_exempt(env):
@@ -878,7 +920,19 @@ def test_launch_wiring_exempts_plugin_storage_and_uses_the_message_uplink(tmp_pa
     config = tmp_path / "plugins" / "demo" / "plugin.toml"
     config.parent.mkdir(parents=True)
     permissions = PluginPermissions()
+    from plugin import logging_config
+
+    log_root = tmp_path / "logs"
+    monkeypatch.setattr(
+        logging_config, "resolve_plugin_log_directory",
+        lambda *, log_subdir=None: log_root / log_subdir if log_subdir else log_root,
+    )
     auditor = host._install_system_audit("demo", config, REPO_ROOT, permissions, sender, logger=None)
+    # Only this process's own log directory: not the log root, which also
+    # holds the host's logs and the call-chain audit.
+    assert os.path.normcase(str(log_root / "plugin")) in auditor._exempt_dirs
+    assert os.path.normcase(str(log_root)) not in auditor._exempt_dirs
+    assert not auditor._exempt(os.path.normcase(str(log_root / "plugin_call_audit" / "call_audit.jsonl")), False)
     assert auditor is installed[0] and auditor._permissions is permissions
     storage = os.path.normcase(str(tmp_path / "storage" / "plugins" / "demo"))
     assert storage in auditor._exempt_dirs

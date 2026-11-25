@@ -37,7 +37,8 @@ the log directory; the import machinery (``open_code`` and ``.pyc`` writes), and
 the SDK / host code makes itself (reply channel, model gateway client and so
 on). Who made a use is read from the Python stack: the innermost frame that
 is plugin code (records) or host code (exempt) decides; library frames in
-between are transparent. A use with neither on the stack (a thread a library
+between are transparent. The walk stops at the event loop: inside an asyncio
+task only the task's own coroutine chain counts. A use with neither on the stack (a thread a library
 started) is recorded and flagged ``unattributed``, and never refused.
 
 Like the rest of the permission checks this only constrains honest plugins:
@@ -702,6 +703,12 @@ class SystemAuditor:
         for _ in range(_MAX_FRAMES):
             if frame is None:
                 break
+            if frame.f_code.co_name == "_run" and frame.f_globals.get("__name__") == "asyncio.events":
+                # The event loop running a task or callback: whatever lies
+                # below is whoever started the loop (the host runner), not
+                # who made this use. A task with no plugin or host frame of
+                # its own (one a library created) is unattributed.
+                return None
             kind = self._frame_kind(frame)
             if kind != _OTHER:
                 return kind
