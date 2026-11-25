@@ -310,6 +310,12 @@ async def test_corrupt_backup_failure_rejects_runtime_mutations_without_partial_
 
     from datetime import datetime, timedelta, timezone
 
+    async def _allow_queue_urls(_queue: list[dict[str, Any]]) -> str:
+        return ""
+
+    monkeypatch.setattr(plugin, "_validate_queue_urls_allowlistable", _allow_queue_urls)
+    assert "损坏" in str(settings_res.error)
+
     future_iso = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
     create_res = await plugin.create_schedule_task(
         trigger_at=future_iso,
@@ -317,6 +323,7 @@ async def test_corrupt_backup_failure_rejects_runtime_mutations_without_partial_
         queue_items=[{"url": "https://example.test/song.mp3", "title": "Song"}],
     )
     assert create_res.is_err()
+    assert "损坏" in str(create_res.error)
     assert plugin._tasks == {}
     assert plugin._state_file.read_text(encoding="utf-8") == corrupt_bytes
 
@@ -326,3 +333,149 @@ async def test_corrupt_backup_failure_rejects_runtime_mutations_without_partial_
     assert ok_res.is_ok()
     assert plugin._attach_prompt_on_push is (not prev_attach)
     assert Path(plugin._degraded_state["scheduler_state.json"]["backup_path"]).read_text(encoding="utf-8") == corrupt_bytes
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_upload_music_file_checks_state_writability_before_pushing_playback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import base64
+
+    plugin = _make_plugin(tmp_path)
+    monkeypatch.setattr(plugin, "_ensure_scheduler_task", lambda: None)
+    plugin._state_file.parent.mkdir(parents=True, exist_ok=True)
+    corrupt_bytes = "{broken state"
+    plugin._state_file.write_text(corrupt_bytes, encoding="utf-8")
+
+    real_replace = music_pusher_mod.os.replace
+
+    def _fail_backup_replace(src: Path, dst: Path) -> None:
+        if ".corrupt." in dst.name:
+            raise PermissionError("file locked")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(music_pusher_mod.os, "replace", _fail_backup_replace)
+    assert (await plugin.on_start()).is_ok()
+
+    push_calls: list[dict[str, Any]] = []
+
+    async def _record_push(**kwargs: Any) -> bool:
+        push_calls.append(dict(kwargs))
+        return True
+
+    monkeypatch.setattr(plugin, "_push_music_link_with_timeout", _record_push)
+    audio_b64 = base64.b64encode(b"ID3testaudio").decode("ascii")
+    res = await plugin.upload_music_file(
+        audio_base64=audio_b64,
+        filename="demo.mp3",
+        auto_push=True,
+    )
+    assert res.is_err()
+    assert "损坏" in str(res.error)
+    assert push_calls == []
+    assert list(plugin._upload_dir.glob("*")) == []
+
+    # Case 2: State becomes unwritable during push after playback is accepted -> keep uploaded file alive.
+    monkeypatch.setattr(music_pusher_mod.os, "replace", real_replace)
+    plugin._state_file.write_text("{}", encoding="utf-8")
+    assert (await plugin.on_start()).is_ok()
+
+    async def _push_then_corrupt(**kwargs: Any) -> bool:
+        push_calls.append(dict(kwargs))
+        plugin._state_file.write_text("{corrupt mid-flight", encoding="utf-8")
+        plugin._degraded_state[plugin._state_file.name] = {
+            "reason": "corrupt",
+            "backup_path": "",
+        }
+        monkeypatch.setattr(music_pusher_mod.os, "replace", _fail_backup_replace)
+        return True
+
+    monkeypatch.setattr(plugin, "_push_music_link_with_timeout", _push_then_corrupt)
+    res2 = await plugin.upload_music_file(
+        audio_base64=audio_b64,
+        filename="kept_after_push.mp3",
+        auto_push=True,
+    )
+    assert res2.is_err()
+    assert "损坏" in str(res2.error)
+    assert len(push_calls) == 1
+    assert len(list(plugin._upload_dir.glob("*.mp3"))) == 1
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_invalid_tasks_preserves_tombstoned_audio_across_restarts_and_delete_music_item(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin = _make_plugin(tmp_path)
+    monkeypatch.setattr(plugin, "_ensure_scheduler_task", lambda: None)
+    plugin._upload_dir.mkdir(parents=True, exist_ok=True)
+    audio_a = plugin._upload_dir / "task_ref_a.mp3"
+    audio_b = plugin._upload_dir / "task_ref_b.mp3"
+    audio_a.write_bytes(b"ID3-A")
+    audio_b.write_bytes(b"ID3-B")
+
+    plugin._upload_name_map = {
+        "task_ref_a.mp3": {
+            "stored_filename": "task_ref_a.mp3",
+            "original_filename": "task_ref_a.mp3",
+            "title": "A",
+            "artist": "Artist",
+            "duration_sec": 30,
+            "deleted": True,
+        },
+        "task_ref_b.mp3": {
+            "stored_filename": "task_ref_b.mp3",
+            "original_filename": "task_ref_b.mp3",
+            "title": "B",
+            "artist": "Artist",
+            "duration_sec": 30,
+            "deleted": False,
+        },
+    }
+    plugin._save_upload_name_map_locked()
+
+    # Corrupt `tasks` (dict instead of list) + valid music_item referencing task_ref_b.mp3.
+    plugin._state_file.parent.mkdir(parents=True, exist_ok=True)
+    plugin._state_file.write_text(
+        json.dumps(
+            {
+                "music_items": [
+                    {
+                        "item_id": "itm_b",
+                        "url": "http://127.0.0.1:48916/plugin/music_pusher/ui/uploads/task_ref_b.mp3",
+                        "title": "B",
+                        "artist": "Artist",
+                        "source": "upload",
+                        "stored_filename": "task_ref_b.mp3",
+                        "original_filename": "task_ref_b.mp3",
+                        "duration_sec": 30,
+                    }
+                ],
+                "tasks": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    # Boot 1: backs up invalid scheduler_state.json, keeps audio_a despite tombstone.
+    assert (await plugin.on_start()).is_ok()
+    assert audio_a.is_file()
+    persisted = json.loads(plugin._state_file.read_text(encoding="utf-8"))
+    assert persisted.get("tasks_recovery_incomplete") is True
+
+    # Deleting item_b while tasks_recovery_incomplete=True must tombstone upload without unlinking file.
+    del_res = await plugin.delete_music_item(item_id="itm_b")
+    assert del_res.is_ok()
+    assert audio_b.is_file()
+    assert plugin._upload_name_map["task_ref_b.mp3"]["deleted"] is True
+
+    # Boot 2: scheduler_state.json has valid JSON now, but tasks_recovery_incomplete persists protection!
+    plugin2 = _make_plugin(tmp_path)
+    monkeypatch.setattr(plugin2, "_ensure_scheduler_task", lambda: None)
+    assert (await plugin2.on_start()).is_ok()
+    assert audio_a.is_file()
+    assert audio_b.is_file()

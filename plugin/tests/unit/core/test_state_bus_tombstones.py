@@ -25,6 +25,8 @@ def _new_state() -> GlobalState:
     gs._deleted_lifecycle_ids_order.clear()
     gs._pending_event_deletes.clear()
     gs._pending_lifecycle_deletes.clear()
+    gs._pending_event_overflow = False
+    gs._pending_lifecycle_overflow = False
     return gs
 
 
@@ -276,3 +278,118 @@ def test_sync_message_plane_holds_bus_store_lock_and_clears_pending_deletes() ->
     assert saw_lock_held == [True, True]
     assert gs._pending_event_deletes == {}
     assert gs._pending_lifecycle_deletes == {}
+
+
+def test_bridge_retries_failed_delete_snapshot_in_order_until_zmq_send_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ormsgpack
+    import zmq
+    from plugin.server.messaging import plane_bridge as plane_bridge_mod
+
+    sent_msgs: list[dict] = []
+    first_delete_failed = threading.Event()
+    allow_delete_send = threading.Event()
+
+    class _FakeSocket:
+        linger = 0
+
+        def connect(self, _ep: str) -> None:
+            pass
+
+        def close(self, _linger: int = 0) -> None:
+            pass
+
+        def send(self, raw: bytes, flags: int = 0) -> None:
+            msg = ormsgpack.unpackb(raw)
+            if msg.get("mode") == "delete" and not allow_delete_send.is_set():
+                first_delete_failed.set()
+                raise zmq.Again()
+            sent_msgs.append(msg)
+
+    class _FakeCtx:
+        def socket(self, _kind: int) -> _FakeSocket:
+            return _FakeSocket()
+
+    monkeypatch.setattr(plane_bridge_mod.zmq.Context, "instance", staticmethod(lambda: _FakeCtx()))
+
+    bridge = plane_bridge_mod._Bridge()
+    bridge._enabled = True
+    bridge._endpoint = f"inproc://retry_bridge_{uuid.uuid4().hex}"
+    bridge.start()
+    try:
+        assert bridge.enqueue_snapshot(
+            store="events",
+            topic="all",
+            items=[{"event_id": "e1", "trace_id": "e1"}],
+            mode="delete",
+        ) is True
+        assert first_delete_failed.wait(timeout=3.0) is True
+        # Queue a subsequent delta while delete is awaiting retry; delete must still go out first.
+        assert bridge.enqueue_delta(
+            store="events",
+            topic="all",
+            payload={"event_id": "e2", "type": "after"},
+        ) is True
+        allow_delete_send.set()
+        deadline = __import__("time").monotonic() + 3.0
+        while len(sent_msgs) < 2 and __import__("time").monotonic() < deadline:
+            __import__("time").sleep(0.01)
+    finally:
+        allow_delete_send.set()
+        bridge.stop()
+
+    assert len(sent_msgs) == 2
+    assert sent_msgs[0]["kind"] == "snapshot"
+    assert sent_msgs[0]["mode"] == "delete"
+    assert sent_msgs[1]["kind"] == "delta_batch"
+    assert sent_msgs[1]["items"][0]["payload"]["event_id"] == "e2"
+
+
+def test_idle_flush_hook_and_overflow_fallback_recover_without_subsequent_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+    from plugin.server.messaging import plane_bridge as plane_bridge_mod
+
+    gs = _new_state()
+    calls: list[tuple[str, str, list[dict]]] = []
+    bridge_ready = {"ok": False}
+
+    def _rec(*, store: str, record: dict, topic: str = "all") -> bool:
+        return True
+
+    def _snap(*, store: str, records: list, topic: str = "all", mode: str = "replace") -> bool:
+        calls.append((store, mode, [dict(r) for r in records]))
+        return bridge_ready["ok"]
+
+    with patch("plugin.server.messaging.plane_bridge.publish_record", side_effect=_rec), patch(
+        "plugin.server.messaging.plane_bridge.publish_snapshot", side_effect=_snap
+    ):
+        gs.append_event_record({"event_id": "e1", "type": "a"})
+        assert gs.delete_event("e1") is True
+        assert "e1" in gs._pending_event_deletes
+
+        # Bridge idle hook runs after recovery with no subsequent write -> flushes pending delete.
+        bridge_ready["ok"] = True
+        plane_bridge_mod._bridge._run_flush_hooks()
+        assert gs._pending_event_deletes == {}
+        assert calls[-1] == ("events", "delete", [{"event_id": "e1", "trace_id": "e1"}])
+
+        # Sustained outage past MAX_DELETED_BUS_IDS marks overflow and falls back to full replace.
+        calls.clear()
+        bridge_ready["ok"] = False
+        state_module = sys.modules["plugin.core.state"]
+        monkeypatch.setattr(state_module, "MAX_DELETED_BUS_IDS", 3)
+
+        gs.append_event_record({"event_id": "keep", "type": "alive"})
+        for idx in range(4):
+            gs.append_event_record({"event_id": f"ov-{idx}", "type": "ov"})
+            assert gs.delete_event(f"ov-{idx}") is True
+        assert gs._pending_event_overflow is True
+
+        bridge_ready["ok"] = True
+        plane_bridge_mod._bridge._run_flush_hooks()
+        assert gs._pending_event_overflow is False
+        assert gs._pending_event_deletes == {}
+        assert calls[-1] == ("events", "replace", [{"event_id": "keep", "type": "alive"}])

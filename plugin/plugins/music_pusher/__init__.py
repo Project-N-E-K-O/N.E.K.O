@@ -429,6 +429,7 @@ class MusicPusherPlugin(NekoPluginBase):
         self._upload_name_map: dict[str, dict[str, Any]] = {}
         self._lyrics_map: dict[str, dict[str, Any]] = {}
         self._degraded_state: dict[str, dict[str, str]] = {}
+        self._tasks_recovery_incomplete: bool = False
 
         self._active_task_id: str | None = None
         self._active_track: dict[str, Any] | None = None
@@ -1220,10 +1221,16 @@ class MusicPusherPlugin(NekoPluginBase):
                 return f"状态文件 {path.name} 损坏且暂无法备份，已拒绝保存以防数据丢失"
         return None
 
+    def _has_incomplete_task_state_locked(self) -> bool:
+        return bool(
+            getattr(self, "_tasks_recovery_incomplete", False)
+            or self._state_file.name in getattr(self, "_degraded_state", {})
+        )
+
     def _gc_tombstoned_uploads_locked(self) -> bool:
-        if self._state_file.name in getattr(self, "_degraded_state", {}):
+        if self._has_incomplete_task_state_locked():
             self.logger.warning(
-                "Skipping tombstoned upload GC while scheduler state is degraded"
+                "Skipping tombstoned upload GC while scheduler state is degraded or incomplete"
             )
             return False
         removed = False
@@ -1276,6 +1283,7 @@ class MusicPusherPlugin(NekoPluginBase):
         self._music_items = []
         self._tasks = {}
         self._attach_prompt_on_push = _DEFAULT_ATTACH_PROMPT_ON_PUSH
+        self._tasks_recovery_incomplete = False
 
         path = self._state_file
         if not path.exists():
@@ -1285,18 +1293,24 @@ class MusicPusherPlugin(NekoPluginBase):
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception as exc:
             self.logger.warning(f"读取调度状态失败，将重置为空状态: {exc}")
+            self._tasks_recovery_incomplete = True
             self._backup_corrupt_file_locked(path, f"invalid_json: {exc}")
             return
         if not isinstance(data, dict):
             self.logger.warning("读取调度状态失败，将重置为空状态: 状态文件根节点不是对象")
+            self._tasks_recovery_incomplete = True
             self._backup_corrupt_file_locked(path, "invalid_root_type")
             return
+        if _coerce_bool(data.get("tasks_recovery_incomplete"), False):
+            self._tasks_recovery_incomplete = True
         if (
             data.get("music_items") is not None and not isinstance(data.get("music_items"), list)
         ) or (
             data.get("tasks") is not None and not isinstance(data.get("tasks"), list)
         ):
             self.logger.warning("读取调度状态失败，将进入降级状态并尽力恢复有效字段: 状态文件集合字段类型无效")
+            if data.get("tasks") is not None and not isinstance(data.get("tasks"), list):
+                self._tasks_recovery_incomplete = True
             self._backup_corrupt_file_locked(path, "invalid_collection_type")
 
         raw_items = data.get("music_items")
@@ -1386,6 +1400,8 @@ class MusicPusherPlugin(NekoPluginBase):
             },
             "updated_at": _iso(),
         }
+        if getattr(self, "_tasks_recovery_incomplete", False):
+            payload["tasks_recovery_incomplete"] = True
         _atomic_write_json(self._state_file, payload)
 
     def _serialize_task(self, task: dict[str, Any]) -> dict[str, Any]:
@@ -1942,6 +1958,15 @@ class MusicPusherPlugin(NekoPluginBase):
         if lyric_err:
             return Err(SdkError(lyric_err))
 
+        async with self._state_lock:
+            save_err = self._check_state_files_writable_locked(
+                self._upload_name_map_file,
+                self._lyrics_map_file,
+                self._state_file,
+            )
+            if save_err:
+                return Err(SdkError(save_err))
+
         stored_filename, music_url = await asyncio.to_thread(self._save_upload_file, binary, ext)
         absolute_url = self._to_absolute_ui_url(music_url)
 
@@ -1997,7 +2022,8 @@ class MusicPusherPlugin(NekoPluginBase):
                 self._state_file,
             )
             if save_err:
-                self._delete_upload_file_locked(stored_filename)
+                if not pushed:
+                    self._delete_upload_file_locked(stored_filename)
                 return Err(SdkError(save_err))
             self._music_items.append(created_item)
             self._upsert_upload_name_map_locked(
@@ -2354,7 +2380,10 @@ class MusicPusherPlugin(NekoPluginBase):
                 self._lyrics_map.pop(target, None)
                 stored_filename = str((deleted_item or {}).get("stored_filename") or "").strip()
                 if stored_filename and stored_filename == Path(stored_filename).name:
-                    if self._upload_file_referenced_by_tasks_locked(stored_filename):
+                    if (
+                        self._upload_file_referenced_by_tasks_locked(stored_filename)
+                        or self._has_incomplete_task_state_locked()
+                    ):
                         prev = self._upload_name_map.get(stored_filename) or {}
                         self._upload_name_map[stored_filename] = {
                             "stored_filename": stored_filename,

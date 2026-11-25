@@ -925,3 +925,114 @@ async def test_ensure_valid_oauth_token_shields_commit_against_task_cancellation
     assert await asyncio.to_thread(commit_done.wait, 5.0) is True
     saved = json.loads(token_file.read_text(encoding="utf-8"))
     assert saved["refresh_token"] == "rt-rotated"
+
+
+@pytest.mark.asyncio
+async def test_ensure_valid_oauth_token_holds_refresh_lock_and_shields_queued_commit_on_cancel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    import json
+    import threading
+    import time
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    token_file = tmp_path / "market_auth.json"
+    monkeypatch.setattr(market_bridge_module, "_OAUTH_TOKEN_FILE", token_file)
+    monkeypatch.setattr(market_bridge_module, "NEKO_AUTH_URL", "https://auth.test")
+    monkeypatch.setattr(market_bridge_module, "MARKET_API_URL", "https://market.test")
+
+    current = {
+        "access_token": "at-old",
+        "refresh_token": "rt-old",
+        "expires_at": time.time() - 60,
+        "auth_url": "https://auth.test",
+        "issuer": "https://auth.test/",
+        "client_id": market_bridge_module._OAUTH_CLIENT_ID,
+        "session_id": "sess-1",
+        "subject": "sub-1",
+        "subject_pending": False,
+        "refresh_generation": 0,
+        "state_revision": 0,
+        "scope": market_bridge_module._OAUTH_SCOPE,
+    }
+    market_bridge_module._write_private_json(token_file, current)
+
+    worker_busy = threading.Event()
+    worker_release = threading.Event()
+    commit_queued = asyncio.Event()
+    commit_started = threading.Event()
+    refresh_calls = 0
+
+    single_executor = ThreadPoolExecutor(max_workers=1)
+    loop = asyncio.get_running_loop()
+    real_to_thread = asyncio.to_thread
+    real_commit = market_bridge_module._commit_refreshed_oauth_token_sync
+
+    def _occupy_worker() -> None:
+        worker_busy.set()
+        worker_release.wait(timeout=5.0)
+
+    blocker_future = loop.run_in_executor(single_executor, _occupy_worker)
+    assert await real_to_thread(worker_busy.wait, 5.0) is True
+
+    async def _fake_refresh(_tok: dict[str, Any]) -> dict[str, Any]:
+        nonlocal refresh_calls
+        refresh_calls += 1
+        return dict(
+            current,
+            access_token="at-rotated",
+            refresh_token="rt-rotated",
+            expires_at=time.time() + 3600,
+            refresh_generation=1,
+        )
+
+    def _tracked_commit(cur: dict[str, Any], ref: dict[str, Any]) -> dict[str, Any] | None:
+        commit_started.set()
+        return real_commit(cur, ref)
+
+    async def _gated_to_thread(fn, /, *args, **kwargs):
+        if fn is _tracked_commit:
+            commit_queued.set()
+            return await loop.run_in_executor(single_executor, lambda: fn(*args, **kwargs))
+        return await real_to_thread(fn, *args, **kwargs)
+
+    monkeypatch.setattr(market_bridge_module, "_refresh_oauth_token", _fake_refresh)
+    monkeypatch.setattr(
+        market_bridge_module, "_commit_refreshed_oauth_token_sync", _tracked_commit
+    )
+    monkeypatch.setattr(asyncio, "to_thread", _gated_to_thread)
+
+    task1 = asyncio.create_task(market_bridge_module._ensure_valid_oauth_token())
+    task2: asyncio.Task[Any] | None = None
+    try:
+        await asyncio.wait_for(commit_queued.wait(), timeout=5.0)
+        await asyncio.sleep(0)
+        assert commit_started.is_set() is False
+
+        # Cancel while commit is still queued behind the busy 1-worker executor.
+        task1.cancel()
+        task2 = asyncio.create_task(market_bridge_module._ensure_valid_oauth_token())
+        await asyncio.sleep(0.02)
+        assert refresh_calls == 1
+        assert not task2.done()
+    finally:
+        worker_release.set()
+
+    await blocker_future
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await task1
+        assert task2 is not None
+        res2 = await task2
+    finally:
+        single_executor.shutdown(wait=True)
+
+    assert res2 is not None
+    assert res2["refresh_token"] == "rt-rotated"
+    assert refresh_calls == 1
+    assert commit_started.is_set() is True
+    saved = json.loads(token_file.read_text(encoding="utf-8"))
+    assert saved["refresh_token"] == "rt-rotated"

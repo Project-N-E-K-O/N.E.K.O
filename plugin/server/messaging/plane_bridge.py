@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import queue
 import os
 import secrets
@@ -142,6 +143,10 @@ def _parse_tcp_endpoint(endpoint: str) -> tuple[str, int] | None:
     return host, port
 
 
+def _is_reliable_delete_snapshot(msg: object) -> bool:
+    return isinstance(msg, dict) and msg.get("kind") == "snapshot" and msg.get("mode") == "delete"
+
+
 class _Bridge:
     def __init__(self) -> None:
         self._endpoint = str(MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT)
@@ -149,6 +154,28 @@ class _Bridge:
         self._q: "queue.Queue[dict[str, object]]" = queue.Queue(maxsize=4096)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._flush_hooks_lock = threading.Lock()
+        self._flush_hooks: list[Callable[[], None]] = []
+
+    def register_flush_hook(self, hook: Callable[[], None]) -> None:
+        if not callable(hook):
+            return
+        with self._flush_hooks_lock:
+            if hook not in self._flush_hooks:
+                self._flush_hooks.append(hook)
+
+    def unregister_flush_hook(self, hook: Callable[[], None]) -> None:
+        with self._flush_hooks_lock:
+            self._flush_hooks = [item for item in self._flush_hooks if item is not hook]
+
+    def _run_flush_hooks(self) -> None:
+        with self._flush_hooks_lock:
+            hooks = list(self._flush_hooks)
+        for hook in hooks:
+            try:
+                hook()
+            except Exception:
+                pass
 
     def start(self) -> None:
         if not self._enabled:
@@ -329,17 +356,35 @@ class _Bridge:
                 pass
             return
 
+        pending_msg: dict[str, object] | None = None
         try:
             while not stop.is_set():
+                if pending_msg is not None:
+                    msg = pending_msg
+                else:
+                    try:
+                        msg = self._q.get(timeout=0.2)
+                    except queue.Empty:
+                        self._run_flush_hooks()
+                        continue
+                    except _RUNTIME_ERRORS:
+                        continue
                 try:
-                    msg = self._q.get(timeout=0.2)
-                except queue.Empty:
-                    continue
-                except _RUNTIME_ERRORS:
+                    raw = _dumps(msg)
+                except (RuntimeError, ValueError, TypeError, AttributeError):
+                    pending_msg = None
                     continue
                 try:
-                    sock.send(_dumps(msg), flags=zmq.NOBLOCK)
-                except (RuntimeError, ValueError, TypeError, AttributeError, OSError, zmq.ZMQError):
+                    sock.send(raw, flags=zmq.NOBLOCK)
+                    pending_msg = None
+                    if self._q.empty():
+                        self._run_flush_hooks()
+                except (OSError, zmq.ZMQError):
+                    if _is_reliable_delete_snapshot(msg):
+                        pending_msg = msg
+                        stop.wait(0.05)
+                    else:
+                        pending_msg = None
                     continue
         finally:
             try:
@@ -404,6 +449,14 @@ def publish_record(*, store: str, record: dict[str, object], topic: str = "all")
     refusal there is indistinguishable from a message that was delivered.
     """
     return bool(_bridge.enqueue_delta(store=store, topic=topic, payload=record))
+
+
+def register_pending_flush_hook(hook: Callable[[], None]) -> None:
+    _bridge.register_flush_hook(hook)
+
+
+def unregister_pending_flush_hook(hook: Callable[[], None]) -> None:
+    _bridge.unregister_flush_hook(hook)
 
 
 def publish_snapshot(
