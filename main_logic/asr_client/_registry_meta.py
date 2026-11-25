@@ -300,7 +300,9 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
             mode="request",
             max_segment_ms=300_000,
             request_timeout_ms=60_000,
-            model="gpt-4o-mini-transcribe",
+            # gpt-4o-mini-transcribe shuts down 2027-02-26; gpt-transcribe is
+            # the documented file-transcription replacement.
+            model="gpt-transcribe",
         ),
     ),
     "step": AsrProviderMeta(
@@ -397,10 +399,12 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
             ("ASR_SONIOX_PROTECTED_REPLAY_DISABLED", AsrFailureRule(use_delivery_notice=True)),
             ("ASR_SONIOX_REPLAY_INCOMPLETE", AsrFailureRule(use_delivery_notice=True)),
         ),
-        # Replayed through a manual-endpointing realtime session.
+        # Replayed through a manual-endpointing realtime session. Kept under
+        # the worker's 30 s reconnect-replay buffer (with margin for carried
+        # over audio) so every segment stays recoverable after a disconnect.
         offline=AsrOfflineSpec(
             mode="session",
-            max_segment_ms=60_000,
+            max_segment_ms=25_000,
             request_timeout_ms=40_000,
         ),
     ),

@@ -26,6 +26,8 @@ import json
 from collections.abc import Callable, Mapping
 from typing import Any, TypeAlias
 
+import httpx
+
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
 from ..delivery import begin_transport_write, complete_transport_write, interval_delivery_spans, retire_interval_deliveries
 from ._shared import (
@@ -187,6 +189,14 @@ async def request_gemini_transcript(
         return _response_transcript(response)
     except asyncio.CancelledError:
         raise
+    except httpx.TimeoutException as exc:
+        # The SDK lets transport timeouts through as httpx errors; keep the
+        # realtime code but classify them as timeouts.
+        raise AsrRequestFailure(
+            "ASR_GEMINI_REQUEST_FAILED",
+            "Gemini ASR request failed",
+            kind="timeout",
+        ) from exc
     except asyncio.TimeoutError as exc:
         raise AsrRequestFailure(
             "ASR_GEMINI_TIMEOUT",

@@ -153,6 +153,13 @@ def test_registry_declares_offline_capability_for_every_provider() -> None:
             assert meta.offline.unsupported_reason
 
 
+def test_soniox_segments_fit_its_reconnect_replay_buffer() -> None:
+    from main_logic.asr_client.workers import soniox
+
+    limit_ms = ASR_PROVIDER_REGISTRY["soniox"].offline.max_segment_ms
+    assert limit_ms * BYTES_PER_SECOND // 1000 < soniox._MAX_REPLAY_BYTES
+
+
 def test_segmented_offline_limits_follow_realtime_segment_limit() -> None:
     # GLM/Gemini/faster-whisper already split realtime turns at 27 s; their
     # offline requests must respect the same per-request ceiling.
@@ -330,11 +337,10 @@ async def test_openai_file_transcription_request(http_client) -> None:
     assert await _transcriber("openai").transcribe(_pcm(2), language="en-US") == "hello"
     (call,) = client.calls
     assert call["url"] == "https://api.openai.com/v1/audio/transcriptions"
-    assert call["data"] == {
-        "model": ASR_PROVIDER_REGISTRY["openai"].offline.model,
-        "response_format": "json",
-        "language": "en",
-    }
+    # gpt-transcribe documents ``languages`` instead of ``language``; no hint
+    # is sent until that is verified, the model detects the language itself.
+    assert ASR_PROVIDER_REGISTRY["openai"].offline.model == "gpt-transcribe"
+    assert call["data"] == {"model": "gpt-transcribe"}
 
 
 async def test_openai_unsupported_language_falls_back_to_detection(http_client) -> None:
@@ -427,6 +433,16 @@ async def test_gemini_failures(monkeypatch, outcome, code) -> None:
     with pytest.raises(offline.AsrOfflineError) as caught:
         await _transcriber("gemini").transcribe(_pcm(1))
     assert caught.value.code == code
+
+
+async def test_gemini_transport_timeout_is_a_timeout(monkeypatch) -> None:
+    client = _FakeGeminiClient(httpx.ReadTimeout("slow"))
+    monkeypatch.setattr(offline, "_create_gemini_client", lambda key: client)
+    with pytest.raises(offline.AsrOfflineError) as caught:
+        await _transcriber("gemini").transcribe(_pcm(1))
+    assert caught.value.code == "ASR_OFFLINE_TIMEOUT"
+    # The realtime machine code is unchanged.
+    assert caught.value.provider_code == "ASR_GEMINI_REQUEST_FAILED"
 
 
 async def test_gemini_timeout_uses_registry_budget(monkeypatch) -> None:
@@ -591,6 +607,41 @@ async def test_faster_whisper_cancelled_queued_call_returns_its_slot(monkeypatch
     await asyncio.to_thread(real_executor.submit(lambda: None).result, 5)
     assert whisper_pool._decode_slots_used == 0
     assert whisper_pool.lease_count(spec) == 0
+
+
+async def test_faster_whisper_decoder_start_failure(monkeypatch, whisper_pool) -> None:
+    monkeypatch.setattr(faster_whisper, "_load_whisper_model", lambda spec: _FakeWhisperModel("x"))
+
+    class _BrokenExecutor:
+        def submit(self, fn: Any) -> Any:
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(whisper_pool, "decoder_executor", lambda: _BrokenExecutor())
+    with pytest.raises(offline.AsrOfflineError) as caught:
+        await _transcriber("faster_whisper", api_key="").transcribe(_pcm(1))
+    assert caught.value.code == "ASR_OFFLINE_PROVIDER_FAILED"
+    assert caught.value.provider_code == "ASR_LOCAL_TRANSCRIBE_FAILED"
+    assert whisper_pool._decode_slots_used == 0
+    assert whisper_pool.lease_count(faster_whisper._model_spec_from_env()) == 0
+
+
+def test_idle_decoder_thread_keeps_no_reference_to_the_last_call() -> None:
+    import gc
+    import weakref
+
+    class _Call:
+        def __call__(self) -> str:
+            return "ok"
+
+    executor = faster_whisper._DaemonSerialExecutor("test-decoder")
+    call = _Call()
+    ref = weakref.ref(call)
+    assert executor.submit(call).result(5) == "ok"
+    del call
+    # Let the thread get back to waiting on its queue.
+    executor.submit(lambda: None).result(5)
+    gc.collect()
+    assert ref() is None
 
 
 async def test_faster_whisper_decode_failure(monkeypatch, whisper_pool) -> None:

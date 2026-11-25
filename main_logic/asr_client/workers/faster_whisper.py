@@ -397,24 +397,31 @@ class _DaemonSerialExecutor(concurrent.futures.Executor):
 
     def _run(self) -> None:
         while True:
-            future, fn, args, kwargs = self._items.get()
-            if not future.set_running_or_notify_cancel():
-                try:
-                    fn(*args, **kwargs)
-                except Exception:
-                    logger.debug("cancelled decode call failed", exc_info=True)
-                continue
-            done = False
+            # One call per frame: while the thread waits for the next call,
+            # nothing of the previous one (whose closure may hold a recording
+            # and a model) stays referenced.
+            self._run_one(self._items.get())
+
+    @staticmethod
+    def _run_one(item: tuple[Any, ...]) -> None:
+        future, fn, args, kwargs = item
+        if not future.set_running_or_notify_cancel():
             try:
-                result = fn(*args, **kwargs)
-                done = True
-            except Exception as exc:
-                future.set_exception(exc)
-            finally:
-                if done:
-                    future.set_result(result)
-                elif not future.done():
-                    future.set_exception(RuntimeError("decode was interrupted"))
+                fn(*args, **kwargs)
+            except Exception:
+                logger.debug("cancelled decode call failed", exc_info=True)
+            return
+        done = False
+        try:
+            result = fn(*args, **kwargs)
+            done = True
+        except Exception as exc:
+            future.set_exception(exc)
+        finally:
+            if done:
+                future.set_result(result)
+            elif not future.done():
+                future.set_exception(RuntimeError("decode was interrupted"))
 
 
 @dataclass(slots=True)
@@ -1338,6 +1345,12 @@ async def transcribe_pcm16_locally(
 
     try:
         concurrent_future = pool.decoder_executor().submit(decode)
+    except Exception as exc:
+        give_back()
+        raise AsrRequestFailure(
+            "ASR_LOCAL_TRANSCRIBE_FAILED",
+            "faster-whisper decoder could not be started",
+        ) from exc
     except BaseException:
         give_back()
         raise

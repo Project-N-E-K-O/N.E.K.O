@@ -278,10 +278,11 @@ async def _request_glm(
 async def _request_openai(
     transcriber: "OfflineAsrTranscriber", pcm16: bytes, language: str, client: Any
 ) -> str:
-    fields = {"model": transcriber.spec.model or "", "response_format": "json"}
-    hint = _zh_en_language("OpenAI", language)
-    if hint:
-        fields["language"] = hint
+    # gpt-transcribe detects the spoken language itself and documents a
+    # ``languages`` field in place of ``language``; no hint is sent until that
+    # contract is verified against the live API.
+    _ = language
+    fields = {"model": transcriber.spec.model or ""}
     return await post_wav_transcription(
         client,
         url=_OPENAI_TRANSCRIPTION_URL,
