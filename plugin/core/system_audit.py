@@ -136,6 +136,7 @@ _SERVICE_PORTS = {"http": 80, "https": 443}
 _HOST_NAME = re.compile(r"[\w.\-]{1,253}")
 # A leading shell variable assignment (NAME=value): never a program name.
 # Command-line parsing (_command_program) is by allow-list, ASCII only.
+_ASCII_BLANKS = " \t\r\n\f\v"
 _ASSIGNMENT_START = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 _PLAIN_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_./:@%+,-]*[ \t]+")
 _WORD = re.compile(r"[^ \t]*")
@@ -266,9 +267,13 @@ def program_name(value: object, *, command_line: bool = False) -> str:
         value = os.fsdecode(value)
     if not isinstance(value, str):
         return "<unknown>"
-    text = value.strip()
     if command_line:
-        return _command_program(text)
+        # Only ASCII blanks separate words here; any other blank (e.g. U+00A0)
+        # is part of a shell word, so where words end is unclear: "<shell>".
+        if any(char.isspace() and char not in _ASCII_BLANKS for char in value):
+            return "<shell>"
+        return _command_program(value.strip(_ASCII_BLANKS))
+    text = value.strip()
     name = text.replace("\\", "/").rsplit("/", 1)[-1]
     return name[:TARGET_MAX_CHARS] or "<unknown>"
 

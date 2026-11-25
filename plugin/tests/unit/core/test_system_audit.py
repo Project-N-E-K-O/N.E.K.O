@@ -201,6 +201,10 @@ def test_rename_records_both_ends_outside(env):
         ("os.system", ("A=1>secret curl",), "<shell>"),
         ("os.system", ("A=(x) curl",), "<shell>"),
         ("os.system", ("A=ok-1.2/x:y@z curl",), "curl"),
+        ("os.system", ("\u00a0A=1 secret",), "<shell>"),  # a non-ASCII blank anywhere
+        ("os.system", ("curl\u2003secret",), "<shell>"),
+        ("os.system", ("A=1 #secret",), "<shell>"),  # a comment, no program
+        ("os.system", ("  A=1 curl x  ",), "curl"),  # ASCII blanks around are fine
         ("os.system", ("curl;rm -rf x",), "<shell>"),
         ("os.system", ("密码 x",), "<shell>"),
         ("os.system", ('"$HOME/bin/tool" x',), "<shell>"),
