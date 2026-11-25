@@ -56,6 +56,8 @@ export function askView(question: Record<string, unknown>) {
     shape,
     line,
     whole,
+    // The line that says it leaves part of the command or path out.
+    lineCut: shape === 'permission' && Boolean(whole) && question.line_cut === true,
     // Whether all of what it would do has to be opened before a wider approval is offered.
     needsWhole: shape === 'permission' && Boolean(whole) && (question.line_cut === true || whole.length > GLANCE_CHARS || whole.includes('\n')),
     options,
@@ -117,6 +119,9 @@ export default function NekoPowerAskBlock({ block, message, interactive, onActio
     give(somePicked ? { selected: picked, text: reply } : { text: reply });
   };
   const compact = presentation === 'bubble';
+  // The card shows the line whole, so only one that was cut has more to open; above the composer
+  // the line is clamped, and anything not read at a glance is opened first.
+  const needsWhole = compact ? view.needsWhole : view.lineCut;
   const hit = (id: string) => (compact ? {
     'data-compact-hit-region': 'true', 'data-compact-hit-region-id': `nekopower-ask:${block.taskId}:${id}`,
     'data-compact-hit-region-kind': 'message-action', 'data-compact-no-drag': 'true',
@@ -159,7 +164,7 @@ export default function NekoPowerAskBlock({ block, message, interactive, onActio
 
       {open && view.shape === 'permission' ? (
         <>
-          {view.needsWhole ? (
+          {needsWhole ? (
             <>
               {wholeOpen ? <pre className="nekopower-ask-whole" tabIndex={0}>{view.whole}</pre> : null}
               <div className="nekopower-ask-row">
@@ -173,7 +178,7 @@ export default function NekoPowerAskBlock({ block, message, interactive, onActio
           <div className="nekopower-ask-row" role="group">
             {view.options
               // An approval that holds for more than this once: only with all of what it would do in view.
-              .filter(option => !WIDE_CHOICES.includes(option) || !view.needsWhole || wholeOpen)
+              .filter(option => !WIDE_CHOICES.includes(option) || !needsWhole || wholeOpen)
               .map(option => (
                 <button key={option} type="button" className={`nekopower-ask-button${option === 'deny' ? ' is-deny' : ''}`}
                   disabled={held} data-choice={option} {...hit(`choice:${option}`)}
@@ -182,7 +187,7 @@ export default function NekoPowerAskBlock({ block, message, interactive, onActio
                 </button>
               ))}
           </div>
-          {view.needsWhole && !wholeOpen && view.options.some(option => WIDE_CHOICES.includes(option)) ? (
+          {needsWhole && !wholeOpen && view.options.some(option => WIDE_CHOICES.includes(option)) ? (
             <p className="nekopower-ask-hint">{i18n('agent.ask.wideHint', 'Wider approvals appear once all of it is shown')}</p>
           ) : null}
         </>

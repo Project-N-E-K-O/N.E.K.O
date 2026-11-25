@@ -78,6 +78,19 @@ describe('what a NekoPower commission asks, as a card of the chat', () => {
     expect(given[0]).toMatchObject({ choice: 'always' });
   });
 
+  it('asks for the command to be opened above the composer, where its line is clamped, though it is whole on the card', () => {
+    const uncut = { ...permission, detail: { command: LONG }, line: `run the command ${LONG}`, line_cut: false };
+    const choices = (view: ReturnType<typeof show>) => [...view.container.querySelectorAll('[data-choice]')].map(node => node.getAttribute('data-choice'));
+    const card = show(ask(uncut));
+    expect(choices(card)).toEqual(['always', 'session', 'once', 'deny']);
+    expect(card.at('[data-ask-whole]')).toBeNull();
+    card.unmount();
+    const bubble = show(ask(uncut), 'bubble');
+    expect(choices(bubble)).toEqual(['once', 'deny']);
+    fireEvent.click(bubble.at('[data-ask-whole]'));
+    expect(choices(bubble)).toEqual(['always', 'session', 'once', 'deny']);
+  });
+
   it('leaves out the line for a sentence where nothing could take one', () => {
     const { at } = show(ask(permission, { noNote: true }));
     expect(at('[data-ask-input]')).toBeNull();

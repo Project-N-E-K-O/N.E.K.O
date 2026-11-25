@@ -74,6 +74,9 @@ describe('the task HUD and what a task asks', () => {
     expect(order()).toEqual(['c2', 'p1']);
     show([task('p1', { type: 'user_plugin' }), task('c2'), task('c3')]);
     expect(order()).toEqual(['c2', 'c3', 'p1']);
+    // The same cards, told in another order: put so, though none came or went.
+    show([task('c3'), task('c2'), task('p1', { type: 'user_plugin' })]);
+    expect(order()).toEqual(['c3', 'c2', 'p1']);
     show([task('c3')]);
     expect(order()).toEqual(['c3']);
   });
