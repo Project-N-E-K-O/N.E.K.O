@@ -350,10 +350,35 @@ async def test_a_member_that_comes_free_first_takes_it_and_what_was_asked_is_tak
     assert await _events(host, two.commission_id, "beside_declined") == []
     assert await _events(host, two.commission_id, "beside_opened") == []
     assert [member.id for member in await _members(host)] == [main.id] and trees.made == []
-    # What was asked is no longer to be answered.
+    # What was asked is no longer to be answered, and nothing says the user answered it.
     assert not await host.answer(two.commission_id, "yes", choice="once", question_id=question["id"])
+    assert await _events(host, two.commission_id, "tool_answered") == []
     await let_go(host)
     assert host.task_agents._handing_back_to == {} and host.task_agents._asking_beside == {}
+
+
+@pytest.mark.parametrize("choice", ["once", "deny"])
+async def test_what_the_user_chose_is_on_the_timeline_once_it_is_back_among_the_queued(hosts, tmp_path, choice):
+    host, _trees, _workdir, _one, _scripts, _seen = await _busy(hosts, tmp_path, _links())
+    two = await _dispatch(host, APART)
+    await _asked(host, two.commission_id)
+
+    assert await host.answer(two.commission_id, "yes, do it", choice=choice)
+    await _settled(host)
+    host.release.set()
+    await wait_status(host, two.commission_id, "done")
+
+    entries = [item for item in (await host.timeline(project="Shop site"))["entries"] if item["commission_id"] == two.commission_id]
+    kinds = [item["kind"] for item in entries]
+    # Answered after it is back among the queued and before it starts: the answer puts nobody to
+    # work, whichever member it is drawn at.
+    at = kinds.index("asked_user")
+    assert kinds[at:at + 4] == ["asked_user", "queued", "answered", "started"]
+    # Which of the four was chosen, and nothing else of what was sent with it.
+    (answered,) = [item for item in entries if item["kind"] == "answered"]
+    assert (answered["text"], answered["detail"], answered["peer"]["type"]) == (
+        "", {"asked_by_tool": True, "question_kind": "permission", "choice": choice}, "user",
+    )
 
 
 async def test_stopped_while_the_user_is_asked_it_is_over_and_nothing_is_made(hosts, tmp_path):
@@ -372,6 +397,8 @@ async def test_stopped_while_the_user_is_asked_it_is_over_and_nothing_is_made(ho
     assert host.task_agents.queued == [] and host.task_agents._direct_questions == {}
     assert not await host.answer(two.commission_id, "yes", choice="once")
     assert await _events(host, two.commission_id, "beside_declined") == []
+    # The user answered nothing.
+    assert await _events(host, two.commission_id, "tool_answered") == []
     assert [member.id for member in await _members(host)] == [main.id] and trees.made == []
     # The member it waited for goes on as if nothing had been.
     host.release.set()
@@ -1078,8 +1105,10 @@ async def test_what_the_user_answered_stands_though_it_cannot_be_put_back_among_
     assert await host.answer(two.commission_id, "no", choice="deny")
     await _settled(host)
 
-    # Refused, as the user said: on record as that, and waiting for the member where it stood.
+    # Refused, as the user said: on record as that (on the timeline as well), and waiting for the
+    # member where it stood.
     assert await _events(host, two.commission_id, "beside_declined") == [{"beside": main.id}]
+    assert await _events(host, two.commission_id, "tool_answered") == [{"question_kind": "permission", "choice": "deny"}]
     assert manager.queued == [two.commission_id] and manager._session_of[two.commission_id] == main.id
     stands = await host.ledger.get(two.commission_id)
     if fails == "once":

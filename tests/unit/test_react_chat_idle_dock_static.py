@@ -736,5 +736,10 @@ def test_any_real_surface_change_drops_the_web_owed_reopen():
     set_mode_block = _between(source, "function setChatSurfaceMode(nextMode) {", "clearCompactMinimizePressTimer();")
     # Unconditional: a later manual minimize after the chat was opened some
     # other way (e.g. the theater) must not inherit the reopen.
-    before_clear = _between(set_mode_block, "return previousMode;", "idleDockParkedRestore = null;")
+    # Anchor on the transition-queue return; an earlier guard may also return previousMode.
+    before_clear = _between(
+        set_mode_block,
+        "transitionOptions: transitionOptions\n            };\n            return previousMode;",
+        "idleDockParkedRestore = null;",
+    )
     assert "if (" not in before_clear

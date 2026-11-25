@@ -153,6 +153,30 @@ describe('how the familiars stood at a moment of what happened', () => {
     expect(sceneAt(waitingLong, 1).get('lead')).toEqual({ look: 'waiting_user', said: 'Which day?', saidAt: 100 })
   })
 
+  it('leaves one at work as it stands while the user is asked whether another is to do what waits for it', () => {
+    const of = (kind: string, session: string, commission: string, at: number, over: Partial<TimelineEntry> = {}) =>
+      entry(kind, { session_id: session, commission_id: commission, at, ...over })
+    const asked = { text: 'open_beside', peer: { type: 'user' as const }, detail: { question_kind: 'permission' } }
+    const answered = (choice: string) => ({ peer: { type: 'user' as const }, detail: { asked_by_tool: true, question_kind: 'permission', choice } })
+    // Refused: what was asked is on record at the busy one, which is at its own all along and takes it up in its turn.
+    const refused = [
+      of('started', 'shop', 'c1', 1), of('queued', 'shop', 'c9', 2), of('asked_user', 'shop', 'c9', 3, asked),
+      of('queued', 'shop', 'c9', 4), of('answered', 'shop', 'c9', 5, answered('deny')), of('ended', 'shop', 'c1', 6),
+      of('started', 'shop', 'c9', 7),
+    ]
+    for (const at of [1, 2, 3, 4]) expect(sceneAt(refused, at).get('shop')?.look).toBe('working')
+    expect(sceneAt(refused, 5).get('shop')?.look).toBe('idle')
+    expect(sceneAt(refused, 6).get('shop')?.look).toBe('working')
+    // Allowed: the one opened for it waits for the user, then for its turn, and is at work only once it starts.
+    const allowed = [
+      of('started', 'shop', 'c1', 1), of('asked_user', 'other', 'c9', 3, asked), of('queued', 'other', 'c9', 4),
+      of('answered', 'other', 'c9', 5, answered('once')), of('started', 'other', 'c9', 6),
+    ]
+    expect(sceneAt(allowed, 1).get('other')?.look).toBe('waiting_user')
+    expect(sceneAt(allowed, 3).get('other')?.look).toBe('queued')
+    expect([sceneAt(allowed, 4).get('other')?.look, sceneAt(allowed, 4).get('shop')?.look]).toEqual(['working', 'working'])
+  })
+
   it('leaves one at work as it stands when another commission waits for its turn in it or is called off', () => {
     const of = (kind: string, commission: string, at: number) => entry(kind, { commission_id: commission, at })
     const turns = [of('started', 'c1', 1), of('queued', 'c2', 2), of('ended', 'c2', 3), of('ended', 'c1', 4), of('queued', 'c3', 5)]

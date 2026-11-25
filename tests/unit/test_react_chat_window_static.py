@@ -1102,7 +1102,7 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert "--compact-tool-wheel-transform-easing: cubic-bezier(0.2, 0.9, 0.22, 1.12);" in fan_block
     assert "--compact-tool-wheel-charge-first-angle: 0deg;" in fan_block
     assert "--compact-tool-wheel-charge-second-angle: 0deg;" in fan_block
-    assert "--compact-tool-toggle-center-x: calc(100% - 31px);" in fan_block
+    assert "--compact-tool-toggle-center-x: calc(100% - var(--compact-input-tool-center-inset, 31px));" in fan_block
     assert "--compact-tool-toggle-center-y: 31px;" in fan_block
     assert "left: calc(var(--compact-tool-toggle-center-x) - var(--compact-tool-fan-focus-x));" in fan_block
     assert "top: calc(var(--compact-tool-toggle-center-y) - var(--compact-tool-fan-focus-y));" in fan_block
@@ -1161,12 +1161,13 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert "width: auto;" in compact_input_block
     assert "min-width: 0;" in compact_input_block
     assert "padding: 10px 8px 10px 0;" in compact_input_block
-    assert 'padding: 5px 62px 5px var(--compact-chat-minimize-ball-slot);' in styles
+    input_padding = 'padding: 5px var(--compact-input-tool-gutter, 62px) 5px var(--compact-chat-minimize-ball-slot);'
+    assert input_padding in styles
     assert '.compact-chat-surface-frame[data-compact-chat-state="input"]' in compact_mobile_block
-    assert 'padding: 5px 62px 5px var(--compact-chat-minimize-ball-slot);' in compact_mobile_block
+    assert input_padding in compact_mobile_block
     assert 'padding: 5px 8px 5px 18px;' not in compact_mobile_block
     assert '.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"]:not([data-compact-chat-state="input"])' in styles
-    assert 'padding-right: 62px;' in styles
+    assert 'padding-right: var(--compact-input-tool-gutter, 62px);' in styles
     assert 'right: 9px;' in styles
     assert "transform: none;" in styles
     assert '.compact-input-tool-item[data-compact-tool-wheel-slot="hidden"]' in styles
@@ -2276,7 +2277,7 @@ def test_compact_minimize_does_not_replay_full_shell_collapse_animation():
         1,
     )[0]
     assert request_block.count(
-        "setChatSurfaceMode('minimized', { skipShellCollapseAnimation: true });"
+        "setChatSurfaceMode('minimized', { skipShellCollapseAnimation: true, fromCompactMinimizeButton: true });"
     ) == 2
 
     set_mode_block = script.split("function setChatSurfaceMode(nextMode)", 1)[1].split(
