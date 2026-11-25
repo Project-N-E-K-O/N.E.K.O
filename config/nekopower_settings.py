@@ -1068,6 +1068,30 @@ CONSOLE_TRANSCRIPT_SCAN_MAX_BYTES = 32 * 1024 * 1024
 """How much of a record is read for one page at most. A page that reaches
 this ends there and says where to go on."""
 
+CONSOLE_TRANSCRIPT_SEARCH_HITS = 50
+"""Most places of a record a search from the console names
+(``NekoPowerHost.search_transcript``), the latest first; how many there are
+in all is said beside them."""
+
+CONSOLE_TRANSCRIPT_SEARCH_EXCERPT_TOKENS = 80
+"""Cap on the line shown of each place a search names."""
+
+CONSOLE_TRANSCRIPT_SEARCH_MAX_BYTES = 64 * 1024 * 1024
+"""How much of a record a search from the console reads, from its end: of a
+longer record the earliest part is not looked through, and the answer says
+so. The same as a task agent may look through (``SESSION_RECORD_MAX_BYTES``)."""
+
+CONSOLE_TIMELINE_BEFORE_COUNT_MAX = 5_000
+"""How far back the entries before where a page begins reading the timeline
+are counted (``NekoPowerHost.timeline_start``): a page needs to know only
+whether reading from the beginning would hold more than it keeps (3000), and
+counting stops here rather than going through all there ever was."""
+
+CONSOLE_TIMELINE_SCENE_MAX_ROWS = 500
+"""Most sessions told of in how things stood where a page begins reading the
+timeline (``NekoPowerHost.timeline_start``): those under way then. The task
+agents at work at one time, with what queues behind them, come to far fewer."""
+
 CONSOLE_TIMELINE_RECENT_EVENT_ROWS = 20_000
 """How far back a page that opens begins reading the timeline, in rows of the
 events (``NekoPowerHost.timeline_start``). Most rows are steps of a task
@@ -1083,6 +1107,14 @@ CONSOLE_COMMISSIONS_ROWS = 200
 
 CONSOLE_COMMISSIONS_MAX_ROWS = 1000
 """Most commissions in one listing."""
+
+CONSOLE_COMMISSIONS_QUEUED_MAX: int | None = None
+"""Most commissions waiting for their turn the page of the commissions lists
+(``NekoPowerHost.commissions``), the newest first, saying that there are more;
+None: all of them. All are listed now: nothing files many at once yet. A
+number goes here once something does (a batch of work handed out at once).
+Those at work and waiting for the user are always all listed: one that waits
+is answered from that list."""
 
 CONSOLE_COMMISSIONS_SCAN_ROWS = 20_000
 """How many commissions, the newest first, are looked through for a listing

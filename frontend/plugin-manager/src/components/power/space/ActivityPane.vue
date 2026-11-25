@@ -3,11 +3,11 @@
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon class="block" />
     <p class="muted">{{ t('power.activity.hint') }}</p>
     <ActivityFeed :entries="entries" :current="null" :name-of="nameOf" :loading="loading" @pick="() => {}" />
-    <el-button v-if="!whole && !dropped && entries.length" size="small" class="earlier" data-testid="activity-whole" @click="fromBeginning">
+    <el-button v-if="!whole && !dropped && wholeFits && entries.length" size="small" class="earlier" data-testid="activity-whole" @click="fromBeginning">
       {{ t('power.colony.fromBeginning') }}
     </el-button>
     <!-- More happened than is held: reading from the beginning would end with the same latest ones. -->
-    <p v-else-if="dropped" class="muted" data-testid="activity-capped">{{ t('power.activity.onlyLatest', { count: KEPT_ENTRIES }) }}</p>
+    <p v-else-if="dropped || !wholeFits" class="muted" data-testid="activity-capped">{{ t('power.activity.onlyLatest', { count: KEPT_ENTRIES }) }}</p>
   </section>
 </template>
 
@@ -26,7 +26,7 @@ const props = defineProps<{ project: string | null }>()
 const { t, te } = useI18n()
 // Of one project all there is, from its beginning: its own history is what is looked for here, and reading
 // it took a tenth of a second on a ledger of three hundred thousand events. Of all of them, the last stretch.
-const { entries, loading, error, whole, dropped, fromBeginning } = useTimeline(
+const { entries, loading, error, whole, dropped, wholeFits, fromBeginning } = useTimeline(
   () => props.project, failure => describeConsoleError(failure, t, te), () => props.project !== null,
 )
 const cards = ref<BoardCard[]>([])

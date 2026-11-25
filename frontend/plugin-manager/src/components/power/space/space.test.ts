@@ -18,7 +18,9 @@ const api = vi.hoisted(() => ({
   listReviews: vi.fn(), readReview: vi.fn(), deleteReview: vi.fn(),
   listPreferences: vi.fn(), editPreference: vi.fn(), removePreference: vi.fn(),
   getProjectBoard: vi.fn(), writeCard: vi.fn(), tellCommission: vi.fn(), answerCommission: vi.fn(), stopCommission: vi.fn(),
-  getTranscript: vi.fn(), getSessionUsage: vi.fn(),
+  getTranscript: vi.fn(), getSessionUsage: vi.fn(), searchTranscript: vi.fn(),
+  // What a project's familiars left in worktrees of their own: none here.
+  listWorktrees: vi.fn(() => Promise.resolve({ worktrees: [] })), getTemplates: vi.fn(), addMember: vi.fn(), giveLeader: vi.fn(),
   consoleErrorCode: (error: unknown) => (error as { code?: string })?.code ?? null,
 }))
 vi.mock('@/api/console', () => api)
