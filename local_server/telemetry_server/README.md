@@ -48,12 +48,20 @@ _TELEMETRY_SERVER_URL = "http://你的服务器IP:8099"
     -v "$PWD/data:/legacy-data:ro" \
     --entrypoint sh telemetry -c '
       set -eu
-      if [ -e /app/data/telemetry.db ] || [ -e /app/data/telemetry.db-wal ] || [ -e /app/data/telemetry.db-shm ]; then
-        echo "Refusing to overwrite existing /app/data/telemetry.db* in volume" >&2
-        exit 1
-      fi
-      if [ ! -e /legacy-data/telemetry.db ]; then
-        echo "Legacy /legacy-data/telemetry.db not found; aborting upgrade so an empty volume is not initialized." >&2
+      for dst in /app/data/telemetry.db /app/data/telemetry.db-wal /app/data/telemetry.db-shm; do
+        if [ -e "$dst" ] || [ -L "$dst" ]; then
+          echo "Refusing to overwrite existing $dst in volume" >&2
+          exit 1
+        fi
+      done
+      for src in /legacy-data/telemetry.db /legacy-data/telemetry.db-wal /legacy-data/telemetry.db-shm; do
+        if [ -L "$src" ]; then
+          echo "Refusing to migrate symlinked $src; replace it with a regular file first." >&2
+          exit 1
+        fi
+      done
+      if [ ! -f /legacy-data/telemetry.db ]; then
+        echo "Legacy /legacy-data/telemetry.db not found (or not a regular file); aborting upgrade so an empty volume is not initialized." >&2
         exit 1
       fi
       stage=$(mktemp -d /app/data/.migrate.XXXXXX)
@@ -67,8 +75,13 @@ _TELEMETRY_SERVER_URL = "http://你的服务器IP:8099"
       trap cleanup EXIT
       cp -a /legacy-data/telemetry.db "$stage/telemetry.db"
       for suffix in -wal -shm; do
-        if [ -e "/legacy-data/telemetry.db$suffix" ]; then
-          cp -a "/legacy-data/telemetry.db$suffix" "$stage/telemetry.db$suffix"
+        src="/legacy-data/telemetry.db$suffix"
+        if [ -e "$src" ]; then
+          if [ ! -f "$src" ]; then
+            echo "Refusing to migrate non-regular $src" >&2
+            exit 1
+          fi
+          cp -a "$src" "$stage/telemetry.db$suffix"
         fi
       done
       chown appuser /app/data

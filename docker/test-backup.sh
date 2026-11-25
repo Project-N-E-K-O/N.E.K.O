@@ -204,6 +204,21 @@ else
 fi
 
 echo
+echo "== T4d 插件锁文件名含空格时的打包 =="
+make_home "$WORK/t4dhome"
+: > "$WORK/t4dhome/.local/share/N.E.K.O/plugins.my role.lock.json"
+if sh "$BACKUP" --container neko --home "$WORK/t4dhome" --out "$WORK/t4dout" --no-stop >/dev/null 2>&1; then
+    t4d_archive=$(ls "$WORK/t4dout"/neko-backup-neko-*.tar.gz 2>/dev/null | head -1)
+    if [ -n "$t4d_archive" ] && tar -tzf "$t4d_archive" | grep -qF '.local/share/N.E.K.O/plugins.my role.lock.json'; then
+        pass "含空格插件锁文件打包成功"
+    else
+        fail "归档中缺少含空格插件锁文件"
+    fi
+else
+    fail "含空格插件锁文件导致备份失败"
+fi
+
+echo
 echo "== T5 拒绝符号链接的数据目录 =="
 make_home "$WORK/t5real"
 ln -s "$WORK/t5real" "$WORK/t5link"
@@ -315,11 +330,17 @@ MOCKDOCKER
 chmod +x "$mock_bin/docker"
 
 # (a) Backup creates disabled when absent and removes it on exit, while restarting container
+make_watchdog_backup() {
+    sed "s|^WATCHDOG_STATE_DIR=/opt/neko\$|WATCHDOG_STATE_DIR=$1|" "$BACKUP" > "$2"
+    grep -q "^WATCHDOG_STATE_DIR=$1\$" "$2" || { echo "failed to patch WATCHDOG_STATE_DIR" >&2; exit 1; }
+}
+
 wd_a="$WORK/t12wd_a"
 mkdir -p "$wd_a"
+make_watchdog_backup "$wd_a" "$WORK/backup_t12a.sh"
 printf 'true\n' > "$WORK/t12state_a"
-if PATH="$mock_bin:$PATH" MOCK_DOCKER_STATE="$WORK/t12state_a" NEKO_WATCHDOG_STATE_DIR="$wd_a" \
-    sh "$BACKUP" --home "$WORK/t12home" --out "$WORK/t12out_a" >/dev/null 2>&1; then
+if PATH="$mock_bin:$PATH" MOCK_DOCKER_STATE="$WORK/t12state_a" \
+    sh "$WORK/backup_t12a.sh" --home "$WORK/t12home" --out "$WORK/t12out_a" >/dev/null 2>&1; then
     if [ ! -e "$wd_a/disabled" ] && [ "$(cat "$WORK/t12state_a")" = "true" ]; then
         pass "冷备新建 disabled 并在重启容器后清理"
     else
@@ -332,10 +353,11 @@ fi
 # (b) Pre-existing disabled file is preserved on exit
 wd_b="$WORK/t12wd_b"
 mkdir -p "$wd_b"
+make_watchdog_backup "$wd_b" "$WORK/backup_t12b.sh"
 : > "$wd_b/disabled"
 printf 'true\n' > "$WORK/t12state_b"
-if PATH="$mock_bin:$PATH" MOCK_DOCKER_STATE="$WORK/t12state_b" NEKO_WATCHDOG_STATE_DIR="$wd_b" \
-    sh "$BACKUP" --home "$WORK/t12home" --out "$WORK/t12out_b" >/dev/null 2>&1; then
+if PATH="$mock_bin:$PATH" MOCK_DOCKER_STATE="$WORK/t12state_b" \
+    sh "$WORK/backup_t12b.sh" --home "$WORK/t12home" --out "$WORK/t12out_b" >/dev/null 2>&1; then
     if [ -e "$wd_b/disabled" ]; then
         pass "冷备保留了预先存在的 disabled 文件"
     else
@@ -348,6 +370,7 @@ fi
 # (c) Container resuming mid-tar invalidates backup
 wd_c="$WORK/t12wd_c"
 mkdir -p "$wd_c"
+make_watchdog_backup "$wd_c" "$WORK/backup_t12c.sh"
 mock_bin_race="$WORK/t12bin_race"
 mkdir -p "$mock_bin_race"
 cat > "$mock_bin_race/docker" <<'MOCKRACE'
@@ -372,8 +395,8 @@ esac
 MOCKRACE
 chmod +x "$mock_bin_race/docker"
 printf '0\n' > "$WORK/t12race_cnt"
-if PATH="$mock_bin_race:$PATH" MOCK_RACE_COUNT="$WORK/t12race_cnt" NEKO_WATCHDOG_STATE_DIR="$wd_c" \
-    sh "$BACKUP" --home "$WORK/t12home" --out "$WORK/t12out_c" >/dev/null 2>&1; then
+if PATH="$mock_bin_race:$PATH" MOCK_RACE_COUNT="$WORK/t12race_cnt" \
+    sh "$WORK/backup_t12c.sh" --home "$WORK/t12home" --out "$WORK/t12out_c" >/dev/null 2>&1; then
     fail "打包期间容器运行竟未报错"
 else
     left_c=$(ls -1 "$WORK/t12out_c"/neko-backup-*.tar.gz 2>/dev/null | wc -l | tr -d ' ')
@@ -386,9 +409,10 @@ fi
 
 # (d) Symlinked/inaccessible watchdog state dir fails cold backup cleanly
 ln -s "$wd_a" "$WORK/t12wd_link"
+make_watchdog_backup "$WORK/t12wd_link" "$WORK/backup_t12d.sh"
 printf 'true\n' > "$WORK/t12state_d"
-if PATH="$mock_bin:$PATH" MOCK_DOCKER_STATE="$WORK/t12state_d" NEKO_WATCHDOG_STATE_DIR="$WORK/t12wd_link" \
-    sh "$BACKUP" --home "$WORK/t12home" --out "$WORK/t12out_d" >/dev/null 2>&1; then
+if PATH="$mock_bin:$PATH" MOCK_DOCKER_STATE="$WORK/t12state_d" \
+    sh "$WORK/backup_t12d.sh" --home "$WORK/t12home" --out "$WORK/t12out_d" >/dev/null 2>&1; then
     fail "不安全的看门狗状态目录未拒绝冷备"
 else
     pass "不安全的看门狗状态目录拒绝冷备"

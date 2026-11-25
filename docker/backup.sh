@@ -149,7 +149,7 @@ for item in $MUST_LIST; do
 done
 for _scoped_lock in "$state"/plugins.*.lock.json; do
     [ -e "$_scoped_lock" ] || continue
-    found="$found $(basename "$_scoped_lock")"
+    found="$found $(basename -- "$_scoped_lock")"
 done
 unset _scoped_lock
 
@@ -278,7 +278,9 @@ elif ! container_state=$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/
 fi
 
 container_was_running=0
-WATCHDOG_STATE_DIR=${NEKO_WATCHDOG_STATE_DIR:-/opt/neko}
+# 与 docker/watchdog/watchdog.sh 的 STATE_DIR=/opt/neko 保持同一固定路径，
+# 不接受环境变量覆盖，确保冷备写入的 disabled 与看门狗读取的是同一个文件。
+WATCHDOG_STATE_DIR=/opt/neko
 if [ "$CONTAINER" = "neko" ]; then
     watchdog_scope=''
 else
@@ -320,10 +322,6 @@ trap 'exit 143' TERM
 
 pause_watchdog_for_cold_backup() {
     if [ ! -e "$WATCHDOG_STATE_DIR" ] && [ ! -L "$WATCHDOG_STATE_DIR" ]; then
-        if [ -n "${NEKO_WATCHDOG_STATE_DIR:-}" ]; then
-            echo "backup: ❌ 指定的看门狗状态目录不存在: $WATCHDOG_STATE_DIR" >&2
-            exit 1
-        fi
         return 0
     fi
     if [ -L "$WATCHDOG_STATE_DIR" ] || [ ! -d "$WATCHDOG_STATE_DIR" ]; then
@@ -390,19 +388,19 @@ fi
 # ── 打包 ────────────────────────────────────────────────────────────────────
 # 只带清单里的子树，不整包 home：/home/neko 是挂载点，用户完全可能往里再挂别的
 # 东西（备份不该把那部分一起打走，也不该因为读不到而整包失败）。
-pack_list=''
+set --
 for item in $MUST_LIST; do
     [ -n "$item" ] || continue
-    [ -e "$state/$item" ] && pack_list="$pack_list .local/share/N.E.K.O/$item"
+    [ -e "$state/$item" ] && set -- "$@" ".local/share/N.E.K.O/$item"
 done
 for _scoped_lock in "$state"/plugins.*.lock.json; do
     [ -e "$_scoped_lock" ] || continue
-    pack_list="$pack_list .local/share/N.E.K.O/$(basename "$_scoped_lock")"
+    set -- "$@" ".local/share/N.E.K.O/$(basename -- "$_scoped_lock")"
 done
 unset _scoped_lock
-[ -e "$home_dir/ssl" ] && pack_list="$pack_list ssl"
+[ -e "$home_dir/ssl" ] && set -- "$@" "ssl"
 
-if [ -z "$pack_list" ]; then
+if [ "$#" -eq 0 ]; then
     echo "backup: ❌ 清单里一个数据项都不存在，没有任何可备份的内容" >&2
     echo "backup:    确认 --home 指向的是容器挂载的目录（默认 docker/neko-home）" >&2
     exit 1
@@ -420,7 +418,7 @@ echo "backup: 写入 $archive"
 # 一个"可解压、非空"的残缺归档，只靠后面的 tar -tzf 是发现不了的 ——
 # 那样脚本会报成功，还可能借着 --keep 把上一份完好备份删掉。
 # shellcheck disable=SC2086
-if ! tar -czf "$archive" $EXCLUDES -C "$home_dir" $pack_list; then
+if ! tar -czf "$archive" $EXCLUDES -C "$home_dir" -- "$@"; then
     echo "backup: ❌ tar 执行失败，本次备份作废（不保留残缺归档）" >&2
     rm -f "$archive" "$archive.manifest.txt"
     exit 1
