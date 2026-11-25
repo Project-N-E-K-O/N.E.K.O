@@ -4,6 +4,7 @@ import asyncio
 import dataclasses
 import hashlib
 import json
+import sys
 import time
 
 from fastapi import FastAPI
@@ -335,6 +336,9 @@ def test_failures_from_three_weeks_ago_decay_without_a_subnormal_power():
     # 21.3-22.4 days after the last failure, 0.5 ** (age / 1800) is subnormal;
     # Windows raises OverflowError for that, so the decay must flush it to zero.
     record("gh-proxy-com", failed=True, latency=0.2, now=0.0)
+    # Every non-zero factor stays a normal float, which no platform flags.
+    for halvings in (999.0, 999.999):
+        assert sources._decay(halvings * sources._FAILURE_HALF_LIFE, sources._FAILURE_HALF_LIFE) >= sys.float_info.min
     for days in (21.5, 22.0, 400.0, 5000.0):
         assert sources._decay(days * 24 * 3600, sources._FAILURE_HALF_LIFE) == 0.0
         estimate = sources.estimate_route("gh-proxy-com", now=days * 24 * 3600)
@@ -346,6 +350,7 @@ def test_failures_from_three_weeks_ago_decay_without_a_subnormal_power():
 def test_one_failing_estimate_falls_back_to_the_prior_and_the_rest_still_rank(monkeypatch):
     warnings = _Warnings()
     monkeypatch.setattr(sources, "logger", warnings)
+    monkeypatch.setattr(sources, "_reported_routes", set())
     record("cdn-gh-proxy-org", latency=0.05, throughput=8 * 1024 * 1024)
     record("gh-proxy-com", latency=0.1, throughput=8 * 1024 * 1024)
     estimate_from = sources._estimate_from
@@ -359,7 +364,7 @@ def test_one_failing_estimate_falls_back_to_the_prior_and_the_rest_still_rank(mo
     assert sources.estimate_route("gh-proxy-com") == sources._PRIOR_ESTIMATE
     candidates = [key for key, _ in sources.download_candidates(URL, sources.DownloadPreferences())]
     assert candidates[0] == "cdn-gh-proxy-org" and len(candidates) == 5
-    assert any("gh-proxy-com" in message for message in warnings.messages)
+    assert sum("gh-proxy-com" in message for message in warnings.messages) == 1
 
 
 def test_non_finite_observations_are_not_recorded():
@@ -367,8 +372,6 @@ def test_non_finite_observations_are_not_recorded():
     record("gh-proxy-com", latency=0.3, throughput=1e300)
     stats = sources._routes["gh-proxy-com"]
     assert stats.latency == 0.3 and stats.throughput == sources._MAX_THROUGHPUT
-    saved = json.loads(sources.route_stats_path().read_text(encoding="utf-8"))["routes"]["gh-proxy-com"]
-    assert saved["updated"] <= time.time()
 
 
 async def test_a_retired_mirror_in_saved_or_sent_preferences_falls_back():

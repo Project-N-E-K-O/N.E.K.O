@@ -72,7 +72,6 @@ def validate_preferences(mode: str, source_id: str) -> DownloadPreferences:
     if mode not in ("auto", "direct", "specified"):
         raise ValueError("Unknown package download mode")
     if source_id in _RETIRED_MIRROR_IDS:
-        logger.info("download source {} was retired; using {}", source_id, _DEFAULT_MIRROR_ID)
         source_id = _DEFAULT_MIRROR_ID
     if source_id not in _MIRROR_IDS:
         raise ValueError("Unknown GitHub download source")
@@ -165,6 +164,8 @@ _sequence = 0
 _written_sequence = 0
 _written_generation = 0
 _file_lock = threading.Lock()
+# Routes whose unusable history has already been reported.
+_reported_routes: set[str] = set()
 
 
 def route_stats_path() -> Path:
@@ -275,7 +276,10 @@ def estimate_route(source_id: str, *, now: float | None = None) -> RouteEstimate
             raise ValueError(f"non-finite estimate {estimate!r}")
     except Exception as exc:
         # One bad history must not stop the other routes from being ranked.
-        logger.warning("ignoring statistics of download route {}: {!r}", source_id, exc)
+        # Every install estimates each route several times; report it once.
+        if source_id not in _reported_routes:
+            _reported_routes.add(source_id)
+            logger.warning("ignoring statistics of download route {}: {!r}", source_id, exc)
         return _PRIOR_ESTIMATE
     return estimate
 
@@ -306,7 +310,6 @@ def _record(observation: RouteObservation, now: float) -> None:
     stats.throughput = _blend(stats.throughput, _sample(observation.throughput, _MAX_THROUGHPUT))
     stats.failures = min(_MAX_FAILURES, stats.failures + (1.0 if observation.failed else 0.0))
     stats.samples = min(_MAX_SAMPLES, stats.samples + 1)
-    # Stamped with the commit time itself, never a later one.
     stats.updated = now
 
 
@@ -360,6 +363,7 @@ async def reset_transfer_history() -> None:
     """Forget every route observation, including those of transfers in progress."""
     global _loaded, _generation
     _routes.clear()
+    _reported_routes.clear()
     _generation += 1
     _loaded = True
     await run_file_operation(_delete_stats_file, _generation)
