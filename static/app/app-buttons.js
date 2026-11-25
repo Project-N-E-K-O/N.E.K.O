@@ -2117,6 +2117,8 @@
             refreshAudioMessageAvailability();
             throw audioMessageRejection('stale_target');
         }
+        // 转写期间开始了实时语音：发文字会开文本会话、顶掉刚开的语音会话。草稿留着，之后再发
+        if (isRealtimeVoiceBusy()) throw audioMessageRejection('busy');
         var text = typeof result.data.text === 'string' ? result.data.text.trim() : '';
         if (!text) {
             showAudioMessageNoSpeech();
@@ -3433,6 +3435,10 @@
             // 语音消息排在头像互动队列里时串门开始了：普通文字会被串门拒收，交回去改走串门链路
             if (options.rerouteToVisit === true && visitOwnsComposerForAudioMessage()) {
                 return AUDIO_MESSAGE_VISIT_REROUTE;
+            }
+            // 语音消息排队期间开始了实时语音：不发（开文本会话会顶掉语音会话），由宿主保留草稿
+            if (options.rerouteToVisit === true && isRealtimeVoiceBusy()) {
+                return false;
             }
             var text = String(typeof rawText === 'string' ? rawText : '').trim();
             var extraImageDataUrls = normalizeExternalImageDataUrls(options.extraImageDataUrls);

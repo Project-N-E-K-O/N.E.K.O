@@ -67,7 +67,7 @@ function glueHarness({ visitActive = true, outcomes = ['sent'], text = '你好',
     window, mod, fetch, console: { warn() {} }, encodeURIComponent, JSON, Object, String, Error, Promise,
   });
   vm.runInContext(`${glue}\nthis.api = { sendAudioMessagePayload };`, context);
-  return { api: context.api, calls };
+  return { api: context.api, calls, window };
 }
 
 const payload = { requestId: '1764-abc', target: 'Neko', audio: 'AAAA', sampleRateHz: 16000 };
@@ -147,6 +147,26 @@ test('a visit line refused after a character switch rejects as stale_target', as
   });
   const error = await rejection(api.sendAudioMessagePayload(payload));
   assert.equal(error.message, 'stale_target');
+});
+
+test('realtime voice started during transcription: nothing is sent and the draft is kept', async () => {
+  for (const visitActive of [false, true]) {
+    for (const state of [{ voiceChatActive: true }, { voiceStartPending: true }, { isRecording: true }]) {
+      const { api, calls, window } = glueHarness({ visitActive });
+      window.appState = state;
+      const error = await rejection(api.sendAudioMessagePayload(payload));
+      assert.equal(error.message, 'busy');
+      assert.equal(calls.sent.length, 0);
+      assert.equal(calls.visit.length, 0);
+    }
+  }
+});
+
+test('a queued voice transcript is not sent once realtime voice is busy', () => {
+  const start = buttonsSource.indexOf('        async function sendTextPayloadInternal(rawText, options) {');
+  const head = buttonsSource.slice(start, buttonsSource.indexOf('var text = String(', start));
+  // Checked before any text session is opened (that would retire the voice session).
+  assert.match(head, /if \(options\.rerouteToVisit === true && isRealtimeVoiceBusy\(\)\) \{\s*return false;/);
 });
 
 test('the ordinary send path checks for a visit before the bubble and right before sending', () => {
