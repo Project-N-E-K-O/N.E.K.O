@@ -1428,31 +1428,41 @@ def test_padded_interleaved_matrix_attributes_share_the_conversion_clone(tmp_pat
 
 
 
-def mmd_runtime_bytes(kind, *, vertices=3, morph_kinds=(), iterations=(), links=1):
+def mmd_runtime_bytes(kind, *, vertices=3, morph_kinds=(), iterations=(), links=1,
+                      parents=None, link=2, morph_records=None):
     """Small complete layouts with controllable loader work, no external resources."""
+    parents = list(parents) if parents is not None else [-1] * max(3, len(iterations))
     if kind == 'pmd':
         raw = b'Pmd' + struct.pack('<f', 1.0) + bytes(276)
         raw += struct.pack('<I', vertices) + bytes(vertices * 38) + struct.pack('<2I', 0, 0)
-        raw += struct.pack('<H', 3) + bytes(3 * 39) + struct.pack('<H', len(iterations))
+        raw += struct.pack('<H', len(parents))
+        raw += b''.join(bytes(20) + struct.pack('<h', parent) + bytes(17) for parent in parents)
+        raw += struct.pack('<H', len(iterations))
         for count in iterations:
-            raw += struct.pack('<HHBHf', 0, 1, links, count, 1.0) + struct.pack('<H', 2) * links
+            raw += struct.pack('<HHBHf', 0, 1, links, count, 1.0) + struct.pack('<H', link) * links
         raw += struct.pack('<H', len(morph_kinds) + 1)
         raw += bytes(25) + (bytes(20) + struct.pack('<IB', 0, 1)) * len(morph_kinds)
         return raw + struct.pack('<2BI', 0, 0, 0)
     def text(value):
         encoded = value.encode(); return struct.pack('<i', len(encoded)) + encoded
-    raw = b'PMX ' + struct.pack('<f', 2.0) + bytes([8, 1, 0, 1, 1, 1, 1, 1, 1]) + text('Fixture') + text('') * 3
-    raw += struct.pack('<i', vertices) + (bytes(34) + struct.pack('<f', 1.0)) * vertices
-    raw += struct.pack('<3i', 0, 0, 0) + struct.pack('<i', max(3, len(iterations)))
-    for index in range(max(3, len(iterations))):
+    bone_width = 2 if max([len(parents), *parents]) > 127 else 1
+    bone_code = 'h' if bone_width == 2 else 'b'
+    raw = b'PMX ' + struct.pack('<f', 2.0) + bytes([8, 1, 0, 4, 1, 1, bone_width, 4, 1]) + text('Fixture') + text('') * 3
+    raw += struct.pack('<i', vertices) + (bytes(33 + bone_width) + struct.pack('<f', 1.0)) * vertices
+    raw += struct.pack('<3i', 0, 0, 0) + struct.pack('<i', len(parents))
+    for index, parent in enumerate(parents):
         has_ik = index < len(iterations)
-        raw += text('Bone' + str(index)) + text('') + bytes(12) + struct.pack('<biHb', -1, 0, 33 if has_ik else 1, -1)
+        raw += text('Bone' + str(index)) + text('') + bytes(12)
+        raw += struct.pack('<' + bone_code + 'iH' + bone_code, parent, 0, 33 if has_ik else 1, -1)
         if has_ik:
-            raw += struct.pack('<bifi', 1, iterations[index], 1.0, links)
-            raw += (struct.pack('<bB', 2, 1) + bytes(24)) * links
-    raw += struct.pack('<i', len(morph_kinds))
-    for morph_kind in morph_kinds:
-        raw += text('Morph') + text('') + struct.pack('<BBi', 0, morph_kind, 0)
+            raw += struct.pack('<' + bone_code + 'ifi', 1, iterations[index], 1.0, links)
+            raw += (struct.pack('<' + bone_code + 'B', link, 1) + bytes(24)) * links
+    records = [(kind, ()) for kind in morph_kinds] if morph_records is None else morph_records
+    raw += struct.pack('<i', len(records))
+    for morph_kind, offsets in records:
+        raw += text('Morph') + text('') + struct.pack('<BBi', 0, morph_kind, len(offsets))
+        raw += b''.join(struct.pack('<if', offset, 1.0) if morph_kind == 0 else struct.pack('<I3f', offset, 0.0, 0.0, 0.0)
+                        for offset in offsets)
     return raw + struct.pack('<3i', 0, 0, 0)
 
 
@@ -1523,3 +1533,90 @@ def test_punctual_light_dependencies_match_loader(tmp_path, case):
         assert validate_model_bundle(path).model_format == 'vrm'
     else:
         with pytest.raises(ModelFormatError): validate_model_bundle(path)
+
+
+@pytest.mark.parametrize('color,valid', [(None, False), ([], False), ([1, 1], False), ([1, 1, 1, 1], False),
+    ([True, 1, 1], False), (['1', 1, 1], False), ({'0': 1}, False), ([0, 0.5, 1], True), ([0, 0, 0], True)])
+def test_referenced_light_color_structure(tmp_path, color, valid):
+    def graph(data):
+        data['extensionsUsed'].append('KHR_lights_punctual')
+        data['extensions']['KHR_lights_punctual'] = {'lights': [{'type': 'point', 'color': color}]}
+        data['nodes'][0]['extensions'] = {'KHR_lights_punctual': {'light': 0}}
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
+    if valid:
+        assert validate_model_bundle(path).model_format == 'vrm'
+    else:
+        with pytest.raises(ModelFormatError): validate_model_bundle(path)
+
+
+@pytest.mark.parametrize('kind', ['pmx', 'pmd'])
+@pytest.mark.parametrize('parents,work', [([-1, -1, -1] + [2] * 8, 108),
+    ([-1, -1, -1] + list(range(2, 10)), 108), ([-1, 2, 3, -1, 2, 4], 48),
+    ([-1, 999, -1], 12)])
+@pytest.mark.parametrize('valid', [False, True])
+def test_ik_work_counts_link_subtrees_including_forward_parents(tmp_path, kind, parents, work, valid):
+    raw = mmd_runtime_bytes(kind, parents=parents, iterations=[12])
+    entry = 'Avatar.' + kind
+    path = make_native_bundle(tmp_path, kind='mmd', entry=entry, files={entry: raw})
+    limits = FormatLimits(mmd_ik_work=work if valid else work - 1)
+    if valid:
+        assert validate_model_bundle(path, format_limits=limits).model_format == 'mmd'
+    else:
+        with pytest.raises(ModelFormatError, match='model_accessor_budget_exceeded'):
+            validate_model_bundle(path, format_limits=limits)
+
+
+@pytest.mark.parametrize('kind', ['pmx', 'pmd'])
+def test_default_ik_budget_rejects_wide_subtree_amplification(tmp_path, kind):
+    raw = mmd_runtime_bytes(kind, parents=[-1] * 24 + [2] * 1000, iterations=[4096] * 24)
+    entry = 'Avatar.' + kind
+    path = make_native_bundle(tmp_path, kind='mmd', entry=entry, files={entry: raw})
+    with pytest.raises(ModelFormatError, match='model_accessor_budget_exceeded'): validate_model_bundle(path)
+
+
+@pytest.mark.parametrize('budget,valid', [(23, False), (24, True)])
+def test_pmd_duplicate_ik_adds_descendant_bones(tmp_path, budget, valid):
+    raw = mmd_runtime_bytes('pmd', parents=[-1, 0, 0], iterations=[3, 3], link=0)
+    path = make_native_bundle(tmp_path, kind='mmd', entry='Avatar.pmd', files={'Avatar.pmd': raw})
+    if valid:
+        assert validate_model_bundle(path, format_limits=FormatLimits(mmd_ik_work=budget)).model_format == 'mmd'
+    else:
+        with pytest.raises(ModelFormatError, match='model_accessor_budget_exceeded'):
+            validate_model_bundle(path, format_limits=FormatLimits(mmd_ik_work=budget))
+
+
+@pytest.mark.parametrize('kind', ['pmx', 'pmd'])
+def test_ik_hierarchy_cycle_is_rejected_without_recursive_walk(tmp_path, kind):
+    raw = mmd_runtime_bytes(kind, parents=[2, -1, 0], iterations=[1])
+    entry = 'Avatar.' + kind
+    path = make_native_bundle(tmp_path, kind='mmd', entry=entry, files={entry: raw})
+    with pytest.raises(ModelFormatError): validate_model_bundle(path)
+
+
+@pytest.mark.parametrize('forward', [False, True])
+@pytest.mark.parametrize('budget,valid', [(8, False), (9, True)])
+def test_group_morph_work_counts_repeated_and_forward_vertex_offsets(tmp_path, forward, budget, valid):
+    records = [(1, range(3)), (0, [0, 0])]
+    if forward: records = [(0, [1, 1]), (1, range(3))]
+    raw = mmd_runtime_bytes('pmx', morph_records=records)
+    path = make_native_bundle(tmp_path, kind='mmd', entry='Avatar.pmx', files={'Avatar.pmx': raw})
+    limits = FormatLimits(mmd_morph_work=budget)
+    if valid:
+        assert validate_model_bundle(path, format_limits=limits).model_format == 'mmd'
+    else:
+        with pytest.raises(ModelFormatError, match='model_accessor_budget_exceeded'):
+            validate_model_bundle(path, format_limits=limits)
+
+
+def test_default_group_morph_budget_rejects_large_expansion(tmp_path):
+    records = [(1, range(900))] * 900 + [(0, range(900))] * 900
+    raw = mmd_runtime_bytes('pmx', vertices=900, morph_records=records)
+    path = make_native_bundle(tmp_path, kind='mmd', entry='Avatar.pmx', files={'Avatar.pmx': raw})
+    assert path.stat().st_size < 250000
+    with pytest.raises(ModelFormatError, match='model_accessor_budget_exceeded'): validate_model_bundle(path)
+
+
+def test_group_morph_targeting_group_is_not_recursively_expanded(tmp_path):
+    raw = mmd_runtime_bytes('pmx', morph_records=[(0, [1]), (0, [2]), (1, range(3))])
+    path = make_native_bundle(tmp_path, kind='mmd', entry='Avatar.pmx', files={'Avatar.pmx': raw})
+    assert validate_model_bundle(path, format_limits=FormatLimits(mmd_morph_work=6)).model_format == 'mmd'
