@@ -331,8 +331,10 @@ function treeChanged(tree: string, said: string) {
 
 /** One more familiar, or a leader, was made: shown at once, and up close. */
 async function crewChanged(sessionId: string) {
+  const project = props.project
   await load()
-  emit('select', sessionId)
+  // Another project was opened meanwhile: the new one is not among its familiars.
+  if (props.project === project) emit('select', sessionId)
 }
 
 function onVisibility() {

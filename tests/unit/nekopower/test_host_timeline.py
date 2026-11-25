@@ -1323,6 +1323,43 @@ async def test_a_rest_before_its_last_move_is_over(ledger):
     assert _looks(await _before(ledger, (await ledger.timeline(limit=0))["latest"])) == {main.id: ("working", commission.id)}
 
 
+async def test_one_woken_is_at_work_from_when_it_was_woken(ledger):
+    main = await _session(ledger, "main")
+    commission = await _working(ledger, main)
+    wake, refusal = await ledger.wake_add(
+        session_id=main.id, commission_id=commission.id, note="later", due_at=9000.0, pending_max=5, daily_max=5,
+    )
+    assert refusal == "" and wake is not None
+    tick(ledger, 10)
+    resting = await ledger.rest(commission.id)
+    tick(ledger, 10)
+    assert await ledger.rest_over(commission.id, resting.since)
+    [found] = (await _before(ledger, (await ledger.timeline(limit=0))["latest"]))["scene"]
+    assert (found["look"], found["since"]) == ("working", 1020.0)
+
+
+async def test_one_is_where_it_was_opened_by_then_not_where_it_is_now(ledger):
+    main, copy = await _session(ledger, "main"), await _session(ledger, "copy")
+    commission = await _working(ledger, main)
+    await ledger.append_event(commission.id, "opened", {"session_id": copy.id})
+    place = (await ledger.timeline(limit=0))["latest"]
+
+    def back(conn: Any) -> None:
+        # Taken back from the copy into the session it was copied from, as the host does.
+        conn.execute("UPDATE commissions SET session_id = ? WHERE id = ?", (main.id, commission.id))
+
+    await ledger.run(back)
+    assert _looks(await _before(ledger, place)) == {copy.id: ("working", commission.id)}
+    # Opened in it again later: there from then on.
+    await ledger.append_event(commission.id, "opened", {"session_id": main.id})
+    assert _looks(await _before(ledger, (await ledger.timeline(limit=0))["latest"])) == {main.id: ("working", commission.id)}
+    # And at the place before that, still where it was then.
+    assert _looks(await _before(ledger, place)) == {copy.id: ("working", commission.id)}
+    # One never opened anywhere: where it is on record.
+    other = await _working(ledger, await _session(ledger, "other"), "other")
+    assert _looks(await _before(ledger, (await ledger.timeline(limit=0))["latest"]))[other.session_id] == ("working", other.id)
+
+
 async def test_of_several_in_a_session_the_one_at_work_is_how_it_stood(ledger):
     main = await _session(ledger, "main")
     await _file(ledger, main, "behind")

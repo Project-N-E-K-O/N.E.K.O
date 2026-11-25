@@ -685,7 +685,7 @@ const messages: PowerMessages = {
     ask: 'Preguntarme antes',
     askHint: 'No se integra al terminar: espera en el espacio de familiares a que elijas Integrar o Descartar.',
     inspect: 'Que un gato capataz revise antes de cada integración',
-    inspectHint: 'Un gato capataz mira la tarea y lo que se cambió, y lo devuelve si no pasa, hasta 2 rondas. Cada revisión ejecuta un familiar más y consume más.',
+    inspectHint: 'Un gato capataz mira la tarea y lo que se cambió, y lo devuelve si no pasa, hasta 2 rondas. Cada revisión ejecuta un familiar más y consume más. Una integración que inicias tú no se vuelve a revisar.',
     saved: 'Guardado.',
     notes: 'Los proyectos que no están en un repositorio git no tienen copias: un familiar cambia archivos a la vez, como antes.',
   },

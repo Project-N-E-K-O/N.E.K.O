@@ -692,7 +692,7 @@ const messages = {
     ask: 'Ask me first',
     askHint: 'Not merged when done: it waits in the familiar space for you to choose Merge or Discard.',
     inspect: 'Have the inspector cat check before every merge',
-    inspectHint: 'The inspector cat looks at the task and what was changed, and sends it back if it does not pass, up to 2 rounds. Each check runs one more familiar and uses more.',
+    inspectHint: 'The inspector cat looks at the task and what was changed, and sends it back if it does not pass, up to 2 rounds. Each check runs one more familiar and uses more. A merge you start yourself is not checked again.',
     saved: 'Saved.',
     notes: 'Projects that are not in a git repository have no copies: one familiar changes files at a time, as before.',
   },

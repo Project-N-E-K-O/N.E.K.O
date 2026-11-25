@@ -393,6 +393,30 @@ describe('more familiars for a project', () => {
     expect(events).toEqual([['onChanged', ['boss1']]])
   })
 
+  it('a familiar summoned is shown up close only while its project is still the one shown', async () => {
+    api.listWorktrees.mockResolvedValue({ worktrees: [] })
+    api.getTemplates.mockResolvedValue({ templates: [{ name: 'general', label: '', description: '', avatar: 'general', source: 'builtin', valid: true, error: '' }] })
+    api.addMember.mockResolvedValue({ session_id: 's9', seat: '' })
+    api.getProjectBoard.mockResolvedValue(board([card()]))
+    const { state, events } = await mount(FamiliarsPane, { project: 'App', selectedId: '' })
+    let answer: (value: unknown) => void = () => {}
+    api.getProjectBoard.mockReturnValueOnce(new Promise(resolve => { answer = resolve }))
+    await click(byTest('member-add'))
+    await click(byTest('member-make'))
+    state.props = { project: 'Other', selectedId: '' }
+    await flush()
+    answer(board([card(), card({ id: 's9' })]))
+    await flush()
+    expect(events.filter(([name]) => name === 'onSelect')).toEqual([])
+    cleanup?.()
+    // Still the one shown: chosen.
+    api.getProjectBoard.mockResolvedValue(board([card()]))
+    const second = await mount(FamiliarsPane, { project: 'App', selectedId: '' })
+    await click(byTest('member-add'))
+    await click(byTest('member-make'))
+    expect(second.events.filter(([name]) => name === 'onSelect')).toEqual([['onSelect', ['s9']]])
+  })
+
   it('are offered on the familiars of a project, not on the loose ones, with what one chosen has in its worktree', async () => {
     api.listWorktrees.mockResolvedValue({ worktrees: [] })
     const member = card({ id: 's2', name: 'App/worker', state: 'unlanded', tree: tree({ state: 'unlanded' }) })
@@ -501,6 +525,41 @@ describe('looking for words in what was said', () => {
     ] })
     await click(document.querySelector('[data-hit-open="120"]'))
     expect(byTest('transcript-hit-cut')).toBeTruthy()
+  })
+
+  it('shows the place asked to be opened last, whichever answer comes first', async () => {
+    api.searchTranscript.mockResolvedValue({ readable: true, total: 2, whole: true, hits: [
+      { at: 120, role: 'assistant', tool: null, excerpt: 'later beans', time: null },
+      { at: 0, role: 'user', tool: null, excerpt: 'first beans', time: null },
+    ] })
+    await mount(TranscriptPane, { sessionId: 's1' })
+    await type('transcript-query', 'beans')
+    await click(byTest('transcript-search'))
+    let late: (value: unknown) => void = () => {}
+    api.getTranscript.mockReturnValueOnce(new Promise(resolve => { late = resolve }))
+    api.getTranscript.mockResolvedValueOnce({ readable: true, before: null, entries: [
+      { at: 0, role: 'user', text: 'the first beans, whole', cut: false, calls: [], tool: null, failed: false, pictures: 0, time: null },
+    ] })
+    await click(document.querySelector('[data-hit-open="120"]'))
+    await click(document.querySelector('[data-hit-open="0"]'))
+    late({ readable: true, before: null, entries: [
+      { at: 120, role: 'assistant', text: 'the later beans, whole', cut: false, calls: [], tool: null, failed: false, pictures: 0, time: null },
+    ] })
+    await flush()
+    expect(document.querySelector('[data-hit="0"]')?.textContent).toContain('the first beans, whole')
+    expect(document.querySelector('[data-hit="120"]')?.textContent).not.toContain('the later beans, whole')
+    // Asked to be opened, then the search was left and done anew: the late answer opens nothing.
+    let stale: (value: unknown) => void = () => {}
+    api.getTranscript.mockReturnValueOnce(new Promise(resolve => { stale = resolve }))
+    await click(document.querySelector('[data-hit-open="120"]'))
+    await click(byTest('transcript-search-end'))
+    await type('transcript-query', 'beans')
+    await click(byTest('transcript-search'))
+    stale({ readable: true, before: null, entries: [
+      { at: 120, role: 'assistant', text: 'the later beans, whole', cut: false, calls: [], tool: null, failed: false, pictures: 0, time: null },
+    ] })
+    await flush()
+    expect(document.querySelector('[data-hit="120"]')?.textContent).not.toContain('the later beans, whole')
   })
 
   it('says when nothing was found, and a search of the familiar left is not shown for the next', async () => {

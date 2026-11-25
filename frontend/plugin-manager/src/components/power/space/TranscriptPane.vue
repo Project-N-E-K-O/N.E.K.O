@@ -113,6 +113,8 @@ const found = ref<TranscriptSearch | null>(null)
 const shownHit = ref<number | null>(null)
 const hitEntry = ref<TranscriptEntry | null>(null)
 let searchTurn = 0
+// Which place was asked to be opened whole last: an answer for an earlier one is not shown.
+let hitTurn = 0
 
 function who(entry: Pick<TranscriptEntry, 'role' | 'tool' | 'failed'>): string {
   if (entry.role === 'tool_result') {
@@ -193,6 +195,7 @@ async function search() {
 
 function endSearch() {
   ++searchTurn
+  ++hitTurn
   searching.value = false
   found.value = null
   shownHit.value = null
@@ -207,18 +210,19 @@ async function openHit(at: number) {
     hitEntry.value = null
     return
   }
-  const session = props.sessionId
+  // Another familiar ends the search, and what it found with it.
+  const mine = ++hitTurn
   opening.value = at
   try {
-    const page = await getTranscript(session, { at })
-    if (session !== props.sessionId) return
+    const page = await getTranscript(props.sessionId, { at })
+    if (mine !== hitTurn) return
     hitEntry.value = page.entries[0] ?? null
     shownHit.value = hitEntry.value ? at : null
     error.value = ''
   } catch (failure) {
-    if (session === props.sessionId) error.value = describeConsoleError(failure, t, te)
+    if (mine === hitTurn) error.value = describeConsoleError(failure, t, te)
   } finally {
-    if (session === props.sessionId) opening.value = null
+    if (mine === hitTurn) opening.value = null
   }
 }
 

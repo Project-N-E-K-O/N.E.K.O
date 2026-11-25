@@ -656,18 +656,26 @@ def read_before(conn: sqlite3.Connection, *, after: str, limit: int, count_most:
             "AND e.rowid <= ? ORDER BY e.seq DESC LIMIT 1",
             (row["id"], events),
         ).fetchone()
-        if found is not None:
-            moves.append(found)
+        if found is None:
+            continue
+        # The session it was opened in last by then: it may have gone on in a copy, or come back
+        # from one, since; the one on record now is that of now.
+        opened = conn.execute(
+            "SELECT payload FROM events WHERE commission_id = ? AND type = 'opened' AND rowid <= ? ORDER BY seq DESC LIMIT 1",
+            (row["id"], events),
+        ).fetchone()
+        then = _load(opened["payload"]).get("session_id") if opened is not None else None
+        moves.append((found, then if isinstance(then, str) and then else found["session_id"]))
     standing: dict[str, tuple[str, float, str, int]] = {}
-    for row in moves:
+    for row, session_id in moves:
         payload = _load(row["payload"])
         look = "queued" if row["type"] == "created" else _STANDING.get(_text(payload.get("to")))
         if look == "waiting_user" and payload.get("question") is None:
             # Nothing asked: an answer that was not taken being handed over again (as ``_event_rows``).
             look = "working"
-        if look is None or not row["session_id"]:
+        if look is None or not session_id:
             continue
-        standing[row["commission_id"]] = (look, float(row["ts"]), row["session_id"], int(row["number"]))
+        standing[row["commission_id"]] = (look, float(row["ts"]), session_id, int(row["number"]))
     if standing:
         # Resting since its last move, as far as the place: the last of its rests and wakings says.
         ids = sorted(standing)
@@ -679,8 +687,11 @@ def read_before(conn: sqlite3.Connection, *, after: str, limit: int, count_most:
         ).fetchall()
         for row in rests:
             look, since, session_id, moved = standing[row["commission_id"]]
-            if row["type"] == "resting" and int(row["number"]) > moved and look == "working":
-                standing[row["commission_id"]] = ("resting", float(row["ts"]), session_id, moved)
+            if int(row["number"]) > moved and look == "working":
+                # Resting since then; or at work again since it was woken.
+                standing[row["commission_id"]] = (
+                    "resting" if row["type"] == "resting" else "working", float(row["ts"]), session_id, moved,
+                )
     by_session: dict[str, dict[str, Any]] = {}
     for commission_id, (look, since, session_id, _moved) in standing.items():
         known = by_session.get(session_id)
