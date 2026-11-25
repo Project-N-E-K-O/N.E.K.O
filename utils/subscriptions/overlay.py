@@ -100,8 +100,10 @@ def tier_setting_in_effect(model_type: str, core_config: dict[str, Any], treat_a
     """Whether the tier's own per-feature setting is what the resolver would use.
 
     Set up in full: per-feature models on, a named provider or custom endpoint
-    chosen (not one of the follow options), and both address and model present
-    in the snapshot. Such a tier keeps its setting over any subscription.
+    chosen (not one of the follow options), and both address and model entered
+    by the user (``TIER_SAVED_FIELDS``; the snapshot's own values may have been
+    filled in from the general provider) and present in the snapshot. Such a tier
+    keeps its setting over any subscription.
     """
     if not treat_as_custom:
         return False
@@ -112,6 +114,11 @@ def tier_setting_in_effect(model_type: str, core_config: dict[str, Any], treat_a
     provider = str(core_config.get(f"{prefix}ModelProvider") or "").strip()
     if not provider or provider.startswith("follow_"):
         return False
+    saved = core_config.get("TIER_SAVED_FIELDS")
+    if isinstance(saved, dict):
+        url_saved, model_saved = saved.get(prefix, (False, False))
+        if not (url_saved and model_saved):
+            return False
     return bool(
         str(core_config.get(model_key) or "").strip()
         and str(core_config.get(f"{model_key}_URL") or "").strip()

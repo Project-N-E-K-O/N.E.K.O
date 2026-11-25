@@ -194,6 +194,37 @@ def test_a_tier_set_up_in_full_keeps_its_own_setting(config_manager):
     assert results["memory"]["subscription"] == "chatgpt"
 
 
+def test_a_tier_missing_its_own_model_is_not_set_up_in_full(config_manager):
+    """An address without a model is incomplete, even though the snapshot fills a fallback model in."""
+    cm = config_manager
+    _write_core(cm, {
+        **BASE_CORE,
+        "enableCustomApi": True,
+        "conversationModelProvider": "custom",
+        "conversationModelUrl": "https://llm.example.test/v1",
+        "conversationModelId": "",
+    })
+    assert cm.get_core_config()["CONVERSATION_MODEL"]  # filled from the general provider
+    store = _store(cm)
+    store.set_tier("chatgpt", "conversation", "gpt-x")
+    store.set_enabled("chatgpt", True)
+    assert cm.get_model_api_config("conversation")["subscription"] == "chatgpt"
+
+
+def test_agent_server_drops_its_read_cache_when_told_the_configuration_changed(monkeypatch):
+    import asyncio
+
+    from app.agent_server import api_routes
+    from utils.config_manager import read_cache
+
+    dropped = []
+    monkeypatch.setattr(read_cache, "invalidate", lambda path=None: dropped.append(path))
+    monkeypatch.setattr(api_routes.Modules, "analyzer_enabled", False)
+    result = asyncio.run(api_routes.notify_config_changed())
+    assert result["success"] is True
+    assert dropped == [None]
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------

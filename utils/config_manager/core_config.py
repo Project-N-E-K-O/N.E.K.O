@@ -1925,9 +1925,19 @@ class CoreConfigMixin:
             config["IMAGE_GENERATION_CONFIG"][field] = config.get(resolved_field, "")
         # Subscriptions & plans: tiers an enabled subscription takes over, resolved
         # here so get_model_api_config stays pure dict work on this snapshot.
-        from utils.subscriptions.overlay import load_overlay
+        from utils.subscriptions.overlay import TIER_PREFIX, load_overlay
 
         config["SUBSCRIPTION_OVERLAY"] = load_overlay(self, config)
+        # Whether each text tier's address and model were saved by the user, before
+        # any fallback fills them in: a tier keeps its own setting over a subscription
+        # only when both were actually entered.
+        config["TIER_SAVED_FIELDS"] = {
+            prefix: (
+                bool(str(core_cfg.get(f"{prefix}ModelUrl") or "").strip()),
+                bool(str(core_cfg.get(f"{prefix}ModelId") or "").strip()),
+            )
+            for prefix in TIER_PREFIX.values()
+        }
         return config
 
     def get_model_api_config(self, model_type: str, *, _core_config: dict | None = None) -> dict:
