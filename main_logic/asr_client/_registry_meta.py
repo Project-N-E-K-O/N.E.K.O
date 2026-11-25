@@ -28,6 +28,10 @@ AsrImplementationStatus = Literal[
     "blocked_backend",
 ]
 AsrReplayPolicy = Literal["none", "preconnect_only", "provider_managed"]
+# How a provider transcribes one complete recording (see ``offline.py``):
+# "request" sends each segment as one file request, "session" replays it
+# through a manual-endpointing realtime session, "unsupported" refuses.
+AsrOfflineMode = Literal["unsupported", "request", "session"]
 
 
 class AsrProviderAvailability(str, Enum):
@@ -66,6 +70,45 @@ class AsrFailureRule:
     recover_on_provider_failure: bool = False
     retry_connect: bool = False
     use_delivery_notice: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class AsrOfflineSpec:
+    """Whole-recording (offline) transcription capability of one provider.
+
+    Specs that may change with the offline model live here rather than in the
+    caller: the longest audio one request/session may carry (longer
+    recordings are split by the offline layer and the transcripts joined),
+    the per-segment time budget, and the model the offline request names.
+    """
+
+    mode: AsrOfflineMode = "unsupported"
+    max_segment_ms: int | None = None
+    request_timeout_ms: int = 35_000
+    # ``None``: the offline path uses the realtime model unchanged (session
+    # mode replays the realtime worker; faster-whisper follows the same
+    # environment configuration).
+    model: str | None = None
+    # Short machine-oriented note for "unsupported" routes, never shown to
+    # users verbatim.
+    unsupported_reason: str = ""
+
+    @property
+    def supported(self) -> bool:
+        return self.mode != "unsupported"
+
+    def __post_init__(self) -> None:
+        if self.mode == "unsupported":
+            if not self.unsupported_reason:
+                raise ValueError("unsupported offline specs require a reason")
+            return
+        if self.max_segment_ms is None or self.max_segment_ms <= 0:
+            raise ValueError("offline-capable providers require max_segment_ms")
+        if self.request_timeout_ms <= 0:
+            raise ValueError("offline request_timeout_ms must be positive")
+
+
+_NO_OFFLINE = AsrOfflineSpec(unsupported_reason="not_implemented")
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +151,7 @@ class AsrProviderMeta:
     # Explicit worker source-sidecar support; matching rates alone is not proof.
     supports_interception_delivery: bool = False
     failure_rules: tuple[tuple[str, AsrFailureRule], ...] = ()
+    offline: AsrOfflineSpec = _NO_OFFLINE
 
     @property
     def availability(self) -> AsrProviderAvailability:
@@ -209,6 +253,11 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         max_segment_ms=27_000,
         warm_transport_ms=0,
         replay_policy="none",
+        offline=AsrOfflineSpec(
+            mode="session",
+            max_segment_ms=27_000,
+            request_timeout_ms=10_000,
+        ),
     ),
     "qwen": AsrProviderMeta(
         provider_key="qwen",
@@ -226,6 +275,14 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
             ("ASR_QWEN_CONNECTION_CLOSED", AsrFailureRule(use_delivery_notice=True)),
             ("ASR_QWEN_WORKER_FAILED", AsrFailureRule(use_delivery_notice=True)),
         ),
+        # Replayed through a manual-endpointing realtime session: one commit
+        # per segment yields exactly one final. The long cap only bounds a
+        # single committed buffer; voice messages stay far below it.
+        offline=AsrOfflineSpec(
+            mode="session",
+            max_segment_ms=60_000,
+            request_timeout_ms=40_000,
+        ),
     ),
     "openai": AsrProviderMeta(
         provider_key="openai",
@@ -236,6 +293,14 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         implementation_status="implemented",
         failure_rules=(
             ("ASR_OPENAI_WORKER_FAILED", AsrFailureRule(use_delivery_notice=True)),
+        ),
+        # Native file endpoint (/v1/audio/transcriptions); the realtime
+        # route only allows provider endpointing, so it is not replayed.
+        offline=AsrOfflineSpec(
+            mode="request",
+            max_segment_ms=300_000,
+            request_timeout_ms=60_000,
+            model="gpt-4o-mini-transcribe",
         ),
     ),
     "step": AsrProviderMeta(
@@ -250,6 +315,10 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
             ("ASR_STEP_CONNECTION_CLOSED", AsrFailureRule(use_delivery_notice=True)),
             ("ASR_STEP_WORKER_FAILED", AsrFailureRule(use_delivery_notice=True)),
         ),
+        # Realtime Step only allows provider endpointing, and its file
+        # transcription endpoint/model could not be verified; refuse instead of
+        # forcing a manual commit through the stream.
+        offline=AsrOfflineSpec(unsupported_reason="provider_endpointing_only"),
     ),
     "grok": AsrProviderMeta(
         provider_key="grok",
@@ -259,6 +328,13 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         supported_endpointing_modes=frozenset({"provider"}),
         implementation_status="implemented",
         supports_interception_delivery=True,
+        # Native REST file endpoint (POST /v1/stt); see offline.py.
+        offline=AsrOfflineSpec(
+            mode="request",
+            max_segment_ms=300_000,
+            request_timeout_ms=60_000,
+            model="grok-voice-transcribe-2.0",
+        ),
     ),
     "glm": AsrProviderMeta(
         provider_key="glm",
@@ -276,6 +352,12 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         # the provider-final watchdog must outlast the worker's 35 s request
         # timeout; otherwise ordinary slow responses fail deterministically.
         provider_final_timeout_ms=40_000,
+        offline=AsrOfflineSpec(
+            mode="request",
+            max_segment_ms=27_000,
+            request_timeout_ms=35_000,
+            model="glm-asr-2512",
+        ),
     ),
     "gemini": AsrProviderMeta(
         provider_key="gemini",
@@ -291,6 +373,12 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         replay_policy="none",
         # Same contract as glm: cover the worker's 35 s request timeout.
         provider_final_timeout_ms=40_000,
+        offline=AsrOfflineSpec(
+            mode="request",
+            max_segment_ms=27_000,
+            request_timeout_ms=35_000,
+            model="gemini-3.1-flash-lite",
+        ),
     ),
     "soniox": AsrProviderMeta(
         provider_key="soniox",
@@ -308,6 +396,12 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
             ("ASR_RATE_LIMITED", AsrFailureRule(retry_connect=True)),
             ("ASR_SONIOX_PROTECTED_REPLAY_DISABLED", AsrFailureRule(use_delivery_notice=True)),
             ("ASR_SONIOX_REPLAY_INCOMPLETE", AsrFailureRule(use_delivery_notice=True)),
+        ),
+        # Replayed through a manual-endpointing realtime session.
+        offline=AsrOfflineSpec(
+            mode="session",
+            max_segment_ms=60_000,
+            request_timeout_ms=40_000,
         ),
     ),
     # Local faster-whisper. It is never a Core route: users opt in through the
@@ -337,6 +431,13 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         requires_credential=False,
         user_selectable=True,
         optional_dependency="faster_whisper",
+        # Model loading is bounded by provider_warmup_timeout_ms; the timeout
+        # here covers queueing on the shared decoder plus decoding.
+        offline=AsrOfflineSpec(
+            mode="request",
+            max_segment_ms=27_000,
+            request_timeout_ms=120_000,
+        ),
     ),
     "free": AsrProviderMeta(
         provider_key="free",
@@ -348,6 +449,7 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         max_segment_ms=27_000,
         warm_transport_ms=0,
         replay_policy="none",
+        offline=AsrOfflineSpec(unsupported_reason="no_cloud_asr_backend"),
     ),
 }
 

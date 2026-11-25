@@ -69,7 +69,11 @@ from ..warmup import (
     complete_provider_warmup,
     ensure_provider_warmup_state,
 )
-from ._shared import MAX_SEGMENT_PCM_BYTES, PCM16_SAMPLE_WIDTH_BYTES
+from ._shared import (
+    MAX_SEGMENT_PCM_BYTES,
+    PCM16_SAMPLE_WIDTH_BYTES,
+    AsrRequestFailure,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -1228,3 +1232,104 @@ async def faster_whisper_asr_worker(
         await response_queue.put(
             _AsrWorkerEvent(kind="closed", generation=last_generation)
         )
+
+
+async def transcribe_pcm16_locally(
+    pcm16: bytes,
+    *,
+    language: str = "auto",
+    load_timeout_seconds: float,
+    decode_timeout_seconds: float,
+    model_loader: ModelLoader | None = None,
+    model_pool: _WhisperModelPool | None = None,
+) -> str:
+    """Decode one complete recording outside any realtime session.
+
+    Shares the realtime worker's model pool (one load, idle release), its
+    process-wide decode slots and single decoder thread, and the same
+    ``_transcribe_pcm16`` decode with its hallucination filter. Failures raise
+    :class:`AsrRequestFailure`. The caller splits audio longer than one
+    segment; ``language`` is an already-normalized session language.
+    """
+
+    loader = model_loader or _load_whisper_model
+    pool = model_pool or _MODEL_POOL
+    spec = _model_spec_from_env()
+    config = AsrSessionConfig(language=language)
+    whisper_language = _session_language(config)
+    initial_prompt = _session_initial_prompt(config)
+
+    try:
+        async with asyncio.timeout(load_timeout_seconds):
+            while True:
+                model = pool.try_lease(spec)
+                if model is not None:
+                    break
+                # Shared per spec: giving up here only stops this caller from
+                # waiting; the load finishes and idles out in the pool.
+                await asyncio.shield(
+                    asyncio.wrap_future(pool.ensure_loading(spec, loader))
+                )
+    except TimeoutError as exc:
+        raise AsrRequestFailure(
+            "ASR_LOCAL_MODEL_LOAD_TIMEOUT",
+            "faster-whisper model was not ready in time",
+            kind="timeout",
+        ) from exc
+    except _LocalAsrFailure as exc:
+        raise AsrRequestFailure(exc.code, exc.message) from exc
+    except Exception as exc:
+        raise AsrRequestFailure(
+            "ASR_LOCAL_MODEL_LOAD_FAILED",
+            "faster-whisper model could not be loaded",
+        ) from exc
+
+    if not pool.try_reserve_decode():
+        pool.release(spec)
+        raise AsrRequestFailure(
+            "ASR_LOCAL_BUSY",
+            "faster-whisper has too many decodes in flight",
+            kind="rate_limited",
+        )
+
+    skip = threading.Event()
+
+    def decode() -> str:
+        try:
+            if skip.is_set():
+                return ""
+            return _transcribe_pcm16(model, pcm16, whisper_language, initial_prompt)
+        finally:
+            # The decoder runs every submitted call (see _DaemonSerialExecutor),
+            # so slot and lease are always given back here exactly once.
+            pool.release_decode()
+            pool.release(spec)
+
+    try:
+        concurrent_future = pool.decoder_executor().submit(decode)
+    except BaseException:
+        pool.release_decode()
+        pool.release(spec)
+        raise
+    decode_future = asyncio.wrap_future(concurrent_future)
+    decode_future.add_done_callback(_consume_decode_outcome)
+    try:
+        async with asyncio.timeout(decode_timeout_seconds):
+            # A running native decode cannot be interrupted; one still queued
+            # is skipped cheaply once the caller stops waiting.
+            return await asyncio.shield(decode_future)
+    except TimeoutError as exc:
+        skip.set()
+        raise AsrRequestFailure(
+            "ASR_LOCAL_TRANSCRIBE_TIMEOUT",
+            "faster-whisper transcription timed out",
+            kind="timeout",
+        ) from exc
+    except asyncio.CancelledError:
+        skip.set()
+        raise
+    except Exception as exc:
+        raise AsrRequestFailure(
+            "ASR_LOCAL_TRANSCRIBE_FAILED",
+            "faster-whisper transcription failed",
+        ) from exc
