@@ -1516,6 +1516,56 @@ function getProviderInfo(providerKey) {
     return _assistApiProviders[providerKey] || _keyBookApiProviders[providerKey] || _coreApiProviders[providerKey] || {};
 }
 
+// A slot saved with a provider the dropdown no longer lists because it is chosen in
+// the Subscriptions & plans panel (ChatGPT, chosen per slot in nightly builds): the
+// saved choice stays, read-only, so the page shows what requests use and saving the
+// settings does not quietly change it. Picking anything else drops it for good.
+function keepPanelOnlyProvider(sel, modelType, providerKey) {
+    let option = Array.from(sel.options).find(opt => opt.value === providerKey);
+    if (!option) {
+        option = document.createElement('option');
+        option.value = providerKey;
+        option.disabled = true;
+        const nameKey = `api.assistProviderNames.${providerKey}`;
+        const translated = window.t ? window.t(nameKey) : nameKey;
+        option.textContent = (translated && translated !== nameKey)
+            ? translated : (getProviderInfo(providerKey).name || providerKey);
+        sel.appendChild(option);
+    }
+    sel.value = providerKey;
+    syncProviderSelectDropdowns(sel, { rebuild: true });
+
+    const hintId = `${modelType}PanelOnlyProviderHint`;
+    let hint = document.getElementById(hintId);
+    if (!hint) {
+        hint = document.createElement('div');
+        hint.id = hintId;
+        hint.className = 'field-row panel-only-provider-hint';
+        const text = document.createElement('em');
+        text.style.cssText = 'font-weight: normal; color: #c0392b; font-size: 0.85em;';
+        hint.appendChild(text);
+        const row = sel.closest('.field-row');
+        if (row && row.parentNode) row.parentNode.insertBefore(hint, row.nextSibling);
+    }
+    const params = { provider: option.textContent };
+    hint.firstChild.textContent = window.t
+        ? window.t('api.subscriptions.panelOnlySlotHint', params)
+        : `${option.textContent} is now set up under Subscriptions & plans.`;
+
+    if (!sel.dataset.panelOnlyWatch) {
+        sel.dataset.panelOnlyWatch = 'true';
+        sel.addEventListener('change', () => {
+            if (sel.value === providerKey) return;
+            const stale = Array.from(sel.options).find(opt => opt.value === providerKey);
+            if (stale) stale.remove();
+            const shown = document.getElementById(hintId);
+            if (shown) shown.remove();
+            delete sel.dataset.panelOnlyWatch;
+            syncProviderSelectDropdowns(sel, { rebuild: true });
+        });
+    }
+}
+
 function isProviderFlagEnabled(value) {
     return value === true || value === 1 || value === 'true' || value === '1';
 }
@@ -3211,6 +3261,12 @@ async function loadCurrentApiKey() {
                 // 覆盖「有 URL 但无 provider → custom」的旧回退，保证存量配置正确回填。
                 if (mt === 'tts' && _loadedGptSovitsState === 'enabled') {
                     sel.value = 'gptsovits';
+                    onCustomModelProviderChange(mt);
+                    return;
+                }
+                if (data[providerField]
+                    && isProviderFlagEnabled(getProviderInfo(data[providerField]).subscription_panel_only)) {
+                    keepPanelOnlyProvider(sel, mt, data[providerField]);
                     onCustomModelProviderChange(mt);
                     return;
                 }

@@ -1329,6 +1329,7 @@
       "ownSettingWins": "Configurada por separado en «Modelos por función»; se usa esa configuración",
       "moveConfirm": "{{from}} se encarga ahora de {{feature}}. ¿Quieres que pase a {{to}}?",
       "moveConfirmOff": "{{feature}} está marcado en {{from}} (esa suscripción está desactivada). ¿Pasarlo a {{to}}?",
+      "panelOnlySlotHint": "Esta función tenía seleccionado {{provider}}, que ahora se configura en Suscripciones y planes. Aquí se mantiene la elección y las solicitudes siguen yendo a {{provider}}. Marca esta función en Suscripciones y planes y luego elige otra opción aquí.",
       "keyLabel": "Clave de {{plan}}",
       "keySaved": "Clave guardada (introduce otra para reemplazarla)",
       "keyFromGeneral": "Se usa la clave correspondiente ya introducida en esta página",

@@ -1329,6 +1329,7 @@
       "ownSettingWins": "Set up under Per-Feature Models; that setting is used instead",
       "moveConfirm": "{{feature}} is taken over by {{from}} now. Let {{to}} take it over instead?",
       "moveConfirmOff": "{{feature}} is ticked under {{from}} (that subscription is off). Let {{to}} take it over instead?",
+      "panelOnlySlotHint": "This feature was set to {{provider}}, which is now set up under Subscriptions & plans. The choice is kept here and requests still go to {{provider}}. Tick this feature under Subscriptions & plans, then pick something else here.",
       "keyLabel": "{{plan}} key",
       "keySaved": "Key saved (enter a new one to replace it)",
       "keyFromGeneral": "Using the matching key already entered on this page",

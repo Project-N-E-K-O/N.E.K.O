@@ -1329,6 +1329,7 @@
       "ownSettingWins": "已在「按功能单独指定模型」里单独指定，订阅不接管",
       "moveConfirm": "{{feature}}目前由 {{from}} 接管，改由 {{to}} 接管吗？",
       "moveConfirmOff": "{{feature}}已勾选在 {{from}} 上（这个订阅没开），改由 {{to}} 接管吗？",
+      "panelOnlySlotHint": "这一项之前选的是 {{provider}}，现在改从「订阅与套餐」接入，这里先保留原来的选择，请求照旧发往 {{provider}}。请到「订阅与套餐」勾选这一项，再把这里改成别的选项。",
       "keyLabel": "{{plan}} 的 Key",
       "keySaved": "已保存 Key（输入新的可替换）",
       "keyFromGeneral": "正在使用本页已填的对应 Key",

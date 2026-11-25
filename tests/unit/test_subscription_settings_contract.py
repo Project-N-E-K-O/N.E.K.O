@@ -72,6 +72,20 @@ def test_page_loads_the_panel_and_hides_chatgpt_from_slot_dropdowns():
     assert "subscription_panel_only" in settings
 
 
+def test_a_slot_saved_with_a_panel_only_provider_keeps_it_with_a_hint():
+    """Nightly builds let ChatGPT be chosen per slot; loading such a slot keeps it read-only."""
+    settings = (ROOT / "static/js/api_key_settings.js").read_text(encoding="utf-8")
+    load = settings.index("keepPanelOnlyProvider(sel, mt, data[providerField]);")
+    fallback = settings.index("!isProviderCapableForModelType(data[providerField], mt)) {")
+    # Checked before the branch that drops slots to their default provider.
+    assert load < fallback
+    assert "option.disabled = true;" in settings
+    assert "api.subscriptions.panelOnlySlotHint" in settings
+    for locale in LOCALES:
+        messages = json.loads((ROOT / "static/locales" / f"{locale}.json").read_text(encoding="utf-8"))
+        assert "{{provider}}" in messages["api"]["subscriptions"]["panelOnlySlotHint"], locale
+
+
 def test_panel_never_posts_to_the_settings_save_endpoint():
     script = SCRIPT.read_text(encoding="utf-8")
     assert "/api/config/subscriptions" in script
