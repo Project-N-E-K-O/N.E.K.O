@@ -672,7 +672,9 @@ class DesktopChatSyncRuntime:
                     # Only the class name: exception text may hold paths or signed URLs.
                     print(f"[chat-sync] model_step_unavailable {type(exc).__name__}")
                 if getattr(exc, "status_code", None) == 404:
-                    await asyncio.to_thread(self.scheduler.success, domain, "model")
+                    model_state = await asyncio.to_thread(self.models.store.get, domain)
+                    await asyncio.to_thread(self.scheduler.success, domain, "model",
+                                            pending=bool(model_state and model_state.get('pending')))
                 else:
                     await asyncio.to_thread(self.scheduler.failure, domain, "model", binding["generation"], presence, exc)
         await asyncio.to_thread(self.models.cleanup_cache)
@@ -1640,11 +1642,14 @@ class DesktopChatSyncRuntime:
                     expected_binding=binding, automatic_only=True)
                 result = await self.long_term_memory.sync(domain, grant, epoch, request, commit, can_apply=can_apply,
                                                           session_fingerprint=presence)
-                await asyncio.to_thread(self.scheduler.success, domain.key(), 'long_term', pending=result['hasMore'])
                 if result['changed'] and can_apply():
                     applied = await self.long_term_memory.adapter.flush(uid)
                     if applied and self.history_changed:
                         await self._notify_history_changed(binding, presence)
+                # A successful fetch can still leave a staged snapshot for the memory owner.
+                pending = result['hasMore'] or await asyncio.to_thread(
+                    self.long_term_memory.adapter.incoming_path(uid).is_file)
+                await asyncio.to_thread(self.scheduler.success, domain.key(), 'long_term', pending=pending)
                 if result['hasMore']:
                     await commit(self.scheduler.request_check, domain.key(), 'long_term')
                 return {'uploaded': 0, 'deletions': 0, 'pullPages': 0, 'hasMore': result['hasMore']}

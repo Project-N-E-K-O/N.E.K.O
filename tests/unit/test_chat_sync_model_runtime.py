@@ -577,6 +577,28 @@ async def test_unaccepted_model_binding_reports_pending_until_the_cloud_receipt_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('pending', [True, False])
+async def test_legacy_model_404_fallback_preserves_an_unconfirmed_upload(tmp_path, monkeypatch, pending):
+    from unittest.mock import AsyncMock
+    from services.chat_sync.runtime import ChatSyncServiceError
+
+    runtime, _, _, _ = await pending_model_runtime(tmp_path, uploaded=True)
+    if not pending:
+        state = runtime.models.store.get(DOMAIN.key())
+        state.pop('pending')
+        runtime.models.store.put(DOMAIN.key(), state)
+    monkeypatch.setattr(runtime.models, 'step', AsyncMock(side_effect=ChatSyncServiceError(404)))
+    try:
+        await runtime._automatic_models(runtime.state.bindings(), await runtime.session_presence_provider())
+        state = runtime.scheduler.channel_status(DOMAIN.key())['model']
+        assert state['lastError'] is None
+        assert state['status'] == ('waiting' if pending else 'success')
+        assert (state['lastSuccessAt'] is not None) is (not pending)
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_cloud_choice_retries_the_same_revision_after_a_renderer_failure(tmp_path):
     runtime, service, adapter, _ = await pending_model_runtime(tmp_path, uploaded=True)
     try:

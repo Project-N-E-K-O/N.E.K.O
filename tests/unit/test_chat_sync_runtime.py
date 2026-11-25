@@ -1793,6 +1793,53 @@ async def test_chat_starting_during_long_term_metadata_read_defers_status_withou
         await runtime.close()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('application', ['busy', 'retry', 'applied'])
+async def test_long_term_status_waits_until_the_staged_snapshot_is_consumed(tmp_path, monkeypatch, application):
+    runtime, service, _ = recent_role_runtime(tmp_path, {UID: 'Neko'}, long_term=True)
+    adapter = runtime.long_term_memory.adapter
+    busy = [False]
+    runtime.profiles.adapter = SimpleNamespace(busy=lambda _name: busy[0])
+    incoming = adapter.incoming_path(UID)
+    stage_remote = adapter.stage_remote
+
+    def stage(*args):
+        staged = stage_remote(*args)
+        if application == 'busy':
+            busy[0] = True
+        return staged
+
+    async def flush(_uid):
+        if application == 'applied' and incoming.is_file():
+            incoming.unlink()
+            return True
+        return False
+
+    async def observed(request):
+        if request.url.path.endswith('/long-term-memory'):
+            value = {'ownerId': OWNER, 'characterSyncId': UID, 'revision': 1, 'completedAt': 2000}
+            if request.url.params.get('metadataOnly') != 'true':
+                value['document'] = {'schemaVersion': 1, 'completedAt': 2000, 'entries': []}
+            return httpx.Response(200, json=value)
+        return await service.request(request)
+
+    monkeypatch.setattr(adapter, 'stage_remote', stage)
+    monkeypatch.setattr(adapter, 'flush', flush)
+    await runtime.http.aclose()
+    runtime.http = httpx.AsyncClient(transport=httpx.MockTransport(observed))
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Neko')
+        result = await runtime._long_term_memory_pass(UID, presence=await runtime.session_presence_provider())
+        assert result['hasMore'] is False
+        assert incoming.is_file() is (application != 'applied')
+        state = runtime.scheduler.channel_status(DOMAIN.key())['long_term']
+        assert state['status'] == ('success' if application == 'applied' else 'waiting')
+        assert (state['lastSuccessAt'] is not None) is (application == 'applied')
+    finally:
+        await runtime.close()
+
+
 async def run_scheduler_tick(runtime):
     """Run one scheduler decision and wait for the finite channel sweeps it launched."""
     await runtime.scheduler_tick()
