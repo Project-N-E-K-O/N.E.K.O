@@ -1241,6 +1241,24 @@ HAND_OVER_ANSWER_WORD_PATTERNS = (
     r"\b(?:familiar(?:es)?|archivos?|arquivos?|cambiar|alterar|yo\s+mismo|eu\s+mesmo)\b",
 )
 
+# What a sentence that answers whether a project's leader may start a team
+# says of that choice, on top of the two lists above: the team, its members
+# working at the same time or one after the other, each in a copy of its own
+# that is merged back (its question, ``open_session_team`` in
+# ``PERMISSION_CATEGORY_TEXTS``, says so). Set aside the same way, for that
+# question only.
+START_TEAM_ANSWER_WORD_PATTERNS = (
+    r"组队|組隊|组一支|組一支|队伍|隊伍|团队|團隊|组吧|組吧|一起|同时|同時|分头|分頭|并行|並行|两只|兩隻|俩|倆|它们|它們"
+    r"|就够|就夠|一个一个|一個一個|一个个|一個個|挨个|挨個|轮流|輪流|按顺序|按順序|副本|合回|分开|分開",
+    r"\b(?:team|teams|together|same\s+time|at\s+once|parallel|both|two|them|they|split|one\s+by\s+one"
+    r"|one\s+after\s+(?:the\s+)?other|in\s+turn|copies|copy|merge|merged|enough|form)\b",
+    r"チーム|組んで|組む|一緒に|同時に|同時|並行|二体|2\s*体|両方|順番に|順番|一体ずつ|ひとつずつ|一つずつ|コピー|反映|十分|分けて|分担",
+    r"팀|꾸려|꾸리|같이|함께|동시에|동시|병렬|둘이|두\s*마리|둘\s*다|하나씩|차례로|차례|사본|반영|충분|나눠",
+    r"команд\w*|вместе|одновременно|параллельно|оба|обе|двое|по\s+очереди|по\s+одному|копи\w*",
+    r"\b(?:equipo|equipe|juntos|juntas|a\s+la\s+vez|al\s+mismo\s+tiempo|ao\s+mesmo\s+tempo|en\s+paralelo|em\s+paralelo"
+    r"|ambos|ambas|los\s+dos|os\s+dois|uno\s+por\s+uno|um\s+por\s+um|copias?|c[oó]pias?)\b",
+)
+
 ANSWER_CUE_PATTERNS = (
     r"^\s*(?:回答|回复|回覆|答复|答覆|告诉它|告訴它|告诉使魔|告訴使魔)",
     r"^\s*(?:answer|reply|tell\s+(?:it|the\s+familiar))\b",

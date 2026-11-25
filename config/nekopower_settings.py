@@ -290,6 +290,22 @@ were) and 2 answers for new work (1 was read wrongly). With four allowed, 2
 of the model's requests (said of the work itself, read as a yes and a no) and
 4 of the others would be answers, and 18 of the model's answers new work."""
 
+START_TEAM_ANSWER_WORDS_MAX = 2
+"""The same as ``BESIDE_ANSWER_WORDS_MAX``, for the answer to whether a
+project's leader may start a team whose members change files
+(``detail.tool == "start_team"``), whose own words of the choice are
+``HAND_OVER_ANSWER_WORD_PATTERNS`` and ``START_TEAM_ANSWER_WORD_PATTERNS``
+as well. Set as the owner set the others ("three and more" is new work).
+Measured with ``tests/unit/nekopower/fixtures/start_team_answer_sentences.json``
+(four languages; 48 answers and 56 requests in each half): of the requests
+written by a model that did not know the rule, none is taken for an answer
+(35 were before, 19 of them for a yes or a no that decided the question); of
+its answers, 25 are taken for new work (4 were read wrongly before). Of the
+sentences written beside the rule, 2 requests are taken for answers (36
+were) and 5 answers for new work (3 were read wrongly). With three or four
+allowed, none of the model's requests and 4 of the others would be answers
+(one a yes to the team), and 20 or 14 of the model's answers new work."""
+
 ORCHESTRATOR_APART_MIN_WORDS = 4
 """A sentence is told to be about something else than what a member works
 on only when it says this many words of its own (as the retrieval counts

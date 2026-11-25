@@ -1170,9 +1170,134 @@ def test_what_an_answer_to_a_leader_says_of_the_choice_is_set_aside_in_the_langu
     assert read_answer(said, [waiting]).choice == choice
 
 
-@pytest.mark.parametrize("tool", ["hand_over", "beside"])
+def _asked_for_a_team(parts: list[str], title: str = "redo the footer of the shop site") -> Commission:
+    """A leader's commission asking the user whether it may start a team whose members change files (``_cb_start_team``)."""
+    members = [f"worker: {part}" for part in parts]
+    question = {
+        "kind": "permission", "category": "open_session", "key": None,
+        "detail": {
+            "tool": "start_team", "title": "; ".join(members), "members": members,
+            "parts": [{"preset": "worker", "description": part} for part in parts], "count": len(parts), "tree": True,
+        },
+        "options": ["always", "session", "once", "deny"], "id": "q1",
+    }
+    return commission("c1", title, status="waiting_user", pending_question=json.dumps(question, ensure_ascii=False))
+
+
+# What is read wrongly of the sentences said while a leader asks to start a team (``START_TEAM_ANSWER_WORDS_MAX``),
+# by name.
+_READ_WRONGLY_FOR_THE_TEAM = {
+    # Answers taken for new work: they say more than a yes or a no (the user then sees a new commission,
+    # with the question still open), or no yes or no at all.
+    ("self", "answers"): [
+        "お願いします、チームを組んで", "이번 한 번만 허락할게", "응, 둘이 동시에 해도 돼", "지금은 하지 마, 푸터는 내가 고칠게",
+        "부탁해, 팀으로 해 줘",
+    ],
+    ("independent", "answers"): [
+        "always allow, you don't need to ask me about teams anymore",
+        "sure, let the two of them work at the same time, but only for this footer task",
+        "fine, form the team. once is enough though, ask me again next time",
+        "always allow, I trust them with that kind of thing",
+        "my boss just told me no parallel changes on the shop repo, so deny",
+        "始终允许，以后组队这种事不用再问我了", "让两只使魔一起改吧，不过只限这次页脚的活", "别同时改了，一个一个来吧，我怕合并的时候出问题",
+        "好的，允许一次，下次还是要先问我", "不行，我不想两只同时动我的文件", "以后都允许吧，我信得过它们", "老板刚说商城项目不许并行改，所以拒绝",
+        "2体同時で進めていいよ、ただしこのフッターの作業の間だけね", "わかった、今回は許可する。次はまた聞いてね",
+        "店長がチームで進めていいって。今回だけ許可で", "上司にショップのリポジトリは並行で変更しないでって言われたから、拒否で",
+        "응", "항상 허용. 팀 꾸리는 건 앞으로 안 물어봐도 돼", "두 마리가 동시에 작업해도 돼, 대신 이 푸터 작업할 때만",
+        "동시에 하지 말고 한 마리씩 차례대로 해 줘", "알겠어, 이번엔 허용. 다음엔 또 물어봐", "사장님이 팀으로 해도 된대. 이번 한 번만 허용해",
+        "안 돼, 두 마리가 한꺼번에 파일 건드리는 건 싫어", "그냥 계속 허용해 둬, 믿으니까", "팀장님이 쇼핑몰 저장소는 동시에 수정하지 말라고 해서 거부할게",
+    ],
+    # New work taken for an answer: short, with little but what reads as a no beside what it asks for.
+    ("self", "new_work"): ["别忘了更新 README", "修一下联系页的错别字"],
+    ("independent", "new_work"): [],
+}
+
+
+@pytest.mark.parametrize("written_by", ["self", "independent"])
+def test_what_is_said_while_a_leader_asks_to_start_a_team_is_read_as_measured(written_by):
+    sentences = json.loads((Path(__file__).parent / "fixtures" / "start_team_answer_sentences.json").read_text("utf-8"))
+    read: dict[str, Triage | None] = {}
+    for lang, said in sentences[written_by].items():
+        # Asked in the user's language: what each member is to do is said in it.
+        asked = sentences["questions"][lang]
+        waiting = _asked_for_a_team(asked["parts"], asked["request"])
+        read.update({text: read_answer(text, [waiting]) for kind in ("answers", "new_work") for text in said[kind]})
+
+    def wrongly(kind: str, as_answer: bool) -> list[str]:
+        return [
+            text for said in sentences[written_by].values() for text in said[kind] if (read[text] is not None) == as_answer
+        ]
+
+    assert wrongly("answers", False) == _READ_WRONGLY_FOR_THE_TEAM[(written_by, "answers")]
+    assert wrongly("new_work", True) == _READ_WRONGLY_FOR_THE_TEAM[(written_by, "new_work")]
+    # What is read as an answer says which choice it is: none is an answer that was not understood.
+    assert all(answer.choice for answer in read.values() if answer is not None)
+
+
+def test_how_much_a_leaders_question_about_a_team_may_be_answered_with_is_a_setting_of_its_own(monkeypatch):
+    # Says no, and more: why, and how it is to be done instead.
+    said = "no, I don't want them touching the same files, let the lead do the links first"
+    team = _asked_for_a_team(["repairs the links in the footer", "rebuilds the footer layout for small screens"])
+    one = _asked_by_the_leader("repairs the links in the footer <- redo the footer of the shop site")
+    assert read_answer(said, [team]) is None and read_answer(said, [one]) is None
+
+    monkeypatch.setattr("config.nekopower_settings.START_TEAM_ANSWER_WORDS_MAX", 20)
+    assert read_answer(said, [team]).choice == "deny"
+    # The leader's other question goes by its own.
+    assert read_answer(said, [one]) is None
+    monkeypatch.setattr("config.nekopower_settings.START_TEAM_ANSWER_WORDS_MAX", 2)
+    monkeypatch.setattr("config.nekopower_settings.HAND_OVER_ANSWER_WORDS_MAX", 20)
+    assert read_answer(said, [one]).choice == "deny" and read_answer(said, [team]) is None
+
+
+@pytest.mark.parametrize(
+    ("said", "choice"),
+    [
+        # What is said of the team itself is set aside: in the languages measured, and in those that are not.
+        ("yes, both of them at the same time is fine", "once"),
+        ("可以，让它们分头同时改", "once"),
+        ("不行，一個一個輪流改就夠了", "deny"),
+        ("はい、チームで同時に並行して", "once"),
+        ("안 돼, 하나씩 차례로 해", "deny"),
+        ("да, пусть работают вместе одновременно", "once"),
+        ("sí, que trabajen juntos al mismo tiempo", "once"),
+        ("não, um por um, nada de equipe em paralelo", "deny"),
+    ],
+)
+def test_what_an_answer_to_a_leader_about_a_team_says_of_the_choice_is_set_aside(said, choice):
+    waiting = _asked_for_a_team(["repairs the links in the footer", "rebuilds the footer layout for small screens"])
+    assert read_answer(said, [waiting]).choice == choice
+    # Of a question about one member, the leader's or one beside a busy member, it is more than an answer.
+    for tool in ("hand_over", "beside"):
+        one = _asked_by_the_leader("repairs the links <- redo the footer of the shop site", tool=tool)
+        assert read_answer(said, [one]) is None, tool
+
+
+def test_new_work_said_while_a_leader_asks_for_a_team_is_not_taken_for_its_answer():
+    waiting = _asked_for_a_team(["repairs the links in the footer", "rebuilds the footer layout for small screens"])
+
+    # It shares words with what is asked (the footer, the links) and says no answer: new work.
+    for said in ("make the footer links open in a new tab", "what about the layout of the contact page", "页脚的链接颜色改成蓝色"):
+        assert read_answer(said, [waiting]) is None
+    # A yes or a no in passing does not answer it either: it would have refused the team (or allowed it).
+    assert read_answer("no rush, but rename the images folder of the shop site", [waiting]) is None
+    assert read_answer("ok, and translate the about page of the shop site into Japanese", [waiting]) is None
+    # What answers it is read as it was, with the choice it says.
+    answered = read_answer("yes", [waiting])
+    assert (answered.kind, answered.targets, answered.choice) == ("answer", ["c1"], "once")
+    assert read_answer("no, one familiar is enough", [waiting]).choice == "deny"
+    assert read_answer("allow it for this session", [waiting]).choice == "session"
+    # What says it answers is an answer, understood or not.
+    unclear = read_answer("answer: the links one", [waiting])
+    assert (unclear.kind, unclear.targets, unclear.choice) == ("answer", ["c1"], None)
+
+
+@pytest.mark.parametrize("tool", ["hand_over", "beside", "start_team"])
 def test_new_work_said_while_another_member_is_asked_about_answers_no_other_question_waiting_beside_it(tool):
-    asked = _asked_by_the_leader("Rebuilds the header and its menu <- redo the header of the shop site", tool=tool)
+    if tool == "start_team":
+        asked = _asked_for_a_team(["Rebuilds the header and its menu"], "redo the header of the shop site")
+    else:
+        asked = _asked_by_the_leader("Rebuilds the header and its menu <- redo the header of the shop site", tool=tool)
     command = {
         "kind": "permission", "category": "shell", "key": None, "detail": {"tool": "bash", "command": "npm run build"},
         "options": ["always", "session", "once", "deny"], "id": "q2",

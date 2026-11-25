@@ -1,0 +1,293 @@
+{
+ "about": "Sentences said while the user is asked whether a project's leader may start a team whose members change files (tests/unit/nekopower/test_host_decision.py). 'questions': what is asked, by language: the commission the leader is at ('request') and what each member that changes files is to do ('parts'), both in the user's language. 'self': written by the session that wrote the rule, while looking at the rule. 'independent': written by a model that did not know the rule, from the questions alone, as shown to the user.",
+ "questions": {
+  "en": {
+   "request": "redo the footer of the shop site so it works on phones",
+   "parts": [
+    "repairs the links in the footer",
+    "rebuilds the footer layout for small screens"
+   ]
+  },
+  "zh": {
+   "request": "把商城网站的页脚重做一下，让它在手机上也好用",
+   "parts": [
+    "修好页脚里的链接",
+    "重排页脚在小屏幕上的布局"
+   ]
+  },
+  "ja": {
+   "request": "ショップサイトのフッターを作り直して、スマホでも使えるようにして",
+   "parts": [
+    "フッターのリンクを直す",
+    "小さい画面向けにフッターのレイアウトを組み直す"
+   ]
+  },
+  "ko": {
+   "request": "쇼핑몰 사이트 푸터를 다시 만들어서 휴대폰에서도 잘 되게 해 줘",
+   "parts": [
+    "푸터의 링크를 고친다",
+    "작은 화면에 맞게 푸터 레이아웃을 다시 짠다"
+   ]
+  }
+ },
+ "self": {
+  "en": {
+   "answers": [
+    "yes",
+    "ok, start the team",
+    "no",
+    "sure, let the two of them work on it",
+    "go ahead, just this once",
+    "allow it for this session",
+    "always allow, don't ask me again",
+    "no, one familiar is enough",
+    "the user says yes",
+    "no, do them one after the other",
+    "not now, I'll fix the footer myself",
+    "yes please, form the team"
+   ],
+   "new_work": [
+    "also check why the checkout page of the shop site is slow",
+    "make the footer links open in a new tab",
+    "add a search box to the shop site",
+    "ok, and translate the about page of the shop site into Japanese",
+    "no rush, but rename the images folder of the shop site",
+    "don't forget to update the readme",
+    "make sure the footer has a dark mode too",
+    "what's the weather tomorrow",
+    "remind me to call mom at six",
+    "sure, then add a newsletter signup form to the footer",
+    "never put the payment key in the footer script, move it to the config",
+    "write a test for the login form of the shop site",
+    "fix the broken links on the contact page",
+    "yes, and also compress the product images of the shop site"
+   ]
+  },
+  "zh": {
+   "answers": [
+    "好的",
+    "可以，组吧",
+    "不行",
+    "行，就这一次",
+    "这次会话都允许",
+    "以后都允许，别再问了",
+    "不要，一只就够了",
+    "可以，让它们俩一起改",
+    "用户说可以",
+    "不用组队，一个一个来",
+    "先别，页脚我自己来改",
+    "嗯，同意"
+   ],
+   "new_work": [
+    "顺便看看商城网站的结账页为什么这么慢",
+    "页脚的链接颜色改成蓝色",
+    "给商城网站加一个搜索框",
+    "好的，再帮我把关于页翻译成日文",
+    "不用急，先把商城网站的图片文件夹改个名",
+    "别忘了更新 README",
+    "页脚也要支持深色模式",
+    "明天天气怎么样",
+    "提醒我六点给妈妈打电话",
+    "可以，然后在页脚加一个订阅邮件的表单",
+    "修一下联系页的错别字",
+    "给商城网站的登录表单写个测试",
+    "把联系页上坏掉的链接修一下",
+    "行，另外把商品图片压缩一下"
+   ]
+  },
+  "ja": {
+   "answers": [
+    "はい",
+    "いいよ、チームで進めて",
+    "だめ",
+    "今回だけならいいよ",
+    "このセッション中は許可",
+    "常に許可で、もう聞かないで",
+    "いや、一体で十分",
+    "うん、二体で同時にやっていいよ",
+    "ユーザーは許可すると言っています",
+    "拒否。順番にやって",
+    "今はやめて、フッターは自分で直す",
+    "お願いします、チームを組んで"
+   ],
+   "new_work": [
+    "ついでにショップサイトの決済ページが遅い理由も調べて",
+    "フッターのリンクの色を青にして",
+    "ショップサイトに検索ボックスを追加して",
+    "いいよ、それとアバウトページを英語に翻訳して",
+    "急がないけど、ショップサイトの画像フォルダの名前を変えて",
+    "README の更新も忘れないで",
+    "フッターにもダークモードを付けて",
+    "明日の天気は？",
+    "六時に母に電話するようリマインドして",
+    "いいね、じゃあフッターにメルマガ登録フォームを追加して",
+    "お問い合わせページの誤字を直して",
+    "ショップサイトのログインフォームのテストを書いて",
+    "お問い合わせページの壊れたリンクを直して",
+    "はい、あと商品画像も圧縮して"
+   ]
+  },
+  "ko": {
+   "answers": [
+    "네",
+    "좋아, 팀 꾸려",
+    "안 돼",
+    "이번 한 번만 허락할게",
+    "이번 세션 동안은 허용",
+    "항상 허용, 다시 묻지 마",
+    "아니, 하나면 충분해",
+    "응, 둘이 동시에 해도 돼",
+    "사용자가 허락한대요",
+    "거부. 하나씩 차례로 해",
+    "지금은 하지 마, 푸터는 내가 고칠게",
+    "부탁해, 팀으로 해 줘"
+   ],
+   "new_work": [
+    "그리고 쇼핑몰 사이트 결제 페이지가 왜 느린지 봐 줘",
+    "푸터 링크 색을 파란색으로 바꿔 줘",
+    "쇼핑몰 사이트에 검색창을 추가해 줘",
+    "좋아, 그리고 소개 페이지를 일본어로 번역해 줘",
+    "급하진 않은데 쇼핑몰 사이트 이미지 폴더 이름 좀 바꿔 줘",
+    "README 업데이트하는 거 잊지 마",
+    "푸터에도 다크 모드 넣어 줘",
+    "내일 날씨 어때",
+    "여섯 시에 엄마한테 전화하라고 알려 줘",
+    "응, 그럼 푸터에 뉴스레터 구독 폼 추가해 줘",
+    "문의 페이지 오타 좀 고쳐 줘",
+    "쇼핑몰 사이트 로그인 폼 테스트 작성해 줘",
+    "문의 페이지의 깨진 링크를 고쳐 줘",
+    "네, 그리고 상품 이미지도 압축해 줘"
+   ]
+  }
+ },
+ "independent": {
+  "en": {
+   "answers": [
+    "yes",
+    "ok go ahead, just this once",
+    "allow for this session",
+    "always allow, you don't need to ask me about teams anymore",
+    "no, deny that",
+    "sure, let the two of them work at the same time, but only for this footer task",
+    "I'd rather they do it one after the other, so no team please",
+    "fine, form the team. once is enough though, ask me again next time",
+    "my partner says go ahead with the two familiars, allow it this time",
+    "nope, I don't want two of them touching my files at once",
+    "always allow, I trust them with that kind of thing",
+    "my boss just told me no parallel changes on the shop repo, so deny"
+   ],
+   "new_work": [
+    "also the 'Contact us' link in the footer goes to a 404, can you check that too",
+    "ok another thing: the product page images load really slowly on mobile",
+    "can you add a newsletter signup box to the footer?",
+    "what's the weather like tomorrow in Seattle",
+    "remind me at 6pm to call the supplier",
+    "never mind the footer colors I mentioned before, keep them as they are",
+    "don't forget the checkout page still shows the old shipping price",
+    "sure would be nice if the cart icon showed the number of items, can you add that",
+    "write a short thank-you message I can put on the order confirmation page",
+    "no rush, but the About page has a typo in the second paragraph",
+    "the search bar on the home page is fine on desktop but breaks on phones, can you look at it",
+    "I want a dark mode for the whole shop at some point, not now though, just put it on the list",
+    "write me a two-line birthday message for my sister",
+    "where does the Instagram link in the footer point right now? I think it's still the old account"
+   ]
+  },
+  "zh": {
+   "answers": [
+    "可以",
+    "行，这次先允许吧",
+    "本会话允许",
+    "始终允许，以后组队这种事不用再问我了",
+    "拒绝",
+    "让两只使魔一起改吧，不过只限这次页脚的活",
+    "别同时改了，一个一个来吧，我怕合并的时候出问题",
+    "好的，允许一次，下次还是要先问我",
+    "我老公说可以，让它们组队吧，就这一次",
+    "不行，我不想两只同时动我的文件",
+    "以后都允许吧，我信得过它们",
+    "老板刚说商城项目不许并行改，所以拒绝"
+   ],
+   "new_work": [
+    "对了，页脚里那个“联系我们”的链接点进去是404，顺便看看",
+    "好，还有一件事：商品详情页的图片在手机上加载特别慢",
+    "能不能在页脚加一个订阅邮件的输入框？",
+    "明天上海天气怎么样",
+    "提醒我晚上六点给供应商打电话",
+    "算了，之前说的页脚颜色不用改了，保持原样就行",
+    "别忘了结算页面还显示旧的运费",
+    "要是购物车图标上能显示件数就好了，帮我加一下呗",
+    "帮我写一段感谢下单的话，放到订单确认页上",
+    "不急，关于我们页面第二段有个错别字",
+    "首页的搜索框在电脑上没问题，手机上就乱了，看一下",
+    "以后想给整个商城加个深色模式，现在先不用，记下来就好",
+    "帮我写两句给我妹妹的生日祝福",
+    "页脚里的 Instagram 链接现在指向哪个账号？我记得还是旧的"
+   ]
+  },
+  "ja": {
+   "answers": [
+    "いいよ",
+    "今回だけならOK",
+    "このセッションだけ許可で",
+    "常に許可。チーム組むのはもういちいち聞かなくていいよ",
+    "拒否",
+    "2体同時で進めていいよ、ただしこのフッターの作業の間だけね",
+    "同時にやるのはやめて、1体ずつ順番にやってほしい",
+    "わかった、今回は許可する。次はまた聞いてね",
+    "店長がチームで進めていいって。今回だけ許可で",
+    "だめ、2体で同時にファイルいじられるのは不安",
+    "ずっと許可でいいよ、信頼してるし",
+    "上司にショップのリポジトリは並行で変更しないでって言われたから、拒否で"
+   ],
+   "new_work": [
+    "あと、フッターの「お問い合わせ」リンクが404になってるから見ておいて",
+    "OK、もう一つ。商品ページの画像がスマホだとすごく遅い",
+    "フッターにメルマガ登録の欄を追加できる？",
+    "明日の東京の天気どう？",
+    "夕方6時に仕入れ先に電話するのリマインドして",
+    "やっぱりフッターの色の件はいいや、今のままにしといて",
+    "決済ページにまだ古い送料が出てるの忘れないでね",
+    "カートのアイコンに商品の数が出たらいいな、追加してくれる？",
+    "注文確認ページに載せるお礼のメッセージを短く書いて",
+    "急がないけど、会社概要ページの2段落目に誤字がある",
+    "トップページの検索バー、PCでは大丈夫だけどスマホだと崩れる",
+    "いつかショップ全体にダークモードがほしい。今じゃなくていいから、メモしといて",
+    "妹の誕生日に送るメッセージを2行くらいで書いて",
+    "フッターのInstagramのリンクって今どのアカウントに飛ぶ？古いアカウントのままな気がする"
+   ]
+  },
+  "ko": {
+   "answers": [
+    "응",
+    "이번만 허용할게",
+    "이번 세션만 허용",
+    "항상 허용. 팀 꾸리는 건 앞으로 안 물어봐도 돼",
+    "거부",
+    "두 마리가 동시에 작업해도 돼, 대신 이 푸터 작업할 때만",
+    "동시에 하지 말고 한 마리씩 차례대로 해 줘",
+    "알겠어, 이번엔 허용. 다음엔 또 물어봐",
+    "사장님이 팀으로 해도 된대. 이번 한 번만 허용해",
+    "안 돼, 두 마리가 한꺼번에 파일 건드리는 건 싫어",
+    "그냥 계속 허용해 둬, 믿으니까",
+    "팀장님이 쇼핑몰 저장소는 동시에 수정하지 말라고 해서 거부할게"
+   ],
+   "new_work": [
+    "그리고 푸터에 있는 '문의하기' 링크가 404 떠, 그것도 봐 줘",
+    "오케이, 하나 더. 상품 페이지 이미지가 폰에서 너무 느리게 떠",
+    "푸터에 뉴스레터 구독 칸 추가할 수 있어?",
+    "내일 서울 날씨 어때?",
+    "저녁 6시에 거래처에 전화하라고 알려 줘",
+    "아 전에 말한 푸터 색깔은 됐어, 그냥 그대로 둬",
+    "결제 페이지에 아직 예전 배송비가 나오는 거 잊지 마",
+    "장바구니 아이콘에 상품 개수 뜨면 좋겠다, 추가해 줄래?",
+    "주문 확인 페이지에 넣을 짧은 감사 인사 써 줘",
+    "급한 건 아닌데 회사 소개 페이지 두 번째 문단에 오타 있어",
+    "메인 페이지 검색창이 PC에선 괜찮은데 폰에서는 깨져",
+    "나중에 쇼핑몰 전체에 다크 모드 넣고 싶어. 지금 말고, 메모만 해 둬",
+    "여동생 생일 축하 메시지 두 줄 정도로 써 줘",
+    "푸터 인스타그램 링크 지금 어느 계정으로 연결돼? 예전 계정인 것 같은데"
+   ]
+  }
+ }
+}
