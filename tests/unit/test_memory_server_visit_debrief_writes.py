@@ -1092,3 +1092,30 @@ def test_store_conversation_inserts_timestamp_atomically_in_one_transaction(tmp_
             text(f"SELECT COUNT(*) FROM {TIME_ORIGINAL_TABLE_NAME} WHERE timestamp IS NULL")
         ).fetchone()[0]
     assert null_rows == 0
+
+    # Database execution failure after the first INSERT must roll back the entire batch.
+    with engine.connect() as conn:
+        conn.execute(text(
+            f"CREATE TRIGGER reject_second_msg BEFORE INSERT ON {TIME_ORIGINAL_TABLE_NAME} "
+            "WHEN NEW.session_id = 'sess_db_fail' AND NEW.message LIKE '%trigger_boom%' "
+            "BEGIN SELECT RAISE(ABORT, 'db constraint boom'); END;"
+        ))
+        conn.commit()
+    with pytest.raises(Exception, match="db constraint boom"):
+        tim.store_conversation(
+            "sess_db_fail",
+            [HumanMessage(content="first_ok"), AIMessage(content="trigger_boom")],
+            NAME,
+            timestamp=t2,
+        )
+    with engine.connect() as conn:
+        failed_rows = conn.execute(
+            text(f"SELECT COUNT(*) FROM {TIME_ORIGINAL_TABLE_NAME} WHERE session_id = 'sess_db_fail'")
+        ).fetchone()[0]
+        shared_rows = conn.execute(
+            text(f"SELECT id, session_id, timestamp FROM {TIME_ORIGINAL_TABLE_NAME} ORDER BY id")
+        ).fetchall()
+    assert failed_rows == 0
+    assert len(shared_rows) == 2
+    assert shared_rows[0][2].startswith("2026-11-01")
+    assert shared_rows[1][2].startswith("2026-11-02")

@@ -21,6 +21,43 @@ python server.py --port 8099 --admin-token YOUR_SECRET_TOKEN
 _TELEMETRY_SERVER_URL = "http://你的服务器IP:8099"
 ```
 
+### 从旧版 `./data` 绑定挂载升级到命名卷 `telemetry-data`
+
+新版 `docker-compose.yml` 将持久化目录从宿主机 `./data:/app/data` 切换为 Docker 命名卷 `telemetry-data:/app/data`。**全新部署**无需任何操作，直接 `docker compose up -d` 会自动初始化空卷；**已有宿主机 `./data/telemetry.db` 的旧部署**必须在启动新容器前先把历史库迁入命名卷，否则服务会以空库启动：
+
+```bash
+cd local_server/telemetry_server
+
+# 1. 先停止旧服务，保证 SQLite（含 -wal/-shm）处于一致状态
+docker compose down
+
+# 2. 若本地尚未构建最新镜像，先构建
+docker compose build
+
+# 3. 一次性将宿主机 ./data/telemetry.db* 复制进命名卷 telemetry-data（不覆盖卷内已有库）
+docker compose run --rm --no-deps --user root \
+  -v "$PWD/data:/legacy-data:ro" \
+  --entrypoint sh telemetry -c '
+    set -eu
+    if [ -e /app/data/telemetry.db ]; then
+      echo "Refusing to overwrite existing /app/data/telemetry.db in volume" >&2
+      exit 1
+    fi
+    if [ ! -e /legacy-data/telemetry.db ]; then
+      echo "No legacy /legacy-data/telemetry.db found; nothing to migrate."
+      exit 0
+    fi
+    cp -a /legacy-data/telemetry.db /app/data/telemetry.db
+    for suffix in -wal -shm; do
+      [ -e "/legacy-data/telemetry.db$suffix" ] && cp -a "/legacy-data/telemetry.db$suffix" "/app/data/telemetry.db$suffix"
+    done
+    chown -R appuser /app/data
+  '
+
+# 4. 启动升级后的服务并核对历史数据仍在
+docker compose up -d
+```
+
 ## 安全机制
 
 | 机制 | 实现 | 说明 |
@@ -107,8 +144,8 @@ curl -X POST -H "Authorization: Bearer $TOKEN" http://服务器:8099/api/v1/admi
 ### 直接查 SQLite
 
 ```bash
-# Docker Compose 部署使用命名卷 telemetry-data：
-docker compose exec telemetry sqlite3 /app/data/telemetry.db
+# Docker Compose 部署使用命名卷 telemetry-data（镜像基于 python:3.11-slim，未安装 sqlite3 CLI，使用内置 sqlite3 模块查询）：
+docker compose exec telemetry python -c "import sqlite3; c = sqlite3.connect('/app/data/telemetry.db'); print(c.execute(\"SELECT * FROM daily_aggregates WHERE stat_date = date('now') AND model = '_total'\").fetchall())"
 # 直接运行 python server.py 时数据库位于本地 ./data/telemetry.db：
 # sqlite3 data/telemetry.db
 

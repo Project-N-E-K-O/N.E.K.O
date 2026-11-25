@@ -776,15 +776,16 @@ class FactStore:
     ) -> list[dict]:
         """Active facts (plus archived ones) read from disk, raising ``RuntimeError`` when unreadable.
 
-        For keyed writes deciding "was this already written": the lenient
-        :meth:`load_facts` caches an unreadable active pool as empty (a later
-        save would erase it) and :meth:`load_facts_full` reads an unreadable
-        archive as absent. Nothing is cached. Absent files read as empty; a
-        row present in both files (an interrupted archive commit) counts once,
-        as in :meth:`load_facts_full`. ``include_cold_stubs`` adds the cold rows
-        as stubs (no text, see :meth:`load_facts_full`); a cold row's stub
-        replaces any copy of it in the two files. An unreadable cold shard
-        raises too.
+        For keyed writes deciding "was this already written": unlike
+        :meth:`load_facts` (which caches the active pool in memory after a
+        successful load) and :meth:`load_facts_full` (which treats an unreadable
+        archive as absent), this method bypasses the in-memory cache and fails
+        closed on unreadable active, archive, or cold-shard files. Absent files
+        read as empty; a row present in both files (an interrupted archive
+        commit) counts once, as in :meth:`load_facts_full`.
+        ``include_cold_stubs`` adds the cold rows as stubs (no text, see
+        :meth:`load_facts_full`); a cold row's stub replaces any copy of it in
+        the two files. An unreadable cold shard raises too.
         """
         from memory.long_term_sync import require_consistent_views, consistent_view_read
         require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
@@ -7051,6 +7052,8 @@ class FactStore:
                 logger.info(f"[FactStore] {name}: v1→v2 entity 值迁移完成")
             except MaintenanceModeError as exc:
                 logger.debug(f"[FactStore] {name}: 维护态跳过 facts.json 迁移落盘: {exc}")
+            except OSError as exc:
+                logger.warning(f"[FactStore] {name}: facts.json v1→v2 迁移落盘失败，暂用内存迁移结果: {exc}")
         self._facts[name] = data
         return data
 

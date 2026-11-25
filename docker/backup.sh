@@ -465,30 +465,29 @@ echo "backup:   5) 实例访问密钥若一并恢复，终端不需要重新配�
 
 # ── 轮转（只在调用方明确要求时执行，且只删本脚本自己命名的文件）─────────────
 if [ "$KEEP" -gt 0 ]; then
-    matched=''
-    for candidate in $(ls -1t "$out_dir"/neko-backup-"$safe_container"-*.tar.gz 2>/dev/null || true); do
-        [ -e "$candidate" ] || continue
-        base=$(basename "$candidate")
-        suffix=${base#"neko-backup-${safe_container}-"}
-        case "$suffix" in
-            [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z-[0-9]*.tar.gz)
-                pid_part=${suffix#[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z-}
-                pid_part=${pid_part%.tar.gz}
-                case "$pid_part" in
-                    ''|*[!0-9]*) continue ;;
-                esac
-                matched="${matched}${candidate}
-"
-                ;;
-        esac
-    done
-    stale=$(printf '%s' "$matched" | sed '/^$/d' | tail -n +"$((KEEP + 1))" || true)
-    [ -n "$stale" ] || stale=''
-    if [ -n "$stale" ]; then
-        printf '%s\n' "$stale" | while IFS= read -r old; do
-            [ -n "$old" ] || continue
-            echo "backup: 轮转删除 $(basename "$old")（保留最近 $KEEP 份）"
-            rm -f "$old" "$old.sha256" "$old.manifest.txt"
+    (
+        cd "$out_dir" || exit 0
+        ls -1t -- neko-backup-"$safe_container"-*.tar.gz 2>/dev/null || true
+    ) | {
+        seen=0
+        while IFS= read -r base; do
+            [ -n "$base" ] || continue
+            [ -e "$out_dir/$base" ] || continue
+            suffix=${base#"neko-backup-${safe_container}-"}
+            case "$suffix" in
+                [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z-[0-9]*.tar.gz)
+                    pid_part=${suffix#[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z-}
+                    pid_part=${pid_part%.tar.gz}
+                    case "$pid_part" in
+                        ''|*[!0-9]*) continue ;;
+                    esac
+                    seen=$((seen + 1))
+                    if [ "$seen" -gt "$KEEP" ]; then
+                        echo "backup: 轮转删除 $base（保留最近 $KEEP 份）"
+                        rm -f "$out_dir/$base" "$out_dir/$base.sha256" "$out_dir/$base.manifest.txt"
+                    fi
+                    ;;
+            esac
         done
-    fi
+    }
 fi

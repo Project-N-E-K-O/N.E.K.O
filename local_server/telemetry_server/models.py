@@ -66,16 +66,23 @@ def _validate_daily_stats_map(daily_stats: dict) -> dict:
     today = date.today()
     min_date = today - timedelta(days=DAILY_STATS_PAST_DAYS)
     max_date = today + timedelta(days=DAILY_STATS_FUTURE_DAYS)
-    for stat_date in daily_stats:
+    filtered = {}
+    for stat_date, day_stats in daily_stats.items():
         if not isinstance(stat_date, str) or not _STAT_DATE_RE.fullmatch(stat_date):
             raise ValueError(f"invalid stat_date format: {stat_date!r}")
         try:
             parsed = date.fromisoformat(stat_date)
         except ValueError as exc:
             raise ValueError(f"invalid stat_date value: {stat_date!r}") from exc
-        if parsed < min_date or parsed > max_date:
-            raise ValueError(f"stat_date out of allowed window: {stat_date!r}")
-    return daily_stats
+        if parsed > max_date:
+            raise ValueError(f"stat_date in future beyond allowed window: {stat_date!r}")
+        if parsed < min_date:
+            # Drop expired historical days instead of failing the batch: returning
+            # clients persist pending batches across restarts and only clear them
+            # after HTTP 200, so rejecting >90d rows would block newer reports.
+            continue
+        filtered[stat_date] = day_stats
+    return filtered
 
 
 def _make_validator(*fields: str, fn, pre: bool = False):

@@ -330,3 +330,129 @@ async def test_apply_correction_results_checks_corrections_writable_before_savin
 
     facts = pm._get_section_facts(await pm.aensure_persona("小天"), "master")
     assert [e["text"] for e in facts] == ["旧偏好"]
+
+
+@pytest.mark.asyncio
+async def test_merge_with_unchanged_text_still_folds_speaker_trust_and_event_fields(tmp_path):
+    """Unchanged merge text must skip version_history while still folding speaker trust and event windows."""
+    pm, _ = _install(str(tmp_path))
+    await _seed_master_fact(
+        pm, "小天", "主人喜欢猫",
+        speaker_id="qq:alice",
+        speaker_trust=0.9,
+        event_when_raw="2026-04",
+        event_start_at="2026-04-01T00:00:00",
+        event_end_at="2026-04-30T23:59:59",
+    )
+    await pm._aqueue_correction(
+        "小天", "主人喜欢猫", "主人喜欢橘猫", "master",
+        old_speaker_provenance={"speaker_id": "qq:alice", "speaker_trust": 0.9},
+        new_speaker_provenance={
+            "speaker_id": "qq:alice",
+            "speaker_trust": 0.2,
+            "event_when_raw": "2026-05",
+            "event_start_at": "2026-05-01T00:00:00",
+            "event_end_at": "2026-05-31T23:59:59",
+        },
+    )
+    cid = (await pm.aload_pending_corrections("小天"))[0]["correction_id"]
+    fake_llm = _make_llm_mock([{"index": 0, "action": "merge", "text": "主人喜欢猫"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
+        resolved = await pm.resolve_corrections("小天")
+
+    assert resolved == 1
+    target = pm._get_section_facts(await pm.aensure_persona("小天"), "master")[0]
+    assert target["text"] == "主人喜欢猫"
+    assert target.get("version_history") == []
+    assert target["speaker_trust"] == pytest.approx(0.2)
+    assert target["event_start_at"] == "2026-04-01T00:00:00"
+    assert target["event_end_at"] == "2026-05-31T23:59:59"
+    assert target["applied_correction_id"] == cid
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["keep_new", "keep_both"])
+async def test_corrections_ignore_permanently_suppressed_matching_new_entry(tmp_path, action):
+    """Permanently suppressed rows matching new_text must not suppress creating a live entry."""
+    from memory.introspection import PERMANENT_SUPPRESSION_KEY, build_permanent_suppression
+
+    pm, _ = _install(str(tmp_path))
+    await _seed_master_fact(pm, "小天", "旧观察")
+    await _seed_master_fact(
+        pm, "小天", "新观察",
+        id="retired_new_1",
+        **{PERMANENT_SUPPRESSION_KEY: build_permanent_suppression("stale", "2026-11-01T00:00:00")},
+    )
+    await pm._aqueue_correction("小天", "旧观察", "新观察", "master")
+
+    fake_llm = _make_llm_mock([{"index": 0, "action": action}])
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
+        resolved = await pm.resolve_corrections("小天")
+
+    assert resolved == 1
+    facts = pm._get_section_facts(await pm.aensure_persona("小天"), "master")
+    live_new = [e for e in facts if e.get("text") == "新观察" and not e.get(PERMANENT_SUPPRESSION_KEY)]
+    retired = [e for e in facts if e.get("id") == "retired_new_1"]
+    assert len(live_new) == 1
+    assert len(retired) == 1
+    assert bool(retired[0].get(PERMANENT_SUPPRESSION_KEY)) is True
+    assert "applied_correction_id" not in retired[0]
+    if action == "keep_new":
+        assert all(e.get("text") != "旧观察" for e in facts)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arbitrated", [True, False])
+async def test_keep_new_with_existing_live_new_entry_merges_history_only_when_arbitrated(tmp_path, arbitrated):
+    """When live new_text already exists, trust-arbitrated keep_new retains old history/metadata while non-arbitrated skips history."""
+    pm, _ = _install(str(tmp_path))
+    prior_snapshot = {"text": "更早版本", "replaced_at": "2026-01-01T00:00:00", "reason": "correction", "source_fact_id": None}
+    await _seed_master_fact(
+        pm, "小天", "主人喜欢猫",
+        speaker_id="qq:bob",
+        speaker_trust=0.2 if arbitrated else 0.8,
+        event_when_raw="2026-06",
+        event_start_at="2026-06-01T00:00:00",
+        event_end_at="2026-06-30T23:59:59",
+        version_history=[prior_snapshot],
+    )
+    await _seed_master_fact(
+        pm, "小天", "主人不喜欢猫",
+        speaker_id="qq:alice",
+        speaker_trust=0.95,
+    )
+    await pm._aqueue_correction(
+        "小天", "主人喜欢猫", "主人不喜欢猫", "master",
+        old_speaker_provenance={
+            "speaker_id": "qq:bob",
+            "speaker_trust": 0.2 if arbitrated else 0.8,
+            "event_when_raw": "2026-06",
+            "event_start_at": "2026-06-01T00:00:00",
+            "event_end_at": "2026-06-30T23:59:59",
+        },
+        new_speaker_provenance={
+            "speaker_id": "qq:alice",
+            "speaker_trust": 0.9 if arbitrated else 0.8,
+            "event_when_raw": "2026-06",
+            "event_start_at": "2026-06-01T00:00:00",
+            "event_end_at": "2026-06-30T23:59:59",
+        },
+    )
+    cid = (await pm.aload_pending_corrections("小天"))[0]["correction_id"]
+    fake_llm = _make_llm_mock([{"index": 0, "action": "keep_old" if arbitrated else "keep_new"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
+        resolved = await pm.resolve_corrections("小天")
+
+    assert resolved == 1
+    facts = pm._get_section_facts(await pm.aensure_persona("小天"), "master")
+    assert [e["text"] for e in facts] == ["主人不喜欢猫"]
+    survivor = facts[0]
+    assert survivor["applied_correction_id"] == cid
+    assert survivor["event_when_raw"] == "2026-06"
+    if arbitrated:
+        assert survivor["speaker_trust"] == pytest.approx(0.9)
+        reasons = [h.get("reason") for h in survivor.get("version_history") or []]
+        assert reasons == ["correction", "trust_superseded"]
+        assert survivor["version_history"][1]["text"] == "主人喜欢猫"
+    else:
+        assert survivor.get("version_history") == []

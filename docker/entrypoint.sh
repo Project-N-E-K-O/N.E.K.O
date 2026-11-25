@@ -475,7 +475,7 @@ EOF
     
     # 验证生成的证书
     echo "   Verifying generated certificate..."
-    if ! openssl x509 -in "$cert_file" -noout -text 2>/dev/null | grep -q "CN=$domain"; then
+    if ! openssl x509 -in "$cert_file" -noout -subject -nameopt RFC2253 2>/dev/null | grep -qF "CN=$domain"; then
         echo "❌ Generated certificate does not contain expected domain"
         return 1
     fi
@@ -517,8 +517,12 @@ _archive_invalid_ssl_file() {
         dest="${target}.invalid-${ts}-${n}"
         n=$((n + 1))
     done
-    mv -f "$target" "$dest"
+    if ! mv -f "$target" "$dest"; then
+        echo "❌ Failed to archive invalid/partial SSL file: $target -> $dest" >&2
+        return 1
+    fi
     echo "📦 Archived invalid/partial SSL file: $target -> $dest"
+    return 0
 }
 
 ensure_ssl_certificates() {
@@ -540,8 +544,14 @@ ensure_ssl_certificates() {
         echo "   Key: $key_file"
         if [ "${AUTO_REGENERATE_CERT:-0}" = "1" ]; then
             echo "🔄 AUTO_REGENERATE_CERT=1: archiving partial files and regenerating self-signed SSL certificate..."
-            _archive_invalid_ssl_file "$cert_file"
-            _archive_invalid_ssl_file "$key_file"
+            if ! _archive_invalid_ssl_file "$cert_file" || ! _archive_invalid_ssl_file "$key_file"; then
+                echo "❌ Refusing to regenerate SSL certificate because existing files could not be archived."
+                if [ "${DISABLE_SSL:-0}" != "1" ]; then
+                    return 1
+                fi
+                echo "⚠️ SSL disabled, continuing without HTTPS..."
+                return 0
+            fi
             if generate_ssl_certificate "$cert_file" "$key_file" "$SSL_DOMAIN" "$SSL_DAYS"; then
                 echo "✅ Successfully regenerated SSL certificate"
             else
@@ -572,8 +582,14 @@ ensure_ssl_certificates() {
             echo "❌ SSL certificate validation failed."
             if [ "${AUTO_REGENERATE_CERT:-0}" = "1" ]; then
                 echo "🔄 AUTO_REGENERATE_CERT=1: archiving invalid SSL files and regenerating..."
-                _archive_invalid_ssl_file "$cert_file"
-                _archive_invalid_ssl_file "$key_file"
+                if ! _archive_invalid_ssl_file "$cert_file" || ! _archive_invalid_ssl_file "$key_file"; then
+                    echo "❌ Refusing to regenerate SSL certificate because existing files could not be archived."
+                    if [ "${DISABLE_SSL:-0}" != "1" ]; then
+                        return 1
+                    fi
+                    echo "⚠️ SSL disabled, continuing without HTTPS..."
+                    return 0
+                fi
                 if generate_ssl_certificate "$cert_file" "$key_file" "$SSL_DOMAIN" "$SSL_DAYS"; then
                     echo "✅ Successfully regenerated SSL certificate"
                 else
@@ -665,8 +681,9 @@ start_nginx_reloader() {
     
     # 记录初始配置文件的修改时间。分层之后配置由多个文件组成，全部纳入指纹：
     # 用户覆盖 snippets/ 或 locations.conf 时同样能触发重载。
-    local ssl_cert="/home/neko/ssl/N.E.K.O.crt"
-    local ssl_key="/home/neko/ssl/N.E.K.O.key"
+    local ssl_dir="${NEKO_SSL_DIR:-/home/neko/ssl}"
+    local ssl_cert="$ssl_dir/N.E.K.O.crt"
+    local ssl_key="$ssl_dir/N.E.K.O.key"
     local -a nginx_confs=(
         /etc/nginx/nginx.conf
         /etc/nginx/conf.d/neko-proxy.conf

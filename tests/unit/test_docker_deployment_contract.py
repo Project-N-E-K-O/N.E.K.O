@@ -171,6 +171,9 @@ def test_entrypoint_ssl_preserves_existing_certs_by_default():
     assert "AUTO_REGENERATE_CERT:-1" not in entrypoint
     assert 'rm -f "$cert_file"' not in entrypoint
     assert 'rm -f "$key_file"' not in entrypoint
+    assert 'ssl_cert="/home/neko/ssl/N.E.K.O.crt"' not in entrypoint
+    assert 'ssl_key="/home/neko/ssl/N.E.K.O.key"' not in entrypoint
+    assert 'local ssl_dir="${NEKO_SSL_DIR:-/home/neko/ssl}"' in entrypoint
 
     import shutil
     import subprocess

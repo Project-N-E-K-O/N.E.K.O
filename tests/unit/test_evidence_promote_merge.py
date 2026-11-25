@@ -1765,3 +1765,40 @@ async def test_time_driven_legacy_promotion_retry_is_idempotent(tmp_path):
     r_after = next(r for r in await re._aload_reflections_full('小天') if r['id'] == 'ref_td_legacy')
     assert r_after['status'] == 'promoted'
     assert await pm.aload_pending_corrections('小天') == []
+
+
+@pytest.mark.asyncio
+async def test_promote_fresh_recovers_after_final_attempt_state_change_failure_without_blocking(tmp_path):
+    """If the final allowed attempt persists prom_<rid> and fails _arecord_state_change, retry must promote without hitting dead-letter."""
+    from config import EVIDENCE_PROMOTE_MAX_RETRIES
+
+    _ev, _fs, pm, re, _cm = _install(str(tmp_path))
+    R = _reflection('ref_final_half', '主人喜欢散步', rein=2.5, attempt_count=EVIDENCE_PROMOTE_MAX_RETRIES - 1)
+    await re.asave_reflections('小天', [R])
+    await pm.asave_persona('小天', {'master': {'facts': []}})
+
+    llm_reply = {'action': 'promote_fresh', 'reason': 'novel'}
+    with patch.object(re, '_allm_call_promotion_merge', AsyncMock(return_value=llm_reply)):
+        with patch.object(re, '_arecord_state_change', AsyncMock(side_effect=OSError("reflect save failed"))):
+            with pytest.raises(OSError, match="reflect save failed"):
+                await re._apromote_with_merge('小天', dict(R))
+
+    r_mid = await _reflection_state(re, 'ref_final_half')
+    assert r_mid['status'] == 'confirmed'
+    assert r_mid['promote_attempt_count'] == EVIDENCE_PROMOTE_MAX_RETRIES
+
+    llm_should_not_run = AsyncMock(side_effect=AssertionError("LLM must not be called during recovery"))
+    with patch.object(re, '_allm_call_promotion_merge', llm_should_not_run), _past_backoff():
+        outcome = await re._apromote_with_merge('小天', dict(r_mid))
+
+    assert outcome == 'promote_fresh'
+    assert llm_should_not_run.await_count == 0
+    r_after = await _reflection_state(re, 'ref_final_half')
+    assert r_after['status'] == 'promoted'
+
+    # An unapplied reflection at max retries must still enter promote_blocked.
+    R_unapplied = _reflection('ref_unapplied_max', '未写入条目', rein=2.5, attempt_count=EVIDENCE_PROMOTE_MAX_RETRIES)
+    await re.asave_reflections('小天', [r_after, R_unapplied])
+    with _past_backoff():
+        assert await re._apromote_with_merge('小天', dict(R_unapplied)) == 'blocked'
+    assert (await _reflection_state(re, 'ref_unapplied_max'))['status'] == 'promote_blocked'

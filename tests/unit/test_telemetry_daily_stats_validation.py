@@ -87,16 +87,27 @@ def _valid_day(**overrides) -> dict:
         "2099-01-01",
         "k0",
         "2026-W47-7",
-        "1970-01-01",
-        (date.today() - timedelta(days=91)).isoformat(),
         (date.today() + timedelta(days=3)).isoformat(),
     ],
 )
 def test_model_rejects_invalid_or_out_of_window_stat_date(bad_date):
-    """Pydantic model must reject malformed, ISO-week, or out-of-window stat_date keys."""
+    """Pydantic model must reject malformed, ISO-week, or future out-of-window stat_date keys."""
     payload = _base_event_dict({bad_date: _valid_day()})
     with pytest.raises(Exception):
         model_from_json(TelemetryEvent, json.dumps(payload))
+
+
+def test_model_drops_expired_past_dates_while_keeping_in_window_days():
+    """Expired (>90d) stat_date entries are silently stripped so pending batches do not wedge clients."""
+    expired_91 = (date.today() - timedelta(days=91)).isoformat()
+    today = date.today().isoformat()
+    payload = _base_event_dict({
+        "1970-01-01": _valid_day(),
+        expired_91: _valid_day(),
+        today: _valid_day(),
+    })
+    ev = model_from_json(TelemetryEvent, json.dumps(payload))
+    assert set(ev.daily_stats.keys()) == {today}
 
 
 def test_model_accepts_boundary_stat_dates():
@@ -320,3 +331,58 @@ def test_first_seen_00_to_08_cst_cohort_alignment(store):
     canon_m = store.get_canonical_metrics(days=30)
     assert canon_m["canonical_d1_retention"] == 50.0
     assert canon_m["canonical_d7_retention"] == 100.0
+
+
+def test_http_submit_drops_expired_days_and_acknowledges_batch(tmp_path, monkeypatch):
+    """HTTP /api/v1/telemetry must return 200 on >90d expired days, store only in-window days, and dedupe batch_id."""
+    from fastapi.testclient import TestClient
+    from security import compute_signature
+    import server as telemetry_server
+
+    test_store = TelemetryStorage(tmp_path / "http_expired.db")
+    monkeypatch.setattr(telemetry_server, "storage", test_store)
+    monkeypatch.setattr(telemetry_server.rate_limiter, "is_allowed", lambda _dev: True)
+    client = TestClient(telemetry_server.app)
+
+    today = date.today().isoformat()
+    expired_91 = (date.today() - timedelta(days=91)).isoformat()
+
+    def _signed_post(payload: dict, batch_id: str):
+        ts = time.time()
+        payload_str = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        sig = compute_signature(payload_str, ts, telemetry_server.HMAC_SECRET)
+        return client.post(
+            "/api/v1/telemetry",
+            json={"timestamp": ts, "signature": sig, "batch_id": batch_id, "payload": payload},
+        )
+
+    mixed_payload = _base_event_dict({
+        expired_91: _valid_day(total_tokens=999),
+        today: _valid_day(
+            total_tokens=42,
+            by_model={"qwen-max": _valid_bucket(total_tokens=42)},
+            by_call_type={"chat": _valid_bucket(total_tokens=42)},
+        ),
+    })
+    resp_mixed = _signed_post(mixed_payload, batch_id="batch-mixed-1")
+    assert resp_mixed.status_code == 200
+    assert resp_mixed.json()["ok"] is True
+
+    rows = test_store._get_conn().execute(
+        "SELECT stat_date, model, call_type, total_tokens FROM daily_aggregates ORDER BY stat_date, model, call_type"
+    ).fetchall()
+    assert [(r["stat_date"], r["model"], r["call_type"], r["total_tokens"]) for r in rows] == [
+        (today, "_total", "_total", 42),
+        (today, "_total", "chat", 42),
+        (today, "qwen-max", "_total", 42),
+    ]
+
+    expired_only = _base_event_dict({expired_91: _valid_day(total_tokens=123)})
+    resp_old = _signed_post(expired_only, batch_id="batch-expired-only-1")
+    assert resp_old.status_code == 200
+    assert resp_old.json()["ok"] is True
+    assert test_store.is_duplicate_batch("batch-expired-only-1") is True
+
+    resp_dup = _signed_post(expired_only, batch_id="batch-expired-only-1")
+    assert resp_dup.status_code == 200
+    assert resp_dup.json()["message"] == "duplicate, skipped"

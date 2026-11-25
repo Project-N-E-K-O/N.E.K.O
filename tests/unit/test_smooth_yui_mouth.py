@@ -136,3 +136,64 @@ def test_atomic_write_failure_preserves_original_and_cleans_temp(tmp_path, monke
 
     assert motion_file.read_bytes() == original_bytes
     assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_short_raw_spike_is_smoothed_first_and_idempotent_second(tmp_path):
+    """A 3-key raw spike (Segments=[0,0,0,1,1,0,2,0]) must be smoothed on first run and unchanged on second run."""
+    motion = {
+        "Version": 3,
+        "Meta": {"Duration": 2.0, "Fps": 60.0, "Loop": True, "AreBeziersRestricted": True, "CurveCount": 1, "TotalSegmentCount": 2, "TotalPointCount": 6, "UserDataCount": 0, "TotalUserDataSize": 0},
+        "Curves": [
+            {"Target": "Parameter", "Id": "ParamMouthOpenY", "Segments": [0, 0, 0, 1, 1, 0, 2, 0]},
+        ],
+    }
+    motion_file = tmp_path / "short_spike.motion3.json"
+    motion_file.write_text(json.dumps(motion), encoding="utf-8")
+
+    stats1 = MOD.process(motion_file)
+    assert stats1["ParamMouthOpenY"] == (3, 3)
+    first_bytes = motion_file.read_bytes()
+    first_data = json.loads(first_bytes.decode("utf-8"))
+    keys1 = MOD.extract_keys(first_data["Curves"][0]["Segments"])
+    assert keys1[0][1] == 0
+    assert keys1[1][1] < 0.5
+    assert keys1[2][1] == 0
+
+    MOD.process(motion_file)
+    assert motion_file.read_bytes() == first_bytes
+
+
+@pytest.mark.parametrize("end_t", [2.500000238418579, 6.500000238418579])
+def test_rounding_boundary_duration_is_idempotent(tmp_path, end_t):
+    """Durations near DECIMALS rounding boundaries must produce identical keyframe counts on repeat runs."""
+    motion = {
+        "Version": 3,
+        "Meta": {"Duration": end_t, "Fps": 60.0, "Loop": True, "AreBeziersRestricted": True, "CurveCount": 1, "TotalSegmentCount": 2, "TotalPointCount": 6, "UserDataCount": 0, "TotalUserDataSize": 0},
+        "Curves": [
+            {"Target": "Parameter", "Id": "ParamMouthOpenY", "Segments": [0.0, 0.8, 0, end_t * 0.5, 0.9, 0, end_t, 0.7]},
+        ],
+    }
+    motion_file = tmp_path / "boundary.motion3.json"
+    motion_file.write_text(json.dumps(motion), encoding="utf-8")
+
+    stats1 = MOD.process(motion_file)
+    first_bytes = motion_file.read_bytes()
+    first_keys = MOD.extract_keys(json.loads(first_bytes.decode("utf-8"))["Curves"][0]["Segments"])
+
+    stats2 = MOD.process(motion_file)
+    assert motion_file.read_bytes() == first_bytes
+    assert stats1["ParamMouthOpenY"][1] == len(first_keys)
+    assert stats2["ParamMouthOpenY"] == (len(first_keys), len(first_keys))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits are not enforced identically on Windows")
+def test_atomic_replace_preserves_file_mode(tmp_path):
+    """Rewriting a 0644 motion file must keep 0644 instead of shrinking permissions to 0600."""
+    import stat
+
+    motion_file = tmp_path / "mode_check.motion3.json"
+    motion_file.write_text(json.dumps(_raw_motion()), encoding="utf-8")
+    motion_file.chmod(0o644)
+
+    MOD.process(motion_file)
+    assert stat.S_IMODE(motion_file.stat().st_mode) == 0o644

@@ -34,6 +34,7 @@ from datetime import datetime
 
 
 from memory.facts import safe_int_field
+from memory.introspection import is_permanently_suppressed
 
 
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
@@ -982,14 +983,12 @@ class CorrectionsMixin:
                 )
                 for j, existing in enumerate(section_facts):
                     et = existing.get('text', '') if isinstance(existing, dict) else str(existing)
-                    if et == old_text and _entry_in_scope(existing):
+                    if et == old_text and _entry_in_scope(existing) and not is_permanently_suppressed(existing):
                         if isinstance(existing, dict):
-                            if merged_text == old_text:
-                                _record_applied_cid(existing, item_cid)
-                                break
                             from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
-                            prior_history = existing.get('version_history', []) or []
                             from memory.speaker_trust import provenance_of_entries
+                            text_changed = merged_text != old_text
+                            prior_history = existing.get('version_history', []) or []
                             new_source = {
                                 'speaker_id': new_speaker_id,
                                 'speaker_trust': item.get('new_speaker_trust'),
@@ -1012,13 +1011,17 @@ class CorrectionsMixin:
                             mixed_speakers = not folded_provenance.get(
                                 'speaker_id'
                             )
-                            merged_history = list(prior_history) + [history_entry]
-                            if mixed_speakers and new_speaker_id:
+                            merged_history = list(prior_history)
+                            if text_changed:
+                                merged_history.append(history_entry)
+                            if text_changed and mixed_speakers and new_speaker_id:
                                 merged_history.append(_history_snapshot(
                                     new_text, 'new', 'correction_merge_source',
                                 ))
-                            existing['text'] = merged_text
-                            existing['version_history'] = merged_history[-_VH_MAX:]
+                            if text_changed:
+                                existing['text'] = merged_text
+                            if len(merged_history) > len(prior_history):
+                                existing['version_history'] = merged_history[-_VH_MAX:]
                             existing.update(
                                 _merged_correction_event_fields(existing, item)
                             )
@@ -1038,12 +1041,13 @@ class CorrectionsMixin:
                                 'speaker_provenance_mixed'
                             ) is True:
                                 existing['speaker_provenance_mixed'] = True
-                            # Text changed → invalidate the derived
-                            # caches so the next render recomputes
-                            # against the new text instead of serving
-                            # stale counts/vectors tied to old_text.
-                            self._invalidate_token_count_cache(existing)
-                            self._invalidate_embedding_cache(existing)
+                            if text_changed:
+                                # Text changed → invalidate the derived
+                                # caches so the next render recomputes
+                                # against the new text instead of serving
+                                # stale counts/vectors tied to old_text.
+                                self._invalidate_token_count_cache(existing)
+                                self._invalidate_embedding_cache(existing)
                             _record_applied_cid(existing, item_cid)
                             section_facts[j] = self._normalize_entry(existing)
                         else:
@@ -1060,18 +1064,24 @@ class CorrectionsMixin:
                     e for e in section_facts
                     if (e.get('text', '') if isinstance(e, dict) else str(e)) == old_text
                     and _entry_in_scope(e)
+                    and not is_permanently_suppressed(e)
                 ]
                 section_facts[:] = [
                     e for e in section_facts
                     if (e.get('text', '') if isinstance(e, dict) else str(e)) != old_text
                     or not _entry_in_scope(e)
+                    or is_permanently_suppressed(e)
                 ]
-                already_has_new = any(
-                    (e.get('text', '') if isinstance(e, dict) else str(e)) == new_text
-                    and _entry_in_scope(e)
-                    for e in section_facts
+                live_new_match = next(
+                    (
+                        (j, e) for j, e in enumerate(section_facts)
+                        if (e.get('text', '') if isinstance(e, dict) else str(e)) == new_text
+                        and _entry_in_scope(e)
+                        and not is_permanently_suppressed(e)
+                    ),
+                    None,
                 )
-                if not already_has_new:
+                if live_new_match is None:
                     replacement = _stamped_new_entry(new_text)
                     from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
                     if preference == 'new':
@@ -1092,18 +1102,71 @@ class CorrectionsMixin:
                         )[-_VH_MAX:]
                     _record_applied_cid(replacement, item_cid)
                     section_facts.append(replacement)
-                elif item_cid:
-                    for existing in section_facts:
-                        et = existing.get('text', '') if isinstance(existing, dict) else str(existing)
-                        if et == new_text and _entry_in_scope(existing) and isinstance(existing, dict):
-                            _record_applied_cid(existing, item_cid)
-                            break
+                else:
+                    existing_idx, existing = live_new_match
+                    if old_entries:
+                        if not isinstance(existing, dict):
+                            existing = self._normalize_entry_for_section(
+                                persona, entity, existing,
+                            )
+                            if item_subject is not None:
+                                existing.update(item_subject.as_entry_fields())
+                        if preference == 'new':
+                            from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
+                            prior_history = (
+                                list(old_entries[0].get('version_history') or [])
+                                if isinstance(old_entries[0], dict)
+                                else []
+                            )
+                            existing['version_history'] = (
+                                list(existing.get('version_history') or [])
+                                + prior_history
+                                + [
+                                    _history_snapshot(
+                                        old_text, 'old', 'trust_superseded',
+                                    )
+                                ]
+                            )[-_VH_MAX:]
+                        existing.update(
+                            _merged_correction_event_fields(existing, item)
+                        )
+                        if (
+                            new_speaker_id
+                            or item.get('new_speaker_provenance_mixed') is True
+                        ):
+                            from memory.speaker_trust import provenance_of_entries
+                            new_source = {
+                                'speaker_id': new_speaker_id,
+                                'speaker_trust': item.get('new_speaker_trust'),
+                            }
+                            _queued_entity = str(
+                                item.get('new_speaker_entity_id') or ''
+                            ).strip()
+                            if _queued_entity:
+                                new_source['speaker_entity_id'] = _queued_entity
+                            if item.get('new_speaker_provenance_mixed') is True:
+                                new_source['speaker_provenance_mixed'] = True
+                            folded_provenance = provenance_of_entries([
+                                existing, new_source,
+                            ])
+                            for key in (
+                                'speaker_id', 'speaker_trust', 'speaker_label',
+                                'speaker_entity_id',
+                            ):
+                                existing.pop(key, None)
+                            existing.update(folded_provenance)
+                            if new_source.get('speaker_provenance_mixed') is True:
+                                existing['speaker_provenance_mixed'] = True
+                        existing = self._normalize_entry(existing)
+                        section_facts[existing_idx] = existing
+                    if item_cid and isinstance(existing, dict):
+                        _record_applied_cid(existing, item_cid)
             elif action == 'keep_old':
                 # When trust arbitration selects the old observation, the new observation must not silently disappear: embed it in the winner's
                 # version_history, preserving full text, speaker, and trust so it can be manually restored.
                 for existing in section_facts:
                     et = existing.get('text', '') if isinstance(existing, dict) else str(existing)
-                    if et == old_text and _entry_in_scope(existing) and isinstance(existing, dict):
+                    if et == old_text and _entry_in_scope(existing) and not is_permanently_suppressed(existing) and isinstance(existing, dict):
                         if preference == 'old':
                             from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
                             history = list(existing.get('version_history') or [])
@@ -1141,7 +1204,7 @@ class CorrectionsMixin:
                 existing_texts = {
                     (e.get('text', '') if isinstance(e, dict) else str(e))
                     for e in section_facts
-                    if _entry_in_scope(e)
+                    if _entry_in_scope(e) and not is_permanently_suppressed(e)
                 }
                 if new_text not in existing_texts:
                     new_entry = _stamped_new_entry(new_text)
@@ -1150,7 +1213,7 @@ class CorrectionsMixin:
                 elif item_cid:
                     for existing in section_facts:
                         et = existing.get('text', '') if isinstance(existing, dict) else str(existing)
-                        if et == new_text and _entry_in_scope(existing) and isinstance(existing, dict):
+                        if et == new_text and _entry_in_scope(existing) and not is_permanently_suppressed(existing) and isinstance(existing, dict):
                             _record_applied_cid(existing, item_cid)
                             break
 

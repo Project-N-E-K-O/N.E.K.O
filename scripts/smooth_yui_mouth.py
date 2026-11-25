@@ -37,13 +37,15 @@ Usage: `uv run python scripts/smooth_yui_mouth.py [--root static/yui-lolita]`
 """
 
 import argparse
+import hashlib
 import json
 import math
 import os
+import stat
 import tempfile
 from pathlib import Path
 
-from slim_live2d_motions import dump_motion
+from slim_live2d_motions import DECIMALS, _round_floats, dump_motion
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1] / "static" / "yui-origin"
 
@@ -119,6 +121,27 @@ def fade_weight(t, duration, fade_s):
     return x * x * (3 - 2 * x)
 
 
+SMOOTH_META_KEY = "NekoMouthSmoothed"
+
+
+def _expected_out_count(t_start: float, t_end: float, out_hz: float) -> int:
+    rounded_duration = max(0.0, round(t_end, DECIMALS) - round(t_start, DECIMALS))
+    return max(2, int(round(rounded_duration * out_hz)) + 1)
+
+
+def _smoothing_params() -> dict:
+    return {
+        "sigma_s": _round_floats(float(SIGMA_S)),
+        "out_hz": _round_floats(float(OUT_HZ)),
+        "fade_s": _round_floats(float(FADE_S)),
+    }
+
+
+def _curve_segments_digest(seg) -> str:
+    canonical = json.dumps(_round_floats(seg), ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
 def smooth_curve(keys, neutral, sigma_s, out_hz, fade_s):
     if len(keys) < 2:
         return keys
@@ -147,7 +170,7 @@ def smooth_curve(keys, neutral, sigma_s, out_hz, fade_s):
             acc += w * raw[idx]
         smoothed.append(acc)
 
-    n_out = max(2, int(round(duration * out_hz)) + 1)
+    n_out = _expected_out_count(t_start, t_end, out_hz)
     out = []
     for i in range(n_out):
         t = t_start + i * (duration / (n_out - 1))
@@ -221,7 +244,7 @@ def is_already_smoothed(
     if duration <= 0:
         return len(keys) == 2
 
-    n_out = max(2, int(round(duration * out_hz)) + 1)
+    n_out = _expected_out_count(t_start, t_end, out_hz)
     if len(keys) != n_out:
         return False
     step = duration / (n_out - 1)
@@ -235,6 +258,12 @@ def is_already_smoothed(
         if w >= 0.05:
             u_vals.append((idx, neutral + (v - neutral) / w))
     max_amp = max((abs(u - neutral) for _, u in u_vals), default=0.0)
+    if max_amp <= 1e-6:
+        return True
+    if len(u_vals) < 3:
+        # Too few interior points for curvature verification (e.g. a 3-key spike
+        # [0,0, 0,1,1, 0,2,0]); do not mistake raw short spikes for smoothed output.
+        return False
     limit = 0.05 * max(1.0, max_amp)
     for j in range(1, len(u_vals) - 1):
         i0, u0 = u_vals[j - 1]
@@ -248,6 +277,10 @@ def is_already_smoothed(
 
 def _atomic_write_text(path: Path, text: str) -> None:
     target_path = path.resolve() if path.is_symlink() else path
+    try:
+        existing_mode = stat.S_IMODE(target_path.stat().st_mode)
+    except FileNotFoundError:
+        existing_mode = None
     tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -262,6 +295,8 @@ def _atomic_write_text(path: Path, text: str) -> None:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
+        if existing_mode is not None:
+            os.chmod(tmp_path, existing_mode)
         os.replace(tmp_path, target_path)
     except BaseException:
         if tmp_path is not None:
@@ -275,28 +310,44 @@ def _atomic_write_text(path: Path, text: str) -> None:
 def process(path: Path):
     original_text = path.read_text(encoding="utf-8")
     data = json.loads(original_text)
+    meta = data.setdefault("Meta", {})
+    raw_marker = meta.get(SMOOTH_META_KEY)
+    params = _smoothing_params()
+    marker_curves = (
+        raw_marker.get("curves", {})
+        if isinstance(raw_marker, dict) and raw_marker.get("params") == params
+        and isinstance(raw_marker.get("curves"), dict)
+        else {}
+    )
     stats = {}
+    recorded_digests = {}
+    modified_any = False
     for curve in data["Curves"]:
         cid = curve.get("Id")
         if cid not in TARGET_IDS:
             continue
         before = extract_keys(curve["Segments"])
-        if is_already_smoothed(curve["Segments"], NEUTRAL[cid]):
+        digest = _curve_segments_digest(curve["Segments"])
+        if marker_curves.get(cid) == digest or is_already_smoothed(curve["Segments"], NEUTRAL[cid]):
             stats[cid] = (len(before), len(before))
+            recorded_digests[cid] = digest
             continue
         after = smooth_curve(before, NEUTRAL[cid], SIGMA_S, OUT_HZ, FADE_S)
         curve["Segments"] = keys_to_linear_segments(after)
         stats[cid] = (len(before), len(after))
+        recorded_digests[cid] = _curve_segments_digest(curve["Segments"])
+        modified_any = True
 
     seg_total = pts_total = 0
     for c in data["Curves"]:
         s, p = walk_curve(c["Segments"])
         seg_total += s
         pts_total += p
-    meta = data.setdefault("Meta", {})
     meta["CurveCount"] = len(data["Curves"])
     meta["TotalSegmentCount"] = seg_total
     meta["TotalPointCount"] = pts_total
+    if modified_any and recorded_digests:
+        meta[SMOOTH_META_KEY] = {"params": params, "curves": recorded_digests}
 
     serialized = dump_motion(data)
     if serialized != original_text:

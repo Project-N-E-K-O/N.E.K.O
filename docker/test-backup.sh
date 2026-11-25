@@ -187,6 +187,23 @@ else
 fi
 
 echo
+echo "== T4c 输出目录含空格时的 --keep 轮转 =="
+space_out="$WORK/out with spaces"
+mkdir -p "$space_out"
+old_space_archive="$space_out/neko-backup-neko-20250101T000000Z-100.tar.gz"
+: > "$old_space_archive"
+: > "$old_space_archive.sha256"
+: > "$old_space_archive.manifest.txt"
+touch -t 202501010000 "$old_space_archive"
+sh "$BACKUP" --home "$WORK/t4home" --out "$space_out" --no-stop --keep 1 >/dev/null 2>&1
+space_count=$(ls -1 "$space_out"/neko-backup-neko-*.tar.gz 2>/dev/null | wc -l | tr -d ' ')
+if [ "$space_count" = "1" ] && [ ! -e "$old_space_archive" ] && [ ! -e "$old_space_archive.sha256" ] && [ ! -e "$old_space_archive.manifest.txt" ]; then
+    pass "含空格 --out 目录的 --keep 1 轮转正确删除旧归档"
+else
+    fail "含空格 --out 目录轮转失败 (count=$space_count)"
+fi
+
+echo
 echo "== T5 拒绝符号链接的数据目录 =="
 make_home "$WORK/t5real"
 ln -s "$WORK/t5real" "$WORK/t5link"

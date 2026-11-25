@@ -9,6 +9,8 @@ services:
       # Use a Docker-managed named volume so Docker initializes /app/data from
       # the image's appuser-owned directory instead of mounting a root-owned ./data
       # host directory that blocks non-root appuser writes and exposes telemetry.db.
+      # Upgrading from an existing ./data bind mount? Migrate telemetry.db* into
+      # telemetry-data first (see README.md upgrade steps) before running compose up.
       - telemetry-data:/app/data
     environment:
       # 存储中的业务时间戳固定为 +08:00，容器时区同样固定为 Asia/Shanghai。

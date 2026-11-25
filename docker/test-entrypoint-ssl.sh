@@ -15,12 +15,28 @@ FAILED=0
 pass() { printf '  PASS: %s\n' "$1"; }
 fail() { printf '  FAIL: %s\n' "$1" >&2; FAILED=1; }
 
+_make_openssl_cnf() {
+    local cnf_path="$1"
+    local cn="$2"
+    cat > "$cnf_path" <<EOF
+[req]
+prompt = no
+distinguished_name = dn
+
+[dn]
+CN = $cn
+EOF
+}
+
 make_valid_pair() {
     local dir="$1"
     mkdir -p "$dir"
+    local cnf="$dir/openssl.cnf"
+    _make_openssl_cnf "$cnf" "valid.example"
     openssl req -x509 -nodes -newkey rsa:2048 -days 1 \
-        -subj "/CN=valid.example" \
+        -config "$cnf" \
         -keyout "$dir/N.E.K.O.key" -out "$dir/N.E.K.O.crt" >/dev/null 2>&1
+    rm -f "$cnf"
 }
 
 echo "== SSL-1 fresh directory generates self-signed pair =="
@@ -36,9 +52,11 @@ fi
 echo "== SSL-2 default AUTO_REGENERATE_CERT=0 preserves encrypted/mismatched pair =="
 s2="$WORK/s2"
 mkdir -p "$s2"
+_make_openssl_cnf "$s2/openssl.cnf" "encrypted.example"
 openssl genrsa -aes256 -passout pass:secret123 -out "$s2/N.E.K.O.key" 2048 >/dev/null 2>&1
 openssl req -new -x509 -key "$s2/N.E.K.O.key" -passin pass:secret123 -days 1 \
-    -subj "/CN=encrypted.example" -out "$s2/N.E.K.O.crt" >/dev/null 2>&1
+    -config "$s2/openssl.cnf" -out "$s2/N.E.K.O.crt" >/dev/null 2>&1
+rm -f "$s2/openssl.cnf"
 orig_crt=$(cksum "$s2/N.E.K.O.crt")
 orig_key=$(cksum "$s2/N.E.K.O.key")
 if (unset AUTO_REGENERATE_CERT DISABLE_SSL; ensure_ssl_certificates "$s2/N.E.K.O.crt" "$s2/N.E.K.O.key") >/dev/null 2>&1; then
@@ -95,6 +113,27 @@ if (AUTO_REGENERATE_CERT=1 ensure_ssl_certificates "$s5/N.E.K.O.crt" "$s5/N.E.K.
     fi
 else
     fail "AUTO_REGENERATE_CERT=1 failed"
+fi
+
+echo "== SSL-6 failed archive refuses to overwrite existing SSL files =="
+s6="$WORK/s6"
+mkdir -p "$s6"
+printf 'keep-existing-cert\n' > "$s6/N.E.K.O.crt"
+printf 'keep-existing-key\n' > "$s6/N.E.K.O.key"
+s6_crt_sum=$(cksum "$s6/N.E.K.O.crt")
+s6_key_sum=$(cksum "$s6/N.E.K.O.key")
+if ! (
+    AUTO_REGENERATE_CERT=1
+    mv() { return 1; }
+    ensure_ssl_certificates "$s6/N.E.K.O.crt" "$s6/N.E.K.O.key"
+) >/dev/null 2>&1; then
+    if [ "$(cksum "$s6/N.E.K.O.crt")" = "$s6_crt_sum" ] && [ "$(cksum "$s6/N.E.K.O.key")" = "$s6_key_sum" ]; then
+        pass "AUTO_REGENERATE_CERT=1 aborted without overwriting when archive mv failed"
+    else
+        fail "AUTO_REGENERATE_CERT=1 overwrote original files after archive mv failed"
+    fi
+else
+    fail "AUTO_REGENERATE_CERT=1 should fail when archive mv fails"
 fi
 
 exit "$FAILED"

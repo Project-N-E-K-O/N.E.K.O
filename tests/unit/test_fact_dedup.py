@@ -2463,3 +2463,34 @@ def test_fact_store_fails_closed_on_os_error(tmp_path, monkeypatch):
     monkeypatch.undo()
     with open(facts_path, "rb") as handle:
         assert handle.read() == original_bytes
+
+
+def test_load_facts_caches_migrated_v1_facts_when_writeback_os_error(tmp_path, monkeypatch):
+    """Best-effort v1->v2 migration writeback OSError must not fail readable facts or re-trigger on repeat reads."""
+    import os
+    from memory import facts as facts_mod
+
+    fs, _ = _install_resolver(str(tmp_path))
+    facts_path = fs._facts_path("小天")
+    os.makedirs(os.path.dirname(facts_path), exist_ok=True)
+    with open(facts_path, "w", encoding="utf-8") as handle:
+        json.dump([{"id": "v1-1", "entity": "user", "text": "likes tea"}], handle)
+
+    write_attempts = 0
+
+    def _fail_write(*_args, **_kwargs):
+        nonlocal write_attempts
+        write_attempts += 1
+        raise PermissionError("read-only directory")
+
+    monkeypatch.setattr(facts_mod, "atomic_write_json", _fail_write)
+
+    loaded_first = fs.load_facts("小天")
+    assert len(loaded_first) == 1
+    assert loaded_first[0]["entity"] == "master"
+    assert write_attempts == 1
+    assert "小天" in fs._facts
+
+    loaded_second = fs.load_facts("小天")
+    assert loaded_second == loaded_first
+    assert write_attempts == 1
