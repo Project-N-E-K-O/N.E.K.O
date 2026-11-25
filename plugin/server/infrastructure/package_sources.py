@@ -111,8 +111,6 @@ _MAX_LATENCY = 600.0
 _MAX_THROUGHPUT = 100.0 * _PRIOR_THROUGHPUT
 _MAX_FAILURES = 1000.0
 _MAX_SAMPLES = 1_000_000
-# Statistics stamped this far past the local clock are treated as corrupt.
-_FUTURE_TOLERANCE = 300.0
 # 2 ** -1000 is still a normal float; past it a decay factor is flushed to zero.
 _MAX_HALVINGS = 1000.0
 
@@ -201,13 +199,17 @@ def _parse_route(values: Any, now: float) -> RouteStats:
     if not isinstance(values, dict):
         raise TypeError("route statistics are not an object")
     updated = _finite(values.get("updated", 0.0), "updated")
-    if updated < 0 or updated > now + _FUTURE_TOLERANCE:
-        raise ValueError(f"updated {updated!r} is outside the valid range")
+    if updated < 0:
+        raise ValueError(f"updated {updated!r} is negative")
+    # A stamp past the local clock (one that runs behind, a restored VM
+    # snapshot) is read as "just now": the history stays usable and decays
+    # from there, instead of being lost.
+    updated = min(updated, now)
     samples = values.get("samples", 0)
     if isinstance(samples, bool) or not isinstance(samples, (int, float)):
         raise TypeError("samples is not a number")
     return RouteStats(
-        latency=_sample(_optional(values.get("latency"), "latency"), _MAX_LATENCY),
+        latency=_sample(_optional(values.get("latency"), "latency"), _MAX_LATENCY, allow_zero=True),
         throughput=_sample(_optional(values.get("throughput"), "throughput"), _MAX_THROUGHPUT),
         failures=min(_MAX_FAILURES, max(0.0, _finite(values.get("failures", 0.0), "failures"))),
         samples=min(_MAX_SAMPLES, max(0, int(_finite(samples, "samples")))),
@@ -228,15 +230,19 @@ def _optional(value: Any, name: str) -> float | None:
     return None if value is None else _finite(value, name)
 
 
-def _sample(value: Any, limit: float) -> float | None:
-    """A usable positive measurement capped at ``limit``, or None."""
+def _sample(value: Any, limit: float, *, allow_zero: bool = False) -> float | None:
+    """A usable measurement capped at ``limit``, or None.
+
+    A latency may be 0: a fast round trip can measure 0 s on a coarse clock
+    and is still a sample. A throughput must be positive.
+    """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     try:
         number = float(value)
     except OverflowError:
         return None
-    if not math.isfinite(number) or number <= 0:
+    if not math.isfinite(number) or number < 0 or (number == 0 and not allow_zero):
         return None
     return min(number, limit)
 
@@ -306,7 +312,7 @@ def _record(observation: RouteObservation, now: float) -> None:
     stats = _routes.setdefault(observation.source_id, RouteStats())
     if stats.updated:
         stats.failures *= _decay(now - stats.updated, _FAILURE_HALF_LIFE)
-    stats.latency = _blend(stats.latency, _sample(observation.latency, _MAX_LATENCY))
+    stats.latency = _blend(stats.latency, _sample(observation.latency, _MAX_LATENCY, allow_zero=True))
     stats.throughput = _blend(stats.throughput, _sample(observation.throughput, _MAX_THROUGHPUT))
     stats.failures = min(_MAX_FAILURES, stats.failures + (1.0 if observation.failed else 0.0))
     stats.samples = min(_MAX_SAMPLES, stats.samples + 1)

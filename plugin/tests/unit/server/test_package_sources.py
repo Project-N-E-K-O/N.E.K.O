@@ -299,16 +299,20 @@ def test_corrupt_routes_are_dropped_one_by_one(monkeypatch):
     text = (
         '{"routes": {'
         f'"cdn-gh-proxy-org": {json.dumps(good)},'
-        f'"gh-proxy-com": {json.dumps({**good, "updated": now + 30 * 24 * 3600})},'
+        f'"gh-proxy-com": {json.dumps({**good, "latency": 0.5, "updated": now + 30 * 24 * 3600})},'
         f'"gh-proxy-org": {json.dumps({**good, "latency": float("inf")})},'
         f'"edgeone-gh-proxy-org": {json.dumps({**good, "throughput": float("nan")})},'
         f'"github-direct": {json.dumps(good)[:-1]}, "failures": {10 ** 400}}}'
         '}}'
     )
     warnings = _load_routes(monkeypatch, text)
-    assert list(sources._routes) == ["cdn-gh-proxy-org"]
-    for source_id in ["gh-proxy-com", "gh-proxy-org", "edgeone-gh-proxy-org", "github-direct"]:
+    loaded_at = time.time()
+    assert list(sources._routes) == ["cdn-gh-proxy-org", "gh-proxy-com"]
+    for source_id in ["gh-proxy-org", "edgeone-gh-proxy-org", "github-direct"]:
         assert any(source_id in message for message in warnings.messages), source_id
+    # A stamp past the clock keeps its history but counts as "just now".
+    assert sources._routes["gh-proxy-com"].updated <= loaded_at
+    assert sources._routes["gh-proxy-com"].latency == 0.5
 
     candidates = sources.download_candidates(URL, sources.DownloadPreferences())
     assert candidates[0][0] == "cdn-gh-proxy-org"
@@ -372,6 +376,17 @@ def test_non_finite_observations_are_not_recorded():
     record("gh-proxy-com", latency=0.3, throughput=1e300)
     stats = sources._routes["gh-proxy-com"]
     assert stats.latency == 0.3 and stats.throughput == sources._MAX_THROUGHPUT
+
+
+def test_a_zero_second_latency_is_a_sample_when_recorded_and_reloaded():
+    # A coarse clock (Windows) can measure a fast round trip as 0 s.
+    record("gh-proxy-com", latency=0.0, throughput=0.0)
+    assert sources._routes["gh-proxy-com"].latency == 0.0
+    assert sources._routes["gh-proxy-com"].throughput is None
+    sources._routes.clear()
+    sources._loaded = False
+    sources._ensure_loaded()
+    assert sources._routes["gh-proxy-com"].latency == 0.0
 
 
 async def test_a_retired_mirror_in_saved_or_sent_preferences_falls_back():
