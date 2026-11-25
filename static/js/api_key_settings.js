@@ -1561,15 +1561,17 @@ function keepPanelOnlyProvider(sel, modelType, providerKey) {
 
     if (!sel.dataset.panelOnlyWatch) {
         sel.dataset.panelOnlyWatch = 'true';
-        sel.addEventListener('change', () => {
+        const drop = () => {
             if (sel.value === providerKey) return;
+            sel.removeEventListener('change', drop);
             const stale = Array.from(sel.options).find(opt => opt.value === providerKey);
             if (stale) stale.remove();
             const shown = document.getElementById(hintId);
             if (shown) shown.remove();
             delete sel.dataset.panelOnlyWatch;
             syncProviderSelectDropdowns(sel, { rebuild: true });
-        });
+        };
+        sel.addEventListener('change', drop);
     }
 }
 

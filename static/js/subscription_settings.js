@@ -67,9 +67,14 @@
                 headers: { 'Content-Type': 'application/json' }, signal,
                 ...(body === undefined ? {} : { body: JSON.stringify(body) }),
             });
-            data = await response.json();
         } catch (error) {
             throw new Error(t('error.network', 'Could not reach the subscription settings. Please retry.'));
+        }
+        try {
+            data = await response.json();
+        } catch (error) {
+            // The server answered, just not with the settings' own reply (an unexpected error page).
+            throw new Error(t('error.server', 'The subscription settings ran into an error (status {{status}}). Please retry.', { status: response.status }));
         }
         if (!response.ok) {
             const detail = data && data.detail;
@@ -102,6 +107,10 @@
         cards.classList.toggle('is-busy', value);
         // Only the controls this script draws; the ChatGPT account controls belong to chatgpt_settings.js.
         for (const control of cards.querySelectorAll('[data-role] input, [data-role] select, [data-role] button')) {
+            control.disabled = value;
+        }
+        // Drawn outside the cards (under Per-Feature Models), changing the same state.
+        for (const control of document.querySelectorAll('[data-subscription-control]')) {
             control.disabled = value;
         }
     }
@@ -420,6 +429,7 @@
                         : t('featureNoteFollow', 'This feature follows another one that uses the {{plan}} subscription.', { plan: name }) }),
                     direct ? el('button', {
                         type: 'button', className: 'btn secondary', text: t('giveBack', 'Use my own setting for this'),
+                        'data-subscription-control': '', disabled: busy,
                         onclick: () => act(info.effective, () => api(`/${info.effective}/tier`, { tier, model: null })),
                     }) : null);
                 content.prepend(note);

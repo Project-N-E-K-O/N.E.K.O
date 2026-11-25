@@ -116,6 +116,12 @@ async def chatgpt_logout(body: AccountRequest):
     go back to the user's own settings."""
     confirmed = await _safe_call(_change_account, "sign_out", body.account_id)
     subscription_off = await _safe_call(_turn_off_subscription_without_accounts)
+    if subscription_off:
+        # As after any subscription change: the task agent server re-reads the
+        # configuration and works out again which tools it can offer.
+        from .subscriptions import _notify_agent_server
+
+        await _notify_agent_server()
     return {"success": True, "revocation_confirmed": confirmed, "subscription_turned_off": subscription_off}
 
 

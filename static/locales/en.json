@@ -1395,7 +1395,8 @@
         "busy": "Subscription settings are busy. Please retry.",
         "invalid": "The subscription settings could not take this change. Reload the page and retry.",
         "unreadable": "The subscription settings file is damaged and cannot be changed. Fix or remove subscriptions.json, then retry.",
-        "save_failed": "Could not save the subscription settings (the file may be in use or the disk full). Please retry."
+        "save_failed": "Could not save the subscription settings (the file may be in use or the disk full). Please retry.",
+        "server": "The subscription settings ran into an error (status {{status}}). Please retry."
       }
     },
     "imageModelConfig": "Image generation",

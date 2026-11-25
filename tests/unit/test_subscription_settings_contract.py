@@ -80,6 +80,7 @@ def test_a_slot_saved_with_a_panel_only_provider_keeps_it_with_a_hint():
     # Checked before the branch that drops slots to their default provider.
     assert load < fallback
     assert "option.disabled = true;" in settings
+    assert "sel.removeEventListener('change', drop);" in settings
     # Only where the slot could use it otherwise; a text provider saved on speech slots still drops.
     assert "isProviderCapableForModelType(providerKey, modelType, { allowPanelOnly: true })" in settings
     # A language switch rebuilds the dropdowns; the kept choice is put back, not lost.
@@ -108,3 +109,6 @@ def test_panel_refreshes_after_a_settings_save_and_drops_stale_replies():
     assert "generation !== accountGeneration" in script
     # A failed change reads the server state again; a failed read offers a retry.
     assert "if (failed) load();" in script and "onclick: () => load()" in script
+    # The give-back button under Per-Feature Models waits too; an error page is not "unreachable".
+    assert "'data-subscription-control': ''" in script and "querySelectorAll('[data-subscription-control]')" in script
+    assert "t('error.server'" in script

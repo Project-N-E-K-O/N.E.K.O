@@ -364,6 +364,25 @@ def client_factory(config_manager, monkeypatch):
     return make, notified
 
 
+@pytest.mark.parametrize("turned_off", [True, False])
+def test_signing_out_tells_the_agent_server_only_when_the_subscription_went_off(monkeypatch, turned_off):
+    import asyncio
+
+    from main_routers.config_router import chatgpt, subscriptions
+
+    told = []
+
+    async def notify():
+        told.append(True)
+
+    monkeypatch.setattr(chatgpt, "_change_account", lambda action, account_id: True)
+    monkeypatch.setattr(chatgpt, "_turn_off_subscription_without_accounts", lambda: turned_off)
+    monkeypatch.setattr(subscriptions, "_notify_agent_server", notify)
+    result = asyncio.run(chatgpt.chatgpt_logout(chatgpt.AccountRequest(account_id="issued-1")))
+    assert result["subscription_turned_off"] is turned_off
+    assert told == ([True] if turned_off else [])
+
+
 def test_turning_chatgpt_off_after_sign_out_never_fails_the_sign_out(monkeypatch):
     from main_routers.config_router import chatgpt
     from utils.chatgpt_auth import ChatGPTAuthError

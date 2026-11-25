@@ -1395,7 +1395,8 @@
         "busy": "As configurações de assinatura estão ocupadas. Tente novamente.",
         "invalid": "As configurações de assinatura não aceitam esta alteração. Recarregue a página e tente novamente.",
         "unreadable": "O arquivo de configurações de assinatura está corrompido e não pode ser alterado. Corrija ou remova subscriptions.json e tente novamente.",
-        "save_failed": "Não foi possível salvar as configurações de assinatura (o arquivo pode estar em uso ou o disco cheio). Tente novamente."
+        "save_failed": "Não foi possível salvar as configurações de assinatura (o arquivo pode estar em uso ou o disco cheio). Tente novamente.",
+        "server": "As configurações de assinatura tiveram um erro (código {{status}}). Tente novamente."
       }
     },
     "imageModelConfig": "Geração de imagens",
