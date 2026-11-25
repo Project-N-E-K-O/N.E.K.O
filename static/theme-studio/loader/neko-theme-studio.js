@@ -177,7 +177,9 @@
   //          guide's borderless composer while it takes over.
   //   1.6.50 The upgrade-reload draft guard checks every composer (React and
   //          legacy), not only the first match.
-  var SCRIPT_VERSION = '1.6.50';
+  //   1.6.51 Material rules skip the chat shell while it is minimized,
+  //          collapsing or expanding, so the host's yarn ball and transitions apply.
+  var SCRIPT_VERSION = '1.6.51';
 
   // Allowed colour value shapes. Deliberately conservative: only plain colours, so
   // arbitrary CSS can never be injected into a variable.
@@ -1562,7 +1564,11 @@
     '/* ---- Base surfaces: declared once, everything via the -c variables ---- */',
     ':root[data-nts-mt]:root:root:root:root body .compact-chat-surface-frame,',
     ':root[data-nts-mt]:root:root:root:root body .chat-window,',
-    ':root[data-nts-mt]:root:root:root:root body #react-chat-window-shell,',
+    // Not while minimized / collapsing / expanding: the host styles those states
+    // itself (yarn ball, scale-and-move transitions) and the layered material
+    // !important would otherwise paint a panel behind the ball and replace the
+    // shell's transitions.
+    ':root[data-nts-mt]:root:root:root:root body #react-chat-window-shell:not(.is-minimized):not(.is-collapsing):not(.is-expanding),',
     ':root[data-nts-mt]:root:root:root:root body .message-bubble-user,',
     ':root[data-nts-mt]:root:root:root:root body .message-bubble-assistant,',
     ':root[data-nts-mt]:root:root:root:root body .message-bubble-tool,',
@@ -1651,7 +1657,7 @@
     '}',
     '/* The shell / inner root / popovers / export bubbles carry their own transform, filter or will-change (see audit_mt_backdrop_hazards.py);',
     '   Chromium often fails to paint them entirely with backdrop-filter, so blur is removed and the glass is expressed via base colour / layered backgrounds / border / shadow. */',
-    ':root[data-nts-mt]:root:root:root:root:root body #react-chat-window-shell,',
+    ':root[data-nts-mt]:root:root:root:root:root body #react-chat-window-shell:not(.is-minimized):not(.is-collapsing):not(.is-expanding),',
     ':root[data-nts-mt]:root:root:root:root:root body .composer-icon-popover,',
     ':root[data-nts-mt]:root:root:root:root:root body .compact-export-history-bubble {',
     '  -webkit-backdrop-filter: none !important;',

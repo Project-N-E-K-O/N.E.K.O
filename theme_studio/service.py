@@ -3142,10 +3142,31 @@ class ThemeStudioService(NekoPluginBase):
             # The schedule above was read without the lock; the user may have disabled it since.
             # save_schedule writes under the same (reentrant) lock, so re-check here and keep the
             # lock held through the apply: a stale tick must not switch the theme afterwards.
+            # The fresh check, the theme write and the stamp update form one critical
+            # section: a tick working from an older schedule must neither apply a
+            # theme the current schedule no longer asks for, nor interleave its
+            # apply/stamp with a concurrent tick (e.g. save_schedule's forced one),
+            # which could leave the stamp naming a theme the window does not show.
             with _WRITE_LOCK:
-                if not self._read_schedule().get("enabled"):
+                fresh = self._read_schedule()
+                if not fresh.get("enabled"):
                     return {"action": "disabled"}
+                fresh_theme = str(self._schedule_zone_map(fresh, day_kind).get(zone) or "")
+                if fresh_theme != theme_id:
+                    return {"action": "superseded", "zone": zone, "day_kind": day_kind}
                 outcome = self._apply_theme_record(theme_id)
+                # Record "already switched to this theme for this zone" to avoid
+                # rewriting theme.json every 30s. Only the stamp is merged; the
+                # snapshot read at the start is not written back.
+                self._update_schedule_stamp(
+                    last_zone=zone,
+                    last_day_kind=day_kind,
+                    last_theme=theme_id,
+                    last_date=occurrence,
+                    # Actually switched: clear the "missing theme" stamp so a future
+                    # miss (theme changed then deleted again) still warns.
+                    last_missing=None,
+                )
         except Exception as exc:  # noqa: BLE001
             # When the entry itself is broken (e.g. an empty palette saved by an old version) apply keeps failing, and
             # the schedule thread retries every 30s -> 2880 identical warnings a day, drowning useful logs when something
@@ -3164,16 +3185,6 @@ class ThemeStudioService(NekoPluginBase):
                 "theme_id": theme_id,
                 "error": str(exc),
             }
-        # Record "already switched to this theme for this zone" to avoid rewriting theme.json every 30s.
-        # Only merge the stamp; do not write back the snapshot read at the start (see _update_schedule_stamp).
-        self._update_schedule_stamp(
-            last_zone=zone,
-            last_day_kind=day_kind,
-            last_theme=theme_id,
-            last_date=occurrence,
-            # Actually switched: clear the "missing theme" stamp so a future miss (theme changed then deleted again) still warns.
-            last_missing=None,
-        )
         name = str((outcome.get("theme") or {}).get("name") or theme_id)
         self._log("info", f"自动换主题：{zone} → {name}")
         return {
@@ -5127,10 +5138,15 @@ class ThemeStudioService(NekoPluginBase):
                     materials=materials_map,
                 )
             else:
+                # Exporting the current theme keeps its on/off state (the copied
+                # JSON from export_theme does too); a library entry exports enabled.
+                enabled_flag = True
+                if not str(theme_id).strip():
+                    enabled_flag = self._read_unlocked().get("enabled") is not False
                 doc = {
                     "schema": SCHEMA_VERSION,
                     "name": theme_name,
-                    "enabled": True,
+                    "enabled": enabled_flag,
                     "updated_at": _now_iso(),
                     "vars": vars_map,
                     "dark_vars": dark_map,

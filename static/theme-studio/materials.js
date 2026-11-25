@@ -750,6 +750,19 @@
   /** Delete a custom preset: a dedicated entry persists it immediately (apply's merge semantics would re-add it). */
   function deleteCustomPreset(name) {
     if (!name) return;
+    // A preset that exists only in the draft (created but never applied) is not
+    // on the server: remove it locally; the server call is for saved presets only.
+    var saved = !!(BASELINE && BASELINE.custom_presets &&
+      Object.prototype.hasOwnProperty.call(BASELINE.custom_presets, name));
+    if (!saved) {
+      if (CURRENT.custom_presets) delete CURRENT.custom_presets[name];
+      if (CURRENT.preset === name) CURRENT.preset = 'custom';
+      markDirty();
+      renderPane();
+      renderHeadState();
+      toast(T('materials.toast.presetDeleted', '已删除自定义预设「{{name}}」。', { name: name }), 'ok');
+      return;
+    }
     callEntry('delete_material_preset', { name: name }).then(function (data) {
       var materials = (data && data.materials) || null;
       // Remove only this entry from the draft: other unapplied new / edited presets must stay as they are

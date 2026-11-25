@@ -383,6 +383,38 @@ def test_stamp_update_skips_when_schedule_cannot_be_read(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
+def test_stale_tick_does_not_apply_a_theme_the_schedule_no_longer_wants(tmp_path, monkeypatch):
+    import json
+    from datetime import datetime
+
+    studio = ts_service.ThemeStudioService(data_dir=tmp_path / "data")
+    studio._ensure_dirs()
+    (studio.data_dir / "schedule.json").write_text(
+        json.dumps({"schema": 2, "enabled": True, "zones": {"morning": "amber-dusk"}}),
+        encoding="utf-8",
+    )
+    studio._now = lambda: datetime(2026, 11, 23, 8, 0)
+
+    real_read = studio._read_schedule
+    calls = {"n": 0}
+
+    def read_then_change(**kwargs):
+        calls["n"] += 1
+        result = real_read(**kwargs)
+        if calls["n"] > 1:
+            # The user re-picked the morning theme while the tick was running.
+            result["zones"] = dict(result["zones"], morning="graphite")
+        return result
+
+    monkeypatch.setattr(studio, "_read_schedule", read_then_change)
+    applied = []
+    monkeypatch.setattr(studio, "_apply_theme_record", lambda theme_id: applied.append(theme_id) or {})
+
+    assert studio._schedule_tick()["action"] == "superseded"
+    assert applied == []
+
+
+@pytest.mark.unit
 def test_night_zone_occurrence_belongs_to_the_day_it_started():
     from datetime import datetime
 
@@ -538,6 +570,21 @@ def test_library_backup_reports_images_it_could_not_pack(studio, monkeypatch):
     result = theme_studio.run_entry_sync("export_to_file", {"kind": "library"})
     assert result.ok, result.error
     assert result.value["skipped_images"] == 1
+
+
+@pytest.mark.unit
+def test_json_download_of_a_disabled_current_theme_stays_disabled(studio):
+    import json
+
+    seeded = theme_studio.run_entry_sync("apply_saved_theme", {"id": "amber-dusk"})
+    assert seeded.ok, seeded.error
+    off = theme_studio.run_entry_sync("apply_theme", {"enabled": False})
+    assert off.ok, off.error
+
+    result = theme_studio.run_entry_sync("export_to_file", {"kind": "json"})
+    assert result.ok, result.error
+    doc = json.loads(base64.b64decode(result.value["data"]).decode("utf-8"))
+    assert doc["enabled"] is False
 
 
 @pytest.mark.unit
