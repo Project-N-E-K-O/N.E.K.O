@@ -159,6 +159,16 @@ def prepare_request(payload: dict[str, Any], model: ModelConfig) -> tuple[str, d
     base_url = str(model.base_url or "")
     body = dict(payload)
     body["model"] = model.model
+    messages = body.get("messages")
+    if isinstance(messages, list):
+        # Most providers reject the newer "developer" role; N.E.K.O never sends
+        # it upstream, so dsh's instructions go out as a system message.
+        body["messages"] = [
+            {**message, "role": "system"}
+            if isinstance(message, dict) and message.get("role") == "developer"
+            else message
+            for message in messages
+        ]
     limit = body.pop("max_completion_tokens", None)
     older = body.pop("max_tokens", None)
     limit = limit if limit is not None else older

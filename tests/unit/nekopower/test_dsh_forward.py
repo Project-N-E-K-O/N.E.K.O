@@ -127,6 +127,21 @@ def test_the_real_model_and_key_replace_dshs_and_the_rest_is_kept() -> None:
     assert payload["model"] == "slot-3"  # the caller's request is not changed
 
 
+def test_a_developer_message_goes_out_as_a_system_message() -> None:
+    # Most providers reject the "developer" role; N.E.K.O never sends it upstream.
+    payload = _payload()
+    payload["messages"] = [
+        {"role": "developer", "content": "be brief"},
+        {"role": "user", "content": "hi"},
+    ]
+    model = ModelConfig(model="m", base_url="http://127.0.0.1:1/v1", auto_extra_body=False)
+
+    _url, _headers, body = prepare_request(payload, model)
+
+    assert body["messages"] == [{"role": "system", "content": "be brief"}, {"role": "user", "content": "hi"}]
+    assert payload["messages"][0]["role"] == "developer"  # the caller's request is not changed
+
+
 def test_a_model_without_a_key_gets_the_placeholder_the_model_client_sends() -> None:
     _url, headers, _body = prepare_request(_payload(), ModelConfig(model="m", base_url="http://127.0.0.1:1/v1"))
     assert headers["Authorization"] == "Bearer sk-placeholder"

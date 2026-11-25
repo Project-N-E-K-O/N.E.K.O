@@ -755,5 +755,69 @@
         "英文男": "Milo"
       }
     }
+  },
+  "_comment_subscription_plans": "Subscriptions & plans panel (utils/subscriptions). Each plan lists the text tiers it may take over (decided plan by plan from the models it includes), where requests go and how it signs in. verified=false: not yet tested with a real subscription.",
+  "subscription_plans": {
+    "chatgpt": {
+      "name": "ChatGPT",
+      "auth": "chatgpt_oauth",
+      "provider_type": "chatgpt",
+      "base_url": "https://api.openai.com/v1",
+      "tiers": [
+        "conversation",
+        "memory",
+        "recognition",
+        "agent",
+        "agent_small",
+        "agent_advanced",
+        "game_main",
+        "game_summary",
+        "game_recognition"
+      ],
+      "models": "account",
+      "info_url": "https://chatgpt.com/settings/usage",
+      "verified": true
+    },
+    "mimo_token_plan": {
+      "name": "MiMo Token Plan",
+      "auth": "api_key",
+      "provider_type": "openai_compatible",
+      "regions": {
+        "cn": "https://token-plan-cn.xiaomimimo.com/v1",
+        "sgp": "https://token-plan-sgp.xiaomimimo.com/v1",
+        "ams": "https://token-plan-ams.xiaomimimo.com/v1"
+      },
+      "default_region": "cn",
+      "tiers": [
+        "conversation",
+        "memory",
+        "recognition",
+        "agent",
+        "agent_small",
+        "agent_advanced",
+        "game_main",
+        "game_summary",
+        "game_recognition"
+      ],
+      "models": [
+        "mimo-v2.6-pro",
+        "mimo-v2.6-flash"
+      ],
+      "default_models": {
+        "conversation": "mimo-v2.6-pro",
+        "memory": "mimo-v2.6-pro",
+        "recognition": "mimo-v2.6-flash",
+        "agent": "mimo-v2.6-pro",
+        "agent_small": "mimo-v2.6-flash",
+        "agent_advanced": "mimo-v2.6-pro",
+        "game_main": "mimo-v2.6-pro",
+        "game_summary": "mimo-v2.6-pro",
+        "game_recognition": "mimo-v2.6-flash"
+      },
+      "key_prefix": "tp-",
+      "key_fallback": "ASSIST_API_KEY_MIMO_TOKEN_PLAN",
+      "info_url": "https://mimo.mi.com/docs/en-US/tokenplan/Token%20Plan/subscription",
+      "verified": false
+    }
   }
 }

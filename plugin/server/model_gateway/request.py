@@ -318,6 +318,10 @@ def prepare_chat_request(slot: ModelSlot, body: object) -> dict:
         _response_format(source["response_format"])
     request = copy.deepcopy(source)
     for message in request["messages"]:
+        if message["role"] == "developer":
+            # Most providers reject the newer "developer" role; N.E.K.O never
+            # sends it upstream (it accepts it from plugins as a system message).
+            message["role"] = "system"
         if message["role"] == "assistant":
             for field in ("audio", "function_call", "annotations"):
                 message.pop(field, None)

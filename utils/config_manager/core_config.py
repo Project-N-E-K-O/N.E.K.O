@@ -157,6 +157,26 @@ class CoreConfigMixin:
             return self.get_model_api_config(model_type, _core_config=core_config)
         return await asyncio.to_thread(self.get_model_api_config, model_type)
 
+    def _read_core_config_file(self):
+        """Parsed ``core_config.json`` (runtime copy, else the bundled one).
+
+        Goes through the in-process read cache (``read_cache``): a chat turn
+        reads the snapshot dozens of times and must not hit the disk each time.
+        Raises ``FileNotFoundError`` when neither copy exists, like the plain
+        read it replaces. With the cache switched off this is exactly the old
+        ``get_config_path`` + ``open`` read.
+        """
+        from . import read_cache
+
+        if not read_cache.enabled():
+            with open(str(self.get_config_path('core_config.json')), 'r', encoding='utf-8') as f:
+                return json.load(f)
+        for path in (self.config_dir / 'core_config.json', self.project_config_dir / 'core_config.json'):
+            text = read_cache.read_text(path)
+            if text is not None:
+                return json.loads(text)
+        raise FileNotFoundError('core_config.json')
+
     # --- Core config helpers ---
 
     # Only lanlan.tech in original configuration is region-rewritten; lanlan.app counts only when the loop rechecks
@@ -1145,8 +1165,7 @@ class CoreConfigMixin:
         core_cfg = deepcopy(DEFAULT_CONFIG_DATA['core_config.json'])
 
         try:
-            with open(str(self.get_config_path('core_config.json')), 'r', encoding='utf-8') as f:
-                file_data = json.load(f)
+            file_data = self._read_core_config_file()
             if isinstance(file_data, dict):
                 # Old tier names (emotion / summary) are read under the new ones; startup
                 # persists this, but a file restored or edited later must read the same.
@@ -1904,6 +1923,11 @@ class CoreConfigMixin:
             ("assistApiKeyQwenIntl", "ASSIST_API_KEY_QWEN_INTL"),
         ):
             config["IMAGE_GENERATION_CONFIG"][field] = config.get(resolved_field, "")
+        # Subscriptions & plans: tiers an enabled subscription takes over, resolved
+        # here so get_model_api_config stays pure dict work on this snapshot.
+        from utils.subscriptions.overlay import load_overlay
+
+        config["SUBSCRIPTION_OVERLAY"] = load_overlay(self, config)
         return config
 
     def get_model_api_config(self, model_type: str, *, _core_config: dict | None = None) -> dict:
@@ -2077,6 +2101,25 @@ class CoreConfigMixin:
             raise ValueError(f"Unknown model_type: {model_type}. Valid types: {list(model_type_mapping.keys())}")
         
         mapping = model_type_mapping[model_type]
+
+        # Subscriptions & plans. Precedence: the tier's own per-feature setting when
+        # set up in full, then a subscription that takes the tier, then everything
+        # below (follow options, general providers). Followers reach their followed
+        # tier through the delegation below, which checks that tier the same way.
+        subscription = (core_config.get('SUBSCRIPTION_OVERLAY') or {}).get(model_type)
+        if subscription:
+            from utils.subscriptions.overlay import tier_setting_in_effect
+
+            if not tier_setting_in_effect(model_type, core_config, treat_as_custom):
+                return {
+                    'model': subscription['model'],
+                    'api_key': subscription['api_key'],
+                    'base_url': subscription['base_url'],
+                    'is_custom': True,
+                    'provider_type': subscription['provider_type'],
+                    'api_type': None,
+                    'subscription': subscription['subscription'],
+                }
 
         def _normalize_provider_type_value(value: object) -> str:
             provider_type = str(value or 'openai_compatible').strip().lower()
