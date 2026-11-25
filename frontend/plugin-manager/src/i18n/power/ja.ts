@@ -516,6 +516,7 @@ const messages: PowerMessages = {
     foundPart: '会話がとても長いので、最近の部分だけ検索しました。',
     hitOpen: '全文を見る',
     hitClose: 'たたむ',
+    hitCut: 'この項目は長すぎるため、下には一部だけを表示しています。見つかった箇所：',
     roles: {
       user: '渡されたもの', assistant: '使い魔の発言', tool_result: '{tool} の結果', tool_failed: '{tool} の結果（失敗）',
       notice: 'お知らせ', summary: 'これまでの内容の要約',

@@ -85,7 +85,7 @@ watch(() => props.tree.id, () => {
 })
 
 /** What came of landing it, in words. */
-function landed(result: Landing): string {
+function landed(result: Landing, state: string): string {
   if (result.status === 'landed' || result.status === 'unchanged') {
     // What changed outside the project's directory landed without being asked about; what was not
     // carried over stays in the worktree.
@@ -97,35 +97,47 @@ function landed(result: Landing): string {
   if (result.status === 'conflict') {
     if (result.resolving) return t('power.trees.resolving')
     // One the user sees to never goes back to its familiar: what clashed is the user's to merge.
-    return props.tree.state === 'kept' ? t('power.trees.keptClashes') : t('power.trees.stillClashes')
+    return state === 'kept' ? t('power.trees.keptClashes') : t('power.trees.stillClashes')
   }
   const kept = result.kept_copies?.length ? ` ${t('power.trees.keptCopies', { paths: result.kept_copies.join(', ') })}` : ''
   return `${t('power.trees.failed', { detail: result.detail || '—' })}${kept}`
 }
 
-async function act(name: string, work: () => Promise<string>) {
+/**
+ * Do one thing to the worktree shown, and say what came of it. Of that worktree: when another is
+ * shown by the time the answer is in, nothing of it is said here, and whoever shows this is only
+ * told to read anew.
+ */
+async function act(name: string, work: (tree: BoardTree | Worktree) => Promise<string>) {
   if (busy.value) return
+  const tree = props.tree
   busy.value = name
   note.value = ''
   error.value = ''
+  let said = ''
+  let failed = false
   try {
-    note.value = await work()
-    emit('changed', props.tree.id, note.value)
+    said = await work(tree)
   } catch (failure) {
-    error.value = describeConsoleError(failure, t, te)
-    // Gone, taken in hand elsewhere, at work again: what is shown is not how it stands.
-    emit('changed', props.tree.id, error.value)
-  } finally {
-    busy.value = ''
+    failed = true
+    said = describeConsoleError(failure, t, te)
   }
+  const same = props.tree.id === tree.id
+  if (same) {
+    if (failed) error.value = said
+    else note.value = said
+  }
+  // Gone, taken in hand elsewhere, at work again: what is shown is not how it stands.
+  emit('changed', tree.id, same ? said : '')
+  busy.value = ''
 }
 
-const land = () => act('land', async () => landed(await landWorktree(props.tree.id)))
-const keep = () => act('keep', async () => { await keepWorktree(props.tree.id); return t('power.trees.keptNote') })
-const open = () => act('open', async () => { await openWorktree(props.tree.id); return '' })
+const land = () => act('land', async tree => landed(await landWorktree(tree.id), tree.state))
+const keep = () => act('keep', async tree => { await keepWorktree(tree.id); return t('power.trees.keptNote') })
+const open = () => act('open', async tree => { await openWorktree(tree.id); return '' })
 async function discard() {
-  await act('discard', async () => {
-    const { removed } = await discardWorktree(props.tree.id)
+  await act('discard', async tree => {
+    const { removed } = await discardWorktree(tree.id)
     return removed ? t('power.trees.discarded') : t('power.trees.discardedLater')
   })
   discarding.value = false

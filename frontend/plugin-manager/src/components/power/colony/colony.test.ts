@@ -1251,6 +1251,11 @@ describe('several familiars at work in one project', () => {
       entry('not_landed', { ...kid }), entry('landing_conflict', { ...kid }),
     ]
     for (const at of [4, 5, 6, 7]) expect(sceneAt(later, at).get('kid')?.look).toBe('working')
+    // A member of a team hands its work back stuck over its worktree: waiting for the user as well.
+    const member = [entry('started', { ...kid }), entry('not_landed', { ...kid }), entry('child_returned', { ...kid, detail: { outcome: 'blocked' } })]
+    expect(sceneAt(member, 2).get('kid')?.look).toBe('unlanded')
+    const handedBack = [entry('started', { ...kid }), entry('not_landed', { ...kid }), entry('child_returned', { ...kid, detail: { outcome: 'done' } })]
+    expect(sceneAt(handedBack, 2).get('kid')?.look).toBe('idle')
     // Ended otherwise: at rest, whatever it was before.
     const done = [entry('started', { ...kid }), entry('landing_conflict', { ...kid }), entry('ended', { ...kid, detail: { outcome: 'failed' } })]
     expect(sceneAt(done, 2).get('kid')?.look).toBe('idle')

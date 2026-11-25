@@ -516,6 +516,7 @@ const messages: PowerMessages = {
     foundPart: '대화가 너무 길어서 최근 부분만 찾았어요.',
     hitOpen: '전체 보기',
     hitClose: '접기',
+    hitCut: '이 항목은 너무 길어서 아래에는 일부만 보여요. 찾은 곳:',
     roles: {
       user: '맡긴 내용', assistant: '사역마의 말', tool_result: '{tool} 결과', tool_failed: '{tool} 결과(실패)',
       notice: '알림', summary: '이전 내용 요약',

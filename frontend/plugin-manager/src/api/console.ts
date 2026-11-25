@@ -382,7 +382,9 @@ export const getProjectBoard = (project: string | null, knownRevision?: string) 
   if (knownRevision) params.known_revision = knownRevision
   return get<Board>('/console/board', params)
 }
-export const getTemplates = () => get<{ templates: FamiliarTemplate[] }>('/console/templates')
+/** The kinds to choose from; of a project, with the templates only it has, as that project has them. */
+export const getTemplates = (project?: string | null) =>
+  get<{ templates: FamiliarTemplate[] }>('/console/templates', project ? { project } : undefined)
 export const draftFamiliar = (text: string, workdir?: string) =>
   send<{ draft: FamiliarForm }>('post', '/console/familiars/draft', { text, workdir: workdir || undefined }, undefined, DRAFT_TIMEOUT_MS)
 export const makeFamiliar = (form: FamiliarForm & { workdir?: string }) =>

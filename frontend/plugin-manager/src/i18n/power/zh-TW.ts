@@ -516,6 +516,7 @@ const messages: PowerMessages = {
     foundPart: '對話太長，只找了最近的一部分。',
     hitOpen: '看完整的',
     hitClose: '收起',
+    hitCut: '這一條太長，下面只顯示了一部分；找到的那一處是：',
     roles: {
       user: '交給它的', assistant: '它說', tool_result: '{tool} 的結果', tool_failed: '{tool} 的結果（失敗）',
       notice: '通知', summary: '之前內容的摘要',

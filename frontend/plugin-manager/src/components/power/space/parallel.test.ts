@@ -173,6 +173,20 @@ describe('what a familiar changed in a worktree of its own', () => {
     expect(said).toContain(words.trees.skippedNote.replace('{files}', 'big.bin'))
   })
 
+  it('says nothing of what came of a decision on one worktree once another is shown', async () => {
+    let answer: (value: unknown) => void = () => {}
+    api.landWorktree.mockReturnValue(new Promise(resolve => { answer = resolve }))
+    const { state, events } = await mount(TreeActions, { tree: tree() })
+    await click(byTest('tree-land'))
+    state.props = { tree: tree({ id: 't2', state: 'held', reason: 'ask' }) }
+    await flush()
+    answer({ status: 'landed', files: [{ path: 'a.py' }], more: 0, conflicts: [], resolving: false, detail: '' })
+    await flush()
+    expect(byTest('tree-note')).toBeNull()
+    // Read anew all the same, as of the one it was made on.
+    expect(events).toEqual([['onChanged', ['t1', '']]])
+  })
+
   it.each(['making', 'active', 'landing', 'resolving'])('at work (%s) offers nothing to decide', async state => {
     await mount(TreeActions, { tree: tree({ state, reason: '' }) })
     expect(byTest('tree-actions')?.textContent).toContain(words.trees.states[state as keyof typeof words.trees.states])
@@ -317,6 +331,45 @@ describe('more familiars for a project', () => {
     expect(byTest('crew-note')?.textContent).toBe(words.crew.added)
   })
 
+  it('offers the kinds of this project, read again for another, and never opens on one it does not have', async () => {
+    api.getTemplates.mockResolvedValue({ templates: [
+      { name: 'scout', label: '', description: '', avatar: 'scout', source: 'builtin', valid: true, error: '' },
+      { name: 'translator', label: 'Translator', description: '', avatar: '', source: 'project', valid: true, error: '' },
+      { name: 'general', label: '', description: '', avatar: 'general', source: 'builtin', valid: false, error: 'broken here' },
+    ] })
+    api.addMember.mockResolvedValue({ session_id: 's9', seat: '' })
+    const { state } = await mount(CrewTools, { project: 'App', hasLeader: true })
+    await click(byTest('member-add'))
+    expect(api.getTemplates).toHaveBeenCalledWith('App')
+    const offered = [...document.querySelectorAll('.el-select-dropdown__item')].map(item => item.textContent?.trim())
+    expect(offered).toEqual([words.home.presets.scout, 'Translator'])
+    await click(byTest('member-make'))
+    expect(api.addMember).toHaveBeenLastCalledWith('App', expect.objectContaining({ preset: 'scout' }))
+    // Opened again: read once, and still not on the kind this project does not have.
+    await click(byTest('member-add'))
+    await click(byTest('member-make'))
+    expect(api.addMember).toHaveBeenLastCalledWith('App', expect.objectContaining({ preset: 'scout' }))
+    expect(api.getTemplates).toHaveBeenCalledTimes(1)
+    state.props = { project: 'Other', hasLeader: true }
+    await flush()
+    await click(byTest('member-add'))
+    expect(api.getTemplates).toHaveBeenLastCalledWith('Other')
+  })
+
+  it('does not keep the kinds read for a project the user has left meanwhile', async () => {
+    let answer: (value: unknown) => void = () => {}
+    api.getTemplates.mockReturnValueOnce(new Promise(resolve => { answer = resolve }))
+    const { state } = await mount(CrewTools, { project: 'App', hasLeader: true })
+    await click(byTest('member-add'))
+    state.props = { project: 'Other', hasLeader: true }
+    await flush()
+    answer({ templates: [{ name: 'scout', label: '', description: '', avatar: 'scout', source: 'builtin', valid: true, error: '' }] })
+    await flush()
+    await click(byTest('member-add'))
+    // Read for the project now shown.
+    expect(api.getTemplates).toHaveBeenLastCalledWith('Other')
+  })
+
   it('one that cannot be summoned says why and the form stays', async () => {
     api.addMember.mockRejectedValue(refusal('no_project', 404))
     await mount(CrewTools, { project: 'App', hasLeader: true })
@@ -419,6 +472,35 @@ describe('looking for words in what was said', () => {
     await click(byTest('transcript-search-end'))
     expect(document.querySelector('[data-hit]')).toBeNull()
     expect(document.querySelector('[data-entry="0"]')).toBeTruthy()
+  })
+
+  it('of a place opened whole that is too long to show whole, still says where the words were found', async () => {
+    api.searchTranscript.mockResolvedValue({ readable: true, total: 1, whole: true, hits: [
+      { at: 120, role: 'tool_result', tool: 'read', excerpt: '…the needle is here', time: null },
+    ] })
+    await mount(TranscriptPane, { sessionId: 's1' })
+    await type('transcript-query', 'needle')
+    await click(byTest('transcript-search'))
+    api.getTranscript.mockResolvedValueOnce({ readable: true, before: null, entries: [
+      { at: 120, role: 'tool_result', text: 'a very long file, cut before the needle', cut: true, calls: [], tool: 'read', failed: false, pictures: 0, time: null },
+    ] })
+    await click(document.querySelector('[data-hit-open="120"]'))
+    expect(byTest('transcript-hit-cut')?.textContent).toBe(words.transcript.hitCut)
+    expect(document.querySelector('[data-hit="120"]')?.textContent).toContain('…the needle is here')
+    // One shown whole has nothing of the kind.
+    await click(document.querySelector('[data-hit-open="120"]'))
+    api.getTranscript.mockResolvedValueOnce({ readable: true, before: null, entries: [
+      { at: 120, role: 'tool_result', text: 'the needle is here', cut: false, calls: [], tool: 'read', failed: false, pictures: 0, time: null },
+    ] })
+    await click(document.querySelector('[data-hit-open="120"]'))
+    expect(byTest('transcript-hit-cut')).toBeNull()
+    // Arguments of a call cut short are as good as a cut text.
+    await click(document.querySelector('[data-hit-open="120"]'))
+    api.getTranscript.mockResolvedValueOnce({ readable: true, before: null, entries: [
+      { at: 120, role: 'assistant', text: '', cut: false, calls: [{ name: 'write', arguments: '{...', cut: true }], tool: null, failed: false, pictures: 0, time: null },
+    ] })
+    await click(document.querySelector('[data-hit-open="120"]'))
+    expect(byTest('transcript-hit-cut')).toBeTruthy()
   })
 
   it('says when nothing was found, and a search of the familiar left is not shown for the next', async () => {

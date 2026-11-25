@@ -516,6 +516,7 @@ const messages: PowerMessages = {
     foundPart: 'La conversación es muy larga; solo se buscó en su parte más reciente.',
     hitOpen: 'Ver completo',
     hitClose: 'Plegar',
+    hitCut: 'Esta entrada es demasiado larga para mostrarla entera abajo; donde se encontraron las palabras:',
     roles: {
       user: 'Lo que recibió', assistant: 'Lo que dijo', tool_result: 'Resultado de {tool}', tool_failed: 'Resultado de {tool} (falló)',
       notice: 'Aviso', summary: 'Resumen de lo anterior',

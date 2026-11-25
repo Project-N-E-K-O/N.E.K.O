@@ -41,6 +41,16 @@ function put(cats: Map<string, SceneCat>, id: string | null | undefined, look?: 
 }
 
 /**
+ * Put a familiar whose commission ended at rest; unless it is stuck over what it changed in its
+ * worktree, which waits there for the user: it is drawn as waiting then.
+ */
+function atRest(cats: Map<string, SceneCat>, entry: TimelineEntry) {
+  const look = cats.get(entry.session_id ?? '')?.look ?? ''
+  if (entry.detail?.outcome === 'blocked' && (look === 'held' || look === 'unlanded')) return
+  put(cats, entry.session_id, 'idle')
+}
+
+/**
  * Return how each session stood once the entries up to `index` had happened.
  *
  * A session that no entry up to there names is not in the answer: whoever
@@ -83,10 +93,7 @@ export function sceneAt(entries: TimelineEntry[], index: number, base: SceneStan
       case 'rest_over': put(cats, id, 'idle'); break
       case 'ended':
         if (busyWithAnother(entry)) break
-        // Stuck over what it changed in its worktree, which waits there for the user: drawn so.
-        if (entry.detail?.outcome !== 'blocked' || !['held', 'unlanded'].includes(cats.get(id ?? '')?.look ?? '')) {
-          put(cats, id, 'idle')
-        }
+        atRest(cats, entry)
         if (id) atWork.delete(id)
         break
       // What a familiar changed in a worktree of its own: merged where it clashed, left for the user.
@@ -100,7 +107,8 @@ export function sceneAt(entries: TimelineEntry[], index: number, base: SceneStan
           if (cat && ['resolving', 'held', 'unlanded'].includes(cat.look)) cat.look = atWork.has(id ?? '') ? 'working' : 'idle'
         }
         break
-      case 'child_returned': case 'ask_answered': put(cats, id, 'idle'); break
+      // A member of a team, or another one a familiar started, ends so.
+      case 'child_returned': case 'ask_answered': atRest(cats, entry); break
       case 'child_started':
         put(cats, id)
         // The one it started is there from now on.

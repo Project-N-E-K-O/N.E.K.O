@@ -79,20 +79,29 @@ watch(() => props.project, () => {
   adding.value = false
   leading.value = false
   note.value = ''
+  // Another project has its own templates: read again when next asked for.
+  templatesRead.value = false
 })
 
 async function openAdding() {
   Object.assign(form, { preset: 'general', title: '', duty: '' })
   error.value = ''
   adding.value = true
-  if (templatesRead.value) return
-  try {
-    templates.value = (await getTemplates()).templates
-  } catch {
-    // The kind every project has stays to choose.
-    templates.value = [{ name: 'general', label: '', description: '', avatar: 'general', source: 'builtin', valid: true, error: '' }]
+  if (!templatesRead.value) {
+    const project = props.project
+    let read: FamiliarTemplate[]
+    try {
+      read = (await getTemplates(project)).templates
+    } catch {
+      // The kind every project has stays to choose.
+      read = [{ name: 'general', label: '', description: '', avatar: 'general', source: 'builtin', valid: true, error: '' }]
+    }
+    // Read for a project the user has left meanwhile: not this one's.
+    if (project !== props.project) return
+    templates.value = read
+    templatesRead.value = true
   }
-  templatesRead.value = true
+  // Every time it opens: the kind it opens with may be none this project has.
   if (!kinds.value.some(item => item.name === form.preset)) form.preset = kinds.value[0]?.name ?? ''
 }
 

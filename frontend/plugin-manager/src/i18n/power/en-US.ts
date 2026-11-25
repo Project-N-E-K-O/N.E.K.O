@@ -523,6 +523,7 @@ const messages = {
     foundPart: 'The conversation is very long; only its latest part was searched.',
     hitOpen: 'Show all of it',
     hitClose: 'Fold',
+    hitCut: 'This entry is too long to show all of it below; where the words were found:',
     roles: {
       user: 'Given to it', assistant: 'It said', tool_result: 'Result of {tool}', tool_failed: 'Result of {tool} (failed)',
       notice: 'Notice', summary: 'Summary of what came before',

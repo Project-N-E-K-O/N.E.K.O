@@ -68,7 +68,7 @@
       </dl>
 
       <!-- It works in a git worktree of its own, or left what it changed there for the user. -->
-      <TreeActions v-if="selected.tree" :tree="selected.tree" :title="selected.commission?.title" @changed="treeChanged" />
+      <TreeActions v-if="selected.tree" :key="selected.tree.id" :tree="selected.tree" :title="selected.commission?.title" @changed="treeChanged" />
       <p v-if="treeSaid.said && selected.tree?.id !== treeSaid.tree" class="muted" role="status" data-testid="tree-said">{{ treeSaid.said }}</p>
 
       <div class="views" role="tablist">

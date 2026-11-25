@@ -35,6 +35,11 @@
           </header>
           <p v-if="shownHit !== hit.at" class="text">{{ hit.excerpt }}</p>
           <template v-else-if="hitEntry">
+            <!-- Cut where it is too long to show whole: where the words were found is said all the same. -->
+            <template v-if="hitEntry.cut || hitEntry.calls.some(call => call.cut)">
+              <p class="muted" data-testid="transcript-hit-cut">{{ t('power.transcript.hitCut') }}</p>
+              <p class="text">{{ hit.excerpt }}</p>
+            </template>
             <p v-if="hitEntry.text" class="text">{{ hitEntry.text }}</p>
             <details v-for="(call, index) in hitEntry.calls" :key="index" class="call">
               <summary>{{ t('power.transcript.calls', { tool: call.name }) }}</summary>
