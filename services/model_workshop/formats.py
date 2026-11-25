@@ -655,11 +655,15 @@ def _vrm(resources: _Resources) -> None:
         clone_view = accessor["bufferView"] if view is not None and view.get("byteStride", element_size) != element_size and "sparse" not in accessor else None
         accessor_clones.append((clone_size, clone_view))
         if view is None or "sparse" in accessor:
-            # Sparse data over an existing interleaved view clones its full stride,
-            # not just the logical element width. Sum every private backing array.
+            # Sparse data over an existing view clones private backing storage.
+            # Sum every private array before checking supported sparse layouts.
             allocated += count * (view.get("byteStride", element_size) if view is not None else element_size)
             _require(allocated <= resources.limits.vrm_accessor_bytes, entry, "model_accessor_budget_exceeded")
         if "sparse" in accessor:
+            # GLTFLoader copies a sparse interleaved array into a plain attribute
+            # without deinterleaving it, changing its count and vertex layout.
+            _require(view is None or view.get("byteStride", element_size) == element_size,
+                     entry, "unsupported_model_structure")
             # This bundled GLTFLoader writes sparse items through setX/Y/Z/W;
             # matrix widths above four components are explicitly unsupported.
             _require(shape not in ("MAT3", "MAT4"), entry, "unsupported_model_structure")

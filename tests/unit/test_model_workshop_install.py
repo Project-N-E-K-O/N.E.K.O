@@ -1312,6 +1312,8 @@ def test_root_redirection_is_not_a_missing_model_status(service, tmp_path):
     path, _ = bundle_path(tmp_path)
     record = install(service, path)['result']
     root = service.paths.root; saved = root.with_name('original-runtime')
+    # Windows prevents renaming a tree while its writer lock file is open.
+    service.close()
     root.rename(saved)
     try:
         try: root.symlink_to(saved, target_is_directory=True)

@@ -750,13 +750,14 @@ def sparse_accessors(data, *, count=2_000_000_000, copies=1, backed=False):
                            "values": {"bufferView": 3}}}
     if backed:
         accessor["bufferView"] = 1
+        data["bufferViews"][1]["byteStride"] = 12
     data["accessors"] = [dict(accessor) for _ in range(copies)]
 
 
 @pytest.mark.parametrize("count,copies,backed,budget", [(2_000_000_000, 1, False, None),
-    (4, 2, False, 145), (4, 2, True, 193)])
+    (4, 2, False, 145), (4, 2, True, 176)])
 def test_vrm_sparse_allocations_are_bounded_individually_and_in_total(tmp_path, count, copies, backed, budget):
-    """Count and stride bound actual zero-filled arrays and sparse buffer clones."""
+    """Count bounds actual zero-filled arrays and packed sparse buffer clones."""
     raw = vrm_bytes(change=lambda data: sparse_accessors(data, count=count, copies=copies, backed=backed))
     path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": raw})
     options = {} if budget is None else {"format_limits": FormatLimits(vrm_accessor_bytes=budget)}
@@ -1356,3 +1357,29 @@ def test_scene_camera_dependencies_are_checked(tmp_path, case):
         assert validate_model_bundle(path).model_format == 'vrm'
     else:
         with pytest.raises(ModelFormatError): validate_model_bundle(path)
+
+
+@pytest.mark.parametrize('stride,sparse,valid', [(12, False, True), (12, True, True), (16, False, True),
+                                               (16, True, False), (252, False, True), (252, True, False)])
+@pytest.mark.parametrize('mode', [4, 5, 6])
+def test_sparse_accessor_preserves_loaded_vertex_layout(tmp_path, stride, sparse, valid, mode):
+    def graph(data):
+        count = 10000
+        raw = bytes(stride * count + 16)
+        data['buffers'].append({'byteLength': len(raw), 'uri': 'data:application/octet-stream;base64,' + base64.b64encode(raw).decode()})
+        data['bufferViews'].extend([{'buffer': 1, 'byteLength': stride * count, 'byteStride': stride},
+                                   {'buffer': 1, 'byteOffset': stride * count, 'byteLength': 1},
+                                   {'buffer': 1, 'byteOffset': stride * count + 4, 'byteLength': 12}])
+        accessor = {'bufferView': 1, 'componentType': 5126, 'type': 'VEC3', 'count': count}
+        if sparse:
+            accessor['sparse'] = {'count': 1, 'indices': {'bufferView': 2, 'componentType': 5121}, 'values': {'bufferView': 3}}
+        data['accessors'] = [accessor]
+        data['meshes'] = [{'primitives': [{'attributes': {'POSITION': 0}, 'mode': mode}]}]
+        data['nodes'] = [{'mesh': 0} for _ in range(100)]
+        data['scenes'][0]['nodes'] = list(range(100))
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
+    if valid:
+        assert validate_model_bundle(path).model_format == 'vrm'
+    else:
+        with pytest.raises(ModelFormatError, match='unsupported_model_structure'):
+            validate_model_bundle(path)
