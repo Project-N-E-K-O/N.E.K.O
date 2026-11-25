@@ -265,8 +265,9 @@ def _literal_import(node: ast.AST, bindings) -> str | None:
         if len(node.args) != 1 or node.keywords:
             return None
         module = _literal_string(node.args[0])
-        if module is not None and not module.startswith("."):
-            module = module.split(".", 1)[0]
+        if module is None or module.startswith(".") or not _MODULE_NAME.fullmatch(module):
+            return None
+        return module.split(".", 1)[0]
     else:
         return None
     if module is None or not _MODULE_NAME.fullmatch(module):

@@ -1962,6 +1962,8 @@ def test_literal_import_module_is_followed_like_an_import(tmp_path, source, basi
         "__import__('subprocess', fromlist=['run'])\n",
         "import builtins\nbuiltins.__import__('subprocess')\n",
         "import importlib\nimportlib.import_module('not a module')\n",
+        "__import__('subprocess.')\n",
+        "__import__('.sub')\n",
     ],
 )
 def test_non_literal_dynamic_imports_stay_blind_spots(tmp_path, source):
