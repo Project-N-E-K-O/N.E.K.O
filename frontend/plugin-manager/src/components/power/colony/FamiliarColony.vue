@@ -121,7 +121,8 @@ const describe = (failure: unknown) => describeConsoleError(failure, t, te)
 const { board, loaded, error, load } = useBoard(() => t('power.home.unavailable'), describe)
 const { asks: besides, load: loadBesides } = useBesideAsks(board)
 // What is answered above a familiar's head: each apart, another can be answered meanwhile.
-const { answering, failed, answer: answerOne } = useAskAnswers(() => Promise.all([load(), loadBesides()]))
+// The card is gone once its question is answered: that the sentence added to it was not taken is said above the colony.
+const { answering, failed, answer: answerOne } = useAskAnswers(() => Promise.all([load(), loadBesides()]), lost => { said.value = lost })
 const {
   entries, loading: timelineLoading, error: timelineError, whole, dropped, base, wholeFits, fromBeginning,
 } = useTimeline(() => null, describe)

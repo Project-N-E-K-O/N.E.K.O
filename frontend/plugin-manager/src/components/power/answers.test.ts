@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createApp, h, nextTick, reactive } from 'vue'
+import { createApp, defineComponent, h, nextTick, reactive } from 'vue'
 import type { Component } from 'vue'
 import { createI18n } from 'vue-i18n'
 import ElementPlus from 'element-plus'
@@ -12,7 +12,7 @@ import AskBubble from './colony/AskBubble.vue'
 import ColonyTerritory from './colony/ColonyTerritory.vue'
 import type { ColonyMember } from './colony/ColonyTerritory.vue'
 import FamiliarCard from './home/FamiliarCard.vue'
-import { sendAnswer } from './useAskAnswers'
+import { sendAnswer, useAskAnswers } from './useAskAnswers'
 
 const api = vi.hoisted(() => ({
   answerCommission: vi.fn(),
@@ -301,6 +301,47 @@ describe('where the cards are shown', () => {
       [(parseFloat((spot as HTMLElement).style.top) / 100) * height < 150, spot.querySelector('[data-ask-bubble]')!.classList.contains('below')])
     expect(sides.every(([high, under]) => high === under)).toBe(true)
     expect(new Set(sides.map(([, under]) => under)).size).toBeGreaterThanOrEqual(1)
+  })
+
+  it('moves the card of one that stands at the edge inwards, its pointer staying above the familiar', async () => {
+    localStorage.setItem('neko-power-colony-spots', JSON.stringify({ 'project:edge': { s1: { x: 0.02, y: 0.6 }, s2: { x: 0.5, y: 0.6 } } }))
+    const members = [member({ ask: permission(), commission: 'c1' }), member({ id: 's2', name: 'Soot', ask: permission({ id: 'q2' }), commission: 'c2' })]
+    const { container } = await mount(ColonyTerritory, { territory: { key: 'project:edge', name: 'edge', loose: false, members } })
+    await vi.dynamicImportSettled()
+    await flush()
+    const width = parseFloat((container.querySelector('[data-territory]') as HTMLElement).style.width)
+    const shift = (id: string) => parseFloat((container.querySelector(`[data-ask-of="${id}"] [data-ask-bubble]`) as HTMLElement).style.getPropertyValue('--shift'))
+    const middle = (id: string) => (parseFloat((container.querySelector(`[data-ask-of="${id}"]`) as HTMLElement).style.left) / 100) * width
+    // 216 wide, its middle near the left edge: moved right until its left edge is at the territory's.
+    expect(middle('s1')).toBeLessThan(108)
+    expect(shift('s1')).toBe(Math.round(108 - middle('s1')))
+    expect(shift('s2')).toBe(0)
+    localStorage.removeItem('neko-power-colony-spots')
+  })
+
+  it('tells whoever shows the questions that a sentence was not taken, where it asks to be told', async () => {
+    const told: string[] = []
+    let answers!: ReturnType<typeof useAskAnswers>
+    let kept!: ReturnType<typeof useAskAnswers>
+    await mount(defineComponent({
+      setup() {
+        answers = useAskAnswers(async () => {}, said => told.push(said))
+        kept = useAskAnswers(async () => {})
+        return () => null
+      },
+    }))
+    api.answerCommission.mockResolvedValue({ success: true, note_taken: false })
+    await answers.answer({ id: 'c1', ask: permission() }, { choice: 'deny', note: 'x' })
+    await kept.answer({ id: 'c1', ask: permission() }, { choice: 'deny', note: 'x' })
+    // Said elsewhere, since the card is gone with the answer; else kept with why answers were not taken.
+    expect(told).toEqual([words.ask.noteLost])
+    expect(answers.failedOf({ id: 'c1' })).toBe('')
+    expect(kept.failedOf({ id: 'c1' })).toBe(words.ask.noteLost)
+    // An answer that was not taken is kept with the question either way.
+    api.answerCommission.mockRejectedValue({ code: 'not_taken' })
+    await answers.answer({ id: 'c1', ask: permission() }, { choice: 'deny' })
+    expect(answers.failedOf({ id: 'c1' })).toBe(words.ask.stale)
+    expect(told.length).toBe(1)
   })
 
   it('answers in the card of the board, where pressing the card itself still opens the familiar', async () => {

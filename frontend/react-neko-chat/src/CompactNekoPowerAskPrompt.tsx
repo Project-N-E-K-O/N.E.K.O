@@ -1,4 +1,6 @@
 import { useRef } from 'react';
+import { useChatScreenVisibility } from './ChatScreenVisibility';
+import CompactMusicRecommendationPrompt from './CompactMusicRecommendationPrompt';
 import NekoPowerAskBlock from './NekoPowerAskBlock';
 import type { ChatMessage, MessageAction } from './message-schema';
 
@@ -10,6 +12,22 @@ export function pendingNekoPowerAsk(messages: ChatMessage[]) {
     if (block && block.type === 'nekopower_ask' && (block.state === 'pending' || block.state === 'sending')) return { message, block };
   }
   return null;
+}
+
+/**
+ * What floats above the composer of the compact chat: what a commission asks comes before a
+ * recommendation, since its work waits for the answer. A question whose message the screen hides
+ * is not shown, and keeps no recommendation from being shown.
+ */
+export function CompactAskOrRecommendationPrompt({ messages, onAction }: {
+  messages: ChatMessage[];
+  onAction?: (message: ChatMessage, action: MessageAction) => void;
+}) {
+  const { isMessageHidden } = useChatScreenVisibility();
+  const seen = messages.filter(message => !isMessageHidden(message));
+  return pendingNekoPowerAsk(seen)
+    ? <CompactNekoPowerAskPrompt messages={seen} onAction={onAction} />
+    : <CompactMusicRecommendationPrompt messages={messages} onAction={onAction} />;
 }
 
 /**

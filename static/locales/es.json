@@ -4778,7 +4778,9 @@
             "closed": "Esta pregunta ya terminó",
             "stale": "No se entregó: esta pregunta ya fue respondida, o una nueva ocupó su lugar.",
             "noteLost": "Tu respuesta se entregó, pero la frase que añadiste no.",
-            "failed": "No se entregó. Inténtalo de nuevo."
+            "failed": "No se entregó. Inténtalo de nuevo.",
+            "unsure": "Aún no se sabe si se entregó. Vuelve a mirar en un momento.",
+            "wideBlocked": "Aquí no se puede mostrar todo: concede los permisos más amplios en la ventana de NekoPower"
         },
         "taskHud": {
             "tasksTab": "Tareas",

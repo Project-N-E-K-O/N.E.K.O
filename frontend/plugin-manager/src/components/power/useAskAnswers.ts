@@ -27,8 +27,13 @@ export async function sendAnswer(commissionId: string, given: GivenAnswer, ask: 
   return done?.note_taken === false ? t('power.ask.noteLost') : ''
 }
 
-/** `after` is done once an answer was taken or not: whoever shows the questions reads anew then. */
-export function useAskAnswers(after: () => Promise<unknown>) {
+/**
+ * `after` is done once an answer was taken or not: whoever shows the questions reads anew then.
+ * `noteLost`, where given, is told that an answer was taken while the sentence added to it was
+ * not: where the question is shown is gone with the answer, so it is said elsewhere. Not given,
+ * it is kept with why answers were not taken.
+ */
+export function useAskAnswers(after: () => Promise<unknown>, noteLost?: (said: string) => void) {
   const { t, te } = useI18n()
   // By its commission: with which button a question is being answered, and why an answer was not taken.
   const answering = ref<Record<string, string>>({})
@@ -42,7 +47,8 @@ export function useAskAnswers(after: () => Promise<unknown>) {
     failed.value = without(failed.value, item.id)
     try {
       const lost = await sendAnswer(item.id, given, item.ask, t)
-      if (lost) failed.value = { ...failed.value, [item.id]: lost }
+      if (lost && noteLost) noteLost(lost)
+      else if (lost) failed.value = { ...failed.value, [item.id]: lost }
     } catch (failure) {
       failed.value = { ...failed.value, [item.id]: describeAnswerError(failure, t, te) }
     }

@@ -4778,7 +4778,9 @@
             "closed": "Esta pergunta já terminou",
             "stale": "Não foi entregue: esta pergunta já foi respondida, ou uma nova tomou o lugar dela.",
             "noteLost": "Sua resposta foi entregue, mas a frase que você acrescentou não.",
-            "failed": "Não foi entregue. Tente novamente."
+            "failed": "Não foi entregue. Tente novamente.",
+            "unsure": "Ainda não se sabe se foi entregue. Confira de novo daqui a pouco.",
+            "wideBlocked": "Não dá para mostrar tudo aqui: conceda as permissões mais amplas na janela do NekoPower"
         },
         "taskHud": {
             "tasksTab": "Tarefas",

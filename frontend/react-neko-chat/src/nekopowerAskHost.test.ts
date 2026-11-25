@@ -130,6 +130,51 @@ describe('the question inside a card of the task HUD', () => {
     expect(shownChoices(box)).toEqual(['once', 'deny']);
   });
 
+  it('opens what a line left out before a wider approval, and offers none where it cannot be shown', () => {
+    // A request that names no command or path (handing work over), its title too long for the line.
+    const handed = { kind: 'permission', id: 'q8', category: 'open_session', options: ['always', 'session', 'once', 'deny'],
+      detail: { tool: 'hand_over', title: 'a very long title that the line cut' }, line: 'start another familiar: a very … cut', line_cut: true };
+    const box = draw(handed);
+    expect(shownChoices(box)).toEqual(['once', 'deny']);
+    press(box.querySelector('[data-ask-whole]'));
+    expect(box.querySelector('.task-ask-whole')?.textContent).toBe('a very long title that the line cut');
+    expect(shownChoices(box)).toEqual(['always', 'session', 'once', 'deny']);
+    // Cut, and nothing to show it whole by: only this once, or not, and it says where the rest is given.
+    const bare = draw({ ...handed, id: 'q9', detail: {} });
+    expect(shownChoices(bare)).toEqual(['once', 'deny']);
+    expect(bare.querySelector('[data-ask-whole]')).toBeNull();
+    expect(bare.textContent).toContain('请到喵能力界面里选');
+  });
+
+  it('asks whether the question still waits when the server gave up waiting for the answer to be taken', async () => {
+    const rows = (questions: unknown[]) => (url: string) => (url.includes('/answer') ? { status: 504, body: {} } : { status: 200, body: { questions } });
+    // It does not wait any more: the answer was taken.
+    reply = rows([]);
+    const taken = draw(permission);
+    press(taken.querySelector('[data-choice="once"]'));
+    await flush();
+    expect(taken.querySelector('.task-ask-status')?.textContent).toContain('已回答');
+    // The same question still waits: not taken, to be sent again.
+    reply = rows([{ task_id: 'c1', question: permission }]);
+    const waits = draw(permission);
+    press(waits.querySelector('[data-choice="once"]'));
+    await flush();
+    expect(waits.querySelector('.task-ask-status')?.textContent).toBe('没送到，再试一次吧。');
+    expect((waits.querySelector('[data-choice="once"]') as HTMLButtonElement).disabled).toBe(false);
+    // Another question waits by now: this one was answered.
+    reply = rows([{ task_id: 'c1', question: confirmation }]);
+    const moved = draw(permission);
+    press(moved.querySelector('[data-choice="once"]'));
+    await flush();
+    expect(moved.querySelector('.task-ask-status')?.textContent).toContain('已回答');
+    // That cannot be read either: it is not known, and is not said to have failed.
+    reply = url => (url.includes('/answer') ? { status: 504, body: {} } : { status: 502, body: {} });
+    const unknown = draw(permission);
+    press(unknown.querySelector('[data-choice="once"]'));
+    await flush();
+    expect(unknown.querySelector('.task-ask-status')?.textContent).toBe('还不确定送到没有，过一会儿再看。');
+  });
+
   it('has no line for a sentence where a plugin does the work, and holds back after taking another question\'s place', () => {
     vi.useFakeTimers();
     const box = draw(permission, { noNote: true, settle: true });
@@ -278,6 +323,56 @@ describe('the cards of the chat window', () => {
     expect(messages.map(message => message.blocks[0].state)).toEqual(['closed', 'pending', 'pending']);
   });
 
+  it('shows no card for a question that is over when its report arrives late', async () => {
+    asks.receive(frame(permission));
+    answerFromChat({ taskId: 'c1', questionId: 'q1', choice: 'once' });
+    await flush();
+    asks.receive(frame(confirmation, { task_id: 'c2' }));
+    asks.receive(frame(null, { task_id: 'c2', question_id: 'q2' }));
+    // Closed before its report was shown at all.
+    asks.receive(frame(null, { task_id: 'c3', question_id: 'q7' }));
+    // The reports were on their way as the answers came, and arrive now.
+    asks.receive(frame(permission));
+    asks.receive(frame(confirmation, { task_id: 'c2' }));
+    asks.receive(frame({ ...permission, id: 'q7' }, { task_id: 'c3' }));
+    expect(messages.map(message => [message.id, message.blocks[0].state])).toEqual([
+      ['nekopower-ask-c1-q1', 'answered'], ['nekopower-ask-c2-q2', 'closed'],
+    ]);
+    // The next question of those tasks is shown as ever.
+    asks.receive(frame({ ...permission, id: 'q8' }, { task_id: 'c3' }));
+    expect(messages.length).toBe(3);
+  });
+
+  it('does not open a card again that was closed while its answer was on its way', async () => {
+    let release = () => {};
+    hold = new Promise(resolve => { release = resolve; });
+    reply = () => ({ status: 502, body: {} });
+    asks.receive(frame(permission));
+    answerFromChat({ taskId: 'c1', questionId: 'q1', choice: 'once' });
+    await flush();
+    asks.receive(frame(null, { question_id: 'q1' }));
+    hold = null;
+    release();
+    await flush();
+    // The answer failed, but there is nothing left to answer: the card stays closed.
+    expect(block().state).toBe('closed');
+
+    // Taken, and the word that it is over came before the word that it was taken: answered, not just over.
+    hold = new Promise(resolve => { release = resolve; });
+    reply = () => ({ status: 200, body: { success: true } });
+    asks.receive(frame(confirmation, { task_id: 'c2' }));
+    window.dispatchEvent(new CustomEvent('react-chat-window:action', {
+      detail: { message: messages[1], action: { action: 'nekopower_ask_answer', payload: { taskId: 'c2', questionId: 'q2', choice: 'yes' } } },
+    }));
+    await flush();
+    asks.receive(frame(null, { task_id: 'c2', question_id: 'q2' }));
+    expect(block(1).state).toBe('closed');
+    hold = null;
+    release();
+    await flush();
+    expect(block(1).state).toBe('answered');
+  });
+
   it('keeps the card of the next question answerable when it comes before the last answer is back', async () => {
     let release = () => {};
     hold = new Promise(resolve => { release = resolve; });
@@ -376,5 +471,34 @@ describe('the cards of the chat window', () => {
     vi.advanceTimersByTime(600);
     // Only the latest of each task, and none of one that is over meanwhile.
     expect(messages.map(message => message.id)).toEqual(['nekopower-ask-c1-q2']);
+  });
+
+  it('lets go of what waited for the chat window once something newer is shown or it is over', async () => {
+    vi.useFakeTimers();
+    const w = window as unknown as Record<string, unknown>;
+    const host = w.reactChatWindowHost;
+    w.reactChatWindowHost = null;
+    asks.receive(frame(permission));
+    // The window is there, and the next question of the task comes before what waited is looked at.
+    w.reactChatWindowHost = host;
+    asks.receive(frame(confirmation));
+    vi.advanceTimersByTime(600);
+    // Not the older question over the newer one.
+    expect(messages.map(message => [message.id, message.blocks[0].state])).toEqual([['nekopower-ask-c1-q2', 'pending']]);
+
+    // One that waits for the window, and is over by the time what waits now is read.
+    w.reactChatWindowHost = null;
+    asks.receive(frame(permission, { task_id: 'c2' }));
+    asks.receive(frame({ ...permission, id: 'q6' }, { task_id: 'c3' }));
+    reply = () => ({ status: 200, body: { questions: [
+      { task_id: 'c1', title: 't', route: 'task_agent', lanlan_name: 'Lan', question: confirmation },
+      { task_id: 'c3', title: 't', route: 'task_agent', lanlan_name: 'Lan', question: { ...permission, id: 'q6' } },
+    ] } });
+    // Told of before this read began, so the read is the newer word on them.
+    await asks.sync();
+    w.reactChatWindowHost = host;
+    vi.advanceTimersByTime(600);
+    // c2 asks nothing any more and is not shown; c3 still asks, and is.
+    expect(messages.map(message => message.id)).toEqual(['nekopower-ask-c1-q2', 'nekopower-ask-c3-q6']);
   });
 });

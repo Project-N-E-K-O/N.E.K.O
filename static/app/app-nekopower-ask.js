@@ -56,7 +56,9 @@
         closed: ['agent.ask.closed', '这个问题已经结束了'],
         stale: ['agent.ask.stale', '没送到：这个问题已经答过了，或者它换了个新问题。'],
         noteLost: ['agent.ask.noteLost', '回答送到了，补的那句没送到。'],
-        failed: ['agent.ask.failed', '没送到，再试一次吧。']
+        failed: ['agent.ask.failed', '没送到，再试一次吧。'],
+        unsure: ['agent.ask.unsure', '还不确定送到没有，过一会儿再看。'],
+        wideBlocked: ['agent.ask.wideBlocked', '这里看不到完整内容，「始终允许」这类选项请到喵能力界面里选']
     };
     function word(name, vars) { return tr(WORDS[name][0], WORDS[name][1], vars); }
 
@@ -85,6 +87,13 @@
         var options = Array.isArray(asked.options) ? asked.options.filter(function (option) { return WORDS[option]; }) : [];
         var questions = questionsOf(asked);
         var whole = text(detail.command) || text(detail.path);
+        // The line that says it left part of something out: of the command or path, or (where it
+        // names neither) of whatever else it is said by, and of whom something is delivered to.
+        var cut = asked.line_cut === true;
+        if (cut) {
+            whole = [whole || text(asked.key) || text(detail.title) || text(detail.tool), text(detail.content_to)]
+                .filter(Boolean).join('\n');
+        }
         var shape = options.length ? 'permission'
             : asked.kind === 'confirmation' ? 'confirmation'
                 : questions.some(function (item) { return item.options.length; }) ? 'questions' : 'words';
@@ -97,8 +106,8 @@
             line: line,
             whole: whole,
             // Whether all of what it would do has to be opened before a wider approval is offered.
-            needsWhole: shape === 'permission' && Boolean(whole)
-                && (asked.line_cut === true || whole.length > GLANCE_CHARS || whole.indexOf('\n') !== -1),
+            needsWhole: shape === 'permission'
+                && (cut || (Boolean(whole) && (whole.length > GLANCE_CHARS || whole.indexOf('\n') !== -1))),
             options: options,
             questions: questions,
             quick: questions.length === 1 && !questions[0].multi
@@ -148,10 +157,18 @@
             var result = null;
             try { result = await response.json(); } catch (_) { result = null; }
             if (response.ok) return { ok: true, stale: false, noteLost: Boolean(result && result.note_taken === false) };
-            return { ok: false, stale: response.status === 409, noteLost: false };
+            if (response.status !== 504) return { ok: false, stale: response.status === 409, noteLost: false };
         } catch (_) {
             return { ok: false, stale: false, noteLost: false };
         }
+        // The server gave up waiting after it had passed the answer on: it may be in. Whether the
+        // same question still waits says which; where that cannot be read, it is not known.
+        var rows = await waiting();
+        if (!rows) return { ok: false, stale: false, noteLost: false, unsure: true };
+        var still = rows.some(function (row) {
+            return row && String(row.task_id) === String(taskId) && view(row.question).id === (questionId || '');
+        });
+        return still ? { ok: false, stale: false, noteLost: false } : { ok: true, stale: false, noteLost: false };
     }
 
     /** What commissions ask right now, read from the agent process: `[{task_id, title, question, route}]`. */
@@ -218,7 +235,11 @@
                 button.style.cursor = button.disabled ? 'default' : 'pointer';
             });
             wide.forEach(function (button) { button.style.display = shown.needsWhole && !wholeOpen ? 'none' : ''; });
-            if (hint) hint.style.display = shown.needsWhole && !wholeOpen && wide.length ? '' : 'none';
+            if (hint) {
+                hint.style.display = shown.needsWhole && !wholeOpen && wide.length ? '' : 'none';
+                // Cut, and nothing here to show it whole by: the wider approvals are given elsewhere.
+                hint.textContent = word(shown.whole ? 'wideHint' : 'wideBlocked');
+            }
             if (input) input.disabled = busy || done;
         }
         function button(label, style, press) {
@@ -243,7 +264,7 @@
                     + (result.noteLost ? ' ' + word('noteLost') : '');
                 status.style.color = 'var(--neko-popup-success, #16a34a)';
             } else {
-                status.textContent = result.stale ? word('stale') : word('failed');
+                status.textContent = word(result.stale ? 'stale' : result.unsure ? 'unsure' : 'failed');
                 status.style.color = 'var(--neko-popup-error, #dc2626)';
                 // Too late: the question is closed, and what waits now is read anew.
                 if (result.stale) { done = true; sync(); }
@@ -293,7 +314,7 @@
         }
 
         if (shown.shape === 'permission') {
-            if (shown.needsWhole) {
+            if (shown.needsWhole && shown.whole) {
                 var whole = el('pre', {
                     display: 'none', margin: '0', padding: '6px 8px', maxHeight: '140px', overflow: 'auto', whiteSpace: 'pre-wrap',
                     wordBreak: 'break-all', font: '11px/1.5 Consolas, Menlo, monospace', borderRadius: '6px',
@@ -384,6 +405,15 @@
     // By task: the card of what it asks now (`{message, questionId}`); the cards are the chat's to keep.
     var open = new Map();
     var queued = [];
+    // The ids of questions whose cards were closed or answered here (the latest few hundred): a
+    // report of one of them that arrives late (it was on its way as the answer came) shows no card.
+    var over = [];
+    function isOver(questionId) { return Boolean(questionId) && over.indexOf(questionId) !== -1; }
+    function setOver(questionId) {
+        if (!questionId || isOver(questionId)) return;
+        over.push(questionId);
+        if (over.length > 300) over.shift();
+    }
     // When each task was last told of by the page's connection (a count, not a time): what a read
     // that began before that says of the task is older, and is not gone by.
     var told = new Map();
@@ -407,9 +437,11 @@
     /** Close the card of a task's question: all of that task's, or the one that asked `questionId`. */
     function close(taskId, questionId) {
         queued = queued.filter(function (args) { return args[0] !== taskId || (questionId && view(args[2]).id !== questionId); });
+        if (questionId) setOver(questionId);
         var card = open.get(taskId);
         if (!card || (questionId && card.questionId !== questionId)) return;
         open.delete(taskId);
+        setOver(card.questionId);
         var block = card.message.blocks[0];
         if (block.state === 'pending' || block.state === 'sending') patch(card, { state: 'closed' });
     }
@@ -424,6 +456,9 @@
             return;
         }
         var shown = view(question);
+        if (isOver(shown.id)) return;
+        // Shown from here on: what waited for the window of this task is older, and is let go of.
+        queued = queued.filter(function (args) { return args[0] !== taskId; });
         var card = open.get(taskId);
         if (card && card.questionId === shown.id) return;
         // Another question of the same task: the last one is over.
@@ -483,6 +518,11 @@
                     if (fresh(taskId)) return;
                     if (!row || view(row.question).id !== open.get(taskId).questionId) close(taskId);
                 });
+                // What waits for the chat window to be there, likewise: one that is over is not shown then.
+                queued = queued.filter(function (args) {
+                    var row = asked.get(args[0]);
+                    return fresh(args[0]) || Boolean(row && view(row.question).id === view(args[2]).id);
+                });
                 asked.forEach(function (row, taskId) {
                     // Of another character than the one this page is with: its page shows it, as
                     // the connection would have sent it there.
@@ -516,16 +556,25 @@
         patch(card, { state: 'sending', notice: '' });
         answer(block.taskId, block.questionId, given).then(function (result) {
             // The task may ask its next question before this is back: that card is the one kept.
-            var forget = function () { if (open.get(block.taskId) === card) open.delete(block.taskId); };
+            var mine = open.get(block.taskId) === card;
+            var forget = function () { if (mine) open.delete(block.taskId); };
+            if (!mine) {
+                // Closed while the answer was on its way (it was answered elsewhere, or is over):
+                // the card says so already, and is not opened again whatever came of this.
+                if (result.ok) patch(card, { state: 'answered', answer: shownAnswer(given), notice: result.noteLost ? word('noteLost') : '' });
+                return;
+            }
             if (result.ok) {
                 forget();
+                setOver(card.questionId);
                 patch(card, { state: 'answered', answer: shownAnswer(given), notice: result.noteLost ? word('noteLost') : '' });
             } else if (result.stale) {
                 forget();
+                setOver(card.questionId);
                 patch(card, { state: 'closed', notice: word('stale') });
                 sync();
             } else {
-                patch(card, { state: 'pending', notice: word('failed') });
+                patch(card, { state: 'pending', notice: word(result.unsure ? 'unsure' : 'failed') });
             }
         });
     });

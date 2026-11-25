@@ -1,6 +1,7 @@
 import { act, fireEvent, render } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import CompactNekoPowerAskPrompt, { pendingNekoPowerAsk } from './CompactNekoPowerAskPrompt';
+import { ChatScreenVisibilityProvider, useChatScreenVisibility } from './ChatScreenVisibility';
+import CompactNekoPowerAskPrompt, { CompactAskOrRecommendationPrompt, pendingNekoPowerAsk } from './CompactNekoPowerAskPrompt';
 import MessageBlockView from './MessageBlockView';
 import { NEKOPOWER_ASK_SETTLE_MS, askView } from './NekoPowerAskBlock';
 import { parseChatMessage } from './message-schema';
@@ -89,6 +90,27 @@ describe('what a NekoPower commission asks, as a card of the chat', () => {
     expect(choices(bubble)).toEqual(['once', 'deny']);
     fireEvent.click(bubble.at('[data-ask-whole]'));
     expect(choices(bubble)).toEqual(['always', 'session', 'once', 'deny']);
+  });
+
+  it('opens what a line left out of a request that names no command, and offers no wider approval where it cannot', () => {
+    const handed = { kind: 'permission', id: 'q8', category: 'open_session', options: ['always', 'session', 'once', 'deny'],
+      detail: { tool: 'hand_over', title: 'a very long title that the line cut' }, line: 'start another familiar: a very … cut', line_cut: true };
+    const choices = (view: ReturnType<typeof show>) => [...view.container.querySelectorAll('[data-choice]')].map(node => node.getAttribute('data-choice'));
+    const card = show(ask(handed));
+    expect(choices(card)).toEqual(['once', 'deny']);
+    fireEvent.click(card.at('[data-ask-whole]'));
+    expect(card.at('.nekopower-ask-whole').textContent).toBe('a very long title that the line cut');
+    expect(choices(card)).toEqual(['always', 'session', 'once', 'deny']);
+    card.unmount();
+    const bare = show(ask({ ...handed, detail: {} }));
+    expect(choices(bare)).toEqual(['once', 'deny']);
+    expect(bare.at('[data-ask-whole]')).toBeNull();
+    expect(bare.at('.nekopower-ask-hint').textContent).toContain('NekoPower window');
+    bare.unmount();
+    // Above the composer as well, where the line is clamped besides.
+    const floating = show(ask({ ...handed, detail: {} }), 'bubble');
+    expect(choices(floating)).toEqual(['once', 'deny']);
+    expect(floating.at('[data-ask-whole]')).toBeNull();
   });
 
   it('leaves out the line for a sentence where nothing could take one', () => {
@@ -184,6 +206,24 @@ describe('the question above the composer of the compact chat', () => {
     expect(pendingNekoPowerAsk([ask(permission, { state: 'closed' })])).toBeNull();
     // One whose answer is on its way stays where it is until that is in.
     expect(pendingNekoPowerAsk([ask(permission, { state: 'sending' })])?.block.state).toBe('sending');
+  });
+
+  it('does not float a question the screen hides, and keeps nothing else from being shown for it', () => {
+    function Clear() {
+      const { clearScreen } = useChatScreenVisibility();
+      return <button data-clear="true" onClick={clearScreen}>clear</button>;
+    }
+    const messages = [ask(permission)];
+    const view = render(
+      <ChatScreenVisibilityProvider messages={messages}>
+        <Clear />
+        <CompactAskOrRecommendationPrompt messages={messages} />
+      </ChatScreenVisibilityProvider>,
+    );
+    expect(view.container.querySelector('#compact-nekopower-ask-prompt')).toBeTruthy();
+    fireEvent.click(view.container.querySelector('[data-clear]')!);
+    // The screen was cleared: the question is not brought back above the composer.
+    expect(view.container.querySelector('#compact-nekopower-ask-prompt')).toBeNull();
   });
 
   it('holds its buttons back for a moment when another question takes the place of the one shown', () => {

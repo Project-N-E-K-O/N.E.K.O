@@ -805,7 +805,13 @@ def build_console_router(
         if not note:
             return {"success": True}
         # The answer is in whatever becomes of this: a note nothing took is said, and is no error.
-        return {"success": True, "note_taken": bool(await host.tell(commission_id, note))}
+        # Neither is one that could not be passed on: sent again, the answer would be turned away.
+        try:
+            taken = bool(await host.tell(commission_id, note))
+        except Exception as exc:  # noqa: BLE001 - the answer was taken; only the note was not
+            logger.warning("a sentence added to an answer could not be passed on (exc_type=%s)", type(exc).__name__)
+            taken = False
+        return {"success": True, "note_taken": taken}
 
     @router.get("/questions")
     async def list_questions() -> dict[str, Any]:

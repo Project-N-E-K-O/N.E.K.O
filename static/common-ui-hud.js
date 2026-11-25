@@ -1435,19 +1435,16 @@ window.AgentHUD._doUpdateAgentTaskHUD = function () {
         return existing ? (this._updateTaskCard(existing, task) || existing) : this._createTaskCard(task);
     });
 
-    // 顺序没变就不动 DOM：把卡片挪走再插回会让卡片里正在打字的输入框丢掉焦点（输入法也会被打断）。
-    const standing = Array.from(taskList.querySelectorAll('.task-card'));
-    const sameOrder = standing.length === desired.length && standing.every((card, index) => card === desired[index]);
-    if (!sameOrder) {
-        const fragment = document.createDocumentFragment();
-        desired.forEach(card => fragment.appendChild(card));
-        // Re-append empty state first (it should stay at top), then task cards
-        if (emptyState && emptyState.parentNode === taskList) {
-            taskList.insertBefore(fragment, emptyState.nextSibling);
+    // 只挪位置不对的卡片：已经站在该站的位置上的不动。把卡片挪走再插回会让卡片里正在打字的输入框
+    // 丢掉焦点（输入法也会被打断），哪怕只是别的任务新来了一张卡。空状态留在最前面。
+    let next = emptyState && emptyState.parentNode === taskList ? emptyState.nextSibling : taskList.firstChild;
+    desired.forEach(card => {
+        if (card === next) {
+            next = next.nextSibling;
         } else {
-            taskList.appendChild(fragment);
+            taskList.insertBefore(card, next);
         }
-    }
+    });
     if (window.NekoPluginViews) window.NekoPluginViews.syncHud();
 };
 
@@ -1465,12 +1462,16 @@ window.AgentHUD._syncTaskAsk = function (card, task) {
     const questionId = String(question.id || '');
     if (shown && shown.dataset.questionId === questionId) return;
     if (shown) shown.remove();
+    // 这件任务上一次问的是哪条：中间画过一帧「运行中」、卡片上已经没有问话了，换成下一条时照样先停一下。
+    if (!this._askedByTask) this._askedByTask = {};
+    const last = this._askedByTask[task.id];
+    this._askedByTask[task.id] = questionId;
     card.appendChild(asks.render({
         taskId: task.id,
         question: question,
         // 插件直接办的事没有使魔能收「补一句」。
         noNote: task.type === 'user_plugin',
-        settle: Boolean(shown)
+        settle: Boolean(shown) || (last !== undefined && last !== questionId)
     }));
 };
 

@@ -167,7 +167,9 @@ async def test_yes_or_no_pressed_on_a_page_is_told_to_the_task_agent_in_words(an
 class _Host:
     """Stands in for the host: takes answers and sentences, and says what waits."""
 
-    def __init__(self, *, takes_answer: bool = True, takes_note: bool = True, waiting: list[Any] | None = None) -> None:
+    def __init__(
+        self, *, takes_answer: bool = True, takes_note: bool | Exception = True, waiting: list[Any] | None = None
+    ) -> None:
         self.takes_answer, self.takes_note = takes_answer, takes_note
         self.answers: list[tuple[str, str, dict[str, Any]]] = []
         self.told: list[tuple[str, str]] = []
@@ -181,6 +183,8 @@ class _Host:
 
     async def tell(self, commission_id: str, text: str) -> bool:
         self.told.append((commission_id, text))
+        if isinstance(self.takes_note, Exception):
+            raise self.takes_note
         return self.takes_note
 
     async def _select(self, **criteria: Any) -> list[Any]:
@@ -217,6 +221,17 @@ async def test_a_note_nothing_took_is_said_and_is_no_error():
 
     assert answer.status_code == 200
     assert answer.json() == {"success": True, "note_taken": False}
+
+
+async def test_a_note_that_could_not_be_passed_on_leaves_the_answer_taken():
+    # The answer is in by then: an error here would have the page send it again, to be turned away.
+    host = _Host(takes_note=OSError("the ledger could not be written"))
+    async with _client(host) as client:
+        answer = await client.post("/console/commissions/c1/answer", headers=HEADERS, json={"choice": "once", "note": "careful"})
+
+    assert answer.status_code == 200
+    assert answer.json() == {"success": True, "note_taken": False}
+    assert host.told == [("c1", "careful")]
 
 
 async def test_no_note_is_passed_on_for_an_answer_that_was_not_taken_nor_without_one():

@@ -62,7 +62,8 @@
       <AskBubble
         v-if="cardOpen(member.id)"
         :ask="member.ask!" :name="member.name" :busy="answering?.[member.commission ?? ''] ?? ''" :error="failed?.[member.commission ?? ''] ?? ''"
-        :below="below(member.id)" :style="below(member.id) ? { top: '40px' } : { bottom: member.leader ? '52px' : '44px' }"
+        :below="below(member.id)" :shift="shift(member.id)"
+        :style="below(member.id) ? { top: '40px' } : { bottom: member.leader ? '52px' : '44px' }"
         @answer="emit('answer', member.id, $event)" @more="emit('ask', member.id)"
       />
       <!-- Several wait at once: their cards would cover one another, so each is a label until it is pressed. -->
@@ -204,6 +205,8 @@ const ASK_SPOT = { position: 'absolute', width: '0', height: '0', zIndex: 3 } as
 // (in pixels) a familiar stands for its card to go below it.
 const CARDS_AT_ONCE = 2
 const CARD_ROOM = 150
+// As wide as `AskBubble` draws itself.
+const CARD_WIDTH = 216
 const ASK_LABEL = {
   position: 'absolute', left: '50%', transform: 'translateX(-50%)', padding: '0 8px', font: 'inherit', fontSize: '11px', fontWeight: '600',
   lineHeight: '1.6', whiteSpace: 'nowrap', cursor: 'pointer', color: '#fff', border: '1px solid var(--el-color-warning)',
@@ -245,6 +248,15 @@ const heldLinks = computed(() => {
 const opened = ref('')
 const cardOpen = (id: string) => asking.value.length <= CARDS_AT_ONCE || opened.value === id
 const below = (id: string) => at(id).y * size.value.height < CARD_ROOM
+/**
+ * How far (in pixels) the card of one that stands near the left or right edge is moved inwards, so that
+ * all of it is within the territory: what reaches beyond is cut off by what the territories stand in.
+ */
+function shift(id: string): number {
+  const middle = at(id).x * size.value.width
+  const half = CARD_WIDTH / 2
+  return Math.round(Math.min(Math.max(middle, half), Math.max(half, size.value.width - half)) - middle)
+}
 function stateWord(look: CatLook): string {
   const key = `power.home.states.${look}`
   return te(key) ? t(key) : look

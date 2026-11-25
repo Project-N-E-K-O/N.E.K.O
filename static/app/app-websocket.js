@@ -113,7 +113,17 @@
                         return;
                     }
                     _agentTaskMissingCounts.delete(id);
-                    if (['completed', 'failed', 'cancelled', 'blocked'].indexOf(current.status) === -1) return;
+                    if (['completed', 'failed', 'cancelled', 'blocked'].indexOf(current.status) === -1) {
+                        // 还在办的任务：等不等用户回话、问的是哪条，按服务端的来。问话的推送漏了（连接断过）
+                        // 的话，悬浮窗上会一直留着上一条问话。
+                        var askedNow = current.question && current.question.id;
+                        var askedHere = task.question && task.question.id;
+                        if (current.status !== task.status || askedNow !== askedHere) {
+                            taskMap.set(id, Object.assign({}, task, current));
+                            changed = true;
+                        }
+                        return;
+                    }
                     var terminalAt = Date.now();
                     taskMap.set(id, Object.assign({}, task, current, { terminal_at: terminalAt }));
                     changed = true;

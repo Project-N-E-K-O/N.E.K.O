@@ -4778,7 +4778,9 @@
             "closed": "This question is over",
             "stale": "Not delivered: this question was already answered, or a new one has taken its place.",
             "noteLost": "Your answer was delivered, but the sentence you added was not.",
-            "failed": "Not delivered. Please try again."
+            "failed": "Not delivered. Please try again.",
+            "unsure": "Not sure yet whether it was delivered. Check again in a moment.",
+            "wideBlocked": "Not all of it can be shown here: give a wider approval in the NekoPower window"
         },
         "taskHud": {
             "tasksTab": "Tasks",

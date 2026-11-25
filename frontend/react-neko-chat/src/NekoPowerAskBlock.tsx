@@ -45,7 +45,13 @@ export function askView(question: Record<string, unknown>) {
       .filter(option => option.label);
     return [{ id: String(index), text: text(asked.question), options: offered, multi: asked.multi_select === true }];
   });
-  const whole = text(detail.command) || text(detail.path);
+  const lineCut = question.line_cut === true;
+  // The line that says it left part of something out: of the command or path, or (where it names
+  // neither) of whatever else it is said by, and of whom something is delivered to.
+  const whole = lineCut
+    ? [text(detail.command) || text(detail.path) || text(question.key) || text(detail.title) || text(detail.tool), text(detail.content_to)]
+      .filter(Boolean).join('\n')
+    : text(detail.command) || text(detail.path);
   const shape = options.length ? 'permission' as const
     : question.kind === 'confirmation' ? 'confirmation' as const
       : questions.some(item => item.options.length) ? 'questions' as const : 'words' as const;
@@ -57,9 +63,9 @@ export function askView(question: Record<string, unknown>) {
     line,
     whole,
     // The line that says it leaves part of the command or path out.
-    lineCut: shape === 'permission' && Boolean(whole) && question.line_cut === true,
+    lineCut: shape === 'permission' && lineCut,
     // Whether all of what it would do has to be opened before a wider approval is offered.
-    needsWhole: shape === 'permission' && Boolean(whole) && (question.line_cut === true || whole.length > GLANCE_CHARS || whole.includes('\n')),
+    needsWhole: shape === 'permission' && (lineCut || (Boolean(whole) && (whole.length > GLANCE_CHARS || whole.includes('\n')))),
     options,
     questions,
     quick: questions.length === 1 && !questions[0].multi,
@@ -165,7 +171,7 @@ export default function NekoPowerAskBlock({ block, message, interactive, onActio
 
       {open && view.shape === 'permission' ? (
         <>
-          {needsWhole ? (
+          {needsWhole && view.whole ? (
             <>
               {wholeOpen ? <pre className="nekopower-ask-whole" tabIndex={0}>{view.whole}</pre> : null}
               <div className="nekopower-ask-row">
@@ -189,7 +195,10 @@ export default function NekoPowerAskBlock({ block, message, interactive, onActio
               ))}
           </div>
           {needsWhole && !wholeOpen && view.options.some(option => WIDE_CHOICES.includes(option)) ? (
-            <p className="nekopower-ask-hint">{i18n('agent.ask.wideHint', 'Wider approvals appear once all of it is shown')}</p>
+            <p className="nekopower-ask-hint">{view.whole
+              ? i18n('agent.ask.wideHint', 'Wider approvals appear once all of it is shown')
+              // Cut, and nothing here to show it whole by: the wider approvals are given elsewhere.
+              : i18n('agent.ask.wideBlocked', 'Not all of it can be shown here: give a wider approval in the NekoPower window')}</p>
           ) : null}
         </>
       ) : null}

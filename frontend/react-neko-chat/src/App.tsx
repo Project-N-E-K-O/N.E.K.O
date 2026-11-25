@@ -14,8 +14,7 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { useReplyTailPresentation } from './useReplyTailPresentation';
-import CompactMusicRecommendationPrompt from './CompactMusicRecommendationPrompt';
-import CompactNekoPowerAskPrompt, { pendingNekoPowerAsk } from './CompactNekoPowerAskPrompt';
+import { CompactAskOrRecommendationPrompt } from './CompactNekoPowerAskPrompt';
 import ScreenObservationExposure from './ScreenObservationExposure';
 import MiniGameInvitePrompt from './MiniGameInvitePrompt';
 import AvatarToolItemManager, {
@@ -6257,10 +6256,7 @@ function CompactChatApp({
       <div className="chat-focus-overlay" aria-hidden="true" />
       {compactExportHistoryNode}
       {chatSurfaceMode === 'compact' && !compactExportHistoryMounted && !theaterActive && !catLocalTextOnly ? (
-        // What a commission asks comes before a recommendation: its work waits for the answer.
-        pendingNekoPowerAsk(messages)
-          ? <CompactNekoPowerAskPrompt messages={messages} onAction={onMessageAction} />
-          : <CompactMusicRecommendationPrompt messages={messages} onAction={onMessageAction} />
+        <CompactAskOrRecommendationPrompt messages={messages} onAction={onMessageAction} />
       ) : null}
       {compactHistoryVisibilityHandleNode}
       {compactMusicPlayerMountNode}
