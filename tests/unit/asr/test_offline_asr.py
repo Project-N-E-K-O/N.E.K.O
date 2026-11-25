@@ -920,3 +920,47 @@ async def test_dev_dummy_override_runs_through_session(core_config, monkeypatch)
     transcriber = offline.resolve_offline_transcriber("glm")
     assert transcriber.provider_key == "dummy"
     assert isinstance(await transcriber.transcribe(_pcm(1)), str)
+
+
+async def test_segments_are_judged_on_the_recordings_own_frame_grid(http_client) -> None:
+    # Short pulses near a split point: each pulse lies in one 20 ms frame of
+    # the recording, and the split never cuts a frame, so the second segment
+    # sees exactly the voiced frames the whole recording has there.
+    import numpy as np
+
+    samples = np.zeros(464_160, dtype="<i2")
+    for frame in (730, 732, 734, 736, 738):
+        start = frame * 320 + 40
+        samples[start:start + 80] = 400
+    audio = samples.tobytes()
+    first, second = offline.split_pcm16_segments(audio, 27_000)
+    assert offline.voiced_frame_count(audio) == 5
+    assert offline.voiced_frame_count(first) == 0
+    assert offline.voiced_frame_count(second) == 5
+    client = http_client(_FakeResponse({"text": "嗯"}))
+    assert await _transcriber("glm").transcribe(audio) == "嗯"
+    assert len(client.calls) == 1  # the voiceless first half is skipped
+    assert _wav_frames(client.calls[0]["files"]["file"][1])[3] == len(second) // 2
+
+
+@pytest.mark.parametrize("seconds", [10, 27.01, 30, 30.01, 54.3])
+def test_split_points_fall_on_the_20ms_frame_grid(seconds) -> None:
+    audio = _pcm(seconds)
+    segments = offline.split_pcm16_segments(audio, 27_000)
+    assert b"".join(segments) == audio
+    offset = 0
+    for segment in segments[:-1]:
+        offset += len(segment) // 2
+        assert offset % 320 == 0
+    assert all(len(segment) <= 27 * BYTES_PER_SECOND for segment in segments)
+
+
+async def test_speech_ending_at_the_split_does_not_send_the_silent_half(http_client) -> None:
+    # 30.01 s: the split lands at 15.0 s on the frame grid. Speech stops right
+    # there; the second half is silent and must not reach the provider.
+    split_samples = 15 * SAMPLE_RATE
+    audio = _pcm(15) + _silence(15.01)
+    assert len(offline.split_pcm16_segments(audio, 27_000)[0]) // 2 == split_samples
+    client = http_client(_FakeResponse({"text": "前半"}))
+    assert await _transcriber("glm").transcribe(audio) == "前半"
+    assert len(client.calls) == 1

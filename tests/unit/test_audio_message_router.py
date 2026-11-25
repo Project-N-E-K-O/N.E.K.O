@@ -338,3 +338,29 @@ def test_a_silent_recording_does_not_clear_a_rejected_key(env) -> None:
     # A spoken recording that succeeds with the same key does prove it works.
     env["client"].post("/api/audio-message/transcribe", json=_payload(requestId="spoken-2"))
     assert env["client"].get("/api/audio-message/status", params={"target": "Neko"}).json()["supported"] is True
+
+
+async def test_running_transcriptions_are_capped_but_retries_still_join() -> None:
+    cache = router_module._TranscriptCache()
+    release = asyncio.Event()
+
+    async def slow() -> str:
+        await release.wait()
+        return "完成"
+
+    limit = router_module._MAX_RUNNING_TRANSCRIPTIONS
+    running = [asyncio.create_task(cache.transcribe(f"k{i}", slow)) for i in range(limit)]
+    await asyncio.sleep(0)
+    with pytest.raises(AsrOfflineError) as caught:
+        await cache.transcribe("one-too-many", slow)
+    assert caught.value.code == "ASR_RATE_LIMITED"
+    # A retry of a request that is already running joins it instead.
+    joined = asyncio.create_task(cache.transcribe("k0", slow))
+    await asyncio.sleep(0)
+    release.set()
+    assert await joined == "完成"
+    assert [await task for task in running] == ["完成"] * limit
+    # Capacity is back once they finish.
+    async def quick() -> str:
+        return "又可以了"
+    assert await cache.transcribe("one-too-many", quick) == "又可以了"

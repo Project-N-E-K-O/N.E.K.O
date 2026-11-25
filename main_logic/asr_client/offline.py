@@ -41,7 +41,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import math
 import unicodedata
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -211,16 +210,21 @@ _SILENCE_FRAME_RMS = 200.0
 _MIN_VOICED_FRAMES = 5  # 100 ms
 
 
-def voiced_frame_count(pcm16: bytes) -> int:
-    """Number of 20 ms frames of 16 kHz PCM16 above the speech floor."""
+def _voiced_frame_mask(pcm16: bytes) -> np.ndarray:
+    """Per 20 ms frame of 16 kHz PCM16: whether it is above the speech floor."""
 
     samples = np.frombuffer(pcm16, dtype="<i2").astype(np.float32)
     usable = len(samples) - len(samples) % _SILENCE_FRAME_SAMPLES
     if usable == 0:
-        return 0
+        return np.zeros(0, dtype=bool)
     frames = samples[:usable].reshape(-1, _SILENCE_FRAME_SAMPLES)
-    rms = np.sqrt(np.mean(frames * frames, axis=1))
-    return int(np.count_nonzero(rms >= _SILENCE_FRAME_RMS))
+    return np.sqrt(np.mean(frames * frames, axis=1)) >= _SILENCE_FRAME_RMS
+
+
+def voiced_frame_count(pcm16: bytes) -> int:
+    """Number of 20 ms frames of 16 kHz PCM16 above the speech floor."""
+
+    return int(np.count_nonzero(_voiced_frame_mask(pcm16)))
 
 
 def is_silent_pcm16(pcm16: bytes) -> bool:
@@ -233,18 +237,22 @@ def split_pcm16_segments(pcm16: bytes, max_segment_ms: int) -> list[bytes]:
     """Split 16 kHz PCM16 into the fewest equal segments within the limit.
 
     Equal parts avoid a near-empty trailing request (a 27.1 s recording with a
-    27 s limit becomes two 13.55 s segments, not 27 s plus 0.1 s).
+    27 s limit becomes two 13.55 s segments, not 27 s plus 0.1 s). Split
+    points fall on the 20 ms silence-gate frame grid, so every frame belongs
+    to exactly one segment and the gate never credits a segment with sound
+    that lies on the other side of its boundary.
     """
 
-    max_bytes = (max_segment_ms * PCM16_SAMPLE_RATE_HZ * PCM16_SAMPLE_WIDTH_BYTES // 1000) & ~1
-    if max_bytes <= 0:
+    max_frames = max_segment_ms * PCM16_SAMPLE_RATE_HZ // 1000 // _SILENCE_FRAME_SAMPLES
+    if max_frames <= 0:
         raise ValueError("max_segment_ms is too small")
-    count = max(1, math.ceil(len(pcm16) / max_bytes))
     samples = len(pcm16) // PCM16_SAMPLE_WIDTH_BYTES
+    total_frames = -(-samples // _SILENCE_FRAME_SAMPLES)  # a partial tail counts
+    count = max(1, -(-total_frames // max_frames))
     segments: list[bytes] = []
     for index in range(count):
-        start = samples * index // count
-        end = samples * (index + 1) // count
+        start = min(samples, total_frames * index // count * _SILENCE_FRAME_SAMPLES)
+        end = min(samples, total_frames * (index + 1) // count * _SILENCE_FRAME_SAMPLES)
         segments.append(
             pcm16[start * PCM16_SAMPLE_WIDTH_BYTES : end * PCM16_SAMPLE_WIDTH_BYTES]
         )
@@ -460,13 +468,20 @@ class OfflineAsrTranscriber:
         # split across a segment boundary must not fall below it twice. Once
         # the recording holds speech, only segments with no speech-level frame
         # at all are skipped.
-        if is_silent_pcm16(audio):
+        voiced = _voiced_frame_mask(audio)
+        if int(np.count_nonzero(voiced)) < _MIN_VOICED_FRAMES:
             return ""
-        segments = [
-            segment
-            for segment in split_pcm16_segments(audio, self.spec.max_segment_ms)
-            if voiced_frame_count(segment) > 0
-        ]
+        # Judge segments on the recording's frame grid. Split points lie on
+        # that grid, so a frame never straddles two segments.
+        segments: list[bytes] = []
+        start_sample = 0
+        for segment in split_pcm16_segments(audio, self.spec.max_segment_ms):
+            end_sample = start_sample + len(segment) // PCM16_SAMPLE_WIDTH_BYTES
+            first = start_sample // _SILENCE_FRAME_SAMPLES
+            last = -(-end_sample // _SILENCE_FRAME_SAMPLES)  # ceil
+            if bool(voiced[first:last].any()):
+                segments.append(segment)
+            start_sample = end_sample
         session_language = _resolve_session_language(self.provider_key, language)
         if self.spec.mode == "session":
             texts = await self._transcribe_with_session(segments, session_language)
