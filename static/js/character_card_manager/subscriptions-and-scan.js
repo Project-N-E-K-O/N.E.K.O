@@ -81,7 +81,12 @@ function sanitizeWorkshopPreviewUrl(url, fallback = '../static/icons/Steam_icon_
                 : 'http://localhost/';
             const baseUrl = new URL(baseHref);
             const parsed = new URL(raw, baseUrl);
-            if (parsed.origin !== baseUrl.origin || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
+            if (
+                parsed.origin !== baseUrl.origin
+                || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
+                || !parsed.pathname.startsWith('/')
+                || parsed.pathname.startsWith('//')
+            ) {
                 return fallback;
             }
             return `${parsed.pathname}${parsed.search}${parsed.hash}`;

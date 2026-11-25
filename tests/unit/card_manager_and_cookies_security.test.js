@@ -355,6 +355,9 @@ test('R1111-P3-06: subscriptions-and-scan escapes errors, tags, status, and prev
   assert.equal(context.sanitizeWorkshopPreviewUrl('https://cdn.example.com/\uD800.png'), '../static/icons/Steam_icon_logo.png');
   assert.equal(context.sanitizeWorkshopPreviewUrl('//evil.test/a.png'), '../static/icons/Steam_icon_logo.png');
   assert.equal(context.sanitizeWorkshopPreviewUrl('/\\evil.test/a.png'), '../static/icons/Steam_icon_logo.png');
+  assert.equal(context.sanitizeWorkshopPreviewUrl('/.//preview.example/a.png'), '../static/icons/Steam_icon_logo.png');
+  assert.equal(context.sanitizeWorkshopPreviewUrl('/a/..//preview.example/a.png'), '../static/icons/Steam_icon_logo.png');
+  assert.equal(context.sanitizeWorkshopPreviewUrl('././/preview.example/a.png'), '../static/icons/Steam_icon_logo.png');
 
   // renderSubscriptionsPage escapes previewUrl, voiceClone data-item-id, and statusText
   context.allSubscriptions = [
