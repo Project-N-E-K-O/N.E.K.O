@@ -292,7 +292,7 @@ export interface BoardTree {
   /** How many times an inspector looked at it. */
   checks: number
   conflicts: string[]
-  /** Why it was not landed: `conflict`, `failed`, `inspection`, `ask`, `stopped`, `restart`; empty while it is at work. */
+  /** Why it was not landed: `conflict`, `failed`, `inspection`, `ask`, `stopped`, `restart`, `skipped`; empty while it is at work. */
   reason: string
   project_dir: string
   commission_id: string | null
