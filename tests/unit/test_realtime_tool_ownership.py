@@ -7,6 +7,7 @@ import pytest
 
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.tool_calling import ToolCall, ToolResult
+from tests.support.task_sets import wait_task_set_empty
 
 
 class _QueueSocket:
@@ -224,12 +225,10 @@ def _gemini_response(
 
 
 async def _wait_for_tool_tasks(client: OmniRealtimeClient) -> None:
-    while client._tool_tasks:
-        tasks = tuple(client._tool_tasks)
-        await asyncio.wait_for(
-            asyncio.gather(*tasks, return_exceptions=True),
-            timeout=1,
-        )
+    await asyncio.wait_for(
+        wait_task_set_empty(client._tool_tasks, return_exceptions=True),
+        timeout=1,
+    )
 
 
 async def _wait_for_socket_sends(socket: _QueueSocket, count: int) -> None:

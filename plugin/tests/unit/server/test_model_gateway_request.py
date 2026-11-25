@@ -259,7 +259,12 @@ def test_preceding_system_and_developer_text_preserved(slot, body):
         {"role": "system", "content": "system"},
         {"role": "developer", "content": [{"type": "text", "text": "developer"}]},
     ]
-    assert prepare_chat_request(slot, body)["messages"] == body["messages"]
+    original = copy.deepcopy(body)
+    expected = copy.deepcopy(body["messages"])
+    # Most providers reject the "developer" role: it goes upstream as system.
+    expected[1]["role"] = "system"
+    assert prepare_chat_request(slot, body)["messages"] == expected
+    assert body == original
 
 
 def test_sdk_message_dump_tool_result_continuation(slot, body):

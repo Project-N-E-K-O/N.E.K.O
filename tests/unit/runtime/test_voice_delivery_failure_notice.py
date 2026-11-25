@@ -1,6 +1,5 @@
 """A runtime failure reaches both UI planes before its lease is retired."""
 
-import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -8,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from tests.support.asr_fakes import _Runtime, _install_ready_lifecycle
+from tests.support.task_sets import wait_task_set_empty
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.runtime]
 
@@ -24,8 +24,7 @@ async def test_runtime_failure_code_is_delivered_exactly_once(owner, code):
     await receiver._handle_independent_asr_error(
         receiver._asr_session_epoch, "qwen", status_code=code,
     )
-    while receiver._asr_close_tasks:
-        await asyncio.gather(*tuple(receiver._asr_close_tasks))
+    await wait_task_set_empty(receiver._asr_close_tasks)
     codes = [json.loads(call.args[0]).get("code") for call in manager.send_status.await_args_list]
     assert codes.count(code) == 1
     assert manager._asr_route_mode == "blocked"
@@ -54,8 +53,7 @@ async def test_display_send_takeover_does_not_notify_or_revoke_successor():
     await receiver._handle_independent_asr_error(
         receiver._asr_session_epoch, "qwen", status_code="ASR_INPUT_DELIVERY_FAILED",
     )
-    while receiver._asr_close_tasks:
-        await asyncio.gather(*tuple(receiver._asr_close_tasks))
+    await wait_task_set_empty(receiver._asr_close_tasks)
     failures = [call for call in manager._send_to_voice_owner.await_args_list
                 if "ASR_INPUT_DELIVERY_FAILED" in str(call)]
     assert not failures
