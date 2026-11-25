@@ -694,3 +694,25 @@ async def test_rejected_request_neither_warns_nor_uses_up_the_report(execution_l
         await executor.complete(plugin_call("late_bot"), body(temperature=0.3))
     dropped = [entry for entry in execution_log.warnings if "it was dropped" in entry[0]]
     assert [entry[1] for entry in dropped] == ["weather_bot"]
+
+
+async def test_quota_rejection_neither_warns_nor_uses_up_the_report(execution_log):
+    allow = False
+
+    async def reserve_quota(_slot_id, _slot):
+        if not allow:
+            raise ModelGatewayError("agent_quota_exceeded", "quota", 429)
+
+    def quota_call(plugin_id):
+        return ResolvedModelCall(
+            plugin_id, "analysis", "slot_" + "a" * 32, slot(), before_attempt=reserve_quota,
+        )
+
+    executor = ModelExecutor(Gateway(), Recorder())
+    with pytest.raises(ModelGatewayError):
+        await executor.complete(quota_call("weather_bot"), body(temperature=0.3))
+    assert [entry for entry in execution_log.warnings if "it was dropped" in entry[0]] == []
+    allow = True
+    await executor.complete(quota_call("weather_bot"), body(temperature=0.3))
+    assert [entry[1] for entry in execution_log.warnings if "it was dropped" in entry[0]] == ["weather_bot"]
+    await executor.aclose()

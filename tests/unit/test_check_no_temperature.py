@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import locale
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -389,6 +390,24 @@ def test_unreadable_and_broken_files_do_not_stop_the_scan(tmp_path: Path, capsys
     captured = capsys.readouterr()
     assert "z.py:1:" in captured.out
     assert "broken.py" in captured.err
+
+
+@pytest.mark.unit
+def test_unreadable_folder_is_reported_not_silently_skipped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys):
+    folder = tmp_path / "scan"
+    _write(folder / "locked" / "inside.py", "make(temperature=0.2)\n")
+    _write(folder / "ok.py", "x = 1\n")
+    real_scandir = os.scandir
+
+    def scandir(path="."):
+        if Path(path).name == "locked":
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    assert MOD.main([str(folder)]) == 0
+    err = capsys.readouterr().err
+    assert "locked" in err and "skipped folder" in err
 
 
 @pytest.mark.unit

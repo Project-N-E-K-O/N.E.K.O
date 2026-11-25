@@ -768,7 +768,18 @@ def test_rejected_slot_save_does_not_report_a_default_temperature(config_env, co
         service.create_slot(slot_payload(base_url="", defaults={"temperature": 1.5}))
     with pytest.raises(ServerDomainError):
         service.update_slot("slot_" + "f" * 32, {"defaults": {"temperature": 1.5}})
+    # Rejected later, inside the save: a missing fallback slot (404) and an
+    # endpoint change without a key update (409).
+    with pytest.raises(ServerDomainError):
+        service.create_slot(slot_payload(fallback_slot_id="slot_" + "d" * 32, defaults={"temperature": 1.5}))
+    created = service.create_slot(slot_payload())
+    with pytest.raises(ServerDomainError) as error:
+        service.update_slot(created["id"], {"base_url": "https://other.example/v1", "defaults": {"temperature": 1.5}})
+    assert error.value.code == "MODEL_CREDENTIAL_UPDATE_REQUIRED"
     assert service_log.warnings == []
+    # The save that succeeds reports it once.
+    service.update_slot(created["id"], {"name": "Renamed", "defaults": {"temperature": 1.5}})
+    assert len(service_log.warnings) == 1
 
 
 def test_saved_default_temperature_is_ignored_reported_once_and_removed_on_save(config_env, config_logs):

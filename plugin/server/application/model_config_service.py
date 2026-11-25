@@ -181,7 +181,6 @@ class ModelConfigService:
 
     def create_slot(self, payload: dict) -> dict:
         slot = _validate_slot(payload)
-        _report_retired_defaults(payload)
         slot_id = "slot_" + uuid4().hex
 
         def change(config):
@@ -189,7 +188,10 @@ class ModelConfigService:
             config.slots[slot_id] = slot
             return self._view(config, slot_id)
 
-        return self.store.update(change)
+        result = self.store.update(change)
+        # Only once the save succeeded: a rejected save reports nothing.
+        _report_retired_defaults(payload)
+        return result
 
     @staticmethod
     def _validate_fallback(config: PluginModelsConfig, slot_id: str, slot: ModelSlot) -> None:
@@ -222,8 +224,6 @@ class ModelConfigService:
                 merged["protocol"] = updates.get("protocol", "openai_chat")
                 merged["host_api"] = None
             slot = _validate_slot(merged)
-            # Only once the slot exists and the merged values validate.
-            _report_retired_defaults(payload)
             if old.source == "manual" and slot.source == "manual" and old.api_key and "api_key" not in updates and (
                 old.protocol != slot.protocol or not same_endpoint(old.base_url, slot.base_url)
             ):
@@ -250,7 +250,10 @@ class ModelConfigService:
                             self._check_capabilities(slot, requirement)
             return self._view(config, slot_id)
 
-        return self.store.update(change)
+        result = self.store.update(change)
+        # Only once the save succeeded: a rejected save reports nothing.
+        _report_retired_defaults(payload)
+        return result
 
     def delete_slot(self, slot_id: str) -> dict:
         def change(config):

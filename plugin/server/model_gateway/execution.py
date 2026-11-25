@@ -38,8 +38,9 @@ _warned_drops: set[tuple[str, str, str]] = set()
 def _warn_dropped_fields(call: ResolvedModelCall, body: object) -> None:
     """Request preparation dropped these fields; tell the user which plugin sent one.
 
-    Called just before a validated request is sent, so a rejected request
-    (busy, shutting down, invalid) neither logs nor uses up the report.
+    Called just before a validated request is sent (after quota reservation),
+    so a rejected request (busy, shutting down, invalid, out of quota)
+    neither logs nor uses up the report.
     """
     if not isinstance(body, dict):
         return
@@ -350,11 +351,13 @@ class ModelExecutor:
 
         async def before_attempt(attempt_slot_id: str, attempt_slot: ModelSlot) -> None:
             # Runs once the request was admitted and passed validation, right
-            # before a real upstream send: only now report what preparation
-            # dropped (deduplicated, so a fallback attempt does not repeat it).
-            _warn_dropped_fields(call, body)
+            # before a real upstream send. The caller's own step (quota
+            # reservation) goes first: only a request that will really be sent
+            # reports what preparation dropped (deduplicated, so a fallback
+            # attempt does not repeat it).
             if call.before_attempt is not None:
                 await call.before_attempt(attempt_slot_id, attempt_slot)
+            _warn_dropped_fields(call, body)
 
         primary_cutoff = None
         if call.fallback_slot is not None and call.fallback_slot_id is not None:

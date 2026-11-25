@@ -426,6 +426,11 @@ def _git_listed_python_files(root: Path) -> list[Path] | None:
     return sorted(files)
 
 
+def _report_unreadable_folder(error: OSError) -> None:
+    # os.walk skips a folder it cannot list without a word; say so, as for files.
+    print(f"{error.filename}: skipped folder — {error}", file=sys.stderr)
+
+
 def _iter_python_files(paths: Iterable[Path]) -> Iterator[Path]:
     for root in paths:
         if root.is_file():
@@ -439,7 +444,7 @@ def _iter_python_files(paths: Iterable[Path]) -> Iterator[Path]:
             if listed is not None:
                 yield from listed
                 continue
-        for dirpath, dirnames, filenames in os.walk(root):
+        for dirpath, dirnames, filenames in os.walk(root, onerror=_report_unreadable_folder):
             dirnames[:] = sorted(d for d in dirnames if d not in EXCLUDE_DIRS)
             for filename in sorted(filenames):
                 if filename.endswith(".py"):
