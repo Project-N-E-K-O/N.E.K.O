@@ -4398,6 +4398,11 @@ async function saveApiKey(params) {
                     statusMessage = window.t ? window.t('api.saveSuccessReload') : 'API Key保存成功！配置已重新加载，新配置将在下次对话时生效。';
                 }
                 showStatus(statusMessage, 'success');
+                // The subscriptions panel marks which features a subscription took; a
+                // feature's own setting saved just now may win over it.
+                if (typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+                    window.dispatchEvent(new CustomEvent('neko:core-config-saved'));
+                }
 
                 // 清除本地Voice ID记录
                 await clearVoiceIds();

@@ -40,6 +40,13 @@
     let busy = false;
     const accountModels = {};
     const messages = {};
+    // Keys typed but not saved yet survive re-rendering the cards.
+    const keyDrafts = {};
+    // A reply is applied only while it is still the newest: a status load that a
+    // change overtook, or a model list of an account switched away from, is dropped.
+    let stateVersion = 0;
+    let loadTicket = 0;
+    let accountGeneration = 0;
 
     toggle.addEventListener('click', () => {
         panel.hidden = !panel.hidden;
@@ -88,31 +95,48 @@
         }
     }
 
+    function setBusy(value) {
+        busy = value;
+        cards.classList.toggle('is-busy', value);
+        // Only the controls this script draws; the ChatGPT account controls belong to chatgpt_settings.js.
+        for (const control of cards.querySelectorAll('[data-role] input, [data-role] select, [data-role] button')) {
+            control.disabled = value;
+        }
+    }
+
+    function applyState(data) {
+        state = data;
+        stateVersion += 1;
+    }
+
+    // One change at a time: controls are disabled meanwhile, and the cards are drawn
+    // again afterwards from the server's state, so an edit never looks saved when it was not.
     async function act(planId, action) {
         if (busy) return;
-        busy = true;
-        cards.classList.add('is-busy');
+        setBusy(true);
         try {
             const data = await action();
-            if (data && data.plans) {
-                state = data;
-                render();
-            }
+            if (data && data.plans) applyState(data);
             return data;
         } catch (error) {
             say(planId, error.message, 'error');
         } finally {
-            busy = false;
-            cards.classList.remove('is-busy');
+            setBusy(false);
+            render();
         }
     }
 
     async function load() {
+        const ticket = ++loadTicket;
+        const version = stateVersion;
         try {
-            state = await api('');
+            const data = await api('');
+            if (ticket !== loadTicket || version !== stateVersion) return;
+            applyState(data);
             loadError.hidden = true;
             render();
         } catch (error) {
+            if (ticket !== loadTicket) return;
             loadError.textContent = error.message;
             loadError.hidden = false;
         }
@@ -138,10 +162,14 @@
     }
 
     async function fetchAccountModels(plan) {
+        const generation = accountGeneration;
         const data = await api(`/${plan.id}/models`, {});
         if (!data.success) throw new Error(data.error || t('error.models', 'Could not list models.'));
-        accountModels[plan.id] = data.models.map(model => (typeof model === 'string' ? model : model.id)).filter(Boolean);
-        return accountModels[plan.id];
+        const models = data.models.map(model => (typeof model === 'string' ? model : model.id)).filter(Boolean);
+        // The ChatGPT account changed while listing: these models belong to the old one.
+        if (plan.auth === 'chatgpt_oauth' && generation !== accountGeneration) return [];
+        accountModels[plan.id] = models;
+        return models;
     }
 
     async function chooseTier(plan, tier, model) {
@@ -208,7 +236,6 @@
                 onclick: () => act(plan.id, async () => {
                     const models = await fetchAccountModels(plan);
                     say(plan.id, t('modelsLoaded', '{{count}} models available.', { count: models.length }));
-                    render();
                 }),
             }));
         }
@@ -218,12 +245,13 @@
     function keyRows(plan, entry) {
         const rows = el('div', { className: 'subscription-key' });
         const input = el('input', {
-            type: 'password', autocomplete: 'off', className: 'subscription-key-input',
+            type: 'password', autocomplete: 'off', className: 'subscription-key-input', value: keyDrafts[plan.id] || '',
             'aria-label': t('keyLabel', '{{plan}} key', { plan: planName(plan.id) }),
             placeholder: entry.has_key ? t('keySaved', 'Key saved (enter a new one to replace it)')
                 : plan.uses_general_provider_key ? t('keyFromGeneral', 'Using the matching key already entered on this page')
                     : t('keyPlaceholder', 'Paste the subscription key{{prefix}}', { prefix: plan.key_prefix ? ` (${plan.key_prefix}…)` : '' }),
         });
+        input.addEventListener('input', () => { keyDrafts[plan.id] = input.value; });
         let region = null;
         if (plan.regions.length > 1) {
             region = el('select', { className: 'subscription-region', 'aria-label': t('region', 'Region') });
@@ -241,6 +269,7 @@
                     if (!key) return say(plan.id, t('error.missing_key', 'Enter the key first.'), 'error');
                     return act(plan.id, async () => {
                         const data = await api(`/${plan.id}/key`, { api_key: key, region: region ? region.value : null });
+                        delete keyDrafts[plan.id];
                         say(plan.id, t('keySavedNotice', 'Key saved.'));
                         return data;
                     });
@@ -253,7 +282,10 @@
                     const confirmed = typeof window.showConfirm === 'function'
                         ? await window.showConfirm(question, t('title', 'Subscriptions & plans'), { danger: true })
                         : window.confirm(question);
-                    if (confirmed) await act(plan.id, () => api(`/${plan.id}/key`, { api_key: '' }));
+                    if (confirmed) {
+                        delete keyDrafts[plan.id];
+                        await act(plan.id, () => api(`/${plan.id}/key`, { api_key: '' }));
+                    }
                 },
             }) : null));
         return rows;
@@ -261,8 +293,7 @@
 
     function header(plan, entry) {
         const switchInput = el('input', { type: 'checkbox', checked: Boolean(entry.enabled) });
-        switchInput.addEventListener('change', () => act(plan.id, () => api(`/${plan.id}/enable`, { enabled: switchInput.checked }))
-            .then(data => { if (!data) render(); }));
+        switchInput.addEventListener('change', () => act(plan.id, () => api(`/${plan.id}/enable`, { enabled: switchInput.checked })));
         return [
             el('span', { className: 'subscription-name', text: planName(plan.id) }),
             plan.verified ? null : el('span', { className: 'subscription-badge', text: t('unverified', 'Not yet tested'), title: t('unverifiedHint', 'Not yet tested with a real subscription; report problems if it misbehaves.') }),
@@ -368,9 +399,11 @@
     }
 
     window.addEventListener('neko:chatgpt-account-changed', () => {
+        accountGeneration += 1;
         delete accountModels.chatgpt;
         load();
     });
+    window.addEventListener('neko:core-config-saved', () => load());
     window.addEventListener('localechange', () => render());
     window.addEventListener('pageshow', () => load());
     load();

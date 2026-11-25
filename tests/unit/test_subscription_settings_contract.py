@@ -76,3 +76,14 @@ def test_panel_never_posts_to_the_settings_save_endpoint():
     script = SCRIPT.read_text(encoding="utf-8")
     assert "/api/config/subscriptions" in script
     assert "core_api" not in script
+
+
+def test_panel_refreshes_after_a_settings_save_and_drops_stale_replies():
+    settings = (ROOT / "static/js/api_key_settings.js").read_text(encoding="utf-8")
+    script = SCRIPT.read_text(encoding="utf-8")
+    # A feature's own setting saved under Per-Feature Models may win over a subscription.
+    assert "new CustomEvent('neko:core-config-saved')" in settings
+    assert "addEventListener('neko:core-config-saved'" in script
+    # Replies a newer change overtook are not applied; unsaved keys survive re-rendering.
+    assert "version !== stateVersion" in script and "keyDrafts[plan.id]" in script
+    assert "generation !== accountGeneration" in script
