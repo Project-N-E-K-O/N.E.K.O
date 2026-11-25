@@ -36,13 +36,16 @@ from ._shared import AsrRequestFailure, is_auth_rejection, provider_status_code
 class HttpResponse(Protocol):
     status_code: int
 
-    def raise_for_status(self) -> None: ...
+    def raise_for_status(self) -> None:
+        """Raise ``httpx.HTTPStatusError`` for a 4xx/5xx status."""
 
-    def json(self) -> Any: ...
+    def json(self) -> Any:
+        """Return the decoded JSON body."""
 
 
 class HttpClient(Protocol):
-    async def post(self, url: str, **kwargs: Any) -> HttpResponse: ...
+    async def post(self, url: str, **kwargs: Any) -> HttpResponse:
+        """Send one POST request (``httpx.AsyncClient.post`` shape)."""
 
 
 async def post_wav_transcription(

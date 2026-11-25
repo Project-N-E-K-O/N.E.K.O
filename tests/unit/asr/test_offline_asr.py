@@ -17,7 +17,7 @@ from typing import Any
 import httpx
 import pytest
 
-import main_logic.asr_client as asr_client
+from main_logic import asr_client
 from main_logic.asr_client import offline
 from main_logic.asr_client._infra import _AsrWorkerEvent
 from main_logic.asr_client._registry_meta import (
