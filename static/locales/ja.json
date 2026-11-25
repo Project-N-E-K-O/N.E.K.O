@@ -7934,6 +7934,7 @@
         "retry": "再試行"
     },
     "themeStudio": {
+        "backupSkippedImages": "{{count}} 枚の背景画像を読み込めず、バックアップに含められませんでした。復元後、該当するテーマは背景画像なしになります。",
         "core": {
             "request": {
                 "timeout": "リクエストがタイムアウトしました（{{seconds}}s）",

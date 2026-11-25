@@ -7934,6 +7934,7 @@
         "retry": "重试"
     },
     "themeStudio": {
+        "backupSkippedImages": "有 {{count}} 张背景图读取失败、没有打进备份，恢复后这些主题会缺背景图。",
         "core": {
             "request": {
                 "timeout": "请求超时（{{seconds}}s）",

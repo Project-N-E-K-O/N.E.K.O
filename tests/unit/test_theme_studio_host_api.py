@@ -6,6 +6,7 @@ exports, the loopback guard split and schedule thread restart.
 
 import base64
 import io
+import json
 import zipfile
 
 import pytest
@@ -443,6 +444,210 @@ def test_main_server_shutdown_hook_calls_theme_studio():
     source = inspect.getsource(on_shutdown)
     assert "shutdown_service_async" in source
     assert 'what="theme studio shutdown"' in source
+
+
+def _library_backup_zip(themes):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, doc in themes.items():
+            archive.writestr(f"themes/{name}.json", json.dumps(doc))
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+@pytest.mark.unit
+def test_library_restore_keeps_absent_and_switch_only_materials(studio):
+    data = _library_backup_zip({
+        "colors-only": {"name": "colors-only", "vars": {"--nts-accent": "#3366ff"}, "dark_vars": {}},
+        "switch-only": {
+            "name": "switch-only",
+            "vars": {"--nts-accent": "#3366ff"},
+            "dark_vars": {},
+            "materials": {"enabled": False},
+        },
+    })
+    result = theme_studio.run_entry_sync("import_library", {"data": data})
+    assert result.ok, result.error
+    records = {}
+    for summary in result.value["themes"]:
+        path = studio._library_dir() / f"{summary['id']}.json"
+        records[summary["name"]] = json.loads(path.read_text(encoding="utf-8"))
+    assert "materials" not in records["colors-only"]
+    assert records["switch-only"]["materials"] == {"enabled": False}
+
+
+@pytest.mark.unit
+def test_library_backup_reports_images_it_could_not_pack(studio, monkeypatch):
+    gif = base64.b64decode("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==")
+    filename = studio._save_background_bytes(gif)
+    studio._save_library_item(
+        name="with-image",
+        vars_map={"--nts-chat-bg-image": f'url("{studio._background_url(filename)}")'},
+        dark_map={},
+    )
+    real_write = zipfile.ZipFile.write
+
+    def locked(self, path, arcname=None, *args, **kwargs):
+        if str(arcname or "").startswith("images/"):
+            raise PermissionError("locked")
+        return real_write(self, path, arcname, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "write", locked)
+    result = theme_studio.run_entry_sync("export_to_file", {"kind": "library"})
+    assert result.ok, result.error
+    assert result.value["skipped_images"] == 1
+
+
+@pytest.mark.unit
+def test_library_backup_uses_the_file_name_as_theme_id(studio):
+    library = studio._library_dir()
+    library.mkdir(parents=True, exist_ok=True)
+    (library / "copied-entry.json").write_text(
+        json.dumps({
+            "id": "original-entry",
+            "name": "copy",
+            "vars": {"--nts-accent": "#3366ff"},
+            "dark_vars": {},
+        }),
+        encoding="utf-8",
+    )
+    _, data, count = studio._build_library_archive()
+    assert count == 1
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        assert "themes/copied-entry.json" in archive.namelist()
+        doc = json.loads(archive.read("themes/copied-entry.json").decode("utf-8"))
+    assert doc["id"] == "copied-entry"
+
+
+@pytest.mark.unit
+def test_import_with_materials_off_as_string_does_not_wipe_palette(studio):
+    seeded = theme_studio.run_entry_sync("apply_saved_theme", {"id": "amber-dusk"})
+    assert seeded.ok, seeded.error
+    before = theme_studio.run_entry_sync("get_theme", {}).value["vars"]
+    assert before, "precondition: the palette has colors"
+
+    payload = json.dumps({"vars": {}, "materials": {"enabled": "false"}})
+    result = theme_studio.run_entry_sync("import_theme", {"payload": payload})
+    assert not result.ok
+    assert theme_studio.run_entry_sync("get_theme", {}).value["vars"] == before
+
+
+@pytest.mark.unit
+def test_apply_counts_a_cleared_variable_as_written(studio):
+    seeded = theme_studio.run_entry_sync("apply_theme", {"vars": {"--nts-accent": "#3366ff"}})
+    assert seeded.ok, seeded.error
+
+    result = theme_studio.run_entry_sync(
+        "apply_theme", {"vars": {"--nts-accent": None, "--nts-nope-var": "#ffffff"}}
+    )
+    assert result.ok, result.error
+    assert result.value["rejected"]
+    assert "--nts-accent" not in theme_studio.run_entry_sync("get_theme", {}).value["vars"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("name", ["frosted", "Frosted Glass", "CUSTOM"])
+def test_material_preset_refuses_built_in_names(studio, name):
+    from theme_studio import materials as ts_materials
+
+    result = theme_studio.run_entry_sync(
+        "save_material_preset", {"name": name, "materials": ts_materials.default_materials()}
+    )
+    assert not result.ok
+    assert str(result.error) == msg("theme.preset.nameReserved", name=name)
+
+
+@pytest.mark.unit
+def test_stale_schedule_tick_does_not_apply_after_disable(tmp_path):
+    from datetime import datetime
+
+    studio = ts_service.ThemeStudioService(data_dir=tmp_path / "data")
+    studio._ensure_dirs()
+    # On disk the user has already disabled the schedule ...
+    (studio.data_dir / "schedule.json").write_text(
+        json.dumps({"schema": 2, "enabled": False, "zones": {"morning": "amber-dusk"}}),
+        encoding="utf-8",
+    )
+    studio._now = lambda: datetime(2026, 11, 23, 8, 0)
+    real_read = studio._read_schedule
+    calls = {"count": 0}
+
+    def read_schedule(**kwargs):
+        calls["count"] += 1
+        schedule = real_read(**kwargs)
+        if calls["count"] == 1:
+            # ... but the tick's unlocked snapshot was taken just before that.
+            schedule = dict(schedule, enabled=True)
+        return schedule
+
+    applied = []
+    studio._read_schedule = read_schedule
+    studio._apply_theme_record = lambda theme_id: applied.append(theme_id) or {}
+
+    assert studio._schedule_tick()["action"] == "disabled"
+    assert applied == []
+
+
+def _rgba_parts(value):
+    body = value[value.index("(") + 1 : value.rindex(")")]
+    return [float(part) for part in body.split(",")]
+
+
+@pytest.mark.unit
+def test_bad_rgba_alpha_only_resets_that_color():
+    from theme_studio import materials as ts_materials
+
+    raw = ts_materials.default_materials()
+    raw["global"]["tint"] = "rgba(1, 2, 3, 1.2.3)"
+    raw["lighting"]["edgeColor"] = "#123456"
+    clean, warnings = ts_materials.normalize_materials(raw)
+    assert clean["global"]["tint"] == ts_materials.PARAM_BY_KEY["tint"].default
+    assert clean["lighting"]["edgeColor"] == "#123456"
+    assert warnings
+
+
+@pytest.mark.unit
+def test_dark_tint_mix_keeps_the_input_alpha():
+    from theme_studio import materials as ts_materials
+
+    def dark_bg_alpha(tint):
+        raw = ts_materials.default_materials()
+        raw["global"]["tint"] = tint
+        clean, _warnings = ts_materials.normalize_materials(raw)
+        return _rgba_parts(ts_materials.compile_materials(clean)[1]["--nts-mt-bg"])[3]
+
+    opaque = dark_bg_alpha("rgba(255, 255, 255, 1)")
+    half = dark_bg_alpha("rgba(255, 255, 255, 0.5)")
+    assert abs(half - opaque / 2) < 0.002
+
+
+@pytest.mark.unit
+def test_component_opacity_uses_the_dark_tint_in_dark_mode():
+    from theme_studio import materials as ts_materials
+
+    raw = ts_materials.default_materials()
+    # Same opacity as the global one, so the component background must equal the global one.
+    raw["components"] = {"chat": {"mode": "custom", "opacity": raw["global"]["opacity"]}}
+    clean, _warnings = ts_materials.normalize_materials(raw)
+    light, dark = ts_materials.compile_materials(clean)
+    assert light["--nts-mt-c-bg-chat"] == light["--nts-mt-bg"]
+    assert dark["--nts-mt-c-bg-chat"] == dark["--nts-mt-bg"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("keyword", "rgb"), [("white", [255, 255, 255]), ("Black", [0, 0, 0]), ("transparent", [0, 0, 0])]
+)
+def test_color_keywords_that_validate_also_compile(keyword, rgb):
+    from theme_studio import materials as ts_materials
+
+    raw = ts_materials.default_materials()
+    raw["lighting"]["edgeColor"] = keyword
+    clean, warnings = ts_materials.normalize_materials(raw)
+    assert clean["lighting"]["edgeColor"] == keyword
+    assert not warnings
+    parts = _rgba_parts(ts_materials.compile_materials(clean)[0]["--nts-mt-edge-color"])
+    assert parts[:3] == rgb
+    assert parts[3] == (0.0 if keyword == "transparent" else 1.0)
 
 
 @pytest.mark.unit

@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 主题工坊面板文案接入 i18n（themeStudio.*）后刷新语言包缓存。
-    const LOCALE_VERSION = '2026-11-25-theme-studio-panel-i18n';
+    const LOCALE_VERSION = '2026-11-25-theme-studio-backup-skipped-images';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

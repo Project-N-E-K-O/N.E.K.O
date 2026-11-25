@@ -35,7 +35,7 @@ QUALITY_MODES = ("saver", "balanced", "high", "ultra")
 # Compiled-output version: must be bumped whenever a derived variable is added / renamed. The mirror in
 # theme.json uses it to detect staleness -- looking only at loader_version / css_sha8, a compiler upgrade
 # with an unchanged loader would never recompute the mirror (hit in 0.15.12).
-COMPILE_VERSION = "1.6.20"
+COMPILE_VERSION = "1.6.21"
 QUALITY_LABELS = {
     "saver": "省电",
     "balanced": "均衡",
@@ -253,13 +253,37 @@ def preset_label(preset_id: str) -> str:
     return _msg(f"materials.preset.{preset_id}", default=PRESET_LABELS.get(preset_id, preset_id))
 
 
+def is_reserved_preset_name(name: Any) -> bool:
+    """Whether ``name`` collides with a built-in preset id or its label in any language.
+
+    normalize_materials drops custom presets named like a built-in id, and a
+    custom preset named like a built-in label would be indistinguishable from
+    it in the panel, so such names must be refused before saving.
+    """
+    from config.prompts.prompts_theme_studio import THEME_STUDIO_MESSAGES
+
+    folded = str(name or "").strip().casefold()
+    if not folded:
+        return False
+    reserved = set(PRESET_IDS) | set(PRESET_LABELS.values())
+    for preset_id in PRESET_IDS:
+        reserved.update((THEME_STUDIO_MESSAGES.get(f"materials.preset.{preset_id}") or {}).values())
+    return folded in {item.strip().casefold() for item in reserved}
+
+
 _HEX_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
 _RGB_RE = re.compile(
     r"^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})"
     r"(?:\s*,\s*([0-9.]+)\s*)?\)$",
     re.IGNORECASE,
 )
-_KEYWORD_COLORS = {"transparent", "white", "black"}
+#: Color keywords accepted by validation; _parse_color resolves exactly these, so a
+#: keyword that validates always compiles to the color it names.
+_KEYWORD_COLORS: dict[str, tuple[int, int, int, float]] = {
+    "transparent": (0, 0, 0, 0.0),
+    "white": (255, 255, 255, 1.0),
+    "black": (0, 0, 0, 1.0),
+}
 
 
 def _kebab(name: str) -> str:
@@ -311,12 +335,15 @@ def _coerce_bool(raw: Any) -> bool | None:
 
 
 def _parse_color(raw: Any) -> tuple[int, int, int, float] | None:
-    """Parse #rgb / #rrggbb / rgb() / rgba() into an RGBA tuple."""
+    """Parse #rgb / #rrggbb / rgb() / rgba() / a color keyword into an RGBA tuple."""
     if not isinstance(raw, str):
         return None
     text = raw.strip()
     if not text:
         return None
+    keyword = _KEYWORD_COLORS.get(text.lower())
+    if keyword is not None:
+        return keyword
     if _HEX_RE.match(text):
         body = text[1:]
         if len(body) in (3, 4):
@@ -329,7 +356,13 @@ def _parse_color(raw: Any) -> tuple[int, int, int, float] | None:
         r, g, b = (int(match.group(i)) for i in (1, 2, 3))
         if any(v > 255 for v in (r, g, b)):
             return None
-        alpha = float(match.group(4)) if match.group(4) is not None else 1.0
+        try:
+            alpha = float(match.group(4)) if match.group(4) is not None else 1.0
+        except ValueError:
+            # "rgba(1, 2, 3, 1.2.3)" passes the regex but is not a number: reject this
+            # one color so only its own field falls back, instead of raising out of
+            # normalize_materials and losing the whole materials tree.
+            return None
         return r, g, b, _clamp(alpha, 0.0, 1.0)
     return None
 
@@ -340,13 +373,17 @@ def _rgba(rgb: tuple[int, int, int, float], alpha: float) -> str:
 
 
 def _mix_rgb(one: tuple[int, int, int, float], two: tuple[int, int, int, float], ratio: float) -> tuple[int, int, int, float]:
-    """Mix ``one`` towards ``two`` by ``ratio`` (0-1) and return an RGBA tuple. Used for dye warmth."""
+    """Mix the RGB of ``one`` towards ``two`` by ``ratio`` (0-1); the alpha of ``one`` is kept.
+
+    Used for dye warmth and the dark-mode tint: a translucent input color must
+    stay translucent after mixing.
+    """
     t = _clamp(float(ratio), 0.0, 1.0)
     return (
         int(round(one[0] * (1.0 - t) + two[0] * t)),
         int(round(one[1] * (1.0 - t) + two[1] * t)),
         int(round(one[2] * (1.0 - t) + two[2] * t)),
-        1.0,
+        one[3],
     )
 
 
@@ -360,7 +397,8 @@ def _coerce_param(param: Param, value: Any) -> tuple[bool, Any]:
         return (text in param.choices, text)
     if param.kind == "color":
         text = str(value).strip()
-        if _parse_color(text) is not None or text.lower() in _KEYWORD_COLORS:
+        # The compiler parses with the same function, so whatever validates here also compiles.
+        if _parse_color(text) is not None:
             return (True, text)
         return (False, None)
     if isinstance(value, bool) or value is None:
@@ -1207,6 +1245,10 @@ def compile_materials(materials: dict[str, Any]) -> tuple[dict[str, str], dict[s
             surf = resolve_section(materials, "surface", dark_mode)
             if "opacity" in style:
                 tint = _parse_color(glob.get("tint")) or (255, 255, 255, 1.0)
+                if dark_mode:
+                    # Same darkened base as the global --nts-mt-bg in dark mode, otherwise a
+                    # component with its own opacity turns back into white glass under light text.
+                    tint = _mix_rgb(tint, (16, 20, 28, 1.0), 0.62)
                 tint_strength = float(glob.get("tintStrength", 0.35))
                 comp_opacity = _clamp(float(style["opacity"]), 0.0, 1.0)
                 target[f"--nts-mt-c-bg-{comp}"] = _rgba(tint, comp_opacity * tint_strength)

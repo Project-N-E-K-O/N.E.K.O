@@ -7934,6 +7934,7 @@
         "retry": "Tentar novamente"
     },
     "themeStudio": {
+        "backupSkippedImages": "Não foi possível ler {{count}} imagem(ns) de fundo, que ficaram fora do backup; esses temas ficarão sem fundo após a restauração.",
         "core": {
             "request": {
                 "timeout": "Tempo limite da solicitação esgotado ({{seconds}} s)",

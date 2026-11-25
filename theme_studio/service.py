@@ -607,7 +607,7 @@ ARCHIVE_README = (
     "N.E.K.O 主题工坊 · 主题分享包\n"
     "\n"
     "theme.json 是调色板；images/ 里是与它配套的背景图。\n"
-    "用法：打开 插件 → 主题工坊 → 主题仓库 → 导入压缩包，选择本文件即可。\n"
+    "用法：在 N.E.K.O 里打开 主题工坊 → 主题仓库 → 导入压缩包，选择本文件即可。\n"
     "导入只会把主题存进仓库，不会立刻改动你当前的配色；在仓库里点「应用」才切换。\n"
 )
 
@@ -620,7 +620,7 @@ LIBRARY_ARCHIVE_README = (
     "N.E.K.O 主题工坊 · 主题库备份包\n"
     "\n"
     "themes/ 里是你保存过的每一套主题（每套一个 json），images/ 是它们共用的背景图。\n"
-    "用法：打开 插件 → 主题工坊 → 主题仓库 → 恢复备份，选择本文件即可。\n"
+    "用法：在 N.E.K.O 里打开 主题工坊 → 主题仓库 → 恢复备份，选择本文件即可。\n"
     "恢复只会往仓库里「新增」主题，不会覆盖或删除现有的任何一套；同名不同 id 会各存一份。\n"
     "恢复不会立刻改动你当前的配色；在仓库里点「应用」才切换。\n"
 )
@@ -1842,6 +1842,7 @@ class ThemeStudioService(NekoPluginBase):
             # Delete semantics: an explicit empty string / None = fall back to the N.E.K.O native value.
             # Note: **rejected** values never reach here (they are neither in clean nor empty),
             # so the old value is kept as-is -- one bad input cannot destroy an existing good value.
+            cleared = 0
             for source, merged in ((vars_in, merged_vars), (dark_in, merged_dark)):
                 if not isinstance(source, dict):
                     continue
@@ -1853,6 +1854,10 @@ class ThemeStudioService(NekoPluginBase):
                         isinstance(raw_value, str) and not raw_value.strip()
                     ):
                         merged.pop(key, None)
+                        # A clear of a known variable is an accepted edit (_validate_palette
+                        # reports no error for it); unknown names are rejected there.
+                        if key in KNOWN_VARS:
+                            cleared += 1
             merged_vars.update(clean_vars)
             merged_dark.update(clean_dark)
 
@@ -1861,7 +1866,8 @@ class ThemeStudioService(NekoPluginBase):
 
             # How many input fields were actually accepted. Silently dropped entries (not in KNOWN_VARS, invalid
             # value) are not counted -- they took no effect and must not be treated as success.
-            accepted = len(clean_vars) + len(clean_dark)
+            # Successful clears do count: "clear one var + one unknown var" did write something.
+            accepted = len(clean_vars) + len(clean_dark) + cleared
 
             if isinstance(name, str):
                 # Empty / whitespace-only = restore the default name (the panel takes this path when the input is cleared), not an error.
@@ -2243,6 +2249,10 @@ class ThemeStudioService(NekoPluginBase):
                 return Err(SdkError(_msg("theme.preset.nameEmpty")))
             if len(title) > 40:
                 return Err(SdkError(_msg("theme.preset.nameTooLong", length=len(title))))
+            if _materials.is_reserved_preset_name(title):
+                # normalize_materials would silently drop it, so the save would report Ok
+                # while nothing was stored; refuse before writing.
+                return Err(SdkError(_msg("theme.preset.nameReserved", name=title)))
             palette = self._read_unlocked(strict=True)
             source = materials if isinstance(materials, dict) else palette.get("materials")
             clean, warnings = _materials.normalize_materials(source)
@@ -2754,7 +2764,9 @@ class ThemeStudioService(NekoPluginBase):
                 incoming_materials = parsed.get("materials")
                 has_material = (
                     isinstance(incoming_materials, dict)
-                    and bool(incoming_materials.get("enabled"))
+                    # Use the normalized flag: a raw "false" / "off" string is truthy but means off,
+                    # and an off-materials bundle with no colors must not wipe the palette.
+                    and bool(_materials.normalize_materials(incoming_materials)[0].get("enabled"))
                     # Only allow it when "the bundle carries no colors at all": one that carries colors but has all of
                     # them rejected is a bad bundle and must still be blocked, or one mistaken import wipes the user's palette.
                     and not payload_vars
@@ -3112,7 +3124,13 @@ class ThemeStudioService(NekoPluginBase):
             )
             return {"action": "missing", "zone": zone, "day_kind": day_kind, "theme_id": theme_id}
         try:
-            outcome = self._apply_theme_record(theme_id)
+            # The schedule above was read without the lock; the user may have disabled it since.
+            # save_schedule writes under the same (reentrant) lock, so re-check here and keep the
+            # lock held through the apply: a stale tick must not switch the theme afterwards.
+            with _WRITE_LOCK:
+                if not self._read_schedule().get("enabled"):
+                    return {"action": "disabled"}
+                outcome = self._apply_theme_record(theme_id)
         except Exception as exc:  # noqa: BLE001
             # When the entry itself is broken (e.g. an empty palette saved by an old version) apply keeps failing, and
             # the schedule thread retries every 30s -> 2880 identical warnings a day, drowning useful logs when something
@@ -3762,6 +3780,7 @@ class ThemeStudioService(NekoPluginBase):
     def _library_records_for_backup(self) -> list:
         """Read all usable library entries; bad entries are skipped with a warning so one bad file can't ruin the backup."""
         records = []
+        seen: set[str] = set()
         for path in sorted(self._library_dir().glob("*.json")):
             try:
                 raw = json.loads(path.read_text(encoding="utf-8"))
@@ -3774,13 +3793,16 @@ class ThemeStudioService(NekoPluginBase):
                 raw.get("dark_vars"), dict
             ):
                 continue
-            theme_id = str(raw.get("id") or path.stem).strip()
+            # The file name is the entry's real id (lookups, apply and delete all go by it); the id field
+            # inside may have been hand-edited or copied from another entry. Use the field only when the
+            # file name itself is unusable.
+            theme_id = path.stem
             if not RE_THEME_ID.match(theme_id):
-                # If the entry's id field was hand-edited to an invalid value, fall back to the file name (also server-generated).
-                theme_id = path.stem
-            if not RE_THEME_ID.match(theme_id):
+                theme_id = str(raw.get("id") or "").strip()
+            if not RE_THEME_ID.match(theme_id) or theme_id in seen:
                 self._log("warning", f"备份跳过 id 不合法的仓库条目 {path.name}")
                 continue
+            seen.add(theme_id)
             record = dict(raw)
             record["id"] = theme_id
             records.append(record)
@@ -3809,12 +3831,16 @@ class ThemeStudioService(NekoPluginBase):
             )
         return files
 
-    def _build_library_archive(self) -> tuple:
+    def _build_library_archive(self, skipped_images: list | None = None) -> tuple:
         """Pack all custom themes into one zip: ``themes/<id>.json`` + ``images/`` + ``manifest.json``.
 
         Image refs are rewritten to the portable ``url("images/<name>")`` -- a
         backup must restore on another machine, so local absolute URLs like
         ``/plugin/.../ui/backgrounds/...`` must never be written into it.
+
+        :param skipped_images: optional list that receives the file names of
+            referenced background images that could not be packed (deleted or
+            unreadable), so the caller can tell the user the backup is incomplete.
         """
         records = self._library_records_for_backup()
         if not records:
@@ -3882,8 +3908,10 @@ class ThemeStudioService(NekoPluginBase):
                     archive.write(
                         self._backgrounds_dir() / filename, f"images/{filename}"
                     )
-                except OSError as exc:  # pragma: no cover
+                except OSError as exc:
                     self._log("warning", f"备份图片失败（已跳过）{filename}：{exc}")
+                    if skipped_images is not None:
+                        skipped_images.append(filename)
             archive.writestr(
                 "manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2)
             )
@@ -5018,8 +5046,11 @@ class ThemeStudioService(NekoPluginBase):
         # by content hash: that is the app's own data directory, idempotent and subject to orphan cleanup, not an export artifact.
         if kind == "library":
             # A library backup needs no "current theme": one bundle holds all custom themes in the library + shared images.
+            skipped_images: list = []
             try:
-                filename, payload, count = self._build_library_archive()
+                filename, payload, count = self._build_library_archive(
+                    skipped_images=skipped_images
+                )
             except SdkError as exc:
                 return Err(exc)
             except Exception as exc:  # noqa: BLE001
@@ -5034,6 +5065,9 @@ class ThemeStudioService(NekoPluginBase):
                     "bytes": len(payload),
                     "kind": kind,
                     "themes": count,
+                    # Background images that could not be packed: non-zero means the backup is
+                    # incomplete and the panel should say so instead of reporting full success.
+                    "skipped_images": len(skipped_images),
                 }
             )
 

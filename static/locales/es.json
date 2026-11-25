@@ -7934,6 +7934,7 @@
         "retry": "Reintentar"
     },
     "themeStudio": {
+        "backupSkippedImages": "No se pudieron leer {{count}} imágenes de fondo y no se incluyeron en la copia; esos temas quedarán sin fondo al restaurarla.",
         "core": {
             "request": {
                 "timeout": "Tiempo de espera agotado ({{seconds}} s)",

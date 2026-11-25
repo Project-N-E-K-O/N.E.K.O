@@ -7934,6 +7934,7 @@
         "retry": "Retry"
     },
     "themeStudio": {
+        "backupSkippedImages": "{{count}} background image(s) could not be read and were left out of the backup; those themes will be missing their backgrounds after restoring.",
         "core": {
             "request": {
                 "timeout": "Request timed out ({{seconds}}s)",

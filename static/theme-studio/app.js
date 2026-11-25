@@ -5546,8 +5546,18 @@ async function backupLibrary(button) {
   try {
     var result = await saveThemeFile({ kind: 'library' });
     var count = result.themes || 0;
-    showNotice('ok', tsT('library.backup.doneTitle', '主题库已备份（{{count}} 套）', { count: count }) + '\n' + savedHint(result) +
-      '\n' + tsT('library.backup.restoreHint', '换电脑或重装后，用「恢复备份」选这个 zip 就能整套拿回来（只新增、不覆盖）。'));
+    // Images the backend could not pack (unreadable files): the backup is
+    // incomplete, so say so instead of reporting a full backup.
+    var skippedImages = Number(result.skipped_images) || 0;
+    var skippedNote = skippedImages
+      ? '\n' + tsT('backupSkippedImages',
+        '有 {{count}} 张背景图读取失败、没有打进备份，恢复后这些主题会缺背景图。',
+        { count: skippedImages })
+      : '';
+    showNotice(skippedImages ? 'warn' : 'ok',
+      tsT('library.backup.doneTitle', '主题库已备份（{{count}} 套）', { count: count }) + '\n' + savedHint(result) +
+      '\n' + tsT('library.backup.restoreHint', '换电脑或重装后，用「恢复备份」选这个 zip 就能整套拿回来（只新增、不覆盖）。') +
+      skippedNote);
     showToast(tsT('library.backup.done', '已备份 {{count}} 套主题', { count: count }), 'ok');
     setStatus(tsT('library.backup.doneStatus', '已备份主题库'), 'ok');
   } catch (error) {

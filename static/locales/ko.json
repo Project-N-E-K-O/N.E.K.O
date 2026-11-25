@@ -7934,6 +7934,7 @@
         "retry": "다시 시도"
     },
     "themeStudio": {
+        "backupSkippedImages": "배경 이미지 {{count}}개를 읽지 못해 백업에 포함하지 못했습니다. 복원 후 해당 테마에는 배경 이미지가 없습니다.",
         "core": {
             "request": {
                 "timeout": "요청 시간 초과({{seconds}}s)",

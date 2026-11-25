@@ -2518,4 +2518,14 @@ THEME_STUDIO_MESSAGES: dict[str, dict[str, str]] = {
         "es": "No se pudo leer theme.json: {error}",
         "pt": "Falha ao ler theme.json: {error}",
     },
+    "theme.preset.nameReserved": {
+        "zh": "「{name}」是内置预设的名字，请换一个预设名。",
+        "zh-TW": "「{name}」是內建預設的名稱，請換一個預設名稱。",
+        "en": "\"{name}\" is the name of a built-in preset; please choose another preset name.",
+        "ja": "「{name}」は組み込みプリセットの名前です。別のプリセット名を指定してください。",
+        "ko": "'{name}'은(는) 기본 프리셋의 이름입니다. 다른 프리셋 이름을 지정하세요.",
+        "ru": "«{name}» — имя встроенного пресета; выберите другое имя пресета.",
+        "es": "«{name}» es el nombre de un preajuste integrado; elige otro nombre para el preajuste.",
+        "pt": "\"{name}\" é o nome de uma predefinição integrada; escolha outro nome para a predefinição.",
+    },
 }
