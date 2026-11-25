@@ -52,6 +52,7 @@ from ._sdk_compat import (
 
 from . import assets as _assets
 from . import materials as _materials
+from .i18n import msg as _msg
 
 # ---------------------------------------------------------------------------- paths
 #: Directory containing this file (``theme_studio/`` in the host code tree).
@@ -721,9 +722,9 @@ def _material_badge(raw: Any) -> dict[str, Any] | None:
     return {
         "enabled": bool(clean.get("enabled")),
         "preset": preset,
-        "label": _materials.PRESET_LABELS.get(preset, preset),
+        "label": _materials.preset_label(preset),
         "quality": quality,
-        "quality_label": _materials.QUALITY_LABELS.get(quality, quality),
+        "quality_label": _materials.quality_label(quality),
     }
 
 def _preset_preview(light: dict, dark: dict) -> dict:
@@ -861,22 +862,22 @@ def _parse_theme_json(payload: bytes) -> dict:
     try:
         text = payload.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
-        raise SdkError("主题文件不是 UTF-8 文本，可能选错了文件。") from exc
+        raise SdkError(_msg("theme.file.notUtf8")) from exc
     text = text.strip()
     if not text:
-        raise SdkError("主题文件是空的。")
+        raise SdkError(_msg("theme.file.empty"))
     if len(text) > IMPORT_MAX_CHARS:
-        raise SdkError(f"主题文件过长（{len(text)} 字符，上限 {IMPORT_MAX_CHARS}）。")
+        raise SdkError(_msg("theme.file.tooLong", length=len(text), limit=IMPORT_MAX_CHARS))
     try:
         parsed = json.loads(text)
     except (ValueError, TypeError) as exc:
-        raise SdkError(f"主题文件不是合法 JSON：{exc}") from exc
+        raise SdkError(_msg("theme.file.invalidJson", error=exc)) from exc
     if not isinstance(parsed, dict):
-        raise SdkError("主题文件必须是一个 JSON 对象。")
+        raise SdkError(_msg("theme.file.notObject"))
     if not isinstance(parsed.get("vars"), dict) and not isinstance(
         parsed.get("dark_vars"), dict
     ):
-        raise SdkError("主题文件缺少 vars / dark_vars 字段。")
+        raise SdkError(_msg("theme.file.missingVars"))
     return parsed
 
 
@@ -1360,32 +1361,34 @@ def _validate_palette(
         if src is None:
             continue
         if not isinstance(src, dict):
-            errors.append(f"{label}: 必须是对象")
+            errors.append(_msg("theme.palette.notObject", label=label))
             continue
         for raw_name, raw_value in src.items():
             name = str(raw_name)
             if not RE_VAR_NAME.match(name):
-                errors.append(f"{label}: 变量名非法已拒绝 {name!r}")
+                errors.append(_msg("theme.palette.badVarName", label=label, var=repr(name)))
                 continue
             if name not in KNOWN_VARS:
                 # Well-formed but consumed by no rule -> must be an error. Otherwise a "silent no-op reported
                 # as success" makes users think the change worked (an independent verifier tested --nts-nope-var).
                 errors.append(
-                    f"{label}: 未知变量名已拒绝 {name!r}（拼写错误？见 README 变量清单）"
+                    _msg("theme.palette.unknownVar", label=label, var=repr(name))
                 )
                 continue
             if raw_value is None:
                 # Explicitly empty = delete the key (fall back to the N.E.K.O native value).
                 continue
             if not isinstance(raw_value, str):
-                errors.append(f"{label}: {name} 的值必须是字符串")
+                errors.append(_msg("theme.palette.valueNotString", label=label, var=name))
                 continue
             value = raw_value.strip()
             if not value:
                 # Empty string = delete the key (the panel's "clear" semantics).
                 continue
             if not _is_safe_value(name, value):
-                errors.append(f"{label}: {name} 的值非法已拒绝 {value!r}")
+                errors.append(
+                    _msg("theme.palette.badValue", label=label, var=name, value=repr(value))
+                )
                 continue
             out[name] = _canonicalize_value(name, value)
 
@@ -1406,14 +1409,7 @@ def _permission_hint(exc: BaseException) -> str:
     disk is full, so the fix command is given directly here.
     """
     plugin_dir = Path(__file__).resolve().parent
-    return (
-        f"写入主题失败：{exc}。"
-        "该目录对插件进程不可写：N.E.K.O 的插件子进程以 Low 完整性级别运行，"
-        "而目录可能被提权进程改成了 Medium/High。"
-        "修复：在插件面板「应用集成」里点一次「修复应用侧集成」；"
-        "若仍失败，再以管理员身份重新运行 install.ps1（它会自动把插件目录降为 Low）；"
-        f'或手动执行：icacls "{plugin_dir}" /setintegritylevel (OI)(CI)L /T /C'
-    )
+    return _msg("theme.permissionHint", error=exc, plugin_dir=plugin_dir)
 
 
 _TRUE_WORDS = frozenset({"true", "1", "yes", "on"})
@@ -1645,14 +1641,14 @@ class ThemeStudioService(NekoPluginBase):
             return default_palette()
         except OSError as exc:
             if strict:
-                raise _ThemeUnreadable(f"读取 theme.json 失败：{exc}") from exc
+                raise _ThemeUnreadable(_msg("theme.themeJson.readFailed", error=exc)) from exc
             self._log("warning", f"读取 theme.json 失败，使用默认值：{exc}")
             return default_palette()
         try:
             return self._normalize(json.loads(text.decode("utf-8")))
         except (ValueError, TypeError) as exc:
             if strict:
-                raise _ThemeUnreadable(f"theme.json 解析失败：{exc}") from exc
+                raise _ThemeUnreadable(_msg("theme.themeJson.parseFailed", error=exc)) from exc
             self._log("warning", f"theme.json 解析失败，使用默认值：{exc}")
             return default_palette()
 
@@ -1872,12 +1868,12 @@ class ThemeStudioService(NekoPluginBase):
                 palette["name"] = _clip_name(name, DEFAULT_THEME_NAME)
                 accepted += 1
             elif name is not None:
-                errors.append(f"name: 必须是字符串，收到 {type(name).__name__}")
+                errors.append(_msg("theme.apply.nameNotString", type=type(name).__name__))
 
             if enabled is not None:
                 coerced = _coerce_bool(enabled)
                 if coerced is None:
-                    errors.append(f"enabled: 无法解析为布尔值 {enabled!r}")
+                    errors.append(_msg("theme.apply.enabledNotBool", value=repr(enabled)))
                 else:
                     palette["enabled"] = coerced
                     accepted += 1
@@ -1915,7 +1911,7 @@ class ThemeStudioService(NekoPluginBase):
                 accepted += 1
             elif materials_in is not None:
                 errors.append(
-                    f"materials: 必须是对象，收到 {type(materials_in).__name__}"
+                    _msg("theme.apply.materialsNotObject", type=type(materials_in).__name__)
                 )
 
             palette["updated_at"] = _now_iso()
@@ -2018,7 +2014,7 @@ class ThemeStudioService(NekoPluginBase):
             # Include material_vars: the loader does not parse material params, it only reads the compiled variable table.
             return Ok(self._with_material_vars(self._read_unlocked()))
         except Exception as exc:  # noqa: BLE001
-            return Err(SdkError(f"读取主题失败：{exc}"))
+            return Err(SdkError(_msg("theme.getTheme.failed", error=exc)))
 
     @plugin_entry(
         id="studio_status",
@@ -2037,7 +2033,7 @@ class ThemeStudioService(NekoPluginBase):
         try:
             palette = self._read_unlocked()
         except Exception as exc:  # noqa: BLE001
-            return Err(SdkError(f"读取运行状态失败：{exc}"))
+            return Err(SdkError(_msg("theme.status.readFailed", error=exc)))
         try:
             library_count = len(self._library_items())
         except Exception as exc:  # noqa: BLE001
@@ -2126,35 +2122,38 @@ class ThemeStudioService(NekoPluginBase):
                             "min": param.minimum,
                             "max": param.maximum,
                             "choices": list(param.choices),
-                            "label": param.label,
+                            "label": _materials.param_label(param),
                             "var": _materials.var_name(param),
                         }
                         for param in _materials.PARAMS
                     ],
                     "sections": [
-                        {"id": section, "label": _materials.SECTION_LABELS[section]}
+                        {"id": section, "label": _materials.section_label(section)}
                         for section in _materials.SECTIONS
                     ],
                     "components": [
-                        {"id": comp, "label": _materials.COMPONENT_LABELS[comp]}
+                        {"id": comp, "label": _materials.component_label(comp)}
                         for comp in _materials.COMPONENTS
                     ],
                     "component_params": list(_materials.COMPONENT_PARAMS),
                     "quality": [
-                        {"id": mode, "label": _materials.QUALITY_LABELS[mode]}
+                        {"id": mode, "label": _materials.quality_label(mode)}
                         for mode in _materials.QUALITY_MODES
                     ],
                     # Six built-ins + custom make seven cards: custom is not "a separately saved set of values" but
                     # "back to param defaults", so its params are the default table, not an empty one.
                     "presets": {
                         preset_id: {
-                            "label": _materials.PRESET_LABELS[preset_id],
+                            "label": _materials.preset_label(preset_id),
                             "params": _materials.PRESETS.get(preset_id)
                             or _materials._blank_params(),
                         }
                         for preset_id in _materials.PRESET_IDS
                     },
-                    "preset_labels": dict(_materials.PRESET_LABELS),
+                    "preset_labels": {
+                        preset_id: _materials.preset_label(preset_id)
+                        for preset_id in _materials.PRESET_IDS
+                    },
                     "easings": list(_materials.EASINGS),
                     "blur_levels": dict(_materials.BLUR_LEVELS),
                     # User-saved presets: the panel lists cards by name; on switch the backend lays down the whole
@@ -2166,7 +2165,7 @@ class ThemeStudioService(NekoPluginBase):
                 }
             )
         except Exception as exc:  # noqa: BLE001
-            return Err(SdkError(f"读取材质参数表失败：{exc}"))
+            return Err(SdkError(_msg("theme.materialSpec.readFailed", error=exc)))
 
     @plugin_entry(
         id="preview_materials",
@@ -2216,7 +2215,7 @@ class ThemeStudioService(NekoPluginBase):
                 }
             )
         except Exception as exc:  # noqa: BLE001
-            return Err(SdkError(f"编译材质变量失败：{exc}"))
+            return Err(SdkError(_msg("theme.previewMaterials.failed", error=exc)))
 
     @plugin_entry(
         id="save_material_preset",
@@ -2241,9 +2240,9 @@ class ThemeStudioService(NekoPluginBase):
         try:
             title = str(name or "").strip()
             if not title:
-                return Err(SdkError("name 不能为空。"))
+                return Err(SdkError(_msg("theme.preset.nameEmpty")))
             if len(title) > 40:
-                return Err(SdkError(f"预设名最多 40 个字符（当前 {len(title)}）。"))
+                return Err(SdkError(_msg("theme.preset.nameTooLong", length=len(title))))
             palette = self._read_unlocked(strict=True)
             source = materials if isinstance(materials, dict) else palette.get("materials")
             clean, warnings = _materials.normalize_materials(source)
@@ -2254,7 +2253,7 @@ class ThemeStudioService(NekoPluginBase):
             clean["custom_presets"] = stored
             palette, errors, _accepted = self._apply_and_store(materials_in=clean)
             if errors:
-                return Err(SdkError("；".join(errors)))
+                return Err(SdkError(_msg("theme.errorSeparator").join(errors)))
             current = palette.get("materials") or {}
             return Ok({
                 "name": title,
@@ -2264,7 +2263,7 @@ class ThemeStudioService(NekoPluginBase):
         except _ThemeUnreadable as exc:
             return Err(SdkError(str(exc)))
         except Exception as exc:  # noqa: BLE001
-            return Err(SdkError(f"保存自定义预设失败：{exc}"))
+            return Err(SdkError(_msg("theme.preset.saveFailed", error=exc)))
 
     @plugin_entry(
         id="delete_material_preset",
@@ -2283,7 +2282,7 @@ class ThemeStudioService(NekoPluginBase):
         try:
             title = str(name or "").strip()[:40]
             if not title:
-                return Err(SdkError("name 不能为空。"))
+                return Err(SdkError(_msg("theme.preset.nameEmpty")))
             # Deletion must bypass _apply_and_store's "merge preset library by name": merging would add the just-deleted
             # entry back. Modify materials on disk directly here and write atomically.
             with _WRITE_LOCK:
@@ -2291,7 +2290,7 @@ class ThemeStudioService(NekoPluginBase):
                 clean, _warnings = _materials.normalize_materials(palette.get("materials"))
                 stored = dict(clean.get("custom_presets") or {})
                 if title not in stored:
-                    return Err(SdkError(f"没有名为「{title}」的自定义预设。"))
+                    return Err(SdkError(_msg("theme.preset.notFound", name=title)))
                 stored.pop(title, None)
                 clean["custom_presets"] = stored
                 if clean.get("preset") == title:
@@ -2309,7 +2308,7 @@ class ThemeStudioService(NekoPluginBase):
         except _ThemeUnreadable as exc:
             return Err(SdkError(str(exc)))
         except Exception as exc:  # noqa: BLE001
-            return Err(SdkError(f"删除自定义预设失败：{exc}"))
+            return Err(SdkError(_msg("theme.preset.deleteFailed", error=exc)))
 
     @plugin_entry(
         id="loader_report",
@@ -2335,7 +2334,7 @@ class ThemeStudioService(NekoPluginBase):
         into readable data.
         """
         if not isinstance(report, dict):
-            return Err("report 必须是对象。")
+            return Err(_msg("theme.loaderReport.notObject"))
         received_at = datetime.now().astimezone().isoformat(timespec="seconds")
         attrs = report.get("attrs")
         errors = report.get("errors")
@@ -2448,7 +2447,7 @@ class ThemeStudioService(NekoPluginBase):
             _write_json_atomic(target, payload)
             return Ok({"path": str(target), "received_at": received_at})
         except OSError as exc:
-            return Err(f"写入诊断记录失败：{exc}")
+            return Err(_msg("theme.loaderReport.writeFailed", error=exc))
 
     @plugin_entry(
         id="apply_theme",
@@ -2495,7 +2494,7 @@ class ThemeStudioService(NekoPluginBase):
         except Exception as exc:  # noqa: BLE001
             if isinstance(exc, PermissionError):
                 return Err(SdkError(_permission_hint(exc)))
-            return Err(SdkError(f"写入主题失败：{exc}"))
+            return Err(SdkError(_msg("theme.apply.writeFailed", error=exc)))
 
         gave_input = any(
             x is not None for x in (vars, dark_vars, name, enabled, materials)
@@ -2507,7 +2506,14 @@ class ThemeStudioService(NekoPluginBase):
             if gave_input and accepted == 0:
                 # Nothing accepted = this call did nothing and must report failure,
                 # otherwise a caller looking only at status would think the write succeeded.
-                return Err(SdkError("没有写入任何改动：" + "；".join(errors)))
+                return Err(
+                    SdkError(
+                        _msg(
+                            "theme.apply.nothingWritten",
+                            errors=_msg("theme.errorSeparator").join(errors),
+                        )
+                    )
+                )
             return Ok({**self._with_material_vars(palette), "rejected": errors})
         return Ok(self._with_material_vars(palette))
 
@@ -2535,10 +2541,7 @@ class ThemeStudioService(NekoPluginBase):
                 except _ThemeUnreadable as exc:
                     if isinstance(exc.__cause__, OSError):
                         return Err(
-                            SdkError(
-                                "暂时读不到 theme.json（可能被占用或没有权限），"
-                                "为了不丢失已保存的材质预设，这次没有恢复默认，请稍后重试。"
-                            )
+                            SdkError(_msg("theme.reset.themeJsonUnreadable"))
                         )
                     current = None
                 if current is not None:
@@ -2552,7 +2555,7 @@ class ThemeStudioService(NekoPluginBase):
                 self._write_unlocked(palette)
             return Ok(self._with_material_vars(palette))
         except Exception as exc:  # noqa: BLE001
-            return Err(SdkError(f"恢复默认主题失败：{exc}"))
+            return Err(SdkError(_msg("theme.reset.failed", error=exc)))
 
     @plugin_entry(
         id="export_theme",
@@ -2580,7 +2583,7 @@ class ThemeStudioService(NekoPluginBase):
                 }
             )
         except Exception as exc:  # noqa: BLE001
-            return Err(SdkError(f"导出主题失败：{exc}"))
+            return Err(SdkError(_msg("theme.export.failed", error=exc)))
 
     @plugin_entry(
         id="theme_json",
@@ -2650,7 +2653,7 @@ class ThemeStudioService(NekoPluginBase):
                 for key in [k for k in mapping if k in image_keys]:
                     mapping.pop(key, None)
             if not clean_vars and not clean_dark:
-                raise SdkError("这套主题里没有可分享的调色板变量。")
+                raise SdkError(_msg("theme.shareJson.noShareableVars"))
             payload = {
                 "schema": SCHEMA_VERSION,
                 "name": _clip_name(record.get("name"), DEFAULT_THEME_NAME),
@@ -2672,7 +2675,7 @@ class ThemeStudioService(NekoPluginBase):
         except SdkError as exc:
             return Err(exc)
         except Exception as exc:  # noqa: BLE001
-            return Err(SdkError(f"生成主题 JSON 失败：{exc}"))
+            return Err(SdkError(_msg("theme.shareJson.failed", error=exc)))
         return Ok(
             {
                 "payload": text,
@@ -2706,27 +2709,27 @@ class ThemeStudioService(NekoPluginBase):
     )
     async def import_theme(self, payload: str = "", **_):
         if not isinstance(payload, str):
-            return Err(SdkError(f"导入内容必须是字符串，收到 {type(payload).__name__}。"))
+            return Err(SdkError(_msg("theme.import.notString", type=type(payload).__name__)))
         text = payload.strip()
         if not text:
-            return Err(SdkError("导入内容为空。"))
+            return Err(SdkError(_msg("theme.import.empty")))
         if len(text) > IMPORT_MAX_CHARS:
             # input_schema's maxLength is only a declaration the host may not enforce -> guard it ourselves.
             return Err(
-                SdkError(f"导入内容过长（{len(text)} 字符，上限 {IMPORT_MAX_CHARS}）。")
+                SdkError(_msg("theme.import.tooLong", length=len(text), limit=IMPORT_MAX_CHARS))
             )
 
         try:
             parsed = json.loads(text)
         except (ValueError, TypeError) as exc:
-            return Err(SdkError(f"导入内容不是合法 JSON：{exc}"))
+            return Err(SdkError(_msg("theme.import.invalidJson", error=exc)))
         if not isinstance(parsed, dict):
-            return Err(SdkError("导入内容必须是一个 JSON 对象。"))
+            return Err(SdkError(_msg("theme.import.notObject")))
 
         payload_vars = parsed.get("vars")
         payload_dark = parsed.get("dark_vars")
         if not isinstance(payload_vars, dict) and not isinstance(payload_dark, dict):
-            return Err(SdkError("导入内容缺少 vars / dark_vars 字段。"))
+            return Err(SdkError(_msg("theme.import.missingVars")))
 
         # Import is "wholesale replace", not merge: clear first, then write the valid subset.
         try:
@@ -2741,7 +2744,7 @@ class ThemeStudioService(NekoPluginBase):
                 for gone in (gone_light, gone_dark):
                     for key in gone:
                         errors = list(errors) + [
-                            f"{key}: 引用的背景图已不存在，已回退原生"
+                            _msg("theme.import.backgroundMissing", key=key)
                         ]
 
                 # Everything rejected = this import has no usable content. The old implementation still wrote to disk,
@@ -2758,10 +2761,7 @@ class ThemeStudioService(NekoPluginBase):
                     and not payload_dark
                 )
                 if not clean_vars and not clean_dark and not has_material:
-                    raise SdkError(
-                        "导入内容里没有可用的变量（变量名或取值都不被识别），"
-                        "已取消导入，当前调色板没有改动。"
-                    )
+                    raise SdkError(_msg("theme.import.noUsableVars"))
 
                 old_light = set(palette["vars"])
                 old_dark = set(palette["dark_vars"])
@@ -2802,7 +2802,7 @@ class ThemeStudioService(NekoPluginBase):
 
                 self._write_unlocked(palette)
         except Exception as exc:  # noqa: BLE001
-            return Err(SdkError(f"导入主题失败：{exc}"))
+            return Err(SdkError(_msg("theme.import.failed", error=exc)))
 
         if errors:
             self._log("warning", f"import_theme 拒绝 {len(errors)} 条：{errors[:3]}")
@@ -2869,38 +2869,55 @@ class ThemeStudioService(NekoPluginBase):
         if raw is None:
             return schedule, errors
         if not isinstance(raw, dict):
-            errors.append("排程数据必须是一个 JSON 对象")
+            errors.append(_msg("theme.schedule.notObject"))
             return schedule, errors
 
         flag = _coerce_bool(raw.get("enabled", False))
         if flag is None:
-            errors.append(f"enabled 不是可识别的布尔值：{raw.get('enabled')!r}")
+            errors.append(_msg("theme.schedule.enabledNotBool", value=repr(raw.get("enabled"))))
         else:
             schedule["enabled"] = flag
 
-        for field, label in (("zones", "工作日"), ("weekend_zones", "周末")):
+        for field, label in (
+            (
+                "zones",
+                _msg("theme.dayKind.weekday", default=SCHEDULE_DAY_KIND_LABELS["weekday"]),
+            ),
+            (
+                "weekend_zones",
+                _msg("theme.dayKind.weekend", default=SCHEDULE_DAY_KIND_LABELS["weekend"]),
+            ),
+        ):
             raw_zones = raw.get(field, {})
             if raw_zones is None:
                 raw_zones = {}
             if not isinstance(raw_zones, dict):
-                errors.append(f"{field} 必须是一个对象")
+                errors.append(_msg("theme.schedule.fieldNotObject", field=field))
                 continue
             unknown = sorted(set(raw_zones) - set(SCHEDULE_ZONES))
             if unknown:
-                errors.append(label + "的未知时段：" + "、".join(unknown))
+                errors.append(
+                    _msg(
+                        "theme.schedule.unknownZones",
+                        day=label,
+                        zones=_msg("theme.listSeparator").join(unknown),
+                    )
+                )
             target = schedule[field]
             for zone in SCHEDULE_ZONES:
                 value = raw_zones.get(zone, "")
                 if value is None:
                     value = ""
                 if not isinstance(value, str):
-                    errors.append(f"{label}时段「{zone}」的值必须是字符串主题 id")
+                    errors.append(_msg("theme.schedule.zoneNotString", day=label, zone=zone))
                     continue
                 value = value.strip()
                 if not value:
                     continue
                 if not RE_THEME_ID.match(value):
-                    errors.append(f"{label}时段「{zone}」的主题 id 不合法：{value!r}")
+                    errors.append(
+                        _msg("theme.schedule.zoneBadId", day=label, zone=zone, value=repr(value))
+                    )
                     continue
                 if not self._theme_exists(value):
                     # drop_missing=False is only for "writing back runtime stamps" (_update_schedule_stamp):
@@ -2911,7 +2928,9 @@ class ThemeStudioService(NekoPluginBase):
                     if not drop_missing and not strict:
                         target[zone] = value
                         continue
-                    errors.append(f"{label}时段「{zone}」引用了不存在的主题：{value}")
+                    errors.append(
+                        _msg("theme.schedule.zoneMissingTheme", day=label, zone=zone, theme_id=value)
+                    )
                     # On a non-strict read (_read_schedule) keep a copy of the "dropped zones";
                     # the panel uses it to tell the user "this theme is no longer in the library".
                     if dropped is not None:
@@ -3044,7 +3063,7 @@ class ThemeStudioService(NekoPluginBase):
         try:
             schedule = self._read_schedule()
         except Exception as exc:  # noqa: BLE001
-            return {"action": "error", "error": f"读取排程失败：{exc}"}
+            return {"action": "error", "error": _msg("theme.schedule.readFailed", error=exc)}
         if not schedule.get("enabled"):
             return {"action": "disabled"}
         stamp = self._now()
@@ -3320,14 +3339,14 @@ class ThemeStudioService(NekoPluginBase):
     def _save_background_bytes(self, data: bytes, *, label: str = "") -> str:
         """Validate magic bytes, write a background image to disk, return its file name (``<hash16>.<ext>``)."""
         if not data:
-            raise SdkError("图片内容为空。")
+            raise SdkError(_msg("theme.image.empty"))
         if len(data) > IMAGE_MAX_BYTES:
             raise SdkError(
-                f"图片过大（{len(data)} 字节，上限 {IMAGE_MAX_BYTES} 字节）。"
+                _msg("theme.image.tooLarge", size=len(data), limit=IMAGE_MAX_BYTES)
             )
         ext = _image_extension(data)
         if not ext:
-            raise SdkError("不支持的图片格式（只接受 png / jpg / webp / gif）。")
+            raise SdkError(_msg("theme.image.unsupportedFormat"))
         filename = f"{hashlib.sha256(data).hexdigest()[:16]}.{ext}"
         self._ensure_dirs()
         target = self._backgrounds_dir() / filename
@@ -3363,7 +3382,7 @@ class ThemeStudioService(NekoPluginBase):
                         except OSError:
                             pass
         except OSError as exc:
-            raise SdkError(f"保存图片失败：{exc}") from exc
+            raise SdkError(_msg("theme.image.saveFailed", error=exc)) from exc
         # Log a line only on an actual write; otherwise every theme listing would log "saved" for every preset image,
         # filling the log with things that never happened (measured: 4 lines per list_themes).
         if wrote:
@@ -3533,7 +3552,7 @@ class ThemeStudioService(NekoPluginBase):
 
     def _load_library_item(self, theme_id: Any) -> dict:
         if not isinstance(theme_id, str) or not RE_THEME_ID.match(theme_id.strip()):
-            raise SdkError("主题仓库条目 id 非法。")
+            raise SdkError(_msg("library.entry.invalidId"))
         clean_id = theme_id.strip()
         path = self._library_dir() / f"{clean_id}.json"
         if not path.is_file():
@@ -3544,13 +3563,13 @@ class ThemeStudioService(NekoPluginBase):
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError as exc:
-            raise SdkError(f"主题仓库里没有这个主题：{theme_id}") from exc
+            raise SdkError(_msg("library.entry.notFound", theme_id=theme_id)) from exc
         except OSError as exc:
-            raise SdkError(f"读取主题仓库条目失败：{exc}") from exc
+            raise SdkError(_msg("library.entry.readFailed", error=exc)) from exc
         except (ValueError, TypeError) as exc:
-            raise SdkError(f"主题仓库条目已损坏：{exc}") from exc
+            raise SdkError(_msg("library.entry.corrupted", error=exc)) from exc
         if not isinstance(raw, dict):
-            raise SdkError("主题仓库条目格式不正确。")
+            raise SdkError(_msg("library.entry.badFormat"))
         # The file name is the library's primary key (_library_items also reports id from path.stem). The "id" in the
         # record is content and can be corrupted by hand; once the two disagree, any code "locating by record id" operates
         # on a different theme (delete_theme("beta") once deleted alpha.json).
@@ -3580,9 +3599,7 @@ class ThemeStudioService(NekoPluginBase):
         with _WRITE_LOCK:
             directory = self._library_dir()
             if len(list(directory.glob("*.json"))) >= LIBRARY_MAX_ITEMS:
-                raise SdkError(
-                    f"主题仓库已满（上限 {LIBRARY_MAX_ITEMS} 个），请先删除一些再保存。"
-                )
+                raise SdkError(_msg("library.full", limit=LIBRARY_MAX_ITEMS))
             label = _clip_name(name, DEFAULT_THEME_NAME)
             slug = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-") or "theme"
             base = f"{slug[:32]}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
@@ -3672,10 +3689,12 @@ class ThemeStudioService(NekoPluginBase):
             return
         limit = ARCHIVE_MAX_BYTES
         raise SdkError(
-            f"{what}有 {size / 1048576:.1f} MB，超过恢复上限 "
-            f"{limit / 1048576:.0f} MB，导入时会被拒绝。"
-            "背景图会原样打进包里：先去「变量编辑 → 聊天背景图」去掉几张图再导出，"
-            "或者只导出配色（导出 JSON）。"
+            _msg(
+                "library.export.tooLarge",
+                what=what,
+                size=f"{size / 1048576:.1f}",
+                limit=f"{limit / 1048576:.0f}",
+            )
         )
 
     def _build_archive(
@@ -3734,7 +3753,7 @@ class ThemeStudioService(NekoPluginBase):
                 except OSError as exc:  # pragma: no cover
                     self._log("warning", f"打包图片失败（已跳过）{filename}：{exc}")
         payload = buffer.getvalue()
-        self._guard_export_size(payload, what="这个分享包")
+        self._guard_export_size(payload, what=_msg("library.export.whatShareBundle"))
         stamp = datetime.now().strftime("%Y%m%d%H%M%S")
         return f"{_safe_archive_name(name)}-{stamp}.zip", payload
 
@@ -3773,12 +3792,20 @@ class ThemeStudioService(NekoPluginBase):
         files = [info for info in archive.infolist() if not info.is_dir()]
         if len(files) > LIBRARY_ARCHIVE_MAX_ENTRIES:
             raise SdkError(
-                f"备份包条目过多（{len(files)} 个，上限 {LIBRARY_ARCHIVE_MAX_ENTRIES} 个）。"
+                _msg(
+                    "library.backup.tooManyEntries",
+                    count=len(files),
+                    limit=LIBRARY_ARCHIVE_MAX_ENTRIES,
+                )
             )
         total = sum(info.file_size for info in files)
         if total > ARCHIVE_MAX_UNCOMPRESSED:
             raise SdkError(
-                f"备份包解压后过大（{total} 字节，上限 {ARCHIVE_MAX_UNCOMPRESSED} 字节）。"
+                _msg(
+                    "library.backup.uncompressedTooLarge",
+                    total=total,
+                    limit=ARCHIVE_MAX_UNCOMPRESSED,
+                )
             )
         return files
 
@@ -3791,7 +3818,7 @@ class ThemeStudioService(NekoPluginBase):
         """
         records = self._library_records_for_backup()
         if not records:
-            raise SdkError("主题仓库里还没有自己的主题，没有什么可备份的。")
+            raise SdkError(_msg("library.backup.empty"))
         manifest = {
             "format": LIBRARY_ARCHIVE_FORMAT,
             "schema": SCHEMA_VERSION,
@@ -3864,7 +3891,7 @@ class ThemeStudioService(NekoPluginBase):
             self._library_archive_files(archive)
             count = len(manifest["themes"])
         payload = buffer.getvalue()
-        self._guard_export_size(payload, what="这份主题库备份")
+        self._guard_export_size(payload, what=_msg("library.export.whatLibraryBackup"))
         stamp = datetime.now().strftime("%Y%m%d%H%M%S")
         return f"neko-theme-studio-library-{stamp}.zip", payload, count
 
@@ -3877,12 +3904,12 @@ class ThemeStudioService(NekoPluginBase):
         """
         if len(data) > ARCHIVE_MAX_BYTES:
             raise SdkError(
-                f"备份包过大（{len(data)} 字节，上限 {ARCHIVE_MAX_BYTES} 字节）。"
+                _msg("library.backup.tooLarge", size=len(data), limit=ARCHIVE_MAX_BYTES)
             )
         try:
             archive = zipfile.ZipFile(io.BytesIO(data))
         except zipfile.BadZipFile as exc:
-            raise SdkError("备份包不是有效的 zip 文件。") from exc
+            raise SdkError(_msg("library.backup.notZip")) from exc
         items = []
         images = {}
         with archive:
@@ -3900,14 +3927,16 @@ class ThemeStudioService(NekoPluginBase):
                 try:
                     raw = json.loads(archive.read(info).decode("utf-8-sig"))
                 except (ValueError, UnicodeDecodeError) as exc:
-                    items.append({"error": f"{name} 不是合法 JSON：{exc}"})
+                    items.append(
+                        {"error": _msg("library.backup.entryInvalidJson", name=name, error=exc)}
+                    )
                     continue
                 if not isinstance(raw, dict):
-                    items.append({"error": f"{name} 的内容不是主题对象"})
+                    items.append({"error": _msg("library.backup.entryNotObject", name=name)})
                     continue
                 items.append({"theme": raw, "path": name})
         if not items:
-            raise SdkError("备份包里没有任何主题（期望 themes/*.json）。")
+            raise SdkError(_msg("library.backup.noThemes"))
         return items, images
 
     def _rewrite_archive_refs(
@@ -3997,7 +4026,7 @@ class ThemeStudioService(NekoPluginBase):
         """Parse a share bundle (zip or bare JSON); returns ``(palette, source_format)``."""
         if len(data) > ARCHIVE_MAX_BYTES:
             raise SdkError(
-                f"分享包过大（{len(data)} 字节，上限 {ARCHIVE_MAX_BYTES} 字节）。"
+                _msg("library.archive.tooLarge", size=len(data), limit=ARCHIVE_MAX_BYTES)
             )
         if data[:4] != b"PK\x03\x04":
             # Bare JSON (someone sends theme.json directly / a hand-trimmed {"vars":{...}}):
@@ -4008,29 +4037,36 @@ class ThemeStudioService(NekoPluginBase):
         try:
             archive = zipfile.ZipFile(io.BytesIO(data))
         except zipfile.BadZipFile as exc:
-            raise SdkError("分享包不是有效的 zip 压缩包。") from exc
+            raise SdkError(_msg("library.archive.notZip")) from exc
         with archive:
             infos = archive.infolist()
             if len(infos) > ARCHIVE_MAX_ENTRIES:
                 raise SdkError(
-                    f"压缩包条目过多（{len(infos)} 个，上限 {ARCHIVE_MAX_ENTRIES}）。"
+                    _msg(
+                        "library.archive.tooManyEntries",
+                        count=len(infos),
+                        limit=ARCHIVE_MAX_ENTRIES,
+                    )
                 )
             total = sum(info.file_size for info in infos)
             if total > ARCHIVE_MAX_UNCOMPRESSED:
                 raise SdkError(
-                    "压缩包解压后过大"
-                    f"（{total} 字节，上限 {ARCHIVE_MAX_UNCOMPRESSED}）。"
+                    _msg(
+                        "library.archive.uncompressedTooLarge",
+                        total=total,
+                        limit=ARCHIVE_MAX_UNCOMPRESSED,
+                    )
                 )
             entries = {}
             for info in infos:
                 name = info.filename.replace("\\", "/")
                 if name.startswith("/") or ".." in name.split("/") or ":" in name:
-                    raise SdkError(f"压缩包里含有非法路径：{name}")
+                    raise SdkError(_msg("library.archive.illegalPath", name=name))
                 # Duplicate entries (names colliding after case/slash normalization) let the later one silently override
                 # the earlier, which an attacker could use to swap "the validated theme.json" for "another same-named entry".
                 # Reject outright; legitimate share bundles never contain duplicates.
                 if name in entries:
-                    raise SdkError(f"压缩包里有重复文件名：{name}")
+                    raise SdkError(_msg("library.archive.duplicateName", name=name))
                 entries[name] = info.filename
 
             json_names = [n for n in entries if n.lower().endswith(".json")]
@@ -4041,17 +4077,15 @@ class ThemeStudioService(NekoPluginBase):
                 )
             )
             if not json_names:
-                raise SdkError(
-                    "压缩包里没有 theme.json（主题分享包应包含一个 JSON 调色板）。"
-                )
+                raise SdkError(_msg("library.archive.noThemeJson"))
             try:
                 parsed = json.loads(
                     archive.read(entries[json_names[0]]).decode("utf-8", "replace")
                 )
             except (ValueError, TypeError) as exc:
-                raise SdkError(f"压缩包里的 JSON 无法解析：{exc}") from exc
+                raise SdkError(_msg("library.archive.jsonParseFailed", error=exc)) from exc
             if not isinstance(parsed, dict):
-                raise SdkError("压缩包里的 JSON 必须是一个对象。")
+                raise SdkError(_msg("library.archive.jsonNotObject"))
 
             images = {}
             for name in entries:
@@ -4075,7 +4109,7 @@ class ThemeStudioService(NekoPluginBase):
         try:
             items = self._preset_items() + self._library_items()
         except Exception as exc:  # noqa: BLE001
-            return Err(SdkError(f"列出主题仓库失败：{exc}"))
+            return Err(SdkError(_msg("library.list.failed", error=exc)))
         return Ok({"count": len(items), "themes": items})
 
     @plugin_entry(
@@ -4091,7 +4125,7 @@ class ThemeStudioService(NekoPluginBase):
         try:
             schedule = self._read_schedule()
         except Exception as exc:  # noqa: BLE001
-            return Err(SdkError(f"读取自动换主题排程失败：{exc}"))
+            return Err(SdkError(_msg("library.schedule.readFailed", error=exc)))
         stamp = datetime.now()
         day_kind = _day_kind_for(stamp.weekday())
         zone = _zone_for_hour(stamp.hour)
@@ -4166,12 +4200,14 @@ class ThemeStudioService(NekoPluginBase):
             raw["weekend_zones"] = keep if isinstance(keep, dict) else {}
         schedule, errors = self._normalize_schedule(raw, strict=True)
         if errors:
-            return Err(SdkError("排程没有保存：" + "；".join(errors)))
+            return Err(
+                SdkError(_msg("library.schedule.notSaved", errors="；".join(errors)))
+            )
         try:
             with _WRITE_LOCK:
                 self._save_schedule_unlocked(schedule)
         except Exception as exc:  # noqa: BLE001
-            return Err(SdkError(f"保存自动换主题排程失败：{exc}"))
+            return Err(SdkError(_msg("library.schedule.saveFailed", error=exc)))
         self._log(
             "info",
             "自动换主题排程已保存：enabled="
@@ -4247,8 +4283,7 @@ class ThemeStudioService(NekoPluginBase):
             if not _clean_vars and not _clean_dark:
                 return Err(
                     SdkError(
-                        "当前主题没有任何可用的配色变量（可能刚恢复默认），"
-                        "先调几个颜色再保存到主题库。"
+                        _msg("library.save.noUsableVars")
                     )
                 )
             record = self._save_library_item(
@@ -4268,7 +4303,7 @@ class ThemeStudioService(NekoPluginBase):
         except SdkError as exc:
             return Err(exc)
         except Exception as exc:  # noqa: BLE001
-            return Err(SdkError(f"保存到主题仓库失败：{exc}"))
+            return Err(SdkError(_msg("library.save.failed", error=exc)))
         summary = self._theme_summary(
             record,
             light=len(record["vars"]),
@@ -4313,14 +4348,16 @@ class ThemeStudioService(NekoPluginBase):
             for gone in (gone_light, gone_dark):
                 for key in gone:
                     errors = list(errors) + [
-                        f"{key}: 引用的背景图已不存在，已回退原生"
+                        _msg("library.apply.missingBackground", key=key)
                     ]
             if not clean_vars and not clean_dark:
                 # Older versions allowed saving an empty palette, so such entries may already sit in the library. Applying
                 # one would wipe the user's current colors entirely (the panel just shows "applied"); block it before writing.
                 raise SdkError(
-                    f"主题条目 {record.get('name') or theme_id} 没有任何可用的配色变量"
-                    "（多为旧版本保存的空条目），已拒绝应用——否则会把当前配色清空。"
+                    _msg(
+                        "library.apply.emptyEntry",
+                        name=record.get("name") or theme_id,
+                    )
                 )
             palette["vars"] = clean_vars
             palette["dark_vars"] = clean_dark
@@ -4428,7 +4465,7 @@ class ThemeStudioService(NekoPluginBase):
         except SdkError as exc:
             return Err(exc)
         except Exception as exc:  # noqa: BLE001
-            return Err(SdkError(f"切换主题失败：{exc}"))
+            return Err(SdkError(_msg("library.apply.failed", error=exc)))
         rejected = outcome["rejected"]
         if rejected:
             self._log("warning", f"apply_saved_theme 拒绝 {len(rejected)} 条：{rejected[:3]}")
@@ -4472,23 +4509,22 @@ class ThemeStudioService(NekoPluginBase):
             # it too); the record's "id" field is just file content and, if hand-edited, points at another theme.
             requested = str(theme_id or "").strip()
             if not RE_THEME_ID.match(requested):
-                raise SdkError(f"仓库条目 id 非法，已拒绝删除：{requested!r}")
-            if self._preset_path(requested).is_file():
                 raise SdkError(
-                    "内置主题不能删除（它随插件一起发布）。"
-                    "想留下改动过的版本：先点「应用」，再「保存到仓库」另存一份。"
+                    _msg("library.delete.invalidId", theme_id=repr(requested))
                 )
+            if self._preset_path(requested).is_file():
+                raise SdkError(_msg("library.delete.builtin"))
             directory = self._library_dir().resolve()
             path = (directory / f"{requested}.json").resolve()
             if path.parent != directory:
-                raise SdkError("仓库条目路径不在主题仓库目录内，已拒绝删除。")
+                raise SdkError(_msg("library.delete.outsideDir"))
             if not path.is_file():
-                raise SdkError(f"主题仓库里没有这个主题：{requested}")
+                raise SdkError(_msg("library.entry.notFound", theme_id=requested))
             path.unlink(missing_ok=True)
         except SdkError as exc:
             return Err(exc)
         except Exception as exc:  # noqa: BLE001
-            return Err(SdkError(f"删除仓库主题失败：{exc}"))
+            return Err(SdkError(_msg("library.delete.failed", error=exc)))
         return Ok({"deleted": True, "theme_id": str(theme_id)})
 
     @plugin_entry(
@@ -4534,31 +4570,30 @@ class ThemeStudioService(NekoPluginBase):
         """
         theme_id = theme_id or id
         if name is None and note is None and tags is None:
-            return Err(SdkError("没有要修改的内容（name / note / tags 都没给）。"))
+            return Err(SdkError(_msg("library.updateMeta.nothingToChange")))
         try:
             record = self._load_library_item(theme_id)
             # Same as the delete entry: the file name is the primary key, the record's "id" is just content.
             record_id = str(theme_id or "").strip()
             if not RE_THEME_ID.match(record_id):
-                raise SdkError(f"仓库条目 id 非法，已拒绝修改：{record_id!r}")
-            if self._preset_path(record_id).is_file():
                 raise SdkError(
-                    "内置主题不能改名/改备注（它随插件一起发布）。"
-                    "想改就用「应用」+「保存到仓库」另存一份，再改那一份。"
+                    _msg("library.updateMeta.invalidId", theme_id=repr(record_id))
                 )
+            if self._preset_path(record_id).is_file():
+                raise SdkError(_msg("library.updateMeta.builtin"))
             directory = self._library_dir().resolve()
             path = (directory / f"{record_id}.json").resolve()
             if path.parent != directory:
-                raise SdkError("仓库条目路径不在主题仓库目录内，已拒绝修改。")
+                raise SdkError(_msg("library.updateMeta.outsideDir"))
             if not path.is_file():
-                raise SdkError(f"主题仓库里没有这个主题：{record_id}")
+                raise SdkError(_msg("library.entry.notFound", theme_id=record_id))
 
             payload = dict(record)
             changed = []
 
             if name is not None:
                 if not isinstance(name, str) or not name.strip():
-                    raise SdkError("主题名称不能为空。")
+                    raise SdkError(_msg("library.updateMeta.emptyName"))
                 label = _clip_name(name, DEFAULT_THEME_NAME)
                 if label != str(payload.get("name") or ""):
                     changed.append("name")
@@ -4612,7 +4647,7 @@ class ThemeStudioService(NekoPluginBase):
         except SdkError as exc:
             return Err(exc)
         except Exception as exc:  # noqa: BLE001
-            return Err(SdkError(f"修改主题信息失败：{exc}"))
+            return Err(SdkError(_msg("library.updateMeta.failed", error=exc)))
 
         self._log(
             "info",
@@ -4647,17 +4682,17 @@ class ThemeStudioService(NekoPluginBase):
     )
     async def import_theme_archive(self, filename: str = "", data: str = "", **_):
         if not isinstance(data, str) or not data.strip():
-            return Err(SdkError("分享包内容为空。"))
+            return Err(SdkError(_msg("library.import.emptyData")))
         raw = data.strip()
         if len(raw) > ARCHIVE_MAX_BYTES * 2:
-            return Err(SdkError("分享包内容过大（base64 超过上限）。"))
+            return Err(SdkError(_msg("library.import.dataTooLarge")))
         if raw.startswith("data:"):
             # Tolerate a data URL prefix (the panel normally strips it, manual calls may include it).
             _, _, raw = raw.partition(",")
         try:
             payload = base64.b64decode(raw, validate=True)
         except Exception:  # noqa: BLE001 - binascii.Error is a subclass of ValueError
-            return Err(SdkError("分享包内容不是合法的 base64。"))
+            return Err(SdkError(_msg("library.import.invalidBase64")))
         label = f"来自 {filename or '分享包'}"
         try:
             theme, source_format = self._parse_archive(payload, label=label)
@@ -4672,12 +4707,10 @@ class ThemeStudioService(NekoPluginBase):
             for gone in (gone_light, gone_dark):
                 for key in gone:
                     errors = list(errors) + [
-                        f"{key}: 引用的背景图在本机不存在，已回退原生"
+                        _msg("library.import.missingBackground", key=key)
                     ]
             if not clean_vars and not clean_dark:
-                raise SdkError(
-                    "分享包里没有可用的调色板变量（可能不是主题工坊的分享包）。"
-                )
+                raise SdkError(_msg("library.import.noUsableVars"))
             record = self._save_library_item(
                 name=theme.get("name"),
                 vars_map=clean_vars,
@@ -4689,7 +4722,7 @@ class ThemeStudioService(NekoPluginBase):
         except SdkError as exc:
             return Err(exc)
         except Exception as exc:  # noqa: BLE001
-            return Err(SdkError(f"导入主题分享包失败：{exc}"))
+            return Err(SdkError(_msg("library.import.failed", error=exc)))
         if errors:
             self._log(
                 "warning", f"import_theme_archive 拒绝 {len(errors)} 条：{errors[:3]}"
@@ -4758,7 +4791,7 @@ class ThemeStudioService(NekoPluginBase):
         except SdkError as exc:
             return Err(exc)
         except Exception as exc:  # noqa: BLE001
-            return Err(SdkError(f"导出主题分享包失败：{exc}"))
+            return Err(SdkError(_msg("library.export.failed", error=exc)))
         images = len(self._image_refs(clean_vars)) + len(self._image_refs(clean_dark))
         return Ok(
             {
@@ -4836,31 +4869,40 @@ class ThemeStudioService(NekoPluginBase):
     )
     async def import_library(self, filename: str = "", data: str = "", **_):
         if not isinstance(data, str) or not data.strip():
-            return Err(SdkError("备份包内容为空。"))
+            return Err(SdkError(_msg("library.restore.emptyData")))
         raw = data.strip()
         if raw.startswith("data:"):
             _, _, raw = raw.partition(",")
         if len(raw) > ARCHIVE_MAX_BYTES * 2:
-            return Err(SdkError("备份包过大（base64 超过上限）。"))
+            return Err(SdkError(_msg("library.restore.dataTooLarge")))
         try:
             payload = base64.b64decode(raw, validate=True)
         except Exception:  # noqa: BLE001
-            return Err(SdkError("备份包内容不是合法的 base64。"))
+            return Err(SdkError(_msg("library.restore.invalidBase64")))
         try:
             items, images = self._parse_library_archive(payload)
         except SdkError as exc:
             return Err(exc)
         except Exception as exc:  # noqa: BLE001
-            return Err(SdkError(f"解析备份包失败：{exc}"))
+            return Err(SdkError(_msg("library.restore.parseFailed", error=exc)))
 
         imported = []
         skipped = []
         for item in items:
             if "error" in item:
-                skipped.append({"name": item.get("path") or "未知条目", "reason": item["error"]})
+                skipped.append(
+                    {
+                        "name": item.get("path") or _msg("library.restore.unknownEntry"),
+                        "reason": item["error"],
+                    }
+                )
                 continue
             theme = item["theme"]
-            label = _clip_name(theme.get("name"), DEFAULT_THEME_NAME) or item.get("path") or "主题"
+            label = (
+                _clip_name(theme.get("name"), DEFAULT_THEME_NAME)
+                or item.get("path")
+                or _msg("library.restore.fallbackName")
+            )
             try:
                 local = self._rewrite_archive_refs(
                     theme, images, label=f"主题库备份 · {label}"
@@ -4869,7 +4911,7 @@ class ThemeStudioService(NekoPluginBase):
                     local.get("vars"), local.get("dark_vars")
                 )
                 if not clean_vars and not clean_dark:
-                    raise SdkError("这套主题里没有可用的调色板变量。")
+                    raise SdkError(_msg("library.restore.noUsableVars"))
                 record = self._save_library_item(
                     name=label,
                     vars_map=clean_vars,
@@ -4882,7 +4924,9 @@ class ThemeStudioService(NekoPluginBase):
                 skipped.append({"name": label, "reason": str(exc)})
                 continue
             except Exception as exc:  # noqa: BLE001
-                skipped.append({"name": label, "reason": f"导入失败：{exc}"})
+                skipped.append(
+                    {"name": label, "reason": _msg("library.restore.importFailed", error=exc)}
+                )
                 continue
             imported.append(
                 self._theme_summary(
@@ -4897,8 +4941,12 @@ class ThemeStudioService(NekoPluginBase):
             )
 
         if not imported:
-            reason = skipped[0]["reason"] if skipped else "包里没有可导入的主题"
-            return Err(SdkError(f"备份包里的主题都没能导入：{reason}"))
+            reason = (
+                skipped[0]["reason"]
+                if skipped
+                else _msg("library.restore.nothingInBundle")
+            )
+            return Err(SdkError(_msg("library.restore.allFailed", reason=reason)))
         self._log(
             "info",
             f"已恢复主题库备份 {filename or '（无文件名）'}："
@@ -4950,13 +4998,17 @@ class ThemeStudioService(NekoPluginBase):
             if _raw is not None and not isinstance(_raw, str):
                 return Err(
                     SdkError(
-                        f"导出参数 {_label} 必须是字符串，收到 {type(_raw).__name__}。"
+                        _msg(
+                            "library.exportFile.paramNotString",
+                            param=_label,
+                            type=type(_raw).__name__,
+                        )
                     )
                 )
         kind = (kind or "zip").strip().lower()
         if kind not in ("zip", "json", "library"):
             return Err(
-                SdkError(f"不支持的导出格式：{kind}（只能是 zip / json / library）。")
+                SdkError(_msg("library.exportFile.unsupportedKind", kind=kind))
             )
         # Now built in, the panel is an ordinary top-level page where browser downloads work: the server only produces
         # bytes and the panel triggers the download. Export files are no longer written to the desktop / Downloads /
@@ -4971,7 +5023,7 @@ class ThemeStudioService(NekoPluginBase):
             except SdkError as exc:
                 return Err(exc)
             except Exception as exc:  # noqa: BLE001
-                return Err(SdkError(f"备份主题库失败：{exc}"))
+                return Err(SdkError(_msg("library.backup.failed", error=exc)))
             filename = self._download_filename(filename)
             self._log("info", f"已打包主题库备份 {filename}（{count} 套 / {len(payload)} 字节）")
             return Ok(
@@ -4992,7 +5044,7 @@ class ThemeStudioService(NekoPluginBase):
         except SdkError as exc:
             return Err(exc)
         except Exception as exc:  # noqa: BLE001
-            return Err(SdkError(f"读取主题失败：{exc}"))
+            return Err(SdkError(_msg("library.exportFile.readFailed", error=exc)))
         if name and name.strip():
             theme_name = _clip_name(name.strip(), theme_name)
 
@@ -5019,7 +5071,7 @@ class ThemeStudioService(NekoPluginBase):
         except SdkError as exc:
             return Err(exc)
         except Exception as exc:  # noqa: BLE001
-            return Err(SdkError(f"打包主题失败：{exc}"))
+            return Err(SdkError(_msg("library.exportFile.packFailed", error=exc)))
 
         filename = self._download_filename(filename)
         self._log("info", f"已打包导出文件 {filename}（{len(payload)} 字节）")
@@ -5052,16 +5104,16 @@ class ThemeStudioService(NekoPluginBase):
     )
     async def import_background(self, filename: str = "", data: str = "", **_):
         if not isinstance(data, str) or not data.strip():
-            return Err(SdkError("图片内容为空。"))
+            return Err(SdkError(_msg("library.background.emptyData")))
         raw = data.strip()
         if raw.startswith("data:"):
             _, _, raw = raw.partition(",")
         if len(raw) > IMAGE_MAX_BYTES * 2:
-            return Err(SdkError("图片过大（base64 超过上限）。"))
+            return Err(SdkError(_msg("library.background.dataTooLarge")))
         try:
             payload = base64.b64decode(raw, validate=True)
         except Exception:  # noqa: BLE001
-            return Err(SdkError("图片内容不是合法的 base64。"))
+            return Err(SdkError(_msg("library.background.invalidBase64")))
         try:
             saved = self._save_background_bytes(
                 payload, label=f"来自 {filename or '面板'}"
@@ -5069,7 +5121,7 @@ class ThemeStudioService(NekoPluginBase):
         except SdkError as exc:
             return Err(exc)
         except Exception as exc:  # noqa: BLE001
-            return Err(SdkError(f"保存背景图失败：{exc}"))
+            return Err(SdkError(_msg("library.background.saveFailed", error=exc)))
         return Ok(
             {
                 "url": self._background_url(saved),

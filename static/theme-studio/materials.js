@@ -263,15 +263,23 @@
     var seq = ++PREVIEW_SEQ;
     var payload = clone(CURRENT);
     var mode = MODE;
+    // A response compiled for the other mode (light/dark switched while it was in flight) is
+    // stale even if no newer request was sent yet: never paint it, and make sure the current
+    // mode gets compiled.
+    function stale() {
+      if (seq !== PREVIEW_SEQ) return true;
+      if (mode !== MODE) { PREVIEW_PENDING = true; return true; }
+      return false;
+    }
     callEntry('preview_materials', { materials: payload, mode: mode }).then(function (result) {
       PREVIEW_INFLIGHT = false;
-      if (seq !== PREVIEW_SEQ) { drainPreview(); return; }
+      if (stale()) { drainPreview(); return; }
       PREVIEW_VARS = result && result.vars ? result.vars : {};
       paintPreview(result);
       drainPreview();
     }).catch(function (error) {
       PREVIEW_INFLIGHT = false;
-      if (seq !== PREVIEW_SEQ) { drainPreview(); return; }
+      if (stale()) { drainPreview(); return; }
       var meta = byId('mt-pv-meta');
       if (meta) {
         meta.textContent = T('materials.preview.compileFailed', '预览编译失败：{{error}}', {
@@ -535,12 +543,14 @@
     var min = num(param.min, 0);
     var max = num(param.max, 1);
     var step = stepOf(param);
+    // The row <label> is not bound to these inputs (two controls share it), so give each an
+    // accessible name of its own from the param label.
     var range = el('input', {
-      type: 'range', class: 'mt-range',
+      type: 'range', class: 'mt-range', 'aria-label': param.label,
       min: min, max: max, step: step, value: fmtNum(value)
     });
     var number = el('input', {
-      type: 'number', class: 'mt-num',
+      type: 'number', class: 'mt-num', 'aria-label': param.label,
       min: min, max: max, step: step, value: fmtNum(value)
     });
     range.addEventListener('input', function () {
@@ -864,7 +874,8 @@
     var step = stepOf(param);
     var value = entry[param.key];
     if (value === undefined || value === null) value = lightValue(param.section, param.key);
-    var range = el('input', { type: 'range', class: 'mt-range', min: min, max: max, step: step, value: fmtNum(value) });
+    var range = el('input', { type: 'range', class: 'mt-range', 'aria-label': param.label,
+      min: min, max: max, step: step, value: fmtNum(value) });
     var out = el('span', { class: 'mt-comp-num', text: fmtNum(value) });
     range.addEventListener('input', function () {
       var next = num(range.value, num(value, min));
@@ -1027,13 +1038,24 @@
     if (!paramPair(CURRENT.quality, BASELINE.quality)) total++;
     if (!!CURRENT.lock !== !!BASELINE.lock) total++;
     if (!same(CURRENT.components || {}, BASELINE.components || {})) total++;
-    var darkLeft = darkOverrideCount();
-    var darkRight = 0;
+    // Dark overrides: count the keys that actually differ (added, removed or changed), not
+    // the difference in override counts -- editing an existing override changes no count.
+    var curDark = CURRENT.dark || {};
     var baseDark = BASELINE.dark || {};
-    Object.keys(baseDark).forEach(function (section) {
-      if (baseDark[section] && typeof baseDark[section] === 'object') darkRight += Object.keys(baseDark[section]).length;
+    var darkSections = {};
+    Object.keys(curDark).forEach(function (section) { darkSections[section] = 1; });
+    Object.keys(baseDark).forEach(function (section) { darkSections[section] = 1; });
+    Object.keys(darkSections).forEach(function (section) {
+      var left = (curDark[section] && typeof curDark[section] === 'object') ? curDark[section] : {};
+      var right = (baseDark[section] && typeof baseDark[section] === 'object') ? baseDark[section] : {};
+      var keys = {};
+      Object.keys(left).forEach(function (key) { keys[key] = 1; });
+      Object.keys(right).forEach(function (key) { keys[key] = 1; });
+      Object.keys(keys).forEach(function (key) {
+        if (HAS.call(left, key) !== HAS.call(right, key) ||
+          !equalForKind(left[key], right[key], PARAMS[key])) total++;
+      });
     });
-    total += Math.abs(darkLeft - darkRight);
     return total;
   }
 
@@ -1171,8 +1193,10 @@
   function ensureRef(mode) {
     var box = byId('mt-pv-ref');
     if (!box) return;
-    if (REF_CACHE[mode]) { paintRef(REF_CACHE[mode]); return; }
+    // Bump the sequence even on a cache hit: a request still in flight for the other mode
+    // must not land afterwards and repaint the reference with that mode's values.
     var seq = ++REF_SEQ;
+    if (REF_CACHE[mode]) { paintRef(REF_CACHE[mode]); return; }
     callEntry('preview_materials', { materials: deepDefaults(), mode: mode }).then(function (result) {
       if (seq !== REF_SEQ) return;
       REF_CACHE[mode] = (result && result.vars) || {};
@@ -1326,6 +1350,8 @@
     modeSel.addEventListener('change', function () {
       MODE = modeSel.value === 'dark' ? 'dark' : 'light';
       renderPane();
+      // The "clear dark overrides" button is only shown in dark mode: refresh it right away.
+      renderHeadState();
       buildPreviewTitle();
       schedulePreview();
     });

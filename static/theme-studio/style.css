@@ -2211,7 +2211,7 @@ body.is-drop-target::after {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
-  color: var(--text-main, #1d2530);
+  color: var(--text, #1d2530); /* --text is defined for both modes; --text-main never was */
   white-space: nowrap;
   text-overflow: ellipsis;
 }

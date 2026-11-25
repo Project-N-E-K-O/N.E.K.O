@@ -1037,21 +1037,54 @@ function fetchWithTimeout(url, options, timeoutMs) {
   var controller = new AbortController();
   var timer = setTimeout(function () { controller.abort(); }, timeoutMs);
   opts.signal = controller.signal;
-  return fetch(url, opts).catch(function (error) {
+  function translate(error) {
     if (error && error.name === 'AbortError') {
       var timeoutError = new Error(tsT('core.request.timeout', '请求超时（{{seconds}}s）', { seconds: Math.round(timeoutMs / 1000) }));
       timeoutError.timeout = true;
-      throw timeoutError;
+      return timeoutError;
     }
-    throw error;
-  }).finally(function () { clearTimeout(timer); });
+    return error;
+  }
+  function clear() { clearTimeout(timer); }
+  return fetch(url, opts).then(function (response) {
+    // The deadline also covers reading the body: a stalled body read would otherwise hang
+    // the caller (and e.g. keep the external-sync poll "in flight" forever). Aborting the
+    // controller rejects a pending body read, so the timer stays armed until it settles.
+    // A body nobody reads just gets aborted when the timer fires, which is harmless.
+    ['json', 'text', 'blob', 'arrayBuffer'].forEach(function (method) {
+      var original = response[method];
+      if (typeof original !== 'function') return;
+      response[method] = function () {
+        return original.apply(response, arguments)
+          .catch(function (error) { throw translate(error); })
+          .finally(clear);
+      };
+    });
+    return response;
+  }, function (error) {
+    clear();
+    throw translate(error);
+  });
 }
 
 /** POST a JSON body and return the raw fetch Response (business checks are left to the caller). */
+/** UI language of the panel, sent so backend messages come back in the same language. */
+function panelLocale() {
+  try {
+    var lang = (window.i18n && window.i18n.language) || document.documentElement.lang || '';
+    return String(lang || '');
+  } catch (error) {
+    return '';
+  }
+}
+
 function postJson(url, body) {
+  var headers = { 'Content-Type': 'application/json' };
+  var locale = panelLocale();
+  if (locale) headers['X-Neko-Locale'] = locale;
   return fetchWithTimeout(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: headers,
     body: body
   }, POST_TIMEOUT_MS);
 }
@@ -1516,6 +1549,9 @@ function renderAudit(auto) {
         li.setAttribute('tabindex', '0');
         li.addEventListener('click', function () { jumpToAuditRow(r.key, r.mode); });
         li.addEventListener('keydown', function (event) {
+          // Keys pressed on the nested "auto fix" button bubble up here: leave them to the
+          // button, or preventDefault would cancel its click and jump to the row instead.
+          if (event.target !== li) return;
           if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault();
             jumpToAuditRow(r.key, r.mode);
@@ -1566,7 +1602,7 @@ function renderAudit(auto) {
  * Coalescing: consecutive edits to the same row within 900ms push only one entry —
  * otherwise typing ten characters means ten undo steps and Ctrl+Z feels stuck.
  */
-var undoState = { past: [], future: [], limit: 50, lastKey: '', lastAt: 0, applying: false };
+var undoState = { past: [], future: [], limit: 50, lastKey: '', lastAt: 0, applying: false, grouping: false };
 
 /**
  * Drop the whole undo history, including the coalescing marker: otherwise an edit
@@ -1599,7 +1635,7 @@ function undoSnapshot() {
 }
 
 function undoPush(key, force) {
-  if (undoState.applying) return;
+  if (undoState.applying || undoState.grouping) return;
   var now = (typeof Date.now === 'function') ? Date.now() : new Date().getTime();
   if (!force && key && undoState.lastKey === key && now - undoState.lastAt < 900) {
     undoState.lastAt = now;
@@ -1611,6 +1647,21 @@ function undoPush(key, force) {
   if (undoState.past.length > undoState.limit) undoState.past.shift();
   undoState.future = [];
   updateUndoButtons();
+}
+
+/**
+ * Run a multi-row action as ONE undo step: push a single snapshot up front, then mute the
+ * per-row undoPush calls made by markEdited / markCleared inside fn (each has a different
+ * key, so coalescing would not fold them and one click would need several Ctrl+Z).
+ */
+function undoGroup(fn) {
+  undoPush('', true);
+  undoState.grouping = true;
+  try {
+    fn();
+  } finally {
+    undoState.grouping = false;
+  }
 }
 
 function undoApply(snapshot) {
@@ -1691,7 +1742,7 @@ function markEdited(key, value) {
   // Remember the last edited value that passed validation: invalid input on a non-color
   // row rolls back to it; otherwise Apply would still submit the previous valid value and
   // report success (the user would think the new input took effect).
-  rowValidCache[key] = value;
+  rowValidCache()[key] = value;
   delete clearedMap()[key];
   // Changing back to the server's value = unchanged: otherwise the button would still say
   // "changed" after retyping it, and Apply would write the same value again (version +1,
@@ -1706,7 +1757,7 @@ function markEdited(key, value) {
 function markCleared(key) {
   undoPush(key);
   delete editedMap()[key];
-  delete rowValidCache[key];
+  delete rowValidCache()[key];
   markRowInvalid(key, false);
   clearedMap()[key] = true;
 }
@@ -1723,7 +1774,7 @@ function clearRow(key) {
   if (!hasServer) {
     delete editedMap()[key];
     delete clearedMap()[key];
-    delete rowValidCache[key];
+    delete rowValidCache()[key];
     markRowInvalid(key, false);
     return false;
   }
@@ -1738,12 +1789,18 @@ function clearRow(key) {
  * 2) rowValidCache: each row's last edited value that passed validation; on invalid input
  *    edited is rolled back to it (or the key is deleted = back to the server value), so
  *    the panel state matches what will be submitted.
- * 3) lastRgbByKey: fully transparent rows remember their last RGB so the alpha slider
+ * 3) rgbMemory(): fully transparent rows remember their last RGB so the alpha slider
  *    still works while transparent (the old version greyed it out and users could never
- *    drag back to semi-transparent). */
-var rowValidCache = {};
+ *    drag back to semi-transparent).
+ * 2) and 3) are kept per mode (light / dark are independent palettes, like state.edited):
+ * a single map would roll a dark row back to its light value, or let the dark alpha slider
+ * reuse the light RGB. Always go through rowValidCache() / rgbMemory(). */
+var rowValidCacheByMode = { light: {}, dark: {} };
 var invalidRows = {};
-var lastRgbByKey = {};
+var lastRgbByMode = { light: {}, dark: {} };
+
+function rowValidCache() { return rowValidCacheByMode[state.mode === 'dark' ? 'dark' : 'light']; }
+function rgbMemory() { return lastRgbByMode[state.mode === 'dark' ? 'dark' : 'light']; }
 
 function markRowInvalid(key, bad) {
   if (bad) invalidRows[key] = true;
@@ -1759,8 +1816,8 @@ function invalidInputHint(item) {
 
 /** On invalid input, roll back to the last valid edited value; if none, drop the local edit (back to the server value). */
 function rollbackRowToLastValid(key) {
-  if (Object.prototype.hasOwnProperty.call(rowValidCache, key)) {
-    markEdited(key, rowValidCache[key]);
+  if (Object.prototype.hasOwnProperty.call(rowValidCache(), key)) {
+    markEdited(key, rowValidCache()[key]);
   } else {
     delete editedMap()[key];
   }
@@ -1768,14 +1825,14 @@ function rollbackRowToLastValid(key) {
 
 function markAllRowsValid() { invalidRows = {}; }
 
-function clearRgbMemory() { lastRgbByKey = {}; }
+function clearRgbMemory() { lastRgbByMode = { light: {}, dark: {} }; }
 
 /** Remember a row's most recent RGB that carried color (the literal transparent has none, so it is skipped). */
 function rememberRgbValue(key, parsed, raw) {
   if (!parsed) return;
   if (String(raw || '').trim().toLowerCase() === 'transparent') return;
   if (parsed.a > 0 || parsed.r || parsed.g || parsed.b) {
-    lastRgbByKey[key] = { r: parsed.r, g: parsed.g, b: parsed.b };
+    rgbMemory()[key] = { r: parsed.r, g: parsed.g, b: parsed.b };
   }
 }
 
@@ -2144,6 +2201,12 @@ function buildRow(item, countNode) {
       autocomplete: 'off',
       placeholder: placeholderFor(item),
       'aria-label': tsT('editor.color.valueAria', '{{label}} 颜色值', { label: item.label }),
+      onfocus: function () {
+        // Alpha of the value before this typing session: plain 6/3-digit hex inherits it.
+        // Captured once, because mid-typing drafts change it (the 4-digit prefix "#ff88" of
+        // "#ff8800" is a 53% colour, which currentAlpha() would then hand to "#ff8800").
+        hexInput.dataset.baseAlpha = String(currentAlpha(item.key));
+      },
       oninput: function () {
         var raw = hexInput.value.trim();
         if (!raw) { clearRow(item.key); setInputInvalid(hexInput, item, false); syncRow(item.key, { keepHex: true, defer: true }); return; }
@@ -2164,18 +2227,16 @@ function buildRow(item, countNode) {
         // transparent, 4/8-digit hex and rgba(...) use the parsed alpha. The old code always used
         // currentAlpha(), which returns 1 for fully transparent → typing "transparent" got recorded
         // as rgba(0,0,0,1) solid black, and Ctrl+Enter (no blur needed) wrote it to disk.
-        var isPlainHex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(raw);
-        var alphaOut = isPlainHex ? currentAlpha(item.key) : parsed.a;
         rememberRgbValue(item.key, parsed, raw);
-        markEdited(item.key, toRgba(parsed.r, parsed.g, parsed.b, alphaOut));
+        markEdited(item.key, hexDraftValue(parsed, raw));
         // keepHex: keep the user's in-progress text, otherwise "#ff8" gets rewritten as a 3-digit
         // colour and later keystrokes build a value never typed (observed: #ff8800 → #ffff8880).
         syncRow(item.key, { keepHex: true, defer: true });
       },
       onchange: function () {
-        // Blur/Enter finalises: only then take alpha from 4/8-digit hex and normalise the display.
-        // While typing keep the existing alpha, otherwise the 4-char prefix "#ff88" of "#ff8800"
-        // would be read as a 53%-transparent colour, turning a solid colour semi-transparent.
+        // Blur/Enter finalises and normalises the display. The draft value itself follows the
+        // same rule as oninput (hexDraftValue), so finishing with blur or applying straight
+        // from the keyboard records the same colour.
         var raw = hexInput.value.trim();
         if (!raw) return;
         if (raw.toLowerCase() === 'currentcolor') {
@@ -2190,10 +2251,20 @@ function buildRow(item, countNode) {
         setInputInvalid(hexInput, item, false);
         markRowInvalid(item.key, false);
         rememberRgbValue(item.key, parsed, raw);
-        markEdited(item.key, toRgba(parsed.r, parsed.g, parsed.b, parsed.a));
+        // Same rule as oninput, so blur and a quick apply (Ctrl+Enter, no blur) agree.
+        markEdited(item.key, hexDraftValue(parsed, raw));
         syncRow(item.key);
       }
     });
+    // Draft value of a typed colour, shared by oninput and onchange. Only 6/3-digit hex has
+    // no alpha of its own, so it inherits the pre-typing alpha; everything else (transparent,
+    // 4/8-digit hex, rgba(...)) uses its parsed alpha.
+    var hexDraftValue = function (parsed, raw) {
+      var isPlainHex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(raw);
+      var base = parseFloat(hexInput.dataset.baseAlpha);
+      var alphaOut = isPlainHex ? (isNaN(base) ? currentAlpha(item.key) : base) : parsed.a;
+      return toRgba(parsed.r, parsed.g, parsed.b, alphaOut);
+    };
 
     alpha = el('input', {
       type: 'range', min: '0', max: '100', step: '1', value: '100',
@@ -2201,11 +2272,11 @@ function buildRow(item, countNode) {
       oninput: function () {
         var a = Number(alpha.value) / 100;
         var parsed = parseColor(displayValue(item.key));
-        // No colour guessing: a fully transparent row that remembers its last RGB (lastRgbByKey)
+        // No colour guessing: a fully transparent row that remembers its last RGB (rgbMemory())
         // reuses it so opacity can be dragged back up — the old code disabled the slider and forced
         // currentAlpha to 1, so the user could never get back to semi-transparent. Only when there
         // is no remembered RGB at all do we skip (otherwise it would be solid black).
-        var rgb = parsed && parsed.a > 0 ? parsed : lastRgbByKey[item.key];
+        var rgb = parsed && parsed.a > 0 ? parsed : rgbMemory()[item.key];
         // Dragging the slider fires input repeatedly: update the row now, batch the global refresh per frame.
         if (!rgb) { syncRow(item.key, { defer: true }); return; }
         rememberRgbValue(item.key, rgb, '');
@@ -2493,6 +2564,13 @@ function buildRow(item, countNode) {
  * So this only does "read file → call import_background → markEdited"; applyTheme still submits. */
 
 function pickBackgroundImage(item, file, input) {
+  // Take the busy lock before reading the file, not after: otherwise a second upload or an
+  // apply could start while FileReader is still running and interleave with this one.
+  if (state.busy) {
+    if (input) input.value = '';
+    return;
+  }
+  setBusy(true, tsT('editor.image.uploading', '正在上传背景图片…'));
   var reader = new FileReader();
   reader.onload = function () {
     var raw = String(reader.result || '');
@@ -2501,6 +2579,7 @@ function pickBackgroundImage(item, file, input) {
     if (!base64) {
       showToast(tsT('editor.image.readFailed', '读取图片失败'), 'error');
       if (input) input.value = '';
+      setBusy(false);
       return;
     }
     uploadBackgroundImage(item, file.name, base64, input);
@@ -2510,10 +2589,12 @@ function pickBackgroundImage(item, file, input) {
     showNotice('error', tsT('editor.image.readFailedDetail', '读取图片失败：{{reason}}', { reason: why }));
     showToast(tsT('editor.image.readFailed', '读取图片失败'), 'error');
     if (input) input.value = '';
+    setBusy(false);
   };
   reader.readAsDataURL(file);
 }
 
+/** Upload step; the caller (pickBackgroundImage) already holds the busy lock, released here. */
 async function uploadBackgroundImage(item, filename, base64, input) {
   setBusy(true, tsT('editor.image.uploading', '正在上传背景图片…'));
   try {
@@ -2541,7 +2622,7 @@ function currentAlpha(key) {
   // When the current value is fully transparent (transparent / rgba(...,0)), don't pass alpha=0 on
   // to the new colour: the user picks a solid colour but rgba(...,0) gets submitted, the panel shows
   // "changed" while the page stays fully transparent — it looks like nothing happened. Swatch picks
-  // default to solid. Note: the alpha slider doesn't use this; it uses the RGB in lastRgbByKey.
+  // default to solid. Note: the alpha slider doesn't use this; it uses the RGB in rgbMemory().
   if (!parsed || parsed.a === 0) return 1;
   return parsed.a;
 }
@@ -2647,10 +2728,10 @@ function syncRow(key, opts) {
       ref.alphaVal.textContent = '100%';
     }
     // transparent / inherit / empty have no current RGB: the slider is only usable with a remembered
-    // RGB (dragging reuses the last colour, see lastRgbByKey). With no memory it is disabled, otherwise
+    // RGB (dragging reuses the last colour, see rgbMemory()). With no memory it is disabled, otherwise
     // dragging yields semi-transparent black rgba(0,0,0,x) and it looks like "drag turns it black".
     if (ref.alpha) {
-      var hasRgbMemory = !!lastRgbByKey[key];
+      var hasRgbMemory = !!rgbMemory()[key];
       ref.alpha.disabled = !!state.busy || !parsed || (fullyTransparent && !hasRgbMemory);
       if (!parsed) {
         ref.alpha.title = tsT('editor.color.alphaNoColor', '当前值没有颜色成分（transparent / inherit / 空）；先填一个颜色再调不透明度');
@@ -2958,8 +3039,10 @@ async function showHoverPreview(item) {
 }
 
 function clearHoverPreview() {
-  if (!hoverPreview.palette) return;
+  // Always bump seq, even with nothing painted yet: leaving a card must invalidate a
+  // request still in flight, or it would paint after the pointer is gone.
   hoverPreview.seq += 1;
+  if (!hoverPreview.palette) return;
   hoverPreview.palette = null;
   hoverPreview.themeId = '';
   hoverPreview.name = '';
@@ -3059,12 +3142,25 @@ function renderPreview() {
     background: 'transparent',
     borderRadius: panelRadius || '0px'
   });
+  // Fit / position / repeat of the image (and its brightness scrim, which shares them on
+  // device). Only catalog option values are honoured: one bad entry would invalidate the
+  // whole comma-separated list below and drop every layer's sizing.
+  function pvSelectValue(key, fallback) {
+    var raw = pvValue(key, '');
+    var item = CATALOG_BY_KEY[key];
+    var ok = !!raw && !!item && (item.options || []).some(function (opt) { return String(opt.value) === raw; });
+    return ok ? raw : fallback;
+  }
+  var imgFit = pvSelectValue('--nts-chat-bg-fit', 'cover');
+  var imgPosition = pvSelectValue('--nts-chat-bg-position', 'center');
+  var imgRepeat = pvSelectValue('--nts-chat-bg-repeat', 'no-repeat');
+  var imgLayerCount = hasPanelImage ? (imgScrim ? 2 : 1) : 0;
   var pvBody = $('pv-body');
   if (pvBody) {
     pvBody.style.backgroundImage = hasPanelImage ? (imgScrim + panelImage) : '';
-    pvBody.style.backgroundSize = hasPanelImage ? 'cover' : '';
-    pvBody.style.backgroundPosition = hasPanelImage ? 'center center' : '';
-    pvBody.style.backgroundRepeat = hasPanelImage ? 'no-repeat' : '';
+    pvBody.style.backgroundSize = hasPanelImage ? imgFit : '';
+    pvBody.style.backgroundPosition = hasPanelImage ? imgPosition : '';
+    pvBody.style.backgroundRepeat = hasPanelImage ? imgRepeat : '';
     // Top fade (the "haze at the top of the image" users mention): same mask-gradient alpha multiply as the app.
     var topFadeRaw = pvValue('--nts-chat-top-fade', '');
     if (topFadeRaw === '') {
@@ -3164,9 +3260,24 @@ function renderPreview() {
       ? (above.join(', ') + (below ? ', ' + below : ''))
       : below;
     if (hasPanelImage || above.length) {
-      pvBody.style.backgroundRepeat = 'no-repeat';
-      pvBody.style.backgroundSize = 'cover';
-      pvBody.style.backgroundPosition = 'center center';
+      // Per-layer lists: glow / tint layers keep their own cover / center / no-repeat, the
+      // image layers (scrim + image) use the selected fit / position / repeat.
+      var layerSizes = [];
+      var layerPositions = [];
+      var layerRepeats = [];
+      for (var li = 0; li < above.length; li += 1) {
+        layerSizes.push('cover');
+        layerPositions.push('center center');
+        layerRepeats.push('no-repeat');
+      }
+      for (var lj = 0; lj < imgLayerCount; lj += 1) {
+        layerSizes.push(imgFit);
+        layerPositions.push(imgPosition);
+        layerRepeats.push(imgRepeat);
+      }
+      pvBody.style.backgroundRepeat = layerRepeats.join(', ');
+      pvBody.style.backgroundSize = layerSizes.join(', ');
+      pvBody.style.backgroundPosition = layerPositions.join(', ');
     }
 
     /* Border: on device it's on anchor::after; the preview puts a border on the body directly. */
@@ -3190,7 +3301,8 @@ function renderPreview() {
   var fontFamily = pvValue('--nts-font-family', '');
   var fontSize = pvValue('--nts-font-size', '');
   preview.style.fontFamily = fontFamily || '';
-  if (fontSize) preview.style.fontSize = fontSize;
+  // Always assign (empty clears it): otherwise emptying the field keeps the old inline size.
+  preview.style.fontSize = fontSize || '';
 
   liveStyle($('pv-topbar'), {
     background: pvValue('--nts-topbar-bg', 'transparent'),
@@ -3782,6 +3894,10 @@ function updateButtons() {
     var node = $(id);
     if (node) node.disabled = state.busy;
   });
+  // Schedule save also needs a successfully read schedule: saving after a failed read would
+  // overwrite the stored schedule with the empty / default card (see refreshSchedule).
+  var scheduleSave = $('btn-schedule-save');
+  if (scheduleSave) scheduleSave.disabled = !!state.busy || !(scheduleState && scheduleState.loaded);
   // Pending changes list (v0.5.1): refreshed with the button text; the card hides itself.
   renderChanges();
   updateUndoButtons();
@@ -4542,6 +4658,15 @@ var libraryState = {
   favorites: [], // favorite id list (synced with localStorage)
   lastShuffle: null
 };
+/** Switch to the "Custom" tab to show an action's result (save / import / restore). Tag filter
+ *  and search are cleared too, so a leftover query can't hide the entry just added. */
+function showCustomFamilyResult() {
+  libraryState.family = LIB_CUSTOM_FAMILY;
+  libraryState.filter = '';
+  libraryState.query = '';
+  var search = $('lib-search');
+  if (search) search.value = '';
+}
 /** Empty-library text; a function so the translation is looked up at render time. */
 function libEmptyText() {
   return tsT('library.empty', '仓库还是空的。调好配色后点「保存」存成自己的主题；别人分享的 .zip / .json 用「导入」收进来，之后随时切回来，也能「分享」成 zip 发给别人。');
@@ -5060,8 +5185,7 @@ async function saveLibraryTheme() {
     if (input) input.value = '';
     if (noteInput) noteInput.value = '';
     // After saving, switch to "Custom" so the user sees the entry just saved (built-ins are not in that view).
-    libraryState.family = LIB_CUSTOM_FAMILY;
-    libraryState.filter = '';
+    showCustomFamilyResult();
     await refreshLibrary();
     var savedName = (result && result.theme && result.theme.name)
       || (result && result.name) || name || tsT('library.save.currentTheme', '当前主题');
@@ -5370,8 +5494,7 @@ async function importArchive(filename, base64) {
     });
     // Imported entries always land in "Custom": switch there so the user sees the new
     // theme right away instead of hunting among twenty-plus built-ins in "All".
-    libraryState.family = LIB_CUSTOM_FAMILY;
-    libraryState.filter = '';
+    showCustomFamilyResult();
     await refreshLibrary();
     var label = (result && result.theme && result.theme.name)
       || (result && result.name) || tsT('library.importArchive.untitled', '未命名主题');
@@ -5471,8 +5594,7 @@ async function restoreLibrary(filename, base64) {
       data: base64
     });
     // Everything restored is "Custom": switch there so the user sees it right away.
-    libraryState.family = LIB_CUSTOM_FAMILY;
-    libraryState.filter = '';
+    showCustomFamilyResult();
     await refreshLibrary();
     var imported = (result && result.imported) || 0;
     var skipped = (result && result.skipped) || [];
@@ -5655,15 +5777,51 @@ function markScheduleDirty() {
   updateScheduleDirtyHint();
 }
 
-/** Clear the dirty flags after a successful save / explicit discard (dropdowns and both switches). */
-function clearScheduleDirty() {
-  scheduleState.dirty = false;
+/** All controls of the schedule card that can carry an unsaved choice (both switches + dropdowns). */
+function scheduleControls() {
+  var out = [];
   ['schedule-weekend', 'schedule-enabled'].forEach(function (id) {
     var node = $(id);
-    if (node) delete node.dataset.dirty;
+    if (node) out.push(node);
   });
   var selects = document.querySelectorAll('.schedule-select');
-  for (var i = 0; i < selects.length; i += 1) delete selects[i].dataset.dirty;
+  for (var i = 0; i < selects.length; i += 1) out.push(selects[i]);
+  return out;
+}
+
+function scheduleControlValue(node) {
+  return node.type === 'checkbox' ? String(!!node.checked) : String(node.value || '');
+}
+
+/** What a save is about to send: [{node, value}] per control, see clearScheduleDirty. */
+function scheduleControlSnapshot() {
+  return scheduleControls().map(function (node) {
+    return { node: node, value: scheduleControlValue(node) };
+  });
+}
+
+/**
+ * Clear the dirty flags after a successful save (dropdowns and both switches).
+ * With a snapshot taken when the request was sent, only controls still holding the sent
+ * value are cleared: a choice made while the save was in flight stays dirty, otherwise
+ * renderSchedule would overwrite it with the saved value.
+ */
+function clearScheduleDirty(sentSnapshot) {
+  var anyDirty = false;
+  scheduleControls().forEach(function (node) {
+    var keep = false;
+    if (sentSnapshot && node.dataset.dirty === '1') {
+      var sent = null;
+      for (var i = 0; i < sentSnapshot.length; i += 1) {
+        if (sentSnapshot[i].node === node) { sent = sentSnapshot[i]; break; }
+      }
+      // A control created after the request (grid rebuilt) has no snapshot: keep it dirty.
+      keep = !sent || sent.value !== scheduleControlValue(node);
+    }
+    if (keep) anyDirty = true;
+    else delete node.dataset.dirty;
+  });
+  scheduleState.dirty = anyDirty;
   updateScheduleDirtyHint();
 }
 
@@ -5846,7 +6004,7 @@ function renderSchedule() {
   }
 
   var saveBtn = $('btn-schedule-save');
-  if (saveBtn) saveBtn.disabled = !!state.busy;
+  if (saveBtn) saveBtn.disabled = !!state.busy || !scheduleState.loaded;
 }
 
 /** Load the schedule. If the theme list is empty, fetch the library too (the dropdowns need options). */
@@ -5865,6 +6023,9 @@ async function refreshSchedule() {
     return scheduleState.schedule;
   } catch (error) {
     scheduleState.loaded = false;
+    // Not knowing what is stored, a save would overwrite it with the empty card: disable it.
+    var failedSave = $('btn-schedule-save');
+    if (failedSave) failedSave.disabled = true;
     var rows = $('schedule-rows');
     if (rows) {
       rows.innerHTML = '';
@@ -5881,7 +6042,7 @@ async function refreshSchedule() {
 
 /** Save the schedule. When enabled the backend switches immediately for the current slot, so read the palette back too. */
 async function saveSchedule() {
-  if (state.busy) return;
+  if (state.busy || !scheduleState.loaded) return;
   var zones = collectScheduleZones('schedule-rows');
   var weekendBox = $('schedule-weekend');
   var useWeekend = !!(weekendBox && weekendBox.checked);
@@ -5889,6 +6050,7 @@ async function saveSchedule() {
   var weekend = useWeekend ? collectScheduleZones('schedule-rows-weekend') : {};
   var enabledBox = $('schedule-enabled');
   var wanted = !!(enabledBox && enabledBox.checked);
+  var sentSnapshot = scheduleControlSnapshot();
   setBusy(true, tsT('library.schedule.saving', '正在保存自动换主题…'));
   try {
     var result = await callPlugin('save_schedule', {
@@ -5899,8 +6061,10 @@ async function saveSchedule() {
     if (result && result.schedule) scheduleState.schedule = result.schedule;
     if (result && result.now) scheduleState.now = result.now;
     scheduleState.weekendEnabled = scheduleWeekendHasValues(result && result.schedule);
-    // Saved = the panel's choices are what is on disk; clear dirty.
-    clearScheduleDirty();
+    // Saved = the sent choices are what is on disk; clear dirty for those only, so choices
+    // made while the request was in flight survive (see clearScheduleDirty).
+    clearScheduleDirty(sentSnapshot);
+    if (weekendBox && weekendBox.dataset.dirty === '1') scheduleState.weekendEnabled = !!weekendBox.checked;
     renderSchedule();
     var applied = result && result.applied;
     if (applied && applied.action === 'applied') {
@@ -6239,11 +6403,11 @@ function setRowControlsDisabled(busy) {
     // On unlock, do not enable alpha unconditionally: transparent / inherit / empty rows must
     // stay disabled, or after one apply the slider could drag out semi-transparent black (the old
     // code set disabled only in syncRow and this overwrote it). With an RGB memory (color dragged
-    // or picked), transparent stays enabled: dragging reuses the remembered color, see lastRgbByKey.
+    // or picked), transparent stays enabled: dragging reuses the remembered color, see rgbMemory().
     if (!busy && ref.alpha) {
       var parsed = parseColor(displayValue(key));
       var transparent = !!parsed && parsed.a === 0;
-      ref.alpha.disabled = !parsed || (transparent && !lastRgbByKey[key]);
+      ref.alpha.disabled = !parsed || (transparent && !rgbMemory()[key]);
     }
   });
 }
@@ -7171,10 +7335,11 @@ function currentFontPreset() {
 function applyGlowLevel(level) {
   var def = GLOW_LEVELS[level];
   if (!def) return;
-  undoPush('', true);
-  GLOW_LEVEL_KEYS.forEach(function (key) {
-    markEdited(key, def.value);
-    syncRow(key);
+  undoGroup(function () {
+    GLOW_LEVEL_KEYS.forEach(function (key) {
+      markEdited(key, def.value);
+      syncRow(key);
+    });
   });
   renderQuickPresets();
   showToast(tsT('misc.glowApplied', '光效强度已设为「{{label}}」（四项变量，Ctrl+Z 可撤销）',
@@ -7184,19 +7349,20 @@ function applyGlowLevel(level) {
 function applyFontPreset(id) {
   var preset = FONT_PRESETS[id];
   if (!preset) return;
-  undoPush('', true);
-  if (preset.family) {
-    markEdited('--nts-font-family', preset.family);
-  } else {
-    markCleared('--nts-font-family');
-  }
-  syncRow('--nts-font-family');
-  if (preset.lineHeight) {
-    markEdited('--nts-line-height', preset.lineHeight);
-  } else {
-    markCleared('--nts-line-height');
-  }
-  syncRow('--nts-line-height');
+  undoGroup(function () {
+    if (preset.family) {
+      markEdited('--nts-font-family', preset.family);
+    } else {
+      markCleared('--nts-font-family');
+    }
+    syncRow('--nts-font-family');
+    if (preset.lineHeight) {
+      markEdited('--nts-line-height', preset.lineHeight);
+    } else {
+      markCleared('--nts-line-height');
+    }
+    syncRow('--nts-line-height');
+  });
   renderQuickPresets();
   showToast(tsT('misc.fontApplied', '字体已切到「{{label}}」（点「应用」才生效，Ctrl+Z 可撤销）',
     { label: tsT('misc.font.' + id, preset.label) }), 'ok');

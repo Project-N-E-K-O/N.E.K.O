@@ -171,7 +171,11 @@
   //          palette, and the inline value beat the transparent outer layer of
   //          compact /chat); in modes with a chat wallpaper the material does not
   //          take over the message area.
-  var SCRIPT_VERSION = '1.6.48';
+  //   1.6.49 Material layer mirrors three host !important overrides it would
+  //          otherwise outrank: no animations while #chat-container is dragged,
+  //          transparent mobile tool buttons during the expand guard, and the
+  //          guide's borderless composer while it takes over.
+  var SCRIPT_VERSION = '1.6.49';
 
   // Allowed colour value shapes. Deliberately conservative: only plain colours, so
   // arbitrary CSS can never be injected into a variable.
@@ -1406,7 +1410,9 @@
     //     item): background tabs no longer keep compositing. The selector uses
     //     :root[data-nts-paused] + 4 x :root to beat high-specificity rules in the
     //     generated CSS.
-    var PAUSE_HEAD = ':root[data-nts-paused]:root:root:root:root body ';
+    //     (The animation rules are (0,8,2), so the pause head needs 8 x :root to
+    //     reach (0,10,2); with 5 it was (0,7,2) and lost.)
+    var PAUSE_HEAD = ':root[data-nts-paused]:root:root:root:root:root:root:root body ';
     var pauseSel = [];
     for (var q = 0; q < FX_SURFACES.length; q++) {
       pauseSel.push(PAUSE_HEAD + FX_SURFACES[q] + '::after');
@@ -1422,10 +1428,15 @@
 
     // 11) Reduced-motion preference: stop sweep/caustics (the band rests off-view,
     //     leaving only rim / thickness / specular, no flashing).
+    //     The animation is attached by sel(...) rules at specificity (0,8,2)
+    //     (mode prefix + gate attribute + BOOST + target), and all of them are
+    //     !important in the same sheet, so this selector needs a higher one or it
+    //     silently loses: 8 x :root + attribute + target = (0,10,2).
+    var RM_HEAD = ':root[' + ACTIVE_ATTR + ']:root:root:root:root:root:root:root body ';
     var rmTargets = FX_SURFACES.slice();
     var rmSel = [];
     for (var r = 0; r < rmTargets.length; r++) {
-      rmSel.push(':root[' + ACTIVE_ATTR + '] body ' + rmTargets[r] + '::after');
+      rmSel.push(RM_HEAD + rmTargets[r] + '::after');
     }
 
     // 12) Theme switch transition (v1.5.20): when applyPalette detects a stamp
@@ -1651,8 +1662,10 @@
     '   a radius on a fullscreen window would clip content; .container still takes radius-c from the base surface. */',
 /* The message area is one large scrolling surface: behind it is the same window glass, so blur makes no
    visible difference, but every scroll recomputes backdrop-filter for the whole area, the top cause of
-   scroll jank. Background/radius/shadow are kept. */
-    ':root[data-nts-mt]:root:root:root body .message-list {',
+   scroll jank. Background/radius/shadow are kept.
+   Specificity: the blur rule above is (0,7,1); this must be higher to win (both !important, same
+   layer), so 6 x :root + attribute + class = (0,8,1). With 4 x :root it was (0,6,1) and lost. */
+    ':root[data-nts-mt]:root:root:root:root:root body .message-list {',
     '  -webkit-backdrop-filter: none !important;',
     '  backdrop-filter: none !important;',
     '}',
@@ -1692,18 +1705,19 @@
     '',
     '/* ---- Power saver: frequent small elements no longer take part in backdrop blur compositing ----',
     '   Behind bubbles/input/top bar is the semi-transparent window base, so blur makes almost no visible difference,',
-    '   but twenty bubbles on screen means twenty backdrop-filter layers. The saver tier simply does not declare it. */',
-    ':root[data-nts-mt][data-nts-mt-quality="saver"]:root:root body .message-bubble-user,',
-    ':root[data-nts-mt][data-nts-mt-quality="saver"]:root:root body .message-bubble-assistant,',
-    ':root[data-nts-mt][data-nts-mt-quality="saver"]:root:root body .message-bubble-tool,',
-    ':root[data-nts-mt][data-nts-mt-quality="saver"]:root:root body .message-bubble-system,',
-    ':root[data-nts-mt][data-nts-mt-quality="saver"]:root:root body .compact-export-history-bubble,',
-    ':root[data-nts-mt][data-nts-mt-quality="saver"]:root:root body .composer-input-shell,',
-    ':root[data-nts-mt][data-nts-mt-quality="saver"]:root:root body .composer-panel,',
-    ':root[data-nts-mt][data-nts-mt-quality="saver"]:root:root body .message-list,',
-    ':root[data-nts-mt][data-nts-mt-quality="saver"]:root:root body .window-topbar,',
-    ':root[data-nts-mt][data-nts-mt-quality="saver"]:root:root body .composer-overflow-popover,',
-    ':root[data-nts-mt][data-nts-mt-quality="saver"]:root:root body .composer-icon-popover {',
+    '   but twenty bubbles on screen means twenty backdrop-filter layers. The saver tier simply does not declare it.',
+    '   Specificity (0,8,1) = 5 x :root + 2 attributes + class, above the (0,7,1) blur rule it has to override. */',
+    ':root[data-nts-mt][data-nts-mt-quality="saver"]:root:root:root:root body.message-bubble-user,',
+    ':root[data-nts-mt][data-nts-mt-quality="saver"]:root:root:root:root body.message-bubble-assistant,',
+    ':root[data-nts-mt][data-nts-mt-quality="saver"]:root:root:root:root body.message-bubble-tool,',
+    ':root[data-nts-mt][data-nts-mt-quality="saver"]:root:root:root:root body.message-bubble-system,',
+    ':root[data-nts-mt][data-nts-mt-quality="saver"]:root:root:root:root body.compact-export-history-bubble,',
+    ':root[data-nts-mt][data-nts-mt-quality="saver"]:root:root:root:root body.composer-input-shell,',
+    ':root[data-nts-mt][data-nts-mt-quality="saver"]:root:root:root:root body.composer-panel,',
+    ':root[data-nts-mt][data-nts-mt-quality="saver"]:root:root:root:root body.message-list,',
+    ':root[data-nts-mt][data-nts-mt-quality="saver"]:root:root:root:root body.window-topbar,',
+    ':root[data-nts-mt][data-nts-mt-quality="saver"]:root:root:root:root body.composer-overflow-popover,',
+    ':root[data-nts-mt][data-nts-mt-quality="saver"]:root:root:root:root body.composer-icon-popover {',
     '      -webkit-backdrop-filter: none !important;',
     '      backdrop-filter: none !important;',
     '}',
@@ -1822,6 +1836,31 @@
     // No animation here: .compact-chat-surface-shell relies on the host's
     // neko-compact-collapse-wipe / expand-wipe animations to collapse / expand;
     // touching it here kills the transition.
+    '}',
+    '',
+    // Host overrides that the layered material rules would otherwise outrank
+    // (layered !important beats the host's unlayered !important regardless of
+    // specificity). Each mirrors a host rule with the same scope and only the
+    // properties the material rules set.
+    '/* index.css: no animations while the legacy chat container is dragged. */',
+    ':root[data-nts-mt]:root:root:root:root:root body #chat-container.dragging * {',
+    '  animation: none !important;',
+    '}',
+    '/* index.css (mobile): tool buttons stay transparent during the expand guard. */',
+    '@media only screen and (max-width: 768px) {',
+    '  :root[data-nts-mt]:root:root:root:root:root body:not(.electron-chat-window):not(.lanlan-pet-mode) #react-chat-window-shell.is-mobile-expand-guarding .composer-tool-btn,',
+    '  :root[data-nts-mt]:root:root:root:root:root body:not(.electron-chat-window):not(.lanlan-pet-mode) #react-chat-window-shell.is-mobile-expand-guarding .composer-tool-btn:hover,',
+    '  :root[data-nts-mt]:root:root:root:root:root body:not(.electron-chat-window):not(.lanlan-pet-mode) #react-chat-window-shell.is-mobile-expand-guarding .composer-tool-btn:active,',
+    '  :root[data-nts-mt]:root:root:root:root:root body:not(.electron-chat-window):not(.lanlan-pet-mode) #react-chat-window-shell.is-mobile-expand-guarding .composer-tool-btn:focus {',
+    '    background-color: transparent !important;',
+    '    background-image: none !important;',
+    '  }',
+    '}',
+    '/* yui-guide.css: while the guide takes over, the composer drops its border and shadow. */',
+    ':root[data-nts-mt]:root:root:root:root:root body.yui-taking-over #react-chat-window-root .composer-input-shell,',
+    ':root[data-nts-mt]:root:root:root:root:root body.yui-taking-over #react-chat-window-root .composer-input-shell:focus-within {',
+    '  border-color: transparent !important;',
+    '  box-shadow: none !important;',
     '}',
     '}'
   ].join('\n');
@@ -2650,13 +2689,20 @@
     if (mtPointerBound) return;
     mtPointerBound = true;
     var timer = 0;
-    function onMove(ev) {
+    var lastEv = null;
+    function onMove(moveEv) {
       if (!document.documentElement.hasAttribute(MT_ATTR)) return;
       if (mtFollow <= 0) return;
-      window.clearTimeout(timer);
+      // Throttle, not debounce: the old clearTimeout-per-move restarted the delay on every
+      // event, so a continuously moving pointer never updated the light until it stopped.
+      // Keep the latest event and let one pending timer write it.
+      lastEv = moveEv;
+      if (timer) return;
       timer = window.setTimeout(function () {
+        timer = 0;
+        var ev = lastEv;
         var de = document.documentElement;
-        if (!de.hasAttribute(MT_ATTR)) return;
+        if (!ev || !de.hasAttribute(MT_ATTR)) return;
         var w = window.innerWidth || 1;
         var h = window.innerHeight || 1;
         var x = (ev.clientX / w) * 100;
@@ -3176,6 +3222,10 @@
   var lastFetchAt = 0;
   var timer = null;
   var inflight = false;
+  /** Bumped whenever a palette arrives from outside the poll (another window via the shared
+   *  cache). A poll response whose request started before that is stale: it must neither
+   *  overwrite the newer palette nor write itself back to the shared cache. */
+  var paletteGen = 0;
   /** Summary of the last successful apply (for diagnostics). */
   var lastApply = null;
   /** Raw text + time of the last fetch failure (for diagnostics). */
@@ -3293,7 +3343,7 @@
       clearTimer();
       throw e2;
     }
-    return p.then(function (res) { clearTimer(); return res; }, function (err) {
+    var onError = function (err) {
       clearTimer();
       if (timedOut) {
         var te = new Error('timeout ' + ms + 'ms');
@@ -3301,7 +3351,28 @@
         throw te;
       }
       throw err;
-    });
+    };
+    return p.then(function (res) {
+      // The deadline also covers reading the body: headers can arrive and the body then
+      // stall, which would keep the poll's inflight lock held. Aborting rejects a pending
+      // body read, so keep the timer armed until json()/text() settles. A body that is
+      // never read is simply aborted when the timer fires, which is harmless.
+      if (res && typeof res.json === 'function') {
+        ['json', 'text'].forEach(function (method) {
+          var original = res[method];
+          if (typeof original !== 'function') return;
+          res[method] = function () {
+            return original.apply(res, arguments).then(function (value) {
+              clearTimer();
+              return value;
+            }, onError);
+          };
+        });
+      } else {
+        clearTimer();
+      }
+      return res;
+    }, onError);
   }
 
   /** Contract errors (data arrived but invalid) are reported loudly once per reason; never trigger a self-healing restart. */
@@ -3360,6 +3431,7 @@
     // it in then/catch, so a hung endpoint (fetch pending forever) stalled polling
     // permanently.
     var release = function () { inflight = false; };
+    var gen = paletteGen;
     var req;
     try {
       req = fetchWithTimeout(url, opts, FETCH_TIMEOUT_MS);
@@ -3391,6 +3463,13 @@
       }
       if (p.schema !== undefined && p.schema !== 1) {
         warnContractOnce('theme.json schema=' + String(p.schema) + ' (this loader only accepts 1)');
+        return;
+      }
+      // A newer palette arrived from another window while this request was in flight:
+      // this response may predate it. Drop it (no apply, no cache write-back, which would
+      // also bounce the old palette to every other window); the next poll re-reads.
+      if (gen !== paletteGen) {
+        log('drop stale poll response (a newer palette arrived meanwhile)');
         return;
       }
       rememberAssetMeta(p);
@@ -3523,6 +3602,7 @@
         var raw = '';
         try { raw = JSON.stringify(p); } catch (e0) { raw = ''; }
         if (raw === lastRaw) return;
+        paletteGen += 1; // invalidate a poll still in flight (see fetchPalette)
         applyPalette(p);
         lastRaw = raw;
       } catch (e) { /* ignore */ }

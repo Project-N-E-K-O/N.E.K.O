@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any
 
 from ._sdk_compat import ENTRY_REGISTRY, Err, Ok, SdkError
+from .i18n import msg as _msg
 from .service import (
     API_BASE,
     PRESETS_DIR,
@@ -78,6 +79,8 @@ logger = logging.getLogger("neko.theme_studio")
 _service: ThemeStudioService | None = None
 _service_lock = threading.RLock()
 _service_started = False
+# Set by the app-exit hook (shutdown_service(final=True)); blocks restarts.
+_app_exiting = False
 _data_dir_override: Path | None = None
 # Entries were written for a plugin host that ran them one at a time, and
 # several do read-modify-write outside ``_WRITE_LOCK`` (e.g. update_theme_meta
@@ -119,8 +122,12 @@ def startup_service() -> ThemeStudioService:
     service = get_service()
     if _service_started:
         return service
+    if _app_exiting:
+        # The app is shutting down: a late request still gets the service (its
+        # reads and writes are safe), but the schedule thread must not come back.
+        return service
     with _service_lock:
-        if not _service_started:
+        if not _service_started and not _app_exiting:
             service.startup_sync()
             _service_started = True
     return service
@@ -133,7 +140,7 @@ async def startup_service_async() -> ThemeStudioService:
     return await asyncio.to_thread(startup_service)
 
 
-def shutdown_service(timeout: float | None = None) -> bool:
+def shutdown_service(timeout: float | None = None, *, final: bool = False) -> bool:
     """Stop the schedule thread and let in-flight writes finish.
 
     Called from the main server's shutdown hook (``on_shutdown`` in
@@ -145,24 +152,35 @@ def shutdown_service(timeout: float | None = None) -> bool:
     if the budget runs out. Returns True when everything stopped in time.
 
     Resets the started flag so a later :func:`startup_service` restarts the
-    schedule thread instead of leaving it dead until the process restarts.
+    schedule thread instead of leaving it dead until the process restarts --
+    except with ``final=True`` (the app-exit hook): then later requests during
+    exit no longer start it again.
+    The wait for the service lock (held while startup scans the data directory)
+    is also bounded by ``timeout``.
     """
-    global _service_started
+    global _service_started, _app_exiting
+    if final:
+        _app_exiting = True
     service = _service
     if service is None:
         return True
     deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
-    with _service_lock:
+
+    def remaining() -> float:
+        return max(0.0, deadline - time.monotonic()) if deadline is not None else 0.0
+
+    locked = _service_lock.acquire(timeout=remaining()) if deadline is not None else _service_lock.acquire()
+    try:
         try:
             service.shutdown()
         except Exception as exc:  # noqa: BLE001
             logger.warning("Theme Studio shutdown raised (ignored): %s", exc)
         _service_started = False
+    finally:
+        if locked:
+            _service_lock.release()
     if deadline is None:
         return True
-
-    def remaining() -> float:
-        return max(0.0, deadline - time.monotonic())
 
     stopped = service._join_schedule_worker(remaining())  # noqa: SLF001
     if _ENTRY_LOCK.acquire(timeout=remaining()):
@@ -181,7 +199,7 @@ def shutdown_service(timeout: float | None = None) -> bool:
 
 async def shutdown_service_async(timeout: float = 3.0) -> bool:
     """:func:`shutdown_service` with a bounded wait, run in a worker thread."""
-    return await asyncio.to_thread(shutdown_service, timeout)
+    return await asyncio.to_thread(shutdown_service, timeout, final=True)
 
 
 def entries() -> list[str]:
@@ -225,7 +243,7 @@ def run_entry_sync(entry_id: str, args: dict[str, Any] | None = None) -> Ok | Er
     payload = args if isinstance(args, dict) else {}
     fn = _resolve_entry(str(entry_id or ""))
     if fn is None:
-        return Err(SdkError(f"未知的主题工坊操作：{entry_id}"))
+        return Err(SdkError(_msg("core.unknownEntry", entry_id=entry_id)))
     try:
         # Inside the try: a failed first startup must reach the panel as
         # ``{ok: false, error}``; ``_service_started`` stays False so the next
@@ -237,7 +255,7 @@ def run_entry_sync(entry_id: str, args: dict[str, Any] | None = None) -> Ok | Er
         return Err(exc)
     except Exception as exc:  # noqa: BLE001 - every failure must become a readable error
         logger.exception("Theme Studio entry failed: %s", entry_id)
-        return Err(SdkError(f"操作失败：{exc}"))
+        return Err(SdkError(_msg("core.operationFailedDetail", error=exc)))
     if isinstance(result, (Ok, Err)):
         return result
     return Ok(result)

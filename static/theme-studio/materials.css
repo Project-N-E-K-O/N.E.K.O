@@ -300,11 +300,15 @@
   -webkit-backdrop-filter: blur(var(--nts-mt-c-blur-chat, var(--nts-mt-blur))) saturate(var(--nts-mt-saturation, 165%)) brightness(var(--nts-mt-brightness, 105%)) contrast(1.03);
   backdrop-filter: blur(var(--nts-mt-c-blur-chat, var(--nts-mt-blur))) saturate(var(--nts-mt-saturation, 165%)) brightness(var(--nts-mt-brightness, 105%)) contrast(1.03);
 }
+/* Each sample reads its own component blur (falling back to global), like the app window does;
+   otherwise the bubble / input / sidebar / dialog blur controls would not move the preview. */
 .mt-pv-msg {
   background-color: var(--nts-mt-c-bg-bubble, var(--nts-mt-bg));
   border-radius: var(--nts-mt-c-radius-bubble, var(--nts-mt-radius));
   border-width: var(--nts-mt-c-border-width-bubble, var(--nts-mt-border-width));
   box-shadow: var(--nts-mt-c-shadow-bubble, var(--nts-mt-shadow));
+  -webkit-backdrop-filter: blur(var(--nts-mt-c-blur-bubble, var(--nts-mt-blur, 14px))) saturate(var(--nts-mt-saturation, 1.4));
+  backdrop-filter: blur(var(--nts-mt-c-blur-bubble, var(--nts-mt-blur, 14px))) saturate(var(--nts-mt-saturation, 1.4)) brightness(var(--nts-mt-brightness, 1.05)) contrast(1.03);
 }
 .mt-pv-btn {
   flex: none; display: flex; align-items: center; padding: 4px 11px;
@@ -322,6 +326,8 @@
   background-color: var(--nts-mt-c-bg-input, var(--nts-mt-bg));
   border: var(--nts-mt-c-border-width-input, var(--nts-mt-border-width)) solid var(--nts-mt-border, rgba(255, 255, 255, .3));
   box-shadow: var(--nts-mt-c-shadow-input, var(--nts-mt-shadow));
+  -webkit-backdrop-filter: blur(var(--nts-mt-c-blur-input, var(--nts-mt-blur, 0px)));
+  backdrop-filter: blur(var(--nts-mt-c-blur-input, var(--nts-mt-blur, 0px)));
 }
 .mt-pv-side {
   flex: none; width: 34px; display: flex; flex-direction: column; justify-content: center; gap: 3px; padding: 5px 4px;
@@ -329,6 +335,8 @@
   background-color: var(--nts-mt-c-bg-sidebar, var(--nts-mt-bg));
   border: var(--nts-mt-c-border-width-sidebar, var(--nts-mt-border-width)) solid var(--nts-mt-border, rgba(255, 255, 255, .3));
   box-shadow: var(--nts-mt-c-shadow-sidebar, var(--nts-mt-shadow));
+  -webkit-backdrop-filter: blur(var(--nts-mt-c-blur-sidebar, var(--nts-mt-blur, 0px)));
+  backdrop-filter: blur(var(--nts-mt-c-blur-sidebar, var(--nts-mt-blur, 0px)));
 }
 .mt-pv-side i { display: block; height: 3px; border-radius: 2px; background: rgba(255, 255, 255, .45); }
 .mt-pv-pop {
@@ -337,6 +345,8 @@
   background-color: var(--nts-mt-c-bg-dialog, var(--nts-mt-bg));
   border: var(--nts-mt-c-border-width-dialog, var(--nts-mt-border-width)) solid var(--nts-mt-border, rgba(255, 255, 255, .3));
   box-shadow: var(--nts-mt-c-shadow-dialog, var(--nts-mt-shadow));
+  -webkit-backdrop-filter: blur(var(--nts-mt-c-blur-dialog, var(--nts-mt-blur, 0px)));
+  backdrop-filter: blur(var(--nts-mt-c-blur-dialog, var(--nts-mt-blur, 0px)));
 }
 .mt-pv-pop-head { display: flex; align-items: center; justify-content: space-between; font-size: 10.5px; font-weight: 600; margin-bottom: 5px; }
 .mt-pv-x { font-size: 9px; opacity: .7; }
@@ -347,8 +357,11 @@
 /* The compare layer keeps only the right half: clip-path cuts the left 50%, a 1px bright line marks the seam. */
 .mt-pv-ref { position: absolute; inset: 0; z-index: 2; display: none; pointer-events: none; overflow: hidden; clip-path: inset(0 0 0 50%); }
 .mt-pv[data-compare="1"] .mt-pv-ref { display: block; }
-.mt-pv-ref::after { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 1px; background: rgba(255, 255, 255, .55); }
+/* .mt-pv-ref spans the whole stage and clip-path hides its left half, so the seam line and the
+   "original" label are placed at / after 50%; at left: 0 they were clipped away. */
+.mt-pv-ref::after { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; z-index: 5; width: 1px; background: rgba(255, 255, 255, .55); }
 .mt-pv-side-label { position: absolute; top: 5px; left: 5px; z-index: 6; display: none; font-size: 9.5px; font-weight: 600; padding: 1px 5px; border-radius: 5px; background: rgba(0, 0, 0, .45); color: #fff; pointer-events: none; }
+.mt-pv-ref .mt-pv-side-label { left: calc(50% + 5px); }
 .mt-pv-label-cur { z-index: 6; }
 .mt-pv[data-compare="1"] .mt-pv-label-cur,
 .mt-pv[data-compare="1"] .mt-pv-ref .mt-pv-side-label { display: block; }

@@ -98,7 +98,9 @@ class Err(_Result):
         if isinstance(error, str):
             error = SdkError(error)
         elif error is None:
-            error = SdkError("未知错误")
+            from .i18n import msg  # local import: the compat layer stays dependency-free
+
+            error = SdkError(msg("core.unknownError"))
         super().__init__(value=None, error=error)
 
 

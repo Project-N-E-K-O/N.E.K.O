@@ -12,12 +12,14 @@ import pytest
 
 import theme_studio
 from theme_studio import service as ts_service
+from theme_studio.i18n import msg, reset_request_locale, set_request_locale
 
 
 @pytest.fixture
 def studio(tmp_path, monkeypatch):
     monkeypatch.setattr(theme_studio, "_service", None)
     monkeypatch.setattr(theme_studio, "_service_started", False)
+    monkeypatch.setattr(theme_studio, "_app_exiting", False)
     monkeypatch.setattr(theme_studio, "_data_dir_override", tmp_path / "data")
     service = theme_studio.startup_service()
     yield service
@@ -32,9 +34,61 @@ def studio(tmp_path, monkeypatch):
 def test_run_entry_refuses_unregistered_methods(studio, entry_id):
     result = theme_studio.run_entry_sync(entry_id, {})
     assert not result.ok
-    assert "未知的主题工坊操作" in str(result.error)
+    assert str(result.error) == msg("core.unknownEntry", entry_id=entry_id)
     # The schedule thread must still be alive: ``shutdown`` was not reachable.
     assert studio._schedule_thread is not None and studio._schedule_thread.is_alive()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("en-US", "Unknown Theme Studio action: nope"), ("zh-CN", "未知的主题工坊操作：nope"),
+     ("zh-TW", "未知的主題工坊操作：nope")],
+)
+def test_backend_messages_follow_the_request_language(studio, raw, expected):
+    token = set_request_locale(raw)
+    try:
+        result = theme_studio.run_entry_sync("nope", {})
+    finally:
+        reset_request_locale(token)
+    assert str(result.error) == expected
+
+
+@pytest.mark.unit
+def test_run_route_uses_the_panel_locale_header(studio):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from main_routers.cookies_login_router import verify_local_access
+    from main_routers.theme_studio_router import router
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[verify_local_access] = lambda: None
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/theme_studio/run/nope",
+            json={},
+            headers={"Sec-Fetch-Site": "same-origin", "X-Neko-Locale": "ja"},
+        )
+    assert response.status_code == 200
+    assert response.json()["error"] == "不明なテーマスタジオ操作です：nope"
+
+
+@pytest.mark.unit
+def test_message_table_is_complete_in_every_language():
+    import re
+
+    from config.prompts.prompts_theme_studio import THEME_STUDIO_MESSAGES
+
+    langs = {"zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"}
+    placeholder = re.compile(r"(?<!\{)\{([A-Za-z_][A-Za-z0-9_]*)\}(?!\})")
+    for msg_id, entry in THEME_STUDIO_MESSAGES.items():
+        assert set(entry) == langs, msg_id
+        want = sorted(placeholder.findall(entry["zh"]))
+        for lang, text in entry.items():
+            assert text, (msg_id, lang)
+            assert sorted(placeholder.findall(text)) == want, (msg_id, lang)
 
 
 @pytest.mark.unit
@@ -296,7 +350,7 @@ def test_reset_theme_refuses_when_theme_file_is_temporarily_unreadable(studio, m
     monkeypatch.setattr(path_type, "read_bytes", locked)
     result = theme_studio.run_entry_sync("reset_theme", {})
     assert not result.ok
-    assert "稍后重试" in str(result.error)
+    assert str(result.error) == msg("theme.reset.themeJsonUnreadable")
 
 
 @pytest.mark.unit
@@ -364,6 +418,20 @@ def test_shutdown_gives_up_after_its_timeout(studio):
         assert time.monotonic() - started < 2.0
     finally:
         theme_studio._ENTRY_LOCK.release()
+
+
+@pytest.mark.unit
+def test_requests_during_app_exit_do_not_restart_the_schedule_thread(studio):
+    worker = studio._schedule_thread
+    assert theme_studio.shutdown_service(3.0, final=True) is True
+    worker.join(timeout=5)
+
+    # A late request while the app exits still gets a working service ...
+    result = theme_studio.run_entry_sync("get_theme", {})
+    assert result.ok, result.error
+    # ... but the schedule thread stays stopped.
+    assert theme_studio.service_started() is False
+    assert studio._schedule_thread is worker and not worker.is_alive()
 
 
 @pytest.mark.unit

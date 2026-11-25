@@ -60,6 +60,8 @@ from theme_studio import (
     run_entry,
     startup_service_async,
 )
+from theme_studio.i18n import msg as theme_studio_msg
+from theme_studio.i18n import reset_request_locale, set_request_locale
 
 router = APIRouter(
     prefix="/api/theme_studio",
@@ -132,11 +134,19 @@ async def run_theme_entry(
         return rejection
     if not _RE_ENTRY_ID.match(entry_id or ""):
         raise HTTPException(status_code=400, detail="invalid entry id")
-    result = await run_entry(entry_id, args)
+    # Messages returned to the panel follow the panel's UI language (the panel
+    # sends X-Neko-Locale); asyncio.to_thread copies this context into the worker.
+    token = set_request_locale(
+        request.headers.get("x-neko-locale") or request.headers.get("accept-language")
+    )
+    try:
+        result = await run_entry(entry_id, args)
+    finally:
+        reset_request_locale(token)
     if result.ok:
         return JSONResponse(content={"ok": True, "result": result.value})
     error = result.error
-    message = str(error) if error is not None else "操作失败"
+    message = str(error) if error is not None else theme_studio_msg("core.operationFailed")
     return JSONResponse(
         content={"ok": False, "error": message, "entry_id": entry_id},
         headers={"Cache-Control": "no-store"},

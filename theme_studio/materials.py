@@ -26,6 +26,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from .i18n import msg as _msg
+
 MATERIAL_VERSION = 1
 
 QUALITY_MODES = ("saver", "balanced", "high", "ultra")
@@ -219,6 +221,37 @@ PARAM_BY_KEY: dict[str, Param] = {p.key: p for p in PARAMS}
 PARAMS_BY_SECTION: dict[str, tuple[Param, ...]] = {
     section: tuple(p for p in PARAMS if p.section == section) for section in SECTIONS
 }
+
+
+# ---------------------------------------------------------------- localized labels
+# The Chinese / English constants above are the source data and the fallback; the panel gets the
+# text in the request language through these helpers (call them per request, never at import time).
+
+
+def param_label(param: Param) -> str:
+    """Localized label of a material param."""
+    return _msg(f"materials.param.{param.key}.label", default=param.label)
+
+
+def section_label(section: str) -> str:
+    """Localized title of a param section."""
+    return _msg(f"materials.section.{section}", default=SECTION_LABELS.get(section, section))
+
+
+def component_label(comp: str) -> str:
+    """Localized label of a component."""
+    return _msg(f"materials.component.{comp}", default=COMPONENT_LABELS.get(comp, comp))
+
+
+def quality_label(quality: str) -> str:
+    """Localized label of a quality tier."""
+    return _msg(f"materials.quality.{quality}", default=QUALITY_LABELS.get(quality, quality))
+
+
+def preset_label(preset_id: str) -> str:
+    """Localized label of a built-in preset (custom preset names are returned unchanged)."""
+    return _msg(f"materials.preset.{preset_id}", default=PRESET_LABELS.get(preset_id, preset_id))
+
 
 _HEX_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
 _RGB_RE = re.compile(
