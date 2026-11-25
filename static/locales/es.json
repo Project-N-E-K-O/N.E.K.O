@@ -1402,6 +1402,7 @@
             "deepseek": "búsqueda profunda",
             "doubao": "Doubao LLM (Volcengine Ark)",
             "doubao_tts": "Doubao Speech (Volcengine)",
+            "qwen_token_plan": "Alibaba Bailian Token Plan",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Int.)",
             "elevenlabs": "ElevenLabs (clonación de voz)",
@@ -1474,6 +1475,7 @@
             "kimi_code": "Moonshot Kimi Code",
             "doubao": "Doubao LLM (Volcengine Ark)",
             "doubao_tts": "Doubao Speech (Volcengine)",
+            "qwen_token_plan": "Alibaba Bailian Token Plan",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Int.)",
             "mimo": "MiMo (Xiaomi)",
@@ -1541,6 +1543,7 @@
         "ttsVoiceId": "Identificación de voz",
         "ttsProtocolHintOpenAI": "Compatible con OpenAI: HTTP(S) POST /v1/audio/speech con texto completo y respuesta de audio en streaming.",
         "ttsProtocolHintVllmOmni": "vLLM-Omni: WS(S) /v1/audio/speech/stream con transmisión bidireccional de texto y audio.",
+        "ttsProtocolHintQwenTokenPlan": "Alibaba Bailian Token Plan: HTTPS POST /api/v1/services/audio/tts/SpeechSynthesizer con respuesta de audio en streaming. Requiere una clave de Token Plan que empiece por sk-sp-.",
         "ttsVoiceIdHint": "(Opcional, voz alternativa cuando el personaje no tiene ninguna)",
         "ttsCustomVoiceFallbackHint": "Si Voice ID está vacío, los personajes sin voz asignada usan la voz integrada del modelo de voz.",
         "agentModelUrlPlaceholder": "Déjelo en blanco para usar la URL del Proveedor de modelo general",
@@ -6233,7 +6236,9 @@
             "unknown": "Error desconocido",
             "backend_unavailable": "Servicio backend no disponible",
             "invalid_response": "Formato de respuesta no válido",
-            "invalid_workspace_id": "ID de espacio de trabajo de Bailian no válido"
+            "invalid_workspace_id": "ID de espacio de trabajo de Bailian no válido",
+            "token_plan_key_mismatch": "Parece una clave normal de Bailian. Token Plan necesita su clave dedicada que empieza por sk-sp-",
+            "token_plan_url_invalid": "La URL de Token Plan debe ser una dirección https en un dominio oficial de Token Plan"
         },
         "decisionFallback": {
             "workspace_missing": "Sin ID de espacio de trabajo de Bailian: se usa un modelo de chat en lugar del modelo de decisión",

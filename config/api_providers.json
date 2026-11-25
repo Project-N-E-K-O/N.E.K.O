@@ -403,6 +403,17 @@
       "tts_config_visible": false,
       "probe_kind": "http_tts",
       "probe_sub_type": "doubao_tts"
+    },
+    "qwen_token_plan": {
+      "key": "qwen_token_plan",
+      "name": "阿里百炼 Token Plan",
+      "description": "阿里云百炼 Token Plan 专属 Key（sk-sp- 开头），用于 qwen-audio-3.0-tts-plus 语音合成",
+      "openrouter_url": "https://token-plan.cn-beijing.maas.aliyuncs.com",
+      "provider_type": "tts",
+      "tts_default_model": "qwen-audio-3.0-tts-plus",
+      "tts_default_voice": "longanlingxin",
+      "probe_kind": "http_tts",
+      "probe_sub_type": "qwen_token_plan"
     }
   },
   "default_models": {
@@ -444,7 +455,8 @@
     "orcarouter": "ASSIST_API_KEY_ORCAROUTER",
     "requesty": "ASSIST_API_KEY_REQUESTY",
     "opper": "ASSIST_API_KEY_OPPER",
-    "atlascloud": "ASSIST_API_KEY_ATLASCLOUD"
+    "atlascloud": "ASSIST_API_KEY_ATLASCLOUD",
+    "qwen_token_plan": "ASSIST_API_KEY_QWEN_TOKEN_PLAN"
   },
   "api_key_registry": {
     "qwen": {
@@ -541,6 +553,10 @@
     },
     "doubao_tts": {
       "config_field": "assistApiKeyDoubaoTts",
+      "restricted": false
+    },
+    "qwen_token_plan": {
+      "config_field": "assistApiKeyQwenTokenPlan",
       "restricted": false
     }
   },
