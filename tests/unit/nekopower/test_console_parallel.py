@@ -345,7 +345,7 @@ async def test_the_landing_settings_are_shown_and_set_one_at_a_time(consoles, tm
     inspected = (await console.post("/landing", {"inspect": True})).json()
     assert (inspected["mode"], inspected["inspect"]) == ("ask", True)
     assert {key: value for key, value in (await console.host.landing_settings()).items() if key != "worktrees_per_project"} == {
-        "mode": "ask", "inspect": True,
+        "mode": "ask", "inspect": True, "beside": "ask",
     }
     both = (await console.post("/landing", {"mode": "auto", "inspect": False})).json()
     assert (both["mode"], both["inspect"]) == ("auto", False)
