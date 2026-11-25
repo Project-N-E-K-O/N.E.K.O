@@ -4033,11 +4033,12 @@ async function applyTheme() {
       // Applied = the server accepted these changes; keeping the undo stack would only
       // create the illusion of undoing written values into "never written". Clear it:
       // undo only makes sense before applying.
-      if (!leftover) {
-        undoState.past = [];
-        undoState.future = [];
-        updateUndoButtons();
-      }
+      // A successful save is the undo boundary even when drafts made during the
+      // save remain: older snapshots predate the saved values, and restoring
+      // them would bring saved drafts back as pending changes.
+      undoState.past = [];
+      undoState.future = [];
+      updateUndoButtons();
     } else {
       // Readback failed: dirty flags must be kept (never clear before reading). The old
       // code cleared edited/cleared first, so a failed readback showed "saved" while
@@ -7515,6 +7516,16 @@ function bootstrapWhenReady() {
  * edit is lost). Static markup is handled by the host's updatePageTexts().
  */
 function refreshGeneratedTexts() {
+  // Rebuilding the editor replaces its inputs. Text that exists only in an input
+  // (unfinished typing in the focused field, or invalid text whose last valid
+  // value is what state.edited holds) would be lost, so wait until neither is
+  // the case. Everything else lives in `state` and survives the rebuild.
+  var groups = $('groups');
+  var typing = groups && document.activeElement && groups.contains(document.activeElement);
+  if (typing || invalidRowCount()) {
+    setTimeout(refreshGeneratedTexts, 1000);
+    return;
+  }
   try {
     localizeCatalog();
     buildEditor();
