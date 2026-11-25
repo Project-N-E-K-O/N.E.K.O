@@ -380,7 +380,7 @@ async def test_stopped_while_the_user_is_asked_it_is_over_and_nothing_is_made(ho
 
 
 @pytest.mark.parametrize("told", ["goes_on", "apart", "not_told"])
-@pytest.mark.parametrize("beside", ["ask", "open"])
+@pytest.mark.parametrize("beside", ["ask", "open", "ask_but_allowed_for_good"])
 async def test_the_small_model_is_asked_once_whether_it_goes_on_with_what_the_busy_one_is_at(hosts, tmp_path, beside, told):
     host, trees, _workdir, one, _scripts, _seen = await _busy(hosts, tmp_path, _links())
     main = await _session_of(host, one.commission_id)
@@ -388,11 +388,14 @@ async def test_the_small_model_is_asked_once_whether_it_goes_on_with_what_the_bu
     model.beside = [
         {"goes_on": True} if told == "goes_on" else {"goes_on": False} if told == "apart" else RuntimeError("away")
     ]
-    await host.set_landing_settings(beside=beside)
+    await host.set_landing_settings(beside="open" if beside == "open" else "ask")
+    if beside == "ask_but_allowed_for_good":
+        # The user answered "always" once: from then on nobody is asked, as where it is set to open.
+        await host.permission_store.set_mode("open_beside", "allow")
     two = await _dispatch(host, APART)
 
     # Told apart by its words, it goes to the small model once more: separate work, or on with the busy one's?
-    # Not told (the request failed), the user tells where asked; where nobody is asked, nothing is opened.
+    # Not told (the request failed), the user tells where asked; where nobody answers, nothing is opened.
     opened = told == "apart" or (told == "not_told" and beside == "ask")
     if beside == "ask" and opened:
         await _asked(host, two.commission_id)
@@ -407,7 +410,7 @@ async def test_the_small_model_is_asked_once_whether_it_goes_on_with_what_the_bu
     asked = request[-1]["content"]
     assert APART in asked and FIRST in asked and main.name in asked
     if opened:
-        assert len(await _members(host)) == 2 if beside == "open" else len(await outbox(host, "question")) == 1
+        assert len(await _members(host)) == 2 if beside != "ask" else len(await outbox(host, "question")) == 1
     else:
         waiting = await host.ledger.get(two.commission_id)
         assert (waiting.status, waiting.session_id) == ("queued", main.id)

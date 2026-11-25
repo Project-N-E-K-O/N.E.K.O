@@ -10762,10 +10762,9 @@ class TaskAgentManager(TreeWork):
             # (The member came free while that was read, say: nobody is asked about what need not wait.)
             return
         goes_on = await self._goes_on_with(commission, kept)
-        if goes_on or (goes_on is None and choice == BESIDE_OPEN):
+        if goes_on:
             # It goes on with what the busy one is at, as the small model says (the words alone
-            # did not tell), or that is not told where nobody would be asked: it waits for that
-            # one, as it would have. (Not told where the user is asked, the user tells.)
+            # did not tell): it waits for that one, as it would have.
             return
         if not waits():
             return
@@ -10804,6 +10803,10 @@ class TaskAgentManager(TreeWork):
                         await self._ledger.append_event(commission_id, "beside_declined", {"beside": main})
                     return
                 asked = decision.asked
+            if goes_on is None and not asked:
+                # Not told whether it goes on with what the busy one is at, and nobody answered
+                # (``open``, or allowed for good): it waits for that one, as it would have.
+                return
             # Looked at once more and made with no other member made, and no leader, in
             # between (as where a commission is placed, ``Families.place``): the user may
             # have taken a while, and two of these may get here together with room for one.
