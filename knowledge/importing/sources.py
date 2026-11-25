@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import uuid
 from pathlib import Path
@@ -14,6 +15,7 @@ from ..registry import utc_now
 from .documents import SourceLimits, parse_source
 
 SIDECAR_MAX_BYTES = 8 * 1024 * 1024
+logger = logging.getLogger("N.E.K.O.Knowledge")
 
 
 def _encoded_record(value: dict) -> bytes:
@@ -76,8 +78,29 @@ class SourceStore:
                    "sha256": hashlib.sha256(raw).hexdigest(), "content": parsed["content"],
                    "sections": parsed["sections"], "chars": len(parsed["content"]), "created_at": utc_now()}
         encoded = _encoded_record(preview)
-        atomic_write_bytes(folder / (preview_id + ".original"), raw)
-        atomic_write_bytes(folder / (preview_id + ".json"), encoded)
+        original = folder / (preview_id + ".original")
+        metadata = folder / (preview_id + ".json")
+        try:
+            atomic_write_bytes(original, raw)
+            atomic_write_bytes(metadata, encoded)
+        except BaseException:
+            # The unreturned UUID belongs only to this attempt. Interruptions
+            # can occur after either rename, so roll back both published files.
+            try:
+                original.unlink(missing_ok=True)
+                metadata.unlink(missing_ok=True)
+            except OSError as error:
+                # Preserve the write error and never log private paths or text.
+                logger.warning("[Knowledge] preview cleanup failed (%s)", type(error).__name__)
+            if not requires_existing_pack:
+                # Remove only this new pack's empty folders; other retained
+                # previews or history make rmdir fail without deleting them.
+                for path in (folder, folder.parent):
+                    try:
+                        path.rmdir()
+                    except OSError:
+                        break
+            raise
         return preview
 
     def find_preview(self, preview_id: str) -> dict:

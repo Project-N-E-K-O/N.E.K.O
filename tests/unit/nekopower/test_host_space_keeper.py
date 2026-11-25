@@ -270,27 +270,33 @@ async def test_entries_of_a_review_are_kept_where_they_belong(world, monkeypatch
     assert review.entries == ("_daily/photo-dates", "use-uv", "_daily/where-it-stands")
 
 
-async def test_a_review_can_start_a_project(world, tmp_path):
+async def test_a_review_starts_no_project_and_what_it_would_call_it_is_kept(world, tmp_path):
     workdir = str(tmp_path / "work")
     world.llm.answers[TIER_REVIEW] = [
         {
             "review": "It built the first screen.",
             "entries": [{"title": "Stack", "type": "reference", "content": "Flask and SQLite."}],
             "project": "Budget app",
-            "project_description": "a small app that tracks spending",
+            "project_description": "a small app  that tracks spending",
         }
     ]
 
     commission = await world.finished("build me a budget app", workdir=workdir)
 
-    project = await world.space.get_project("Budget app")
-    assert (project.description, project.workdir, project.commissions) == ("a small app that tracks spending", workdir, 1)
-    assert project.last_commission_at == commission.ended_at
-    assert (world.root / "projects" / "Budget app" / "reviews" / f"{commission.id}.md").is_file()
-    assert (world.root / "projects" / "Budget app" / "memory" / "stack.md").is_file()
-    assert "[project: Budget app](<projects/Budget app/MEMORY.md>)" in await world.space.read_index()
-    assert not (world.root / "projects" / DEFAULT_PROJECT).exists()
-    # Where the session is kept follows from the ledger's project, which stays.
+    # One commission makes no project: a project comes of the same job coming up again.
+    assert await world.space.get_project("Budget app") is None
+    assert not (world.root / "projects" / "Budget app").exists()
+    assert "Budget app" not in await world.space.read_index()
+    # The review and what it noted are kept where the commission is.
+    (review,) = await world.reviews(commission.id)
+    assert (review["status"], review["project"]) == ("written", DEFAULT_PROJECT) and "refiled" not in review
+    assert (world.root / "projects" / DEFAULT_PROJECT / "reviews" / f"{commission.id}.md").is_file()
+    assert (world.root / "projects" / DEFAULT_PROJECT / "memory" / "stack.md").is_file()
+    # What it would have called the project is on record with the commission, for the day its
+    # task agent becomes one.
+    assert [event.payload for event in await world.ledger.events(commission.id) if event.type == "project_suggested"] == [
+        {"name": "Budget app", "description": "a small app that tracks spending"}
+    ]
     assert (await world.ledger.get(commission.id)).project is None
 
 
@@ -1873,6 +1879,7 @@ async def test_the_commission_whose_end_starts_the_first_round_is_looked_after_t
 
 
 async def test_what_a_commission_filed_goes_with_it_to_the_project_its_review_names(world):
+    await world.space.touch_project("Budget app")
     other = await world.file("another small thing")
     await world.space.submit(other, {"title": "Unrelated", "content": "Nothing to do with it.", "category": "lesson"})
     await world.space.submit(other, {"title": "Shared", "content": "From the other one.", "category": "lesson"})
@@ -2010,6 +2017,7 @@ async def test_a_summary_held_for_a_project_is_dropped_once_the_project_is_used(
 
 
 async def test_a_review_is_kept_though_what_the_commission_filed_could_not_be_moved(world, monkeypatch):
+    await world.space.touch_project("Budget app")
     commission = await world.file("build me a budget app")
     await world.work(commission.id)
     await world.space.submit(commission, {"title": "Stack", "content": "It uses Flask.", "category": "lesson"})
@@ -2199,6 +2207,7 @@ async def test_what_its_task_agents_did_is_part_of_a_commission_and_is_told_in_i
     world.llm.answers[TIER_REVIEW] = [
         {"review": "Its task agent wrote the parser.", "project": "Budget app", "project_description": "tracks spending"}
     ]
+    await world.space.touch_project("Budget app")
     parent = await world.file("build the budget app")
     # It did nothing itself but start a task agent, which did the work and filed a note.
     await world.work(parent.id, 0)
@@ -2763,10 +2772,17 @@ async def test_the_review_of_a_commission_the_user_stopped_makes_no_project(worl
     joined = await world.finished("another task that was stopped", status="cancelled")
     assert (await world.reviews(joined.id))[0]["project"] == "Budget app"
 
-    # And a commission that was done makes the project it names.
+    # Nor is one made of a commission that was done: what it would be called is kept with that
+    # one, and not with one that was stopped.
     done = await world.finished("a third task with other words")
-    assert (await world.reviews(done.id))[0]["project"] == "Photo sorter"
-    assert (await world.space.get_project("Photo sorter")).description == "sorts photos by date"
+    assert (await world.reviews(done.id))[0]["project"] == DEFAULT_PROJECT
+    assert await world.space.get_project("Photo sorter") is None
+
+    async def suggested(commission_id: str) -> list[dict[str, Any]]:
+        return [event.payload for event in await world.ledger.events(commission_id) if event.type == "project_suggested"]
+
+    assert await suggested(done.id) == [{"name": "Photo sorter", "description": "sorts photos by date"}]
+    assert await suggested(stopped.id) == [] and await suggested(joined.id) == []
 
 
 async def test_a_scan_left_beyond_what_is_old_by_now_begins_anew(world):

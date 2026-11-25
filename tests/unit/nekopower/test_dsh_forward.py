@@ -179,6 +179,10 @@ def test_which_models_are_forwarded() -> None:
     assert "address" in str(unsupported_reason(ModelConfig(model="m")))
     assert "Anthropic" in str(unsupported_reason(ModelConfig(model="m", base_url="https://x.invalid/v1", provider_type="anthropic")))
     assert "Anthropic" in str(unsupported_reason(ModelConfig(model="claude", base_url="https://api.anthropic.com/v1")))
+    # The ChatGPT subscription is OAuth + Responses on the host's own client: the
+    # built-in runtime takes these sessions instead of dsh.
+    assert "ChatGPT" in str(unsupported_reason(ModelConfig(
+        model="gpt-5", base_url="https://api.openai.com/v1", provider_type="chatgpt")))
 
 
 # ---------------------------------------------------------------------------

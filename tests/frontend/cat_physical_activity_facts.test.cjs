@@ -9,6 +9,7 @@ const nativeDragPath = path.join(projectRoot, 'static/app/app-ui/return-window-d
 const manualDragPath = path.join(projectRoot, 'static/avatar/avatar-ui-buttons/methods-return.js');
 const journeyPath = path.join(projectRoot, 'static/avatar/avatar-ui-buttons/idle-journey-and-presentation.js');
 const vrmDragPath = path.join(projectRoot, 'static/vrm/vrm-ui-buttons.js');
+const playgroundPath = path.join(projectRoot, 'static/avatar/avatar-ui-buttons/idle-playground.js');
 
 function sourceBetween(filePath, startMarker, endMarker) {
   const source = fs.readFileSync(filePath, 'utf8');
@@ -130,6 +131,11 @@ test('VRM return-ball drag dispatches one terminal event with aggregated physica
   });
 
   vm.createContext(context);
+  vm.runInContext(sourceBetween(
+    playgroundPath,
+    'function _isNekoIdleReturnCatDragMovement(',
+    'function _dispatchNekoIdleCat1PlaygroundCatDragFact('
+  ), context);
   vm.runInContext(sourceBetween(
     vrmDragPath,
     'VRMManager.prototype._setupReturnButtonDrag = function',

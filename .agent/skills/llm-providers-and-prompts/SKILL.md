@@ -7,7 +7,7 @@ description: LLM 厂商参数方言（extra_body、推理开关、输出上限�
 
 ## 先读已有文档（这里不重复）
 
-- `.agent/rules/neko-guide.md`「辅助 LLM 调用约定」：不下发 `temperature`、每个调用必须有输出预算和超时、模型从 tier 拿、多语言字符串放 `config/prompts/prompts_*.py`、跨模块提示词不写死具体功能。
+- `.agent/rules/neko-guide.md`：全仓库不设 `temperature`；「辅助 LLM 调用约定」：每个调用必须有输出预算和超时、模型从 tier 拿、多语言字符串放 `config/prompts/prompts_*.py`、跨模块提示词不写死具体功能。
 - `docs/design/llm-prompt-budget.md`：输入输出的 token 预算。
 - `docs/api_providers_fields.md`：`config/api_providers.json` 的字段含义。
 - `config/providers.py` 里各常量旁边的注释：每家厂商的实测记录都写在那儿，是第一手资料。动某个常量前先读它旁边那段。

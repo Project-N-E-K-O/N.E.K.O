@@ -747,7 +747,7 @@ def test_cat_mind_phase3_provider_gates_are_stronger_than_legacy_entries():
     assert "_dryRunNekoCatMindCat1ButtonProvider(_NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN" in play_provider_block
     assert "_isNekoCatMindCat1NearChat(button)" in play_provider_block
     assert "near_chat_unavailable" in play_provider_block
-    assert "_canNekoCatMindControlPlayYarn()" in play_provider_block
+    assert "_canNekoCatMindControlPlayYarn(button)" in play_provider_block
     assert "play_yarn_unavailable" in play_provider_block
 
     sleep_provider_block = source.split("function _dryRunNekoCatMindSleepFeedbackProvider", 1)[1].split(

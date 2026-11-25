@@ -17,6 +17,7 @@ from plugin.server.infrastructure.model_slot_resolver import (
     list_model_slots,
     resolve_model_slot,
 )
+from plugin.server.model_gateway.errors import ModelGatewayError
 from utils.file_utils import atomic_write_json
 
 
@@ -141,6 +142,23 @@ def test_small_familiar_tier_resolves_its_own_main_app_tier(env):
     resolved = resolve_model_slot(PLAIN_ID, config_manager=env)
     assert env.asked == ["agent_small"]
     assert (resolved.host_api, resolved.model, resolved.base_url) == ("agent_small", "small-model", "https://small.test/v1")
+
+
+@pytest.mark.parametrize("host_api", ["agent_small", "agent_advanced"])
+def test_task_agents_resolve_a_tier_behind_the_chatgpt_subscription(env, host_api):
+    """In-process task agents call the tier with its own provider type; only the plugin gateway cannot."""
+    from plugin.server.infrastructure.host_model_slots import resolve_host_slot
+
+    env.host[host_api] = {"model": "gpt-5", "base_url": "https://api.openai.com/v1", "api_key": "",
+                          "provider_type": "chatgpt"}
+    write_slots(env, {PLAIN_ID: follow(host_api)})
+    resolved = resolve_model_slot(PLAIN_ID, config_manager=env)
+    assert (resolved.host_api, resolved.model) == (host_api, "gpt-5")
+    listed = {summary.slot_id: summary for summary in list_model_slots(config_manager=env)}
+    assert listed[PLAIN_ID].configured is True
+    with pytest.raises(ModelGatewayError) as refused:
+        resolve_host_slot(follow(host_api), config_manager=env)
+    assert refused.value.code == "host_api_unsupported"
 
 
 def test_credentials_stay_out_of_repr(env):

@@ -14,7 +14,8 @@ import McpTools from '@/views/McpTools.vue'
 import AskBox from './AskBox.vue'
 import RoleModelsTab from './RoleModelsTab.vue'
 import UsageLimitCard from './UsageLimitCard.vue'
-import { askFacts, askLines, askSummary, askWhole } from './ask'
+import { askFacts, askLines, askSummary, askWarning, askWhole } from './ask'
+import dshPluginCommands from './dshPluginCommands.json'
 import { formatDuration, formatTokens } from './powerFormat'
 import ActivityPane from './space/ActivityPane.vue'
 import TranscriptPane from './space/TranscriptPane.vue'
@@ -114,6 +115,14 @@ describe('what a familiar asks the user', () => {
       words.ask.facts.used, words.ask.facts.more,
     ])
     expect(askLines({ category: 'brand_new' }, t, te)).toEqual(['brand_new'])
+    // A boss asking to summon a familiar that changes files: the kind of familiar by its name.
+    const summon = { category: 'open_session', detail: { tool: 'hand_over', title: 'general', preset: 'worker' } }
+    expect(askLines(summon, t, te)).toEqual([`${words.runtime.permissions.categories.open_session} · hand_over`])
+    expect(askFacts(summon, t, te)).toEqual([
+      { name: 'title', label: words.ask.facts.title, value: 'general' },
+      { name: 'preset', label: words.ask.facts.preset, value: words.home.presets.worker },
+    ])
+    expect(askFacts({ category: 'open_session', detail: { preset: 'translator' } }, t, te)[0].value).toBe('translator')
     expect(askFacts({ detail: { odd: 3, nested: { a: 1 }, empty: '' } }, t, te)).toEqual([{ name: 'odd', label: 'odd', value: '3' }])
     // In a list it is one short line.
     expect(askSummary(permission(), t, te).length).toBeLessThanOrEqual(80)
@@ -135,6 +144,28 @@ describe('what a familiar asks the user', () => {
     expect(answers).toEqual([{ choice: 'deny' }])
     // Nothing to type an answer into: it is answered by its choices.
     expect(byTest('familiar-reply')).toBeNull()
+  })
+
+  it('says what a dsh plugin may do when the command would add one, and only then', async () => {
+    const adding = permission({ detail: { tool: 'bash', command: 'cd D:/x && neko-dsh-plugin add dsh-free-search' } })
+    expect(askWarning(adding, t)).toBe(words.runtime.plugins.warning)
+    // The cases the backend's `adds_plugin` is tested with too, so the warning and her question agree.
+    for (const command of dshPluginCommands.adds) {
+      expect(askWarning(permission({ detail: { command } }), t), command).toBe(words.runtime.plugins.warning)
+    }
+    for (const command of [...dshPluginCommands.local, LONG]) {
+      expect(askWarning(permission({ detail: { command } }), t), command).toBeNull()
+    }
+    // Only a command asks to run it: a path that happens to read so is no plugin being added.
+    expect(askWarning(permission({ category: 'outside_read', detail: { command: 'neko-dsh-plugin add a' } }), t)).toBeNull()
+    await mount(AskBox, { ask: adding, busy: '' })
+    expect(byTest('ask-warning')?.textContent).toContain(words.runtime.plugins.warning)
+    expect(byTest('ask-whole')?.textContent).toBe('cd D:/x && neko-dsh-plugin add dsh-free-search')
+  })
+
+  it('shows no warning for any other request', async () => {
+    await mount(AskBox, { ask: permission(), busy: '' })
+    expect(byTest('ask-warning')).toBeNull()
   })
 
   it('takes an answer in words for a question put in words, and none that says nothing', async () => {
@@ -675,6 +706,21 @@ describe('the commissions', () => {
     expect(rows[1].textContent).toContain('310k')
     // Only the projects that are not put away are offered to keep to.
     expect([...byTest('commissions-project')!.querySelectorAll('option')].map(option => option.value)).toEqual(['', 'loose', 'p:Blog'])
+  })
+
+  it('names a member of a project by the project, then by its title or its kind', async () => {
+    const member = (id: string, name: string, preset: string, title = '') =>
+      row({ id, session_id: id, session: { name, kind: 'line', preset, title } })
+    api.listCommissions.mockResolvedValue({ commissions: [
+      member('m1', 'Blog', 'general'), member('m2', 'Blog/scout', 'scout'), member('m3', 'Blog', 'general', 'Keeper'),
+      row({ id: 'm4', project: null, session_id: 'm4', session: { name: 'Garden', kind: 'line', preset: 'general', title: '' } }),
+      row({ id: 'm5', session_id: 'm5' }),
+    ], more: false })
+    await mount(Commissions)
+    const doer = (id: string) => document.querySelector(`tr.row[data-commission="${id}"]`)!.querySelectorAll('td')[2].textContent
+    expect(['m1', 'm2', 'm3', 'm4', 'm5'].map(doer)).toEqual([
+      `Blog · ${words.home.presets.general}`, `Blog · ${words.home.presets.scout}`, 'Blog · Keeper', `Garden · ${words.home.presets.general}`, 'Blog',
+    ])
   })
 
   it('keeps to what is chosen', async () => {

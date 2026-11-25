@@ -14,7 +14,18 @@ from utils.game_route_state import _game_route_states, _route_state_key
 
 class _FakeRequest:
     def __init__(self, payload):
+        from starlette.datastructures import Headers
+        from main_routers.system_router._shared import AUTOSTART_CSRF_TOKEN
+
         self._payload = payload
+        self.method = "POST"
+        self.base_url = "http://testserver/"
+        self.url = SimpleNamespace(path="/api/game/drawing_guess/test")
+        self.headers = Headers({
+            "content-type": "application/json",
+            "origin": "http://testserver",
+            "x-csrf-token": AUTOSTART_CSRF_TOKEN,
+        })
 
     async def json(self):
         return self._payload

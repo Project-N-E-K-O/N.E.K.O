@@ -66,9 +66,27 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-11-25-qwen-token-plan-tts-main-merge",
+        "2026-11-24-knowledge-emote-theater-merge",
         "2026-11-23-theater-market-recovery-main-merge",
         "2026-11-23-knowledge-frontend-i18n-merge",
+        "2026-11-24-qwen-token-plan-tts",
+        "2026-11-24-chatgpt-account-panel",
+        "2026-11-24-agent-model-probe-removed-main-merge",
+        "2026-11-24-chatgpt-subscription-emote-license-merge",
+        "2026-11-24-chatgpt-subscription-reload-failed",
+        "2026-11-24-chatgpt-subscription-main-merge",
+        "2026-11-19-chatgpt-review-feedback",
+        "2026-11-17-chatgpt-independent-settings",
+        "2026-11-16-chatgpt-subscription-toggle",
+        "2026-11-13-chatgpt-review-main-merge",
+        "2026-11-10-chatgpt-subscription",
+        "2026-11-10-provider-cat-visit-merge",
+        "2026-11-24-chatgpt-subscription-agent-probe-merge",
+        "2026-11-24-agent-model-probe-removed",
+        "2026-11-24-emote-template-license-main-sync",
         "2026-11-23-emote-maker-frontend-sync",
+        "2026-11-24-emote-template-license",
         "2026-11-19-theater-market-recovery",
         "2026-11-22-emote-maker-model-memory-sync",
         "2026-11-22-star-map-cooldown-after-key-cleanup",
@@ -103,9 +121,9 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-11-21-unified-knowledge-manager-merge",
         "2026-11-20-unified-knowledge-manager-merge",
         "2026-11-19-unified-knowledge-manager-merge",
+        "2026-11-21-emote-maker-review-main-sync",
         "2026-11-19-eight-locale-gap-fill",
         "2026-11-18-unified-knowledge-manager",
-        "2026-11-21-emote-maker-review-main-sync",
         "2026-11-21-emote-maker-upstream-sync",
         "2026-11-18-emote-maker-restore-confirmations",
         "2026-11-18-emote-maker-upstream-sync",
@@ -634,7 +652,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "d76f58d47678fdea4bc4f8cf465fbe1d598d0c878c6144570d2092d5589ed640"
+LOCALE_KEY_SIGNATURE = "e889ff04eaeb5e161ffec5aecc182db3ec2c93ab8d9098338660f839875bf513"
 
 
 _BUMP_INSTRUCTIONS = (

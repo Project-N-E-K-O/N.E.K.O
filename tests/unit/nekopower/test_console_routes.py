@@ -214,10 +214,12 @@ async def test_the_permission_table_shows_each_category_and_what_auto_comes_to(c
     rows = {row["category"]: row for row in seen["categories"]}
     assert list(rows) == [
         "workdir_files", "outside_read", "outside_write", "run_command",
-        "keyboard_mouse", "browser", "plugin_entry", "managed_delivery", "other",
+        "keyboard_mouse", "browser", "plugin_entry", "managed_delivery", "other", "open_session",
     ]
     assert all(row["mode"] == "auto" for row in rows.values()) and seen["unreadable"] is False
     assert rows["run_command"]["auto"] == "first_ask" and rows["workdir_files"]["auto"] == "allow"
+    # A boss starting another familiar that changes files: asked about once, and can be set here.
+    assert rows["open_session"]["auto"] == "first_ask"
     # The tools of dsh plugins: confirmed at install, not asked for.
     assert rows["other"]["auto"] == "allow"
     assert seen["modes"] == ["auto", "first_ask", "always_ask", "allow", "deny"]
@@ -775,6 +777,17 @@ async def test_a_task_agent_is_made_with_what_the_user_filled_in_and_shows_on_th
     assert [item["name"] for item in of_one["projects"]] == ["Ledger tool"]
 
 
+async def test_a_task_agent_made_with_no_preset_named_does_the_work_itself(familiars):
+    client, host = familiars
+    made = await client.post("/console/familiars", headers=HEADERS, json={"name": "Garden"})
+    assert made.status_code == 200, made.text
+    session = await host.ledger.get_session(made.json()["session_id"])
+    # A worker of the project, not a boss that only hands work on.
+    assert (session.preset, session.kind, session.project) == ("general", "line", "Garden")
+    (card,) = (await client.get("/console/board", headers=HEADERS)).json()["projects"][0]["members"]
+    assert (card["preset"], card["leader"]) == ("general", False)
+
+
 async def test_a_task_agent_is_not_made_of_what_will_not_do_and_nothing_is_left_behind(familiars, tmp_path):
     client, host = familiars
     await host.space.touch_project("Taken")
@@ -827,7 +840,7 @@ async def test_the_form_of_a_new_task_agent_is_filled_in_and_a_failure_says_whic
     client, host = familiars
     host._decision_llm.answer = dict(FORM)
     filled = await client.post("/console/familiars/draft", headers=HEADERS, json={"text": "a task agent for the monthly reports"})
-    assert filled.status_code == 200 and filled.json()["draft"] == {**FORM, "preset": "boss"}
+    assert filled.status_code == 200 and filled.json()["draft"] == {**FORM, "preset": "general"}
     assert len(host._decision_llm.calls) == 1
     # Nothing was made by filling it in.
     assert await host.space.list_projects() == [] and await host.ledger.find_sessions() == []

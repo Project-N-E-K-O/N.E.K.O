@@ -40,6 +40,7 @@ from .retry import (
     _OPENAI_RETRY_EXCEPTION_TYPES,
     anthropic_retry_error_types,
     chat_retry_error_types,
+    chat_retry_error_types_snapshot,
     openai_retry_error_types,
 )
 from .thinking import (

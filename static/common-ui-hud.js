@@ -47,6 +47,57 @@ const STANDALONE_HUD_POSITION = Object.freeze({
 });
 const AGENT_TASK_HUD_COLLAPSED_KEY = 'agent-task-hud-collapsed-v2';
 const AGENT_TASK_HUD_VISIBLE_KEY = 'neko-agent-taskhud-visible';
+let _agentHudCsrfToken = '';
+
+async function _getAgentHudMutationHeaders(forceRefresh) {
+    try {
+        const security = window.nekoLocalMutationSecurity;
+        if (security && typeof security.getMutationHeaders === 'function') {
+            if (forceRefresh && typeof security.refreshToken === 'function') {
+                await security.refreshToken();
+            }
+            const headers = await security.getMutationHeaders();
+            if (headers && typeof headers === 'object') {
+                if (typeof headers['X-CSRF-Token'] === 'string' && headers['X-CSRF-Token']) {
+                    _agentHudCsrfToken = headers['X-CSRF-Token'];
+                }
+                return headers;
+            }
+        }
+    } catch (_) { /* fall back to page_config */ }
+    if (forceRefresh) _agentHudCsrfToken = '';
+    if (_agentHudCsrfToken) {
+        return { 'X-CSRF-Token': _agentHudCsrfToken };
+    }
+    try {
+        const resp = await fetch('/api/config/page_config', { cache: 'no-store' });
+        const cfg = resp.ok ? await resp.json() : null;
+        const token = cfg && cfg.autostart_csrf_token;
+        if (typeof token === 'string' && token) {
+            _agentHudCsrfToken = token;
+            return { 'X-CSRF-Token': token };
+        }
+    } catch (_) { /* guarded POST will surface rejection */ }
+    return {};
+}
+
+async function _agentHudMutationFetch(url, options) {
+    async function send(forceRefresh) {
+        const csrfHeaders = await _getAgentHudMutationHeaders(forceRefresh);
+        return fetch(url, Object.assign({}, options, {
+            headers: Object.assign({}, (options && options.headers) || {}, csrfHeaders),
+        }));
+    }
+    const response = await send(false);
+    if (response.status !== 403 || typeof response.clone !== 'function') return response;
+    try {
+        const payload = await response.clone().json();
+        if (!payload || payload.error_code !== 'csrf_validation_failed') return response;
+    } catch (_) {
+        return response;
+    }
+    return send(true);
+}
 
 function isAgentTaskHudVisiblePreferenceEnabled() {
     try {
@@ -69,10 +120,47 @@ window.AgentHUD.saveTaskHudPreference = function (visible, options) {
     try {
         const command = { command: 'set_task_hud_visible', value: !!visible };
         if (options && options.ifUnset === true) command.if_unset = true;
-        return fetch('/api/agent/command', {
+        const url = '/api/agent/command';
+        const body = JSON.stringify(command);
+        const security = window.nekoLocalMutationSecurity;
+        const cachedToken = (
+            security && typeof security.peekCachedToken === 'function'
+                ? security.peekCachedToken()
+                : ''
+        ) || _agentHudCsrfToken || '';
+        // Sync fast path when token is already cached OR when nekoLocalMutationSecurity is absent
+        // (preserving synchronous fetch dispatch + zero extra page_config calls in unit harnesses,
+        // while still refreshing & retrying once if the backend returns 403 csrf_validation_failed).
+        if (cachedToken || !security || typeof security.getMutationHeaders !== 'function') {
+            const headers = cachedToken
+                ? { 'Content-Type': 'application/json', 'X-CSRF-Token': cachedToken }
+                : { 'Content-Type': 'application/json' };
+            return fetch(url, { method: 'POST', headers: headers, body: body })
+                .then(async function (r) {
+                    if (r && r.status === 403 && typeof r.clone === 'function') {
+                        let shouldRetryCsrf = false;
+                        try {
+                            const errPayload = await r.clone().json();
+                            shouldRetryCsrf = Boolean(errPayload && errPayload.error_code === 'csrf_validation_failed');
+                        } catch (_) { /* keep original 403 */ }
+                        if (shouldRetryCsrf) {
+                            const csrfHeaders = await _getAgentHudMutationHeaders(true);
+                            const retryResp = await fetch(url, {
+                                method: 'POST',
+                                headers: Object.assign({ 'Content-Type': 'application/json' }, csrfHeaders),
+                                body: body,
+                            });
+                            return !!(retryResp && retryResp.ok);
+                        }
+                    }
+                    return !!(r && r.ok);
+                })
+                .catch(function () { return false; });
+        }
+        return _agentHudMutationFetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(command)
+            body: body
         }).then(function (r) { return !!(r && r.ok); }).catch(function () { return false; });
     } catch (_) {
         return Promise.resolve(false);
@@ -844,7 +932,7 @@ window.AgentHUD.createAgentTaskHUD = function () {
         try {
             cancelBtn.style.opacity = '0.5';
             cancelBtn.style.pointerEvents = 'none';
-            const r = await fetch('/api/agent/admin/control', {
+            const r = await _agentHudMutationFetch('/api/agent/admin/control', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: 'end_all' })
@@ -1686,7 +1774,7 @@ window.AgentHUD._createTaskCard = function (task) {
         taskCancelBtn.style.opacity = '0.4';
         taskCancelBtn.style.pointerEvents = 'none';
         try {
-            const r = await fetch(`/api/agent/tasks/${encodeURIComponent(task.id)}/cancel`, {
+            const r = await _agentHudMutationFetch(`/api/agent/tasks/${encodeURIComponent(task.id)}/cancel`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' }
             });

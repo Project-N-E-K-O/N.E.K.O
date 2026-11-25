@@ -22,8 +22,8 @@ what they are doing:
 
 * whether a group is available: the master switch and the group's own switch
   are on and its last readiness check passed (``_state``);
-* which group a commission is using right now (``group_in_use``), so a failed
-  probe of the agent model does not switch a group off under a working task;
+* which commission is using a group right now (``occupant``), for the
+  banner and for stopping it;
 * when a commission begins and stops using a group (``on_builtin_activity``):
   the main server is sent a ``builtin_activity`` event, which is what the
   banner over the desktop or the browser window is driven by (design
@@ -119,13 +119,6 @@ def _own_ports() -> set[int]:
 
 # One per process; the browser it starts and the keys it holds are this process's.
 provider = BuiltinToolProvider(state=_state, on_browser_window=_on_browser_window, own_ports=_own_ports)
-
-
-def group_in_use(group: Optional[str] = None) -> bool:
-    """Whether a commission occupies a group right now (one group, or any)."""
-    if group is None:
-        return bool(_in_use)
-    return group in _in_use
 
 
 def occupant(group: str) -> Optional[str]:

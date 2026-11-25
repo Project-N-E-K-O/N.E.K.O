@@ -13,10 +13,9 @@ therefore do not need to hold any lock while pushing, and the start path
 (which sends its snapshot with the launch options, before the host is
 registered here) pushes once more after registering.
 
-A write that is later undone (the consent flow mirrors its decision before
-writing the consent file and restores the record if that fails) is pushed
-too, so a plugin may briefly see the undone state; the restore is a write
-of its own and is pushed after it.
+A write that is later undone (e.g. a transaction rollback that restores a
+record) is pushed too, so a plugin may briefly see the undone state; the
+restore is a write of its own and is pushed after it.
 
 Retries: when the host table is busy the plugin is looked up again shortly;
 when a push was not delivered, or had to fall back because the grant store

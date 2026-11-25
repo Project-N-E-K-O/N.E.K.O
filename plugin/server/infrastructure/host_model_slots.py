@@ -34,8 +34,13 @@ def host_protocol(config: dict[str, Any]) -> str:
     return "openai_chat"
 
 
-def resolve_host_slot(slot: ModelSlot, *, config_manager: Any = None) -> ModelSlot:
-    """Return an executable manual-shaped snapshot of a host-follow slot."""
+def resolve_host_slot(slot: ModelSlot, *, config_manager: Any = None, for_task_agents: bool = False) -> ModelSlot:
+    """Return an executable manual-shaped snapshot of a host-follow slot.
+
+    ``for_task_agents``: resolved for the in-process task agents (NekoPower),
+    which call a followed tier with its own provider type and so can use one
+    behind the ChatGPT subscription; the plugin HTTP gateway cannot.
+    """
     if slot.source != "host_follow":
         return slot
     if config_manager is None:
@@ -48,10 +53,10 @@ def resolve_host_slot(slot: ModelSlot, *, config_manager: Any = None) -> ModelSl
         raise ModelGatewayError(
             "host_api_not_configured", "The main app API configuration could not be read", 409, "model",
         ) from exc
-    return materialize_host_slot(slot, config)
+    return materialize_host_slot(slot, config, for_task_agents=for_task_agents)
 
 
-def materialize_host_slot(slot: ModelSlot, config: dict[str, Any]) -> ModelSlot:
+def materialize_host_slot(slot: ModelSlot, config: dict[str, Any], *, for_task_agents: bool = False) -> ModelSlot:
     base_url = str(config.get("base_url") or "").strip()
     model = str(config.get("model") or "").strip()
     if not base_url or not model:
@@ -64,10 +69,15 @@ def materialize_host_slot(slot: ModelSlot, config: dict[str, Any]) -> ModelSlot:
             "The followed main app model is not an HTTP chat endpoint (e.g. a WebSocket address)",
             409, "model",
         )
+    if not for_task_agents and str(config.get("provider_type") or "").strip().lower() == "chatgpt":
+        # Sign in with ChatGPT is a Responses API with an OAuth token held by
+        # the main app; the plugin gateway speaks Chat Completions with a key.
+        raise ModelGatewayError(
+            "host_api_unsupported",
+            "The followed main app model uses the ChatGPT subscription, which plugin model slots cannot call",
+            409, "model",
+        )
     protocol = host_protocol(config)
-    # Temperature compatibility is judged on the effective request value in
-    # prepare_chat_request: an explicit valid override must not be rejected
-    # because of an unused (legacy) saved default.
     return slot.model_copy(update={
         "protocol": protocol,
         "base_url": base_url,
@@ -96,6 +106,9 @@ _PLUGIN_OWNED_FIELDS = frozenset({
     "tools", "tool_choice", "parallel_tool_calls", "functions", "function_call",
     "stream", "stream_options", "n",
 })
+# Never merged from provider settings either: plugin model requests carry no
+# temperature (scripts/check_no_temperature.py).
+_NEVER_MERGED_FIELDS = frozenset({"temperature"})
 
 
 def adapt_host_follow_request(slot: ModelSlot, request: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
@@ -143,7 +156,7 @@ def adapt_host_follow_request(slot: ModelSlot, request: dict[str, Any]) -> tuple
         # built-in web_search would otherwise bypass the tool_calling
         # capability check done in prepare_chat_request. Explicit plugin
         # parameters (and validated core fields) win.
-        if key in _PLUGIN_OWNED_FIELDS:
+        if key in _PLUGIN_OWNED_FIELDS or key in _NEVER_MERGED_FIELDS:
             continue
         # Deliberately unlike forward.py's body.update(extra) (provider wins):
         # here the plugin's explicit request wins over provider defaults.

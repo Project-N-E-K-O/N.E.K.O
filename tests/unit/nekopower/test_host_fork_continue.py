@@ -161,7 +161,8 @@ async def test_a_later_commission_is_carried_on_in_a_copy_while_the_session_is_a
     permissions.received_external_input = noting
     first = await _export_at_work(host, scripts)
     main = await host.ledger.get_session(first.session_id)
-    assert main.kind == "project"
+    # The member of a project that has no leader: its commissions come to it one after the other.
+    assert main.kind == "line"
 
     second = await _dispatch(host, FILES)
     done = await wait_status(host, second.id, "done", "failed", "blocked")

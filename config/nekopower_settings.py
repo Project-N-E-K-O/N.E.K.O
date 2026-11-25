@@ -179,6 +179,216 @@ FOLLOW_UP_ROWS = 8
 """Most commissions that are over a dispatched sentence is compared with."""
 
 # ---------------------------------------------------------------------------
+# The orchestrator: which task agent a new commission goes to
+# ---------------------------------------------------------------------------
+# Measured on the built-in free tier only (the scenarios in
+# ``tests/unit/nekopower/fixtures/orchestrator_scenarios.json``). Another
+# small model may want other numbers.
+
+ORCHESTRATOR_MIN_HITS = 2
+"""Least number of a sentence's own words (function words and particles left
+out) that must occur in what a project or a loose task agent is about for the
+sentence to be held against it at all. With fewer in every one of them the
+commission is a loose one of its own, and no model is asked: most one-off
+requests end here. Lower, and more one-off requests cost a call of the small
+model; higher, and more follow-ups in other words are missed."""
+
+ORCHESTRATOR_ATTACH_SCORE = 0.75
+ORCHESTRATOR_ATTACH_HITS = 5
+ORCHESTRATOR_ATTACH_MARGIN = 0.1
+"""When a match is clear enough to attach a sentence without asking the small
+model: this share of the sentence's own words (weighed) occurs there, on this
+many words at least, and the next best match is this far behind. High on
+purpose: a sentence attached to work it has nothing to do with is worked on
+with what was said about something else, which does more harm than one task
+agent too many."""
+
+ORCHESTRATOR_CANDIDATES_SHOWN = 4
+"""How many of the best matches the small model is shown."""
+
+ORCHESTRATOR_CANDIDATE_MAX_TOKENS = 90
+"""Cap on the line one project or loose task agent is shown to the small
+model as: its name or title, what it does, what it did lately."""
+
+ORCHESTRATOR_OUTPUT_MAX_TOKENS = 60
+"""Cap on the small model's answer: a number and a word, as JSON."""
+
+ORCHESTRATOR_FAMILY_MIN_OCCURRENCES = 3
+"""How often the same job has to have come up, this time included, for the
+loose task agents that did it to become a project. Follow-ups of one piece of
+work do not count: only commissions filed as new or as the same job once
+more."""
+
+ORCHESTRATOR_SESSIONS_LOOKED_AT = 60
+ORCHESTRATOR_COMMISSIONS_EACH = 3
+"""How much of the ledger a sentence is held against: the sessions of the
+character last in use (leaders, members and those of one commission), and of
+each the commissions last worked on in it."""
+
+ORCHESTRATOR_REQUEST_MAX_TOKENS = 300
+"""Cap on what she dispatched, and on the user's own words, as the small
+model is shown each. With the fixed text (about 300 tokens) and the
+candidates, a request is some 1300 tokens at most."""
+
+ORCHESTRATOR_MODEL_SLOT = "recognition"
+"""The model tier of the main app the orchestrator's one request goes to:
+the small, fast one. Measured on the free tier, the `memory` tier was right
+more often (95% against 92% of the scenarios); it costs more on most
+providers."""
+
+ORCHESTRATOR_PEER_SHARE = 0.4
+ORCHESTRATOR_PEER_HITS = 2
+"""Which other loose task agents did the same thing as the one a sentence
+goes with: those that match the sentence on this many words at least, with
+this share of that one's score. They become members of the project with it."""
+
+# ---------------------------------------------------------------------------
+# Leaders and members of projects
+# ---------------------------------------------------------------------------
+
+ORCHESTRATOR_MEMBER_HITS = 4
+"""In a project that has a leader, a commission goes to a member without
+coming to the leader when it shares this many words with that member's card
+and what the member did lately, the words of the project's own name left
+out (every sentence that names the project shares those with every member),
+and more than with any other member by ``ORCHESTRATOR_MIN_HITS``. Words as
+the retrieval counts them: a word of Latin letters is one, and so is every
+two characters of Chinese that stand together, so one phrase of five
+characters makes four. Set where
+ten scenarios and four sentences of the measurements fall apart: those that
+go on with a member's work share four to eight, the others none or one."""
+
+LEADER_AT_MEMBERS = 3
+"""A project gets a leader when this many task agents would be its members,
+those that take no more work counted: the third is the leader's to start.
+The backstop; one whose member has too much waiting gets one sooner
+(``LEADER_WHEN_UNDER_WAY``)."""
+
+LEADER_IN_GIT_REPOSITORIES = False
+"""Whether a project whose directory is in a git repository gets a leader
+with its first commission. Off: as long as one task agent writes in a
+project at a time, a leader there only adds its own requests to every
+commission (two more, some 17,000 to 19,000 tokens sent and ten to twenty
+seconds, measured on the free tier), so a project gets one when there is
+work to hand out: a third member, a member with too much waiting, or the
+user asking."""
+
+LEADER_WHEN_UNDER_WAY = 3
+"""A project without a leader gets one when a new commission would be this
+many under way in the member it would go to, or more: the one it is at, and those that
+wait for it (``families.family_is_busy``)."""
+
+LEADER_GIT_PROBE_SECONDS = 300.0
+"""How long it is remembered whether a project's directory is in a git
+repository, before git is asked again."""
+
+LEADER_FIRST_ROSTER_MAX_TOKENS = 3000
+LEADER_ROSTER_MAX_TOKENS = 800
+"""Caps on what a leader is told of its project's members with a commission
+that opens in it: the first time (each member's card, what it did lately and
+has in hand), and every time after (name, preset, state and what it takes).
+Put together by the host from the ledger; no model is asked."""
+
+LEADER_ROSTER_MEMBERS = 12
+LEADER_ROSTER_LINE_MAX_TOKENS = 60
+LEADER_ROSTER_SUMMARY_MAX_TOKENS = 120
+LEADER_ROSTER_RESULTS_EACH = 2
+"""Of that: how many members are listed (the ones last in use), and the caps
+on one line (what a member takes; what came of a commission), on a member's
+summary, and on how many of its late commissions are told the first time."""
+
+LEADER_HANDED_WORK_MAX_ITEMS = 5
+LEADER_HANDED_WORK_RESULT_MAX_TOKENS = 120
+"""How many of the commissions a leader handed over it is told the outcome
+of with the next one that opens in it, and the cap on each outcome."""
+
+HAND_OVER_BRIEF_MAX_TOKENS = 1500
+"""Cap on the brief a leader hands a commission over with, as whoever takes
+it is told it."""
+
+MEMBER_EARLIER_WORK_MAX_TOKENS = 200
+"""Cap on what a member of a project is told of the directories other
+members worked in (those of a family stay where they were)."""
+
+# -- task agents that change files side by side (``nekopower/host/tree_work.py``) --
+
+TREE_PROBE_SECONDS = 5.0
+"""How long it is remembered whether a git worktree can be made for a
+project's directory, where task agents are told apart that would wait for
+one another (``TaskAgentManager._note_writer``). Asked anew, and not from
+what is remembered, when one is made."""
+
+WORKTREES_PER_PROJECT = 8
+"""How many git worktrees one project has at a time, those waiting for the
+user counted. One more is not made: its task agent works in the project's
+directory, in its turn. A team's six and two more."""
+
+LANDING_CONFLICT_ROUNDS = 3
+"""How often a task agent is sent back to merge what clashed between its
+worktree and the project's directory before the host gives up and its
+changes stay in the worktree for the user to decide on. Counted anew when
+the user asks for another try."""
+
+LANDED_NOTE_MAX_TOKENS = 300
+"""Cap on what is said of the files a landing changed: in the result of the
+commission, and to the task agent at work in the project's directory."""
+
+TREE_FILES_LISTED = 40
+"""How many files a landing changed, or that clashed, are put on record and
+told by name; the rest are counted."""
+
+TREE_NOT_LANDED_MAX_TOKENS = 400
+"""Cap on what is told of a worktree that was not landed: where it is, why,
+and which files clashed."""
+
+MEMBER_TREE_NOTE_MAX_TOKENS = 400
+"""Cap on what a task agent is told of the worktree it works in as its
+commission opens, with what an earlier commission of its left unlanded."""
+
+INSPECTION_ROUNDS = 2
+"""How often an inspector checks what a task agent changed, at the most. The
+task agent is sent back with what was found after every check but the last;
+what does not pass the last one is left in the worktree for the user to
+decide on."""
+
+INSPECTION_BRIEF_MAX_TOKENS = 1500
+"""Cap on what an inspector the host starts is told was to be done: the
+commission as its task agent was handed it."""
+
+INSPECTION_FINDINGS_MAX_TOKENS = 1500
+"""Cap on what a task agent is sent back with of what an inspector found."""
+
+TEAM_MAX_WORKING = 6
+"""How many task agents a leader started for one commission work at a time
+(``start_team``, ``subagent``). Beside ``TASK_AGENT_MAX_CONCURRENT``, which
+stands."""
+
+TEAM_START_WAIT_SECONDS = 10.0
+"""How long ``start_team`` waits, at most, to learn whether the task agents it
+started got their git worktrees before it answers the leader. One still being
+started by then is told of as started."""
+
+TEAM_PART_BRIEF_MAX_TOKENS = 1500
+"""Cap on the brief of one part a leader hands to a team."""
+
+TEAM_ASK_MEMBERS_MAX_TOKENS = 60
+"""Cap on what the user is told of one member of a team that is asked about:
+its preset and what it takes."""
+
+TEAM_STALL_SECONDS = 120.0
+"""How long a leader's commission may stand with every task agent it started
+over, no run of its own under way and nothing asked of the user, before the
+host reminds the leader of it. Once for a commission."""
+
+TEAM_STALL_NOTE_MAX_TOKENS = 300
+"""Cap on that reminder."""
+
+PROJECT_MEMBERS_MAX = 12
+"""How many members that still take work a project has for one character
+before its leader is refused another and told to hand over to one that is
+there. As many as the leader is told of (``LEADER_ROSTER_MEMBERS``)."""
+
+# ---------------------------------------------------------------------------
 # Task agents
 # ---------------------------------------------------------------------------
 
@@ -1598,6 +1808,55 @@ DSH_DOWNLOAD_HOSTS: tuple[str, ...] = (
 """Where the file is fetched from, tried in this order: PyPI, then two
 mirrors of it that are reachable where PyPI is slow. They serve the same
 file; the SHA-256 is checked whichever answered."""
+
+DSH_PNPM_VERSION = "11.29.0"
+DSH_PNPM_PACKAGES: dict[str, dict[str, str | int]] = {
+    "main": {
+        "name": "@pnpm/exe",
+        "file": "exe-11.29.0.tgz",
+        "sha256": "8adba3afca205162ef1104463a234731b069c44b79ea7f4fbff3c9ffc07b66a5",
+        "size": 4995345,
+    },
+    "win-x64": {
+        "name": "@pnpm/win-x64",
+        "file": "win-x64-11.29.0.tgz",
+        "sha256": "8f02527ca7092c11e03b49a3f1362b3a931dce64b7b2f68407c65fc766db0ddd",
+        "size": 39988414,
+    },
+    "macos-arm64": {
+        "name": "@pnpm/macos-arm64",
+        "file": "macos-arm64-11.29.0.tgz",
+        "sha256": "ba2067d77c0c0089e5b5f40eb2a601ea60d79bbb2fd32bf36773ea33e3f45ddc",
+        "size": 45237146,
+    },
+    "linux-x64": {
+        "name": "@pnpm/linux-x64",
+        "file": "linux-x64-11.29.0.tgz",
+        "sha256": "8e60d808c722593a234de2bbffff8ae27482921f011925f34bb1a7c8ae18a212",
+        "size": 48695456,
+    },
+    "linux-arm64": {
+        "name": "@pnpm/linux-arm64",
+        "file": "linux-arm64-11.29.0.tgz",
+        "sha256": "e72457099714a2b242e9e1dd1ab3a62684f79d93eb0953f67531f02e8abda762",
+        "size": 48683686,
+    },
+}
+"""The pnpm that adds plugins to dsh (``nekopower/dsh/plugin_command.py``):
+dsh hands ``dsh plugin`` to a ``pnpm`` it looks for on the PATH and brings
+none of its own. This one needs no Node.js: ``main`` is its program text, and
+each platform's file is the executable that runs it, placed next to it. By
+dsh's platform tag, with each file's name on the registry, its SHA-256 and
+its size in bytes; a file that differs is deleted and not used. Fetched the
+first time a plugin is added, not with dsh. pnpm 11 is not built for macOS on
+Intel, which is not supported for dsh plugins."""
+
+DSH_PNPM_REGISTRIES: tuple[str, ...] = (
+    "https://registry.npmjs.org",
+    "https://registry.npmmirror.com",
+)
+"""Where pnpm, and then the plugins, are fetched from: the npm registry, then
+a mirror of it reachable where it is slow. The first that answers is used."""
 
 DSH_DOWNLOAD_CONNECT_SECONDS = 15.0
 DSH_DOWNLOAD_READ_SECONDS = 60.0

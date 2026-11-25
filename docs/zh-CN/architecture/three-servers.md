@@ -66,7 +66,7 @@
 
 `app/agent_server/__main__.py` 在 `127.0.0.1:48915` 启动 package 的 Tool Server FastAPI app。实现拆分在 `api_runtime.py`、`api_routes.py`、`capabilities.py`、`results.py`、`plugin_host.py`、`nekopower_mount.py` 和 `nekopower_builtins.py`。负责记录和执行任务的喵能力（NekoPower）宿主在 `nekopower/host/`。
 
-Agent 启动时，进程会初始化 capability state、Agent 侧 ZeroMQ bridge 和 agent 模型的连通性检查，并登记喵能力宿主。登记不创建任何东西：宿主的台账、agent runtime 和能力网关都等到第一次用到时才创建。`plugin_host.py` 在独立线程中启动 `127.0.0.1:48916` 的内嵌 user-plugin FastAPI listener。即使 listener 与 Agent 同进程，user-plugin 执行仍受 feature flag 与 plugin lifecycle gate 控制。
+Agent 启动时，进程会初始化 capability state（只看本地条件，不向 agent 模型发请求）和 Agent 侧 ZeroMQ bridge，并登记喵能力宿主。登记不创建任何东西：宿主的台账、agent runtime 和能力网关都等到第一次用到时才创建。`plugin_host.py` 在独立线程中启动 `127.0.0.1:48916` 的内嵌 user-plugin FastAPI listener。即使 listener 与 Agent 同进程，user-plugin 执行仍受 feature flag 与 plugin lifecycle gate 控制。
 
 ### HTTP ownership
 

@@ -100,6 +100,7 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     ("static/react/neko-chat", "neko-chat-window.iife.js"),
     ("static/react/neko-chat", "neko-chat-window.css"),
     ("templates", None),
+    ("templates", "emote_template_license.html"),
     ("assets", None),
     # Built-in theater stories are JSON data; including the services package only bundles Python modules.
     # Offline model assets: prepare_*.py scripts download these before Nuitka; weights are not checked in, and frozen builds have no runtime download path;

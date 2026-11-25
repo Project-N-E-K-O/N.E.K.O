@@ -108,6 +108,7 @@ MIGRATED_RUNTIME_ENTRY_NAMES = (
     "nekopower/model_capabilities.json",
     "nekopower/role_models.json",
     "nekopower/usage_limit.json",
+    "nekopower/landing.json",
     "nekopower/browser.json",
     # What task agents keep for later commissions: rules, indexes, entries,
     # reviews, archived projects. Plain text the host alone writes, kept in

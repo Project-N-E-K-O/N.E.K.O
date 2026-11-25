@@ -1007,6 +1007,7 @@ def test_questions_of_a_task_agent_and_a_confirmation_read_as_sentences():
 def test_a_question_is_rendered_in_every_language_within_its_budget(lang):
     from config.nekopower_settings import QUESTION_TEXT_MAX_TOKENS
     from config.prompts.prompts_nekopower_brain import (
+        PERMISSION_DETAIL_CUT_HINT,
         PERMISSION_DETAIL_CUT_MARK,
         PERMISSION_OPTION_NAMES,
         QUESTION_TEXTS,
@@ -1027,18 +1028,50 @@ def test_a_question_is_rendered_in_every_language_within_its_budget(lang):
     assert title in text
     assert count_tokens(text) <= QUESTION_TEXT_MAX_TOKENS
     # A command too long to quote loses its middle, and the sentence says so.
-    # What comes after it is whole: every answer on offer, and the
-    # instruction to hand the answer back, down to its last word.
+    # What comes after it is whole: every answer on offer, the instruction
+    # to hand the answer back, and where the user can read the command whole.
     assert PERMISSION_DETAIL_CUT_MARK[lang] in text
     assert "Remove-Item C:/Users" in text and "-Recurse -Force" in text
     for name in PERMISSION_OPTION_NAMES[lang].values():
         assert name in text
     closing = QUESTION_TEXTS[lang]["permission"].split("{options}")[1]
-    assert len(closing) > 10 and text.endswith(closing)
+    assert len(closing) > 10 and text.endswith(closing + " " + PERMISSION_DETAIL_CUT_HINT[lang])
     short = render_question(title, {**question, "detail": {"command": "dir"}}, lang)
     assert PERMISSION_DETAIL_CUT_MARK[lang] not in short
+    assert PERMISSION_DETAIL_CUT_HINT[lang] not in short and short.endswith(closing)
     for name in PERMISSION_OPTION_NAMES[lang].values():
         assert name in short
+
+
+@pytest.mark.parametrize("lang", LANGUAGES)
+@pytest.mark.parametrize(
+    "detail",
+    [
+        {"path": "LONG", "content_to": "LONG", "direction": "content"},
+        {"path": "LONG", "content_to": "model"},
+        {"path": "notes.txt", "content_to": "LONG"},
+    ],
+)
+def test_a_cut_delivery_question_keeps_room_for_where_to_read_it_whole(lang, detail):
+    from config.nekopower_settings import QUESTION_TEXT_MAX_TOKENS
+    from config.prompts.prompts_nekopower_brain import PERMISSION_DETAIL_CUT_HINT, QUESTION_TEXTS
+    from nekopower.host.reports import render_question
+    from utils.tokenize import count_tokens
+
+    long = _long_command()
+    question = {
+        "kind": "permission",
+        "category": "managed_delivery",
+        "detail": {key: long if value == "LONG" else value for key, value in detail.items()},
+        "options": ["always", "session", "once", "deny"],
+    }
+
+    text = render_question(_full_length_title(), question, lang)
+
+    # The quoted parts give way to the hint; the cap takes nothing.
+    closing = QUESTION_TEXTS[lang]["permission"].split("{options}")[1]
+    assert count_tokens(text) <= QUESTION_TEXT_MAX_TOKENS
+    assert text.endswith(closing + " " + PERMISSION_DETAIL_CUT_HINT[lang])
 
 
 async def test_a_stored_question_carries_its_sentence_in_the_commissions_language(server, hosts, tmp_path):
@@ -1177,7 +1210,7 @@ async def test_a_task_agent_whose_quota_is_used_up_fails_and_she_is_told(hosts, 
     for word in ("free", "daily", "day", "today", "tomorrow"):
         assert word not in said.lower().split() and word not in failed.status_reason.split()
     assert "out of quota for now" in said
-    assert said.endswith("once the quota is refreshed, or once the user switches the familiar to another API.")
+    assert said.endswith("once the quota is refreshed, or once the user switches the task agent to another API.")
     # Not one request went out for it: nothing of it is done.
     assert "did not start on it" in said and "may already be done" not in said
     # Counted before the first prompt: not one request went to the model,
@@ -1303,7 +1336,7 @@ async def test_the_quota_running_out_midway_stops_the_task_agent_after_that_requ
     assert report.payload["summary"] == report.payload["text"] == failed.result_summary == said
     assert "part of it may already be done" in said and said.endswith("rather than start over.")
     assert "out of quota for now" in said
-    assert "once the quota is refreshed, or once the user switches the familiar to another API" in said
+    assert "once the quota is refreshed, or once the user switches the task agent to another API" in said
     for word in ("free", "daily", "day", "today", "tomorrow"):
         assert word not in said.lower().split() and word not in failed.status_reason.split()
     assert (report.payload["delivery_mode"], report.payload["visibility"]) == ("passive", [])

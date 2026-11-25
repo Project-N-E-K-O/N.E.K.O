@@ -1332,7 +1332,6 @@ export const I18N = {
           model: 'model',
           api_key: 'api_key',
           api_key_hint: '只在你不想用 Settings 里保存的 key 时才填; 一次性覆盖.',
-          temperature: 'temperature',
           max_tokens: 'max_tokens',
           timeout: 'timeout (秒)',
           timeout_hint: 'LLM 单次调用超时. 默认 90s.',
@@ -2697,7 +2696,6 @@ export const I18N = {
           base_url: '服务端 base_url',
           api_key: 'API Key',
           model: '模型名',
-          temperature: 'Temperature',
           max_tokens: 'Max tokens',
           timeout: '超时 (秒)',
         },
@@ -2705,15 +2703,12 @@ export const I18N = {
           base_url: '如 https://dashscope.aliyuncs.com/compatible-mode/v1',
           api_key: '留空 = 用预设/registry 兜底 (免费预设可留空)',
           model: '如 qwen-plus / gpt-4.1-mini',
-          temperature: '留空 = 由模型端自决',
           max_tokens: '留空 = 不限制',
           timeout: '留空 = 60',
         },
         hint: {
-          // 三个可选数值字段的行内提示. 明确"留空 = 不发送此参数给模型端"
-          // 的语义, 避免用户以为空=0 或空=默认 1.0. 特别点出 o1/gpt-5-thinking
-          // 这类拒绝 temperature 的模型必须留空.
-          temperature: '留空表示不把 temperature 字段写进请求体 (让模型端用自己的默认值). o1 / o3 / gpt-5-thinking / Claude extended-thinking 等拒绝该参数的模型, 必须留空.',
+          // 可选数值字段的行内提示. 明确"留空 = 不发送此参数给模型端"
+          // 的语义, 避免用户以为空=0 或空=某个默认值.
           max_tokens: '留空表示不限制输出长度, 由模型自行决定; 填正整数则作为硬上限.',
           timeout: '客户端侧 httpx 超时, 不会发送给模型端. 流式长输出建议 ≥ 60s.',
         },

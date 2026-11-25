@@ -18,6 +18,15 @@
 All names formerly defined by this module are re-exported from domain modules.
 """
 
+# Keep this first. OpenBLAS reads its thread count once, when numpy loads its
+# library. The launcher and the three server entry points import ``config``
+# before anything that pulls numpy in. The release-smoke branches in
+# launcher.py import numpy first, so they run without the default; that only
+# costs them the saving. See config/native_runtime.py for what it saves.
+from .native_runtime import apply_native_runtime_defaults as _apply_native_runtime_defaults
+
+_apply_native_runtime_defaults()
+
 from .application import (  # noqa: F401
     logging,
     APP_NAME,
@@ -415,7 +424,6 @@ from .agent_settings import (  # noqa: F401
     AGENT_PLUGIN_SHORTDESC_MAX_TOKENS,
     AGENT_PLUGIN_COARSE_MAX_TOKENS,
     AGENT_PLUGIN_FULL_MAX_TOKENS,
-    LLM_PING_MAX_TOKENS,
 )
 
 from .session_settings import (  # noqa: F401
@@ -1034,7 +1042,6 @@ __all__ = [
     'AGENT_PLUGIN_SHORTDESC_MAX_TOKENS',
     'AGENT_PLUGIN_COARSE_MAX_TOKENS',
     'AGENT_PLUGIN_FULL_MAX_TOKENS',
-    'LLM_PING_MAX_TOKENS',
     'SESSION_ARCHIVE_TRIGGER_TOKENS',
     'SESSION_TURN_THRESHOLD',
     'USER_DIRECTIVE_TTL_SECONDS',

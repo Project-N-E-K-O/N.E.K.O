@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { pluginPackageSizeDetails, resolvePluginInstallErrorKey } from './pluginInstallError'
 import { PERMISSION_ERROR_KEYS, permissionErrorKey } from './pluginPermissionErrors'
-import { pluginConsentMessages } from '@/i18n/plugin-consent'
+import { allPluginConsentMessages as pluginConsentMessages } from '@/i18n/plugin-consent/testing'
 
 describe('resolvePluginInstallErrorKey', () => {
   it.each([

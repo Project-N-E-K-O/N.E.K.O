@@ -334,6 +334,20 @@ def test_the_environment_is_the_hosts_without_what_would_configure_dsh() -> None
     assert base["DSH_HOME"] == "somewhere-else"
 
 
+def test_the_environment_leaves_out_the_blas_thread_default_the_backend_gave_itself() -> None:
+    # dsh passes its environment on to the commands it runs in the user's project.
+    injected = {"PATH": "p", "OPENBLAS_NUM_THREADS": "1", "NEKO_INJECTED_OPENBLAS_THREADS": "1"}
+    environment = profile.child_environment(injected, home=Path("home"), token="t")
+    assert "OPENBLAS_NUM_THREADS" not in environment and "NEKO_INJECTED_OPENBLAS_THREADS" not in environment
+    assert environment["PATH"] == "p"
+    assert injected["OPENBLAS_NUM_THREADS"] == "1", "the caller's mapping is left alone"
+
+    # A thread count the user set is theirs to keep.
+    chosen = {"OPENBLAS_NUM_THREADS": "4", "OMP_NUM_THREADS": "8"}
+    environment = profile.child_environment(chosen, home=Path("home"), token="t")
+    assert environment["OPENBLAS_NUM_THREADS"] == "4" and environment["OMP_NUM_THREADS"] == "8"
+
+
 def test_the_process_starts_in_a_directory_of_ours(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     directory = profile.start_directory(tmp_path / "home")
     assert directory.is_dir() and list(directory.iterdir()) == []

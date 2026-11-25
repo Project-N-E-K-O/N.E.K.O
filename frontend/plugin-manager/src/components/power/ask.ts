@@ -48,6 +48,27 @@ export function askWhole(ask: BoardAsk): { kind: 'command' | 'path'; text: strin
   return null
 }
 
+// Each call of `neko-dsh-plugin` in a command line, with the word after it; a call whose first word
+// is not one of these may bring a plugin in. The same as `adds_plugin` in
+// `nekopower/dsh/plugin_command.py`.
+// The word is looked for on the same line only: a command on the next one is no argument.
+const DSH_PLUGIN_CALL = /neko-dsh-plugin(?:\.cmd)?['"]?(?:[ \t]+['"]?([^\s'"]*))?/gi
+// Not `allow-version`: it lets dsh load a plugin version it would refuse (`HARMLESS_COMMANDS`).
+const DSH_PLUGIN_LOCAL = new Set([
+  'list', 'ls', 'remove', 'rm', 'uninstall', 'un', 'why', 'revoke-version', 'version-exemptions',
+])
+
+/**
+ * Return what has to be known before saying yes, when the request may add a dsh plugin: it runs
+ * inside dsh with all that dsh may do, without a sandbox. Null for any other request.
+ */
+export function askWarning(ask: BoardAsk, t: Translate): string | null {
+  const command = ask.detail?.command
+  if (ask.category !== 'run_command' || typeof command !== 'string') return null
+  const adds = [...command.matchAll(DSH_PLUGIN_CALL)].some(call => !DSH_PLUGIN_LOCAL.has((call[1] ?? '').toLowerCase()))
+  return adds ? t('power.runtime.plugins.warning') : null
+}
+
 const SHOWN_APART = new Set(['command', 'path', 'tool'])
 
 /** Return what else a request for approval says, each with its name: where it would run, to whom something goes. */
@@ -56,7 +77,10 @@ export function askFacts(ask: BoardAsk, t: Translate, te: Exists): Array<{ name:
   for (const [name, value] of Object.entries(ask.detail ?? {})) {
     if (SHOWN_APART.has(name) || (typeof value !== 'string' && typeof value !== 'number') || value === '') continue
     const key = `power.ask.facts.${name}`
-    facts.push({ name, label: te(key) ? t(key) : name, value: String(value) })
+    // The kind of familiar it would start, by the name the pages give that kind.
+    const kind = `power.home.presets.${value}`
+    const shown = name === 'preset' && te(kind) ? t(kind) : String(value)
+    facts.push({ name, label: te(key) ? t(key) : name, value: shown })
   }
   return facts
 }

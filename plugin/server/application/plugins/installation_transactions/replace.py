@@ -88,6 +88,12 @@ def _snapshot_permissions(plugin_id: str):
     return snapshot_permissions(plugin_id)
 
 
+def _drop_grants(plugin_id: str) -> bool:
+    from plugin.server.application.plugins.permission_service import forget_plugin_grants
+
+    return forget_plugin_grants((plugin_id,))
+
+
 async def _start_plugin(plugin_id: str) -> None:
     if not plugin_id:
         return
@@ -566,6 +572,15 @@ async def replace_plugin(
             # Old source was not restored exactly: the failed new package may remain, so old grants cannot authorize autostart.
             # Inspect only the plugin code directory; auxiliary directories, cache cleanup, and restart failures do not change source identity.
             _revoke_hot_reload_recovery(plugin_id)
+            # The new code may still be on disk while the recorded source
+            # and grants are the previous package's: drop the grants as a
+            # source change would, so a later start does not hand them to
+            # it. Never raises; the rollback is already incomplete.
+            if not await asyncio.to_thread(_drop_grants, plugin_id):
+                logger.error(
+                    "plugin rollback could not drop grants left with the new code plugin_id={}",
+                    plugin_id,
+                )
         raise ReplacePluginError(
             stage=stage,
             rollback_status="completed" if restored else "incomplete",

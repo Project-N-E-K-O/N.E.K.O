@@ -17,8 +17,8 @@ from __future__ import annotations
 import copy
 import itertools
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
 
 from plugin.logging_config import get_logger
 from plugin.server.domain.errors import ServerDomainError
@@ -208,21 +208,23 @@ def reconcile_installed_plugins(result: dict) -> None:
 
 
 def forget_plugin_grants(plugin_ids: tuple[str, ...]) -> bool:
-    """Drop all grants of ``plugin_ids``.
+    """Drop the grants of ``plugin_ids`` as a source change would.
 
-    Used inside a replacement, before the plugin restarts, when the new
-    package's install source could not be recorded: the grants would stay
-    bound to the previous source, so they are dropped and the plugin is
-    asked again. A rollback of that replacement puts them back from its
-    snapshot. Call under the plugin operation lock. Never raises; returns
-    whether every grant was dropped. A damaged or newer-version store counts
-    as dropped (see ``UNUSABLE_STORE_CODES``), although its records stay on
-    disk.
+    Used where the plugin's code changed (or may have) but its new install
+    source could not be recorded: inside a replacement, before the plugin
+    restarts, and when a rollback leaves the new code on disk. The grants
+    would stay bound to the previous source, so they are dropped and the
+    plugin is asked again; what a source change keeps stays (see
+    ``KEPT_ON_SOURCE_CHANGE``). A rollback that restores the previous code
+    puts them back from its snapshot. Call under the plugin operation lock.
+    Never raises; returns whether every grant was dropped. A damaged or
+    newer-version store counts as dropped (see ``UNUSABLE_STORE_CODES``),
+    although its records stay on disk.
     """
     complete = True
     for plugin_id in sorted(set(plugin_ids)):
         try:
-            forget_permissions(plugin_id)
+            drop_grants_on_source_change(plugin_id)
         except ServerDomainError as exc:
             if exc.code in UNUSABLE_STORE_CODES:
                 # Holds no usable grant, same as bind_permission_source.
@@ -243,23 +245,20 @@ def forget_plugin_grants(plugin_ids: tuple[str, ...]) -> bool:
     return complete
 
 
-def mirror_consent_decision(
+def record_consent_decision(
     plugin_id: str,
     decision: str | None,
     capabilities: list[str] | tuple[str, ...] = (),
     *,
     newly_approved: list[str] | tuple[str, ...] | None = None,
-) -> Callable[[], None]:
-    """Keep the permission store in step with the consent flow.
+) -> dict:
+    """Store a decision made in the consent dialog; returns the record.
 
-    Transitional: remove together with the consent dialog. Called under the
-    plugin operation lock before the consent record is written. Returns an
-    undo that puts the previous permission record back; call it when the
-    consent write fails, so a failed request leaves this plugin's records in
-    both files unchanged (a first-use import may still be saved).
+    The permission store is where the dialog's decisions live. Remove
+    together with the consent dialog. Call under the plugin operation lock.
+    Raises ``ServerDomainError`` when the store cannot be read or saved.
     """
-    previous = permission_store.read(plugin_id) or None
-    permission_store.apply_legacy_decision(
+    return permission_store.apply_legacy_decision(
         plugin_id,
         decision,
         capabilities,
@@ -267,10 +266,68 @@ def mirror_consent_decision(
         source=current_source(plugin_id),
     )
 
-    def undo() -> None:
-        restore_permissions(plugin_id, previous)
 
-    return undo
+def consent_decision(record: dict | None) -> dict:
+    """The consent dialog's view of a permission record.
+
+    ``record`` is the record as it applies to the plugin's current source
+    (see :func:`permission_record`). Returns ``decision`` (``"approved"``,
+    ``"denied"`` or no key), ``approved_capabilities`` (the earlier names of
+    the granted permissions) and ``decided_at``, the fields the consent
+    dialog shows; an empty dict when nothing was decided.
+    """
+    from plugin.server.infrastructure.plugin_permissions import (
+        LEGACY_APPROVED,
+        LEGACY_DENIED,
+        STATE_GRANTED,
+    )
+
+    if not record:
+        return {}
+    permissions = record.get("permissions") or {}
+    granted = sorted(
+        {
+            spec.legacy_name
+            for permission_id, entry in permissions.items()
+            if isinstance(entry, dict)
+            and entry.get("state") == STATE_GRANTED
+            and (spec := PERMISSIONS.get(permission_id)) is not None
+            and spec.legacy_name is not None
+        }
+    )
+    if record.get(LEGACY_DENIED):
+        decision, approved = "denied", []
+    elif granted or record.get(LEGACY_APPROVED):
+        decision, approved = "approved", granted
+    else:
+        return {}
+    # When the dialog's decision was made: the newest granted entry of an
+    # approval; otherwise (a denial, or an approval without permissions) the
+    # record's last change, the closest stored time.
+    times = [
+        entry.get("decided_at")
+        for permission_id, entry in permissions.items()
+        if decision == "approved"
+        and isinstance(entry, dict)
+        and entry.get("state") == STATE_GRANTED
+        and isinstance(entry.get("decided_at"), str)
+        and (spec := PERMISSIONS.get(permission_id)) is not None
+        and spec.legacy_name is not None
+    ]
+    decided_at = max(times) if times else record.get("updated_at")
+    return {
+        "decision": decision,
+        "approved_capabilities": approved,
+        "decided_at": decided_at if isinstance(decided_at, str) else None,
+    }
+
+
+def consent_record(plugin_id: str) -> dict:
+    """:func:`consent_decision` for the plugin's current source.
+
+    Raises ``ServerDomainError`` when the store cannot be read.
+    """
+    return consent_decision(permission_record(plugin_id))
 
 
 def decide_permission(
@@ -354,11 +411,203 @@ def bind_entry_permission_source(plugin_id: str, entry) -> None:
         )
 
 
+def drop_grants_on_source_change(plugin_id: str) -> dict | None:
+    """Drop what a source change drops (see ``KEPT_ON_SOURCE_CHANGE``)
+    without recording a new source; returns the record as it was before."""
+    return permission_store.drop_grants(plugin_id)
+
+
 def forget_permissions(plugin_id: str) -> dict | None:
     """Drop all grants of an uninstalled plugin; returns the removed record."""
     # The store's change notification drops the remembered record (see
     # _on_store_change), in order with any later write.
     return permission_store.forget(plugin_id)
+
+
+def _parse_time(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def _directory_gone(root: object, directory_name: str) -> bool:
+    """Whether the plugin directory is absent under a root that is present."""
+    if root is None or not Path(root).is_dir():
+        return False
+    try:
+        (Path(root) / directory_name).lstat()
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError):
+        return False
+    return False
+
+
+_MANIFEST_UNKNOWN = object()
+
+
+def _manifest_plugin_id_state(root: object, directory_name: str):
+    """Id the directory's plugin.toml declares now.
+
+    ``""`` when there is no manifest entry (not a plugin), the id when it
+    reads, ``_MANIFEST_UNKNOWN`` when it cannot be read or checked.
+    """
+    from plugin.server.application.install_source.scanner import (
+        PluginDirectoryScanner,
+    )
+
+    if root is None or not Path(root).is_dir():
+        # An unavailable root hides whatever the directory declares.
+        return _MANIFEST_UNKNOWN
+    directory = Path(root) / directory_name
+    try:
+        (directory / "plugin.toml").lstat()
+    except FileNotFoundError:
+        return ""
+    except (OSError, ValueError):
+        return _MANIFEST_UNKNOWN
+    return PluginDirectoryScanner._load_plugin_id(directory) or _MANIFEST_UNKNOWN
+
+
+def _uninstalled_plugin_cutoffs(manager) -> dict[str, datetime] | None:
+    """Plugins the install-source lock proves uninstalled, with their removal time.
+
+    A plugin counts only when it has a removed entry whose directory is gone
+    and no entry in any root that is active or not provably gone. Absence
+    from the lock is never evidence (workbench projects and other sources
+    outside the managed roots are not in it), and neither is a builtin
+    tombstone. Returns ``None`` when the lock cannot be trusted for this.
+
+    Reconcile does not refresh the plugin_id of an entry whose directory
+    stays in place, so every directory that may still be installed protects
+    both its recorded id and the id its manifest declares now; a manifest
+    that cannot be read skips the pass.
+    """
+    if manager is None or manager.is_degraded:
+        return None
+    roots = {"builtin": manager.builtin_root, "user": manager.user_root}
+    active: set[str] = set()
+    removed_at: dict[str, datetime] = {}
+    for entry in manager.list_entries(include_removed=True):
+        root = roots.get(entry.root_id)
+        if entry.removed and _directory_gone(root, entry.directory_name):
+            when = _parse_time(entry.removed_at)
+            # Builtins cannot be uninstalled (mark_removed rejects them); a
+            # builtin tombstone only means the directory vanished, e.g. on
+            # a branch switch or an update, which is no uninstall.
+            if not entry.plugin_id or when is None or entry.root_id == "builtin":
+                continue
+            if entry.plugin_id not in removed_at or when > removed_at[entry.plugin_id]:
+                removed_at[entry.plugin_id] = when
+            continue
+        # An active entry, or a tombstone whose directory may still be there
+        # (root unmounted, listing failed, symlinked): the plugin may be
+        # installed under its recorded id or under the id its manifest
+        # declares now, since reconcile keeps a recorded id once set.
+        if entry.plugin_id:
+            active.add(entry.plugin_id)
+        manifest = _manifest_plugin_id_state(root, entry.directory_name)
+        if manifest is _MANIFEST_UNKNOWN:
+            # Could be any of the removed plugins: prune nothing this time.
+            logger.debug(
+                "uninstalled plugin grants not pruned: manifest unreadable root={} directory={}",
+                entry.root_id,
+                entry.directory_name,
+            )
+            return None
+        if manifest:
+            active.add(manifest)
+    return {pid: when for pid, when in removed_at.items() if pid not in active}
+
+
+def _plugin_ids_in_use() -> set[str] | None:
+    """Ids served from outside the lock: registered plugins and workbench projects.
+
+    The registry may not be populated yet at startup (it is refreshed after
+    the install-source reconcile in embedded mode), so registered ids are a
+    best-effort extra; the lock and the workbench store are the checks that
+    always apply. Returns ``None`` when a workbench project cannot be read,
+    since its plugin id is then unknown.
+    """
+    from plugin.core.state import state
+    from plugin.server.application.plugins.project_sources import (
+        list_project_sources_sync,
+    )
+
+    with state.acquire_plugins_read_lock():
+        in_use = set(state.plugins)
+    try:
+        sources, failures = list_project_sources_sync()
+    except Exception as exc:
+        logger.warning(
+            "workbench projects unreadable, uninstalled plugin grants kept: err_type={}",
+            type(exc).__name__,
+        )
+        return None
+    if failures:
+        logger.info(
+            "workbench project unreadable, uninstalled plugin grants kept: failures={}",
+            len(failures),
+        )
+        return None
+    in_use.update(source.plugin_id for source in sources)
+    return in_use
+
+
+def prune_uninstalled_plugin_grants(manager) -> list[str]:
+    """Drop grant records left behind by plugins that were uninstalled.
+
+    An uninstall leaves the records in place when the permission store was
+    unusable at the time (see ``UNUSABLE_STORE_CODES``). Run once at startup,
+    after the install-source reconcile, under the plugin operation lock.
+
+    A record is dropped only when the lock proves the plugin uninstalled, no
+    registered plugin or workbench project uses the id, and the record was
+    last updated before the removal. A degraded lock or an unreadable store
+    skips the pass; the next startup tries again. Never raises; returns the
+    dropped plugin ids.
+    """
+    try:
+        cutoffs = _uninstalled_plugin_cutoffs(manager)
+        if not cutoffs:
+            return []
+        in_use = _plugin_ids_in_use()
+        if in_use is None:
+            return []
+        for plugin_id in in_use:
+            cutoffs.pop(plugin_id, None)
+        if not cutoffs:
+            return []
+
+        def _older_than_removal(plugin_id: str, record: dict) -> bool:
+            if "updated_at" not in record:
+                return True
+            updated = _parse_time(record.get("updated_at"))
+            # An unreadable timestamp is not evidence the record is stale.
+            return updated is not None and updated <= cutoffs[plugin_id]
+
+        dropped = permission_store.forget_many(
+            cutoffs, should_forget=_older_than_removal
+        )
+    except ServerDomainError as exc:
+        logger.warning(
+            "uninstalled plugin grants not pruned, retried next startup: code={}",
+            exc.code,
+        )
+        return []
+    except Exception as exc:
+        logger.warning(
+            "uninstalled plugin grants not pruned, retried next startup: err_type={}",
+            type(exc).__name__,
+        )
+        return []
+    if dropped:
+        logger.info("dropped grants of uninstalled plugins: plugin_ids={}", dropped)
+    return dropped
 
 
 class PermissionSnapshot:
@@ -568,46 +817,55 @@ def _resolve_state(permission: str, record: dict | None, *, checks_off: bool) ->
     return PermissionState(status, background=background, enforced=enforced)
 
 
-def permission_snapshot(plugin_id: str) -> dict:
-    """The plugin's resolved permission states, in the shape the plugin
-    process takes (see ``plugin.sdk.shared.permissions.runtime``). Never raises.
+def resolved_states(
+    plugin_id: str, *, read: bool = True
+) -> tuple[int, dict[str, PermissionState], bool]:
+    """The plugin's resolved permission states: ``(revision, states,
+    read_failed)``. Never raises.
 
-    When the grants cannot be read, the last record read for this plugin is
-    used; when none was ever read, enforced permissions are denied and
-    disclosure-only ones undecided. While the master switch is on every
-    permission is ``enforced=False``.
+    The one place permission states are worked out, for the plugin process
+    (:func:`permission_snapshot`) and for the host's own checks alike, so
+    both see the same state. When the grants cannot be read (or ``read`` is
+    False, for a caller backing off after a failure) the last record read
+    for this plugin is used; when none was ever read, enforced permissions
+    are denied and disclosure-only ones undecided. While the master switch
+    is on every permission is ``enforced=False``; the status is unchanged.
     """
     from plugin.core.capability_policy import checks_disabled
-    from plugin.sdk.shared.permissions.runtime import state_to_wire
 
     # Numbered before reading: a snapshot that starts after a write always
     # outranks one that may have read the data from before it.
     with _snapshot_lock:
         revision = next(_snapshot_revision)
     read_failed = False
-    try:
-        record: dict | None = _read_and_remember(plugin_id, revision)
-    except Exception as exc:
-        code = getattr(exc, "code", None)
+    if not read:
         read_failed = True
         with _snapshot_lock:
             record = copy.deepcopy(_last_records.get(plugin_id, (0, None))[1])
-            failures = _read_failures.get(plugin_id, 0) + 1
-            _read_failures[plugin_id] = failures
-        if failures == 1 or failures % READ_FAILURE_LOG_EVERY == 0:
-            logger.error(
-                "plugin permissions could not be read for the plugin process: plugin_id={}, error={}, using={}, "
-                "failures_in_a_row={}",
-                plugin_id,
-                code or type(exc).__name__,
-                "last read" if record is not None else "nothing (enforced permissions count as denied)",
-                failures,
-            )
     else:
-        with _snapshot_lock:
-            recovered = _read_failures.pop(plugin_id, None)
-        if recovered:
-            logger.info("plugin permissions can be read again: plugin_id={}", plugin_id)
+        try:
+            record = _read_and_remember(plugin_id, revision)
+        except Exception as exc:
+            code = getattr(exc, "code", None)
+            read_failed = True
+            with _snapshot_lock:
+                record = copy.deepcopy(_last_records.get(plugin_id, (0, None))[1])
+                failures = _read_failures.get(plugin_id, 0) + 1
+                _read_failures[plugin_id] = failures
+            if failures == 1 or failures % READ_FAILURE_LOG_EVERY == 0:
+                logger.error(
+                    "plugin permissions could not be read: plugin_id={}, error={}, using={}, "
+                    "failures_in_a_row={}",
+                    plugin_id,
+                    code or type(exc).__name__,
+                    "last read" if record is not None else "nothing (enforced permissions count as denied)",
+                    failures,
+                )
+        else:
+            with _snapshot_lock:
+                recovered = _read_failures.pop(plugin_id, None)
+            if recovered:
+                logger.info("plugin permissions can be read again: plugin_id={}", plugin_id)
     try:
         checks_off = checks_disabled()
     except Exception as exc:
@@ -615,10 +873,24 @@ def permission_snapshot(plugin_id: str) -> dict:
         logger.error("permission master switch could not be read: error={}", type(exc).__name__)
         checks_off = False
     states = {
-        permission: state_to_wire(_resolve_state(permission, record, checks_off=checks_off))
+        permission: _resolve_state(permission, record, checks_off=checks_off)
         for permission in PERMISSIONS
     }
-    snapshot: dict = {"revision": revision, "states": states}
+    return revision, states, read_failed
+
+
+def permission_snapshot(plugin_id: str) -> dict:
+    """The plugin's resolved permission states, in the shape the plugin
+    process takes (see ``plugin.sdk.shared.permissions.runtime``). Never
+    raises; see :func:`resolved_states`.
+    """
+    from plugin.sdk.shared.permissions.runtime import state_to_wire
+
+    revision, states, read_failed = resolved_states(plugin_id)
+    snapshot: dict = {
+        "revision": revision,
+        "states": {permission: state_to_wire(state) for permission, state in states.items()},
+    }
     if read_failed:
         # Host-side marker (not sent): the push service retries until a read works.
         snapshot["read_failed"] = True

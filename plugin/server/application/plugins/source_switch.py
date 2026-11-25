@@ -204,11 +204,14 @@ def _validate_rebuilt_plan(plan: Mapping[str, object], request: SourceSwitchRequ
 
 def _drop_permissions(plugin_id: str) -> None:
     """Fail-safe after an incomplete rollback: no grants for code that may
-    still be the Market version. Never raises."""
-    from plugin.server.application.plugins.permission_service import forget_permissions
+    still be the Market version (dropped as a source change would). Never
+    raises."""
+    from plugin.server.application.plugins.permission_service import (
+        drop_grants_on_source_change,
+    )
 
     try:
-        forget_permissions(plugin_id)
+        drop_grants_on_source_change(plugin_id)
     except Exception as exc:
         logger.error(
             "override rollback could not clear permission grants plugin_id={} err_type={}",
