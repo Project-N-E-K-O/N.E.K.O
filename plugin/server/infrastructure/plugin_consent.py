@@ -1,10 +1,14 @@
-"""Persistent capability decisions, cached per runtime root."""
+"""The earlier per-plugin consent decisions (``plugin_consents.json``).
+
+Decisions now live in the permission store, which imports this file once
+(see ``plugin_permissions``). Nothing writes decisions here any more; the
+only write left is removing an uninstalled plugin's entry.
+"""
 
 from __future__ import annotations
 
 import copy
 import threading
-from datetime import datetime, timezone
 
 from plugin.server.domain.errors import ServerDomainError
 from utils.file_utils import read_json_tolerating_replace
@@ -64,16 +68,6 @@ class PluginConsentStore:
             self._load()
             return copy.deepcopy(self._records.get(plugin_id, {}))
 
-    def update(self, plugin_id: str, change) -> dict:
-        with self._lock:
-            manager = self._load()
-            records = copy.deepcopy(self._records)
-            record = records.setdefault(plugin_id, {})
-            change(record)
-            self._save(manager, records)
-            self._records = records
-            return copy.deepcopy(record)
-
     def _save(self, manager, records: dict) -> None:
         try:
             manager.save_json_config(
@@ -85,24 +79,6 @@ class PluginConsentStore:
                 "Plugin consent records could not be saved",
                 503,
             ) from exc
-
-    def decide(
-        self,
-        plugin_id: str,
-        decision: str,
-        capabilities: list[str],
-        version: str,
-    ) -> dict:
-        def change(record):
-            record.clear()
-            record.update(
-                decision=decision,
-                approved_capabilities=sorted(set(capabilities)),
-                version=version,
-                decided_at=datetime.now(timezone.utc).isoformat(),
-            )
-
-        return self.update(plugin_id, change)
 
     def delete(self, plugin_id: str) -> None:
         with self._lock:
