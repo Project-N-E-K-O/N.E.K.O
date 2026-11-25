@@ -217,6 +217,25 @@ def test_color_only_library_entry_does_not_reset_current_materials(studio):
 
 
 @pytest.mark.unit
+def test_shared_theme_with_materials_off_turns_recipient_materials_off(studio):
+    exported = theme_studio.run_entry_sync("export_theme_archive", {"id": "amber-dusk"})
+    assert exported.ok, exported.error
+    imported = theme_studio.run_entry_sync(
+        "import_theme_archive", {"filename": "amber-dusk.zip", "data": exported.value["data"]}
+    )
+    assert imported.ok, imported.error
+    theme_id = imported.value["theme"]["id"]
+
+    # The recipient currently has materials on.
+    on = theme_studio.run_entry_sync("apply_saved_theme", {"id": "amber-dusk-material"})
+    assert on.ok and on.value["material_enabled"] is True
+
+    applied = theme_studio.run_entry_sync("apply_saved_theme", {"id": theme_id})
+    assert applied.ok, applied.error
+    assert applied.value["material_enabled"] is False
+
+
+@pytest.mark.unit
 def test_daily_schedule_applies_again_on_the_next_day(tmp_path):
     import json
     from datetime import datetime

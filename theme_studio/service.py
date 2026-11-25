@@ -3604,7 +3604,13 @@ class ThemeStudioService(NekoPluginBase):
             # But when the source has no materials at all (color-only JSON / share bundle, old backups) we must not
             # invent factory materials: applying the theme would then reset the user's current materials to off. When
             # absent, write nothing, and apply takes the "old entry without materials -> keep current materials" branch.
-            if isinstance(materials, dict):
+            if isinstance(materials, dict) and materials and set(materials) <= {"enabled", "lock", "version"}:
+                # Switch-only patch (e.g. {"enabled": false} from a share bundle): keep
+                # it as a patch so applying the entry only toggles materials instead of
+                # resetting the user's parameters to factory values.
+                enabled_flag = _coerce_bool(materials.get("enabled", False))
+                record["materials"] = {"enabled": bool(enabled_flag)}
+            elif isinstance(materials, dict):
                 clean_materials, _material_warnings = _materials.normalize_materials(
                     materials
                 )
@@ -3697,9 +3703,16 @@ class ThemeStudioService(NekoPluginBase):
             "dark_vars": {key: portable(value) for key, value in dark_map.items()},
         }
         # Share bundles carry materials too: recipients import "a complete look", not just colors.
-        clean_materials, _material_warnings = _materials.normalize_materials(materials)
-        if clean_materials.get("enabled"):
-            record["materials"] = clean_materials
+        # A look with materials explicitly off is shared as the patch {"enabled": false}
+        # (the same form built-in non-material presets use): applying it turns the
+        # recipient's materials off but keeps their tuned parameters. Omitting the
+        # field instead would mean "keep whatever the recipient has".
+        if isinstance(materials, dict):
+            clean_materials, _material_warnings = _materials.normalize_materials(materials)
+            if clean_materials.get("enabled"):
+                record["materials"] = clean_materials
+            else:
+                record["materials"] = {"enabled": False}
         # Pack the author's description/tags too: after import, the panel's "Customize" shows the origin
         # instead of an anonymous, undescribed color scheme.
         clean_note = _theme_note(note)

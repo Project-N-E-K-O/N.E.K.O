@@ -51,19 +51,34 @@ window.tsT = tsT;
 
 /**
  * Run `callback` once the host i18n has loaded the language bundle (it fires
- * "localechange" after initialising), or after a short timeout so a failed
- * i18n load never blocks the panel.
+ * "localechange" after initialising), or after a short timeout so a failed or
+ * slow i18n load never blocks the panel.
+ * If the timeout won and the bundle arrives later, `onLate` (optional) runs once
+ * so the caller can refresh text it generated with the fallback strings.
  */
-function whenI18nReady(callback) {
+function whenI18nReady(callback, onLate) {
   var done = false;
-  function run() {
-    if (done) return;
-    done = true;
-    callback();
+  var timedOut = false;
+  function onLocale() {
+    if (!done) { done = true; callback(); return; }
+    if (timedOut && typeof onLate === 'function') {
+      timedOut = false;
+      window.removeEventListener('localechange', onLocale);
+      onLate();
+    }
   }
-  if (window.i18n && window.i18n.isInitialized) { run(); return; }
-  window.addEventListener('localechange', run, { once: true });
-  setTimeout(run, 2500);
+  if (window.i18n && window.i18n.isInitialized) { done = true; callback(); return; }
+  window.addEventListener('localechange', onLocale);
+  setTimeout(function () {
+    if (done) {
+      window.removeEventListener('localechange', onLocale);
+      return;
+    }
+    done = true;
+    timedOut = true;
+    if (typeof onLate !== 'function') window.removeEventListener('localechange', onLocale);
+    callback();
+  }, 2500);
 }
 window.whenI18nReady = whenI18nReady;
 
@@ -3901,6 +3916,37 @@ function resetMaterialsLocal() {
   }
 }
 
+/** Copy of the palette drafts (edited values and cleared keys) per mode. */
+function snapshotDrafts() {
+  return {
+    edited: { light: Object.assign({}, state.edited.light), dark: Object.assign({}, state.edited.dark) },
+    cleared: { light: Object.assign({}, state.cleared.light), dark: Object.assign({}, state.cleared.dark) }
+  };
+}
+
+/**
+ * Remove the drafts that were submitted by a save, keeping edits made while the
+ * save was in flight (a different value for the same key, or a new key).
+ * Returns the number of drafts left.
+ */
+function dropSubmittedDrafts(snapshot) {
+  var left = 0;
+  ['light', 'dark'].forEach(function (mode) {
+    var edited = state.edited[mode];
+    var cleared = state.cleared[mode];
+    Object.keys(snapshot.edited[mode]).forEach(function (key) {
+      if (Object.prototype.hasOwnProperty.call(edited, key) && edited[key] === snapshot.edited[mode][key]) {
+        delete edited[key];
+      }
+    });
+    Object.keys(snapshot.cleared[mode]).forEach(function (key) {
+      if (Object.prototype.hasOwnProperty.call(cleared, key)) delete cleared[key];
+    });
+    left += Object.keys(edited).length + Object.keys(cleared).length;
+  });
+  return left;
+}
+
 async function applyTheme() {
   if (state.busy) return;
 
@@ -3964,6 +4010,9 @@ async function applyTheme() {
   // Material snapshot at submit time: material controls stay editable during save /
   // readback, and later edits must remain in the panel.
   var materialsAtSubmit = materialsSnapshot();
+  // Same for palette drafts: presets, variants and row paste stay usable while the
+  // save is in flight, so only the drafts that were actually submitted are cleared.
+  var draftsAtSubmit = snapshotDrafts();
   try {
     var result = await callPlugin('apply_theme', args);
     var rejected = result && result.rejected;
@@ -3972,10 +4021,10 @@ async function applyTheme() {
     // what the user sees would not match disk.
     var reloaded = await reloadPalette({ silent: true, materialsSubmitted: materialsAtSubmit });
     if (reloaded) {
-      // Only a successful readback means "panel = disk"; only then clear dirty and invalid state.
-      state.edited = { light: {}, dark: {} };
-      state.cleared = { light: {}, dark: {} };
-      markAllRowsValid();
+      // Only a successful readback means "panel = disk"; only then clear dirty and
+      // invalid state -- for the submitted drafts. Edits made during the save remain.
+      var leftover = dropSubmittedDrafts(draftsAtSubmit);
+      if (!leftover) markAllRowsValid();
       // The syncAll() inside reloadPalette ran before the dirty state was cleared: the
       // yellow "changed" rows, the group header's "N changed" and the dump footnote are
       // all stale. Without refreshing here the user thinks the save failed, and clicking
@@ -3984,9 +4033,11 @@ async function applyTheme() {
       // Applied = the server accepted these changes; keeping the undo stack would only
       // create the illusion of undoing written values into "never written". Clear it:
       // undo only makes sense before applying.
-      undoState.past = [];
-      undoState.future = [];
-      updateUndoButtons();
+      if (!leftover) {
+        undoState.past = [];
+        undoState.future = [];
+        updateUndoButtons();
+      }
     } else {
       // Readback failed: dirty flags must be kept (never clear before reading). The old
       // code cleared edited/cleared first, so a failed readback showed "saved" while
@@ -5637,6 +5688,15 @@ function renderScheduleGrid(containerId, kind) {
     }
     return;
   }
+  // The theme list changed (added / renamed / deleted): the dropdowns are rebuilt,
+  // but unsaved choices must survive the rebuild, same as in the branch above.
+  var dirtyChoices = {};
+  var oldSelects = rows.querySelectorAll('.schedule-select');
+  for (var j = 0; j < oldSelects.length; j += 1) {
+    if (oldSelects[j].dataset.dirty === '1') {
+      dirtyChoices[oldSelects[j].getAttribute('data-zone')] = oldSelects[j].value;
+    }
+  }
   rows.innerHTML = '';
   zones.forEach(function (zone) {
     var select = el('select', {
@@ -5647,6 +5707,17 @@ function renderScheduleGrid(containerId, kind) {
         { day: scheduleDayLabel(kind), zone: scheduleZoneLabel(zone) })
     });
     fillScheduleSelect(select, groups, String(map[zone] || ''));
+    if (Object.prototype.hasOwnProperty.call(dirtyChoices, zone)) {
+      var wanted = dirtyChoices[zone];
+      var available = Array.prototype.some.call(select.options, function (option) {
+        return option.value === wanted;
+      });
+      // A choice whose theme was just deleted cannot be kept; fall back to the saved value.
+      if (available) {
+        select.value = wanted;
+        select.dataset.dirty = '1';
+      }
+    }
     select.addEventListener('change', function () {
       this.dataset.dirty = '1';
       markScheduleDirty();
@@ -7434,7 +7505,29 @@ function bootstrapWhenReady() {
   whenI18nReady(function () {
     localizeCatalog();
     bootstrap();
-  });
+  }, refreshGeneratedTexts);
+}
+
+/**
+ * The language bundle arrived after the panel was already built with the
+ * fallback strings: translate the catalog and rebuild the generated UI from the
+ * current state (drafts, filters and collapsed groups live in `state`, so no
+ * edit is lost). Static markup is handled by the host's updatePageTexts().
+ */
+function refreshGeneratedTexts() {
+  try {
+    localizeCatalog();
+    buildEditor();
+    syncAll();
+    applyFilters();
+    renderMeta();
+    renderAudit(true);
+    refreshLibrary();
+    refreshSchedule();
+    refreshHealth({});
+  } catch (error) {
+    // A partial refresh must never break the panel; the next reopen is fully translated.
+  }
 }
 
 if (document.readyState === 'loading') {
