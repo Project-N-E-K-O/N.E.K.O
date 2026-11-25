@@ -57,6 +57,7 @@ from __future__ import annotations
 import collections
 import ipaddress
 import os
+import re
 import sys
 import threading
 import time
@@ -130,6 +131,11 @@ _SPAWN_EVENTS = frozenset({
 _LOOKUP_EVENTS = frozenset({"socket.getaddrinfo", "socket.gethostbyname", "socket.gethostbyname_ex"})
 _CONNECT_EVENTS = frozenset({"socket.connect", "socket.sendto"})
 _SERVICE_PORTS = {"http": 80, "https": 443}
+# Host names kept for a connect target: letters (any script), digits, ".", "-",
+# "_"; a subset of what the host accepts in a target (capability_gate._TARGET).
+_HOST_NAME = re.compile(r"[\w.\-]{1,253}")
+# A leading shell variable assignment (NAME=value): never a program name.
+_SHELL_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 _FROZEN = bool(getattr(sys, "frozen", False)) or "__compiled__" in globals()
 
 
@@ -255,12 +261,26 @@ def program_name(value: object, *, command_line: bool = False) -> str:
         return "<unknown>"
     text = value.strip()
     if command_line:
+        words = text.split()
+        # Skip leading NAME=value words (their values may be secrets);
+        # anything still unclear is recorded as "<shell>".
+        while words and _SHELL_ASSIGNMENT.match(words[0]):
+            word = words.pop(0)
+            if word.count('"') % 2 or word.count("'") % 2:
+                return "<shell>"  # a quoted value with blanks: don't guess past it
+        if not words:
+            return "<shell>"
+        text = " ".join(words)
         if text[:1] in ('"', "'"):
             quote = text[0]
             end = text.find(quote, 1)
-            text = text[1:end] if end > 0 else text[1:]
+            if end <= 0:
+                return "<shell>"
+            text = text[1:end]
         else:
-            text = text.split()[0] if text.split() else ""
+            text = words[0]
+            if "=" in text or text[:1] in ("$", "`", "(", "{"):
+                return "<shell>"
     name = text.replace("\\", "/").rsplit("/", 1)[-1]
     return name[:TARGET_MAX_CHARS] or "<unknown>"
 
@@ -354,7 +374,6 @@ class SystemAuditor:
         self._queue: collections.deque[dict] = collections.deque()
         self._dedup: dict[tuple, float] = {}
         self._frame_kinds: dict[str, int] = {}
-        self._plain_dirs: set[str] = set()
         self._lookups: collections.deque[tuple[float, str, int | None]] = collections.deque(maxlen=64)
         self._thread_lookup: dict[int, tuple[float, str, int | None]] = {}
         self.dropped = 0
@@ -465,9 +484,8 @@ class SystemAuditor:
         """Where ``path`` really lands (symlinks resolved; the link itself
         when the operation does not follow it), not case-normalised.
 
-        Parent directories without any symlink are remembered, so a use
-        costs a couple of ``lstat`` calls instead of one per level.
-        ``realpath`` / ``lstat`` raise no audit event.
+        Nothing is cached: a link anywhere on the path may change between
+        uses. ``realpath`` / ``lstat`` raise no audit event.
         """
         if ".." in path.replace("\\", "/").split("/"):
             # abspath folds ".." before symlinks are seen: resolve it all.
@@ -481,18 +499,9 @@ class SystemAuditor:
         parent, name = os.path.split(absolute)
         if follow and os.path.islink(absolute):
             return os.path.realpath(absolute)
-        # Only directories with no symlink anywhere on their path are cached
-        # (their resolved form is themselves); a hit re-checks that the
-        # directory has not become a link since. A path through a symlink is
-        # resolved on every use, so retargeting the link is seen at once.
-        if parent in self._plain_dirs and not os.path.islink(parent):
-            return os.path.join(parent, name)
-        resolved = os.path.realpath(parent)
-        if os.path.normcase(resolved) == os.path.normcase(parent):
-            if len(self._plain_dirs) > 4096:
-                self._plain_dirs.clear()
-            self._plain_dirs.add(parent)
-        return os.path.join(resolved, name)
+        # Resolved on every use, all the way up: any level of the path may
+        # have been switched to a link since the last use.
+        return os.path.join(os.path.realpath(parent), name)
 
     def _exempt(self, path: str, read: bool) -> bool:
         return _under(path, self._exempt_dirs) or (read and _under(path, self._read_exempt))
@@ -554,6 +563,10 @@ class SystemAuditor:
         if isinstance(host, bytes):
             host = host.decode("idna", "replace")
         if not isinstance(host, str) or not host or _is_ip_literal(host):
+            return
+        if not _HOST_NAME.fullmatch(host):
+            # Not a host name the target can carry (a failed lookup of junk):
+            # the connect is then recorded by its address only.
             return
         port = _port(args[1]) if event == "socket.getaddrinfo" and len(args) > 1 else None
         entry = (time.monotonic(), host[:TARGET_MAX_CHARS], port)

@@ -180,6 +180,13 @@ def test_rename_records_both_ends_outside(env):
         ("os.exec", ("/opt/My App/bin/tool", ["tool"], None), "tool"),
         ("os.posix_spawn", ("/opt/My App/run", ["run"], None), "run"),
         ("os.system", ("/usr/bin/env FOO=1 tool",), "env"),
+        # Shell assignments are never taken for the program (they may be secrets).
+        ("os.system", ("API_TOKEN=secret curl https://example.invalid",), "curl"),
+        ("os.system", (b"A=1 B=2 /usr/bin/tool --x",), "tool"),
+        ("os.system", ('TOKEN="abc def" curl x',), "<shell>"),
+        ("os.system", ("API_TOKEN=secret",), "<shell>"),
+        ("os.system", ("$CMD --x",), "<shell>"),
+        ("subprocess.Popen", (None, "SECRET=x ./run.sh", None, None), "run.sh"),
         # A document opened with its program: only its extension.
         ("os.startfile", ("C:\\My Docs\\plan for 2027.pdf", None), "*.pdf"),
     ],
@@ -228,6 +235,24 @@ def test_a_long_host_name_never_pushes_the_address_out(env, ip):
     from plugin.server.application.plugins import capability_gate
 
     assert capability_gate._system_use_target(record["target"]) == record["target"]
+
+
+@pytest.mark.parametrize("bad", ['bad"name', "a\nb", "x y", "名字 带空格", "h" * 300])
+def test_a_lookup_of_an_unusable_name_leaves_the_address(env, bad):
+    # e.g. getaddrinfo('bad"name', 443, flags=AI_NUMERICHOST) still raises the event.
+    env.from_plugin("socket.getaddrinfo", (bad, 443, 0, 1, 0))
+    env.from_plugin("socket.connect", (None, ("192.0.2.10", 443)))
+    (record,) = env.records()
+    assert record["target"] == "192.0.2.10:443"
+    from plugin.server.application.plugins import capability_gate
+
+    assert capability_gate._system_use_target(record["target"]) == record["target"]
+
+
+def test_an_international_host_name_is_kept(env):
+    env.from_plugin("socket.getaddrinfo", ("例え.example", 443, 0, 1, 0))
+    env.from_plugin("socket.connect", (None, ("192.0.2.10", 443)))
+    assert env.records()[0]["target"] == "例え.example(192.0.2.10):443"
 
 
 def test_unix_socket_and_ipv6(env):
@@ -304,6 +329,22 @@ def test_a_directory_replaced_by_a_link_is_seen(env):
     env.from_plugin("open", (str(plain / "a.txt"), "w", os.O_WRONLY))
     (record,) = env.records()
     assert record["target"].endswith("/outside/*.txt")
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="needs unprivileged symlinks")
+def test_an_ancestor_directory_replaced_by_a_link_is_seen(env):
+    (env.data_dir / "current" / "sub").mkdir(parents=True)
+    target = env.data_dir / "current" / "sub" / "a.txt"
+    env.from_plugin("open", (str(target), "w", os.O_WRONLY))  # plain directories so far
+    assert env.records() == []
+    import shutil
+
+    shutil.rmtree(env.data_dir / "current")
+    (env.outside / "sub").mkdir()
+    os.symlink(env.outside, env.data_dir / "current")  # two levels up, now a link out
+    env.from_plugin("open", (str(target), "w", os.O_WRONLY))
+    (record,) = env.records()
+    assert record["target"].endswith("/sub/*.txt") and "data" not in record["target"]
 
 
 @pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="needs unprivileged symlinks")

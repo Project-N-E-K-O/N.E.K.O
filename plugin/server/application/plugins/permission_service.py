@@ -141,6 +141,9 @@ def current_source(plugin_id: str) -> PluginSource | None:
     except Exception:
         snapshot = None
     key = _candidates_key(candidates)
+    # The directory is chosen from the same resolved paths as the key, so a
+    # link switched between the two looks can't file B's source under A's key.
+    resolved = tuple(path for path in key[1] if path is not None)
     cached = _source_cache.get(plugin_id)
     if (
         snapshot is not None and cached is not None and cached[0] is manager
@@ -148,7 +151,7 @@ def current_source(plugin_id: str) -> PluginSource | None:
     ):
         return cached[3]
     try:
-        source = _resolve_source(plugin_id, manager, candidates, snapshot)
+        source = _resolve_source(plugin_id, manager, resolved, snapshot)
     except _SourceUnknown:
         return None  # not cached: a busy registry or lock error is not an answer
     if snapshot is None:

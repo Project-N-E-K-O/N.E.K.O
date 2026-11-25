@@ -1545,25 +1545,39 @@ def test_forget_plugin_grants_drops_only_the_given_plugins(monkeypatch, manager)
     assert store.read("other")["permissions"][MEMORY_READ]["state"] == "granted"
 
 
-class SnapshotInstallSources(FakeInstallSources):
-    """With the real manager's copy-on-write ``snapshot()``."""
+class LockSnapshot:
+    """A frozen lock state: what ``snapshot()`` returns."""
 
-    def __init__(self, entries, **kwargs):
-        super().__init__(entries, **kwargs)
-        self.current = object()
+    def __init__(self, entries, by_directory=None):
+        self.entries = list(entries)
+        self.by_directory = dict(by_directory or {})
+
+
+class SnapshotInstallSources:
+    """Like the real manager: copy-on-write ``snapshot()``, and lookups that
+    read the snapshot they are given (the current one otherwise)."""
+
+    is_degraded = False
+
+    def __init__(self, entries, *, by_directory=None):
+        self.current = LockSnapshot(entries, by_directory)
         self.lookups = 0
+
+    def publish(self, entries, by_directory=None):
+        self.current = LockSnapshot(entries, by_directory)
 
     def snapshot(self):
         return self.current
 
     def entry_for_directory(self, directory_path, *, include_removed=False, snapshot=None):
-        return super().entry_for_directory(directory_path, include_removed=include_removed)
+        entry = (snapshot or self.current).by_directory.get(Path(directory_path).name)
+        if entry is None or (entry.removed and not include_removed):
+            return None
+        return entry
 
     def list_entries(self, *, include_removed=False, snapshot=None):
         self.lookups += 1
-        if snapshot is not None and isinstance(snapshot, list):
-            return [e for e in snapshot if include_removed or not e.removed]
-        return super().list_entries(include_removed=include_removed)
+        return [e for e in (snapshot or self.current).entries if include_removed or not e.removed]
 
 
 def test_current_source_is_cached_until_the_lock_or_registration_changes(monkeypatch):
@@ -1578,8 +1592,7 @@ def test_current_source_is_cached_until_the_lock_or_registration_changes(monkeyp
     first = permission_service.current_source("demo")
     assert permission_service.current_source("demo") == first and manager.lookups == 1
     # Any change of the install-source lock publishes a new snapshot.
-    manager.entries = [_lock_entry(channel="builtin")]
-    manager.current = object()
+    manager.publish([_lock_entry(channel="builtin")])
     assert permission_service.current_source("demo").channel == "builtin" and manager.lookups == 2
     # A different registration is looked up again.
     registered["candidates"] = ("/nowhere/plugin.toml",)
@@ -1642,6 +1655,36 @@ def test_a_switched_symlink_on_the_config_path_is_looked_up_again(monkeypatch, t
     assert directories[-1] == (tmp_path / "b").resolve()
 
 
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="needs unprivileged symlinks")
+def test_the_directory_is_chosen_from_the_paths_the_key_was_made_of(monkeypatch, tmp_path):
+    # The link switches A -> B right after the key is made (and back later):
+    # the source cached under A's key must be worked out from A.
+    from plugin.server.infrastructure import config_paths
+
+    for name in ("a", "b"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "plugin.toml").write_text("", encoding="utf-8")
+    link = tmp_path / "link"
+    os.symlink(tmp_path / "a", link)
+    monkeypatch.setattr(config_paths, "_registered_plugin_config_candidates", lambda _pid: (str(link / "plugin.toml"),))
+    monkeypatch.setattr(permission_service, "_source_cache", {})
+    manager = SnapshotInstallSources([], by_directory={
+        "a": _lock_entry(channel="manual", directory_name="a"),
+        "b": _lock_entry(channel="builtin", directory_name="b"),
+    })
+    monkeypatch.setattr(install_source_module, "get_install_source_manager", lambda: manager)
+    real_key = permission_service._candidates_key
+
+    def key_then_switch(candidates):
+        key = real_key(candidates)
+        os.remove(link)
+        os.symlink(tmp_path / "b", link)
+        return key
+
+    monkeypatch.setattr(permission_service, "_candidates_key", key_then_switch)
+    assert permission_service.current_source("demo").channel == "manual"
+
+
 def test_busy_registry_is_not_cached(monkeypatch):
     from plugin.server.infrastructure import config_paths
 
@@ -1654,27 +1697,34 @@ def test_busy_registry_is_not_cached(monkeypatch):
     assert permission_service._source_cache == {}
 
 
-def test_cached_source_comes_from_the_snapshot_it_is_keyed_by(monkeypatch):
-    # Publish B, fail to save, roll back to the same snapshot object A: what
-    # is cached under A must be A's source, not B's read in between.
+@pytest.mark.parametrize("registered", [False, True])
+def test_cached_source_comes_from_the_snapshot_it_is_keyed_by(monkeypatch, tmp_path, registered):
+    # Publish B, fail to save, roll back to the same snapshot object A while
+    # the source is being read: what is cached under A must be A's source.
     from plugin.server.infrastructure import config_paths
 
-    monkeypatch.setattr(config_paths, "_registered_plugin_config_candidates", lambda _pid: ())
+    config = tmp_path / "demo" / "plugin.toml"
+    config.parent.mkdir()
+    config.write_text("", encoding="utf-8")
+    candidates = (str(config),) if registered else ()
+    monkeypatch.setattr(config_paths, "_registered_plugin_config_candidates", lambda _pid: candidates)
     monkeypatch.setattr(permission_service, "_source_cache", {})
-    snapshot_a = [_lock_entry(channel="manual")]
-    manager = SnapshotInstallSources(snapshot_a)
-    manager.current = snapshot_a
-    entries_b = [_lock_entry(channel="builtin")]
-    real_list = manager.list_entries
+    entry_a, entry_b = _lock_entry(channel="manual"), _lock_entry(channel="builtin")
+    manager = SnapshotInstallSources([entry_a], by_directory={"demo": entry_a})
+    snapshot_a = manager.current
 
-    def list_during_publish(*, include_removed=False, snapshot=None):
-        manager.entries = entries_b  # B published while we read
-        try:
-            return real_list(include_removed=include_removed, snapshot=snapshot)
-        finally:
-            manager.entries = snapshot_a  # rolled back: snapshot() is A again
+    def during_publish(read):
+        def lookup(*args, **kwargs):
+            manager.publish([entry_b], {"demo": entry_b})  # B published while we read
+            try:
+                return read(*args, **kwargs)
+            finally:
+                manager.current = snapshot_a  # rolled back: snapshot() is A again
+        return lookup
 
-    manager.list_entries = list_during_publish
+    manager.list_entries = during_publish(manager.list_entries)
+    manager.entry_for_directory = during_publish(manager.entry_for_directory)
     monkeypatch.setattr(install_source_module, "get_install_source_manager", lambda: manager)
     assert permission_service.current_source("demo").channel == "manual"
+    assert permission_service._source_cache["demo"][1] is snapshot_a
     assert permission_service._source_cache["demo"][3].channel == "manual"
