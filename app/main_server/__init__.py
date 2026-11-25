@@ -1445,6 +1445,22 @@ async def on_shutdown():
             cancellation_budget=cancellation_budget,
         )
 
+        # Theme Studio starts lazily, so there may be nothing to stop. When it
+        # did start: stop the schedule thread and let a write in progress finish
+        # (bounded; every write is atomic, so a timeout leaves no partial file).
+        try:
+            from theme_studio import shutdown_service_async as _theme_studio_shutdown
+
+            shutdown_cancellation = await _run_shutdown_step(
+                lambda: _theme_studio_shutdown(3.0),
+                what="theme studio shutdown",
+                deadline_monotonic=time.monotonic() + 3.5,
+                pending_cancellation=shutdown_cancellation,
+                cancellation_budget=cancellation_budget,
+            )
+        except Exception as e:
+            logger.debug(f"theme studio shutdown failed: {e}")
+
         # Wait for preload tasks if still running.
         if _preload_task:
             preload_task = _preload_task

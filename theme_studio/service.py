@@ -1920,10 +1920,10 @@ class ThemeStudioService(NekoPluginBase):
     def startup_sync(self) -> dict[str, Any]:
         """Startup initialization (sync): create dirs and theme.json, collect unused backgrounds, start the schedule thread.
 
-        The host has no plugin lifecycle layer; the service is initialized on
-        the first request or in the app startup hook. It must work in both
-        contexts (inside / outside a coroutine), so this synchronous method does
-        the real work and ``startup()`` is just its coroutine wrapper.
+        The host has no plugin lifecycle layer: the service starts lazily on the
+        first Theme Studio request (in practice the loader's first palette poll)
+        and is stopped by the main server's shutdown hook. Callers run it in a
+        worker thread; ``startup()`` is only a plugin-era coroutine wrapper.
         """
         # 数据目录不可写（权限 / 只读盘）时不能让启动整体失败：否则每次轮询都会
         # 重试启动并返回 500。读路径在文件缺失时本来就回退默认调色板。
@@ -1944,7 +1944,7 @@ class ThemeStudioService(NekoPluginBase):
             f"({len(palette['vars'])} 亮色 / {len(palette['dark_vars'])} 暗色变量)",
         )
         # 按时段自动换主题：后台线程，每 30s 醒一次、只在时段变化时写盘。
-        # 放在启动阶段是唯一能保证「用户重开应用后仍按时段生效」的时机。
+        # 随服务启动一起起（任何窗口的加载器首次轮询就会触发），保证重开应用后仍按时段生效。
         self._start_schedule_worker()
         return {"status": "ready", "theme_path": str(self.theme_path)}
 
@@ -2772,9 +2772,18 @@ class ThemeStudioService(NekoPluginBase):
                 # 而不是把它清成默认 —— 换一套配色不该顺手重置材质。
                 if isinstance(parsed.get("materials"), dict):
                     (
-                        palette["materials"],
+                        imported_materials,
                         material_warnings,
                     ) = _materials.normalize_materials(parsed["materials"])
+                    # 自定义预设是用户的素材库：与 apply_saved_theme 一样按名字合并，
+                    # 本地独有的预设必须留下，否则导入一份调色板就把它们全清空。
+                    stored_materials = _materials.normalize_materials(
+                        palette.get("materials")
+                    )[0]
+                    merged_custom = dict(stored_materials.get("custom_presets") or {})
+                    merged_custom.update(imported_materials.get("custom_presets") or {})
+                    imported_materials["custom_presets"] = merged_custom
+                    palette["materials"] = imported_materials
                     for message in material_warnings:
                         self._log("warning", f"导入的材质设置被修正 —— {message}")
 
@@ -3158,6 +3167,20 @@ class ThemeStudioService(NekoPluginBase):
         """Signal the schedule thread to exit (does not join)."""
         with self._schedule_lock:
             self._schedule_stop_event.set()
+
+    def _join_schedule_worker(self, timeout: float) -> bool:
+        """Wait up to ``timeout`` seconds for the schedule thread to exit.
+
+        Returns True when no worker is left running. Call after
+        :meth:`_stop_schedule_worker`; a worker idle in ``wait()`` exits at
+        once, one inside ``_schedule_tick()`` exits after finishing its write.
+        """
+        with self._schedule_lock:
+            thread = self._schedule_thread
+        if thread is None or not thread.is_alive():
+            return True
+        thread.join(timeout=max(0.0, timeout))
+        return not thread.is_alive()
 
     def _ensure_dirs(self) -> None:
         """Ensure themes/ and backgrounds/ exist (called once at plugin startup)."""
@@ -3566,10 +3589,14 @@ class ThemeStudioService(NekoPluginBase):
             }
             # 材质随主题成套保存：切回这套主题时「配色 + 玻璃质感」必须一起回来，
             # 否则用户会看到「换个主题连材质都变了」。
-            clean_materials, _material_warnings = _materials.normalize_materials(
-                materials
-            )
-            record["materials"] = clean_materials
+            # 但来源里根本没有材质（纯配色的 JSON / 分享包、老备份）时不能凭空造一份
+            # 出厂材质：那样应用这套主题会把用户当前的材质重置为关闭。缺省就不写，
+            # 应用时走「老条目没有 materials → 保持当前材质」的分支。
+            if isinstance(materials, dict):
+                clean_materials, _material_warnings = _materials.normalize_materials(
+                    materials
+                )
+                record["materials"] = clean_materials
             # 导入别人的主题时把作者写的简介/标签一起留住（面板「自定义」里会展示）。
             clean_note = _theme_note(note)
             if clean_note:

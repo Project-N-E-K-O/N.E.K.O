@@ -175,6 +175,48 @@ def test_reset_theme_keeps_saved_material_presets(studio):
 
 
 @pytest.mark.unit
+def test_import_with_materials_keeps_saved_material_presets(studio):
+    import json
+
+    from theme_studio import materials as ts_materials
+
+    saved = theme_studio.run_entry_sync(
+        "save_material_preset",
+        {"name": "my-glass", "materials": ts_materials.default_materials()},
+    )
+    assert saved.ok, saved.error
+    incoming = ts_materials.default_materials()
+    incoming["enabled"] = True
+    payload = json.dumps({"vars": {"--nts-accent": "#ff8800"}, "materials": incoming})
+
+    imported = theme_studio.run_entry_sync("import_theme", {"payload": payload})
+    assert imported.ok, imported.error
+    after = theme_studio.run_entry_sync("get_theme", {}).value["materials"]
+    assert "my-glass" in after["custom_presets"]
+    assert after["enabled"] is True
+
+
+@pytest.mark.unit
+def test_color_only_library_entry_does_not_reset_current_materials(studio):
+    from theme_studio import materials as ts_materials
+
+    current = ts_materials.default_materials()
+    current["enabled"] = True
+    applied = theme_studio.run_entry_sync("apply_theme", {"materials": current})
+    assert applied.ok, applied.error
+
+    record = studio._save_library_item(
+        name="colors-only", vars_map={"--nts-accent": "#3366ff"}, dark_map={}, materials=None
+    )
+    assert "materials" not in record
+
+    switched = theme_studio.run_entry_sync("apply_saved_theme", {"id": record["id"]})
+    assert switched.ok, switched.error
+    assert switched.value["material_enabled"] is True
+    assert theme_studio.run_entry_sync("get_theme", {}).value["materials"]["enabled"] is True
+
+
+@pytest.mark.unit
 def test_daily_schedule_applies_again_on_the_next_day(tmp_path):
     import json
     from datetime import datetime
@@ -272,6 +314,48 @@ def test_schedule_thread_restarts_after_shutdown(studio):
     assert restarted is studio
     assert studio._schedule_thread is not first
     assert studio._schedule_thread.is_alive()
+
+
+@pytest.mark.unit
+def test_shutdown_stops_schedule_thread_and_waits_for_running_entry(studio):
+    import threading
+    import time
+
+    worker = studio._schedule_thread
+    assert worker is not None and worker.is_alive()
+
+    # An entry still writing when shutdown starts: shutdown must wait for it.
+    theme_studio._ENTRY_LOCK.acquire()
+    threading.Timer(0.3, theme_studio._ENTRY_LOCK.release).start()
+    started = time.monotonic()
+    assert theme_studio.shutdown_service(3.0) is True
+    assert time.monotonic() - started >= 0.25
+    assert not worker.is_alive()
+    assert theme_studio.service_started() is False
+
+
+@pytest.mark.unit
+def test_shutdown_gives_up_after_its_timeout(studio):
+    import time
+
+    theme_studio._ENTRY_LOCK.acquire()
+    try:
+        started = time.monotonic()
+        assert theme_studio.shutdown_service(0.2) is False
+        assert time.monotonic() - started < 2.0
+    finally:
+        theme_studio._ENTRY_LOCK.release()
+
+
+@pytest.mark.unit
+def test_main_server_shutdown_hook_calls_theme_studio():
+    import inspect
+
+    from app.main_server import on_shutdown
+
+    source = inspect.getsource(on_shutdown)
+    assert "shutdown_service_async" in source
+    assert 'what="theme studio shutdown"' in source
 
 
 @pytest.mark.unit

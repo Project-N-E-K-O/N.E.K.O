@@ -40,6 +40,7 @@ import asyncio
 import inspect
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +68,7 @@ __all__ = [
     "service_started",
     "set_data_dir_override",
     "shutdown_service",
+    "shutdown_service_async",
     "startup_service",
     "startup_service_async",
 ]
@@ -131,11 +133,16 @@ async def startup_service_async() -> ThemeStudioService:
     return await asyncio.to_thread(startup_service)
 
 
-def shutdown_service() -> None:
-    """Stop the schedule thread (best effort).
+def shutdown_service(timeout: float | None = None) -> bool:
+    """Stop the schedule thread and let in-flight writes finish.
 
-    Not wired into the app shutdown hooks: the thread is a daemon and theme.json
-    writes are atomic (tmp + replace), so process exit is safe without it.
+    Called from the main server's shutdown hook (``on_shutdown`` in
+    ``app/main_server``) through :func:`shutdown_service_async`. With a
+    ``timeout`` it waits, within that budget in total, for the schedule thread
+    to exit and for any running entry to release ``_ENTRY_LOCK``, so a write
+    already in progress (theme.json, library, schedule) reaches the disk.
+    Every write is atomic (tmp + replace), so nothing half-written is left even
+    if the budget runs out. Returns True when everything stopped in time.
 
     Resets the started flag so a later :func:`startup_service` restarts the
     schedule thread instead of leaving it dead until the process restarts.
@@ -143,13 +150,38 @@ def shutdown_service() -> None:
     global _service_started
     service = _service
     if service is None:
-        return
+        return True
+    deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
     with _service_lock:
         try:
             service.shutdown()
         except Exception as exc:  # noqa: BLE001
             logger.warning("Theme Studio shutdown raised (ignored): %s", exc)
         _service_started = False
+    if deadline is None:
+        return True
+
+    def remaining() -> float:
+        return max(0.0, deadline - time.monotonic())
+
+    stopped = service._join_schedule_worker(remaining())  # noqa: SLF001
+    if _ENTRY_LOCK.acquire(timeout=remaining()):
+        _ENTRY_LOCK.release()
+        drained = True
+    else:
+        drained = False
+    if not (stopped and drained):
+        logger.warning(
+            "Theme Studio shutdown timed out (schedule thread stopped=%s, entries drained=%s)",
+            stopped,
+            drained,
+        )
+    return stopped and drained
+
+
+async def shutdown_service_async(timeout: float = 3.0) -> bool:
+    """:func:`shutdown_service` with a bounded wait, run in a worker thread."""
+    return await asyncio.to_thread(shutdown_service, timeout)
 
 
 def entries() -> list[str]:

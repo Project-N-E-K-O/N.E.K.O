@@ -112,7 +112,8 @@
   //   1.6.41 自升级重载只在聊天 / 字幕 / 提示 / HUD 窗口进行，编辑器页面不再被自动刷新。
   //   1.6.42 窗口重新获得焦点 / 变为可见时清掉轮询退避，立即重新拉取。
   //   1.6.43 同源请求带会话 cookie（远程窗口不再 401）；新调色板直接应用时作废仍在预热的旧调色板。
-  var SCRIPT_VERSION = '1.6.43';
+  //   1.6.44 预热闸门按调色板内容识别（同一秒两次切换不再停在旧主题）；预热超时放行。
+  var SCRIPT_VERSION = '1.6.44';
 
   // 允许的颜色值形态。刻意保守：只放行纯颜色，杜绝把任意 CSS 注进变量。
   var RE_HEX = /^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
@@ -318,6 +319,26 @@
     if (!p || typeof p !== 'object') return '';
     return String(p.updated_at || p.name || '');
   }
+
+  /**
+   * 预热闸门用的调色板签名：按内容算，不能只看 updated_at —— 服务端时间戳只精确
+   * 到秒，同一秒里连点两套带图主题时，两份调色板会被当成同一份，停在旧主题上。
+   */
+  function warmKeyOf(p) {
+    var text = '';
+    try {
+      text = JSON.stringify([p.name, p.enabled, p.vars, p.dark_vars, p.material_vars]);
+    } catch (e) {
+      text = stampOf(p);
+    }
+    // FNV-1a 32 位：只用来判「是不是同一份」，不需要抗碰撞。
+    var h = 0x811c9dc5;
+    for (var i = 0; i < text.length; i += 1) {
+      h ^= text.charCodeAt(i);
+      h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+    }
+    return stampOf(p) + '|' + text.length + '|' + h.toString(16);
+  }
   /* ===== IMAGE_WARM_BEGIN ===== */
   // ------------------------------------------------- 背景图预热（v1.5.21）
   //
@@ -377,18 +398,29 @@
     var pending = 0;
     var fired = false;
     var timer = 0;
+    var unsettled = Object.create(null);
     function finish() {
       if (fired) return;
       fired = true;
       if (timer) { clearTimeout(timer); timer = 0; }
       try { done(); } catch (e) { /* ignore */ }
     }
+    function timeout() {
+      // 超时要「放行」：把还没回来的图记成已处理，否则回调重新进 applyPalette 时
+      // 仍判定需要预热，又开一轮 1.5s —— 图一直不回来，新配色就一直不生效。
+      for (var u in unsettled) {
+        if (unsettled[u] && !warmedImages[u]) markImageWarmed(u, 'timeout');
+      }
+      finish();
+    }
     for (var i = 0; i < urls.length; i += 1) {
       if (warmedImages[urls[i]]) continue;
       pending += 1;
+      unsettled[urls[i]] = 1;
       (function (url) {
         var img = new Image();
         function settle(status) {
+          unsettled[url] = 0;
           markImageWarmed(url, status);
           pending -= 1;
           if (!pending) finish();
@@ -399,7 +431,7 @@
       }(urls[i]));
     }
     if (!pending) { finish(); return; }
-    timer = setTimeout(finish, IMAGE_WARM_TIMEOUT_MS);
+    timer = setTimeout(timeout, IMAGE_WARM_TIMEOUT_MS);
   }
   /* ===== IMAGE_WARM_END ===== */
 
@@ -2697,7 +2729,7 @@
     // 先把图预热再改 CSS，避免「旧图撤掉、新图未到」的空白闪烁。
     // 预热完成后会带着同一份调色板再进本函数一次（那时 warmedImages 已就位）。
     if (p.enabled !== false) {
-      var warmKey = stampOf(p) + '|' + (p.updated_at ? 'u' : 'n');
+      var warmKey = warmKeyOf(p);
       if (warmKey !== lastWarmKey) {
         var warmUrls = imageUrlsOf(p);
         var needWarm = false;
