@@ -14,6 +14,22 @@
         <span>{{ t('power.landing.inspect') }}</span>
       </div>
       <p class="muted">{{ t('power.landing.inspectHint') }}</p>
+
+      <!-- Missing where the service has no such setting. -->
+      <template v-if="view.beside">
+        <h3>{{ t('power.landing.beside.title') }}</h3>
+        <p class="muted">{{ t('power.landing.beside.hint') }}</p>
+        <el-radio-group :model-value="view.beside" :disabled="saving" class="choices" data-testid="landing-beside" @change="setBeside">
+          <!-- What each comes to is said beside it, before it is chosen. -->
+          <div v-for="choice in BESIDE" :key="choice" class="choice">
+            <el-radio :value="choice" :data-testid="`landing-beside-${choice}`">{{ t(`power.landing.beside.${choice}`) }}</el-radio>
+            <p class="muted" :class="{ warn: choice === 'open' }" :data-testid="`landing-beside-${choice}-hint`">
+              {{ t(`power.landing.beside.${choice}Hint`) }}
+            </p>
+          </div>
+        </el-radio-group>
+        <p class="muted">{{ t('power.landing.beside.permission') }}</p>
+      </template>
       <p v-if="note" class="muted" role="status" data-testid="landing-note">{{ note }}</p>
     </template>
     <p class="muted">{{ t('power.landing.notes') }}</p>
@@ -24,13 +40,17 @@
 import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getLanding, setLanding } from '@/api/console'
-import type { LandingSettings } from '@/api/console'
+import type { BesideChoice, LandingSettings } from '@/api/console'
 import { describeConsoleError } from './powerFormat'
 
 /**
  * How what a familiar changed in a git worktree of its own comes back into the project's directory:
- * at once, or once the user says so; and whether an inspector looks at it first every time.
+ * at once, or once the user says so; and whether an inspector looks at it first every time. And
+ * what becomes of work that waits for a familiar busy with something else, in a project without a
+ * leader: the user is asked whether another is to do it in a worktree of its own, another is, or
+ * it waits.
  */
+const BESIDE: readonly BesideChoice[] = ['ask', 'open', 'queue']
 const { t, te } = useI18n()
 const view = ref<LandingSettings | null>(null)
 const saving = ref(false)
@@ -56,6 +76,10 @@ const setMode = (mode: string | number | boolean | undefined) => {
   if (mode === 'auto' || mode === 'ask') void save({ mode })
 }
 const setInspect = (inspect: string | number | boolean) => void save({ inspect: inspect === true })
+const setBeside = (beside: string | number | boolean | undefined) => {
+  const choice = BESIDE.find(item => item === beside)
+  if (choice) void save({ beside: choice })
+}
 
 onMounted(async () => {
   try {
@@ -72,4 +96,8 @@ h2 { margin: 0 0 6px; font-size: 17px; }
 .muted { margin: 6px 0 0; color: var(--el-text-color-secondary); font-size: 13px; line-height: 1.6; }
 .block { margin: 8px 0; }
 .line { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+h3 { margin: 20px 0 4px; font-size: 15px; }
+.choices { display: flex; flex-direction: column; align-items: stretch; gap: 6px; margin-top: 8px; }
+.choice .muted { margin: 0 0 0 24px; }
+.choice .warn { color: var(--el-color-warning); }
 </style>

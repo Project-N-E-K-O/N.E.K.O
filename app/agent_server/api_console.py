@@ -60,6 +60,9 @@ _SHOWN_CATEGORIES: tuple[str, ...] = (
     # allowed for good from its question could not be taken back.
     "open_beside",
 )
+# What may become of work that waits for a member busy with something else (``beside``
+# of the landing settings): the user is asked, another member is opened, it waits.
+_BESIDE_CHOICES: tuple[str, ...] = ("ask", "open", "queue")
 _UNSET = object()
 # No setting of a page is a number beyond this; the largest number a row of the ledger is counted by.
 _NUMBER_MAX = 10**15
@@ -939,26 +942,35 @@ def build_console_router(
 
     @router.get("/landing")
     async def get_landing() -> dict[str, Any]:
-        """Return how what a task agent changed in its worktree is landed: ``mode`` (``auto`` / ``ask``) and ``inspect``."""
+        """Return the landing settings: ``mode`` (``auto`` / ``ask``), ``inspect``, and ``beside`` where the host has it."""
         host = await get_host()
         return {"success": True, **(await host.landing_settings())}
 
     @router.post("/landing")
     async def set_landing(payload: dict[str, Any]) -> dict[str, Any]:
-        """Set what is given of ``mode`` and ``inspect``; returns the settings as they stand."""
+        """Set what is given of ``mode``, ``inspect`` and ``beside``; returns the settings as they stand.
+
+        ``beside``: what becomes of work that waits for a member busy with
+        something else, in a project without a leader (``ask``, ``open``,
+        ``queue``; see ``NekoPowerHost.set_landing_settings``).
+        """
         payload = payload or {}
-        if "mode" not in payload and "inspect" not in payload:
+        # Only what is given is passed on: what is left out stays as it is.
+        given = {name: payload[name] for name in ("mode", "inspect", "beside") if name in payload}
+        if not given:
             raise _refuse(400, "nothing_to_change")
-        mode, inspect = payload.get("mode"), payload.get("inspect")
-        if "mode" in payload and mode not in ("auto", "ask"):
+        if "mode" in given and given["mode"] not in ("auto", "ask"):
             raise _refuse(400, "bad_mode")
-        if "inspect" in payload and not isinstance(inspect, bool):
+        if "inspect" in given and not isinstance(given["inspect"], bool):
             raise _refuse(400, "bad_flag")
+        if "beside" in given and given["beside"] not in _BESIDE_CHOICES:
+            raise _refuse(400, "bad_beside")
         host = await get_host()
         try:
-            changed = await host.set_landing_settings(mode=mode, inspect=inspect)
+            changed = await host.set_landing_settings(**given)
         except ValueError as exc:
-            raise _refuse(400, "bad_flag" if str(exc) == "bad_inspect" else "bad_mode") from None
+            code = {"bad_inspect": "bad_flag", "bad_beside": "bad_beside"}.get(str(exc), "bad_mode")
+            raise _refuse(400, code) from None
         except OSError:
             # Its file could not be written: the settings are what they were.
             raise _refuse(409, "landing_not_saved") from None

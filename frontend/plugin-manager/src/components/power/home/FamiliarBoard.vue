@@ -20,12 +20,17 @@
           </p>
         </header>
         <div class="members">
-          <FamiliarCard
-            v-for="card in hive.members"
-            :key="card.id"
-            :card="card"
-            :class="{ sub: hive.led && !card.leader }"
-            @open="open(hive, $event)"
+          <template v-for="card in hive.members" :key="card.id">
+            <FamiliarCard :card="card" :class="{ sub: hive.led && !card.leader }" @open="open(hive, $event)" />
+            <!-- Whether another is to do what waits for this one, busy with something else: drawn beside it, not there yet. -->
+            <BesideAsk
+              v-for="item in besidesOf(hive, card.id)" :key="item.id"
+              :item="item" :busy="busyOf(item)" :error="failed[item.id] ?? ''" @answer="answer(item, $event)"
+            />
+          </template>
+          <BesideAsk
+            v-for="item in besidesOf(hive, null)" :key="item.id"
+            :item="item" :busy="busyOf(item)" :error="failed[item.id] ?? ''" @answer="answer(item, $event)"
           />
         </div>
       </article>
@@ -37,9 +42,12 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { consoleErrorCode, getBoard } from '@/api/console'
+import { answerCommission, consoleErrorCode, getBoard } from '@/api/console'
 import type { Board, BoardCard } from '@/api/console'
+import { useBesideAsks } from '../colony/useBesideAsks'
+import type { BesideAsk as Beside } from '../colony/useBesideAsks'
 import { describeConsoleError } from '../powerFormat'
+import BesideAsk from './BesideAsk.vue'
 import FamiliarCard from './FamiliarCard.vue'
 
 // `led`: the project has a leader, and the others of it are drawn as under it. In a project with none, none is.
@@ -57,6 +65,11 @@ const POLL_FAILED_MS = 15000
 let timer: ReturnType<typeof setTimeout> | null = null
 let alive = true
 let turn = 0
+const { asks: besides, load: loadBesides } = useBesideAsks(board)
+// By its commission: with which button a question is being answered, and why an answer was not taken.
+// Each apart: another question can be answered while the answer to one is on its way.
+const answering = ref<Record<string, string>>({})
+const failed = ref<Record<string, string>>({})
 
 const hives = computed<Hive[]>(() => {
   const now = board.value
@@ -77,9 +90,30 @@ const tally = computed(() => {
   const all = hives.value.flatMap(hive => hive.members)
   return {
     working: all.filter(card => card.state === 'working').length,
-    waiting: all.filter(card => card.state === 'waiting_user').length,
+    waiting: all.filter(card => card.state === 'waiting_user').length + besides.value.length,
   }
 })
+
+/** What is asked of opening another beside the one named; with none named, beside one that is not on the board. */
+function besidesOf(hive: Hive, sessionId: string | null): Beside[] {
+  return besides.value.filter(item => hive.key === `project:${item.project}`
+    && (sessionId === null ? !hive.members.some(card => card.id === item.beside) : item.beside === sessionId))
+}
+const busyOf = (item: Beside) => answering.value[item.id] ?? ''
+const without = (kept: Record<string, string>, id: string) => Object.fromEntries(Object.entries(kept).filter(([key]) => key !== id))
+
+async function answer(item: Beside, given: { text?: string; choice?: string }) {
+  if (!given.choice && !given.text?.trim()) return
+  answering.value = { ...answering.value, [item.id]: given.choice ? `choice:${given.choice}` : 'answer' }
+  failed.value = without(failed.value, item.id)
+  try {
+    await answerCommission(item.id, { ...given, text: given.text?.trim(), question_id: item.ask.id })
+  } catch (failure) {
+    failed.value = { ...failed.value, [item.id]: describeConsoleError(failure, t, te) }
+  }
+  answering.value = without(answering.value, item.id)
+  await Promise.all([load(), loadBesides()])
+}
 
 function open(hive: Hive, card: BoardCard) {
   void router.push({

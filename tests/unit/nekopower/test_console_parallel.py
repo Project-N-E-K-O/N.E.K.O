@@ -360,6 +360,10 @@ async def test_the_landing_settings_are_shown_and_set_one_at_a_time(consoles, tm
         ({"inspect": "yes"}, (400, "bad_flag")),
         ({"inspect": None}, (400, "bad_flag")),
         ({"mode": "ask", "inspect": 1}, (400, "bad_flag")),
+        ({"beside": "sometimes"}, (400, "bad_beside")),
+        ({"beside": None}, (400, "bad_beside")),
+        ({"beside": ["ask"]}, (400, "bad_beside")),
+        ({"mode": "ask", "beside": "never"}, (400, "bad_beside")),
     ],
 )
 async def test_a_landing_setting_that_is_none_is_refused_and_nothing_is_set(consoles, tmp_path, payload, wanted):
@@ -367,6 +371,33 @@ async def test_a_landing_setting_that_is_none_is_refused_and_nothing_is_set(cons
     assert _code(await console.post("/landing", payload)) == wanted
     assert (await console.host.landing_settings())["mode"] == "auto"
     assert (await console.host.landing_settings())["inspect"] is False
+
+
+async def test_what_becomes_of_work_beside_a_busy_member_is_passed_on_with_nothing_else(consoles, tmp_path, monkeypatch):
+    console = consoles(tmp_path)
+    given: list[dict[str, Any]] = []
+
+    async def set_landing_settings(**changes: Any) -> dict[str, Any]:
+        given.append(changes)
+        return {"mode": "auto", "inspect": False, "beside": changes.get("beside", "ask"), "worktrees_per_project": 8}
+
+    monkeypatch.setattr(console.host, "set_landing_settings", set_landing_settings)
+    for beside in ("open", "queue", "ask"):
+        assert (await console.post("/landing", {"beside": beside})).json()["beside"] == beside
+    # What is not given is not passed on, beside or the others.
+    await console.post("/landing", {"mode": "ask"})
+    await console.post("/landing", {"inspect": True, "beside": "queue"})
+    assert given == [{"beside": "open"}, {"beside": "queue"}, {"beside": "ask"}, {"mode": "ask"}, {"inspect": True, "beside": "queue"}]
+
+
+async def test_a_value_of_beside_the_host_does_not_take_is_said_with_its_code(consoles, tmp_path, monkeypatch):
+    console = consoles(tmp_path)
+
+    async def set_landing_settings(**changes: Any) -> dict[str, Any]:
+        raise ValueError("bad_beside")
+
+    monkeypatch.setattr(console.host, "set_landing_settings", set_landing_settings)
+    assert _code(await console.post("/landing", {"beside": "open"})) == (400, "bad_beside")
 
 
 async def test_a_landing_setting_that_could_not_be_written_is_said_with_a_code(consoles, tmp_path, monkeypatch):
