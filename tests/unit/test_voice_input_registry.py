@@ -478,26 +478,27 @@ async def test_cancelled_wait_idle_keeps_cancellation_callback_owned() -> None:
     chat.on_cancelled.assert_awaited_once_with(turn, "cancelled_wait")
 
 
-async def test_wait_idle_returns_before_finished_tasks_discard_callbacks_run() -> None:
-    """wait_idle must not depend on the set-discard done-callback having run.
+@pytest.mark.timeout(10)
+async def test_wait_idle_lets_queued_discard_callbacks_run() -> None:
+    """wait_idle must yield so a finished task's queued discard callback runs.
 
     A background task can be finished while the ``discard`` callback that
     removes it from the set is still queued on the loop. Since Python 3.12,
     gather() over already-finished tasks completes without yielding, so a
-    loop that waited for that callback spun forever and never let it run.
+    loop that never yields itself spins forever and never lets it run.
     """
 
     registry = VoiceInputRegistry()
-
-    async def finish() -> None:
-        return None
-
-    finished = asyncio.create_task(finish())
-    await finished
-    # The state between the task finishing and its discard callback running.
+    finished = asyncio.get_running_loop().create_future()
     registry._background_tasks.add(finished)
+    finished.add_done_callback(registry._background_tasks.discard)
+    finished.set_result(None)
+    # Finished, with its discard callback queued on the loop but not yet run.
+    assert finished in registry._background_tasks
 
-    await asyncio.wait_for(registry.wait_idle(), timeout=2)
+    # Awaited inline: wait_idle() starts the loop in a new task, and that
+    # first yield would run the queued callback before the loop is reached.
+    await registry._wait_idle_impl()
     assert not registry._background_tasks
 
 
