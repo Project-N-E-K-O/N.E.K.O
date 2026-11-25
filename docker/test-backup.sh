@@ -31,9 +31,10 @@ make_home() {
     # 目录名必须与 storage_roots.py 一致（character_cards 不是 characters，
     # .cloudsave_staging 带点），否则测试会"验证"一个不存在的布局。
     mkdir -p "$state/config" "$state/memory" "$state/chat_sync" "$state/knowledge" \
-             "$state/nekoclaw/task_agent_space" "$state/nekoclaw/task_agents/agent1" \
+             "$state/nekopower/task_agent_space" "$state/nekopower/task_agents/agent1" \
              "$state/plugins" "$state/plugin_shared" \
              "$state/live2d" "$state/vrm" "$state/mmd" "$state/pngtuber" \
+             "$state/emote_templates" \
              "$state/avatar_tools" "$state/chat_avatars" "$state/workshop" \
              "$state/theater" "$state/jukebox" "$state/watch_together" \
              "$state/character_cards" "$state/card_faces" \
@@ -42,9 +43,13 @@ make_home() {
              "$state/.neko-plugin-installations/demo/vendor" "$home/ssl"
     printf 'core\n'      > "$state/config/core_config.json"
     printf 'sync\n'      > "$state/chat_sync/sync.db"
-    printf 'ledger\n'    > "$state/nekoclaw/ledger.db"
-    printf 'space\n'     > "$state/nekoclaw/task_agent_space/rules.md"
-    printf 'scratch\n'   > "$state/nekoclaw/task_agents/agent1/secret.txt"
+    printf 'ledger\n'    > "$state/nekopower/ledger.db"
+    printf '{}\n'        > "$state/nekopower/role_models.json"
+    printf '{}\n'        > "$state/nekopower/usage_limit.json"
+    printf '{}\n'        > "$state/nekopower/landing.json"
+    printf 'space\n'     > "$state/nekopower/task_agent_space/rules.md"
+    printf 'scratch\n'   > "$state/nekopower/task_agents/agent1/secret.txt"
+    printf 'tpl\n'       > "$state/emote_templates/tpl.zip"
     printf 'shared\n'    > "$state/plugin_shared/data.json"
     printf 'lock\n'      > "$state/plugins.lock.json"
     printf 'slock\n'     > "$state/plugins.0123456789abcdef.lock.json"
@@ -96,15 +101,19 @@ if sh "$BACKUP" --home "$WORK/t2home" --out "$WORK/t2out" --no-stop >"$WORK/t2.l
         # 少一类就是"恢复了但东西没了"，而这正是评审抓到的原始问题。
         for want in .local/share/N.E.K.O/config/core_config.json \
                     .local/share/N.E.K.O/chat_sync/sync.db \
-                    .local/share/N.E.K.O/nekoclaw/ledger.db \
-                    .local/share/N.E.K.O/nekoclaw/task_agent_space/rules.md \
+                    .local/share/N.E.K.O/nekopower/ledger.db \
+                    .local/share/N.E.K.O/nekopower/role_models.json \
+                    .local/share/N.E.K.O/nekopower/usage_limit.json \
+                    .local/share/N.E.K.O/nekopower/landing.json \
+                    .local/share/N.E.K.O/nekopower/task_agent_space/rules.md \
                     .local/share/N.E.K.O/plugin_shared/data.json \
                     .local/share/N.E.K.O/plugins.lock.json \
                     .local/share/N.E.K.O/plugins.0123456789abcdef.lock.json \
                     .local/share/N.E.K.O/character_cards/cat.json \
                     .local/share/N.E.K.O/chat_avatars/a.png \
-                    .local/share/N.E.K.O/memory/facts.json \
                     .local/share/N.E.K.O/live2d/model.moc3 \
+                    .local/share/N.E.K.O/emote_templates/tpl.zip \
+                    .local/share/N.E.K.O/memory/facts.json \
                     .local/share/N.E.K.O/workshop/pack.json \
                     .local/share/N.E.K.O/theater/scene.json \
                     .local/share/N.E.K.O/jukebox/list.json \
@@ -115,7 +124,7 @@ if sh "$BACKUP" --home "$WORK/t2home" --out "$WORK/t2out" --no-stop >"$WORK/t2.l
                     ssl/N.E.K.O.crt; do
             printf '%s\n' "$entries" | grep -qF "$want" || fail "主副本缺失: $want"
         done
-        printf '%s\n' "$entries" | grep -qF 'nekoclaw/task_agents/' && fail "nekoclaw/task_agents 不应被打包" || pass "nekoclaw/task_agents 已正确排除"
+        printf '%s\n' "$entries" | grep -qF 'nekopower/task_agents/' && fail "nekopower/task_agents 不应被打包" || pass "nekopower/task_agents 已正确排除"
         # 插件 vendor/ 是插件的 Python 依赖，容器启动时不会重建：默认必须备份，
         # 否则恢复出来的插件会报依赖缺失并被跳过。
         printf '%s\n' "$entries" | grep -qF 'vendor' \

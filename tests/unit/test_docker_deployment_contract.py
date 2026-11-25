@@ -142,8 +142,11 @@ def test_backup_inventory_covers_every_persistent_storage_root():
     block = script.split('MUST_LIST="', 1)[1].split('"', 1)[0]
     listed = {line.strip() for line in block.splitlines() if line.strip()}
 
+    assert "nekopower" not in listed, (
+        "bare 'nekopower' must NOT be in MUST_LIST (would drag in task_agents venvs and browser_profile locks)"
+    )
     assert "nekoclaw" not in listed, (
-        "bare 'nekoclaw' must NOT be in MUST_LIST (would drag in task_agents venvs and browser_profile locks)"
+        "bare 'nekoclaw' must NOT be in MUST_LIST"
     )
 
     missing_roots = sorted(declared - listed)
