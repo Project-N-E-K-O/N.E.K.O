@@ -295,7 +295,8 @@ test('R1111-P3-06: subscriptions-and-scan escapes errors, tags, status, and prev
   const escapeHtmlSrc = extractFunction(coreUploadSource, 'function escapeHtml(', '\n\n// 加载状态管理器');
   const preamble = [
     extractFunction(subscriptionsSource, 'function normalizeSubscriptionText(', '\nfunction renderSubscriptionsEmptyState('),
-    extractFunction(subscriptionsSource, 'function renderSubscriptionsEmptyState(', '\nfunction sanitizeWorkshopPreviewUrl('),
+    extractFunction(subscriptionsSource, 'function renderSubscriptionsEmptyState(', '\nfunction hasLoneSurrogate('),
+    extractFunction(subscriptionsSource, 'function hasLoneSurrogate(', '\nfunction sanitizeWorkshopPreviewUrl('),
     extractFunction(subscriptionsSource, 'function sanitizeWorkshopPreviewUrl(', '\n// 加载订阅物品'),
     extractFunction(subscriptionsSource, 'function loadSubscriptions(', '\n// 渲染当前页的订阅物品'),
     extractFunction(subscriptionsSource, 'function renderSubscriptionsPage(', '\nfunction formatWorkshopCharacterNameList('),
@@ -345,6 +346,15 @@ test('R1111-P3-06: subscriptions-and-scan escapes errors, tags, status, and prev
   assert.equal(context.sanitizeWorkshopPreviewUrl('javascript:alert(1)'), '../static/icons/Steam_icon_logo.png');
   assert.equal(context.sanitizeWorkshopPreviewUrl('data:text/html,<script>alert(1)</script>'), '../static/icons/Steam_icon_logo.png');
   assert.equal(context.sanitizeWorkshopPreviewUrl('https://cdn.example.com/a b.png'), 'https://cdn.example.com/a%20b.png');
+  assert.equal(
+    context.sanitizeWorkshopPreviewUrl('/api/steam/proxy-image?image_path=C%3A/Program%20Files%20%28x86%29/Steam/test.png'),
+    '/api/steam/proxy-image?image_path=C%3A/Program%20Files%20%28x86%29/Steam/test.png',
+  );
+  assert.equal(context.sanitizeWorkshopPreviewUrl('/static/previews/a b.png'), '/static/previews/a%20b.png');
+  assert.equal(context.sanitizeWorkshopPreviewUrl('/bad\uD800.png'), '../static/icons/Steam_icon_logo.png');
+  assert.equal(context.sanitizeWorkshopPreviewUrl('https://cdn.example.com/\uD800.png'), '../static/icons/Steam_icon_logo.png');
+  assert.equal(context.sanitizeWorkshopPreviewUrl('//evil.test/a.png'), '../static/icons/Steam_icon_logo.png');
+  assert.equal(context.sanitizeWorkshopPreviewUrl('/\\evil.test/a.png'), '../static/icons/Steam_icon_logo.png');
 
   // renderSubscriptionsPage escapes previewUrl, voiceClone data-item-id, and statusText
   context.allSubscriptions = [

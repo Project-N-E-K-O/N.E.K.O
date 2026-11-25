@@ -742,7 +742,8 @@ export default {
       exitFocusHint: 'Salir del modo enfoque (Esc)',
       controlError: 'Error de control de la UI del plugin',
       hostedRuntimePending: 'El contenedor Vue reconoció esta Surface. Los renderizadores TSX, Markdown y Auto se conectarán en una fase posterior.',
-      parseDocumentConfirm: '¿Permitir que el plugin "{plugin}" analice el documento "{file}"?'
+      parseDocumentConfirm: '¿Permitir que el plugin "{plugin}" analice el documento "{file}"?',
+      unsafeTargetBlocked: 'Se bloqueó una dirección de destino no segura'
     }
   },
   package: {

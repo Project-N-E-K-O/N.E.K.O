@@ -742,7 +742,8 @@ export default {
       exitFocusHint: 'Exit focus mode (Esc)',
       controlError: 'Plugin UI control error',
       hostedRuntimePending: 'The Vue container recognized this surface. TSX, Markdown, and Auto renderers will be connected in a later phase.',
-      parseDocumentConfirm: 'Allow plugin "{plugin}" to parse document "{file}"?'
+      parseDocumentConfirm: 'Allow plugin "{plugin}" to parse document "{file}"?',
+      unsafeTargetBlocked: 'Blocked unsafe target URL'
     }
   },
   package: {

@@ -42,5 +42,8 @@ def test_vendored_dompurify_matches_lockfile_version_and_provenance_notices():
 
 @pytest.mark.unit
 def test_cookies_login_template_cache_busts_vendored_purify():
+    lock_data = json.loads(PLUGIN_MANAGER_LOCK.read_text(encoding="utf-8"))
+    expected_version = lock_data["packages"]["node_modules/dompurify"]["version"]
+    actual_sha256_prefix = hashlib.sha256(PURIFY_JS.read_bytes()).hexdigest()[:12]
     template = COOKIES_LOGIN_TEMPLATE.read_text(encoding="utf-8")
-    assert '<script src="/static/libs/purify.js?v={{ static_asset_version | default(\'0\') }}"></script>' in template
+    assert f'<script src="/static/libs/purify.js?v={expected_version}-{actual_sha256_prefix}"></script>' in template

@@ -84,6 +84,18 @@ test('F0499: VRMExpression rejects prototype-chain keys and invalid types withou
   customHarness.expression.setBaseExpression('custom_expr');
   assert.equal(customHarness.expression.currentMood, 'custom_expr');
   assert.equal(customHarness.expression.autoChangeMood, false);
+
+  // When model is still loading (expressionManager unavailable), defer valid direct expressions while still blocking forbidden keys
+  const loadingHarness = createExpressionHarness([]);
+  loadingHarness.expression.manager.currentModel = null;
+  loadingHarness.expression.autoReturnToNeutral = false;
+  loadingHarness.expression.setBaseExpression('pending_model_expr');
+  assert.equal(loadingHarness.expression.currentMood, 'pending_model_expr');
+  assert.equal(loadingHarness.expression.autoChangeMood, false);
+  loadingHarness.expression.setBaseExpression('__proto__');
+  assert.equal(loadingHarness.expression.currentMood, 'pending_model_expr');
+  loadingHarness.expression.setBaseExpression('toString');
+  assert.equal(loadingHarness.expression.currentMood, 'pending_model_expr');
 });
 
 test('F0499: loadMoodMap and setMoodMap reject all Object.prototype shadowing keys', async () => {

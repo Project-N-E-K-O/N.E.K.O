@@ -326,7 +326,7 @@ describe('PluginActions runtime mutations', () => {
     await flushPromises()
 
     expect(openSpy).not.toHaveBeenCalled()
-    expect(elementPlusMocks.ElMessage.warning).toHaveBeenCalledWith('Open UI')
+    expect(elementPlusMocks.ElMessage.warning).toHaveBeenCalledWith('plugins.ui.unsafeTargetBlocked')
 
     app.unmount()
     container.remove()
@@ -359,7 +359,7 @@ describe('PluginActions runtime mutations', () => {
     button!.dispatchEvent(new Event('click'))
     await flushPromises()
     expect(routerMocks.push).not.toHaveBeenCalled()
-    expect(elementPlusMocks.ElMessage.warning).toHaveBeenCalledWith('Open Route')
+    expect(elementPlusMocks.ElMessage.warning).toHaveBeenCalledWith('plugins.ui.unsafeTargetBlocked')
 
     store.pluginSummaries = [{
       id: 'demo',

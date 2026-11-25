@@ -21,7 +21,10 @@ const apiMocks = vi.hoisted(() => ({
 vi.mock('@/api/plugins', () => apiMocks)
 
 const elementPlusMocks = vi.hoisted(() => ({
-  ElMessageBox: { confirm: vi.fn(() => Promise.resolve('confirm')) },
+  ElMessageBox: {
+    confirm: vi.fn(() => Promise.resolve('confirm')),
+    close: vi.fn(),
+  },
 }))
 
 vi.mock('element-plus', async (importOriginal) => ({
@@ -273,6 +276,7 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
     apiMocks.parseHostedDocument.mockReset()
     elementPlusMocks.ElMessageBox.confirm.mockReset()
     elementPlusMocks.ElMessageBox.confirm.mockResolvedValue('confirm')
+    elementPlusMocks.ElMessageBox.close.mockReset()
     localeRef.value = 'zh-CN'
   })
 
@@ -335,16 +339,21 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
     expect(document.querySelector('[data-testid="surface-locale-pending"]')).not.toBeNull()
   })
 
-  it('sandboxes static plugin surfaces without allow-same-origin while preserving modals', async () => {
-    const frame = await mountFrame()
-    const tokens = frame.iframe()?.getAttribute('sandbox')?.split(/\s+/) || []
+  it('preserves native modal dialogs for static surfaces and sandboxes hosted srcdoc without allow-same-origin', async () => {
+    const staticFrame = await mountFrame()
+    const staticTokens = staticFrame.iframe()?.getAttribute('sandbox')?.split(/\s+/) || []
+    expect(staticTokens).toContain('allow-modals')
+    expect(staticTokens).toContain('allow-same-origin')
 
-    expect(tokens).toContain('allow-scripts')
-    expect(tokens).toContain('allow-modals')
-    expect(tokens).not.toContain('allow-same-origin')
+    apiMocks.getPluginHostedSurfaceSource.mockResolvedValue(hostedSource)
+    apiMocks.getPluginHostedSurfaceContext.mockResolvedValue({ state: { label: 'ready' } })
+    const hostedFrame = await mountFrame(makeHostedSurface())
+    const hostedTokens = hostedFrame.iframe()?.getAttribute('sandbox')?.split(/\s+/) || []
+    expect(hostedTokens).toContain('allow-scripts')
+    expect(hostedTokens).not.toContain('allow-same-origin')
   })
 
-  it('rejects non-opaque origins on static surface postMessage', async () => {
+  it('rejects mismatched origins on static surface postMessage', async () => {
     const frame = await mountFrame()
     const iframeWindow = frame.iframe()?.contentWindow
     expect(iframeWindow).toBeTruthy()
@@ -352,6 +361,11 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
     window.dispatchEvent(new MessageEvent('message', {
       data: callRequest({ requestId: 'spoof-origin' }),
       origin: window.location.origin,
+      source: iframeWindow,
+    }))
+    window.dispatchEvent(new MessageEvent('message', {
+      data: callRequest({ requestId: 'evil-origin' }),
+      origin: 'https://evil.example',
       source: iframeWindow,
     }))
     await flushPromises()
@@ -844,7 +858,7 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
     )
   })
 
-  it('does not upload if surface changes or request cancels during host confirmation', async () => {
+  it('closes confirm dialog and does not upload if surface changes, unmounts, or request cancels during host confirmation', async () => {
     const firstConfirm = deferred<string>()
     elementPlusMocks.ElMessageBox.confirm.mockReturnValueOnce(firstConfirm.promise as any)
     const frame = await mountFrame()
@@ -856,7 +870,8 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
     ))
     await flushPromises()
     await frame.setSurface({ ...makeDocumentSurface(), id: 'secondary' })
-    firstConfirm.resolve('confirm')
+    expect(elementPlusMocks.ElMessageBox.close).toHaveBeenCalledTimes(1)
+    firstConfirm.reject('close')
     await flushPromises()
 
     expect(apiMocks.parseHostedDocument).not.toHaveBeenCalled()
@@ -870,10 +885,81 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
     ))
     await flushPromises()
     frame.dispatchRequest({ type: 'neko-hosted-surface-cancel', requestId: 'parse-cancel-during-confirm' })
+    expect(elementPlusMocks.ElMessageBox.close).toHaveBeenCalledTimes(2)
     secondConfirm.resolve('confirm')
     await flushPromises()
 
     expect(apiMocks.parseHostedDocument).not.toHaveBeenCalled()
+    expect(frame.postMessage).not.toHaveBeenCalled()
+
+    const thirdConfirm = deferred<string>()
+    elementPlusMocks.ElMessageBox.confirm.mockReturnValueOnce(thirdConfirm.promise as any)
+    frame.dispatchRequest(parseDocumentRequest(
+      new File(['pdf'], 'notes3.pdf', { type: 'application/pdf' }),
+      { requestId: 'parse-unmount-during-confirm', userInitiated: true },
+    ))
+    await flushPromises()
+    frame.unmount()
+    expect(elementPlusMocks.ElMessageBox.close).toHaveBeenCalledTimes(3)
+    thirdConfirm.resolve('confirm')
+    await flushPromises()
+
+    expect(apiMocks.parseHostedDocument).not.toHaveBeenCalled()
+  })
+
+  it('rejects with timeout and skips upload when confirmation settles after deadline expires', async () => {
+    const pendingConfirm = deferred<string>()
+    elementPlusMocks.ElMessageBox.confirm.mockReturnValueOnce(pendingConfirm.promise as any)
+    const frame = await mountFrame()
+    await frame.setSurface(makeDocumentSurface())
+
+    frame.dispatchRequest(parseDocumentRequest(
+      new File(['pdf'], 'late.pdf', { type: 'application/pdf' }),
+      { requestId: 'parse-expired-confirm', userInitiated: true, timeoutMs: 30000 },
+    ))
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(30000)
+    pendingConfirm.resolve('confirm')
+    await flushPromises()
+
+    expect(apiMocks.parseHostedDocument).not.toHaveBeenCalled()
+    expect(frame.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: 'parse-expired-confirm',
+        ok: false,
+        code: 'document_parse_timeout',
+      }),
+      '*',
+    )
+  })
+
+  it('carries remaining deadline across host confirmation into parseHostedDocument', async () => {
+    const pendingConfirm = deferred<string>()
+    elementPlusMocks.ElMessageBox.confirm.mockReturnValueOnce(pendingConfirm.promise as any)
+    apiMocks.parseHostedDocument.mockResolvedValue({
+      ok: true,
+      document: { name: 'notes.pdf', sourceType: 'pdf', content: 'ok' },
+    })
+    const frame = await mountFrame()
+    await frame.setSurface(makeDocumentSurface())
+
+    frame.dispatchRequest(parseDocumentRequest(
+      new File(['pdf'], 'notes.pdf', { type: 'application/pdf' }),
+      { requestId: 'parse-remaining-deadline', userInitiated: true, timeoutMs: 30000 },
+    ))
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(10000)
+    pendingConfirm.resolve('confirm')
+    await flushPromises()
+
+    expect(apiMocks.parseHostedDocument).toHaveBeenCalledWith(
+      expect.any(File),
+      expect.objectContaining({ timeoutMs: 20000 }),
+    )
+    expect(frame.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: 'parse-remaining-deadline', ok: true }),
+      '*',
+    )
   })
 
   it('aborts an in-flight upload when the surface changes', async () => {

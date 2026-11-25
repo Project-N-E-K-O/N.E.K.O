@@ -326,7 +326,8 @@ export function usePluginListContextActions() {
 
     if (action.kind === 'route') {
       if (!isSafeAppRoute(target)) {
-        ElMessage.warning(action.label)
+        console.warn('[plugin-list-actions] blocked unsafe route target', { pluginId: plugin.id, target })
+        ElMessage.warning(t('plugins.ui.unsafeTargetBlocked'))
         return
       }
       await router.push(target)
@@ -339,7 +340,8 @@ export function usePluginListContextActions() {
       // navigation，仅允许同源 http(s) URL。
       if (action.open_in === 'same_tab') {
         if (!isSafeSameTabUrl(target)) {
-          ElMessage.warning(action.label)
+          console.warn('[plugin-list-actions] blocked unsafe same_tab target', { pluginId: plugin.id, target })
+          ElMessage.warning(t('plugins.ui.unsafeTargetBlocked'))
           return
         }
         window.open(target, '_self')

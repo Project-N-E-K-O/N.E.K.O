@@ -742,7 +742,8 @@ export default {
       exitFocusHint: 'Выйти из режима фокуса (Esc)',
       controlError: 'Ошибка элемента управления UI плагина',
       hostedRuntimePending: 'Vue-контейнер распознал этот Surface. TSX, Markdown и Auto рендереры будут подключены позже.',
-      parseDocumentConfirm: 'Разрешить плагину «{plugin}» разобрать документ «{file}»?'
+      parseDocumentConfirm: 'Разрешить плагину «{plugin}» разобрать документ «{file}»?',
+      unsafeTargetBlocked: 'Небезопасный целевой адрес заблокирован'
     }
   },
   package: {

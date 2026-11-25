@@ -86,8 +86,24 @@ test('F0056: Jukebox.escapeHtml works without document and playAudio escapes son
   assert.equal(noDoc.sandbox.Jukebox.escapeHtml(null), '');
 
   const addedItems = [];
+  const listTitleEl = { textContent: '&lt;img src=x onerror=alert(1)&gt;' };
+  const listAuthorEl = { textContent: '&quot;&gt;&lt;svg onload=alert(1)&gt;' };
   const fakePlayer = {
     options: { loop: 'all' },
+    container: {
+      querySelectorAll(selector) {
+        if (selector === '.aplayer-list li') {
+          return [{
+            querySelector(subSelector) {
+              if (subSelector === '.aplayer-list-title') return listTitleEl;
+              if (subSelector === '.aplayer-list-author') return listAuthorEl;
+              return null;
+            },
+          }];
+        }
+        return [];
+      },
+    },
     list: {
       clear() {},
       add(items) {
@@ -99,13 +115,16 @@ test('F0056: Jukebox.escapeHtml works without document and playAudio escapes son
   };
   noDoc.sandbox.Jukebox.getPlayer = () => fakePlayer;
   await noDoc.sandbox.Jukebox.playAudio({
-    name: '<img src=x onerror=alert(1)>',
-    artist: '"><svg onload=alert(1)>',
+    name: 'Rock & Roll <img src=x onerror=alert(1)>',
+    artist: 'A & B "><svg onload=alert(1)>',
     audio: 'songs/test.mp3',
   });
   assert.equal(addedItems.length, 1);
-  assert.equal(addedItems[0].name, '&lt;img src=x onerror=alert(1)&gt;');
-  assert.equal(addedItems[0].artist, '&quot;&gt;&lt;svg onload=alert(1)&gt;');
+  assert.equal(addedItems[0].name, 'Rock &amp; Roll &lt;img src=x onerror=alert(1)&gt;');
+  assert.equal(addedItems[0].artist, 'A &amp; B &quot;&gt;&lt;svg onload=alert(1)&gt;');
+  // Playlist DOM textContent is restored to raw unescaped text so APlayer's $escape does not double-escape `&`
+  assert.equal(listTitleEl.textContent, 'Rock & Roll <img src=x onerror=alert(1)>');
+  assert.equal(listAuthorEl.textContent, 'A & B "><svg onload=alert(1)>');
 
   // Verify APlayer sink receives already-escaped strings so innerHTML does not contain raw tags
   const withDoc = loadJukeboxContext({ withDocument: true });
@@ -126,6 +145,48 @@ test('F0056: Jukebox.escapeHtml works without document and playAudio escapes son
   authorTarget.innerHTML = addedItems[0].artist ? ' - ' + addedItems[0].artist : '';
   assert.ok(!titleTarget.innerHTML.includes('<img'));
   assert.ok(!authorTarget.innerHTML.includes('<svg'));
+});
+
+test('F0056: music_ui.js escapes APlayer title/artist and syncs playlist textContent on init and reuse', () => {
+  const musicUiSource = fs.readFileSync(path.join(repoRoot, 'static/jukebox/music_ui.js'), 'utf8');
+  assert.ok(musicUiSource.includes('const escapeAPlayerHtml ='));
+  assert.ok(musicUiSource.includes('const syncAPlayerListText ='));
+
+  const escapeMatch = musicUiSource.match(/const escapeAPlayerHtml = [\s\S]*?\n    \};/);
+  const syncMatch = musicUiSource.match(/const syncAPlayerListText = [\s\S]*?\n    \};/);
+  assert.ok(escapeMatch && syncMatch);
+
+  const ctx = {};
+  vm.runInNewContext(
+    `${escapeMatch[0].replace('const escapeAPlayerHtml =', 'this.escapeAPlayerHtml =')}\n${syncMatch[0].replace('const syncAPlayerListText =', 'this.syncAPlayerListText =')}`,
+    ctx,
+  );
+  assert.equal(ctx.escapeAPlayerHtml('A & B <img src=x>'), 'A &amp; B &lt;img src=x&gt;');
+  assert.equal(ctx.escapeAPlayerHtml(null), '');
+
+  const listTitle = { textContent: 'A &amp; B' };
+  const listAuthor = { textContent: 'X &amp; Y' };
+  ctx.syncAPlayerListText({
+    container: {
+      querySelectorAll(sel) {
+        return sel === '.aplayer-list li'
+          ? [{ querySelector: (sub) => (sub === '.aplayer-list-title' ? listTitle : sub === '.aplayer-list-author' ? listAuthor : null) }]
+          : [];
+      },
+    },
+  }, [{ name: 'A & B', artist: 'X & Y' }]);
+  assert.equal(listTitle.textContent, 'A & B');
+  assert.equal(listAuthor.textContent, 'X & Y');
+
+  const initBlock = musicUiSource.split('if (needsInit) {', 2)[1].split('} else {', 2)[0];
+  assert.ok(initBlock.includes('name: escapeAPlayerHtml(trackInfo.name || \'\')'));
+  assert.ok(initBlock.includes('artist: escapeAPlayerHtml(trackInfo.artist || \'\')'));
+  assert.ok(initBlock.includes('syncAPlayerListText(localPlayer,'));
+
+  const reuseBlock = musicUiSource.split('// --- 复用模式下的切歌逻辑 ---', 2)[1].split('updatePlayBtnState(false);', 2)[0];
+  assert.ok(reuseBlock.includes('name: escapeAPlayerHtml(trackInfo.name || \'\')'));
+  assert.ok(reuseBlock.includes('artist: escapeAPlayerHtml(trackInfo.artist || \'\')'));
+  assert.ok(reuseBlock.includes('syncAPlayerListText(localPlayer,'));
 });
 
 test('F0055: SongActionManager normalizes untrusted action.format across all render tabs', () => {

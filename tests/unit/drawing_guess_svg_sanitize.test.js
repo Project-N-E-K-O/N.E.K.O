@@ -216,15 +216,15 @@ test('F04B-002: drawing-guess sanitizes AI SVG across showAiDrawing, renderSumma
   const { sandbox, aiDrawingEl, summaryAiArtEl, downloads } = harness;
 
   const maliciousSvg = [
-    '<svg viewBox="0 0 240 180" onload="alert(1)">',
+    '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 240 180" onload="alert(1)">',
     '<script>alert(1)</script>',
     '<foreignObject><body onload="alert(1)"></body></foreignObject>',
     '<image href="https://evil.test/x"/>',
-    '<a xlink:href="javascript:alert(1)"><circle cx="10" cy="10" r="5" fill="#112233"/></a>',
+    '<a xlink:href="javascript:alert(1)"><circle cx="10" cy="10" r=".8" fill="#112233"/></a>',
     '<animate onbegin="alert(1)"/>',
     '<g transform="translate(2, 3)">',
-    '<path d="M0 0 L10 10" onload="alert(1)" style="background:url(javascript:alert(1))" fill="url(javascript:alert(1))" stroke="#112233"/>',
-    '<rect x="5" y="5" width="20" height="20" fill="none" stroke="#223344"/>',
+    '<path d="M1e1 10 L20 20" onload="alert(1)" style="background:url(javascript:alert(1))" fill="url(javascript:alert(1))" stroke="#112233" stroke-width=".5"/>',
+    '<rect x="5" y="5" width="20" height="20" fill="none" stroke="#223344" opacity=".4"/>',
     '</g>',
     '</svg>',
   ].join('');
@@ -233,9 +233,11 @@ test('F04B-002: drawing-guess sanitizes AI SVG across showAiDrawing, renderSumma
   assert.equal(harness.wasRawAiInnerHtmlAssigned(), false);
   const rendered = aiDrawingEl.innerHTML;
   assert.ok(rendered.includes('<path'));
-  assert.ok(rendered.includes('d="M0 0 L10 10"'));
+  assert.ok(rendered.includes('d="M1e1 10 L20 20"'));
   assert.ok(rendered.includes('stroke="#112233"'));
+  assert.ok(rendered.includes('stroke-width=".5"'));
   assert.ok(rendered.includes('<rect'));
+  assert.ok(rendered.includes('opacity=".4"'));
   assert.ok(!rendered.includes('<script'));
   assert.ok(!rendered.includes('<foreignObject'));
   assert.ok(!rendered.includes('<image'));

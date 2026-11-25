@@ -651,7 +651,7 @@ class VRMExpression {
         const expressionNames = expressionManager ? this._getExpressionNames(expressionManager) : [];
         const isKnownMood = targetName === 'neutral' || hasOwnExpressionKey(this.moodMap, targetName);
         const isDirectModelExpression = Boolean(expressionManager && this._findExpression(expressionNames, [targetName]));
-        if (!isKnownMood && !isDirectModelExpression) {
+        if (expressionManager && !isKnownMood && !isDirectModelExpression) {
             console.warn(`[VRM Expression] 未知表情: ${targetName}，忽略切换`);
             return;
         }

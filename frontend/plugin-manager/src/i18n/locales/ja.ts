@@ -742,7 +742,8 @@ export default {
       exitFocusHint: 'フォーカスモードを終了（Esc）',
       controlError: 'プラグイン UI コントロールエラー',
       hostedRuntimePending: 'Vue コンテナはこの Surface を認識しています。TSX/Markdown/Auto レンダラーは後続フェーズで接続されます。',
-      parseDocumentConfirm: 'プラグイン「{plugin}」にドキュメント「{file}」の解析を許可しますか？'
+      parseDocumentConfirm: 'プラグイン「{plugin}」にドキュメント「{file}」の解析を許可しますか？',
+      unsafeTargetBlocked: '安全でない遷移先のためブロックしました'
     }
   },
   package: {

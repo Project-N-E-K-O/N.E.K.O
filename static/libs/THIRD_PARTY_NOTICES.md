@@ -138,7 +138,8 @@ original upstream release or its pre-import patch history.
 - Release: <https://registry.npmjs.org/dompurify/-/dompurify-3.4.17.tgz>
 - SHA-256: `a7b6dc750251c79c95592d6abf8908bcecb51319b0b5c4194b82222566ed29b9`
 - Local changes: none.
-- License: Dual-licensed under Apache-2.0 OR MPL-2.0; full text is in
+- License: Dual-licensed under Apache-2.0 OR MPL-2.0; redistributed here under
+  Apache-2.0, whose full text is in
   [DOMPURIFY.LICENSE](licenses/DOMPURIFY.LICENSE).
 
 ## Distribution and updates

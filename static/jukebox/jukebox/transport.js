@@ -1764,12 +1764,18 @@ Object.assign(window.Jukebox, {
 
     const audioUrl = Jukebox.resolveJukeboxFileUrl(song.audio);
 
+    const rawName = String(song.name || '');
+    const rawArtist = String(song.artist || '');
+    // APlayer renders the active header with innerHTML (`title.innerHTML = t.name`),
+    // so keep the stored track fields HTML-escaped and restore raw textContent on
+    // the playlist DOM nodes after APlayer's `$escape` pass to avoid `&amp;` display.
     player.list.add([{
-      name: Jukebox.escapeHtml(song.name || ''),
-      artist: Jukebox.escapeHtml(song.artist || ''),
+      name: Jukebox.escapeHtml(rawName),
+      artist: Jukebox.escapeHtml(rawArtist),
       url: audioUrl,
       cover: ''
     }]);
+    Jukebox.syncAPlayerListText(player, [{ name: rawName, artist: rawArtist }]);
 
     player.options.loop = 'none';
 
@@ -3024,6 +3030,20 @@ Object.assign(window.Jukebox, {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return `${mins}:${secs.toString().padStart(2, '0')}`;
+  },
+
+  syncAPlayerListText: function(player, tracks) {
+    const container = player && player.container;
+    if (!container || typeof container.querySelectorAll !== 'function' || !Array.isArray(tracks)) return;
+    const rows = container.querySelectorAll('.aplayer-list li');
+    for (let i = 0; i < rows.length && i < tracks.length; i += 1) {
+      const row = rows[i];
+      const track = tracks[i] || {};
+      const titleEl = typeof row.querySelector === 'function' ? row.querySelector('.aplayer-list-title') : null;
+      const authorEl = typeof row.querySelector === 'function' ? row.querySelector('.aplayer-list-author') : null;
+      if (titleEl) titleEl.textContent = track.name === null || track.name === undefined ? '' : String(track.name);
+      if (authorEl) authorEl.textContent = track.artist === null || track.artist === undefined ? '' : String(track.artist);
+    }
   },
 
   escapeHtml: function(text) {

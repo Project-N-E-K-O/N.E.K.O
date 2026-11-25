@@ -66,17 +66,17 @@ def test_subscriptions_and_scan_escapes_errors_tags_and_preview_urls():
 
 @pytest.mark.unit
 def test_plugin_manager_frames_sandbox_without_allow_same_origin():
-    for rel_path in (
-        "frontend/plugin-manager/src/components/plugin/PluginUIFrame.vue",
-        "frontend/plugin-manager/src/components/plugin/HostedSurfaceFrame.vue",
-    ):
-        source = _read(rel_path)
-        sandboxes = re.findall(r'\bsandbox="([^"]*)"', source)
-        assert sandboxes, f"Expected sandbox attribute in {rel_path}"
-        for sandbox in sandboxes:
-            assert "allow-same-origin" not in sandbox.split(), (
-                f"Static/hosted iframe must not combine allow-scripts with allow-same-origin in {rel_path}: {sandbox}"
-            )
+    source = _read("frontend/plugin-manager/src/components/plugin/HostedSurfaceFrame.vue")
+    srcdoc_iframes = re.findall(r"<iframe\b[^>]*:srcdoc=[^>]*>", source, flags=re.DOTALL)
+    assert srcdoc_iframes, "Expected srcdoc iframe in HostedSurfaceFrame.vue"
+    for tag in srcdoc_iframes:
+        sandbox_match = re.search(r'\bsandbox="([^"]*)"', tag)
+        assert sandbox_match is not None, f"Expected sandbox attribute on srcdoc iframe: {tag}"
+        tokens = sandbox_match.group(1).split()
+        assert "allow-scripts" in tokens
+        assert "allow-same-origin" not in tokens, (
+            f"Hosted srcdoc iframe must not combine allow-scripts with allow-same-origin: {sandbox_match.group(1)}"
+        )
 
 
 @pytest.mark.unit

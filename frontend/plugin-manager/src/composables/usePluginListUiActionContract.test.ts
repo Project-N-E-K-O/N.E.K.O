@@ -183,7 +183,7 @@ describe('plugin list UI action navigation contract', () => {
 
     expect(open).not.toHaveBeenCalled()
     expect(mocks.openExternalUrl).not.toHaveBeenCalled()
-    expect(ElMessage.warning).toHaveBeenCalledWith('Unsafe UI')
+    expect(ElMessage.warning).toHaveBeenCalledWith('plugins.ui.unsafeTargetBlocked')
   })
 
   it.each([
@@ -203,7 +203,7 @@ describe('plugin list UI action navigation contract', () => {
     await executeAction(action!, plugin)
 
     expect(mocks.routerPush).not.toHaveBeenCalled()
-    expect(ElMessage.warning).toHaveBeenCalledWith('Unsafe Route')
+    expect(ElMessage.warning).toHaveBeenCalledWith('plugins.ui.unsafeTargetBlocked')
   })
 
   it('allows same-origin absolute URL for same_tab', async () => {

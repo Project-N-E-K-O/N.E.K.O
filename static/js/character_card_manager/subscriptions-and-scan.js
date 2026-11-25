@@ -55,11 +55,39 @@ function renderSubscriptionsEmptyState(subscriptionsList, text) {
     subscriptionsList.replaceChildren(wrapper);
 }
 
+function hasLoneSurrogate(value) {
+    for (let i = 0; i < value.length; i += 1) {
+        const code = value.charCodeAt(i);
+        if (code >= 0xd800 && code <= 0xdbff) {
+            const next = i + 1 < value.length ? value.charCodeAt(i + 1) : 0;
+            if (next < 0xdc00 || next > 0xdfff) return true;
+            i += 1;
+        } else if (code >= 0xdc00 && code <= 0xdfff) {
+            return true;
+        }
+    }
+    return false;
+}
+
 function sanitizeWorkshopPreviewUrl(url, fallback = '../static/icons/Steam_icon_logo.png') {
     const raw = typeof url === 'string' ? url.trim() : '';
-    if (!raw || /[\u0000-\u001f\u007f]/.test(raw)) return fallback;
+    if (!raw || /[\u0000-\u001f\u007f]/.test(raw) || hasLoneSurrogate(raw)) return fallback;
     if ((raw.startsWith('/') && !raw.startsWith('//')) || raw.startsWith('./') || raw.startsWith('../')) {
-        return encodeURI(raw);
+        const pathBeforeQuery = raw.split(/[?#]/, 1)[0];
+        if (pathBeforeQuery.includes('\\')) return fallback;
+        try {
+            const baseHref = (typeof window !== 'undefined' && window.location && /^https?:$/.test(window.location.protocol) && window.location.href)
+                ? window.location.href
+                : 'http://localhost/';
+            const baseUrl = new URL(baseHref);
+            const parsed = new URL(raw, baseUrl);
+            if (parsed.origin !== baseUrl.origin || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
+                return fallback;
+            }
+            return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+        } catch {
+            return fallback;
+        }
     }
     try {
         const parsed = new URL(raw);

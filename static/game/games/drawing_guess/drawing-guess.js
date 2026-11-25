@@ -2656,11 +2656,11 @@
       return false;
     }
     if (attrName === 'xmlns') return value === AI_SVG_NS;
-    if (attrName === 'viewBox') return /^-?\d+(?:\.\d+)?(?:[\s,]+-?\d+(?:\.\d+)?){3}$/.test(value);
+    if (attrName === 'viewBox') return /^-?(?:\d+(?:\.\d+)?|\.\d+)(?:[\s,]+-?(?:\d+(?:\.\d+)?|\.\d+)){3}$/.test(value);
     if (attrName === 'preserveAspectRatio') return /^(?:none|(?:x(?:Min|Mid|Max)Y(?:Min|Mid|Max))(?:\s+(?:meet|slice))?)$/.test(value);
     if (attrName === 'aria-hidden' || attrName === 'focusable') return value === 'true' || value === 'false';
     if (attrName === 'role') return /^[a-zA-Z-]{1,32}$/.test(value);
-    if (attrName === 'd') return /^[MmZzLlHhVvCcSsQqTtAa0-9.,+\-\s]+$/.test(value);
+    if (attrName === 'd') return /^[MmZzLlHhVvCcSsQqTtAaEe0-9.,+\-\s]+$/.test(value);
     if (attrName === 'points') return /^[0-9.,+\-\s]+$/.test(value);
     if (attrName === 'transform') return /^(?:(?:translate|scale|rotate|skewX|skewY|matrix)\(\s*[-+\d.,\s]+\)\s*)+$/.test(value);
     if (attrName === 'stroke-linecap') return /^(?:butt|round|square)$/.test(value);
@@ -2670,7 +2670,7 @@
       return /^(?:none|transparent|currentColor|#[0-9a-fA-F]{3,8}|(?:rgb|hsl)a?\(\s*[-+\d.,%\s]+\)|[a-zA-Z]{1,32})$/.test(value);
     }
     if (attrName === 'stroke-dasharray') return /^(?:none|[-+\d.,\s]+)$/.test(value);
-    return /^-?\d+(?:\.\d+)?(?:%|px)?$/.test(value);
+    return /^-?(?:\d+(?:\.\d+)?|\.\d+)(?:%|px)?$/.test(value);
   }
 
   function sanitizeAiDrawingSvgElement(svgMarkup) {

@@ -150,7 +150,8 @@ async function handleOpenUi() {
   if (target) {
     if (action.kind === 'route') {
       if (!isSafeAppRoute(target)) {
-        ElMessage.warning(uiActionLabel.value)
+        console.warn('[PluginActions] blocked unsafe route target', { pluginId: props.pluginId, target })
+        ElMessage.warning(t('plugins.ui.unsafeTargetBlocked'))
         return
       }
       await router.push(target)
@@ -160,7 +161,8 @@ async function handleOpenUi() {
       openExternalUrl(target)
     } else {
       if (!isSafeSameTabUrl(target)) {
-        ElMessage.warning(uiActionLabel.value)
+        console.warn('[PluginActions] blocked unsafe same_tab target', { pluginId: props.pluginId, target })
+        ElMessage.warning(t('plugins.ui.unsafeTargetBlocked'))
         return
       }
       window.open(target, '_self')

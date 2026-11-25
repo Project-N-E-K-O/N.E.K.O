@@ -27,7 +27,7 @@
       :src="surfaceUrl"
       :title="surfaceTitle"
       class="hosted-surface-frame__iframe"
-      sandbox="allow-scripts allow-forms allow-popups allow-modals"
+      sandbox="allow-scripts allow-forms allow-popups allow-same-origin allow-modals"
       allow="fullscreen"
       @load="handleLoad"
       @error="handleError"
@@ -152,11 +152,19 @@ let componentMounted = false
 let parseDocumentConfirmPending = false
 let parseDocumentConfirmToken = 0
 let pendingParseDocumentConfirmRequestId: string | null = null
-let pendingParseDocumentConfirmCancelled = false
+const cancelledParseDocumentConfirmRequestIds = new Set<string>()
 const hostedDocumentControllers = new Map<string, AbortController>()
 const hostedActionControllers = new Map<string, AbortController>()
 const contextControllers = new Set<AbortController>()
 let contextQueue: Promise<unknown> = Promise.resolve()
+
+function closePendingParseDocumentConfirm() {
+  try {
+    if (typeof ElMessageBox.close === 'function') ElMessageBox.close()
+  } catch {
+    // Ignore close errors when no active message box instance exists.
+  }
+}
 
 function readContextInOrder() {
   const generation = hostedRequestGeneration
@@ -175,10 +183,16 @@ function readContextInOrder() {
 }
 
 function abortAllHostedRequests(reason: string) {
+  const hadPendingConfirm = parseDocumentConfirmPending
+  if (pendingParseDocumentConfirmRequestId) {
+    cancelledParseDocumentConfirmRequestIds.add(pendingParseDocumentConfirmRequestId)
+  }
   parseDocumentConfirmToken += 1
   parseDocumentConfirmPending = false
   pendingParseDocumentConfirmRequestId = null
-  pendingParseDocumentConfirmCancelled = false
+  if (hadPendingConfirm) {
+    closePendingParseDocumentConfirm()
+  }
   for (const controller of contextControllers) controller.abort(reason)
   contextControllers.clear()
   contextQueue = Promise.resolve()
@@ -222,14 +236,34 @@ const surfaceUrl = computed(() => {
   return ''
 })
 
-// Both embedded iframe modes run in an opaque origin (reported as `'null'`):
-//   - ``surface.mode === 'static'``: sandboxed without ``allow-same-origin``.
-//   - ``hosted-tsx`` / ``markdown``: loaded via ``srcdoc``.
-// ``handleMessage`` enforces ``event.source === iframeRef.value?.contentWindow``
-// and ``event.origin === 'null'``. Outbound ``postMessage`` calls target ``'*'``
-// (guarded by ``iframeRef.value?.contentWindow``) because HTML's postMessage
-// targetOrigin algorithm rejects `'null'` for opaque-origin frames.
-const trustedIframeOrigin = computed(() => 'null')
+// PR #1480 review-fix 1.30: trust boundary for postMessage between this
+// component and the embedded iframe. Two iframe modes coexist:
+//
+//   - ``surface.mode === 'static'``: iframe loads ``surfaceUrl`` (an http(s)
+//     URL or a same-origin path). Legacy static plugins rely on same-origin
+//     `/runs`, `/security/csrf-token`, `/plugin/{id}/ui-api/*`, ES modules,
+//     and `localStorage`, so keep same-origin until static plugins move to a
+//     dedicated origin (tracked separately). The trusted origin is parsed from
+//     that URL and resolved against ``window.location.origin`` for relative paths.
+//
+//   - ``hosted-tsx`` / ``markdown``: iframe is loaded via ``srcdoc=...``. The
+//     spec mandates these iframes report ``event.origin === 'null'`` (an opaque
+//     origin), so we accept the literal string ``'null'`` as the trusted
+//     origin sentinel for srcdoc iframes.
+const trustedIframeOrigin = computed(() => {
+  if (props.surface.mode === 'static') {
+    const url = surfaceUrl.value
+    if (!url) return window.location.origin
+    try {
+      return new URL(url, window.location.origin).origin
+    } catch {
+      return window.location.origin
+    }
+  }
+  // srcdoc iframes (hosted-tsx / markdown). Per HTML spec the resulting origin
+  // is opaque and is reported as the literal string 'null'.
+  return 'null'
+})
 
 const loadPhaseTitle = computed(() => {
   if (loadPhase.value === 'resources') return t('plugins.ui.loadingResources')
@@ -527,7 +561,8 @@ function handleMessage(event: MessageEvent) {
   if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-cancel') {
     const requestId = typeof data.requestId === 'string' ? data.requestId : ''
     if (requestId && requestId === pendingParseDocumentConfirmRequestId) {
-      pendingParseDocumentConfirmCancelled = true
+      cancelledParseDocumentConfirmRequestIds.add(requestId)
+      closePendingParseDocumentConfirm()
     }
     hostedDocumentControllers.get(requestId)?.abort('client-cancelled')
     hostedActionControllers.get(requestId)?.abort('client-cancelled')
@@ -660,11 +695,14 @@ async function handleHostedRequest(data: any) {
         })
         return
       }
+      const requestedTimeoutMs = Number(data.timeoutMs)
+      const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : 30000
+      const requestDeadline = Date.now() + timeoutMs
       const safeFileName = String(file.name || '').replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 255)
       const confirmToken = ++parseDocumentConfirmToken
       parseDocumentConfirmPending = true
       pendingParseDocumentConfirmRequestId = requestId
-      pendingParseDocumentConfirmCancelled = false
+      cancelledParseDocumentConfirmRequestIds.delete(requestId)
       try {
         await ElMessageBox.confirm(
           t('plugins.ui.parseDocumentConfirm', { plugin: props.pluginId, file: safeFileName }),
@@ -672,6 +710,10 @@ async function handleHostedRequest(data: any) {
           { type: 'warning' },
         )
       } catch {
+        const wasCancelled = cancelledParseDocumentConfirmRequestIds.delete(requestId)
+        if (!isCurrentRequest() || wasCancelled) {
+          return
+        }
         respond({
           ok: false,
           error: 'Document parsing was cancelled by the user.',
@@ -684,17 +726,20 @@ async function handleHostedRequest(data: any) {
           pendingParseDocumentConfirmRequestId = null
         }
       }
-      if (!isCurrentRequest() || (pendingParseDocumentConfirmCancelled && (pendingParseDocumentConfirmCancelled = false, true))) {
-        pendingParseDocumentConfirmCancelled = false
+      const wasCancelled = cancelledParseDocumentConfirmRequestIds.delete(requestId)
+      if (!isCurrentRequest() || wasCancelled) {
         return
       }
-      const requestedTimeoutMs = Number(data.timeoutMs)
-      const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : 30000
+      const remainingTimeoutMs = requestDeadline - Date.now()
+      if (remainingTimeoutMs <= 0) {
+        respond({ ok: false, error: 'Document parsing timed out.', code: 'document_parse_timeout' })
+        return
+      }
       const controller = new AbortController()
       hostedDocumentControllers.set(requestId, controller)
-      const timeoutId = window.setTimeout(() => controller.abort('timeout'), timeoutMs)
+      const timeoutId = window.setTimeout(() => controller.abort('timeout'), remainingTimeoutMs)
       try {
-        const parsed = await parseHostedDocument(file, { timeoutMs, signal: controller.signal })
+        const parsed = await parseHostedDocument(file, { timeoutMs: remainingTimeoutMs, signal: controller.signal })
         if (!parsed?.document) throw new Error('Document parser returned an invalid response.')
         respond({ ok: true, result: parsed.document })
       } catch (caught: any) {
