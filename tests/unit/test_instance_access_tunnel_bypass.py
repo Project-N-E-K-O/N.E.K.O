@@ -37,6 +37,44 @@ from utils.instance_access import (
 KEY = "test-only-r1111-key-" + "k" * 40
 
 
+def _asgi_transport_preserving_default_port(
+    app: FastAPI,
+    *,
+    client: tuple[str, int] = ("127.0.0.1", 50000),
+) -> httpx.ASGITransport:
+    """Wrap *app* so ASGI scopes restore the scheme default port when httpx strips port 80/443."""
+
+    async def _asgi_app_with_default_port(scope, receive, send) -> None:
+        server = scope.get("server")
+        if isinstance(server, (tuple, list)) and len(server) == 2 and server[1] is None:
+            scheme = str(scope.get("scheme") or "").lower()
+            default_port = 443 if scheme in {"https", "wss"} else 80
+            scope = {**scope, "server": (server[0], default_port)}
+        await app(scope, receive, send)
+
+    return httpx.ASGITransport(app=_asgi_app_with_default_port, client=client)
+
+
+def _make_isolated_core_config_manager(tmp_path: Path):
+    """Create a per-test core_config manager backed by tmp_path to avoid mutating shared user data."""
+    from utils.config_manager.storage_roots import StorageRootsMixin
+
+    manager = StorageRootsMixin.__new__(StorageRootsMixin)
+    manager.docs_dir = tmp_path
+    manager.app_docs_dir = tmp_path
+    manager.load_root_state = lambda: {"mode": "normal"}
+    manager.config_dir = tmp_path / "config"
+    manager.project_config_dir = tmp_path / "project-config"
+    manager.config_dir.mkdir(parents=True, exist_ok=True)
+    manager.project_config_dir.mkdir(parents=True, exist_ok=True)
+    manager.save_json_config(
+        "core_config.json",
+        {"coreApi": "qwen", "assistApi": "qwen", "coreApiKey": "old-key", "enableCustomApi": True},
+    )
+    manager._core_config_cache = None
+    return manager
+
+
 def _build_guarded_app() -> FastAPI:
     app = FastAPI()
 
@@ -185,7 +223,7 @@ async def test_internal_http_client_attaches_signed_proof_in_remote_mode_and_val
     internal_client = get_internal_http_client()
     try:
         # Exercise the registered request event hook directly against an ASGI app.
-        transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 50000))
+        transport = _asgi_transport_preserving_default_port(app)
         hooked_client = httpx.AsyncClient(
             transport=transport,
             event_hooks=internal_client.event_hooks,
@@ -293,7 +331,7 @@ async def test_raw_path_signing_parity_across_client_and_middleware(
         return {"ok": True, "item": item}
 
     app.add_middleware(InstanceAccessMiddleware)
-    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 50000))
+    transport = _asgi_transport_preserving_default_port(app)
 
     async with httpx.AsyncClient(transport=transport) as unsigned:
         assert (await unsigned.get(url)).status_code == 401
@@ -335,52 +373,69 @@ async def test_raw_path_signing_parity_across_client_and_middleware(
 
 
 async def test_migrated_internal_loopback_callers_succeed_under_proxy_mode(
-    clean_user_data_dir,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
     """R1111-01: migrated internal loopback callers attach signed proof and pass InstanceAccessMiddleware."""
+    _clear_deployment_mode_env(monkeypatch)
     monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", KEY)
     monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    monkeypatch.delenv("NEKO_USER_PLUGIN_SERVER_PORT", raising=False)
+
+    pinned_main_port = 48911
+    pinned_memory_port = 48912
+    pinned_tool_port = 48915
+    pinned_user_plugin_port = 48916
+    monkeypatch.setattr(config, "MAIN_SERVER_PORT", pinned_main_port)
+    monkeypatch.setattr(config, "MEMORY_SERVER_PORT", pinned_memory_port)
+    monkeypatch.setattr(config, "TOOL_SERVER_PORT", pinned_tool_port)
+    monkeypatch.setattr(config, "USER_PLUGIN_SERVER_PORT", pinned_user_plugin_port)
 
     app = FastAPI()
-    recorded: list[tuple[str, str, bool]] = []
+    recorded: list[tuple[str, str, int | None, bool]] = []
+
+    def _recorded_port(request: FastAPIRequest) -> int | None:
+        server = request.scope.get("server")
+        if isinstance(server, (tuple, list)) and len(server) == 2:
+            return server[1]
+        return None
 
     @app.post("/notify_config_changed")
     async def notify_config_changed(request: FastAPIRequest):
-        recorded.append(("POST", request.url.path, bool(request.headers.get(INTERNAL_SERVICE_HEADER))))
+        recorded.append(("POST", request.url.path, _recorded_port(request), bool(request.headers.get(INTERNAL_SERVICE_HEADER))))
         return {"status": "ok"}
 
     @app.post("/reload")
     async def reload_memory(request: FastAPIRequest):
-        recorded.append(("POST", request.url.path, bool(request.headers.get(INTERNAL_SERVICE_HEADER))))
+        recorded.append(("POST", request.url.path, _recorded_port(request), bool(request.headers.get(INTERNAL_SERVICE_HEADER))))
         return {"status": "success"}
 
     @app.get("/plugins")
     async def list_plugins(request: FastAPIRequest):
-        recorded.append(("GET", request.url.path, bool(request.headers.get(INTERNAL_SERVICE_HEADER))))
+        recorded.append(("GET", request.url.path, _recorded_port(request), bool(request.headers.get(INTERNAL_SERVICE_HEADER))))
         return {"plugins": []}
 
     @app.post("/api/tools/register")
     async def register_tool_route(request: FastAPIRequest):
-        recorded.append(("POST", request.url.path, bool(request.headers.get(INTERNAL_SERVICE_HEADER))))
+        recorded.append(("POST", request.url.path, _recorded_port(request), bool(request.headers.get(INTERNAL_SERVICE_HEADER))))
         return {"ok": True, "affected_roles": ["Lanlan"], "failed_roles": []}
 
     @app.post("/api/llm-tools/callback/p/t")
     async def plugin_tool_callback(request: FastAPIRequest):
-        recorded.append(("POST", request.url.path, bool(request.headers.get(INTERNAL_SERVICE_HEADER))))
+        recorded.append(("POST", request.url.path, _recorded_port(request), bool(request.headers.get(INTERNAL_SERVICE_HEADER))))
         return {"output": {"ran": True}, "is_error": False}
 
     app.add_middleware(InstanceAccessMiddleware)
-    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 50000))
+    transport = _asgi_transport_preserving_default_port(app)
 
     # Sanity check: headerless callers are rejected on every internal endpoint.
     async with httpx.AsyncClient(transport=transport) as raw_client:
         for method, path in (
-            ("POST", f"http://127.0.0.1:{TOOL_SERVER_PORT}/notify_config_changed"),
-            ("POST", f"http://127.0.0.1:{MEMORY_SERVER_PORT}/reload"),
-            ("GET", f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins"),
-            ("POST", f"http://127.0.0.1:{MAIN_SERVER_PORT}/api/tools/register"),
-            ("POST", f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/api/llm-tools/callback/p/t"),
+            ("POST", f"http://127.0.0.1:{pinned_tool_port}/notify_config_changed"),
+            ("POST", f"http://127.0.0.1:{pinned_memory_port}/reload"),
+            ("GET", f"http://127.0.0.1:{pinned_user_plugin_port}/plugins"),
+            ("POST", f"http://127.0.0.1:{pinned_main_port}/api/tools/register"),
+            ("POST", f"http://127.0.0.1:{pinned_user_plugin_port}/api/llm-tools/callback/p/t"),
         ):
             assert (await raw_client.request(method, path)).status_code == 401
     assert recorded == []
@@ -399,8 +454,9 @@ async def test_migrated_internal_loopback_callers_succeed_under_proxy_mode(
     # 1. characters_router/notify.py -> POST /reload
     from main_routers.characters_router import notify as notify_mod
 
+    monkeypatch.setattr(notify_mod, "MEMORY_SERVER_PORT", pinned_memory_port)
     assert await notify_mod.notify_memory_server_reload(reason="proxy-test") is True
-    assert recorded[-1] == ("POST", "/reload", True)
+    assert recorded[-1] == ("POST", "/reload", pinned_memory_port, True)
 
     # 2. app/agent_server/api_routes.py -> GET /plugins
     from app.agent_server import api_routes
@@ -408,14 +464,17 @@ async def test_migrated_internal_loopback_callers_succeed_under_proxy_mode(
     async def _fast_sleep(_seconds: float) -> None:
         return None
 
+    monkeypatch.setattr(api_routes, "USER_PLUGIN_SERVER_PORT", pinned_user_plugin_port)
     monkeypatch.setattr(api_routes.asyncio, "sleep", _fast_sleep)
     readiness = await api_routes._check_user_plugin_registry_readiness()
     assert readiness["status"] == "empty"
-    assert recorded[-1] == ("GET", "/plugins", True)
+    assert recorded[-1] == ("GET", "/plugins", pinned_user_plugin_port, True)
 
     # 3. plugin/server/messaging/llm_tool_registry.py -> POST /api/tools/register
     from plugin.server.messaging import llm_tool_registry
 
+    monkeypatch.setattr(llm_tool_registry, "MAIN_SERVER_PORT", pinned_main_port)
+    monkeypatch.setattr(llm_tool_registry, "USER_PLUGIN_SERVER_PORT", pinned_user_plugin_port)
     monkeypatch.setattr(llm_tool_registry, "_HTTP_CLIENT", None)
     try:
         reg_resp = await llm_tool_registry.register_remote_tool(
@@ -426,7 +485,7 @@ async def test_migrated_internal_loopback_callers_succeed_under_proxy_mode(
             timeout_seconds=10.0,
         )
         assert reg_resp["ok"] is True
-        assert recorded[-1] == ("POST", "/api/tools/register", True)
+        assert recorded[-1] == ("POST", "/api/tools/register", pinned_main_port, True)
     finally:
         await llm_tool_registry.shutdown_http_client()
         llm_tool_registry._HTTP_CLIENT = None
@@ -439,11 +498,11 @@ async def test_migrated_internal_loopback_callers_succeed_under_proxy_mode(
     try:
         tool_res = await tool_router._remote_dispatch(
             ToolCall(name="t", arguments={"x": 1}, call_id="c1"),
-            {"source": "plugin:p", "callback_url": f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/api/llm-tools/callback/p/t"},
+            {"source": "plugin:p", "callback_url": f"http://127.0.0.1:{pinned_user_plugin_port}/api/llm-tools/callback/p/t"},
         )
         assert tool_res.is_error is False
         assert tool_res.output == {"ran": True}
-        assert recorded[-1] == ("POST", "/api/llm-tools/callback/p/t", True)
+        assert recorded[-1] == ("POST", "/api/llm-tools/callback/p/t", pinned_user_plugin_port, True)
     finally:
         if tool_router._HTTP_CLIENT is not None:
             await tool_router._HTTP_CLIENT.aclose()
@@ -454,14 +513,8 @@ async def test_migrated_internal_loopback_callers_succeed_under_proxy_mode(
     from utils import config_manager as config_manager_module
     from main_routers.config_router import core_config
 
-    manager = config_manager_module.get_config_manager("N.E.K.O")
-    manager.config_dir.mkdir(parents=True, exist_ok=True)
+    manager = _make_isolated_core_config_manager(tmp_path)
     monkeypatch.setattr(config_manager_module, "get_config_manager", lambda *a, **k: manager)
-    manager.save_json_config(
-        "core_config.json",
-        {"coreApi": "qwen", "assistApi": "qwen", "coreApiKey": "old-key", "enableCustomApi": True},
-    )
-    manager._core_config_cache = None
 
     async def _noop(*_args, **_kwargs):
         return None
@@ -492,7 +545,7 @@ async def test_migrated_internal_loopback_callers_succeed_under_proxy_mode(
 
     cfg_res = await core_config.update_core_config(_FakeCoreRequest())
     assert cfg_res["success"] is True
-    assert recorded[-1] == ("POST", "/notify_config_changed", True)
+    assert recorded[-1] == ("POST", "/notify_config_changed", pinned_tool_port, True)
 
 
 _INTERNAL_HTTPX_SCAN_ROOTS = (
@@ -1980,13 +2033,32 @@ def _track_binding_in_block(
                     )
                     for s in body_stmts
                 )
-                child_blocks.append((body_stmts, bound))
-                for handler in getattr(stmt, "handlers", []):
-                    child_blocks.append((handler.body, bound and not body_mentions and handler.name != var_name))
+                handlers = getattr(stmt, "handlers", [])
+                any_handler_mentions = any(
+                    handler.name == var_name
+                    or any(
+                        _stmt_mentions_name(
+                            s, var_name, httpx_mod_aliases, async_client_aliases, sync_client_aliases
+                        )
+                        for s in handler.body
+                    )
+                    for handler in handlers
+                )
                 orelse_stmts = getattr(stmt, "orelse", [])
+                orelse_mentions = any(
+                    _stmt_mentions_name(
+                        s, var_name, httpx_mod_aliases, async_client_aliases, sync_client_aliases
+                    )
+                    for s in orelse_stmts
+                )
+                child_blocks.append((body_stmts, bound))
+                for handler in handlers:
+                    child_blocks.append((handler.body, bound and not body_mentions and handler.name != var_name))
                 child_blocks.append((orelse_stmts, bound and not body_mentions))
                 final_stmts = getattr(stmt, "finalbody", [])
-                child_blocks.append((final_stmts, bound and not body_mentions))
+                child_blocks.append(
+                    (final_stmts, bound and not body_mentions and not orelse_mentions and not any_handler_mentions)
+                )
                 for case in getattr(stmt, "cases", []):
                     child_blocks.append((case.body, bound))
             else:
@@ -3086,6 +3158,90 @@ def test_internal_httpx_ast_guard_catches_aliased_and_discarded_hook_calls():
     assert signed == 0
     assert unhooked == ["synthetic/lambda_post_mutation_neg.py:6 (make)"]
 
+    try_except_mutates_before_finally_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(**kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    try:\n"
+        "        risky()\n"
+        "    except RuntimeError:\n"
+        "        kwargs.clear()\n"
+        "    finally:\n"
+        "        return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        try_except_mutates_before_finally_neg_src,
+        "synthetic/try_except_mutates_before_finally_neg.py",
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/try_except_mutates_before_finally_neg.py:11 (make)"]
+
+    try_except_as_rebinds_before_finally_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(**kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    try:\n"
+        "        risky()\n"
+        "    except RuntimeError as kwargs:\n"
+        "        pass\n"
+        "    finally:\n"
+        "        return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        try_except_as_rebinds_before_finally_neg_src,
+        "synthetic/try_except_as_rebinds_before_finally_neg.py",
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/try_except_as_rebinds_before_finally_neg.py:11 (make)"]
+
+    try_else_mutates_before_finally_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(**kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    try:\n"
+        "        risky()\n"
+        "    except RuntimeError:\n"
+        "        pass\n"
+        "    else:\n"
+        "        kwargs.clear()\n"
+        "    finally:\n"
+        "        return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        try_else_mutates_before_finally_neg_src,
+        "synthetic/try_else_mutates_before_finally_neg.py",
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/try_else_mutates_before_finally_neg.py:13 (make)"]
+
+    try_except_else_clean_finally_pos_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(**kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    try:\n"
+        "        risky()\n"
+        "    except RuntimeError:\n"
+        "        cleanup_other()\n"
+        "    else:\n"
+        "        note_success()\n"
+        "    finally:\n"
+        "        return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        try_except_else_clean_finally_pos_src,
+        "synthetic/try_except_else_clean_finally_pos.py",
+    )
+    assert signed == 1
+    assert unhooked == []
+
 
 def test_internal_httpx_scan_path_filter_uses_repo_relative_components(tmp_path: Path):
     """Scanning must ignore 'tests'/'__pycache__' above repo_root while filtering test dirs/files inside repo_root."""
@@ -3326,21 +3482,18 @@ async def test_task_tool_post_treats_signing_error_as_not_delivered(monkeypatch:
     assert transport_called is False
 
 
-async def test_core_config_update_logs_warning_and_keeps_save_on_401_notify(monkeypatch: pytest.MonkeyPatch):
+async def test_core_config_update_logs_warning_and_keeps_save_on_401_notify(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
     """Non-2xx response from agent_server /notify_config_changed must log non-fatal warning without rolling back config."""
     import asyncio
     import json
     from utils import config_manager as config_manager_module
     from main_routers.config_router import core_config
 
-    manager = config_manager_module.get_config_manager("N.E.K.O")
-    manager.config_dir.mkdir(parents=True, exist_ok=True)
+    manager = _make_isolated_core_config_manager(tmp_path)
     monkeypatch.setattr(config_manager_module, "get_config_manager", lambda *a, **k: manager)
-    manager.save_json_config(
-        "core_config.json",
-        {"coreApi": "qwen", "assistApi": "qwen", "coreApiKey": "old-key", "enableCustomApi": True},
-    )
-    manager._core_config_cache = None
 
     async def _noop(*_args, **_kwargs):
         return None
@@ -3397,15 +3550,20 @@ async def test_subscriptions_notify_agent_server_signs_and_warns_on_non_2xx(monk
     _clear_deployment_mode_env(monkeypatch)
     monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
     monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", KEY)
+    monkeypatch.setattr(config, "MAIN_SERVER_PORT", 48911)
+    monkeypatch.setattr(config, "TOOL_SERVER_PORT", 48915)
 
-    captured: list[tuple[dict[str, str], object]] = []
+    captured: list[tuple[dict[str, str], object, int | None]] = []
     app = FastAPI()
 
     @app.post("/notify_config_changed")
     async def notify_changed(request: FastAPIRequest):
+        server = request.scope.get("server")
+        port = server[1] if isinstance(server, (tuple, list)) and len(server) == 2 else None
         captured.append((
             {k.lower(): v for k, v in request.headers.items()},
             request.scope.get("neko.instance_identity"),
+            port,
         ))
         return {"success": True}
 
@@ -3415,7 +3573,7 @@ async def test_subscriptions_notify_agent_server_signs_and_warns_on_non_2xx(monk
 
     def _asgi_client(*_args, **kwargs):
         return real_client(
-            transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 50000)),
+            transport=_asgi_transport_preserving_default_port(app),
             **kwargs,
         )
 
@@ -3432,6 +3590,16 @@ async def test_subscriptions_notify_agent_server_signs_and_warns_on_non_2xx(monk
     assert len(captured) == 1
     assert INTERNAL_SERVICE_HEADER in captured[0][0]
     assert captured[0][1] == "internal"
+    assert captured[0][2] == 48915
+
+    # Default HTTP port 80 is stripped to url.port=None by httpx, so ASGITransport must preserve port 80.
+    monkeypatch.setattr(config, "TOOL_SERVER_PORT", 80)
+    await subscriptions._notify_agent_server()
+    assert warn_logs == []
+    assert len(captured) == 2
+    assert INTERNAL_SERVICE_HEADER in captured[1][0]
+    assert captured[1][1] == "internal"
+    assert captured[1][2] == 80
 
     def _deny_handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(401, json={"detail": "instance_authorization_required"}, request=request)
