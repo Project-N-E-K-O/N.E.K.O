@@ -16,6 +16,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -134,6 +135,10 @@ class Env:
 
     def records(self):
         return list(self.auditor._queue)
+
+    def sent_and_queued(self):
+        # An os.exec sends the queue from the hook (the process is replaced).
+        return [item for message in self.sent for item in message["items"]] + self.records()
 
 
 @pytest.fixture
@@ -304,8 +309,10 @@ def test_rename_records_both_ends_outside(env):
 )
 def test_spawn_records_the_program_name_only(env, event, args, program):
     env.from_plugin(event, args)
-    (record,) = env.records()
+    (record,) = env.sent_and_queued()
     assert record["permission"] == PROCESS_SPAWN and record["target"] == program
+    # Only the exec, which replaces the process, is sent from the hook.
+    assert bool(env.sent) == (event == "os.exec")
 
 
 def test_connect_uses_the_host_name_resolved_before(env):
@@ -691,6 +698,18 @@ def test_hook_never_sends_and_a_thread_flushes(env):
     assert sender_threads == [env.auditor._thread.ident] != [threading.get_ident()]
 
 
+def test_exec_send_waits_only_briefly_for_a_stuck_sender(env, monkeypatch):
+    monkeypatch.setattr(system_audit, "_EXEC_FLUSH_WAIT", 0.05)
+    env.auditor._flush_lock.acquire()  # the sender thread is stuck in a send
+    try:
+        started = time.monotonic()
+        env.from_plugin("os.exec", ("/bin/true", ["true"], None))
+        assert time.monotonic() - started < 2
+    finally:
+        env.auditor._flush_lock.release()
+    assert env.sent == [] and len(env.records()) == 1 and env.auditor.errors == 0
+
+
 def test_hook_does_not_reenter(env):
     nested = []
 
@@ -850,8 +869,14 @@ permissions.apply({{"revision": 1, "states": {{
     p: {{"status": "granted" if p in granted else "undecided", "background": False, "enforced": True}}
     for p in system_audit.AUDITED_PERMISSIONS}}}})
 sent = []
+def send(message):
+    if mode == "exec":  # this process is replaced: hand the messages over in a file
+        with open(os.path.join(data_dir, "sent.jsonl"), "a") as out:
+            out.write(json.dumps(message) + "\n")
+    else:
+        sent.append(message)
 auditor = system_audit.SystemAuditor(plugin_dir=plugin_dir, exempt_dirs=[data_dir],
-                                     project_root={repo!r}, permissions=permissions, sender=sent.append)
+                                     project_root={repo!r}, permissions=permissions, sender=send)
 if mode == "refuse":
     system_audit.REFUSES_SYSTEM_USES = True
 system_audit.install(auditor)
@@ -888,6 +913,10 @@ elif mode == "refuse":
         result["read"] = "refused"
     open(os.path.join(data_dir, "own.txt"), "w").close()
     result["own"] = "allowed"
+elif mode == "exec":
+    os.listdir(outside)
+    sys.stdout.flush()
+    os.execv(sys.executable, [sys.executable, "-c", "print('RESULT{{}}')"])
 auditor.close(timeout=5)
 result["records"] = [item for message in sent for item in message["items"]]
 result["errors"] = auditor.errors
@@ -951,6 +980,16 @@ def test_real_hook_refuses_when_switched_on(tmp_path):
     assert not (tmp_path / "outside" / "x.txt").exists()
     refused = [r for r in result["records"] if r["verdict"] == "would_deny"]
     assert [r["enforcing"] for r in refused] == [True]
+
+
+def test_real_hook_sends_the_queue_before_an_exec_replaces_the_process(tmp_path):
+    # The exec replaces the process and its sender thread: what was queued
+    # (the exec itself included) must have been sent before it went ahead.
+    _run_driver(tmp_path, "exec")
+    lines = (tmp_path / "data" / "sent.jsonl").read_text(encoding="utf-8").splitlines()
+    seen = {(r["permission"], r["event"]) for line in lines for r in json.loads(line)["items"]}
+    assert (FS_READ, "os.listdir") in seen
+    assert (PROCESS_SPAWN, "os.exec") in seen
 
 
 def test_source_explains_env_reads_are_not_covered():
