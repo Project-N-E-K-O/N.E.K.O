@@ -1569,7 +1569,8 @@ class SnapshotInstallSources:
     def snapshot(self):
         return self.current
 
-    def entry_for_directory(self, directory_path, *, include_removed=False, snapshot=None):
+    def entry_for_directory(self, directory_path, *, include_removed=False, snapshot=None, path_resolved=False):
+        self.classified = (directory_path, path_resolved)
         entry = (snapshot or self.current).by_directory.get(Path(directory_path).name)
         if entry is None or (entry.removed and not include_removed):
             return None
@@ -1768,3 +1769,35 @@ def test_cached_source_comes_from_the_snapshot_it_is_keyed_by(monkeypatch, tmp_p
     assert permission_service.current_source("demo").channel == "manual"
     assert permission_service._source_cache["demo"][1] is snapshot_a
     assert permission_service._source_cache["demo"][3].channel == "manual"
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="needs unprivileged symlinks")
+def test_a_resolved_directory_is_classified_as_given(tmp_path):
+    # The plugin directory A is swapped for a link to B between the cache key
+    # and the lock lookup: classifying the key's resolved path must still say A.
+    from plugin.server.application.install_source.manager import classify_plugin_path
+
+    user_root, builtin_root = tmp_path / "user", tmp_path / "builtin"
+    for directory in (user_root / "a", user_root / "b", builtin_root):
+        directory.mkdir(parents=True)
+    resolved_a = (user_root / "a").resolve()
+    (user_root / "a").rmdir()
+    os.symlink(user_root / "b", user_root / "a")
+    roots = {"builtin_root": builtin_root, "user_root": user_root}
+    assert classify_plugin_path(resolved_a, **roots) == ("user", "b")  # resolves again: follows the link
+    assert classify_plugin_path(resolved_a, **roots, already_resolved=True) == ("user", "a")
+
+
+def test_current_source_classifies_the_key_s_resolved_directory_as_given(monkeypatch, tmp_path):
+    from plugin.server.infrastructure import config_paths
+
+    config = tmp_path / "demo" / "plugin.toml"
+    config.parent.mkdir()
+    config.write_text("", encoding="utf-8")
+    monkeypatch.setattr(config_paths, "_registered_plugin_config_candidates", lambda _pid: (str(config),))
+    monkeypatch.setattr(permission_service, "_source_cache", {})
+    entry = _lock_entry(channel="manual")
+    manager = SnapshotInstallSources([entry], by_directory={"demo": entry})
+    monkeypatch.setattr(install_source_module, "get_install_source_manager", lambda: manager)
+    assert permission_service.current_source("demo").channel == "manual"
+    assert manager.classified == (config.parent.resolve(), True)

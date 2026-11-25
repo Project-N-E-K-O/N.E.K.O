@@ -185,7 +185,11 @@ def _resolve_source(
     directory = _plugin_directory(plugin_id, candidates)
     if directory is not None:
         try:
-            entry = manager.entry_for_directory(directory, **pinned)
+            # The directory comes from the key's resolved paths: classify it
+            # as it is, not wherever a link points by now.
+            entry = manager.entry_for_directory(
+                directory, **pinned, **({"path_resolved": True} if pinned else {})
+            )
         except InstallSourceError as exc:
             raise _SourceUnknown from exc
         # The directory key is exact; an empty plugin_id only means the
