@@ -944,7 +944,7 @@ opacity: 0.95 !important;
 
 /* Rotated state for collapsible buttons */
 #custom-api-toggle-btn.rotated .dropdown-icon,
-:is(#key-book-toggle-btn, #chatgpt-toggle-btn).rotated .dropdown-icon {
+:is(#key-book-toggle-btn, #subscriptions-toggle-btn).rotated .dropdown-icon {
     transform: translateY(-50%) rotate(180deg);
 }
 
@@ -1726,7 +1726,7 @@ input:checked + .slider:before {
     margin-top: 0;
 }
 
-:is(#key-book-toggle-btn, #chatgpt-toggle-btn) {
+:is(#key-book-toggle-btn, #subscriptions-toggle-btn) {
     background: linear-gradient(to right, #40d3f9, #17a7ff) !important;
     background-color: transparent !important;
     border: 3px solid #d8f6ff !important;
@@ -1751,7 +1751,7 @@ input:checked + .slider:before {
     box-sizing: border-box;
 }
 
-:is(#key-book-toggle-btn, #chatgpt-toggle-btn) .dropdown-icon {
+:is(#key-book-toggle-btn, #subscriptions-toggle-btn) .dropdown-icon {
     display: block !important;
     position: absolute;
     left: 12px;
@@ -1766,7 +1766,7 @@ input:checked + .slider:before {
     transition: transform 0.2s;
 }
 
-:is(#key-book-toggle-btn, #chatgpt-toggle-btn) span {
+:is(#key-book-toggle-btn, #subscriptions-toggle-btn) span {
     position: relative;
     z-index: 20;
     margin: 0 !important;
@@ -1788,13 +1788,13 @@ input:checked + .slider:before {
     line-height: 1.2;
 }
 
-:is(#key-book-toggle-btn, #chatgpt-toggle-btn):hover:not(:disabled) {
+:is(#key-book-toggle-btn, #subscriptions-toggle-btn):hover:not(:disabled) {
     opacity: 0.9;
     transform: translateY(-1px);
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1) !important;
 }
 
-:is(#key-book-toggle-btn, #chatgpt-toggle-btn):active:not(:disabled) {
+:is(#key-book-toggle-btn, #subscriptions-toggle-btn):active:not(:disabled) {
     transform: translateY(1px) scale(0.98) !important;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
     opacity: 0.95 !important;
@@ -2188,9 +2188,38 @@ font-size: 0.8em;
     }
 }
 
-#chatgpt-settings { margin-top: 0; }
-#chatgpt-options { padding: 16px; background: #f0f9ff; border: 1px solid #d0e8ff; border-radius: 12px; }
+#subscriptions-settings { margin-top: 0; }
+#subscriptions-options { padding: 16px; background: #f0f9ff; border: 1px solid #d0e8ff; border-radius: 12px; }
 .chatgpt-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
-#chatgpt-options .gsv-tutorial-link { cursor: pointer; white-space: normal; }
-#chatgpt-options button:disabled { opacity: .5; cursor: default; }
+#subscriptions-options .gsv-tutorial-link { cursor: pointer; white-space: normal; }
+#subscriptions-options button:disabled { opacity: .5; cursor: default; }
 #chatgpt-status { overflow-wrap: anywhere; }
+
+/* Subscriptions & plans: one card per subscription. */
+#subscription-cards { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
+#subscription-cards.is-busy { cursor: progress; }
+.subscription-card { padding: 12px 16px; background: #fff; border: 1px solid #d0e8ff; border-radius: 10px; }
+.subscription-card.is-on { border-color: #40c5f1; box-shadow: 0 0 0 1px rgba(64, 197, 241, 0.25); }
+.subscription-card-header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.subscription-name { font-weight: 600; color: var(--text-blue, #1f5f8b); }
+.subscription-badge { font-size: 0.75em; padding: 1px 8px; border-radius: 999px; background: #fff4e0; color: #9a5b00; border: 1px solid #f3d19e; }
+.subscription-switch { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: 0.9em; }
+.subscription-tiers { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; }
+.subscription-tiers-title { margin: 0; font-size: 0.85em; color: #666; }
+.subscription-tier-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.subscription-tier-label { display: inline-flex; align-items: center; gap: 6px; min-width: 12em; cursor: pointer; }
+.subscription-model, .subscription-region { max-width: 260px; }
+.subscription-tier-note { font-size: 0.8em; color: #888; }
+.field-row.subscription-key-row { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 8px; }
+.subscription-key-input { flex: 1 1 240px; min-width: 0; max-width: 420px; }
+.subscription-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.subscription-state { margin: 6px 0; font-size: 0.85em; color: #666; }
+.subscription-message { margin: 4px 0; font-size: 0.85em; overflow-wrap: anywhere; }
+.subscription-message[data-kind="error"] { color: #c0392b; }
+.subscription-message[data-kind="ok"] { color: #2e7d32; }
+.subscription-summary { margin: 4px 0 8px; padding: 8px 12px; font-size: 0.85em; color: var(--text-blue-sub, #2a6f97); background: #f0f9ff; border: 1px solid #d0e8ff; border-radius: 8px; }
+.subscription-tag { margin-left: 8px; font-size: 0.75em; padding: 1px 8px; border-radius: 999px; background: #e3f6fd; color: #1f6f8b; border: 1px solid #b3e5fc; white-space: nowrap; }
+.subscription-feature-note { gap: 8px; align-items: center; }
+.subscription-feature-note em { font-weight: normal; color: #1f6f8b; font-size: 0.85em; }
+/* A feature a subscription took: its own settings stay editable but are not in use. */
+.subscription-taken .connectivity-light { opacity: 0.35; }

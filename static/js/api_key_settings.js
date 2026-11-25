@@ -1477,6 +1477,8 @@ function isKeyBookBackedTtsProvider(providerKey) {
 function isProviderCapableForModelType(providerKey, modelType) {
     const pk = String(providerKey || '').trim();
     if (!pk || pk === 'custom' || pk.startsWith('follow_')) return true;
+    // Subscriptions (ChatGPT) are chosen in the Subscriptions & plans panel, not per slot.
+    if (isProviderFlagEnabled(getProviderInfo(pk).subscription_panel_only)) return false;
     const supportedTypes = getProviderInfo(pk).supported_model_types;
     if (Array.isArray(supportedTypes) && !supportedTypes.includes(modelType)) return false;
 
