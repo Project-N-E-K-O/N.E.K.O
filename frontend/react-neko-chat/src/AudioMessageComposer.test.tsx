@@ -130,65 +130,28 @@ describe('recording draft submission', () => {
     }
   });
 
-  it('preserves preview after uncertain delivery and provides no resend action', async () => {
-    const send = vi.fn(async () => { throw new Error('socket closed after write'); });
+  it.each([
+    ['a generic failure', new Error('socket closed'), 'The recording could not be sent'],
+    ['a busy rejection', Object.assign(new Error('busy'), { name: 'AudioMessageRejected' }), 'The conversation is busy'],
+  ])('keeps the preview after %s and retries with the same request ID', async (_label, failure, message) => {
+    const send = vi.fn<(_payload: AudioMessagePayload) => Promise<unknown>>()
+      .mockRejectedValueOnce(failure)
+      .mockResolvedValueOnce({});
     const busy = vi.fn();
     render(<AudioMessageComposer target="YUI" disabled={false} send={send} onBusyChange={busy} />);
     fireEvent.click(screen.getByRole('button', { name: 'Record a voice message' }));
     fireEvent.click(await screen.findByRole('button', { name: /Stop/ }));
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Delivery could not be confirmed'));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(message));
     expect(showStatusToast).toHaveBeenCalledWith(screen.getByRole('alert').textContent, expect.any(Number));
+    expect(screen.getByRole('button', { name: 'Preview recording' })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Send recording' }));
+    await screen.findByRole('button', { name: 'Record a voice message' });
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1][0]).toEqual(send.mock.calls[0][0]);
     expect(busy).toHaveBeenLastCalledWith(false);
-    expect(screen.getByLabelText('Preview recording')).toBeVisible();
-    expect(screen.queryByRole('button', { name: 'Send recording' })).toBeNull();
-    expect(send).toHaveBeenCalledTimes(1);
   });
 
-  it('explains an expired retry without replacing its ID or sending the recording again', async () => {
-    const now = Date.now();
-    const send = vi.fn(async (payload: AudioMessagePayload) => {
-      const reason = Date.now() - Number(payload.requestId.split('-')[0]) > 15 * 60_000 ? 'expired' : 'busy';
-      const error = new Error(reason);
-      error.name = 'AudioMessageRejected';
-      throw error;
-    });
-    render(<AudioMessageComposer target="YUI" disabled={false} send={send} onBusyChange={() => {}} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Record a voice message' }));
-    fireEvent.click(await screen.findByRole('button', { name: /Stop/ }));
-    const retry = await screen.findByRole('button', { name: 'Send recording' });
-    const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 16 * 60_000);
-    try {
-      fireEvent.click(retry);
-      await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('This send request has expired'));
-      expect(showStatusToast).toHaveBeenLastCalledWith(screen.getByRole('alert').textContent, expect.any(Number));
-      expect(send).toHaveBeenCalledTimes(2);
-      expect(send.mock.calls[1][0]).toEqual(send.mock.calls[0][0]);
-      expect(screen.getByRole('button', { name: 'Preview recording' })).toBeVisible();
-      expect(screen.queryByRole('button', { name: 'Send recording' })).toBeNull();
-      fireEvent.click(screen.getByRole('button', { name: 'Close preview' }));
-      expect(screen.getByRole('button', { name: 'Record a voice message' })).toBeEnabled();
-      expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:recording');
-      expect(send).toHaveBeenCalledTimes(2);
-    } finally {
-      clock.mockRestore();
-    }
-  });
-
-  it.each(['full', 'compact'] as const)('explains the independent ASR restriction in the %s chat', mode => {
-    const { rerender } = render(<App chatSurfaceMode={mode} audioMessageTarget="YUI"
-      onComposerAudioMessage={vi.fn()} audioMessageIndependentAsrBlocked />);
-    const button = screen.getByRole('button', { name: 'Record a voice message' });
-    expect(button).toBeDisabled();
-    expect(button).toHaveAccessibleDescription(/Voice messages require Omni/);
-    fireEvent.click(button);
-    expect(screen.queryByRole('button', { name: /Stop/ })).not.toBeInTheDocument();
-    rerender(<App chatSurfaceMode={mode} audioMessageTarget="YUI" onComposerAudioMessage={vi.fn()} />);
-    expect(button).toBeEnabled();
-  });
-
-  it.each(['busy', 'storage', 'manual_unavailable', 'independent_asr_unavailable'])('keeps the same recording ID and disables retries while blocked after %s', async reason => {
-    const rejected = new Error(reason);
-    rejected.name = 'AudioMessageRejected';
+  it('blocks a retry while the composer is disabled', async () => {
     let rejectSend!: (error: Error) => void;
     const send = vi.fn<(_payload: AudioMessagePayload) => Promise<unknown>>()
       .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectSend = reject; }))
@@ -198,15 +161,9 @@ describe('recording draft submission', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Record a voice message' }));
     fireEvent.click(await screen.findByRole('button', { name: /Stop/ }));
     await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    // The host can disable the composer while a send is in flight.
     view.rerender(<AudioMessageComposer {...props} disabled />);
-    await act(async () => { rejectSend(rejected); });
-    if (reason === 'independent_asr_unavailable') {
-      expect(screen.getByRole('alert')).toHaveTextContent('Voice messages require Omni');
-    }
-    if (reason === 'manual_unavailable') {
-      expect(screen.getByRole('alert')).toHaveTextContent('could not confirm recording support');
-    }
-    expect(showStatusToast).toHaveBeenCalledWith(screen.getByRole('alert').textContent, expect.any(Number));
+    await act(async () => { rejectSend(new Error('offline')); });
     const retry = screen.getByRole('button', { name: 'Send recording' });
     expect(retry).toBeDisabled();
     fireEvent.click(retry);
@@ -216,6 +173,13 @@ describe('recording draft submission', () => {
     fireEvent.click(retry);
     await screen.findByRole('button', { name: 'Record a voice message' });
     expect(send).toHaveBeenCalledTimes(2);
-    expect(send.mock.calls[0][0].requestId).toBe(send.mock.calls[1][0].requestId);
+    expect(send.mock.calls[1][0].requestId).toBe(send.mock.calls[0][0].requestId);
+  });
+
+  it.each(['full', 'compact'] as const)('hides the microphone in the %s chat until the host provides a send path', mode => {
+    const { rerender } = render(<App chatSurfaceMode={mode} audioMessageTarget="YUI" />);
+    expect(screen.queryByRole('button', { name: 'Record a voice message' })).toBeNull();
+    rerender(<App chatSurfaceMode={mode} audioMessageTarget="YUI" onComposerAudioMessage={vi.fn()} />);
+    expect(screen.getByRole('button', { name: 'Record a voice message' })).toBeEnabled();
   });
 });

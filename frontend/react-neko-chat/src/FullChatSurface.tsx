@@ -68,7 +68,6 @@ import {
 type ChatWindowProps = ChatWindowSchemaProps & {
   audioMessageControl?: import('react').ReactNode;
   audioMessageActive?: boolean;
-  onLoadOlderRecordings?: () => void;
   onMessageAction?: (message: ChatMessage, action: MessageAction) => void;
   onComposerImportImage?: () => void;
   onComposerScreenshot?: () => void;
@@ -444,7 +443,6 @@ function getCompactToolWheelDetentDisplayRatio(offsetRatio: number): number {
 export default function FullChatSurface({
   audioMessageControl,
   audioMessageActive = false,
-  onLoadOlderRecordings,
   title = i18n('chat.title', 'N.E.K.O Chat'),
   iconSrc = '/static/icons/chat_icon.png',
   messages = defaultMessages,
@@ -3120,7 +3118,6 @@ export default function FullChatSurface({
       failedStatusLabel={failedStatusLabel}
       thinking={focusThinking}
       onAction={onMessageAction}
-      onLoadOlderRecordings={onLoadOlderRecordings}
       footerKey={choicePromptHasOptions && choicePrompt.source === 'mini_game_invite' ? choicePrompt.sessionId || 'mini-game-invite' : undefined}
       footer={choicePromptHasOptions && choicePrompt.source === 'mini_game_invite' ? (
         <MiniGameInvitePrompt key={choicePrompt.sessionId} prompt={choicePrompt} presentation="card"

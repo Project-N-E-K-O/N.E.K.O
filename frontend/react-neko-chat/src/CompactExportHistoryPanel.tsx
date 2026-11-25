@@ -127,7 +127,6 @@ export function isCompactExportMessageSelectable(message: ChatMessage) {
   // exported, so they must not count toward selectable/selected totals either —
   // otherwise the header count diverges from what's visible/selectable.
   return !!message.id && message.status !== 'sending' && !isTopicHintMessage(message)
-    && !message.blocks.some(block => block.type === 'audio_message')
     && hasVisibleMessageContent(message);
 }
 
@@ -278,7 +277,6 @@ export default function CompactExportHistoryPanel({
     () => mode === 'theater' ? messages : messages.filter(message => !isMessageHidden(message)),
     [messages, mode, isMessageHidden],
   );
-  const hasAudioHistory = messages.some(message => message.blocks.some(block => block.type === 'audio_message'));
   const exposureAnchorIds = useMemo(
     () => getScreenObservationAnchorIds(messages, allMessages),
     [messages, allMessages],
@@ -899,9 +897,6 @@ export default function CompactExportHistoryPanel({
           </div>
         </div>
       </div>
-      {hasAudioHistory && <div className="compact-export-preview-subtitle">
-        {i18n('chat.exportAudioOmitted', 'Voice messages and their transcripts are not included. You can view them in chat history.')}
-      </div>}
       {exportFormatOptions.length > 1 ? (
         <div className="compact-export-preview-format-strip" aria-label={i18n('chat.exportFormatLabel', 'Export Format')}>
           {exportFormatOptions.map(option => (
@@ -1208,9 +1203,6 @@ export default function CompactExportHistoryPanel({
                   {i18n('chat.exportAction', 'Export')}
                 </button>
               </div>
-              {hasAudioHistory && <div className="compact-export-history-count">
-                {i18n('chat.exportAudioOmitted', 'Voice messages and their transcripts are not included. You can view them in chat history.')}
-              </div>}
             </div>
           ) : null}
         </>

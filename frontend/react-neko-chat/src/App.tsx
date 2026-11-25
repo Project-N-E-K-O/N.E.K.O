@@ -24,7 +24,6 @@ import AvatarToolItemManager, {
 import AvatarToolQuickbar from './AvatarToolQuickbar';
 import FullChatSurface from './FullChatSurface';
 import AudioMessageComposer, { useAudioMessageComposer } from './AudioMessageComposer';
-import { OlderRecordingsStatusContext, useChatAudioHistory } from './useChatAudioHistory';
 import NekoTooltipLayer from './NekoTooltipLayer';
 import AvatarToolVisuals from './avatar-tools/presentation';
 import { useAvatarToolRuntime } from './avatar-tools/runtime';
@@ -897,47 +896,26 @@ function getCompactHistoryScrollUnderCompactToolWheel(
 export default function ChatWindowRoot(props: ChatWindowProps) {
   const audioGuideLocked = useGuideChatButtonLock();
   const target = !props.catLocalTextOnly && !props.theaterPresentation?.active ? props.audioMessageTarget : undefined;
-  const fullChat = props.chatSurfaceMode === 'full';
-  const { messages: audioHistory, submit, onLoadOlder, loadOlderStatus, oldestRecordingTime } = useChatAudioHistory(
-    target, props.userName || 'You', !fullChat,
-  );
   const send = props.onComposerAudioMessage;
   const audioComposer = useAudioMessageComposer({
     target: send ? target : undefined,
-    independentAsrBlocked: props.audioMessageIndependentAsrBlocked,
     disabled: !!props.composerDisabled || !!props.composerHidden || audioGuideLocked,
-    send: send ? payload => submit(payload, send) : undefined,
+    send,
   });
+  // The control stays hidden until the host provides a send path.
   const audioMessageControl = send && target ? <AudioMessageComposer composer={audioComposer} /> : null;
-  const messages = useMemo(() => {
-    if (!audioHistory.length) return props.messages;
-    // The host's sortKey is an ordering sequence, not a wall-clock value.
-    const audio = [...audioHistory].sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0));
-    const merged: ChatMessage[] = [];
-    let index = 0;
-    for (const message of props.messages ?? []) {
-      while (index < audio.length && (audio[index].createdAt ?? 0) <= (message.createdAt ?? 0)) {
-        merged.push(audio[index++]);
-      }
-      merged.push(message);
-    }
-    return merged.concat(audio.slice(index));
-  }, [audioHistory, props.messages]);
   const surfaceProps = { ...props, composerDisabled: !!props.composerDisabled || audioComposer.active,
-    audioMessageControl, audioMessageActive: audioComposer.active, messages,
+    audioMessageControl, audioMessageActive: audioComposer.active,
   };
   useReplyTailPresentation(
     props.messages || [], false, undefined, false, '', '', true,
     props.chatSurfaceMode === 'full',
   );
   return (
-    <ChatScreenVisibilityProvider messages={messages || defaultMessages}
-      audioHistoryTarget={target} oldestRecordingTime={oldestRecordingTime}>
-      <OlderRecordingsStatusContext.Provider value={loadOlderStatus}>
-        {props.chatSurfaceMode === 'full'
-          ? <FullChatSurface {...surfaceProps} onLoadOlderRecordings={onLoadOlder} />
-          : <CompactChatApp {...surfaceProps} />}
-      </OlderRecordingsStatusContext.Provider>
+    <ChatScreenVisibilityProvider messages={props.messages || defaultMessages}>
+      {props.chatSurfaceMode === 'full'
+        ? <FullChatSurface {...surfaceProps} />
+        : <CompactChatApp {...surfaceProps} />}
       <NekoTooltipLayer />
     </ChatScreenVisibilityProvider>
   );

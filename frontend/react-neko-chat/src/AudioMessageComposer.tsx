@@ -6,11 +6,6 @@ import {
   type AudioMessagePayload, type Recording,
 } from './audioRecording';
 
-function independentAsrMessage() {
-  return i18n('chat.audioMessageIndependentAsrUnavailable',
-    'Voice messages require Omni speech recognition. Turn off independent ASR or check your ASR settings.');
-}
-
 const RECORDING_LIMIT_SECONDS = AUDIO_MAX_SAMPLES / AUDIO_SAMPLE_RATE;
 
 type AudioMessageHost = Window & { showStatusToast?: (message: string, duration?: number) => void };
@@ -18,13 +13,12 @@ type AudioMessageHost = Window & { showStatusToast?: (message: string, duration?
 type Props = {
   target?: string;
   disabled: boolean;
-  independentAsrBlocked?: boolean;
   send?: (payload: AudioMessagePayload) => Promise<unknown>;
 };
 
 // The chat root owns capture and the draft so both survive the compact surface being folded away.
-export function useAudioMessageComposer({ target, disabled, independentAsrBlocked = false, send }: Props) {
-  const [phase, setPhase] = useState<'idle' | 'starting' | 'recording' | 'preview' | 'sending' | 'failed'>('idle');
+export function useAudioMessageComposer({ target, disabled, send }: Props) {
+  const [phase, setPhase] = useState<'idle' | 'starting' | 'recording' | 'preview' | 'sending'>('idle');
   const [preview, setPreview] = useState('');
   const [beganAt, setBeganAt] = useState(0);
   const [durationSeconds, setDurationSeconds] = useState(0);
@@ -99,7 +93,7 @@ export function useAudioMessageComposer({ target, disabled, independentAsrBlocke
   }
 
   async function start() {
-    if (disabled || independentAsrBlocked || !target || !send || phase !== 'idle') return;
+    if (disabled || !target || !send || phase !== 'idle') return;
     if (globalThis.isSecureContext === false) {
       reportError(i18n('instanceAccess.httpsRequired', 'Use HTTPS or a trusted HTTPS tunnel to connect securely.'));
       return;
@@ -125,11 +119,6 @@ export function useAudioMessageComposer({ target, disabled, independentAsrBlocke
 
   async function submit() {
     if (disabled || !target || !send || submitted.current || !pcm.current) return;
-    if (independentAsrBlocked) {
-      setPhase('preview');
-      reportError(independentAsrMessage());
-      return;
-    }
     if (!messageId.current) messageId.current = `${Date.now()}-${crypto.randomUUID()}`;
     submitted.current = true;
     if (audio.current && !audio.current.paused) audio.current.pause();
@@ -141,36 +130,25 @@ export function useAudioMessageComposer({ target, disabled, independentAsrBlocke
       if (own === generation.current) cancel();
     } catch (failure) {
       if (own !== generation.current) return;
-      if (failure instanceof Error && failure.name === 'AudioMessageRejected'
-          && ['busy', 'storage', 'manual_unavailable', 'independent_asr_unavailable'].includes(failure.message)) {
-        submitted.current = false;
-        setPhase('preview');
-        const messages = {
-          busy: i18n('chat.audioMessageBusy', 'The conversation is busy. Try sending the recording again when it is ready.'),
-          storage: i18n('chat.audioHistoryStorageError', 'The recording could not be saved. Try again.'),
-          independent_asr_unavailable: independentAsrMessage(),
-          manual_unavailable: i18n('chat.audioMessageManualUnavailable', 'The voice provider could not confirm recording support. You can retry or change providers.'),
-        };
-        reportError(messages[failure.message as keyof typeof messages]);
-        return;
-      }
-      setPhase('failed');
-      reportError(failure instanceof Error && failure.name === 'AudioMessageRejected' && failure.message === 'expired'
-        ? i18n('chat.audioMessageExpired', 'This send request has expired. Check the conversation, then close the preview to record again.')
-        : i18n('chat.audioMessageSendError', 'Delivery could not be confirmed. Check the conversation before recording again.'));
+      // Keep the draft and its request ID so a retry can be recognised by the host.
+      submitted.current = false;
+      setPhase('preview');
+      reportError(failure instanceof Error && failure.name === 'AudioMessageRejected' && failure.message === 'busy'
+        ? i18n('chat.audioMessageBusy', 'The conversation is busy. Try sending the recording again when it is ready.')
+        : i18n('chat.audioMessageSendError', 'The recording could not be sent. Try again.'));
     }
   }
 
   return {
-    phase, preview, beganAt, durationSeconds, error, audio, disabled, independentAsrBlocked,
-    active: phase !== 'idle' && phase !== 'failed',
+    phase, preview, beganAt, durationSeconds, error, audio, disabled,
+    active: phase !== 'idle',
     start, stop, submit, cancel,
   };
 }
 
 export default function AudioMessageComposer({ composer }: { composer: ReturnType<typeof useAudioMessageComposer> }) {
   const {
-    phase, preview, beganAt, durationSeconds, error, audio, disabled, independentAsrBlocked, active,
+    phase, preview, beganAt, durationSeconds, error, audio, disabled, active,
     start, stop, submit, cancel,
   } = composer;
   const [elapsed, setElapsed] = useState(0);
@@ -205,12 +183,9 @@ export default function AudioMessageComposer({ composer }: { composer: ReturnTyp
   const displayedSeconds = preview ? Math.ceil(durationSeconds) : Math.floor(elapsed);
   const duration = `0:${String(displayedSeconds).padStart(2, '0')}`;
   const recordLabel = i18n('chat.audioMessageRecord', 'Record a voice message');
-  const blockedReason = independentAsrBlocked ? independentAsrMessage() : undefined;
   const stopLabel = i18n('chat.audioMessageStop', 'Stop and send');
   const sendLabel = i18n('chat.audioMessageSend', 'Send recording');
-  const cancelLabel = phase === 'failed'
-    ? i18n('chat.audioMessageClosePreview', 'Close preview')
-    : i18n('chat.audioMessageCancel', 'Discard recording');
+  const cancelLabel = i18n('chat.audioMessageCancel', 'Discard recording');
   const playbackLabel = playing ? i18n('common.pause', 'Pause') : i18n('chat.audioMessagePreview', 'Preview recording');
   const showFallback = typeof window !== 'undefined' && typeof (window as AudioMessageHost).showStatusToast !== 'function';
   const announcement = <span className="audio-message-announcement"
@@ -218,14 +193,12 @@ export default function AudioMessageComposer({ composer }: { composer: ReturnTyp
   return <div className="audio-message-composer" data-compact-no-drag="true"
     data-audio-message-active={active ? 'true' : undefined}
     data-compact-hit-region="true" data-compact-geometry-item="audio-message"
-    title={blockedReason}
     onPointerDown={event => event.stopPropagation()}>
     {phase === 'idle' ? <button type="button" className="composer-tool-btn audio-message-mic"
-      aria-label={recordLabel} aria-description={blockedReason} title={blockedReason ?? recordLabel}
-      disabled={disabled || independentAsrBlocked} onClick={() => { void start(); }}>
+      aria-label={recordLabel} title={recordLabel}
+      disabled={disabled} onClick={() => { void start(); }}>
       <span className="audio-message-mic-glyph" aria-hidden="true" />
-    </button> : <div className="audio-message-strip" data-recording={phase === 'recording' || undefined}
-      data-audio-message-failed={phase === 'failed' || undefined}>
+    </button> : <div className="audio-message-strip" data-recording={phase === 'recording' || undefined}>
       {phase === 'recording' ? (
         <>
           <span className="audio-message-clock">
@@ -256,8 +229,8 @@ export default function AudioMessageComposer({ composer }: { composer: ReturnTyp
         <span className="audio-message-stop-icon" aria-hidden="true" />
         <span className="audio-message-stop-label">{stopLabel}</span>
       </button> : null}
-      {phase === 'preview' ? <button type="button" className="audio-message-send" disabled={disabled || independentAsrBlocked}
-        aria-label={sendLabel} aria-description={blockedReason} title={blockedReason ?? sendLabel} onClick={() => { void submit(); }}>
+      {phase === 'preview' ? <button type="button" className="audio-message-send" disabled={disabled}
+        aria-label={sendLabel} title={sendLabel} onClick={() => { void submit(); }}>
         <span className="audio-message-send-label">{i18n('chat.send', 'Send')}</span>
       </button> : null}
     </div>}

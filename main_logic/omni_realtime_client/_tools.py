@@ -27,7 +27,6 @@ from ._shared import (
     ToolCall,
     ToolDefinition,
     ToolResult,
-    TurnDetectionMode,
     canonical_realtime_dialect,
     logger,
     time,
@@ -678,14 +677,10 @@ class _ToolingMixin:
         batch = self._open_raw_tool_batch(owner, response_id)
         self._register_tool_batch_entry(batch, call, owner, task)
         if batch.collector is None:
-            collector = self._create_tool_task(self._answer_raw_tool_batch(batch, owner))
             self._register_tool_batch_collector(
                 batch,
-                collector,
+                self._create_tool_task(self._answer_raw_tool_batch(batch, owner)),
             )
-            audio_batches = getattr(self, "_audio_message_tool_batches", None)
-            if audio_batches is not None:
-                audio_batches.append(collector)
         return task
 
     async def _answer_raw_tool_batch(
@@ -693,16 +688,9 @@ class _ToolingMixin:
         batch: _ToolBatch,
         owner: _ToolTaskOwner,
     ) -> None:
-        audio_batches = getattr(self, "_audio_message_tool_batches", None)
-        audio_owned = audio_batches is not None and asyncio.current_task() in audio_batches
         results = await self._collect_tool_batch(batch, owner)
         if results:
-            if audio_owned:
-                await self._send_tool_results_openai_realtime(results, owner=owner, wait_for_completion=True)
-            else:
-                await self._send_tool_results_openai_realtime(results, owner=owner)
-        elif audio_owned:
-            raise ConnectionError("audio message tool batch lost its owner")
+            await self._send_tool_results_openai_realtime(results, owner=owner)
 
     def _start_gemini_tool_batch(
         self,
@@ -792,12 +780,14 @@ class _ToolingMixin:
                 payload["tool_choice"] = "auto"
             await self.update_session(payload)
         elif api == 'glm':
-            # Resend the connected session's mode so GLM cannot reset it.
+            # GLM documentation requires turn_detection whenever tools change under ServerVAD.
+            # This method requires connect() first, which already configured turn_detection as
+            # server_vad. Resend the same value to prevent server reset to its default.
             # Do not repeat beta_fields here: GLM partial updates automatically add them
             # in update_session. Omitting them would exceed downstream reconnect limits and close the connection.
             await self.update_session({
                 "tools": self._tools_for_openai_realtime(),
-                "turn_detection": None if self.turn_detection_mode == TurnDetectionMode.MANUAL else {"type": "server_vad"},
+                "turn_detection": {"type": "server_vad"},
             })
         elif api == 'qwen':
             # Qwen-Omni-Realtime: tools and enable_search are mutually exclusive; registering
@@ -879,7 +869,6 @@ class _ToolingMixin:
         results: List[ToolResult],
         *,
         owner: _ToolTaskOwner | None = None,
-        wait_for_completion: bool = False,
     ) -> None:
         """OpenAI Realtime / GLM Realtime / StepFun / Qwen / Free —
         send every tool result of one provider response as
@@ -903,8 +892,6 @@ class _ToolingMixin:
           server, or the request is likely to be rejected.
         """
         if owner is not None and not self._tool_task_owner_is_current(owner):
-            if wait_for_completion:
-                raise ConnectionError("audio message tool continuation lost its owner")
             return
 
         api = self._tooling_realtime_dialect()
@@ -948,16 +935,10 @@ class _ToolingMixin:
         try:
             if owner is not None and not self._tool_task_owner_is_current(owner):
                 await arbiter.cancel_ticket(ticket, wait=False)
-                if wait_for_completion:
-                    raise ConnectionError("audio message tool continuation lost its owner")
                 return
             await asyncio.shield(ticket.sent)
             if owner is not None and not self._tool_task_owner_is_current(owner):
                 await arbiter.cancel_ticket(ticket, wait=False)
-                if wait_for_completion:
-                    raise ConnectionError("audio message tool continuation lost its owner")
-            elif wait_for_completion:
-                await asyncio.shield(ticket.done)
         except asyncio.CancelledError:
             await asyncio.shield(arbiter.cancel_ticket(ticket, wait=False))
             raise

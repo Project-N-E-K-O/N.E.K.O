@@ -969,26 +969,6 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   scrollbar-width: none;
 }
 
-.message-list-load-older {
-  align-self: center;
-  flex: 0 0 auto;
-  padding: 6px 12px;
-  border: 1px solid currentColor;
-  border-radius: 999px;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-}
-
-.message-list-load-older:disabled {
-  cursor: wait;
-}
-
-.message-list-load-older-error {
-  align-self: center;
-}
-
 .message-list::-webkit-scrollbar {
   width: 0;
   height: 0;
@@ -2374,13 +2354,6 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   text-align: start;
 }
 
-.message-audio-status {
-  display: block;
-  margin: 2px 7px 4px;
-  color: var(--audio-muted);
-  font-size: 0.78rem;
-}
-
 .message-audio-transcript {
   margin: 4px 6px 5px;
   padding-top: 6px;
@@ -2450,15 +2423,6 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
 
 .compact-chat-surface-shell:has(> .compact-chat-surface-frame[data-audio-message-active="true"]) {
   max-width: 100vw;
-}
-
-.audio-message-strip[data-audio-message-failed="true"] {
-  min-height: 34px;
-  padding: 0 2px;
-  gap: 2px;
-  border-color: transparent;
-  border-radius: 10px;
-  background: var(--audio-hover);
 }
 
 .composer-input-shell:has(.composer-send-actions .audio-message-composer[data-audio-message-active="true"]) {
