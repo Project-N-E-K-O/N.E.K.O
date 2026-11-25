@@ -319,3 +319,22 @@ async def test_success_after_the_caller_left_is_cached_and_expires() -> None:
         return "重新转写"
 
     assert await cache.transcribe("k", fresh) == "重新转写"
+
+
+def test_a_silent_recording_does_not_clear_a_rejected_key(env) -> None:
+    env["transcriber"].outcomes.extend(
+        [AsrOfflineError("ASR_CREDENTIALS_REJECTED", provider_key="glm"), "", "你好"]
+    )
+    env["client"].post("/api/audio-message/transcribe", json=_payload())
+    silent = base64.b64encode(b"\x00\x00" * 16_000).decode()
+    response = env["client"].post(
+        "/api/audio-message/transcribe",
+        json=_payload(requestId="silent-1", audio=silent),
+    )
+    assert response.json() == {"ok": True, "text": ""}
+    # Nothing reached the provider, so the key is still known to be refused.
+    status = env["client"].get("/api/audio-message/status", params={"target": "Neko"}).json()
+    assert status["supported"] is False
+    # A spoken recording that succeeds with the same key does prove it works.
+    env["client"].post("/api/audio-message/transcribe", json=_payload(requestId="spoken-2"))
+    assert env["client"].get("/api/audio-message/status", params={"target": "Neko"}).json()["supported"] is True

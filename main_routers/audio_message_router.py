@@ -26,6 +26,7 @@ from fastapi.responses import JSONResponse
 
 from main_logic.asr_client.offline import (
     AsrOfflineError,
+    is_silent_pcm16,
     resolve_offline_transcriber,
 )
 from main_routers.system_router import _validate_local_mutation_request
@@ -256,7 +257,10 @@ async def transcribe_audio_message(request: Request):
             if exc.code == "ASR_CREDENTIALS_REJECTED" and fingerprint:
                 _REJECTED_CREDENTIALS.add(fingerprint)
             raise
-        _REJECTED_CREDENTIALS.discard(fingerprint)
+        if not is_silent_pcm16(pcm16):
+            # Only a recording that actually reached the provider proves the
+            # credential works; a silent one is answered locally.
+            _REJECTED_CREDENTIALS.discard(fingerprint)
         logger.info(
             "audio message transcribed provider=%s audio_ms=%d elapsed_ms=%d chars=%d",
             transcriber.provider_key,
