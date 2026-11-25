@@ -1,7 +1,7 @@
 <template>
-  <el-dialog :model-value="Boolean(asking)" :title="askingName" width="600px" @update:model-value="(open: boolean) => { if (!open) emit('closeAsk') }">
-    <p v-if="asking?.commission" class="muted">{{ asking.commission.title }}</p>
-    <AskBox v-if="asking?.commission?.ask" :ask="asking.commission.ask" :busy="busy" @answer="emit('answer', $event)" />
+  <el-dialog :model-value="Boolean(asking)" :title="asking?.name" width="600px" @update:model-value="(open: boolean) => { if (!open) emit('closeAsk') }">
+    <p v-if="asking?.title" class="muted">{{ asking.title }}</p>
+    <AskBox v-if="asking?.ask" :ask="asking.ask" :busy="busy" @answer="emit('answer', $event)" />
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon data-testid="colony-ask-error" />
   </el-dialog>
 
@@ -20,16 +20,21 @@
 
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import type { BoardCard } from '@/api/console'
+import type { BoardAsk } from '@/api/console'
 import AskBox from '../AskBox.vue'
 
 /**
  * The two things the colony asks the user in a dialog: an answer for a
- * familiar that waits, and whether a project is really to be sent away.
+ * familiar that waits (or for whether another is to be opened beside a
+ * busy one), and whether a project is really to be sent away.
  * Loaded when the first of them is needed: the colony is the first page,
  * and what a dialog is drawn with is not part of it.
  */
-defineProps<{ asking: BoardCard | null; askingName: string; parting: string; busy: string; error: string }>()
+defineProps<{
+  /** Who or what asks, what about, and the question. */
+  asking: { name: string; title: string; ask: BoardAsk | null } | null
+  parting: string; busy: string; error: string
+}>()
 const emit = defineEmits<{
   answer: [given: { text?: string; choice?: string }]; part: []; closeAsk: []; closePart: []
 }>()
