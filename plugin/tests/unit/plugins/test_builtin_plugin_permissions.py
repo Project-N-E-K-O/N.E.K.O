@@ -60,6 +60,9 @@ _EXPECTED = {
 _ALLOWED_POSSIBLE = {
     "music_pusher": {
         _FS_WRITE: [
+            ("__init__.py", "_atomic_write_json", "os.replace"),
+            ("__init__.py", "_atomic_write_json", "pathlib.Path().unlink"),
+            ("__init__.py", "MusicPusherPlugin._backup_corrupt_file_locked", "os.replace"),
             ("__init__.py", "MusicPusherPlugin._copy_static_ui_assets", "shutil.copy2"),
             ("__init__.py", "MusicPusherPlugin._migrate_legacy_uploads", "shutil.copy2"),
         ],
