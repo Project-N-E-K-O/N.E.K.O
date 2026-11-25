@@ -998,11 +998,18 @@
             I.state.onComposerAudioMessage = typeof handler === 'function' ? handler : null;
             I.renderWindow();
         },
-        setAudioMessageTarget: function (target) {
+        // 返回是否已生效。options.keepDraft：只是收起麦克风（线路暂不可用）而不是换了角色时，
+        // 若还有录音或待发送的草稿就先不清空——清空目标会让聊天窗当作换角色而丢掉草稿
+        setAudioMessageTarget: function (target, options) {
             var next = typeof target === 'string' ? target.trim() : '';
-            if (I.state.audioMessageTarget === next) return;
+            if (I.state.audioMessageTarget === next) return true;
+            if (!next && options && options.keepDraft
+                    && typeof I.isAudioMessageActive === 'function' && I.isAudioMessageActive()) {
+                return false;
+            }
             I.state.audioMessageTarget = next;
             I.renderWindow();
+            return true;
         },
         setOnTheaterSubmit: function (handler) {
             I.state.onTheaterSubmit = typeof handler === 'function' ? handler : null;

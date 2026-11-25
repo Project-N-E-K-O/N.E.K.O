@@ -148,6 +148,7 @@
         var shell = I.getShell();
         return !!(shell && shell.querySelector('.audio-message-composer[data-audio-message-active="true"]'));
     }
+    I.isAudioMessageActive = isAudioMessageActive;
 
     function finishIdleDockMinimize(shell) {
         if (I.isIdleDockPlaygroundBlocked()) {

@@ -21,11 +21,19 @@ const glue = section(
 );
 
 function harness({ responses = [], sendResult = true, target = 'Neko' } = {}) {
-  const calls = { fetch: [], sent: [], toasts: [], targets: [], handlers: [], refreshedToken: 0 };
+  const calls = { fetch: [], sent: [], toasts: [], targets: [], keepDraft: [], handlers: [], intervals: [], refreshedToken: 0 };
   const queue = responses.slice();
   const host = {
     setOnComposerAudioMessage(handler) { calls.handlers.push(handler); },
-    setAudioMessageTarget(value) { calls.targets.push(value); },
+    draftOpen: false,
+    // Mirrors the chat-window host: hiding is refused while a draft is open
+    // and the caller asked to keep it.
+    setAudioMessageTarget(value, options) {
+      calls.keepDraft.push(!!(options && options.keepDraft));
+      if (!value && options && options.keepDraft && host.draftOpen) return false;
+      calls.targets.push(value);
+      return true;
+    },
   };
   const window = {
     lanlan_config: { lanlan_name: target },
@@ -36,7 +44,7 @@ function harness({ responses = [], sendResult = true, target = 'Neko' } = {}) {
     },
     showStatusToast(message, duration) { calls.toasts.push([message, duration]); },
     t: (key) => key,
-    setInterval() { return 1; },
+    setInterval(fn) { calls.intervals.push(fn); return calls.intervals.length; },
     addEventListener() {},
   };
   const mod = {
@@ -194,4 +202,48 @@ test('a rejected key hides the microphone at once', async () => {
   assert.equal(calls.targets[0], '');
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(calls.targets, ['', '']);
+});
+
+test('hiding the microphone waits for an open draft so the recording survives', async () => {
+  const context = harness({
+    responses: [
+      { status: 200, body: { supported: true } },
+      { status: 409, body: { ok: false, error_code: 'ASR_CREDENTIALS_REJECTED' } },
+      { status: 200, body: { supported: false, error_code: 'ASR_CREDENTIALS_REJECTED' } },
+    ],
+  });
+  const { api, calls, host } = context;
+  api.bindAudioMessageHost(host);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls.targets, ['Neko']);
+
+  host.draftOpen = true; // the failed recording is back in preview
+  await rejection(api.sendAudioMessagePayload(payload));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls.targets, ['Neko'], 'target kept while the draft is open');
+  assert.equal(calls.keepDraft.at(-1), true);
+
+  calls.intervals[0](); // still open: nothing changes
+  assert.deepEqual(calls.targets, ['Neko']);
+  host.draftOpen = false; // user cancelled or sent the draft
+  calls.intervals[0]();
+  assert.deepEqual(calls.targets, ['Neko', '']);
+});
+
+test('switching to a character without offline ASR does not keep the old draft', async () => {
+  const context = harness({
+    responses: [
+      { status: 200, body: { supported: true } },
+      { status: 200, body: { supported: false, error_code: 'ASR_OFFLINE_NOT_SUPPORTED' } },
+    ],
+  });
+  const { api, calls, host, window } = context;
+  api.bindAudioMessageHost(host);
+  await new Promise((resolve) => setImmediate(resolve));
+  host.draftOpen = true;
+  window.lanlan_config.lanlan_name = 'Other';
+  calls.intervals[0]();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls.keepDraft.at(-1), false);
+  assert.deepEqual(calls.targets, ['Neko', '']);
 });

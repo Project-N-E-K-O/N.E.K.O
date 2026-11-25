@@ -1963,11 +1963,26 @@
     };
     var audioMessageAvailabilitySeq = 0;
     var audioMessageCheckedTarget = null;
+    // 期望交给聊天窗的目标，以及聊天窗实际接受的目标（有草稿时收起会被推迟）
+    var audioMessageDesiredTarget = null;
+    var audioMessageAppliedTarget = null;
 
     function audioMessageRejection(message) {
         var error = new Error(message || 'failed');
         error.name = 'AudioMessageRejected';
         return error;
+    }
+
+    function applyAudioMessageTarget(target) {
+        var host = window.reactChatWindowHost;
+        if (!host || typeof host.setAudioMessageTarget !== 'function') return;
+        audioMessageDesiredTarget = target;
+        // 角色没变、只是线路不可用时保留草稿：用户改好设置后可以直接重发这条录音
+        var keepDraft = !target && !!audioMessageAppliedTarget
+            && audioMessageAppliedTarget === currentAudioMessageTarget();
+        if (host.setAudioMessageTarget(target, { keepDraft: keepDraft }) !== false) {
+            audioMessageAppliedTarget = target;
+        }
     }
 
     function currentAudioMessageTarget() {
@@ -2033,9 +2048,8 @@
             console.warn('[AudioMessage] 转写失败:', code);
             if (code === 'ASR_RATE_LIMITED') throw audioMessageRejection('busy');
             if (AUDIO_MESSAGE_ROUTE_ERRORS[code]) {
-                // 先收起按钮；后端记住了被拒的 key，换 key 前状态查询不会再报可用
-                var host = window.reactChatWindowHost;
-                if (host && typeof host.setAudioMessageTarget === 'function') host.setAudioMessageTarget('');
+                // 收起麦克风（草稿还在时推迟到草稿结束）；后端记住了被拒的 key，换 key 前状态查询不会再报可用
+                applyAudioMessageTarget('');
                 refreshAudioMessageAvailability();
             }
             throw audioMessageRejection(code);
@@ -2084,7 +2098,7 @@
             }
         }
         if (seq !== audioMessageAvailabilitySeq) return;
-        host.setAudioMessageTarget(supported ? target : '');
+        applyAudioMessageTarget(supported ? target : '');
     }
 
     function bindAudioMessageHost(host) {
@@ -2101,6 +2115,10 @@
         window.setInterval(function () {
             if (currentAudioMessageTarget() !== audioMessageCheckedTarget) {
                 refreshAudioMessageAvailability();
+            } else if (audioMessageDesiredTarget !== null
+                    && audioMessageDesiredTarget !== audioMessageAppliedTarget) {
+                // 被推迟的收起：草稿结束后再试
+                applyAudioMessageTarget(audioMessageDesiredTarget);
             }
         }, 1000);
         window.addEventListener('focus', function () {
