@@ -1301,6 +1301,12 @@ describe('several familiars at work in one project', () => {
     expect(frames[0].textContent).toContain(words.colony.team)
     expect(cat('kid')?.getAttribute('data-look')).toBe('resolving')
     expect(cat('other')?.classList.contains('cat--unlanded')).toBe(true)
+    // Waiting for the user to merge, or not merged: drawn as waiting for the user; merging: as at work.
+    expect(cat('other')?.classList.contains('cat--waits')).toBe(true)
+    expect(cat('alone')?.classList.contains('cat--waits')).toBe(true)
+    expect(cat('kid')?.classList.contains('cat--waits')).toBe(false)
+    expect(cat('kid')?.querySelector('.figure--working')).toBeTruthy()
+    expect(cat('other')?.querySelector('.figure--working')).toBeNull()
     // Being dragged is not what one waiting for the user to merge looks like.
     expect(document.querySelector('.cat--grabbed')).toBeNull()
     // One that is not there at the moment shown is not framed.

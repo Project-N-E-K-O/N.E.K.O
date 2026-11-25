@@ -21,9 +21,9 @@ const face = computed(() => FAMILIAR_FACES[props.avatar] ?? FAMILIAR_FACES.gener
 <style scoped>
 .figure { display: block; font-size: 34px; line-height: 1.2; filter: drop-shadow(0 3px 2px rgb(0 0 0 / 18%)); }
 .figure--lead { font-size: 46px; }
-.figure--working, .figure--landing, .figure--resolving { animation: colony-bob 0.9s ease-in-out infinite; }
+.figure--working { animation: colony-bob 0.9s ease-in-out infinite; }
 .figure--idle { opacity: 0.8; }
 .figure--asleep, .figure--resting, .figure--queued { opacity: 0.5; }
 @keyframes colony-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
-@media (prefers-reduced-motion: reduce) { .figure--working, .figure--landing, .figure--resolving { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .figure--working { animation: none; } }
 </style>
