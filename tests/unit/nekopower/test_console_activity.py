@@ -227,12 +227,18 @@ async def test_where_a_page_begins_it_is_told_how_many_came_before_and_who_was_a
     console = consoles(tmp_path, llm)
     first = await console.dispatch("sort the photos")
     waiting = await wait_status(console.host, first.id, "waiting_user")
-    whole = (await console.get("/timeline")).json()
     # Read from where nothing is left to read: all of it came before.
     monkeypatch.setattr(settings, "CONSOLE_TIMELINE_RECENT_EVENT_ROWS", 0)
     monkeypatch.setattr(settings, "CONSOLE_TIMELINE_RECENT_MESSAGE_ROWS", 0)
     start = (await console.get("/timeline/start")).json()
-    assert start["after"] == whole["latest"] and start["before"] == len(whole["entries"])
+    assert start["after"] == start["latest"]
+    # What is on record up to there (the session may still write the end of its turn after it).
+    from nekopower.host.timeline import parse_cursor
+
+    events, messages = parse_cursor(start["after"])
+    entries = (await console.get("/timeline")).json()["entries"]
+    before = [item for item in entries if all(a <= b for a, b in zip(parse_cursor(item["cursor"]), (events, messages)))]
+    assert before and start["before"] == len(before)
     assert [(item["session_id"], item["commission_id"], item["look"]) for item in start["scene"]] == [
         (waiting.session_id, first.id, "waiting_user")
     ]
