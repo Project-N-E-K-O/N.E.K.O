@@ -107,17 +107,20 @@ _IMPORT_MODULES = frozenset({"importlib._bootstrap", "importlib._bootstrap_exter
 # path argument, index of its dir_fd argument or None, whether the operation
 # follows a symlink in the last component). Argument orders as CPython raises
 # them (os.rename is also os.replace).
-_FS_EVENTS: dict[str, tuple[str, tuple[tuple[int, int | None, bool], ...]]] = {
+_FS_EVENTS: dict[str, tuple[str, tuple[tuple[int, int | None, bool | None], ...]]] = {
     "os.listdir": (FS_READ, ((0, None, True),)),
     "os.scandir": (FS_READ, ((0, None, True),)),
     "os.remove": (FS_WRITE, ((0, 1, False),)),
     "os.rename": (FS_WRITE, ((0, 2, False), (1, 3, False))),
     "os.mkdir": (FS_WRITE, ((0, 2, False),)),
     "os.rmdir": (FS_WRITE, ((0, 1, False),)),
-    "os.chmod": (FS_WRITE, ((0, 2, True),)),
-    "os.chown": (FS_WRITE, ((0, 3, True),)),
+    # chmod / chown / utime: the event does not say whether follow_symlinks
+    # was False (lchown, lchmod, utime(follow_symlinks=False)), so a link is
+    # judged both as itself and as its target (follow=None).
+    "os.chmod": (FS_WRITE, ((0, 2, None),)),
+    "os.chown": (FS_WRITE, ((0, 3, None),)),
     "os.truncate": (FS_WRITE, ((0, None, True),)),
-    "os.utime": (FS_WRITE, ((0, 3, True),)),
+    "os.utime": (FS_WRITE, ((0, 3, None),)),
     "os.link": (FS_WRITE, ((1, 3, False),)),
     "os.symlink": (FS_WRITE, ((1, 2, False),)),
     "shutil.rmtree": (FS_WRITE, ((0, 1, False),)),
@@ -480,16 +483,25 @@ class SystemAuditor:
                 return []
             flags = args[2] if len(args) > 2 and isinstance(args[2], int) else 0
             mode = args[1] if len(args) > 1 else None
+            access = flags & (os.O_WRONLY | os.O_RDWR)
+            # A read-write open (r+, w+, a+, O_RDWR) can do both, so it is two
+            # uses, each judged with its own exemptions (as the static check
+            # counts it, capability_analysis._open_permissions).
+            reads = access != os.O_WRONLY or (isinstance(mode, str) and "+" in mode)
             writes = bool(flags & _WRITE_FLAGS) or (
                 isinstance(mode, str) and any(c in mode for c in "wax+")
             )
-            permission = FS_WRITE if writes else FS_READ
             if isinstance(path, (str, bytes)) and not os.path.isabs(path) and _inside_rmtree():
                 # rmtree opens subdirectories by name relative to a dir_fd the
                 # event does not carry; its root was judged already.
                 return []
-            target = self._fs_target(path, directory=False, read=permission == FS_READ)
-            return [(permission, target, ())] if target else []
+            uses = []
+            for permission, wanted in ((FS_READ, reads), (FS_WRITE, writes)):
+                if wanted:
+                    target = self._fs_target(path, directory=False, read=permission == FS_READ)
+                    if target:
+                        uses.append((permission, target, ()))
+            return uses
         spec = _FS_EVENTS.get(event)
         if spec is not None:
             permission, paths = spec
@@ -556,7 +568,7 @@ class SystemAuditor:
         return _under(path, self._exempt_dirs) or (read and _under(path, self._read_exempt))
 
     def _fs_target(self, path: object, *, directory: bool, read: bool = False,
-                   dir_fd: object = None, follow: bool = True) -> str | None:
+                   dir_fd: object = None, follow: bool | None = True) -> str | None:
         if path is None or isinstance(path, int):
             return None
         if isinstance(path, os.PathLike):
@@ -571,10 +583,19 @@ class SystemAuditor:
             return "<dir_fd>"
         # Judged where it really lands, so a symlink in the data directory
         # cannot lead out of it (and an alias of it is still the data directory).
-        real = self._real(path, follow=follow)
-        key = os.path.normcase(real)
-        if self._exempt(key, read) or self._own_file(real):
+        # follow=None: unknown whether the link or its target is changed, so
+        # both are judged and the use counts unless both are exempt.
+        landings = [self._real(path, follow=follow is not False)]
+        if follow is None:
+            landings.append(self._real(path, follow=False))
+        real = None
+        for landing in landings:
+            if not (self._exempt(os.path.normcase(landing), read) or self._own_file(landing)):
+                real = landing
+                break
+        if real is None:
             return None
+        key = os.path.normcase(real)
         shown = real
         if self._real_home is not None:
             real_home = os.path.normcase(self._real_home).rstrip(os.sep)

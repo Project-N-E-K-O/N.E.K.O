@@ -157,9 +157,66 @@ def test_open_outside_data_dir_is_a_read_or_write(env):
 
 
 def test_os_open_mode_none_uses_flags(env):
-    env.from_plugin("open", (str(env.outside / "a"), None, os.O_RDWR))
-    (record,) = env.records()
-    assert record["permission"] == FS_WRITE
+    env.from_plugin("open", (str(env.outside / "a.rw"), None, os.O_RDWR))
+    env.from_plugin("open", (str(env.outside / "b.wo"), None, os.O_WRONLY | os.O_CREAT))
+    env.from_plugin("open", (str(env.outside / "c.ro"), None, os.O_RDONLY))
+    assert [(r["permission"], r["target"].rsplit(".", 1)[-1]) for r in env.records()] == [
+        (FS_READ, "rw"), (FS_WRITE, "rw"), (FS_WRITE, "wo"), (FS_READ, "ro"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("mode", "flags", "expected"),
+    [
+        ("r+", os.O_RDWR, [FS_READ, FS_WRITE]),
+        ("w+", os.O_RDWR | os.O_CREAT | os.O_TRUNC, [FS_READ, FS_WRITE]),
+        ("a+", os.O_RDWR | os.O_CREAT | os.O_APPEND, [FS_READ, FS_WRITE]),
+        ("w", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, [FS_WRITE]),
+        ("a", os.O_WRONLY | os.O_CREAT | os.O_APPEND, [FS_WRITE]),
+        ("r", os.O_RDONLY, [FS_READ]),
+    ],
+)
+def test_a_read_write_open_is_both_uses(env, mode, flags, expected):
+    env.from_plugin("open", (str(env.outside / "a.txt"), mode, flags))
+    assert [r["permission"] for r in env.records()] == expected
+
+
+def test_each_half_of_a_read_write_open_is_judged_on_its_own(tmp_path):
+    env = Env(tmp_path, granted=(FS_WRITE,))
+    env.from_plugin("open", (str(env.outside / "a.txt"), "r+", os.O_RDWR))
+    verdicts = {r["permission"]: r["verdict"] for r in env.records()}
+    assert verdicts == {FS_READ: "would_deny", FS_WRITE: "allow"}
+    # Interpreter directories are exempt for reading only.
+    env.auditor._queue.clear()
+    env.from_plugin("open", (str(Path(pytest.__file__).parent / "x.py"), "r+", os.O_RDWR))
+    assert [r["permission"] for r in env.records()] == [FS_WRITE]
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="needs unprivileged symlinks")
+@pytest.mark.parametrize("event", ["os.utime", "os.chown", "os.chmod"])
+def test_metadata_on_a_link_counts_the_link_and_its_target(env, event):
+    # The event does not tell whether follow_symlinks=False (lchown, utime on
+    # the link): a link outside pointing in, and one inside pointing out,
+    # are both recorded; a plain file inside stays exempt.
+    (env.data_dir / "own.txt").write_text("x", encoding="utf-8")
+    (env.outside / "far.txt").write_text("x", encoding="utf-8")
+    outside_link = env.outside / "in.lnk"
+    inside_link = env.data_dir / "out.lnk"
+    os.symlink(env.data_dir / "own.txt", outside_link)
+    os.symlink(env.outside / "far.txt", inside_link)
+    argument_count = {"os.utime": 4, "os.chown": 4, "os.chmod": 3}[event]
+
+    def call(path):
+        args = [str(path)] + [None] * (argument_count - 2) + [-1]
+        env.from_plugin(event, tuple(args))
+
+    call(env.data_dir / "own.txt")
+    assert env.records() == []
+    call(outside_link)
+    call(inside_link)
+    targets = [r["target"] for r in env.records()]
+    assert len(targets) == 2
+    assert targets[0].endswith("/outside/*.lnk") and targets[1].endswith("/outside/*.txt")
 
 
 @pytest.mark.parametrize(
