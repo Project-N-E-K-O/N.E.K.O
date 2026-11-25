@@ -677,3 +677,20 @@ async def test_no_warning_without_temperature_and_none_per_fallback_attempt(exec
     assert gateway.calls[-2:] == ["primary", "backup"]
     assert len(execution_log.warnings) == 1
     await executor.aclose()
+
+
+async def test_rejected_request_neither_warns_nor_uses_up_the_report(execution_log):
+    executor = ModelExecutor(Gateway(), Recorder())
+    # Invalid (no messages): rejected during preparation, before any send.
+    with pytest.raises(ModelGatewayError):
+        await executor.complete(plugin_call("weather_bot"), body(messages=[], temperature=0.3))
+    assert execution_log.warnings == []
+    # The first request that is actually sent still gets the warning.
+    await executor.complete(plugin_call("weather_bot"), body(temperature=0.3))
+    assert len(execution_log.warnings) == 1
+    await executor.aclose()
+    # A closed gateway rejects before any attempt: no warning either.
+    with pytest.raises(ModelGatewayError):
+        await executor.complete(plugin_call("late_bot"), body(temperature=0.3))
+    dropped = [entry for entry in execution_log.warnings if "it was dropped" in entry[0]]
+    assert [entry[1] for entry in dropped] == ["weather_bot"]

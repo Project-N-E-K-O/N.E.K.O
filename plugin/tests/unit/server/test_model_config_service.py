@@ -761,6 +761,16 @@ def test_saving_a_default_temperature_is_accepted_and_dropped_with_a_warning(con
     assert service.store.read().slots[created["id"]].defaults.model_dump() == {"max_output_tokens": 600}
 
 
+def test_rejected_slot_save_does_not_report_a_default_temperature(config_env, config_logs):
+    _, service, _ = config_env
+    service_log, _ = config_logs
+    with pytest.raises(ServerDomainError):
+        service.create_slot(slot_payload(base_url="", defaults={"temperature": 1.5}))
+    with pytest.raises(ServerDomainError):
+        service.update_slot("slot_" + "f" * 32, {"defaults": {"temperature": 1.5}})
+    assert service_log.warnings == []
+
+
 def test_saved_default_temperature_is_ignored_reported_once_and_removed_on_save(config_env, config_logs):
     cm, service, _ = config_env
     _, store_log = config_logs

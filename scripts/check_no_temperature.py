@@ -122,20 +122,27 @@ EXEMPTIONS: dict[str, str] = {
     "main_logic/omni_realtime_client/_transport.py": (
         "Voice: the GLM and Qwen realtime voice sessions accept a session "
         "temperature, and these values are part of the voice session setup."
+        " Whole-file exemption: any other temperature added to this file is not "
+        "reported, so keep this file to voice requests."
     ),
     "main_logic/omni_realtime_client/_gemini_support.py": (
         "Voice: the Gemini Live session accepts a temperature in its "
         "generation_config, and this value is part of the voice session setup."
+        " Whole-file exemption: any other temperature added to this file is not "
+        "reported, so keep this file to voice requests."
     ),
     "main_logic/asr_client/workers/gemini.py": (
         "Voice: Gemini speech recognition accepts a temperature, and 0 is part "
         "of the transcription request setup."
+        " Whole-file exemption: any other temperature added to this file is not "
+        "reported, so keep this file to voice requests."
     ),
     **{
         f"plugin/tests/unit/server/{name}.py": (
-            "Tests that a temperature a plugin sends, one saved in a model slot or "
-            "sent by an older plugin manager, or one in provider settings is "
-            "accepted, dropped with a warning and never reaches the upstream request."
+            "Tests that a temperature a plugin sends, or one saved in a model slot or "
+            "sent by an older plugin manager, is accepted, dropped with a warning and "
+            "never reaches the upstream request; and that one in provider settings is "
+            "never merged into it."
         )
         for name in (
             "test_host_model_slots",
@@ -148,6 +155,10 @@ EXEMPTIONS: dict[str, str] = {
             "test_model_gateway_service",
         )
     },
+    "tests/unit/theater_workshop/test_sdk_model_drops_temperature.py": (
+        "Tests that the workshop SDK drops a temperature that a generator written "
+        "for SDK 0.1.0 still passes, before the model call."
+    ),
     "plugin/plugins/lifekit": (
         "Weather plugin: 'temperature' is the air temperature in forecast data; "
         "the plugin makes no model calls."

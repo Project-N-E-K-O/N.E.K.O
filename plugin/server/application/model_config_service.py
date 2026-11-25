@@ -180,8 +180,8 @@ class ModelConfigService:
         return self._view(config, slot_id)
 
     def create_slot(self, payload: dict) -> dict:
-        _report_retired_defaults(payload)
         slot = _validate_slot(payload)
+        _report_retired_defaults(payload)
         slot_id = "slot_" + uuid4().hex
 
         def change(config):
@@ -205,8 +205,6 @@ class ModelConfigService:
             fallback = target.fallback_slot_id
 
     def update_slot(self, slot_id: str, payload: dict) -> dict:
-        _report_retired_defaults(payload)
-
         def change(config):
             old = self._slot(config, slot_id)
             updates = dict(payload)
@@ -224,6 +222,8 @@ class ModelConfigService:
                 merged["protocol"] = updates.get("protocol", "openai_chat")
                 merged["host_api"] = None
             slot = _validate_slot(merged)
+            # Only once the slot exists and the merged values validate.
+            _report_retired_defaults(payload)
             if old.source == "manual" and slot.source == "manual" and old.api_key and "api_key" not in updates and (
                 old.protocol != slot.protocol or not same_endpoint(old.base_url, slot.base_url)
             ):
