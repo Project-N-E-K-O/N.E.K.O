@@ -603,6 +603,8 @@ class PluginCommunicationResourceManager:
         # main_server-side bookkeeping.
         "LLM_TOOL_REGISTER": "_handle_llm_tool_register",
         "LLM_TOOL_UNREGISTER": "_handle_llm_tool_unregister",
+        # The plugin process's own system.* uses (plugin/core/system_audit.py).
+        "SYSTEM_AUDIT": "_handle_system_audit",
     }
 
     async def _consume_uplink(self) -> None:
@@ -1134,6 +1136,12 @@ class PluginCommunicationResourceManager:
             )
         except Exception:
             self.logger.exception("Failed to handle LLM_TOOL_UNREGISTER")
+
+    async def _handle_system_audit(self, msg: Dict[str, Any]) -> None:
+        from plugin.server.application.plugins import capability_gate
+
+        # plugin_id is the uplink's identity (stamped in _route_message).
+        capability_gate.record_system_uses(self.plugin_id, msg)
 
     async def _handle_list_actions_update(self, msg: Dict[str, Any]) -> None:
         try:

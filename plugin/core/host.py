@@ -1075,6 +1075,50 @@ def _resolve_configured_persist_mode(
     return persist_mode
 
 
+def _install_system_audit(
+    plugin_id: str,
+    config_path: Path,
+    project_root: Path,
+    permissions: Any,
+    message_sender: Any,
+    logger: Any,
+) -> Any | None:
+    """Record this process's own ``system.*`` uses (observe only, see system_audit).
+
+    Installed before the plugin module is imported. A failure here leaves the
+    plugin running without the records.
+    """
+    try:
+        from types import SimpleNamespace
+
+        from plugin.core import system_audit
+        from plugin.logging_config import resolve_plugin_log_directory
+        from plugin.sdk.shared.core.base_runtime import (
+            resolve_plugin_shared_dir,
+            resolve_plugin_storage_dir,
+        )
+
+        exempt_dirs = [
+            resolve_plugin_storage_dir(SimpleNamespace(plugin_id=plugin_id)),
+            resolve_plugin_shared_dir(plugin_id),
+        ]
+        try:
+            exempt_dirs.append(resolve_plugin_log_directory())
+        except Exception:
+            pass
+        auditor = system_audit.SystemAuditor(
+            plugin_dir=Path(config_path).parent,
+            exempt_dirs=exempt_dirs,
+            project_root=project_root,
+            permissions=permissions,
+            sender=message_sender.put_nowait,
+        )
+        return system_audit.install(auditor)
+    except Exception as exc:
+        logger.warning("[Plugin Process] system permission audit not installed: {}", type(exc).__name__)
+        return None
+
+
 def _plugin_process_runner(
     plugin_id: str,
     entry_point: str,
@@ -1128,6 +1172,18 @@ def _plugin_process_runner(
     message_sender = child_transport.channel_sender(CH_MSG)
     comm_sender = child_transport.channel_sender(CH_COMM)
 
+    # Grants as the host sent them at launch. ctx.permissions adopts this copy
+    # below; the audit hook reads it from before the plugin module is imported.
+    from plugin.sdk.shared.permissions.runtime import PluginPermissions
+
+    launch_permissions = PluginPermissions(logger)
+    initial_permissions = (startup_options or {}).get("permissions")
+    if initial_permissions is not None:
+        launch_permissions.apply(initial_permissions)
+    system_auditor = _install_system_audit(
+        plugin_id, config_path, project_root, launch_permissions, message_sender, logger,
+    )
+
     try:
         _prepare_child_plugin_import_roots(logger)
         _prepare_child_current_plugin_import_root(config_path, logger)
@@ -1173,10 +1229,8 @@ def _plugin_process_runner(
         # The context owns this instance's credential from now on.
         if model_gateway_options is not None:
             model_gateway_options.clear()
-        initial_permissions = (startup_options or {}).get("permissions")
-        if initial_permissions is not None:
-            ctx.permissions.apply(initial_permissions)
-        else:
+        ctx._permissions = launch_permissions
+        if initial_permissions is None:
             logger.warning(
                 "[Plugin Process] no permission snapshot at launch; ctx.permissions reports "
                 "enforced permissions as denied until the host sends one"
@@ -2006,6 +2060,11 @@ def _plugin_process_runner(
                         asyncio.run(_run_with_model_client_cleanup(ctx, _run_with_downlink(result)))
         except BaseException:
             pass
+        if system_auditor is not None:
+            try:
+                system_auditor.close()
+            except Exception:
+                pass
         try:
             ctx.close()
         except Exception:

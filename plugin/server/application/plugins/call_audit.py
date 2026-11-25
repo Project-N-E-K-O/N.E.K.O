@@ -29,6 +29,7 @@ _ring: deque[tuple[int, dict]] = deque(maxlen=1000)
 _write_order = itertools.count()  # shared by both rings; timestamps can tie
 # Decisions get their own ring so frequent forward entries cannot evict them.
 _decision_ring: deque[tuple[int, dict]] = deque(maxlen=500)
+_DECISION_KINDS = frozenset({"decision", "system_use"})
 _listener: logging.handlers.QueueListener | None = None
 _lock = threading.Lock()
 _closed = False
@@ -113,7 +114,7 @@ def _audit_logger_locked() -> logging.Logger | None:
 def record(entry: dict) -> None:
     """Keep ``entry`` in the ring and queue it for the file; never raises."""
     item = {"ts": datetime.now(timezone.utc).isoformat(), **entry}
-    (_decision_ring if entry.get("kind") == "decision" else _ring).append((next(_write_order), item))
+    (_decision_ring if entry.get("kind") in _DECISION_KINDS else _ring).append((next(_write_order), item))
     try:
         # Check and enqueue (non-blocking) under the lock close() takes, so
         # everything accepted before a close is queued ahead of its sentinel.

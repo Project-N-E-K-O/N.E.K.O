@@ -52,18 +52,42 @@ class _SourceUnknown(Exception):
     pass
 
 
-def _plugin_directory(plugin_id: str) -> Path | None:
+def _registered_candidates(plugin_id: str) -> tuple[object, ...]:
+    from plugin.server.infrastructure.config_paths import (
+        _registered_plugin_config_candidates,
+    )
+
+    try:
+        return _registered_plugin_config_candidates(plugin_id)
+    except TimeoutError as exc:
+        # The registry is busy; an unknown source keeps the last known one.
+        raise _SourceUnknown from exc
+
+
+def _plugin_directory(plugin_id: str, candidates: tuple[object, ...] | None = None) -> Path | None:
     """Directory of the loaded plugin, ``None`` when it is not registered."""
     from plugin.server.infrastructure.config_paths import (
         _resolve_registered_plugin_config_path,
     )
 
     try:
-        path = _resolve_registered_plugin_config_path(plugin_id)
+        path = _resolve_registered_plugin_config_path(plugin_id, candidates)
     except TimeoutError as exc:
-        # The registry is busy; an unknown source keeps the last known one.
         raise _SourceUnknown from exc
     return path.parent if path is not None else None
+
+
+# plugin_id -> (manager, lock snapshot, registered config paths, source).
+# The source is worked out from exactly these inputs; the install-source
+# lock is copy-on-write (every change publishes a new snapshot object), so
+# a different snapshot, manager or registration means it is worked out again.
+# Spares the per-use path resolution and file checks in the host's checks.
+_source_cache: dict[str, tuple[object, object, tuple[object, ...], PluginSource | None]] = {}
+_SOURCE_CACHE_LIMIT = 1024
+
+
+def clear_source_cache() -> None:
+    _source_cache.clear()
 
 
 def _source_of(entry) -> PluginSource | None:
@@ -86,23 +110,46 @@ def _source_of(entry) -> PluginSource | None:
 
 def current_source(plugin_id: str) -> PluginSource | None:
     """Return the plugin's install source, or ``None`` when it is unknown."""
-    from plugin.server.application.install_source import (
-        InstallSourceError,
-        get_install_source_manager,
-    )
+    from plugin.server.application.install_source import get_install_source_manager
 
     manager = get_install_source_manager()
     if manager is None or manager.is_degraded or not plugin_id:
         return None
     try:
-        directory = _plugin_directory(plugin_id)
+        candidates = _registered_candidates(plugin_id)
     except _SourceUnknown:
         return None
+    try:
+        snapshot = manager.snapshot()
+    except Exception:
+        snapshot = None
+    cached = _source_cache.get(plugin_id)
+    if (
+        snapshot is not None and cached is not None and cached[0] is manager
+        and cached[1] is snapshot and cached[2] == candidates
+    ):
+        return cached[3]
+    try:
+        source = _resolve_source(plugin_id, manager, candidates)
+    except _SourceUnknown:
+        return None  # not cached: a busy registry or lock error is not an answer
+    if snapshot is None:
+        return source
+    if len(_source_cache) >= _SOURCE_CACHE_LIMIT:
+        _source_cache.clear()
+    _source_cache[plugin_id] = (manager, snapshot, candidates, source)
+    return source
+
+
+def _resolve_source(plugin_id: str, manager, candidates: tuple[object, ...]) -> PluginSource | None:
+    from plugin.server.application.install_source import InstallSourceError
+
+    directory = _plugin_directory(plugin_id, candidates)
     if directory is not None:
         try:
             entry = manager.entry_for_directory(directory)
-        except InstallSourceError:
-            return None
+        except InstallSourceError as exc:
+            raise _SourceUnknown from exc
         # The directory key is exact; an empty plugin_id only means the
         # metadata was unreadable when the lock entry was written. A known
         # directory without an entry must not fall back to another root's

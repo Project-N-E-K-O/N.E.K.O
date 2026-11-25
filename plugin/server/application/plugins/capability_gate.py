@@ -8,6 +8,9 @@ plugin-supplied ``_ctx`` or views. It runs whatever the master switch says,
 and never refuses a call yet (``REFUSES_CALLS``); a failure in here is logged
 by type and ignored, so the caller sees exactly what it saw before.
 Permission ids come from ``plugin.sdk.shared.permissions``.
+
+``record_system_uses`` writes what a plugin process reports about its own
+``system.*`` uses (``plugin/core/system_audit.py``) to the same audit.
 """
 
 from __future__ import annotations
@@ -263,3 +266,82 @@ def capability_checked(capability: str, handler):
 
     checked.__capability__ = capability
     return checked
+
+
+# What a plugin process may report about its own system.* uses. The report is
+# the plugin's own word (its process could also stay silent); it is bounded
+# and reduced to fixed vocabularies before it reaches the audit file.
+SYSTEM_USE_PERMISSIONS = frozenset({
+    PERMISSIONS["system.network:connect"].id,
+    PERMISSIONS["system.process:spawn"].id,
+    PERMISSIONS["system.fs:read"].id,
+    PERMISSIONS["system.fs:write"].id,
+})
+_SYSTEM_USE_FLAGS = frozenset({"unattributed", "loopback"})
+_SYSTEM_USE_BATCH_LIMIT = 100
+_SYSTEM_USE_PER_MINUTE = 600
+_system_use_budget: dict[str, tuple[float, int]] = {}
+# Printable text without line breaks or quotes that could fake a log line.
+_TARGET = re.compile(r"[^\x00-\x1f\x7f\"\\]{1,200}")
+
+
+def _system_use_target(value: object) -> str:
+    return value if isinstance(value, str) and _TARGET.fullmatch(value) else "<invalid>"
+
+
+def record_system_uses(plugin_id: str, message: object) -> int:
+    """Audit one ``SYSTEM_AUDIT`` batch from ``plugin_id``'s process.
+
+    Returns how many entries were written. Never raises. Malformed items are
+    skipped; more than ``_SYSTEM_USE_PER_MINUTE`` entries a minute per plugin
+    are counted, not written.
+    """
+    try:
+        if not isinstance(message, dict):
+            return 0
+        items = message.get("items")
+        items = items[:_SYSTEM_USE_BATCH_LIMIT] if isinstance(items, list) else []
+        lost = message.get("dropped")
+        lost = lost if isinstance(lost, int) and not isinstance(lost, bool) and lost > 0 else 0
+        now = time.monotonic()
+        started, used = _system_use_budget.get(plugin_id, (now, 0))
+        if now - started >= 60.0:
+            started, used = now, 0
+        mode = current_mode()
+        written = 0
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            permission = item.get("permission")
+            if permission not in SYSTEM_USE_PERMISSIONS:
+                continue
+            if used >= _SYSTEM_USE_PER_MINUTE:
+                lost += 1
+                continue
+            used += 1
+            would_deny = item.get("verdict") == "would_deny"
+            reason = item.get("reason") if item.get("reason") in ("denied", "undecided") else None
+            flags = item.get("flags")
+            call_audit.record({
+                "kind": "system_use", "mode": mode,
+                # Whether the process refused it (system_audit.REFUSES_SYSTEM_USES).
+                "enforcing": would_deny and item.get("enforcing") is True,
+                "plugin": plugin_id, "capability": permission,
+                "operation": _identifier(item.get("event")),
+                "target": _system_use_target(item.get("target")),
+                "verdict": "would_deny" if would_deny else "allow",
+                "reason": reason if would_deny else None,
+                "flags": sorted(
+                    {flag for flag in flags if flag in _SYSTEM_USE_FLAGS} if isinstance(flags, list) else ()
+                ) + ["plugin_reported"],
+            })
+            written += 1
+        if len(_system_use_budget) > 1024:
+            _system_use_budget.clear()
+        _system_use_budget[plugin_id] = (started, used)
+        if lost:
+            call_audit.record({"kind": "system_use_lost", "plugin": plugin_id, "count": lost})
+        return written
+    except Exception as exc:
+        logger.warning("system use audit failed: error_type={}", type(exc).__name__)
+        return 0

@@ -694,7 +694,7 @@ def install_sources(monkeypatch):
         install_source_module, "get_install_source_manager", lambda: holder["manager"]
     )
     monkeypatch.setattr(
-        permission_service, "_plugin_directory", lambda _pid: holder["directory"]
+        permission_service, "_plugin_directory", lambda _pid, _candidates=None: holder["directory"]
     )
     return holder
 
@@ -835,7 +835,7 @@ def test_registry_lock_timeout_is_an_unknown_source(monkeypatch):
     def busy(_plugin_id):
         raise TimeoutError("plugins_read")
 
-    monkeypatch.setattr(config_paths, "_resolve_registered_plugin_config_path", busy)
+    monkeypatch.setattr(config_paths, "_registered_plugin_config_candidates", busy)
     # A unique entry exists: without the timeout handling the scan would use it.
     manager = FakeInstallSources([_lock_entry(channel="manual")])
     monkeypatch.setattr(install_source_module, "get_install_source_manager", lambda: manager)
@@ -1542,3 +1542,54 @@ def test_forget_plugin_grants_drops_only_the_given_plugins(monkeypatch, manager)
 
     assert MEMORY_READ not in (store.read("demo") or {}).get("permissions", {})
     assert store.read("other")["permissions"][MEMORY_READ]["state"] == "granted"
+
+
+class SnapshotInstallSources(FakeInstallSources):
+    """With the real manager's copy-on-write ``snapshot()``."""
+
+    def __init__(self, entries, **kwargs):
+        super().__init__(entries, **kwargs)
+        self.current = object()
+        self.lookups = 0
+
+    def snapshot(self):
+        return self.current
+
+    def list_entries(self, *, include_removed=False):
+        self.lookups += 1
+        return super().list_entries(include_removed=include_removed)
+
+
+def test_current_source_is_cached_until_the_lock_or_registration_changes(monkeypatch):
+    from plugin.server.infrastructure import config_paths
+
+    registered = {"candidates": ()}
+    monkeypatch.setattr(config_paths, "_registered_plugin_config_candidates", lambda _pid: registered["candidates"])
+    monkeypatch.setattr(permission_service, "_source_cache", {})
+    manager = SnapshotInstallSources([_lock_entry(channel="manual")])
+    monkeypatch.setattr(install_source_module, "get_install_source_manager", lambda: manager)
+
+    first = permission_service.current_source("demo")
+    assert permission_service.current_source("demo") == first and manager.lookups == 1
+    # Any change of the install-source lock publishes a new snapshot.
+    manager.entries = [_lock_entry(channel="builtin")]
+    manager.current = object()
+    assert permission_service.current_source("demo").channel == "builtin" and manager.lookups == 2
+    # A different registration is looked up again.
+    registered["candidates"] = ("/nowhere/plugin.toml",)
+    permission_service.current_source("demo")
+    assert manager.lookups == 3
+    permission_service.current_source("demo")
+    assert manager.lookups == 3
+
+
+def test_busy_registry_is_not_cached(monkeypatch):
+    from plugin.server.infrastructure import config_paths
+
+    monkeypatch.setattr(permission_service, "_source_cache", {})
+    manager = SnapshotInstallSources([_lock_entry(channel="manual")])
+    monkeypatch.setattr(install_source_module, "get_install_source_manager", lambda: manager)
+    monkeypatch.setattr(config_paths, "_registered_plugin_config_candidates", lambda _pid: ())
+    monkeypatch.setattr(config_paths, "_resolve_registered_plugin_config_path", lambda *_a: (_ for _ in ()).throw(TimeoutError()))
+    assert permission_service.current_source("demo") is None
+    assert permission_service._source_cache == {}
