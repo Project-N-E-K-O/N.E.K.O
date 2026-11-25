@@ -425,6 +425,8 @@ def _write_tree(root: Path) -> None:
 
 # Variables that point git at some other repository, as inside a git hook of
 # another checkout. Dropped for the git commands these tests run themselves.
+# Kept apart from the script's GIT_LOCATION_VARS on purpose: setting up the
+# test repositories must not depend on the code under test.
 _GIT_LOCATION_VARS = frozenset({
     "GIT_DIR",
     "GIT_WORK_TREE",

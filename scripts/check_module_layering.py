@@ -64,8 +64,10 @@ the same as a module-top one.
 
 A new top-level package fails the gate until it is placed in ``LAYERS``.
 Its files are listed with ``git ls-files`` so untracked local scratch
-directories never trip the check; without git (e.g. an exported source
-tree) the filesystem is walked instead.
+directories never trip the check. The filesystem is walked instead when the
+repository root is not the top of a git work tree (an exported source tree,
+one unpacked inside another checkout, a bare repository) or git is missing
+or fails.
 
 Suppression
 -----------
@@ -477,7 +479,11 @@ def _parse_file(path: Path) -> ast.Module | None:
 
 
 # Variables that point git at a repository other than the one ``cwd`` is in;
-# they are set inside git hooks, for example. Dropped for the calls below.
+# they are set inside git hooks, for example. Dropped for the calls below even
+# when they point at this repository: a checkout whose git directory is found
+# only through them is then walked as plain folders (untracked folders may be
+# reported; nothing is missed). The same list is in
+# scripts/check_no_temperature.py; change both together.
 GIT_LOCATION_VARS = frozenset(
     {
         "GIT_DIR",
@@ -539,8 +545,8 @@ def find_unregistered_packages(root: Path, known: Set[str]) -> List[Tuple[str, s
 
     Dot-directories, ``UNLAYERED_TOP_LEVEL`` and anything ``EXCLUDE_DIRS``
     skips are ignored. Files come from ``git ls-files`` so untracked local
-    scratch directories cannot fail the gate; when git is unavailable the
-    filesystem is walked instead.
+    scratch directories cannot fail the gate; when ``_tracked_python_files``
+    cannot list them, the filesystem is walked instead.
     """
 
     def is_candidate(name: str) -> bool:
