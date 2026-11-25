@@ -96,14 +96,22 @@ TIER_MODEL_KEY = {
 }
 
 
+# Tiers whose resolver reads an empty provider (a setting saved before the field
+# existed) as the tier's own address and model. For the other tiers an empty
+# provider means following their default tier.
+EMPTY_PROVIDER_IS_OWN_ENDPOINT = frozenset({"conversation", "memory", "recognition", "agent"})
+
+
 def tier_setting_in_effect(model_type: str, core_config: dict[str, Any], treat_as_custom: bool) -> bool:
     """Whether the tier's own per-feature setting is what the resolver would use.
 
     Set up in full: per-feature models on, a named provider or custom endpoint
     chosen (not one of the follow options), and both address and model entered
     by the user (``TIER_SAVED_FIELDS``; the snapshot's own values may have been
-    filled in from the general provider) and present in the snapshot. Such a tier
-    keeps its setting over any subscription.
+    filled in from the general provider) and present in the snapshot. A tier
+    saved without a provider counts too where the resolver uses its own address
+    and model for it, provided both were entered. Such a tier keeps its setting
+    over any subscription.
     """
     if not treat_as_custom:
         return False
@@ -112,9 +120,12 @@ def tier_setting_in_effect(model_type: str, core_config: dict[str, Any], treat_a
     if prefix is None or model_key is None:
         return False
     provider = str(core_config.get(f"{prefix}ModelProvider") or "").strip()
-    if not provider or provider.startswith("follow_"):
+    if provider.startswith("follow_"):
         return False
     saved = core_config.get("TIER_SAVED_FIELDS")
+    if not provider and (model_type not in EMPTY_PROVIDER_IS_OWN_ENDPOINT or not isinstance(saved, dict)):
+        # Without the saved fields an empty provider cannot be told from defaults.
+        return False
     if isinstance(saved, dict):
         url_saved, model_saved = saved.get(prefix, (False, False))
         if not (url_saved and model_saved):

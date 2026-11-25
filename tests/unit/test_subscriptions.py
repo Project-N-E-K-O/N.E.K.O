@@ -211,6 +211,61 @@ def test_a_tier_missing_its_own_model_is_not_set_up_in_full(config_manager):
     assert cm.get_model_api_config("conversation")["subscription"] == "chatgpt"
 
 
+def test_a_tier_saved_without_a_provider_keeps_the_address_and_model_entered(config_manager):
+    """Settings saved before the provider field existed: the resolver uses them, so they win."""
+    cm = config_manager
+    core = {
+        **BASE_CORE,
+        "enableCustomApi": True,
+        "conversationModelUrl": "https://llm.example.test/v1",
+        "conversationModelId": "own-model",
+        "memoryModelUrl": "https://llm.example.test/v1",
+        "gameMainModelUrl": "https://llm.example.test/v1",
+        "gameMainModelId": "own-game-model",
+    }
+    _write_core(cm, core)
+    baseline = _all_tiers(cm)
+    assert baseline["conversation"]["model"] == "own-model"
+    store = _store(cm)
+    for tier in ("conversation", "memory", "game_main"):
+        store.set_tier("chatgpt", tier, "gpt-x")
+    store.set_enabled("chatgpt", True)
+
+    results = _all_tiers(cm)
+    assert results["conversation"] == baseline["conversation"]
+    # Only an address was entered: the model comes from defaults, so the subscription wins.
+    assert results["memory"]["subscription"] == "chatgpt"
+    # An empty provider on the minigame chat tier means following the chat tier.
+    assert results["game_main"]["subscription"] == "chatgpt"
+
+
+def test_minigame_tiers_following_the_other_tier_inherit_its_subscription(config_manager):
+    cm = config_manager
+    core = {
+        **BASE_CORE,
+        "enableCustomApi": True,
+        "gameMainModelProvider": "follow_memory",
+        "gameSummaryModelProvider": "follow_conversation",
+    }
+    _write_core(cm, core)
+    baseline = _all_tiers(cm)
+    store = _store(cm)
+    store.set_tier("chatgpt", "memory", "gpt-memory")
+    store.set_enabled("chatgpt", True)
+    results = _all_tiers(cm)
+    assert results["game_main"] == results["memory"]
+    assert results["game_main"]["model"] == "gpt-memory"
+    assert results["game_summary"] == baseline["game_summary"]
+
+    store.set_tier("chatgpt", "conversation", "gpt-chat")
+    results = _all_tiers(cm)
+    assert results["game_summary"] == results["conversation"]
+    assert results["game_summary"]["model"] == "gpt-chat"
+
+    store.set_enabled("chatgpt", False)
+    assert _all_tiers(cm) == baseline
+
+
 def test_agent_server_drops_its_read_cache_when_told_the_configuration_changed(monkeypatch):
     import asyncio
 

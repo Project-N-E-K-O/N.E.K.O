@@ -2114,8 +2114,9 @@ class CoreConfigMixin:
 
         # Subscriptions & plans. Precedence: the tier's own per-feature setting when
         # set up in full, then a subscription that takes the tier, then everything
-        # below (follow options, general providers). Followers reach their followed
-        # tier through the delegation below, which checks that tier the same way.
+        # below (follow options, general providers). Followers reach the followed
+        # tier's subscription through the delegations below, which resolve that tier
+        # the same way.
         subscription = (core_config.get('SUBSCRIPTION_OVERLAY') or {}).get(model_type)
         if subscription:
             from utils.subscriptions.overlay import tier_setting_in_effect
@@ -2273,10 +2274,20 @@ class CoreConfigMixin:
             provider = str(core_config.get('gameMainModelProvider') or 'follow_conversation').strip()
             if not treat_as_custom or provider == 'follow_conversation':
                 return self.get_model_api_config('conversation', _core_config=core_config)
+            if provider == 'follow_memory':
+                # Following the other tier resolves field by field below, from that tier's
+                # own settings; a subscription that took that tier is inherited instead.
+                followed = self.get_model_api_config('memory', _core_config=core_config)
+                if followed.get('subscription'):
+                    return followed
         elif model_type == 'game_summary':
             provider = str(core_config.get('gameSummaryModelProvider') or 'follow_memory').strip()
             if not treat_as_custom or provider == 'follow_memory':
                 return self.get_model_api_config('memory', _core_config=core_config)
+            if provider == 'follow_conversation':
+                followed = self.get_model_api_config('conversation', _core_config=core_config)
+                if followed.get('subscription'):
+                    return followed
         else:
             whole_follow = next(
                 (
