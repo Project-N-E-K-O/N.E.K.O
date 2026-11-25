@@ -143,10 +143,18 @@ def _status() -> dict[str, Any]:
 async def _notify_agent_server() -> None:
     """Let the task agent server drop clients it built from the previous configuration."""
     from config import TOOL_SERVER_PORT
+    from utils.internal_http_client import internal_service_event_hooks
 
     try:
-        async with httpx.AsyncClient(timeout=5, proxy=None, trust_env=False) as client:
-            await client.post(f"http://127.0.0.1:{TOOL_SERVER_PORT}/notify_config_changed")
+        async with httpx.AsyncClient(
+            timeout=5,
+            proxy=None,
+            trust_env=False,
+            event_hooks=internal_service_event_hooks(),
+        ) as client:
+            notify_resp = await client.post(f"http://127.0.0.1:{TOOL_SERVER_PORT}/notify_config_changed")
+            if notify_resp is not None and not notify_resp.is_success:
+                raise RuntimeError(f"HTTP {notify_resp.status_code}")
     except Exception as exc:  # noqa: BLE001 - best effort, as after a settings save
         logger.warning("通知 agent_server 刷新订阅配置失败（非致命）: %s", exc)
 

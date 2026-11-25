@@ -3388,3 +3388,58 @@ async def test_core_config_update_logs_warning_and_keeps_save_on_401_notify(monk
     assert saved_core_cfg["coreApiKey"] == "new-key-401"
     assert not any("已通知 agent_server 刷新 CUA 适配器" in m for m in info_logs)
     assert any("HTTP 401" in m for m in warn_logs)
+
+
+async def test_subscriptions_notify_agent_server_signs_and_warns_on_non_2xx(monkeypatch: pytest.MonkeyPatch):
+    """subscriptions._notify_agent_server must sign internal requests under proxy mode and warn on non-2xx responses."""
+    from main_routers.config_router import subscriptions
+
+    _clear_deployment_mode_env(monkeypatch)
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", KEY)
+
+    captured: list[tuple[dict[str, str], object]] = []
+    app = FastAPI()
+
+    @app.post("/notify_config_changed")
+    async def notify_changed(request: FastAPIRequest):
+        captured.append((
+            {k.lower(): v for k, v in request.headers.items()},
+            request.scope.get("neko.instance_identity"),
+        ))
+        return {"success": True}
+
+    app.add_middleware(InstanceAccessMiddleware)
+
+    real_client = httpx.AsyncClient
+
+    def _asgi_client(*_args, **kwargs):
+        return real_client(
+            transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 50000)),
+            **kwargs,
+        )
+
+    warn_logs: list[str] = []
+    monkeypatch.setattr(httpx, "AsyncClient", _asgi_client)
+    monkeypatch.setattr(
+        subscriptions.logger,
+        "warning",
+        lambda msg, *args, **_kwargs: warn_logs.append(str(msg) % args if args else str(msg)),
+    )
+
+    await subscriptions._notify_agent_server()
+    assert warn_logs == []
+    assert len(captured) == 1
+    assert INTERNAL_SERVICE_HEADER in captured[0][0]
+    assert captured[0][1] == "internal"
+
+    def _deny_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"detail": "instance_authorization_required"}, request=request)
+
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda *_args, **kwargs: real_client(transport=httpx.MockTransport(_deny_handler), **kwargs),
+    )
+    await subscriptions._notify_agent_server()
+    assert any("HTTP 401" in m for m in warn_logs)
