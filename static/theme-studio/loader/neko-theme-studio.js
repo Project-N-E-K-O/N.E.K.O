@@ -115,7 +115,8 @@
   //   1.6.44 预热闸门按调色板内容识别（同一秒两次切换不再停在旧主题）；预热超时放行。
   //   1.6.45 材质规则放进 @layer nts-theme.materials，不再被调色板层的 !important 覆盖；
   //          修掉设置页材质段里提前闭合的注释。
-  var SCRIPT_VERSION = '1.6.45';
+  //   1.6.46 紧凑聊天（/chat）外层包裹在材质开启时保持透明，只有胶囊带材质。
+  var SCRIPT_VERSION = '1.6.46';
 
   // 允许的颜色值形态。刻意保守：只放行纯颜色，杜绝把任意 CSS 注进变量。
   var RE_HEX = /^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
@@ -1610,6 +1611,24 @@
     '  :root[data-nts-mt] .composer-overflow-popover,',
     ':root[data-nts-mt] .composer-icon-popover,',
     '  :root[data-nts-mt] .modal-dialog { animation: none !important; }',
+    '}',
+    '',
+    '/* ---- 紧凑聊天（/chat 悬浮胶囊）：外层包裹保持透明 ----',
+    '   宿主 index.css 在紧凑模式下把 root / .chat-window / .composer-panel 等外层设为透明，',
+    '   只让 .compact-chat-surface-frame 这只胶囊有外观。材质层带层后其 !important 会压过',
+    '   宿主那条规则，所以这里按同一范围把外层再收回透明；胶囊本身照常上材质。 */',
+    ':root[data-nts-mt]:root:root:root:root:root body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized) #react-chat-window-root,',
+    ':root[data-nts-mt]:root:root:root:root:root body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized) #react-chat-window-root .app-shell,',
+    ':root[data-nts-mt]:root:root:root:root:root body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized) #react-chat-window-root .chat-window,',
+    ':root[data-nts-mt]:root:root:root:root:root body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized) #react-chat-window-root .composer-panel,',
+    ':root[data-nts-mt]:root:root:root:root:root body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized) #react-chat-window-root .composer,',
+    ':root[data-nts-mt]:root:root:root:root:root body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized) #react-chat-window-root .compact-chat-surface-shell {',
+    '  background: transparent !important;',
+    '  box-shadow: none !important;',
+    '  border: 0 !important;',
+    '  -webkit-backdrop-filter: none !important;',
+    '  backdrop-filter: none !important;',
+    '  animation: none !important;',
     '}',
     '}'
   ].join('\n');
