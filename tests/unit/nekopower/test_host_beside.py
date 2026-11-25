@@ -54,6 +54,8 @@ pytestmark = pytest.mark.unit
 FIRST = "fix the header of the shop site"
 # About something else than the header: none of its words is in what the member is at.
 APART = "repair the broken links in the footer on every page of the shop site"
+# Apart as well, and from the one above.
+APART_TOO = "write an invoice template with tax rows for the accounting of the shop site"
 # Goes on with what the member is at: it shares "header" and "fix" with it.
 ALONG = "fix the logo in the header of the shop site as well and make that header sticky"
 # Says too little of its own to be told apart.
@@ -153,13 +155,19 @@ async def _settled_look(host: Any, commission_id: str) -> None:
 
 
 async def _let_go_of(host: Any, commission_id: str) -> None:
-    """Wait until a commission that is over has let go of its session, and what that sets off is through."""
+    """Wait until a commission that is over has let go of its session, and have places given out once more after that.
+
+    Letting go gives places out anew in a task of its own, which nothing
+    here can wait for by itself (what looks at a commission the user is
+    asked about is a task of the same kind, and is not over): so it is
+    done once more here, to the end, whatever that task has got to.
+    """
     manager = host.task_agents
     await wait_until(
         lambda: commission_id not in manager._held_by.values() and commission_id not in manager._sessions,
         what="its session being let go",
     )
-    await asyncio.sleep(0.2)
+    await manager._start_next()
 
 
 def _hold_the_look_at_its_end(host: Any) -> asyncio.Event:
@@ -229,12 +237,20 @@ async def test_work_apart_from_what_a_busy_member_is_at_is_asked_about_and_done_
     }
     (put,) = await outbox(host, "question")
     assert put.payload["task_id"] == two.commission_id and "copy of its own" in put.payload["text"]
+    # (What is allowed says where it works should no copy be to be had by the time it starts.)
+    assert "in the project folder itself, in its turn, where no copy can be made" in put.payload["text"]
     # It waits for the user where it stood in the queue, at no session, and was never at work.
     waiting = await host.ledger.get(two.commission_id)
     assert (waiting.session_id, waiting.started_at) == (None, None)
     assert host.task_agents.queued == [two.commission_id]
     (waits,) = [item for item in (await host.waits(project="Shop site"))["waits"] if item["kind"] == "user"]
     assert (waits["waiter"]["commission_id"], waits["waiter"]["session_id"]) == (two.commission_id, None)
+    # It takes no place while that is asked, should whoever gives places out find its session let go a moment
+    # before what is asked is taken back.
+    manager = host.task_agents
+    held = manager._held_by.pop(main.id)
+    assert not manager._session_free_for(two.commission_id) and not manager._take_place(two.commission_id)
+    manager._held_by[main.id] = held
     # Nothing is made before the user says so, and the busy member is not the one that waits.
     assert [member.id for member in await _members(host)] == [main.id]
     assert (await host.ledger.get_session(main.id)).status == "running"
@@ -535,7 +551,7 @@ async def test_stopped_while_its_member_is_being_made_it_takes_no_place(hosts, t
     two = await _dispatch(host, APART)
     await _asked(host, two.commission_id)
     assert await host.answer(two.commission_id, "yes", choice="once")
-    await making.wait()
+    await wait_until(making.is_set, what="its member being made")
 
     await host.abort(two.commission_id)
     go.set()
@@ -547,6 +563,37 @@ async def test_stopped_while_its_member_is_being_made_it_takes_no_place(hosts, t
     # (The member that was being made is there, with nothing to do.)
     assert len(await _members(host)) == 2 and manager._held_by == {main.id: one.commission_id}
     host.release.set()
+
+
+async def test_two_that_are_opened_at_once_do_not_both_take_the_last_room_for_a_member(hosts, tmp_path, monkeypatch):
+    host, _trees, _workdir, one, scripts, _seen = await _busy(
+        hosts, tmp_path, {**_links(), "invoice": ScriptedLLM([_report("template written")])}
+    )
+    manager = host.task_agents
+    main = await _session_of(host, one.commission_id)
+    await host.set_landing_settings(beside="open")
+    monkeypatch.setattr(settings, "PROJECT_MEMBERS_MAX", 2)
+    create = host.ledger.create_session
+
+    async def slow(**values: Any) -> Any:
+        # Long enough for the other one to count the members meanwhile, were it let to.
+        await asyncio.sleep(0.3)
+        return await create(**values)
+
+    host.ledger.create_session = slow
+    two = await _filed(host, APART)
+    three = await _filed(host, APART_TOO)
+    await _settled(host)
+
+    # One member more, which is all the project may have: the other commission waits for the busy one.
+    assert len(await _members(host)) == 2
+    sessions = [(await host.ledger.get(item.commission_id)).session_id for item in (two, three)]
+    assert sorted(session == main.id for session in sessions) == [False, True]
+    opened = [len(await _events(host, item.commission_id, "beside_opened")) for item in (two, three)]
+    assert sorted(opened) == [0, 1] and len(manager.queued) == 1
+    host.release.set()
+    await wait_status(host, two.commission_id, "done")
+    await wait_status(host, three.commission_id, "done")
 
 
 # ---------------------------------------------------------------------------
@@ -696,7 +743,56 @@ async def test_nobody_is_asked_where_it_no_longer_holds_by_the_time_it_is_looked
     host.release.set()
 
 
-@pytest.mark.parametrize("meanwhile", ["as_many_members_as_may_be", "switched_off", "forbidden"])
+async def test_forbidden_while_it_is_looked_at_no_member_is_opened_with_nobody_asked(hosts, tmp_path):
+    host, trees, _workdir, one, _scripts, _seen = await _busy(hosts, tmp_path, _links())
+    main = await _session_of(host, one.commission_id)
+    await host.set_landing_settings(beside="open")
+    gate = host.task_agents._permissions
+    forbidden, looks = gate.forbidden, 0
+
+    async def then_denied(category: str, key: str | None = None) -> bool:
+        nonlocal looks
+        looks += 1
+        found = await forbidden(category, key)
+        if looks == 1:
+            # Allowed when it was first looked at, and forbidden right after.
+            await host.permission_store.set_mode("open_session", "deny")
+        return found
+
+    gate.forbidden = then_denied
+    two = await _dispatch(host, APART)
+    await _settled(host)
+
+    assert looks == 2 and [member.id for member in await _members(host)] == [main.id] and trees.made == []
+    assert (await host.ledger.get(two.commission_id)).session_id == main.id
+    host.release.set()
+
+
+async def test_what_a_member_is_at_is_read_whole_however_many_commissions_ended_in_it_since(hosts, tmp_path, monkeypatch):
+    host, _trees, _workdir, one, _scripts, _seen = await _busy(hosts, tmp_path, _links())
+    main = await _session_of(host, one.commission_id)
+    # Of each session the latest commission only is read for what it did: one that ended after the one it is at began.
+    monkeypatch.setattr(settings, "ORCHESTRATOR_COMMISSIONS_EACH", 1)
+    later, _created = await host.ledger.create(
+        lanlan_name="Lan", title="tidy the readme", dispatch_text="tidy the readme", source="dispatch",
+        project="Shop site", lang="en",
+    )
+    await host.ledger.update(later.id, session_id=main.id)
+    assert (await host.ledger.transition(later.id, "failed", reason="given up")).applied
+    asked, _created = await host.ledger.create(
+        lanlan_name="Lan", title=ALONG, dispatch_text=ALONG, source="dispatch", project="Shop site", lang="en"
+    )
+
+    standing = await host.task_agents.families.standing(asked)
+
+    member = standing.agent(main.id)
+    assert [done.title for done in member.done] == ["tidy the readme"]
+    # What it is at is among what a sentence is held against, though it is not among the latest read.
+    assert FIRST in member.at_hand
+    host.release.set()
+
+
+@pytest.mark.parametrize("meanwhile", ["as_many_members_as_may_be", "switched_off", "forbidden", "a_leader"])
 async def test_allowed_after_a_while_nothing_is_made_where_it_no_longer_holds(hosts, tmp_path, monkeypatch, meanwhile):
     host, trees, _workdir, one, scripts, _seen = await _busy(hosts, tmp_path, _links())
     main = await _session_of(host, one.commission_id)
@@ -708,6 +804,9 @@ async def test_allowed_after_a_while_nothing_is_made_where_it_no_longer_holds(ho
     elif meanwhile == "forbidden":
         # Set since it was asked: that wins over the answer, and is no refusal by the user.
         await host.permission_store.set_mode("open_session", "deny")
+    elif meanwhile == "a_leader":
+        # The project has a leader by now, which says who does what.
+        assert (await host.derive_leader("Shop site", "Lan"))["made"] is True
     else:
         host.task_agents._switched_on = lambda: False
     assert await host.answer(two.commission_id, "yes", choice="once")
@@ -716,7 +815,7 @@ async def test_allowed_after_a_while_nothing_is_made_where_it_no_longer_holds(ho
     # Where it was: queued for the member, and not on record as refused.
     back = await host.ledger.get(two.commission_id)
     assert (back.status, back.session_id) == ("queued", main.id)
-    assert [member.id for member in await _members(host)] == [main.id] and trees.made == []
+    assert [member.id for member in await _members(host) if member.kind == "line"] == [main.id] and trees.made == []
     assert await _events(host, two.commission_id, "beside_declined") == []
     assert await _events(host, two.commission_id, "beside_opened") == []
     host.task_agents._switched_on = None
@@ -740,6 +839,8 @@ async def test_a_member_that_cannot_be_made_leaves_it_waiting_for_the_one_it_wai
 
     assert (await host.ledger.get(two.commission_id)).session_id == main.id
     assert host.task_agents.queued == [two.commission_id] and host.task_agents._session_of[two.commission_id] == main.id
+    # (The member that was made is there, with nothing to do: it counts among those the project may have.)
+    assert len(await _members(host)) == 2
     host.ledger.update = update
     host.release.set()
     done = await wait_status(host, two.commission_id, "done")
@@ -794,7 +895,7 @@ async def test_nobody_is_asked_while_it_is_still_told_whether_it_is_a_side_quest
 
     manager.set_side_question_judge(slow)
     two = await _dispatch(host, APART)
-    await asked.wait()
+    await wait_until(asked.is_set, what="it being asked whether it is a side question")
     await asyncio.sleep(0.3)
 
     # Telling takes a model a while: the commission waits meanwhile, and the user is asked nothing.

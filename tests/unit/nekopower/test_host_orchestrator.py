@@ -689,6 +689,28 @@ def test_sentences_written_without_knowing_the_rule_are_told_apart_as_measured()
     }
 
 
+def test_what_names_another_member_of_the_project_is_not_told_apart() -> None:
+    writer = orch.Agent(
+        id="writer", project="thesis", title="Chapter three", duty="Writes the chapters of the thesis",
+        at_hand=("tighten the survey of related work",), idle_seconds=0.0,
+    )
+    archivist = orch.Agent(
+        id="archivist", project="thesis", title="Orchard Archivist", duty="Keeps the sources in order", idle_seconds=90.0
+    )
+    standing = orch.Standing(projects=(orch.ProjectView(name="thesis"),), agents=(writer, archivist))
+    bars = orch.Bars()
+
+    def found(sentence: str) -> tuple[str, str | None, bool]:
+        verdict = orch.settle(orch.PROJECT_KEY + "thesis", orch.FOLLOW_UP, standing, bars, sentence=sentence)
+        return verdict.action, verdict.agent, verdict.apart
+
+    plain = "catalog vintage manuscripts alphabetically by century"
+    # About something else than what the one last in use is at, and naming nobody: told apart.
+    assert found(plain) == (orch.CONTINUE, "writer", True)
+    # Naming the other member: said of that one's work. (Where it goes is as it was before.)
+    assert found(f"Orchard Archivist, {plain}") == (orch.CONTINUE, "writer", False)
+
+
 def test_a_sentence_that_points_back_or_adds_to_something_is_not_told_apart() -> None:
     writer = orch.Agent(
         id="writer", project="thesis", title="Chapter three", duty="Writes the chapters of the thesis",

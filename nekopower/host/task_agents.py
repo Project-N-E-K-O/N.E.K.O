@@ -1954,6 +1954,11 @@ class TaskAgentManager(TreeWork):
     def _session_free_for(self, commission_id: str) -> bool:
         """Whether a commission's session is held by no other commission."""
         session_id = self._session_of.get(commission_id, "")
+        if commission_id in self._asking_beside:
+            # The user is asked whether another member is to do it, or one is being made for
+            # it: it starts nowhere until that is settled (``_beside``), whoever looks, and
+            # however free its session is by then.
+            return False
         if self._handing_back_to.get(session_id):
             # A commission a copy handed back is being put back in its place
             # among those that wait for the session (``_handed_back``).
@@ -4613,9 +4618,13 @@ class TaskAgentManager(TreeWork):
         """Give free places to queued commissions, in the order they were queued."""
         # Those found, on a second look, to have to wait for another that changes files in their project.
         waits: set[str] = set()
-        # A session the user is asked about beside may have come free: what is asked is taken back.
-        self._beside_came_free()
         while not self._closed and len(self._sessions) < self.limit:
+            # A session a commission waits for while the user is asked about it may have come
+            # free: what is asked is taken back, and nothing starts in that session until that
+            # is seen to. Looked at each time round: a session let go while this waited below
+            # is seen the next time, and the commission itself takes no place meanwhile
+            # (``_session_free_for``).
+            self._beside_came_free()
             # One whose old session is still on its way out keeps its turn;
             # it is started when that session has gone. So does one whose
             # session another commission holds: it is next when that one is
@@ -10594,7 +10603,9 @@ class TaskAgentManager(TreeWork):
 
         Asked, the commission keeps its place in the queue, is on record
         as waiting for the user (with no session: it is at none) and
-        starts nowhere. No member is made until the user allows it: what
+        starts nowhere (``_session_free_for``). No member is made until
+        the user allows it, and then with no other made in between
+        (``Families.placing``): what
         is asked says which it would be (``detail``: ``member``,
         ``preset``, ``project``, ``beside``). Allowed, a member is made
         (``seat`` ``tree``) and the commission is its: started at once
@@ -10700,26 +10711,33 @@ class TaskAgentManager(TreeWork):
                         await self._ledger.append_event(commission_id, "beside_declined", {"beside": main})
                     return
                 asked = decision.asked
-                # The user may have taken a while: looked at once more.
-                if not await room(commission, kept):
+            # Looked at once more and made with no other member made, and no leader, in
+            # between (as where a commission is placed, ``Families.place``): the user may
+            # have taken a while, and two of these may get here together with room for one.
+            async with self.families.placing:
+                if await self._ledger.lead_session(commission.lanlan_name, kept.project) is not None:
                     return
-            if not waits():
-                # (A session that came free meanwhile takes it, as it would have.)
-                return
-            member = await self._ledger.create_session(
-                name=await self._ledger.member_name(
-                    commission.lanlan_name, str(kept.project), f"{kept.project}/{model_name(WORKING_PRESET)}"
-                ),
-                lanlan_name=commission.lanlan_name,
-                kind="line",
-                project=kept.project,
-                workdir=kept.workdir or commission.workdir,
-                preset=WORKING_PRESET,
-                duty=commission.title,
-                # A git worktree is made for each of its commissions: it does not wait for
-                # the one that works in the project's directory.
-                seat="tree",
-            )
+                if await self._permissions.forbidden(OPEN_SESSION) or not await room(commission, kept):
+                    # (Forbidden since it was looked at, where nobody is asked: a ``deny`` set while the
+                    # user is asked is seen to by the gate.)
+                    return
+                if not waits():
+                    # (A session that came free meanwhile takes it, as it would have.)
+                    return
+                member = await self._ledger.create_session(
+                    name=await self._ledger.member_name(
+                        commission.lanlan_name, str(kept.project), f"{kept.project}/{model_name(WORKING_PRESET)}"
+                    ),
+                    lanlan_name=commission.lanlan_name,
+                    kind="line",
+                    project=kept.project,
+                    workdir=kept.workdir or commission.workdir,
+                    preset=WORKING_PRESET,
+                    duty=commission.title,
+                    # A git worktree is made for each of its commissions: it does not wait for
+                    # the one that works in the project's directory.
+                    seat="tree",
+                )
             # The model it is sent to, by its preset.
             await self.settle_model(member)
             await self._ledger.update(commission_id, session_id=member.id)

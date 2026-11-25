@@ -702,7 +702,10 @@ def settle(
             latest = min(at_work, key=lambda member: member.idle_seconds)
             return verdict(
                 CONTINUE, agent=latest.id, project=project.name, relation=relation,
-                apart=apart_from(sentence, latest, bars, project.name),
+                # (Not what names another member of the project: that is said of that one's work,
+                # and no further member is to be had for it.)
+                apart=apart_from(sentence, latest, bars, project.name)
+                and named_member(sentence, working, bars, project.name) is None,
             )
         return verdict(SUMMON_IN_PROJECT, project=project.name, preset=WORKING_PRESET, relation=relation)
     if target is None:
