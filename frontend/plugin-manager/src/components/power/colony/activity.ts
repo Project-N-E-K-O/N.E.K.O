@@ -108,7 +108,13 @@ export function sceneAt(entries: TimelineEntry[], index: number, base: SceneStan
         }
         break
       // A member of a team, or another one a familiar started, ends so.
-      case 'child_returned': case 'ask_answered': atRest(cats, entry); break
+      case 'child_returned':
+        if (busyWithAnother(entry)) break
+        atRest(cats, entry)
+        // Its commission is over: what is decided on its worktree later leaves it at rest.
+        if (id) atWork.delete(id)
+        break
+      case 'ask_answered': atRest(cats, entry); break
       case 'child_started':
         put(cats, id)
         // The one it started is there from now on.

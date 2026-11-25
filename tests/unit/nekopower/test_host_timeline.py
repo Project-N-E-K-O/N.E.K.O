@@ -1364,6 +1364,7 @@ async def test_one_is_where_it_was_opened_by_then_not_where_it_is_now(ledger):
     assert _looks(await _before(ledger, in_copy)) == {copy.id: ("working", commission.id)}
     assert _looks(await _before(ledger, (await ledger.timeline(limit=0))["latest"])) == {main.id: ("queued", commission.id)}
     for kind, payload, where in (
+        ("carried_on_in_copy", {"session_id": copy.id, "of": main.id}, copy.id),
         ("handed_back", {"to": main.id, "copy": copy.id}, main.id),
         ("carried_on_in_copy", {"session_id": copy.id, "of": main.id}, copy.id),
         ("not_carried_on", {"of": main.id, "copy": copy.id}, main.id),

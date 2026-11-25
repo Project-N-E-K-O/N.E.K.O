@@ -176,8 +176,11 @@ async function open(entry: TranscriptEntry) {
 async function search() {
   const words = query.value.trim()
   if (!words) return
-  // Another search, or another familiar (which ends this one), makes what this one finds stale.
+  // Another search, or another familiar (which ends this one), makes what this one finds stale;
+  // so does it what was asked to be opened of what was found before.
   const mine = ++searchTurn
+  ++hitTurn
+  opening.value = null
   searching.value = true
   try {
     const answer = await searchTranscript(props.sessionId, words)
@@ -196,6 +199,7 @@ async function search() {
 function endSearch() {
   ++searchTurn
   ++hitTurn
+  opening.value = null
   searching.value = false
   found.value = null
   shownHit.value = null

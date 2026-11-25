@@ -22,7 +22,7 @@
       <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon data-testid="crew-error" />
       <template #footer>
         <el-button @click="adding = false">{{ t('common.cancel') }}</el-button>
-        <el-button type="primary" :loading="busy" :disabled="!form.preset" data-testid="member-make" @click="add">{{ t('power.home.make') }}</el-button>
+        <el-button type="primary" :loading="busy" :disabled="!offered" data-testid="member-make" @click="add">{{ t('power.home.make') }}</el-button>
       </template>
     </el-dialog>
 
@@ -65,10 +65,14 @@ const error = ref('')
 const note = ref('')
 const templates = ref<FamiliarTemplate[]>([])
 const templatesRead = ref(false)
+// While the kinds of the project are read, none is chosen yet: nothing is sent.
+const reading = ref(false)
 const form = reactive({ preset: 'general', title: '', duty: '' })
 
 /** What a member can be: any kind that works, not a leader (a project gets that with the other button). */
 const kinds = computed(() => templates.value.filter(item => item.valid && item.name !== 'boss'))
+/** Whether the kind chosen is one this project offers, as read for it. */
+const offered = computed(() => !reading.value && kinds.value.some(item => item.name === form.preset))
 
 function kindName(item: FamiliarTemplate): string {
   const key = `power.home.presets.${item.name}`
@@ -81,6 +85,7 @@ watch(() => props.project, () => {
   note.value = ''
   // Another project has its own templates: read again when next asked for.
   templatesRead.value = false
+  reading.value = false
 })
 
 async function openAdding() {
@@ -90,16 +95,20 @@ async function openAdding() {
   if (!templatesRead.value) {
     const project = props.project
     let read: FamiliarTemplate[]
+    let readWhole = true
+    reading.value = true
     try {
       read = (await getTemplates(project)).templates
     } catch {
-      // The kind every project has stays to choose.
+      // The kind every project has stays to choose; asked again the next time it opens.
       read = [{ name: 'general', label: '', description: '', avatar: 'general', source: 'builtin', valid: true, error: '' }]
+      readWhole = false
     }
     // Read for a project the user has left meanwhile: not this one's.
     if (project !== props.project) return
+    reading.value = false
     templates.value = read
-    templatesRead.value = true
+    templatesRead.value = readWhole
   }
   // Every time it opens: the kind it opens with may be none this project has.
   if (!kinds.value.some(item => item.name === form.preset)) form.preset = kinds.value[0]?.name ?? ''
@@ -111,7 +120,8 @@ function openLeading() {
 }
 
 async function add() {
-  if (busy.value || !form.preset) return
+  // (Pressed only while what is chosen is one this project offers: the button is off otherwise.)
+  if (busy.value) return
   busy.value = true
   error.value = ''
   try {

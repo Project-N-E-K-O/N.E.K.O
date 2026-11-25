@@ -1254,6 +1254,11 @@ describe('several familiars at work in one project', () => {
     // A member of a team hands its work back stuck over its worktree: waiting for the user as well.
     const member = [entry('started', { ...kid }), entry('not_landed', { ...kid }), entry('child_returned', { ...kid, detail: { outcome: 'blocked' } })]
     expect(sceneAt(member, 2).get('kid')?.look).toBe('unlanded')
+    // One handed back of another commission than the one it is at changes nothing.
+    const atAnother = [entry('started', { ...kid }), entry('child_returned', { session_id: 'kid', commission_id: 'k9', detail: { outcome: 'done' } })]
+    expect(sceneAt(atAnother, 1).get('kid')?.look).toBe('working')
+    // Its worktree decided on afterwards: at rest, its commission being over.
+    expect(sceneAt([...member, entry('tree_kept', { ...kid })], 3).get('kid')?.look).toBe('idle')
     const handedBack = [entry('started', { ...kid }), entry('not_landed', { ...kid }), entry('child_returned', { ...kid, detail: { outcome: 'done' } })]
     expect(sceneAt(handedBack, 2).get('kid')?.look).toBe('idle')
     // Ended otherwise: at rest, whatever it was before.

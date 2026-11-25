@@ -356,6 +356,50 @@ describe('more familiars for a project', () => {
     expect(api.getTemplates).toHaveBeenLastCalledWith('Other')
   })
 
+  it('sends nothing while the kinds of the project are read, and reads them again after a failure', async () => {
+    let answer: (value: unknown) => void = () => {}
+    api.getTemplates.mockReturnValueOnce(new Promise(resolve => { answer = resolve }))
+    api.addMember.mockResolvedValue({ session_id: 's9', seat: '' })
+    await mount(CrewTools, { project: 'App', hasLeader: true })
+    const opening = click(byTest('member-add'))
+    await flush()
+    // Not read yet: the kind it opens with is not known to be one of this project's.
+    expect(byTest('member-make')?.hasAttribute('disabled')).toBe(true)
+    answer({ templates: [{ name: 'scout', label: '', description: '', avatar: 'scout', source: 'builtin', valid: true, error: '' }] })
+    await opening
+    await flush()
+    expect(byTest('member-make')?.hasAttribute('disabled')).toBe(false)
+    await click(byTest('member-make'))
+    expect(api.addMember).toHaveBeenLastCalledWith('App', expect.objectContaining({ preset: 'scout' }))
+    cleanup?.()
+    // Could not be read: the kind every project has, and asked again the next time.
+    api.getTemplates.mockRejectedValueOnce(new Error('down'))
+    await mount(CrewTools, { project: 'App', hasLeader: true })
+    await click(byTest('member-add'))
+    expect(byTest('member-make')?.hasAttribute('disabled')).toBe(false)
+    await click(document.querySelector('.el-dialog__headerbtn'))
+    await click(byTest('member-add'))
+    expect(api.getTemplates).toHaveBeenCalledTimes(3)
+  })
+
+  it('sends nothing for another project while its kinds are read, though the last project\'s are held', async () => {
+    api.getTemplates.mockResolvedValueOnce({ templates: [{ name: 'general', label: '', description: '', avatar: 'general', source: 'builtin', valid: true, error: '' }] })
+    const { state } = await mount(CrewTools, { project: 'App', hasLeader: true })
+    await click(byTest('member-add'))
+    await click(document.querySelector('.el-dialog__headerbtn'))
+    let answer: (value: unknown) => void = () => {}
+    api.getTemplates.mockReturnValueOnce(new Promise(resolve => { answer = resolve }))
+    state.props = { project: 'Other', hasLeader: true }
+    await flush()
+    const opening = click(byTest('member-add'))
+    await flush()
+    expect(byTest('member-make')?.hasAttribute('disabled')).toBe(true)
+    answer({ templates: [{ name: 'general', label: '', description: '', avatar: 'general', source: 'builtin', valid: true, error: '' }] })
+    await opening
+    await flush()
+    expect(byTest('member-make')?.hasAttribute('disabled')).toBe(false)
+  })
+
   it('does not keep the kinds read for a project the user has left meanwhile', async () => {
     let answer: (value: unknown) => void = () => {}
     api.getTemplates.mockReturnValueOnce(new Promise(resolve => { answer = resolve }))
@@ -548,11 +592,24 @@ describe('looking for words in what was said', () => {
     await flush()
     expect(document.querySelector('[data-hit="0"]')?.textContent).toContain('the first beans, whole')
     expect(document.querySelector('[data-hit="120"]')?.textContent).not.toContain('the later beans, whole')
+    // Asked to be opened, and searched anew before the answer came: the late answer opens nothing,
+    // and the place is not shown as being opened any more.
+    let older: (value: unknown) => void = () => {}
+    api.getTranscript.mockReturnValueOnce(new Promise(resolve => { older = resolve }))
+    await click(document.querySelector('[data-hit-open="120"]'))
+    await click(byTest('transcript-search'))
+    expect(document.querySelector('[data-hit-open="120"]')?.classList.contains('is-loading')).toBe(false)
+    older({ readable: true, before: null, entries: [
+      { at: 120, role: 'assistant', text: 'the later beans, whole', cut: false, calls: [], tool: null, failed: false, pictures: 0, time: null },
+    ] })
+    await flush()
+    expect(document.querySelector('[data-hit="120"]')?.textContent).not.toContain('the later beans, whole')
     // Asked to be opened, then the search was left and done anew: the late answer opens nothing.
     let stale: (value: unknown) => void = () => {}
     api.getTranscript.mockReturnValueOnce(new Promise(resolve => { stale = resolve }))
     await click(document.querySelector('[data-hit-open="120"]'))
     await click(byTest('transcript-search-end'))
+    expect(byTest('transcript-latest')?.classList.contains('is-loading')).toBe(false)
     await type('transcript-query', 'beans')
     await click(byTest('transcript-search'))
     stale({ readable: true, before: null, entries: [
@@ -560,6 +617,23 @@ describe('looking for words in what was said', () => {
     ] })
     await flush()
     expect(document.querySelector('[data-hit="120"]')?.textContent).not.toContain('the later beans, whole')
+  })
+
+  it('leaves no place of the conversation shown as being opened once the search is left', async () => {
+    api.getTranscript.mockResolvedValue({ readable: true, before: null, entries: [
+      { at: 120, role: 'tool_result', text: 'a long result', cut: true, calls: [], tool: 'read', failed: false, pictures: 0, time: null },
+    ] })
+    api.searchTranscript.mockResolvedValue({ readable: true, total: 1, whole: true, hits: [
+      { at: 120, role: 'tool_result', tool: 'read', excerpt: 'long', time: null },
+    ] })
+    await mount(TranscriptPane, { sessionId: 's1' })
+    await type('transcript-query', 'long')
+    await click(byTest('transcript-search'))
+    api.getTranscript.mockReturnValueOnce(new Promise(() => {}))
+    await click(document.querySelector('[data-hit-open="120"]'))
+    await click(byTest('transcript-search-end'))
+    // Back in the conversation: the same place is not being opened.
+    expect(document.querySelector('[data-whole="120"]')?.classList.contains('is-loading')).toBe(false)
   })
 
   it('says when nothing was found, and a search of the familiar left is not shown for the next', async () => {
