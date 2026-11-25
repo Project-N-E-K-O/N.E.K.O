@@ -205,18 +205,8 @@ async def subscription_tier(plan_id: str, body: TierRequest):
     def apply():
         from utils.subscriptions import get_store
 
-        store = get_store()
-        moved_from = store.set_tier(plan_id, body.tier, body.model)
-        # A plan left with nothing to take over is off: it would otherwise
-        # read as on while doing nothing.
-        entry = store.read()["plans"].get(plan_id, {})
-        if entry.get("enabled") and not entry.get("tiers"):
-            store.set_enabled(plan_id, False)
-        if moved_from:
-            other = store.read()["plans"].get(moved_from, {})
-            if other.get("enabled") and not other.get("tiers"):
-                store.set_enabled(moved_from, False)
-        return moved_from
+        # A plan left with nothing to take over is turned off in the same write.
+        return get_store().set_tier(plan_id, body.tier, body.model)
 
     moved_from = await _run(apply)
     result = await _changed()

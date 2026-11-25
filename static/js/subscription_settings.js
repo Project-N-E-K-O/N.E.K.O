@@ -216,10 +216,16 @@
                 if (!checkbox.checked) return chooseTier(plan, tier, null);
                 let model = select.value;
                 if (!model && plan.fetch_models) {
+                    // Listing the models is part of this change: nothing else is
+                    // clickable meanwhile, so the box cannot be unticked under it.
+                    if (busy) return;
+                    setBusy(true);
                     try {
                         model = (await fetchAccountModels(plan))[0] || '';
                     } catch (error) {
                         say(plan.id, error.message, 'error');
+                    } finally {
+                        setBusy(false);
                     }
                 }
                 if (!model) {

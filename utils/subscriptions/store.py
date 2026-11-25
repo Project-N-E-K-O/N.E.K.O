@@ -140,7 +140,8 @@ class SubscriptionStore:
         """Give ``tier`` to ``plan_id`` with ``model`` (``None`` takes it back).
 
         Returns the plan the tier was moved away from, if any: a tier belongs
-        to one plan at a time.
+        to one plan at a time. A plan left with no tier is turned off in the same
+        write, so it never reads as on while taking nothing over.
         """
         if tier not in TEXT_TIERS:
             raise SubscriptionError("Unknown model tier.")
@@ -155,6 +156,10 @@ class SubscriptionStore:
                 self._entry(value, plan_id)["tiers"][tier] = model
             else:
                 self._entry(value, plan_id)["tiers"].pop(tier, None)
+            for affected in {plan_id, moved_from} - {None}:
+                entry = value["plans"].get(affected)
+                if entry and entry.get("enabled") and not entry.get("tiers"):
+                    entry["enabled"] = False
             return moved_from
 
         return self._change(mutate)

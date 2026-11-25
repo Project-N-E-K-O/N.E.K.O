@@ -67,6 +67,25 @@ def test_a_tier_belongs_to_one_plan_and_moves_on_request(tmp_path):
         store.set_tier("chatgpt", "realtime", "x")
 
 
+def test_a_plan_left_with_no_tier_turns_off_in_the_same_write(tmp_path):
+    store = SubscriptionStore(tmp_path / "subscriptions.json")
+    store.set_tier("chatgpt", "conversation", "gpt-x")
+    store.set_enabled("chatgpt", True)
+    store.set_key("mimo_token_plan", "tp-test")
+    store.set_tier("mimo_token_plan", "memory", "mimo-v2.6-pro")
+    store.set_enabled("mimo_token_plan", True)
+
+    # Moving the only tier away leaves that plan with nothing: it is off.
+    assert store.set_tier("mimo_token_plan", "conversation", "mimo-v2.6-pro") == "chatgpt"
+    plans = store.read()["plans"]
+    assert plans["chatgpt"]["enabled"] is False and plans["mimo_token_plan"]["enabled"] is True
+
+    store.set_tier("mimo_token_plan", "memory", None)
+    assert store.read()["plans"]["mimo_token_plan"]["enabled"] is True  # still takes conversation
+    store.set_tier("mimo_token_plan", "conversation", None)
+    assert store.read()["plans"]["mimo_token_plan"]["enabled"] is False
+
+
 def test_removing_a_key_turns_the_plan_off_and_keys_are_masked(tmp_path):
     store = SubscriptionStore(tmp_path / "subscriptions.json")
     store.set_key("mimo_token_plan", "tp-secret", "sgp")
