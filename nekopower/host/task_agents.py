@@ -3493,6 +3493,11 @@ class TaskAgentManager(TreeWork):
             if commission is None or commission.status not in ("queued", "blocked", "failed", "waiting_user"):
                 self._discard(commission_id)
                 return False
+            if not commission.session_id:
+                # On record with no session: the user was asked whether another member is to do it,
+                # and it could not be put back among the queued with its session (``_ask_beside``).
+                # It is the session's it starts in.
+                commission = await self._ledger.update(commission_id, session_id=session.session_id) or commission
             kept = await self._ledger.get_session(session.session_id)
             if kept is None:
                 raise RuntimeError("the session of the commission is not on record")
@@ -4618,13 +4623,14 @@ class TaskAgentManager(TreeWork):
         """Give free places to queued commissions, in the order they were queued."""
         # Those found, on a second look, to have to wait for another that changes files in their project.
         waits: set[str] = set()
+        # A session a commission waits for while the user is asked about it may have come free:
+        # what is asked is taken back, and nothing starts in that session until that is seen
+        # to. Before places are looked at: taken back though none is free for it to start at.
+        # (Whoever lets a session go has places given out anew, so this comes by; one let go
+        # while this waits below is seen by that, and the commission itself takes no place
+        # meanwhile, ``_session_free_for``.)
+        self._beside_came_free()
         while not self._closed and len(self._sessions) < self.limit:
-            # A session a commission waits for while the user is asked about it may have come
-            # free: what is asked is taken back, and nothing starts in that session until that
-            # is seen to. Looked at each time round: a session let go while this waited below
-            # is seen the next time, and the commission itself takes no place meanwhile
-            # (``_session_free_for``).
-            self._beside_came_free()
             # One whose old session is still on its way out keeps its turn;
             # it is started when that session has gone. So does one whose
             # session another commission holds: it is next when that one is
@@ -10756,6 +10762,11 @@ class TaskAgentManager(TreeWork):
                 # as it would have).
                 if await self._permissions.forbidden(OPEN_SESSION) or not waits():
                     return
+                if not asked and self._said_meanwhile(commission_id):
+                    # More was said to it since it was told apart, which goes with it and may say
+                    # otherwise ("go on with what is there"): with nobody asked, it waits for the
+                    # member as it would have. (Asked, the user answered knowing what they said.)
+                    return
                 member = await self._ledger.create_session(
                     name=name,
                     lanlan_name=commission.lanlan_name,
@@ -10846,16 +10857,30 @@ class TaskAgentManager(TreeWork):
             finally:
                 # Back among the queued only from waiting: one stopped, or failed (by
                 # shutting down, say) meanwhile, stays as it is. With the session it waits
-                # for: whoever asked writes the member's, should one be made.
-                await asyncio.shield(
-                    self._ledger.transition(
-                        commission_id,
-                        "queued",
-                        reason="what was asked was taken back" if asking.withdrawn else "the user answered",
-                        only_from=("waiting_user",),
-                        session_id=asking.main,
+                # for: whoever asked writes the member's, should one be made. Asked again a
+                # few times where the ledger cannot be written this moment; given up on, what
+                # the user answered stands all the same (it is in), the commission is still
+                # queued here, and is put on record as it starts (``_start``).
+                try:
+                    await asyncio.shield(
+                        self._looked(
+                            lambda: self._ledger.transition(
+                                commission_id,
+                                "queued",
+                                reason="what was asked was taken back" if asking.withdrawn else "the user answered",
+                                only_from=("waiting_user",),
+                                session_id=asking.main,
+                            ),
+                            what="to put a commission the user was asked about back among the queued",
+                        )
                     )
-                )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - the answer stands; its record is put right as it starts
+                    logger.warning(
+                        "putting commission %s back among the queued failed; it is on record as waiting", commission_id,
+                        exc_info=True,
+                    )
         finally:
             self._direct_questions.pop(commission_id, None)
         choice = answer.get("choice")

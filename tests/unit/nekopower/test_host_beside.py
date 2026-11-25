@@ -431,6 +431,9 @@ async def test_what_is_said_to_it_while_the_user_is_asked_goes_along_with_the_wo
     assert (await host.ledger.get(two.commission_id)).question()["id"] == question["id"]
     assert await _events(host, two.commission_id, "beside_declined") == []
     assert await host.answer(two.commission_id, "yes", choice="once")
+    await wait_until(lambda: len(scripts["broken links"].requests) >= 1, what="the other member being at work")
+    # Allowed knowing what was said: another member does it, with what was said.
+    assert len(await _members(host)) == 2 and len(scripts["fix the header"].requests) == 1
     host.release.set()
     await wait_status(host, two.commission_id, "done")
     assert "use relative links only" in _said_to(scripts["broken links"])
@@ -440,15 +443,30 @@ async def test_a_host_that_shuts_down_while_the_user_is_asked_does_not_wait_for_
     hosts: list[Any] = []
     host, _trees, _workdir, _one, _scripts, _seen = await _busy(hosts, tmp_path, _links())
     two = await _dispatch(host, APART)
-    await _asked(host, two.commission_id)
-    host.release.set()
+    question = await _asked(host, two.commission_id)
+    # How it is moved from here on (the ledger is closed once the host has shut down).
+    moves: list[tuple[str, bool]] = []
+    transition = host.ledger.transition
 
+    async def noting(commission_id: str, status: str, **values: Any) -> Any:
+        moved = await transition(commission_id, status, **values)
+        if commission_id == two.commission_id:
+            moves.append((status, moved.applied))
+        return moved
+
+    host.ledger.transition = noting
+
+    # The member it waits for is still busy: nothing but the shutting down takes back what is asked.
     began = asyncio.get_running_loop().time()
     await host.shutdown()
 
     # (Well within what a start that hangs is waited for.)
     assert asyncio.get_running_loop().time() - began < 3.0
     assert host.task_agents._asking_beside == {} and not host.task_agents._starting
+    # It ends as what is queued does, and what was asked is no longer to be answered.
+    assert ("failed", True) in moves and ("working", True) not in moves
+    assert not await host.answer(two.commission_id, "yes", choice="once", question_id=question["id"])
+    host.release.set()
     # Nor is anything looked at for another member any more (a look for a copy that ends now would have it so).
     host.task_agents._apart[two.commission_id] = "a session"
     host.task_agents._try_beside(two.commission_id)
@@ -644,6 +662,92 @@ async def test_two_that_are_opened_at_once_do_not_both_take_the_last_room_for_a_
     await wait_status(host, three.commission_id, "done")
 
 
+async def test_what_is_asked_is_taken_back_though_no_place_is_free_for_it_to_start_at(hosts, tmp_path):
+    host, _trees, _workdir, one, _scripts, _seen = await _busy(hosts, tmp_path, _links())
+    manager = host.task_agents
+    main = await _session_of(host, one.commission_id)
+    two = await _dispatch(host, APART)
+    await _asked(host, two.commission_id)
+
+    # As where the member is let go of while every place is taken by something else (its commission was
+    # stopped while it waited for the user with its session closed, say): nothing can start, and places
+    # are given out all the same.
+    most, manager._max_concurrent = manager._max_concurrent, 1
+    held = manager._held_by.pop(main.id)
+    await manager._start_next()
+
+    assert manager._asking_beside[two.commission_id].withdrawn == "free"
+    await wait_until(lambda: not manager._asking_beside, what="what was asked being taken back")
+    back = await host.ledger.get(two.commission_id)
+    assert (back.status, back.session_id, back.status_reason) == ("queued", main.id, "what was asked was taken back")
+    # It waits for a place where it stood, and starts once there is one.
+    assert manager.queued == [two.commission_id] and manager._handing_back_to == {}
+    manager._held_by[main.id] = held
+    manager._max_concurrent = most
+    host.release.set()
+    done = await wait_status(host, two.commission_id, "done")
+    assert done.session_id == main.id
+
+
+@pytest.mark.parametrize("fails", ["once", "every_time"])
+async def test_what_the_user_answered_stands_though_it_cannot_be_put_back_among_the_queued(hosts, tmp_path, monkeypatch, fails):
+    monkeypatch.setattr(settings, "REST_LOOK_RETRY_DELAYS", (0.0,))
+    host, trees, workdir, one, scripts, _seen = await _busy(hosts, tmp_path, _links())
+    manager = host.task_agents
+    main = await _session_of(host, one.commission_id)
+    two = await _dispatch(host, APART)
+    await _asked(host, two.commission_id)
+    transition, failed = host.ledger.transition, 0
+
+    async def failing(commission_id: str, status: str, **values: Any) -> Any:
+        nonlocal failed
+        if commission_id == two.commission_id and status == "queued" and (fails == "every_time" or not failed):
+            failed += 1
+            raise RuntimeError("the ledger cannot be written")
+        return await transition(commission_id, status, **values)
+
+    host.ledger.transition = failing
+    assert await host.answer(two.commission_id, "no", choice="deny")
+    await _settled(host)
+
+    # Refused, as the user said: on record as that, and waiting for the member where it stood.
+    assert await _events(host, two.commission_id, "beside_declined") == [{"beside": main.id}]
+    assert manager.queued == [two.commission_id] and manager._session_of[two.commission_id] == main.id
+    stands = await host.ledger.get(two.commission_id)
+    if fails == "once":
+        # Asked again, it was written.
+        assert (failed, stands.status, stands.session_id) == (1, "queued", main.id)
+    else:
+        # Given up on: on record as waiting still, with no session, until it starts.
+        assert (failed, stands.status, stands.session_id) == (2, "waiting_user", None)
+    host.release.set()
+    done = await wait_status(host, two.commission_id, "done")
+    assert done.session_id == main.id and (workdir / "links.txt").read_text() == "repaired"
+    assert [member.id for member in await _members(host)] == [main.id] and trees.made == []
+
+
+async def test_more_said_to_it_before_another_is_opened_with_nobody_asked_keeps_it_waiting(hosts, tmp_path):
+    host, trees, _workdir, one, _scripts, _seen = await _busy(hosts, tmp_path, _links())
+    manager = host.task_agents
+    main = await _session_of(host, one.commission_id)
+    await host.set_landing_settings(beside="open")
+    go = _hold_the_look(host)
+    two = await _dispatch(host, APART)
+    await wait_until(lambda: manager.landing.get.looks == 1, what="the look having begun")
+
+    # Said to it while it is queued, which goes with it: what it was told apart by is not all of it any more.
+    assert await host.tell(two.commission_id, "go on in the same session with what is there already")
+    go.set()
+    await _settled_look(host, two.commission_id)
+    await _settled(host)
+
+    assert [member.id for member in await _members(host)] == [main.id] and trees.made == []
+    assert (await host.ledger.get(two.commission_id)).session_id == main.id and manager.queued == [two.commission_id]
+    host.release.set()
+    done = await wait_status(host, two.commission_id, "done")
+    assert done.session_id == main.id
+
+
 # ---------------------------------------------------------------------------
 # What the user set
 # ---------------------------------------------------------------------------
@@ -791,23 +895,34 @@ async def test_nobody_is_asked_where_it_no_longer_holds_by_the_time_it_is_looked
     host.release.set()
 
 
-async def test_forbidden_while_it_is_looked_at_no_member_is_opened_with_nobody_asked(hosts, tmp_path):
+@pytest.mark.parametrize("when", ["right_after_the_first_look", "while_the_member_is_named"])
+async def test_forbidden_while_it_is_looked_at_no_member_is_opened_with_nobody_asked(hosts, tmp_path, when):
     host, trees, _workdir, one, _scripts, _seen = await _busy(hosts, tmp_path, _links())
     main = await _session_of(host, one.commission_id)
     await host.set_landing_settings(beside="open")
     gate = host.task_agents._permissions
     forbidden, looks = gate.forbidden, 0
+    member_name, named = host.ledger.member_name, 0
 
     async def then_denied(category: str, key: str | None = None) -> bool:
         nonlocal looks
         looks += 1
         found = await forbidden(category, key)
-        if looks == 1:
+        if looks == 1 and when == "right_after_the_first_look":
             # Allowed when it was first looked at, and forbidden right after.
             await host.permission_store.set_mode("open_session", "deny")
         return found
 
+    async def naming(lanlan_name: str, project: str, wanted: str) -> str:
+        nonlocal named
+        named += 1
+        if named == 2 and when == "while_the_member_is_named":
+            # Forbidden while the member that is about to be made is named: the last thing read before it is.
+            await host.permission_store.set_mode("open_session", "deny")
+        return await member_name(lanlan_name, project, wanted)
+
     gate.forbidden = then_denied
+    host.ledger.member_name = naming
     two = await _dispatch(host, APART)
     await _settled(host)
 
