@@ -53,12 +53,9 @@ TOKEN_HEADER = "X-CSRF-Token"
 _SIZE_BUDGET_SECONDS = 1.5
 # The categories the permission table shows a row for. The setting of the
 # MCP servers is not among them: it is shown with the servers (``/mcp``).
-# Of these, those the host has (``AUTO_POLICY``): a row for one it does not
-# have would set what nothing reads.
 _SHOWN_CATEGORIES: tuple[str, ...] = (
     "workdir_files", "outside_read", "outside_write", "run_command",
     "keyboard_mouse", "browser", "plugin_entry", "managed_delivery", "other", "open_session",
-    "open_beside",
 )
 # What may become of work that waits for a member busy with something else (``beside``
 # of the landing settings): the user is asked, another member is opened, it waits.
@@ -258,8 +255,6 @@ def build_console_router(
         snapshot = await store.snapshot()
         rows = []
         for category in _SHOWN_CATEGORIES:
-            if category not in AUTO_POLICY:
-                continue
             rows.append({
                 "category": category,
                 "mode": snapshot["categories"].get(category, "auto"),
@@ -282,11 +277,11 @@ def build_console_router(
     @router.post("/permissions")
     async def set_permission(payload: dict[str, Any]) -> dict[str, Any]:
         """Set the mode of one category. ``expected_version`` refuses a change made on an older view."""
-        from nekopower.host.permissions import AUTO_POLICY, MODES, PermissionFileError
+        from nekopower.host.permissions import MODES, PermissionFileError
 
         payload = payload or {}
         category, mode = payload.get("category"), payload.get("mode")
-        if category not in _SHOWN_CATEGORIES or category not in AUTO_POLICY:
+        if category not in _SHOWN_CATEGORIES:
             raise _refuse(400, "bad_category")
         if mode not in MODES:
             raise _refuse(400, "bad_mode")

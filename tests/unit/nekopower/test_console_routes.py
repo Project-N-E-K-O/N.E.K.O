@@ -208,34 +208,18 @@ async def test_removing_dsh_passes_on_whether_what_it_kept_goes_too(console):
 # ---------------------------------------------------------------------------
 
 
-def _host_has_open_beside(monkeypatch: pytest.MonkeyPatch, has: bool = True) -> None:
-    """Have the host know the category of another member opened beside a busy one (``OPEN_BESIDE``), or not."""
-    from nekopower.host import permissions
-
-    if has:
-        monkeypatch.setitem(permissions.AUTO_POLICY, "open_beside", "first_ask")
-        monkeypatch.setitem(permissions.DEFAULT_MODES, "open_beside", "auto")
-    else:
-        monkeypatch.delitem(permissions.AUTO_POLICY, "open_beside", raising=False)
-        monkeypatch.delitem(permissions.DEFAULT_MODES, "open_beside", raising=False)
-
-
-async def test_the_permission_table_shows_each_category_and_what_auto_comes_to(console, monkeypatch):
-    _host_has_open_beside(monkeypatch)
+async def test_the_permission_table_shows_each_category_and_what_auto_comes_to(console):
     client, _, _ = console
     seen = (await client.get("/console/permissions", headers=HEADERS)).json()
     rows = {row["category"]: row for row in seen["categories"]}
     assert list(rows) == [
         "workdir_files", "outside_read", "outside_write", "run_command",
-        "keyboard_mouse", "browser", "plugin_entry", "managed_delivery", "other", "open_session", "open_beside",
+        "keyboard_mouse", "browser", "plugin_entry", "managed_delivery", "other", "open_session",
     ]
     assert all(row["mode"] == "auto" for row in rows.values()) and seen["unreadable"] is False
     assert rows["run_command"]["auto"] == "first_ask" and rows["workdir_files"]["auto"] == "allow"
     # A boss starting another familiar that changes files: asked about once, and can be set here.
     assert rows["open_session"]["auto"] == "first_ask"
-    # Another one beside a busy member, in a project without a boss: a row of its own, what auto
-    # comes to as the host says.
-    assert rows["open_beside"]["auto"] == "first_ask"
     # The tools of dsh plugins: confirmed at install, not asked for.
     assert rows["other"]["auto"] == "allow"
     assert seen["modes"] == ["auto", "first_ask", "always_ask", "allow", "deny"]
@@ -258,28 +242,6 @@ async def test_a_permission_is_set_and_a_change_on_an_older_view_is_refused(cons
     )
     assert stale.status_code == 409 and stale.json()["detail"]["code"] == "stale"
     assert await host.permission_store.mode("run_command") == "always_ask"
-
-
-async def test_another_member_beside_a_busy_one_is_set_apart_from_a_boss_opening_one(console, monkeypatch):
-    _host_has_open_beside(monkeypatch)
-    client, host, _ = console
-    version = (await client.get("/console/permissions", headers=HEADERS)).json()["version"]
-    changed = await client.post(
-        "/console/permissions", headers=HEADERS, json={"category": "open_beside", "mode": "deny", "expected_version": version},
-    )
-    rows = {row["category"]: row["mode"] for row in changed.json()["categories"]}
-    assert (rows["open_beside"], rows["open_session"]) == ("deny", "auto")
-    assert await host.permission_store.mode("open_beside") == "deny"
-
-
-async def test_a_category_the_host_does_not_have_is_neither_shown_nor_set(console, monkeypatch):
-    _host_has_open_beside(monkeypatch, has=False)
-    client, host, _ = console
-    seen = (await client.get("/console/permissions", headers=HEADERS)).json()
-    assert "open_beside" not in [row["category"] for row in seen["categories"]]
-    refused = await client.post("/console/permissions", headers=HEADERS, json={"category": "open_beside", "mode": "deny"})
-    assert refused.status_code == 400 and refused.json()["detail"]["code"] == "bad_category"
-    assert "open_beside" not in (await host.permission_store.snapshot())["categories"]
 
 
 @pytest.mark.parametrize(
