@@ -117,7 +117,9 @@
   //          修掉设置页材质段里提前闭合的注释。
   //   1.6.46 紧凑聊天（/chat）外层包裹在材质开启时保持透明，只有胶囊带材质。
   //   1.6.47 紧凑聊天外层透明规则不再覆盖 animation，收起 / 展开擦除动画恢复。
-  var SCRIPT_VERSION = '1.6.47';
+  //   1.6.48 不再给 #react-chat-window-root 写内联 !important 底色（材质层已能覆盖调色板，
+  //          内联值会压过紧凑 /chat 的透明外层）；配了聊天壁纸的模式下材质不接管消息区。
+  var SCRIPT_VERSION = '1.6.48';
 
   // 允许的颜色值形态。刻意保守：只放行纯颜色，杜绝把任意 CSS 注进变量。
   var RE_HEX = /^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
@@ -1374,7 +1376,10 @@
     ':root[data-nts-mt]:root:root:root:root body .compact-export-history-bubble,',
     ':root[data-nts-mt]:root:root:root:root body .composer-input-shell,',
     ':root[data-nts-mt]:root:root:root:root body .composer-panel,',
-    ':root[data-nts-mt]:root:root:root:root body .message-list,',
+    // 消息区是聊天壁纸的落点（调色板表在 .message-list 上画 --nts-chat-bg-image）。
+    // 材质层带层后会压过那几条规则，所以当前模式配了壁纸时这里不接管消息区。
+    ':root[data-nts-mt]:not([data-theme="dark"]):not([data-nts-l-chat-bg-image]):root:root:root body .message-list,',
+    ':root[data-nts-mt][data-theme="dark"]:not([data-nts-d-chat-bg-image]):root:root:root body .message-list,',
     ':root[data-nts-mt]:root:root:root:root body .window-topbar,',
     ':root[data-nts-mt]:root:root:root:root body .modal-dialog,',
     ':root[data-nts-mt]:root:root:root:root body .modal-overlay,',
@@ -2338,21 +2343,18 @@
   }
 
   /**
-   * 聊天窗内层让位：调色板层用 !important 给 #react-chat-window-root 上实色，
-   * 玻璃在外壳上会被整块遮住。内联 !important 是唯一能稳赢 author !important 的位置。
+   * 曾经的「聊天窗内层让位」：调色板层用 !important 给 #react-chat-window-root 上实色，
+   * 不带层的材质规则赢不了，只能写内联 !important。1.6.45 起材质规则在
+   * @layer nts-theme.materials 里，已经稳赢调色板层（MATERIAL_CSS 里有专门的
+   * #react-chat-window-root 规则，紧凑模式也有对应的透明规则），内联覆盖反而会压过
+   * 紧凑 /chat 的透明外层，让胶囊背后多出一块底色。
+   * 所以现在只做清理：撤掉旧版本可能留下的内联值，不再写入。参数保留以兼容调用点。
    */
-  function applyRootBypass(on) {
+  function applyRootBypass(_on) {
     var el = document.querySelector ? document.querySelector('#react-chat-window-root') : null;
-    if (!el || !el.style || !el.style.setProperty) return;
-    if (on) {
-      // 只让「实色底」换成本材质自己的玻璃底（--nts-mt-bg），不是清成 transparent：
-      // 清成 transparent 时整个窗口只剩壳上那层 15% 白玻璃，浅色壁纸下看起来像「聊天框没了」。
-      // background-image 必须保留：那可能是用户的聊天壁纸（--nts-chat-bg-image）。
-      // 2026-11-21 用户就是这么看到「聊天框没了」的。
-      el.style.setProperty('background-color', 'var(--nts-mt-bg, transparent)', 'important');
-    } else {
+    if (!el || !el.style || !el.style.removeProperty) return;
+    if (el.style.getPropertyValue && el.style.getPropertyValue('background-color').indexOf('--nts-mt-bg') !== -1) {
       el.style.removeProperty('background-color');
-      el.style.removeProperty('background-image');
     }
   }
 

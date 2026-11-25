@@ -3388,13 +3388,16 @@ function collect(mode) {
   return out;
 }
 
-function renderMeta() {
+function renderMeta(options) {
   var p = state.palette;
   if (!p) return;
   // 用户已经改了名称/启用但还没应用时，不能拿服务端的值把输入框冲掉：旧实现
   // 每次回读都无条件写 #theme-enabled，于是「拐一下开关」会被静默复位成服务端的值，
   // 用户再点应用时还以为自己改过。
-  var keepEdits = metaDirtyCount() > 0;
+  // 例外：用户点「重新读取」并确认放弃改动（discard）时，名称 / 启用也要一起回到磁盘值，
+  // 否则面板说「已放弃」，这两项却还留着、继续拦外部同步，下次应用还会被写进去。
+  var discard = !!(options && options.discard);
+  var keepEdits = !discard && metaDirtyCount() > 0;
   // 基线必须在每次读回调色板时刷新：applyTheme 靠它判断名称/启用是否真的变了。
   state.metaName = p.name || '';
   state.metaEnabled = p.enabled !== false;
@@ -3403,7 +3406,8 @@ function renderMeta() {
   $('meta-name').textContent = p.name || '默认';
   var when = p.updated_at ? String(p.updated_at).replace('T', ' ').slice(0, 19) : '—';
   $('meta-updated').textContent = when;
-  if (!keepEdits && document.getElementById('theme-name') && document.activeElement !== $('theme-name')) {
+  if (!keepEdits && document.getElementById('theme-name') &&
+      (discard || document.activeElement !== $('theme-name'))) {
     $('theme-name').value = p.name || '';
   }
   if (!keepEdits) $('theme-enabled').checked = p.enabled !== false;
@@ -5753,7 +5757,7 @@ async function reloadPalette(options) {
       // 此时是新值还是又回到了旧值，都会被判为「需要同步」并把面板拉回磁盘。
       externalSyncState.lastSignature = '';
     }
-    renderMeta();
+    renderMeta({ discard: discardEdits });
     renderPaletteHint();
     // 材质子树跟着磁盘刷新：导入/重置/应用之后，材质中心的「已保存」基线
     // 必须一起更新，否则它一直显示「N 项待应用」。

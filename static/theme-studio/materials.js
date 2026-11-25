@@ -709,16 +709,19 @@
     if (!name) return;
     callEntry('delete_material_preset', { name: name }).then(function (data) {
       var materials = (data && data.materials) || null;
-      if (materials) {
-        CURRENT.custom_presets = materials.custom_presets || {};
-        CURRENT.preset = materials.preset || 'custom';
-        if (BASELINE) {
-          BASELINE.custom_presets = clone(CURRENT.custom_presets);
-          BASELINE.preset = CURRENT.preset;
+      // 只从草稿里删掉这一条：其他还没应用的新建 / 修改预设必须原样留下，
+      // 不能被服务端已保存的那份预设库整体替换掉。
+      if (CURRENT.custom_presets) delete CURRENT.custom_presets[name];
+      if (CURRENT.preset === name) CURRENT.preset = 'custom';
+      // 已保存的基线跟服务端走（删除已经落盘），这样剩下的未应用改动仍显示为待应用。
+      if (BASELINE) {
+        if (materials) {
+          BASELINE.custom_presets = clone(materials.custom_presets || {});
+          BASELINE.preset = materials.preset || 'custom';
+        } else {
+          if (BASELINE.custom_presets) delete BASELINE.custom_presets[name];
+          if (BASELINE.preset === name) BASELINE.preset = 'custom';
         }
-      } else {
-        if (CURRENT.custom_presets) delete CURRENT.custom_presets[name];
-        if (CURRENT.preset === name) CURRENT.preset = 'custom';
       }
       markDirty();
       renderPane();
