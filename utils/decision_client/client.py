@@ -30,6 +30,7 @@ import httpx
 from utils.logger_config import get_module_logger
 
 from .adapters import ChatFallbackDecisionAdapter, get_decision_adapter
+from .openrouter_catalog import is_openrouter_url, schedule_refresh_if_stale
 from .schema import (
     DecisionProtocolError,
     DecisionQuestion,
@@ -268,6 +269,9 @@ class DecisionClient:
         protocol = str(cfg.get("decision_protocol") or "").strip().lower()
         if not protocol:
             protocol = infer_decision_protocol(model, decision_url or base_url)
+        if is_openrouter_url(decision_url or base_url):
+            # Keeps the decision model list current for later calls; never awaited here.
+            schedule_refresh_if_stale()
 
         call_type_ctx: contextlib.AbstractContextManager[Any] = contextlib.nullcontext()
         if call_type:

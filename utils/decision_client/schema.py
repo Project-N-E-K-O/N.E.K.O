@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Union
 import urllib.parse
 
+from .openrouter_catalog import is_openrouter_decision_model
+
 
 NATIVE_DECISION_PROTOCOLS = frozenset({
     "systemone",
@@ -31,17 +33,20 @@ NATIVE_DECISION_PROTOCOLS = frozenset({
 
 ALL_DECISION_PROTOCOLS = NATIVE_DECISION_PROTOCOLS | frozenset({"chat_fallback"})
 
+# Model IDs served by a vendor's own Decisions API. OpenRouter decision model
+# IDs are recognized by utils.decision_client.openrouter_catalog instead.
 _KNOWN_NATIVE_MODEL_PREFIXES: tuple[tuple[str, str], ...] = (
     ("decision-model-", "systemone"),
     ("gpt-6-luna", "openai_decisions"),
     ("gemini-decision-", "gemini_decisions"),
-    ("google/gemini-decision-", "openrouter_decisions"),
-    ("openai/gpt-6-luna", "openrouter_decisions"),
-    ("typesafe/jev", "openrouter_decisions"),
-    ("inception/mercury-decide", "openrouter_decisions"),
-    ("cloudflare/clef", "openrouter_decisions"),
-    ("liquid/d1", "openrouter_decisions"),
 )
+
+# Decision models whose bare IDs only mean a decision model on one host. SiliconFlow
+# serves Kev-4B and SemIf on POST /v1/systemone (alpha; IDs are case-insensitive)
+# and rejects them on chat completions (observed 2026-11-25).
+_HOST_NATIVE_MODELS: dict[str, tuple[frozenset[str], str]] = {
+    "api.siliconflow.cn": (frozenset({"kev-4b", "semif"}), "systemone"),
+}
 
 
 def is_native_decision_protocol(protocol: str | None) -> bool:
@@ -61,8 +66,10 @@ def infer_decision_protocol(
     Precedence:
       1. Explicit native decision endpoint suffix in *base_url* (e.g. ``/systemone``,
          ``/v1/decisions``, ``/v1beta/decisions``, ``/alpha/decisions``).
-      2. Known native decision model ID prefixes (e.g. ``decision-model-preview``,
-         ``gpt-6-luna``, ``gemini-decision-1``).
+      2. Known native decision model IDs: vendor prefixes (e.g.
+         ``decision-model-preview``, ``gpt-6-luna``, ``gemini-decision-1``), the
+         OpenRouter decision model catalog (e.g. ``google/gemini-decision-1``) and
+         host-scoped IDs (e.g. ``Kev-4B`` on SiliconFlow).
       3. Profile-declared native protocol when *model* matches *profile_model* (or is empty).
       4. ``chat_fallback`` for every other chat/generative model.
     """
@@ -87,6 +94,11 @@ def infer_decision_protocol(
     if url_path.endswith("/v1/decisions") or url_path.endswith("/decisions"):
         return "openai_decisions"
 
+    if is_openrouter_decision_model(m):
+        return "openrouter_decisions"
+    host_models = _HOST_NATIVE_MODELS.get(url_host)
+    if host_models and m in host_models[0]:
+        return host_models[1]
     for prefix, proto in _KNOWN_NATIVE_MODEL_PREFIXES:
         if m.startswith(prefix):
             if url_host == "openrouter.ai" and proto != "openrouter_decisions":
@@ -243,8 +255,11 @@ class DecisionProtocolError(RuntimeError):
         status_code: int | None = None,
         protocol: str = "",
         permanent_route_error: bool = False,
+        error_code: str = "",
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.protocol = protocol
         self.permanent_route_error = permanent_route_error
+        # Machine-readable cause the settings page can explain (e.g. "workspace_mismatch").
+        self.error_code = error_code

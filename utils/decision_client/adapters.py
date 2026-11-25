@@ -22,6 +22,7 @@ import asyncio
 import json
 import math
 import re
+import weakref
 from typing import Any, Mapping
 
 import httpx
@@ -139,6 +140,49 @@ def _extract_error_detail(resp: httpx.Response) -> str:
     return (resp.text or "")[:200]
 
 
+# One pooled client per event loop: a new client per request paid a fresh TLS
+# handshake every time (about +60 ms to Bailian and +1 s to OpenAI, measured
+# 2026-11-25). A client cannot be shared across event loops, and the servers
+# that call decisions each run their own loop.
+_http_clients: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, httpx.AsyncClient]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _decision_http_client() -> httpx.AsyncClient:
+    loop = asyncio.get_running_loop()
+    client = _http_clients.get(loop)
+    if client is None or getattr(client, "is_closed", False):
+        client = httpx.AsyncClient()
+        _http_clients[loop] = client
+    return client
+
+
+async def _post_decision_request(
+    endpoint: str,
+    payload: Mapping[str, Any],
+    headers: Mapping[str, str],
+    timeout: float,
+) -> httpx.Response:
+    return await _decision_http_client().post(endpoint, json=payload, headers=dict(headers), timeout=timeout)
+
+
+def _decode_json_object(resp: httpx.Response, protocol: str) -> Mapping[str, Any]:
+    try:
+        body = resp.json()
+    except Exception as exc:
+        raise DecisionProtocolError(
+            f"{protocol} returned invalid JSON: {exc}",
+            protocol=protocol,
+        ) from exc
+    if not isinstance(body, Mapping):
+        raise DecisionProtocolError(
+            f"{protocol} returned non-object JSON",
+            protocol=protocol,
+        )
+    return body
+
+
 class DecisionAdapter(abc.ABC):
     """Base interface shared by all native and fallback decision adapters."""
 
@@ -179,6 +223,35 @@ def _score_probs_by_label(levels: tuple[str, ...], probs: Mapping[str, float]) -
     return out
 
 
+def _bool_instructions_with_descriptions(q: BoolQuestion) -> str:
+    """Fold a yes/no question's true/false descriptions into its instructions.
+
+    For wire formats without a field for them (OpenAI ``predicate``; Gemini
+    rejects every key in ``noul`` criteria).
+    """
+    if not (q.true_description or q.false_description):
+        return q.instructions
+    parts = [q.instructions]
+    if q.true_description:
+        parts.append(f"True: {q.true_description}")
+    if q.false_description:
+        parts.append(f"False: {q.false_description}")
+    return "\n".join(parts)
+
+
+def _usage_int(usage: Mapping[str, Any], *names: str) -> int:
+    """First positive integer among *names* in *usage*, else 0."""
+    for name in names:
+        val = usage.get(name)
+        if not val or isinstance(val, bool):
+            continue
+        try:
+            return int(val)
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return 0
+
+
 class SystemOneAdapter(DecisionAdapter):
     """TypeSafe System One protocol (DashScope ``decision-model-preview`` & OpenRouter Decisions).
 
@@ -189,12 +262,49 @@ class SystemOneAdapter(DecisionAdapter):
     to description. One request accepts at most
     :attr:`MAX_QUESTIONS_PER_REQUEST` questions; larger batches are split into
     concurrent requests that share the same state.
+
+    Close variants (Gemini) subclass this and override the ``_``-prefixed hooks.
     """
 
     MAX_QUESTIONS_PER_REQUEST = 16
+    STATE_FIELD = "state"
 
     def __init__(self, protocol: str = "systemone") -> None:
         self.protocol = protocol
+
+    def _bool_entry(self, q: BoolQuestion) -> dict[str, Any]:
+        entry: dict[str, Any] = {"type": "noul", "instructions": q.instructions}
+        noul_criteria: dict[str, str] = {}
+        if q.true_description:
+            noul_criteria["true"] = q.true_description
+        if q.false_description:
+            noul_criteria["false"] = q.false_description
+        if noul_criteria:
+            entry["criteria"] = noul_criteria
+        return entry
+
+    def _encode_state(self, state: Any) -> Any:
+        return _truncate_state_for_decision(state)
+
+    def _auth_headers(self, api_key: str) -> dict[str, str]:
+        return {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+    def _parse_usage(self, data: Mapping[str, Any]) -> tuple[int, int, int]:
+        usage = data.get("usage") if isinstance(data.get("usage"), Mapping) else {}
+        prompt_tokens = _usage_int(usage, "prompt_tokens", "input_tokens")
+        completion_tokens = _usage_int(usage, "completion_tokens", "output_tokens")
+        cached_tokens = 0
+        details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details")
+        if isinstance(details, Mapping):
+            cached_tokens = _usage_int(details, "cached_tokens")
+        return prompt_tokens, completion_tokens, cached_tokens
+
+    def _error_code(self, status_code: int, detail: str) -> str:
+        # Bailian answers 403 "Workspace endpoint access denied." when the API key
+        # belongs to another workspace than the one in the API Host.
+        if self.protocol == "systemone" and status_code == 403 and "workspace endpoint" in detail.lower():
+            return "workspace_mismatch"
+        return ""
 
     def build_payload(
         self,
@@ -206,18 +316,7 @@ class SystemOneAdapter(DecisionAdapter):
         q_map: dict[str, dict[str, Any]] = {}
         for qid, q in questions.items():
             if isinstance(q, BoolQuestion):
-                entry: dict[str, Any] = {
-                    "type": "noul",
-                    "instructions": q.instructions,
-                }
-                noul_criteria: dict[str, str] = {}
-                if q.true_description:
-                    noul_criteria["true"] = q.true_description
-                if q.false_description:
-                    noul_criteria["false"] = q.false_description
-                if noul_criteria:
-                    entry["criteria"] = noul_criteria
-                q_map[qid] = entry
+                q_map[qid] = self._bool_entry(q)
             elif isinstance(q, ChoiceQuestion):
                 q_map[qid] = {
                     "type": "choice",
@@ -232,7 +331,7 @@ class SystemOneAdapter(DecisionAdapter):
                 }
         return {
             "model": model,
-            "state": _truncate_state_for_decision(state),
+            self.STATE_FIELD: self._encode_state(state),
             "questions": q_map,
         }
 
@@ -308,14 +407,7 @@ class SystemOneAdapter(DecisionAdapter):
                     score_norm=(score_val / max_idx) if max_idx > 0 else 0.0,
                 )
 
-        usage = data.get("usage") if isinstance(data.get("usage"), Mapping) else {}
-        prompt_tokens = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
-        completion_tokens = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
-        cached_tokens = 0
-        details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details")
-        if isinstance(details, Mapping):
-            cached_tokens = int(details.get("cached_tokens") or 0)
-
+        prompt_tokens, completion_tokens, cached_tokens = self._parse_usage(data)
         return DecisionResponse(
             answers=answers,
             model=str(data.get("model") or model),
@@ -383,36 +475,121 @@ class SystemOneAdapter(DecisionAdapter):
         timeout: float,
     ) -> DecisionResponse:
         payload = self.build_payload(state=state, questions=questions, model=model)
-        headers = {"Content-Type": "application/json"}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(endpoint, json=payload, headers=headers)
+        headers = {"Content-Type": "application/json", **self._auth_headers(api_key)}
+        resp = await _post_decision_request(endpoint, payload, headers, timeout)
         if resp.status_code >= 400:
+            detail = _extract_error_detail(resp)
             raise DecisionProtocolError(
-                f"{self.protocol} HTTP {resp.status_code}: {_extract_error_detail(resp)}",
+                f"{self.protocol} HTTP {resp.status_code}: {detail}",
                 status_code=resp.status_code,
                 protocol=self.protocol,
                 permanent_route_error=_http_error_is_permanent(resp.status_code, self.protocol),
+                error_code=self._error_code(resp.status_code, detail),
             )
-        try:
-            body = resp.json()
-        except Exception as exc:
-            raise DecisionProtocolError(
-                f"{self.protocol} returned invalid JSON: {exc}",
-                protocol=self.protocol,
-            ) from exc
-        if not isinstance(body, Mapping):
-            raise DecisionProtocolError(
-                f"{self.protocol} returned non-object JSON",
-                protocol=self.protocol,
-            )
-        return self.parse_response(body, questions, model)
+        return self.parse_response(_decode_json_object(resp, self.protocol), questions, model)
+
+
+class GeminiDecisionsAdapter(SystemOneAdapter):
+    """Google Gemini Decisions API (``POST /v1beta/decisions``, ``gemini-decision-1``).
+
+    Same question and answer shapes as System One (0-based ``score`` over
+    ``criteria`` levels; answers keyed by question ID), with these differences
+    observed on 2026-11-25: the state goes in ``input`` and must be a string
+    or a parts list, not an object; ``noul`` criteria rejects every key, so
+    true/false descriptions are folded into the instructions; the key is sent
+    as ``x-goog-api-key``; usage reports ``total_input_tokens``.
+    """
+
+    # 64 questions in one request were accepted on 2026-11-25; no limit is documented.
+    MAX_QUESTIONS_PER_REQUEST = 64
+    STATE_FIELD = "input"
+
+    def __init__(self) -> None:
+        super().__init__("gemini_decisions")
+
+    def _bool_entry(self, q: BoolQuestion) -> dict[str, Any]:
+        return {"type": "noul", "instructions": _bool_instructions_with_descriptions(q)}
+
+    def _encode_state(self, state: Any) -> Any:
+        if not isinstance(state, str):
+            try:
+                state = json.dumps(state, ensure_ascii=False)
+            except (TypeError, ValueError):
+                state = str(state)
+        return _truncate_state_for_decision(state)
+
+    def _auth_headers(self, api_key: str) -> dict[str, str]:
+        return {"x-goog-api-key": api_key} if api_key else {}
+
+    def _parse_usage(self, data: Mapping[str, Any]) -> tuple[int, int, int]:
+        usage: Any = None
+        for name in ("usage", "usage_metadata", "usageMetadata"):
+            usage = data.get(name)
+            if isinstance(usage, Mapping):
+                break
+        if not isinstance(usage, Mapping):
+            return 0, 0, 0
+        prompt_tokens = _usage_int(
+            usage, "total_input_tokens", "input_token_count", "prompt_token_count",
+            "promptTokenCount", "inputTokenCount",
+        )
+        completion_tokens = _usage_int(
+            usage, "total_output_tokens", "output_token_count", "candidatesTokenCount", "outputTokenCount",
+        )
+        cached_tokens = _usage_int(usage, "cached_content_token_count", "cachedContentTokenCount")
+        return prompt_tokens, completion_tokens, cached_tokens
+
+
+def _probabilities_from_list(raw: Any, key_for: Any) -> dict[str, float]:
+    """Normalize an OpenAI ``probabilities`` list (``[{value, probability}, ...]``) or map.
+
+    *key_for* maps one list entry to its result key (``None`` skips it).
+    """
+    if isinstance(raw, Mapping):
+        return _normalize_probs_map(raw)
+    out: dict[str, float] = {}
+    if not isinstance(raw, list):
+        return out
+    for entry in raw:
+        if not isinstance(entry, Mapping):
+            continue
+        key = key_for(entry)
+        p = _clamp_prob(entry.get("probability"))
+        if key is not None and p is not None:
+            out[str(key)] = p
+    return out
+
+
+def _choice_value_key(entry: Mapping[str, Any]) -> Any:
+    return entry.get("value")
+
+
+def _score_level_key(levels: tuple[str, ...]) -> Any:
+    """Key OpenAI score probabilities by level label (entries carry ``label`` and 0-based ``value``)."""
+
+    def _key(entry: Mapping[str, Any]) -> str | None:
+        label = entry.get("label")
+        if isinstance(label, str) and label in levels:
+            return label
+        idx = entry.get("value")
+        if isinstance(idx, int) and not isinstance(idx, bool) and 0 <= idx < len(levels):
+            return levels[idx]
+        return None
+
+    return _key
 
 
 class OpenAIDecisionsAdapter(DecisionAdapter):
-    """OpenAI Decisions API protocol (``POST /v1/decisions``, ``gpt-6-luna``)."""
+    """OpenAI Decisions API protocol (``POST /v1/decisions``, ``gpt-6-luna``).
+
+    Wire format observed on 2026-11-25: ``input`` plus a ``questions`` list of
+    ``{name, type, instructions}`` where type is ``predicate`` / ``choice`` /
+    ``score``. ``choices`` items are ``{value, description}`` objects and
+    ``levels`` items are ``{label}`` objects; predicates have no field for
+    true/false descriptions, so those are folded into the instructions.
+    Answers come back as a list keyed by ``name``; ``probabilities`` is a list
+    of ``{value, (label), probability}`` objects and ``score`` is 0-based.
+    """
 
     protocol = "openai_decisions"
 
@@ -426,39 +603,29 @@ class OpenAIDecisionsAdapter(DecisionAdapter):
         q_list: list[dict[str, Any]] = []
         for qid, q in questions.items():
             if isinstance(q, BoolQuestion):
-                instr = q.instructions
-                if q.true_description or q.false_description:
-                    parts = [instr]
-                    if q.true_description:
-                        parts.append(f"True: {q.true_description}")
-                    if q.false_description:
-                        parts.append(f"False: {q.false_description}")
-                    instr = "\n".join(parts)
                 q_list.append({
                     "name": qid,
                     "type": "predicate",
-                    "instructions": instr,
+                    "instructions": _bool_instructions_with_descriptions(q),
                 })
             elif isinstance(q, ChoiceQuestion):
-                criteria_desc = "; ".join(
-                    f"{k}: {v}" for k, v in q.criteria.items() if v
-                )
-                instr = (
-                    f"{q.instructions}\nOptions: {criteria_desc}"
-                    if criteria_desc
-                    else q.instructions
-                )
+                choices: list[dict[str, str]] = []
+                for key, desc in q.criteria.items():
+                    option: dict[str, str] = {"value": key}
+                    if desc:
+                        option["description"] = desc
+                    choices.append(option)
                 q_list.append({
                     "name": qid,
                     "type": "choice",
-                    "choices": list(q.criteria.keys()),
-                    "instructions": instr,
+                    "choices": choices,
+                    "instructions": q.instructions,
                 })
             elif isinstance(q, ScoreQuestion):
                 q_list.append({
                     "name": qid,
                     "type": "score",
-                    "levels": list(q.levels),
+                    "levels": [{"label": lbl} for lbl in q.levels],
                     "instructions": q.instructions,
                 })
         return {
@@ -493,9 +660,9 @@ class OpenAIDecisionsAdapter(DecisionAdapter):
             if not item:
                 continue
             conf = _clamp_prob(item.get("confidence"))
-            probs = _normalize_probs_map(item.get("probabilities"))
 
             if isinstance(q, BoolQuestion):
+                probs = _probabilities_from_list(item.get("probabilities"), _choice_value_key)
                 prob = _clamp_prob(item.get("probability"))
                 raw_val = item.get("value")
                 if prob is None and isinstance(raw_val, bool):
@@ -511,7 +678,8 @@ class OpenAIDecisionsAdapter(DecisionAdapter):
                     confidence=conf,
                 )
             elif isinstance(q, ChoiceQuestion):
-                selected = item.get("selected") or item.get("choice") or item.get("value")
+                probs = _probabilities_from_list(item.get("probabilities"), _choice_value_key)
+                selected = item.get("choice") or item.get("selected") or item.get("value")
                 if not isinstance(selected, str) or selected not in q.criteria:
                     valid = {k: v for k, v in probs.items() if k in q.criteria}
                     selected = max(valid, key=valid.get) if valid else None
@@ -524,6 +692,7 @@ class OpenAIDecisionsAdapter(DecisionAdapter):
                         confidence=conf,
                     )
             elif isinstance(q, ScoreQuestion):
+                probs = _probabilities_from_list(item.get("probabilities"), _score_level_key(q.levels))
                 max_idx = float(len(q.levels) - 1)
                 raw_score = item.get("score")
                 if raw_score is None:
@@ -542,12 +711,12 @@ class OpenAIDecisionsAdapter(DecisionAdapter):
                 )
 
         usage = data.get("usage") if isinstance(data.get("usage"), Mapping) else {}
-        prompt_tokens = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
-        completion_tokens = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+        prompt_tokens = _usage_int(usage, "prompt_tokens", "input_tokens")
+        completion_tokens = _usage_int(usage, "completion_tokens", "output_tokens")
         cached_tokens = 0
         details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details")
         if isinstance(details, Mapping):
-            cached_tokens = int(details.get("cached_tokens") or 0)
+            cached_tokens = _usage_int(details, "cached_tokens")
 
         return DecisionResponse(
             answers=answers,
@@ -582,8 +751,7 @@ class OpenAIDecisionsAdapter(DecisionAdapter):
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(endpoint, json=payload, headers=headers)
+        resp = await _post_decision_request(endpoint, payload, headers, timeout)
         if resp.status_code >= 400:
             raise DecisionProtocolError(
                 f"openai_decisions HTTP {resp.status_code}: {_extract_error_detail(resp)}",
@@ -591,218 +759,7 @@ class OpenAIDecisionsAdapter(DecisionAdapter):
                 protocol=self.protocol,
                 permanent_route_error=_http_error_is_permanent(resp.status_code),
             )
-        try:
-            body = resp.json()
-        except Exception as exc:
-            raise DecisionProtocolError(
-                f"openai_decisions returned invalid JSON: {exc}",
-                protocol=self.protocol,
-            ) from exc
-        if not isinstance(body, Mapping):
-            raise DecisionProtocolError(
-                "openai_decisions returned non-object JSON",
-                protocol=self.protocol,
-            )
-        return self.parse_response(body, questions, model)
-
-
-class GeminiDecisionsAdapter(DecisionAdapter):
-    """Google Gemini Decisions API protocol (``POST /v1beta/decisions``, ``gemini-decision-1``)."""
-
-    protocol = "gemini_decisions"
-
-    def build_payload(
-        self,
-        *,
-        state: Any,
-        questions: Mapping[str, DecisionQuestion],
-        model: str,
-    ) -> dict[str, Any]:
-        q_map: dict[str, dict[str, Any]] = {}
-        for qid, q in questions.items():
-            if isinstance(q, BoolQuestion):
-                entry: dict[str, Any] = {
-                    "type": "noul",
-                    "instructions": q.instructions,
-                }
-                if q.true_description:
-                    entry["true_description"] = q.true_description
-                if q.false_description:
-                    entry["false_description"] = q.false_description
-                q_map[qid] = entry
-            elif isinstance(q, ChoiceQuestion):
-                q_map[qid] = {
-                    "type": "choice",
-                    "instructions": q.instructions,
-                    "criteria": dict(q.criteria),
-                }
-            elif isinstance(q, ScoreQuestion):
-                # Gemini score legend uses 1-based string keys ("1", "2", ..., "N")
-                legend = {str(i + 1): lbl for i, lbl in enumerate(q.levels)}
-                q_map[qid] = {
-                    "type": "score",
-                    "instructions": q.instructions,
-                    "legend": legend,
-                }
-        return {
-            "model": model,
-            "input": _truncate_state_for_decision(state),
-            "questions": q_map,
-        }
-
-    def parse_response(
-        self,
-        data: Mapping[str, Any],
-        questions: Mapping[str, DecisionQuestion],
-        model: str,
-    ) -> DecisionResponse:
-        raw_answers = data.get("answers")
-        if not isinstance(raw_answers, Mapping):
-            raise DecisionProtocolError(
-                "gemini_decisions response missing 'answers' object",
-                protocol=self.protocol,
-            )
-
-        answers: dict[str, DecisionAnswer] = {}
-        for qid, q in questions.items():
-            item = raw_answers.get(qid)
-            if not isinstance(item, Mapping):
-                continue
-            conf = _clamp_prob(item.get("confidence"))
-            probs = _normalize_probs_map(item.get("probabilities"))
-
-            if isinstance(q, BoolQuestion):
-                prob = _clamp_prob(item.get("noul"))
-                if prob is None:
-                    prob = _clamp_prob(item.get("probability"))
-                if prob is None:
-                    continue
-                answers[qid] = DecisionAnswer(
-                    question_type="bool",
-                    value=prob >= 0.5,
-                    probability=prob,
-                    probabilities=probs or {"yes": prob, "no": round(1.0 - prob, 6)},
-                    confidence=conf,
-                )
-            elif isinstance(q, ChoiceQuestion):
-                choice = item.get("choice")
-                if not isinstance(choice, str) or choice not in q.criteria:
-                    valid = {k: v for k, v in probs.items() if k in q.criteria}
-                    choice = max(valid, key=valid.get) if valid else None
-                if isinstance(choice, str) and choice in q.criteria:
-                    answers[qid] = DecisionAnswer(
-                        question_type="choice",
-                        value=choice,
-                        probability=probs.get(choice),
-                        probabilities=probs,
-                        confidence=conf,
-                    )
-            elif isinstance(q, ScoreQuestion):
-                max_idx = float(len(q.levels) - 1)
-                # Convert Gemini's 1..N score and "1".."N" prob keys back to 0..(N-1)
-                label_probs: dict[str, float] = {}
-                for i, lbl in enumerate(q.levels):
-                    p = probs.get(str(i + 1))
-                    if p is None:
-                        p = probs.get(lbl)
-                    if p is not None:
-                        label_probs[lbl] = p
-                raw_one_based = _extract_numeric_score(
-                    item.get("score"), 1.0, float(len(q.levels))
-                )
-                if raw_one_based is not None:
-                    score_val: float | None = max(0.0, min(max_idx, raw_one_based - 1.0))
-                else:
-                    score_val = _expected_score_from_probs(q.levels, label_probs, max_idx)
-                if score_val is None:
-                    continue
-                answers[qid] = DecisionAnswer(
-                    question_type="score",
-                    value=score_val,
-                    probabilities=label_probs or probs,
-                    confidence=conf,
-                    score_norm=(score_val / max_idx) if max_idx > 0 else 0.0,
-                )
-
-        usage = data.get("usage_metadata")
-        if not isinstance(usage, Mapping):
-            usage = data.get("usageMetadata")
-        if not isinstance(usage, Mapping):
-            usage = {}
-        prompt_tokens = int(
-            usage.get("input_token_count")
-            or usage.get("prompt_token_count")
-            or usage.get("promptTokenCount")
-            or usage.get("inputTokenCount")
-            or 0
-        )
-        completion_tokens = int(
-            usage.get("output_token_count")
-            or usage.get("candidatesTokenCount")
-            or usage.get("outputTokenCount")
-            or 0
-        )
-        cached_tokens = int(
-            usage.get("cached_content_token_count")
-            or usage.get("cachedContentTokenCount")
-            or 0
-        )
-
-        return DecisionResponse(
-            answers=answers,
-            model=model,
-            protocol=self.protocol,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            cached_tokens=cached_tokens,
-        )
-
-    async def execute(
-        self,
-        *,
-        state: Any,
-        questions: Mapping[str, DecisionQuestion],
-        model: str,
-        base_url: str,
-        api_key: str,
-        decision_url: str = "",
-        provider_type: str | None = None,
-        timeout: float = 8.0,
-    ) -> DecisionResponse:
-        endpoint = resolve_decision_endpoint(self.protocol, base_url, decision_url)
-        if not endpoint:
-            raise DecisionProtocolError(
-                "gemini_decisions endpoint URL is empty",
-                protocol=self.protocol,
-                permanent_route_error=True,
-            )
-        payload = self.build_payload(state=state, questions=questions, model=model)
-        headers = {"Content-Type": "application/json"}
-        if api_key:
-            headers["x-goog-api-key"] = api_key
-
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(endpoint, json=payload, headers=headers)
-        if resp.status_code >= 400:
-            raise DecisionProtocolError(
-                f"gemini_decisions HTTP {resp.status_code}: {_extract_error_detail(resp)}",
-                status_code=resp.status_code,
-                protocol=self.protocol,
-                permanent_route_error=_http_error_is_permanent(resp.status_code),
-            )
-        try:
-            body = resp.json()
-        except Exception as exc:
-            raise DecisionProtocolError(
-                f"gemini_decisions returned invalid JSON: {exc}",
-                protocol=self.protocol,
-            ) from exc
-        if not isinstance(body, Mapping):
-            raise DecisionProtocolError(
-                "gemini_decisions returned non-object JSON",
-                protocol=self.protocol,
-            )
-        return self.parse_response(body, questions, model)
+        return self.parse_response(_decode_json_object(resp, self.protocol), questions, model)
 
 
 class ChatFallbackDecisionAdapter(DecisionAdapter):
