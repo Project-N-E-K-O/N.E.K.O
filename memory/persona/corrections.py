@@ -903,25 +903,29 @@ class CorrectionsMixin:
                     continue
                 merged_text = merged_text.strip()
 
+            def _ensure_entry_id(entry: dict, _subj=item_subject) -> None:
+                if entry.get('id'):
+                    return
+                # A newly created or migrated correction entry must have an ID (with a scope salt,
+                # matching _build_fact_entry): an empty ID causes ID-indexed refine/
+                # signal/archive operations to skip it, and multiple entries would collide on the empty string.
+                salt = (
+                    f"{_subj.key}|{_subj.scope}|" if _subj is not None else ""
+                )
+                digest = hashlib.sha256(
+                    (salt + str(entry.get('text', ''))).encode()
+                ).hexdigest()[:8]
+                entry['id'] = (
+                    f"corr_{datetime.now().strftime('%Y%m%d%H%M%S')}_{digest}"
+                )
+
             def _stamped_new_entry(text_value, _subj=item_subject) -> dict:
                 new_entry = self._normalize_entry_for_section(
                     persona, entity, text_value,
                 )
                 if _subj is not None:
                     new_entry.update(_subj.as_entry_fields())
-                if not new_entry.get('id'):
-                    # A newly created correction entry must have an ID (with a scope salt, matching
-                    # _build_fact_entry): an empty ID causes ID-indexed refine/
-                    # signal/archive operations to skip it, and multiple entries would collide on the empty string.
-                    salt = (
-                        f"{_subj.key}|{_subj.scope}|" if _subj is not None else ""
-                    )
-                    digest = hashlib.sha256(
-                        (salt + str(text_value)).encode()
-                    ).hexdigest()[:8]
-                    new_entry['id'] = (
-                        f"corr_{datetime.now().strftime('%Y%m%d%H%M%S')}_{digest}"
-                    )
+                _ensure_entry_id(new_entry, _subj)
                 if item.get('new_speaker_provenance_mixed') is True:
                     new_entry['speaker_provenance_mixed'] = True
                 elif item.get('new_speaker_id'):
@@ -1178,6 +1182,7 @@ class CorrectionsMixin:
                             existing['speaker_provenance_mixed'] = True
                     existing = self._normalize_entry(existing)
                     if isinstance(existing, dict):
+                        _ensure_entry_id(existing)
                         for inherited_cid in inherited_cids:
                             _record_applied_cid(existing, inherited_cid)
                         _record_applied_cid(existing, item_cid)

@@ -298,7 +298,7 @@ restart_container() {
     fi
 }
 cleanup_on_exit() {
-    exec 6>&- 2>/dev/null || true
+    exec 6>&- || true
     restart_container
     if [ "$created_watchdog_disabled" = "1" ]; then
         if [ -d "$WATCHDOG_STATE_DIR" ] && [ ! -L "$WATCHDOG_STATE_DIR" ] && [ ! -L "$watchdog_lock" ] && [ ! -L "$watchdog_disabled" ]; then

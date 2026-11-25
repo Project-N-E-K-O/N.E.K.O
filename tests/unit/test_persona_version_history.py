@@ -538,3 +538,26 @@ async def test_chained_keep_new_replay_preserves_inherited_correction_ids(tmp_pa
     assert cid1 in (survivor.get("applied_correction_ids") or [])
     assert cid2 in (survivor.get("applied_correction_ids") or [])
     assert survivor["applied_correction_id"] == cid2
+
+
+@pytest.mark.asyncio
+async def test_keep_new_migrating_legacy_string_entry_assigns_non_empty_id(tmp_path):
+    """When keep_new migrates an existing plain-string entry to a dict, it must receive a non-empty corr_ ID."""
+    pm, _ = _install(str(tmp_path))
+    persona = await pm.aensure_persona("小天")
+    pm._get_section_facts(persona, "master").extend(["A", "C"])
+    await pm.asave_persona("小天", persona)
+
+    await pm._aqueue_correction("小天", "A", "C", "master")
+    cid = (await pm.aload_pending_corrections("小天"))[0]["correction_id"]
+    with patch("utils.llm_client.create_chat_llm", return_value=_make_llm_mock([{"index": 0, "action": "keep_new"}])):
+        resolved = await pm.resolve_corrections("小天")
+
+    assert resolved == 1
+    facts = pm._get_section_facts(await pm.aensure_persona("小天"), "master")
+    assert len(facts) == 1
+    survivor = facts[0]
+    assert isinstance(survivor, dict)
+    assert survivor["text"] == "C"
+    assert str(survivor.get("id") or "").startswith("corr_")
+    assert survivor["applied_correction_id"] == cid

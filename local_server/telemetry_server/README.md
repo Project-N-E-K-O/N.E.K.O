@@ -28,7 +28,14 @@ _TELEMETRY_SERVER_URL = "http://你的服务器IP:8099"
 ```bash
 (
   set -euo pipefail
-  cd local_server/telemetry_server
+  # 支持在仓库根目录或 local_server/telemetry_server 目录中直接执行
+  if [ -d local_server/telemetry_server ]; then
+    cd local_server/telemetry_server
+  fi
+  if [ ! -f docker-compose.yml ] || [ ! -f server.py ]; then
+    echo "请在仓库根目录或 local_server/telemetry_server 目录中执行升级脚本" >&2
+    exit 1
+  fi
 
   # 1. 先停止旧服务，保证 SQLite（含 -wal/-shm）处于一致状态
   docker compose down
@@ -36,7 +43,7 @@ _TELEMETRY_SERVER_URL = "http://你的服务器IP:8099"
   # 2. 若本地尚未构建最新镜像，先构建
   docker compose build
 
-  # 3. 一次性将宿主机 ./data/telemetry.db* 暂存并原子迁入命名卷 telemetry-data（不覆盖卷内已有库）
+  # 3. 一次性将宿主机 ./data/telemetry.db* 先暂存、修正属主后再逐个移入命名卷 telemetry-data（不覆盖卷内已有库）
   docker compose run --rm --no-deps --user root \
     -v "$PWD/data:/legacy-data:ro" \
     --entrypoint sh telemetry -c '
@@ -46,8 +53,8 @@ _TELEMETRY_SERVER_URL = "http://你的服务器IP:8099"
         exit 1
       fi
       if [ ! -e /legacy-data/telemetry.db ]; then
-        echo "No legacy /legacy-data/telemetry.db found; nothing to migrate."
-        exit 0
+        echo "Legacy /legacy-data/telemetry.db not found; aborting upgrade so an empty volume is not initialized." >&2
+        exit 1
       fi
       stage=$(mktemp -d /app/data/.migrate.XXXXXX)
       committed=0
@@ -78,6 +85,8 @@ _TELEMETRY_SERVER_URL = "http://你的服务器IP:8099"
   docker compose up -d
 )
 ```
+
+> 若迁移容器在移入文件过程中被强制终止（例如 `SIGKILL`），退出清理可能来不及执行；重试前请先执行 `docker compose run --rm --no-deps --entrypoint ls telemetry -la /app/data` 检查是否残留未完成的 `telemetry.db*` 或 `.migrate.*` 文件，确认无误后清理残留再重新执行迁移。
 
 ## 安全机制
 
@@ -165,7 +174,7 @@ curl -X POST -H "Authorization: Bearer $TOKEN" http://服务器:8099/api/v1/admi
 ### 直接查 SQLite
 
 ```bash
-# Docker Compose 部署使用命名卷 telemetry-data（镜像基于 python:3.11-slim，未安装 sqlite3 CLI，使用内置 sqlite3 模块查询；日期对齐服务端 UTC+8 口径）：
+# Docker Compose 部署使用命名卷 telemetry-data（镜像基于 python:3.11-slim，未安装 sqlite3 CLI，使用内置 sqlite3 模块查询；stat_date 按客户端本地日历日分桶，下例用 date('now', '+8 hours') 查询与 UTC+8 当天同名的日期桶，不会将多时区客户端折算为统一 UTC+8 当日总量；devices.last_seen 为服务端写入的 +08:00 时间戳）：
 docker compose exec telemetry python -c "import sqlite3; c = sqlite3.connect('/app/data/telemetry.db'); print(c.execute(\"SELECT * FROM daily_aggregates WHERE stat_date = date('now', '+8 hours') AND model = '_total'\").fetchall())"
 # 直接运行 python server.py 时数据库位于本地 ./data/telemetry.db：
 # sqlite3 data/telemetry.db
