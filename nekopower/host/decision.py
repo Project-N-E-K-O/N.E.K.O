@@ -580,7 +580,19 @@ def read_answer(text: str, active: list[Commission]) -> Triage | None:
     if choice is not None and not explicit and any(new_work_beside(commission) for commission in waiting):
         # New work that says a yes or a no in passing, while a question that quotes its commission
         # waits: no answer to it, nor to any other question waiting beside it, which it would
-        # answer by that yes or no alone (and allow, say, a command).
+        # answer by that yes or no alone (and allow, say, a command). Should it name what one of
+        # those asks (the command, the path), it may answer that after all: the user is asked which.
+        from nekopower.host.orchestrator import content_tokens
+
+        said = text
+        for name in ("answer", "deny", "session", "always", "once"):
+            said = strip_cues(name, said)
+        named = content_tokens(said)
+        if any(
+            not _quotes_its_commission(commission.question() or {}) and named & token_set(_question_text(commission))
+            for commission in waiting
+        ):
+            return Triage(kind="ambiguous", targets=[commission.id for commission in waiting])
         return None
 
     def bears_on(commission: Commission) -> float:

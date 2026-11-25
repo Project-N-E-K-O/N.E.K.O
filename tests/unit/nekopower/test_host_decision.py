@@ -1183,8 +1183,12 @@ def test_new_work_said_while_another_member_is_asked_about_answers_no_other_ques
     # Alone, the other question is read as it was: its yes.
     assert (read_answer(said, [other]).targets, read_answer(said, [other]).choice) == (["c2"], "once")
     # Beside a question about another member, which takes it for new work, it is new work: the yes it says
-    # in passing allows no command.
+    # in passing allows no command (nor does "this session", which every request for approval offers).
     assert read_answer(said, [asked, other]) is None
+    assert read_answer(f"allow it for this session, {said}", [asked, other]) is None
+    # One that names what the other asks may answer that after all: the user is asked which.
+    named = read_answer("yes, run npm run build", [asked, other])
+    assert (named.kind, sorted(named.targets), named.choice) == ("ambiguous", ["c1", "c2"], None)
     # A plain yes is still for the user to say which.
     plain = read_answer("yes", [asked, other])
     assert (plain.kind, sorted(plain.targets)) == ("ambiguous", ["c1", "c2"])
