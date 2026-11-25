@@ -211,16 +211,22 @@ _SILENCE_FRAME_RMS = 200.0
 _MIN_VOICED_FRAMES = 5  # 100 ms
 
 
-def is_silent_pcm16(pcm16: bytes) -> bool:
-    """Whether 16 kHz PCM16 holds less than 100 ms above the speech floor."""
+def voiced_frame_count(pcm16: bytes) -> int:
+    """Number of 20 ms frames of 16 kHz PCM16 above the speech floor."""
 
     samples = np.frombuffer(pcm16, dtype="<i2").astype(np.float32)
     usable = len(samples) - len(samples) % _SILENCE_FRAME_SAMPLES
     if usable == 0:
-        return True
+        return 0
     frames = samples[:usable].reshape(-1, _SILENCE_FRAME_SAMPLES)
     rms = np.sqrt(np.mean(frames * frames, axis=1))
-    return int(np.count_nonzero(rms >= _SILENCE_FRAME_RMS)) < _MIN_VOICED_FRAMES
+    return int(np.count_nonzero(rms >= _SILENCE_FRAME_RMS))
+
+
+def is_silent_pcm16(pcm16: bytes) -> bool:
+    """Whether 16 kHz PCM16 holds less than 100 ms above the speech floor."""
+
+    return voiced_frame_count(pcm16) < _MIN_VOICED_FRAMES
 
 
 def split_pcm16_segments(pcm16: bytes, max_segment_ms: int) -> list[bytes]:
@@ -450,13 +456,17 @@ class OfflineAsrTranscriber:
                 provider_key=self.provider_key,
             )
         assert self.spec.max_segment_ms is not None
+        # The speech threshold applies to the whole recording: a short word
+        # split across a segment boundary must not fall below it twice. Once
+        # the recording holds speech, only segments with no speech-level frame
+        # at all are skipped.
+        if is_silent_pcm16(audio):
+            return ""
         segments = [
             segment
             for segment in split_pcm16_segments(audio, self.spec.max_segment_ms)
-            if not is_silent_pcm16(segment)
+            if voiced_frame_count(segment) > 0
         ]
-        if not segments:
-            return ""
         session_language = _resolve_session_language(self.provider_key, language)
         if self.spec.mode == "session":
             texts = await self._transcribe_with_session(segments, session_language)

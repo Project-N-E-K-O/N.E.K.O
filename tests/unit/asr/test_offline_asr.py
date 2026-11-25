@@ -257,6 +257,20 @@ async def test_silent_segments_of_a_long_recording_are_skipped(http_client) -> N
     assert len(client.calls) == 1
 
 
+async def test_short_speech_split_across_a_segment_boundary_is_kept(http_client) -> None:
+    # 120 ms of speech straddling the 15 s split point: each segment holds only
+    # 60 ms, below the 100 ms threshold on its own, yet the recording has speech.
+    client = http_client(_FakeResponse({"text": "嗯"}), _FakeResponse({"text": ""}))
+    audio = _silence(14.94) + _pcm(0.12) + _silence(14.94)
+    assert not offline.is_silent_pcm16(audio)
+    assert all(
+        offline.is_silent_pcm16(segment)
+        for segment in offline.split_pcm16_segments(audio, 27_000)
+    )
+    assert await _transcriber("glm").transcribe(audio) == "嗯"
+    assert len(client.calls) == 2
+
+
 async def test_session_route_skips_silence_too() -> None:
     seen: list[Any] = []
     transcriber = _transcriber("qwen", worker_fn=_fake_stream_worker(seen=seen))
