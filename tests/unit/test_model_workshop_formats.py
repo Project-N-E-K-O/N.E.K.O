@@ -1208,7 +1208,7 @@ def test_gpu_instance_draw_work_is_bounded_below_the_memory_budget(tmp_path, ins
         with pytest.raises(ModelFormatError, match='model_accessor_budget_exceeded'): validate_model_bundle(path)
 
 
-@pytest.mark.parametrize("settings,fps,valid", [(30, 60, True), (1000, 240, False)])
+@pytest.mark.parametrize("settings,fps,valid", [(30, 60, True), (150, 60, True), (300, 60, True), (300, 240, True), (1000, 60, False), (1000, 240, False)])
 def test_physics_budget_counts_per_step_rig_work(tmp_path, settings, fps, valid):
     files = live2d_files()
     setting = {"Normalization": {key: {"Minimum": -1, "Maximum": 1, "Default": 0} for key in ("Position", "Angle")},
@@ -1268,3 +1268,91 @@ def test_instanced_draw_budget_uses_converted_triangle_indices(tmp_path, indexed
         assert validate_model_bundle(path).model_format == 'vrm'
     else:
         with pytest.raises(ModelFormatError, match='model_accessor_budget_exceeded'): validate_model_bundle(path)
+
+
+@pytest.mark.parametrize('nodes,mode,valid', [(10, 4, True), (101, 4, False), (10, 5, True), (34, 5, False)])
+def test_shared_mesh_draw_work_counts_ordinary_nodes(tmp_path, nodes, mode, valid):
+    def graph(data):
+        data['accessors'] = [{'componentType': 5126, 'type': 'VEC3', 'count': 50000}]
+        data['meshes'] = [{'primitives': [{'attributes': {'POSITION': 0}, 'mode': mode}]}]
+        data['nodes'] = [{'mesh': 0} for _ in range(nodes)]
+        data['scenes'][0]['nodes'] = list(range(nodes))
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
+    if valid:
+        assert validate_model_bundle(path).model_format == 'vrm'
+    else:
+        with pytest.raises(ModelFormatError, match='model_accessor_budget_exceeded'): validate_model_bundle(path)
+
+
+@pytest.mark.parametrize('mode', [4, 5, 6])
+@pytest.mark.parametrize('primitives', [1, 2])
+@pytest.mark.parametrize('indexed', [False, True])
+@pytest.mark.parametrize('morph', [False, True])
+def test_triangle_conversion_budgets_each_primitive_copy(tmp_path, mode, primitives, indexed, morph):
+    def graph(data):
+        data['accessors'] = [{'componentType': 5126, 'type': 'VEC3', 'count': 1000},
+                             {'componentType': 5125, 'type': 'SCALAR', 'count': 1000}]
+        primitive = {'attributes': {'POSITION': 0}, 'mode': mode}
+        if indexed: primitive['indices'] = 1
+        if morph: primitive['targets'] = [{'POSITION': 0}]
+        data['meshes'] = [{'primitives': [primitive] * primitives}]
+        data['nodes'][0]['mesh'] = 0
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
+    limits = FormatLimits(vrm_accessor_bytes=60000)
+    if mode == 4 or primitives == 1:
+        assert validate_model_bundle(path, format_limits=limits).model_format == 'vrm'
+    else:
+        with pytest.raises(ModelFormatError, match='model_accessor_budget_exceeded'):
+            validate_model_bundle(path, format_limits=limits)
+
+
+@pytest.mark.parametrize('shared,valid', [(False, False), (True, True)])
+def test_triangle_conversion_counts_interleaved_padding_and_shares_its_clone(tmp_path, shared, valid):
+    def graph(data):
+        raw = bytes(32000)
+        data['buffers'].append({'byteLength': len(raw), 'uri': 'data:application/octet-stream;base64,' + base64.b64encode(raw).decode()})
+        data['bufferViews'].append({'buffer': 1, 'byteLength': len(raw), 'byteStride': 32})
+        data['accessors'] = [{'bufferView': 1, 'componentType': 5126, 'type': 'VEC3', 'count': 1000}]
+        primitive = {'attributes': {'POSITION': 0}, 'mode': 5}
+        if shared: primitive['attributes']['NORMAL'] = 0
+        data['meshes'] = [{'primitives': [primitive]}]
+        data['nodes'][0]['mesh'] = 0
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
+    limits = FormatLimits(vrm_accessor_bytes=85000 if valid else 70000)
+    if valid:
+        assert validate_model_bundle(path, format_limits=limits).model_format == 'vrm'
+    else:
+        with pytest.raises(ModelFormatError, match='model_accessor_budget_exceeded'):
+            validate_model_bundle(path, format_limits=limits)
+
+
+def test_triangle_conversion_counts_missing_morphs_that_fall_back_to_base_attributes(tmp_path):
+    def graph(data):
+        data['accessors'] = [{'componentType': 5126, 'type': 'VEC3', 'count': 1000}]
+        data['meshes'] = [{'primitives': [{'attributes': {'POSITION': 0}, 'mode': 5, 'targets': [{'POSITION': 0}, {}]}]}]
+        data['nodes'][0]['mesh'] = 0
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
+    with pytest.raises(ModelFormatError, match='model_accessor_budget_exceeded'):
+        validate_model_bundle(path, format_limits=FormatLimits(vrm_accessor_bytes=60000))
+
+
+@pytest.mark.parametrize('case', ['perspective', 'orthographic', 'missing_table', 'index', 'negative', 'boolean', 'string',
+                                 'bad_table', 'bad_camera', 'unknown_type', 'missing_parameters'])
+def test_scene_camera_dependencies_are_checked(tmp_path, case):
+    def graph(data):
+        kind = case if case in ('perspective', 'orthographic') else 'perspective'
+        params = {'yfov': 1, 'znear': 0.1} if kind == 'perspective' else {'xmag': 1, 'ymag': 1, 'znear': 0.1, 'zfar': 10}
+        data['cameras'] = [{'type': kind, kind: params}]
+        data['nodes'][0]['camera'] = 0
+        if case == 'missing_table': data.pop('cameras')
+        elif case in ('index', 'negative', 'boolean', 'string'):
+            data['nodes'][0]['camera'] = {'index': 99, 'negative': -1, 'boolean': True, 'string': '0'}[case]
+        elif case == 'bad_table': data['cameras'] = {}
+        elif case == 'bad_camera': data['cameras'] = [None]
+        elif case == 'unknown_type': data['cameras'][0]['type'] = 'unknown'
+        elif case == 'missing_parameters': data['cameras'][0].pop(kind)
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
+    if case in ('perspective', 'orthographic'):
+        assert validate_model_bundle(path).model_format == 'vrm'
+    else:
+        with pytest.raises(ModelFormatError): validate_model_bundle(path)

@@ -36,10 +36,10 @@ class FormatLimits:
     json_depth: int = 64
     binary_records: int = 2000000
     binary_text_bytes: int = 1024 * 1024
-    # Bound copied bufferViews plus zero/sparse arrays independently of encoded GLB size.
+    # Bound bufferViews, private accessors and converted geometry independently of GLB size.
     vrm_accessor_bytes: int = 256 * 1024 * 1024
     vrm_instanced_vertices: int = 5000000
-    live2d_physics_work: int = 200000
+    live2d_physics_work: int = 3000000
 
 
 def _require(condition, path: str, code: str = "invalid_model_structure") -> None:
@@ -300,9 +300,12 @@ def _auxiliary(data: dict, path: str, *, kind: str = "", limits: FormatLimits) -
             for key in ("Input", "Output", "Vertices"):
                 _require(isinstance(setting.get(key), list), path)
         # evaluate() slices each setting's remaining input/output/particle arrays
-        # on every step. Bound that quadratic work as well as the step frequency.
-        entries = sum(len(setting["Input"]) + 2 * len(setting["Output"]) + len(setting["Vertices"]) for setting in settings)
-        _require(len(settings) * entries * max(1, fps / 60) <= limits.live2d_physics_work,
+        # on every step. Each entry is copied once for each preceding rig plus
+        # its own rig. Bound steady-frame work, retaining room for 300 ordinary
+        # rigs even at 240 Hz; the separate Fps cap bounds catch-up step count.
+        entries = sum((index + 1) * (len(setting["Input"]) + 2 * len(setting["Output"]) + len(setting["Vertices"]))
+                      for index, setting in enumerate(settings))
+        _require(entries * max(1, fps / 60) <= limits.live2d_physics_work,
                  path, "model_physics_budget_exceeded")
         # static/libs/index.min.js: CubismPhysics.parse walks the actual arrays;
         # inputs/particles use push, outputs use plain array indexing. The
@@ -609,8 +612,12 @@ def _vrm(resources: _Resources) -> None:
         _require(isinstance(bone, dict), entry)
         _index(bone.get("node"), nodes, entry)
     # Validate common graph indices; shader/humanoid behavior still needs rendering.
-    accessors, meshes, skins, scenes, animations = (data.get(key, []) for key in ("accessors", "meshes", "skins", "scenes", "animations"))
-    _require(all(isinstance(value, list) for value in (accessors, meshes, skins, scenes, animations)), entry)
+    accessors, meshes, skins, scenes, animations, cameras = (data.get(key, []) for key in ("accessors", "meshes", "skins", "scenes", "animations", "cameras"))
+    _require(all(isinstance(value, list) for value in (accessors, meshes, skins, scenes, animations, cameras)), entry)
+    for camera in cameras:
+        _require(isinstance(camera, dict) and camera.get("type") in ("perspective", "orthographic"), entry)
+        _require(isinstance(camera.get(camera["type"]), dict), entry)
+    accessor_clones = []
     for accessor in accessors:
         _require(isinstance(accessor, dict), entry)
         count = _uint(accessor.get("count"), entry)
@@ -642,6 +649,11 @@ def _vrm(resources: _Resources) -> None:
         else:
             # glTF and the bundled loader allow pure zero-initialized accessors.
             _require(_uint(accessor.get("byteOffset", 0), entry) == 0, entry)
+        # Geometry.clone() copies ordinary arrays independently. Interleaved
+        # attributes share a clone of their backing view, including stride padding.
+        clone_size = count * (view.get("byteStride", element_size) if view is not None else element_size)
+        clone_view = accessor["bufferView"] if view is not None and view.get("byteStride", element_size) != element_size and "sparse" not in accessor else None
+        accessor_clones.append((clone_size, clone_view))
         if view is None or "sparse" in accessor:
             # Sparse data over an existing interleaved view clones its full stride,
             # not just the logical element width. Sum every private backing array.
@@ -713,6 +725,28 @@ def _vrm(resources: _Resources) -> None:
                     _require(isinstance(morph, dict), entry)
                     for index in morph.values():
                         _index(index, accessors, entry)
+            if primitive.get("mode", 4) in (5, 6):
+                # toTrianglesDrawMode clones each primitive's geometry even when
+                # its source accessors are shared, then allocates triangle indices.
+                clone_indices = list(primitive["attributes"].values())
+                for semantic in ("POSITION", "NORMAL", "COLOR_0"):
+                    if any(semantic in morph for morph in morphs):
+                        clone_indices.extend(morph.get(semantic, primitive["attributes"].get(semantic)) for morph in morphs)
+                cloned_views = {}
+                for index in clone_indices:
+                    if index is None:
+                        continue
+                    size, view_index = accessor_clones[index]
+                    if view_index is None:
+                        allocated += size
+                    else:
+                        cloned_views[view_index] = max(cloned_views.get(view_index, 0), size)
+                allocated += sum(cloned_views.values()) + primitive_count * 4
+                # The original index is also cloned before being replaced. For
+                # unindexed geometry the helper first generates a sequential index.
+                allocated += accessor_clones[primitive["indices"]][0] if "indices" in primitive else max(
+                    (accessors[index]["count"] for index in primitive["attributes"].values()), default=0) * 4
+                _require(allocated <= resources.limits.vrm_accessor_bytes, entry, "model_accessor_budget_exceeded")
             counts.append(len(morphs))
         _require(len(set(counts)) <= 1, entry)
         mesh_morph_counts.append(tuple(set(counts)))
@@ -770,9 +804,10 @@ def _vrm(resources: _Resources) -> None:
         _require(isinstance(node, dict) and isinstance(node.get("children", []), list), entry)
         for child in node.get("children", []):
             _index(child, nodes, entry)
-        for field, table in (("mesh", meshes), ("skin", skins)):
+        for field, table in (("mesh", meshes), ("skin", skins), ("camera", cameras)):
             if field in node:
                 _index(node[field], table, entry)
+        instances = 1
         instancing = node.get("extensions", {}).get("EXT_mesh_gpu_instancing")
         if instancing is not None and "mesh" in node:
             _require(isinstance(instancing, dict) and isinstance(instancing.get("attributes"), dict), entry)
@@ -784,12 +819,14 @@ def _vrm(resources: _Resources) -> None:
                 instance_counts.add(accessor["count"])
             _require(len(instance_counts) <= 1, entry)
             if instance_counts:
-                instanced_vertices += next(iter(instance_counts)) * mesh_draw_counts[node["mesh"]]
-                _require(instanced_vertices <= resources.limits.vrm_instanced_vertices, entry, "model_accessor_budget_exceeded")
+                instances = next(iter(instance_counts))
                 # GLTFMeshGpuInstancing creates count*16 Float32 values per
                 # node and primitive, even when all nodes share one accessor.
                 allocated += next(iter(instance_counts)) * 64 * len(meshes[node["mesh"]]["primitives"])
                 _require(allocated <= resources.limits.vrm_accessor_bytes, entry, "model_accessor_budget_exceeded")
+        if "mesh" in node:
+            instanced_vertices += instances * mesh_draw_counts[node["mesh"]]
+            _require(instanced_vertices <= resources.limits.vrm_instanced_vertices, entry, "model_accessor_budget_exceeded")
     # A cyclic child graph cannot become a scene tree in the current loader.
     colors = [0] * len(nodes)
     for start in range(len(nodes)):
