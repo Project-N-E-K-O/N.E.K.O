@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from urllib.parse import unquote
 
@@ -12,6 +13,7 @@ from utils.config_manager import get_reserved
 from .market import Launch
 from .paths import WorkshopError
 from .runtime import installed_selection
+from .tasks import _drain_sync
 
 
 async def apply_installed(config, launch: Launch):
@@ -66,12 +68,23 @@ async def apply_installed(config, launch: Launch):
         # Cancellation after this point reports the real save result, not rollback.
         launch.phase = "applying"
 
-    def guard(actual, characters):
+    async def guard(actual, characters):
         if actual is not config:
             raise WorkshopError("model_market_target_changed")
-        launch.check(config, characters)
-        with installed_selection(config, result):
+
+        async def commit_gate():
+            launch.check(config, characters)
             return check_role(characters)
+
+        loop = asyncio.get_running_loop()
+
+        def verify():
+            # The worker owns the lifecycle lock through the small Main gate;
+            # release it before the original asynchronous character save.
+            with installed_selection(config, result):
+                return asyncio.run_coroutine_threadsafe(commit_gate(), loop).result()
+
+        return await _drain_sync(verify)
 
     raw = json.dumps(payload).encode()
 

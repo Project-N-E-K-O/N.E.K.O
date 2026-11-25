@@ -1425,3 +1425,101 @@ def test_padded_interleaved_matrix_attributes_share_the_conversion_clone(tmp_pat
         data['nodes'][0]['mesh'] = 0
     path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
     assert validate_model_bundle(path, format_limits=FormatLimits(vrm_accessor_bytes=210)).model_format == 'vrm'
+
+
+
+def mmd_runtime_bytes(kind, *, vertices=3, morph_kinds=(), iterations=(), links=1):
+    """Small complete layouts with controllable loader work, no external resources."""
+    if kind == 'pmd':
+        raw = b'Pmd' + struct.pack('<f', 1.0) + bytes(276)
+        raw += struct.pack('<I', vertices) + bytes(vertices * 38) + struct.pack('<2I', 0, 0)
+        raw += struct.pack('<H', 3) + bytes(3 * 39) + struct.pack('<H', len(iterations))
+        for count in iterations:
+            raw += struct.pack('<HHBHf', 0, 1, links, count, 1.0) + struct.pack('<H', 2) * links
+        raw += struct.pack('<H', len(morph_kinds) + 1)
+        raw += bytes(25) + (bytes(20) + struct.pack('<IB', 0, 1)) * len(morph_kinds)
+        return raw + struct.pack('<2BI', 0, 0, 0)
+    def text(value):
+        encoded = value.encode(); return struct.pack('<i', len(encoded)) + encoded
+    raw = b'PMX ' + struct.pack('<f', 2.0) + bytes([8, 1, 0, 1, 1, 1, 1, 1, 1]) + text('Fixture') + text('') * 3
+    raw += struct.pack('<i', vertices) + (bytes(34) + struct.pack('<f', 1.0)) * vertices
+    raw += struct.pack('<3i', 0, 0, 0) + struct.pack('<i', max(3, len(iterations)))
+    for index in range(max(3, len(iterations))):
+        has_ik = index < len(iterations)
+        raw += text('Bone' + str(index)) + text('') + bytes(12) + struct.pack('<biHb', -1, 0, 33 if has_ik else 1, -1)
+        if has_ik:
+            raw += struct.pack('<bifi', 1, iterations[index], 1.0, links)
+            raw += (struct.pack('<bB', 2, 1) + bytes(24)) * links
+    raw += struct.pack('<i', len(morph_kinds))
+    for morph_kind in morph_kinds:
+        raw += text('Morph') + text('') + struct.pack('<BBi', 0, morph_kind, 0)
+    return raw + struct.pack('<3i', 0, 0, 0)
+
+
+@pytest.mark.parametrize('kind', ['pmx', 'pmd'])
+@pytest.mark.parametrize('budget,valid', [(71, False), (72, True)])
+def test_mmd_empty_morphs_still_allocate_dense_positions(tmp_path, kind, budget, valid):
+    entry = 'Avatar.' + kind
+    raw = mmd_runtime_bytes(kind, morph_kinds=(0, 1))
+    path = make_native_bundle(tmp_path, kind='mmd', entry=entry, files={entry: raw})
+    limits = FormatLimits(mmd_morph_bytes=budget)
+    if valid:
+        assert validate_model_bundle(path, format_limits=limits).model_format == 'mmd'
+    else:
+        with pytest.raises(ModelFormatError, match='model_accessor_budget_exceeded'):
+            validate_model_bundle(path, format_limits=limits)
+
+
+def test_mmd_morph_budget_rejects_tiny_compressed_package_with_gigabytes_of_positions(tmp_path):
+    raw = mmd_runtime_bytes('pmx', vertices=100000, morph_kinds=[1] * 10000)
+    path = make_native_bundle(tmp_path, kind='mmd', entry='Avatar.pmx', files={'Avatar.pmx': raw})
+    assert path.stat().st_size < 20000
+    with pytest.raises(ModelFormatError, match='model_accessor_budget_exceeded'): validate_model_bundle(path)
+
+
+def test_non_position_pmx_morphs_do_not_consume_position_budget(tmp_path):
+    raw = mmd_runtime_bytes('pmx', morph_kinds=(2, 3, 8))
+    path = make_native_bundle(tmp_path, kind='mmd', entry='Avatar.pmx', files={'Avatar.pmx': raw})
+    assert validate_model_bundle(path, format_limits=FormatLimits(mmd_morph_bytes=0)).model_format == 'mmd'
+
+
+@pytest.mark.parametrize('kind', ['pmx', 'pmd'])
+@pytest.mark.parametrize('iterations,links,valid', [([40] * 10, 4, True), ([256] * 40, 4, True),
+    ([4096], 1, True), ([4097], 1, False), ([4096] * 7, 4, False), ([0], 1, True)])
+def test_mmd_ik_iteration_and_aggregate_work_limits(tmp_path, kind, iterations, links, valid):
+    entry = 'Avatar.' + kind
+    raw = mmd_runtime_bytes(kind, iterations=iterations, links=links)
+    path = make_native_bundle(tmp_path, kind='mmd', entry=entry, files={entry: raw})
+    if valid:
+        assert validate_model_bundle(path).model_format == 'mmd'
+    else:
+        with pytest.raises(ModelFormatError, match='model_accessor_budget_exceeded'): validate_model_bundle(path)
+
+
+@pytest.mark.parametrize('iterations', [-1, 2147483647])
+def test_pmx_ik_rejects_negative_or_unbounded_iterations(tmp_path, iterations):
+    raw = mmd_runtime_bytes('pmx', iterations=[iterations])
+    path = make_native_bundle(tmp_path, kind='mmd', entry='Avatar.pmx', files={'Avatar.pmx': raw})
+    with pytest.raises(ModelFormatError): validate_model_bundle(path)
+
+
+@pytest.mark.parametrize('case', ['point', 'directional', 'spot', 'missing_table', 'index', 'negative', 'bool', 'string',
+                                 'bad_table', 'bad_light', 'bad_type', 'bad_spot', 'empty_node'])
+def test_punctual_light_dependencies_match_loader(tmp_path, case):
+    def graph(data):
+        data['extensionsUsed'].append('KHR_lights_punctual')
+        data['extensions']['KHR_lights_punctual'] = {'lights': [{'type': case if case in ('point', 'directional', 'spot') else 'point'}]}
+        data['nodes'][0]['extensions'] = {'KHR_lights_punctual': {'light': 0}}
+        if case == 'missing_table': data['extensions'].pop('KHR_lights_punctual')
+        elif case in ('index', 'negative', 'bool', 'string'):
+            data['nodes'][0]['extensions']['KHR_lights_punctual']['light'] = {'index': 999, 'negative': -1, 'bool': False, 'string': '0'}[case]
+        elif case == 'bad_table': data['extensions']['KHR_lights_punctual']['lights'] = {}
+        elif case == 'bad_light': data['extensions']['KHR_lights_punctual']['lights'] = [None]
+        elif case == 'bad_type': data['extensions']['KHR_lights_punctual']['lights'][0]['type'] = 'unsupported'
+        elif case == 'bad_spot': data['extensions']['KHR_lights_punctual']['lights'][0] = {'type': 'spot', 'spot': 'invalid'}
+        elif case == 'empty_node': data['nodes'][0]['extensions']['KHR_lights_punctual'] = {}
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
+    if case in ('point', 'directional', 'spot', 'empty_node'):
+        assert validate_model_bundle(path).model_format == 'vrm'
+    else:
+        with pytest.raises(ModelFormatError): validate_model_bundle(path)

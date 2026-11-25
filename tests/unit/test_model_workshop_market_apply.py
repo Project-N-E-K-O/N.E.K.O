@@ -377,3 +377,54 @@ async def test_apply_does_not_wait_on_an_active_model_lifecycle(application, own
             finally:
                 release.set(); await asyncio.to_thread(running.result, 5)
     assert config.get_runtime_config_path('characters.json').read_bytes() == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('cancel', [False, True])
+async def test_model_verification_keeps_event_loop_live_and_role_gate_on_main(
+    application, owner, no_network, tmp_path, monkeypatch, cancel
+):
+    import threading
+    import time
+    _, config = application
+    package, _ = bundle_path(tmp_path, 'vrm')
+    launch = Launches().create(config)
+    launch.result, launch.phase = _public_result(config, install(owner, package)['result']), 'installed'
+    entered, release = threading.Event(), threading.Event()
+    checking_threads, role_threads = [], []
+    main_thread = threading.get_ident()
+    original = owner.installer.registry.status
+    def slow_status(row):
+        checking_threads.append(threading.get_ident())
+        entered.set(); release.wait(2)
+        return original(row)
+    monkeypatch.setattr(owner.installer.registry, 'status', slow_status)
+    async with main_character_runtime(config, {NAME: 'idle', OTHER: 'idle'}) as harness:
+        shared_state.init_shared_state(role_state=harness.module.role_state, config_manager=config,
+            steamworks=None, templates=None, init_one_catgirl=harness.module.init_one_catgirl)
+        original_managers = shared_state.get_session_manager
+        def managers():
+            role_threads.append(threading.get_ident())
+            assert threading.get_ident() == main_thread
+            return original_managers()
+        monkeypatch.setattr(shared_state, 'get_session_manager', managers)
+        before = config.get_runtime_config_path('characters.json').read_bytes()
+        started = time.monotonic()
+        applying = asyncio.create_task(apply_installed(config, launch))
+        try:
+            assert await asyncio.to_thread(entered.wait, 3)
+            await asyncio.sleep(0)
+            assert time.monotonic() - started < 1
+            assert not applying.done()
+            if cancel: launch.cancel.set()
+            release.set()
+            if cancel:
+                with pytest.raises(WorkshopError, match='cancelled'): await applying
+                assert config.get_runtime_config_path('characters.json').read_bytes() == before
+            else:
+                assert (await applying)['phase'] == 'saved'
+                assert role_threads == [main_thread]
+            assert all(value != main_thread for value in checking_threads)
+        finally:
+            release.set()
+            await asyncio.gather(applying, return_exceptions=True)
