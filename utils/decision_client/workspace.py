@@ -205,8 +205,16 @@ def resolve_workspace_decision_url(template: Any, stored: Any, chat_base_url: An
     url = tpl.replace(WORKSPACE_HOST_PLACEHOLDER, host)
     try:
         split = urllib.parse.urlsplit(url)
+        # Reading .port raises ValueError for a malformed or out-of-range port.
+        port = split.port
     except ValueError:
         return "", WORKSPACE_MISSING
-    if split.scheme != "https" or (split.hostname or "").lower() != host or split.username or split.password or split.port:
+    if (
+        split.scheme != "https"
+        or (split.hostname or "").lower() != host
+        or split.username
+        or split.password
+        or port is not None
+    ):
         return "", WORKSPACE_MISSING
     return url, ""

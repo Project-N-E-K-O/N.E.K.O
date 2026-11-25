@@ -453,6 +453,10 @@ def test_resolve_workspace_decision_url_takes_region_from_host_or_chat_endpoint(
         "https://{workspace_host}.evil.example/v1",
         "https://evil.example/{workspace_host}/v1",
         "https://{workspace_host}:8443/v1",
+        "https://{workspace_host}:0/v1",
+        # Malformed or out-of-range ports make urlsplit().port raise.
+        "https://{workspace_host}:bad/v1",
+        "https://{workspace_host}:65536/v1",
     ):
         assert resolve(bad_tpl, "llm-abc", _BJ_CHAT) == ("", "workspace_missing"), bad_tpl
     # Only providers whose native endpoint needs a workspace carry a template.
