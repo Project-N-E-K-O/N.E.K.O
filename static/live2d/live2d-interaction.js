@@ -762,6 +762,8 @@ function getLive2DPeekBodyRect(manager) {
     try {
         const info = manager.getBodyScreenRectInfo();
         const rect = info && info.rect;
+        // Number(null) 是 0，缺 rect 时不能让它变成一个 (0, 0) 的假腰部。
+        if (!rect) return null;
         const centerX = Number(rect && (Number.isFinite(rect.centerX)
             ? rect.centerX
             : Number(rect.left) + Number(rect.width) * 0.5));

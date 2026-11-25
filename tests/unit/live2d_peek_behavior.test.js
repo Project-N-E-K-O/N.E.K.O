@@ -1409,6 +1409,28 @@ test('without a reliable head, a lower drop whose waist is still on screen keeps
     }
 });
 
+test('without a reliable head or any waist rect, a lower side drop still clamps the head into the work area', async () => {
+    // getBodyScreenRectInfo 找不到任何身体来源时返回 null，不能被当成 (0, 0) 的腰部去兜底。
+    for (const item of [{ side: 'left', x: 0, scaleX: 1 }, { side: 'right', x: 1000, scaleX: -1 }]) {
+        const harness = createHarness();
+        const manager = new harness.Live2DManager();
+        const model = createRotatingModel({ x: item.x, y: 342, scaleX: item.scaleX, height: 1200 });
+        const head = attachScaledAnchors(manager, model, { headY: 288, waistY: 728, reliable: false });
+        manager.getBodyScreenRectInfo = () => null;
+
+        const contact = harness.getLive2DPeekEdgeContact(manager, model);
+        assert.equal(contact.edge, item.side);
+
+        assert.equal(harness.settleLive2DBaseAtEdgeContact(model, contact), true);
+        const settled = harness.validateLive2DPeekEdgeContact(manager, model, contact);
+        const enterPromise = manager._tryApplyLive2DPeek(model, settled);
+        flushNextFrame(harness);
+        assert.equal(await enterPromise, true);
+        const finalHead = head();
+        assert.ok(finalHead.y > 0 && finalHead.y < 800, `${item.side} head stays inside the work area, y=${finalHead.y}`);
+    }
+});
+
 test('a reliable head keeps the side peek even when the waist is past the bottom', async () => {
     for (const item of [{ side: 'left', x: 0, scaleX: 1 }, { side: 'right', x: 1000, scaleX: -1 }]) {
         const harness = createHarness();
