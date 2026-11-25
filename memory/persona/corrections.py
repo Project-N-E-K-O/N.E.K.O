@@ -67,6 +67,19 @@ def _has_applied_cid(entry_obj: object, target_cid: str) -> bool:
     return isinstance(applied_list, list) and target_cid in applied_list
 
 
+def _applied_cids(entry_obj: object) -> list[str]:
+    if not isinstance(entry_obj, dict):
+        return []
+    ids: list[str] = []
+    for raw in entry_obj.get("applied_correction_ids") or []:
+        if isinstance(raw, str) and raw and raw not in ids:
+            ids.append(raw)
+    single = entry_obj.get("applied_correction_id")
+    if isinstance(single, str) and single and single not in ids:
+        ids.append(single)
+    return ids
+
+
 def _record_applied_cid(entry_obj: dict, target_cid: str) -> None:
     if not target_cid:
         return
@@ -1066,6 +1079,11 @@ class CorrectionsMixin:
                     and _entry_in_scope(e)
                     and not is_permanently_suppressed(e)
                 ]
+                inherited_cids: list[str] = []
+                for old_entry in old_entries:
+                    for cid in _applied_cids(old_entry):
+                        if cid not in inherited_cids:
+                            inherited_cids.append(cid)
                 section_facts[:] = [
                     e for e in section_facts
                     if (e.get('text', '') if isinstance(e, dict) else str(e)) != old_text
@@ -1100,67 +1118,70 @@ class CorrectionsMixin:
                                 for _ in old_entries[:1]
                             ]
                         )[-_VH_MAX:]
+                    for inherited_cid in inherited_cids:
+                        _record_applied_cid(replacement, inherited_cid)
                     _record_applied_cid(replacement, item_cid)
                     section_facts.append(replacement)
                 else:
                     existing_idx, existing = live_new_match
-                    if old_entries:
-                        if not isinstance(existing, dict):
-                            existing = self._normalize_entry_for_section(
-                                persona, entity, existing,
-                            )
-                            if item_subject is not None:
-                                existing.update(item_subject.as_entry_fields())
-                        if preference == 'new':
-                            from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
-                            prior_history = (
-                                list(old_entries[0].get('version_history') or [])
-                                if isinstance(old_entries[0], dict)
-                                else []
-                            )
-                            existing['version_history'] = (
-                                list(existing.get('version_history') or [])
-                                + prior_history
-                                + [
-                                    _history_snapshot(
-                                        old_text, 'old', 'trust_superseded',
-                                    )
-                                ]
-                            )[-_VH_MAX:]
-                        existing.update(
-                            _merged_correction_event_fields(existing, item)
+                    if not isinstance(existing, dict):
+                        existing = self._normalize_entry_for_section(
+                            persona, entity, existing,
                         )
-                        if (
-                            new_speaker_id
-                            or item.get('new_speaker_provenance_mixed') is True
+                        if item_subject is not None:
+                            existing.update(item_subject.as_entry_fields())
+                    if old_entries and preference == 'new':
+                        from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
+                        prior_history = (
+                            list(old_entries[0].get('version_history') or [])
+                            if isinstance(old_entries[0], dict)
+                            else []
+                        )
+                        existing['version_history'] = (
+                            list(existing.get('version_history') or [])
+                            + prior_history
+                            + [
+                                _history_snapshot(
+                                    old_text, 'old', 'trust_superseded',
+                                )
+                            ]
+                        )[-_VH_MAX:]
+                    existing.update(
+                        _merged_correction_event_fields(existing, item)
+                    )
+                    if (
+                        new_speaker_id
+                        or item.get('new_speaker_provenance_mixed') is True
+                    ):
+                        from memory.speaker_trust import provenance_of_entries
+                        new_source = {
+                            'speaker_id': new_speaker_id,
+                            'speaker_trust': item.get('new_speaker_trust'),
+                        }
+                        _queued_entity = str(
+                            item.get('new_speaker_entity_id') or ''
+                        ).strip()
+                        if _queued_entity:
+                            new_source['speaker_entity_id'] = _queued_entity
+                        if item.get('new_speaker_provenance_mixed') is True:
+                            new_source['speaker_provenance_mixed'] = True
+                        folded_provenance = provenance_of_entries([
+                            existing, new_source,
+                        ])
+                        for key in (
+                            'speaker_id', 'speaker_trust', 'speaker_label',
+                            'speaker_entity_id',
                         ):
-                            from memory.speaker_trust import provenance_of_entries
-                            new_source = {
-                                'speaker_id': new_speaker_id,
-                                'speaker_trust': item.get('new_speaker_trust'),
-                            }
-                            _queued_entity = str(
-                                item.get('new_speaker_entity_id') or ''
-                            ).strip()
-                            if _queued_entity:
-                                new_source['speaker_entity_id'] = _queued_entity
-                            if item.get('new_speaker_provenance_mixed') is True:
-                                new_source['speaker_provenance_mixed'] = True
-                            folded_provenance = provenance_of_entries([
-                                existing, new_source,
-                            ])
-                            for key in (
-                                'speaker_id', 'speaker_trust', 'speaker_label',
-                                'speaker_entity_id',
-                            ):
-                                existing.pop(key, None)
-                            existing.update(folded_provenance)
-                            if new_source.get('speaker_provenance_mixed') is True:
-                                existing['speaker_provenance_mixed'] = True
-                        existing = self._normalize_entry(existing)
-                        section_facts[existing_idx] = existing
-                    if item_cid and isinstance(existing, dict):
+                            existing.pop(key, None)
+                        existing.update(folded_provenance)
+                        if new_source.get('speaker_provenance_mixed') is True:
+                            existing['speaker_provenance_mixed'] = True
+                    existing = self._normalize_entry(existing)
+                    if isinstance(existing, dict):
+                        for inherited_cid in inherited_cids:
+                            _record_applied_cid(existing, inherited_cid)
                         _record_applied_cid(existing, item_cid)
+                    section_facts[existing_idx] = existing
             elif action == 'keep_old':
                 # When trust arbitration selects the old observation, the new observation must not silently disappear: embed it in the winner's
                 # version_history, preserving full text, speaker, and trust so it can be manually restored.

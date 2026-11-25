@@ -328,7 +328,8 @@ def process(path: Path):
             continue
         before = extract_keys(curve["Segments"])
         digest = _curve_segments_digest(curve["Segments"])
-        if marker_curves.get(cid) == digest or is_already_smoothed(curve["Segments"], NEUTRAL[cid]):
+        rounded_segments = _round_floats(curve["Segments"])
+        if marker_curves.get(cid) == digest or is_already_smoothed(rounded_segments, NEUTRAL[cid]):
             stats[cid] = (len(before), len(before))
             recorded_digests[cid] = digest
             continue

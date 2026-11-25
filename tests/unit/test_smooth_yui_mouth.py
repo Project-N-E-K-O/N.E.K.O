@@ -197,3 +197,43 @@ def test_atomic_replace_preserves_file_mode(tmp_path):
 
     MOD.process(motion_file)
     assert stat.S_IMODE(motion_file.stat().st_mode) == 0o644
+
+
+def test_unmarked_rounding_threshold_curve_is_idempotent(tmp_path):
+    """Unmarked curves near the 0.05 curvature limit after DECIMALS rounding must be smoothed on pass 1 and unchanged on pass 2."""
+    boundary_segments = [
+        0, 0, 0,
+        1, 0.0074074074074, 0,
+        2, 0.01000049, 0,
+        3, 0.03500051, 0,
+        4, 0.01000149, 0,
+        5, 0.0074074074074, 0,
+        6, 0,
+    ]
+    motion = {
+        "Version": 3,
+        "Meta": {
+            "Duration": 6.0,
+            "Fps": 60.0,
+            "Loop": True,
+            "AreBeziersRestricted": True,
+            "CurveCount": 1,
+            "TotalSegmentCount": 6,
+            "TotalPointCount": 10,
+            "UserDataCount": 0,
+            "TotalUserDataSize": 0,
+        },
+        "Curves": [
+            {"Target": "Parameter", "Id": "ParamMouthOpenY", "Segments": boundary_segments},
+        ],
+    }
+    motion_file = tmp_path / "rounding_threshold.motion3.json"
+    motion_file.write_text(json.dumps(motion), encoding="utf-8")
+
+    MOD.process(motion_file)
+    first_bytes = motion_file.read_bytes()
+    first_data = json.loads(first_bytes.decode("utf-8"))
+    assert MOD.SMOOTH_META_KEY in first_data["Meta"]
+
+    MOD.process(motion_file)
+    assert motion_file.read_bytes() == first_bytes

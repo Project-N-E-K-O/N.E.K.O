@@ -456,3 +456,85 @@ async def test_keep_new_with_existing_live_new_entry_merges_history_only_when_ar
         assert survivor["version_history"][1]["text"] == "主人喜欢猫"
     else:
         assert survivor.get("version_history") == []
+
+
+@pytest.mark.asyncio
+async def test_keep_new_existing_live_entry_folds_metadata_even_when_old_entry_missing(tmp_path):
+    """When old_entries is empty on an existing live new_text entry, keep_new must still fold metadata and cid."""
+    pm, _ = _install(str(tmp_path))
+    await _seed_master_fact(pm, "小天", "A", speaker_id="qq:alice", speaker_trust=0.95)
+    await _seed_master_fact(pm, "小天", "C", speaker_id="qq:alice", speaker_trust=0.95)
+    await pm._aqueue_correction("小天", "A", "B", "master")
+    await pm._aqueue_correction(
+        "小天", "A", "C", "master",
+        old_speaker_provenance={"speaker_id": "qq:alice", "speaker_trust": 0.95},
+        new_speaker_provenance={
+            "speaker_id": "qq:alice",
+            "speaker_trust": 0.3,
+            "event_when_raw": "2026-07",
+            "event_start_at": "2026-07-01T00:00:00",
+            "event_end_at": "2026-07-31T23:59:59",
+        },
+    )
+    queued = await pm.aload_pending_corrections("小天")
+    cid2 = queued[1]["correction_id"]
+    fake_llm = _make_llm_mock([
+        {"index": 0, "action": "keep_new"},
+        {"index": 1, "action": "keep_new"},
+    ])
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
+        resolved = await pm.resolve_corrections("小天")
+
+    assert resolved == 2
+    facts = pm._get_section_facts(await pm.aensure_persona("小天"), "master")
+    entry_c = next(e for e in facts if e["text"] == "C")
+    assert entry_c["speaker_trust"] == pytest.approx(0.3)
+    assert entry_c["event_when_raw"] == "2026-07"
+    assert entry_c["event_start_at"] == "2026-07-01T00:00:00"
+    assert entry_c["applied_correction_id"] == cid2
+    assert entry_c.get("version_history") == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("preseed_c", [False, True])
+async def test_chained_keep_new_replay_preserves_inherited_correction_ids(tmp_path, monkeypatch, preseed_c):
+    """Chained keep_new A->B->C must inherit prior applied_correction_ids onto C so replay stays idempotent."""
+    from memory.persona import corrections as corrections_mod
+
+    pm, _ = _install(str(tmp_path))
+    await _seed_master_fact(pm, "小天", "A", speaker_id="qq:alice", speaker_trust=0.9)
+    if preseed_c:
+        await _seed_master_fact(pm, "小天", "C", speaker_id="qq:alice", speaker_trust=0.9)
+    await pm._aqueue_correction("小天", "A", "B", "master")
+    await pm._aqueue_correction("小天", "B", "C", "master")
+    queued = await pm.aload_pending_corrections("小天")
+    cid1, cid2 = queued[0]["correction_id"], queued[1]["correction_id"]
+
+    real_write = corrections_mod.atomic_write_json_async
+
+    async def _fail_corrections_write(path, *args, **kwargs):
+        if str(path).endswith("persona_corrections.json"):
+            raise OSError("disk failure after persona save")
+        return await real_write(path, *args, **kwargs)
+
+    monkeypatch.setattr(corrections_mod, "atomic_write_json_async", _fail_corrections_write)
+    payload = [
+        {"index": 0, "action": "keep_new"},
+        {"index": 1, "action": "keep_new"},
+    ]
+    with patch("utils.llm_client.create_chat_llm", return_value=_make_llm_mock(payload)):
+        with pytest.raises(OSError, match="disk failure"):
+            await pm.resolve_corrections("小天")
+
+    monkeypatch.setattr(corrections_mod, "atomic_write_json_async", real_write)
+    with patch("utils.llm_client.create_chat_llm", return_value=_make_llm_mock(payload)):
+        resolved = await pm.resolve_corrections("小天")
+
+    assert resolved == 2
+    assert await pm.aload_pending_corrections("小天") == []
+    facts = pm._get_section_facts(await pm.aensure_persona("小天"), "master")
+    assert [e["text"] for e in facts] == ["C"]
+    survivor = facts[0]
+    assert cid1 in (survivor.get("applied_correction_ids") or [])
+    assert cid2 in (survivor.get("applied_correction_ids") or [])
+    assert survivor["applied_correction_id"] == cid2
