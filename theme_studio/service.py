@@ -1562,6 +1562,10 @@ class ThemeStudioService(NekoPluginBase):
         self._schedule_stop_event = threading.Event()
         self._schedule_thread: threading.Thread | None = None
         self._schedule_last_result: dict[str, Any] = {}
+        # Optional gate set by the owner (theme_studio.get_service): returns False
+        # once the app is exiting, so a startup still in progress cannot start the
+        # schedule thread after shutdown already ran.
+        self.schedule_allowed: Any = None
 
     # ------------------------------------------------------------- internal helpers
 
@@ -3193,6 +3197,11 @@ class ThemeStudioService(NekoPluginBase):
     def _start_schedule_worker(self) -> None:
         """Start the schedule thread (idempotent; restartable after shutdown)."""
         with self._schedule_lock:
+            # Checked under the same lock _stop_schedule_worker takes, so start and
+            # stop cannot interleave around the exit flag.
+            gate = self.schedule_allowed
+            if callable(gate) and not gate():
+                return
             previous = self._schedule_thread
             if previous is not None and previous.is_alive():
                 if not self._schedule_stop_event.is_set():
@@ -3852,6 +3861,7 @@ class ThemeStudioService(NekoPluginBase):
             "themes": [],
         }
         images = set()
+        missing_images: set = set()
 
         def portable(value):
             filename = self._image_filename_in_value(value)
@@ -3870,6 +3880,18 @@ class ThemeStudioService(NekoPluginBase):
                 }
                 images.update(item[1] for item in self._image_refs(record["vars"]))
                 images.update(item[1] for item in self._image_refs(record["dark_vars"]))
+                # _image_refs() only returns files that exist; a theme can still
+                # reference a background deleted earlier. That image is missing from
+                # the backup as well, so report it like a write failure.
+                for mapping in (record["vars"], record["dark_vars"]):
+                    for value in (mapping or {}).values():
+                        name = self._image_filename_in_value(value)
+                        if (
+                            name
+                            and RE_BG_NAME.match(name)
+                            and not (self._backgrounds_dir() / name).is_file()
+                        ):
+                            missing_images.add(name)
                 doc = {
                     "schema": SCHEMA_VERSION,
                     "id": record["id"],
@@ -3912,6 +3934,9 @@ class ThemeStudioService(NekoPluginBase):
                     self._log("warning", f"备份图片失败（已跳过）{filename}：{exc}")
                     if skipped_images is not None:
                         skipped_images.append(filename)
+            if skipped_images is not None:
+                for filename in sorted(missing_images - set(skipped_images)):
+                    skipped_images.append(filename)
             archive.writestr(
                 "manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2)
             )

@@ -436,6 +436,21 @@ def test_requests_during_app_exit_do_not_restart_the_schedule_thread(studio):
 
 
 @pytest.mark.unit
+def test_startup_racing_with_exit_cannot_start_the_schedule_thread(tmp_path, monkeypatch):
+    """A startup still running when the exit hook gave up waiting for the lock."""
+    monkeypatch.setattr(theme_studio, "_service", None)
+    monkeypatch.setattr(theme_studio, "_service_started", False)
+    monkeypatch.setattr(theme_studio, "_app_exiting", False)
+    monkeypatch.setattr(theme_studio, "_data_dir_override", tmp_path / "data")
+    service = theme_studio.get_service()
+
+    monkeypatch.setattr(theme_studio, "_app_exiting", True)
+    # This is the step startup_sync() would reach after shutdown already ran.
+    service._start_schedule_worker()
+    assert service._schedule_thread is None
+
+
+@pytest.mark.unit
 def test_main_server_shutdown_hook_calls_theme_studio():
     import inspect
 
@@ -492,6 +507,22 @@ def test_library_backup_reports_images_it_could_not_pack(studio, monkeypatch):
         return real_write(self, path, arcname, *args, **kwargs)
 
     monkeypatch.setattr(zipfile.ZipFile, "write", locked)
+    result = theme_studio.run_entry_sync("export_to_file", {"kind": "library"})
+    assert result.ok, result.error
+    assert result.value["skipped_images"] == 1
+
+
+@pytest.mark.unit
+def test_library_backup_reports_backgrounds_deleted_before_the_backup(studio):
+    gif = base64.b64decode("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==")
+    filename = studio._save_background_bytes(gif)
+    studio._save_library_item(
+        name="with-image",
+        vars_map={"--nts-chat-bg-image": f'url("{studio._background_url(filename)}")'},
+        dark_map={},
+    )
+    (studio._backgrounds_dir() / filename).unlink()
+
     result = theme_studio.run_entry_sync("export_to_file", {"kind": "library"})
     assert result.ok, result.error
     assert result.value["skipped_images"] == 1

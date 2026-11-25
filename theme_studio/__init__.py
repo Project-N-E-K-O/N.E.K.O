@@ -95,6 +95,10 @@ def set_data_dir_override(path: Path | str | None) -> None:
     _data_dir_override = Path(path) if path else None
 
 
+def _schedule_allowed() -> bool:
+    return not _app_exiting
+
+
 def get_service() -> ThemeStudioService:
     """Return the process-wide service instance, constructing it on first use."""
     global _service
@@ -102,7 +106,11 @@ def get_service() -> ThemeStudioService:
         return _service
     with _service_lock:
         if _service is None:
-            _service = ThemeStudioService(data_dir=_data_dir_override)
+            service = ThemeStudioService(data_dir=_data_dir_override)
+            # The exit flag is read when the schedule thread is about to start, so
+            # a startup racing with the app-exit hook cannot bring it back.
+            service.schedule_allowed = _schedule_allowed
+            _service = service
         return _service
 
 
