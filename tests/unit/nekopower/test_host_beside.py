@@ -487,10 +487,11 @@ async def test_new_work_said_while_the_user_is_asked_is_not_taken_for_an_answer_
     unclear = read_answer("answer: the user agrees", [waiting])
     assert (unclear.kind, unclear.targets, unclear.choice) == ("answer", [two.commission_id], None)
     assert read_answer("the user does not agree to that", [waiting]).choice == "deny"
-    # Any other request for approval is read as it was: a word shared with what it asks makes a sentence its answer.
+    # Any other request for approval (save the leader's, ``test_host_decision.py``) is read as it was: a word
+    # shared with what it asks makes a sentence its answer.
     asked = json.loads(waiting.pending_question)
     other = dataclasses.replace(
-        waiting, pending_question=json.dumps({**asked, "detail": {**asked["detail"], "tool": "hand_over"}})
+        waiting, pending_question=json.dumps({**asked, "detail": {**asked["detail"], "tool": "write"}})
     )
     assert read_answer("fix the login page too", [other]).kind == "answer"
 
