@@ -131,6 +131,8 @@ describe('what is asked of opening another beside a busy one', () => {
     const ask = beside({ detail: { tool: 'beside', title: 'Write the newsletter', tree: false } })
     expect(askFacts(ask, t, te).map(fact => fact.name)).toEqual(['title'])
     expect(besideHint(ask, t, te)).toContain(words.ask.beside.busyOne)
+    const nameless = askFacts(beside({ detail: { tool: 'beside', title: 'Write the newsletter', at_hand: 'Restock the shelves' } }), t, te)
+    expect(nameless.find(fact => fact.name === 'at_hand')?.label).toBe(words.ask.beside.atHand.replace('{name}', words.ask.beside.busyOne))
   })
 
   it('leaves every other question as it was', () => {
@@ -196,6 +198,8 @@ describe('the question in the colony', () => {
     expect(ghost?.textContent).toContain(words.colony.besideBubble)
     expect(ghost?.getAttribute('aria-label')).toBe(words.colony.unbornLabel.replace('{name}', 'Shop/general-2'))
     expect(byTest('board-tally')?.textContent).toContain(words.home.waiting.replace('{count}', '1'))
+    // Beside the busy one, as one it started would stand: that one keeps the middle of its territory.
+    expect([cat('shop')?.style.left, cat('shop')?.style.top]).toEqual(['50%', '52%'])
   })
 
   it('is answered with a button from the one not there yet, which is no familiar to open', async () => {
@@ -209,6 +213,8 @@ describe('the question in the colony', () => {
     expect(push).not.toHaveBeenCalled()
     expect(document.querySelector('[data-fact="at_hand"]')?.textContent).toContain('Restock the shelves')
     expect(document.querySelector('.el-dialog__title')?.textContent).toBe(words.colony.besideTitle)
+    // What came is said among the facts, not once more above the question.
+    expect(byTest('colony-ask-title')).toBeNull()
     api.listCommissions.mockResolvedValue(asked([]))
     await click(choice('once'))
     expect(api.answerCommission).toHaveBeenCalledWith('c9', { choice: 'once', text: undefined, question_id: 'q9' })
@@ -222,32 +228,39 @@ describe('the question in the colony', () => {
     api.answerCommission.mockRejectedValue(refusal('not_taken'))
     await mount(FamiliarColony)
     await click(document.querySelector('[data-beside="c9"] button'))
+    expect(byTest('colony-ask-title')).toBeNull()
     await click(choice('deny'))
     expect(api.answerCommission).toHaveBeenCalledWith('c9', { choice: 'deny', text: undefined, question_id: 'q9' })
     expect(byTest('colony-ask-error')?.textContent).toContain(words.errors.not_taken)
   })
 
-  it('goes once it is taken back, and is not looked for while nothing can be asked', async () => {
+  it('goes once it is taken back', async () => {
     vi.useFakeTimers()
     await mount(FamiliarColony)
     await click(cat('beside:c9'))
     expect(document.querySelector('[data-fact]')).toBeTruthy()
-    // The busy one came free: what was asked is taken back.
+    // Read again a while later: what was asked was taken back meanwhile.
     api.listCommissions.mockResolvedValue(asked([]))
     await vi.advanceTimersByTimeAsync(BESIDE_POLL_MS + 100)
     await flush()
     expect(cat('beside:c9')).toBeNull()
     expect(document.querySelector('[data-fact]')).toBeNull()
-    // Nobody is at anything any more: it is not looked for, and what was shown goes at once.
-    api.listCommissions.mockResolvedValue(asked())
+  })
+
+  it('goes at once when nobody is at anything any more, and is not looked for then', async () => {
+    vi.useFakeTimers()
+    await mount(FamiliarColony)
+    expect(cat('beside:c9')).toBeTruthy()
+    // The busy one came free, before the commissions are read again: none can be asked of any more.
     api.getBoard.mockResolvedValue(board([card({ state: 'idle', commission: null })], 'r2'))
     await vi.advanceTimersByTimeAsync(2100)
     await flush()
+    expect(cat('beside:c9')).toBeNull()
+    expect(document.querySelector('[data-beside]')).toBeNull()
     const calls = api.listCommissions.mock.calls.length
     await vi.advanceTimersByTimeAsync(BESIDE_POLL_MS * 3)
     await flush()
     expect(api.listCommissions.mock.calls.length).toBe(calls)
-    expect(cat('beside:c9')).toBeNull()
   })
 
   it('is not looked for in a project with a leader', async () => {
@@ -266,6 +279,15 @@ describe('the question in the colony', () => {
 })
 
 describe('the question on the board', () => {
+  it('is not drawn among the loose ones, whatever its project is called', async () => {
+    const both = board()
+    both.loose = [card({ id: 'odd', name: 'Sort the photos', kind: 'single', state: 'idle', commission: null })]
+    api.getBoard.mockResolvedValue(both)
+    api.listCommissions.mockResolvedValue(asked([row({ project: words.home.loose, ask: beside({ detail: { ...beside().detail, beside_session: 'gone' } }) })]))
+    await mount(FamiliarBoard)
+    expect(document.querySelector('[data-hive="loose"] [data-testid="beside-ask"]')).toBeNull()
+  })
+
   it('stands under the busy one, answered with a button', async () => {
     api.answerCommission.mockResolvedValue({ success: true })
     await mount(FamiliarBoard)

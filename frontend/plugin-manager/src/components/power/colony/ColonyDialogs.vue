@@ -1,6 +1,6 @@
 <template>
   <el-dialog :model-value="Boolean(asking)" :title="asking?.name" width="600px" @update:model-value="(open: boolean) => { if (!open) emit('closeAsk') }">
-    <p v-if="asking?.title" class="muted">{{ asking.title }}</p>
+    <p v-if="asking?.title" class="muted" data-testid="colony-ask-title">{{ asking.title }}</p>
     <AskBox v-if="asking?.ask" :ask="asking.ask" :busy="busy" @answer="emit('answer', $event)" />
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon data-testid="colony-ask-error" />
   </el-dialog>

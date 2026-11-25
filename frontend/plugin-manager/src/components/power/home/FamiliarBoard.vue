@@ -95,8 +95,7 @@ const tally = computed(() => {
 
 /** What is asked of opening another beside the one named; with none named, beside one that is not on the board. */
 function besidesOf(hive: Hive, sessionId: string | null): Beside[] {
-  if (hive.loose) return []
-  return besides.value.filter(item => item.project === hive.name
+  return besides.value.filter(item => hive.key === `project:${item.project}`
     && (sessionId === null ? !hive.members.some(card => card.id === item.beside) : item.beside === sessionId))
 }
 const busyOf = (item: Beside) => (answering.value?.id === item.id ? answering.value.what : '')
