@@ -340,7 +340,6 @@ async def _invoke_llm_once(
         model=cfg.model,
         base_url=cfg.base_url,
         api_key=cfg.api_key,
-        temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
         timeout=cfg.timeout or 60.0,
         max_retries=1,

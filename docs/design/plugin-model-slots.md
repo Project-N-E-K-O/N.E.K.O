@@ -55,9 +55,12 @@ The version-1 document contains `slots` keyed by host-generated stable IDs,
 which default-slot seeding generation has been applied. Each binding points to one slot ID.
 A slot contains `name`, `source`, `protocol` (`openai_chat` or `anthropic_messages`),
 `base_url`, `model`, `api_key`, `capabilities`, `defaults`, `timeout_seconds`, and
-an optional `fallback_slot_id`. Defaults validate temperature against the selected protocol (0–1 for Anthropic,
-0–2 for OpenAI Chat), including on protocol changes. Defaults currently accept `temperature` and
-`max_output_tokens` (1–1,000,000, matching the request limit). These fields
+an optional `fallback_slot_id`. Defaults hold only `max_output_tokens`
+(1–1,000,000, matching the request limit). There is no default temperature: plugin
+model requests carry none (`scripts/check_no_temperature.py`).
+A `temperature` in a saved document or a save request from an older plugin
+manager is dropped with a warning instead of failing validation, and the next
+save removes it from the document. These fields
 configure subsequent execution; saving does not make a model request or prove
 provider capabilities.
 
@@ -101,14 +104,8 @@ Messages protocol are sent unadapted.
 
 An unconfigured main-app tier returns `host_api_not_configured` (409); a
 followed tier whose address is not HTTP(S) returns `host_api_unsupported`
-(409) rather than silently substituting another tier. A host-follow slot's default temperature is
-limited to the protocol intersection (0–1) at save time, because the main app
-may resolve to Anthropic at any moment; the editor enforces the same limit.
-Temperature compatibility is judged on the effective request value: an
-explicit valid override works even when a legacy document carries a higher
-default, and only a request that actually exceeds the resolved protocol's
-range fails with `model_defaults_incompatible` (400) before any upstream
-request. Slot views include a read-only `host_status` summary (configured
+(409) rather than silently substituting another tier. A temperature in the
+followed tier's provider settings is never merged into the request. Slot views include a read-only `host_status` summary (configured
 flag, resolved model, protocol, free-tier flag, or an error code with an
 actionable message) that never contains credentials. Connection tests resolve
 host-follow slots the same way.
@@ -264,7 +261,10 @@ subsequent tool round. Images are not downloaded, resized or converted to text.
 The accepted request fields are `model`, `messages`, `stream`, `stream_options`
 (`include_usage`), `tools`, `tool_choice`, `parallel_tool_calls`, `max_tokens`,
 `max_completion_tokens`, `temperature`, `top_p`, `stop`, `n` (only 1), and
-`response_format`. Explicit request values override slot defaults. An omitted
+`response_format`. A `temperature` is accepted whatever its value so plugins
+written for the earlier gateway keep working, then dropped before the request
+is sent; the gateway logs a warning once per plugin usage per process, and the
+provider default applies. Explicit request values override slot defaults. An omitted
 output budget defaults to 1024 tokens. Unknown fields, unsupported modalities,
 unmatched tool results and missing declared slot capabilities are rejected.
 
@@ -273,7 +273,7 @@ response/chunk extensions without claiming that they work across providers.
 The Anthropic adapter converts to native Messages and maps text, tool calls,
 finish reasons and usage back. Anthropic-specific reasoning and citations are
 not exposed. Message names, non-auto image detail, strict function schemas,
-non-text `response_format` and temperature above 1 have no supported mapping and
+and non-text `response_format` have no supported mapping and
 are explicitly rejected for that backend. OpenAI JSON output is passed through
 only when the selected upstream model supports it.
 

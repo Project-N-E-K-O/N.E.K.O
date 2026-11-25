@@ -43,7 +43,7 @@ description: NekoPower（喵能力，`nekopower/`）的不变式、跨进程契�
    - 给 task agent 加工具，默认按「用到才加载」做，固定开销先量。
 9. **发给模型的提示词**：
    - 发给免费档的提示词必须带水印，否则请求被拒。`prompts_nekopower_brain.py` 的提示词表有测试守着（`test_host_decision.py`），新加一张表要登记进那条测试。
-   - 不传 `temperature`（`scripts/check_no_temperature.py` 管着 `nekopower/`）。
+   - 不传 `temperature`（`scripts/check_no_temperature.py` 扫全仓库，`nekopower/` 在内）。
    - task agent 的系统提示和自带工具定义照抄 dsh 的英文原文，不翻译。改动要更新快照：`NEKOPOWER_UPDATE_SNAPSHOTS=1` 跑 `tests/unit/nekopower/test_prompt_snapshot.py`，再看 `snapshots/` 的 diff。
    - 界面上不出现 skill / 技能书。「给 task agent 一个 skill」在实现里就是按组加载的说明加工具定义，不做通用的技能加载机制。
 10. **键鼠和浏览器在 task agent 自己的循环里**：两组细粒度工具加各自的说明，经能力网关给出。没有里层循环，没有哪个工具自己调模型。实现留在 agent 进程（`nekopower/builtin/`），不进运行时子进程。浏览器直接走调试协议，不依赖 browser-use、Playwright。

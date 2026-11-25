@@ -83,16 +83,15 @@ function renderGroupCard(groupKey, current, providers, keysStatus) {
 
   // 本地 draft — 初始化为 current 的浅拷贝.
   // 注意: current 里的 api_key 是 masked (只告诉我们"有没有"); 编辑时需要用户重新输入或维持空字符串.
-  // temperature/max_tokens: null = "不发送此字段给模型端, 由模型自决"; 对
-  // o1/o3/gpt-5-thinking/Claude extended-thinking 这种拒绝 temperature 的
-  // 端点是**必须**的. 后端 `_params` 只在非 None 时才把它写进请求体.
+  // max_tokens: null = "不发送此字段给模型端, 由模型自决". 后端 `_params`
+  // 只在非 None 时才把它写进请求体. 没有 temperature: testbench 不设
+  // (scripts/check_no_temperature.py), 由模型端用自己的默认值.
   const draft = {
     provider: current.provider ?? null,
     base_url: current.base_url ?? '',
     api_key: '',                          // 永远从空白开始, 避免把 masked 值当明文回写
     api_key_was_configured: !!current.api_key_configured,
     model: current.model ?? '',
-    temperature: current.temperature ?? null,
     max_tokens: current.max_tokens ?? null,
     timeout: current.timeout ?? 60,
   };
@@ -117,9 +116,8 @@ function renderGroupCard(groupKey, current, providers, keysStatus) {
   const presetRow = el('div', { className: 'row' }, providerSel, applyBtn);
 
   // 各字段 input.
-  // temperature / max_tokens / timeout 三者都接受"空字符串 = null = 不发送",
-  // 这样用户可以显式关掉 temperature (o1/gpt-5-thinking 必需) 或让模型自定
-  // max_tokens. 空值必须存成 `null`, **不是** 0 / 1.0 回填默认 — 否则又变成
+  // max_tokens / timeout 都接受"空字符串 = null = 不发送", 让模型自定
+  // max_tokens. 空值必须存成 `null`, **不是** 0 回填默认 — 否则又变成
   // "强制发送" 的旧行为.
   const inputs = {
     base_url:    el('input', { type: 'text', value: draft.base_url,
@@ -131,15 +129,6 @@ function renderGroupCard(groupKey, current, providers, keysStatus) {
     model:       el('input', { type: 'text', value: draft.model,
                                placeholder: i18n('settings.models.placeholder.model'),
                                onInput: (ev) => { draft.model = ev.target.value; } }),
-    temperature: el('input', { type: 'number', step: '0.1', min: '0', max: '2',
-                               value: draft.temperature ?? '',
-                               placeholder: i18n('settings.models.placeholder.temperature'),
-                               onInput: (ev) => {
-                                 const raw = ev.target.value.trim();
-                                 if (!raw) { draft.temperature = null; return; }
-                                 const v = parseFloat(raw);
-                                 draft.temperature = Number.isFinite(v) ? v : null;
-                               } }),
     max_tokens:  el('input', { type: 'number', step: '1', min: '1',
                                value: draft.max_tokens ?? '',
                                placeholder: i18n('settings.models.placeholder.max_tokens'),
@@ -166,8 +155,6 @@ function renderGroupCard(groupKey, current, providers, keysStatus) {
     field(i18n('settings.models.fields.model'),    inputs.model,     { wide: true }),
     field(i18n('settings.models.fields.api_key'),  inputs.api_key,
           { wide: true, hint: describeApiKeyState(draft, providers, keysStatus) }),
-    field(i18n('settings.models.fields.temperature'), inputs.temperature,
-          { hint: i18n('settings.models.hint.temperature') }),
     field(i18n('settings.models.fields.max_tokens'),  inputs.max_tokens,
           { hint: i18n('settings.models.hint.max_tokens') }),
     field(i18n('settings.models.fields.timeout'),     inputs.timeout,
@@ -265,14 +252,13 @@ function describeApiKeyState(draft, providers, keysStatus) {
 async function onSave(groupKey, draft, statusLine) {
   // 若用户没填 api_key 但之前后端已记录, 保留 (不发送 api_key 字段, 后端按
   // exclude_unset 合并); 否则发送空字符串.
-  // temperature / max_tokens / timeout 三者 **显式发送 null**: 代表"用户明确
+  // max_tokens / timeout 两者 **显式发送 null**: 代表"用户明确
   // 选择不设此参数". exclude_unset 在 PUT 上保留旧值的语义只适用于"完全不
-  // 发送"的字段 — 要把 1.0 改回 null 必须显式发 null.
+  // 发送"的字段 — 要把旧值改回 null 必须显式发 null.
   const body = {
     provider: draft.provider,
     base_url: draft.base_url,
     model: draft.model,
-    temperature: draft.temperature,
     max_tokens: draft.max_tokens,
     timeout: draft.timeout,
   };

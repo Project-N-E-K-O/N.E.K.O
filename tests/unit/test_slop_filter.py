@@ -343,7 +343,6 @@ def _bare_chat_openai(model="m", base_url="https://example.test"):
     obj = ChatOpenAI.__new__(ChatOpenAI)
     obj.model = model
     obj.base_url = base_url
-    obj.temperature = None
     obj.max_completion_tokens = None
     obj.max_tokens = None
     obj.extra_body = {}
@@ -391,7 +390,6 @@ def _bare_chat_anthropic():
     obj = ChatAnthropic.__new__(ChatAnthropic)
     obj.model = "m"
     obj._max_tokens = 128
-    obj.temperature = None
     obj.extra_body = {}
     obj.tools = None
     obj.tool_choice = None
