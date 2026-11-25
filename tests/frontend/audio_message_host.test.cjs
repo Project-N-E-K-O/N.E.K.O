@@ -21,16 +21,20 @@ const glue = section(
 );
 
 function harness({ responses = [], sendResult = true, target = 'Neko' } = {}) {
-  const calls = { fetch: [], sent: [], toasts: [], targets: [], keepDraft: [], handlers: [], intervals: [], refreshedToken: 0 };
+  const calls = { fetch: [], sent: [], toasts: [], targets: [], keepDraft: [], stopCapture: [], handlers: [], intervals: [], refreshedToken: 0 };
   const queue = responses.slice();
   const host = {
     setOnComposerAudioMessage(handler) { calls.handlers.push(handler); },
     draftOpen: false,
+    capturing: false, // the open draft is still recording from the microphone
     // Mirrors the chat-window host: hiding is refused while a draft is open
-    // and the caller asked to keep it.
+    // and the caller asked to keep it, except that stopCapture ends a draft
+    // that is still recording.
     setAudioMessageTarget(value, options) {
       calls.keepDraft.push(!!(options && options.keepDraft));
-      if (!value && options && options.keepDraft && host.draftOpen) return false;
+      calls.stopCapture.push(!!(options && options.stopCapture));
+      if (!value && options && (options.keepDraft || options.stopCapture) && host.draftOpen
+          && !(options.stopCapture && host.capturing)) return false;
       calls.targets.push(value);
       return true;
     },
@@ -239,9 +243,10 @@ test('realtime voice withdraws the microphone, stops a recording in progress, an
   assert.deepEqual(calls.targets, ['Neko']);
 
   host.draftOpen = true; // a voice message is being recorded
+  host.capturing = true;
   window.appState.isRecording = true; // realtime voice starts (mobile keeps the composer visible)
   calls.intervals[0]();
-  assert.equal(calls.keepDraft.at(-1), false, 'the second microphone capture must stop');
+  assert.equal(calls.stopCapture.at(-1), true, 'the second microphone capture must stop');
   assert.deepEqual(calls.targets, ['Neko', '']);
   calls.intervals[0](); // nothing changes while realtime voice stays on
   assert.deepEqual(calls.targets, ['Neko', '']);
@@ -434,4 +439,64 @@ test('the deferral branch hands voice messages a promise of the real result', ()
   );
   assert.match(branch, /return new Promise\(function \(resolve\) \{\s*queueDeferredTextSubmission\(text, deferredOptions, resolve\);/);
   assert.match(glue, /awaitDeferredSend: true/);
+});
+
+test('realtime voice keeps a recording that is already being sent until its request settles', async () => {
+  const context = harness({ responses: [{ status: 200, body: { supported: true } }] });
+  const { api, calls, host, window } = context;
+  window.appState = { isRecording: false };
+  api.bindAudioMessageHost(host);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  host.draftOpen = true; // recorded and now sending (no microphone in use)
+  host.capturing = false;
+  window.appState.isRecording = true;
+  calls.intervals[0]();
+  assert.deepEqual(calls.targets, ['Neko'], 'a sending recording is not cancelled');
+  assert.equal(calls.stopCapture.at(-1), true);
+  calls.intervals[0](); // still sending: still kept
+  assert.deepEqual(calls.targets, ['Neko']);
+
+  host.draftOpen = false; // the send settled (sent, or cancelled after a failure)
+  calls.intervals[0]();
+  assert.deepEqual(calls.targets, ['Neko', '']);
+});
+
+test('chat-window host: only a capturing draft is stopped for realtime voice', () => {
+  const api = fs.readFileSync(
+    path.join(__dirname, '../../static/app/app-react-chat-window/resize-drag-and-api.js'), 'utf8');
+  const start = api.indexOf('        setAudioMessageTarget: function (target, options) {');
+  const setter = api.slice(start, api.indexOf('\n        },', start) + 11);
+  const run = (state, target, options, active) => {
+    const I = { state: Object.assign({ audioMessageTarget: 'Neko', deferredAudioMessageTarget: null }, state),
+      isAudioMessageActive: () => active, renderWindow() {} };
+    const sandbox = { I };
+    vm.runInNewContext(`this.setter = { ${setter.trim().replace(/,$/, '')} }.setAudioMessageTarget;`, sandbox);
+    return { applied: sandbox.setter(target, options), I };
+  };
+  assert.equal(run({ audioMessagePhase: 'recording' }, '', { stopCapture: true }, true).applied, true);
+  const sending = run({ audioMessagePhase: 'sending' }, '', { stopCapture: true }, true);
+  assert.equal(sending.applied, false);
+  assert.equal(sending.I.state.deferredAudioMessageTarget, '');
+  assert.equal(run({ audioMessagePhase: 'preview' }, '', { keepDraft: true }, true).applied, false);
+  assert.equal(run({ audioMessagePhase: 'idle' }, '', { stopCapture: true }, false).applied, true);
+  assert.equal(run({ audioMessagePhase: 'preview' }, '', {}, true).applied, true, 'a character switch clears at once');
+});
+
+test('chat-window host: a deferred hide applies the moment the draft ends', () => {
+  const handlers = fs.readFileSync(
+    path.join(__dirname, '../../static/app/app-react-chat-window/message-bundle-actions-and-prompts.js'), 'utf8');
+  let renders = 0;
+  const sandbox = { I: { state: { audioMessageActive: true, audioMessageTarget: 'Neko', deferredAudioMessageTarget: '' },
+    renderWindow() { renders += 1; } } };
+  vm.runInNewContext(
+    handlers.slice(handlers.indexOf('    I.handleAudioMessageActiveChange = '), handlers.indexOf('    I.handleComposerScreenshot = ')),
+    sandbox,
+  );
+  sandbox.I.handleAudioMessageActiveChange(true, 'sending');
+  assert.equal(sandbox.I.state.audioMessageTarget, 'Neko');
+  sandbox.I.handleAudioMessageActiveChange(false, 'idle');
+  assert.equal(sandbox.I.state.audioMessageTarget, '');
+  assert.equal(sandbox.I.state.deferredAudioMessageTarget, null);
+  assert.equal(renders, 1);
 });

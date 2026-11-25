@@ -911,8 +911,8 @@ export default function ChatWindowRoot(props: ChatWindowProps) {
   // has unmounted the control, so it reports activity from the root hook.
   const onAudioMessageActiveChange = props.onAudioMessageActiveChange;
   useEffect(() => {
-    onAudioMessageActiveChange?.(audioComposer.active);
-  }, [audioComposer.active, onAudioMessageActiveChange]);
+    onAudioMessageActiveChange?.(audioComposer.active, audioComposer.phase);
+  }, [audioComposer.active, audioComposer.phase, onAudioMessageActiveChange]);
   useReplyTailPresentation(
     props.messages || [], false, undefined, false, '', '', true,
     props.chatSurfaceMode === 'full',
