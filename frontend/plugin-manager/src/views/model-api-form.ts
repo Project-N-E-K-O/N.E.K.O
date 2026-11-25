@@ -11,7 +11,6 @@ export interface ModelSlotForm {
   initial_api_key: string
   api_key: string
   capabilities: ModelCapability[]
-  temperature: number | undefined
   max_output_tokens: number | undefined
   timeout_seconds: number
   fallback_slot_id: string
@@ -29,7 +28,6 @@ export function modelSlotForm(slot?: ModelSlot): ModelSlotForm {
     initial_api_key: slot?.api_key ? slot.api_key_preview || '******' : '',
     api_key: slot?.api_key ? slot.api_key_preview || '******' : '',
     capabilities: [...(slot?.capabilities ?? ['text'])],
-    temperature: slot?.defaults.temperature ?? undefined,
     max_output_tokens: slot?.defaults.max_output_tokens ?? undefined,
     timeout_seconds: slot?.timeout_seconds ?? 60,
     fallback_slot_id: slot?.fallback_slot_id ?? '',
@@ -46,21 +44,13 @@ export function needsModelKeyUpdate(form: ModelSlotForm, slot: ModelSlot | null)
     && (form.protocol !== slot.protocol || endpoint(form.base_url) !== endpoint(slot.base_url)))
 }
 
-// A host-follow slot executes with the main app's resolved protocol, which may
-// change to Anthropic at any time; only the intersection of both protocols'
-// ranges (≤1) is safe to save. The server enforces the same limit.
-export function temperatureLimit(form: ModelSlotForm, _slot: ModelSlot | null): number {
-  if (form.source === 'host_follow') return 1
-  return form.protocol === 'anthropic_messages' ? 1 : 2
-}
-
 export function modelSlotPayload(form: ModelSlotForm): ModelSlotInput {
   const payload: ModelSlotInput = {
     name: form.name.trim(), source: form.source,
     host_api: form.source === 'host_follow' ? form.host_api : null,
     protocol: form.protocol, base_url: form.base_url.trim(), model: form.model.trim(),
     capabilities: [...new Set<ModelCapability>(['text', ...form.capabilities])],
-    defaults: { temperature: form.temperature ?? null, max_output_tokens: form.max_output_tokens ?? null },
+    defaults: { max_output_tokens: form.max_output_tokens ?? null },
     timeout_seconds: form.timeout_seconds,
     fallback_slot_id: form.fallback_slot_id || null,
   }

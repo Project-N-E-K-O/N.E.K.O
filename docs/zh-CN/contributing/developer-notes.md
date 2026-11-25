@@ -51,7 +51,7 @@ Provider、backend 和 feature 实现应结构成对。拆分、重命名、配�
 - 异步处理器中不得直接执行阻塞工作。
 - 启动期间的同步配置写入，如果也用于异步路径，应提供对应的异步 `a*` 接口。
 - 主包层级和 `main_logic/core/` facade 契约由 CI 检查。
-- 受限的 LLM 构造/调用点不得传入 `temperature=`；同时关注输出、超时和输入预算。
+- 仓库内代码不给模型设置 `temperature`，例外（如实时语音会话）在 `scripts/check_no_temperature.py` 里逐条写明理由（CI 扫全仓库）；同时关注输出、超时和输入预算。
 
 ## 记忆系统
 

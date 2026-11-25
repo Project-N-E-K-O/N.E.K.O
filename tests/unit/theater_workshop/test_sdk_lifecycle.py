@@ -719,7 +719,7 @@ def test_model_configuration_is_explicit_and_request_budget_has_no_hidden_retry(
         return Client()
     monkeypatch.setattr(llm_client, "create_chat_llm", create)
     options = dict(max_tokens=16000, max_retries=1, response_format={"type":"json_object"},
-                   thinking={"type":"disabled"}, operation="numeric_v2_mainline_generation", temperature=.35)
+                   thinking={"type":"disabled"}, operation="numeric_v2_mainline_generation")
     with pytest.raises(WorkshopError, match="workshop_model_required"):
         NekoWorkshopModel({})([], **options)
     with pytest.raises(WorkshopError, match="workshop_model_endpoint_required"):

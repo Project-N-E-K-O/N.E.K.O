@@ -972,15 +972,33 @@ async def test_host_follow_adaptation_never_overrides_request_fields(monkeypatch
 
     monkeypatch.setattr(
         providers, "get_agent_extra_body",
-        lambda model, base_url=None: {"enable_thinking": False, "temperature": 2, "model": "other"},
+        lambda model, base_url=None: {"enable_thinking": False, "top_p": 0.1, "model": "other"},
     )
     gateway, sent = capture_gateway()
-    await gateway.complete(host_follow_slot("qwen3.8-flash", DASHSCOPE), request_body(temperature=0.3))
+    await gateway.complete(host_follow_slot("qwen3.8-flash", DASHSCOPE), request_body(top_p=0.8))
     body, _ = sent[0]
     assert body["enable_thinking"] is False
     # Explicit plugin parameters and the resolved model are never replaced.
-    assert body["temperature"] == 0.3
+    assert body["top_p"] == 0.8
     assert body["model"] == "qwen3.8-flash"
+
+
+@pytest.mark.parametrize("sent_by_plugin", [False, True])
+async def test_host_follow_never_sends_a_temperature(monkeypatch, sent_by_plugin):
+    # Neither the plugin's value (dropped at request preparation) nor one in
+    # provider settings (never merged) reaches the upstream body.
+    import config.providers as providers
+
+    monkeypatch.setattr(
+        providers, "get_agent_extra_body",
+        lambda model, base_url=None: {"enable_thinking": False, "temperature": 2},
+    )
+    gateway, sent = capture_gateway()
+    request = request_body(temperature=0.3) if sent_by_plugin else request_body()
+    await gateway.complete(host_follow_slot("qwen3.8-flash", DASHSCOPE), request)
+    body, _ = sent[0]
+    assert body["enable_thinking"] is False
+    assert "temperature" not in body
 
 
 async def test_host_follow_never_injects_provider_tools():

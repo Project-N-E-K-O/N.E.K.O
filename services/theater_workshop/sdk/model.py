@@ -61,6 +61,10 @@ class ModelAgent(JSONResponseParser):
             raise RuntimeError("workshop_model_required")
         # The host performs exactly the requested number of attempts. There is
         # no second retry loop in this adapter or in the generator.
+        # Generators written for SDK 0.1.0 may still pass a temperature. Model
+        # calls set none (scripts/check_no_temperature.py), so it is dropped
+        # here, like the main app's clients and the plugin gateway do.
+        options.pop("temperature", None)
         reply = self._model_call(messages, **options)
         content = reply.content if isinstance(reply, ModelReply) else reply
         if not isinstance(content, str):

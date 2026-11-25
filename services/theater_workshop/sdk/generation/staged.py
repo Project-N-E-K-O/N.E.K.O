@@ -489,7 +489,7 @@ def generate_staged(generator, *, title, setup, checkpoint=None, cast_names=None
 
             def send(messages):
                 return generator.call_llm(
-                    messages, temperature=0.25, max_tokens=max_tokens, max_retries=1,
+                    messages, max_tokens=max_tokens, max_retries=1,
                     response_format={"type": "json_object"}, thinking={"type": "disabled"}, operation=operation)
 
             if not earlier_entries:
