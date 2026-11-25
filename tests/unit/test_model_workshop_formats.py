@@ -1247,3 +1247,24 @@ def test_shared_morph_dependencies_are_checked_once_across_animations(tmp_path, 
     monkeypatch.setattr(formats, '_index', counted)
     validate_model_bundle(path)
     assert len(checked) == 51  # POSITION plus each of its 50 morphs, independent of channels.
+
+
+@pytest.mark.parametrize('indexed', [False, True])
+@pytest.mark.parametrize('mode,valid', [(4, True), (5, False), (6, False)])
+def test_instanced_draw_budget_uses_converted_triangle_indices(tmp_path, indexed, mode, valid):
+    def graph(data):
+        vrm_graph(data)
+        data['animations'] = []; data['skins'] = []; data['nodes'][0].pop('skin')
+        data['accessors'] = [{'componentType': 5126, 'type': 'VEC3', 'count': 50000},
+                             {'componentType': 5126, 'type': 'VEC3', 'count': 100},
+                             {'componentType': 5125, 'type': 'SCALAR', 'count': 50000}]
+        primitive = {'attributes': {'POSITION': 0}, 'mode': mode}
+        if indexed: primitive['indices'] = 2
+        data['meshes'] = [{'primitives': [primitive]}]
+        data['nodes'][0].update(mesh=0, extensions={'EXT_mesh_gpu_instancing': {'attributes': {'TRANSLATION': 1}}})
+        data['extensionsUsed'].append('EXT_mesh_gpu_instancing')
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
+    if valid:
+        assert validate_model_bundle(path).model_format == 'vrm'
+    else:
+        with pytest.raises(ModelFormatError, match='model_accessor_budget_exceeded'): validate_model_bundle(path)
