@@ -116,7 +116,8 @@
   //   1.6.45 材质规则放进 @layer nts-theme.materials，不再被调色板层的 !important 覆盖；
   //          修掉设置页材质段里提前闭合的注释。
   //   1.6.46 紧凑聊天（/chat）外层包裹在材质开启时保持透明，只有胶囊带材质。
-  var SCRIPT_VERSION = '1.6.46';
+  //   1.6.47 紧凑聊天外层透明规则不再覆盖 animation，收起 / 展开擦除动画恢复。
+  var SCRIPT_VERSION = '1.6.47';
 
   // 允许的颜色值形态。刻意保守：只放行纯颜色，杜绝把任意 CSS 注进变量。
   var RE_HEX = /^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
@@ -1628,7 +1629,8 @@
     '  border: 0 !important;',
     '  -webkit-backdrop-filter: none !important;',
     '  backdrop-filter: none !important;',
-    '  animation: none !important;',
+    // 不写 animation：.compact-chat-surface-shell 收起 / 展开时靠宿主的
+    // neko-compact-collapse-wipe / expand-wipe 动画，这里一碰就没了过渡。
     '}',
     '}'
   ].join('\n');
