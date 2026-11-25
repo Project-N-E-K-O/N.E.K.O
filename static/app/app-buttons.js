@@ -3797,6 +3797,12 @@
                             } catch (nameError) {
                                 console.warn('[Chat] preload user display name failed:', nameError);
                             }
+                            // 等用户名期间切换了角色（串门句会走到这里）：录音时角色的转写不再发出
+                            if (typeof options.expectedLanlanName === 'string' && options.expectedLanlanName
+                                    && !(window.lanlan_config && window.lanlan_config.lanlan_name === options.expectedLanlanName)) {
+                                updateReactOptimisticMessageStatus('failed');
+                                return false;
+                            }
                         }
 
                         var textMessage = {

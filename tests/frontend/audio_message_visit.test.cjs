@@ -160,6 +160,13 @@ test('the ordinary send path checks for a visit before the bubble and right befo
   assert.ok(first > 0 && first < bubble, 'checked before any bubble is drawn (queued submissions)');
   assert.ok(sessionWait < second && second < send, 'checked again after the text session wait');
   assert.ok(body.slice(second, send).includes('removeMessage(reactOptimisticMessageId)'));
+  // Visit lines are not React-window sends, so they still wait for the user
+  // name after the first character check: the check runs again after that wait.
+  const nameWait = body.indexOf('await window.appChat.ensureUserDisplayName();');
+  const textSend = body.indexOf('S.socket.send(JSON.stringify(textMessage));');
+  const recheck = body.slice(nameWait, textSend);
+  assert.ok(nameWait > send && textSend > nameWait);
+  assert.match(recheck, /window\.lanlan_config\.lanlan_name === options\.expectedLanlanName\)\)\s*\{\s*updateReactOptimisticMessageStatus\('failed'\);\s*return false;/);
   // The deferred queue settles awaiting callers with the send result itself.
   const flush = buttonsSource.slice(buttonsSource.indexOf('    function flushDeferredTextSubmissions() {'));
   assert.match(flush.slice(0, flush.indexOf('\n    }\n')), /settleDeferredSubmission\(submission, sent\)/);
