@@ -4226,7 +4226,8 @@ async function resetTheme() {
     state.cleared = { light: {}, dark: {} };
     markAllRowsValid();
     clearRgbMemory();
-    var reloaded = await reloadPalette({ silent: true });
+    // Wholesale replacement: name / enabled inputs follow the saved values too.
+    var reloaded = await reloadPalette({ silent: true, discardEdits: true });
     if (reloaded) {
       showNotice('ok', tsT('actions.reset.done', '已恢复默认主题。'));
     } else {
@@ -4340,7 +4341,8 @@ async function doImport() {
     state.cleared = { light: {}, dark: {} };
     markAllRowsValid();
     clearRgbMemory();
-    var reloaded = await reloadPalette({ silent: true });
+    // Wholesale replacement: name / enabled inputs follow the saved values too.
+    var reloaded = await reloadPalette({ silent: true, discardEdits: true });
     var readbackNote = reloaded ? '' :
       '\n' + tsT('actions.readbackFailedNote', '已写入，但回读失败，面板显示可能不是最新值，请点「重新读取」。');
     var rejected = result && result.rejected;
@@ -5209,11 +5211,12 @@ async function applyLibraryItem(item, button) {
   try {
     var result = await callPlugin('apply_saved_theme', { id: item.id });
     // Wholesale replacement: unapplied panel changes become invalid, so clear them before reading back.
+    // discardEdits also resets the name / enabled inputs to what the backend saved.
     state.edited = { light: {}, dark: {} };
     state.cleared = { light: {}, dark: {} };
     markAllRowsValid();
     clearRgbMemory();
-    var reloaded = await reloadPalette({ silent: true });
+    var reloaded = await reloadPalette({ silent: true, discardEdits: true });
     var label = (result && result.theme && result.theme.name)
       || (result && result.name) || item.name || tsT('library.apply.thisTheme', '该主题');
     // Materials follow the theme: say "materials switched too" when the theme ships them,

@@ -355,6 +355,34 @@ def test_reset_theme_refuses_when_theme_file_is_temporarily_unreadable(studio, m
 
 
 @pytest.mark.unit
+def test_stamp_update_skips_when_schedule_cannot_be_read(tmp_path, monkeypatch):
+    import json
+
+    studio = ts_service.ThemeStudioService(data_dir=tmp_path / "data")
+    studio._ensure_dirs()
+    path = studio.data_dir / "schedule.json"
+    original = {"schema": 2, "enabled": True, "zones": {"morning": "amber-dusk"}}
+    path.write_text(json.dumps(original), encoding="utf-8")
+
+    path_type = type(path)
+    real_read_text = path_type.read_text
+
+    def flaky(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError("in use")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(path_type, "read_text", flaky)
+    studio._update_schedule_stamp(last_zone="morning")
+    monkeypatch.setattr(path_type, "read_text", real_read_text)
+
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["enabled"] is True
+    assert saved["zones"]["morning"] == "amber-dusk"
+    assert "last_zone" not in saved
+
+
+@pytest.mark.unit
 def test_night_zone_occurrence_belongs_to_the_day_it_started():
     from datetime import datetime
 

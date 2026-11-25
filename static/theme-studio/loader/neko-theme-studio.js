@@ -175,7 +175,9 @@
   //          otherwise outrank: no animations while #chat-container is dragged,
   //          transparent mobile tool buttons during the expand guard, and the
   //          guide's borderless composer while it takes over.
-  var SCRIPT_VERSION = '1.6.49';
+  //   1.6.50 The upgrade-reload draft guard checks every composer (React and
+  //          legacy), not only the first match.
+  var SCRIPT_VERSION = '1.6.50';
 
   // Allowed colour value shapes. Deliberately conservative: only plain colours, so
   // arbitrary CSS can never be injected into a variable.
@@ -2417,10 +2419,17 @@
       // the reload and retry on the next heartbeat (throttled to 60s). Likewise
       // yield while a reply is streaming, so it is not interrupted.
       try {
-        var ta = document.querySelector('textarea.composer-input, #textInputBox');
-        if (ta && ta.value && String(ta.value).trim()) {
-          log('self-upgrade deferred: composer has draft text');
-          return;
+        // Check every composer: the templates put the (often empty) legacy
+        // #textInputBox before the React root, so querySelector alone would
+        // return it and miss a draft in the React composer.
+        var inputs = document.querySelectorAll('textarea.composer-input, .composer-input[contenteditable="true"], #textInputBox');
+        for (var ii = 0; ii < inputs.length; ii += 1) {
+          var box = inputs[ii];
+          var text = box.value != null ? box.value : box.textContent;
+          if (text && String(text).trim()) {
+            log('self-upgrade deferred: composer has draft text');
+            return;
+          }
         }
         if (document.querySelector('.message-block-status, [data-streaming="true"]')) {
           log('self-upgrade deferred: a reply is in flight');

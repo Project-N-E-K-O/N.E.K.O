@@ -2981,7 +2981,7 @@ class ThemeStudioService(NekoPluginBase):
             schedule["last_missing"] = last_missing
         return schedule, errors
 
-    def _read_schedule(self, *, drop_missing: bool = True) -> dict[str, Any]:
+    def _read_schedule(self, *, drop_missing: bool = True, strict: bool = False) -> dict[str, Any]:
         """Read schedule.json; missing / unreadable / bad JSON are all treated as "disabled".
 
         :param drop_missing: whether to drop zones referencing themes that no
@@ -2989,6 +2989,10 @@ class ThemeStudioService(NekoPluginBase):
             stale entries and prompt the user to re-pick); writing back runtime
             stamps must keep them, otherwise a single write-back permanently
             wipes the user's configuration.
+        :param strict: for read-modify-write paths. An existing file that cannot
+            be read or parsed raises instead of returning the disabled defaults,
+            which would otherwise be written back over the real configuration.
+            A missing file still yields the defaults.
         """
         path = self._schedule_path()
         try:
@@ -2996,11 +3000,15 @@ class ThemeStudioService(NekoPluginBase):
         except FileNotFoundError:
             return self._schedule_defaults()
         except OSError as exc:
+            if strict:
+                raise
             self._log("warning", f"读取 schedule.json 失败（{exc}），按未启用处理")
             return self._schedule_defaults()
         try:
             raw = json.loads(text)
         except ValueError as exc:
+            if strict:
+                raise
             self._log("warning", f"schedule.json 不是合法 JSON（{exc}），按未启用处理")
             return self._schedule_defaults()
         dropped: list[dict[str, Any]] = []
@@ -3036,7 +3044,10 @@ class ThemeStudioService(NekoPluginBase):
         try:
             with _WRITE_LOCK:
                 # Key point: do not drop zones "referencing a deleted theme" when fetching the baseline.
-                fresh = self._read_schedule(drop_missing=False)
+                # Strict: if the existing file cannot be read right now, skip this
+                # stamp update (the except below) rather than writing the disabled
+                # defaults plus stamps over the user's configuration.
+                fresh = self._read_schedule(drop_missing=False, strict=True)
                 for key, value in changes.items():
                     if value is None:
                         fresh.pop(key, None)
