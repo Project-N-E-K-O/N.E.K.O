@@ -153,7 +153,7 @@ async def test_permanent_update_with_profile_targets_profile_not_base_config(
 
     monkeypatch.setattr(module, "update_plugin_config", lambda *a, **k: base_calls.append((a, k)))
     monkeypatch.setattr(module, "update_profile_config", _fake_update_profile)
-    monkeypatch.setattr(module, "load_plugin_config", lambda _pid: {"config": {"feature": {"x": 2}}})
+    monkeypatch.setattr(module, "load_plugin_config", lambda _pid: {"config": {"feature": {"x": 2, "y": 3}}})
 
     # 1. Host stopped -> writes profile, does not touch base config.
     monkeypatch.setattr(state, "plugin_hosts", {})
@@ -182,7 +182,7 @@ async def test_permanent_update_with_profile_targets_profile_not_base_config(
     assert host.sent == []
     assert base_calls == []
 
-    # 3. Host running and profile == active_profile -> updates profile and hot reloads live host.
+    # 3. Host running and profile == active_profile -> updates profile and hot reloads full snapshot (retaining y=3).
     active_res = await module.hot_update_plugin_config(
         plugin_id="demo",
         updates={"feature": {"x": 2}},
@@ -192,9 +192,33 @@ async def test_permanent_update_with_profile_targets_profile_not_base_config(
     assert active_res["hot_reloaded"] is True
     assert active_res["profile"] == "work"
     assert host.sent == [
-        {"config": {"feature": {"x": 2}}, "mode": "temporary", "profile": "work", "timeout": 10.0, "replace": True}
+        {"config": {"feature": {"x": 2, "y": 3}}, "mode": "temporary", "profile": "work", "timeout": 10.0, "replace": True}
     ]
     assert base_calls == []
+
+    # 3b. Host running and alias profile shares active file (affected_active=True) -> triggers hot reload.
+    host.sent.clear()
+    monkeypatch.setattr(
+        module,
+        "update_profile_config",
+        lambda *, plugin_id, profile_name, updates: {
+            "success": True,
+            "plugin_id": plugin_id,
+            "profile": profile_name,
+            "active_profile": "work",
+            "affected_active": True,
+            "config": updates,
+        },
+    )
+    alias_res = await module.hot_update_plugin_config(
+        plugin_id="demo",
+        updates={"feature": {"x": 2}},
+        mode="permanent",
+        profile="alias_of_work",
+    )
+    assert alias_res["hot_reloaded"] is True
+    assert len(host.sent) == 1
+    assert host.sent[0]["replace"] is True
 
     # 4. Whitespace profile raises INVALID_ARGUMENT.
     with pytest.raises(ServerDomainError) as exc_info:

@@ -855,15 +855,21 @@ async def _handle_config_update_command(
         )
         
         had_cached_config = hasattr(ctx, "_effective_config") and ctx._effective_config is not None
+        had_uncertain_config = bool(getattr(ctx, "_effective_config_uncertain", False))
+        bump_gen = getattr(ctx, "_bump_effective_config_gen", None)
         if replace:
             old_config = copy.deepcopy(ctx._effective_config) if had_cached_config else {}
             ctx._effective_config = copy.deepcopy(new_config)
+            if callable(bump_gen):
+                bump_gen()
             if hasattr(ctx, "_effective_config_uncertain"):
                 ctx._effective_config_uncertain = False
             logger.debug("[Plugin Process] Config cache replaced")
         elif had_cached_config:
             old_config = copy.deepcopy(ctx._effective_config)
             _deep_merge(ctx._effective_config, new_config)
+            if callable(bump_gen):
+                bump_gen()
             logger.debug("[Plugin Process] Config cache updated")
         else:
             base_config: dict[str, Any] = {}
@@ -883,6 +889,8 @@ async def _handle_config_update_command(
             old_config = copy.deepcopy(base_config)
             _deep_merge(base_config, new_config)
             ctx._effective_config = base_config
+            if callable(bump_gen):
+                bump_gen()
 
         refresh_runtime_config = getattr(ctx, "_refresh_instance_runtime_config", None)
         if callable(refresh_runtime_config) and isinstance(ctx._effective_config, dict):
@@ -908,6 +916,10 @@ async def _handle_config_update_command(
                 logger.exception("[Plugin Process] config_change handler failed")
                 # Restore prechange configuration.
                 ctx._effective_config = old_config if had_cached_config else None
+                if callable(bump_gen):
+                    bump_gen()
+                if hasattr(ctx, "_effective_config_uncertain"):
+                    ctx._effective_config_uncertain = had_uncertain_config
                 if callable(refresh_runtime_config) and isinstance(old_config, dict):
                     refresh_runtime_config(old_config)
                 logger.debug("[Plugin Process] Config rolled back after handler failure")
@@ -990,7 +1002,9 @@ def _deep_merge(base: dict, updates: dict) -> None:
         if value == "__DELETE__":
             base.pop(key, None)
             continue
-        if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+        if isinstance(value, dict):
+            if not isinstance(base.get(key), dict):
+                base[key] = {}
             _deep_merge(base[key], value)
         else:
             base[key] = value

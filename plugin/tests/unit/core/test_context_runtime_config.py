@@ -505,3 +505,56 @@ async def test_context_activate_profile_keeps_cleared_cache_when_reload_fails(
     res = await ctx.set_own_active_profile("home")
     assert res["config_profiles"]["active"] == "home"
     assert ctx._effective_config is None
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_context_stale_get_own_config_does_not_overwrite_newer_profile_refresh(
+    tmp_path: Path,
+) -> None:
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "demo" / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+    )
+    stale_started = asyncio.Event()
+    release_stale = asyncio.Event()
+    active_profile = {"name": "home"}
+
+    async def _no_local(**_kwargs: object) -> None:
+        return None
+
+    async def _fake_rpc(
+        *,
+        method_name: str,
+        request_type: str,
+        request_data: dict[str, object],
+        timeout: float,
+        wrap_result: bool,
+    ) -> dict[str, object]:
+        del method_name, timeout, wrap_result
+        if request_type == "PLUGIN_CONFIG_GET":
+            if active_profile["name"] == "home":
+                stale_started.set()
+                await release_stale.wait()
+                return {"config": {"profile": "home"}}
+            return {"config": {"profile": "work"}}
+        if request_type == "PLUGIN_CONFIG_PROFILE_ACTIVATE":
+            active_profile["name"] = str(request_data["profile_name"])
+            return {"config_profiles": {"active": active_profile["name"]}}
+        raise AssertionError(f"Unexpected RPC {request_type}")
+
+    ctx._get_local_config_payload = _no_local  # type: ignore[method-assign]
+    ctx._send_request_and_wait_async = _fake_rpc  # type: ignore[method-assign]
+
+    slow_read = asyncio.create_task(ctx.get_own_config())
+    await stale_started.wait()
+
+    await ctx.set_own_active_profile("work")
+    assert ctx._effective_config == {"profile": "work"}
+
+    release_stale.set()
+    stale_payload = await slow_read
+    assert stale_payload == {"config": {"profile": "home"}}
+    assert ctx._effective_config == {"profile": "work"}

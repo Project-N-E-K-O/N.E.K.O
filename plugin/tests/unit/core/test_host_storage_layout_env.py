@@ -1151,3 +1151,49 @@ async def test_config_update_replace_removes_deleted_keys_and_temporary_hydrates
         "memo": {"max_reminders": 42, "timezone": "Asia/Tokyo"},
         "other": {"enabled": True},
     }
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_config_update_replace_rollback_restores_uncertain_flag_and_deep_merge_strips_nested_delete() -> None:
+    class _Ctx:
+        def __init__(self) -> None:
+            self._effective_config = {"feature": {"old": 1}}
+            self._effective_config_uncertain = True
+            self.refreshed: list[dict[str, object]] = []
+
+        def _refresh_instance_runtime_config(self, effective_config: dict[str, object]) -> None:
+            self.refreshed.append(host_module.copy.deepcopy(effective_config))
+
+        @contextmanager
+        def _handler_scope(self, _handler_ctx: str):
+            yield
+
+    def _boom(**_kwargs: object) -> None:
+        raise RuntimeError("boom")
+
+    ctx = _Ctx()
+    sender = _FakeResponseSender()
+    await host_module._handle_config_update_command(
+        msg={
+            "req_id": "req-rb",
+            "config": {"feature": {"new": 2}},
+            "mode": "temporary",
+            "replace": True,
+        },
+        ctx=ctx,
+        events_by_type={"lifecycle": {"config_change": _boom}},
+        plugin_id="demo",
+        res_sender=sender,
+        logger=_FakeLogger(),
+    )
+    assert sender.payloads[-1]["success"] is False
+    assert ctx._effective_config == {"feature": {"old": 1}}
+    assert ctx._effective_config_uncertain is True
+
+    merged: dict[str, object] = {}
+    host_module._deep_merge(
+        merged,
+        {"section": {"obsolete": "__DELETE__", "enabled": True}},
+    )
+    assert merged == {"section": {"enabled": True}}

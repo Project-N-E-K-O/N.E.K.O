@@ -278,6 +278,7 @@ export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardS
               <Input
                 value={configForm.values.default_city}
                 placeholder={t("panel.placeholders.defaultCity")}
+                disabled={savingConfig}
                 onChange={(value) => configForm.setField("default_city", value)}
               />
             </Field>
@@ -285,6 +286,7 @@ export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardS
               <Input
                 value={configForm.values.timezone}
                 placeholder="Asia/Shanghai"
+                disabled={savingConfig}
                 onChange={(value) => configForm.setField("timezone", value)}
               />
             </Field>
@@ -292,6 +294,7 @@ export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardS
               <Select
                 value={configForm.values.forecast_days}
                 options={["1", "2", "3", "4", "5", "6", "7"]}
+                disabled={savingConfig}
                 onChange={(value) => configForm.setField("forecast_days", String(value))}
               />
             </Field>
@@ -309,24 +312,28 @@ export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardS
                   { value: "es", label: "Español" },
                   { value: "pt", label: "Português" },
                 ]}
+                disabled={savingConfig}
                 onChange={(value) => configForm.setField("locale", String(value))}
               />
             </Field>
             <Switch
               checked={configForm.values.force_locale}
               label={t("panel.fields.forceLocale")}
+              disabled={savingConfig}
               onChange={(value) => configForm.setField("force_locale", value)}
             />
             <Field label={t("panel.fields.cacheTtl")}>
               <Input
                 value={configForm.values.cache_ttl_seconds}
                 placeholder="1800"
+                disabled={savingConfig}
                 onChange={(value) => configForm.setField("cache_ttl_seconds", value)}
               />
             </Field>
             <Switch
               checked={configForm.values.enable_geoip}
               label={t("panel.fields.enableGeoip")}
+              disabled={savingConfig}
               onChange={(value) => configForm.setField("enable_geoip", value)}
             />
             <Field

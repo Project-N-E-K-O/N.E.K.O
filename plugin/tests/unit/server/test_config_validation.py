@@ -62,3 +62,11 @@ def test_validate_config_updates_rejects_sdk_conflicts_non_list_non_bool() -> No
         validate_config_updates(updates={"plugin": {"sdk": {"conflicts": "x"}}})
 
     assert "conflicts" in exc_info.value.message.lower()
+
+
+@pytest.mark.plugin_unit
+def test_validate_config_updates_accepts_single_table_plugin_dependency() -> None:
+    payload = {"plugin": {"dependency": {"id": "dep_a", "providers": ["search"]}}}
+
+    normalized = validate_config_updates(updates=payload)
+    assert normalized["plugin"] == payload["plugin"]

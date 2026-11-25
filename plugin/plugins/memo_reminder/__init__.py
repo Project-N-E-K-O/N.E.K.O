@@ -231,12 +231,7 @@ class MemoReminderPlugin(NekoPluginBase):
             raw_memo = resolved_cfg.get("memo")
             if not isinstance(raw_memo, Mapping):
                 return resolved_cfg
-            existing_memo = (
-                dict(self._memo_cfg)
-                if isinstance(getattr(self, "_memo_cfg", None), Mapping)
-                else {}
-            )
-            memo_cfg: Dict[str, Any] = {**existing_memo, **raw_memo}
+            memo_cfg: Dict[str, Any] = dict(raw_memo)
         else:
             dumped = await self.config.dump(timeout=5.0)
             resolved_cfg = dict(dumped) if isinstance(dumped, Mapping) else {}

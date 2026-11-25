@@ -323,13 +323,13 @@ async def test_memo_reminder_temporary_config_change_uses_new_config_over_stale_
         assert plugin._max_reminders == 1
         assert str(plugin._tz) == "America/New_York"
 
-        # Partial [memo] patch preserves unspecified keys like timezone.
-        partial_res = await plugin.on_config_change(
-            new_config={"memo": {"max_reminders": 3}},
+        # Deleting [memo] keys in full snapshot resets them to defaults instead of keeping stale values.
+        reset_res = await plugin.on_config_change(
+            new_config={"memo": {}},
             mode="temporary",
         )
-        assert partial_res.is_ok()
-        assert plugin._max_reminders == 3
-        assert str(plugin._tz) == "America/New_York"
+        assert reset_res.is_ok()
+        assert plugin._max_reminders == 200
+        assert str(plugin._tz) == "Asia/Shanghai"
     finally:
         await asyncio.to_thread(plugin.shutdown)

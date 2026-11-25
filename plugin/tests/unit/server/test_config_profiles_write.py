@@ -278,3 +278,95 @@ def test_profile_writes_respect_cancelled_commit_guard_and_clean_temp_files(
         assert not list(plugin_dir.glob(".profile*"))
         assert not list((plugin_dir / "profiles").glob(".profile*"))
     assert "active='home'" in (plugin_dir / "profiles.toml").read_text(encoding="utf-8")
+
+
+@pytest.mark.plugin_unit
+def test_profile_writes_detect_shared_file_alias_with_active_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin_dir = tmp_path / "demo"
+    (plugin_dir / "profiles").mkdir(parents=True)
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\nentry='demo:Plugin'\n", encoding="utf-8")
+    (plugin_dir / "profiles.toml").write_text(
+        "[config_profiles]\nactive='home'\n"
+        "[config_profiles.files]\nhome='profiles/shared.toml'\nwork='profiles/shared.toml'\nother='profiles/other.toml'\n",
+        encoding="utf-8",
+    )
+    (plugin_dir / "profiles" / "shared.toml").write_text("[feature]\nx=1\n", encoding="utf-8")
+    (plugin_dir / "profiles" / "other.toml").write_text("[feature]\nx=9\n", encoding="utf-8")
+    monkeypatch.setattr(module, "get_plugin_config_path", lambda _pid: config_path)
+
+    upd_alias = module.update_profile_config(
+        plugin_id="demo",
+        profile_name="work",
+        updates={"feature": {"x": 2}},
+    )
+    assert upd_alias["active_profile"] == "home"
+    assert upd_alias["affected_active"] is True
+
+    upd_other = module.update_profile_config(
+        plugin_id="demo",
+        profile_name="other",
+        updates={"feature": {"x": 10}},
+    )
+    assert upd_other["affected_active"] is False
+
+    ups_alias = module.upsert_profile_config(
+        plugin_id="demo",
+        profile_name="work",
+        config={"feature": {"x": 3}},
+        make_active=False,
+    )
+    assert ups_alias["active_profile"] == "home"
+    assert ups_alias["affected_active"] is True
+
+    ups_other = module.upsert_profile_config(
+        plugin_id="demo",
+        profile_name="other",
+        config={"feature": {"x": 11}},
+        make_active=False,
+    )
+    assert ups_other["affected_active"] is False
+
+
+@pytest.mark.plugin_unit
+def test_upsert_profile_config_rolls_back_first_file_if_second_replace_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+    import time
+    from fastapi import HTTPException
+    from plugin.server.infrastructure.config_storage import ConfigCommitGuard
+
+    plugin_dir = tmp_path / "demo"
+    (plugin_dir / "profiles").mkdir(parents=True)
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\nentry='demo:Plugin'\n", encoding="utf-8")
+    (plugin_dir / "profiles.toml").write_text(
+        "[config_profiles]\nactive='work'\n[config_profiles.files]\nwork='profiles/work.toml'\n",
+        encoding="utf-8",
+    )
+    work_path = plugin_dir / "profiles" / "work.toml"
+    work_path.write_text("[feature]\nx=1\n", encoding="utf-8")
+    monkeypatch.setattr(module, "get_plugin_config_path", lambda _pid: config_path)
+
+    real_replace = os.replace
+
+    def _fail_on_profiles(src, dst):
+        if Path(dst).name == "profiles.toml":
+            raise OSError("simulated disk error")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(module.os, "replace", _fail_on_profiles)
+    guard = ConfigCommitGuard(deadline=time.monotonic() + 10.0)
+    with pytest.raises(HTTPException) as exc_info:
+        module.upsert_profile_config(
+            plugin_id="demo",
+            profile_name="work",
+            config={"feature": {"x": 999}},
+            make_active=True,
+            commit_guard=guard,
+        )
+    assert exc_info.value.status_code == 500
+    assert work_path.read_text(encoding="utf-8") == "[feature]\nx=1\n"

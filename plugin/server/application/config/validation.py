@@ -97,6 +97,8 @@ def _validate_plugin_dependency(plugin_section: Mapping[object, object]) -> None
     dependency_obj = plugin_section.get("dependency")
     if dependency_obj is None:
         return
+    if isinstance(dependency_obj, Mapping):
+        dependency_obj = [dependency_obj]
     if not isinstance(dependency_obj, list):
         _raise_invalid_config("plugin.dependency must be a list")
 

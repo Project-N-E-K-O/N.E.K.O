@@ -294,6 +294,7 @@ class PluginContext:
     _restored_from_freeze: bool = False  # Whether restored from frozen state
     _effective_config: Optional[Dict[str, Any]] = None
     _effective_config_uncertain: bool = False
+    _effective_config_gen: int = 0
     _current_lanlan: Optional[str] = None
     _permissions: Optional[Any] = field(default=None, init=False, repr=False)
 
@@ -486,7 +487,19 @@ class PluginContext:
             except Exception:
                 pass
 
+    def _current_effective_config_gen(self) -> int:
+        try:
+            return int(getattr(self, "_effective_config_gen", 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _bump_effective_config_gen(self) -> int:
+        next_gen = self._current_effective_config_gen() + 1
+        self._effective_config_gen = next_gen
+        return next_gen
+
     def _set_effective_config_cache(self, config_obj: object) -> Dict[str, Any] | None:
+        self._bump_effective_config_gen()
         if not isinstance(config_obj, dict):
             self._effective_config = None
             self._effective_config_uncertain = False
@@ -1715,12 +1728,13 @@ class PluginContext:
                         "config": copy.deepcopy(cached),
                         "config_path": str(self.config_path),
                     }
+                gen_before = self._current_effective_config_gen()
                 payload = await asyncio.wait_for(
                     service.get_plugin_config(plugin_id=self.plugin_id),
                     timeout=timeout,
                 )
                 config_obj = payload.get("config")
-                if isinstance(config_obj, dict):
+                if isinstance(config_obj, dict) and self._current_effective_config_gen() == gen_before:
                     self._set_effective_config_cache(config_obj)
                 return payload
             if payload_type == "base":
@@ -1768,6 +1782,7 @@ class PluginContext:
         local_payload = await self._get_local_config_payload(payload_type="config", timeout=timeout)
         if isinstance(local_payload, dict):
             return local_payload
+        gen_before = self._current_effective_config_gen()
         try:
             payload = await self._send_request_and_wait_async(
                 method_name="get_own_config",
@@ -1777,7 +1792,7 @@ class PluginContext:
                 wrap_result=True,
             )
             config_obj = payload.get("config") if isinstance(payload, dict) else None
-            if isinstance(config_obj, dict):
+            if isinstance(config_obj, dict) and self._current_effective_config_gen() == gen_before:
                 self._set_effective_config_cache(config_obj)
             return payload
         except TimeoutError as e:
@@ -1854,6 +1869,7 @@ class PluginContext:
         if isinstance(profile_name, str) and profile_name.strip():
             request_data["profile_name"] = profile_name.strip()
 
+        gen_before = self._current_effective_config_gen()
         local_payload = await self._get_local_config_payload(
             payload_type="effective",
             profile_name=profile_name,
@@ -1861,7 +1877,11 @@ class PluginContext:
         )
         if isinstance(local_payload, dict):
             effective_obj = local_payload.get("config")
-            if isinstance(effective_obj, dict) and profile_name is None:
+            if (
+                isinstance(effective_obj, dict)
+                and profile_name is None
+                and self._current_effective_config_gen() == gen_before
+            ):
                 self._set_effective_config_cache(effective_obj)
             return local_payload
 
@@ -1984,6 +2004,7 @@ class PluginContext:
             if isinstance(old_effective_config, dict):
                 self._set_effective_config_cache(old_effective_config)
             else:
+                self._bump_effective_config_gen()
                 self._effective_config = None
                 self._refresh_instance_runtime_config({})
             self._effective_config_uncertain = old_effective_config_uncertain
@@ -2031,17 +2052,20 @@ class PluginContext:
             if isinstance(old_effective_config, dict):
                 self._set_effective_config_cache(old_effective_config)
             else:
+                self._bump_effective_config_gen()
                 self._effective_config = None
                 self._refresh_instance_runtime_config({})
             self._effective_config_uncertain = old_effective_config_uncertain
             raise
 
     async def _refresh_effective_config_after_profile_change(self, *, timeout: float) -> None:
+        self._bump_effective_config_gen()
         self._effective_config = None
         self._effective_config_uncertain = False
         try:
             refreshed = await self.get_own_config(timeout=timeout)
         except Exception:
+            self._bump_effective_config_gen()
             self._effective_config = None
             return
         config_obj = refreshed.get("config") if isinstance(refreshed, dict) else None

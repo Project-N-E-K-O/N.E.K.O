@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 import os
 import tempfile
 import threading
@@ -187,6 +188,34 @@ def _atomic_dump_toml(
         ) from exc
 
 
+def _write_temp_bytes(*, target_path: Path, payload: bytes, prefix: str) -> Path:
+    try:
+        temp_fd, temp_path = tempfile.mkstemp(
+            suffix=".toml",
+            prefix=prefix,
+            dir=str(target_path.parent),
+        )
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create temporary file for {target_path}",
+        ) from exc
+
+    temp_file_path = Path(temp_path)
+    try:
+        with os.fdopen(temp_fd, "wb") as temp_file:
+            temp_file.write(payload)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+    except (OSError, RuntimeError, ValueError, TypeError) as exc:
+        _cleanup_temp_files(temp_file_path)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to persist {target_path.name}",
+        ) from exc
+    return temp_file_path
+
+
 def _atomic_dump_toml_pair(
     *,
     first_path: Path,
@@ -211,13 +240,42 @@ def _atomic_dump_toml_pair(
     except BaseException:
         _cleanup_temp_files(first_temp)
         raise
+
     try:
-        commit_guard.commit(
-            lambda: (
-                os.replace(first_temp, first_path),
-                os.replace(second_temp, second_path),
-            )
-        )
+        had_first = first_path.exists()
+        old_first_bytes = first_path.read_bytes() if had_first else None
+    except OSError as exc:
+        _cleanup_temp_files(first_temp, second_temp)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to snapshot existing {first_path.name}",
+        ) from exc
+
+    def _commit_pair() -> None:
+        os.replace(first_temp, first_path)
+        try:
+            os.replace(second_temp, second_path)
+        except BaseException:
+            try:
+                if had_first and old_first_bytes is not None:
+                    rollback_temp = _write_temp_bytes(
+                        target_path=first_path,
+                        payload=old_first_bytes,
+                        prefix=".rollback_",
+                    )
+                    os.replace(rollback_temp, first_path)
+                else:
+                    first_path.unlink(missing_ok=True)
+            except BaseException as rollback_exc:
+                logger.warning(
+                    "Failed to rollback {} after second-file replace error: {}",
+                    first_path,
+                    str(rollback_exc),
+                )
+            raise
+
+    try:
+        commit_guard.commit(_commit_pair)
         _fsync_parent_dir(first_path)
         _fsync_parent_dir(second_path)
     except ConfigCommitCancelled:
@@ -229,6 +287,25 @@ def _atomic_dump_toml_pair(
             status_code=500,
             detail=f"Failed to persist {first_path.name} / {second_path.name}",
         ) from exc
+
+
+def _profile_affects_active(
+    *,
+    base_dir: Path,
+    files_map: Mapping[str, str],
+    profile_name: str,
+    profile_path: Path,
+    active_name: str | None,
+) -> bool:
+    if active_name is None:
+        return False
+    if active_name == profile_name:
+        return True
+    active_raw = files_map.get(active_name)
+    if not isinstance(active_raw, str) or not active_raw.strip():
+        return False
+    active_path = resolve_profile_path(active_raw, base_dir)
+    return active_path is not None and active_path == profile_path
 
 
 def upsert_profile_config(
@@ -310,7 +387,13 @@ def upsert_profile_config(
             )
 
         active_name = _resolve_active_profile_name(plugin_id, profiles_cfg)
-        affected_active = (active_name == profile_name) or (previous_active != active_name)
+        affected_active = (previous_active != active_name) or _profile_affects_active(
+            base_dir=base_dir,
+            files_map=files_map,
+            profile_name=profile_name,
+            profile_path=profile_path,
+            active_name=active_name,
+        )
         result = get_profile_config(
             plugin_id=plugin_id,
             profile_name=profile_name,
@@ -424,11 +507,19 @@ def update_profile_config(
         )
 
         active_name = _resolve_active_profile_name(plugin_id, profiles_cfg)
+        affected_active = _profile_affects_active(
+            base_dir=base_dir,
+            files_map=files_map,
+            profile_name=profile_name,
+            profile_path=profile_path,
+            active_name=active_name,
+        )
         return {
             "success": True,
             "plugin_id": plugin_id,
             "profile": profile_name,
             "active_profile": active_name,
+            "affected_active": affected_active,
             "config": merged,
             "requires_reload": True,
             "message": "Config updated successfully",

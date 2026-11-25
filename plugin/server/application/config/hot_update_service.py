@@ -116,7 +116,13 @@ async def hot_update_plugin_config(
                 profile_name=profile_name,
                 updates=normalized_updates,
             )
-            if profile_name != persisted.get("active_profile"):
+            affected_active_obj = persisted.get("affected_active")
+            affected_active = (
+                affected_active_obj
+                if isinstance(affected_active_obj, bool)
+                else (profile_name == persisted.get("active_profile"))
+            )
+            if not affected_active:
                 return {
                     "success": True,
                     "plugin_id": plugin_id,
