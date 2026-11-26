@@ -41,6 +41,7 @@ from plugin.core.message_plane_transport import format_rpc_error
 MAX_DELETED_BUS_IDS = 20000
 MAX_CONVERSATION_SUBSCRIPTIONS = 4096
 MAX_PLUGIN_CONVERSATION_SUBSCRIPTIONS = 128
+_PENDING_DELETE_RETRY_BACKOFF_SECONDS = 1.0
 
 # Default lock timeout in seconds.
 DEFAULT_LOCK_TIMEOUT = 10.0
@@ -258,9 +259,15 @@ class GlobalState:
         self._pending_lifecycle_deletes: Dict[str, Dict[str, Any]] = {}
         self._pending_event_overflow: bool = False
         self._pending_lifecycle_overflow: bool = False
+        self._pending_delete_retry_after: Dict[str, float] = {
+            "events": 0.0,
+            "lifecycle": 0.0,
+        }
+        self._plane_bridge_hook_lock = threading.Lock()
         self._plane_bridge_flush_hook_registered: bool = False
-        if sys.modules.get("plugin.server.messaging.plane_bridge") is not None:
-            self._ensure_plane_bridge_flush_hook_registered()
+        pb_mod = sys.modules.get("plugin.server.messaging.plane_bridge")
+        if pb_mod is not None:
+            self._ensure_plane_bridge_flush_hook_registered(plane_bridge_mod=pb_mod)
 
         self._bus_rev_lock = threading.Lock()
         self._bus_rev: Dict[str, int] = {
@@ -903,17 +910,19 @@ class GlobalState:
         if not isinstance(record, dict):
             return
         eid = record.get("event_id") or record.get("trace_id")
+        plane_bridge = self._resolve_plane_bridge()
         with self._bus_store_lock:
             if isinstance(eid, str) and eid in self._deleted_event_ids:
                 return
             self._event_store.append(record)
-            self._flush_pending_message_plane_deletes_locked("events")
-            try:
-                from plugin.server.messaging.plane_bridge import publish_record
-
-                publish_record(store="events", record=dict(record), topic="all")
-            except Exception:
-                pass
+            flush_status = self._flush_pending_message_plane_deletes_locked(
+                "events", plane_bridge=plane_bridge
+            )
+            if flush_status != "flushed_replace" and plane_bridge is not None:
+                try:
+                    plane_bridge.publish_record(store="events", record=dict(record), topic="all")
+                except Exception:
+                    pass
         try:
             rev = self._bump_bus_rev("events")
             self.bus_change_hub.emit("events", "add", {"record": dict(record), "rev": rev})
@@ -930,6 +939,7 @@ class GlobalState:
             candidates.append(rec)
 
         kept: List[Dict[str, Any]] = []
+        plane_bridge = self._resolve_plane_bridge()
         with self._bus_store_lock:
             for rec in candidates:
                 eid = rec.get("event_id") or rec.get("trace_id")
@@ -939,15 +949,16 @@ class GlobalState:
                 kept.append(rec)
             if not kept:
                 return 0
-            self._flush_pending_message_plane_deletes_locked("events")
-            try:
-                from plugin.server.messaging.plane_bridge import publish_record
-
-                for rec in kept:
-                    if isinstance(rec, dict):
-                        publish_record(store="events", record=dict(rec), topic="all")
-            except Exception:
-                pass
+            flush_status = self._flush_pending_message_plane_deletes_locked(
+                "events", plane_bridge=plane_bridge
+            )
+            if flush_status != "flushed_replace" and plane_bridge is not None:
+                try:
+                    for rec in kept:
+                        if isinstance(rec, dict):
+                            plane_bridge.publish_record(store="events", record=dict(rec), topic="all")
+                except Exception:
+                    pass
         for rec in kept:
             try:
                 rev = self._bump_bus_rev("events")
@@ -960,17 +971,19 @@ class GlobalState:
         if not isinstance(record, dict):
             return
         lid = record.get("lifecycle_id") or record.get("trace_id")
+        plane_bridge = self._resolve_plane_bridge()
         with self._bus_store_lock:
             if isinstance(lid, str) and lid in self._deleted_lifecycle_ids:
                 return
             self._lifecycle_store.append(record)
-            self._flush_pending_message_plane_deletes_locked("lifecycle")
-            try:
-                from plugin.server.messaging.plane_bridge import publish_record
-
-                publish_record(store="lifecycle", record=dict(record), topic="all")
-            except Exception:
-                pass
+            flush_status = self._flush_pending_message_plane_deletes_locked(
+                "lifecycle", plane_bridge=plane_bridge
+            )
+            if flush_status != "flushed_replace" and plane_bridge is not None:
+                try:
+                    plane_bridge.publish_record(store="lifecycle", record=dict(record), topic="all")
+                except Exception:
+                    pass
         try:
             rev = self._bump_bus_rev("lifecycle")
             self.bus_change_hub.emit("lifecycle", "add", {"record": dict(record), "rev": rev})
@@ -987,6 +1000,7 @@ class GlobalState:
             candidates.append(rec)
 
         kept: List[Dict[str, Any]] = []
+        plane_bridge = self._resolve_plane_bridge()
         with self._bus_store_lock:
             for rec in candidates:
                 lid = rec.get("lifecycle_id") or rec.get("trace_id")
@@ -996,15 +1010,16 @@ class GlobalState:
                 kept.append(rec)
             if not kept:
                 return 0
-            self._flush_pending_message_plane_deletes_locked("lifecycle")
-            try:
-                from plugin.server.messaging.plane_bridge import publish_record
-
-                for rec in kept:
-                    if isinstance(rec, dict):
-                        publish_record(store="lifecycle", record=dict(rec), topic="all")
-            except Exception:
-                pass
+            flush_status = self._flush_pending_message_plane_deletes_locked(
+                "lifecycle", plane_bridge=plane_bridge
+            )
+            if flush_status != "flushed_replace" and plane_bridge is not None:
+                try:
+                    for rec in kept:
+                        if isinstance(rec, dict):
+                            plane_bridge.publish_record(store="lifecycle", record=dict(rec), topic="all")
+                except Exception:
+                    pass
         for rec in kept:
             try:
                 rev = self._bump_bus_rev("lifecycle")
@@ -1295,6 +1310,7 @@ class GlobalState:
                 if result is not False:
                     self._pending_event_deletes.clear()
                     self._pending_event_overflow = False
+                    self._pending_delete_retry_after["events"] = 0.0
                 return int(len(items))
         except Exception:
             return 0
@@ -1314,23 +1330,33 @@ class GlobalState:
                 if result is not False:
                     self._pending_lifecycle_deletes.clear()
                     self._pending_lifecycle_overflow = False
+                    self._pending_delete_retry_after["lifecycle"] = 0.0
                 return int(len(items))
         except Exception:
             return 0
 
-    def _ensure_plane_bridge_flush_hook_registered(self) -> bool:
+    def _resolve_plane_bridge(self) -> Any | None:
+        # Resolve outside _bus_store_lock so package import locks never contend with bus mutations.
+        if "plugin.server.messaging.plane_bridge" in sys.modules:
+            return sys.modules["plugin.server.messaging.plane_bridge"]
+        try:
+            return importlib.import_module("plugin.server.messaging.plane_bridge")
+        except Exception:
+            return None
+
+    def _ensure_plane_bridge_flush_hook_registered(
+        self, *, plane_bridge_mod: Any | None = None
+    ) -> bool:
         if self._plane_bridge_flush_hook_registered:
             return True
-        with self._bus_store_lock:
+        if plane_bridge_mod is None:
+            plane_bridge_mod = self._resolve_plane_bridge()
+        if plane_bridge_mod is None:
+            return False
+        with self._plane_bridge_hook_lock:
             if self._plane_bridge_flush_hook_registered:
                 return True
             try:
-                plane_bridge = sys.modules.get("plugin.server.messaging.plane_bridge")
-                if plane_bridge is None:
-                    plane_bridge = importlib.import_module("plugin.server.messaging.plane_bridge")
-                    if self._plane_bridge_flush_hook_registered:
-                        return True
-
                 self_ref = weakref.ref(self)
 
                 def _hook() -> None:
@@ -1338,15 +1364,14 @@ class GlobalState:
                     if gs is not None:
                         gs.flush_pending_message_plane_deletes()
 
-                plane_bridge.register_pending_flush_hook(_hook)
-                weakref.finalize(self, plane_bridge.unregister_pending_flush_hook, _hook)
+                plane_bridge_mod.register_pending_flush_hook(_hook)
+                weakref.finalize(self, plane_bridge_mod.unregister_pending_flush_hook, _hook)
                 self._plane_bridge_flush_hook_registered = True
                 return True
             except Exception:
                 return False
 
     def flush_pending_message_plane_deletes(self) -> None:
-        self._ensure_plane_bridge_flush_hook_registered()
         if (
             not self._pending_event_deletes
             and not self._pending_event_overflow
@@ -1354,11 +1379,17 @@ class GlobalState:
             and not self._pending_lifecycle_overflow
         ):
             return
+        plane_bridge = self._resolve_plane_bridge()
+        self._ensure_plane_bridge_flush_hook_registered(plane_bridge_mod=plane_bridge)
         with self._bus_store_lock:
             if self._pending_event_deletes or self._pending_event_overflow:
-                self._flush_pending_message_plane_deletes_locked("events")
+                self._flush_pending_message_plane_deletes_locked(
+                    "events", force=True, plane_bridge=plane_bridge
+                )
             if self._pending_lifecycle_deletes or self._pending_lifecycle_overflow:
-                self._flush_pending_message_plane_deletes_locked("lifecycle")
+                self._flush_pending_message_plane_deletes_locked(
+                    "lifecycle", force=True, plane_bridge=plane_bridge
+                )
 
     def _pending_deletes_for_store(self, store: str) -> Optional[Dict[str, Dict[str, Any]]]:
         if store == "events":
@@ -1380,15 +1411,36 @@ class GlobalState:
         elif store == "lifecycle":
             self._pending_lifecycle_overflow = value
 
-    def _flush_pending_message_plane_deletes_locked(self, store: str) -> bool:
-        self._ensure_plane_bridge_flush_hook_registered()
+    def _flush_pending_message_plane_deletes_locked(
+        self,
+        store: str,
+        *,
+        force: bool = False,
+        plane_bridge: Any | None = None,
+    ) -> str:
         pending = self._pending_deletes_for_store(store)
         overflow = self._is_pending_overflow(store)
         if not pending and not overflow:
-            return True
+            return "noop"
+        if plane_bridge is None:
+            plane_bridge = sys.modules.get("plugin.server.messaging.plane_bridge")
+        if plane_bridge is None:
+            return "deferred"
         try:
-            from plugin.server.messaging.plane_bridge import publish_snapshot
+            is_enabled_fn = getattr(plane_bridge, "is_bridge_enabled", None)
+            if callable(is_enabled_fn) and not is_enabled_fn():
+                if pending is not None:
+                    pending.clear()
+                self._set_pending_overflow(store, False)
+                self._pending_delete_retry_after[store] = 0.0
+                return "noop"
+            can_enqueue_fn = getattr(plane_bridge, "can_enqueue_snapshot", None)
+            if callable(can_enqueue_fn) and not can_enqueue_fn():
+                return "deferred"
+            if not force and time.monotonic() < self._pending_delete_retry_after.get(store, 0.0):
+                return "deferred"
 
+            publish_snapshot = plane_bridge.publish_snapshot
             if overflow:
                 source_items = (
                     list(self._event_store)
@@ -1402,11 +1454,15 @@ class GlobalState:
                     mode="replace",
                 )
                 if result is False:
-                    return False
+                    self._pending_delete_retry_after[store] = (
+                        time.monotonic() + _PENDING_DELETE_RETRY_BACKOFF_SECONDS
+                    )
+                    return "deferred"
                 if pending is not None:
                     pending.clear()
                 self._set_pending_overflow(store, False)
-                return True
+                self._pending_delete_retry_after[store] = 0.0
+                return "flushed_replace"
 
             assert pending is not None
             result = publish_snapshot(
@@ -1416,11 +1472,18 @@ class GlobalState:
                 mode="delete",
             )
             if result is False:
-                return False
+                self._pending_delete_retry_after[store] = (
+                    time.monotonic() + _PENDING_DELETE_RETRY_BACKOFF_SECONDS
+                )
+                return "deferred"
             pending.clear()
-            return True
+            self._pending_delete_retry_after[store] = 0.0
+            return "flushed_delete"
         except Exception:
-            return False
+            self._pending_delete_retry_after[store] = (
+                time.monotonic() + _PENDING_DELETE_RETRY_BACKOFF_SECONDS
+            )
+            return "deferred"
 
     def _delete_message_plane_record(
         self,
@@ -1428,15 +1491,24 @@ class GlobalState:
         record: Dict[str, Any],
         *,
         record_id: str | None = None,
+        plane_bridge: Any | None = None,
     ) -> bool:
         with self._bus_store_lock:
-            self._ensure_plane_bridge_flush_hook_registered()
+            if plane_bridge is None:
+                plane_bridge = sys.modules.get("plugin.server.messaging.plane_bridge")
+            if plane_bridge is not None:
+                try:
+                    is_enabled_fn = getattr(plane_bridge, "is_bridge_enabled", None)
+                    if callable(is_enabled_fn) and not is_enabled_fn():
+                        return False
+                except Exception:
+                    pass
             pending = self._pending_deletes_for_store(store)
             if pending is None:
+                if plane_bridge is None:
+                    return False
                 try:
-                    from plugin.server.messaging.plane_bridge import publish_snapshot
-
-                    return publish_snapshot(
+                    return plane_bridge.publish_snapshot(
                         store=store,
                         records=[dict(record)],
                         topic="all",
@@ -1458,7 +1530,9 @@ class GlobalState:
                         oldest = next(iter(pending))
                         pending.pop(oldest, None)
                 pending[key] = dict(record)
-            return self._flush_pending_message_plane_deletes_locked(store)
+            return self._flush_pending_message_plane_deletes_locked(
+                store, plane_bridge=plane_bridge
+            ) in ("flushed_delete", "flushed_replace")
 
     def delete_message(self, message_id: str) -> bool:
         if not isinstance(message_id, str) or not message_id:
@@ -1528,6 +1602,8 @@ class GlobalState:
         if not isinstance(event_id, str) or not event_id:
             return False
         removed = False
+        plane_bridge = self._resolve_plane_bridge()
+        self._ensure_plane_bridge_flush_hook_registered(plane_bridge_mod=plane_bridge)
         with self._bus_store_lock:
             if event_id not in self._deleted_event_ids:
                 self._deleted_event_ids.add(event_id)
@@ -1548,9 +1624,12 @@ class GlobalState:
                     "events",
                     {"event_id": event_id, "trace_id": event_id},
                     record_id=event_id,
+                    plane_bridge=plane_bridge,
                 )
             elif self._pending_event_deletes or self._pending_event_overflow:
-                self._flush_pending_message_plane_deletes_locked("events")
+                self._flush_pending_message_plane_deletes_locked(
+                    "events", plane_bridge=plane_bridge
+                )
         if removed:
             try:
                 rev = self._bump_bus_rev("events")
@@ -1563,6 +1642,8 @@ class GlobalState:
         if not isinstance(lifecycle_id, str) or not lifecycle_id:
             return False
         removed = False
+        plane_bridge = self._resolve_plane_bridge()
+        self._ensure_plane_bridge_flush_hook_registered(plane_bridge_mod=plane_bridge)
         with self._bus_store_lock:
             if lifecycle_id not in self._deleted_lifecycle_ids:
                 self._deleted_lifecycle_ids.add(lifecycle_id)
@@ -1583,9 +1664,12 @@ class GlobalState:
                     "lifecycle",
                     {"lifecycle_id": lifecycle_id, "trace_id": lifecycle_id},
                     record_id=lifecycle_id,
+                    plane_bridge=plane_bridge,
                 )
             elif self._pending_lifecycle_deletes or self._pending_lifecycle_overflow:
-                self._flush_pending_message_plane_deletes_locked("lifecycle")
+                self._flush_pending_message_plane_deletes_locked(
+                    "lifecycle", plane_bridge=plane_bridge
+                )
         if removed:
             try:
                 rev = self._bump_bus_rev("lifecycle")

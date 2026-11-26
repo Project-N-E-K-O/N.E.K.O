@@ -1221,6 +1221,19 @@ class MusicPusherPlugin(NekoPluginBase):
                 return f"状态文件 {path.name} 损坏且暂无法备份，已拒绝保存以防数据丢失"
         return None
 
+    def _list_corrupt_state_backups_locked(self) -> list[str]:
+        try:
+            return sorted(
+                str(p)
+                for p in self._state_file.parent.glob(f"{self._state_file.name}.corrupt.*")
+                if p.is_file()
+            )
+        except OSError:
+            return []
+
+    def _has_corrupt_state_backup_locked(self) -> bool:
+        return bool(self._list_corrupt_state_backups_locked())
+
     def _has_incomplete_task_state_locked(self) -> bool:
         return bool(
             getattr(self, "_tasks_recovery_incomplete", False)
@@ -1287,6 +1300,12 @@ class MusicPusherPlugin(NekoPluginBase):
 
         path = self._state_file
         if not path.exists():
+            if self._has_corrupt_state_backup_locked():
+                self.logger.warning(
+                    "scheduler_state.json missing while corrupt state backup(s) still exist; "
+                    "keeping tombstoned upload GC paused until corrupt backups are removed"
+                )
+                self._tasks_recovery_incomplete = True
             return
 
         try:
@@ -1302,7 +1321,14 @@ class MusicPusherPlugin(NekoPluginBase):
             self._backup_corrupt_file_locked(path, "invalid_root_type")
             return
         if _coerce_bool(data.get("tasks_recovery_incomplete"), False):
-            self._tasks_recovery_incomplete = True
+            if self._has_corrupt_state_backup_locked():
+                self._tasks_recovery_incomplete = True
+            else:
+                self.logger.info(
+                    "Corrupt scheduler state backups removed; clearing tasks_recovery_incomplete "
+                    "and resuming tombstoned upload GC"
+                )
+                self._tasks_recovery_incomplete = False
         if (
             data.get("music_items") is not None and not isinstance(data.get("music_items"), list)
         ) or (
@@ -1462,12 +1488,17 @@ class MusicPusherPlugin(NekoPluginBase):
             }
 
         degraded_files = dict(getattr(self, "_degraded_state", {}) or {})
+        tasks_recovery_incomplete = bool(getattr(self, "_tasks_recovery_incomplete", False))
+        corrupt_state_backups = self._list_corrupt_state_backups_locked()
         return {
             "active": active,
             "next_task": next_task,
             "playback": dict(self._playback_state),
-            "degraded": bool(degraded_files),
+            "degraded": bool(degraded_files or tasks_recovery_incomplete),
             "degraded_files": degraded_files,
+            "tasks_recovery_incomplete": tasks_recovery_incomplete,
+            "upload_gc_paused": bool(self._has_incomplete_task_state_locked()),
+            "corrupt_state_backups": corrupt_state_backups,
             "now": _iso(),
         }
 
@@ -1857,9 +1888,9 @@ class MusicPusherPlugin(NekoPluginBase):
             self._refresh_upload_urls_in_tasks_locked()
             self._rebuild_music_items_from_uploads_locked()
             self._refresh_upload_urls_in_tasks_locked()
+            self._save_state_locked(allow_skip=True)
             self._save_upload_name_map_locked(allow_skip=True)
             self._save_lyrics_map_locked(allow_skip=True)
-            self._save_state_locked(allow_skip=True)
         if self._degraded_state:
             self.logger.error(
                 "MusicPusher started in degraded state; backed up corrupt files: {}",

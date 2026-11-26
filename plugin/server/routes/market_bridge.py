@@ -3521,11 +3521,19 @@ async def _ensure_valid_oauth_token(
                 break
             except asyncio.CancelledError:
                 cancelled = True
+        if committed is None:
+            revoke_task = asyncio.create_task(_revoke_oauth_token_best_effort(refreshed))
+            while True:
+                try:
+                    await asyncio.shield(revoke_task)
+                    break
+                except asyncio.CancelledError:
+                    cancelled = True
+            if cancelled:
+                raise asyncio.CancelledError
+            return None
         if cancelled:
             raise asyncio.CancelledError
-        if committed is None:
-            await _revoke_oauth_token_best_effort(refreshed)
-            return None
         return committed
 
 

@@ -2324,33 +2324,13 @@ class InstallSourceManager:
                     # Never changed (e.g. the replacement's own write failed):
                     # nothing to write back.
                     return
-                if self._read_only and not self._missing_lock_degraded:
-                    raise InstallSourceError(
-                        "lock_write_failed",
-                        f"failed to restore install-source entry for {entry.plugin_id}: lock is read-only degraded",
-                        details={
-                            "plugin_id": entry.plugin_id,
-                            "root_id": entry.root_id,
-                            "directory_name": entry.directory_name,
-                        },
-                    )
                 now = self._now_iso()
                 new_lock = self._replace_entry(old_lock, entry, updated_at=now)
                 try:
-                    if self._missing_lock_degraded:
-                        created = _atomic_create_if_missing(
-                            self.lock_path, _serialize_lock(new_lock)
-                        )
-                        if not created:
-                            self.load()
-                            continue
-                        self._clear_degrade()
-                    else:
-                        _atomic_write(self.lock_path, _serialize_lock(new_lock))
-                    self._current = new_lock
-                    self._has_verified_snapshot = True
-                    return
+                    if self._publish_or_reload_locked(new_lock):
+                        return
                 except Exception as exc:
+                    self._current = old_lock
                     raise InstallSourceError(
                         "lock_write_failed",
                         f"failed to restore install-source entry for {entry.plugin_id}: {exc}",

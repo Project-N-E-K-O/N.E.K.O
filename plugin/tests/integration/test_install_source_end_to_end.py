@@ -1188,11 +1188,63 @@ def test_restore_entry_for_rollback_merges_admin_restored_lock_from_missing_lock
     assert isinstance(entries["mk_plug"].source_detail, SourceDetailMarket)
     assert entries["mk_plug"].source_detail.version == "1.0.0"
 
-    # Ordinary read-only degrade must fail rather than reporting rollback succeeded.
+    # Ordinary read-only degrade must revert in-memory state cleanly without failing rollback.
     lock_path.unlink()
     lock_path.mkdir()
     mgr.load()
     assert mgr.is_degraded is True
-    with pytest.raises(InstallSourceError) as exc_info:
-        mgr.restore_entry_for_rollback(entries["mk_plug"])
-    assert exc_info.value.code == "lock_write_failed"
+    # Record a forward change in memory under read_only degrade, then roll it back in memory.
+    mgr.record_market(
+        directory_path=mk_dir,
+        plugin_market_id="mk_plug",
+        version="2.0.0",
+        package_url="https://example.test/v2.neko-plugin",
+    )
+    assert mgr.list_entries()[0].source_detail.version == "2.0.0"  # type: ignore[union-attr]
+    mgr.restore_entry_for_rollback(v1_entry)
+    restored = {e.directory_name: e for e in mgr.list_entries()}
+    assert restored["mk_plug"] == v1_entry
+    assert mgr.is_degraded is True
+
+
+def test_restore_entry_for_rollback_reverts_in_memory_snapshot_in_read_only_degrade(
+    tmp_path: Path,
+) -> None:
+    mgr, _, user_root, lock_path = _build_mgr(tmp_path)
+    mk_dir = user_root / "mk_plug"
+    mk_dir.mkdir(parents=True)
+
+    mgr.load()
+    v1_entry, _ = mgr.record_market_install(
+        root_id="user",
+        directory_name="mk_plug",
+        plugin_id="mk_plug",
+        market_detail={
+            "plugin_market_id": "mk_plug",
+            "version": "1.0.0",
+            "package_url": "https://example.test/v1.neko-plugin",
+        },
+    )
+
+    lock_path.unlink()
+    lock_path.mkdir()
+    mgr.load()
+    assert mgr.is_degraded is True
+    assert "read_failed" in (mgr.degrade_reason or "")
+
+    mgr.record_market(
+        directory_path=mk_dir,
+        plugin_market_id="mk_plug",
+        version="2.0.0",
+        package_url="https://example.test/v2.neko-plugin",
+    )
+    in_mem_after_upgrade = mgr.list_entries()
+    assert len(in_mem_after_upgrade) == 1
+    assert isinstance(in_mem_after_upgrade[0].source_detail, SourceDetailMarket)
+    assert in_mem_after_upgrade[0].source_detail.version == "2.0.0"
+
+    mgr.restore_entry_for_rollback(v1_entry)
+    assert mgr.is_degraded is True
+    entries = mgr.list_entries()
+    assert len(entries) == 1
+    assert entries[0] == v1_entry

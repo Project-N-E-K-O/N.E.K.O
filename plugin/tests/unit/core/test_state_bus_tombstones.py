@@ -246,8 +246,13 @@ def test_failed_event_delete_is_queued_and_flushed_later() -> None:
         assert calls[-1] == ("events", "delete", [{"event_id": "e1", "trace_id": "e1"}])
         assert "e1" in gs._pending_event_deletes
 
-        # Bridge recovers; appending next record or retrying delete flushes pending deletes.
+        # Immediate appends during backoff skip redundant snapshot copies.
+        gs.append_event_record({"event_id": "e2-during-backoff", "type": "b"})
+        assert len(calls) == 1
+
+        # Once bridge recovers and retry backoff elapses, next append flushes pending deletes.
         bridge_ready["ok"] = True
+        gs._pending_delete_retry_after["events"] = 0.0
         gs.append_event_record({"event_id": "e2", "type": "b"})
         assert gs._pending_event_deletes == {}
         assert calls[-1] == ("events", "delete", [{"event_id": "e1", "trace_id": "e1"}])
@@ -442,6 +447,7 @@ assert calls[-1] == ("events", "delete", [{"event_id": "startup-e1", "trace_id":
         env=env,
         capture_output=True,
         text=True,
+        timeout=30,
     )
     assert result.returncode == 0, f"stdout={result.stdout}\nstderr={result.stderr}"
 
@@ -547,3 +553,314 @@ def test_bridge_retries_failed_replace_snapshot_in_order_until_zmq_send_succeeds
     assert sent_msgs[0]["items"] == [{"event_id": "keep-1", "type": "alive"}]
     assert sent_msgs[1]["kind"] == "delta_batch"
     assert sent_msgs[1]["items"][0]["payload"]["event_id"] == "e2"
+
+
+def test_disabled_bridge_does_not_accumulate_or_retry_pending_deletes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.server.messaging import plane_bridge as plane_bridge_mod
+
+    gs = _new_state()
+    monkeypatch.setattr(plane_bridge_mod._bridge, "_enabled", False)
+
+    snap_calls: list[tuple[str, str]] = []
+    with patch("plugin.server.messaging.plane_bridge.publish_record", return_value=False), patch(
+        "plugin.server.messaging.plane_bridge.publish_snapshot",
+        side_effect=lambda **kw: snap_calls.append((kw["store"], kw["mode"])) or False,
+    ):
+        gs.append_event_record({"event_id": "e1", "type": "a"})
+        gs.append_lifecycle_record({"lifecycle_id": "l1", "type": "start"})
+        assert gs.delete_event("e1") is True
+        assert gs.delete_lifecycle("l1") is True
+        assert gs._pending_event_deletes == {}
+        assert gs._pending_lifecycle_deletes == {}
+
+        gs.append_event_record({"event_id": "e2", "type": "b"})
+        gs.append_lifecycle_record({"lifecycle_id": "l2", "type": "stop"})
+        gs.flush_pending_message_plane_deletes()
+
+    assert snap_calls == []
+
+
+def test_full_bridge_queue_skips_pending_delete_copies_on_append(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.server.messaging import plane_bridge as plane_bridge_mod
+
+    gs = _new_state()
+    snap_calls: list[tuple[str, str, list[dict]]] = []
+    queue_full = {"flag": False}
+    bridge_ready = {"ok": False}
+
+    monkeypatch.setattr(plane_bridge_mod, "can_enqueue_snapshot", lambda: not queue_full["flag"])
+
+    with patch("plugin.server.messaging.plane_bridge.publish_record", return_value=True), patch(
+        "plugin.server.messaging.plane_bridge.publish_snapshot",
+        side_effect=lambda **kw: (
+            snap_calls.append((kw["store"], kw["mode"], [dict(r) for r in kw["records"]])),
+            bridge_ready["ok"],
+        )[1],
+    ):
+        gs.append_event_record({"event_id": "e1", "type": "a"})
+        assert gs.delete_event("e1") is True
+        assert len(snap_calls) == 1
+        assert "e1" in gs._pending_event_deletes
+
+        # Queue is now full and bridge is down; append and extra delete must skip publish_snapshot copies.
+        queue_full["flag"] = True
+        gs._pending_delete_retry_after["events"] = 0.0
+        gs.append_event_record({"event_id": "e2", "type": "b"})
+        gs.append_event_record({"event_id": "e3", "type": "c"})
+        assert gs.delete_event("e2") is True
+        assert len(snap_calls) == 1
+        assert set(gs._pending_event_deletes) == {"e1", "e2"}
+
+        # Queue drains and bridge recovers -> idle flush hook sends batched delete snapshot once.
+        queue_full["flag"] = False
+        bridge_ready["ok"] = True
+        plane_bridge_mod._bridge._run_flush_hooks()
+        assert len(snap_calls) == 2
+        assert gs._pending_event_deletes == {}
+
+
+def test_overflow_replace_during_append_skips_duplicate_delta_publish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_module = sys.modules["plugin.core.state"]
+    gs = _new_state()
+    monkeypatch.setattr(state_module, "MAX_DELETED_BUS_IDS", 3)
+
+    rec_calls: list[tuple[str, dict]] = []
+    snap_calls: list[tuple[str, str, list[dict]]] = []
+    bridge_ready = {"ok": False}
+
+    def _rec(*, store: str, record: dict, topic: str = "all") -> bool:
+        rec_calls.append((store, dict(record)))
+        return bridge_ready["ok"]
+
+    def _snap(*, store: str, records: list, topic: str = "all", mode: str = "replace") -> bool:
+        snap_calls.append((store, mode, [dict(r) for r in records]))
+        return bridge_ready["ok"]
+
+    with patch("plugin.server.messaging.plane_bridge.publish_record", side_effect=_rec), patch(
+        "plugin.server.messaging.plane_bridge.publish_snapshot", side_effect=_snap
+    ):
+        gs.append_event_record({"event_id": "ev-keep", "type": "keep"})
+        for idx in range(4):
+            gs.append_event_record({"event_id": f"ov-ev-{idx}", "type": "ov"})
+            assert gs.delete_event(f"ov-ev-{idx}") is True
+        assert gs._pending_event_overflow is True
+
+        gs.append_lifecycle_record({"lifecycle_id": "lc-keep", "type": "keep"})
+        for idx in range(4):
+            gs.append_lifecycle_record({"lifecycle_id": f"ov-lc-{idx}", "type": "ov"})
+            assert gs.delete_lifecycle(f"ov-lc-{idx}") is True
+        assert gs._pending_lifecycle_overflow is True
+
+        bridge_ready["ok"] = True
+        rec_calls.clear()
+        snap_calls.clear()
+        gs._pending_delete_retry_after["events"] = 0.0
+        gs._pending_delete_retry_after["lifecycle"] = 0.0
+
+        # Single append triggers overflow replace containing ev-new-1; must NOT also publish delta.
+        gs.append_event_record({"event_id": "ev-new-1", "type": "new"})
+        assert gs._pending_event_overflow is False
+        assert gs._pending_event_deletes == {}
+        assert snap_calls == [
+            (
+                "events",
+                "replace",
+                [
+                    {"event_id": "ev-keep", "type": "keep"},
+                    {"event_id": "ev-new-1", "type": "new"},
+                ],
+            )
+        ]
+        assert rec_calls == []
+
+        # Subsequent non-overflow append resumes delta publishing.
+        gs.append_event_record({"event_id": "ev-new-2", "type": "new"})
+        assert rec_calls == [("events", {"event_id": "ev-new-2", "type": "new"})]
+
+        # Batch extend for lifecycle overflow replace must also skip duplicate deltas.
+        rec_calls.clear()
+        snap_calls.clear()
+        assert (
+            gs.extend_lifecycle_records(
+                [
+                    {"lifecycle_id": "lc-new-1", "type": "new"},
+                    {"lifecycle_id": "lc-new-2", "type": "new"},
+                ]
+            )
+            == 2
+        )
+        assert gs._pending_lifecycle_overflow is False
+        assert snap_calls == [
+            (
+                "lifecycle",
+                "replace",
+                [
+                    {"lifecycle_id": "lc-keep", "type": "keep"},
+                    {"lifecycle_id": "lc-new-1", "type": "new"},
+                    {"lifecycle_id": "lc-new-2", "type": "new"},
+                ],
+            )
+        ]
+        assert rec_calls == []
+
+
+def test_bridge_retains_and_retries_failed_snapshot_across_stop_and_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ormsgpack
+    import zmq
+    from plugin.server.messaging import plane_bridge as plane_bridge_mod
+
+    sent_msgs: list[dict] = []
+    first_delete_failed = threading.Event()
+    allow_delete_send = threading.Event()
+
+    class _FakeSocket:
+        linger = 0
+
+        def connect(self, _ep: str) -> None:
+            pass
+
+        def close(self, _linger: int = 0) -> None:
+            pass
+
+        def send(self, raw: bytes, flags: int = 0) -> None:
+            msg = ormsgpack.unpackb(raw)
+            if msg.get("mode") == "delete" and not allow_delete_send.is_set():
+                first_delete_failed.set()
+                raise zmq.Again()
+            sent_msgs.append(msg)
+
+    class _FakeCtx:
+        def socket(self, _kind: int) -> _FakeSocket:
+            return _FakeSocket()
+
+    monkeypatch.setattr(plane_bridge_mod.zmq.Context, "instance", staticmethod(lambda: _FakeCtx()))
+
+    bridge = plane_bridge_mod._Bridge()
+    bridge._enabled = True
+    bridge._endpoint = f"inproc://restart_retry_bridge_{uuid.uuid4().hex}"
+    bridge.start()
+    try:
+        assert bridge.enqueue_snapshot(
+            store="events",
+            topic="all",
+            items=[{"event_id": "e1", "trace_id": "e1"}],
+            mode="delete",
+        ) is True
+        assert first_delete_failed.wait(timeout=3.0) is True
+        # Stop sender thread while failed delete snapshot is held pending.
+        bridge.stop()
+        assert bridge.enqueue_delta(
+            store="events",
+            topic="all",
+            payload={"event_id": "e2", "type": "after"},
+        ) is True
+        allow_delete_send.set()
+        bridge.start()
+        deadline = time.monotonic() + 3.0
+        while len(sent_msgs) < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        allow_delete_send.set()
+        bridge.stop()
+
+    assert len(sent_msgs) == 2
+    assert sent_msgs[0]["kind"] == "snapshot"
+    assert sent_msgs[0]["mode"] == "delete"
+    assert sent_msgs[0]["items"] == [{"event_id": "e1", "trace_id": "e1"}]
+    assert sent_msgs[1]["kind"] == "delta_batch"
+    assert sent_msgs[1]["items"][0]["payload"]["event_id"] == "e2"
+
+
+def test_bridge_runs_flush_hooks_periodically_under_sustained_non_empty_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ormsgpack
+    from plugin.server.messaging import plane_bridge as plane_bridge_mod
+
+    bridge = plane_bridge_mod._Bridge()
+    bridge._enabled = True
+    bridge._endpoint = f"inproc://busy_hook_bridge_{uuid.uuid4().hex}"
+    monkeypatch.setattr(plane_bridge_mod, "_FLUSH_HOOK_MIN_INTERVAL_SECONDS", 0.02)
+
+    hook_ran_with_non_empty_queue = threading.Event()
+    sent_count = 0
+
+    def _hook() -> None:
+        if not bridge._q.empty():
+            hook_ran_with_non_empty_queue.set()
+
+    bridge.register_flush_hook(_hook)
+
+    class _FakeSocket:
+        linger = 0
+
+        def connect(self, _ep: str) -> None:
+            pass
+
+        def close(self, _linger: int = 0) -> None:
+            pass
+
+        def send(self, raw: bytes, flags: int = 0) -> None:
+            nonlocal sent_count
+            _ = ormsgpack.unpackb(raw)
+            sent_count += 1
+            time.sleep(0.005)
+            # Keep the queue continuously non-empty until the flush hook runs.
+            if not hook_ran_with_non_empty_queue.is_set() and sent_count < 40 and bridge._q.empty():
+                bridge.enqueue_delta(
+                    store="messages",
+                    topic="all",
+                    payload={"message_id": f"keepalive-{sent_count}", "content": "busy"},
+                )
+
+    class _FakeCtx:
+        def socket(self, _kind: int) -> _FakeSocket:
+            return _FakeSocket()
+
+    monkeypatch.setattr(plane_bridge_mod.zmq.Context, "instance", staticmethod(lambda: _FakeCtx()))
+
+    bridge.start()
+    try:
+        for idx in range(5):
+            assert bridge.enqueue_delta(
+                store="messages",
+                topic="all",
+                payload={"message_id": f"m-{idx}", "content": "busy"},
+            ) is True
+        assert hook_ran_with_non_empty_queue.wait(timeout=3.0) is True
+    finally:
+        bridge.stop()
+
+
+def test_package_init_hook_registration_does_not_acquire_bus_store_lock() -> None:
+    from plugin.server.messaging import plane_bridge as plane_bridge_mod
+
+    gs = _new_state()
+    registered = {"ok": False}
+    err_holder: list[BaseException] = []
+
+    def _register() -> None:
+        try:
+            registered["ok"] = gs._ensure_plane_bridge_flush_hook_registered(
+                plane_bridge_mod=plane_bridge_mod
+            )
+        except BaseException as exc:  # pragma: no cover
+            err_holder.append(exc)
+
+    with gs._bus_store_lock:
+        t = threading.Thread(target=_register)
+        t.start()
+        t.join(timeout=2.0)
+        assert not t.is_alive(), "hook registration blocked on _bus_store_lock"
+
+    assert err_holder == []
+    assert registered["ok"] is True
+    assert gs._plane_bridge_flush_hook_registered is True

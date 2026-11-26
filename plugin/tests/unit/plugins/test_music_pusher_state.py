@@ -479,3 +479,124 @@ async def test_invalid_tasks_preserves_tombstoned_audio_across_restarts_and_dele
     assert (await plugin2.on_start()).is_ok()
     assert audio_a.is_file()
     assert audio_b.is_file()
+    snap2 = plugin2._build_runtime_snapshot()
+    assert snap2["degraded"] is True
+    assert snap2["tasks_recovery_incomplete"] is True
+    assert snap2["upload_gc_paused"] is True
+    assert len(snap2["corrupt_state_backups"]) == 1
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_corrupt_backup_followed_by_startup_save_failure_still_blocks_gc_on_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin1 = _make_plugin(tmp_path)
+    monkeypatch.setattr(plugin1, "_ensure_scheduler_task", lambda: None)
+    plugin1._upload_dir.mkdir(parents=True, exist_ok=True)
+    audio_a = plugin1._upload_dir / "keep_across_crash.mp3"
+    audio_a.write_bytes(b"ID3-CRASH")
+
+    plugin1._upload_name_map = {
+        "keep_across_crash.mp3": {
+            "stored_filename": "keep_across_crash.mp3",
+            "original_filename": "keep_across_crash.mp3",
+            "title": "Crash Keep",
+            "artist": "Artist",
+            "duration_sec": 30,
+            "deleted": True,
+        }
+    }
+    plugin1._save_upload_name_map_locked()
+
+    plugin1._state_file.parent.mkdir(parents=True, exist_ok=True)
+    plugin1._state_file.write_text("{corrupt", encoding="utf-8")
+
+    real_atomic_write_json = music_pusher_mod._atomic_write_json
+
+    def _fail_state_save(path: Path, payload: object) -> None:
+        if path == plugin1._state_file:
+            raise OSError("disk full")
+        real_atomic_write_json(path, payload)
+
+    monkeypatch.setattr(music_pusher_mod, "_atomic_write_json", _fail_state_save)
+    with pytest.raises(OSError, match="disk full"):
+        await plugin1.on_start()
+
+    # Corrupt scheduler_state.json was backed up to .corrupt.*, leaving no scheduler_state.json on disk.
+    assert not plugin1._state_file.exists()
+    assert len(list(plugin1._state_file.parent.glob("scheduler_state.json.corrupt.*"))) == 1
+    assert audio_a.is_file()
+
+    # Boot 2: scheduler_state.json is absent, but existing .corrupt.* backup keeps GC paused.
+    monkeypatch.setattr(music_pusher_mod, "_atomic_write_json", real_atomic_write_json)
+    plugin2 = _make_plugin(tmp_path)
+    monkeypatch.setattr(plugin2, "_ensure_scheduler_task", lambda: None)
+    assert (await plugin2.on_start()).is_ok()
+    assert audio_a.is_file()
+    assert plugin2._tasks_recovery_incomplete is True
+    snap2 = plugin2._build_runtime_snapshot()
+    assert snap2["degraded"] is True
+    assert snap2["tasks_recovery_incomplete"] is True
+    assert snap2["upload_gc_paused"] is True
+    assert len(snap2["corrupt_state_backups"]) == 1
+    persisted2 = json.loads(plugin2._state_file.read_text(encoding="utf-8"))
+    assert persisted2.get("tasks_recovery_incomplete") is True
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_removing_corrupt_state_backups_clears_recovery_incomplete_and_resumes_gc(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin1 = _make_plugin(tmp_path)
+    monkeypatch.setattr(plugin1, "_ensure_scheduler_task", lambda: None)
+    plugin1._upload_dir.mkdir(parents=True, exist_ok=True)
+    audio_a = plugin1._upload_dir / "tombstoned_orphan.mp3"
+    audio_a.write_bytes(b"ID3-ORPHAN")
+
+    plugin1._upload_name_map = {
+        "tombstoned_orphan.mp3": {
+            "stored_filename": "tombstoned_orphan.mp3",
+            "original_filename": "tombstoned_orphan.mp3",
+            "title": "Orphan",
+            "artist": "Artist",
+            "duration_sec": 30,
+            "deleted": True,
+        }
+    }
+    plugin1._save_upload_name_map_locked()
+    plugin1._state_file.parent.mkdir(parents=True, exist_ok=True)
+    plugin1._state_file.write_text("{corrupt", encoding="utf-8")
+
+    # Boot 1 & Boot 2 while .corrupt.* backup remains -> GC stays paused.
+    assert (await plugin1.on_start()).is_ok()
+    assert audio_a.is_file()
+    plugin2 = _make_plugin(tmp_path)
+    monkeypatch.setattr(plugin2, "_ensure_scheduler_task", lambda: None)
+    assert (await plugin2.on_start()).is_ok()
+    assert audio_a.is_file()
+    snap2 = plugin2._build_runtime_snapshot()
+    assert snap2["degraded"] is True
+    assert snap2["tasks_recovery_incomplete"] is True
+    assert snap2["upload_gc_paused"] is True
+
+    # Operator removes corrupt backup files after inspecting/recovering -> Boot 3 clears flag & resumes GC.
+    for backup_file in plugin2._state_file.parent.glob("scheduler_state.json.corrupt.*"):
+        backup_file.unlink()
+
+    plugin3 = _make_plugin(tmp_path)
+    monkeypatch.setattr(plugin3, "_ensure_scheduler_task", lambda: None)
+    assert (await plugin3.on_start()).is_ok()
+    assert not audio_a.exists()
+    assert "tombstoned_orphan.mp3" not in plugin3._upload_name_map
+    assert plugin3._tasks_recovery_incomplete is False
+    snap3 = plugin3._build_runtime_snapshot()
+    assert snap3["degraded"] is False
+    assert snap3["tasks_recovery_incomplete"] is False
+    assert snap3["upload_gc_paused"] is False
+    assert snap3["corrupt_state_backups"] == []
+    persisted3 = json.loads(plugin3._state_file.read_text(encoding="utf-8"))
+    assert "tasks_recovery_incomplete" not in persisted3
