@@ -31,7 +31,7 @@
     <form v-if="typing" class="say" @submit.prevent="send">
       <input
         ref="box" v-model="reply" type="text" :placeholder="t('power.colony.sayPlaceholder')" :aria-label="t('power.colony.sayPlaceholder')"
-        :disabled="held" data-testid="bubble-reply"
+        :disabled="held" data-testid="bubble-reply" @keydown.enter="notWhilePicking"
       >
       <button type="submit" class="pick" :disabled="held || !reply.trim()" :aria-label="t('power.space.familiars.answer')" data-testid="bubble-send">↵</button>
     </form>
@@ -100,6 +100,10 @@ function give(given: GivenAnswer) {
 }
 function send() {
   if (reply.value.trim()) give({ text: reply.value })
+}
+// The Enter that picks a word being composed (Chinese, Japanese) is no Enter of the form: it would send what is half typed.
+function notWhilePicking(event: KeyboardEvent) {
+  if (event.isComposing || event.keyCode === 229) event.preventDefault()
 }
 watch(typing, async shown => {
   if (!shown) return

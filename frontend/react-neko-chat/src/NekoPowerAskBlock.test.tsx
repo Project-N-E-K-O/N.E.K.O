@@ -350,6 +350,24 @@ describe('the question above the composer of the compact chat', () => {
     expect(input().value).toBe('on its way');
   });
 
+  it('does not send what is half typed with the Enter that picks a word being composed', () => {
+    const shown = show(ask(inWords));
+    const input = shown.at('[data-ask-input]');
+    fireEvent.change(input, { target: { value: '最新的' } });
+    // The Enter of an input method: kept from the form (which would send on it), however the browser says so.
+    expect(fireEvent.keyDown(input, { key: 'Enter', isComposing: true })).toBe(false);
+    expect(fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 })).toBe(false);
+    fireEvent.compositionStart(input);
+    expect(fireEvent.keyDown(input, { key: 'Enter' })).toBe(false);
+    fireEvent.submit(input.closest('form') as HTMLFormElement);
+    expect(shown.given).toEqual([]);
+    // Once the word is in, Enter is the form's again.
+    fireEvent.compositionEnd(input);
+    expect(fireEvent.keyDown(input, { key: 'Enter' })).toBe(true);
+    fireEvent.submit(input.closest('form') as HTMLFormElement);
+    expect(shown.given.length).toBe(1);
+  });
+
   it('says which folder a command is to be run in, where it names one', () => {
     const elsewhere = { ...permission, detail: { command: 'rm -rf dist', cwd: 'D:/another/project' } };
     for (const presentation of ['card', 'bubble'] as const) {

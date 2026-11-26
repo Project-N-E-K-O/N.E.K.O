@@ -282,6 +282,24 @@ describe('the question inside a card of the task HUD', () => {
     expect((draw(bare).querySelector('.task-ask-line') as HTMLElement).style.overflow).toBe('');
   });
 
+  it('does not send what is half typed with the Enter that picks a word being composed', async () => {
+    const box = draw({ kind: 'report', id: 'q5', question: 'Which file?' });
+    const input = box.querySelector('.task-ask-input') as HTMLInputElement;
+    input.value = '最新的';
+    const press = (init: KeyboardEventInit) => {
+      const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...init });
+      if ('keyCode' in init) Object.defineProperty(event, 'keyCode', { value: (init as { keyCode: number }).keyCode });
+      input.dispatchEvent(event);
+    };
+    press({ isComposing: true });
+    press({ keyCode: 229 } as KeyboardEventInit);
+    await flush();
+    expect(calls).toEqual([]);
+    press({});
+    await flush();
+    expect(calls.length).toBe(1);
+  });
+
   it('says which folder a command is to be run in, where it names one', () => {
     const elsewhere = { ...permission, id: 'q6', detail: { command: 'rm -rf dist', cwd: 'D:/another/project' }, line: 'run the command rm -rf dist' };
     const where = draw(elsewhere).querySelector('.task-ask-cwd') as HTMLElement;

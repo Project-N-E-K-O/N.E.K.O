@@ -459,7 +459,8 @@
                 say.appendChild(send);
                 input.addEventListener('keydown', function (event) {
                     // Not while a word is being composed: that Enter picks the word.
-                    if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); sendWords(); }
+                    // (229: what some browsers say of that key once the word is picked.)
+                    if (event.key === 'Enter' && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); sendWords(); }
                     event.stopPropagation();
                 });
             } else {

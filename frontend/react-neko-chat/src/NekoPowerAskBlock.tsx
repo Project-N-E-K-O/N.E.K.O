@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { i18n } from './i18n';
 import type { ChatMessage, MessageAction, MessageBlock } from './message-schema';
 
@@ -141,6 +141,8 @@ export default function NekoPowerAskBlock({ block, message, interactive, onActio
     }
     if (drafts.size > 50) drafts.delete(drafts.keys().next().value as string);
   }, [draftKey, block.state, reply, picked]);
+  // Whether a word is being composed in the line (an input method is at work).
+  const composing = useRef(false);
   const [wholeOpen, setWholeOpen] = useState(false);
   const [settling, setSettling] = useState(settle);
   useEffect(() => {
@@ -269,15 +271,19 @@ export default function NekoPowerAskBlock({ block, message, interactive, onActio
       ) : null}
 
       {open && !(view.shape === 'permission' && block.noNote) ? (
-        <form className="nekopower-ask-say" onSubmit={event => { event.preventDefault(); sendWords(); }}>
+        <form className="nekopower-ask-say" onSubmit={event => { event.preventDefault(); if (!composing.current) sendWords(); }}>
           <input type="text" value={reply} placeholder={placeholder} aria-label={placeholder} disabled={!interactive || block.state !== 'pending'}
             data-ask-input="true" {...hit('input')}
             onChange={event => setReply(event.target.value)}
+            onCompositionStart={() => { composing.current = true; }}
+            onCompositionEnd={() => { composing.current = false; }}
             // Words alone are no answer to a request for approval (they would read as a refusal):
-            // there the line only goes along with a button.
+            // there the line only goes along with a button. And the Enter that picks a word being
+            // composed (Chinese, Japanese) is no Enter of the form: it would send what is half typed.
             onKeyDown={event => {
               event.stopPropagation();
-              if (event.key === 'Enter' && view.shape === 'permission') event.preventDefault();
+              const picksWord = event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || composing.current;
+              if (event.key === 'Enter' && (view.shape === 'permission' || picksWord)) event.preventDefault();
             }} />
           {view.shape !== 'permission' ? (
             <button type="submit" className="nekopower-ask-button is-solid" disabled={held || (!reply.trim() && !somePicked)} data-ask-send="true" {...hit('send')}>

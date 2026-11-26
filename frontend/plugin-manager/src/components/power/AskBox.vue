@@ -57,7 +57,7 @@
       <div class="say">
         <el-input
           v-model="reply" :placeholder="t(shape === 'words' ? 'power.space.familiars.answerPlaceholder' : 'power.ask.addPlaceholder')"
-          data-testid="familiar-reply" @keyup.enter="send"
+          data-testid="familiar-reply" @keydown="noteKey" @keyup.enter="enter"
         />
         <el-button type="primary" :loading="busy === 'answer'" :disabled="!ready || held" data-testid="familiar-answer" @click="send">
           {{ t('power.space.familiars.answer') }}
@@ -139,6 +139,15 @@ function choose(option: string) {
 function confirm(yes: boolean) {
   if (held.value) return
   emit('answer', confirmation(yes, reply.value))
+}
+// The Enter that picks a word being composed (Chinese, Japanese) is let go of like any other, and is no
+// Enter to send by: whether it was that one is known as it is pressed, not as it is let go of.
+let pickedWord = false
+function noteKey(event: KeyboardEvent) {
+  pickedWord = event.isComposing || event.keyCode === 229
+}
+function enter() {
+  if (!pickedWord) send()
 }
 function send() {
   // Enter sends no more than the button would: nothing while an answer is on its way.

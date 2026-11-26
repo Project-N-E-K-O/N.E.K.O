@@ -337,6 +337,40 @@ describe('the card above the head of a familiar that waits', () => {
   })
 })
 
+describe('the Enter that picks a word being composed', () => {
+  const key = (type: string, init: KeyboardEventInit & { keyCode?: number } = {}) => {
+    const event = new KeyboardEvent(type, { key: 'Enter', bubbles: true, cancelable: true, ...init })
+    if (init.keyCode !== undefined) Object.defineProperty(event, 'keyCode', { value: init.keyCode })
+    return event
+  }
+
+  it('sends nothing from the box, let go of as any Enter is', async () => {
+    const answers: unknown[] = []
+    const { container } = await mount(AskBox, { ask: inWords, busy: '', onAnswer: (given: unknown) => answers.push(given) })
+    const input = inputOf(container, 'familiar-reply')!
+    typeInto(input, '最新的')
+    await flush()
+    for (const down of [key('keydown', { isComposing: true }), key('keydown', { keyCode: 229 })]) {
+      input.dispatchEvent(down)
+      input.dispatchEvent(key('keyup'))
+    }
+    expect(answers).toEqual([])
+    // The Enter after it sends.
+    input.dispatchEvent(key('keydown'))
+    input.dispatchEvent(key('keyup'))
+    expect(answers).toEqual([{ text: '最新的' }])
+  })
+
+  it('is kept from the form of the card above a head', async () => {
+    const { container } = await mount(AskBubble, { ask: inWords, name: 'Tabby', busy: '', error: '' })
+    const input = container.querySelector('[data-testid="bubble-reply"]') as HTMLInputElement
+    const prevented = (event: KeyboardEvent) => { input.dispatchEvent(event); return event.defaultPrevented }
+    expect(prevented(key('keydown', { isComposing: true }))).toBe(true)
+    expect(prevented(key('keydown', { keyCode: 229 }))).toBe(true)
+    expect(prevented(key('keydown'))).toBe(false)
+  })
+})
+
 describe('the folder a command is to be run in', () => {
   it('is said on the card above a head, where the command names one', async () => {
     const elsewhere = permission({ detail: { command: 'rm -rf dist', cwd: 'D:/another/project' } })
