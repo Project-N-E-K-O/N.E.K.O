@@ -211,7 +211,8 @@ class Launches:
         now = time.monotonic()
         if any(other.character_id == row.character_id and other.witness[0] == row.witness[0]
                and (other.phase in ACTIVE or other.connection.running
-                    or other.phase == "installed" and other.expires > now) for other in self.items.values()):
+                    or (other.phase == "installed" and other.expires > now and other.witness == row.witness))
+               for other in self.items.values()):
             raise WorkshopError("model_market_busy")
         if sum(item.phase in {"downloading", "installing", "applying"}
                for item in self.items.values()) >= 2:

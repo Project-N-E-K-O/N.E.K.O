@@ -1,6 +1,7 @@
 import copy
 import contextlib
 import json
+import os
 import shutil
 import sqlite3
 import sys
@@ -5796,6 +5797,43 @@ def test_legacy_bootstrap_preserves_old_root_with_unfinished_workshop(tmp_path, 
     assert not (cm.app_docs_dir / 'model_workshop').exists()
     assert inspect_model_workshop_metadata(cm.app_docs_dir) is None
     assert {str(p.relative_to(old)): p.read_bytes() for p in old.rglob('*') if p.is_file()} == before
+
+
+@pytest.mark.parametrize('state,error', [
+    ('pending', 'model_workshop_pending'),
+    ('unreadable', 'model_workshop_state_unreadable'),
+])
+def test_legacy_bootstrap_does_not_replace_current_workshop_with_unfinished_state(tmp_path, state, error):
+    from utils.cloudsave_runtime import import_legacy_runtime_root_if_needed
+
+    cm = _make_config_manager(tmp_path / 'current')
+    cm._get_localized_characters_source = lambda: None
+    cm.project_config_dir = tmp_path / 'empty_project_config'
+    cm.ensure_config_directory()
+    atomic_write_json(cm.config_dir / 'characters.json', cm.get_default_characters())
+    old = tmp_path / 'old'
+    shutil.copytree(cm.config_dir, old / 'config')
+    legacy_characters = old / 'config/characters.json'
+    characters = cm.get_default_characters()
+    next(iter(characters['猫娘'].values()))['性格'] = 'Edited legacy character'
+    atomic_write_json(legacy_characters, characters)
+    workshop = cm.app_docs_dir / 'model_workshop'
+    evidence = workshop / ('transactions/' + 'a' * 32 + '.json' if state == 'pending' else 'installed.json')
+    evidence.parent.mkdir(parents=True)
+    evidence.write_text('{}' if state == 'pending' else '{', encoding='utf-8')
+    evidence_before = evidence.stat(), evidence.read_bytes()
+    legacy_before = legacy_characters.read_bytes()
+    current_before = (cm.config_dir / 'characters.json').read_bytes()
+    cm.get_legacy_app_root_candidates = lambda: [old]
+
+    result = import_legacy_runtime_root_if_needed(cm)
+
+    assert not result['migrated'] and result['result'] == 'legacy_root_' + error
+    assert result['backup_path'] == '' and result['copied_paths'] == []
+    assert os.path.samestat(evidence.stat(), evidence_before[0])
+    assert evidence.read_bytes() == evidence_before[1]
+    assert legacy_characters.read_bytes() == legacy_before
+    assert (cm.config_dir / 'characters.json').read_bytes() == current_before
 
 
 def test_legacy_bootstrap_preserves_both_completed_workshop_registries(tmp_path):

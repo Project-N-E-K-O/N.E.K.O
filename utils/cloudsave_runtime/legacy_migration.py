@@ -835,6 +835,15 @@ def import_legacy_runtime_root_if_needed(config_manager) -> dict[str, Any]:
         )
         if target_has_user_content and not should_repair:
             continue
+        if target_has_user_content:
+            try:
+                inspect_model_workshop_metadata(target_root)
+            except ModelWorkshopStorageError as error:
+                # Replacing the current root with a copy changes the file
+                # identities needed to recover an unfinished installation.
+                logger.warning("Legacy runtime import deferred: %s", str(error))
+                return {"migrated": False, "source": str(source_root), "copied_paths": [],
+                        "backup_path": "", "repair_reason": "", "result": "legacy_root_" + str(error)}
         if (target_has_user_content and model_workshop_has_user_content(source_root / "model_workshop")
                 and os.path.lexists(target_root / "model_workshop")):
             logger.warning("Legacy runtime import deferred: model workshop roots conflict")

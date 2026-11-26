@@ -165,9 +165,11 @@ class WorkshopStaticMixin:
         if self._maintain_main:
             await _drain_sync(lambda: maintain(self._workshop_config))
         original = await super().get_response(path, scope)
-        full_path, info = await _drain_sync(lambda: self.lookup_path(path))
-        if info is None or original.status_code not in (200, 304):
+        if original.status_code not in (200, 304):
             return original
+        full_path, info = await _drain_sync(lambda: self.lookup_path(path))
+        if info is None:
+            return JSONResponse({"detail": "Not Found"}, status_code=404, headers={"cache-control": "no-store"})
         # All user-model files are pinned, including unregistered ordinary
         # ones: an import beginning after lookup must not replace their handle.
         return _PinnedModelFileResponse(

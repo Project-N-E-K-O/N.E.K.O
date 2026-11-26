@@ -71,7 +71,7 @@ class Snapshot:
         candidate = Path(os.path.abspath(path))
         # Rebase only the configured root alias. Resolving the entire candidate
         # would follow an injected link inside a model before its safety check.
-        for root in (self.paths.root, self.paths.root_alias):
+        for root in (self.paths.root_alias, self.paths.root):
             if root is None:
                 continue
             try:
@@ -178,17 +178,24 @@ def snapshot(config=None, *, paths=None) -> Snapshot:
         journals = []
         try:
             directory = paths.checked("model_workshop/transactions")
-            names = list(islice(directory.glob("*.json"), MAX_INSTALLED + 1))
+            try:
+                entries = os.scandir(directory)
+            except FileNotFoundError:
+                names = []
+            else:
+                with entries:
+                    journal_names = (entry.name for entry in entries if os.path.normcase(entry.name).endswith(".json"))
+                    names = list(islice(journal_names, MAX_INSTALLED + 1))
             if len(names) > MAX_INSTALLED:
                 raise WorkshopError("model_workshop_state_unreadable")
-            for path in names:
+            for name in names:
                 try:
                     data = read_json(
-                        paths.checked("model_workshop/transactions/" + path.name),
+                        paths.checked("model_workshop/transactions/" + name),
                         STATE_BYTES,
                     )
                     if data is not None:
-                        journals.append(validate_journal(data, path.name))
+                        journals.append(validate_journal(data, name))
                 except (OSError, WorkshopError):
                     errors.append("model_workshop_state_unreadable")
         except (OSError, WorkshopError):

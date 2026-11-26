@@ -125,6 +125,28 @@ def test_ordinary_models_preserve_get_head_etag_and_ranges(config):
     assert not (config.app_docs_dir / "model_workshop").exists()
 
 
+def test_model_disappearing_during_lookup_returns_controlled_not_found(config, monkeypatch):
+    config.vrm_dir.mkdir()
+    path = config.vrm_dir / "ordinary.vrm"
+    path.write_bytes(b"old model")
+    static = ReadOnlyWorkshopStaticFiles(directory=config.vrm_dir, config_manager=config)
+    lookup = static.lookup_path
+    count = 0
+
+    def remove_before_second_lookup(relative):
+        nonlocal count
+        count += 1
+        if count == 2:
+            path.unlink()
+        return lookup(relative)
+
+    monkeypatch.setattr(static, "lookup_path", remove_before_second_lookup)
+    app = Starlette(routes=[Mount("/", static)])
+    with TestClient(app, raise_server_exceptions=False) as client:
+        assert client.get("/ordinary.vrm").status_code == 404
+    assert count == 2
+
+
 def test_descriptor_is_pinned_before_the_response_start_even_if_path_is_replaced(
     config, monkeypatch
 ):

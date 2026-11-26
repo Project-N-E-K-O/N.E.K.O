@@ -142,6 +142,27 @@ def test_multiple_pairings_cannot_replace_one_role_concurrently(config):
         launches.select(config, second.request_id, 2, "b" * 64, 200, "2" * 32)
 
 
+@pytest.mark.parametrize("phase,admitted", [("installed", True), ("installing", False)])
+def test_stale_install_receipt_only_releases_an_idle_role(config, monkeypatch, phase, admitted):
+    monkeypatch.setattr(market, "_account_witness", lambda: None)
+    launches = market.Launches()
+    first = launches.create(config)
+    launches.select(config, first.request_id, 1, "a" * 64, 100, OPERATION)
+    first.phase = phase
+    path = config.get_runtime_config_path("characters.json")
+    characters = config.load_characters()
+    characters["猫娘"]["A"]["性格"] = "Edited"
+    path.write_text(json.dumps(characters))
+    new = launches.create(config)
+    assert new.witness != first.witness
+    if admitted:
+        assert launches.select(config, new.request_id, 2, "b" * 64, 200, "2" * 32) == (new, True)
+    else:
+        with pytest.raises(WorkshopError, match="busy"):
+            launches.select(config, new.request_id, 2, "b" * 64, 200, "2" * 32)
+    assert launches.get(first.request_id, OPERATION) is first and first.phase == phase
+
+
 def test_operation_receipts_stay_bounded_without_replaying_evicted_writes(config, monkeypatch):
     launches = market.Launches(); row = launches.create(config)
     monkeypatch.setattr(market, "MAX_OPERATIONS", 1)

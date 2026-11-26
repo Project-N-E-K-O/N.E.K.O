@@ -64,10 +64,11 @@ def test_shared_parameters_remain_editable_after_managed_install(owned, tmp_path
     assert json.loads(target.read_text()) == {"param_0": 2.5}
 
 
-def test_root_alias_keeps_managed_write_and_delete_protection(owned, tmp_path):
+@pytest.mark.parametrize("nested", [False, True])
+def test_root_alias_keeps_managed_write_and_delete_protection(owned, tmp_path, nested):
     path, _ = bundle_path(tmp_path)
     row = install(owned, path)["result"]
-    alias = tmp_path / "runtime-alias"
+    alias = (owned.paths.root if nested else tmp_path) / "runtime-alias"
     try:
         alias.symlink_to(owned.paths.root, target_is_directory=True)
     except OSError:
@@ -85,6 +86,28 @@ def test_root_alias_keeps_managed_write_and_delete_protection(owned, tmp_path):
     assert runtime.write_managed_json(cfg, alias / row["local_entrypoint"], {"local": True}) is True
     runtime.remove_managed_model(cfg, row)
     assert not target.exists()
+
+
+@pytest.mark.parametrize("state", ["not_directory", "permission_denied"])
+def test_unknown_journal_directory_blocks_ordinary_write_fallback(config, monkeypatch, state):
+    directory = config.app_docs_dir / "model_workshop" / "transactions"
+    directory.parent.mkdir()
+    if state == "not_directory":
+        directory.write_bytes(b"unknown state")
+    else:
+        directory.mkdir()
+        scandir = runtime.os.scandir
+
+        def deny_transactions(path):
+            if path == directory:
+                raise PermissionError("test directory is not enumerable")
+            return scandir(path)
+
+        monkeypatch.setattr(runtime.os, "scandir", deny_transactions)
+
+    assert "model_workshop_state_unreadable" in runtime.snapshot(config).errors
+    with pytest.raises(WorkshopError, match="unavailable"):
+        runtime.write_managed_json(config, config.vrm_dir / "example.json", {})
 
 
 @pytest.mark.parametrize("mutation", ["json", "blob", "upload"])
