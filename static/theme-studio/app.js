@@ -2571,6 +2571,9 @@ function pickBackgroundImage(item, file, input) {
     return;
   }
   setBusy(true, tsT('editor.image.uploading', '正在上传背景图片…'));
+  // The light / dark tabs stay usable during the upload, so remember which
+  // mode's draft the picked image belongs to.
+  var mode = state.mode;
   var reader = new FileReader();
   reader.onload = function () {
     var raw = String(reader.result || '');
@@ -2582,7 +2585,7 @@ function pickBackgroundImage(item, file, input) {
       setBusy(false);
       return;
     }
-    uploadBackgroundImage(item, file.name, base64, input);
+    uploadBackgroundImage(item, file.name, base64, input, mode);
   };
   reader.onerror = function () {
     var why = reader.error && reader.error.message ? reader.error.message : file.name;
@@ -2595,13 +2598,21 @@ function pickBackgroundImage(item, file, input) {
 }
 
 /** Upload step; the caller (pickBackgroundImage) already holds the busy lock, released here. */
-async function uploadBackgroundImage(item, filename, base64, input) {
+async function uploadBackgroundImage(item, filename, base64, input, mode) {
   setBusy(true, tsT('editor.image.uploading', '正在上传背景图片…'));
   try {
     var result = await callPlugin('import_background', { filename: filename, data: base64 });
     var url = result && result.url ? String(result.url) : '';
     if (!url) throw new Error(tsT('editor.image.noUrl', '后端没有返回图片地址'));
-    markEdited(item.key, 'url("' + url + '")');
+    // Write into the draft of the mode the image was picked in, even if the
+    // user switched tabs meanwhile (the draft helpers all key off state.mode).
+    var shownMode = state.mode;
+    state.mode = (mode === 'dark' || mode === 'light') ? mode : shownMode;
+    try {
+      markEdited(item.key, 'url("' + url + '")');
+    } finally {
+      state.mode = shownMode;
+    }
     syncRow(item.key);
     setStatus(tsT('editor.image.selected', '已选择背景图片'), 'ok');
     showToast(tsT('editor.image.selected', '已选择背景图片'), 'ok');
@@ -6083,7 +6094,10 @@ async function saveSchedule() {
     if (applied && applied.action === 'applied') {
       // The backend already switched themes while the editor still shows the old one:
       // read back, or the user's next "Apply" would overwrite the auto-switch result.
-      await reloadPalette({ silent: true });
+      // Unapplied material edits are kept, the same way external sync keeps
+      // them (the sync baseline is invalidated, so the next poll reports that
+      // the switched theme's materials are waiting behind those drafts).
+      await reloadPalette({ silent: true, keepMaterialDrafts: true });
       showToast(tsT('library.schedule.savedSwitched', '已保存，并切换到「{{name}}」',
         { name: String((applied.theme && applied.theme.name) || applied.theme_id) }), 'ok');
       setStatus(tsT('library.schedule.savedSwitchedStatus', '自动换主题已生效'), 'ok');

@@ -23,6 +23,11 @@ paints them:
      clear the chat window's built-in default gradient; their selectors are
      less specific than the gradient rules, so a theme gradient still paints.
 
+* Compact chat history bubbles (``.compact-export-history-bubble``): the
+  same text colour, but the glass tint rules do not reach them, so the stack
+  is always ``--nts-*-bubble-bg`` then ``--nts-*-bubble-gradient`` over the
+  message list. A preset must read well in both layouts.
+
 * Tool bubbles: ``--nts-tool-bubble-bg`` over the message list.
 
 Gradients are reduced to the mean of their colour stops, because text runs
@@ -49,6 +54,8 @@ WINDOW = "window"
 MESSAGE_LIST = "message-list"
 USER_BUBBLE = "user-bubble"
 AI_BUBBLE = "ai-bubble"
+COMPACT_USER_BUBBLE = "compact-user-bubble"
+COMPACT_AI_BUBBLE = "compact-ai-bubble"
 
 # (label, text key, background key, surface kind, minimum contrast ratio)
 PAIRS: list[tuple[str, str, str, str, float]] = [
@@ -59,6 +66,9 @@ PAIRS: list[tuple[str, str, str, str, float]] = [
     ("send-button", "--nts-send-text", "--nts-send-bg", WINDOW, 4.5),
     ("user-bubble", "--nts-user-bubble-text", "--nts-user-bubble-bg", USER_BUBBLE, 4.5),
     ("ai-bubble", "--nts-ai-bubble-text", "--nts-ai-bubble-bg", AI_BUBBLE, 4.5),
+    ("compact-user-bubble", "--nts-user-bubble-text", "--nts-user-bubble-bg",
+     COMPACT_USER_BUBBLE, 4.5),
+    ("compact-ai-bubble", "--nts-ai-bubble-text", "--nts-ai-bubble-bg", COMPACT_AI_BUBBLE, 4.5),
     ("panel-text", "--nts-panel-text", "--nts-panel-bg", WINDOW, 4.5),
     ("panel-subtext", "--nts-panel-text-sub", "--nts-panel-bg", WINDOW, 3.0),
     ("link", "--nts-link", "--nts-ai-bubble-bg", AI_BUBBLE, 4.5),
@@ -198,8 +208,11 @@ def resolve_surface(vars_map, kind, bg_key):
         return _layer(vars_map, bg_key, window_base(vars_map))
     if kind == MESSAGE_LIST:
         return _layer(vars_map, bg_key, message_list_base(vars_map))
-    role = "user" if kind == USER_BUBBLE else "ai"
+    role = "user" if kind in (USER_BUBBLE, COMPACT_USER_BUBBLE) else "ai"
     base = message_list_base(vars_map)
+    if kind in (COMPACT_USER_BUBBLE, COMPACT_AI_BUBBLE):
+        base = _layer(vars_map, f"--nts-{role}-bubble-bg", base)
+        return _layer(vars_map, f"--nts-{role}-bubble-gradient", base)
     tint = average_color(vars_map.get("--nts-bubble-glass-tint"))
     base = over(tint, base) if tint else _layer(vars_map, f"--nts-{role}-bubble-bg", base)
     return _layer(vars_map, f"--nts-{role}-bubble-gradient", base)
