@@ -326,3 +326,37 @@ async def test_split_and_merge_preserve_disputation_sub_zero_days_and_signal_clo
     assert merged['rein_last_signal_at'] == '2026-04-03T10:00:00'
     assert merged['disp_last_signal_at'] == '2026-04-05T10:00:00'
     assert merged['sub_zero_last_increment_date'] == '2026-04-06'
+
+
+@pytest.mark.asyncio
+async def test_merge_preserves_negative_reinforcement_and_sub_zero_archive_countdown(tmp_path):
+    """Merging reflections with negative reinforcement must keep the true max rather than clamping to 0."""
+    from memory.evidence import maybe_mark_sub_zero
+
+    engine = _install(str(tmp_path))
+    r1 = await _seed_refl(engine, "小天", id='r_neg_1', text='ignored once')
+    r1.update(
+        reinforcement=-0.4,
+        disputation=0.0,
+        rein_last_signal_at='2026-04-01T10:00:00',
+    )
+    r2 = await _seed_refl(engine, "小天", id='r_neg_2', text='ignored less')
+    r2.update(
+        reinforcement=-0.2,
+        disputation=0.0,
+        rein_last_signal_at='2026-04-02T10:00:00',
+    )
+    await engine.asave_reflections("小天", [r1, r2])
+
+    merge_cluster = [_annot_refl(r1), _annot_refl(r2)]
+    merge_actions = [{
+        'action': 'merge',
+        'source_ids': ['r_neg_1', 'r_neg_2'],
+        'produce': {'text': 'merged negative'},
+    }]
+    assert await engine.apply_refine_actions("小天", "master", merge_cluster, merge_actions, 'h_neg') == 1
+    merged = next(r for r in await engine.aload_reflections("小天") if r['text'] == 'merged negative')
+    assert merged['reinforcement'] == pytest.approx(-0.2)
+    assert merged['disputation'] == 0.0
+    assert maybe_mark_sub_zero(merged, datetime(2026, 4, 10, 12, 0, 0)) is True
+    assert merged['sub_zero_days'] == 1

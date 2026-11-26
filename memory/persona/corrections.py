@@ -718,6 +718,7 @@ class CorrectionsMixin:
         """Apply implementation for when the data lock is already held."""
         resolved = 0
         resolved_indices: set[int] = set()
+        replaced_old_texts: set[tuple[str, tuple[str, str, str] | None, str]] = set()
         fresh_by_identity = None
         ambiguous_fresh_identities: set[tuple[str, ...]] = set()
         if fresh_corrections is not None:
@@ -854,6 +855,10 @@ class CorrectionsMixin:
                         )
                     except MemoryScopeError:
                         continue
+            item_scope_key = (
+                (item_subject.kind, item_subject.subject_id, item_subject.scope)
+                if item_subject is not None else None
+            )
 
             def _entry_in_scope(entry, _subj=item_subject) -> bool:
                 if _subj is None:
@@ -985,15 +990,18 @@ class CorrectionsMixin:
                 )
 
             def _find_live_entry(target_text: str):
-                return next(
-                    (
-                        (j, e) for j, e in enumerate(section_facts)
-                        if (e.get('text', '') if isinstance(e, dict) else str(e)) == target_text
+                legacy_match = None
+                for j, e in enumerate(section_facts):
+                    if (
+                        (e.get('text', '') if isinstance(e, dict) else str(e)) == target_text
                         and _entry_in_scope(e)
                         and not is_permanently_suppressed(e)
-                    ),
-                    None,
-                )
+                    ):
+                        if isinstance(e, dict):
+                            return (j, e)
+                        if legacy_match is None:
+                            legacy_match = (j, e)
+                return legacy_match
 
             def _fold_into_live_entry(
                 live_idx: int,
@@ -1014,27 +1022,22 @@ class CorrectionsMixin:
                 sources_to_fold: list[dict] = []
                 if include_old_source:
                     sources_to_fold.append(_queued_source('old'))
-                if (
-                    new_speaker_id
-                    or item.get('new_speaker_provenance_mixed') is True
+                sources_to_fold.append(_queued_source('new'))
+                from memory.speaker_trust import provenance_of_entries
+                folded_provenance = provenance_of_entries([
+                    live_entry, *sources_to_fold,
+                ])
+                for key in (
+                    'speaker_id', 'speaker_trust', 'speaker_label',
+                    'speaker_entity_id',
                 ):
-                    sources_to_fold.append(_queued_source('new'))
-                if sources_to_fold:
-                    from memory.speaker_trust import provenance_of_entries
-                    folded_provenance = provenance_of_entries([
-                        live_entry, *sources_to_fold,
-                    ])
-                    for key in (
-                        'speaker_id', 'speaker_trust', 'speaker_label',
-                        'speaker_entity_id',
-                    ):
-                        live_entry.pop(key, None)
-                    live_entry.update(folded_provenance)
-                    if any(
-                        src.get('speaker_provenance_mixed') is True
-                        for src in sources_to_fold
-                    ):
-                        live_entry['speaker_provenance_mixed'] = True
+                    live_entry.pop(key, None)
+                live_entry.update(folded_provenance)
+                if any(
+                    src.get('speaker_provenance_mixed') is True
+                    for src in sources_to_fold
+                ):
+                    live_entry['speaker_provenance_mixed'] = True
                 live_entry = self._normalize_entry(live_entry)
                 if isinstance(live_entry, dict):
                     _ensure_entry_id(live_entry)
@@ -1191,6 +1194,10 @@ class CorrectionsMixin:
                                 new_entry['version_history'] = [history_entry]
                             _record_applied_cid(new_entry, item_cid)
                             section_facts[j] = new_entry
+                        if merged_text != old_text:
+                            replaced_old_texts.add(
+                                (entity, item_scope_key, old_text)
+                            )
                         break
                 if not matched:
                     live_merged = _find_live_entry(merged_text)
@@ -1253,6 +1260,8 @@ class CorrectionsMixin:
                     or not _entry_in_scope(e)
                     or is_permanently_suppressed(e)
                 ]
+                if old_entries and new_text != old_text:
+                    replaced_old_texts.add((entity, item_scope_key, old_text))
                 live_new_match = _find_live_entry(new_text)
                 if live_new_match is None:
                     replacement = _stamped_new_entry(new_text)
@@ -1358,7 +1367,11 @@ class CorrectionsMixin:
                                 )[-_VH_MAX:]
                         _record_applied_cid(existing, item_cid)
                         break
-                if not matched and _is_blocked_by_retirement(old_text):
+                if (
+                    not matched
+                    and (entity, item_scope_key, old_text) not in replaced_old_texts
+                    and _is_blocked_by_retirement(old_text)
+                ):
                     live_new = _find_live_entry(new_text)
                     if live_new is not None:
                         _fold_into_live_entry(
@@ -1373,9 +1386,10 @@ class CorrectionsMixin:
             else:  # keep_both
                 live_new = _find_live_entry(new_text)
                 if live_new is None:
-                    new_entry = _stamped_new_entry(new_text)
-                    _record_applied_cid(new_entry, item_cid)
-                    section_facts.append(new_entry)
+                    if not _is_blocked_by_retirement(new_text):
+                        new_entry = _stamped_new_entry(new_text)
+                        _record_applied_cid(new_entry, item_cid)
+                        section_facts.append(new_entry)
                 elif item_cid:
                     live_idx, live_entry = live_new
                     if not isinstance(live_entry, dict):
