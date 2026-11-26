@@ -1413,15 +1413,12 @@ async def test_anytime_is_refused_before_saving_when_the_manifest_cannot_be_open
     assert permission_panel.pending(index=env.index)["incomplete"] == ["open"]
 
 
-@pytest.mark.parametrize("shape", ["missing", "directory"])
-def test_no_manifest_file_is_an_empty_declaration(tmp_path, shape):
-    if shape == "directory":
-        (tmp_path / "plugin.toml").mkdir()
-    assert permission_panel._load_manifest(tmp_path) == {}
+def test_no_manifest_file_is_an_empty_declaration(tmp_path):
+    assert permission_panel._load_manifest(tmp_path) == ({}, "read")
 
 
 @pytest.mark.parametrize("step", ["stat", "open"])
-def test_a_manifest_that_cannot_be_read_now_is_not_an_empty_one(tmp_path, monkeypatch, step):
+def test_a_manifest_that_cannot_be_read_now_is_unavailable(tmp_path, monkeypatch, step):
     (tmp_path / "plugin.toml").write_text("[plugin]\nid='x'\n", encoding="utf-8")
     real = getattr(Path, step)
 
@@ -1431,30 +1428,96 @@ def test_a_manifest_that_cannot_be_read_now_is_not_an_empty_one(tmp_path, monkey
         return real(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, step, failing)
-    assert permission_panel._load_manifest(tmp_path) is None
+    assert permission_panel._load_manifest(tmp_path) == ({}, "unavailable")
 
 
-@pytest.mark.parametrize("content", [b"[plugin\nid=", b"\xff\xfe[plugin]"])
-def test_a_damaged_manifest_is_not_an_empty_one(tmp_path, content):
-    (tmp_path / "plugin.toml").write_bytes(content)
-    assert permission_panel._load_manifest(tmp_path) is None
+@pytest.mark.parametrize("shape", ["directory", "damaged", "not_utf8", "oversized", "grown_after_stat"])
+def test_a_manifest_the_host_cannot_use_is_unusable(tmp_path, monkeypatch, shape):
+    path = tmp_path / "plugin.toml"
+    if shape == "directory":
+        path.mkdir()
+    elif shape == "damaged":
+        path.write_bytes(b"[plugin\nid=")
+    elif shape == "not_utf8":
+        path.write_bytes(b"\xff\xfe[plugin]")
+    else:
+        monkeypatch.setattr(permission_panel, "_MAX_MANIFEST_BYTES", 16)
+        path.write_text("[plugin]\nid='x'\n" + ("#" * 40 if shape == "oversized" else ""), encoding="utf-8")
+        if shape == "grown_after_stat":
+            real_open = Path.open
+
+            def growing_open(self, *args, **kwargs):
+                if self.name == "plugin.toml":
+                    with real_open(self, "a", encoding="utf-8") as stream:
+                        stream.write("#" * 40)
+                return real_open(self, *args, **kwargs)
+
+            monkeypatch.setattr(Path, "open", growing_open)
+    assert permission_panel._load_manifest(tmp_path) == ({}, "unusable")
 
 
-def test_an_oversized_manifest_is_not_an_empty_one(tmp_path, monkeypatch):
-    monkeypatch.setattr(permission_panel, "_MAX_MANIFEST_BYTES", 4)
-    (tmp_path / "plugin.toml").write_text("[plugin]\nid='x'\n", encoding="utf-8")
-    assert permission_panel._load_manifest(tmp_path) is None
+def test_a_manifest_exactly_at_the_limit_is_read(tmp_path, monkeypatch):
+    content = "[plugin]\nid='x'\n"
+    monkeypatch.setattr(permission_panel, "_MAX_MANIFEST_BYTES", len(content))
+    (tmp_path / "plugin.toml").write_text(content, encoding="utf-8")
+    assert permission_panel._load_manifest(tmp_path) == ({"plugin": {"id": "x"}}, "read")
+
+
+def test_an_unusable_manifest_still_shows_what_the_scan_found(env, monkeypatch):
+    monkeypatch.setattr(permission_panel, "_MAX_MANIFEST_BYTES", 16)
+    env.plugin("big", manifest="[plugin]\nid='big'\n" + "#" * 40 + "\n", report=_report(
+        system_process__spawn={"declared": None, "findings": [_finding("a.py", 1)], "basis": "resolved_call"},
+    ))
+    result = permission_panel.pending(index=env.index)
+    assert result["inferred"] == [{"plugin_id": "big", "permission": SPAWN}]
+    assert result["incomplete"] == []
+    panel = permission_panel.plugin_panel("big", index=env.index)
+    assert panel["manifest"] == "unusable" and panel["analysis"]["declarations"] == "unusable"
+    assert panel["counts"]["undeclared_found"] == 1
+
+
+@pytest.mark.asyncio
+async def test_anytime_is_refused_on_an_unusable_manifest(env):
+    env.plugin("broken", manifest="[plugin\nid=", report=_report())
+    response = await _call("PUT", f"/plugin-permissions/plugins/broken/permissions/{SPAWN}",
+                           {"state": "granted", "condition": "anytime"})
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["code"] == "PLUGIN_MANIFEST_UNUSABLE"
+    assert env.store.read("broken") == {}
+    allowed = await _call("PUT", f"/plugin-permissions/plugins/broken/permissions/{SPAWN}", {"state": "granted"})
+    assert allowed.status_code == 200, allowed.text
+
+
+def test_a_failed_read_drops_the_copy(env, short_wait):
+    _weather(env)
+    permission_panel.pending(index=env.index)
+    (Path(env.metas["weather"]["config_path"])).write_text("[plugin\nid=", encoding="utf-8")
+    assert permission_panel.pending(index=env.index)["incomplete"] == []  # read, unusable
+    with _operation_running_elsewhere():
+        assert permission_panel.pending(index=env.index)["incomplete"] == ["weather"]
 
 
 def test_time_waited_for_the_lock_is_taken_from_the_budget(env, monkeypatch):
-    monkeypatch.setattr(permission_panel, "MANIFEST_LOCK_WAIT", 5.0)
+    from contextlib import contextmanager as _cm
+
+    clock = {"now": 100.0}
+
+    class Clock:
+        @staticmethod
+        def monotonic():
+            return clock["now"]
+
+    @_cm
+    def lock(_stop, *, timeout=None):
+        clock["now"] += 0.7  # the wait before the lock was granted
+        yield
+
+    monkeypatch.setattr(permission_panel, "time", Clock)
+    monkeypatch.setattr(permission_panel, "hold_plugin_operation_file_lock", lock)
     _weather(env)
-    budget = permission_panel._LockBudget(5.0)
-    with _operation_ending_soon(0.2):
-        _manifest, status = permission_panel._read_manifest(
-            Path(env.metas["weather"]["config_path"]).parent, "1.0", budget
-        )
-    assert status == "read" and budget.wait() < 4.9
+    budget = permission_panel._LockBudget(2.0)
+    _manifest, status = permission_panel._read_manifest(Path(env.metas["weather"]["config_path"]).parent, "1.0", budget)
+    assert status == "read" and budget.wait() == pytest.approx(1.3)
 
 
 def test_views_answer_when_the_lock_file_cannot_be_opened(env, monkeypatch):

@@ -76,8 +76,16 @@ from plugin.server.infrastructure.plugin_permissions import (
 # ``incomplete`` in the all-plugin views).
 MANIFEST_READ = "read"
 MANIFEST_CACHED = "cached"  # an operation held the lock: the copy read last
-MANIFEST_UNAVAILABLE = "unavailable"  # busy without a usable copy, or unreadable
+# Could not be read this time (busy without a usable copy, or a read error):
+# the declaration is unknown, nothing is inferred for it.
+MANIFEST_UNAVAILABLE = "unavailable"
+# Read, but not a manifest the host can use (not a regular file, over the
+# size limit, not valid TOML): no usable declaration, so the views infer from
+# the scan as for an invalid ``[permissions]`` table, but "any time", which
+# needs the declaration, is refused.
+MANIFEST_UNUSABLE = "unusable"
 MANIFEST_UNAVAILABLE_CODE = "PLUGIN_MANIFEST_UNAVAILABLE"
+MANIFEST_UNUSABLE_CODE = "PLUGIN_MANIFEST_UNUSABLE"
 # Reconciliation of the declaration with the scan, one per permission row.
 RECONCILE_MATCHED = "matched"  # declared and found
 RECONCILE_UNDECLARED = "undeclared"  # found, not declared
@@ -215,7 +223,8 @@ def _read_manifest(root: Path | None, version: str, budget: _LockBudget | None =
     read last for plugin ``version`` is served without touching the file.
     Otherwise, and when the file exists but cannot be read, the manifest is
     unavailable (``{}``, which callers must not read as "declares nothing").
-    The caller gets its own copy.
+    A read that does not give a usable manifest drops the copy. The caller
+    gets its own copy.
     """
     if root is None:
         return {}, MANIFEST_READ
@@ -226,9 +235,11 @@ def _read_manifest(root: Path | None, version: str, budget: _LockBudget | None =
         with hold_plugin_operation_file_lock(None, timeout=wait):
             if budget is not None:
                 budget.spend(time.monotonic() - started)
-            manifest = _load_manifest(root)
-            if manifest is None:
-                return {}, MANIFEST_UNAVAILABLE
+            manifest, status = _load_manifest(root)
+            if status != MANIFEST_READ:
+                with _manifest_cache_lock:
+                    _manifest_cache.pop(key, None)
+                return {}, status
             # Published while the lock is held, so reads publish in the order
             # they read; under the version the read file states (an update
             # installs into the same directory).
@@ -250,31 +261,33 @@ def _read_manifest(root: Path | None, version: str, budget: _LockBudget | None =
         return {}, MANIFEST_UNAVAILABLE
 
 
-def _load_manifest(root: Path) -> dict | None:
-    """``{}`` when there is no manifest file, ``None`` when there is one but
-    it cannot be read or parsed now (a registered plugin's manifest parsed
-    when it was loaded: one that does not is mid-write or damaged, and is
-    not taken as declaring nothing)."""
+def _load_manifest(root: Path) -> tuple[dict, str]:
+    """The manifest and ``MANIFEST_READ`` (``{}`` when there is no file),
+    ``MANIFEST_UNAVAILABLE`` when the file could not be read now, or
+    ``MANIFEST_UNUSABLE`` when what is there is not a usable manifest."""
     path = root / "plugin.toml"
     try:
         info = path.stat()
     except (FileNotFoundError, NotADirectoryError):
-        return {}
+        return {}, MANIFEST_READ
     except OSError:
-        return None
-    if not stat.S_ISREG(info.st_mode):
-        return {}
-    if info.st_size > _MAX_MANIFEST_BYTES:
-        return None
+        return {}, MANIFEST_UNAVAILABLE
+    if not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_MANIFEST_BYTES:
+        return {}, MANIFEST_UNUSABLE
     try:
         with path.open("rb") as stream:
-            return tomllib.load(stream)
+            # Bounded by what is read: the file may grow after the stat.
+            data = stream.read(_MAX_MANIFEST_BYTES + 1)
     except (FileNotFoundError, NotADirectoryError):
-        return {}
+        return {}, MANIFEST_READ
     except OSError:
-        return None
+        return {}, MANIFEST_UNAVAILABLE
+    if len(data) > _MAX_MANIFEST_BYTES:
+        return {}, MANIFEST_UNUSABLE
+    try:
+        return tomllib.loads(data.decode("utf-8")), MANIFEST_READ
     except (tomllib.TOMLDecodeError, UnicodeError):
-        return None
+        return {}, MANIFEST_UNUSABLE
 
 
 def _inputs(plugin_id: str, meta: dict, *, verify: bool = False, budget: _LockBudget | None = None) -> _PluginInputs:
@@ -548,7 +561,9 @@ def plugin_panel(plugin_id: str, *, index: UsageIndex = usage_index) -> dict:
             "status": report.get("status"),
             "analyzer_version": report.get("_analyzer_version"),
             "analyzed_at": report.get("analyzed_at"),
-            "declarations": inputs.declarations.status if inputs.manifest_known else MANIFEST_UNAVAILABLE,
+            "declarations": inputs.manifest_status
+            if inputs.manifest_status in (MANIFEST_UNAVAILABLE, MANIFEST_UNUSABLE)
+            else inputs.declarations.status,
         },
         "counts": _counts(rows),
         "rows": rows,
@@ -835,13 +850,20 @@ def check_condition_allowed(plugin_id: str, permission: str, state_value: str, c
     manifest, status = _read_manifest(
         Path(config_path).parent if config_path else None, str(meta.get("version") or "")
     )
+    # Neither is taken as "no declaration": that would allow "any time".
     if status == MANIFEST_UNAVAILABLE:
-        # Never taken as "no declaration": that would allow "any time".
         raise ServerDomainError(
             MANIFEST_UNAVAILABLE_CODE,
             "The plugin's permission declaration could not be read",
             503,
             details={"plugin_id": plugin_id, "retryable": True},
+        )
+    if status == MANIFEST_UNUSABLE:
+        raise ServerDomainError(
+            MANIFEST_UNUSABLE_CODE,
+            "The plugin's manifest cannot be used to check background use",
+            422,
+            details={"plugin_id": plugin_id, "retryable": False},
         )
     declarations, _issues = parse_permission_declarations(manifest)
     if declarations.status != "declared":
