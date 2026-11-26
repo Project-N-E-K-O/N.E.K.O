@@ -541,6 +541,7 @@ _archive_invalid_ssl_pair() {
                 echo "↩️ Restored archived certificate after key archive failure: $cert_file" >&2
             else
                 echo "⚠️ Failed to roll back archived certificate: $archived_cert -> $cert_file" >&2
+                echo "   Certificate remains at $archived_cert; restore it manually before restarting." >&2
             fi
         fi
         return 1

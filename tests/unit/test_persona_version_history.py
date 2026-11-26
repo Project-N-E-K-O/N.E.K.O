@@ -746,6 +746,7 @@ async def test_fallback_reusing_live_entry_folds_trust_and_event_window(
     )
     await pm._aqueue_correction(
         "小天", "旧观察", "新观察", "master",
+        old_speaker_provenance={"speaker_id": "qq:alice", "speaker_trust": 0.8},
         new_speaker_provenance={
             "speaker_id": "qq:alice",
             "speaker_trust": 0.2,
@@ -769,3 +770,140 @@ async def test_fallback_reusing_live_entry_folds_trust_and_event_window(
     assert entry["event_start_at"] == "2026-04-01T00:00:00"
     assert entry["event_end_at"] == "2026-05-31T23:59:59"
     assert entry["applied_correction_id"] == cid
+
+
+@pytest.mark.asyncio
+async def test_keep_old_does_not_append_rejected_new_text_when_old_replaced_in_same_batch(tmp_path):
+    """If an earlier keep_new replaces old_text, a subsequent keep_old on the same old_text must not append rejected new_text."""
+    pm, _ = _install(str(tmp_path))
+    await _seed_master_fact(pm, "小天", "喜欢喝茶")
+    await pm._aqueue_correction("小天", "喜欢喝茶", "喜欢喝咖啡", "master")
+    await pm._aqueue_correction("小天", "喜欢喝茶", "讨厌喝茶", "master")
+
+    payload = [
+        {"index": 0, "action": "keep_new"},
+        {"index": 1, "action": "keep_old"},
+    ]
+    with patch("utils.llm_client.create_chat_llm", return_value=_make_llm_mock(payload)):
+        resolved = await pm.resolve_corrections("小天")
+
+    assert resolved == 2
+    assert await pm.aload_pending_corrections("小天") == []
+    facts = pm._get_section_facts(await pm.aensure_persona("小天"), "master")
+    assert [e["text"] for e in facts] == ["喜欢喝咖啡"]
+
+
+@pytest.mark.asyncio
+async def test_merge_fallback_reuse_with_unknown_old_speaker_marks_mixed(tmp_path):
+    """When merge fallback reuses a live entry and queued old provenance is unknown, it must mark provenance mixed."""
+    from memory.introspection import PERMANENT_SUPPRESSION_KEY, build_permanent_suppression
+
+    pm, _ = _install(str(tmp_path))
+    await _seed_master_fact(
+        pm, "小天", "旧观察",
+        id="retired_unknown_old",
+        **{PERMANENT_SUPPRESSION_KEY: build_permanent_suppression("merged_into", "2026-11-01T00:00:00", merged_into="live_target_1")},
+    )
+    await _seed_master_fact(
+        pm, "小天", "融合新观察",
+        id="live_target_1",
+        speaker_id="qq:alice",
+        speaker_trust=0.95,
+    )
+    await pm._aqueue_correction(
+        "小天", "旧观察", "新观察", "master",
+        new_speaker_provenance={"speaker_id": "qq:alice", "speaker_trust": 0.2},
+    )
+    cid = (await pm.aload_pending_corrections("小天"))[0]["correction_id"]
+    with patch("utils.llm_client.create_chat_llm", return_value=_make_llm_mock([{"index": 0, "action": "merge", "text": "融合新观察"}])):
+        resolved = await pm.resolve_corrections("小天")
+
+    assert resolved == 1
+    facts = pm._get_section_facts(await pm.aensure_persona("小天"), "master")
+    entry = next(e for e in facts if e.get("id") == "live_target_1")
+    assert entry.get("speaker_provenance_mixed") is True
+    assert "speaker_id" not in entry
+    assert entry["applied_correction_id"] == cid
+
+
+@pytest.mark.asyncio
+async def test_inplace_merge_blocked_by_retired_target_preserves_existing_and_new_observation(tmp_path):
+    """When in-place merge proposes retired wording, keep the active entry untouched and preserve new_text separately."""
+    from memory.introspection import PERMANENT_SUPPRESSION_KEY, build_permanent_suppression
+
+    pm, _ = _install(str(tmp_path))
+    await _seed_master_fact(
+        pm, "小天", "旧观察",
+        id="live_old_1",
+        reinforcement=3.0,
+    )
+    await _seed_master_fact(
+        pm, "小天", "退役合并句",
+        id="retired_target_1",
+        **{PERMANENT_SUPPRESSION_KEY: build_permanent_suppression("merged_into", "2026-11-01T00:00:00", merged_into="other_1")},
+    )
+    await pm._aqueue_correction("小天", "旧观察", "新观察", "master")
+    cid = (await pm.aload_pending_corrections("小天"))[0]["correction_id"]
+
+    with patch("utils.llm_client.create_chat_llm", return_value=_make_llm_mock([{"index": 0, "action": "merge", "text": "退役合并句"}])):
+        resolved = await pm.resolve_corrections("小天")
+
+    assert resolved == 1
+    facts = pm._get_section_facts(await pm.aensure_persona("小天"), "master")
+    old_entry = next(e for e in facts if e.get("id") == "live_old_1")
+    assert old_entry["text"] == "旧观察"
+    assert old_entry["reinforcement"] == pytest.approx(3.0)
+    assert old_entry["applied_correction_id"] == cid
+
+    live_retired_text = [
+        e for e in facts if e.get("text") == "退役合并句" and not e.get(PERMANENT_SUPPRESSION_KEY)
+    ]
+    assert live_retired_text == []
+
+    new_entry = next(e for e in facts if e.get("text") == "新观察" and not e.get(PERMANENT_SUPPRESSION_KEY))
+    assert new_entry["applied_correction_id"] == cid
+
+
+@pytest.mark.asyncio
+async def test_keep_both_hitting_legacy_string_entry_records_cid_for_chained_replay(tmp_path, monkeypatch):
+    """When keep_both hits a legacy plain-string new_text entry, it must normalize it and record cid so chained keep_new replay inherits it."""
+    from memory.persona import corrections as corrections_mod
+
+    pm, _ = _install(str(tmp_path))
+    persona = await pm.aensure_persona("小天")
+    pm._get_section_facts(persona, "master").extend(["A", "B"])
+    await pm.asave_persona("小天", persona)
+
+    await pm._aqueue_correction("小天", "A", "B", "master")
+    await pm._aqueue_correction("小天", "B", "C", "master")
+    queued = await pm.aload_pending_corrections("小天")
+    cid1, cid2 = queued[0]["correction_id"], queued[1]["correction_id"]
+
+    real_write = corrections_mod.atomic_write_json_async
+
+    async def _fail_corrections_write(path, *args, **kwargs):
+        if str(path).endswith("persona_corrections.json"):
+            raise OSError("disk failure after persona save")
+        return await real_write(path, *args, **kwargs)
+
+    monkeypatch.setattr(corrections_mod, "atomic_write_json_async", _fail_corrections_write)
+    payload = [
+        {"index": 0, "action": "keep_both"},
+        {"index": 1, "action": "keep_new"},
+    ]
+    with patch("utils.llm_client.create_chat_llm", return_value=_make_llm_mock(payload)):
+        with pytest.raises(OSError, match="disk failure"):
+            await pm.resolve_corrections("小天")
+
+    monkeypatch.setattr(corrections_mod, "atomic_write_json_async", real_write)
+    with patch("utils.llm_client.create_chat_llm", return_value=_make_llm_mock(payload)):
+        resolved = await pm.resolve_corrections("小天")
+
+    assert resolved == 2
+    assert await pm.aload_pending_corrections("小天") == []
+    facts = pm._get_section_facts(await pm.aensure_persona("小天"), "master")
+    assert [e["text"] if isinstance(e, dict) else e for e in facts] == ["A", "C"]
+    entry_c = next(e for e in facts if isinstance(e, dict) and e["text"] == "C")
+    assert cid1 in (entry_c.get("applied_correction_ids") or [])
+    assert cid2 in (entry_c.get("applied_correction_ids") or [])
+    assert entry_c["applied_correction_id"] == cid2

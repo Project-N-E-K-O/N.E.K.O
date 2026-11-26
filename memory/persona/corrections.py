@@ -1012,10 +1012,7 @@ class CorrectionsMixin:
                     _merged_correction_event_fields(live_entry, item)
                 )
                 sources_to_fold: list[dict] = []
-                if include_old_source and (
-                    old_speaker_id
-                    or item.get('old_speaker_provenance_mixed') is True
-                ):
+                if include_old_source:
                     sources_to_fold.append(_queued_source('old'))
                 if (
                     new_speaker_id
@@ -1095,6 +1092,31 @@ class CorrectionsMixin:
                     et = existing.get('text', '') if isinstance(existing, dict) else str(existing)
                     if et == old_text and _entry_in_scope(existing) and not is_permanently_suppressed(existing):
                         matched = True
+                        if merged_text != old_text and _is_blocked_by_retirement(merged_text):
+                            if not isinstance(existing, dict):
+                                existing = self._normalize_entry_for_section(
+                                    persona, entity, existing,
+                                )
+                                if item_subject is not None:
+                                    existing.update(item_subject.as_entry_fields())
+                                existing = self._normalize_entry(existing)
+                                if isinstance(existing, dict):
+                                    _ensure_entry_id(existing)
+                                section_facts[j] = existing
+                            if isinstance(existing, dict):
+                                _record_applied_cid(existing, item_cid)
+                            live_new = _find_live_entry(new_text)
+                            if live_new is not None:
+                                _fold_into_live_entry(
+                                    live_new[0],
+                                    live_new[1],
+                                    include_old_source=False,
+                                )
+                            elif not _is_blocked_by_retirement(new_text):
+                                new_entry = _stamped_new_entry(new_text)
+                                _record_applied_cid(new_entry, item_cid)
+                                section_facts.append(new_entry)
+                            break
                         if isinstance(existing, dict):
                             from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
                             from memory.speaker_trust import provenance_of_entries
@@ -1336,7 +1358,7 @@ class CorrectionsMixin:
                                 )[-_VH_MAX:]
                         _record_applied_cid(existing, item_cid)
                         break
-                if not matched:
+                if not matched and _is_blocked_by_retirement(old_text):
                     live_new = _find_live_entry(new_text)
                     if live_new is not None:
                         _fold_into_live_entry(
@@ -1349,21 +1371,25 @@ class CorrectionsMixin:
                         _record_applied_cid(new_entry, item_cid)
                         section_facts.append(new_entry)
             else:  # keep_both
-                existing_texts = {
-                    (e.get('text', '') if isinstance(e, dict) else str(e))
-                    for e in section_facts
-                    if _entry_in_scope(e) and not is_permanently_suppressed(e)
-                }
-                if new_text not in existing_texts:
+                live_new = _find_live_entry(new_text)
+                if live_new is None:
                     new_entry = _stamped_new_entry(new_text)
                     _record_applied_cid(new_entry, item_cid)
                     section_facts.append(new_entry)
                 elif item_cid:
-                    for existing in section_facts:
-                        et = existing.get('text', '') if isinstance(existing, dict) else str(existing)
-                        if et == new_text and _entry_in_scope(existing) and not is_permanently_suppressed(existing) and isinstance(existing, dict):
-                            _record_applied_cid(existing, item_cid)
-                            break
+                    live_idx, live_entry = live_new
+                    if not isinstance(live_entry, dict):
+                        live_entry = self._normalize_entry_for_section(
+                            persona, entity, live_entry,
+                        )
+                        if item_subject is not None:
+                            live_entry.update(item_subject.as_entry_fields())
+                        live_entry = self._normalize_entry(live_entry)
+                        if isinstance(live_entry, dict):
+                            _ensure_entry_id(live_entry)
+                        section_facts[live_idx] = live_entry
+                    if isinstance(live_entry, dict):
+                        _record_applied_cid(live_entry, item_cid)
 
             resolved += 1
             resolved_indices.add(idx)
