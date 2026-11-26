@@ -1841,7 +1841,7 @@ async def test_long_term_status_waits_until_the_staged_snapshot_is_consumed(tmp_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('outbox', ['pending', 'republish', 'empty'])
+@pytest.mark.parametrize('outbox', ['pending', 'republish', 'owed', 'empty'])
 async def test_long_term_receipt_does_not_complete_newer_outbox_work(tmp_path, monkeypatch, outbox):
     from unittest.mock import AsyncMock
 
@@ -1855,6 +1855,7 @@ async def test_long_term_receipt_does_not_complete_newer_outbox_work(tmp_path, m
     ]
     uploads = []
     grant = epoch = None
+    capture_owed = outbox == 'owed'
 
     async def observed(request):
         if request.url.path.endswith('/long-term-memory'):
@@ -1871,6 +1872,8 @@ async def test_long_term_receipt_does_not_complete_newer_outbox_work(tmp_path, m
             if outbox == 'republish':
                 local = adapter.read_local(grant, epoch)
                 adapter.write_local(grant, epoch, base=local['base'], pending=None, republish=True)
+            if capture_owed:
+                adapter.owed_path(UID).touch()
             return httpx.Response(200, json={
                 'ownerId': OWNER, 'characterSyncId': UID, 'revision': len(uploads), 'completedAt': 2000,
             })
@@ -1895,6 +1898,12 @@ async def test_long_term_receipt_does_not_complete_newer_outbox_work(tmp_path, m
             # The next pass can send B immediately without bypassing retry fences.
             await runtime._long_term_memory_pass(UID, presence=presence)
             assert uploads == [snapshot['operationId'] for snapshot in snapshots]
+            assert runtime.scheduler.channel_status(DOMAIN.key())['long_term']['status'] == 'success'
+        elif outbox == 'owed':
+            capture_owed = False
+            adapter.owed_path(UID).unlink()
+            runtime.scheduler.request_check(DOMAIN.key(), 'long_term')
+            await runtime._long_term_memory_pass(UID, presence=presence)
             assert runtime.scheduler.channel_status(DOMAIN.key())['long_term']['status'] == 'success'
     finally:
         await runtime.close()

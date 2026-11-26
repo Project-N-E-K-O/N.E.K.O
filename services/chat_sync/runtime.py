@@ -1651,7 +1651,8 @@ class DesktopChatSyncRuntime:
                 local_after = await commit(self.long_term_memory.adapter.read_local, grant, epoch)
                 upload_pending = bool(local_after and local_after['pending'])
                 pending = (result['hasMore'] or upload_pending or bool(local_after and local_after['republish'])
-                           or await asyncio.to_thread(self.long_term_memory.adapter.incoming_path(uid).is_file))
+                           or await asyncio.to_thread(self.long_term_memory.adapter.incoming_path(uid).is_file)
+                           or await asyncio.to_thread(self.long_term_memory.adapter.owed_path(uid).is_file))
                 await asyncio.to_thread(self.scheduler.success, domain.key(), 'long_term', pending=pending)
                 if result['hasMore'] or upload_pending:
                     await commit(self.scheduler.request_check, domain.key(), 'long_term')

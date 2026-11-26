@@ -681,6 +681,26 @@ def test_sync_status_distinguishes_local_response_failures_from_transport_failur
     """.replace('FAILURE', json.dumps(failure)).replace('KEY', json.dumps(key)))
 
 
+@pytest.mark.parametrize('failure,key', [
+    ('body', 'errorNetwork'), ('abort', 'errorNetwork'), ('json', 'errorInternal'), ('unexpected', 'errorInternal'),
+])
+def test_response_body_failure_is_classified_without_exposing_its_content(failure, key):
+    run_script(r"""(async()=>{
+        window.t=(key,values={})=>key+JSON.stringify(values);
+        global.fetch=async()=>{
+            if(FAILURE==='json')return new Response('{"private":');
+            const cause=FAILURE==='body'?new TypeError('private connection reset')
+                :FAILURE==='abort'?new DOMException('private request cancelled','AbortError')
+                :new Error('private unexpected body failure');
+            return new Response(new ReadableStream({start(controller){controller.error(cause);}}));
+        };
+        await window.nekoChatSync.openSettings();
+        const shown=body.children[0].children.find(node=>node.className==='chat-sync-status').textContent;
+        assert(shown.includes(KEY));assert(!shown.includes('private'));
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('FAILURE', json.dumps(failure)).replace('KEY', json.dumps(key)))
+
+
 def test_channel_status_labels_exist_in_all_eight_locales():
     keys = {'channelRecent', 'channelLongTerm', 'channelProfile', 'channelModel', 'channelStatus',
             'channelSuccess', 'channelWaiting', 'channelError', 'channelDisabled', 'channelPaused',

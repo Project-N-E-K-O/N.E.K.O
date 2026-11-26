@@ -74,7 +74,11 @@
         }); } catch (_) { throw new Error('chat_sync_network_unavailable'); }
         var result;
         try { result = await response.json(); }
-        catch (_) { throw new Error('chat_sync_internal_error'); }
+        catch (error) {
+            // A fresh body may fail in transit after fetch has received its headers.
+            var interrupted = error && (error.name === 'TypeError' || error.name === 'AbortError');
+            throw new Error(interrupted ? 'chat_sync_network_unavailable' : 'chat_sync_internal_error');
+        }
         if (!response.ok) throw new Error(result && typeof result.detail === 'string' ? result.detail : 'chat_sync_internal_error');
         return result;
     }
