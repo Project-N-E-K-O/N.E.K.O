@@ -453,10 +453,6 @@
             && !window.vrmManager?.currentModel?.vrm
         );
 
-        if (newCatgirl === oldCatgirl && !forceReload && !sameCurrentCharacterMissingVrm) {
-            console.log('[猫娘切换] 新旧角色相同，跳过切换');
-            return;
-        }
         // 已是当前角色：BroadcastChannel 兜底 + WebSocket 后端通知会让同一次切换在两条
         // 通道各到一份。BC 先到的话 handleCatgirlSwitch 跑完 lanlan_name 已是 newCatgirl，
         // 接踵而至的 WS 事件参数还是 (newCatgirl, 上一次的 oldCatgirl)，原本只 newCatgirl
