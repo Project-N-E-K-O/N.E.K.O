@@ -484,6 +484,7 @@ host 走和通知相同的 `main_server` 调用，把 `main_server` 的答复带
 | `cleanup` | `None`，或注册失败后清理用的那次注销的结果（见下） | — |
 
 `error` 错误码：`rejected`（注册：没有 role 接受，例如名字已被其他 source 占用）、
+`plugin_stopped`（注册：请求还在途中时插件被停止了；`main_server` 已存下的那条注册已按注册 id 撤回）、
 `partial_failure`（注销：部分 role 失败）、`main_server_unavailable`（请求没能送到 `main_server`，什么都没生效）、
 `main_server_error`（HTTP 状态码 >= 400，例如 role 不存在）、`timeout`（没拿到能用的回复：`request_timeout` 内 host 没回复、请求已发出后
 `main_server` 没回复，或回复不是 JSON 对象；结果未知）、`host_unavailable`（请求没送到 host）、`busy`（同名前面的调用用掉了预算，或者入口的剩余时间在发出前就用完了，这次来不及发出；什么都没发，`cleanup` 为 `None`。补发的注销因为入口时间用完而没发出时，`cleanup` 里也是 `busy`。注销或 `cleanup` 已经发出的请求用掉了预算、剩下的不够再删它们报告的过期注册（见下文）时也是 `busy`：那次删除没有发出，这个注册仍列在 `refused_roles` 里）、`not_registered`（注销：插件本地没有这个名字的记录，

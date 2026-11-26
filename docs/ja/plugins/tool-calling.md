@@ -532,6 +532,7 @@ result = await self.unregister_llm_tool_async("custom_tool")
 | `cleanup` | `None`、または登録失敗後の後片付けとして送った解除の結果（下記） | — |
 
 `error` コード：`rejected`（登録：どの role も受け付けなかった。例：名前が別 source に使われている）、
+`plugin_stopped`（登録：リクエストの処理中にプラグインが停止された。`main_server` に保存された登録は登録 id で取り消し済み）、
 `partial_failure`（解除：一部の role が失敗）、`main_server_unavailable`（リクエストが `main_server` に届かず、何も適用されていない）、
 `main_server_error`（HTTP ステータス >= 400。例：存在しない role）、`timeout`（使える応答がなかった：`request_timeout` 内にホストが応答しなかった、
 リクエスト送信後に `main_server` が応答しなかった、または応答が JSON オブジェクトでなかった。結果は不明）、`host_unavailable`（リクエストがホストに届かなかった）、

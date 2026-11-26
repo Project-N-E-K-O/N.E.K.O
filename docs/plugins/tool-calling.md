@@ -565,7 +565,9 @@ returns what `main_server` answered:
 | `cleanup` | `None`, or the unregister result of the cleanup after a failed register (below). | — |
 
 `error` codes: `rejected` (register: no role accepted, e.g. the name is
-owned by another source), `partial_failure` (unregister: some roles
+owned by another source), `plugin_stopped` (register: the plugin was
+stopped while the register was in flight; whatever `main_server` stored
+was withdrawn by its registration id), `partial_failure` (unregister: some roles
 failed), `main_server_unavailable` (the request could not reach
 `main_server`; nothing was applied), `main_server_error`
 (HTTP status >= 400, e.g. unknown role), `timeout` (no usable answer: none
