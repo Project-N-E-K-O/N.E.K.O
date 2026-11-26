@@ -1942,13 +1942,7 @@ async def _rename_catgirl_transaction(
 
 
 async def current_catgirl_switch_snapshot(config_manager):
-    """Read the committed current identity and ordering evidence as one snapshot."""
-    # Rename/delete can hold the lifecycle lock across remote work after a
-    # provisional characters.json write. While that transaction is in flight,
-    # the last published target/revision is the authoritative public snapshot;
-    # do not make ordinary current-character reads wait for the long mutation.
-    if character_config_mutation_lock.locked() and _catgirl_switch_revision > 0:
-        return _catgirl_switch_revision_target, _catgirl_switch_revision
+    """Read the current identity and its ordering evidence as one snapshot."""
     async with character_config_mutation_lock:
         characters = await config_manager.aload_characters()
         current_catgirl = characters.get('当前猫娘', '')
