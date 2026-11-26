@@ -454,6 +454,10 @@ def _pending(plugins: list[tuple[_PluginInputs, list[dict]]], index: UsageIndex)
         else:
             items = [row["permission"] for row in rows if _needs_decision(row)]
             if items:
+                # Approximate: the store keeps no earlier permission set, so
+                # "asks for more after an update" is any plugin with an
+                # earlier decision that still has items to decide. Items a
+                # newer analyzer found on an unchanged plugin count too.
                 target = upgraded if _has_decision(inputs.record) else to_confirm
                 target.append({"plugin_id": inputs.plugin_id, "items": items})
         # Used while the user has not decided: not asked in a dialog, listed

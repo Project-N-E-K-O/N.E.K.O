@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -39,6 +40,25 @@ RECENT_LIMIT = 50
 DAYS_KEPT = 31
 _ORIGINS_KEPT = 1024
 _FILE_NAME = "call_audit.jsonl"
+
+# A network target as the plugin process reports it: "name(address):port",
+# "address:port" or a bare name / address (a long name may be cut with "…").
+# Only the host name, or without one the address, is kept; a target of any
+# other shape (a URL path, a query, spaces) is dropped.
+_HOST = r"[\w\-]+(?:\.[\w\-]+)*\.?"
+_IP = r"\[[0-9A-Fa-f:.]+(?:%[\w.\-]+)?\]|[0-9]{1,3}(?:\.[0-9]{1,3}){3}"
+_PORT = r"(?::[0-9]{1,5})?"
+_NAMED_TARGET = re.compile(rf"(?P<host>{_HOST})…?\((?:{_IP})\){_PORT}")
+_BARE_TARGET = re.compile(rf"(?P<host>{_IP}|{_HOST}){_PORT}")
+
+
+def network_host(target: object) -> str | None:
+    """The host name in a reported network target, else its address; None
+    when the target is not of a known shape."""
+    if not isinstance(target, str) or not target or len(target) > 260:
+        return None
+    match = _NAMED_TARGET.fullmatch(target) or _BARE_TARGET.fullmatch(target)
+    return match.group("host") if match else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,7 +182,7 @@ class UsageIndex:
         origin = _text(entry.get("origin_kind")) if kind == "decision" else None
         if kind == "decision" and "unattributed" in flags:
             origin = None
-        target = _text(entry.get("target")) if permission == NETWORK_CONNECT else None
+        target = network_host(entry.get("target")) if permission == NETWORK_CONNECT else None
         outcome = _outcome(entry)
         blocked_by: tuple[str, ...] = ()
         if outcome != OUTCOME_ALLOWED:
@@ -193,10 +213,14 @@ class UsageIndex:
             last = self._last_effective.get(key)
             if last is None or use.at >= last.at:
                 self._last_effective[key] = use
-            if not use.summarized:
+            day = use.at.date()
+            oldest = self._now().date() - timedelta(days=DAYS_KEPT)
+            if not use.summarized and day >= oldest:
                 days = self._daily.setdefault(key, {})
-                day = use.at.date()
                 days[day] = days.get(day, 0) + use.count
+                if len(days) > DAYS_KEPT + 1:
+                    for stale in [item for item in days if item < oldest]:
+                        del days[stale]
         for blocked in use.blocked_by:
             refused_key = (blocked, use.permission)
             seen = self._refused.get(refused_key)

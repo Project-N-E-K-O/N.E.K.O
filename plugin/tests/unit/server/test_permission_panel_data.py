@@ -850,3 +850,62 @@ def test_refusals_older_than_the_stored_decision_are_ignored(env):
     env.store.apply_legacy_decision("p", "denied", source=MARKET)
     env.store.clear("p", MEMORY)  # explicit undecided entry with a time
     assert permission_panel.pending(index=env.index)["first_use"] == []
+
+
+@pytest.mark.parametrize(
+    ("target", "host"),
+    [
+        ("api.example.com(93.184.216.34):443", "api.example.com"),
+        ("天气.example(1.2.3.4):80", "天气.example"),
+        ("averyveryl…(1.2.3.4):443", "averyveryl"),
+        ("93.184.216.34:443", "93.184.216.34"),
+        ("[2001:db8::1]:443", "[2001:db8::1]"),
+        ("api.example.com", "api.example.com"),
+        ("https://api.example.com/path?q=1", None),
+        ("api.example.com/path", None),
+        ("api.example.com:443/x", None),
+        ("a b", None),
+        ("<invalid>", None),
+        ("", None),
+    ],
+)
+def test_network_target_keeps_the_host_only(target, host):
+    from plugin.server.application.plugins.permission_usage import network_host
+
+    assert network_host(target) == host
+
+
+def test_daily_counts_are_bounded(tmp_path):
+    index = _index(tmp_path)
+    for day in range(200):
+        index.observe(_decision("a", MEMORY, ts=_ts(timedelta(days=day))))
+    assert len(index._daily[("a", MEMORY)]) <= 32
+    assert index.count("a", MEMORY, 30) == 30
+
+
+def test_indexed_network_target_is_the_host_only(tmp_path):
+    index = _index(tmp_path)
+    index.observe(_system_use("a", CONNECT, target="api.example.com/secret?token=1"))
+    index.observe(_system_use("b", CONNECT, target="api.example.com(1.2.3.4):443"))
+    assert index.last_use("a", CONNECT).target is None
+    assert [use.target for use in index.recent([CONNECT])] == ["api.example.com", None] or [
+        use.target for use in index.recent([CONNECT])
+    ] == [None, "api.example.com"]
+
+
+def test_uses_older_than_the_kept_days_get_no_bucket(tmp_path):
+    index = _index(tmp_path)
+    index.observe(_decision("a", MEMORY, ts=_ts(timedelta(days=40))))
+    assert ("a", MEMORY) not in index._daily
+    assert index.last_use("a", MEMORY) is not None
+
+
+def test_buckets_are_pruned_as_time_moves_on(tmp_path):
+    clock = {"now": NOW}
+    index = UsageIndex(now=lambda: clock["now"], directory=str(tmp_path))
+    for day in range(31):
+        index.observe(_decision("a", MEMORY, ts=(NOW - timedelta(days=day)).isoformat()))
+    clock["now"] = NOW + timedelta(days=40)
+    for day in range(3):
+        index.observe(_decision("a", MEMORY, ts=(clock["now"] - timedelta(days=day)).isoformat()))
+    assert len(index._daily[("a", MEMORY)]) <= 32
