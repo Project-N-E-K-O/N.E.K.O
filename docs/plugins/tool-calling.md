@@ -570,9 +570,9 @@ request was sent, or an answer that is not a JSON object; the outcome is
 unknown), `host_unavailable` (the request could
 not reach the host), `busy` (earlier calls for the same name used up the
 budget before this one could be sent; nothing was sent and `cleanup` is
-`None`. Also on an unregister, or a `cleanup`, whose first request was
-answered but left too little budget to remove a stale registration it
-reported (below): that removal was not sent and the registration is still
+`None`. Also on an unregister, or a `cleanup`, whose requests already sent
+left too little budget to remove a stale registration they reported
+(below): that removal was not sent and the registration is still
 listed in `refused_roles`), `not_registered` (unregister: the plugin had no local
 record of the name and `main_server` removed nothing of this plugin's under
 it; with a local record the same answer is `ok=True, removed=False` and the

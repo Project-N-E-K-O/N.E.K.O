@@ -136,7 +136,9 @@ _LLM_TOOL_MAX_REQUEST_TIMEOUT = 60.0
 # A call that got the name lock with less than this left of its budget
 # (or less than half of it, for small budgets) is not sent: it reports
 # "busy" with nothing applied, instead of an almost certain "timeout"
-# whose outcome would be unknown.
+# whose outcome would be unknown. The stale-removal follow-ups use the same
+# threshold and also report "busy" when one is not sent; the requests sent
+# before it may have applied changes, which the result reports.
 _LLM_TOOL_MIN_SEND_BUDGET = 5.0
 # How often one reported registration id is targeted when it keeps showing up.
 _LLM_TOOL_MAX_REMOVAL_ATTEMPTS = 2
@@ -1173,11 +1175,13 @@ class NekoPluginBase(_SharedNekoPluginBase):
             if left < min(_LLM_TOOL_MIN_SEND_BUDGET, budget / 2):
                 # Nothing is sent, so the outcome is known (the holder stays):
                 # "busy", like a call whose lock wait used up its budget, not
-                # "timeout", which means the outcome is unknown.
-                error, message = "busy", (
-                    f"another registration of {name!r} holds the name and too little of the "
-                    f"{budget}s budget is left to remove it; nothing more was sent"
-                )
+                # "timeout", which means the outcome is unknown. An earlier
+                # error (a holder without an id) is kept: a retry cannot fix it.
+                if error is None:
+                    error, message = "busy", (
+                        f"another registration of {name!r} holds the name and too little of the "
+                        f"{budget}s budget is left to remove it; nothing more was sent"
+                    )
                 break
             outcome = await self._request_llm_tool_change(
                 request_type="LLM_TOOL_UNREGISTER_REQUEST",

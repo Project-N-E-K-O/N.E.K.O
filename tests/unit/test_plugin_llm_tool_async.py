@@ -867,6 +867,41 @@ async def test_cleanup_reports_busy_when_too_little_budget_is_left_for_the_follo
 
 
 @pytest.mark.asyncio
+async def test_busy_does_not_hide_an_earlier_holder_without_an_id(monkeypatch):
+    """A holder reported without an id cannot be removed (partial_failure);
+    when the budget then runs out before the next follow-up, that error is
+    kept instead of being replaced by busy."""
+    from plugin.sdk.plugin import base
+
+    real = base.time.monotonic
+    offset = {"s": 0.0}
+
+    class _Clock:
+        @staticmethod
+        def monotonic():
+            return real() + offset["s"]
+
+    monkeypatch.setattr(base, "time", _Clock)
+    plugin, _ = await _plugin_with_tool(role=None)
+    calls: list[dict] = []
+
+    async def host(**kwargs):
+        calls.append(kwargs)
+        # The first answer arrives after 38 of the 40 seconds.
+        offset["s"] += 38.0
+        return _held_by(("R1", ""), ("R2", "C"))
+
+    _install_host(plugin, host)
+
+    result = await plugin.unregister_llm_tool_async("tool_a")
+
+    assert len(calls) == 1
+    assert result["ok"] is False and result["error"] == "partial_failure"
+    assert "did not report its id" in result["message"]
+    assert _local_names(plugin) == {"tool_a"}
+
+
+@pytest.mark.asyncio
 async def test_cleanup_leaves_a_registration_whose_handler_is_back_locally():
     """While the failed register's cleanup runs, another thread registers
     the same name with the sync call (which does not take the async name
