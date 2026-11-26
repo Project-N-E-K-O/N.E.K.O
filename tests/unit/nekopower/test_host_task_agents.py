@@ -2831,6 +2831,9 @@ async def _a_team_at_work(host: Any, monkeypatch: Any) -> SimpleNamespace:
     monkeypatch.setattr(manager, "_note_usage", not_noted)
     team.session = _Session(parent.id, session_id="the-parents-session", free=True)
     manager._sessions[parent.id] = team.session
+    # Each at work in a session of its own: what is closed of them is seen.
+    for name, one in members.items():
+        manager._sessions[one] = _Session(one, session_id=f"the-session-of-{name.replace(' ', '-')}")
     return team
 
 
@@ -2844,7 +2847,8 @@ async def _ended_for_what_it_used(manager: Any, team: SimpleNamespace, end: str)
         team.session.wind_up_left = 0
         return await manager._wind_up_step(team.session)
     finally:
-        del manager._sessions[team.parent.id]
+        for one in (team.parent.id, *team.members.values()):
+            manager._sessions.pop(one, None)
 
 
 @pytest.mark.parametrize("end", ["quota", "usage"])
@@ -2886,8 +2890,10 @@ async def test_each_task_agent_is_stopped_by_itself_when_the_commission_that_sta
     for name in ("cannot be closed", "written when asked again", "at work"):
         assert after[name].status_reason == "its parent finished"
     assert after["stopped meanwhile"].status_reason == "test"
-    # And the commission's own session is closed all the same.
-    assert team.closed == [team.parent.id]
+    # Their sessions are asked to close (the one whose stop cannot be written among them; not the
+    # one that cannot be closed, nor the one that ended meanwhile), and the commission's own after.
+    closed = ("cannot be written", "written when asked again", "at work", "stopped meanwhile")
+    assert team.closed == [*(members[name] for name in closed), team.parent.id]
 
 
 @pytest.mark.parametrize("end", ["quota", "usage"])
