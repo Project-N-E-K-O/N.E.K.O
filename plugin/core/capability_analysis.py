@@ -326,12 +326,33 @@ _DATAGRAM_ENDPOINTS = frozenset(
 )
 
 
-def _unix_family(call: ast.Call, index: int | None, bindings) -> bool:
+def _dotted_name(node: ast.AST | None, walker=None) -> str:
+    """a.b.c for a plain dotted name, else "" (no calls, so the walk is
+    as long as the name; charged to the budget when a walker is given)."""
+    parts = []
+    while isinstance(node, ast.Attribute):
+        if walker is not None:
+            walker.check()
+        parts.append(node.attr)
+        node = node.value
+        if len(parts) > MAX_REFERENCE_LENGTH:
+            raise _AnalysisBudgetExceeded
+    if not isinstance(node, ast.Name):
+        return ""
+    parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _unix_family(call: ast.Call, index: int | None, bindings, walker=None) -> bool:
     """The family argument statically resolves to socket.AF_UNIX."""
     argument = _call_argument(call, index, "family")
-    raw = _name(argument) if argument is not None else ""
     # Cheap test first: this runs at every call level of every chain.
-    if not raw.endswith("AF_UNIX"):
+    # A bare name may be an alias (family = socket.AF_UNIX); a dotted one
+    # must end in AF_UNIX.
+    if not (isinstance(argument, ast.Name) or (isinstance(argument, ast.Attribute) and argument.attr == "AF_UNIX")):
+        return False
+    raw = _dotted_name(argument, walker)
+    if not raw:
         return False
     resolved, external, bound = _resolve_with_origin(raw, bindings)
     return bool(external and bound) and resolved in _UNIX_FAMILIES
@@ -468,7 +489,7 @@ def _resolve_chain_root(raw_node: ast.AST, bindings, walker) -> tuple[str, bool,
             reflected = _external_getattr(node, bindings, walker)
             if reflected is not None:
                 root = reflected, True, _ROOT_GETATTR
-            elif isinstance(node, ast.Call) and _unix_family(node, 0, bindings):
+            elif isinstance(node, ast.Call) and _unix_family(node, 0, bindings, walker):
                 func = node.func
                 through_getattr = _constant_getattr(func, bindings) is not None
                 if through_getattr:
@@ -477,7 +498,10 @@ def _resolve_chain_root(raw_node: ast.AST, bindings, walker) -> tuple[str, bool,
                         # The rest of the chain is that getattr: unresolved.
                         return None
                 elif isinstance(func, (ast.Name, ast.Attribute)):
-                    called, external, bound = _resolve_with_origin(_name(func), bindings)
+                    # Only a plain dotted name (socket.socket, sock, self.make);
+                    # a longer chain is left to the next steps of this walk.
+                    dotted = _dotted_name(func, walker)
+                    called, external, bound = _resolve_with_origin(dotted, bindings) if dotted else (None, False, False)
                     if not (external and bound):
                         called = None
                 else:
@@ -557,16 +581,12 @@ def _references(tree, walker: _AnalysisWalker):
         nodes = list(walker.scope_nodes(body))
         declared, assignments = _collect_declarations(nodes, parameters, walker)
         bindings = _build_bindings(declared, inherited, nodes, walker)
-        _propagate_assignments(assignments, bindings, walker, shared)
         # Names rebound here, plus those inherited from enclosing scopes that
         # this scope does not bind itself (it may import its own copy).
         rebound = _derived_rebound(
             _rebound_names(nodes, walker) | (outer_rebound - declared), assignments, walker
         )
-        for name in rebound | shared:
-            # A family name rebound by a loop, with, ... or elsewhere.
-            if bindings.get(name, (None,))[0] in _UNIX_FAMILIES:
-                bindings[name] = (None, False)
+        _propagate_assignments(assignments, bindings, walker, rebound | shared)
         own = {id(node) for node in nodes}
         written = _written_targets(nodes, walker)
         membership = {
@@ -627,8 +647,11 @@ def _references(tree, walker: _AnalysisWalker):
 def _shared_names(tree, walker) -> frozenset[str]:
     """Names a global / nonlocal statement lets another scope assign.
 
-    One extra pass over the file; it honours the stop event but is not
-    charged to the node budget, which the scopes already count.
+    File-wide on purpose: a name in any global / nonlocal statement is
+    treated as possibly reassigned in every scope. That only keeps sockets
+    from being treated as local (the safe side). One extra linear pass; it
+    honours the stop event but is not charged to the node budget, which the
+    scopes already count.
     """
     names: set[str] = set()
     for node in ast.walk(tree):
@@ -825,21 +848,31 @@ def _references_binding(value: str, key: str) -> bool:
     return value == key or value.startswith((key + ".", key + "()"))
 
 
-def _propagate_assignments(assignments, bindings, walker, shared=frozenset()):
+def _propagate_assignments(assignments, bindings, walker, uncertain_names=frozenset()):
     """Resolve aliases until the final binding of each assignment stops changing.
 
-    ``shared`` names are also assigned elsewhere (global / nonlocal).
+    ``uncertain_names`` are also bound by other targets (loop, with ...) or
+    from other scopes (global / nonlocal).
     """
     counts: dict[str, int] = {}
     for key, _node in assignments:
         counts[key] = counts.get(key, 0) + 1
-    # Assigned more than once or elsewhere: the name may hold another socket
-    # or family, so it is not known to be a local one.
-    uncertain = {key for key, count in counts.items() if count > 1 or key in shared}
+    # Bound more than once: the name may hold another socket, or another
+    # value than the AF_UNIX family, so it is not known to be local.
+    uncertain = {key for key, count in counts.items() if count > 1} | set(uncertain_names)
+    # A family name already bound (imported or inherited) and also assigned
+    # here (from socket import AF_UNIX; AF_UNIX = 2).
+    uncertain.update(key for key in counts if bindings.get(key, (None,))[0] in _UNIX_FAMILIES)
+    # Settled before any socket is resolved through them.
+    for key in uncertain:
+        if bindings.get(key, (None,))[0] in _UNIX_FAMILIES:
+            bindings[key] = (None, False)
 
     def bind(key, resolved, external):
         if key in uncertain:
             resolved = _unmark_local_socket(resolved)[0]
+            if resolved in _UNIX_FAMILIES:
+                resolved, external = None, False
         binding = resolved, external
         resolved_bindings[key] = binding
         bindings[key] = binding
@@ -865,18 +898,8 @@ def _propagate_assignments(assignments, bindings, walker, shared=frozenset()):
             if external or not _references_binding(resolved, key):
                 bind(key, resolved, external)
         if resolved_bindings == previous or not resolved_bindings:
-            break
+            return
         previous = resolved_bindings
-    # A family name is trusted only when bound once, to the family itself
-    # (not "from socket import AF_UNIX" followed by "AF_UNIX = 2").
-    for key in counts:
-        binding = bindings.get(key)
-        if (
-            binding is not None
-            and binding[0] in _UNIX_FAMILIES
-            and (key in uncertain or resolved_bindings.get(key, (None,))[0] not in _UNIX_FAMILIES)
-        ):
-            bindings[key] = (None, False)
 
 
 def _propagate_self_attributes(node, bindings, walker, shared=frozenset()):

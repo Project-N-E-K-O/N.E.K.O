@@ -2223,6 +2223,8 @@ def test_aliased_getattr_with_a_constant_name_is_still_a_blind_spot(tmp_path):
         "import socket\ns = socket.socket(socket.AddressFamily.AF_UNIX)\ns.listen()\n",
         "from socket import socket, AF_UNIX\ns = socket(AF_UNIX)\ns.listen()\n",
         "import socket\nt = socket.socket(socket.AF_UNIX)\ns = t\ngetattr(s, 'listen')()\n",
+        "import socket\nfamily = socket.AF_UNIX\ns = socket.socket(family)\ns.listen()\n",
+        "from socket import socket as sock, AF_UNIX\ns = sock(AF_UNIX)\ns.listen()\n",
         "import socket\nclass S:\n    def __init__(self):\n        self.sock = socket.socket(socket.AF_UNIX)\n"
         "    def serve(self):\n        self.sock.bind('/p')\n        self.sock.listen()\n",
     ],
@@ -2354,6 +2356,9 @@ def test_unix_sockets_made_through_getattr_are_local_too(tmp_path, source):
         # The family name is rebound.
         "import socket\nfrom socket import AF_UNIX\nAF_UNIX = 2\nsocket.socket(AF_UNIX).listen()\n",
         "import socket\nfrom socket import AF_UNIX\nfor AF_UNIX in families:\n    socket.socket(AF_UNIX).listen()\n",
+        "import socket\nfrom socket import AF_UNIX\nAF_UNIX = 2\ns = socket.socket(AF_UNIX)\ns.bind(('', 80))\ns.listen()\n",
+        "import socket\nfrom socket import AF_UNIX\nwith make() as AF_UNIX:\n    s = socket.socket(AF_UNIX)\n    s.listen()\n",
+        "import socket\nfamily = socket.AF_UNIX\nfamily = 2\ns = socket.socket(family)\ns.listen()\n",
         "import socket\nfrom socket import AF_UNIX\ndef f():\n    global AF_UNIX\n    AF_UNIX = 2\n"
         "socket.socket(AF_UNIX).listen()\n",
         # A class attribute set to another socket in another method.
@@ -2364,7 +2369,9 @@ def test_unix_sockets_made_through_getattr_are_local_too(tmp_path, source):
 def test_sockets_that_may_not_be_unix_keep_their_listen_evidence(tmp_path, source):
     report = _scan(tmp_path, source)
     assert report["permissions"][LISTEN]["basis"] in ("resolved_call", "suffix_match")
-    assert report["permissions"][LISTEN]["basis"] != "resolved_name"
+    if "AF_UNIX = 2" in source:
+        # The construction and what is done through it agree.
+        assert report["permissions"][CONNECT]["basis"] == "resolved_call"
 
 
 def test_the_local_socket_marker_never_reaches_the_report(tmp_path):
@@ -2387,6 +2394,7 @@ def test_the_local_socket_marker_never_reaches_the_report(tmp_path):
         "import socket\nx = socket" + ".socket(socket.AF_UNIX)" * 60 + "\n",
         "import socket\nx = " + "getattr(" * 60 + "socket" + ", 'socket')(socket.AF_UNIX)" * 60 + "\n",
         "x = " + "getattr(" * 60 + "obj" + ", 'f')(socket.AF_UNIX)" * 60 + "\n",
+        "import socket\nx = socket" + ".socket(socket.AF_UNIX).a()" * 60 + "\n",
     ],
 )
 def test_nested_getattr_and_socket_chains_stay_within_budget(tmp_path, monkeypatch, source):
