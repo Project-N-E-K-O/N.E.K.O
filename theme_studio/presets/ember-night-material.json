@@ -158,7 +158,7 @@
     "--nts-chip-bg": "rgba(193, 159, 199, 0.18)",
     "--nts-chip-text": "#f1eaf4",
     "--nts-rec-bg": "rgba(255, 255, 255, 0.55)",
-    "--nts-rec-text": "#f1eaf4",
+    "--nts-rec-text": "#302e30",
     "--nts-rec-border": "rgba(150, 76, 153, 0.32)",
     "--nts-accent": "#964c99",
     "--nts-link": "#BD7EBF",

@@ -2,7 +2,7 @@
 
 A badly tuned palette never raises an error or drops a frame; the only symptom
 is a user quietly switching back to the default theme. ``theme_studio/contrast.py``
-defines 17 text/surface pairs, each composited the way the chat window paints
+defines 19 text/surface pairs, each composited the way the chat window paints
 it, and this module turns "every preset x light/dark x every pair" into a
 regression check that every change has to pass.
 
@@ -91,6 +91,12 @@ def test_compact_history_bubbles_ignore_the_glass_tint():
         vars_map, contrast.COMPACT_USER_BUBBLE, "--nts-user-bubble-bg"
     )
     assert surface[:3] == (255, 255, 255)
+
+
+def test_recommendation_text_is_checked_on_its_own_card_background():
+    """The loader paints ``--nts-rec-text`` on a ``--nts-rec-bg`` card, not on the panel."""
+    rows = {label: (bg_key, kind) for label, _, bg_key, kind, _ in contrast.PAIRS}
+    assert rows["recommendation-text"] == ("--nts-rec-bg", contrast.MESSAGE_LIST)
 
 
 def test_contrast_extremes():

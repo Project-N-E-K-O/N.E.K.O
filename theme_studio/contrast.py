@@ -30,11 +30,34 @@ paints them:
 
 * Tool bubbles: ``--nts-tool-bubble-bg`` over the message list.
 
+* Floating and in-message elements, each on its own background variable:
+
+  - Modal (``.modal-dialog``, ``--nts-modal-text``): ``--nts-modal-bg`` over
+    ``--nts-overlay-bg`` (``.modal-overlay``) over the window. Dialogs open
+    over the host page, whose colour is unknown, so the window background
+    stands in for it.
+  - Popover (``.composer-overflow-popover``, ``--nts-popover-text``):
+    ``--nts-popover-bg`` over the window (it floats above the composer).
+  - Recommendation (``--nts-rec-text``): ``--nts-rec-bg`` over the message
+    list. The full-chat card (``.proactive-recommendation-card``) sits in an
+    assistant bubble that the chat stylesheet makes transparent when the card
+    is its only child, so the message list is what shows through.
+  - Chip (``.system-chip``, ``--nts-chip-text``): ``--nts-chip-bg`` over the
+    message list, where system messages render. The same colours also paint
+    composer chips (galgame options, visit bar badge) over the window.
+  - Status (``.message-block-status``, ``--nts-status-text``):
+    ``--nts-status-bg`` over the assistant bubble, since status blocks render
+    inside message bubbles.
+
 Gradients are reduced to the mean of their colour stops, because text runs
 across the whole gradient. This is an approximation: background images, the
 bubble veil, backdrop filters and the material (liquid glass) layers are not
 modelled, and a translucent ``--nts-chat-bg`` is treated as if nothing were
 behind it.
+
+A pair is skipped when its text or background variable is unset: the loader
+then leaves the host stylesheet's own colour in place, which this audit cannot
+see.
 """
 
 from __future__ import annotations
@@ -56,6 +79,8 @@ USER_BUBBLE = "user-bubble"
 AI_BUBBLE = "ai-bubble"
 COMPACT_USER_BUBBLE = "compact-user-bubble"
 COMPACT_AI_BUBBLE = "compact-ai-bubble"
+MODAL = "modal"
+AI_BUBBLE_BLOCK = "ai-bubble-block"
 
 # (label, text key, background key, surface kind, minimum contrast ratio)
 PAIRS: list[tuple[str, str, str, str, float]] = [
@@ -72,11 +97,11 @@ PAIRS: list[tuple[str, str, str, str, float]] = [
     ("panel-text", "--nts-panel-text", "--nts-panel-bg", WINDOW, 4.5),
     ("panel-subtext", "--nts-panel-text-sub", "--nts-panel-bg", WINDOW, 3.0),
     ("link", "--nts-link", "--nts-ai-bubble-bg", AI_BUBBLE, 4.5),
-    ("modal-text", "--nts-modal-text", "--nts-panel-bg", WINDOW, 4.5),
-    ("popover-text", "--nts-popover-text", "--nts-panel-bg", WINDOW, 4.5),
-    ("recommendation-text", "--nts-rec-text", "--nts-panel-bg", WINDOW, 4.5),
-    ("chip-text", "--nts-chip-text", "--nts-panel-bg", WINDOW, 4.5),
-    ("status-text", "--nts-status-text", "--nts-panel-bg", WINDOW, 3.0),
+    ("modal-text", "--nts-modal-text", "--nts-modal-bg", MODAL, 4.5),
+    ("popover-text", "--nts-popover-text", "--nts-popover-bg", WINDOW, 4.5),
+    ("recommendation-text", "--nts-rec-text", "--nts-rec-bg", MESSAGE_LIST, 4.5),
+    ("chip-text", "--nts-chip-text", "--nts-chip-bg", MESSAGE_LIST, 4.5),
+    ("status-text", "--nts-status-text", "--nts-status-bg", AI_BUBBLE_BLOCK, 3.0),
     ("tool-bubble", "--nts-tool-bubble-text", "--nts-tool-bubble-bg", MESSAGE_LIST, 4.5),
     ("code-text", "--nts-code-text", "--nts-code-bg", WINDOW, 4.5),
 ]
@@ -205,6 +230,11 @@ def resolve_surface(vars_map, kind, bg_key):
         return _layer(vars_map, bg_key, window_base(vars_map))
     if kind == MESSAGE_LIST:
         return _layer(vars_map, bg_key, message_list_base(vars_map))
+    if kind == MODAL:
+        base = _layer(vars_map, "--nts-overlay-bg", window_base(vars_map))
+        return _layer(vars_map, bg_key, base)
+    if kind == AI_BUBBLE_BLOCK:
+        return _layer(vars_map, bg_key, resolve_surface(vars_map, AI_BUBBLE, "--nts-ai-bubble-bg"))
     role = "user" if kind in (USER_BUBBLE, COMPACT_USER_BUBBLE) else "ai"
     base = message_list_base(vars_map)
     if kind in (COMPACT_USER_BUBBLE, COMPACT_AI_BUBBLE):
