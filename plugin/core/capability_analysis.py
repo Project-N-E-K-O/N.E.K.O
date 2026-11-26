@@ -586,7 +586,19 @@ def _references(tree, walker: _AnalysisWalker):
         rebound = _derived_rebound(
             _rebound_names(nodes, walker) | (outer_rebound - declared), assignments, walker
         )
-        _propagate_assignments(assignments, bindings, walker, rebound | shared)
+        comprehension_locals = _comprehension_locals(nodes, walker)
+        # Also assigned and imported here, or bound by a comprehension in
+        # this scope: not known to keep one value (only weakens local-socket
+        # tracking; the aliases themselves resolve as before).
+        assigned = {key for key, _value in assignments}
+        imported = {
+            item.asname or item.name.split(".")[0]
+            for node in nodes
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+            for item in node.names
+        } & assigned
+        comprehended = set().union(*comprehension_locals.values()) if comprehension_locals else set()
+        _propagate_assignments(assignments, bindings, walker, rebound | shared | imported | comprehended)
         own = {id(node) for node in nodes}
         written = _written_targets(nodes, walker)
         membership = {
@@ -596,7 +608,6 @@ def _references(tree, walker: _AnalysisWalker):
             for op, comparator in zip(node.ops, node.comparators)
             if isinstance(op, (ast.In, ast.NotIn))
         }
-        comprehension_locals = _comprehension_locals(nodes, walker)
         # e = eval where eval is a parameter or loop target here: not the builtin.
         shadowed_aliases = {
             key

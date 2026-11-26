@@ -2359,6 +2359,8 @@ def test_unix_sockets_made_through_getattr_are_local_too(tmp_path, source):
         "import socket\nfrom socket import AF_UNIX\nAF_UNIX = 2\ns = socket.socket(AF_UNIX)\ns.bind(('', 80))\ns.listen()\n",
         "import socket\nfrom socket import AF_UNIX\nwith make() as AF_UNIX:\n    s = socket.socket(AF_UNIX)\n    s.listen()\n",
         "import socket\nfamily = socket.AF_UNIX\nfamily = 2\ns = socket.socket(family)\ns.listen()\n",
+        "import socket\nfrom socket import AF_UNIX\n[socket.socket(AF_UNIX).listen() for AF_UNIX in families]\n",
+        "import socket\nfamily = socket.AF_UNIX\nfrom other import family\nsocket.socket(family).listen()\n",
         "import socket\nfrom socket import AF_UNIX\ndef f():\n    global AF_UNIX\n    AF_UNIX = 2\n"
         "socket.socket(AF_UNIX).listen()\n",
         # A class attribute set to another socket in another method.
