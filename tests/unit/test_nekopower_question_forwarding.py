@@ -170,15 +170,26 @@ async def test_what_the_agent_process_answers_is_passed_back_as_it_is(router, mo
 
 
 @pytest.mark.parametrize(
-    "raising, content, expected",
+    "raising, status_code, content, expected",
     [
-        (httpx.ReadTimeout("slow"), None, 504),
-        (httpx.ConnectError("refused"), None, 502),
-        (None, ValueError("not json"), 502),
+        # It never got there: not taken, and the page offers to give it again.
+        (httpx.ConnectError("refused"), 200, None, 502),
+        (httpx.ConnectTimeout("no route"), 200, None, 502),
+        (httpx.PoolTimeout("busy"), 200, None, 502),
+        (None, 404, ValueError("not json"), 502),
+        # It was sent and nothing is known of what came of it: the page reads how things stand
+        # first. Said to have failed, an approval that was taken would be given a second time.
+        (httpx.ReadTimeout("slow"), 200, None, 504),
+        (httpx.ReadError("reset"), 200, None, 504),
+        (httpx.RemoteProtocolError("closed"), 200, None, 504),
+        (None, 500, ValueError("not json"), 504),
+        (None, 200, ValueError("not json"), 504),
     ],
 )
-async def test_an_agent_process_that_does_not_answer_is_no_stale_question(router, monkeypatch, raising, content, expected):
-    monkeypatch.setattr(router, "_get_http_client", lambda: _client([], 200, content, raising))
+async def test_an_agent_process_that_does_not_answer_is_no_stale_question(
+    router, monkeypatch, raising, status_code, content, expected
+):
+    monkeypatch.setattr(router, "_get_http_client", lambda: _client([], status_code, content, raising))
 
     answer = await router.proxy_commission_answer("c1", {"text": "yes"})
 

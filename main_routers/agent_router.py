@@ -720,7 +720,8 @@ async def proxy_commission_answer(commission_id: str, payload: dict = Body(...))
     ``/console/commissions/{id}/answer``, which asks for the token of this
     launch. What that route answers is passed back as it is: 409 with
     ``detail.code`` ``not_taken`` says the question was answered, withdrawn
-    or replaced by another meanwhile.
+    or replaced by another meanwhile. 502 says the answer never got there;
+    504 that it was sent and nothing is known of what came of it.
     """
     from urllib.parse import quote
 
@@ -738,13 +739,22 @@ async def proxy_commission_answer(commission_id: str, payload: dict = Body(...))
         try:
             content = r.json()
         except ValueError:
-            return JSONResponse({"success": False, "error": f"tool_server responded {r.status_code}"}, status_code=502)
+            # Something else than the route answered. A refusal of the request (4xx) took
+            # nothing; anything else leaves it open whether the answer was taken.
+            unknown = not 400 <= r.status_code < 500
+            return JSONResponse(
+                {"success": False, "error": f"tool_server responded {r.status_code}"},
+                status_code=504 if unknown else 502,
+            )
         return JSONResponse(content, status_code=r.status_code)
-    except httpx.ReadTimeout as e:
-        # It may have been taken all the same: the page reads how things stand before it says so.
-        return JSONResponse({"success": False, "error": f"proxy timeout: {e}"}, status_code=504)
-    except Exception as e:
+    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as e:
+        # It never reached the agent process: plainly not taken, and can be given again.
         return JSONResponse({"success": False, "error": f"proxy error: {e}"}, status_code=502)
+    except Exception as e:
+        # It was sent, and what came of it is not known (no answer in time, the connection
+        # broke): it may have been taken all the same. 504 has the page read how things
+        # stand before it says anything of it, and not offer to send it again meanwhile.
+        return JSONResponse({"success": False, "error": f"proxy error: {e}"}, status_code=504)
 
 
 @router.get('/builtin/activity')
