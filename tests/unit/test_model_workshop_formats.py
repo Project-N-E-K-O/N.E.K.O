@@ -1429,7 +1429,7 @@ def test_padded_interleaved_matrix_attributes_share_the_conversion_clone(tmp_pat
 
 
 def mmd_runtime_bytes(kind, *, vertices=3, morph_kinds=(), iterations=(), links=1,
-                      parents=None, link=2, morph_records=None):
+                      parents=None, link=2, morph_records=None, owners=None, materials=0):
     """Small complete layouts with controllable loader work, no external resources."""
     parents = list(parents) if parents is not None else [-1] * max(3, len(iterations))
     if kind == 'pmd':
@@ -1438,8 +1438,8 @@ def mmd_runtime_bytes(kind, *, vertices=3, morph_kinds=(), iterations=(), links=
         raw += struct.pack('<H', len(parents))
         raw += b''.join(bytes(20) + struct.pack('<h', parent) + bytes(17) for parent in parents)
         raw += struct.pack('<H', len(iterations))
-        for count in iterations:
-            raw += struct.pack('<HHBHf', 0, 1, links, count, 1.0) + struct.pack('<H', link) * links
+        for owner, count in zip(owners if owners is not None else [0] * len(iterations), iterations):
+            raw += struct.pack('<HHBHf', owner, 1, links, count, 1.0) + struct.pack('<H', link) * links
         raw += struct.pack('<H', len(morph_kinds) + 1)
         raw += bytes(25) + (bytes(20) + struct.pack('<IB', 0, 1)) * len(morph_kinds)
         return raw + struct.pack('<2BI', 0, 0, 0)
@@ -1449,7 +1449,9 @@ def mmd_runtime_bytes(kind, *, vertices=3, morph_kinds=(), iterations=(), links=
     bone_code = 'h' if bone_width == 2 else 'b'
     raw = b'PMX ' + struct.pack('<f', 2.0) + bytes([8, 1, 0, 4, 1, 1, bone_width, 4, 1]) + text('Fixture') + text('') * 3
     raw += struct.pack('<i', vertices) + (bytes(33 + bone_width) + struct.pack('<f', 1.0)) * vertices
-    raw += struct.pack('<3i', 0, 0, 0) + struct.pack('<i', len(parents))
+    raw += struct.pack('<3i', 0, 0, materials)
+    raw += (text('') * 2 + bytes(65) + struct.pack('<bbBBB', -1, -1, 0, 1, 0) + text('') + struct.pack('<i', 0)) * materials
+    raw += struct.pack('<i', len(parents))
     for index, parent in enumerate(parents):
         has_ik = index < len(iterations)
         raw += text('Bone' + str(index)) + text('') + bytes(12)
@@ -1461,8 +1463,11 @@ def mmd_runtime_bytes(kind, *, vertices=3, morph_kinds=(), iterations=(), links=
     raw += struct.pack('<i', len(records))
     for morph_kind, offsets in records:
         raw += text('Morph') + text('') + struct.pack('<BBi', 0, morph_kind, len(offsets))
-        raw += b''.join(struct.pack('<if', offset, 1.0) if morph_kind == 0 else struct.pack('<I3f', offset, 0.0, 0.0, 0.0)
-                        for offset in offsets)
+        if morph_kind == 8:
+            raw += b''.join(struct.pack('<b', offset) + bytes(113) for offset in offsets)
+        else:
+            raw += b''.join(struct.pack('<if', offset, 1.0) if morph_kind == 0 else struct.pack('<I3f', offset, 0.0, 0.0, 0.0)
+                            for offset in offsets)
     return raw + struct.pack('<3i', 0, 0, 0)
 
 
@@ -1620,3 +1625,98 @@ def test_group_morph_targeting_group_is_not_recursively_expanded(tmp_path):
     raw = mmd_runtime_bytes('pmx', morph_records=[(0, [1]), (0, [2]), (1, range(3))])
     path = make_native_bundle(tmp_path, kind='mmd', entry='Avatar.pmx', files={'Avatar.pmx': raw})
     assert validate_model_bundle(path, format_limits=FormatLimits(mmd_morph_work=6)).model_format == 'mmd'
+
+
+@pytest.mark.parametrize('forward', [False, True])
+@pytest.mark.parametrize('budget,valid', [(8, False), (9, True)])
+def test_material_morph_work_includes_direct_group_expansion(tmp_path, forward, budget, valid):
+    records = [(8, [0, -1, 0]), (0, [0, 0])]
+    if forward: records = [(0, [1, 1]), (8, [0, -1, 0])]
+    raw = mmd_runtime_bytes('pmx', morph_records=records, materials=1)
+    path = make_native_bundle(tmp_path, kind='mmd', entry='Avatar.pmx', files={'Avatar.pmx': raw})
+    if valid:
+        assert validate_model_bundle(path, format_limits=FormatLimits(mmd_morph_work=budget)).model_format == 'mmd'
+    else:
+        with pytest.raises(ModelFormatError, match='model_accessor_budget_exceeded'):
+            validate_model_bundle(path, format_limits=FormatLimits(mmd_morph_work=budget))
+
+
+@pytest.mark.parametrize('grouped', [False, True])
+@pytest.mark.parametrize('index,valid', [(-1, True), (0, True), (1, False), (-2, False)])
+def test_material_morph_indices_follow_loader_skip_semantics(tmp_path, grouped, index, valid):
+    records = [(8, [index])] + ([(0, [0])] if grouped else [])
+    raw = mmd_runtime_bytes('pmx', morph_records=records, materials=1)
+    path = make_native_bundle(tmp_path, kind='mmd', entry='Avatar.pmx', files={'Avatar.pmx': raw})
+    if valid: assert validate_model_bundle(path).model_format == 'mmd'
+    else:
+        with pytest.raises(ModelFormatError): validate_model_bundle(path)
+
+
+def test_default_material_morph_work_budget_rejects_repeated_expansion(tmp_path):
+    raw = mmd_runtime_bytes('pmx', morph_records=[(8, [0] * 1000)] + [(0, [0] * 20)] * 1000, materials=1)
+    path = make_native_bundle(tmp_path, kind='mmd', entry='Avatar.pmx', files={'Avatar.pmx': raw})
+    with pytest.raises(ModelFormatError, match='model_accessor_budget_exceeded'): validate_model_bundle(path)
+
+
+@pytest.mark.parametrize('owners', [(0, 1, 1, 0), (1, 0, 1, 0)])
+@pytest.mark.parametrize('budget,valid', [(11, False), (12, True)])
+def test_pmd_duplicate_slots_use_bone_order_even_when_ik_records_are_reordered(tmp_path, owners, budget, valid):
+    raw = mmd_runtime_bytes('pmd', parents=[-1, -1, 3], iterations=[1] * 4, owners=owners, link=0)
+    path = make_native_bundle(tmp_path, kind='mmd', entry='Avatar.pmd', files={'Avatar.pmd': raw})
+    if valid:
+        assert validate_model_bundle(path, format_limits=FormatLimits(mmd_ik_work=budget)).model_format == 'mmd'
+    else:
+        with pytest.raises(ModelFormatError, match='model_accessor_budget_exceeded'):
+            validate_model_bundle(path, format_limits=FormatLimits(mmd_ik_work=budget))
+
+
+@pytest.mark.parametrize('parents', [(0, -1, -1), (1, 0, -1)])
+@pytest.mark.parametrize('iterations', [(), (0,), (1,)])
+def test_pmd_parent_cycles_are_checked_without_active_ik(tmp_path, parents, iterations):
+    raw = mmd_runtime_bytes('pmd', parents=parents, iterations=iterations)
+    path = make_native_bundle(tmp_path, kind='mmd', entry='Avatar.pmd', files={'Avatar.pmd': raw})
+    with pytest.raises(ModelFormatError): validate_model_bundle(path)
+
+
+def test_pmd_acyclic_tree_without_ik_still_loads(tmp_path):
+    raw = mmd_runtime_bytes('pmd', parents=[2, -1, 1], iterations=())
+    path = make_native_bundle(tmp_path, kind='mmd', entry='Avatar.pmd', files={'Avatar.pmd': raw})
+    assert validate_model_bundle(path).model_format == 'mmd'
+
+
+@pytest.mark.parametrize('semantics', [('POSITION',), ('NORMAL',), ('COLOR_0',), ('POSITION', 'NORMAL'), ('POSITION', 'NORMAL', 'COLOR_0')])
+@pytest.mark.parametrize('valid', [False, True])
+def test_vrm_morph_texture_charges_each_layer_and_semantic_slot(tmp_path, semantics, valid):
+    slots = 3 if 'COLOR_0' in semantics else 2 if 'NORMAL' in semantics else 1
+    budget = 3 * slots * 32 * 2
+    def graph(data):
+        data['accessors'] = [{'componentType': 5126, 'type': 'VEC3', 'count': 3}]
+        target = {semantic: 0 for semantic in semantics}
+        data['meshes'] = [{'primitives': [{'attributes': {'POSITION': 0, 'NORMAL': 0, 'COLOR_0': 0}, 'targets': [target, {}]}]}]
+        data['nodes'][0]['mesh'] = 0
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
+    if valid:
+        assert validate_model_bundle(path, format_limits=FormatLimits(vrm_morph_bytes=budget)).model_format == 'vrm'
+    else:
+        with pytest.raises(ModelFormatError, match='model_accessor_budget_exceeded'):
+            validate_model_bundle(path, format_limits=FormatLimits(vrm_morph_bytes=budget - 1))
+
+
+def test_vrm_shared_morph_accessors_cannot_hide_multi_gigabyte_texture(tmp_path):
+    def graph(data):
+        data['accessors'] = [{'componentType': 5126, 'type': 'VEC3', 'count': 1000000}]
+        data['meshes'] = [{'primitives': [{'attributes': {'POSITION': 0}, 'targets': [{'POSITION': 0}] * 1000}]}]
+        data['nodes'][0]['mesh'] = 0
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
+    assert path.stat().st_size < 20000
+    with pytest.raises(ModelFormatError, match='model_accessor_budget_exceeded'): validate_model_bundle(path)
+
+
+def test_vrm_morph_texture_is_not_charged_again_for_shared_mesh_nodes(tmp_path):
+    def graph(data):
+        data['accessors'] = [{'componentType': 5126, 'type': 'VEC3', 'count': 3}]
+        data['meshes'] = [{'primitives': [{'attributes': {'POSITION': 0}, 'targets': [{'POSITION': 0}]}]}]
+        data['nodes'] = [{'mesh': 0} for _ in range(20)]
+        data['scenes'][0]['nodes'] = list(range(20))
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
+    assert validate_model_bundle(path, format_limits=FormatLimits(vrm_morph_bytes=96)).model_format == 'vrm'

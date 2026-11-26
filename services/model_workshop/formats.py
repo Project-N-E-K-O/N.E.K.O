@@ -38,6 +38,7 @@ class FormatLimits:
     binary_text_bytes: int = 1024 * 1024
     # Bound bufferViews, private accessors and converted geometry independently of GLB size.
     vrm_accessor_bytes: int = 256 * 1024 * 1024
+    vrm_morph_bytes: int = 256 * 1024 * 1024
     vrm_instanced_vertices: int = 5000000
     live2d_physics_work: int = 3000000
     mmd_morph_bytes: int = 256 * 1024 * 1024
@@ -714,6 +715,7 @@ def _vrm(resources: _Resources) -> None:
                 if value is not None:
                     _require(texture_sources[_index(value, textures, entry)], entry)
     mesh_morph_counts, mesh_draw_counts = [], []
+    morph_allocated = 0
     for mesh in meshes:
         _require(isinstance(mesh, dict) and isinstance(mesh.get("primitives"), list), entry)
         counts = []
@@ -742,6 +744,16 @@ def _vrm(resources: _Resources) -> None:
                     _require(isinstance(morph, dict), entry)
                     for index in morph.values():
                         _index(index, accessors, entry)
+            # WebGLMorphtargets allocates a separate RGBA float texture layer
+            # per target, even for shared/fallback accessors. Row padding is less
+            # than one row, hence at most twice the logical pixels for any GPU.
+            slots = max((slot for semantic, slot in (("POSITION", 1), ("NORMAL", 2), ("COLOR_0", 3))
+                         if any(semantic in morph for morph in morphs)), default=0)
+            if slots:
+                _require("POSITION" in primitive["attributes"], entry)
+                position = accessors[primitive["attributes"]["POSITION"]]
+                morph_allocated += position["count"] * slots * 32 * len(morphs)
+                _require(morph_allocated <= resources.limits.vrm_morph_bytes, entry, "model_accessor_budget_exceeded")
             if mode in (5, 6):
                 # toTrianglesDrawMode clones each primitive's geometry even when
                 # its source accessors are shared, then allocates triangle indices.
@@ -949,14 +961,14 @@ def _mmd_texture(resources: _Resources, value: str) -> None:
     resources.dependency(value, base=posixpath.dirname(resources.bundle.entrypoint), suffixes=_MMD_IMAGES)
 
 
-def _mmd_ik_budget(resources: _Resources, parents: list[int], weights: dict[int, int]) -> None:
+def _mmd_ik_budget(resources: _Resources, parents: list[int], weights: dict[int, int], *, strict_parents=False) -> None:
     """Count recursive matrix updates without recursively walking the bone graph."""
-    if not weights:
+    if not weights and not strict_parents:
         return
     sizes, children = [1] * len(parents), [0] * len(parents)
     for index, parent in enumerate(parents):
         # buildBones leaves missing parents at the root; Object3D ignores self-add.
-        if 0 <= parent < len(parents) and parent != index:
+        if 0 <= parent < len(parents) and (strict_parents or parent != index):
             children[parent] += 1
     leaves = [index for index, count in enumerate(children) if count == 0]
     visited = 0
@@ -964,7 +976,7 @@ def _mmd_ik_budget(resources: _Resources, parents: list[int], weights: dict[int,
         index = leaves.pop()
         visited += 1
         parent = parents[index]
-        if 0 <= parent < len(parents) and parent != index:
+        if 0 <= parent < len(parents) and (strict_parents or parent != index):
             sizes[parent] += sizes[index]
             children[parent] -= 1
             if children[parent] == 0:
@@ -1007,7 +1019,8 @@ def _pmx(resources: _Resources, reader: _MmdReader) -> None:
             _mmd_texture(resources, textures[index])
 
     covered = 0
-    for _ in range(reader.count(minimum=79)):
+    material_count = reader.count(minimum=79)
+    for _ in range(material_count):
         reader.text()
         reader.text()
         # Diffuse/specular/shininess/ambient, draw flag, edge color and edge size.
@@ -1069,7 +1082,7 @@ def _pmx(resources: _Resources, reader: _MmdReader) -> None:
                    6: vertex + 16, 7: vertex + 16, 8: material + 113,
                    9: morph + 4, 10: rigid + 25}
     dense_morphs = 0
-    morph_offsets, group_targets = [], []
+    morph_work_counts, group_targets = [], []
     for _ in range(reader.count(minimum=14)):
         reader.text()
         reader.text()
@@ -1084,23 +1097,27 @@ def _pmx(resources: _Resources, reader: _MmdReader) -> None:
                      path, "model_accessor_budget_exceeded")
         width = morph_sizes[kind]
         count = reader.count(minimum=width)
-        morph_offsets.append(count if kind == 1 else 0)
+        morph_work_counts.append(count if kind in (1, 8) else 0)
         if kind == 0:
             targets = []
             for _ in range(count):
                 targets.append(reader.index(morph))
                 reader.skip(4)
             group_targets.append(targets)
+        elif kind == 8:
+            for _ in range(count):
+                _require(-1 <= reader.index(material) < material_count, path)
+                reader.skip(113)
         else:
             reader.skip(count * width)
-    # buildGeometry expands each direct group reference, even repeated/zero-ratio
-    # references. Group-to-group references are ignored, not recursively expanded.
-    morph_work = sum(morph_offsets)
+    # Geometry and transparency fixes expand direct vertex/material references,
+    # even repeated/zero-ratio references. Group-to-group references are ignored.
+    morph_work = sum(morph_work_counts)
     _require(morph_work <= resources.limits.mmd_morph_work, path, "model_accessor_budget_exceeded")
     for targets in group_targets:
         for index in targets:
-            _require(0 <= index < len(morph_offsets), path)
-            morph_work += morph_offsets[index]
+            _require(0 <= index < len(morph_work_counts), path)
+            morph_work += morph_work_counts[index]
             _require(morph_work <= resources.limits.mmd_morph_work, path, "model_accessor_budget_exceeded")
     for _ in range(reader.count(minimum=13)):
         reader.text()
@@ -1176,7 +1193,7 @@ def _pmd(resources: _Resources, reader: _MmdReader) -> None:
     _require(covered == indices, path)
     # The remaining sections are still consumed so truncation cannot hide after textures.
     bones = reader.count("H", 39)
-    parents, ik_weights, ik_owners = [], {}, set()
+    parents, ik_weights, ik_owners = [], {}, {}
     for _ in range(bones):
         reader.skip(20)
         parents.append(reader.scalar("h"))
@@ -1185,11 +1202,8 @@ def _pmd(resources: _Resources, reader: _MmdReader) -> None:
     for _ in range(reader.count("H", 11)):
         owner = reader.scalar("H")
         reader.skip(2)
-        # PmdReader adds a child bone for every subsequent IK with this owner.
         if owner < bones:
-            if owner in ik_owners:
-                parents.append(owner)
-            ik_owners.add(owner)
+            ik_owners[owner] = ik_owners.get(owner, 0) + 1
         links = reader.scalar("B")
         iterations = reader.scalar("H")
         ik_work += iterations * links
@@ -1201,7 +1215,11 @@ def _pmd(resources: _Resources, reader: _MmdReader) -> None:
             # PmdReader discards missing links and IKs with no owner bone.
             if owner < bones and index < bones:
                 ik_weights[index] = ik_weights.get(index, 0) + iterations
-    _mmd_ik_budget(resources, parents, ik_weights)
+    # PmdReader appends duplicate IK children in original bone order. Its later
+    # reordering remaps both parents and links by identity, preserving subtree
+    # sizes and weights; calculate in that identity space before the permutation.
+    parents.extend(owner for owner in sorted(ik_owners) for _ in range(ik_owners[owner] - 1))
+    _mmd_ik_budget(resources, parents, ik_weights, strict_parents=True)
     morphs = reader.count("H", 25)
     # PmdReader removes its base morph, then converts the rest to vertex morphs.
     _require(vertices * max(0, morphs - 1) * 12 <= resources.limits.mmd_morph_bytes,
