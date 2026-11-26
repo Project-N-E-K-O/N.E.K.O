@@ -3686,6 +3686,133 @@ def test_config_update_command_coordinates_with_in_flight_writes_and_profile_swi
                     pending.cancel()
             await asyncio.gather(*to_tasks, return_exceptions=True)
 
+        # 19d(iii). Timed-out first write followed by a failing or persisted=False second write while
+        #           config_change rejects must keep _effective_config_uncertain=True across rebase.
+        for second_outcome in ("fail", "persisted_false"):
+            ctx_u = PluginContext(
+                plugin_id="demo",
+                config_path=tmp_path / f"demo_mem_rb_uncertain_{second_outcome}" / "plugin.toml",
+                logger=_FakeLogger(),  # type: ignore[arg-type]
+                status_queue=None,
+            )
+            instance_u = _RecordingInstance()
+            ctx_u._instance = instance_u
+            ctx_u._set_effective_config_cache({"base": 1})
+
+            second_started_u = asyncio.Event()
+            release_second_u = asyncio.Event()
+            orig_local_u = ctx_u._get_local_config_payload
+
+            async def _uncertain_local_payload(
+                *,
+                payload_type: str = "config",
+                _orig: object = orig_local_u,
+                _ctx: PluginContext = ctx_u,
+                **kwargs: object,
+            ) -> dict[str, object] | None:
+                if (
+                    payload_type == "config"
+                    and isinstance(_ctx._effective_config, dict)
+                    and not _ctx._effective_config_uncertain
+                ):
+                    res = await _orig(payload_type="config", **kwargs)  # type: ignore[operator]
+                    if isinstance(res, dict):
+                        return res
+                return None
+
+            async def _timeout_then_second_rpc(
+                *,
+                request_type: str,
+                request_data: dict[str, object],
+                _outcome: str = second_outcome,
+                _started: asyncio.Event = second_started_u,
+                _release: asyncio.Event = release_second_u,
+                **_kwargs: object,
+            ) -> dict[str, object]:
+                if request_type == "PLUGIN_CONFIG_GET":
+                    return {"plugin_id": "demo", "config": {"base": 1}}
+                assert request_type == "PLUGIN_CONFIG_UPDATE"
+                updates = request_data["updates"]
+                assert isinstance(updates, dict)
+                if "timer" in updates:
+                    raise TimeoutError("first write timed out")
+                _started.set()
+                await _release.wait()
+                if _outcome == "fail":
+                    raise RuntimeError("second write failed")
+                return {"success": True, "persisted": False, "config": {}}
+
+            ctx_u._get_local_config_payload = _uncertain_local_payload  # type: ignore[method-assign]
+            ctx_u._send_request_and_wait_async = _timeout_then_second_rpc  # type: ignore[method-assign]
+            u_tasks: list[asyncio.Task[dict[str, object]]] = []
+
+            async def _timeout_then_second_then_reject(
+                *,
+                _ctx: PluginContext = ctx_u,
+                _started: asyncio.Event = second_started_u,
+                _tasks: list[asyncio.Task[dict[str, object]]] = u_tasks,
+                _outcome: str = second_outcome,
+                **_kwargs: object,
+            ) -> None:
+                res1 = await _ctx.update_own_config({"timer": 3})
+                assert res1["persisted"] is None
+                assert _ctx._effective_config_uncertain is True
+                write2 = asyncio.create_task(_ctx.update_own_config({"timer2": 4}))
+                _tasks.append(write2)
+                await _wait_for_checkpoint_or_task_failure(_started, write2)
+                raise RuntimeError(f"reject after timeout + {_outcome}")
+
+            sender_u = _FakeResponseSender()
+            try:
+                await host_module._handle_config_update_command(
+                    msg={
+                        "req_id": f"req-mem-rb-uncertain-{second_outcome}",
+                        "config": {"host": 9},
+                        "mode": "temporary",
+                        "replace": False,
+                    },
+                    ctx=ctx_u,
+                    events_by_type={
+                        "lifecycle": {"config_change": _timeout_then_second_then_reject}
+                    },
+                    plugin_id="demo",
+                    res_sender=sender_u,
+                    logger=_FakeLogger(),
+                )
+                assert sender_u.payloads[-1]["success"] is False
+                assert f"reject after timeout + {second_outcome}" in str(
+                    sender_u.payloads[-1].get("error", "")
+                )
+                release_second_u.set()
+                if second_outcome == "fail":
+                    with pytest.raises(RuntimeError, match="second write failed"):
+                        await u_tasks[0]
+                    expected_after_u = {"base": 1, "timer": 3}
+                else:
+                    res2 = await u_tasks[0]
+                    assert res2["persisted"] is False
+                    expected_after_u = {"base": 1, "timer": 3, "timer2": 4}
+                    assert res2["config"] == expected_after_u
+                assert ctx_u._effective_config == expected_after_u
+                assert instance_u.refreshed[-1] == expected_after_u
+                assert ctx_u._effective_config_uncertain is True
+
+                dumped_u = await ctx_u.get_own_config()
+                assert dumped_u["config"] == {"base": 1}
+                assert ctx_u._effective_config == {"base": 1}
+                assert ctx_u._effective_config_uncertain is False
+                assert instance_u.refreshed[-1] == {"base": 1}
+                assert ctx_u._host_config_change_pending == 0
+                assert not getattr(ctx_u, "_pending_host_config_owner_tokens", {})
+                assert not getattr(ctx_u, "_owner_token_host_change_root", {})
+                assert getattr(ctx_u, "_non_persisted_host_lineage", None) is None
+            finally:
+                release_second_u.set()
+                for pending in u_tasks:
+                    if not pending.done():
+                        pending.cancel()
+                await asyncio.gather(*u_tasks, return_exceptions=True)
+
         # 19e. Control: persisted=False followed by persisted=True detaches lineage and preserves commit.
         ctx_commit = PluginContext(
             plugin_id="demo",

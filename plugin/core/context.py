@@ -2817,6 +2817,7 @@ class PluginContext:
             ):
                 self._rejected_host_rollback = None
                 _, rb_had_cached, rb_old_config, rb_uncertain, rb_fallback_notify = pending_host_rb
+                effective_uncertain = rb_uncertain or old_effective_config_uncertain
                 self._bump_effective_config_gen()
                 if rb_had_cached and isinstance(rb_old_config, dict):
                     restored = (
@@ -2826,11 +2827,11 @@ class PluginContext:
                     )
                     self._record_effective_config_locked(
                         restored,
-                        uncertain=rb_uncertain,
+                        uncertain=effective_uncertain,
                     )
                     should_flush = True
                 else:
-                    self._record_effective_config_locked(None, uncertain=rb_uncertain)
+                    self._record_effective_config_locked(None, uncertain=effective_uncertain)
                     if isinstance(rb_fallback_notify, dict):
                         seq = int(getattr(self, "_effective_config_publish_seq", 0) or 0)
                         self._effective_config_fallback_notify = (
@@ -2952,6 +2953,9 @@ class PluginContext:
                                             rb_uncertain,
                                             rb_fallback_notify,
                                         ) = pending_host_rb
+                                        effective_uncertain = (
+                                            rb_uncertain or old_effective_config_uncertain
+                                        )
                                         self._bump_effective_config_gen()
                                         if rb_had_cached and isinstance(rb_old_config, dict):
                                             applied_config = self._apply_config_patches(
@@ -2960,14 +2964,14 @@ class PluginContext:
                                             )
                                             self._record_effective_config_locked(
                                                 copy.deepcopy(applied_config),
-                                                uncertain=rb_uncertain,
+                                                uncertain=effective_uncertain,
                                             )
                                             should_flush_in_memory = True
                                         else:
                                             superseded_by_host_rollback = True
                                             self._record_effective_config_locked(
                                                 None,
-                                                uncertain=rb_uncertain,
+                                                uncertain=effective_uncertain,
                                             )
                                             if isinstance(rb_fallback_notify, dict):
                                                 seq = int(
