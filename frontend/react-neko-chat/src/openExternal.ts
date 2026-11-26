@@ -6,7 +6,7 @@
 // users get trapped. The host preload script exposes window.electronShell
 // as the bridge to shell.openExternal in the main process; the same
 // convention is used by static/app/app-proactive.js for url-card / meme
-// links, and by plugin surfaces (e.g. game_agent_minecraft quickstart).
+// links, and by plugin surfaces.
 //
 // The chat surface renders in three contexts (index.html wide / narrow
 // mobile / chat.html in Electron). In the two browser contexts the

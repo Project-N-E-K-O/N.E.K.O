@@ -958,7 +958,7 @@ describe('hosted ui runtime', () => {
       configurable: true,
     })
 
-    const promise = ui.api.call('game_agent_status')
+    const promise = ui.api.call('demo_status')
     expect(requestMessage?.type).toBe('neko-hosted-surface-request')
 
     window.dispatchEvent(new MessageEvent('message', {
@@ -968,7 +968,7 @@ describe('hosted ui runtime', () => {
         ok: false,
         error: '插件未运行',
         code: 'PLUGIN_NOT_RUNNING',
-        details: { plugin_id: 'game_agent_minecraft' },
+        details: { plugin_id: 'demo_plugin' },
         status: 409,
       },
     }))
@@ -976,7 +976,7 @@ describe('hosted ui runtime', () => {
     await expect(promise).rejects.toMatchObject({
       message: '插件未运行',
       code: 'PLUGIN_NOT_RUNNING',
-      details: { plugin_id: 'game_agent_minecraft' },
+      details: { plugin_id: 'demo_plugin' },
       status: 409,
     })
   })
