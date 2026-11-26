@@ -924,7 +924,7 @@ async def _handle_config_update_command(
                         )
                         res_sender.put(ret_payload, timeout=10.0)
                         return
-                    base_config: dict[str, Any] = {}
+                    hydrated_base: dict[str, Any] | None = None
                     get_own_config = getattr(ctx, "get_own_config", None)
                     if callable(get_own_config):
                         try:
@@ -945,7 +945,7 @@ async def _handle_config_update_command(
                             if inspect.isawaitable(loaded):
                                 loaded = await asyncio.wait_for(loaded, timeout=remaining_budget)
                             if isinstance(loaded, Mapping) and isinstance(loaded.get("config"), Mapping):
-                                base_config = copy.deepcopy(dict(loaded["config"]))
+                                hydrated_base = copy.deepcopy(dict(loaded["config"]))
                         except TimeoutError:
                             ret_payload["error"] = (
                                 "Timed out hydrating config before temporary update"
@@ -973,7 +973,7 @@ async def _handle_config_update_command(
                         _post_gen,
                         rollback_runtime_snapshot,
                     ) = apply_hydrated_merge_for_host(
-                        base_config=base_config,
+                        base_config=hydrated_base,
                         new_config=new_config,
                         merge_fn=_deep_merge,
                         expected_gen=expected_gen,
@@ -984,6 +984,12 @@ async def _handle_config_update_command(
                         applied_ok = True
                         logger.debug("[Plugin Process] Config cache updated")
                         break
+                    if apply_status == "hydrate_failed":
+                        ret_payload["error"] = (
+                            "Failed to hydrate base config before temporary update"
+                        )
+                        res_sender.put(ret_payload, timeout=10.0)
+                        return
                     if apply_status == "wait_write":
                         if not await wait_write_settled(deadline=merge_deadline):
                             ret_payload["error"] = (
@@ -1024,20 +1030,28 @@ async def _handle_config_update_command(
                     bump_gen()
                 logger.debug("[Plugin Process] Config cache updated")
             else:
-                base_config = {}
+                base_config: dict[str, Any] = {}
                 get_own_config = getattr(ctx, "get_own_config", None)
                 if callable(get_own_config):
+                    hydrated_base_fallback: dict[str, Any] | None = None
                     try:
                         loaded = get_own_config()
                         if inspect.isawaitable(loaded):
                             loaded = await loaded
                         if isinstance(loaded, Mapping) and isinstance(loaded.get("config"), Mapping):
-                            base_config = copy.deepcopy(dict(loaded["config"]))
+                            hydrated_base_fallback = copy.deepcopy(dict(loaded["config"]))
                     except Exception:
                         logger.debug(
                             "[Plugin Process] Failed to hydrate base config before temporary update",
                             exc_info=True,
                         )
+                    if hydrated_base_fallback is None:
+                        ret_payload["error"] = (
+                            "Failed to hydrate base config before temporary update"
+                        )
+                        res_sender.put(ret_payload, timeout=10.0)
+                        return
+                    base_config = hydrated_base_fallback
                 old_config = copy.deepcopy(base_config)
                 _deep_merge(base_config, new_config)
                 ctx._effective_config = base_config

@@ -2135,3 +2135,123 @@ def test_config_update_command_coordinates_with_in_flight_writes_and_profile_swi
         assert instance.refreshed[-1] == {"keep": "orig", "nested": {"x": 1}}
 
     asyncio.run(_case_failing_config_change_mutating_old_config_preserves_rollback())
+
+    # 8. Uncertain cached draft from timed-out write must re-hydrate authoritative disk config before host patch.
+    async def _case_uncertain_cached_draft_rehydrates_before_host_patch() -> None:
+        ctx = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "demo_uncertain_rehydrate" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance = _RecordingInstance()
+        ctx._instance = instance
+        ctx._set_effective_config_cache({"base": 1})
+
+        async def _timeout_write(**_kwargs: object) -> dict[str, object]:
+            raise TimeoutError("write ack timed out")
+
+        disk_config: dict[str, object] = {"base": 1}
+
+        async def _local_payload(**_kwargs: object) -> dict[str, object]:
+            return {"plugin_id": "demo", "config": dict(disk_config)}
+
+        ctx._send_request_and_wait_async = _timeout_write  # type: ignore[method-assign]
+        ctx._get_local_config_payload = _local_payload  # type: ignore[method-assign]
+
+        res = await ctx.update_own_config({"draft": 1})
+        assert res["persisted"] is None
+        assert ctx._effective_config == {"base": 1, "draft": 1}
+        assert ctx._effective_config_uncertain is True
+
+        sender = _FakeResponseSender()
+        await host_module._handle_config_update_command(
+            msg={
+                "req_id": "req-uncertain-rehydrate",
+                "config": {"live": 2},
+                "mode": "temporary",
+                "replace": False,
+            },
+            ctx=ctx,
+            events_by_type={},
+            plugin_id="demo",
+            res_sender=sender,
+            logger=_FakeLogger(),
+        )
+        assert sender.payloads[-1]["success"] is True
+        assert ctx._effective_config == {"base": 1, "live": 2}
+        assert "draft" not in ctx._effective_config
+        assert ctx._effective_config_uncertain is False
+        assert instance.refreshed[-1] == {"base": 1, "live": 2}
+
+    asyncio.run(_case_uncertain_cached_draft_rehydrates_before_host_patch())
+
+    # 9. Failed hydration must abort temporary patch instead of overwriting existing runtime config with {}.
+    async def _case_failed_hydration_aborts_temporary_patch_instead_of_overwriting_with_empty_base() -> None:
+        ctx = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "demo_hydrate_fail" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance = _RecordingInstance()
+        ctx._instance = instance
+        ctx._set_effective_config_cache({"keep": 1, "mode": "old"})
+        ctx._invalidate_effective_config_for_profile_refresh()
+        assert ctx._effective_config is None
+
+        handler_calls = 0
+
+        def _should_not_run(**_kwargs: object) -> None:
+            nonlocal handler_calls
+            handler_calls += 1
+
+        async def _broken_get_own_config(*, timeout: float = 5.0) -> dict[str, object]:
+            del timeout
+            raise RuntimeError("disk offline")
+
+        ctx.get_own_config = _broken_get_own_config  # type: ignore[method-assign]
+        sender = _FakeResponseSender()
+        await host_module._handle_config_update_command(
+            msg={
+                "req_id": "req-hydrate-fail",
+                "config": {"live": 2},
+                "mode": "temporary",
+                "replace": False,
+            },
+            ctx=ctx,
+            events_by_type={"lifecycle": {"config_change": _should_not_run}},
+            plugin_id="demo",
+            res_sender=sender,
+            logger=_FakeLogger(),
+        )
+        assert sender.payloads[-1]["success"] is False
+        assert "Failed to hydrate" in str(sender.payloads[-1]["error"])
+        assert ctx._effective_config is None
+        assert instance.refreshed[-1] == {"keep": 1, "mode": "old"}
+        assert handler_calls == 0
+
+        # Control case: genuine empty baseline {"config": {}} still applies normally.
+        async def _empty_get_own_config(*, timeout: float = 5.0) -> dict[str, object]:
+            del timeout
+            return {"config": {}}
+
+        ctx.get_own_config = _empty_get_own_config  # type: ignore[method-assign]
+        await host_module._handle_config_update_command(
+            msg={
+                "req_id": "req-hydrate-empty-ok",
+                "config": {"live": 2},
+                "mode": "temporary",
+                "replace": False,
+            },
+            ctx=ctx,
+            events_by_type={},
+            plugin_id="demo",
+            res_sender=sender,
+            logger=_FakeLogger(),
+        )
+        assert sender.payloads[-1]["success"] is True
+        assert ctx._effective_config == {"live": 2}
+        assert instance.refreshed[-1] == {"live": 2}
+
+    asyncio.run(_case_failed_hydration_aborts_temporary_patch_instead_of_overwriting_with_empty_base())

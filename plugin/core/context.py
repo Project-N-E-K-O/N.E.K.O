@@ -850,7 +850,7 @@ class PluginContext:
             had_cached = isinstance(self._effective_config, dict)
             had_uncertain = bool(getattr(self, "_effective_config_uncertain", False))
             last_runtime = getattr(self, "_last_runtime_config_snapshot", None)
-            if not had_cached:
+            if not had_cached or had_uncertain:
                 return (
                     "needs_hydrate",
                     False,
@@ -884,7 +884,7 @@ class PluginContext:
     def _apply_hydrated_merge_for_host(
         self,
         *,
-        base_config: Mapping[str, Any],
+        base_config: Mapping[str, Any] | None,
         new_config: Mapping[str, Any],
         merge_fn: Any,
         expected_gen: int,
@@ -906,13 +906,13 @@ class PluginContext:
             current_gen = self._current_effective_config_gen()
             gen_changed = current_gen != expected_gen
             current_uncertain = bool(getattr(self, "_effective_config_uncertain", False))
-            if isinstance(self._effective_config, dict):
+            if isinstance(self._effective_config, dict) and not current_uncertain:
                 old_config = copy.deepcopy(self._effective_config)
                 merged = copy.deepcopy(old_config)
                 merge_fn(merged, new_config)
-                had_cached_for_rollback = gen_changed
-                had_uncertain_for_rollback = current_uncertain if gen_changed else fallback_uncertain
-                applied_uncertain = current_uncertain
+                had_cached_for_rollback = True
+                had_uncertain_for_rollback = False
+                applied_uncertain = False
                 rollback_runtime_snapshot: Dict[str, Any] = copy.deepcopy(old_config)
             else:
                 if gen_changed:
@@ -926,12 +926,23 @@ class PluginContext:
                         current_gen,
                         pre_runtime_snapshot,
                     )
+                if not isinstance(base_config, Mapping):
+                    return (
+                        "hydrate_failed",
+                        False,
+                        current_uncertain,
+                        {},
+                        None,
+                        0,
+                        current_gen,
+                        pre_runtime_snapshot,
+                    )
                 old_config = copy.deepcopy(dict(base_config))
                 merged = copy.deepcopy(old_config)
                 merge_fn(merged, new_config)
                 had_cached_for_rollback = False
                 had_uncertain_for_rollback = fallback_uncertain
-                applied_uncertain = current_uncertain
+                applied_uncertain = False
                 rollback_runtime_snapshot = (
                     copy.deepcopy(old_config)
                     if old_config
