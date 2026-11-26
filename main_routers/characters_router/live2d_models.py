@@ -38,9 +38,12 @@ from utils.config_manager import (
     get_reserved,
     set_reserved,
 )
-from utils.frontend_utils import find_models, find_model_directory
+from services.model_workshop.catalog import find_models, find_model_directory
 from utils.url_utils import encode_url_path
 from utils.cloudsave_runtime import MaintenanceModeError
+from services.model_workshop.paths import WorkshopError
+from services.model_workshop.runtime import require_url
+from services.model_workshop.tasks import _drain_sync
 from config import (
     DEFAULT_LIVE2D_MODEL_NAME,
 )
@@ -292,9 +295,14 @@ def _resolve_live2d_model_binding(model_identifier: str, *, item_id: str = "") -
 
     resolved_source = "steam_workshop" if normalized_item_id else (_derive_live2d_asset_source(normalized_model) or "local_imported")
     resolved_source_id = normalized_item_id
+    binding_model_path = normalized_model or resolved_model_path
+    input_url_encoded = normalized_model.startswith("/") or bool(urlparse(normalized_model).scheme)
+    binding_url_encoded = input_url_encoded
 
     # Keep external links bound to their original locations; do not rebind them to local or Workshop directories.
     if resolved_source == "manual_external":
+        # Absolute loopback URLs still refer to protected local resources.
+        require_url(get_config_manager(), normalized_model, for_binding=True)
         return normalized_model or resolved_model_path, resolved_source_id, resolved_source
 
     try:
@@ -308,12 +316,27 @@ def _resolve_live2d_model_binding(model_identifier: str, *, item_id: str = "") -
         )
         if matching_model is not None:
             matched_path = str(matching_model.get("path") or "").strip().replace("\\", "/")
+            binding_model_path = matched_path or binding_model_path
+            if matched_path:
+                binding_url_encoded = False  # Discovery supplies filesystem spellings.
             resolved_model_path = _normalize_live2d_catalog_path(matched_path) or resolved_model_path
             resolved_source = _derive_live2d_asset_source(matched_path) or resolved_source
             resolved_source_id = normalized_item_id or str(matching_model.get("item_id") or "").strip()
+    except WorkshopError:
+        raise
     except Exception as exc:
         logger.debug("解析 Live2D 模型绑定时查找模型目录失败: %s", exc)
 
+    # Keep unavailable results outside the catalog compatibility fallback.
+    require_url(get_config_manager(), normalized_model, url_encoded=input_url_encoded)
+    # Apply ownership checks to the resolved target: a bare name may have
+    # resolved to an unrelated builtin/Steam model in the existing catalog.
+    # The persisted spelling drops URL prefixes; retain the source-qualified
+    # identity for this check, including legacy Steam name + item_id bindings.
+    if resolved_source == "steam_workshop" and resolved_source_id:
+        binding_model_path = f"/workshop/{resolved_source_id}/{resolved_model_path}"
+        binding_url_encoded = False
+    require_url(get_config_manager(), binding_model_path, for_binding=True, url_encoded=binding_url_encoded)
     return resolved_model_path, resolved_source_id, resolved_source
 
 
@@ -836,8 +859,20 @@ async def update_catgirl_l2d(name: str, request: Request):
 
         # Load the current character configuration.
         _config_manager = get_config_manager()
+        for model_ref in (vrm_model, mmd_model):
+            if model_ref:
+                await _drain_sync(lambda: require_url(_config_manager, str(model_ref), for_binding=True))
         async with character_config_mutation_lock:
             characters = await _config_manager.aload_characters()
+
+            # Only the in-process market caller supplies this guard. Revalidate
+            # its captured target inside the same lock as the real avatar save;
+            # ordinary HTTP model/parameter edits retain their existing path.
+            market_guard = getattr(request.state, 'model_workshop_guard', None)
+            if market_guard is not None and await market_guard(_config_manager, characters):
+                # Only the internal workshop guard can confirm this exact asset
+                # is already active. Ordinary HTTP saves keep their original behavior.
+                return JSONResponse(content={'success': True})
 
             # Ensure the neko configuration exists.
             if '猫娘' not in characters:
@@ -974,9 +1009,8 @@ async def update_catgirl_l2d(name: str, request: Request):
                 logger.debug(f"已保存角色 {name} 的PNGTuber配置")
             else:
                 # Update Live2D model settings and save item_id as well, if provided.
-                live2d_model_path, resolved_item_id, resolved_asset_source = _resolve_live2d_model_binding(
-                    live2d_model,
-                    item_id=str(item_id or ""),
+                live2d_model_path, resolved_item_id, resolved_asset_source = await _drain_sync(
+                    lambda: _resolve_live2d_model_binding(live2d_model, item_id=str(item_id or ""))
                 )
                 set_reserved(
                     characters['猫娘'][name],
@@ -1017,6 +1051,11 @@ async def update_catgirl_l2d(name: str, request: Request):
 
             # Save the configuration.
             await await_retirement(_config_manager.asave_characters(characters))
+            # The connected import distinguishes persistence from a later
+            # runtime-refresh failure; external HTTP callers have no callback.
+            market_saved = getattr(request.state, 'model_workshop_saved', None)
+            if market_saved is not None:
+                market_saved()
         # Telemetry: which avatar type the user actively picks (live2d / vrm / mmd / pngtuber).
         # Complements the startup snapshot, which misses a switch until the next launch.
         try:
@@ -1051,6 +1090,8 @@ async def update_catgirl_l2d(name: str, request: Request):
 
     except MaintenanceModeError:
         raise
+    except WorkshopError as exc:
+        return JSONResponse({"success": False, "error_code": str(exc)}, status_code=409)
     except Exception as e:
         logger.exception("更新角色模型设置失败")
         return JSONResponse(content={

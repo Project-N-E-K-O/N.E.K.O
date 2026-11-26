@@ -9,8 +9,10 @@ import os
 import stat
 import sys
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+
+from utils.model_workshop_storage import is_redirecting_reparse
 
 from .bundle import _constant, _object
 
@@ -22,7 +24,9 @@ class WorkshopError(ValueError):
 def identity(path: Path) -> list[int]:
     """Use no-follow device/file identity, never a timestamp or content hash."""
     info = path.lstat()
-    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+    # Cloud placeholders are data; only redirecting tags are link-like. The
+    # same distinction is already used by the storage migration copier.
+    if stat.S_ISLNK(info.st_mode) or is_redirecting_reparse(info):
         raise WorkshopError("model_workshop_unsafe_path")
     kind = stat.S_IFMT(info.st_mode)
     if kind not in (stat.S_IFREG, stat.S_IFDIR) or not info.st_ino:
@@ -181,6 +185,9 @@ class WorkshopPaths:
     vrm: Path
     mmd: Path
     root_identity: tuple[int, ...]
+    # Root aliases do not change ownership of the same resolved filesystem.
+    # Preserve their spelling for callers that still use ConfigManager paths.
+    root_alias: Path | None = field(default=None, compare=False)
 
     @classmethod
     def capture(cls, config):
@@ -196,7 +203,8 @@ class WorkshopPaths:
         ):
             raise WorkshopError("model_workshop_unsafe_path")
         return cls(
-            root, root / "live2d", root / "vrm", root / "mmd", tuple(identity(root))
+            root, root / "live2d", root / "vrm", root / "mmd", tuple(identity(root)),
+            Path(os.path.abspath(config.app_docs_dir)),
         )
 
     @property

@@ -1245,7 +1245,7 @@ def test_opened_registry_disappearing_is_not_an_empty_registry(tmp_path, monkeyp
     with pytest.raises(WorkshopError, match='state_unreadable'): paths.read_json(path, STATE_BYTES)
 
 
-@pytest.mark.parametrize('kind', ['wait', 'cancel'])
+@pytest.mark.parametrize('kind', ['wait', 'cancel', 'request_cancel'])
 def test_acquired_task_survives_eviction_before_return(service, monkeypatch, kind):
     from services.model_workshop.tasks import _Task
     task = _Task(uuid.uuid4().hex, phase='completed', result={'kept': True}); task.done.set()

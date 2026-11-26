@@ -598,6 +598,14 @@ def _is_main_limited_mode_allowed_path(path: str, method: str) -> bool:
     )
 
 
+# Register the importer before the startup middleware: Starlette wraps earlier
+# registrations with later ones. Storage selection must reject the request
+# before the importer acquires a writer, recovers transactions or reads a body.
+# The existing Host/instance/global-body guards below remain outside both.
+from main_routers.model_market_router import ModelImportBodyGuard
+app.add_middleware(ModelImportBodyGuard, config_getter=lambda: _config_manager)
+
+
 @app.middleware("http")
 async def main_storage_limited_mode_guard(request: Request, call_next):
     if _runtime_startup_init_completed or not _main_runtime_limited_mode_enabled:
@@ -638,6 +646,10 @@ def _avatar_tool_multipart_preflight(scope):
         )
     return _validate_local_mutation_request(request)
 
+
+# Work in the guard runs off-loop; Monitor only consumes read-only metadata.
+from app.model_workshop_static import ModelWorkshopRequestGate
+app.add_middleware(ModelWorkshopRequestGate, config_getter=lambda: _config_manager)
 
 # Global nonmultipart requests retain 16 MiB Content-Length guards. Custom-prop
 # POST/PUT also check local access, CSRF/origin, and aggregate size before FastAPI
@@ -697,6 +709,7 @@ from .web_app import (  # noqa: F401
     live2d_router,
     memory_router,
     mmd_router,
+    model_market_router,
     music_router,
     pages_router,
     pngtuber_router,
@@ -1504,9 +1517,31 @@ async def on_shutdown():
             except Exception as e:
                 logger.debug(f"loop stall watchdog stop failed: {e}")
             _loop_stall_watchdog = None
+        # A model commit may outlive its awaiter. Finish real I/O before any
+        # shutdown cancellation is propagated or storage ownership is released.
+        from services.model_workshop.runtime import close_all as close_model_workshop
+        from services.model_workshop.tasks import _drain_sync as drain_model_workshop_io
+        workshop_shutdown_cancellation = None
+        # Stop network receivers before releasing the installer's root owner;
+        # a disconnected HTTP caller does not own these accepted background jobs.
+        from main_routers.model_market_router import connected_downloads
+        try:
+            await connected_downloads.close()
+        except asyncio.CancelledError as exc:
+            workshop_shutdown_cancellation = exc
+        except Exception as exc:
+            logger.error("model market download shutdown failed: %s", exc)
+        try:
+            await drain_model_workshop_io(close_model_workshop)
+        except asyncio.CancelledError as exc:
+            # The worker has finished; carry cancellation through the existing
+            # cleanup sequence rather than skipping other services' shutdown.
+            workshop_shutdown_cancellation = exc
+        except Exception as exc:
+            logger.error("model workshop shutdown failed: %s", exc)
         # Isolate each step's failure; after first caller cancellation share 8 s including cancellation grace.
         # Skip subsequent async steps only on total-budget exhaustion, then reraise the first cancellation.
-        shutdown_cancellation: asyncio.CancelledError | None = None
+        shutdown_cancellation: asyncio.CancelledError | None = workshop_shutdown_cancellation
         cancellation_budget = _ShutdownCancellationBudget()
         # Finalize visits first: seal uploads before finalized state, without leave, within VISIT_SHUTDOWN_BUDGET_S;
         # expiry cannot block later hooks, and unfinished work remains for startup backfill.

@@ -32,7 +32,7 @@
     // 剧场交接反馈、猫爪任务悬浮窗的文案，「找不到可用浏览器」的提示和删掉的
     // OpenClaw、MCP 开关文案，加上 DeepSeek 语音合成的音色示例占位文案和自定义
     // 语音合成不填音色时的说明（八语言）合在一起，刷新客户端缓存。
-    const LOCALE_VERSION = '2026-11-15-nekoclaw-browser-custom-tts-merge';
+    const LOCALE_VERSION = '2026-11-20-model-workshop-market-entry';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

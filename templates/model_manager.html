@@ -62,6 +62,16 @@
             <div id="upload-status" style="font-size:12px; color:#666; margin-top:4px;"></div>
         </div>
 
+        {% if model_workshop_enabled | default(false) %}
+        <!-- Reuse the existing import artwork; the original local import stays separate. -->
+        <section id="model-workshop-panel" class="control-group model-workshop-panel">
+            <button id="model-workshop-btn" class="btn btn-primary" data-workshop="start" type="button" data-i18n-title="modelWorkshop.title">
+                <img src="/static/icons/import_model_button_icon.png?v=1" class="import-icon" alt="" aria-hidden="true" draggable="false" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
+                <span class="round-stroke-text" data-i18n="modelWorkshop.title" data-text=""></span>
+            </button>
+        </section>
+        {% endif %}
+
         <div class="control-group">
             <div id="model-type-select-wrapper" style="position: relative;">
                 <button id="model-type-select-btn" class="btn btn-primary" type="button" data-i18n-title="live2d.modelType">
@@ -690,6 +700,9 @@
     <script src="/static/js/model_manager/card-face.js?v={{ static_asset_version | default('0') }}"></script>
     <script src="/static/js/model_manager/path-request-fullscreen.js?v={{ static_asset_version | default('0') }}"></script>
     <script src="/static/js/model_manager/vrm-emotion-source.js?v={{ static_asset_version | default('0') }}"></script>
+    {% if model_workshop_enabled | default(false) %}
+    <script src="/static/js/model_manager/model-workshop.js?v={{ static_asset_version | default('0') }}"></script>
+    {% endif %}
     <script src="/static/js/model_manager/page-controller.js?v={{ static_asset_version | default('0') }}"></script>
     <script src="/static/js/model_manager/background-model-drag.js?v={{ static_asset_version | default('0') }}"></script>
     <script src="/static/js/model_manager/window-lifecycle.js?v={{ static_asset_version | default('0') }}"></script>

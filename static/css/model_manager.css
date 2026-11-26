@@ -477,7 +477,8 @@ body.model-manager-page #pngtuber-container .pngtuber-image {
 }
 
 /* 导入模型按钮样式（参考返回主页按钮模式） */
-#upload-btn {
+#upload-btn,
+#model-workshop-btn {
     background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
     background-color: transparent !important;
     border: none !important;
@@ -501,7 +502,8 @@ body.model-manager-page #pngtuber-container .pngtuber-image {
     transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease !important;
 }
 
-#upload-btn .import-icon {
+#upload-btn .import-icon,
+#model-workshop-btn .import-icon {
     display: block !important;
     position: absolute;
     left: 10px;
@@ -552,7 +554,8 @@ body.model-manager-page #pngtuber-container .pngtuber-image {
     display: flex;
 }
 
-#upload-btn:hover:not(:disabled) {
+#upload-btn:hover:not(:disabled),
+#model-workshop-btn:hover:not(:disabled) {
     background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
     background-color: transparent;
     opacity: 0.9;
@@ -560,7 +563,8 @@ body.model-manager-page #pngtuber-container .pngtuber-image {
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1) !important;
 }
 
-#upload-btn:active:not(:disabled) {
+#upload-btn:active:not(:disabled),
+#model-workshop-btn:active:not(:disabled) {
     background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
     background-color: transparent !important;
     transform: translateY(1px) scale(0.98) !important;
@@ -3489,6 +3493,7 @@ input:checked + .toggle-slider:before {
 /* 所有语言共用同一套宽度，避免翻译文本改变按钮尺寸 */
 #backToMainBtn,
 #upload-btn,
+#model-workshop-btn,
 #model-type-select-btn,
 #live2d-model-select-btn,
 #motion-select-btn,
@@ -3510,6 +3515,7 @@ input:checked + .toggle-slider:before {
 
 #backToMainBtn,
 #upload-btn,
+#model-workshop-btn,
 #model-type-select-btn,
 #live2d-model-select-btn,
 #motion-select-btn,
@@ -3650,6 +3656,7 @@ input:checked + .toggle-slider:before {
 
 #backToMainBtn span:not(.dropdown-arrow),
 #upload-btn span:not(.dropdown-arrow),
+#model-workshop-btn span:not(.dropdown-arrow),
 #model-type-select-btn span:not(.dropdown-arrow),
 #live2d-model-select-btn span:not(.dropdown-arrow),
 #motion-select-btn span:not(.dropdown-arrow),
