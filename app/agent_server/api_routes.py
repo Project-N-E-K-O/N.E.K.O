@@ -143,7 +143,14 @@ async def _check_user_plugin_registry_readiness() -> Dict[str, Any]:
     )
 
     try:
-        async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
+        from utils.internal_http_client import internal_service_event_hooks
+
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            proxy=None,
+            trust_env=False,
+            event_hooks=internal_service_event_hooks(),
+        ) as client:
             async with asyncio.timeout(_USER_PLUGIN_REGISTRY_CHECK_MAX_DURATION_S):
                 for attempt in range(_USER_PLUGIN_REGISTRY_CHECK_ATTEMPTS):
                     await asyncio.sleep(_USER_PLUGIN_REGISTRY_CHECK_INTERVAL_S)

@@ -233,7 +233,14 @@ class MemoryQueryService:
                 # at the cap the call fails fast with BUSY instead of queueing.
                 # Rendering is local work and runs after the slot is released.
                 with memory_request_slot():
-                    async with httpx.AsyncClient(timeout=deadline, proxy=None, trust_env=False) as client:
+                    from utils.internal_http_client import internal_service_event_hooks
+
+                    async with httpx.AsyncClient(
+                        timeout=deadline,
+                        proxy=None,
+                        trust_env=False,
+                        event_hooks=internal_service_event_hooks(),
+                    ) as client:
                         response = await client.post(
                             _build_memory_query_url(lanlan_name=normalized_lanlan_name),
                             json=body,

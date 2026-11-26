@@ -105,8 +105,14 @@ async def notify_memory_server_reload(
     release_derived_task_claims: dict[str, list[str] | tuple[str, ...]] | None = None,
 ) -> bool:
     try:
+        from utils.internal_http_client import internal_service_event_hooks
+
         resume_names = sorted(set(resume_derived_task_names))
-        async with httpx.AsyncClient(proxy=None, trust_env=False) as client:
+        async with httpx.AsyncClient(
+            proxy=None,
+            trust_env=False,
+            event_hooks=internal_service_event_hooks(),
+        ) as client:
             response = await client.post(
                 f"http://127.0.0.1:{MEMORY_SERVER_PORT}/reload",
                 json={

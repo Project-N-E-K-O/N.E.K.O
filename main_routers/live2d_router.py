@@ -2085,10 +2085,13 @@ def delete_model(model_name: str):
                 config_mgr.ensure_live2d_directory()
                 fallback_dir = config_mgr.live2d_dir / model_name
                 if fallback_dir.exists():
-                    # Validate path safety against traversal.
+                    # Validate strict non-root containment against traversal.
                     fallback_real = os.path.realpath(str(fallback_dir))
                     live2d_real = os.path.realpath(str(config_mgr.live2d_dir))
-                    if fallback_real != live2d_real and os.path.commonpath([fallback_real, live2d_real]) == live2d_real:
+                    if (
+                        os.path.commonpath([fallback_real, live2d_real]) == live2d_real
+                        and os.path.normcase(fallback_real) != os.path.normcase(live2d_real)
+                    ):
                         model_dir = str(fallback_dir)
                         _url_prefix = '/user_live2d'
                         logger.info(f"通过降级路径找到用户模型: {model_dir}")
@@ -2112,7 +2115,7 @@ def delete_model(model_name: str):
             user_live2d_dir = os.path.realpath(str(config_mgr.live2d_dir))
             try:
                 common = os.path.commonpath([user_live2d_dir, model_dir_real])
-                if common == user_live2d_dir and model_dir_real != user_live2d_dir:
+                if common == user_live2d_dir and os.path.normcase(model_dir_real) != os.path.normcase(user_live2d_dir):
                     is_user_model = True
             except ValueError:
                 pass
@@ -2124,7 +2127,7 @@ def delete_model(model_name: str):
                     readable_live2d_real = os.path.realpath(str(readable_live2d))
                     try:
                         common = os.path.commonpath([readable_live2d_real, model_dir_real])
-                        if common == readable_live2d_real and model_dir_real != readable_live2d_real:
+                        if common == readable_live2d_real and os.path.normcase(model_dir_real) != os.path.normcase(readable_live2d_real):
                             is_user_model = True
                             _model_in_readonly_dir = True  # Inside CFA-protected read-only directory.
                     except ValueError:

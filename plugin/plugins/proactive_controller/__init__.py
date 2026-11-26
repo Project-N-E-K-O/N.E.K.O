@@ -264,7 +264,13 @@ class ProactiveControllerPlugin(NekoPluginBase):
 
     async def _get_json(self, path: str) -> dict[str, Any]:
         try:
-            async with httpx.AsyncClient(timeout=self._api_timeout, trust_env=False) as client:
+            from utils.internal_http_client import internal_service_event_hooks
+
+            async with httpx.AsyncClient(
+                timeout=self._api_timeout,
+                trust_env=False,
+                event_hooks=internal_service_event_hooks(),
+            ) as client:
                 resp = await client.get(self._url(path))
                 if resp.status_code >= 400:
                     return {"success": False, "error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
@@ -275,7 +281,13 @@ class ProactiveControllerPlugin(NekoPluginBase):
 
     async def _post_json(self, path: str, body: Mapping[str, Any]) -> dict[str, Any]:
         try:
-            async with httpx.AsyncClient(timeout=self._api_timeout, trust_env=False) as client:
+            from utils.internal_http_client import internal_service_event_hooks
+
+            async with httpx.AsyncClient(
+                timeout=self._api_timeout,
+                trust_env=False,
+                event_hooks=internal_service_event_hooks(),
+            ) as client:
                 resp = await client.post(self._url(path), json=dict(body))
                 if resp.status_code >= 400:
                     return {"success": False, "error": f"HTTP {resp.status_code}: {resp.text[:200]}"}

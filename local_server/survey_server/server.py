@@ -55,7 +55,7 @@ from storage import SurveyStorage
 
 HMAC_SECRET = os.getenv("SURVEY_HMAC_SECRET", DEFAULT_HMAC_SECRET)
 DB_PATH = os.getenv("SURVEY_DB_PATH", "./data/survey.db")
-ADMIN_TOKEN = os.getenv("SURVEY_ADMIN_TOKEN", "")
+ADMIN_TOKEN = os.getenv("SURVEY_ADMIN_TOKEN", "").strip()
 MAX_BODY_SIZE = 256 * 1024            # Request body byte limit (usually <=10 KB after gzip).
 MAX_DECOMPRESSED_SIZE = 1024 * 1024   # Decompression limit to block zip bombs.
 
@@ -109,23 +109,57 @@ def _decompress_if_gzip(body_bytes: bytes, content_encoding: str) -> bytes:
         raise HTTPException(400, f"Invalid gzip body: {e}")
 
 
+_INSECURE_PLACEHOLDER_TOKENS = frozenset({"please-change-me", "changeme"})
+
+
+def _is_admin_token_configured(admin_token: str) -> bool:
+    normalized = (admin_token or "").strip().lower()
+    return bool(normalized) and normalized not in _INSECURE_PLACEHOLDER_TOKENS
+
+
 def _extract_token(request: Request) -> str:
-    url_token = request.query_params.get("token", "").strip()
-    if url_token:
-        return url_token
     auth = request.headers.get("Authorization", "")
     return (auth[len("Bearer "):] if auth.startswith("Bearer ") else auth).strip()
 
 
 def require_admin(request: Request):
-    if not ADMIN_TOKEN:
-        raise HTTPException(503, "Admin API not configured (set SURVEY_ADMIN_TOKEN env var on server)")
+    expected_token = (ADMIN_TOKEN or "").strip()
+    if not _is_admin_token_configured(expected_token):
+        raise HTTPException(503, "Admin API not configured (set a non-placeholder SURVEY_ADMIN_TOKEN env var on server)")
     token = _extract_token(request)
     # Constant-time comparison: the admin endpoint exposes device_id / steam_user_id; ordinary != leaks a byte-by-byte comparison
     # progress through a timing side channel. compare_digest removes that difference. First reject non-ASCII: compare_digest
-    # raises TypeError for strings containing non-ASCII characters; otherwise a single ?token=é would turn a 401 into a 500.
-    if not token or not token.isascii() or not hmac.compare_digest(token, ADMIN_TOKEN):
+    # raises TypeError for strings containing non-ASCII characters; otherwise an Authorization header containing 'é' would turn a 401 into a 500.
+    if (
+        not token
+        or not expected_token
+        or not token.isascii()
+        or not expected_token.isascii()
+        or not hmac.compare_digest(token, expected_token)
+    ):
         raise HTTPException(401, "Invalid admin token")
+
+
+async def _read_limited_body(request: Request, max_bytes: int) -> bytes:
+    """Stream request body chunks and enforce max_bytes before buffering."""
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > max_bytes:
+                raise HTTPException(413, "Payload too large")
+        except ValueError:
+            pass
+
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(413, "Payload too large")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _sanitize_answers(answers) -> dict:
@@ -170,21 +204,9 @@ def _sanitize_answers(answers) -> dict:
 @app.post("/api/v1/survey", response_model=SubmitResponse)
 async def submit_survey(request: Request):
     """Receive a survey response. Validation: body size → decompress → timestamp → HMAC → rate limit → store."""
-    # Content-Length preflight: well-behaved clients send this header, so reject oversized requests with 413 immediately instead of first buffering the entire body
-    # into memory and then rejecting it. Requests without CL / using chunked transfer fall through to the actual read check below (uvicorn also provides
-    # a frame-size limit as a safeguard).
-    content_length = request.headers.get("content-length")
-    if content_length is not None:
-        try:
-            if int(content_length) > MAX_BODY_SIZE:
-                raise HTTPException(413, "Payload too large")
-        except ValueError:
-            # The CL header is not a valid integer: skip this preflight and rely on the actual read-length check below as a safeguard.
-            pass
-
-    body_bytes = await request.body()
-    if len(body_bytes) > MAX_BODY_SIZE:
-        raise HTTPException(413, "Payload too large")
+    # Preflight Content-Length and stream chunks with an incremental byte limit so chunked/unbounded requests
+    # fail with 413 immediately without buffering the full payload in memory.
+    body_bytes = await _read_limited_body(request, MAX_BODY_SIZE)
 
     body_bytes = _decompress_if_gzip(body_bytes, request.headers.get("Content-Encoding", ""))
 
@@ -332,8 +354,10 @@ async def on_startup():
     rate_limiter.cleanup_stale()
     asyncio.create_task(_periodic_rate_limiter_cleanup())
     logger.info(f"Survey server started. DB={DB_PATH}")
-    if not ADMIN_TOKEN:
+    if not ADMIN_TOKEN or not ADMIN_TOKEN.strip():
         logger.warning("⚠ SURVEY_ADMIN_TOKEN not set — admin API disabled")
+    elif ADMIN_TOKEN.strip().lower() in _INSECURE_PLACEHOLDER_TOKENS:
+        logger.warning("⚠ SURVEY_ADMIN_TOKEN uses an insecure placeholder value — admin API disabled")
 
 
 # ---------------------------------------------------------------------------
@@ -353,7 +377,7 @@ if __name__ == "__main__":
         Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
         storage = SurveyStorage(DB_PATH)
     if args.admin_token:
-        ADMIN_TOKEN = args.admin_token
+        ADMIN_TOKEN = args.admin_token.strip()
 
     import uvicorn
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")

@@ -54,7 +54,7 @@ cd deploy && ./setup.sh   # 自动建 venv + 装服务 + 生成 admin token
 - `POST /api/v1/survey` —— 上报答卷（HMAC 验签）
 - `GET /health`
 
-管理端（需 admin token，URL `?token=` 或 `Authorization: Bearer`）：
+管理端（需 admin token，通过 Header `Authorization: Bearer <token>` 鉴权）：
 
 - `GET /api/v1/admin/summary?survey_version=` —— 漏斗：提交/跳过/去重设备数
 - `GET /api/v1/admin/responses?survey_version=&limit=` —— 原始答卷 JSON（不含跳过）
