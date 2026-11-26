@@ -278,13 +278,13 @@ describe('the question above the composer of the compact chat', () => {
     view.rerender(within([first, ask(inWords, { state: 'answered', answer: 'x' }, 'd2')]));
     expect((at('[data-ask-input]') as HTMLInputElement).value).toBe('half a sentence');
     expect(at('[data-question="1"] [data-option="b"]').getAttribute('aria-pressed')).toBe('true');
-    // Sent: what was typed is no draft any more, though above the composer the card is taken away
-    // before it is ever drawn as answered.
+    // Sent, and another one's floats before the answer is back. The answer is not taken (it
+    // failed), and the question waits again: with what was put into it.
     view.rerender(within([ask(twoQuestions, { state: 'sending' }, 'd1')]));
-    view.rerender(within([]));
-    view.rerender(within([first]));
-    expect((at('[data-ask-input]') as HTMLInputElement).value).toBe('');
-    fireEvent.change(at('[data-ask-input]'), { target: { value: 'again' } });
+    view.rerender(within([ask(twoQuestions, { state: 'sending' }, 'd1'), ask(inWords, {}, 'd3')]));
+    view.rerender(within([first, ask(inWords, { state: 'answered', answer: 'x' }, 'd3')]));
+    expect((at('[data-ask-input]') as HTMLInputElement).value).toBe('half a sentence');
+    expect(at('[data-question="1"] [data-option="b"]').getAttribute('aria-pressed')).toBe('true');
     // Once it is over (its card among the messages says so), nothing of it is kept for a card that is drawn again.
     view.rerender(within([]));
     show(ask(twoQuestions, { state: 'closed' }, 'd1')).unmount();
@@ -312,6 +312,18 @@ describe('the question above the composer of the compact chat', () => {
     view.rerender(<Chat messages={[first, ask(inWords, {}, 'e2')]} />);
     view.rerender(<Chat messages={[first, ask(inWords, { state: 'answered', answer: 'x' }, 'e2')]} />);
     expect(input().value).toBe('half a sentence');
+    // The same while its answer is on its way, which then is not taken.
+    view.rerender(<Chat messages={[ask(twoQuestions, { state: 'sending' }, 'e1')]} />);
+    view.rerender(<Chat messages={[ask(twoQuestions, { state: 'sending' }, 'e1'), ask(inWords, {}, 'e3')]} />);
+    view.rerender(<Chat messages={[first, ask(inWords, { state: 'answered', answer: 'x' }, 'e3')]} />);
+    expect(input().value).toBe('half a sentence');
+    // Sent and taken: above the composer its card is taken away without being drawn as answered.
+    view.rerender(<Chat messages={[ask(twoQuestions, { state: 'sending' }, 'e1')]} />);
+    view.rerender(<Chat messages={[ask(twoQuestions, { state: 'answered', answer: 'x' }, 'e1')]} />);
+    expect(view.container.querySelector('#compact-nekopower-ask-prompt')).toBeNull();
+    view.rerender(<Chat messages={[first]} />);
+    expect(input().value).toBe('');
+    type('half a sentence');
     // Over (taken back, answered elsewhere) with nothing to say of it: above the composer its card
     // is taken away and never drawn as closed.
     view.rerender(<Chat messages={[ask(twoQuestions, { state: 'closed' }, 'e1')]} />);

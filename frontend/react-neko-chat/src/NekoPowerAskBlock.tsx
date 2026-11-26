@@ -26,6 +26,9 @@ const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '')
 // Above the composer one question is shown at a time: one that gives way to another (of another
 // task) and comes back has what was put into it still there. Let go of once the question is over.
 const drafts = new Map<string, { reply: string; picked: Record<string, string[]> }>();
+// One whose answer is on its way is not answered yet: where that fails it waits again, and what
+// was put into it is still its draft (its card may have given way to another's meanwhile).
+const unanswered = (state: AskBlock['state']) => state === 'pending' || state === 'sending';
 
 /**
  * Lets go of what was put into questions that do not wait among these messages any more. One
@@ -39,7 +42,7 @@ export function useNekoPowerAskDrafts(messages: ChatMessage[]): void {
     const waiting = new Set<string>();
     for (const message of messages) {
       for (const block of message.blocks) {
-        if (block.type === 'nekopower_ask' && block.state === 'pending') waiting.add(`${block.taskId}:${block.questionId}`);
+        if (block.type === 'nekopower_ask' && unanswered(block.state)) waiting.add(`${block.taskId}:${block.questionId}`);
       }
     }
     for (const key of [...drafts.keys()]) if (!waiting.has(key)) drafts.delete(key);
@@ -117,11 +120,12 @@ export default function NekoPowerAskBlock({ block, message, interactive, onActio
   const [reply, setReply] = useState(() => drafts.get(draftKey)?.reply ?? '');
   const [picked, setPicked] = useState<Record<string, string[]>>(() => drafts.get(draftKey)?.picked ?? {});
   useEffect(() => {
-    // Kept only while it can still be answered: one whose answer is on its way is not a draft any
-    // more (above the composer its card is taken away before it is drawn as answered). Put in
-    // anew each time, so that the one let go of when there are too many is the one left longest.
+    // Kept until the question is answered or over, also while an answer is on its way. (Above the
+    // composer a card is taken away without being drawn as answered: the chat lets go of what is
+    // left of it then, `useNekoPowerAskDrafts`.) Put in anew each time, so that the one let go of
+    // when there are too many is the one left longest.
     drafts.delete(draftKey);
-    if (block.state === 'pending' && (reply || Object.values(picked).some(labels => labels.length))) drafts.set(draftKey, { reply, picked });
+    if (unanswered(block.state) && (reply || Object.values(picked).some(labels => labels.length))) drafts.set(draftKey, { reply, picked });
     if (drafts.size > 50) drafts.delete(drafts.keys().next().value as string);
   }, [draftKey, block.state, reply, picked]);
   const [wholeOpen, setWholeOpen] = useState(false);
