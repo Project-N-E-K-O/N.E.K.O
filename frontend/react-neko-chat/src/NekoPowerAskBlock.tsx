@@ -31,21 +31,27 @@ const drafts = new Map<string, { reply: string; picked: Record<string, string[]>
 const unanswered = (state: AskBlock['state']) => state === 'pending' || state === 'sending';
 
 /**
- * Lets go of what was put into questions that do not wait among these messages any more. One
- * that is over is not always drawn so (above the composer its card is just taken away), and a
- * chat that is emptied draws none of its cards again: so it is the chat itself, where the
- * messages are held, that says which questions are left.
+ * Lets go of what was put into questions that these messages say are answered or over, and of
+ * all of it once the chat is emptied. One that is over is not always drawn so (above the
+ * composer its card is just taken away), and a chat that is emptied draws none of its cards
+ * again: so it is the chat itself, where the messages are held, that says so.
  */
 export function useNekoPowerAskDrafts(messages: ChatMessage[]): void {
   useEffect(() => {
     if (!drafts.size) return;
-    const waiting = new Set<string>();
+    // The chat was emptied: none of its questions is left.
+    if (!messages.length) {
+      drafts.clear();
+      return;
+    }
+    // Otherwise only those the messages say are answered or over. One whose card is not among
+    // them may have been pushed out by newer messages (the chat keeps its latest) while its
+    // question still waits: it is put back, and what was typed for it is still wanted then.
     for (const message of messages) {
       for (const block of message.blocks) {
-        if (block.type === 'nekopower_ask' && unanswered(block.state)) waiting.add(`${block.taskId}:${block.questionId}`);
+        if (block.type === 'nekopower_ask' && !unanswered(block.state)) drafts.delete(`${block.taskId}:${block.questionId}`);
       }
     }
-    for (const key of [...drafts.keys()]) if (!waiting.has(key)) drafts.delete(key);
   }, [messages]);
 }
 
@@ -204,7 +210,10 @@ export default function NekoPowerAskBlock({ block, message, interactive, onActio
             </div>
           ) : null}
         </div>
-      )) : <p className="nekopower-ask-line">{view.line}</p>}
+      )) : (
+        // What an approval is asked for is drawn whole where nothing here opens all of it.
+        <p className={`nekopower-ask-line${view.shape === 'permission' && !needsWhole ? ' nekopower-ask-line-whole' : ''}`}>{view.line}</p>
+      )}
 
       {open && view.shape === 'permission' ? (
         <>

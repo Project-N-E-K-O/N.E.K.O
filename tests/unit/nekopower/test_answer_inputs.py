@@ -268,6 +268,23 @@ async def test_a_note_that_could_not_be_passed_on_leaves_the_answer_taken():
     assert host.told == [("c1", "careful")]
 
 
+async def test_a_note_whose_passing_on_is_cancelled_leaves_the_answer_taken():
+    # The host is being shut down as the sentence is passed on. Not this request: the answer is
+    # in, and anything but saying so would have the page give it again.
+    class _ShutDown(_Host):
+        async def tell(self, commission_id: str, text: str) -> bool:
+            self.told.append((commission_id, text))
+            raise asyncio.CancelledError()
+
+    host = _ShutDown()
+    async with _client(host) as client:
+        answer = await client.post("/console/commissions/c1/answer", headers=HEADERS, json={"choice": "once", "note": "careful"})
+
+    assert answer.status_code == 200
+    assert answer.json() == {"success": True, "note_taken": False}
+    assert host.told == [("c1", "careful")]
+
+
 async def test_a_note_slow_to_pass_on_does_not_keep_the_answer_waiting(monkeypatch):
     from app.agent_server import api_console
 

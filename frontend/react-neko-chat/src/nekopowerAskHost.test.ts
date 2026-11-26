@@ -263,6 +263,17 @@ describe('the question inside a card of the task HUD', () => {
     expect(once.disabled).toBe(false);
   });
 
+  it('draws what an approval is asked for whole where nothing opens all of it, and keeps anything else to a few lines', () => {
+    // A narrow HUD cuts three lines short sooner than the length of the line says, and the
+    // wider approvals are offered at once here.
+    const short = draw(permission).querySelector('.task-ask-line') as HTMLElement;
+    expect(short.style.overflow).toBe('');
+    // Cut short where all of it can be opened (the wider approvals wait for that), and what is no approval.
+    const long = { ...permission, id: 'q8', detail: { command: 'x'.repeat(200) }, line: `run the command ${'x'.repeat(60)}…`, line_cut: true };
+    expect((draw(long).querySelector('.task-ask-line') as HTMLElement).style.overflow).toBe('hidden');
+    expect((draw(confirmation).querySelector('.task-ask-line') as HTMLElement).style.overflow).toBe('hidden');
+  });
+
   it('has no line for a sentence where a plugin does the work, and holds back after taking another question\'s place', () => {
     vi.useFakeTimers();
     const box = draw(permission, { noNote: true, settle: true });
@@ -616,6 +627,70 @@ describe('the cards of the chat window', () => {
     expect(messages.map(message => [message.id, message.blocks[0].state])).toEqual([
       ['nekopower-ask-c2-q1', 'closed'], ['nekopower-ask-c1-q2', 'pending'],
     ]);
+  });
+
+  it('still shows what a task asks now where all the connection said meanwhile is that an earlier question of it is over', async () => {
+    let release = () => {};
+    hold = new Promise(resolve => { release = resolve; });
+    // What the read will say: c1 asks q2 by now, c5 asks q7 (both put while the page was away).
+    reply = () => ({ status: 200, body: { questions: [
+      { task_id: 'c1', title: 't', route: 'task_agent', lanlan_name: 'Lan', question: confirmation },
+      { task_id: 'c5', title: 't', route: 'task_agent', lanlan_name: 'Lan', question: { ...permission, id: 'q7' } },
+    ] } });
+    const reading = asks.sync();
+    // Of c1: that q1 is over, which says nothing of q2. Of c5: that what it asked is over, whichever it was.
+    asks.receive(frame(null, { question_id: 'q1' }));
+    asks.receive(frame(null, { task_id: 'c5' }));
+    hold = null;
+    release();
+    await reading;
+    await flush();
+    expect(messages.map(message => message.id)).toEqual(['nekopower-ask-c1-q2']);
+  });
+
+  it('does not go on saying it will look again once a card that was being looked into is closed', async () => {
+    vi.useFakeTimers();
+    asks.receive(frame(permission));
+    asks.receive(frame(confirmation, { task_id: 'c2' }));
+    // The server gave up waiting, and what waits cannot be read: looked into.
+    reply = url => (url.includes('/answer') ? { status: 504, body: {} } : { status: 502, body: {} });
+    answerFromChat({ taskId: 'c1', questionId: 'q1', choice: 'once' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(block().notice).toBe('还不确定送到没有，过一会儿再看。');
+    asks.receive(frame(null, { question_id: 'q1' }));
+    expect([block().state, block().notice]).toEqual(['closed', '这个问题已经结束了；这次的回答有没有算上，不确定。']);
+    // One that was not: closed, with nothing more said.
+    asks.receive(frame(null, { task_id: 'c2', question_id: 'q2' }));
+    expect([block(1).state, block(1).notice || '']).toEqual(['closed', '']);
+  });
+
+  it('keeps a card whose answer is on its way through the chat being emptied, and does not offer its question anew', async () => {
+    let back = () => {};
+    (window as unknown as Record<string, { getState?: () => unknown }>).reactChatWindowHost.getState = () => ({ messages });
+    const rows = [{ task_id: 'c1', title: 't', route: 'task_agent', lanlan_name: 'Lan', question: permission }];
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      calls.push({ url, body: null, headers: {} });
+      if (url.includes('/answer')) {
+        return new Promise(resolve => { back = () => resolve({ ok: true, status: 200, json: async () => ({ success: true }) }); });
+      }
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ questions: rows }) });
+    }));
+    asks.receive(frame(permission));
+    answerFromChat({ taskId: 'c1', questionId: 'q1', choice: 'once' });
+    await flush();
+    expect(block().state).toBe('sending');
+    // The chat is emptied; read anew, the question still waits (the answer has not got there yet).
+    messages = [];
+    window.dispatchEvent(new CustomEvent('react-chat-window:messages-cleared'));
+    await flush();
+    expect(messages.map(message => [message.id, message.blocks[0].state])).toEqual([['nekopower-ask-c1-q1', 'sending']]);
+    answerFromChat({ taskId: 'c1', questionId: 'q1', choice: 'deny' });
+    await flush();
+    expect(calls.filter(call => call.url.includes('/answer')).length).toBe(1);
+    // What comes of the answer is said on the card that was put back.
+    back();
+    await flush();
+    expect(block().state).toBe('answered');
   });
 
   it('reads once more when it was asked to while a read was on its way, or the character changed meanwhile', async () => {

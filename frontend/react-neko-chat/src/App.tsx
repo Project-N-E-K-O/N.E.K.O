@@ -918,6 +918,9 @@ export default function ChatWindowRoot(props: ChatWindowProps) {
     props.messages || [], false, undefined, false, '', '', true,
     props.chatSurfaceMode === 'full',
   );
+  // Here, for both surfaces of the chat: what was typed into a question's card is let go of
+  // with the question, whichever of them draws it.
+  useNekoPowerAskDrafts(props.messages || defaultMessages);
   return (
     <ChatScreenVisibilityProvider messages={props.messages || defaultMessages}>
       {props.chatSurfaceMode === 'full'
@@ -1105,7 +1108,6 @@ function CompactChatApp({
   const [compactSpeechFallbackRevealActive, setCompactSpeechFallbackRevealActive] = useState(false);
   const [speechPlaybackState, setSpeechPlaybackState] = useState<SpeechPlaybackState | null>(null);
   const [compactCaptionState, setCompactCaptionState] = useState<CompactCaptionState | null>(null);
-  useNekoPowerAskDrafts(messages);
   useEffect(() => {
     const resetCompactPreview = (event: Event) => {
       const detail = (event as CustomEvent).detail;

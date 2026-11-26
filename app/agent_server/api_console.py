@@ -842,6 +842,12 @@ def build_console_router(
             taken: bool | None = bool(await asyncio.wait_for(asyncio.shield(passing), _NOTE_WAIT_SECONDS))
         except asyncio.TimeoutError:
             taken = None
+        except asyncio.CancelledError:
+            # The passing on was cancelled (the host is being shut down), not this request: the
+            # answer is in all the same, and saying anything else would have it given again.
+            if not passing.cancelled():
+                raise
+            taken = False
         except Exception:  # noqa: BLE001 - the answer was taken; only the note was not (logged as it ended)
             taken = False
         return {"success": True, "note_taken": taken}

@@ -309,6 +309,12 @@ describe('the question above the composer of the compact chat', () => {
     const type = (value: string) => fireEvent.change(input(), { target: { value } });
     // While it waits, giving way to another one and coming back keeps what was put into it.
     type('half a sentence');
+    // Pushed out of the chat by newer messages while it still waits (the chat keeps its latest),
+    // and put back: as it was left.
+    const newer = ask(inWords, { state: 'answered', answer: 'x' }, 'e9');
+    view.rerender(<Chat messages={[newer]} />);
+    view.rerender(<Chat messages={[newer, first]} />);
+    expect(input().value).toBe('half a sentence');
     view.rerender(<Chat messages={[first, ask(inWords, {}, 'e2')]} />);
     view.rerender(<Chat messages={[first, ask(inWords, { state: 'answered', answer: 'x' }, 'e2')]} />);
     expect(input().value).toBe('half a sentence');
@@ -335,6 +341,19 @@ describe('the question above the composer of the compact chat', () => {
     view.rerender(<Chat messages={[]} />);
     view.rerender(<Chat messages={[first]} />);
     expect(input().value).toBe('');
+  });
+
+  it('draws what an approval is asked for whole above the composer where nothing there opens all of it', () => {
+    const line = (question: Record<string, unknown>) => {
+      const shown = show(ask(question), 'bubble');
+      const name = shown.at('.nekopower-ask-line').className;
+      shown.unmount();
+      return name;
+    };
+    expect(line(permission)).toContain('nekopower-ask-line-whole');
+    // Kept short where all of it can be opened first, and what is no approval.
+    expect(line({ ...permission, detail: { command: 'x'.repeat(200) } })).not.toContain('nekopower-ask-line-whole');
+    expect(line(confirmation)).not.toContain('nekopower-ask-line-whole');
   });
 
   it('does not float a question the screen hides, and keeps nothing else from being shown for it', () => {

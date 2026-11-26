@@ -372,7 +372,11 @@
                 box.appendChild(row);
             });
         } else {
-            var line = el('div', {
+            // What an approval is asked for is drawn whole where nothing here opens all of it (the
+            // wider approvals are offered at once then): a narrow HUD cuts three lines of it short
+            // sooner than its length says. Anything else is kept to three lines.
+            var all = shown.shape === 'permission' && !shown.needsWhole;
+            var line = el('div', all ? { overflowWrap: 'anywhere' } : {
                 overflow: 'hidden', display: '-webkit-box', webkitBoxOrient: 'vertical', webkitLineClamp: '3', overflowWrap: 'anywhere'
             }, shown.line);
             line.className = 'task-ask-line';
@@ -519,7 +523,10 @@
         open.delete(taskId);
         setOver(card.questionId);
         var block = card.message.blocks[0];
-        if (block.state === 'pending' || block.state === 'sending') patch(card, { state: 'closed' });
+        if (block.state !== 'pending' && block.state !== 'sending') return;
+        // One that was being looked into (its answer was sent, and what came of it is not known)
+        // is not looked into any more: it does not go on saying that it will be.
+        patch(card, card.looking ? { state: 'closed', notice: word('goneUnsure') } : { state: 'closed' });
     }
     /** Whether something is of another character than `mine`, the one this page is with. */
     function ofAnother(mine, name) {
@@ -589,8 +596,9 @@
     /** A `nekopower_question` frame of the main server: a question to show, or (none) one that is over. */
     function receive(frame) {
         if (!frame || !frame.task_id) return;
-        told.set(String(frame.task_id), ++tellings);
-        if (!frame.question || typeof frame.question !== 'object') {
+        var closing = !frame.question || typeof frame.question !== 'object';
+        told.set(String(frame.task_id), { at: ++tellings, closed: closing ? text(frame.question_id) : '' });
+        if (closing) {
             close(String(frame.task_id), text(frame.question_id));
             return;
         }
@@ -628,7 +636,14 @@
                 rows.forEach(function (row) {
                     if (row && row.task_id && row.question) asked.set(String(row.task_id), row);
                 });
-                var fresh = function (taskId) { return (told.get(taskId) || 0) > since; };
+                var fresh = function (taskId) { return (told.get(taskId) || { at: 0 }).at > since; };
+                // For what the read says a task asks: not gone by where the connection told of the
+                // task since, unless all it told is that another question of it is over, which
+                // says nothing of this one.
+                var newerThan = function (taskId, questionId) {
+                    var said = told.get(taskId);
+                    return fresh(taskId) && !(said.closed && said.closed !== questionId);
+                };
                 Array.from(open.keys()).forEach(function (taskId) {
                     var row = asked.get(taskId);
                     // A card of another character's question: a read that came back while the page
@@ -650,7 +665,7 @@
                 asked.forEach(function (row, taskId) {
                     // Of another character than the one this page is with: its page shows it, as
                     // the connection would have sent it there.
-                    if (fresh(taskId) || ofAnother(mine, row.lanlan_name)) return;
+                    if (newerThan(taskId, view(row.question).id) || ofAnother(mine, row.lanlan_name)) return;
                     show(taskId, row.title, row.question, row.route, row.lanlan_name);
                 });
             }
@@ -662,7 +677,12 @@
     // The chat was emptied (the character was switched): its cards are gone with it. What the
     // character the page is with now is asked is read anew.
     window.addEventListener('react-chat-window:messages-cleared', function () {
-        open.clear();
+        // One whose answer is on its way is kept: where its question still waits when that is
+        // read, the card is put back as it stands (not to be answered a second time), and what
+        // comes of the answer is said on it.
+        Array.from(open.keys()).forEach(function (taskId) {
+            if (open.get(taskId).message.blocks[0].state !== 'sending') open.delete(taskId);
+        });
         queued = [];
         sync();
     });
@@ -708,7 +728,9 @@
                 // Not to be sent again until it is known whether this was taken: the card stays as
                 // one whose answer is on its way, and is looked into until it is known.
                 patch(card, { state: 'sending', notice: word('unsure') });
+                card.looking = true;
                 lookInto(block.taskId, block.questionId, function () { return open.get(block.taskId) === card; }, function (waits) {
+                    card.looking = false;
                     if (waits) {
                         patch(card, { state: 'pending', notice: word('failed') });
                         return;
