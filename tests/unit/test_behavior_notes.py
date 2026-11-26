@@ -757,7 +757,6 @@ def test_nothing_is_read_for_a_character_without_a_file(tmp_path):
 @pytest.mark.parametrize("content", [
     "不是 JSON",
     "[]",
-    json.dumps({"schema_version": "别的版本", "language": "zh", "reviewed_at": 1, "source_end_at": 1, "notes": []}),
     json.dumps({"schema_version": bn.SCHEMA_VERSION, "language": "", "reviewed_at": 1, "source_end_at": 1, "notes": []}),
     json.dumps({"schema_version": bn.SCHEMA_VERSION, "language": "zh", "reviewed_at": "x", "source_end_at": 1, "notes": []}),
     json.dumps({"schema_version": bn.SCHEMA_VERSION, "language": "zh", "reviewed_at": 1, "source_end_at": 1, "notes": 3}),
@@ -1976,3 +1975,46 @@ async def test_the_record_reaches_neither_the_session_nor_the_next_review(tmp_pa
     assert stored["history"][-1]["lapsed"] == ["N1"]
     assert "已过期提醒的专属文字" in json.dumps(stored["history"], ensure_ascii=False)
     assert env.store.prompt_block(NAME, "zh", now=later) == ""
+
+
+@pytest.mark.asyncio
+async def test_foreign_schema_raises_on_read_and_refuses_overwrite(tmp_path):
+    """Foreign schema_version must raise ValueError on read/review and refuse overwrite."""
+    foreign = json.dumps({
+        "schema_version": "behavior-notes/v2",
+        "language": "zh",
+        "reviewed_at": 1,
+        "source_end_at": 1,
+        "notes": [],
+    })
+    _write_raw(tmp_path, foreign)
+    env = _env(tmp_path)
+
+    with pytest.raises(ValueError, match="schema_version"):
+        env.store.read(NAME)
+    assert env.store.prompt_block(NAME, "zh", now=_NOW) == ""
+    assert env.store.write(NAME, _payload([_note()])) is False
+    assert (tmp_path / NAME / BEHAVIOR_NOTES_FILENAME).read_text(encoding="utf-8") == foreign
+
+    with pytest.raises(ValueError, match="schema_version"):
+        await _review(env, _Answering(_good_add))
+    assert (tmp_path / NAME / BEHAVIOR_NOTES_FILENAME).read_text(encoding="utf-8") == foreign
+
+
+def test_transient_os_error_raises_on_read_and_refuses_overwrite(tmp_path, monkeypatch):
+    """Transient OSError on read must propagate while prompt_block degrades to empty string."""
+    _save(_store(tmp_path), _payload([_note()]))
+    store = _store(tmp_path)
+    original_open = open
+    target_path = str(tmp_path / NAME / BEHAVIOR_NOTES_FILENAME)
+
+    def _fail_open(file, *args, **kwargs):
+        if os.fspath(file) == target_path:
+            raise PermissionError("sharing violation")
+        return original_open(file, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", _fail_open)
+    with pytest.raises(OSError, match="sharing violation"):
+        store.read(NAME)
+    assert store.prompt_block(NAME, "zh", now=_NOW) == ""
+    assert store.write(NAME, _payload([])) is False

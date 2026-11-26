@@ -24,7 +24,7 @@ NEKO_TRUSTED_ORIGINS=https://your-domain.example:48912
 
 Pairing over `http://<server-ip>:48911` is allowed by default and the page warns that it is unencrypted; the pairing key and session cookie travel in clear text, so do not enter credentials this way on untrusted networks. Set `NEKO_REQUIRE_HTTPS=1` to require HTTPS/WSS.
 
-On an existing deployment, changing `SSL_DOMAIN` does not reissue the certificate: the entrypoint keeps reusing the self-signed pair in `docker/neko-home/ssl/`. To get a new one, stop the container, move `N.E.K.O.crt` and `N.E.K.O.key` out of that directory as a backup, and start again; with your own certificate, replace those two files.
+On an existing deployment, changing `SSL_DOMAIN` does not reissue the certificate: the entrypoint keeps reusing the self-signed pair in `docker/neko-home/ssl/`. To get a new one, stop the container, move `N.E.K.O.crt` and `N.E.K.O.key` out of that directory as a backup, and start again; with your own certificate, replace those two files. By default (`AUTO_REGENERATE_CERT=0`), if only one file is present or certificate/key validation fails (including passphrase-protected private keys in non-interactive container startup), the entrypoint leaves your files untouched and exits with an error rather than deleting or overwriting them; set `AUTO_REGENERATE_CERT=1` only if you want invalid/partial files archived as `*.invalid-<timestamp>` and replaced with a self-signed pair.
 
 Before the first start, run the host preflight once from the repository root (also after migrating data, or when Docker created either directory as root):
 

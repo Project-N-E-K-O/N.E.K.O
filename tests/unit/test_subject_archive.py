@@ -1078,3 +1078,50 @@ def test_archive_sweep_loop_source_wires_subject_stage():
 
     src = inspect.getsource(evidence_loops._periodic_archive_sweep_loop)
     assert "_amaybe_sweep_subject_archive(" in src
+
+
+@pytest.mark.asyncio
+async def test_sweep_runs_fact_reactivation_check_even_when_fact_targets_empty(tmp_path):
+    """Even when fact_targets is empty, aarchive_subject_facts must run to detect concurrent reactivation."""
+    _, fs, pm, re, _, _ = _install(str(tmp_path))
+
+    # Facts were already moved to cold storage in an earlier pass, leaving only stale reflection/persona.
+    fs._facts["小天"] = []
+    await fs.asave_facts("小天")
+    from memory import cold_store
+    from memory.archive_shards import append_to_shard_sync
+    append_to_shard_sync(cold_store.cold_dir(fs._character_dir("小天"), "fact"), [{
+        **_scoped_fact("fcold", "冷存旧事实", SUBJ_STALE, created_at=_iso(120)),
+        "subject_archived_at": _iso(10),
+    }])
+
+    stale_refl = _scoped_reflection("rs_only", "陈年反思", SUBJ_STALE, created_at=_iso(120))
+    await re.asave_reflections("小天", [stale_refl])
+    await pm.asave_persona("小天", {
+        SUBJ_STALE.persona_section_key: {
+            "facts": [{
+                "id": "p_only", "text": "陈年人格", "source": "reflection",
+                "created_at": _iso(120), **SUBJ_STALE.as_entry_fields(),
+            }],
+        },
+    })
+
+    # Simulate a concurrent new fact landing in FactStore within stale_cutoff after snapshot assessment.
+    real_aarchive = fs.aarchive_subject_facts
+    called = {"count": 0}
+
+    async def _inject_concurrent_write_then_archive(name, subject, now_iso, cutoff):
+        called["count"] += 1
+        fs._facts[name].append(_scoped_fact("f_new", "刚写入的新事实", SUBJ_STALE, created_at=_iso(0.01)))
+        await fs.asave_facts(name)
+        return await real_aarchive(name, subject, now_iso, cutoff)
+
+    from unittest.mock import patch as _patch
+    with _patch.object(fs, "aarchive_subject_facts", side_effect=_inject_concurrent_write_then_archive):
+        report = await asweep_scoped_subject_archive("小天", **_sweep_kwargs(fs, pm, re))
+
+    assert called["count"] == 1
+    assert report["archived"] == {}
+    assert {r["id"] for r in await re._aload_reflections_full("小天")} == {"rs_only"}
+    persona = await pm.aensure_persona("小天")
+    assert {e["id"] for e in persona[SUBJ_STALE.persona_section_key]["facts"]} == {"p_only"}

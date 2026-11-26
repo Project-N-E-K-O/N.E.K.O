@@ -248,7 +248,8 @@ def test_telemetry_compose_and_systemd_service_have_no_active_placeholder_token(
     compose_raw = (TELEMETRY_DIR / "docker-compose.yml").read_text(encoding="utf-8")
     compose_data = yaml.safe_load(compose_raw)
     service = compose_data["services"]["telemetry"]
-    assert "./data:/app/data" in service["volumes"]
+    assert "telemetry-data:/app/data" in service["volumes"]
+    assert "telemetry-data" in (compose_data.get("volumes") or {})
     env_entries = [str(e) for e in service["environment"]]
     assert "${TELEMETRY_ADMIN_TOKEN:-}" in "".join(env_entries)
     assert "please-change-me" not in compose_raw

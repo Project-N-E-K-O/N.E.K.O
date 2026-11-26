@@ -998,10 +998,13 @@ async def test_same_key_in_another_language_is_rejected(env):
 async def test_repaired_facts_file_is_not_overwritten_by_a_stale_empty_cache(env):
     facts_path = Path(env.fs._facts_path(NAME))
     facts_path.write_text("{torn", encoding="utf-8")
-    assert await env.fs.aload_facts(NAME) == []            # The permissive loader caches a corrupt file as empty.
+    with pytest.raises(RuntimeError):
+        await env.fs.aload_facts(NAME)                     # Fail-closed loader refuses to cache corrupt files.
+    assert NAME not in env.fs._facts
     kept = {"id": "kept-1", "text": "修好的旧事实", "importance": 6, "hash": "h-kept",
             **{k: v for k, v in GROUP.items()}, "scope": f"{GROUP['subject_kind']}:{GROUP['subject_id']}"}
     facts_path.write_text(json.dumps([kept], ensure_ascii=False), encoding="utf-8")
+    env.fs._facts[NAME] = []                               # Even with a stale empty cache, keyed writes reload from disk.
     env.llm.responses = [SINGLE_FACTS]
     await _post(env, _single_body(display_name=None))
     on_disk = json.loads(facts_path.read_text(encoding="utf-8"))
