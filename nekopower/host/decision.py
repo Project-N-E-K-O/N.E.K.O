@@ -21,11 +21,13 @@ commissions, and returns a conclusion.
 ``DecisionModel`` is the interface; a different implementation (an embedding
 model, for instance) only has to provide its two methods:
 
-* ``triage``, the first round. Local work: is this a stop request, an answer,
-  an addition or a repeat of something under way, and are there candidates.
-  It makes no model call, with one exception: when nothing matches locally
-  and no task agent can be started, it runs the small-model coarse screen once
-  before concluding that nothing can do this.
+* ``triage``, the first round. What the sentence does with the work there
+  is: answers what waits for the user, stops some of it, adds to it, or is
+  new; is it a repeat; and are there candidates. While there is work it may
+  be about, one small-model request says which (``read_under_way``); the
+  rest is local, but for the small-model coarse screen it runs once when
+  nothing matches locally and no task agent can be started, before
+  concluding that nothing can do this.
 * ``select``, the second round. Chooses a plugin entry and fills in its
   arguments; plugins come first. When no entry fits or the task needs several
   steps, it hands over to a task agent. That is decided by the same request,
@@ -40,7 +42,9 @@ and what the small model picks.
 
 Model calls per path (asserted in ``tests/unit/nekopower/test_host_decision.py``):
 
-* ``triage``: 0; 1 (small model) only when there is no local candidate and no
+* ``triage``: 0; 1 more while there is work the sentence may be about (her
+  work under way, what waits for the user within it, her work that ended
+  lately), and 1 more (small model) when there is no local candidate and no
   task agent.
 * ``probe`` for a query: always 0.
 * ``select``: 1; 2 when the descriptions exceed the threshold (coarse screen
@@ -60,14 +64,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from nekopower.host.ledger import Commission
+from nekopower.host.ledger import ACTIVE_STATUSES, Commission
 from nekopower.host.selection import (
     annotate_keyword_hits,
     build_desc_lines,
     keyword_hits,
     similarity,
     stage1_filter,
-    token_set,
     visible_entries,
 )
 
@@ -88,6 +91,11 @@ TIER_FINE = "fine"
 TIER_ORCHESTRATE = "orchestrate"
 # The turn check: the small model again, with a budget of its own.
 TIER_TURN_CHECK = "turn_check"
+# What a dispatched sentence does with the work there is: answers what waits
+# for the user, stops some of it, adds to it, or is new
+# (``LexicalDecisionModel.read_under_way``). On the tier the settings name
+# (``UNDER_WAY_READ_MODEL_SLOT``), metered under a name of its own.
+TIER_UNDER_WAY = "under_way"
 # A short description for a plugin whose manifest has none: the small model,
 # once per plugin and description, in the background.
 TIER_SHORT_DESCRIPTION = "short_description"
@@ -109,6 +117,7 @@ _CALL_TYPES = {
     TIER_CONSOLIDATE: "task_agent_consolidate",
     TIER_SESSION_DRAFT: "task_agent_session_draft",
     TIER_ORCHESTRATE: "task_agent_orchestrate",
+    TIER_UNDER_WAY: "task_agent_under_way",
 }
 _FINE_ATTEMPTS = 3
 _FINE_RETRY_DELAYS = (1.0, 2.0)
@@ -136,6 +145,13 @@ class DecisionRequest:
     # questions reach the user too, so an answer can be about them; a stop,
     # a repeat or an addition never is.
     answerable: list[Commission] = field(default_factory=list)
+    # Commissions started by her task agents that are under way (the members
+    # of a team among them): shown with the commission they work for.
+    children: list[Commission] = field(default_factory=list)
+    # What the user calls the familiar of each session the commissions are
+    # worked on or were handed on in, by session id, in the user's language
+    # (``Scout cat "links"``).
+    familiars: dict[str, str] = field(default_factory=dict)
     # Her commissions a task agent worked on that are over (done, failed or
     # stopped) and not long so, newest first. A sentence that adds to one of
     # them goes on with it in its session.
@@ -173,6 +189,10 @@ class Triage:
     # What the coarse screen returned, when this round had to run it.
     coarse_ids: list[str] | None = None
     model_calls: int = 0
+    # What the sentence does with the work there is could not be read (the
+    # request failed, came too late or said nothing it could be): it is
+    # taken for new work, and she is told it could not be told.
+    unread: bool = False
 
 
 @dataclass(slots=True)
@@ -210,7 +230,7 @@ class DecisionLLM(Protocol):
     """The model tiers the lexical decision model uses."""
 
     async def complete(self, tier: str, messages: list[dict[str, Any]]) -> str:
-        """Return the text of one completion of a tier (``TIER_COARSE``, ``TIER_FINE``, ``TIER_TURN_CHECK``, ``TIER_SHORT_DESCRIPTION``, ``TIER_REVIEW``, ``TIER_ARCHIVE``, ``TIER_CONSOLIDATE``, ``TIER_SESSION_DRAFT``, ``TIER_ORCHESTRATE``)."""
+        """Return the text of one completion of a tier (``TIER_COARSE``, ``TIER_FINE``, ``TIER_TURN_CHECK``, ``TIER_SHORT_DESCRIPTION``, ``TIER_REVIEW``, ``TIER_ARCHIVE``, ``TIER_CONSOLIDATE``, ``TIER_SESSION_DRAFT``, ``TIER_ORCHESTRATE``, ``TIER_UNDER_WAY``)."""
 
 
 class DecisionModel(Protocol):
@@ -250,7 +270,8 @@ class ConfiguredDecisionLLM:
     """``DecisionLLM`` on the models the analyzer used.
 
     The coarse screen, the turn check and short descriptions run on the small
-    latency-sensitive tier (``emotion``); the fine selection, the reviews of
+    latency-sensitive tier (``emotion``), and so, as the settings name it, do
+    the orchestrator and the reading of answers; the fine selection, the reviews of
     finished commissions, the summaries of archived projects, the tidying
     of the task agent space and the form of a new session on the ``summary`` tier. Endpoints come from the user's configuration as they
     are, ``http://`` addresses included.
@@ -264,6 +285,7 @@ class ConfiguredDecisionLLM:
         from utils.llm_client import create_chat_llm_async
 
         from config.nekopower_settings import (
+            UNDER_WAY_READ_MODEL_SLOT,
             ORCHESTRATOR_MODEL_SLOT,
             SESSION_DRAFT_MODEL_SLOT,
             SPACE_ARCHIVE_MODEL_SLOT,
@@ -279,6 +301,7 @@ class ConfiguredDecisionLLM:
             TIER_CONSOLIDATE: SPACE_CONSOLIDATE_MODEL_SLOT,
             TIER_SESSION_DRAFT: SESSION_DRAFT_MODEL_SLOT,
             TIER_ORCHESTRATE: ORCHESTRATOR_MODEL_SLOT,
+            TIER_UNDER_WAY: UNDER_WAY_READ_MODEL_SLOT,
         }.get(tier, "summary" if tier in _SUMMARY_TIERS else "emotion")
         config = await asyncio.to_thread(get_config_manager(migrate=False).get_model_api_config, slot)
         key = (slot, config.get("api_key"), config.get("base_url"), config.get("model"), config.get("provider_type"), budget)
@@ -313,6 +336,7 @@ class ConfiguredDecisionLLM:
         )
 
         from config.nekopower_settings import (
+            UNDER_WAY_READ_OUTPUT_MAX_TOKENS,
             BESIDE_JUDGE_OUTPUT_MAX_TOKENS,
             ORCHESTRATOR_OUTPUT_MAX_TOKENS,
             SIDE_QUESTION_OUTPUT_MAX_TOKENS,
@@ -329,6 +353,7 @@ class ConfiguredDecisionLLM:
             TIER_CONSOLIDATE: SPACE_CONSOLIDATE_OUTPUT_MAX_TOKENS,
             TIER_SESSION_DRAFT: SESSION_DRAFT_OUTPUT_MAX_TOKENS,
             TIER_ORCHESTRATE: ORCHESTRATOR_OUTPUT_MAX_TOKENS,
+            TIER_UNDER_WAY: UNDER_WAY_READ_OUTPUT_MAX_TOKENS,
         }.get(tier, AGENT_PLUGIN_FULL_MAX_TOKENS)
         client = await self._client(tier, budget)
         response = await client.ainvoke(messages)
@@ -366,19 +391,9 @@ class _Cues:
             from config.prompts import prompts_nekopower_brain as texts
 
             cls._loaded = {
-                "stop": _patterns(texts.STOP_CUE_PATTERNS),
-                "vague": _patterns(texts.VAGUE_REFERENCE_PATTERNS),
                 "generic": _patterns(texts.GENERIC_WORD_PATTERNS),
                 "supplement": _patterns(texts.SUPPLEMENT_CUE_PATTERNS),
-                "answer": _patterns(texts.ANSWER_CUE_PATTERNS),
-                "deny": _patterns(texts.PERMISSION_DENY_PATTERNS),
-                "session": _patterns(texts.PERMISSION_SESSION_PATTERNS),
-                "always": _patterns(texts.PERMISSION_ALWAYS_PATTERNS),
-                "once": _patterns(texts.PERMISSION_ONCE_PATTERNS),
                 "capability_question": _patterns(texts.CAPABILITY_QUESTION_PATTERNS),
-                "beside_answer": _patterns(texts.BESIDE_ANSWER_WORD_PATTERNS),
-                "hand_over_answer": _patterns(texts.HAND_OVER_ANSWER_WORD_PATTERNS),
-                "start_team_answer": _patterns(texts.START_TEAM_ANSWER_WORD_PATTERNS),
             }
         return cls._loaded[name]
 
@@ -393,24 +408,6 @@ def strip_cues(name: str, text: str) -> str:
     for pattern in _Cues.get(name):
         text = pattern.sub(" ", text)
     return text
-
-
-def parse_permission_choice(text: str) -> str | None:
-    """Return "deny", "session", "always" or "once" for an answer to a permission prompt.
-
-    A refusal wins over everything else in the sentence. Of two scopes named
-    together the narrower one counts. None when the sentence says neither
-    yes nor no.
-    """
-    if has_cue("deny", text):
-        return "deny"
-    if has_cue("session", text):
-        return "session"
-    if has_cue("always", text):
-        return "always"
-    if has_cue("once", text):
-        return "once"
-    return None
 
 
 def looks_like_a_task(external_intent: float | None, user_text: str, plugins: Sequence[dict[str, Any]]) -> bool:
@@ -445,199 +442,136 @@ def commission_text(commission: Commission) -> str:
     return " ".join(part for part in (commission.title, commission.dispatch_text, commission.user_text) if part)
 
 
-def _coverage(sentence_tokens: frozenset[str], commission: Commission) -> float:
-    """Return which share of the sentence's tokens occur in the commission's text."""
-    if not sentence_tokens:
-        return 0.0
-    return len(sentence_tokens & token_set(commission_text(commission))) / len(sentence_tokens)
+# What the answer to a request for approval may choose (``LexicalDecisionModel.read_under_way``).
+ANSWER_CHOICES = ("always", "session", "once", "deny")
+
+# Where an item shown to that reading stands: her work under way, a question
+# within it that waits for the user (asked by a task agent it started), or
+# her work that ended lately.
+_UNDER_WAY, _ASKED, _ENDED = "under_way", "asked", "ended"
 
 
-def _question_text(commission: Commission) -> str:
+def _asked(commission: Commission) -> tuple[str, str]:
+    """Return what a waiting commission asks, as the reading is shown it: the kind, and the question.
+
+    A request for approval says what is to be allowed with the answers on
+    offer (``describe_permission``, in English; the command or the path the
+    user decides by stays as it was written).
+    """
+    from config.nekopower_settings import UNDER_WAY_READ_QUESTION_MAX_TOKENS
+    from config.prompts.prompts_nekopower_brain import QUESTION_TEXTS
+    from config.prompts.prompts_sys import _loc
+    from nekopower.host.reports import _question_lines, describe_permission
+    from utils.tokenize import truncate_to_tokens
+
     question = commission.question() or {}
-    parts: list[str] = []
-
-    def walk(value: Any) -> None:
-        if isinstance(value, str):
-            parts.append(value)
-        elif isinstance(value, dict):
-            for item in value.values():
-                walk(item)
-        elif isinstance(value, list):
-            for item in value:
-                walk(item)
-
-    walk(question)
-    return " ".join(parts)
+    kind = question.get("kind")
+    if kind == "permission":
+        asked = describe_permission(question, "en", max_tokens=UNDER_WAY_READ_QUESTION_MAX_TOKENS)
+    elif kind == "questions":
+        asked = _question_lines(question.get("questions"), _loc(QUESTION_TEXTS, "en"))
+    else:
+        parts = (str(question.get("question") or "").strip(), str(question.get("details") or "").strip())
+        asked = " ".join(part for part in parts if part)
+    shown = kind if kind in ("permission", "confirmation") else "question"
+    return shown, truncate_to_tokens(asked, UNDER_WAY_READ_QUESTION_MAX_TOKENS)
 
 
-# What is asked (``detail.tool``) where a request for approval quotes the commission it is asked for: the
-# cue lists of what an answer to it says of the choice itself, and the setting of how many words of its own
-# it may say beside them (``_says_more_than_an_answer``).
-_QUOTING_TOOLS: dict[str, tuple[tuple[str, ...], str]] = {
-    "beside": (("beside_answer",), "BESIDE_ANSWER_WORDS_MAX"),
-    "hand_over": (("beside_answer", "hand_over_answer"), "HAND_OVER_ANSWER_WORDS_MAX"),
-    "start_team": (("beside_answer", "hand_over_answer", "start_team_answer"), "START_TEAM_ANSWER_WORDS_MAX"),
-}
+def _item_line(number: int, commission: Commission, request: DecisionRequest, *, within: Commission | None = None) -> str:
+    """Return one item of the reading: where it stands, what it is, its project, who is on it, and what it asks."""
+    from config.nekopower_settings import UNDER_WAY_READ_LINE_MAX_TOKENS
+    from config.prompts.prompts_nekopower_brain import UNDER_WAY_QUESTION_KINDS, UNDER_WAY_STATUS_WORDS
+    from utils.tokenize import truncate_to_tokens
+
+    def status(item: Commission) -> str:
+        return UNDER_WAY_STATUS_WORDS.get(item.status, item.status)
+
+    about: list[str] = []
+    if commission.project:
+        about.append(f'project "{commission.project}"')
+    if commission.route == "plugin" and commission.plugin_id:
+        about.append(f"by the plugin {commission.plugin_id}")
+    elif request.familiars.get(commission.session_id or ""):
+        about.append(f"by {request.familiars[commission.session_id or '']}")
+    if request.familiars.get(commission.handed_by or ""):
+        about.append(f"handed on by {request.familiars[commission.handed_by or '']}")
+    if within is not None:
+        about.append(f'within "{within.title}"')
+    line = f'{number}. [{status(commission)}] "{commission.title}"'
+    if about:
+        line += f" ({'; '.join(about)})"
+    members = [item for item in request.children if item.parent_id == commission.id]
+
+    def member(item: Commission) -> str:
+        familiar = request.familiars.get(item.session_id or "")
+        return f'"{item.title}" ({status(item)}; by {familiar})' if familiar else f'"{item.title}" ({status(item)})'
+
+    if members:
+        line += "; its members: " + ", ".join(member(item) for item in members)
+    ended = commission.result_summary or (commission.status_reason if commission.status == "failed" else "")
+    if commission.status not in ACTIVE_STATUSES and ended:
+        line += f"; it ended with: {ended}"
+    line = truncate_to_tokens(line, UNDER_WAY_READ_LINE_MAX_TOKENS)
+    if commission.status == "waiting_user" and commission.question():
+        kind, asked = _asked(commission)
+        line += f"; it waits for the user, {UNDER_WAY_QUESTION_KINDS[kind]}: {asked}"
+    return line
 
 
-def _quotes_its_commission(question: dict[str, Any]) -> bool:
-    """Whether what a commission asks quotes the commission itself: asked whether other members are to do it.
+def _shown(request: DecisionRequest) -> tuple[list[tuple[str, list[str]]], list[tuple[str, Commission]]]:
+    """Return the items of the reading by section, and what each number stands for.
 
-    Such a question carries the commission's title for a page to show:
-    asked beside a busy member, with its project and the names of the
-    members (``TaskAgentManager._beside``); asked for the project's leader,
-    with what the member it starts is to do (``_hand_over``,
-    ``_ask_about_member``), or what each member of the team it starts that
-    changes files is to do (``_cb_start_team``), in the user's language.
-    Those are words that nearly anything said of the project next shares.
-    Other requests for approval name a tool, a command, a path.
+    Her work under way, newest first: past ``UNDER_WAY_READ_ROWS``, those
+    that wait for the user and those whose words are closest to the sentence.
+    What waits for the user within it, asked by task agents it started. Her
+    work that ended lately, which a sentence may go on with in its session:
+    only her own, worked on in a session (that goes on, as the task brain
+    reads them), and only while a task agent can be started.
     """
-    detail = question.get("detail")
-    return question.get("kind") == "permission" and isinstance(detail, dict) and detail.get("tool") in _QUOTING_TOOLS
+    from config.nekopower_settings import UNDER_WAY_READ_ENDED_ROWS, UNDER_WAY_READ_ROWS
+
+    under_way = list(request.active)
+    if len(under_way) > UNDER_WAY_READ_ROWS:
+        closest = sorted(
+            under_way,
+            key=lambda item: (item.status == "waiting_user", similarity(request.match_text, commission_text(item))),
+            reverse=True,
+        )[:UNDER_WAY_READ_ROWS]
+        under_way = [item for item in under_way if item in closest]
+    asked = [item for item in request.answerable if item.status == "waiting_user" and item.question()]
+    asked = asked[:UNDER_WAY_READ_ROWS]
+    ended: list[Commission] = []
+    if request.task_agent_available:
+        ended = [
+            item
+            for item in request.recent
+            if item.parent_id is None and item.session_id
+        ][:UNDER_WAY_READ_ENDED_ROWS]
+    parents = {item.id: item for item in request.active}
+    numbered: list[tuple[str, Commission]] = []
+    sections: list[tuple[str, list[str]]] = []
+    for heading, place, items in (
+        ("UNDER WAY:", _UNDER_WAY, under_way),
+        ("WAITING FOR THE USER, asked within the work above:", _ASKED, asked),
+        ("ENDED LATELY:", _ENDED, ended),
+    ):
+        lines = []
+        for item in items:
+            numbered.append((place, item))
+            lines.append(_item_line(len(numbered), item, request, within=parents.get(item.parent_id or "")))
+        sections.append((heading, lines))
+    return sections, numbered
 
 
-def _says_more_than_an_answer(text: str, question: dict[str, Any], question_tokens: frozenset[str]) -> bool:
-    """Whether a sentence that says a yes or a no says more than an answer to a question that quotes its commission.
-
-    It adds something (``supplement``), or what says yes or no (and for how
-    long), what says it answers and what speaks of the choice itself
-    (another member, waiting, who said so: ``BESIDE_ANSWER_WORD_PATTERNS``;
-    for the leader's questions its changing files, the work handed to it,
-    the user doing it themself as well: ``HAND_OVER_ANSWER_WORD_PATTERNS``;
-    for its team, the team, at the same time, one after the other:
-    ``START_TEAM_ANSWER_WORD_PATTERNS``) set aside, more words of its own
-    are left that are not the question's than an answer says (the setting
-    ``_QUOTING_TOOLS`` names for the question). It is then new work that
-    says a yes or a no in passing ("make sure the checkout page loads
-    fast"); a long answer is taken for new work as well, which the user
-    sees, with the question still open.
-    """
-    from config import nekopower_settings as settings
-    from nekopower.host.orchestrator import content_tokens
-
-    if has_cue("supplement", text):
-        return True
-    of_the_choice, most = _QUOTING_TOOLS[question["detail"]["tool"]]
-    rest = text
-    for name in ("answer", "deny", "session", "always", "once", *of_the_choice):
-        rest = strip_cues(name, rest)
-    return len(content_tokens(rest) - question_tokens) > getattr(settings, most)
-
-
-def _single_best(scored: list[tuple[float, Commission]]) -> Commission | None:
-    """Return the commission with the highest score when it stands alone at the top."""
-    ranked = sorted(scored, key=lambda item: item[0], reverse=True)
-    if not ranked or ranked[0][0] <= 0:
-        return None
-    if len(ranked) > 1 and ranked[1][0] == ranked[0][0]:
-        return None
-    return ranked[0][1]
-
-
-def read_stop(text: str, active: list[Commission]) -> Triage | None:
-    """Read a sentence with a stop cue. None means: not about stopping a commission."""
-    if not has_cue("stop", text):
-        return None
-    # What is left once the stop words and words like "that one" are set aside
-    # says which commission is meant, if the sentence says so at all.
-    named = strip_cues("vague", strip_cues("stop", text))
-    content = token_set(named)
-    if not active:
-        # "Never mind" with nothing under way; a sentence with more in it is a task.
-        return None if content else Triage(kind="nothing_active")
-    # Words such as "tomorrow" do not tell one commission from another. A
-    # sentence that names nothing else still names something: it is not about
-    # whatever happens to be under way.
-    distinctive = token_set(strip_cues("generic", named)) if content else frozenset()
-    scored = [(_coverage(distinctive, commission), commission) for commission in active]
-    matched = [item for item in scored if item[0] > 0]
-    if len(active) == 1:
-        if not content or matched:
-            return Triage(kind="stop", targets=[active[0].id])
-        # It says what to stop, and that is not this commission: a task of its
-        # own, such as cancelling an alarm.
-        return None
-    if matched:
-        best = _single_best(matched)
-        if best is not None:
-            return Triage(kind="stop", targets=[best.id])
-        top = max(score for score, _ in matched)
-        return Triage(kind="ambiguous", targets=[commission.id for score, commission in matched if score == top])
-    if not content:
-        return Triage(kind="ambiguous", targets=[commission.id for commission in active])
-    return None
-
-
-def read_answer(text: str, active: list[Commission]) -> Triage | None:
-    """Read a sentence as the answer to a commission that waits for the user."""
-    waiting = [commission for commission in active if commission.status == "waiting_user"]
-    if not waiting:
-        return None
-    tokens = token_set(strip_cues("answer", text))
-    explicit = has_cue("answer", text)
-    choice = parse_permission_choice(text)
-
-    def new_work_beside(commission: Commission) -> bool:
-        question = commission.question() or {}
-        return _quotes_its_commission(question) and _says_more_than_an_answer(
-            text, question, token_set(_question_text(commission))
-        )
-
-    if choice is not None and not explicit and any(new_work_beside(commission) for commission in waiting):
-        # New work that says a yes or a no in passing, while a question that quotes its commission
-        # waits: no answer to it, nor to any other question waiting beside it, which it would
-        # answer by that yes or no alone (and allow, say, a command). Should it name what one of
-        # those asks (the command, the path), it may answer that after all: the user is asked which.
-        from nekopower.host.orchestrator import content_tokens
-
-        said = text
-        for name in ("answer", "deny", "session", "always", "once"):
-            said = strip_cues(name, said)
-        named = content_tokens(said)
-        if any(
-            not _quotes_its_commission(commission.question() or {}) and named & token_set(_question_text(commission))
-            for commission in waiting
-        ):
-            return Triage(kind="ambiguous", targets=[commission.id for commission in waiting])
-        return None
-
-    def bears_on(commission: Commission) -> float:
-        score = 0.0
-        # A question that quotes its own commission is held against the sentence only where the
-        # sentence says an answer at all (a choice, or a word that says it answers): any other
-        # sentence that shares a word with the commission's title is new work, not an answer
-        # that was not understood. (Where it does say one, the words tell which question it
-        # answers, should several wait.)
-        question = commission.question() or {}
-        quotes = _quotes_its_commission(question)
-        says_no_answer = choice is None and not explicit
-        question_tokens = token_set(_question_text(commission))
-        if tokens and not (says_no_answer and quotes):
-            score = len(tokens & question_tokens) / len(tokens)
-        # A plain yes or no shares no word with the question it answers. It
-        # still bears on a question that asks for exactly that: a permission,
-        # or a confirmation a plugin asked for.
-        asks_yes_or_no = question.get("kind") in ("permission", "confirmation")
-        if asks_yes_or_no and choice is not None:
-            score += 0.5
-        return score
-
-    scored = [(bears_on(commission), commission) for commission in waiting]
-    if len(waiting) == 1:
-        if explicit or scored[0][0] > 0:
-            return _answer(waiting[0], choice)
-        return None
-    best = _single_best(scored)
-    if best is not None:
-        return _answer(best, choice)
-    if explicit or any(score > 0 for score, _ in scored):
-        return Triage(kind="ambiguous", targets=[commission.id for commission in waiting])
-    return None
-
-
-def _answer(commission: Commission, choice: str | None) -> Triage:
-    is_permission = (commission.question() or {}).get("kind") == "permission"
-    return Triage(kind="answer", targets=[commission.id], choice=choice if is_permission else None)
+def _numbers(value: Any, count: int) -> list[int]:
+    """Return the item numbers a reading names, in range and once each."""
+    seen: list[int] = []
+    for item in value if isinstance(value, list) else [value]:
+        if isinstance(item, str) and item.strip().isdigit():
+            item = int(item.strip())
+        if isinstance(item, int) and not isinstance(item, bool) and 1 <= item <= count and item not in seen:
+            seen.append(item)
+    return seen
 
 
 def can_be_repeated(commission: Commission) -> bool:
@@ -676,81 +610,6 @@ def find_duplicate(dispatch_text: str, user_text: str, active: Sequence[Commissi
         if score >= bar and score > best_score:
             best, best_score = commission, score
     return best
-
-
-def read_repeat_or_addition(request: DecisionRequest) -> Triage | None:
-    """Read a sentence as a repeat of, or an addition to, something under way."""
-    from config.nekopower_settings import SUPPLEMENT_MIN_OVERLAP
-
-    text = request.dispatch_text
-    best = find_duplicate(text, request.user_text, request.active)
-    if best is not None:
-        return Triage(kind="duplicate", targets=[best.id])
-
-    if not has_cue("supplement", text):
-        return None
-    content = token_set(strip_cues("vague", strip_cues("supplement", text)))
-    # An addition can only be passed on to a task agent; a plugin run takes none.
-    task_agents = [commission for commission in request.active if commission.route == "task_agent"]
-    if task_agents:
-        scored = [(_coverage(content, commission), commission) for commission in task_agents]
-        related = [item for item in scored if item[0] >= SUPPLEMENT_MIN_OVERLAP]
-        if len(task_agents) == 1 and (related or not content):
-            return Triage(kind="tell", targets=[task_agents[0].id])
-        target = _single_best(related)
-        if target is not None:
-            return Triage(kind="tell", targets=[target.id])
-        if related:
-            top = max(score for score, _ in related)
-            return Triage(kind="ambiguous", targets=[commission.id for score, commission in related if score == top])
-    return read_follow_up(request, anything_under_way=bool(task_agents))
-
-
-def read_follow_up(request: DecisionRequest, *, anything_under_way: bool) -> Triage | None:
-    """Read a sentence that adds something as going on with a commission that is over.
-
-    Called for a sentence with a cue of an addition that is about nothing
-    under way. One of the commissions a task agent worked on lately
-    (``request.recent``) takes it when enough of the sentence's own words
-    (``FOLLOW_UP_MIN_OVERLAP``; without the cue, words that point at
-    something unnamed, and words every request has) occur in what that
-    commission was, or came to: the one that shares most, and of several
-    that share as much, the newest. A sentence that says nothing but that
-    it adds something is about the one such commission there is, when
-    there is one only and nothing is under way. Words are read as for an
-    addition to a commission under way, and as bluntly: a follow-up that is
-    put in other words is missed and is a commission of its own, as before;
-    and a sentence that is none can be taken for one.
-    """
-    from config.nekopower_settings import FOLLOW_UP_MIN_OVERLAP
-
-    if not request.task_agent_available:
-        return None
-    said = strip_cues("vague", strip_cues("supplement", request.dispatch_text))
-    content = token_set(strip_cues("generic", said))
-    ended = [
-        commission
-        for commission in request.recent
-        if commission.route == "task_agent" and commission.parent_id is None and commission.session_id
-    ]
-    if not ended:
-        return None
-    if not content:
-        if len(ended) == 1 and not anything_under_way:
-            return Triage(kind="continue", targets=[ended[0].id])
-        return None
-
-    def shared(commission: Commission) -> float:
-        known = token_set(f"{commission_text(commission)} {commission.result_summary or ''}")
-        return len(content & known) / len(content)
-
-    scored = [(shared(commission), commission) for commission in ended]
-    top = max(score for score, _commission in scored)
-    if top < FOLLOW_UP_MIN_OVERLAP:
-        return None
-    # The first of them: ``recent`` is newest first.
-    target = next(commission for score, commission in scored if score == top)
-    return Triage(kind="continue", targets=[target.id])
 
 
 # ---------------------------------------------------------------------------
@@ -954,27 +813,130 @@ class LexicalDecisionModel:
             logger.warning("asking where a commission belongs failed: %s", type(exc).__name__)
             return None
 
+    async def read_under_way(self, request: DecisionRequest) -> tuple[Triage | None, int, bool]:
+        """Say what a sentence does with the work there is: returns it (None for new work), the requests made, and whether it could not be told.
+
+        One request (``TIER_UNDER_WAY``), made only while there is work it
+        may be about (``_shown``): her work under way, what waits for the
+        user within it, her work that ended lately. Each item says where it
+        stands, its project, the familiar on it (by the name the user calls
+        it), what its members are at, and what it asks. The model answers
+        with a few labels and numbers: "answer" (to a waiting item, with what
+        a request for approval chose: ``ANSWER_CHOICES``, or none for an
+        answer that was not understood), "stop" (the items it means, and
+        whether it says which: one that does not, with several under way,
+        stops nothing and the user is asked which),
+        "add" (to one item: told to it if under way, gone on with in its
+        session if ended), "unsure" (one of these, of several items) or
+        "new". The decision model could give the same. The words of the
+        sentence are handed on as they are.
+
+        What does not come in time (``UNDER_WAY_READ_SECONDS``), cannot be
+        read, or names nothing it could be is taken for new work, with the
+        question still waiting, and said to be so (the third value): her
+        receipt tells her.
+        """
+        from config.nekopower_settings import UNDER_WAY_READ_SECONDS
+        from config.prompts.prompts_nekopower_brain import TASK_BRAIN_UNDER_WAY_PROMPT, build_under_way_request
+
+        sections, numbered = _shown(request)
+        if not numbered:
+            return None, 0, False
+        messages = [
+            {"role": "system", "content": TASK_BRAIN_UNDER_WAY_PROMPT},
+            {
+                "role": "user",
+                "content": build_under_way_request(
+                    sections=sections, task=request.dispatch_text, user_said=request.user_text
+                ),
+            },
+        ]
+        try:
+            raw = await asyncio.wait_for(self._llm.complete(TIER_UNDER_WAY, messages), UNDER_WAY_READ_SECONDS)
+        except Exception as exc:  # noqa: BLE001 - not told: it goes on as new work, and she is told so
+            logger.warning("reading what a request does with the work under way failed: %s", type(exc).__name__)
+            return None, 1, True
+        reading = parse_json_object(raw or "") or {}
+        does = str(reading.get("does") or "").strip().lower()
+        picked = [numbered[number - 1] for number in _numbers(reading.get("items"), len(numbered))]
+        if does == "new":
+            return None, 1, False
+        if does == "unsure" and len(picked) > 1:
+            return Triage(kind="ambiguous", targets=[item.id for _place, item in picked], model_calls=1), 1, False
+        # Whether the sentence itself says which item it means (names its
+        # work, project, familiar, command, file or an option it picks).
+        said_which = reading.get("named") is True
+        waiting = [item.id for _place, item in numbered if item.status == "waiting_user" and item.question()]
+
+        def answered(target: Commission, choice: Any) -> tuple[Triage | None, int, bool]:
+            chosen = None
+            if (target.question() or {}).get("kind") == "permission":
+                choice = str(choice or "").strip().lower()
+                chosen = choice if choice in ANSWER_CHOICES else None
+            return Triage(kind="answer", targets=[target.id], choice=chosen, model_calls=1), 1, False
+
+        if does == "answer" and len(picked) == 1:
+            _place, target = picked[0]
+            if target.status == "waiting_user" and target.question():
+                if not said_which and len(waiting) > 1:
+                    # A plain "yes" with several questions waiting: which, the
+                    # user is asked, and none of them is answered on a guess.
+                    return Triage(kind="ambiguous", targets=waiting, model_calls=1), 1, False
+                return answered(target, reading.get("choice"))
+        if does == "stop" and picked:
+            stopped = [item.id for place, item in picked if place == _UNDER_WAY]
+            under_way = [item.id for place, item in numbered if place == _UNDER_WAY]
+            if not said_which:
+                if len(under_way) > 1:
+                    # "Stop it" with several under way: which, the user is asked,
+                    # not everything stopped on a guess.
+                    return Triage(kind="ambiguous", targets=under_way, model_calls=1), 1, False
+                if len(picked) == 1 and picked[0][1].id in waiting:
+                    # "Wait", "not now" to the one that waits for the user: its
+                    # answer, a refusal, and not the end of its work.
+                    return answered(picked[0][1], "deny")
+            if stopped:
+                return Triage(kind="stop", targets=stopped, model_calls=1), 1, False
+            # It means work that is over, or questions within others' work:
+            # nothing of hers it names is under way.
+            if not under_way:
+                return Triage(kind="nothing_active", model_calls=1), 1, False
+            return Triage(kind="ambiguous", targets=under_way, model_calls=1), 1, False
+        if does == "add" and len(picked) == 1:
+            place, target = picked[0]
+            if place == _ENDED:
+                return Triage(kind="continue", targets=[target.id], model_calls=1), 1, False
+            if place == _UNDER_WAY:
+                if find_duplicate(request.dispatch_text, request.user_text, [target]) is target:
+                    return Triage(kind="duplicate", targets=[target.id], model_calls=1), 1, False
+                if target.route == "task_agent":
+                    return Triage(kind="tell", targets=[target.id], model_calls=1), 1, False
+            # A plugin run takes no addition, and what a task agent of hers
+            # started is that one's business: work of its own.
+            return None, 1, False
+        logger.warning("what a request does with the work under way could not be read: %s", does or "nothing said")
+        return None, 1, True
+
     # -- first round ------------------------------------------------------
 
     async def triage(self, request: DecisionRequest) -> Triage:
-        text = request.dispatch_text
-        stop = read_stop(text, request.active)
-        if stop is not None:
-            return stop
-        answer = read_answer(text, [*request.active, *request.answerable])
-        if answer is not None:
-            return answer
-        repeat = read_repeat_or_addition(request)
-        if repeat is not None:
-            if repeat.kind == "continue":
+        reading, calls, unread = await self.read_under_way(request)
+        if reading is not None:
+            if reading.kind == "continue":
                 # It becomes a commission of its own: the plugins its words
-                # point at go along, as they do for any new one. No model.
+                # point at go along, as they do for any new one.
                 match_text = request.match_text
-                repeat.keyword_hit_ids = keyword_hits(match_text, request.plugins)
+                reading.keyword_hit_ids = keyword_hits(match_text, request.plugins)
                 kept, _ = stage1_filter(match_text, request.plugins)
-                repeat.candidate_ids = [str(plugin.get("id")) for plugin in kept]
-            return repeat
-        return await self.probe(request)
+                reading.candidate_ids = [str(plugin.get("id")) for plugin in kept]
+            return reading
+        best = find_duplicate(request.dispatch_text, request.user_text, request.active)
+        if best is not None:
+            return Triage(kind="duplicate", targets=[best.id], model_calls=calls, unread=unread)
+        probed = await self.probe(request)
+        probed.model_calls += calls
+        probed.unread = unread
+        return probed
 
     async def probe(self, request: DecisionRequest, *, ask_model: bool = True) -> Triage:
         plugins = request.plugins

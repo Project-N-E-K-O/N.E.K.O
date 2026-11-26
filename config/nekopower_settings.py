@@ -28,8 +28,11 @@ import os
 DISPATCH_FIRST_ROUND_SECONDS = 1.0
 """How long ``dispatch`` waits for the first round before answering "received".
 The first round is local (duplicates, keyword and BM25 candidates, whether a
-task agent can be started); only when nothing matches locally and no task agent
-can be started does it make one small-model call."""
+task agent can be started), with two small-model calls it may make: while
+there is work the sentence may be about, what it does with it
+(``UNDER_WAY_READ_SECONDS``); and when nothing matches locally and no task
+agent can be started, the coarse screen. A conclusion that comes too late
+for this is reported to her once it is in."""
 
 TASK_TOOL_TIMEOUT_SECONDS = 2.5
 """How long the main dialogue's task tools wait for the agent process, for
@@ -158,25 +161,15 @@ QUERY_RECENT_SECONDS = 24 * 3600.0
 
 FOLLOW_UP_RECENT_SECONDS = 24 * 3600.0
 """How long after a commission a task agent worked on is over a sentence that
-adds to it still goes on with it, in its session. A sentence about something
-longer ago is a commission of its own (unless its project takes it).
-
-This is how far the guess by words reaches, not how long a session lives
-(``SESSION_SINGLE_LIFETIME_DAYS``): a sentence that only says it adds something
-is about "the one commission that ended lately", and with a longer time there
-is hardly ever just one. A longer time also takes more sentences for follow-ups
-that were not meant as such. A session that is over (above) is not gone on with
-by this either, whatever this is set to."""
-
-FOLLOW_UP_MIN_OVERLAP = 0.25
-"""Least share of a sentence's own words that must occur in a commission that
-is over, or in what came of it, for the sentence to go on with it. Higher
-than for an addition to a commission under way (``SUPPLEMENT_MIN_OVERLAP``):
-taken for a follow-up, a sentence is worked on with all that was said in the
-earlier commission's session in front of it."""
+adds to it still goes on with it, in its session: those that ended within
+this are shown to the reading of a sentence (``UNDER_WAY_READ_ENDED_ROWS``).
+A sentence about something longer ago is a commission of its own (unless its
+project takes it). A session that is over is not gone on with by this either,
+whatever this is set to (``SESSION_SINGLE_LIFETIME_DAYS``)."""
 
 FOLLOW_UP_ROWS = 8
-"""Most commissions that are over a dispatched sentence is compared with."""
+"""Most commissions that are over that are looked up for it, before those whose
+session is over are left out."""
 
 # ---------------------------------------------------------------------------
 # The orchestrator: which task agent a new commission goes to
@@ -258,53 +251,41 @@ characters makes four. Set where
 ten scenarios and four sentences of the measurements fall apart: those that
 go on with a member's work share four to eight, the others none or one."""
 
-BESIDE_ANSWER_WORDS_MAX = 2
-"""Most words of its own a sentence may say, beside a yes or a no, and be
-taken for the answer to whether another member is to do a queued commission
-(``decision._says_more_than_an_answer``): what says yes or no, what says it
-answers, what speaks of the choice itself (``BESIDE_ANSWER_WORD_PATTERNS``)
-and the question's own words are not counted. One that says more, or adds
-something ("also", "by the way"), is new work that says a yes or a no in passing,
-and is dispatched as such. Owner, 2026-11-25: "three and more" is new work.
-Measured with ``tests/unit/nekopower/fixtures/beside_answer_sentences.json``:
-of 40 requests written by a model that did not know the rule, none is taken
-for an answer (32 were before this was counted); of its 39 answers, 14 are
-taken for new work (3 of them say no yes or no at all, and were before). Of
-the 17 requests written beside the rule, 3 short ones are taken for answers
-(17 were before). With none allowed, 23 of the 39 answers would be new work;
-with three allowed, 7 of the 17 requests would be answers."""
+UNDER_WAY_READ_MODEL_SLOT = "recognition"
+"""The model that reads what a dispatched sentence does with the work there is
+(``LexicalDecisionModel.read_under_way``): answers what waits for the user,
+stops something, adds to something, or is new. One request, asked only while
+there is such work. The small model, like the other closed questions of the
+task brain; the decision model may take it over (its answer is a few labels
+and numbers)."""
 
-HAND_OVER_ANSWER_WORDS_MAX = 2
-"""The same as ``BESIDE_ANSWER_WORDS_MAX``, for the answer to whether a
-project's leader may start another member that changes files
-(``detail.tool == "hand_over"``), whose own words of the choice are
-``HAND_OVER_ANSWER_WORD_PATTERNS`` as well. Set as the owner set it for
-the other ("three and more" is new work). Measured with
-``tests/unit/nekopower/fixtures/hand_over_answer_sentences.json`` (four
-languages; 48 answers and 56 requests in each half): of the requests written
-by a model that did not know the rule, none is taken for an answer (46 were
-before, 22 of them for a yes or a no that decided the question); of its
-answers, 30 are taken for new work (10 were read wrongly before). Of the
-sentences written beside the rule, 1 request is taken for an answer (50
-were) and 2 answers for new work (1 was read wrongly). With four allowed, 2
-of the model's requests (said of the work itself, read as a yes and a no) and
-4 of the others would be answers, and 18 of the model's answers new work."""
+UNDER_WAY_READ_OUTPUT_MAX_TOKENS = 64
+"""What that model may write: one line of JSON (what the sentence does, the
+numbers of the items, a choice), with room for a code fence around it and a
+stop of a dozen items."""
 
-START_TEAM_ANSWER_WORDS_MAX = 2
-"""The same as ``BESIDE_ANSWER_WORDS_MAX``, for the answer to whether a
-project's leader may start a team whose members change files
-(``detail.tool == "start_team"``), whose own words of the choice are
-``HAND_OVER_ANSWER_WORD_PATTERNS`` and ``START_TEAM_ANSWER_WORD_PATTERNS``
-as well. Set as the owner set the others ("three and more" is new work).
-Measured with ``tests/unit/nekopower/fixtures/start_team_answer_sentences.json``
-(four languages; 48 answers and 56 requests in each half): of the requests
-written by a model that did not know the rule, none is taken for an answer
-(35 were before, 19 of them for a yes or a no that decided the question); of
-its answers, 25 are taken for new work (4 were read wrongly before). Of the
-sentences written beside the rule, 2 requests are taken for answers (36
-were) and 5 answers for new work (3 were read wrongly). With three or four
-allowed, none of the model's requests and 4 of the others would be answers
-(one a yes to the team), and 20 or 14 of the model's answers new work."""
+UNDER_WAY_READ_SECONDS = 6.0
+"""How long it is read for. A reading that does not come by then, like one
+that cannot be read, is taken for "new": the sentence goes on as any other,
+what waits still waits, and her receipt says it was not told."""
+
+UNDER_WAY_READ_ROWS = 12
+"""How many of her commissions under way it is shown. Those that wait for the
+user come first; past this many, those whose words are closest to the
+sentence. A sentence is never read as stopping, adding to or answering one it
+was not shown."""
+
+UNDER_WAY_READ_ENDED_ROWS = 4
+"""How many of her commissions that ended lately (``FOLLOW_UP_RECENT_SECONDS``)
+it is shown, newest first: what a sentence may go on with."""
+
+UNDER_WAY_READ_LINE_MAX_TOKENS = 120
+"""How much of each item it is shown, besides its question: the title, its
+project, the familiar on it, what its members are at, what came of it."""
+
+UNDER_WAY_READ_QUESTION_MAX_TOKENS = 200
+"""How much of what an item asks it is shown: the question, with the answers
+on offer (for a request for approval, the command or path gives way first)."""
 
 ORCHESTRATOR_APART_MIN_WORDS = 4
 """A sentence is told to be about something else than what a member works

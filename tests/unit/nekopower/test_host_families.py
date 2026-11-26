@@ -911,9 +911,9 @@ async def test_new_work_said_while_the_user_is_asked_about_a_new_member_is_not_t
     question = (await wait_status(host, receipt.commission_id, "waiting_user")).question()
     assert question["detail"]["tool"] == "hand_over"
 
-    # What is asked quotes the commission (the shop site, the header). New work that shares those words and
-    # says no answer, or says a no or a yes in passing, is new work: not an answer that was not understood,
-    # and no answer that refuses (or allows) the member.
+    # What is asked quotes the commission (the shop site, the header). New work that shares those words, or
+    # says a no or a yes in passing, which the model reading answers takes for no answer (``host_fakes``), is
+    # new work: not an answer that was not understood, and no answer that refuses (or allows) the member.
     for said in (
         "go through the price list of the shop site and round every amount",
         "no rush, but rename the images folder of the shop site",
@@ -926,6 +926,8 @@ async def test_new_work_said_while_the_user_is_asked_about_a_new_member_is_not_t
         assert (still.status, still.question()["id"]) == ("waiting_user", question["id"]), said
         await host.abort(more.commission_id)
     assert len(leader_llm.requests) == 1
+    # Shown to the model with who it is with: the leader, by the name the user calls it.
+    assert '"fix the header of the shop site" (project "Shop site"; by Boss cat' in host._decision_llm.under_way_calls[-1][-1]["content"]
 
     # What answers it is read as the answer still.
     answered = await _dispatch(host, "yes, go ahead")

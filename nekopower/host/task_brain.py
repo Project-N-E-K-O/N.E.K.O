@@ -104,6 +104,10 @@ class Receipt:
     # For "no_capability": disabled, not_installed, not_enabled, denied or no_match.
     reason: str = ""
     model_calls: int = 0
+    # Whether what the sentence does with the work there is could not be
+    # told in time (``Triage.unread``): it was taken for new work, and the
+    # receipt says so.
+    unread: bool = False
 
     @property
     def commission_id(self) -> str | None:
@@ -250,20 +254,23 @@ def render_receipt(receipt: Receipt, lang: str) -> str:
     templates = _texts(RECEIPT_TEXTS, lang)
     first = receipt.commissions[0] if receipt.commissions else None
     title = first.title if first else ""
+    note = f" {templates['unread']}" if receipt.unread else ""
     if receipt.kind == "no_capability":
         reason = _texts(NO_CAPABILITY_REASONS, lang).get(receipt.reason) or receipt.reason
-        return templates["no_capability"].format(reason=reason)
+        return templates["no_capability"].format(reason=reason) + note
     if receipt.kind == "duplicate" and first is not None:
-        return templates["duplicate"].format(title=title, status=status_word(first.status, lang))
+        return templates["duplicate"].format(title=title, status=status_word(first.status, lang)) + note
     if receipt.kind == "ambiguous":
         candidates = "\n".join(
             f"- {commission.title} ({status_word(commission.status, lang)})" for commission in receipt.commissions
         )
         return templates["ambiguous"].format(candidates=candidates)
+    if receipt.kind == "stopped" and len(receipt.commissions) > 1:
+        title = templates["joined"].join(commission.title for commission in receipt.commissions)
     template = templates.get(receipt.kind)
     if template is None:
         return receipt.kind
-    return template.format(title=title)
+    return template.format(title=title) + note
 
 
 class TaskBrain:
@@ -392,7 +399,9 @@ class TaskBrain:
         # addition is not about them. Their questions reach the user, though,
         # so an answer can be.
         active = [item for item in under_way if item.parent_id is None]
-        answerable = [item for item in under_way if item.parent_id is not None and item.status == "waiting_user"]
+        children = [item for item in under_way if item.parent_id is not None]
+        answerable = [item for item in children if item.status == "waiting_user"]
+        recent = await self._recently_over(lanlan_name)
         # Plugin entries forbidden in the permission settings are not offered
         # to the decision model at all, so none is called directly either.
         # Asking modes keep the entry discoverable; direct execution obtains
@@ -405,14 +414,35 @@ class TaskBrain:
             plugins=[] if plugins_forbidden else await self._without_denied_mcp(await self._registry.plugins()),
             active=active,
             answerable=answerable,
-            recent=await self._recently_over(lanlan_name),
+            children=children,
+            familiars=await self._familiars([*active, *children, *recent], lang),
+            recent=recent,
             task_agent_available=await self._task_agent_available(),
         )
+
+    async def _familiars(self, commissions: list[Commission], lang: str) -> dict[str, str]:
+        """Return what the user calls the familiar of each session these are worked on or were handed on in, by session id.
+
+        Its role as the interface names it in the user's language, and the
+        title on its card when it has one (``Scout cat "links"``): what the
+        user says of a familiar when they mean its work.
+        """
+        from config.prompts.prompts_nekopower_brain import ROLE_NAMES
+
+        roles = _texts(ROLE_NAMES, lang)
+        named: dict[str, str] = {}
+        for session_id in {item for commission in commissions for item in (commission.session_id, commission.handed_by) if item}:
+            session = await self._ledger.get_session(session_id)
+            if session is None:
+                continue
+            role = roles.get(session.preset or "", session.preset or "familiar")
+            named[session_id] = f'{role} "{session.title}"' if session.title else role
+        return named
 
     async def _recently_over(self, lanlan_name: str) -> list[Commission]:
         """Return her commissions a task agent worked on that are over and not long so, newest first.
 
-        What a sentence that adds something can go on with (``decision.read_follow_up``):
+        What a sentence that adds something can go on with (``decision.LexicalDecisionModel.read_under_way``):
         done, failed or stopped within ``FOLLOW_UP_RECENT_SECONDS``, her own
         (not one a task agent started for itself), and worked on in a session
         that has not ended (``Ledger.session_alive``: a session of one
@@ -582,10 +612,14 @@ class TaskBrain:
         if triage.kind == "ambiguous":
             return Receipt(kind="ambiguous", commissions=targets, model_calls=calls)
         if triage.kind == "duplicate" and targets:
-            return Receipt(kind="duplicate", commissions=targets, model_calls=calls)
+            return Receipt(kind="duplicate", commissions=targets, model_calls=calls, unread=triage.unread)
         if triage.kind == "stop" and targets:
-            stopped = await self.abort(targets[0].id, reason="stopped through a dispatch", notify=False)
-            return Receipt(kind="stopped", commissions=[stopped or targets[0]], model_calls=calls)
+            # Every one it means: "stop everything on the shop site" may be several.
+            stopped = [
+                await self.abort(target.id, reason="stopped through a dispatch", notify=False) or target
+                for target in targets
+            ]
+            return Receipt(kind="stopped", commissions=stopped, model_calls=calls)
         if triage.kind == "answer" and targets:
             target = targets[0]
             is_permission = (target.question() or {}).get("kind") == "permission"
@@ -633,7 +667,9 @@ class TaskBrain:
             # What it referred to is no longer there.
             return Receipt(kind="nothing_active", model_calls=calls)
         if triage.kind == "none":
-            return Receipt(kind="no_capability", reason=await self._no_capability_reason(), model_calls=calls)
+            return Receipt(
+                kind="no_capability", reason=await self._no_capability_reason(), model_calls=calls, unread=triage.unread
+            )
         # Read again after the waits above: NekoPower may have been switched
         # off, or everything stopped, while this round was looking.
         if not self._is_enabled():
@@ -661,7 +697,7 @@ class TaskBrain:
             lang=lang,
         )
         if not created:
-            return Receipt(kind="duplicate", commissions=[commission], model_calls=calls)
+            return Receipt(kind="duplicate", commissions=[commission], model_calls=calls, unread=triage.unread)
         if self._task_agents is not None:
             # What was said just before it, as of now: by the time it is
             # chosen who does it, more may have been said, and what the
@@ -669,7 +705,7 @@ class TaskBrain:
             self._task_agents.note_filed(commission)
         request.active = [item for item in request.active if item.id != commission.id]
         self._spawn(self._second_round(commission, request, triage, follows=follows), commission_id=commission.id)
-        return Receipt(kind="accepted", commissions=[commission], model_calls=calls)
+        return Receipt(kind="accepted", commissions=[commission], model_calls=calls, unread=triage.unread)
 
     async def _second_round(
         self,

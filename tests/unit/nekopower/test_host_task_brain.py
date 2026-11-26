@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import types
 from typing import Any
 
 import pytest
@@ -1072,10 +1073,12 @@ async def _slow_weather(server: FakePluginServer) -> asyncio.Event:
 
 async def test_stop_through_dispatch_cancels_the_plugin_run(server, hosts, tmp_path):
     started = await _slow_weather(server)
-    host = _host(hosts, tmp_path, server, FakeDecisionLLM(fine=[pick_plugin("weather", "today")]))
+    decisions = FakeDecisionLLM(fine=[pick_plugin("weather", "today")])
+    host = _host(hosts, tmp_path, server, decisions)
     first = await _dispatch(host, "查一下上海的天气")
     await asyncio.wait_for(started.wait(), 5)
     (run,) = server.runs()
+    decisions.under_way = [{"does": "stop", "items": [1]}]
 
     receipt = await _dispatch(host, "天气别查了")
 
@@ -1088,6 +1091,54 @@ async def test_stop_through_dispatch_cancels_the_plugin_run(server, hosts, tmp_p
     assert server.run(run.run_id).status == "cancel_requested"
     # She asked for the stop herself, so no report repeats it.
     assert await outbox(host, "task_result") == []
+
+
+async def test_one_dispatch_stops_every_one_it_means(server, hosts, tmp_path):
+    await _slow_weather(server)
+    decisions = FakeDecisionLLM(fine=[pick_plugin("weather", "today")])
+    host = _host(hosts, tmp_path, server, decisions)
+    first = await _dispatch(host, "查一下上海的天气")
+    second = await _dispatch(host, "查一下北京的天气")
+    await wait_until(lambda: len(server.runs()) == 2, what="both runs")
+    decisions.under_way = [{"does": "stop", "items": [1, 2], "named": True}]
+
+    receipt = await _dispatch(host, "天气都别查了")
+
+    assert receipt.kind == "stopped"
+    assert [item.id for item in receipt.commissions] == [second.commission_id, first.commission_id]
+    assert receipt.text("zh") == "已叫停：查一下北京的天气、查一下上海的天气"
+    assert receipt.text("en") == "Stopped: 查一下北京的天气, 查一下上海的天气"
+    for one in (first, second):
+        assert (await host.ledger.get(one.commission_id)).status == "cancelled"
+
+
+async def test_the_familiars_are_named_as_the_user_calls_them(server, hosts, tmp_path):
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM())
+    scout = await host.ledger.create_session(lanlan_name="Lan", name="Blog/scout", kind="project", preset="scout", title="链接")
+    boss = await host.ledger.create_session(lanlan_name="Lan", name="Blog/boss", kind="project", preset="boss")
+    odd = await host.ledger.create_session(lanlan_name="Lan", name="Blog/odd", kind="project", preset="someone")
+    worked = types.SimpleNamespace(session_id=scout.id, handed_by=boss.id)
+    elsewhere = types.SimpleNamespace(session_id=odd.id, handed_by="gone")
+
+    named = await host.brain._familiars([worked, elsewhere], "zh")
+
+    # By role in the user's language, with the title on its card; a session that is gone is left out.
+    assert named == {scout.id: '侦察猫 "链接"', boss.id: "猫老大", odd.id: "someone"}
+    assert (await host.brain._familiars([worked], "en"))[scout.id] == 'Scout cat "链接"'
+
+
+def test_a_receipt_says_when_what_the_sentence_does_with_the_work_could_not_be_told():
+    import types
+
+    from config.prompts.prompts_nekopower_brain import RECEIPT_TEXTS
+    from nekopower.host.task_brain import Receipt
+
+    one = types.SimpleNamespace(id="c1", title="查一下上海的天气", status="working")
+    note = RECEIPT_TEXTS["zh"]["unread"]
+    for kind in ("accepted", "duplicate", "no_capability"):
+        told = Receipt(kind=kind, commissions=[one], reason="no_match").text("zh")
+        not_told = Receipt(kind=kind, commissions=[one], reason="no_match", unread=True).text("zh")
+        assert not_told == f"{told} {note}" and note not in told, kind
 
 
 async def test_a_result_arriving_after_the_stop_does_not_overwrite_it(server, hosts, tmp_path):
@@ -1163,14 +1214,17 @@ async def test_being_stopped_twice_on_the_same_entry_becomes_an_inferred_prefere
     assert "weather.today" in entry_.text
 
 
-async def test_stop_with_nothing_under_way(server, hosts, tmp_path):
+async def test_a_stop_with_nothing_there_is_read_as_any_sentence(server, hosts, tmp_path):
+    # With nothing under way and nothing ended lately there is no work it may be about: no model reads it,
+    # and it goes on as any other sentence (here: nothing can do it). What says stop while only work that
+    # ended is there is told that nothing is under way (``test_host_decision.py``).
     _weather(server)
-    host = _host(hosts, tmp_path, server, FakeDecisionLLM())
+    decisions = FakeDecisionLLM()
+    host = _host(hosts, tmp_path, server, decisions)
 
     receipt = await _dispatch(host, "算了")
 
-    assert receipt.kind == "nothing_active"
-    assert receipt.text("zh") == "现在没有在办的事。"
+    assert decisions.under_way_calls == [] and receipt.kind == "no_capability" and not receipt.unread
 
 
 async def test_stop_without_saying_which_lists_the_candidates(server, hosts, tmp_path):
@@ -1650,7 +1704,7 @@ async def test_receipts_render_in_every_language(server, hosts, tmp_path):
     }
     assert set(RECEIPT_TEXTS["en"]) == {
         "accepted", "received", "duplicate", "no_capability", "stopped", "told", "answered",
-        "ambiguous", "nothing_active", "unclear_answer",
+        "ambiguous", "nothing_active", "unclear_answer", "joined", "unread",
     }
 
 

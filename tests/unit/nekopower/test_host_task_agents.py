@@ -1969,6 +1969,37 @@ async def test_an_answer_that_says_neither_yes_nor_no_keeps_waiting(hosts, tmp_p
     await host.abort(receipt.commission_id)
 
 
+async def test_what_is_said_while_its_answer_cannot_be_read_is_a_request_and_the_question_still_waits(hosts, tmp_path):
+    scripts = {
+        "outside the work folder": ScriptedLLM([_write_outside(tmp_path), _report("ready", "written")]),
+        "yes, do it": ScriptedLLM([_report("ready", "nothing to do")]),
+    }
+    decisions = FakeDecisionLLM()
+    decisions.under_way = [RuntimeError("the small model is down")]
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts), decision_llm=decisions)
+    receipt = await _dispatch(host, "write a file outside the work folder")
+    question = (await wait_status(host, receipt.commission_id, "waiting_user")).question()
+
+    said = await _dispatch(host, "yes, do it")
+
+    # Not read, so no answer, and nothing is allowed: a request of its own, and the question still waits.
+    # She is told it could not be told.
+    assert said.kind == "accepted" and said.commission_id != receipt.commission_id
+    from config.prompts.prompts_nekopower_brain import RECEIPT_TEXTS
+
+    assert said.text("en").endswith(RECEIPT_TEXTS["en"]["unread"])
+    still = await host.ledger.get(receipt.commission_id)
+    assert (still.status, still.question()["id"]) == ("waiting_user", question["id"])
+    assert not (tmp_path / "outside.txt").exists()
+    # Read again once the model answers: the choice it read off the words is what the question gets.
+    decisions.under_way = []
+    answered = await _dispatch(host, "yes")
+    assert answered.kind == "answered" and not answered.unread
+    await wait_status(host, receipt.commission_id, "done")
+    assert (tmp_path / "outside.txt").read_text() == "hello"
+    await host.abort(said.commission_id)
+
+
 async def test_forbidden_category_is_refused_without_asking(hosts, tmp_path):
     llm = ScriptedLLM([_write_outside(tmp_path), _report("blocked", "writing there is forbidden")])
     host = _host(hosts, tmp_path, llm)
