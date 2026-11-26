@@ -1005,6 +1005,8 @@ def test_a_task_that_waits_for_the_user_carries_what_it_asks_and_no_other_does()
     # As a card shows it: the question, and what is to be allowed in one line.
     assert {key: waiting["question"][key] for key in PERMISSION} == PERMISSION
     assert "npm run build" in waiting["question"]["line"] and waiting["question"]["line_cut"] is False
+    # In each language of the interface too: every page it is sent to shows the one of its own.
+    assert waiting["question"]["lines"]["ja"] == {"line": "コマンド npm run build の実行", "line_cut": False}
     # Said as None once it does not wait: the page merges what it is sent into what it has.
     for status in ("queued", "working", "done", "blocked", "failed", "cancelled"):
         task = hud_task(_commission(status=status, asked=dict(PERMISSION), ended_at=1_700_000_050.0))

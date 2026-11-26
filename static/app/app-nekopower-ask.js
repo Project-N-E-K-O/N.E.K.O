@@ -9,7 +9,8 @@
  *
  * A question is `{id, kind, ...}` as the agent process hands it over:
  *   - `permission`: `options` (always / session / once / deny), `line` (what is to be
- *     allowed, in words), `line_cut` (the command or path in it is not whole), `detail`;
+ *     allowed, in words), `line_cut` (the command or path in it is not whole), `lines` (the
+ *     two of them in each language of the interface, by its code), `detail`;
  *   - `confirmation`: `question`; answered yes or no, or in words;
  *   - `questions`: `questions` (each `{question, options?, multi_select?}`);
  *   - anything else (`report`): `question`, `details`; answered in words.
@@ -91,6 +92,27 @@
         return made;
     }
 
+    /** The language the page is shown in, by its code (`zh-CN`, `en`, ...); '' where it cannot be read. */
+    function pageLanguage() {
+        var i18n = window.i18next || window.i18n;
+        return i18n && typeof i18n.language === 'string' ? i18n.language : '';
+    }
+
+    /**
+     * What a request for approval asks to allow, in one line: in the language of the page, as its
+     * buttons are, where the question has the line in that one (`lines`); else in the language of
+     * the commission (`line`). With whether that very line leaves part of the command out.
+     * The same as `saidHere` in frontend/react-neko-chat/src/NekoPowerAskBlock.tsx: what is
+     * changed in one is changed in the other.
+     */
+    function saidHere(asked) {
+        var lines = asked.lines && typeof asked.lines === 'object' ? asked.lines : {};
+        var language = pageLanguage();
+        var mine = lines[language] || lines[language.split('-')[0]];
+        if (mine && typeof mine === 'object' && text(mine.line)) return { line: text(mine.line), cut: mine.line_cut === true };
+        return { line: text(asked.line), cut: asked.line_cut === true };
+    }
+
     /** What a question is shown and answered by. */
     function view(question) {
         var asked = question && typeof question === 'object' ? question : {};
@@ -98,9 +120,10 @@
         var options = Array.isArray(asked.options) ? asked.options.filter(function (option) { return WORDS[option]; }) : [];
         var questions = questionsOf(asked);
         var whole = text(detail.command) || text(detail.path);
+        var said = saidHere(asked);
         // The line that says it left part of something out: of the command or path, or (where it
         // names neither) of whatever else it is said by, and of whom something is delivered to.
-        var cut = asked.line_cut === true;
+        var cut = said.cut;
         if (cut) {
             whole = [whole || text(asked.key) || text(detail.title) || text(detail.tool), text(detail.content_to)]
                 .filter(Boolean).join('\n');
@@ -108,7 +131,7 @@
         var shape = options.length ? 'permission'
             : asked.kind === 'confirmation' ? 'confirmation'
                 : questions.some(function (item) { return item.options.length; }) ? 'questions' : 'words';
-        var line = shape === 'permission' ? (text(asked.line) || whole || text(detail.title) || text(detail.tool) || text(asked.category))
+        var line = shape === 'permission' ? (said.line || whole || text(detail.title) || text(detail.tool) || text(asked.category))
             : [text(asked.question), text(asked.details)].filter(Boolean).join(' ');
         if (!line && questions.length) line = questions.map(function (item) { return item.text; }).filter(Boolean).join(' ');
         return {

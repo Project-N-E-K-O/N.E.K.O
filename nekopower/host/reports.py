@@ -196,16 +196,26 @@ def page_question(question: dict[str, Any] | None, lang: str) -> dict[str, Any] 
     the command or path in it is not whole: the card then shows it whole
     (``detail``) before an approval that holds for more than this once is
     offered.
+
+    ``lines`` has the same line in each language of the interface, by the
+    code a page names its language with (``zh-CN``, ``en``, ...), each with
+    its own ``line_cut``: a page shows the one of its language, the words
+    of its buttons, and ``line`` where it has none. The two go together, so
+    that what a page says of the line being cut is said of the line it
+    shows (the mark that says so in the line is in its language too).
     """
     if not isinstance(question, dict):
         return None
     if question.get("kind") != "permission":
         return dict(question)
     from config.nekopower_settings import PERMISSION_SUBJECT_MAX_TOKENS
-    from config.prompts._locale import normalize_prompt_locale
+    from config.prompts._locale import NEKO_CORE_LOCALES, normalize_prompt_locale
 
-    line, cut = _permission_subject_cut(question, normalize_prompt_locale(lang), PERMISSION_SUBJECT_MAX_TOKENS)
-    return {**question, "line": line, "line_cut": cut}
+    def said(language: str) -> dict[str, Any]:
+        line, cut = _permission_subject_cut(question, normalize_prompt_locale(language), PERMISSION_SUBJECT_MAX_TOKENS)
+        return {"line": line, "line_cut": cut}
+
+    return {**question, **said(lang), "lines": {code: said(code) for code in NEKO_CORE_LOCALES}}
 
 
 def tokens_text(tokens: int) -> str:
