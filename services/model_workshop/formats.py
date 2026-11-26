@@ -162,9 +162,10 @@ class _Resources:
                 self.warn("live2d_optional_resource_unavailable", reference)
             # The browser strips fragments/queries and decodes URL spelling.
             # Case-insensitive filesystems can also open an inventory alias.
-            # Validate that actual object's role, not just the literal reference.
+            # Validate the object the loader can open. If neither spelling
+            # exists, check the URL path rather than its query or fragment.
             runtime_target = runtime_path.removeprefix("/__root__/")
-            target = self.file_keys.get(_key(runtime_target), target)
+            target = self.file_keys.get(_key(runtime_target), target if target in self.files else runtime_target)
         else:
             _require(compatible, reference, "incompatible_model_reference")
             _require(target in self.files, reference, "missing_model_resource")
@@ -760,6 +761,7 @@ def _vrm(resources: _Resources) -> None:
                 for semantic in ("NORMAL", "COLOR_0"):
                     if any(semantic in morph for morph in morphs) and not all(semantic in morph for morph in morphs):
                         fallback = primitive["attributes"].get(semantic)
+                        # glTF requires equal vertex counts within a primitive.
                         _require(fallback is not None and accessors[fallback]["count"] == position["count"], entry)
                 for morph in morphs:
                     for semantic in ("POSITION", "NORMAL", "COLOR_0"):

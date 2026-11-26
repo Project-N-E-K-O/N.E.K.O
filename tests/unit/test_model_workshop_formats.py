@@ -416,6 +416,18 @@ def test_unknown_reference_extensions_are_not_blanket_allowed(tmp_path):
         validate_model_bundle(make_native_bundle(tmp_path, files=files))
 
 
+@pytest.mark.parametrize("reference", ["motions/missing.motion3.json?v=2", "motions/missing.motion3.json#preview"])
+def test_missing_optional_motion_with_query_or_fragment_warns(tmp_path, reference):
+    files = live2d_files()
+    model = json.loads(files["Avatar.model3.json"])
+    model["FileReferences"]["Motions"] = {"Idle": [{"File": reference}]}
+    files["Avatar.model3.json"] = json.dumps(model).encode()
+    result = validate_model_bundle(make_native_bundle(tmp_path, files=files))
+    assert tuple(item.as_dict() for item in result.compatibility_warnings) == (
+        {"code": "live2d_optional_resource_unavailable", "path": reference},
+    )
+
+
 @pytest.mark.parametrize("reference", ["motions/Idle#2.json", "motions/Idle%232.json"])
 def test_optional_motion_with_a_safe_but_incompatible_url_warns(tmp_path, reference):
     files = live2d_files()
@@ -1916,7 +1928,7 @@ def test_pmd_rotation_grant_parent_uses_converted_bone_slots(tmp_path, parent, v
     if valid:
         assert validate_model_bundle(path).model_format == 'mmd'
     else:
-        with pytest.raises(ModelFormatError):
+        with pytest.raises(ModelFormatError, match="^invalid_model_structure$"):
             validate_model_bundle(path)
 
 
@@ -1938,5 +1950,5 @@ def test_vrm_morph_fallback_covers_the_position_vertices(tmp_path, semantic, bas
     if valid:
         assert validate_model_bundle(path).model_format == 'vrm'
     else:
-        with pytest.raises(ModelFormatError):
+        with pytest.raises(ModelFormatError, match="^invalid_model_structure$"):
             validate_model_bundle(path)
