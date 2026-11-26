@@ -53,16 +53,40 @@
       />
       <span class="tag" :style="member.look === 'unborn' ? UNBORN_TAG : undefined">{{ member.name }}</span>
     </button>
+    <!-- What one that waits for the user asks, above its head and answered there. Beside the familiar's
+         own button, not in it: a press in the card neither picks the familiar up nor opens it. -->
+    <div
+      v-for="member in asking" :key="`ask:${member.id}`"
+      :style="{ ...ASK_SPOT, left: `${at(member.id).x * 100}%`, top: `${at(member.id).y * 100}%` }" :data-ask-of="member.id"
+    >
+      <AskBubble
+        v-if="cardOpen(member.id)"
+        :ask="member.ask!" :name="member.name" :busy="answering?.[member.commission ?? ''] ?? ''" :error="failed?.[member.commission ?? ''] ?? ''"
+        :below="below(member.id)" :shift="shift(member.id)" :room="room" :place="member.commission"
+        :style="below(member.id) ? { top: '40px' } : { bottom: member.leader ? '52px' : '44px' }"
+        @answer="emit('answer', member.id, $event)" @more="emit('ask', member.id)"
+      />
+      <!-- Several wait at once: their cards would cover one another, so each is a label until it is pressed. -->
+      <button
+        v-else type="button" :style="{ ...ASK_LABEL, bottom: member.leader ? '52px' : '44px' }" data-testid="ask-label"
+        :aria-label="t('power.colony.askLabel', { name: member.name })" @pointerdown.stop @click.stop="opened = member.id"
+      >{{ t('power.colony.waitingBubble') }}</button>
+    </div>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import type { BoardAsk } from '@/api/console'
+import type { GivenAnswer } from '../ask'
 import type { CatLook } from './activity'
 import ColonyFigure from './ColonyFigure.vue'
 import { defaultSpots, intoTerritory, inTerritory, keepSpots, keptSpots, territorySize } from './layout'
 import type { Spot } from './layout'
+
+// Loaded when the first familiar asks something: what the card is drawn with is not part of the first page.
+const AskBubble = defineAsyncComponent(() => import('./AskBubble.vue'))
 
 /** One familiar as the colony draws it. */
 export interface ColonyMember {
@@ -78,6 +102,9 @@ export interface ColonyMember {
   hidden: boolean
   /** The same for a leader and those it started for the commission it has in hand. */
   team?: string | null
+  /** What it asks the user as things stand now, and the commission that asks; not while what happened is replayed. */
+  ask?: BoardAsk | null
+  commission?: string | null
 }
 
 export interface Territory {
@@ -95,8 +122,15 @@ const props = defineProps<{
   canDismiss?: boolean
   /** Set when the familiars are to be put back where they stand by default. */
   tidy?: number
+  /** By the commission that asks: with which button its question is being answered, and why an answer was not taken. */
+  answering?: Record<string, string>
+  failed?: Record<string, string>
 }>()
-const emit = defineEmits<{ open: [id: string]; dismiss: []; holding: [held: boolean] }>()
+const emit = defineEmits<{
+  open: [id: string]; dismiss: []; holding: [held: boolean]
+  /** A question was answered above a familiar's head; or the whole of it is asked for. */
+  answer: [id: string, given: GivenAnswer]; ask: [id: string]
+}>()
 const { t, te } = useI18n()
 
 const land = ref<HTMLElement | null>(null)
@@ -115,6 +149,8 @@ const STROLL_MS = 2800
 const STROLL_REACH = 0.05
 
 const shown = computed(() => props.territory.members.filter(member => !member.hidden))
+/** Those whose question is shown above them. Not the one that is held: it is being carried about. */
+const asking = computed(() => shown.value.filter(member => member.look === 'waiting_user' && member.ask && member.commission && held.value !== member.id))
 const size = computed(() => territorySize(props.territory.members.length))
 const standing = computed(() => defaultSpots(props.territory.members))
 
@@ -163,6 +199,19 @@ const MERGING = new Set<CatLook>(['landing', 'resolving'])
 // One that would be opened, should the user say so: not picked up nor moved with the keys (it stands by
 // the busy one) but pressed, faded, its name framed in dashes. What it asks is said when it is pointed at, not above it: it stands close below the one it
 // would work beside, whose name a bubble would cover. Styled here and not in the stylesheet, as the teams are.
+// Where a question is shown: a point at the middle of the familiar, the card standing on it. Above the others.
+const ASK_SPOT = { position: 'absolute', width: '0', height: '0', zIndex: 3 } as const
+// How many cards a territory shows at once before they are folded into labels; and how near the top
+// (in pixels) a familiar stands for its card to go below it.
+const CARDS_AT_ONCE = 2
+const CARD_ROOM = 150
+// As wide as `AskBubble` draws itself.
+const CARD_WIDTH = 216
+const ASK_LABEL = {
+  position: 'absolute', left: '50%', transform: 'translateX(-50%)', padding: '0 8px', font: 'inherit', fontSize: '11px', fontWeight: '600',
+  lineHeight: '1.6', whiteSpace: 'nowrap', cursor: 'pointer', color: '#fff', border: '1px solid var(--el-color-warning)',
+  borderRadius: '9px', background: 'var(--el-color-warning)',
+} as const
 const UNBORN = { cursor: 'pointer' } as const
 const UNBORN_FIGURE = { opacity: 0.45, filter: 'grayscale(1)' } as const
 const UNBORN_TAG = { borderStyle: 'dashed' } as const
@@ -195,12 +244,32 @@ const heldLinks = computed(() => {
   return [...related].filter(other => here.has(other))
 })
 
+// The one whose card is open while several wait; '' for none.
+const opened = ref('')
+const cardOpen = (id: string) => asking.value.length <= CARDS_AT_ONCE || opened.value === id
+const below = (id: string) => at(id).y * size.value.height < CARD_ROOM
+/**
+ * How far (in pixels) the card of one that stands near the left or right edge is moved inwards, so that
+ * all of it is within the territory: what reaches beyond is cut off by what the territories stand in.
+ */
+// As wide as the territory is drawn: narrower than it asks to be where the page has less room.
+const width = computed(() => drawn.value || size.value.width)
+/** How wide a card may be: no wider than the territory, where that is narrower than a card. */
+const room = computed(() => Math.min(CARD_WIDTH, width.value))
+function shift(id: string): number {
+  const middle = at(id).x * width.value
+  const half = room.value / 2
+  // (In a territory as narrow as the card, that is its middle.)
+  return Math.round(Math.min(Math.max(middle, half), width.value - half) - middle)
+}
 function stateWord(look: CatLook): string {
   const key = `power.home.states.${look}`
   return te(key) ? t(key) : look
 }
 function bubble(member: ColonyMember): string {
-  return member.look === 'waiting_user' ? t('power.colony.waitingBubble') : member.said
+  if (member.look !== 'waiting_user') return member.said
+  // What it asks is shown above it with the ways to answer; where that is not known, that it waits.
+  return member.ask && member.commission ? '' : t('power.colony.waitingBubble')
 }
 
 function spotOf(event: PointerEvent): Spot | null {
@@ -329,11 +398,21 @@ watch(() => props.tidy, () => {
   keep()
 })
 
-onMounted(() => { timer = setInterval(strollOn, STROLL_MS) })
+// How wide the territory is drawn, kept up with the page: 0 until it is known.
+const drawn = ref(0)
+let watching: ResizeObserver | null = null
+onMounted(() => {
+  timer = setInterval(strollOn, STROLL_MS)
+  if (!land.value || typeof ResizeObserver === 'undefined') return
+  watching = new ResizeObserver(() => { drawn.value = land.value?.clientWidth ?? 0 })
+  watching.observe(land.value)
+  drawn.value = land.value.clientWidth
+})
 // The one that is held went away (its project was put away elsewhere): the drag is over, and whoever was told of it is told.
 watch(shown, members => { if (held.value && !members.some(member => member.id === held.value)) cancel() })
 onBeforeUnmount(() => {
   if (timer) clearInterval(timer)
+  watching?.disconnect()
   cancel()
 })
 </script>

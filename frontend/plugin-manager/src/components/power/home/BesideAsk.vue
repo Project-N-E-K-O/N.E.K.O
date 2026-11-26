@@ -5,7 +5,7 @@
       <span class="name">{{ item.member || t('power.home.states.unborn') }}</span>
       <span class="state">{{ t('power.home.states.unborn') }}</span>
     </div>
-    <AskBox :ask="item.ask" :busy="busy" @answer="emit('answer', $event)" />
+    <AskBox :ask="item.ask" :busy="busy" :place="item.id" @answer="emit('answer', $event)" />
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon class="error" data-testid="beside-error" />
   </div>
 </template>
@@ -13,6 +13,7 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import AskBox from '../AskBox.vue'
+import type { GivenAnswer } from '../ask'
 import type { BesideAsk } from '../colony/useBesideAsks'
 import { FAMILIAR_FACES } from '../powerFormat'
 
@@ -21,7 +22,7 @@ import { FAMILIAR_FACES } from '../powerFormat'
  * it is there: what NekoPower asks of it, answered with a button. Whoever shows it sends the answer.
  */
 defineProps<{ item: BesideAsk; busy: string; error: string }>()
-const emit = defineEmits<{ answer: [given: { text?: string; choice?: string }] }>()
+const emit = defineEmits<{ answer: [given: GivenAnswer] }>()
 const { t } = useI18n()
 </script>
 

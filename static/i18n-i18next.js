@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 同步状态修复与主线语音消息文案合并后刷新语言包缓存。
-    const LOCALE_VERSION = '2026-11-26-sync-review-main-merge';
+    // 合并同步状态与任务问答文案后刷新语言包缓存。
+    const LOCALE_VERSION = '2026-11-26-sync-status-ask-cards-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

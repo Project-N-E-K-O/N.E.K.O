@@ -10,11 +10,10 @@
  */
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { Ref } from 'vue'
-import { useI18n } from 'vue-i18n'
-import { answerCommission, listCommissions } from '@/api/console'
+import { listCommissions } from '@/api/console'
 import type { Board, BoardAsk, CommissionRow } from '@/api/console'
 import { besideOf, isBeside } from '../ask'
-import { describeConsoleError } from '../powerFormat'
+import { useAskAnswers } from '../useAskAnswers'
 
 export const BESIDE_POLL_MS = 3000
 const BESIDE_POLL_FAILED_MS = 15000
@@ -106,29 +105,7 @@ export function useBesideAsks(board: Ref<Board | null>) {
  * each apart: another can be answered while the answer to one is on its way. `after` is done once
  * an answer was taken or not: whoever shows them reads anew then.
  */
-export function useBesideAnswers(after: () => Promise<unknown>) {
-  const { t, te } = useI18n()
-  // By its commission: with which button a question is being answered, and why an answer was not taken.
-  const answering = ref<Record<string, string>>({})
-  const failed = ref<Record<string, string>>({})
-  const without = (kept: Record<string, string>, id: string) => Object.fromEntries(Object.entries(kept).filter(([key]) => key !== id))
-
-  async function answer(item: BesideAsk, given: { text?: string; choice?: string }) {
-    if (!given.choice && !given.text?.trim()) return
-    answering.value = { ...answering.value, [item.id]: given.choice ? `choice:${given.choice}` : 'answer' }
-    failed.value = without(failed.value, item.id)
-    try {
-      await answerCommission(item.id, { ...given, text: given.text?.trim(), question_id: item.ask.id })
-    } catch (failure) {
-      failed.value = { ...failed.value, [item.id]: describeConsoleError(failure, t, te) }
-    }
-    answering.value = without(answering.value, item.id)
-    await after()
-  }
-
-  return {
-    busyOf: (item: BesideAsk) => answering.value[item.id] ?? '',
-    failedOf: (item: BesideAsk) => failed.value[item.id] ?? '',
-    answer,
-  }
+export function useBesideAnswers(after: () => Promise<unknown>, noteLost?: (said: string, commissionId: string) => void) {
+  // The same as for what a familiar asks on its card: by the commission that asks.
+  return useAskAnswers(after, noteLost)
 }

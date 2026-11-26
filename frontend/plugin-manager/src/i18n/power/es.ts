@@ -388,6 +388,10 @@ const messages: PowerMessages = {
     },
   },
   colony: {
+    askLabel: '{name} te pregunta',
+    say: 'Responder…',
+    more: 'Más…',
+    sayPlaceholder: 'Respóndele algo…',
     catLabel: '{name}, {state}. Pulsa Intro para abrir y usa las flechas para mover.',
     waitingBubble: 'Esperando tu respuesta ❗',
     answer: 'Responder…',
@@ -486,6 +490,12 @@ const messages: PowerMessages = {
     },
   },
   ask: {
+    notePlaceholder: 'Si quieres añadir una frase, escríbela aquí y pulsa un botón de arriba',
+    noteLabel: 'Una frase que acompaña tu respuesta',
+    addPlaceholder: 'Escribe tu respuesta, o añade una frase y elige arriba',
+    confirm: { yes: 'Sí, adelante', no: 'No' },
+    stale: 'No se entregó: esta pregunta ya fue respondida, o ha hecho una nueva. Lo que se muestra ahora es su situación actual.',
+    noteLost: 'Tu respuesta se entregó, pero la frase que añadiste no: ahora mismo no puede recibirla.',
     command: 'Comando completo',
     path: 'Ruta completa',
     copy: 'Copiar',

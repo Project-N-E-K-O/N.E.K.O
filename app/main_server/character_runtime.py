@@ -908,6 +908,37 @@ async def _broadcast_vmc_enabled(enabled: bool) -> None:
 set_vmc_enabled_callback(_broadcast_vmc_enabled)
 
 
+async def _send_nekopower_question(event: dict) -> None:
+    """Tell the page what a NekoPower commission asks the user, or that it stopped waiting.
+
+    To the session of the character it belongs to; to every connected one
+    where that is not known, as a task update is.
+    """
+    question = event.get("question")
+    payload = {
+        "type": "nekopower_question",
+        "task_id": str(event.get("task_id") or ""),
+        "title": str(event.get("title") or ""),
+        "route": event.get("route"),
+        "lanlan_name": event.get("lanlan_name"),
+        "question": question if isinstance(question, dict) else None,
+        # Of one that stopped waiting: which question that was ("" where it is not known).
+        "question_id": str((question.get("id") if isinstance(question, dict) else event.get("question_id")) or ""),
+    }
+    if not payload["task_id"]:
+        return
+    mgr = _get_session_manager(event.get("lanlan_name"))
+    if not mgr:
+        await _broadcast_to_all_connected(payload)
+        return
+    ws = getattr(mgr, "websocket", None)
+    if _is_websocket_connected(ws):
+        try:
+            await ws.send_json(payload)
+        except Exception as e:
+            logger.warning("[EventBus] nekopower_question send failed for lanlan=%s: %s", event.get("lanlan_name"), e)
+
+
 async def _handle_agent_event(event: dict):
     """Receive agent_server events over ZeroMQ and dispatch them to core/websocket."""
     try:
@@ -1033,6 +1064,19 @@ async def _handle_agent_event(event: dict):
             else:
                 await _broadcast_to_all_connected(quota_payload)
             return
+
+        # What a NekoPower commission asks the user, for a card with the ways
+        # to answer; or, with no question, that it does not wait for the user
+        # any more (the card is closed). A question comes on the sentence she
+        # is to pass on, which goes on below as it always did.
+        if event_type == "nekopower_question" or (
+            event_type == "proactive_message"
+            and event.get("channel") == "nekopower"
+            and isinstance(event.get("question"), dict)
+        ):
+            await _send_nekopower_question(event)
+            if event_type == "nekopower_question":
+                return
 
         # Resolve target session manager; fallback to broadcast if lanlan is unknown
         mgr = _get_session_manager(lanlan)
