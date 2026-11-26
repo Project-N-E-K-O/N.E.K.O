@@ -2316,12 +2316,23 @@ body.is-drop-target::after {
 }
 
 /* "Current -> Preview" compare card shown while hover-previewing */
+/* Floats over the bottom of the preview instead of taking layout space.
+ * In normal flow, showing it on a library-row hover grew the preview column
+ * and pushed the hovered row out from under the pointer, which hid it again
+ * and made the card oscillate (fix from the original theme-studio author's
+ * devkit 1.0.6.1, section 176). .preview is position: relative with a fixed
+ * height and overflow: hidden, so the card stays inside it. */
 .pv-compare {
-  margin: 8px 12px 0;
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 8px;
+  z-index: 4;
   padding: 8px 10px 6px;
   border: 1px dashed var(--border-soft, rgba(0, 0, 0, .16));
   border-radius: 9px;
   background: var(--surface-2, rgba(0, 0, 0, .03));
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .18);
 }
 
 .pv-compare[hidden] {
