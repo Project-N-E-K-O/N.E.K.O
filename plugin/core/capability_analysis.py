@@ -1030,27 +1030,36 @@ def _propagate_assignments(assignments, bindings, walker, uncertain_names=frozen
 def _propagate_self_attributes(node, bindings, walker, shared=frozenset()):
     """Collect self assignments from methods without inheriting method locals."""
     assignments = []
-    # Method parameters and locals are not shadowed here (as before), so one
-    # spelled like a family name is only kept out of the AF_UNIX check.
-    parameters: set[str] = set()
     set_through: set[str] = set()
     writes: dict[str, int] = {}
+    # A class attribute (sock = socket.socket() in the class body) is what
+    # self.sock holds until a method replaces it.
+    for statement in node.body:
+        walker.check()
+        if isinstance(statement, (ast.Assign, ast.AnnAssign)) and statement.value is not None:
+            targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+            names: set[str] = set()
+            for target in targets:
+                _target_names(target, names)
+            set_through.update(f"self.{name}" for name in names)
     for method in node.body:
         walker.check()
         if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
             args = method.args
-            parameters.update(
+            nodes = list(walker.scope_nodes(method.body))
+            _, method_assignments = _collect_declarations(nodes, (), walker)
+            own = [(key, value) for key, value in method_assignments if key.startswith("self.")]
+            assignments.extend(own)
+            # Parameters and locals of this method are not shadowed here (as
+            # before): a self.x whose socket family is spelled with one of
+            # them (def __init__(self, AF_UNIX) / AF_UNIX = socket.AF_INET)
+            # is not known to be local.
+            local = {
                 arg.arg
                 for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg)
                 if arg is not None
-            )
-            nodes = list(walker.scope_nodes(method.body))
-            _, method_assignments = _collect_declarations(nodes, (), walker)
-            assignments.extend(
-                (key, value) for key, value in method_assignments if key.startswith("self.")
-            )
-            # Method locals (AF_UNIX = socket.AF_INET) shadow module names too.
-            parameters.update(key for key, _value in method_assignments if "." not in key)
+            } | {key for key, _value in method_assignments if "." not in key}
+            set_through.update(key for key, value in own if _family_root_in(value, local, walker))
             _self_writes(method, writes, set_through, walker)
     # self.x written in a way the alias resolution does not follow (a tuple,
     # for / with / augmented target, a nested function, setattr): another
@@ -1063,14 +1072,20 @@ def _propagate_self_attributes(node, bindings, walker, shared=frozenset()):
     if "*" in set_through:
         set_through.update(key for key, _value in assignments)
     class_bindings = dict(bindings)
-    for name in parameters:
-        class_bindings[_UNTRUSTED + name] = (None, False)
     _propagate_assignments(assignments, class_bindings, walker, shared | set_through)
-    for name in parameters:
-        # Methods see their own parameters; do not distrust module names there.
-        if not _untrusted(name, bindings):
-            del class_bindings[_UNTRUSTED + name]
     return class_bindings
+
+
+def _family_root_in(value: ast.AST, names: set[str], walker) -> bool:
+    """A call in value passes a family (first argument or family=) rooted
+    in one of names."""
+    for node in ast.walk(value):
+        walker.poll()
+        if isinstance(node, ast.Call):
+            argument = _call_argument(node, 0, "family")
+            if isinstance(argument, (ast.Name, ast.Attribute)) and _root_name(_dotted_name(argument)) in names:
+                return True
+    return False
 
 
 def _self_writes(method, writes: dict[str, int], set_through: set[str], walker) -> None:

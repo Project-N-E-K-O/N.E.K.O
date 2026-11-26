@@ -2590,3 +2590,31 @@ def test_long_alias_chains_stay_within_budget(tmp_path, monkeypatch):
     monkeypatch.setattr(capability_analysis, "MAX_NODES", 400_000)
     source = "import os\nx0 = os\n" + "".join(f"x{i} = x{i - 1}\n" for i in range(1, 4000))
     assert _scan(tmp_path, source)["status"] == "completed"
+
+
+
+@pytest.mark.parametrize(
+    "source,basis",
+    [
+        # A local or parameter of another method does not shadow __init__'s.
+        (
+            "import socket\nclass C:\n    def __init__(self):\n        self.s = socket.socket(socket.AF_UNIX)\n"
+            "    def other(self):\n        AF_UNIX = 1\n    def go(self):\n        self.s.listen()\n",
+            "resolved_name",
+        ),
+        (
+            "import socket\nfrom socket import AF_UNIX\nclass C:\n    def __init__(self):\n"
+            "        self.s = socket.socket(AF_UNIX)\n    def other(self, AF_UNIX):\n        pass\n"
+            "    def go(self):\n        self.s.listen()\n",
+            "resolved_name",
+        ),
+        # A class attribute default is another socket self.sock may hold.
+        (
+            "import socket\nclass C:\n    sock = socket.socket()\n    def maybe(self, x):\n        if x:\n"
+            "            self.sock = socket.socket(socket.AF_UNIX)\n    def go(self):\n        self.sock.listen()\n",
+            "resolved_call",
+        ),
+    ],
+)
+def test_self_attribute_family_trust_is_judged_per_method(tmp_path, source, basis):
+    assert _scan(tmp_path, source)["permissions"][LISTEN]["basis"] == basis
