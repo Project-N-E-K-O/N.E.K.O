@@ -96,6 +96,10 @@ TIER_TURN_CHECK = "turn_check"
 # (``LexicalDecisionModel.read_under_way``). On the tier the settings name
 # (``UNDER_WAY_READ_MODEL_SLOT``), metered under a name of its own.
 TIER_UNDER_WAY = "under_way"
+# What the answer to a request for approval chose, read apart once the
+# sentence was read as that answer (``LexicalDecisionModel._read_choice``):
+# on the same model, metered under a name of its own.
+TIER_ANSWER_CHOICE = "answer_choice"
 # A short description for a plugin whose manifest has none: the small model,
 # once per plugin and description, in the background.
 TIER_SHORT_DESCRIPTION = "short_description"
@@ -118,6 +122,7 @@ _CALL_TYPES = {
     TIER_SESSION_DRAFT: "task_agent_session_draft",
     TIER_ORCHESTRATE: "task_agent_orchestrate",
     TIER_UNDER_WAY: "task_agent_under_way",
+    TIER_ANSWER_CHOICE: "task_agent_answer_choice",
 }
 _FINE_ATTEMPTS = 3
 _FINE_RETRY_DELAYS = (1.0, 2.0)
@@ -230,7 +235,7 @@ class DecisionLLM(Protocol):
     """The model tiers the lexical decision model uses."""
 
     async def complete(self, tier: str, messages: list[dict[str, Any]]) -> str:
-        """Return the text of one completion of a tier (``TIER_COARSE``, ``TIER_FINE``, ``TIER_TURN_CHECK``, ``TIER_SHORT_DESCRIPTION``, ``TIER_REVIEW``, ``TIER_ARCHIVE``, ``TIER_CONSOLIDATE``, ``TIER_SESSION_DRAFT``, ``TIER_ORCHESTRATE``, ``TIER_UNDER_WAY``)."""
+        """Return the text of one completion of a tier (``TIER_COARSE``, ``TIER_FINE``, ``TIER_TURN_CHECK``, ``TIER_SHORT_DESCRIPTION``, ``TIER_REVIEW``, ``TIER_ARCHIVE``, ``TIER_CONSOLIDATE``, ``TIER_SESSION_DRAFT``, ``TIER_ORCHESTRATE``, ``TIER_UNDER_WAY``, ``TIER_ANSWER_CHOICE``)."""
 
 
 class DecisionModel(Protocol):
@@ -302,6 +307,7 @@ class ConfiguredDecisionLLM:
             TIER_SESSION_DRAFT: SESSION_DRAFT_MODEL_SLOT,
             TIER_ORCHESTRATE: ORCHESTRATOR_MODEL_SLOT,
             TIER_UNDER_WAY: UNDER_WAY_READ_MODEL_SLOT,
+            TIER_ANSWER_CHOICE: UNDER_WAY_READ_MODEL_SLOT,
         }.get(tier, "summary" if tier in _SUMMARY_TIERS else "emotion")
         config = await asyncio.to_thread(get_config_manager(migrate=False).get_model_api_config, slot)
         key = (slot, config.get("api_key"), config.get("base_url"), config.get("model"), config.get("provider_type"), budget)
@@ -354,6 +360,7 @@ class ConfiguredDecisionLLM:
             TIER_SESSION_DRAFT: SESSION_DRAFT_OUTPUT_MAX_TOKENS,
             TIER_ORCHESTRATE: ORCHESTRATOR_OUTPUT_MAX_TOKENS,
             TIER_UNDER_WAY: UNDER_WAY_READ_OUTPUT_MAX_TOKENS,
+            TIER_ANSWER_CHOICE: UNDER_WAY_READ_OUTPUT_MAX_TOKENS,
         }.get(tier, AGENT_PLUGIN_FULL_MAX_TOKENS)
         client = await self._client(tier, budget)
         response = await client.ainvoke(messages)
@@ -821,9 +828,9 @@ class LexicalDecisionModel:
         user within it, her work that ended lately. Each item says where it
         stands, its project, the familiar on it (by the name the user calls
         it), what its members are at, and what it asks. The model answers
-        with a few labels and numbers: "answer" (to a waiting item, with what
-        a request for approval chose: ``ANSWER_CHOICES``, or none for an
-        answer that was not understood), "stop" (the items it means, and
+        with a few labels and numbers: "answer" (to a waiting item; what a
+        request for approval chose is read by a request of its own,
+        ``_read_choice``), "stop" (the items it means, and
         whether it says which: one that does not, with several under way,
         stops nothing and the user is asked which),
         "add" (to one item: told to it if under way, gone on with in its
@@ -868,12 +875,10 @@ class LexicalDecisionModel:
         said_which = reading.get("named") is True
         waiting = [item.id for _place, item in numbered if item.status == "waiting_user" and item.question()]
 
-        def answered(target: Commission, choice: Any) -> tuple[Triage | None, int, bool]:
-            chosen = None
-            if (target.question() or {}).get("kind") == "permission":
-                choice = str(choice or "").strip().lower()
-                chosen = choice if choice in ANSWER_CHOICES else None
-            return Triage(kind="answer", targets=[target.id], choice=chosen, model_calls=1), 1, False
+        def answered(target: Commission, choice: str | None, calls: int = 1) -> tuple[Triage | None, int, bool]:
+            if (target.question() or {}).get("kind") != "permission":
+                choice = None
+            return Triage(kind="answer", targets=[target.id], choice=choice, model_calls=calls), calls, False
 
         if does == "answer" and len(picked) == 1:
             _place, target = picked[0]
@@ -882,7 +887,10 @@ class LexicalDecisionModel:
                     # A plain "yes" with several questions waiting: which, the
                     # user is asked, and none of them is answered on a guess.
                     return Triage(kind="ambiguous", targets=waiting, model_calls=1), 1, False
-                return answered(target, reading.get("choice"))
+                if (target.question() or {}).get("kind") == "permission":
+                    # What it chose is read apart, with that question alone.
+                    return answered(target, await self._read_choice(request, target), calls=2)
+                return answered(target, None)
         if does == "stop" and picked:
             stopped = [item.id for place, item in picked if place == _UNDER_WAY]
             under_way = [item.id for place, item in numbered if place == _UNDER_WAY]
@@ -916,6 +924,38 @@ class LexicalDecisionModel:
             return None, 1, False
         logger.warning("what a request does with the work under way could not be read: %s", does or "nothing said")
         return None, 1, True
+
+    async def _read_choice(self, request: DecisionRequest, target: Commission) -> str | None:
+        """Read what an answer to a request for approval chose (``ANSWER_CHOICES``); None for an answer not understood.
+
+        One request (``TIER_ANSWER_CHOICE``) with that one question shown,
+        made once ``read_under_way`` has read the sentence as its answer:
+        asked within that longer request, the small model read a plain yes
+        as "always" more often. One that says it is no answer after all,
+        names no choice, fails or comes too late is an answer not
+        understood: the user is asked again.
+        """
+        from config.nekopower_settings import UNDER_WAY_READ_SECONDS
+        from config.prompts.prompts_nekopower_brain import TASK_BRAIN_ANSWER_PROMPT, build_answer_request
+
+        kind, asked = _asked(target)
+        messages = [
+            {"role": "system", "content": TASK_BRAIN_ANSWER_PROMPT},
+            {
+                "role": "user",
+                "content": build_answer_request(
+                    questions=[(kind, target.title, asked)], task=request.dispatch_text, user_said=request.user_text
+                ),
+            },
+        ]
+        try:
+            raw = await asyncio.wait_for(self._llm.complete(TIER_ANSWER_CHOICE, messages), UNDER_WAY_READ_SECONDS)
+        except Exception as exc:  # noqa: BLE001 - not understood: the user is asked again
+            logger.warning("reading what an answer chose failed: %s", type(exc).__name__)
+            return None
+        reading = parse_json_object(raw or "") or {}
+        choice = str(reading.get("choice") or "").strip().lower()
+        return choice if reading.get("answers") in (1, "1") and choice in ANSWER_CHOICES else None
 
     # -- first round ------------------------------------------------------
 

@@ -531,6 +531,7 @@ def test_every_prompt_table_sent_to_a_model_is_under_that_check():
         "TASK_BRAIN_BESIDE_PROMPT",
         "ORCHESTRATOR_PROMPT",
         "TASK_BRAIN_UNDER_WAY_PROMPT",
+        "TASK_BRAIN_ANSWER_PROMPT",
     }
 
 
@@ -556,6 +557,12 @@ def test_the_short_description_prompt_opens_as_the_analyzers_did():
     from config.prompts.prompts_nekopower_brain import PLUGIN_SHORT_DESCRIPTION_SYSTEM_PROMPT
 
     assert "automation assessment agent" in PLUGIN_SHORT_DESCRIPTION_SYSTEM_PROMPT.splitlines()[0]
+
+
+def test_the_prompt_that_reads_what_an_answer_chose_opens_as_the_free_tier_takes_it():
+    from config.prompts.prompts_nekopower_brain import TASK_BRAIN_ANSWER_PROMPT
+
+    assert "automation assessment agent, " in TASK_BRAIN_ANSWER_PROMPT.splitlines()[0]
 
 
 def test_the_side_question_prompt_opens_as_the_free_tier_takes_it():
@@ -879,14 +886,20 @@ _ENDED = _ended("c5", "sort the photos")
     ],
 )
 async def test_what_the_model_reads_is_carried_out(reading, read, unread):
+    # (The choice of an answer to a request for approval comes from a request of its own, here given as
+    # "choice" with the reading: ``test_what_an_answer_to_a_request_for_approval_chose_is_read_apart``.)
     llm = _reading(reading)
+    llm.choices = [{"answers": 1, "choice": reading.get("choice") if isinstance(reading, dict) else None}]
     req = request("whatever was said", active=_ITEMS, answerable=[_ASKED_WITHIN], recent=[_ENDED], task_agent_available=True)
 
     triage, calls, not_told = await LexicalDecisionModel(llm).read_under_way(req)
 
-    assert calls == 1 and len(llm.under_way_calls) == 1 and not_told is unread
+    # Two requests for an answer to the request for approval (item 1), one for anything else.
+    asked_twice = read is not None and read[:2] == ("answer", ["c1"])
+    assert (calls, len(llm.under_way_calls), len(llm.choice_calls)) == (2, 1, 1) if asked_twice else (1, 1, 0)
+    assert not_told is unread
     assert (triage and (triage.kind, triage.targets, triage.choice)) == read
-    assert triage is None or triage.model_calls == 1
+    assert triage is None or triage.model_calls == calls
 
 
 async def test_a_stop_that_does_not_say_which_to_the_one_that_waits_is_its_refusal():
@@ -939,6 +952,74 @@ async def test_a_stop_that_does_not_say_which_stops_the_one_thing_under_way():
     assert (triage.kind, triage.targets) == ("stop", ["c1"])
 
 
+@pytest.mark.parametrize(
+    ("choosing", "chose"),
+    [
+        ({"answers": 1, "choice": "session"}, "session"),
+        ({"answers": "1", "choice": "ALWAYS"}, "always"),
+        ('```json\n{"answers": 1, "choice": "deny"}\n```', "deny"),
+        # Not understood (the user is asked again): no choice it can be, or no answer after all.
+        ({"answers": 1, "choice": "unclear"}, None),
+        ({"answers": 1, "choice": "maybe"}, None),
+        ({"answers": 1}, None),
+        ({"answers": "none", "choice": "once"}, None),
+        ({"answers": 2, "choice": "once"}, None),
+        ("yes", None),
+        (RuntimeError("down"), None),
+    ],
+)
+async def test_what_an_answer_to_a_request_for_approval_chose_is_read_apart(choosing, chose):
+    from config.prompts.prompts_nekopower_brain import TASK_BRAIN_ANSWER_PROMPT
+
+    build = _waiting("c1", "build the shop site", _BUILD)
+    other = _waiting("c2", "tidy the blog", {**_BUILD, "detail": {"command": "rm -r old"}})
+    llm = _reading({"does": "answer", "items": [1], "named": True})
+    llm.choices = [choosing]
+
+    triage, calls, _unread = await LexicalDecisionModel(llm).read_under_way(
+        request("yes, build it", user_text="yes, build it please", active=[build, other])
+    )
+
+    assert (triage.kind, triage.targets, triage.choice, triage.model_calls, calls) == ("answer", ["c1"], chose, 2, 2)
+    # Shown that one question alone, with what was said.
+    system, user = llm.choice_calls[-1]
+    assert system == {"role": "system", "content": TASK_BRAIN_ANSWER_PROMPT}
+    assert user["content"].splitlines() == [
+        "QUESTIONS:",
+        f'1. (asks for approval) For the work "build the shop site": run the command npm run build {_ANSWERS_ON_OFFER}',
+        "REQUEST: yes, build it",
+        "WHAT THE USER SAID: yes, build it please",
+    ]
+
+
+async def test_what_the_user_said_is_shown_to_the_reading_of_a_choice_only_where_it_differs():
+    llm = _reading({"does": "answer", "items": [1]})
+    build = _waiting("c1", "build the shop site", _BUILD)
+
+    await LexicalDecisionModel(llm).read_under_way(request("yes", user_text="yes", active=[build]))
+
+    assert "WHAT THE USER SAID" not in llm.choice_calls[-1][-1]["content"]
+
+
+async def test_what_an_answer_chose_that_is_not_read_in_time_is_not_understood(monkeypatch, caplog):
+    class Slow(FakeDecisionLLM):
+        async def complete(self, tier: str, messages: list[dict[str, Any]]) -> str:
+            if tier == "answer_choice":
+                await asyncio.sleep(1)
+                return '{"answers": 1, "choice": "always"}'
+            return '{"does": "answer", "items": [1]}'
+
+    monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_SECONDS", 0.05)
+    with caplog.at_level("WARNING", logger="nekopower.host.decision"):
+        triage, _calls, _unread = await LexicalDecisionModel(Slow()).read_under_way(
+            request("yes", active=[_waiting("c1", "build the shop site", _BUILD)])
+        )
+
+    assert (triage.kind, triage.choice) == ("answer", None)
+    # Logged by what went wrong, never by what was said.
+    assert "TimeoutError" in caplog.text and "yes" not in caplog.text
+
+
 async def test_what_is_read_as_more_said_of_work_that_it_repeats_is_a_repeat():
     llm = _reading({"does": "add", "items": [1]})
     weather = commission("c1", "查一下北京明天的天气", route="task_agent", status="working")
@@ -981,12 +1062,13 @@ async def test_a_reading_that_fails_or_takes_too_long_is_new_work_said_to_be_so(
 
 async def test_the_first_round_reads_the_sentence_against_the_work_before_anything_else_and_counts_the_request():
     waiting = _waiting("c1", "查一下北京明天的天气", _BUILD)
-    llm = _reading({"does": "answer", "items": [1], "choice": "always"})
+    llm = _reading({"does": "answer", "items": [1]})
+    llm.choices = [{"answers": 1, "choice": "always"}]
     model = LexicalDecisionModel(llm)
 
-    # An answer, though it repeats what is under way word for word.
+    # An answer, though it repeats what is under way word for word; what it chose read apart.
     triage = await model.triage(request("查一下北京明天的天气", active=[waiting], task_agent_available=True))
-    assert (triage.kind, triage.targets, triage.choice, triage.model_calls) == ("answer", ["c1"], "always", 1)
+    assert (triage.kind, triage.targets, triage.choice, triage.model_calls) == ("answer", ["c1"], "always", 2)
 
     # New work: what repeats it is a repeat, anything else goes on as it would; the request is counted.
     llm.under_way = [{"does": "new"}]
@@ -1020,9 +1102,16 @@ async def test_answers_are_read_on_the_model_the_settings_name_with_their_own_bu
     assert (UNDER_WAY_READ_MODEL_SLOT, UNDER_WAY_READ_OUTPUT_MAX_TOKENS) == ("recognition", 64)
     assert config.asked == ["recognition"] and call_types == ["task_agent_under_way"]
     assert (created[0].kwargs["model"], created[0].kwargs["max_completion_tokens"]) == ("reader", 64)
+    # What an answer chose is read on the same model and budget, metered apart.
+    from nekopower.host.decision import TIER_ANSWER_CHOICE
+
+    await llm.complete(TIER_ANSWER_CHOICE, [{"role": "user", "content": "hi"}])
+    assert config.asked[-1] == "recognition" and call_types[-1] == "task_agent_answer_choice"
     monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_MODEL_SLOT", "emotion")
     monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_OUTPUT_MAX_TOKENS", 31)
     await llm.complete(TIER_UNDER_WAY, [{"role": "user", "content": "hi"}])
+    assert config.asked[-1] == "emotion" and created[-1].kwargs["max_completion_tokens"] == 31
+    await llm.complete(TIER_ANSWER_CHOICE, [{"role": "user", "content": "hi"}])
     assert config.asked[-1] == "emotion" and created[-1].kwargs["max_completion_tokens"] == 31
     await llm.aclose()
 
@@ -1042,6 +1131,7 @@ async def test_every_sentence_of_the_evaluation_set_is_shown_with_what_waits_and
         else:
             reading = {"does": "answer", "items": [row["answers"]], "choice": (row["choice"] or ["unclear"])[0], "named": True}
         llm = _reading(reading)
+        llm.choices = [{"answers": 1, "choice": reading.get("choice")}]
 
         triage, _calls, unread = await LexicalDecisionModel(llm).read_under_way(request(row["text"], active=asked))
 
@@ -1084,7 +1174,8 @@ async def test_every_sentence_of_the_set_about_the_work_there_is_is_shown_with_i
         req = _background(spec, row["text"])
         numbers = {item.id: number for number, item in enumerate([*req.active, *req.answerable, *req.recent], 1)}
         items = [numbers[item] for item in row["items"]] or list(numbers.values())
-        llm = _reading({"does": row["does"], "items": items, "choice": row.get("choice"), "named": True})
+        llm = _reading({"does": row["does"], "items": items, "named": True})
+        llm.choices = [{"answers": 1, "choice": row.get("choice")}]
 
         triage, _calls, unread = await LexicalDecisionModel(llm).read_under_way(req)
 

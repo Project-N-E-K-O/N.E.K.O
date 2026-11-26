@@ -255,7 +255,8 @@ UNDER_WAY_READ_MODEL_SLOT = "recognition"
 """The model that reads what a dispatched sentence does with the work there is
 (``LexicalDecisionModel.read_under_way``): answers what waits for the user,
 stops something, adds to something, or is new. One request, asked only while
-there is such work. The small model, like the other closed questions of the
+there is such work; and one more on the same model to read what an answer to a
+request for approval chose (``LexicalDecisionModel._read_choice``). The small model, like the other closed questions of the
 task brain; the decision model may take it over (its answer is a few labels
 and numbers)."""
 

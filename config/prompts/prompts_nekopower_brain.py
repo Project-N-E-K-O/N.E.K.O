@@ -1451,9 +1451,10 @@ def build_beside_request(*, task: str, user_said: str, busy: str, at_hand: list[
 # Asked of the small model whenever a request comes in while there is work it
 # may be about (``decision.LexicalDecisionModel.read_under_way``): her work
 # under way, what waits for the user to answer, what ended lately. Whether
-# the request answers one of those (and for a request for approval what was
-# chosen), stops some, adds to one, or is new. (The opening words are fixed:
-# the built-in free tier takes a request by them, with the comma.)
+# the request answers one of those, stops some, adds to one, or is new; what
+# an answer to a request for approval chose is read apart
+# (``TASK_BRAIN_ANSWER_PROMPT``). (The opening words are fixed: the built-in
+# free tier takes a request by them, with the comma.)
 TASK_BRAIN_UNDER_WAY_PROMPT = (
     "You are an agentic automation assessment agent, sorting a request against the work under way. Familiars "
     "(agents) work for the user, some in projects where a boss cat hands work on to them. The ITEMS are that work, "
@@ -1483,17 +1484,11 @@ TASK_BRAIN_UNDER_WAY_PROMPT = (
     "Tell the items apart by what they are about, their project and the familiar on each (its role and name).\n"
     "WHAT THE USER SAID, when shown, is the user's own words in that turn. It can hold more than this one REQUEST: "
     "decide about the REQUEST, and use those words to see what the user meant.\n"
-    "For an answer to an item that asks for approval, also say what was chosen: \"always\" (allow it from now on, "
-    "beyond this work: every time, never ask again), \"session\" (allow it until this work, task or session is "
-    "over), \"once\" (allow it this time only, or ask again next time; a plain yes, ok, sure, go ahead or please "
-    "means this), \"deny\" (refuse, not now, wait, or do it some other way), or \"unclear\" (it answers, but does "
-    "not say whether it allows). When it names two, take the narrower one.\n"
     "With an answer or a stop, also say whether the REQUEST itself says which item it means (it names the work, its "
     "project, its familiar, the command or file asked about, an option it picks, or says all of it): \"named\": "
     "true; or false for a bare \"yes\", \"no\", \"stop it\", \"hold on\", \"enough\".\n"
     'Reply with JSON only: {"does": "new"}; {"does": "stop", "items": [2, 3], "named": true}; {"does": "add", '
-    '"items": [1]}; {"does": "unsure", "items": [1, 2]}; {"does": "answer", "items": [4], "choice": "once", '
-    '"named": false} ("choice" only for an answer to a request for approval).'
+    '"items": [1]}; {"does": "unsure", "items": [1, 2]}; {"does": "answer", "items": [4], "named": false}.'
 )
 
 # How the items of that request say where each stands.
@@ -1539,6 +1534,58 @@ def build_under_way_request(*, sections: list[tuple[str, list[str]]], task: str,
         if items:
             lines.append(heading)
             lines.extend(items)
+    lines.append(f"REQUEST: {task}")
+    if user_said and user_said.strip() != task.strip():
+        lines.append(f"WHAT THE USER SAID: {user_said}")
+    return "\n".join(lines)
+
+
+# Asked of the small model once ``TASK_BRAIN_UNDER_WAY_PROMPT`` has read a
+# request as the answer to a request for approval
+# (``decision.LexicalDecisionModel._read_choice``): what was chosen, with
+# that one question shown. A request of its own: asked within the longer
+# request, the small model read a plain yes as "always" more often. (The
+# opening words are fixed: the built-in free tier takes a request by them,
+# with the comma.)
+TASK_BRAIN_ANSWER_PROMPT = (
+    "You are an agentic automation assessment agent, reading answers. Agents that work for the user wait for the "
+    "user to answer what they asked: the QUESTIONS, numbered. The character the user talks with has just handed "
+    "over a REQUEST. Decide whether the REQUEST is the user's answer to one of the QUESTIONS.\n"
+    "It is an answer when it responds to what a question asks: it allows or refuses what is asked for, picks one "
+    "of the answers offered, or tells what the question wants to know. An answer may give a reason, say to wait, "
+    "or say who is to do it instead (\"no, wait for the other one\", \"yes, the links are urgent\", \"I'll do it "
+    "myself\"). It may be said about the user (\"the user agrees\") or be meant to be passed on (\"tell the lead "
+    "it is fine\").\n"
+    "It is not an answer when it asks for other work, even if it also says yes, ok, no, please or thanks, or names "
+    "the same project, page or files: \"run the tests\", \"don't forget to update the README\", \"fix the typo on "
+    "the contact page\", \"ok, and check the weather too\" are new work. So is an instruction about the work itself "
+    "(\"make the footer links blue\", \"leave the colour as it is\"): it neither allows nor refuses. A question back "
+    "(\"what is the difference?\") is not an answer, and neither is small talk (\"thanks\", \"sorry\").\n"
+    "WHAT THE USER SAID, when shown, is the user's own words in that turn. It can hold more than this one REQUEST: "
+    "decide about the REQUEST, and use those words to see what the user meant.\n"
+    "For a question that asks for approval, also say what was chosen: \"always\" (allow it from now on, beyond this "
+    "work: every time, never ask again), \"session\" (allow it until this work, task or session is over), \"once\" "
+    "(allow it this time only, or ask again next time; a plain yes, ok, sure, go ahead or please means this), "
+    "\"deny\" (refuse, not now, wait, or do it some other way), or \"unclear\" (it answers, but does not say whether "
+    "it allows). When it names two, take the narrower one.\n"
+    "When several questions wait and the REQUEST answers without saying which, reply \"unsure\".\n"
+    'Reply with JSON only: {"answers": "none"}, {"answers": "unsure"}, or the number of the question, with the '
+    'choice for a question that asks for approval: {"answers": 1, "choice": "once"}.'
+)
+
+# The kinds of question, as the question list of that request names them.
+ANSWER_QUESTION_KINDS = {
+    "permission": "asks for approval",
+    "confirmation": "asks the user to confirm",
+    "question": "asks the user",
+}
+
+
+def build_answer_request(*, questions: list[tuple[str, str, str]], task: str, user_said: str) -> str:
+    """Return the user message of that question: the questions (kind, work it is for, what it asks), the request, the user's own words when they differ."""
+    lines = ["QUESTIONS:"]
+    for number, (kind, title, asked) in enumerate(questions, 1):
+        lines.append(f'{number}. ({ANSWER_QUESTION_KINDS[kind]}) For the work "{title}": {asked}')
     lines.append(f"REQUEST: {task}")
     if user_said and user_said.strip() != task.strip():
         lines.append(f"WHAT THE USER SAID: {user_said}")

@@ -88,6 +88,15 @@ def _read_like_a_model(messages: list[dict[str, Any]]) -> dict[str, Any]:
     return {"does": "new"}
 
 
+def _choose_like_a_model(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    """What a bare answer chose, as tests dispatch them (``_BARE_ANSWERS``); anything else chose nothing that is read."""
+    lines = str(messages[-1]["content"]).splitlines()
+    said = next(line for line in lines if line.startswith("REQUEST: "))[len("REQUEST: ") :].strip().lower()
+    marked = next((mark for mark in _ANSWER_MARKS if said.startswith(mark)), None)
+    said = said[len(marked) :].strip() if marked else said
+    return {"answers": 1, "choice": _BARE_ANSWERS.get(said, "unclear")}
+
+
 class FakeDecisionLLM:
     """Stands in for both tiers of the decision model and counts every request."""
 
@@ -127,6 +136,10 @@ class FakeDecisionLLM:
         # (``_read_like_a_model``). Kept apart as well: asked only while there is such work.
         self.under_way: list[Any] = []
         self.under_way_calls: list[list[dict[str, Any]]] = []
+        # What an answer to a request for approval chose, read apart, like ``under_way`` (without any,
+        # the bare answers tests dispatch: ``_choose_like_a_model``).
+        self.choices: list[Any] = []
+        self.choice_calls: list[list[dict[str, Any]]] = []
         self.short_calls: list[list[dict[str, Any]]] = []
         # Answers of the task agent space's own calls (the review of a
         # finished commission, the summary of an archived project): dicts,
@@ -162,6 +175,14 @@ class FakeDecisionLLM:
         if tier == "beside":
             self.beside_calls.append([dict(message) for message in messages])
             answer = self.beside[min(len(self.beside_calls) - 1, len(self.beside) - 1)]
+            if isinstance(answer, BaseException):
+                raise answer
+            return answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)
+        if tier == "answer_choice":
+            self.choice_calls.append([dict(message) for message in messages])
+            if not self.choices:
+                return json.dumps(_choose_like_a_model(messages))
+            answer = self.choices[min(len(self.choice_calls) - 1, len(self.choices) - 1)]
             if isinstance(answer, BaseException):
                 raise answer
             return answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)
