@@ -469,67 +469,147 @@ ANSWER_CHOICES = ("always", "session", "once", "deny")
 _UNDER_WAY, _ASKED, _ENDED = "under_way", "asked", "ended"
 
 
+def quote_data(text: str) -> str:
+    """Return words the host did not write as the reading shows them: a JSON string.
+
+    Titles, projects, commands, paths, questions and what work ended with
+    are written by task agents, the user or her. Quoted, with the quotes and
+    line breaks within escaped, nothing written in them can end the quote,
+    start an item of its own or pass for the host's words; the prompt says
+    what is quoted is what the request is sorted by, never instructions.
+    Every line break ``str.splitlines`` knows is escaped: JSON leaves NEL,
+    the line separator and the paragraph separator as they are.
+    """
+    quoted = json.dumps(text, ensure_ascii=False)
+    for char in _LINE_BREAKS_JSON_KEEPS:
+        quoted = quoted.replace(char, f"\\u{ord(char):04x}")
+    return quoted
+
+
+# Line breaks to ``str.splitlines`` (and to many a tokenizer and model) that
+# ``json.dumps(..., ensure_ascii=False)`` leaves unescaped: NEL, LINE
+# SEPARATOR, PARAGRAPH SEPARATOR.
+_LINE_BREAKS_JSON_KEEPS = ("\x85", "\u2028", "\u2029")
+
+
+def _cut(line: str, max_tokens: int) -> str:
+    """Return a line of the reading cut to ``max_tokens``, a quote it cuts into closed again (``…"``)."""
+    from utils.tokenize import count_tokens, truncate_to_tokens
+
+    if count_tokens(line) <= max_tokens:
+        return line
+    # Room for what closes the quote, as the counter in use counts it (the
+    # bytes of it where there is no tokenizer); and the whole counted again,
+    # as what is put together may count otherwise than its parts.
+    room = max(1, max_tokens - count_tokens('…"'))
+    for _ in range(4):
+        cut = _closed(truncate_to_tokens(line, room))
+        over = count_tokens(cut) - max_tokens
+        if over <= 0:
+            break
+        room = max(1, room - over)
+    return cut
+
+
+def _closed(cut: str) -> str:
+    """Return the start of a line of the reading with a quote it ends within closed again (``…"``)."""
+    within = False
+    index = 0
+    while index < len(cut):
+        if within and cut[index] == "\\":
+            # An escape is kept whole or not at all (``\"``, ``\n``, ``\u0007``).
+            length = 6 if cut[index + 1 : index + 2] == "u" else 2
+            if index + length > len(cut):
+                cut = cut[:index]
+                break
+            index += length
+            continue
+        if cut[index] == '"':
+            within = not within
+        index += 1
+    return f'{cut}…"' if within else cut
+
+
 def _asked(commission: Commission) -> tuple[str, str]:
     """Return what a waiting commission asks, as the reading is shown it: the kind, and the question.
 
     A request for approval says what is to be allowed with the answers on
     offer (``describe_permission``, in English; the command or the path the
-    user decides by stays as it was written).
+    user decides by stays as it was written). The question is quoted
+    (``quote_data``) and fits ``UNDER_WAY_READ_QUESTION_MAX_TOKENS`` quoted:
+    what its escapes add is taken from what is shown of it (the command or
+    the path gives way first, the answers on offer stay while they fit).
     """
     from config.nekopower_settings import UNDER_WAY_READ_QUESTION_MAX_TOKENS
     from config.prompts.prompts_nekopower_brain import QUESTION_TEXTS
     from config.prompts.prompts_sys import _loc
     from nekopower.host.reports import _question_lines, describe_permission
-    from utils.tokenize import truncate_to_tokens
+    from utils.tokenize import count_tokens, truncate_to_tokens
 
     question = commission.question() or {}
     kind = question.get("kind")
-    if kind == "permission":
-        asked = describe_permission(question, "en", max_tokens=UNDER_WAY_READ_QUESTION_MAX_TOKENS)
-    elif kind == "questions":
-        asked = _question_lines(question.get("questions"), _loc(QUESTION_TEXTS, "en"))
+    if kind == "questions":
+        whole = _question_lines(question.get("questions"), _loc(QUESTION_TEXTS, "en"))
     else:
         parts = (str(question.get("question") or "").strip(), str(question.get("details") or "").strip())
-        asked = " ".join(part for part in parts if part)
+        whole = " ".join(part for part in parts if part)
+
+    def quoted(room: int) -> str:
+        if kind == "permission":
+            return quote_data(truncate_to_tokens(describe_permission(question, "en", max_tokens=room), room))
+        return quote_data(truncate_to_tokens(whole, room))
+
+    limit = UNDER_WAY_READ_QUESTION_MAX_TOKENS
+    # The two quotes, then what the escapes add: what is shown gives way
+    # until it fits (it shrinks each time, so this ends).
+    room = limit - 2
+    asked = quoted(room)
+    while count_tokens(asked) > limit and room > 1:
+        room = max(1, room - (count_tokens(asked) - limit))
+        asked = quoted(room)
     shown = kind if kind in ("permission", "confirmation") else "question"
-    return shown, truncate_to_tokens(asked, UNDER_WAY_READ_QUESTION_MAX_TOKENS)
+    return shown, asked
 
 
 def _item_line(number: int, commission: Commission, request: DecisionRequest, *, within: Commission | None = None) -> str:
-    """Return one item of the reading: where it stands, what it is, its project, who is on it, and what it asks."""
+    """Return one item of the reading: where it stands, what it is, its project, who is on it, and what it asks.
+
+    What the host did not write is quoted (``quote_data``); what the user calls
+    a familiar quotes its card's title already (``TaskBrain._familiars``).
+    """
     from config.nekopower_settings import UNDER_WAY_READ_LINE_MAX_TOKENS
     from config.prompts.prompts_nekopower_brain import UNDER_WAY_QUESTION_KINDS, UNDER_WAY_STATUS_WORDS
-    from utils.tokenize import truncate_to_tokens
 
     def status(item: Commission) -> str:
         return UNDER_WAY_STATUS_WORDS.get(item.status, item.status)
 
     about: list[str] = []
     if commission.project:
-        about.append(f'project "{commission.project}"')
+        about.append(f"project {quote_data(commission.project)}")
     if commission.route == "plugin" and commission.plugin_id:
-        about.append(f"by the plugin {commission.plugin_id}")
+        about.append(f"by the plugin {quote_data(commission.plugin_id)}")
     elif request.familiars.get(commission.session_id or ""):
         about.append(f"by {request.familiars[commission.session_id or '']}")
     if request.familiars.get(commission.handed_by or ""):
         about.append(f"handed on by {request.familiars[commission.handed_by or '']}")
     if within is not None:
-        about.append(f'within "{within.title}"')
-    line = f'{number}. [{status(commission)}] "{commission.title}"'
+        about.append(f"within {quote_data(within.title)}")
+    line = f"{number}. [{status(commission)}] {quote_data(commission.title)}"
     if about:
         line += f" ({'; '.join(about)})"
     members = [item for item in request.children if item.parent_id == commission.id]
 
     def member(item: Commission) -> str:
         familiar = request.familiars.get(item.session_id or "")
-        return f'"{item.title}" ({status(item)}; by {familiar})' if familiar else f'"{item.title}" ({status(item)})'
+        said = f"{status(item)}; by {familiar}" if familiar else status(item)
+        return f"{quote_data(item.title)} ({said})"
 
     if members:
         line += "; its members: " + ", ".join(member(item) for item in members)
     ended = commission.result_summary or (commission.status_reason if commission.status == "failed" else "")
     if commission.status not in ACTIVE_STATUSES and ended:
-        line += f"; it ended with: {ended}"
-    line = truncate_to_tokens(line, UNDER_WAY_READ_LINE_MAX_TOKENS)
+        line += f"; it ended with: {quote_data(ended)}"
+    line = _cut(line, UNDER_WAY_READ_LINE_MAX_TOKENS)
     if commission.status == "waiting_user" and commission.question():
         kind, asked = _asked(commission)
         line += f"; it waits for the user, {UNDER_WAY_QUESTION_KINDS[kind]}: {asked}"
@@ -629,17 +709,36 @@ def _said(label: str, spoken: str) -> bool:
 
 
 def _joins(char: str) -> bool:
-    """Whether a character next to a word makes it part of a longer one: a letter or digit of writing with spaces between words."""
-    # (The start or the end of what was said, empty, is no letter.)
-    return char.isalnum() and not _unspaced(char)
+    """Whether a character next to a word makes it part of a longer one.
+
+    A letter or digit of writing with spaces between words, or a mark that
+    combines with the letter before it (an accent NFC has no single letter
+    for, a vowel sign of Devanagari). Not a mark that only says how a
+    character is drawn: a variation selector (the Mongolian ones too), or
+    an enclosing one like the keycap of "1" in an emoji (the option "1" is
+    said in it).
+    """
+    import unicodedata
+
+    if not char:
+        # The start or the end of what was said.
+        return False
+    mark = unicodedata.category(char) in ("Mn", "Mc") and "VARIATION SELECTOR" not in unicodedata.name(char, "")
+    return (char.isalnum() or mark) and not _unspaced(char)
 
 
 def _unspaced(char: str) -> bool:
-    """Whether a character is of writing with no spaces between its words (Chinese, Japanese, Korean)."""
+    """Whether a character is of writing with no spaces between its words.
+
+    Chinese, Japanese and Korean, and Thai, Lao, Khmer and Burmese.
+    """
     import unicodedata
 
     return unicodedata.name(char, "").startswith(
-        ("CJK", "HIRAGANA", "KATAKANA", "HALFWIDTH KATAKANA", "IDEOGRAPHIC", "HANGUL", "HALFWIDTH HANGUL")
+        (
+            "CJK", "HIRAGANA", "KATAKANA", "HALFWIDTH KATAKANA", "IDEOGRAPHIC", "HANGUL", "HALFWIDTH HANGUL",
+            "BOPOMOFO", "THAI", "LAO", "KHMER", "MYANMAR",
+        )
     )
 
 
@@ -917,13 +1016,19 @@ class LexicalDecisionModel:
         stops nothing and the user is asked which),
         "add" (to one item: told to it if under way, gone on with in its
         session if ended), "unsure" (one of these, of several items) or
-        "new". The decision model could give the same. The words of the
-        sentence are handed on as they are.
+        "new". A stop says as well how much it means ("scope"): the items it
+        names, all of a project's, or all the work under way. The decision
+        model could give the same. The words of the sentence are handed on
+        as they are. What task agents wrote (titles, commands, paths,
+        questions, what work ended with) is shown quoted, and the prompt says
+        it is what the sentence is sorted by, not instructions.
 
         What does not come in time (``UNDER_WAY_READ_SECONDS``), cannot be
         read, or names nothing it could be is taken for new work, with the
         question still waiting, and said to be so (the third value): her
-        receipt tells her.
+        receipt tells her. A stop, or a sentence that is about one of several
+        items, that names none of them while several are under way asks
+        which instead.
         """
         from config.nekopower_settings import UNDER_WAY_READ_SECONDS
         from config.prompts.prompts_nekopower_brain import TASK_BRAIN_UNDER_WAY_PROMPT, build_under_way_request
@@ -973,15 +1078,38 @@ class LexicalDecisionModel:
         for place, item in picked:
             if item.id not in by_id or (does == "add" and place == _ENDED):
                 by_id[item.id] = (place, item)
-        rows = len(picked)
         picked = list(by_id.values())
-        if does == "unsure" and rows > 1 and len(picked) == 1:
-            # Unsure between the two rows of one: that one, the user is asked of.
+        # Her work under way, as it was shown; and all of it, which the list
+        # may have cut (what the user is asked to choose among when nothing
+        # names which: one left out of the list may be the one meant).
+        under_way = [item.id for place, item in numbered if place == _UNDER_WAY]
+        everything = [item.id for item in request.active]
+        if does == "unsure" and len(picked) == 1:
+            # Unsure, of one (on one row or on the two of one that ended): that
+            # one, the user is asked of.
             return which([picked[0][1].id])
         if (does == "unsure" or does in ("answer", "add")) and len(picked) > 1:
             # It means one of these and cannot say which (an answer or an
             # addition is to one): which, the user is asked.
             return which([item.id for _place, item in picked])
+        if does in ("unsure", "stop") and reading.get("items") in (None, []):
+            # Some of the work is meant, and none is named ("stop it" read with
+            # no items). (Numbers it gave that are none of the items are no
+            # reading.) A stop is of her work under way, all of it, the list
+            # may have cut; one unsure of which may answer a question as well,
+            # so what waits within her work counts too.
+            if does == "stop":
+                if not everything:
+                    return Triage(kind="nothing_active", model_calls=1), 1, False
+                if len(everything) == 1:
+                    # One thing under way: stopped, as a stop that does not say
+                    # which is ("cancel the task").
+                    return Triage(kind="stop", targets=everything, model_calls=1), 1, False
+                return Triage(kind="ambiguous", targets=everything, model_calls=1), 1, False
+            candidates = [*everything, *(item_id for item_id in waiting if item_id not in everything)]
+            if candidates:
+                # Which, the user is asked (of the one there is, as of one it named).
+                return which(candidates)
         # Whether the sentence itself says which item it means (names its
         # work, project, familiar, command, file or an option it picks).
         said_which = reading.get("named") is True
@@ -1050,25 +1178,38 @@ class LexicalDecisionModel:
                 return answered(target, None)
         if does == "stop" and picked:
             stopped = [item.id for place, item in picked if place == _UNDER_WAY]
-            under_way = [item.id for place, item in numbered if place == _UNDER_WAY]
+            hidden = [item for item in request.active if item.id not in under_way]
+            # How much it means: "these" (the items it names), "project" (all
+            # of a project's, a familiar's or a plugin's work, however much of
+            # it was shown) or "all" (all the work under way). "These" is not
+            # taken at its word where the list left some out: the model has
+            # read "stop all the shop site work" as "these" (measured), and a
+            # stop that leaves the rest of a project running says nothing of
+            # it. So "these", like a stop that does not say, may be either of
+            # the first two. Which items are stopped is still what it names,
+            # and whether it says which: a bare "stop it" is read as all of it
+            # as often as "cancel all of it" is (measured), so "all" is no
+            # naming of its own.
+            scope = str(reading.get("scope") or "").strip().lower()
             if not said_which and len(under_way) > 1:
                 # "Stop it" with several under way: which, the user is asked,
                 # not everything stopped on a guess. ("Wait", "not now" said to
                 # what waits for the user is its answer, a refusal, as the
-                # prompt has it; a stop is a stop.)
-                return Triage(kind="ambiguous", targets=under_way, model_calls=1), 1, False
-            hidden = [item for item in request.active if item.id not in under_way]
-            if len(stopped) > 1 and hidden:
-                # A stop of several (a project, a familiar's) while some of her
-                # work was left out of the list: it may mean those as well,
-                # which were not shown. Which, the user is asked, among all.
-                return Triage(kind="ambiguous", targets=[item.id for item in request.active], model_calls=1), 1, False
+                # prompt has it; a stop is a stop.) Among all of her work, the
+                # list may have cut.
+                return Triage(kind="ambiguous", targets=everything, model_calls=1), 1, False
+            if hidden and (scope == "all" or (len(stopped) > 1 and scope != "project")):
+                # All of it, or a stop of several that is not a project's, while
+                # some of her work was left out of the list: it may mean those
+                # as well, which were not shown. Which, the user is asked, among
+                # all (for "all", though one item was named).
+                return Triage(kind="ambiguous", targets=everything, model_calls=1), 1, False
             shown_stopped = [item for place, item in picked if place == _UNDER_WAY]
             kin = [item.id for item in hidden if any(_kin(item, other) for other in shown_stopped)]
             if kin:
-                # One of a project's or a familiar's work is stopped while more
-                # of it was left out ("stop the shop site work"): which, the
-                # user is asked, among those.
+                # A project's or a familiar's work is stopped while more of it
+                # was left out ("stop the shop site work", one of it shown, or
+                # "the footer one" of it): which, the user is asked, among those.
                 return Triage(kind="ambiguous", targets=[*stopped, *kin], model_calls=1), 1, False
             if stopped:
                 return Triage(kind="stop", targets=stopped, model_calls=1), 1, False
@@ -1076,7 +1217,7 @@ class LexicalDecisionModel:
             # nothing of hers it names is under way.
             if not under_way:
                 return Triage(kind="nothing_active", model_calls=1), 1, False
-            return Triage(kind="ambiguous", targets=under_way, model_calls=1), 1, False
+            return Triage(kind="ambiguous", targets=everything, model_calls=1), 1, False
         if does == "add" and picked:
             place, target = picked[0]
             if place == _ENDED:

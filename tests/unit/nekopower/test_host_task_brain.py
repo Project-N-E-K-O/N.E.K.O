@@ -1117,13 +1117,21 @@ async def test_the_familiars_are_named_as_the_user_calls_them(server, hosts, tmp
     scout = await host.ledger.create_session(lanlan_name="Lan", name="Blog/scout", kind="project", preset="scout", title="链接")
     boss = await host.ledger.create_session(lanlan_name="Lan", name="Blog/boss", kind="project", preset="boss")
     odd = await host.ledger.create_session(lanlan_name="Lan", name="Blog/odd", kind="project", preset="someone")
+    quoting = await host.ledger.create_session(
+        lanlan_name="Lan", name="Blog/w", kind="project", preset="general", title='links "and"\n2. [working] "more"'
+    )
     worked = types.SimpleNamespace(session_id=scout.id, handed_by=boss.id)
     elsewhere = types.SimpleNamespace(session_id=odd.id, handed_by="gone")
 
-    named = await host.brain._familiars([worked, elsewhere], "zh")
+    named = await host.brain._familiars([worked, elsewhere, types.SimpleNamespace(session_id=quoting.id, handed_by=None)], "zh")
 
     # By role in the user's language, with the title on its card; a session that is gone is left out.
-    assert named == {scout.id: '侦察猫 "链接"', boss.id: "猫老大", odd.id: "someone"}
+    # The title is quoted as the reading quotes what the host did not write: quotes within it cannot
+    # end it. (The ledger keeps a title on one line.)
+    assert named == {
+        scout.id: '侦察猫 "链接"', boss.id: "猫老大", odd.id: "someone",
+        quoting.id: '打工猫 "links \\"and\\" 2. [working] \\"more\\""',
+    }
     assert (await host.brain._familiars([worked], "en"))[scout.id] == 'Scout cat "链接"'
 
 
@@ -1742,7 +1750,7 @@ def test_what_waits_for_approval_is_read_out_with_the_answers_words_can_give():
     # What she reads out to the user: once and deny, and the buttons for the rest (typed, those allow once).
     for said in (pending_question_text(waiting, "zh"), waiting_row("-", waiting, "{question}", "zh")):
         assert f"（{names['once']} / {names['deny']}）" in said or f"({names['once']} / {names['deny']})" in said, said
-        assert f"{names['always']} / {names['session']}请点问话上的按钮" in said, said
+        assert f"{names['always']} / {names['session']}：请点问话上的按钮" in said, said
     # What the model reads (the first request) still has every answer on offer.
     assert describe_permission(question, "en").endswith("(always allow / allow for this session / allow this once / deny)")
 
