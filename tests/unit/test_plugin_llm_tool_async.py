@@ -377,10 +377,38 @@ async def test_async_calls_refuse_dot_only_names(name):
     assert host.calls == []
 
 
-def test_sync_register_keeps_accepting_dot_only_names():
-    """Unchanged existing behaviour of the sync API."""
-    plugin, _ = _make_plugin()
-    assert plugin.register_llm_tool(**_register_kwargs("..")) is True
+@pytest.mark.parametrize("name", [".", "..", "..."])
+def test_sync_calls_refuse_dot_only_names(name):
+    """Such a name is normalised away in the callback URL path, so a tool
+    registered under it could never be called: the sync calls refuse it like
+    the async ones, before anything is stored or sent to the host."""
+    plugin, ctx = _make_plugin()
+    while not ctx.message_queue.empty():
+        ctx.message_queue.get_nowait()
+
+    with pytest.raises(ValueError):
+        plugin.register_llm_tool(**_register_kwargs(name))
+    with pytest.raises(ValueError):
+        plugin.unregister_llm_tool(name)
+    assert plugin.list_llm_tools() == []
+    assert not _entry_registered(plugin, name)
+    assert ctx.message_queue.empty()
+
+
+def test_sync_calls_still_accept_names_with_dots():
+    plugin, ctx = _make_plugin()
+    assert plugin.register_llm_tool(**_register_kwargs("a.b")) is True
+    assert plugin.register_llm_tool(**_register_kwargs(".hidden")) is True
+    assert plugin.unregister_llm_tool("a.b") is True
+    assert plugin.unregister_llm_tool(".hidden") is True
+
+
+@pytest.mark.parametrize("name", [".", ".."])
+def test_decorator_refuses_dot_only_names(name):
+    from plugin.sdk.plugin.llm_tool import llm_tool
+
+    with pytest.raises(ValueError):
+        llm_tool(name=name)(lambda self: None)
 
 
 # ---------------------------------------------------------------------------
@@ -1919,6 +1947,60 @@ async def test_host_request_path_refuses_dot_only_names(monkeypatch, registry, o
     assert server.posts == []
 
 
+@pytest.mark.parametrize("name", [".", "..", "..."])
+def test_host_parsers_refuse_dot_only_names(name):
+    """The notification handlers and the request-response handlers share
+    these parsers, so both paths apply the same name rule."""
+    from plugin.server.messaging.llm_tool_registry import (
+        parse_register_request,
+        parse_unregister_request,
+    )
+
+    assert parse_register_request(dict(_REGISTER_REQUEST, name=name)) is None
+    assert parse_unregister_request(dict(_UNREGISTER_REQUEST, name=name)) is None
+    assert parse_register_request(dict(_REGISTER_REQUEST, name="a.b"))["name"] == "a.b"
+    assert parse_unregister_request(dict(_UNREGISTER_REQUEST, name="a.b"))["name"] == "a.b"
+
+
+def _notification_handler_owner():
+    import types
+
+    return types.SimpleNamespace(plugin_id=PLUGIN_ID, logger=logging.getLogger("test"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("op", ["register", "unregister"])
+@pytest.mark.parametrize("name", [".", ".."])
+async def test_host_notification_path_refuses_dot_only_names(monkeypatch, registry, op, name):
+    from plugin.core.communication import PluginCommunicationResourceManager as Comm
+
+    server = _use_main_server(monkeypatch, registry, _FakeMainServer({"ok": True}))
+    owner = _notification_handler_owner()
+    if op == "register":
+        msg = dict(_REGISTER_REQUEST, type="LLM_TOOL_REGISTER", plugin_id=PLUGIN_ID, name=name)
+        await Comm._handle_llm_tool_register(owner, msg)
+    else:
+        msg = dict(_UNREGISTER_REQUEST, type="LLM_TOOL_UNREGISTER", plugin_id=PLUGIN_ID, name=name)
+        await Comm._handle_llm_tool_unregister(owner, msg)
+
+    assert server.posts == []
+    assert not registry.has_plugin_tool(PLUGIN_ID, name)
+
+
+@pytest.mark.asyncio
+async def test_host_notification_path_still_registers_normal_names(monkeypatch, registry):
+    from plugin.core.communication import PluginCommunicationResourceManager as Comm
+
+    server = _use_main_server(monkeypatch, registry, _FakeMainServer({
+        "ok": True, "affected_roles": ["Lanlan"], "failed_roles": [],
+    }))
+    msg = dict(_REGISTER_REQUEST, type="LLM_TOOL_REGISTER", plugin_id=PLUGIN_ID, name="a.b")
+    await Comm._handle_llm_tool_register(_notification_handler_owner(), msg)
+
+    assert [url.rsplit("/", 1)[-1] for url, _ in server.posts] == ["register"]
+    assert registry.has_plugin_tool(PLUGIN_ID, "a.b")
+
+
 @pytest.mark.asyncio
 async def test_host_forwards_registration_ids_and_tracks_them(monkeypatch, registry):
     from plugin.server.messaging.handlers.llm_tools import (
@@ -2340,3 +2422,118 @@ async def test_end_to_end_main_server_unavailable(monkeypatch, registry):
         assert not registry.has_plugin_tool(PLUGIN_ID, "tool_a")
     finally:
         await dispatcher.close()
+
+
+# ---------------------------------------------------------------------------
+# Host: same-name register / unregister run one at a time
+# ---------------------------------------------------------------------------
+
+
+class _GatedMainServer:
+    """main_server whose unregister answer is held until ``release_unregister``
+    is set; register answers at once with a fresh registration id."""
+
+    def __init__(self):
+        self.posts: list[tuple[str, dict]] = []
+        self.unregister_arrived = asyncio.Event()
+        self.release_unregister = asyncio.Event()
+
+    async def post(self, url, json=None, **_):
+        self.posts.append((url, json))
+        if url.endswith("/unregister"):
+            self.unregister_arrived.set()
+            await self.release_unregister.wait()
+            return _FakeResp({
+                "ok": True, "removed": True, "name": json["name"], "affected_roles": ["Lanlan"],
+                "failed_roles": [], "refused_roles": [],
+            })
+        return _FakeResp({
+            "ok": True, "registration_id": json.get("registration_id") or "reg-new",
+            "affected_roles": ["Lanlan"], "failed_roles": [],
+        })
+
+
+@pytest.mark.asyncio
+async def test_host_late_unregister_does_not_drop_a_newer_register(monkeypatch, registry):
+    """An old unregister (its SDK caller already gave up) is held at
+    main_server while a new register of the same name arrives; when the old
+    one finally answers, the new register's tracking must survive."""
+    from plugin.server.messaging.handlers.llm_tools import (
+        handle_llm_tool_register,
+        handle_llm_tool_unregister,
+    )
+
+    await _seed_tracking(registry)
+    server = _use_main_server(monkeypatch, registry, _GatedMainServer())
+
+    old_unregister = asyncio.create_task(handle_llm_tool_unregister(
+        _rpc_ctx(), dict(_UNREGISTER_REQUEST, expected_registration_id="reg-old"),
+    ))
+    await server.unregister_arrived.wait()
+    new_register = asyncio.create_task(handle_llm_tool_register(
+        _rpc_ctx(), dict(_REGISTER_REQUEST, registration_id="reg-new"),
+    ))
+    # Let the register run as far as it can while the unregister is held.
+    for _ in range(20):
+        await asyncio.sleep(0)
+    server.release_unregister.set()
+
+    assert (await old_unregister)["ok"] is True
+    assert (await new_register)["ok"] is True
+    assert [url.rsplit("/", 1)[-1] for url, _ in server.posts] == ["unregister", "register"]
+    assert registry.has_plugin_tool(PLUGIN_ID, "tool_a")
+    assert registry._plugin_tools[PLUGIN_ID]["tool_a"]["registration_id"] == "reg-new"
+    assert (PLUGIN_ID, "tool_a") not in registry._name_locks
+
+
+@pytest.mark.asyncio
+async def test_host_name_lock_is_per_name_and_does_not_block_plugin_stop(monkeypatch, registry):
+    from plugin.server.messaging.handlers.llm_tools import (
+        handle_llm_tool_register,
+        handle_llm_tool_unregister,
+    )
+
+    await _seed_tracking(registry)
+    server = _use_main_server(monkeypatch, registry, _GatedMainServer())
+
+    held = asyncio.create_task(handle_llm_tool_unregister(_rpc_ctx(), dict(_UNREGISTER_REQUEST)))
+    await server.unregister_arrived.wait()
+    try:
+        # Another name of the same plugin is not held up.
+        other = await asyncio.wait_for(
+            handle_llm_tool_register(_rpc_ctx(), dict(_REGISTER_REQUEST, name="tool_b")), timeout=2.0,
+        )
+        assert other["ok"] is True
+        # Plugin-stop cleanup does not wait for the held name either.
+        cleared = await asyncio.wait_for(registry.clear_plugin_tools(PLUGIN_ID), timeout=2.0)
+        assert isinstance(cleared, dict)
+        assert registry.get_plugin_tool_names(PLUGIN_ID) == []
+    finally:
+        server.release_unregister.set()
+        await held
+    assert registry._name_locks == {}
+
+
+@pytest.mark.asyncio
+async def test_host_name_lock_is_released_when_the_call_is_cancelled(monkeypatch, registry):
+    from plugin.server.messaging.handlers.llm_tools import (
+        handle_llm_tool_register,
+        handle_llm_tool_unregister,
+    )
+
+    await _seed_tracking(registry)
+    server = _use_main_server(monkeypatch, registry, _GatedMainServer())
+
+    held = asyncio.create_task(handle_llm_tool_unregister(_rpc_ctx(), dict(_UNREGISTER_REQUEST)))
+    await server.unregister_arrived.wait()
+    held.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await held
+    assert registry._name_locks == {}
+
+    result = await asyncio.wait_for(
+        handle_llm_tool_register(_rpc_ctx(), dict(_REGISTER_REQUEST)), timeout=2.0,
+    )
+    assert result["ok"] is True
+    assert registry.has_plugin_tool(PLUGIN_ID, "tool_a")
+    assert registry._name_locks == {}

@@ -871,15 +871,6 @@ class NekoPluginBase(_SharedNekoPluginBase):
         )
 
     @staticmethod
-    def _validate_async_llm_tool_name(name: str) -> None:
-        validate_tool_name(name)
-        # "." / ".." pass the shared rule but are normalised away in the
-        # callback URL path, so such a tool could never be called. Only the
-        # async calls refuse them; the sync calls keep their behaviour.
-        if set(name) == {"."}:
-            raise ValueError(f"LLM tool name {name!r} must not consist only of dots")
-
-    @staticmethod
     def _validate_llm_tool_timeout(timeout: float) -> None:
         if (
             isinstance(timeout, bool)
@@ -1020,7 +1011,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
             declared permissions.
 
         Returns ``True`` on success. Raises ``ValueError`` for invalid
-        names, ``EntryConflictError`` for duplicates and
+        names (including names made only of dots), ``EntryConflictError`` for duplicates and
         ``PermissionDeniedError`` for a narrowing outside the declarations.
         """
         meta = self._build_llm_tool_meta(
@@ -1039,7 +1030,12 @@ class NekoPluginBase(_SharedNekoPluginBase):
 
         Fire-and-forget like :meth:`register_llm_tool`; use
         :meth:`unregister_llm_tool_async` to get the real outcome.
+
+        Raises ``ValueError`` for an invalid name (one that no call could
+        have registered, e.g. one made only of dots), like
+        :meth:`unregister_llm_tool_async`.
         """
+        validate_tool_name(name)
         meta = self._llm_tools.get(name)
         if meta is None or not self._release_llm_tool_locally(meta):
             return False
@@ -1113,7 +1109,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         """
         request_timeout = self._validate_llm_tool_request_timeout(request_timeout)
         self._validate_llm_tool_timeout(timeout)
-        self._validate_async_llm_tool_name(name)
+        validate_tool_name(name)
         meta = self._build_llm_tool_meta(
             name=name, description=description, parameters=parameters,
             timeout=timeout, role=role, reply_tail=reply_tail, permissions=permissions,
@@ -1339,7 +1335,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         Raises ``ValueError`` for an invalid name or ``request_timeout``.
         """
         request_timeout = self._validate_llm_tool_request_timeout(request_timeout)
-        self._validate_async_llm_tool_name(name)
+        validate_tool_name(name)
         try:
             async with self._llm_tool_name_lock(name, request_timeout) as remaining:
                 deadline = time.monotonic() + remaining

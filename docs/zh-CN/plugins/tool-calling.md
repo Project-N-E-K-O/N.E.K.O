@@ -430,7 +430,9 @@ async def search(self, *, query: str, limit: int = 10):
 ```
 
 `name` 必须匹配 `[A-Za-z0-9_.\-]{1,64}`，这样能直接拼进 callback URL 路径段
-不需要转义。
+不需要转义；而且不能全由点组成（`.`、`..`）：URL 路径会把这种名字规范化掉，
+工具永远调不到。装饰器、同步和 async 调用以及 host 都拒收这种名字（插件里抛
+`ValueError`，host 丢弃这样的注册或注销）。
 
 ### `NekoPluginBase` 实例方法
 
@@ -519,9 +521,9 @@ host 走和通知相同的 `main_server` 调用，把 `main_server` 的答复带
   从有截止时间的入口里调用时，每个请求（包括补发的注销）实际可用的时间取它自己的预算和入口剩余时间中较小的那个；
   入口时间用完、请求根本没发出去时返回 `busy`（什么都没送到 host；补发的注销没发出时 `cleanup` 里是 `busy`）；已经发出、但没在时限内拿到回复的仍是 `timeout`。请求已送到 host、但在 host 的队列里排队时就过了期限的，也报 `timeout`：host 对它的回复和其他超时一样。
 
-参数错误和同步版本一样抛异常（`ValueError`、`TypeError`、`EntryConflictError`）。async 版本
-另外在 `request_timeout` 不在 (0, 60] 内（host 的上限）、名字全是点、或注册时 `timeout` 不在 (0, 300]
-内（`main_server` 的上限）时抛 `ValueError`；同步版本保持原有行为。host 和 `main_server` 的失败不抛异常。
+参数错误和同步版本一样抛异常（`ValueError`、`TypeError`、`EntryConflictError`；名字不合法，包括全是点，
+两边都抛 `ValueError`）。async 版本另外在 `request_timeout` 不在 (0, 60] 内（host 的上限）、或注册时
+`timeout` 不在 (0, 300] 内（`main_server` 的上限）时抛 `ValueError`。host 和 `main_server` 的失败不抛异常。
 同一个工具名只用一种写法：同步调用不参与按名字的排队，且走不同的 IPC 通道，混用没有顺序保证。
 `@llm_tool` 装饰的方法在启动时走的就是这条通知通道；如果插件可能在启动后马上用
 `unregister_llm_tool_async` 注销它，就改用 `register_llm_tool_async` 注册，不要用装饰器。
