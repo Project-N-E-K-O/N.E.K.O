@@ -1703,6 +1703,16 @@ describe('HostedSurfaceFrame open-path scope and action confirmation', () => {
     expect(nekoOpenPath).toHaveBeenCalledWith({ path: '/home/u/plugin /x ' })
   })
 
+  it('checks and opens the same trimmed value for a Windows target with trailing spaces', async () => {
+    apiMocks.getPluginHostedSurfaceContext.mockResolvedValue({ paths: { plugin_dir: 'C:\\Neko\\plugin_a', data_dir: null } })
+    const frame = await mountFrame()
+    frame.dispatchRequest(openPathMessage('C:\\Neko\\plugin_a\\out.txt  '))
+    await flushPromises()
+    await flushPromises()
+    expect(nekoOpenPath).toHaveBeenCalledOnce()
+    expect(nekoOpenPath).toHaveBeenCalledWith({ path: 'C:\\Neko\\plugin_a\\out.txt' })
+  })
+
   it('takes the scope from the host context read, not from the panel message', async () => {
     const frame = await mountFrame()
     frame.dispatchRequest({
@@ -1934,6 +1944,8 @@ describe('HostedSurfaceFrame open-path scope and action confirmation', () => {
     const originalDescriptor = Object.getOwnPropertyDescriptor(document, 'fullscreenElement')
     let fullscreenEl: Element | null = null
     Object.defineProperty(document, 'fullscreenElement', { configurable: true, get: () => fullscreenEl })
+    const bodyClose = vi.fn()
+    elementPlusMocks.ElMessage.mockImplementationOnce(() => ({ close: bodyClose }))
     try {
       frame.dispatchRequest(openPathMessage('/etc/passwd'))
       await flushPromises()
@@ -1948,6 +1960,9 @@ describe('HostedSurfaceFrame open-path scope and action confirmation', () => {
       expect(lastMessageCall().appendTo).toBe(displayTarget)
       // Grouping would reuse the earlier body-mounted message instead of mounting here.
       expect(lastMessageCall()).not.toHaveProperty('grouping')
+      // The same notice moved to a new target replaces the old one.
+      expect(elementPlusMocks.ElMessage).toHaveBeenCalledTimes(2)
+      expect(bodyClose).toHaveBeenCalledOnce()
     } finally {
       if (originalDescriptor) Object.defineProperty(document, 'fullscreenElement', originalDescriptor)
       else delete (document as { fullscreenElement?: Element | null }).fullscreenElement

@@ -190,6 +190,22 @@ describe('resolvePathWithinRoots', () => {
     expect(resolvePathWithinRoots('\\tmp\\plugin\\x', ['/tmp/plugin'])).toBeNull()
   })
 
+  it('drops trailing spaces from drive-letter and UNC targets only', () => {
+    expect(resolvePathWithinRoots('C:\\Neko\\plugins\\plugin_a\\out.txt ', windowsRoots)).toBe('C:\\Neko\\plugins\\plugin_a\\out.txt')
+    expect(resolvePathWithinRoots('D:/NekoData/plugins/plugin_a/data/a.csv   ', windowsRoots)).toBe('D:\\NekoData\\plugins\\plugin_a\\data\\a.csv')
+    expect(resolvePathWithinRoots('\\\\server\\share\\plugin_a\\out.txt ', ['\\\\server\\share\\plugin_a'])).toBe('\\\\server\\share\\plugin_a\\out.txt')
+    // Only the end of the whole path is trimmed; inner segments ending in a space stay rejected.
+    expect(resolvePathWithinRoots('C:\\Neko\\plugins\\plugin_a \\out.txt', ['C:\\Neko\\plugins'])).toBeNull()
+    // A device name stays rejected after trimming.
+    expect(resolvePathWithinRoots('C:\\Neko\\plugins\\plugin_a\\nul ', windowsRoots)).toBeNull()
+    // Roots are never trimmed, so a root with a trailing space cannot be matched.
+    expect(resolvePathWithinRoots('C:\\Neko\\plugins\\plugin_a\\out.txt', ['C:\\Neko\\plugins\\plugin_a '])).toBeNull()
+    // file:// URLs are decoded first, then trimmed like any other Windows target.
+    expect(resolvePathWithinRoots('file:///C:/Neko/plugins/plugin_a/out.txt%20', windowsRoots)).toBe('C:\\Neko\\plugins\\plugin_a\\out.txt')
+    // POSIX targets keep their trailing spaces.
+    expect(resolvePathWithinRoots('/home/u/neko/plugins/plugin_a/out.txt ', posixRoots)).toBe('/home/u/neko/plugins/plugin_a/out.txt ')
+  })
+
   it('compares and returns paths without trimming spaces', () => {
     const roots = ['/tmp/plugin ']
     expect(resolvePathWithinRoots('/tmp/plugin/report.txt', roots)).toBeNull()

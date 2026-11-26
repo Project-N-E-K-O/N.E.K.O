@@ -214,15 +214,19 @@ type ScopedPath = {
  *
  * Purely lexical: symbolic links and junctions cannot be resolved here.
  */
-function parseScopedPath(input: string): ScopedPath | null {
-  // No trimming: spaces are part of POSIX names, and roots and targets must
-  // be compared and opened exactly as given.
-  const raw = normalizeLocalPath(String(input || ''))
+function parseScopedPath(input: string, options: { trimWindowsTrailingSpaces?: boolean } = {}): ScopedPath | null {
+  // No general trimming: spaces are part of POSIX names, and roots must be
+  // compared exactly as given.
+  let raw = normalizeLocalPath(String(input || ''))
   if (!raw || CONTROL_CHARS_RE.test(raw)) return null
   // A backslash is an ordinary file-name character in POSIX paths; only
   // drive-letter and UNC (`\\host\share`, `//host/share`) inputs treat it
   // as a separator.
   const windowsLike = /^[a-zA-Z]:([\\/]|$)/.test(raw) || /^[\\/][\\/]/.test(raw)
+  // Windows itself drops trailing spaces from a path, so a drive-letter or
+  // UNC target may lose them here. The trimmed form is what gets checked
+  // and returned for opening; POSIX targets and all roots stay untouched.
+  if (options.trimWindowsTrailingSpaces && windowsLike) raw = raw.replace(/ +$/, '')
   const posixLiteral = raw.startsWith('/') && !windowsLike
   const slashed = posixLiteral ? raw : raw.replace(/\\/g, '/')
   let style: ScopedPathStyle
@@ -286,7 +290,7 @@ function formatScopedPath(path: ScopedPath): string {
  * empty or not absolute are ignored.
  */
 export function resolvePathWithinRoots(target: string, roots: ReadonlyArray<string | null | undefined>): string | null {
-  const parsed = parseScopedPath(target)
+  const parsed = parseScopedPath(target, { trimWindowsTrailingSpaces: true })
   if (!parsed) return null
   const targetKey = scopedPathKey(parsed)
   for (const root of roots) {
