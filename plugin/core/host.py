@@ -854,30 +854,47 @@ async def _handle_config_update_command(
             plugin_id, mode, req_id,
         )
         
-        set_cache = getattr(ctx, "_set_effective_config_cache", None)
         replace_for_host = getattr(ctx, "_replace_effective_config_cache_for_host", None)
         merge_for_host = getattr(ctx, "_merge_effective_config_cache_for_host", None)
+        apply_hydrated_merge_for_host = getattr(ctx, "_apply_hydrated_merge_for_host", None)
+        rollback_for_host = getattr(ctx, "_rollback_effective_config_cache_for_host", None)
         uses_context_publisher = (
-            callable(set_cache)
-            and callable(replace_for_host)
+            callable(replace_for_host)
             and callable(merge_for_host)
+            and callable(apply_hydrated_merge_for_host)
+            and callable(rollback_for_host)
         )
         bump_gen = getattr(ctx, "_bump_effective_config_gen", None)
         refresh_runtime_config = getattr(ctx, "_refresh_instance_runtime_config", None)
         applied_config: dict[str, Any] | None = None
+        applied_gen = 0
+        applied_publish_seq = 0
+        rollback_runtime_snapshot: dict[str, Any] | None = None
 
         if uses_context_publisher:
             if replace:
-                had_cached_config, had_uncertain_config, old_config, applied_config = replace_for_host(
-                    new_config
-                )
+                (
+                    had_cached_config,
+                    had_uncertain_config,
+                    old_config,
+                    applied_config,
+                    applied_gen,
+                    applied_publish_seq,
+                    rollback_runtime_snapshot,
+                ) = replace_for_host(new_config)
                 logger.debug("[Plugin Process] Config cache replaced")
             else:
-                had_cached_config, had_uncertain_config, old_config, applied_config = merge_for_host(
-                    new_config,
-                    merge_fn=_deep_merge,
-                )
+                (
+                    had_cached_config,
+                    had_uncertain_config,
+                    old_config,
+                    applied_config,
+                    applied_gen,
+                    applied_publish_seq,
+                    pre_runtime_snapshot,
+                ) = merge_for_host(new_config, merge_fn=_deep_merge)
                 if had_cached_config:
+                    rollback_runtime_snapshot = old_config
                     logger.debug("[Plugin Process] Config cache updated")
                 else:
                     base_config: dict[str, Any] = {}
@@ -894,12 +911,22 @@ async def _handle_config_update_command(
                                 "[Plugin Process] Failed to hydrate base config before temporary update",
                                 exc_info=True,
                             )
-                    old_config = copy.deepcopy(base_config)
-                    _deep_merge(base_config, new_config)
-                    post_hydrate_uncertain = bool(
-                        getattr(ctx, "_effective_config_uncertain", had_uncertain_config)
+                    (
+                        had_cached_config,
+                        had_uncertain_config,
+                        old_config,
+                        applied_config,
+                        applied_gen,
+                        applied_publish_seq,
+                        rollback_runtime_snapshot,
+                    ) = apply_hydrated_merge_for_host(
+                        base_config=base_config,
+                        new_config=new_config,
+                        merge_fn=_deep_merge,
+                        expected_gen=applied_gen,
+                        fallback_uncertain=had_uncertain_config,
+                        pre_runtime_snapshot=pre_runtime_snapshot,
                     )
-                    applied_config = set_cache(base_config, uncertain=post_hydrate_uncertain)
         else:
             had_cached_config = hasattr(ctx, "_effective_config") and ctx._effective_config is not None
             had_uncertain_config = bool(getattr(ctx, "_effective_config_uncertain", False))
@@ -961,13 +988,19 @@ async def _handle_config_update_command(
                 logger.exception("[Plugin Process] config_change handler failed")
                 # Restore prechange configuration.
                 if uses_context_publisher:
-                    if had_cached_config:
-                        set_cache(old_config, uncertain=had_uncertain_config)
+                    rolled_back = rollback_for_host(
+                        expected_gen=applied_gen,
+                        expected_publish_seq=applied_publish_seq,
+                        had_cached=had_cached_config,
+                        old_config=old_config,
+                        uncertain=had_uncertain_config,
+                        fallback_notify_config=rollback_runtime_snapshot,
+                    )
+                    if rolled_back:
+                        logger.debug("[Plugin Process] Config rolled back after handler failure")
                     else:
-                        set_cache(
-                            None,
-                            uncertain=had_uncertain_config,
-                            fallback_notify_config=old_config if isinstance(old_config, dict) else None,
+                        logger.debug(
+                            "[Plugin Process] Skipped config rollback after handler failure because a newer snapshot was published"
                         )
                 else:
                     ctx._effective_config = old_config if had_cached_config else None
@@ -977,7 +1010,7 @@ async def _handle_config_update_command(
                         ctx._effective_config_uncertain = had_uncertain_config
                     if callable(refresh_runtime_config) and isinstance(old_config, dict):
                         refresh_runtime_config(old_config)
-                logger.debug("[Plugin Process] Config rolled back after handler failure")
+                    logger.debug("[Plugin Process] Config rolled back after handler failure")
                 ret_payload["error"] = f"config_change handler failed: {e}"
                 res_sender.put(ret_payload, timeout=10.0)
                 return

@@ -197,6 +197,14 @@ class PluginDependencySchema(BaseModel):
     untested: Optional[str] = None
     conflicts: Optional[Union[List[str], bool]] = None
 
+    @field_validator("providers", "conflicts", mode="before")
+    @classmethod
+    def normalize_scalar_string_list(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            stripped = v.strip()
+            return [stripped] if stripped else None
+        return v
+
     @model_validator(mode="after")
     def validate_dependency(self) -> "PluginDependencySchema":
         has_id = isinstance(self.id, str) and bool(self.id.strip())

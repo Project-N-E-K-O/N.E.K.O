@@ -583,6 +583,9 @@ class PluginContext:
         if not callable(refresh):
             return
         with self._get_config_notify_lock():
+            if isinstance(effective_config, dict):
+                with self._get_config_state_lock():
+                    self._last_runtime_config_snapshot = copy.deepcopy(effective_config)
             try:
                 refresh(effective_config)
             except Exception as exc:
@@ -680,6 +683,8 @@ class PluginContext:
                         snapshot = copy.deepcopy(pending_fallback[1])
                     else:
                         snapshot = None
+                    if snapshot is not None:
+                        self._last_runtime_config_snapshot = copy.deepcopy(snapshot)
                     self._last_notified_config_seq = seq
                 if snapshot is not None:
                     self._refresh_instance_runtime_config(snapshot)
@@ -778,35 +783,157 @@ class PluginContext:
     def _replace_effective_config_cache_for_host(
         self,
         new_config: Mapping[str, Any],
-    ) -> tuple[bool, bool, Dict[str, Any], Dict[str, Any]]:
+    ) -> tuple[bool, bool, Dict[str, Any], Dict[str, Any], int, int, Dict[str, Any]]:
         with self._get_config_state_lock():
             had_cached = isinstance(self._effective_config, dict)
             had_uncertain = bool(getattr(self, "_effective_config_uncertain", False))
             old_config = copy.deepcopy(self._effective_config) if had_cached else {}
+            last_runtime = getattr(self, "_last_runtime_config_snapshot", None)
+            rollback_runtime_snapshot = (
+                copy.deepcopy(old_config)
+                if had_cached
+                else (copy.deepcopy(last_runtime) if isinstance(last_runtime, dict) else {})
+            )
             applied = copy.deepcopy(dict(new_config))
-            self._bump_effective_config_gen()
+            applied_gen = self._bump_effective_config_gen()
             self._record_effective_config_locked(applied, uncertain=False)
+            applied_publish_seq = int(getattr(self, "_effective_config_publish_seq", 0) or 0)
         self._flush_instance_runtime_config()
-        return had_cached, had_uncertain, old_config, applied
+        return (
+            had_cached,
+            had_uncertain,
+            old_config,
+            applied,
+            applied_gen,
+            applied_publish_seq,
+            rollback_runtime_snapshot,
+        )
 
     def _merge_effective_config_cache_for_host(
         self,
         new_config: Mapping[str, Any],
         *,
         merge_fn: Any,
-    ) -> tuple[bool, bool, Dict[str, Any], Dict[str, Any] | None]:
+    ) -> tuple[bool, bool, Dict[str, Any], Dict[str, Any] | None, int, int, Dict[str, Any] | None]:
         with self._get_config_state_lock():
             had_cached = isinstance(self._effective_config, dict)
             had_uncertain = bool(getattr(self, "_effective_config_uncertain", False))
+            last_runtime = getattr(self, "_last_runtime_config_snapshot", None)
             if not had_cached:
-                return False, had_uncertain, {}, None
+                return (
+                    False,
+                    had_uncertain,
+                    {},
+                    None,
+                    self._current_effective_config_gen(),
+                    int(getattr(self, "_effective_config_publish_seq", 0) or 0),
+                    copy.deepcopy(last_runtime) if isinstance(last_runtime, dict) else None,
+                )
             old_config = copy.deepcopy(self._effective_config)
             merged = copy.deepcopy(old_config)
             merge_fn(merged, new_config)
-            self._bump_effective_config_gen()
+            applied_gen = self._bump_effective_config_gen()
             self._record_effective_config_locked(merged, uncertain=had_uncertain)
+            applied_publish_seq = int(getattr(self, "_effective_config_publish_seq", 0) or 0)
         self._flush_instance_runtime_config()
-        return True, had_uncertain, old_config, merged
+        return (
+            True,
+            had_uncertain,
+            old_config,
+            merged,
+            applied_gen,
+            applied_publish_seq,
+            copy.deepcopy(old_config),
+        )
+
+    def _apply_hydrated_merge_for_host(
+        self,
+        *,
+        base_config: Mapping[str, Any],
+        new_config: Mapping[str, Any],
+        merge_fn: Any,
+        expected_gen: int,
+        fallback_uncertain: bool,
+        pre_runtime_snapshot: Dict[str, Any] | None,
+    ) -> tuple[bool, bool, Dict[str, Any], Dict[str, Any], int, int, Dict[str, Any]]:
+        with self._get_config_state_lock():
+            current_gen = self._current_effective_config_gen()
+            gen_changed = current_gen != expected_gen
+            current_uncertain = bool(getattr(self, "_effective_config_uncertain", False))
+            if isinstance(self._effective_config, dict):
+                old_config = copy.deepcopy(self._effective_config)
+                merged = copy.deepcopy(old_config)
+                merge_fn(merged, new_config)
+                had_cached_for_rollback = gen_changed
+                had_uncertain_for_rollback = current_uncertain if gen_changed else fallback_uncertain
+                applied_uncertain = current_uncertain
+                rollback_runtime_snapshot = copy.deepcopy(old_config)
+            else:
+                old_config = copy.deepcopy(dict(base_config))
+                merged = copy.deepcopy(old_config)
+                merge_fn(merged, new_config)
+                had_cached_for_rollback = False
+                had_uncertain_for_rollback = current_uncertain if gen_changed else fallback_uncertain
+                applied_uncertain = True if gen_changed else current_uncertain
+                rollback_runtime_snapshot = (
+                    copy.deepcopy(old_config)
+                    if old_config
+                    else (
+                        copy.deepcopy(pre_runtime_snapshot)
+                        if isinstance(pre_runtime_snapshot, dict)
+                        else {}
+                    )
+                )
+            applied_gen = self._bump_effective_config_gen()
+            self._record_effective_config_locked(merged, uncertain=applied_uncertain)
+            applied_publish_seq = int(getattr(self, "_effective_config_publish_seq", 0) or 0)
+        self._flush_instance_runtime_config()
+        return (
+            had_cached_for_rollback,
+            had_uncertain_for_rollback,
+            old_config,
+            merged,
+            applied_gen,
+            applied_publish_seq,
+            rollback_runtime_snapshot,
+        )
+
+    def _rollback_effective_config_cache_for_host(
+        self,
+        *,
+        expected_gen: int,
+        expected_publish_seq: int,
+        had_cached: bool,
+        old_config: object,
+        uncertain: bool,
+        fallback_notify_config: object = None,
+    ) -> bool:
+        should_flush = False
+        with self._get_config_state_lock():
+            if (
+                self._current_effective_config_gen() != expected_gen
+                or int(getattr(self, "_effective_config_publish_seq", 0) or 0) != expected_publish_seq
+            ):
+                return False
+            self._bump_effective_config_gen()
+            if had_cached and isinstance(old_config, dict):
+                self._record_effective_config_locked(
+                    copy.deepcopy(old_config),
+                    uncertain=uncertain,
+                )
+                should_flush = True
+            else:
+                self._record_effective_config_locked(None, uncertain=uncertain)
+                if isinstance(fallback_notify_config, dict):
+                    seq = int(getattr(self, "_effective_config_publish_seq", 0) or 0)
+                    self._effective_config_fallback_notify = (
+                        seq,
+                        copy.deepcopy(fallback_notify_config),
+                    )
+                    should_flush = True
+        if should_flush:
+            self._flush_instance_runtime_config()
+        return True
 
     def _cache_effective_config_from_read(
         self,
@@ -2413,6 +2540,7 @@ class PluginContext:
                     if payload.get("persisted") is False:
                         if has_known_baseline:
                             should_flush_in_memory = False
+                            current_effective: Dict[str, Any] = {}
                             with self._get_config_state_lock():
                                 if self._current_effective_config_gen() == write_gen:
                                     self._bump_effective_config_gen()
@@ -2422,10 +2550,22 @@ class PluginContext:
                                         uncertain=old_effective_config_uncertain,
                                     )
                                     should_flush_in_memory = True
+                                elif isinstance(self._effective_config, dict):
+                                    current_effective = copy.deepcopy(self._effective_config)
                             if should_flush_in_memory:
                                 self._flush_instance_runtime_config()
-                            payload = dict(payload)
-                            payload["config"] = copy.deepcopy(optimistic_config)
+                                payload = dict(payload)
+                                payload["config"] = copy.deepcopy(optimistic_config)
+                            else:
+                                payload = dict(payload)
+                                payload["success"] = False
+                                payload["persisted"] = False
+                                payload["applied_in_memory"] = False
+                                payload["config"] = current_effective
+                                payload["message"] = (
+                                    "Config persistence timed out and a newer config snapshot superseded the draft; "
+                                    "update was not applied in plugin memory"
+                                )
                         else:
                             with self._get_config_state_lock():
                                 if self._current_effective_config_gen() == write_gen:
@@ -2598,7 +2738,16 @@ class PluginContext:
                         and self._effective_config is None
                     ):
                         self._record_effective_config_locked(None, uncertain=False)
-                return
+                        return
+                    if int(getattr(self, "_profile_refresh_epoch", 0) or 0) != refresh_epoch:
+                        return
+                    if isinstance(self._effective_config, dict):
+                        return
+                    if bool(getattr(self, "_effective_config_uncertain", False)):
+                        return
+                    if self._current_effective_config_gen() == attempt_gen:
+                        return
+                continue
             with self._get_config_state_lock():
                 if int(getattr(self, "_profile_refresh_epoch", 0) or 0) != refresh_epoch:
                     return

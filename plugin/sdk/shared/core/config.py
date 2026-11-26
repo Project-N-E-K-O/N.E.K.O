@@ -64,6 +64,20 @@ def unwrap_profiles_state(value: object) -> JsonObject:
     return value
 
 
+def _extract_resolved_profile_name(value: object) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    if isinstance(value.get("data"), dict):
+        value = value["data"]
+    profile_obj = value.get("profile")
+    if not isinstance(profile_obj, dict):
+        return None
+    resolved_name = profile_obj.get("resolved_name")
+    if isinstance(resolved_name, str) and resolved_name.strip():
+        return resolved_name.strip()
+    return None
+
+
 def unwrap_profile_payload(value: object) -> JsonObject:
     if not isinstance(value, dict):
         raise ValidationError(f"expected dict profile payload, got {type(value)!r}")
@@ -276,9 +290,11 @@ class PluginConfig:
 
     async def profile_update(self, profile_name: str, patch: Mapping[str, JsonValue], *, timeout: float = 10.0) -> JsonObject:
         normalized = validate_profile_name(profile_name)
-        current = await self._fetch_profile(normalized, timeout=timeout)
+        raw = await _fetch_ctx(self.ctx, "get_own_profile_config", timeout, arg=normalized)
+        current = unwrap_profile_payload(raw)
+        target_name = _extract_resolved_profile_name(raw) or normalized
         merged = deep_merge_config(current, patch)
-        return await self._upsert_profile(normalized, merged, timeout=timeout)
+        return await self._upsert_profile(target_name, merged, timeout=timeout)
 
     async def profile_delete(self, profile_name: str, *, timeout: float = 10.0) -> bool:
         normalized = validate_profile_name(profile_name)

@@ -257,6 +257,7 @@ def _atomic_dump_toml_pair(
         try:
             os.replace(second_temp, second_path)
         except BaseException:
+            rollback_temp: Path | None = None
             try:
                 if had_first and old_first_bytes is not None:
                     rollback_temp = _write_temp_bytes(
@@ -265,6 +266,7 @@ def _atomic_dump_toml_pair(
                         prefix=".rollback_",
                     )
                     os.replace(rollback_temp, first_path)
+                    rollback_temp = None
                 else:
                     first_path.unlink(missing_ok=True)
             except BaseException as rollback_exc:
@@ -273,6 +275,9 @@ def _atomic_dump_toml_pair(
                     first_path,
                     str(rollback_exc),
                 )
+            finally:
+                if rollback_temp is not None:
+                    _cleanup_temp_files(rollback_temp)
             raise
 
     try:
@@ -319,6 +324,21 @@ def _profile_affects_active(
     return active_path is not None and active_path == profile_path
 
 
+def _seed_profiles_config_if_missing(
+    data: dict[str, object],
+    *,
+    plugin_id: str,
+    config_path: Path,
+) -> None:
+    if not isinstance(data.get("config_profiles"), dict):
+        seeded_cfg = _resolve_profiles_cfg(
+            plugin_id=plugin_id,
+            config_path=config_path,
+        )
+        if isinstance(seeded_cfg, dict):
+            data["config_profiles"] = dict(seeded_cfg)
+
+
 def upsert_profile_config(
     *,
     plugin_id: str,
@@ -348,6 +368,11 @@ def upsert_profile_config(
             plugin_id=plugin_id,
             profiles_path=profiles_path,
             op="upsert",
+        )
+        _seed_profiles_config_if_missing(
+            data,
+            plugin_id=plugin_id,
+            config_path=config_path,
         )
         profiles_cfg, files_map = _normalize_profiles_config(data)
         previous_active = _resolve_active_profile_name(plugin_id, profiles_cfg)
@@ -450,13 +475,11 @@ def update_profile_config(
         else:
             data = {}
 
-        if not isinstance(data.get("config_profiles"), dict):
-            seeded_cfg = _resolve_profiles_cfg(
-                plugin_id=plugin_id,
-                config_path=config_path,
-            )
-            if isinstance(seeded_cfg, dict):
-                data["config_profiles"] = dict(seeded_cfg)
+        _seed_profiles_config_if_missing(
+            data,
+            plugin_id=plugin_id,
+            config_path=config_path,
+        )
 
         profiles_cfg, files_map = _normalize_profiles_config(data)
         registered = lookup_registered_profile_path(files_map, profile_name)

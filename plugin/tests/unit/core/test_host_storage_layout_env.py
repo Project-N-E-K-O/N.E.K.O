@@ -1401,3 +1401,177 @@ def test_config_update_command_uses_plugin_context_ordered_publisher_and_rollbac
     t_rb.join(timeout=2.0)
     assert ctx_race._effective_config == {"v": 99}
     assert race_instance.refreshed == [{"v": 10}, {"v": 99}]
+
+
+@pytest.mark.plugin_unit
+def test_config_update_command_hydrated_merge_preserves_concurrent_save_and_guarded_rollback(
+    tmp_path: Path,
+) -> None:
+    import asyncio
+    from plugin.core.context import PluginContext
+
+    class _RecordingInstance:
+        def __init__(self) -> None:
+            self.refreshed: list[dict[str, object]] = []
+
+        def refresh_runtime_config(self, effective_config: dict[str, object]) -> None:
+            self.refreshed.append(host_module.copy.deepcopy(effective_config))
+
+    # 1. Hydrating an empty cache while a concurrent save finishes must merge into the newer cache.
+    async def _case_hydrated_concurrent_save() -> None:
+        ctx = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "demo_hydrate" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance = _RecordingInstance()
+        ctx._instance = instance
+
+        read_started = asyncio.Event()
+        save_done = asyncio.Event()
+
+        async def _stale_get_own_config() -> dict[str, object]:
+            gen_before, read_id = ctx._begin_config_read()
+            read_started.set()
+            await save_done.wait()
+            stale_cfg = {"base": 1}
+            ctx._cache_effective_config_from_read(stale_cfg, gen_before=gen_before, read_id=read_id)
+            return {"config": stale_cfg}
+
+        ctx.get_own_config = _stale_get_own_config  # type: ignore[method-assign]
+        sender = _FakeResponseSender()
+        cmd_task = asyncio.create_task(
+            host_module._handle_config_update_command(
+                msg={
+                    "req_id": "req-hydrate-race",
+                    "config": {"host": 2},
+                    "mode": "temporary",
+                    "replace": False,
+                },
+                ctx=ctx,
+                events_by_type={},
+                plugin_id="demo",
+                res_sender=sender,
+                logger=_FakeLogger(),
+            )
+        )
+        await read_started.wait()
+        ctx._set_effective_config_cache({"base": 1, "timer": "saved"})
+        save_done.set()
+        await cmd_task
+        assert sender.payloads[-1]["success"] is True
+        assert ctx._effective_config == {"base": 1, "timer": "saved", "host": 2}
+        assert ctx._effective_config_uncertain is False
+        assert instance.refreshed[-1] == {"base": 1, "timer": "saved", "host": 2}
+
+    asyncio.run(_case_hydrated_concurrent_save())
+
+    # 2. Failed config_change after a concurrent newer snapshot is published must not clobber newer config.
+    async def _case_rollback_guarded_when_superseded(*, initial_cached: bool) -> None:
+        ctx = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / f"demo_rb_guard_{initial_cached}" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance = _RecordingInstance()
+        ctx._instance = instance
+        if initial_cached:
+            ctx._set_effective_config_cache({"v": 1})
+        else:
+            async def _hydrate() -> dict[str, object]:
+                return {"config": {"v": 1}}
+
+            ctx.get_own_config = _hydrate  # type: ignore[method-assign]
+
+        handler_entered = asyncio.Event()
+        allow_fail = asyncio.Event()
+
+        async def _slow_failing_handler(**_kwargs: object) -> None:
+            handler_entered.set()
+            await allow_fail.wait()
+            raise RuntimeError("boom after superseding write")
+
+        sender = _FakeResponseSender()
+        cmd_task = asyncio.create_task(
+            host_module._handle_config_update_command(
+                msg={
+                    "req_id": f"req-rb-guard-{initial_cached}",
+                    "config": {"v": 2},
+                    "mode": "temporary",
+                    "replace": initial_cached,
+                },
+                ctx=ctx,
+                events_by_type={"lifecycle": {"config_change": _slow_failing_handler}},
+                plugin_id="demo",
+                res_sender=sender,
+                logger=_FakeLogger(),
+            )
+        )
+        await handler_entered.wait()
+        ctx._set_effective_config_cache({"v": 99})
+        allow_fail.set()
+        await cmd_task
+        assert sender.payloads[-1]["success"] is False
+        assert ctx._effective_config == {"v": 99}
+        assert instance.refreshed[-1] == {"v": 99}
+
+    asyncio.run(_case_rollback_guarded_when_superseded(initial_cached=True))
+    asyncio.run(_case_rollback_guarded_when_superseded(initial_cached=False))
+
+    # 3. replace=True rollback after invalidation restores last runtime snapshot while keeping cache None.
+    async def _case_replace_rollback_restores_last_runtime_snapshot() -> None:
+        ctx = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "demo_replace_rb_snap" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance = _RecordingInstance()
+        ctx._instance = instance
+        ctx._set_effective_config_cache({"plugin": {"state": {"backend": "sqlite"}}, "keep": 1})
+        ctx._invalidate_effective_config_for_profile_refresh()
+        assert ctx._effective_config is None
+
+        def _reject(**_kwargs: object) -> None:
+            raise RuntimeError("rejected replace")
+
+        sender_fail = _FakeResponseSender()
+        await host_module._handle_config_update_command(
+            msg={
+                "req_id": "req-replace-rb-snap",
+                "config": {"plugin": {"state": {"backend": "json"}}},
+                "mode": "temporary",
+                "replace": True,
+            },
+            ctx=ctx,
+            events_by_type={"lifecycle": {"config_change": _reject}},
+            plugin_id="demo",
+            res_sender=sender_fail,
+            logger=_FakeLogger(),
+        )
+        assert sender_fail.payloads[-1]["success"] is False
+        assert ctx._effective_config is None
+        assert instance.refreshed[-1] == {"plugin": {"state": {"backend": "sqlite"}}, "keep": 1}
+
+        # Subsequent successful replace still drops omitted keys cleanly.
+        sender_ok = _FakeResponseSender()
+        await host_module._handle_config_update_command(
+            msg={
+                "req_id": "req-replace-ok",
+                "config": {"only": "new"},
+                "mode": "temporary",
+                "replace": True,
+            },
+            ctx=ctx,
+            events_by_type={},
+            plugin_id="demo",
+            res_sender=sender_ok,
+            logger=_FakeLogger(),
+        )
+        assert sender_ok.payloads[-1]["success"] is True
+        assert ctx._effective_config == {"only": "new"}
+        assert instance.refreshed[-1] == {"only": "new"}
+
+    asyncio.run(_case_replace_rollback_restores_last_runtime_snapshot())

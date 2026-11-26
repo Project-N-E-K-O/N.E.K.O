@@ -550,15 +550,21 @@ async def test_context_stale_get_own_config_does_not_overwrite_newer_profile_ref
     ctx._send_request_and_wait_async = _fake_rpc  # type: ignore[method-assign]
 
     slow_read = asyncio.create_task(ctx.get_own_config())
-    await stale_started.wait()
+    try:
+        await _wait_for_checkpoint_or_task_failure(stale_started, slow_read)
 
-    await ctx.set_own_active_profile("work")
-    assert ctx._effective_config == {"profile": "work"}
+        await ctx.set_own_active_profile("work")
+        assert ctx._effective_config == {"profile": "work"}
 
-    release_stale.set()
-    stale_payload = await slow_read
-    assert stale_payload == {"config": {"profile": "home"}}
-    assert ctx._effective_config == {"profile": "work"}
+        release_stale.set()
+        stale_payload = await slow_read
+        assert stale_payload == {"config": {"profile": "home"}}
+        assert ctx._effective_config == {"profile": "work"}
+    finally:
+        release_stale.set()
+        if not slow_read.done():
+            slow_read.cancel()
+        await asyncio.gather(slow_read, return_exceptions=True)
 
 
 async def _wait_for_checkpoint_or_task_failure(
@@ -2176,26 +2182,37 @@ async def test_profile_refresh_failed_get_does_not_discard_concurrent_same_gen_g
     ctx._send_request_and_wait_async = _rpc_or_fail  # type: ignore[method-assign]
 
     concurrent_task = asyncio.create_task(ctx.get_own_config(timeout=2.0))
-    await concurrent_get_started.wait()
-    assert ctx._current_effective_config_gen() == refresh_gen
+    refresh_task: asyncio.Task[None] | None = None
+    try:
+        await _wait_for_checkpoint_or_task_failure(concurrent_get_started, concurrent_task)
+        assert ctx._current_effective_config_gen() == refresh_gen
 
-    refresh_task = asyncio.create_task(
-        ctx._refresh_effective_config_after_profile_change(
-            timeout=2.0,
-            refresh_gen=refresh_gen,
-            refresh_epoch=refresh_epoch,
+        refresh_task = asyncio.create_task(
+            ctx._refresh_effective_config_after_profile_change(
+                timeout=2.0,
+                refresh_gen=refresh_gen,
+                refresh_epoch=refresh_epoch,
+            )
         )
-    )
-    await refresh_get_started.wait()
-    await refresh_task
-    assert ctx._current_effective_config_gen() == refresh_gen
+        await _wait_for_checkpoint_or_task_failure(refresh_get_started, refresh_task)
+        await refresh_task
+        assert ctx._current_effective_config_gen() == refresh_gen
 
-    release_concurrent_get.set()
-    loaded = await concurrent_task
-    assert loaded["config"] == {"profile": "new"}
-    assert ctx._effective_config == {"profile": "new"}
-    assert ctx._effective_config_uncertain is False
-    assert instance.refreshed[-1] == {"profile": "new"}
+        release_concurrent_get.set()
+        loaded = await concurrent_task
+        assert loaded["config"] == {"profile": "new"}
+        assert ctx._effective_config == {"profile": "new"}
+        assert ctx._effective_config_uncertain is False
+        assert instance.refreshed[-1] == {"profile": "new"}
+    finally:
+        release_concurrent_get.set()
+        for pending in (refresh_task, concurrent_task):
+            if pending is not None and not pending.done():
+                pending.cancel()
+        await asyncio.gather(
+            *(t for t in (refresh_task, concurrent_task) if t is not None),
+            return_exceptions=True,
+        )
 
 
 @pytest.mark.plugin_unit
@@ -2316,3 +2333,128 @@ async def test_context_update_own_config_persisted_false_hydrates_local_baseline
     assert "not applied in plugin memory" in res_unapplied["message"]
     assert ctx._effective_config is None
     assert instance.refreshed == []
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_update_own_config_persisted_false_reports_unapplied_when_superseded_by_host(
+    tmp_path: Path,
+) -> None:
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "demo" / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+    )
+    instance = _Instance()
+    ctx._instance = instance
+    ctx._set_effective_config_cache({"base": 1})
+
+    rpc_started = asyncio.Event()
+    release_rpc = asyncio.Event()
+
+    async def _superseded_rpc(**_kwargs: object) -> dict[str, object]:
+        rpc_started.set()
+        await release_rpc.wait()
+        return {
+            "success": False,
+            "plugin_id": "demo",
+            "config": {"base": 1, "draft": 2},
+            "requires_reload": False,
+            "persisted": False,
+            "message": "Config persistence timed out; update is applied in plugin memory only",
+        }
+
+    ctx._send_request_and_wait_async = _superseded_rpc  # type: ignore[method-assign]
+    update_task = asyncio.create_task(ctx.update_own_config({"draft": 2}, timeout=4.0))
+    try:
+        await _wait_for_checkpoint_or_task_failure(rpc_started, update_task)
+        ctx._set_effective_config_cache({"host": "newer"})
+        release_rpc.set()
+        res = await update_task
+        assert res["success"] is False
+        assert res["persisted"] is False
+        assert res["applied_in_memory"] is False
+        assert res["config"] == {"host": "newer"}
+        assert "not applied in plugin memory" in res["message"]
+        assert ctx._effective_config == {"host": "newer"}
+        assert instance.refreshed[-1] == {"host": "newer"}
+    finally:
+        release_rpc.set()
+        if not update_task.done():
+            update_task.cancel()
+        await asyncio.gather(update_task, return_exceptions=True)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_profile_refresh_retries_after_failed_get_when_concurrent_write_bumped_gen_and_rolled_back(
+    tmp_path: Path,
+) -> None:
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "demo" / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+    )
+    instance = _Instance()
+    ctx._instance = instance
+
+    refresh_gen, refresh_epoch = ctx._invalidate_effective_config_for_profile_refresh()
+    first_get_started = asyncio.Event()
+    release_first_get = asyncio.Event()
+    get_calls = 0
+
+    async def _no_local(**_kwargs: object) -> None:
+        return None
+
+    async def _rpc_handler(
+        *,
+        method_name: str,
+        request_type: str,
+        request_data: dict[str, object],
+        timeout: float,
+        wrap_result: bool,
+    ) -> dict[str, object]:
+        nonlocal get_calls
+        del method_name, request_data, timeout, wrap_result
+        if request_type == "PLUGIN_CONFIG_GET":
+            get_calls += 1
+            if get_calls == 1:
+                first_get_started.set()
+                await release_first_get.wait()
+                raise RuntimeError("transient read error during overlapping write")
+            return {"plugin_id": "demo", "config": {"profile": "work"}}
+        if request_type == "PLUGIN_CONFIG_UPDATE":
+            raise RuntimeError("write rejected by host")
+        raise AssertionError(f"Unexpected RPC {request_type}")
+
+    ctx._get_local_config_payload = _no_local  # type: ignore[method-assign]
+    ctx._send_request_and_wait_async = _rpc_handler  # type: ignore[method-assign]
+
+    refresh_task = asyncio.create_task(
+        ctx._refresh_effective_config_after_profile_change(
+            timeout=2.0,
+            refresh_gen=refresh_gen,
+            refresh_epoch=refresh_epoch,
+        )
+    )
+    try:
+        await _wait_for_checkpoint_or_task_failure(first_get_started, refresh_task)
+        # Concurrent write bumps gen and rolls back to None/uncertain=False before first GET fails.
+        with pytest.raises(RuntimeError, match="write rejected by host"):
+            await ctx.update_own_config({"k": "v"})
+        assert ctx._effective_config is None
+        assert ctx._effective_config_uncertain is False
+
+        release_first_get.set()
+        await refresh_task
+        assert get_calls == 2
+        assert ctx._effective_config == {"profile": "work"}
+        assert ctx._effective_config_uncertain is False
+        assert instance.refreshed[-1] == {"profile": "work"}
+    finally:
+        release_first_get.set()
+        if not refresh_task.done():
+            refresh_task.cancel()
+        await asyncio.gather(refresh_task, return_exceptions=True)

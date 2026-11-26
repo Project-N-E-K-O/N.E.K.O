@@ -378,13 +378,14 @@ def get_profile_config(
     profiles_cfg = _resolve_profiles_cfg(plugin_id=plugin_id, config_path=config_path)
 
     raw_path: str | None = None
+    resolved_name: str | None = None
     if isinstance(profiles_cfg, Mapping):
         files_map_obj = profiles_cfg.get("files")
         if isinstance(files_map_obj, Mapping):
             files_map = _to_string_key_mapping(files_map_obj)
             registered = lookup_registered_profile_path(files_map, profile_name)
             if registered is not None:
-                _, raw_path = registered
+                resolved_name, raw_path = registered
 
     if raw_path is None:
         if (
@@ -438,6 +439,7 @@ def get_profile_config(
         "plugin_id": plugin_id,
         "profile": {
             "name": profile_name,
+            "resolved_name": resolved_name,
             "path": raw_path,
             "resolved_path": resolved_str,
             "exists": exists,

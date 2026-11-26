@@ -453,3 +453,29 @@ def test_plugin_dependencies_schema_matches_runtime_dependency_parser() -> None:
     assert validated_single.plugin.dependency[0].id == "provider_a"
     parsed_single = _parse_plugin_dependencies(single_table_cfg, _NoopLogger(), "schema_demo")
     assert [(dep.id, dep.untested) for dep in parsed_single] == [("provider_a", ">=1.0.0")]
+
+    # 6. Scalar string shorthands for providers and conflicts match runtime parser normalization.
+    scalar_cfg = _base_config()
+    scalar_cfg["plugin"]["dependency"] = [
+        {"id": "dep_scalar_provider", "providers": "search", "untested": ">=1.0.0"},
+        {"id": "dep_scalar_conflict", "conflicts": "<1.0.0", "untested": ">=0"},
+        {"id": "dep_blank_scalars", "providers": "   ", "conflicts": "   ", "untested": ">=0"},
+    ]
+    validated_scalar = validate_plugin_config(scalar_cfg)
+    assert validated_scalar.plugin.dependency is not None
+    assert [(d.providers, d.conflicts) for d in validated_scalar.plugin.dependency] == [
+        (["search"], None),
+        (None, ["<1.0.0"]),
+        (None, None),
+    ]
+    parsed_scalar = _parse_plugin_dependencies(scalar_cfg, _NoopLogger(), "schema_demo")
+    assert [(dep.providers, dep.conflicts) for dep in parsed_scalar] == [
+        (["search"], None),
+        (None, ["<1.0.0"]),
+        (None, None),
+    ]
+
+    bad_scalar_conflict_cfg = _base_config()
+    bad_scalar_conflict_cfg["plugin"]["dependency"] = {"id": "dep_a", "conflicts": "true"}
+    with pytest.raises(ConfigValidationError):
+        validate_plugin_config(bad_scalar_conflict_cfg)

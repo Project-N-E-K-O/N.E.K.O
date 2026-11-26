@@ -665,6 +665,7 @@ def test_get_profile_config_and_delete_profile_config_numeric_alias_rules(
         config_path=config_path,
     )
     assert fetched_alias["profile"]["exists"] is True
+    assert fetched_alias["profile"]["resolved_name"] == "1"
     assert fetched_alias["config"] == {"feature": {"x": 7}}
 
     profiles_toml.write_text(
@@ -677,6 +678,7 @@ def test_get_profile_config_and_delete_profile_config_numeric_alias_rules(
         profile_name="01",
         config_path=config_path,
     )
+    assert fetched_exact["profile"]["resolved_name"] == "01"
     assert fetched_exact["config"] == {"feature": {"x": 99}}
 
     # 2) delete_profile_config("1") with NEKO_PLUGIN_DEMO_PROFILE=01:
@@ -703,3 +705,96 @@ def test_get_profile_config_and_delete_profile_config_numeric_alias_rules(
     deleted_blank_fallback = module.delete_profile_config(plugin_id="demo", profile_name="1")
     assert deleted_blank_fallback["removed"] is True
     assert deleted_blank_fallback["affected_active"] is True
+
+
+@pytest.mark.plugin_unit
+def test_atomic_dump_toml_pair_cleans_rollback_temp_when_rollback_replace_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+    from fastapi import HTTPException
+    from plugin.server.infrastructure.config_storage import ConfigCommitGuard
+
+    plugin_dir = tmp_path / "demo"
+    profiles_dir = plugin_dir / "profiles"
+    profiles_dir.mkdir(parents=True)
+    first_path = profiles_dir / "home.toml"
+    second_path = plugin_dir / "profiles.toml"
+    first_path.write_text("[feature]\nx=1\n", encoding="utf-8")
+    second_path.write_text("[config_profiles]\nactive='home'\n", encoding="utf-8")
+
+    real_replace = module.os.replace
+    calls: list[tuple[Path, Path]] = []
+
+    def _failing_replace(src: object, dst: object) -> None:
+        src_p = Path(str(src))
+        dst_p = Path(str(dst))
+        calls.append((src_p, dst_p))
+        if len(calls) == 1:
+            real_replace(src, dst)
+            return
+        if len(calls) == 2:
+            raise OSError("disk full on second replace")
+        raise PermissionError("locked during rollback replace")
+
+    monkeypatch.setattr(module.os, "replace", _failing_replace)
+    guard = ConfigCommitGuard(deadline=time.monotonic() + 10.0)
+    with pytest.raises(HTTPException) as exc_info:
+        module._atomic_dump_toml_pair(
+            first_path=first_path,
+            first_payload={"feature": {"x": 2}},
+            first_prefix=".profile_",
+            second_path=second_path,
+            second_payload={"config_profiles": {"active": "home"}},
+            second_prefix=".profiles_",
+            commit_guard=guard,
+        )
+    assert exc_info.value.status_code == 500
+    assert not list(profiles_dir.glob(".rollback_*"))
+    assert not list(profiles_dir.glob(".profile_*"))
+    assert not list(plugin_dir.glob(".profiles_*"))
+
+
+@pytest.mark.plugin_unit
+def test_upsert_profile_config_seeds_manifest_registrations_when_profiles_toml_missing_or_lacks_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tomllib
+    from plugin.server.infrastructure.config_profiles import get_profile_config
+
+    for with_extra_profiles_toml in (False, True):
+        plugin_dir = tmp_path / f"demo_{with_extra_profiles_toml}"
+        profiles_dir = plugin_dir / "profiles"
+        profiles_dir.mkdir(parents=True)
+        config_path = plugin_dir / "plugin.toml"
+        config_path.write_text(
+            "[plugin]\nid='demo'\n[plugin.config_profiles]\nactive='home'\n"
+            "[plugin.config_profiles.files]\nhome='profiles/home.toml'\n",
+            encoding="utf-8",
+        )
+        (profiles_dir / "home.toml").write_text("[feature]\nx=1\n", encoding="utf-8")
+        if with_extra_profiles_toml:
+            (plugin_dir / "profiles.toml").write_text("[extra]\nnote='keep'\n", encoding="utf-8")
+        monkeypatch.setattr(module, "get_plugin_config_path", lambda _pid, p=config_path: p)
+        monkeypatch.setenv("NEKO_PLUGIN_DEMO_PROFILE", "home")
+
+        res = module.upsert_profile_config(
+            plugin_id="demo",
+            profile_name="work",
+            config={"feature": {"x": 2}},
+            make_active=False,
+        )
+        assert res["active_profile"] == "home"
+        assert res["affected_active"] is False
+        persisted = tomllib.loads((plugin_dir / "profiles.toml").read_text(encoding="utf-8"))
+        assert persisted["config_profiles"]["active"] == "home"
+        assert set(persisted["config_profiles"]["files"]) == {"home", "work"}
+        if with_extra_profiles_toml:
+            assert persisted["extra"] == {"note": "keep"}
+        home_loaded = get_profile_config(
+            plugin_id="demo",
+            profile_name="home",
+            config_path=config_path,
+        )
+        assert home_loaded["profile"]["exists"] is True
+        assert home_loaded["config"] == {"feature": {"x": 1}}
