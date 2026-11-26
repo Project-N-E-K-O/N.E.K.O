@@ -84,6 +84,42 @@ async def test_publication_streams_the_confirmed_artifact_to_existing_shares(set
     assert "bearer" not in response.text
 
 
+async def test_publication_signs_only_the_local_artifact_hop(setup, monkeypatch):
+    """Proxy deployments authenticate Main without disclosing proof to Market."""
+    from utils import deployment, instance_access
+    from utils.http import internal_client
+    from starlette.requests import Request
+
+    client, data, _events, _reply = setup
+    monkeypatch.setattr(deployment, "is_behind_proxy", lambda: True)
+    monkeypatch.setattr(instance_access, "instance_key", lambda: "isolated-signing-key")
+    monkeypatch.setattr(internal_client, "_trusted_internal_service_ports", lambda: {48911})
+    factory = publish.httpx.AsyncClient
+    requests = []
+
+    async def observe(request):
+        requests.append(request)
+
+    def observed_client(**kwargs):
+        hooks = kwargs.setdefault("event_hooks", {})
+        hooks["request"] = [*hooks.get("request", []), observe]
+        return factory(**kwargs)
+
+    monkeypatch.setattr(publish.httpx, "AsyncClient", observed_client)
+    response = await client.post("/market/knowledge/publish?token=test", json=data)
+    assert response.status_code == 200, response.text
+    local, market = requests
+    header = instance_access.INTERNAL_SERVICE_HEADER
+    assert local.url.host == "127.0.0.1" and local.headers[header]
+    incoming = Request({"type": "http", "method": "GET", "path": local.url.path,
+                        "headers": local.headers.raw, "client": ("127.0.0.1", 50123),
+                        "server": ("127.0.0.1", 48911), "scheme": "http", "query_string": b""})
+    assert instance_access._internal_service_identity(incoming, "isolated-signing-key") == "internal"
+    assert market.url.host == "market.test" and header not in market.headers
+    assert "authorization" not in local.headers
+    assert market.headers["authorization"] == "Bearer isolated-test-bearer"
+
+
 @pytest.mark.parametrize("market_base,no_proxy,proxied", [
     ("https://market.test", "", True),
     ("https://market.test", "market.test", False),

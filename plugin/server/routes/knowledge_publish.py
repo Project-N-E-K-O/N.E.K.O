@@ -19,6 +19,7 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
 from plugin.server.routes import market_bridge as account
+from utils.internal_http_client import internal_service_event_hooks
 from utils.http.knowledge_proxy import BodyTooLarge, capped_body
 from utils.knowledge_package import DEFAULT_LIMITS, PackageError, validate_package
 from utils.market_config import get_market_api_url
@@ -181,7 +182,10 @@ async def _publish_owned(data: dict):
             return _failure("market_auth_required", 401)
         directory = Path(await _thread(tempfile.mkdtemp, prefix="neko-knowledge-publish-",
                                      _cleanup=lambda folder: shutil.rmtree(folder, ignore_errors=True)))
-        async with httpx.AsyncClient(timeout=180.0, follow_redirects=False, trust_env=False) as client:
+        # Only this Main hop needs the instance proof in remote/proxy mode;
+        # the separate Market client must never receive internal credentials.
+        async with httpx.AsyncClient(timeout=180.0, follow_redirects=False, trust_env=False,
+                                     event_hooks=internal_service_event_hooks()) as client:
             path = directory / "artifact.zip"
             checked = await _download(client, path, data["artifact_id"])
             if checked.manifest["package_id"] != data["pack_id"]:

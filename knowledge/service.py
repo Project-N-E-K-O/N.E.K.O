@@ -1590,7 +1590,12 @@ class KnowledgeService:
                 if (job.pack_id in self._broken_packs
                         or self._store.pack_versions().get(job.pack_id) != record.pack_sha256):
                     raise KnowledgePackError("vectors_not_ready")
-                payload = json.loads(_read_bounded(self.root / PACKS_DIR / record.file_name))
+                # Metadata can change without invalidating stored text/vectors.
+                # Check and decode the same bytes of the registered revision.
+                raw = _read_bounded(self.root / PACKS_DIR / record.file_name)
+                if pack_sha256(raw) != record.pack_sha256:
+                    raise KnowledgePackError("pack_file_mismatch")
+                payload = json.loads(raw)
                 # Export the unique stored identity, even when another encoder
                 # is loaded or local inference is unavailable or switched off.
                 spec = self._store.vector_specification(None, pack_id=job.pack_id)

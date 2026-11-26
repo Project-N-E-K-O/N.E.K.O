@@ -503,6 +503,85 @@ async def test_portable_vectors_survive_export_and_deleted_index_without_encodin
         await reopened.stop()
 
 
+@pytest.mark.parametrize("retry", [False, True])
+@pytest.mark.parametrize("changed", ["pack_id", "source", "tags", "alias", "invalid_json"])
+async def test_export_rejects_changed_pack_bytes_before_decoding(tmp_path, changed, retry):
+    """Direct and retried exports must retain the registered pack identity."""
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    await _manual_index(service)
+    try:
+        assert (await _import(service, _pack()))["state"] == "active"
+        if retry:
+            # A real failed job exercises the existing export retry admission.
+            failed = await _finished(service, await service.export_pack("demo-memes"))
+            assert failed["state"] == "failed" and failed["reason"] == "embedding_unavailable"
+        _prepare_export_vectors(service, "demo-memes")
+        record = service._registry.packs["demo-memes"]
+        path = tmp_path / "packs" / record.file_name
+        original = path.read_bytes()
+        payload = json.loads(original)
+        if changed == "pack_id":
+            payload["pack_id"] = "changed-pack"
+        elif changed == "source":
+            payload["source"]["name"] = "Changed source"
+        elif changed == "tags":
+            payload["entries"][0]["tags"].append("changed-tag")
+        elif changed == "alias":
+            payload["entries"][0]["terms"]["alias"].append("changed alias")
+        # Even malformed replacement bytes must report the digest mismatch.
+        changed_raw = b"not-json" if changed == "invalid_json" else json.dumps(payload).encode()
+        path.write_bytes(changed_raw)
+        queued = await service.retry_job(failed["job_id"]) if retry else await service.export_pack("demo-memes")
+        finished = await _finished(service, queued)
+        assert finished["state"] == "failed" and finished["reason"] == "pack_file_mismatch"
+        assert not finished.get("result")
+        assert not list((tmp_path / "artifacts").glob("*.zip"))
+        assert path.read_bytes() == changed_raw
+        assert service._registry.packs["demo-memes"] == record
+        assert service._store.pack_versions()["demo-memes"] == record.pack_sha256
+        # Restoring exactly the registered bytes permits the normal retry.
+        path.write_bytes(original)
+        restored = await _finished(service, await service.retry_job(finished["job_id"]))
+        assert restored["state"] == "active"
+        assert restored["result"]["version"] == service._jobs[finished["job_id"]].export_version
+    finally:
+        await service.stop()
+
+
+async def test_export_decodes_the_same_bytes_it_checked(tmp_path, monkeypatch):
+    """A disk replacement after the bounded read cannot change this snapshot."""
+    from knowledge import service as module
+
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    await _manual_index(service)
+    try:
+        await _import(service, _pack())
+        _prepare_export_vectors(service, "demo-memes")
+        path = tmp_path / "packs" / service._registry.packs["demo-memes"].file_name
+        read = module._read_bounded
+        reads = []
+
+        def replace_after_read(file_path):
+            raw = read(file_path)
+            if file_path == path:
+                reads.append(raw)
+                payload = json.loads(raw)
+                payload["source"]["name"] = "Replaced after snapshot"
+                path.write_bytes(json.dumps(payload).encode())
+            return raw
+
+        monkeypatch.setattr(module, "_read_bounded", replace_after_read)
+        finished = await _finished(service, await service.export_pack("demo-memes"))
+        assert finished["state"] == "active" and len(reads) == 1
+        with zipfile.ZipFile(service.artifact_path(finished["result"]["artifact_id"])) as archive:
+            assert json.loads(archive.read("pack.json"))["source"]["name"] == "Demo"
+        assert json.loads(path.read_bytes())["source"]["name"] == "Replaced after snapshot"
+    finally:
+        await service.stop()
+
+
 async def test_export_versions_are_unique_and_survive_restart_before_retry(tmp_path):
     """Fresh exports receive unique versions; persisted retries keep their release."""
     service = KnowledgeService(tmp_path)
