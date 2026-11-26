@@ -1273,7 +1273,10 @@ function startDesktopAvatarBootstrap(h, injected, fetch, live2d = false, hooks =
     w.mmdModuleLoaded = w.vrmModuleLoaded = true;
     w.VRMCore = {};
     c.MMDManager = class {
-        async init() { this.renderer = {}; this.scene = {}; this._activeLoadToken = 0; this._isDisposed = false; }
+        async init() {
+            this.renderer = {}; this.scene = {}; this._activeLoadToken = 0; this._isDisposed = false;
+            if (hooks.mmdInit) await hooks.mmdInit({ manager: this });
+        }
         dispose() { this._isDisposed = true; this.currentModel = null; }
         async loadModel(url) {
             if (this._isDisposed) throw new Error('cannot load onto a disposed MMD manager');
@@ -1788,6 +1791,66 @@ test('MMD startup waits for an in-flight switch to settle and resumes when takeo
     assert.equal(canvas.style.visibility, 'visible');
 });
 
+
+test('MMD startup restarts when manager initialization loses ownership to a failed takeover', async () => {
+    const h = harness(), firstInit = deferred(), initStarted = deferred();
+    const pathB = '/static/mmd/B/B.pmx', pathC = '/static/mmd/C/C.pmx';
+    const modelB = desktopAvatarConfig('B', 'mmd', 82, pathB);
+    const modelC = desktopAvatarConfig('C', 'mmd', 83, pathC);
+    let initCount = 0, bSettingsReads = 0;
+    const startup = startDesktopAvatarBootstrap(
+        h,
+        { lanlan_name: 'B', switch_revision: 82, model_type: 'live3d', live3d_sub_type: 'mmd' },
+        async url => {
+            if (url === '/api/config/page_config') return { json: async () => modelB };
+            if (url.endsWith('/B/mmd_settings')) {
+                bSettingsReads++;
+                return { ok: true, json: async () => ({ success: false }) };
+            }
+            if (url.endsWith('/C/mmd_settings')) return { ok: true, json: async () => ({ success: false }) };
+            if (url === '/api/characters') return { ok: true, json: async () => ({ ['猫娘']: {
+                B: { ...modelB, mmd: pathB, _reserved: { character_uid: UID_B } },
+                C: { ...modelC, mmd: pathC, _reserved: { character_uid: 'c'.repeat(32) } },
+            } }) };
+            return { ok: true, json: async () => ({}) };
+        },
+        false,
+        {
+            mmdInit: async ({ manager }) => {
+                initCount++;
+                if (initCount === 1) {
+                    initStarted.resolve();
+                    await firstInit.promise;
+                }
+                return manager;
+            },
+            mmdLoadModel: async ({ url }) => {
+                if (url === pathC) {
+                    throw new Error('C load failed before mounting a mesh after replacing B during B init');
+                }
+                return undefined;
+            },
+        }
+    );
+    assert.equal(await startup.ready, true);
+    await initStarted.promise;
+    const originalManager = h.window.mmdManager;
+
+    assert.equal(await h.window.handleCatgirlSwitch('C', 'B', { switchRevision: 83 }), false);
+    assert.ok(originalManager._isDisposed, 'takeover disposes the manager whose init is still suspended');
+    assert.equal(h.window.lanlan_config.lanlan_name, 'B');
+
+    firstInit.resolve();
+    for (let turn = 0; turn < 24 && h.window.mmdManager?.currentModel?.url !== pathB; turn++) {
+        await new Promise(setImmediate);
+    }
+
+    assert.equal(h.window.mmdManager?.currentModel?.url, pathB,
+        'rollback must start B again even though its original init returned null');
+    assert.ok(h.window.mmdManager?.currentModel?.mesh);
+    assert.ok(initCount >= 3, 'B init, C takeover, and fresh B recovery must each own a manager');
+    assert.ok(bSettingsReads >= 1);
+});
 
 test('MMD startup restarts from current config after an MMD-to-MMD takeover disposes its manager then fails', async () => {
     const h = harness(), firstSettings = deferred(), settingsStarted = deferred();

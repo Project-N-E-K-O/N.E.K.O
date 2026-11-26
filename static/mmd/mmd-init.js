@@ -510,6 +510,7 @@ async function autoInitMMDOnMainPage() {
         && (window.lanlan_config?.live3d_sub_type || '').toLowerCase() === 'mmd';
     const currentMmdPath = () => effectiveMmdPath(window.mmdModel);
     const rendererNeedsRecovery = () => window.appCharacter?.rolledBackRendererNeedsRecovery?.(catgirlName) === true;
+    const startupAttemptChanged = () => (window.appState?._switchAttemptCounter || 0) !== startupAttempt;
     const resolvedMmdPath = value => window._mmdConvertPath ? window._mmdConvertPath(value) : value;
     const stillOwnsStartup = () => !window.appState?.isSwitchingCatgirl
         && currentStillTargetsMmd()
@@ -517,8 +518,9 @@ async function autoInitMMDOnMainPage() {
         && (!manager || (window.mmdManager === manager && !manager._isDisposed))
         && (loadStarted
             ? manager._activeLoadToken === loadToken
-            : (window.appState?._switchAttemptCounter || 0) === startupAttempt
-                || !window.mmdManager?.currentModel?.mesh);
+            : !startupAttemptChanged()
+                || (!!manager && window.mmdManager === manager
+                    && !manager._isDisposed && !window.mmdManager?.currentModel?.mesh));
     const scheduleCurrentMmdRecovery = () => {
         if (recoveryScheduled || !currentStillTargetsMmd()) return;
         recoveryScheduled = true;
@@ -548,12 +550,13 @@ async function autoInitMMDOnMainPage() {
             const activeManager = window.mmdManager;
             const pathChanged = currentMmdPath() !== startupMmdPath;
             const managerReplaced = !!manager && (activeManager !== manager || manager._isDisposed);
+            const startupManagerLost = !manager && startupAttemptChanged();
             const desiredResolvedPath = resolvedMmdPath(currentMmdPath());
             const activeResolvedPath = activeManager?.currentModel?.url || '';
             const wrongRenderer = rendererNeedsRecovery();
             const activeAlreadyCurrent = !!activeManager?.currentModel?.mesh
                 && activeResolvedPath === desiredResolvedPath && !wrongRenderer;
-            if (!activeAlreadyCurrent && (pathChanged || managerReplaced || wrongRenderer)) {
+            if (!activeAlreadyCurrent && (pathChanged || managerReplaced || startupManagerLost || wrongRenderer)) {
                 // A same-name config refresh needs the new path; an MMD→MMD
                 // failed takeover may have disposed this startup's manager.
                 // Restart from current globals/settings instead of reviving the
