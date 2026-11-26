@@ -65,6 +65,26 @@ export interface AskQuestion {
   multi: boolean;
 }
 
+/** The language the page is shown in, by its code (`zh-CN`, `en`, ...); '' where it cannot be read. */
+function pageLanguage(): string {
+  const w = window as unknown as { i18next?: { language?: unknown }; i18n?: { language?: unknown } };
+  const language = (w.i18next ?? w.i18n)?.language;
+  return typeof language === 'string' ? language : '';
+}
+
+/**
+ * What a request for approval asks to allow, in one line: in the language of the page, as its
+ * buttons are, where the question has the line in that one (`lines`); else in the language of the
+ * commission (`line`). With whether that very line leaves part of the command out.
+ */
+function saidHere(question: Record<string, unknown>): { line: string; cut: boolean } {
+  const lines = (question.lines && typeof question.lines === 'object' ? question.lines : {}) as Record<string, unknown>;
+  const language = pageLanguage();
+  const mine = (lines[language] ?? lines[language.split('-')[0]]) as Record<string, unknown> | undefined;
+  if (mine && typeof mine === 'object' && text(mine.line)) return { line: text(mine.line), cut: mine.line_cut === true };
+  return { line: text(question.line), cut: question.line_cut === true };
+}
+
 /** What a question of a NekoPower commission is shown and answered by. */
 export function askView(question: Record<string, unknown>) {
   const detail = (question.detail && typeof question.detail === 'object' ? question.detail : {}) as Record<string, unknown>;
@@ -80,7 +100,8 @@ export function askView(question: Record<string, unknown>) {
       .filter(option => option.label);
     return [{ id: String(index), text: text(asked.question), options: offered, multi: asked.multi_select === true }];
   });
-  const lineCut = question.line_cut === true;
+  const said = saidHere(question);
+  const lineCut = said.cut;
   // The line that says it left part of something out: of the command or path, or (where it names
   // neither) of whatever else it is said by, and of whom something is delivered to.
   const whole = lineCut
@@ -91,7 +112,7 @@ export function askView(question: Record<string, unknown>) {
     : question.kind === 'confirmation' ? 'confirmation' as const
       : questions.some(item => item.options.length) ? 'questions' as const : 'words' as const;
   const line = shape === 'permission'
-    ? text(question.line) || whole || text(detail.title) || text(detail.tool) || text(question.category)
+    ? said.line || whole || text(detail.title) || text(detail.tool) || text(question.category)
     : [text(question.question), text(question.details)].filter(Boolean).join(' ');
   return {
     shape,
