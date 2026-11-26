@@ -640,6 +640,14 @@
             if (sent.looking && !sent.watched) lookFor(sent, taskId + ':' + shown.id);
             return;
         }
+        // A task asks one thing at a time. A new question of it is shown: whatever else an
+        // answer of this task is on its way to (its card out of the chat) is over, and a late
+        // report of that one does not take the place of this one.
+        Array.from(flying.keys()).forEach(function (key) {
+            if (key.indexOf(taskId + ':') !== 0) return;
+            setOver(flying.get(key).questionId);
+            flying.delete(key);
+        });
         var now = new Date();
         var message = {
             id: PREFIX + taskId + '-' + (shown.id || now.getTime()),

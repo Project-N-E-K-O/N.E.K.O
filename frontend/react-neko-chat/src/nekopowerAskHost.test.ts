@@ -908,7 +908,7 @@ describe('the cards of the chat window', () => {
     expect(messages.map(message => message.blocks[0].state)).toEqual(['closed']);
   });
 
-  it('puts back the card of an answer on its way though another question of its task is shown by then', async () => {
+  it('keeps the question a task asks now though an answer to an earlier one is still on its way', async () => {
     const w = window as unknown as Record<string, { getState?: () => unknown; lanlan_name?: string }>;
     w.reactChatWindowHost.getState = () => ({ messages });
     vi.stubGlobal('fetch', vi.fn((url: string) => {
@@ -922,14 +922,32 @@ describe('the cards of the chat window', () => {
     w.lanlan_config.lanlan_name = 'Mio';
     asks.receive(frame(permission, { lanlan_name: 'Lan' }));
     expect(messages).toEqual([]);
-    // Back: the task is told to ask another thing, and then, late, the first one again.
+    // Back: the task is told to ask another thing (so the first one is over, whatever comes of
+    // its answer), and then, late, the first one again.
     w.lanlan_config.lanlan_name = 'Lan';
     asks.receive(frame(confirmation, { lanlan_name: 'Lan' }));
     asks.receive(frame(permission, { lanlan_name: 'Lan' }));
-    // The first one is the card whose answer is on its way, and no new one to answer again.
-    expect(messages.map(message => [message.id, message.blocks[0].state])).toEqual([
-      ['nekopower-ask-c1-q2', 'closed'], ['nekopower-ask-c1-q1', 'sending'],
-    ]);
+    // What it asks now stays, and can be answered; the first one is not put in its place.
+    expect(messages.map(message => [message.id, message.blocks[0].state])).toEqual([['nekopower-ask-c1-q2', 'pending']]);
+  });
+
+  it('puts back the card of an answer on its way where its own question is told of again', async () => {
+    const w = window as unknown as Record<string, { getState?: () => unknown; lanlan_name?: string }>;
+    w.reactChatWindowHost.getState = () => ({ messages });
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      calls.push({ url, body: null, headers: {} });
+      if (url.includes('/answer')) return new Promise(() => {});
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ questions: [] }) });
+    }));
+    asks.receive(frame(permission, { lanlan_name: 'Lan' }));
+    answerFromChat({ taskId: 'c1', questionId: 'q1', choice: 'once' });
+    await flush();
+    w.lanlan_config.lanlan_name = 'Mio';
+    asks.receive(frame(permission, { lanlan_name: 'Lan' }));
+    expect(messages).toEqual([]);
+    w.lanlan_config.lanlan_name = 'Lan';
+    asks.receive(frame(permission, { lanlan_name: 'Lan' }));
+    expect(messages.map(message => [message.id, message.blocks[0].state])).toEqual([['nekopower-ask-c1-q1', 'sending']]);
   });
 
   it('gives up on a read of what waits that never ends, as not read and not as nothing waiting', async () => {
