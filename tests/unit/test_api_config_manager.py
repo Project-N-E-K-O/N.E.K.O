@@ -63,7 +63,7 @@ class TestKeybookSaveLoad:
         'assistApiKeyRequesty': 'ASSIST_API_KEY_REQUESTY',
         'assistApiKeyOpper': 'ASSIST_API_KEY_OPPER',
         'assistApiKeyAtlascloud': 'ASSIST_API_KEY_ATLASCLOUD',
-        'assistApiKeyUberllm': 'ASSIST_API_KEY_UBERLLM',
+        'assistApiKeyMartllm': 'ASSIST_API_KEY_MARTLLM',
     }
 
     @pytest.mark.unit
@@ -111,7 +111,7 @@ class TestKeybookSaveLoad:
                        'ASSIST_API_KEY_REQUESTY',
                        'ASSIST_API_KEY_OPPER',
                        'ASSIST_API_KEY_ATLASCLOUD',
-                       'ASSIST_API_KEY_UBERLLM',
+                       'ASSIST_API_KEY_MARTLLM',
                        'ASSIST_API_KEY_QWEN_INTL',
                        'ASSIST_API_KEY_MINIMAX', 'ASSIST_API_KEY_MINIMAX_INTL',
                        'ASSIST_API_KEY_MIMO']:
@@ -429,29 +429,29 @@ class TestOpperResolution:
 
 
 
-class TestUberLLMResolution:
+class TestMartLLMResolution:
     @pytest.mark.unit
     @pytest.mark.parametrize('core_provider', ['qwen', 'openai', 'free'])
-    @pytest.mark.parametrize('uberllm_key', ['', 'sk-uberllm-dedicated'])
+    @pytest.mark.parametrize('martllm_key', ['', 'sk-martllm-dedicated'])
     def test_selected_provider_credentials_and_models(
-        self, config_manager, core_provider, uberllm_key,
+        self, config_manager, core_provider, martllm_key,
     ):
-        """Resolve each UberLLM task without borrowing another provider's key."""
+        """Resolve each MartLLM task without borrowing another provider's key."""
         core_key = 'free-access' if core_provider == 'free' else 'sk-other-core'
         _write_core_config(config_manager, {
             'coreApi': core_provider,
             'coreApiKey': core_key,
-            'assistApi': 'uberllm',
-            'assistApiKeyUberllm': uberllm_key,
+            'assistApi': 'martllm',
+            'assistApiKeyMartllm': martllm_key,
         })
         cfg = config_manager.get_core_config()
-        assert cfg['ASSIST_API_KEY_UBERLLM'] == uberllm_key
-        assert cfg['OPENROUTER_API_KEY'] == uberllm_key
-        assert cfg['AGENT_MODEL_API_KEY'] == uberllm_key
+        assert cfg['ASSIST_API_KEY_MARTLLM'] == martllm_key
+        assert cfg['OPENROUTER_API_KEY'] == martllm_key
+        assert cfg['AGENT_MODEL_API_KEY'] == martllm_key
         for task in ('conversation', 'summary', 'correction', 'emotion', 'vision', 'agent'):
             resolved = config_manager.get_model_api_config(task)
-            assert resolved['api_key'] == uberllm_key, task
-            assert resolved['base_url'] == 'https://api.uberllm.dev/v1', task
+            assert resolved['api_key'] == martllm_key, task
+            assert resolved['base_url'] == 'https://api.martllm.com/v1', task
             assert resolved['model'] == 'openai/gpt-5.4-mini', task
             assert resolved['provider_type'] == 'openai_compatible', task
 
@@ -514,7 +514,7 @@ class TestAssistOnlyKeyIsolation:
 
     @pytest.mark.unit
     def test_catalog_has_assist_only_providers(self):
-        assert {'deepseek', 'orcarouter', 'requesty', 'opper', 'atlascloud', 'uberllm'} <= set(_ASSIST_ONLY_PROVIDERS)
+        assert {'deepseek', 'orcarouter', 'requesty', 'opper', 'atlascloud', 'martllm'} <= set(_ASSIST_ONLY_PROVIDERS)
         assert not {'qwen', 'openai', 'free'} & set(_ASSIST_ONLY_PROVIDERS)
 
     @pytest.mark.unit
@@ -1150,7 +1150,7 @@ class TestProviderExclusion:
             'requesty',
             'opper',
             'atlascloud',
-            'uberllm',
+            'martllm',
             'elevenlabs',
             'qwen_intl',
             'minimax_intl',

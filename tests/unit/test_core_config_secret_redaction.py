@@ -19,7 +19,7 @@ _ASSIST_API_KEY_FIELDS = (
     'assistApiKeyRequesty',
     'assistApiKeyOpper',
     'assistApiKeyAtlascloud',
-    'assistApiKeyUberllm',
+    'assistApiKeyMartllm',
 )
 
 _MODEL_TYPES = (

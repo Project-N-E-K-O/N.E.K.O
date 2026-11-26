@@ -40,7 +40,7 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyRequesty": "",
     "assistApiKeyOpper": "",
     "assistApiKeyAtlascloud": "",
-    "assistApiKeyUberllm": "",
+    "assistApiKeyMartllm": "",
     "assistApiKeyGrok": "",
     "assistApiKeyDoubao": "",
     "assistApiKeyDoubaoTts": "",
@@ -263,8 +263,8 @@ DEFAULT_ASSIST_API_PROFILES = {
         'VISION_MODEL': "google/gemini-3.1-flash-lite",
         'AGENT_MODEL': "google/gemini-3-flash-preview",
     },
-    'uberllm': {
-        'OPENROUTER_URL': "https://api.uberllm.dev/v1",
+    'martllm': {
+        'OPENROUTER_URL': "https://api.martllm.com/v1",
         'CONVERSATION_MODEL': "openai/gpt-5.4-mini",
         'SUMMARY_MODEL': "openai/gpt-5.4-mini",
         'CORRECTION_MODEL': "openai/gpt-5.4-mini",
@@ -355,7 +355,7 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'requesty': 'ASSIST_API_KEY_REQUESTY',
     'opper': 'ASSIST_API_KEY_OPPER',
     'atlascloud': 'ASSIST_API_KEY_ATLASCLOUD',
-    'uberllm': 'ASSIST_API_KEY_UBERLLM',
+    'martllm': 'ASSIST_API_KEY_MARTLLM',
     'grok': 'ASSIST_API_KEY_GROK',
     'doubao': 'ASSIST_API_KEY_DOUBAO',
     'doubao_tts': 'ASSIST_API_KEY_DOUBAO_TTS',
