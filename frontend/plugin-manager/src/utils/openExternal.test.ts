@@ -2,7 +2,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { NO_DESKTOP_BRIDGE, openLocalPath, prepareExternalWindow, resolvePathWithinRoots } from './openExternal'
+import { NO_DESKTOP_BRIDGE, openLocalPath, openVerifiedLocalPath, prepareExternalWindow, resolvePathWithinRoots } from './openExternal'
 
 describe('openLocalPath file URL conversion', () => {
   beforeEach(() => {
@@ -190,8 +190,50 @@ describe('resolvePathWithinRoots', () => {
     expect(resolvePathWithinRoots('\\tmp\\plugin\\x', ['/tmp/plugin'])).toBeNull()
   })
 
+  it('compares and returns paths without trimming spaces', () => {
+    const roots = ['/tmp/plugin ']
+    expect(resolvePathWithinRoots('/tmp/plugin/report.txt', roots)).toBeNull()
+    expect(resolvePathWithinRoots('/tmp/plugin', roots)).toBeNull()
+    expect(resolvePathWithinRoots('/tmp/plugin /report.txt ', roots)).toBe('/tmp/plugin /report.txt ')
+    expect(resolvePathWithinRoots(' /tmp/plugin /x', roots)).toBeNull()
+    expect(resolvePathWithinRoots('/tmp/plugin/report.txt', ['/tmp/plugin'])).toBe('/tmp/plugin/report.txt')
+  })
+
+  it.each([
+    'C:\\Neko\\plugins\\plugin_a\\CON',
+    'C:\\Neko\\plugins\\plugin_a\\out\\nul.txt',
+    'C:\\Neko\\plugins\\plugin_a\\COM1.log',
+    'C:\\Neko\\plugins\\plugin_a\\lpt9',
+    'C:\\Neko\\plugins\\plugin_a\\conout$',
+  ])('rejects the Windows device name in %j', (target) => {
+    expect(resolvePathWithinRoots(target, windowsRoots)).toBeNull()
+  })
+
+  it('still allows ordinary Windows names that start like device names', () => {
+    expect(resolvePathWithinRoots('C:\\Neko\\plugins\\plugin_a\\console.txt', windowsRoots)).toBe('C:\\Neko\\plugins\\plugin_a\\console.txt')
+    expect(resolvePathWithinRoots('C:\\Neko\\plugins\\plugin_a\\com10', windowsRoots)).toBe('C:\\Neko\\plugins\\plugin_a\\com10')
+  })
+
   it('ignores missing roots', () => {
     expect(resolvePathWithinRoots('/anything', [null, undefined, '', 'relative/root'])).toBeNull()
+  })
+})
+
+describe('openVerifiedLocalPath', () => {
+  beforeEach(() => {
+    Reflect.deleteProperty(window, 'nekoHost')
+    Reflect.deleteProperty(window, 'electronShell')
+  })
+
+  it('passes the checked path to the bridge untrimmed', () => {
+    const openPath = vi.fn()
+    Object.defineProperty(window, 'electronShell', { value: { openPath }, configurable: true })
+
+    openVerifiedLocalPath('/tmp/plugin ')
+    openLocalPath('  /tmp/legacy  ')
+
+    expect(openPath).toHaveBeenNthCalledWith(1, '/tmp/plugin ')
+    expect(openPath).toHaveBeenNthCalledWith(2, '/tmp/legacy')
   })
 })
 

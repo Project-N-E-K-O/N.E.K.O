@@ -108,7 +108,7 @@ import { useI18n } from 'vue-i18n'
 import { Document, Loading, WarningFilled } from '@element-plus/icons-vue'
 import { callPluginHostedSurfaceAction, getPluginHostedSurfaceContext, getPluginHostedSurfaceSource, parseHostedDocument } from '@/api/plugins'
 import { loadTsxRenderer, loadMarkdownRenderer } from '@/components/plugin/hosted/rendererModules'
-import { NO_DESKTOP_BRIDGE, openExternalUrl, openLocalPath, resolvePathWithinRoots } from '@/utils/openExternal'
+import { NO_DESKTOP_BRIDGE, openExternalUrl, openVerifiedLocalPath, resolvePathWithinRoots } from '@/utils/openExternal'
 import { PANEL_FILL_HEIGHT } from '@/utils/constants'
 import type { PluginUiSurface } from '@/types/api'
 import { OptionalModuleError } from '@/utils/retryableModule'
@@ -218,7 +218,9 @@ const hostedConfirmAppendTarget = computed<string | HTMLElement>(() => {
   return fullscreenOverlayTarget() ?? 'body'
 })
 function showHostMessage(type: 'warning' | 'error', message: string) {
-  ElMessage({ type, message, grouping: true, appendTo: fullscreenOverlayTarget() ?? document.body })
+  // No grouping: a grouped message is reused in place and would stay on
+  // its old mount target after entering or leaving fullscreen.
+  ElMessage({ type, message, appendTo: fullscreenOverlayTarget() ?? document.body })
 }
 const hostedDocumentControllers = new Map<string, AbortController>()
 const hostedActionControllers = new Map<string, AbortController>()
@@ -724,7 +726,7 @@ async function openHostedSurfacePath(rawPath: string) {
     return
   }
   try {
-    await openLocalPath(target)
+    await openVerifiedLocalPath(target)
   } catch (caught: unknown) {
     if ((caught as { code?: unknown } | null)?.code === NO_DESKTOP_BRIDGE) {
       showHostMessage('warning', t('plugins.ui.openPathNoBridge'))

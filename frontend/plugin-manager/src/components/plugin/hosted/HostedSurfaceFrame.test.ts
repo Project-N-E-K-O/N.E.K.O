@@ -1689,6 +1689,20 @@ describe('HostedSurfaceFrame open-path scope and action confirmation', () => {
     expect(nekoOpenPath).toHaveBeenCalledWith({ path: `${pluginRoot}/out.txt` })
   })
 
+  it('opens exactly the checked path, spaces included', async () => {
+    apiMocks.getPluginHostedSurfaceContext.mockResolvedValue({ paths: { plugin_dir: '/home/u/plugin ', data_dir: null } })
+    const frame = await mountFrame()
+    frame.dispatchRequest(openPathMessage('/home/u/plugin/x'))
+    await flushPromises()
+    await flushPromises()
+    expect(nekoOpenPath).not.toHaveBeenCalled()
+
+    frame.dispatchRequest(openPathMessage('/home/u/plugin /x '))
+    await flushPromises()
+    await flushPromises()
+    expect(nekoOpenPath).toHaveBeenCalledWith({ path: '/home/u/plugin /x ' })
+  })
+
   it('takes the scope from the host context read, not from the panel message', async () => {
     const frame = await mountFrame()
     frame.dispatchRequest({
@@ -1907,6 +1921,8 @@ describe('HostedSurfaceFrame open-path scope and action confirmation', () => {
       await flushPromises()
       expect(lastMessageCall()).toMatchObject({ message: 'plugins.ui.openPathOutOfScope' })
       expect(lastMessageCall().appendTo).toBe(displayTarget)
+      // Grouping would reuse the earlier body-mounted message instead of mounting here.
+      expect(lastMessageCall()).not.toHaveProperty('grouping')
     } finally {
       if (originalDescriptor) Object.defineProperty(document, 'fullscreenElement', originalDescriptor)
       else delete (document as { fullscreenElement?: Element | null }).fullscreenElement

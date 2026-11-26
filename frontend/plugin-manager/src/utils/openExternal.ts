@@ -138,7 +138,19 @@ export function prepareExternalWindow(): {
 }
 
 export function openLocalPath(path: string): Promise<void> {
-  const raw = String(path || '').trim()
+  return openLocalPathExact(String(path || '').trim())
+}
+
+/**
+ * Open exactly this path, without trimming it. Use it for a path returned by
+ * `resolvePathWithinRoots`, so the bridge opens the string that was checked
+ * (POSIX names may start or end with spaces).
+ */
+export function openVerifiedLocalPath(path: string): Promise<void> {
+  return openLocalPathExact(String(path || ''))
+}
+
+function openLocalPathExact(raw: string): Promise<void> {
   if (!isLocalPath(raw)) return Promise.reject(new Error('Not a valid local path'))
   const target = normalizeLocalPath(raw)
   const host = (window as unknown as {
@@ -180,6 +192,8 @@ export function openLocalPath(path: string): Promise<void> {
 
 export const NO_DESKTOP_BRIDGE = 'no_desktop_bridge'
 
+const WINDOWS_DEVICE_NAME_RE = /^(con|prn|aux|nul|conin\$|conout\$|com[0-9¹²³]|lpt[0-9¹²³])(\..*)?$/i
+
 type ScopedPathStyle = 'posix' | 'windows' | 'unc'
 type ScopedPath = {
   style: ScopedPathStyle
@@ -201,7 +215,9 @@ type ScopedPath = {
  * Purely lexical: symbolic links and junctions cannot be resolved here.
  */
 function parseScopedPath(input: string): ScopedPath | null {
-  const raw = normalizeLocalPath(String(input || '').trim())
+  // No trimming: spaces are part of POSIX names, and roots and targets must
+  // be compared and opened exactly as given.
+  const raw = normalizeLocalPath(String(input || ''))
   if (!raw || CONTROL_CHARS_RE.test(raw)) return null
   // A backslash is an ordinary file-name character in POSIX paths; only
   // drive-letter and UNC (`\\host\share`, `//host/share`) inputs treat it
@@ -244,6 +260,9 @@ function parseScopedPath(input: string): ScopedPath | null {
     // Windows drops trailing dots/spaces and treats `:` as a stream
     // separator, so such segments do not name what they spell.
     if (style !== 'posix' && (/[. ]$/.test(segment) || segment.includes(':'))) return null
+    // Windows device names (CON, NUL, COM1, ...) open a device, not a file,
+    // whatever directory or extension they appear with.
+    if (style !== 'posix' && WINDOWS_DEVICE_NAME_RE.test(segment)) return null
     segments.push(segment)
   }
   return { style, root, segments }
