@@ -83,20 +83,54 @@ def _applied_cids(entry_obj: object) -> list[str]:
     return ids
 
 
-def _record_applied_cid(entry_obj: dict, target_cid: str) -> None:
-    if not target_cid:
-        return
-    ids = [
-        str(x) for x in (entry_obj.get("applied_correction_ids") or [])
+_MAX_APPLIED_CORRECTION_IDS = 32
+
+
+def _record_applied_cid(
+    entry_obj: dict,
+    target_cid: str,
+    *,
+    inherited_cids: list[str] | tuple[str, ...] = (),
+    protected_cids: set[str] | frozenset[str] = frozenset(),
+) -> None:
+    """Record target and inherited correction IDs without evicting protected tokens."""
+    existing_ids = _applied_cids(entry_obj)
+    inherited = [
+        str(x) for x in inherited_cids
         if isinstance(x, str) and x
     ]
-    prev_single = entry_obj.get("applied_correction_id")
-    if isinstance(prev_single, str) and prev_single and prev_single not in ids:
-        ids.append(prev_single)
-    if target_cid not in ids:
-        ids.append(target_cid)
-    entry_obj["applied_correction_ids"] = ids[-32:]
-    entry_obj["applied_correction_id"] = target_cid
+    if not target_cid and not inherited:
+        return
+
+    # Place inherited history from superseded entries ahead of the survivor's
+    # own IDs, keeping each deduplicated ID at its newest position.
+    combined: list[str] = []
+    tail = [target_cid] if target_cid else []
+    for cid in (*inherited, *existing_ids, *tail):
+        if not cid:
+            continue
+        if cid in combined:
+            combined.remove(cid)
+        combined.append(cid)
+
+    protected = set(protected_cids)
+    if target_cid:
+        protected.add(target_cid)
+    if protected:
+        history_ids = [c for c in combined if c not in protected]
+        protected_order = [c for c in combined if c in protected]
+        history_budget = max(0, _MAX_APPLIED_CORRECTION_IDS - len(protected_order))
+        combined = (
+            history_ids[-history_budget:] if history_budget else []
+        ) + protected_order
+    elif len(combined) > _MAX_APPLIED_CORRECTION_IDS:
+        combined = combined[-_MAX_APPLIED_CORRECTION_IDS:]
+
+    entry_obj["applied_correction_ids"] = combined
+    if target_cid:
+        entry_obj["applied_correction_id"] = target_cid
+    elif not entry_obj.get("applied_correction_id") and combined:
+        entry_obj["applied_correction_id"] = combined[-1]
 
 _LEGACY_CORRECTION_IDENTITY_FIELDS = (
     'created_at', 'entity', 'old_text', 'new_text',
@@ -745,6 +779,23 @@ class CorrectionsMixin:
             for key, tracked in list(replaced_old_entries.items()):
                 if id(tracked) in old_ids:
                     replaced_old_entries[key] = new_entry
+
+        batch_recorded_cids: set[str] = set()
+
+        def _stamp_applied_cid(
+            entry_obj: dict,
+            cid: str,
+            *,
+            inherited: list[str] | tuple[str, ...] = (),
+        ) -> None:
+            if cid:
+                batch_recorded_cids.add(cid)
+            _record_applied_cid(
+                entry_obj,
+                cid,
+                inherited_cids=inherited,
+                protected_cids=batch_recorded_cids,
+            )
         fresh_by_identity = None
         ambiguous_fresh_identities: set[tuple[str, ...]] = set()
         if fresh_corrections is not None:
@@ -1081,9 +1132,11 @@ class CorrectionsMixin:
                 live_entry = self._normalize_entry(live_entry)
                 if isinstance(live_entry, dict):
                     _ensure_entry_id(live_entry)
-                    for inherited_cid in (inherited_cids or ()):
-                        _record_applied_cid(live_entry, inherited_cid)
-                    _record_applied_cid(live_entry, item_cid)
+                    _stamp_applied_cid(
+                        live_entry,
+                        item_cid,
+                        inherited=inherited_cids or (),
+                    )
                 section_facts[live_idx] = live_entry
                 _redirect_replaced_entries({prev_live_id}, live_entry)
                 return live_entry
@@ -1119,7 +1172,8 @@ class CorrectionsMixin:
                 )
             )
             if already_applied:
-                pass
+                if item_cid:
+                    batch_recorded_cids.add(item_cid)
             elif action == 'merge':
                 # `replace` means "new observation is an update/correction to
                 # the old memory" — semantically an in-place edit, not a
@@ -1154,7 +1208,7 @@ class CorrectionsMixin:
                                     {prev_existing_id}, existing,
                                 )
                             if isinstance(existing, dict):
-                                _record_applied_cid(existing, item_cid)
+                                _stamp_applied_cid(existing, item_cid)
                             live_new = _find_live_entry(new_text)
                             if live_new is not None:
                                 _fold_into_live_entry(
@@ -1164,7 +1218,7 @@ class CorrectionsMixin:
                                 )
                             elif not _is_blocked_by_retirement(new_text):
                                 new_entry = _stamped_new_entry(new_text)
-                                _record_applied_cid(new_entry, item_cid)
+                                _stamp_applied_cid(new_entry, item_cid)
                                 section_facts.append(new_entry)
                             break
                         if isinstance(existing, dict):
@@ -1231,7 +1285,7 @@ class CorrectionsMixin:
                                 # stale counts/vectors tied to old_text.
                                 self._invalidate_token_count_cache(existing)
                                 self._invalidate_embedding_cache(existing)
-                            _record_applied_cid(existing, item_cid)
+                            _stamp_applied_cid(existing, item_cid)
                             section_facts[j] = self._normalize_entry(existing)
                         else:
                             # Legacy str entry — no metadata to preserve;
@@ -1239,7 +1293,7 @@ class CorrectionsMixin:
                             new_entry = _stamped_new_entry(merged_text)
                             if merged_text != old_text:
                                 new_entry['version_history'] = [history_entry]
-                            _record_applied_cid(new_entry, item_cid)
+                            _stamp_applied_cid(new_entry, item_cid)
                             section_facts[j] = new_entry
                         updated_entry = section_facts[j]
                         _redirect_replaced_entries({prev_existing_id}, updated_entry)
@@ -1277,7 +1331,7 @@ class CorrectionsMixin:
                             new_entry['speaker_provenance_mixed'] = True
                         if merged_text != old_text:
                             new_entry['version_history'] = [history_entry]
-                        _record_applied_cid(new_entry, item_cid)
+                        _stamp_applied_cid(new_entry, item_cid)
                         section_facts.append(new_entry)
                     else:
                         live_new = _find_live_entry(new_text)
@@ -1289,7 +1343,7 @@ class CorrectionsMixin:
                             )
                         elif not _is_blocked_by_retirement(new_text):
                             new_entry = _stamped_new_entry(new_text)
-                            _record_applied_cid(new_entry, item_cid)
+                            _stamp_applied_cid(new_entry, item_cid)
                             section_facts.append(new_entry)
             elif action == 'keep_new':
                 old_entries = [
@@ -1329,9 +1383,11 @@ class CorrectionsMixin:
                                 for _ in old_entries[:1]
                             ]
                         )[-_VH_MAX:]
-                    for inherited_cid in inherited_cids:
-                        _record_applied_cid(replacement, inherited_cid)
-                    _record_applied_cid(replacement, item_cid)
+                    _stamp_applied_cid(
+                        replacement,
+                        item_cid,
+                        inherited=inherited_cids,
+                    )
                     section_facts.append(replacement)
                     target_entry = replacement
                 else:
@@ -1425,14 +1481,14 @@ class CorrectionsMixin:
                                 existing['version_history'] = (
                                     history + [rejected]
                                 )[-_VH_MAX:]
-                        _record_applied_cid(existing, item_cid)
+                        _stamp_applied_cid(existing, item_cid)
                         break
                 if not matched:
                     replaced_target = replaced_old_entries.get(
                         (entity, item_scope_key, old_text)
                     )
                     if replaced_target is not None:
-                        _record_applied_cid(replaced_target, item_cid)
+                        _stamp_applied_cid(replaced_target, item_cid)
                     elif _is_blocked_by_retirement(old_text):
                         live_new = _find_live_entry(new_text)
                         if live_new is not None:
@@ -1443,14 +1499,14 @@ class CorrectionsMixin:
                             )
                         elif not _is_blocked_by_retirement(new_text):
                             new_entry = _stamped_new_entry(new_text)
-                            _record_applied_cid(new_entry, item_cid)
+                            _stamp_applied_cid(new_entry, item_cid)
                             section_facts.append(new_entry)
             else:  # keep_both
                 live_new = _find_live_entry(new_text)
                 if live_new is None:
                     if not _is_blocked_by_retirement(new_text):
                         new_entry = _stamped_new_entry(new_text)
-                        _record_applied_cid(new_entry, item_cid)
+                        _stamp_applied_cid(new_entry, item_cid)
                         section_facts.append(new_entry)
                 elif item_cid:
                     live_idx, live_entry = live_new
@@ -1465,7 +1521,7 @@ class CorrectionsMixin:
                             _ensure_entry_id(live_entry)
                         section_facts[live_idx] = live_entry
                     if isinstance(live_entry, dict):
-                        _record_applied_cid(live_entry, item_cid)
+                        _stamp_applied_cid(live_entry, item_cid)
 
             resolved += 1
             resolved_indices.add(idx)

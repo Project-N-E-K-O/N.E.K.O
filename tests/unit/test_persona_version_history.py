@@ -1306,3 +1306,68 @@ async def test_keep_both_prefers_live_dict_entry_over_legacy_string_duplicate(tm
     assert [e["id"] for e in dict_entries] == ["live_dict_1"]
     assert dict_entries[0]["applied_correction_id"] == cid
     assert facts[0] == "重复条目"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("preseed_c", [False, True])
+async def test_chained_keep_new_preserves_batch_tokens_when_inheriting_32_historical_ids(
+    tmp_path, monkeypatch, preseed_c,
+):
+    """Inheriting 32 historical IDs mid-batch must not evict earlier current-batch replay tokens on retry."""
+    from memory.persona import corrections as corrections_mod
+
+    pm, _ = _install(str(tmp_path))
+    hist_a = [f"hist_a_{i:02d}" for i in range(32)]
+    await _seed_master_fact(pm, "小天", "X", id="live_x")
+    await _seed_master_fact(
+        pm, "小天", "A",
+        id="live_a",
+        applied_correction_id=hist_a[-1],
+        applied_correction_ids=list(hist_a),
+    )
+    if preseed_c:
+        hist_c = [f"hist_c_{i:02d}" for i in range(32)]
+        await _seed_master_fact(
+            pm, "小天", "C",
+            id="live_c",
+            applied_correction_id=hist_c[-1],
+            applied_correction_ids=list(hist_c),
+        )
+
+    await pm._aqueue_correction("小天", "X", "B", "master")
+    await pm._aqueue_correction("小天", "A", "B", "master")
+    await pm._aqueue_correction("小天", "B", "C", "master")
+    queued = await pm.aload_pending_corrections("小天")
+    cid1, cid2, cid3 = (row["correction_id"] for row in queued)
+
+    real_write = corrections_mod.atomic_write_json_async
+
+    async def _fail_corrections_write(path, *args, **kwargs):
+        if str(path).endswith("persona_corrections.json"):
+            raise OSError("disk failure after persona save")
+        return await real_write(path, *args, **kwargs)
+
+    payload = [
+        {"index": 0, "action": "keep_new"},
+        {"index": 1, "action": "keep_new"},
+        {"index": 2, "action": "keep_new"},
+    ]
+    monkeypatch.setattr(corrections_mod, "atomic_write_json_async", _fail_corrections_write)
+    with patch("utils.llm_client.create_chat_llm", return_value=_make_llm_mock(payload)):
+        with pytest.raises(OSError, match="disk failure"):
+            await pm.resolve_corrections("小天")
+
+    monkeypatch.setattr(corrections_mod, "atomic_write_json_async", real_write)
+    pm_retry, _ = _install(str(tmp_path))
+    with patch("utils.llm_client.create_chat_llm", return_value=_make_llm_mock(payload)):
+        resolved = await pm_retry.resolve_corrections("小天")
+
+    assert resolved == 3
+    assert await pm_retry.aload_pending_corrections("小天") == []
+    facts = pm_retry._get_section_facts(await pm_retry.aensure_persona("小天"), "master")
+    assert [e["text"] for e in facts] == ["C"]
+    survivor = facts[0]
+    cids = survivor.get("applied_correction_ids") or []
+    assert len(cids) == 32
+    assert cids[-3:] == [cid1, cid2, cid3]
+    assert survivor["applied_correction_id"] == cid3
