@@ -1159,7 +1159,11 @@ async def test_an_answer_not_in_latin_letters_is_a_word_of_its_own_as_well():
         ("ဟုတ်", "ဟုတ်ကဲ့", True),
         ("ㄅㄚ", "ㄅㄚㄇ", True),
         # A mark that combines with the letter before it makes that letter part of a longer word.
-        ("no", "no̱ way", False),
+        ("no", "no\u0331 way", False),
+        # A mark that only says how a character is drawn is not: the keycap of an emoji "1", a variation selector.
+        ("1", "1\ufe0f\u20e3", True),
+        ("1", "1\u20e3", True),
+        ("Dogs", "Dogs\ufe0f for the post", True),
         ("क", "कि", False),
         ("no", "no way", True),
         ("Dogs", "文章配图选Dogs", True),

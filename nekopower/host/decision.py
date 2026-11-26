@@ -713,14 +713,17 @@ def _joins(char: str) -> bool:
 
     A letter or digit of writing with spaces between words, or a mark that
     combines with the letter before it (an accent NFC has no single letter
-    for, a vowel sign of Devanagari).
+    for, a vowel sign of Devanagari). Not a mark that only says how a
+    character is drawn: a variation selector, or an enclosing one like the
+    keycap of "1" in an emoji (the option "1" is said in it).
     """
     import unicodedata
 
     if not char:
         # The start or the end of what was said.
         return False
-    return (char.isalnum() or unicodedata.category(char).startswith("M")) and not _unspaced(char)
+    mark = unicodedata.category(char) in ("Mn", "Mc") and not unicodedata.name(char, "").startswith("VARIATION SELECTOR")
+    return (char.isalnum() or mark) and not _unspaced(char)
 
 
 def _unspaced(char: str) -> bool:

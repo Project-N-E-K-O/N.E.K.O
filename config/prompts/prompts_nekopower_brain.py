@@ -1499,7 +1499,7 @@ def build_beside_request(*, task: str, user_said: str, busy: str, at_hand: list[
 # the request answers one of those, stops some, adds to one, or is new; what
 # an answer to a request for approval chose is read apart
 # (``TASK_BRAIN_ANSWER_PROMPT``). What task agents and others wrote is
-# quoted in the items (``decision._quoted``), and said to be no instructions;
+# quoted in the items (``decision.quote_data``), and said to be no instructions;
 # a stop says how much it means (``scope``). (The opening words are fixed:
 # the built-in free tier takes a request by them, with the comma.)
 TASK_BRAIN_UNDER_WAY_PROMPT = (
