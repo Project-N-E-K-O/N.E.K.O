@@ -2737,3 +2737,200 @@ def test_config_update_command_coordinates_with_in_flight_writes_and_profile_swi
         assert not getattr(ctx_prof, "_owner_token_host_change_root", {})
 
     asyncio.run(_case_in_memory_writes_preserve_host_read_guard_until_authoritative_change())
+
+    # 14. Timed-out / cancelled optimistic writes retain host read protection for the
+    #     retained draft while config_change runs, then allow re-anchoring afterward.
+    async def _case_uncertain_writes_preserve_host_guard_while_draft_current() -> None:
+        # 14a. TimeoutError (persisted=None) inside config_change preserves host+draft until handler exits.
+        ctx_to = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "demo_timeout_guard" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance_to = _RecordingInstance()
+        ctx_to._instance = instance_to
+        ctx_to._set_effective_config_cache({"base": 1})
+
+        async def _disk_local_payload(**_kwargs: object) -> dict[str, object]:
+            return {"plugin_id": "demo", "config": {"base": 1}}
+
+        async def _timeout_rpc(**_kwargs: object) -> dict[str, object]:
+            raise TimeoutError("ack timed out")
+
+        ctx_to._get_local_config_payload = _disk_local_payload  # type: ignore[method-assign]
+        ctx_to._send_request_and_wait_async = _timeout_rpc  # type: ignore[method-assign]
+
+        async def _timeout_then_read(**_kwargs: object) -> None:
+            res = await ctx_to.update_own_config({"timer": 3})
+            assert res["persisted"] is None
+            loaded = await ctx_to.get_own_effective_config(None)
+            assert loaded["config"] == {"base": 1}
+            assert ctx_to._effective_config == {"base": 1, "extra": 3, "timer": 3}
+            assert ctx_to._effective_config_uncertain is True
+            assert instance_to.refreshed[-1] == {"base": 1, "extra": 3, "timer": 3}
+
+        sender_to = _FakeResponseSender()
+        await host_module._handle_config_update_command(
+            msg={
+                "req_id": "req-timeout-guard",
+                "config": {"extra": 3},
+                "mode": "temporary",
+                "replace": False,
+            },
+            ctx=ctx_to,
+            events_by_type={"lifecycle": {"config_change": _timeout_then_read}},
+            plugin_id="demo",
+            res_sender=sender_to,
+            logger=_FakeLogger(),
+        )
+        assert sender_to.payloads[-1]["success"] is True
+        assert ctx_to._effective_config == {"base": 1, "extra": 3, "timer": 3}
+        assert ctx_to._effective_config_uncertain is True
+        assert instance_to.refreshed[-1] == {"base": 1, "extra": 3, "timer": 3}
+        assert ctx_to._host_config_change_pending == 0
+        assert not getattr(ctx_to, "_pending_host_config_owner_tokens", {})
+        assert not getattr(ctx_to, "_owner_token_host_change_root", {})
+
+        post_loaded_to = await ctx_to.get_own_effective_config(None)
+        assert post_loaded_to["config"] == {"base": 1}
+        assert ctx_to._effective_config == {"base": 1}
+        assert ctx_to._effective_config_uncertain is False
+        assert instance_to.refreshed[-1] == {"base": 1}
+
+        # 14b. CancelledError subtask inside config_change preserves host+draft until handler exits.
+        ctx_cancel = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "demo_cancel_guard" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance_cancel = _RecordingInstance()
+        ctx_cancel._instance = instance_cancel
+        ctx_cancel._set_effective_config_cache({"base": 1})
+
+        cancel_rpc_started = asyncio.Event()
+        release_cancel_rpc = asyncio.Event()
+
+        async def _cancellable_rpc(**_kwargs: object) -> dict[str, object]:
+            cancel_rpc_started.set()
+            await release_cancel_rpc.wait()
+            return {"success": True, "config": {"base": 1, "extra": 3, "timer": 3}}
+
+        ctx_cancel._get_local_config_payload = _disk_local_payload  # type: ignore[method-assign]
+        ctx_cancel._send_request_and_wait_async = _cancellable_rpc  # type: ignore[method-assign]
+
+        async def _cancel_then_read(**_kwargs: object) -> None:
+            write_task = asyncio.create_task(ctx_cancel.update_own_config({"timer": 3}))
+            try:
+                await _wait_for_checkpoint_or_task_failure(cancel_rpc_started, write_task)
+                write_task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await write_task
+            finally:
+                release_cancel_rpc.set()
+                if not write_task.done():
+                    write_task.cancel()
+                await asyncio.gather(write_task, return_exceptions=True)
+
+            loaded = await ctx_cancel.get_own_effective_config(None)
+            assert loaded["config"] == {"base": 1}
+            assert ctx_cancel._effective_config == {"base": 1, "extra": 3, "timer": 3}
+            assert ctx_cancel._effective_config_uncertain is True
+            assert instance_cancel.refreshed[-1] == {"base": 1, "extra": 3, "timer": 3}
+
+        sender_cancel = _FakeResponseSender()
+        await host_module._handle_config_update_command(
+            msg={
+                "req_id": "req-cancel-guard",
+                "config": {"extra": 3},
+                "mode": "temporary",
+                "replace": False,
+            },
+            ctx=ctx_cancel,
+            events_by_type={"lifecycle": {"config_change": _cancel_then_read}},
+            plugin_id="demo",
+            res_sender=sender_cancel,
+            logger=_FakeLogger(),
+        )
+        assert sender_cancel.payloads[-1]["success"] is True
+        assert ctx_cancel._effective_config == {"base": 1, "extra": 3, "timer": 3}
+        assert ctx_cancel._effective_config_uncertain is True
+        assert instance_cancel.refreshed[-1] == {"base": 1, "extra": 3, "timer": 3}
+        assert ctx_cancel._host_config_change_pending == 0
+        assert not getattr(ctx_cancel, "_pending_host_config_owner_tokens", {})
+        assert not getattr(ctx_cancel, "_owner_token_host_change_root", {})
+
+        post_loaded_cancel = await ctx_cancel.get_own_effective_config(None)
+        assert post_loaded_cancel["config"] == {"base": 1}
+        assert ctx_cancel._effective_config == {"base": 1}
+        assert ctx_cancel._effective_config_uncertain is False
+        assert instance_cancel.refreshed[-1] == {"base": 1}
+
+        # 14c. Control: superseded draft before TimeoutError does not inherit host guard.
+        ctx_sup = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "demo_superseded_timeout" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance_sup = _RecordingInstance()
+        ctx_sup._instance = instance_sup
+        ctx_sup._set_effective_config_cache({"base": 1})
+
+        sup_rpc_started = asyncio.Event()
+        release_sup_rpc = asyncio.Event()
+
+        async def _sup_local_payload(**_kwargs: object) -> dict[str, object]:
+            return {"plugin_id": "demo", "config": {"base": 1, "superseded": True}}
+
+        async def _sup_timeout_rpc(**_kwargs: object) -> dict[str, object]:
+            sup_rpc_started.set()
+            await release_sup_rpc.wait()
+            raise TimeoutError("superseded timeout")
+
+        ctx_sup._get_local_config_payload = _sup_local_payload  # type: ignore[method-assign]
+        ctx_sup._send_request_and_wait_async = _sup_timeout_rpc  # type: ignore[method-assign]
+
+        async def _superseded_then_read(**_kwargs: object) -> None:
+            write_task = asyncio.create_task(ctx_sup.update_own_config({"timer": 3}))
+            try:
+                await _wait_for_checkpoint_or_task_failure(sup_rpc_started, write_task)
+                ctx_sup._invalidate_effective_config_for_profile_refresh()
+                release_sup_rpc.set()
+                res = await write_task
+                assert res["persisted"] is None
+            finally:
+                release_sup_rpc.set()
+                if not write_task.done():
+                    write_task.cancel()
+                await asyncio.gather(write_task, return_exceptions=True)
+
+            root_map = getattr(ctx_sup, "_owner_token_host_change_root", {})
+            assert ctx_sup._effective_config_owner_token not in root_map
+            loaded = await ctx_sup.get_own_effective_config(None)
+            assert loaded["config"] == {"base": 1, "superseded": True}
+            assert ctx_sup._effective_config == {"base": 1, "superseded": True}
+            assert ctx_sup._effective_config_uncertain is False
+            assert instance_sup.refreshed[-1] == {"base": 1, "superseded": True}
+
+        sender_sup = _FakeResponseSender()
+        await host_module._handle_config_update_command(
+            msg={
+                "req_id": "req-sup-timeout",
+                "config": {"extra": 3},
+                "mode": "temporary",
+                "replace": False,
+            },
+            ctx=ctx_sup,
+            events_by_type={"lifecycle": {"config_change": _superseded_then_read}},
+            plugin_id="demo",
+            res_sender=sender_sup,
+            logger=_FakeLogger(),
+        )
+        assert sender_sup.payloads[-1]["success"] is True
+        assert ctx_sup._host_config_change_pending == 0
+        assert not getattr(ctx_sup, "_pending_host_config_owner_tokens", {})
+        assert not getattr(ctx_sup, "_owner_token_host_change_root", {})
+
+    asyncio.run(_case_uncertain_writes_preserve_host_guard_while_draft_current())

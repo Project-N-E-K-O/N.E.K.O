@@ -665,6 +665,22 @@ class PluginContext:
             return root
         return None
 
+    def _bind_pending_host_guard_locked(
+        self,
+        *,
+        new_token: int,
+        source_token: int | None,
+    ) -> None:
+        if source_token is None:
+            return
+        root = self._resolve_pending_host_change_root_locked(source_token)
+        if root is not None and root != new_token:
+            root_map = getattr(self, "_owner_token_host_change_root", None)
+            if not isinstance(root_map, dict):
+                root_map = {}
+                self._owner_token_host_change_root = root_map
+            root_map[new_token] = root
+
     def _record_effective_config_locked(
         self,
         config_copy: Dict[str, Any] | None,
@@ -685,14 +701,10 @@ class PluginContext:
         else:
             self._effective_config_owner_token = owner_token
             new_token = owner_token
-        if inherit_host_guard_from_token is not None:
-            root = self._resolve_pending_host_change_root_locked(inherit_host_guard_from_token)
-            if root is not None and root != new_token:
-                root_map = getattr(self, "_owner_token_host_change_root", None)
-                if not isinstance(root_map, dict):
-                    root_map = {}
-                    self._owner_token_host_change_root = root_map
-                root_map[new_token] = root
+        self._bind_pending_host_guard_locked(
+            new_token=new_token,
+            source_token=inherit_host_guard_from_token,
+        )
         return new_token
 
     def _flush_instance_runtime_config(self) -> None:
@@ -2609,6 +2621,27 @@ class PluginContext:
         if should_flush:
             self._flush_instance_runtime_config()
 
+    def _mark_optimistic_write_uncertain(
+        self,
+        *,
+        write_gen: int,
+        old_owner_token: int,
+        has_known_baseline: bool,
+    ) -> None:
+        with self._get_config_state_lock():
+            owns_current_draft = (
+                has_known_baseline and self._current_effective_config_gen() == write_gen
+            )
+            self._bump_effective_config_gen()
+            self._effective_config_uncertain = True
+            self._rejected_host_rollback = None
+            new_token = self._allocate_owner_token_locked()
+            if owns_current_draft:
+                self._bind_pending_host_guard_locked(
+                    new_token=new_token,
+                    source_token=old_owner_token,
+                )
+
     def _rollback_optimistic_write_if_current(
         self,
         *,
@@ -2843,11 +2876,11 @@ class PluginContext:
                         )
                 return payload
             except TimeoutError:
-                with self._get_config_state_lock():
-                    self._bump_effective_config_gen()
-                    self._effective_config_uncertain = True
-                    self._rejected_host_rollback = None
-                    self._allocate_owner_token_locked()
+                self._mark_optimistic_write_uncertain(
+                    write_gen=write_gen,
+                    old_owner_token=old_owner_token,
+                    has_known_baseline=has_known_baseline,
+                )
                 return {
                     "success": False,
                     "plugin_id": self.plugin_id,
@@ -2859,11 +2892,11 @@ class PluginContext:
             except asyncio.CancelledError:
                 # The request may already have crossed the atomic commit point.
                 # Keep the optimistic view instead of restoring a known-stale one.
-                with self._get_config_state_lock():
-                    self._bump_effective_config_gen()
-                    self._effective_config_uncertain = True
-                    self._rejected_host_rollback = None
-                    self._allocate_owner_token_locked()
+                self._mark_optimistic_write_uncertain(
+                    write_gen=write_gen,
+                    old_owner_token=old_owner_token,
+                    has_known_baseline=has_known_baseline,
+                )
                 raise
             except Exception:
                 self._rollback_optimistic_write_if_current(
@@ -2940,18 +2973,18 @@ class PluginContext:
                 # No response does not prove that the atomic replace lost its
                 # deadline race.  Keep the requested view; the next successful
                 # config read will replace it with the persisted effective config.
-                with self._get_config_state_lock():
-                    self._bump_effective_config_gen()
-                    self._effective_config_uncertain = True
-                    self._rejected_host_rollback = None
-                    self._allocate_owner_token_locked()
+                self._mark_optimistic_write_uncertain(
+                    write_gen=write_gen,
+                    old_owner_token=old_owner_token,
+                    has_known_baseline=has_known_baseline,
+                )
                 raise
             except asyncio.CancelledError:
-                with self._get_config_state_lock():
-                    self._bump_effective_config_gen()
-                    self._effective_config_uncertain = True
-                    self._rejected_host_rollback = None
-                    self._allocate_owner_token_locked()
+                self._mark_optimistic_write_uncertain(
+                    write_gen=write_gen,
+                    old_owner_token=old_owner_token,
+                    has_known_baseline=has_known_baseline,
+                )
                 raise
             except Exception:
                 self._rollback_optimistic_write_if_current(
