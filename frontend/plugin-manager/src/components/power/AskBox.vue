@@ -57,7 +57,7 @@
       <div class="say">
         <el-input
           v-model="reply" :placeholder="t(shape === 'words' ? 'power.space.familiars.answerPlaceholder' : 'power.ask.addPlaceholder')"
-          data-testid="familiar-reply" @keydown="noteKey" @keyup.enter="enter"
+          data-testid="familiar-reply" @keydown="enterKey.down" @keyup.enter="enterKey.up(send)"
         />
         <el-button type="primary" :loading="busy === 'answer'" :disabled="!ready || held" data-testid="familiar-answer" @click="send">
           {{ t('power.space.familiars.answer') }}
@@ -71,6 +71,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { BoardAsk } from '@/api/console'
+import { useEnterKey } from '@/utils/enterKey'
 import {
   askFacts, askLines, askQuestions, askShape, askWarning, askWhole, besideHint, choiceLabel, confirmation, isBeside, useTookPlace,
 } from './ask'
@@ -142,13 +143,7 @@ function confirm(yes: boolean) {
 }
 // The Enter that picks a word being composed (Chinese, Japanese) is let go of like any other, and is no
 // Enter to send by: whether it was that one is known as it is pressed, not as it is let go of.
-let pickedWord = false
-function noteKey(event: KeyboardEvent) {
-  pickedWord = event.isComposing || event.keyCode === 229
-}
-function enter() {
-  if (!pickedWord) send()
-}
+const enterKey = useEnterKey()
 function send() {
   // Enter sends no more than the button would: nothing while an answer is on its way.
   if (held.value || !ready.value) return

@@ -76,14 +76,20 @@ async function type(testId: string, value: string) {
   input.dispatchEvent(new Event('input', { bubbles: true }))
   await flush()
 }
-/** Press Enter in a field. */
-function enter(testId: string) {
+/** Press Enter in a field: down, then let go. */
+function enter(testId: string, down: KeyboardEventInit = { key: 'Enter', keyCode: 13 }) {
   const input = document.querySelector([
     `input[data-testid="${testId}"]`, `[data-testid="${testId}"] input`,
   ].join(', ')) as HTMLInputElement
   expect(input).toBeTruthy()
-  input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }))
+  input.dispatchEvent(new KeyboardEvent('keydown', { ...down, bubbles: true }))
+  input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }))
 }
+/** Enter as it goes down while it picks a word of an input method, in the two ways browsers tell of it. */
+const PICKING: Array<[string, KeyboardEventInit]> = [
+  ['isComposing', { key: 'Process', keyCode: 229, isComposing: true }],
+  ['keyCode 229 alone', { key: 'Enter', keyCode: 229 }],
+]
 const i18n = createI18n({ legacy: false, locale: 'en-US', messages: { 'en-US': { power: words } } })
 const { t, te } = i18n.global
 
@@ -588,6 +594,19 @@ describe('the usage limit', () => {
     expect(api.setUsageLimit).toHaveBeenCalledTimes(2)
   })
 
+  it.each(PICKING)('is not saved at the Enter that picks a word of an input method (%s)', async (_name, picking) => {
+    api.getUsageLimit.mockResolvedValue(limit())
+    api.setUsageLimit.mockResolvedValue(limit({ tokens: 800_000, set: 800_000 }))
+    await mount(UsageLimitCard)
+    await type('limit-amount', '800')
+    enter('limit-amount', picking)
+    await flush()
+    expect(api.setUsageLimit).not.toHaveBeenCalled()
+    enter('limit-amount')
+    await flush()
+    expect(api.setUsageLimit).toHaveBeenCalledTimes(1)
+  })
+
   it('says why a number was not taken and keeps what was typed', async () => {
     api.getUsageLimit.mockResolvedValue(limit())
     await mount(UsageLimitCard)
@@ -864,6 +883,23 @@ describe('the commissions', () => {
     taken({ success: true })
     await flush()
     expect(typed()).toBe('same words')
+  })
+
+  it.each(PICKING)('does not tell one at work a thing at the Enter that picks a word of an input method (%s)', async (_name, picking) => {
+    api.tellCommission.mockResolvedValue({ success: true })
+    const typed = () => (document.querySelector('[data-testid="commission-say"] input, input[data-testid="commission-say"]') as HTMLInputElement).value
+    await mount(Commissions)
+    await click(document.querySelector('[data-commission="c1"]'))
+    await type('commission-say', '深色主题也要')
+    enter('commission-say', picking)
+    await flush()
+    expect(api.tellCommission).not.toHaveBeenCalled()
+    expect(typed()).toBe('深色主题也要')
+    // Enter once more, with no word left to pick: now it is told.
+    enter('commission-say')
+    await flush()
+    expect(api.tellCommission).toHaveBeenCalledTimes(1)
+    expect(api.tellCommission).toHaveBeenCalledWith('c1', '深色主题也要')
   })
 
   it('reads what the open one used again when the list says it used more or stands otherwise', async () => {

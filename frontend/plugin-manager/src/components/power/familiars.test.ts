@@ -248,6 +248,28 @@ describe('a familiar up close', () => {
     expect(api.tellCommission).toHaveBeenCalledTimes(1)
   })
 
+  it.each([
+    ['isComposing', { key: 'Process', keyCode: 229, isComposing: true }],
+    ['keyCode 229 alone', { key: 'Enter', keyCode: 229 }],
+  ])('does not pass a sentence on at the Enter that picks a word of an input method (%s)', async (_name, picking) => {
+    const working = card({ state: 'working', commission: { id: 'c1', title: 'Add an Excel export', status: 'working', started_at: 0 } })
+    await show([working])
+    api.tellCommission.mockResolvedValue({ success: true })
+    await type('familiar-say', '用 openpyxl')
+    // Only the way down says a word is being picked; let go, it is an Enter like any other.
+    field('familiar-say').dispatchEvent(new KeyboardEvent('keydown', { ...picking, bubbles: true }))
+    field('familiar-say').dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }))
+    await flush()
+    expect(api.tellCommission).not.toHaveBeenCalled()
+    expect(field('familiar-say').value).toBe('用 openpyxl')
+    // Enter once more, with no word left to pick: now it is passed on.
+    field('familiar-say').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }))
+    field('familiar-say').dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }))
+    await flush()
+    expect(api.tellCommission).toHaveBeenCalledTimes(1)
+    expect(api.tellCommission).toHaveBeenCalledWith('c1', '用 openpyxl')
+  })
+
   it('shows a question with its choices and answers it by the one that was pressed', async () => {
     const asking = card({ state: 'waiting_user', commission: { id: 'c1', title: 'Add an Excel export', status: 'waiting_user', started_at: 0, ask: {
       id: 'q1', kind: 'permission', category: 'run_command', detail: { tool: 'bash', command: 'pip install openpyxl' }, options: ['always', 'session', 'once', 'deny'],

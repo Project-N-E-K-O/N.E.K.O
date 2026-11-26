@@ -24,30 +24,16 @@ _PLUGINS = _REPO / "plugin" / "plugins"
 _LOCALES = {"zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"}
 
 _NET = "system.network:connect"
-_LISTEN = "system.network:listen"
 _SPAWN = "system.process:spawn"
 _ENV = "system.env:read"
 _FS_READ = "system.fs:read"
-_FS_WRITE = "system.fs:write"
 _PUSH = "plugin_sdk.main_agent.messages:push"
 
 # Reviewed classification: permission -> (level, background).
 _EXPECTED = {
-    "app_launcher": {_SPAWN: ("require", False), _ENV: ("require", False)},
-    "claude_companion": {
-        _FS_READ: ("require", False),
-        _PUSH: ("require", False),
-        _ENV: ("require", False),
-        _LISTEN: ("require", False),
-        _FS_WRITE: ("require", False),
-    },
-    "game_agent_minecraft": {_NET: ("require", False), _ENV: ("require", False), _PUSH: ("ask", True)},
-    "jukebox_controller": {_PUSH: ("require", False)},
     "lifekit": {_NET: ("require", False), _ENV: ("require", False), _FS_READ: ("require", False), _PUSH: ("ask", False)},
     "mcp_adapter": {_NET: ("require", False), _SPAWN: ("require", False), _ENV: ("require", False)},
     "memo_reminder": {_PUSH: ("require", False)},
-    "music_pusher": {_PUSH: ("require", False), _ENV: ("require", False)},
-    "netease_music": {_NET: ("require", False), _PUSH: ("require", False)},
     "proactive_controller": {_NET: ("require", False)},
     "web_search": {_NET: ("require", False)},
 }
@@ -55,32 +41,14 @@ _EXPECTED = {
 # Possible uses the scan reports that are deliberately not declared, pinned to
 # their call sites (file, function, method), listed once per line the scan
 # reports (it keeps one finding per file and line), so a new call on another
-# line is not let through, not even in the same function:
-# writes inside the plugin's data directory, and a DNS-only socket import.
-_ALLOWED_POSSIBLE = {
-    "music_pusher": {
-        _FS_WRITE: [
-            ("__init__.py", "MusicPusherPlugin._backup_corrupt_file_locked", "os.replace"),
-            ("__init__.py", "MusicPusherPlugin._copy_static_ui_assets", "shutil.copy2"),
-            ("__init__.py", "MusicPusherPlugin._migrate_legacy_uploads", "shutil.copy2"),
-        ],
-        _NET: [("__init__.py", "", "import")],
-    },
-    "netease_music": {
-        _FS_WRITE: [
-            ("credentials.py", "CredentialStore._save_sync", "pathlib.Path().mkdir"),
-            ("credentials.py", "CredentialStore._atomic_write", "os.replace"),
-            ("credentials.py", "CredentialStore._atomic_write", "pathlib.Path().unlink"),
-        ],
-    },
-}
+# line is not let through, not even in the same function. Maps plugin id to
+# {permission: [(file, function, method), ...]}. No built-in plugin needs an
+# exception at present.
+_ALLOWED_POSSIBLE: dict[str, dict[str, list[tuple[str, str, str]]]] = {}
 
-# Declared uses the scan cannot see yet: app_launcher reads environment
-# variables through os.path.expandvars and its child processes inherit the
-# environment, neither of which the scanner recognises as system.env:read.
-_ALLOWED_UNUSED = {
-    "app_launcher": {_ENV},
-}
+# Declared uses the scan cannot see yet, as {plugin id: {permission, ...}}.
+# None at present.
+_ALLOWED_UNUSED: dict[str, set[str]] = {}
 
 pytestmark = pytest.mark.plugin_unit
 
