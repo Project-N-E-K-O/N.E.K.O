@@ -2582,7 +2582,7 @@
   },
   "schema_version": 5,
   "sdk_version": "0.1.0",
-  "source_bytes": 1218839,
+  "source_bytes": 1239968,
   "source_files": [
     "__init__.py",
     "config.schema.json",
@@ -2592,5 +2592,5 @@
     "static/vendor/postprocessing-6.35.6.min.js",
     "static/vendor/three-0.161.0.module.min.js"
   ],
-  "source_sha256": "525674545e827e07751aa12dc77fefaee4339ccbcaac6068b2a01ad2d57c11e1"
+  "source_sha256": "dbe20def3889cf1fbb975accb034285ac716e0b51aeac1310bc9af55929d1178"
 }

@@ -14,6 +14,7 @@ import base64
 import io
 import ipaddress
 import json
+import math
 import os
 import random
 import re
@@ -21,12 +22,15 @@ import shutil
 import socket
 import threading
 import time
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 from urllib.parse import ParseResult
 from uuid import uuid4
+
+from utils.file_utils import atomic_write_json as _utils_atomic_write_json
 
 try:
     import av  # type: ignore
@@ -55,6 +59,7 @@ _STATE_FILE_NAME = "scheduler_state.json"
 _UPLOAD_NAME_MAP_FILE_NAME = "upload_name_map.json"
 _LYRIC_MAP_FILE_NAME = "lyrics_map.json"
 _SCHEDULER_TICK_SECONDS = 1.0
+_SCHEDULER_SAVE_BACKOFF_SECONDS = 5.0
 _PUSH_TIMEOUT_SECONDS = 6.0
 _DEFAULT_TRACK_DURATION_SECONDS = 28
 _MIN_DURATION_SECONDS = 1
@@ -135,6 +140,21 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _sanitize_json_value(value: Any) -> Any:
+    """Recursively replace non-finite floats so strict JSON writes succeed."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _sanitize_json_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_json_value(v) for v in value]
+    return value
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    _utils_atomic_write_json(path, _sanitize_json_value(payload), ensure_ascii=False, indent=2)
+
+
 def _iso(dt: datetime | None = None) -> str:
     val = dt or _utc_now()
     return val.astimezone(timezone.utc).isoformat()
@@ -156,10 +176,14 @@ def _normalize_duration(raw: object, default: int = _DEFAULT_TRACK_DURATION_SECO
     if isinstance(raw, bool):
         return default
     if isinstance(raw, (int, float)):
-        sec = int(raw)
+        if isinstance(raw, float) and not math.isfinite(raw):
+            sec = default
+        else:
+            sec = int(raw)
     elif isinstance(raw, str):
         try:
-            sec = int(float(raw.strip()))
+            parsed = float(raw.strip())
+            sec = int(parsed) if math.isfinite(parsed) else default
         except Exception:
             sec = default
     else:
@@ -421,6 +445,9 @@ class MusicPusherPlugin(NekoPluginBase):
         self._tasks: dict[str, dict[str, Any]] = {}
         self._upload_name_map: dict[str, dict[str, Any]] = {}
         self._lyrics_map: dict[str, dict[str, Any]] = {}
+        self._degraded_state: dict[str, dict[str, str]] = {}
+        self._tasks_recovery_incomplete: bool = False
+        self._scheduler_save_backoff_until: float = 0.0
 
         self._active_task_id: str | None = None
         self._active_track: dict[str, Any] | None = None
@@ -777,6 +804,33 @@ class MusicPusherPlugin(NekoPluginBase):
             "updated_at": now_iso,
         }
 
+    def _backup_corrupt_file_locked(self, path: Path, reason: str) -> str:
+        degraded = getattr(self, "_degraded_state", None)
+        if degraded is None:
+            degraded = {}
+            self._degraded_state = degraded
+        backup_name = f"{path.name}.corrupt.{_utc_now().strftime('%Y%m%dT%H%M%SZ')}.{uuid4().hex[:6]}"
+        backup_path = path.with_name(backup_name)
+        recorded_backup = ""
+        try:
+            os.replace(path, backup_path)
+            recorded_backup = str(backup_path)
+            self.logger.error(
+                "MusicPusher backed up corrupt state file {} -> {} (reason={})",
+                path,
+                backup_path,
+                reason,
+            )
+        except OSError as exc:
+            self.logger.error(
+                "MusicPusher failed to back up corrupt state file {} (reason={}): {}",
+                path,
+                reason,
+                exc,
+            )
+        degraded[path.name] = {"reason": reason, "backup_path": recorded_backup}
+        return recorded_backup
+
     def _load_upload_name_map_locked(self) -> None:
         path = self._upload_name_map_file
         self._upload_name_map = {}
@@ -787,10 +841,13 @@ class MusicPusherPlugin(NekoPluginBase):
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception as exc:
             self.logger.warning(f"读取上传映射失败，将重建: {exc}")
+            self._backup_corrupt_file_locked(path, f"invalid_json: {exc}")
             return
 
         entries = data.get("entries") if isinstance(data, dict) else None
         if not isinstance(entries, dict):
+            self.logger.warning("读取上传映射失败，将重建: 映射文件结构无效")
+            self._backup_corrupt_file_locked(path, "invalid_schema")
             return
 
         cleaned: dict[str, dict[str, Any]] = {}
@@ -815,16 +872,16 @@ class MusicPusherPlugin(NekoPluginBase):
             }
         self._upload_name_map = cleaned
 
-    def _save_upload_name_map_locked(self) -> None:
-        self._upload_name_map_file.parent.mkdir(parents=True, exist_ok=True)
+    def _save_upload_name_map_locked(self, *, allow_skip: bool = False) -> None:
+        if not self._ensure_corrupt_backup_before_save_locked(
+            self._upload_name_map_file, allow_skip=allow_skip
+        ):
+            return
         payload = {
             "entries": self._upload_name_map,
             "updated_at": _iso(),
         }
-        self._upload_name_map_file.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        _atomic_write_json(self._upload_name_map_file, payload)
 
     def _upsert_upload_name_map_locked(
         self,
@@ -859,10 +916,13 @@ class MusicPusherPlugin(NekoPluginBase):
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception as exc:
             self.logger.warning(f"读取歌词映射失败，将重建: {exc}")
+            self._backup_corrupt_file_locked(path, f"invalid_json: {exc}")
             return
 
         entries = data.get("entries") if isinstance(data, dict) else None
         if not isinstance(entries, dict):
+            self.logger.warning("读取歌词映射失败，将重建: 映射文件结构无效")
+            self._backup_corrupt_file_locked(path, "invalid_schema")
             return
 
         cleaned: dict[str, dict[str, Any]] = {}
@@ -884,16 +944,16 @@ class MusicPusherPlugin(NekoPluginBase):
             }
         self._lyrics_map = cleaned
 
-    def _save_lyrics_map_locked(self) -> None:
-        self._lyrics_map_file.parent.mkdir(parents=True, exist_ok=True)
+    def _save_lyrics_map_locked(self, *, allow_skip: bool = False) -> None:
+        if not self._ensure_corrupt_backup_before_save_locked(
+            self._lyrics_map_file, allow_skip=allow_skip
+        ):
+            return
         payload = {
             "entries": self._lyrics_map,
             "updated_at": _iso(),
         }
-        self._lyrics_map_file.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        _atomic_write_json(self._lyrics_map_file, payload)
 
     def _bind_lyrics_to_item_locked(self, *, item_id: str, lyric_text: str, lyric_filename: str) -> None:
         clean_id = str(item_id or "").strip()
@@ -1114,16 +1174,18 @@ class MusicPusherPlugin(NekoPluginBase):
 
         return False
 
-    def _delete_upload_file_locked(self, stored_filename: str) -> None:
+    def _delete_upload_file_locked(self, stored_filename: str) -> bool:
         name = str(stored_filename or "").strip()
         if not name or name != Path(name).name:
-            return
+            return False
         upload_path = self._upload_dir / name
         try:
             if upload_path.exists() and upload_path.is_file():
                 upload_path.unlink()
+            return True
         except Exception as exc:
             self.logger.warning(f"删除上传音乐文件失败[{name}]: {exc}")
+            return False
 
     def _upload_filename_from_url(self, url: str) -> str:
         normalized_url = self._normalize_legacy_url(str(url or "").strip())
@@ -1151,17 +1213,106 @@ class MusicPusherPlugin(NekoPluginBase):
                 return _safe_text(track.get("title"), stored_filename)
         return ""
 
+    def _ensure_corrupt_backup_before_save_locked(
+        self, path: Path, *, allow_skip: bool = False
+    ) -> bool:
+        degraded = getattr(self, "_degraded_state", {})
+        info = degraded.get(path.name) if isinstance(degraded, dict) else None
+        if not isinstance(info, dict) or info.get("backup_path"):
+            return True
+        if not path.exists():
+            return True
+        recorded_backup = self._backup_corrupt_file_locked(
+            path, str(info.get("reason") or "corrupt")
+        )
+        if recorded_backup:
+            return True
+        if allow_skip:
+            self.logger.error(
+                "Skipping save for {} because corrupt backup failed",
+                path,
+            )
+            return False
+        raise OSError(f"Cannot persist {path.name}: failed to back up corrupt state file")
+
+    def _check_state_files_writable_locked(self, *paths: Path) -> str | None:
+        for path in paths:
+            if not self._ensure_corrupt_backup_before_save_locked(path, allow_skip=True):
+                return f"状态文件 {path.name} 损坏且暂无法备份，已拒绝保存以防数据丢失"
+        return None
+
+    def _list_corrupt_state_backups_locked(self) -> list[str] | None:
+        prefix = f"{self._state_file.name}.corrupt."
+        try:
+            entries = list(self._state_file.parent.iterdir())
+        except FileNotFoundError:
+            return []
+        except OSError as exc:
+            self.logger.warning(
+                "Failed to list corrupt state backups in {}: {}",
+                self._state_file.parent,
+                exc,
+            )
+            return None
+        backups: list[str] = []
+        for p in entries:
+            if not p.name.startswith(prefix):
+                continue
+            try:
+                if p.is_file():
+                    backups.append(str(p))
+            except OSError as exc:
+                self.logger.warning(
+                    "Failed to stat corrupt state backup {}: {}",
+                    p,
+                    exc,
+                )
+                return None
+        backups.sort()
+        return backups
+
+    def _has_corrupt_state_backup_locked(self) -> bool | None:
+        backups = self._list_corrupt_state_backups_locked()
+        if backups is None:
+            return None
+        return bool(backups)
+
+    def _has_incomplete_task_state_locked(self) -> bool:
+        return bool(
+            getattr(self, "_tasks_recovery_incomplete", False)
+            or self._state_file.name in getattr(self, "_degraded_state", {})
+        )
+
     def _gc_tombstoned_uploads_locked(self) -> bool:
+        if self._has_incomplete_task_state_locked():
+            self.logger.warning(
+                "Skipping tombstoned upload GC while scheduler state is degraded or incomplete"
+            )
+            return False
         removed = False
         for stored_filename, meta in list(self._upload_name_map.items()):
             if not _coerce_bool((meta or {}).get("deleted"), False):
                 continue
             if self._upload_file_referenced_by_tasks_locked(stored_filename):
                 continue
-            self._delete_upload_file_locked(stored_filename)
-            self._upload_name_map.pop(stored_filename, None)
-            removed = True
+            if self._delete_upload_file_locked(stored_filename):
+                self._upload_name_map.pop(stored_filename, None)
+                removed = True
         return removed
+
+    def _gc_and_save_tombstoned_uploads_locked(self) -> None:
+        prev_map = {k: dict(v) for k, v in self._upload_name_map.items()}
+        if not self._gc_tombstoned_uploads_locked():
+            return
+        try:
+            self._save_upload_name_map_locked()
+        except Exception as exc:
+            self._upload_name_map = prev_map
+            self.logger.warning(
+                "Failed to persist upload_name_map after tombstoned upload GC; "
+                "restoring tombstone entries in memory for retry: {}",
+                exc,
+            )
 
     def _make_queue_item_from_music_item(
         self,
@@ -1202,19 +1353,57 @@ class MusicPusherPlugin(NekoPluginBase):
         self._music_items = []
         self._tasks = {}
         self._attach_prompt_on_push = _DEFAULT_ATTACH_PROMPT_ON_PUSH
+        self._tasks_recovery_incomplete = False
 
         path = self._state_file
         if not path.exists():
+            has_backup = self._has_corrupt_state_backup_locked()
+            if has_backup is not False:
+                self.logger.warning(
+                    "scheduler_state.json missing while corrupt state backups {}; "
+                    "keeping tombstoned upload GC paused until backup state is confirmed clear",
+                    "still exist" if has_backup is True else "could not be listed",
+                )
+                self._tasks_recovery_incomplete = True
             return
 
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception as exc:
             self.logger.warning(f"读取调度状态失败，将重置为空状态: {exc}")
+            self._tasks_recovery_incomplete = True
+            self._backup_corrupt_file_locked(path, f"invalid_json: {exc}")
             return
         if not isinstance(data, dict):
             self.logger.warning("读取调度状态失败，将重置为空状态: 状态文件根节点不是对象")
+            self._tasks_recovery_incomplete = True
+            self._backup_corrupt_file_locked(path, "invalid_root_type")
             return
+        if _coerce_bool(data.get("tasks_recovery_incomplete"), False):
+            has_backup = self._has_corrupt_state_backup_locked()
+            if has_backup is False:
+                self.logger.info(
+                    "Corrupt scheduler state backups removed; clearing tasks_recovery_incomplete "
+                    "and resuming tombstoned upload GC"
+                )
+                self._tasks_recovery_incomplete = False
+            else:
+                if has_backup is None:
+                    self.logger.warning(
+                        "Could not list corrupt state backups; keeping tasks_recovery_incomplete active"
+                    )
+                self._tasks_recovery_incomplete = True
+        backed_up_corrupt = False
+        if (
+            data.get("music_items") is not None and not isinstance(data.get("music_items"), list)
+        ) or (
+            data.get("tasks") is not None and not isinstance(data.get("tasks"), list)
+        ):
+            self.logger.warning("读取调度状态失败，将进入降级状态并尽力恢复有效字段: 状态文件集合字段类型无效")
+            if data.get("tasks") is not None and not isinstance(data.get("tasks"), list):
+                self._tasks_recovery_incomplete = True
+            self._backup_corrupt_file_locked(path, "invalid_collection_type")
+            backed_up_corrupt = True
 
         raw_items = data.get("music_items")
         if isinstance(raw_items, list):
@@ -1226,7 +1415,7 @@ class MusicPusherPlugin(NekoPluginBase):
                     continue
                 if not str(it.get("url") or "").strip():
                     continue
-                normalized = dict(it)
+                normalized = _sanitize_json_value(dict(it))
                 normalized["url"] = self._normalize_legacy_url(str(it.get("url") or ""))
                 normalized["title"] = _safe_text(it.get("title"), "未命名音乐")
                 normalized["artist"] = _safe_text(it.get("artist"), "未知")
@@ -1249,28 +1438,37 @@ class MusicPusherPlugin(NekoPluginBase):
         raw_tasks = data.get("tasks")
         if isinstance(raw_tasks, list):
             tasks: dict[str, dict[str, Any]] = {}
+            dropped_task_entry = False
             for task in raw_tasks:
                 if not isinstance(task, dict):
+                    dropped_task_entry = True
                     continue
                 task_id = str(task.get("task_id") or "").strip()
                 if not task_id:
+                    dropped_task_entry = True
                     continue
                 queue = task.get("queue")
                 if not isinstance(queue, list):
+                    dropped_task_entry = True
                     continue
 
                 normalized_queue: list[dict[str, Any]] = []
                 for raw_q in queue:
                     if not isinstance(raw_q, dict):
+                        dropped_task_entry = True
                         continue
                     try:
-                        normalized_queue.append(self._make_queue_item_from_raw(raw_q))
+                        normalized_queue.append(
+                            _sanitize_json_value(self._make_queue_item_from_raw(raw_q))
+                        )
                     except Exception:
+                        dropped_task_entry = True
                         continue
                 if not normalized_queue:
+                    dropped_task_entry = True
                     continue
 
-                normalized = dict(task)
+                normalized = _sanitize_json_value(dict(task))
                 normalized["task_id"] = task_id
                 normalized["queue"] = normalized_queue
                 raw_status = str(task.get("status") or "pending")
@@ -1288,10 +1486,23 @@ class MusicPusherPlugin(NekoPluginBase):
                 normalized["target_lanlan"] = str(task.get("target_lanlan") or "").strip() or None
                 tasks[task_id] = normalized
 
+            if dropped_task_entry:
+                self.logger.warning(
+                    "Dropped invalid task or queue entries while loading scheduler state; "
+                    "backing up file and pausing tombstoned upload GC"
+                )
+                self._tasks_recovery_incomplete = True
+                if not backed_up_corrupt:
+                    self._backup_corrupt_file_locked(path, "invalid_task_entry")
+                    backed_up_corrupt = True
+
             self._tasks = tasks
 
-    def _save_state_locked(self) -> None:
-        self._state_file.parent.mkdir(parents=True, exist_ok=True)
+    def _save_state_locked(self, *, allow_skip: bool = False) -> bool:
+        if not self._ensure_corrupt_backup_before_save_locked(
+            self._state_file, allow_skip=allow_skip
+        ):
+            return False
         payload = {
             "music_items": self._music_items,
             "tasks": list(self._tasks.values()),
@@ -1300,10 +1511,10 @@ class MusicPusherPlugin(NekoPluginBase):
             },
             "updated_at": _iso(),
         }
-        self._state_file.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        if getattr(self, "_tasks_recovery_incomplete", False):
+            payload["tasks_recovery_incomplete"] = True
+        _atomic_write_json(self._state_file, payload)
+        return True
 
     def _serialize_task(self, task: dict[str, Any]) -> dict[str, Any]:
         raw_queue = task.get("queue")
@@ -1362,10 +1573,18 @@ class MusicPusherPlugin(NekoPluginBase):
                 "trigger_at": nxt.get("trigger_at"),
             }
 
+        degraded_files = dict(getattr(self, "_degraded_state", {}) or {})
+        tasks_recovery_incomplete = bool(getattr(self, "_tasks_recovery_incomplete", False))
+        corrupt_state_backups = self._list_corrupt_state_backups_locked()
         return {
             "active": active,
             "next_task": next_task,
             "playback": dict(self._playback_state),
+            "degraded": bool(degraded_files or tasks_recovery_incomplete),
+            "degraded_files": degraded_files,
+            "tasks_recovery_incomplete": tasks_recovery_incomplete,
+            "upload_gc_paused": bool(self._has_incomplete_task_state_locked()),
+            "corrupt_state_backups": corrupt_state_backups if corrupt_state_backups is not None else [],
             "now": _iso(),
         }
 
@@ -1747,6 +1966,8 @@ class MusicPusherPlugin(NekoPluginBase):
         self._migrate_legacy_uploads()
         self._upload_dir.mkdir(parents=True, exist_ok=True)
         self._state_file.parent.mkdir(parents=True, exist_ok=True)
+        self._degraded_state = {}
+        self._scheduler_save_backoff_until = 0.0
         async with self._state_lock:
             await self._load_state()
             self._load_upload_name_map_locked()
@@ -1754,9 +1975,24 @@ class MusicPusherPlugin(NekoPluginBase):
             self._refresh_upload_urls_in_tasks_locked()
             self._rebuild_music_items_from_uploads_locked()
             self._refresh_upload_urls_in_tasks_locked()
-            self._save_upload_name_map_locked()
-            self._save_lyrics_map_locked()
-            self._save_state_locked()
+            for label, saver in (
+                ("scheduler_state", self._save_state_locked),
+                ("upload_name_map", self._save_upload_name_map_locked),
+                ("lyrics_map", self._save_lyrics_map_locked),
+            ):
+                try:
+                    saver(allow_skip=True)
+                except Exception as exc:
+                    self.logger.error(
+                        "Failed to persist {} during startup: {}",
+                        label,
+                        exc,
+                    )
+        if self._degraded_state:
+            self.logger.error(
+                "MusicPusher started in degraded state; backed up corrupt files: {}",
+                self._degraded_state,
+            )
         self._install_push_mapper()
         self._register_writable_static_ui()
         self._scheduler_stop.clear()
@@ -1804,7 +2040,13 @@ class MusicPusherPlugin(NekoPluginBase):
                     live_task["last_error"] = "插件关闭后任务已停止，请手动继续"
                     live_task["finished_at"] = _iso()
                     live_task["updated_at"] = _iso()
-            self._save_state_locked()
+            try:
+                self._save_state_locked(allow_skip=True)
+            except Exception as exc:
+                self.logger.error(
+                    "Failed to persist scheduler_state during shutdown: {}",
+                    exc,
+                )
 
         self._uninstall_push_mapper()
 
@@ -1849,6 +2091,15 @@ class MusicPusherPlugin(NekoPluginBase):
         lyric_text, lyric_name, lyric_err = _decode_optional_lyric(lyric_base64, lyric_filename)
         if lyric_err:
             return Err(SdkError(lyric_err))
+
+        async with self._state_lock:
+            save_err = self._check_state_files_writable_locked(
+                self._upload_name_map_file,
+                self._lyrics_map_file,
+                self._state_file,
+            )
+            if save_err:
+                return Err(SdkError(save_err))
 
         stored_filename, music_url = await asyncio.to_thread(self._save_upload_file, binary, ext)
         absolute_url = self._to_absolute_ui_url(music_url)
@@ -1899,6 +2150,15 @@ class MusicPusherPlugin(NekoPluginBase):
                 return Err(SdkError("推送超时"))
 
         async with self._state_lock:
+            save_err = self._check_state_files_writable_locked(
+                self._upload_name_map_file,
+                self._lyrics_map_file,
+                self._state_file,
+            )
+            if save_err:
+                if not pushed:
+                    self._delete_upload_file_locked(stored_filename)
+                return Err(SdkError(save_err))
             self._music_items.append(created_item)
             self._upsert_upload_name_map_locked(
                 stored_filename=stored_filename,
@@ -2014,6 +2274,7 @@ class MusicPusherPlugin(NekoPluginBase):
         item_id = ""
         item: dict[str, Any] | None = None
         pushed = False
+        save_paths: tuple[Path, ...] = ()
         if add_to_library:
             item = self._build_music_item(
                 url=link,
@@ -2024,6 +2285,15 @@ class MusicPusherPlugin(NekoPluginBase):
             )
             if lyric_clean:
                 item["lyric_text"] = lyric_clean
+            save_paths = (
+                (self._state_file, self._lyrics_map_file)
+                if lyric_clean
+                else (self._state_file,)
+            )
+            async with self._state_lock:
+                pre_save_err = self._check_state_files_writable_locked(*save_paths)
+                if pre_save_err:
+                    return Err(SdkError(pre_save_err))
 
         if auto_push:
             push_deadline = time.monotonic() + _PUSH_TIMEOUT_SECONDS
@@ -2045,23 +2315,71 @@ class MusicPusherPlugin(NekoPluginBase):
             if not pushed:
                 return Err(SdkError("推送超时"))
 
+        saved = False
+        save_error = ""
         if item is not None:
+            new_item_id = str(item.get("item_id") or "")
             async with self._state_lock:
-                self._music_items.append(item)
-                if lyric_clean:
-                    self._bind_lyrics_to_item_locked(
-                        item_id=str(item.get("item_id") or ""),
-                        lyric_text=lyric_clean,
-                        lyric_filename="manual_lyric.txt",
+                recheck_err = self._check_state_files_writable_locked(*save_paths)
+                if recheck_err:
+                    save_error = recheck_err
+                else:
+                    has_prev_lyric = bool(lyric_clean and new_item_id and new_item_id in self._lyrics_map)
+                    prev_lyric_entry = (
+                        dict(self._lyrics_map[new_item_id])
+                        if has_prev_lyric
+                        else None
                     )
-                    self._save_lyrics_map_locked()
-                self._save_state_locked()
-            item_id = str(item.get("item_id") or "")
+                    self._music_items.append(item)
+                    try:
+                        if lyric_clean:
+                            self._bind_lyrics_to_item_locked(
+                                item_id=new_item_id,
+                                lyric_text=lyric_clean,
+                                lyric_filename="manual_lyric.txt",
+                            )
+                            self._save_lyrics_map_locked()
+                        self._save_state_locked()
+                        saved = True
+                        item_id = new_item_id
+                    except Exception as exc:
+                        self._music_items[:] = [
+                            existing for existing in self._music_items if existing is not item
+                        ]
+                        if lyric_clean and new_item_id:
+                            if prev_lyric_entry is not None:
+                                self._lyrics_map[new_item_id] = prev_lyric_entry
+                            else:
+                                self._lyrics_map.pop(new_item_id, None)
+                        save_error = str(exc) or "保存状态失败"
+
+        if save_error:
+            if auto_push and pushed:
+                return Ok(
+                    {
+                        "pushed": True,
+                        "saved": False,
+                        "save_error": save_error,
+                        "chain": "music_play_url + proactive_notification",
+                        "url": link,
+                        "title": final_title,
+                        "artist": final_artist,
+                        "target_lanlan": target_lanlan,
+                        "item_id": "",
+                        "duration_sec": final_duration,
+                        "detected_duration_sec": detected_duration,
+                        "duration_mode": "manual_override" if duration_sec is not None else "auto_detect",
+                        "lyric_bound": bool(lyric_clean),
+                        "attach_prompt_on_push": attach_prompt,
+                        "message": f"已推送播放，但保存到曲库失败: {save_error}",
+                    }
+                )
+            return Err(SdkError(save_error))
 
         return Ok(
             {
                 "pushed": bool(auto_push and pushed),
-                "saved": bool(add_to_library),
+                "saved": bool(saved),
                 "chain": "music_play_url + proactive_notification",
                 "url": link,
                 "title": final_title,
@@ -2182,6 +2500,9 @@ class MusicPusherPlugin(NekoPluginBase):
     )
     async def set_push_settings(self, attach_prompt_on_push: bool, **_):
         async with self._state_lock:
+            save_err = self._check_state_files_writable_locked(self._state_file)
+            if save_err:
+                return Err(SdkError(save_err))
             self._attach_prompt_on_push = bool(attach_prompt_on_push)
             self._save_state_locked()
         return Ok({"attach_prompt_on_push": bool(self._attach_prompt_on_push), "message": "设置成功"})
@@ -2225,6 +2546,17 @@ class MusicPusherPlugin(NekoPluginBase):
 
         async with self._state_lock:
             deleted_item = self._find_music_item_locked(item_id=target)
+            if deleted_item is None and all(
+                str(it.get("item_id") or "") != target for it in self._music_items
+            ):
+                return Ok({"deleted": False, "item_id": target})
+            save_err = self._check_state_files_writable_locked(
+                self._state_file,
+                self._lyrics_map_file,
+                self._upload_name_map_file,
+            )
+            if save_err:
+                return Err(SdkError(save_err))
             before = len(self._music_items)
             self._music_items = [it for it in self._music_items if str(it.get("item_id") or "") != target]
             deleted = len(self._music_items) != before
@@ -2232,7 +2564,10 @@ class MusicPusherPlugin(NekoPluginBase):
                 self._lyrics_map.pop(target, None)
                 stored_filename = str((deleted_item or {}).get("stored_filename") or "").strip()
                 if stored_filename and stored_filename == Path(stored_filename).name:
-                    if self._upload_file_referenced_by_tasks_locked(stored_filename):
+                    if (
+                        self._upload_file_referenced_by_tasks_locked(stored_filename)
+                        or self._has_incomplete_task_state_locked()
+                    ):
                         prev = self._upload_name_map.get(stored_filename) or {}
                         self._upload_name_map[stored_filename] = {
                             "stored_filename": stored_filename,
@@ -2328,6 +2663,9 @@ class MusicPusherPlugin(NekoPluginBase):
             missing_upload = self._missing_upload_reference_in_queue_locked(queue)
             if missing_upload:
                 return Err(SdkError(f"上传音频已不存在，请重新选择: {missing_upload}"))
+            save_err = self._check_state_files_writable_locked(self._state_file)
+            if save_err:
+                return Err(SdkError(save_err))
 
             task_id = f"tsk_{uuid4().hex[:10]}"
             task = {
@@ -2429,7 +2767,16 @@ class MusicPusherPlugin(NekoPluginBase):
                 return Err(SdkError("任务不存在"))
             if str(task.get("status") or "") == "running":
                 return Err(SdkError("任务执行中，暂不允许编辑"))
+            paths = (
+                (self._state_file, self._upload_name_map_file)
+                if next_queue is not None
+                else (self._state_file,)
+            )
+            save_err = self._check_state_files_writable_locked(*paths)
+            if save_err:
+                return Err(SdkError(save_err))
 
+            prev_task = dict(task)
             trigger_changed = False
             trigger_updated = False
             if parsed_trigger is not None:
@@ -2459,11 +2806,11 @@ class MusicPusherPlugin(NekoPluginBase):
             if next_queue is not None:
                 missing_upload = self._missing_upload_reference_in_queue_locked(next_queue)
                 if missing_upload:
+                    task.clear()
+                    task.update(prev_task)
                     return Err(SdkError(f"上传音频已不存在，请重新选择: {missing_upload}"))
                 task["queue"] = next_queue
                 task["total_duration_sec"] = _calc_total_duration(next_queue)
-                if self._gc_tombstoned_uploads_locked():
-                    self._save_upload_name_map_locked()
 
             task_status = str(task.get("status") or "")
             should_reset_execution = trigger_changed or trigger_updated or task_status == "pending"
@@ -2474,7 +2821,14 @@ class MusicPusherPlugin(NekoPluginBase):
                 task["last_error"] = ""
                 task["current_index"] = 0
             task["updated_at"] = _iso()
-            self._save_state_locked()
+            try:
+                self._save_state_locked()
+            except Exception:
+                task.clear()
+                task.update(prev_task)
+                raise
+            if next_queue is not None:
+                self._gc_and_save_tombstoned_uploads_locked()
 
         self._ensure_scheduler_task()
         return Ok({"updated": True, "task_id": target_id, "message": "获取成功"})
@@ -2500,11 +2854,23 @@ class MusicPusherPlugin(NekoPluginBase):
         async with self._state_lock:
             if self._active_task_id == target_id:
                 return Err(SdkError("任务执行中，暂不允许删除"))
-            deleted = self._tasks.pop(target_id, None) is not None
-            if deleted:
-                if self._gc_tombstoned_uploads_locked():
-                    self._save_upload_name_map_locked()
-                self._save_state_locked()
+            if target_id not in self._tasks:
+                return Ok({"deleted": False, "task_id": target_id})
+            save_err = self._check_state_files_writable_locked(
+                self._state_file,
+                self._upload_name_map_file,
+            )
+            if save_err:
+                return Err(SdkError(save_err))
+            removed_task = self._tasks.pop(target_id, None)
+            deleted = removed_task is not None
+            if removed_task is not None:
+                try:
+                    self._save_state_locked()
+                except Exception:
+                    self._tasks[target_id] = removed_task
+                    raise
+                self._gc_and_save_tombstoned_uploads_locked()
         return Ok({"deleted": deleted, "task_id": target_id})
 
     @plugin_entry(
@@ -2533,6 +2899,9 @@ class MusicPusherPlugin(NekoPluginBase):
                 return Err(SdkError("任务不存在"))
             if str(task.get("status") or "") == "running":
                 return Err(SdkError("任务已在执行中"))
+            save_err = self._check_state_files_writable_locked(self._state_file)
+            if save_err:
+                return Err(SdkError(save_err))
 
             task["trigger_at"] = _iso(_utc_now())
             task["status"] = "pending"
@@ -2707,6 +3076,8 @@ class MusicPusherPlugin(NekoPluginBase):
         async with self._state_lock:
             if self._active_task_id is not None:
                 return
+            if time.monotonic() < float(getattr(self, "_scheduler_save_backoff_until", 0.0)):
+                return
             now = _utc_now()
             pending = [
                 t for t in self._tasks.values()
@@ -2732,240 +3103,313 @@ class MusicPusherPlugin(NekoPluginBase):
             current_execution_task = asyncio.current_task()
             if current_execution_task is not None:
                 self._active_execution_task = current_execution_task
-
-            async with self._state_lock:
-                task = self._tasks.get(task_id)
-                if task is None:
-                    return
-                if str(task.get("status") or "") != "pending":
-                    return
-
-                queue = task.get("queue")
-                if not isinstance(queue, list) or not queue:
-                    task["status"] = "failed"
-                    task["last_error"] = "任务队列为空"
-                    task["updated_at"] = _iso()
-                    task["finished_at"] = _iso()
-                    self._save_state_locked()
-                    return
-
-                task["status"] = "running"
-                task["started_at"] = _iso()
-                task["finished_at"] = None
-                task["last_error"] = ""
-                task["current_index"] = 0
-                task["updated_at"] = _iso()
-                self._active_task_id = task_id
-                self._active_control = None
-                self._active_cancel_event = None
-                self._active_track = None
-                self._active_track_started_at = None
-                self._active_track_duration = 0
-                target_lanlan = str(task.get("target_lanlan") or "").strip() or self._resolve_target_lanlan({})
-                self._save_state_locked()
-
-            success_count = 0
-            last_error = ""
-            stopped_by_user = False
-            queue_size = len(queue)
-            index = 0
-
-            async def _consume_control() -> str | None:
-                async with self._state_lock:
-                    cmd = self._active_control
-                    self._active_control = None
-                    return cmd
-
             try:
-                while index < queue_size:
-                    if self._scheduler_stop.is_set():
-                        last_error = "插件关闭或重载，中断本次执行"
-                        break
+                async with self._state_lock:
+                    task = self._tasks.get(task_id)
+                    if task is None:
+                        return
+                    if str(task.get("status") or "") != "pending":
+                        return
 
-                    cmd_before = await _consume_control()
-                    if cmd_before == _CTRL_STOP:
-                        stopped_by_user = True
-                        last_error = "用户手动停止任务"
-                        break
-                    if cmd_before == _CTRL_PREV:
-                        index = max(0, index - 1)
-                        continue
-                    if cmd_before == _CTRL_NEXT:
-                        index = min(queue_size - 1, index + 1)
-
-                    track = queue[index]
-
-                    if not isinstance(track, dict):
-                        last_error = f"第 {index + 1} 首队列项格式无效"
-                        index += 1
-                        continue
-
-                    url = self._normalize_legacy_url(str(track.get("url") or "").strip())
-                    title = _safe_text(track.get("title"), "未命名音乐")
-                    artist = _safe_text(track.get("artist"), "未知")
-                    duration = _normalize_duration(track.get("duration_sec"))
-                    lyric_text = str(track.get("lyric_text") or "").replace("\r\n", "\n").strip()
-                    if not lyric_text:
-                        async with self._state_lock:
-                            source_item = self._find_music_item_locked(
-                                item_id=str(track.get("item_id") or ""),
-                                url=url,
-                                title=title,
-                                artist=artist,
+                    queue = task.get("queue")
+                    if not isinstance(queue, list) or not queue:
+                        task["status"] = "failed"
+                        task["last_error"] = "任务队列为空"
+                        task["updated_at"] = _iso()
+                        task["finished_at"] = _iso()
+                        try:
+                            self._save_state_locked(allow_skip=True)
+                        except Exception as exc:
+                            self.logger.warning(
+                                "Failed to save empty-queue task state for {}: {}",
+                                task_id,
+                                exc,
                             )
-                            lyric_text = self._lyric_text_for_item_locked(source_item)
+                        return
 
-                    if not url:
-                        last_error = f"第 {index + 1} 首缺少 URL"
-                        index += 1
-                        continue
-
-                    async with self._state_lock:
-                        task_live = self._tasks.get(task_id)
-                        if task_live is None:
-                            break
-                        attach_prompt_on_push = bool(self._attach_prompt_on_push)
-                        task_live["current_index"] = index + 1
-                        task_live["updated_at"] = _iso()
-                        self._active_track = {
-                            "index": index + 1,
-                            "total": queue_size,
-                            "title": title,
-                            "artist": artist,
-                            "url": url,
-                        }
-                        self._active_track_started_at = time.time()
-                        self._active_track_duration = duration
-                        self._playback_state = {
-                            "status": "running",
-                            "position_sec": 0.0,
-                            "duration_sec": float(duration),
-                            "updated_at": _iso(),
-                            "track_url": url,
-                            "track_title": title,
-                        }
-                        self._save_state_locked()
-
-                    pushed_track = False
-                    track_cancel_event = threading.Event()
-                    async with self._state_lock:
-                        if self._active_task_id == task_id:
-                            self._active_cancel_event = track_cancel_event
-                    try:
-                        push_deadline = time.monotonic() + _PUSH_TIMEOUT_SECONDS
-                        pushed_track = await self._push_music_link_with_timeout(
-                            url=url,
-                            title=title,
-                            artist=artist,
-                            target_lanlan=target_lanlan,
-                            lyric_text=lyric_text,
-                            attach_prompt_on_push=attach_prompt_on_push,
-                            deadline_monotonic=push_deadline,
-                            cancel_event=_CombinedCancelEvent(self._push_cancel_event, run_cancel_event, track_cancel_event),
+                    prev_task_fields = {
+                        key: task.get(key)
+                        for key in (
+                            "status",
+                            "started_at",
+                            "finished_at",
+                            "last_error",
+                            "current_index",
+                            "updated_at",
                         )
-                        if not pushed_track:
-                            raise asyncio.TimeoutError
-                        success_count += 1
-                    except asyncio.TimeoutError:
-                        last_error = f"推送超时[{title}]"
-                        self.logger.warning(last_error)
+                    }
+                    task["status"] = "running"
+                    task["started_at"] = _iso()
+                    task["finished_at"] = None
+                    task["last_error"] = ""
+                    task["current_index"] = 0
+                    task["updated_at"] = _iso()
+                    target_lanlan = str(task.get("target_lanlan") or "").strip() or self._resolve_target_lanlan({})
+                    save_exc: Exception | None = None
+                    try:
+                        save_ok = self._save_state_locked(allow_skip=True)
                     except Exception as exc:
-                        last_error = f"推送失败[{title}]: {exc}"
-                        self.logger.warning(last_error)
-                    finally:
-                        async with self._state_lock:
-                            if self._active_cancel_event is track_cancel_event:
-                                self._active_cancel_event = None
+                        save_ok = False
+                        save_exc = exc
+                    if not save_ok:
+                        task.update(prev_task_fields)
+                        self._active_task_id = None
+                        self._active_control = None
+                        self._active_cancel_event = None
+                        self._active_track = None
+                        self._active_track_started_at = None
+                        self._active_track_duration = 0
+                        self._scheduler_save_backoff_until = (
+                            time.monotonic() + _SCHEDULER_SAVE_BACKOFF_SECONDS
+                        )
+                        self.logger.warning(
+                            "Deferring execution for task {} because running state could not be saved: {}",
+                            task_id,
+                            save_exc if save_exc is not None else "corrupt backup blocked save",
+                        )
+                        return
 
-                    if not pushed_track:
-                        async with self._state_lock:
-                            task_live = self._tasks.get(task_id)
-                            if task_live is not None:
-                                task_live["updated_at"] = _iso()
-                                self._playback_state = {
-                                    "status": "idle",
-                                    "position_sec": 0.0,
-                                    "duration_sec": 0.0,
-                                    "updated_at": _iso(),
-                                    "track_url": "",
-                                    "track_title": "",
-                                }
-                                self._save_state_locked()
-                        index += 1
-                        continue
-
-                    switch_to_prev = False
-                    switch_to_next = False
-                    end_at = time.time() + duration
-                    while time.time() < end_at and not self._scheduler_stop.is_set():
-                        await asyncio.sleep(0.25)
-                        now_pos = max(0.0, min(float(duration), time.time() - float(self._active_track_started_at or time.time())))
-                        self._playback_state = {
-                            "status": "running",
-                            "position_sec": round(now_pos, 2),
-                            "duration_sec": float(duration),
-                            "updated_at": _iso(),
-                            "track_url": url,
-                            "track_title": title,
-                        }
-
-                        cmd = await _consume_control()
-                        if cmd == _CTRL_STOP:
-                            stopped_by_user = True
-                            last_error = "用户手动停止任务"
-                            break
-                        if cmd == _CTRL_PREV:
-                            switch_to_prev = True
-                            break
-                        if cmd == _CTRL_NEXT:
-                            switch_to_next = True
-                            break
-
-                    if stopped_by_user:
-                        break
-                    if self._scheduler_stop.is_set():
-                        last_error = "插件关闭或重载，中断本次执行"
-                        break
-
-                    if switch_to_prev:
-                        index = max(0, index - 1)
-                        continue
-                    if switch_to_next:
-                        index = min(queue_size, index + 1)
-                        continue
-
-                    index += 1
-
-                async with self._state_lock:
-                    task_done = self._tasks.get(task_id)
-                    if task_done is not None:
-                        total = len(task_done.get("queue") or [])
-                        if stopped_by_user:
-                            final_status = "stopped"
-                        elif self._scheduler_stop.is_set():
-                            final_status = "stopped"
-                        else:
-                            final_status = "completed" if success_count > 0 and not last_error else "failed"
-                        task_done["status"] = final_status
-                        task_done["finished_at"] = _iso()
-                        task_done["updated_at"] = _iso()
-                        task_done["current_index"] = min(total, max(0, int(index)))
-                        task_done["last_error"] = last_error
-                        self._save_state_locked()
-            finally:
-                async with self._state_lock:
-                    self._active_task_id = None
+                    self._scheduler_save_backoff_until = 0.0
+                    self._active_task_id = task_id
                     self._active_control = None
                     self._active_cancel_event = None
                     self._active_track = None
                     self._active_track_started_at = None
                     self._active_track_duration = 0
-                    self._playback_state = {
-                        "status": "idle",
-                        "position_sec": 0.0,
-                        "duration_sec": 0.0,
-                        "updated_at": _iso(),
-                        "track_url": "",
-                        "track_title": "",
-                    }
-                    self._save_state_locked()
+
+                success_count = 0
+                last_error = ""
+                stopped_by_user = False
+                queue_size = len(queue)
+                index = 0
+
+                async def _consume_control() -> str | None:
+                    async with self._state_lock:
+                        cmd = self._active_control
+                        self._active_control = None
+                        return cmd
+
+                try:
+                    while index < queue_size:
+                        if self._scheduler_stop.is_set():
+                            last_error = "插件关闭或重载，中断本次执行"
+                            break
+
+                        cmd_before = await _consume_control()
+                        if cmd_before == _CTRL_STOP:
+                            stopped_by_user = True
+                            last_error = "用户手动停止任务"
+                            break
+                        if cmd_before == _CTRL_PREV:
+                            index = max(0, index - 1)
+                            continue
+                        if cmd_before == _CTRL_NEXT:
+                            index = min(queue_size - 1, index + 1)
+
+                        track = queue[index]
+
+                        if not isinstance(track, dict):
+                            last_error = f"第 {index + 1} 首队列项格式无效"
+                            index += 1
+                            continue
+
+                        url = self._normalize_legacy_url(str(track.get("url") or "").strip())
+                        title = _safe_text(track.get("title"), "未命名音乐")
+                        artist = _safe_text(track.get("artist"), "未知")
+                        duration = _normalize_duration(track.get("duration_sec"))
+                        lyric_text = str(track.get("lyric_text") or "").replace("\r\n", "\n").strip()
+                        if not lyric_text:
+                            async with self._state_lock:
+                                source_item = self._find_music_item_locked(
+                                    item_id=str(track.get("item_id") or ""),
+                                    url=url,
+                                    title=title,
+                                    artist=artist,
+                                )
+                                lyric_text = self._lyric_text_for_item_locked(source_item)
+
+                        if not url:
+                            last_error = f"第 {index + 1} 首缺少 URL"
+                            index += 1
+                            continue
+
+                        async with self._state_lock:
+                            task_live = self._tasks.get(task_id)
+                            if task_live is None:
+                                break
+                            attach_prompt_on_push = bool(self._attach_prompt_on_push)
+                            task_live["current_index"] = index + 1
+                            task_live["updated_at"] = _iso()
+                            self._active_track = {
+                                "index": index + 1,
+                                "total": queue_size,
+                                "title": title,
+                                "artist": artist,
+                                "url": url,
+                            }
+                            self._active_track_started_at = time.time()
+                            self._active_track_duration = duration
+                            self._playback_state = {
+                                "status": "running",
+                                "position_sec": 0.0,
+                                "duration_sec": float(duration),
+                                "updated_at": _iso(),
+                                "track_url": url,
+                                "track_title": title,
+                            }
+                            try:
+                                self._save_state_locked(allow_skip=True)
+                            except Exception as exc:
+                                self.logger.warning(
+                                    "Failed to save track start state for task {}: {}",
+                                    task_id,
+                                    exc,
+                                )
+
+                        pushed_track = False
+                        track_cancel_event = threading.Event()
+                        async with self._state_lock:
+                            if self._active_task_id == task_id:
+                                self._active_cancel_event = track_cancel_event
+                        try:
+                            push_deadline = time.monotonic() + _PUSH_TIMEOUT_SECONDS
+                            pushed_track = await self._push_music_link_with_timeout(
+                                url=url,
+                                title=title,
+                                artist=artist,
+                                target_lanlan=target_lanlan,
+                                lyric_text=lyric_text,
+                                attach_prompt_on_push=attach_prompt_on_push,
+                                deadline_monotonic=push_deadline,
+                                cancel_event=_CombinedCancelEvent(self._push_cancel_event, run_cancel_event, track_cancel_event),
+                            )
+                            if not pushed_track:
+                                raise asyncio.TimeoutError
+                            success_count += 1
+                        except asyncio.TimeoutError:
+                            last_error = f"推送超时[{title}]"
+                            self.logger.warning(last_error)
+                        except Exception as exc:
+                            last_error = f"推送失败[{title}]: {exc}"
+                            self.logger.warning(last_error)
+                        finally:
+                            async with self._state_lock:
+                                if self._active_cancel_event is track_cancel_event:
+                                    self._active_cancel_event = None
+
+                        if not pushed_track:
+                            async with self._state_lock:
+                                task_live = self._tasks.get(task_id)
+                                if task_live is not None:
+                                    task_live["updated_at"] = _iso()
+                                    self._playback_state = {
+                                        "status": "idle",
+                                        "position_sec": 0.0,
+                                        "duration_sec": 0.0,
+                                        "updated_at": _iso(),
+                                        "track_url": "",
+                                        "track_title": "",
+                                    }
+                                    try:
+                                        self._save_state_locked(allow_skip=True)
+                                    except Exception as exc:
+                                        self.logger.warning(
+                                            "Failed to save failed track state for task {}: {}",
+                                            task_id,
+                                            exc,
+                                        )
+                            index += 1
+                            continue
+
+                        switch_to_prev = False
+                        switch_to_next = False
+                        end_at = time.time() + duration
+                        while time.time() < end_at and not self._scheduler_stop.is_set():
+                            await asyncio.sleep(0.25)
+                            now_pos = max(0.0, min(float(duration), time.time() - float(self._active_track_started_at or time.time())))
+                            self._playback_state = {
+                                "status": "running",
+                                "position_sec": round(now_pos, 2),
+                                "duration_sec": float(duration),
+                                "updated_at": _iso(),
+                                "track_url": url,
+                                "track_title": title,
+                            }
+
+                            cmd = await _consume_control()
+                            if cmd == _CTRL_STOP:
+                                stopped_by_user = True
+                                last_error = "用户手动停止任务"
+                                break
+                            if cmd == _CTRL_PREV:
+                                switch_to_prev = True
+                                break
+                            if cmd == _CTRL_NEXT:
+                                switch_to_next = True
+                                break
+
+                        if stopped_by_user:
+                            break
+                        if self._scheduler_stop.is_set():
+                            last_error = "插件关闭或重载，中断本次执行"
+                            break
+
+                        if switch_to_prev:
+                            index = max(0, index - 1)
+                            continue
+                        if switch_to_next:
+                            index = min(queue_size, index + 1)
+                            continue
+
+                        index += 1
+
+                    async with self._state_lock:
+                        task_done = self._tasks.get(task_id)
+                        if task_done is not None:
+                            total = len(task_done.get("queue") or [])
+                            if stopped_by_user:
+                                final_status = "stopped"
+                            elif self._scheduler_stop.is_set():
+                                final_status = "stopped"
+                            else:
+                                final_status = "completed" if success_count > 0 and not last_error else "failed"
+                            task_done["status"] = final_status
+                            task_done["finished_at"] = _iso()
+                            task_done["updated_at"] = _iso()
+                            task_done["current_index"] = min(total, max(0, int(index)))
+                            task_done["last_error"] = last_error
+                            try:
+                                self._save_state_locked(allow_skip=True)
+                            except Exception as exc:
+                                self.logger.warning(
+                                    "Failed to save final task state for {}: {}",
+                                    task_id,
+                                    exc,
+                                )
+                finally:
+                    async with self._state_lock:
+                        self._active_task_id = None
+                        self._active_control = None
+                        self._active_cancel_event = None
+                        self._active_track = None
+                        self._active_track_started_at = None
+                        self._active_track_duration = 0
+                        self._playback_state = {
+                            "status": "idle",
+                            "position_sec": 0.0,
+                            "duration_sec": 0.0,
+                            "updated_at": _iso(),
+                            "track_url": "",
+                            "track_title": "",
+                        }
+                        try:
+                            self._save_state_locked(allow_skip=True)
+                        except Exception as exc:
+                            self.logger.warning(
+                                "Failed to save idle state after task {}: {}",
+                                task_id,
+                                exc,
+                            )
+            finally:
+                if current_execution_task is not None and self._active_execution_task is current_execution_task:
+                    self._active_execution_task = None
