@@ -1061,3 +1061,65 @@ def test_a_whole_plugin_denial_covers_permissions_set_back_to_undecided(env):
     assert rows[MEMORY]["state"] == "denied" and rows[CONVERSATIONS]["state"] == "denied"
     # Outside what the dialog decides: the user's own choice stays.
     assert env.store.read("p")["permissions"][SPAWN]["state"] == "undecided"
+
+
+def test_refusals_from_before_a_source_change_stay_answered_after_a_restart(env):
+    env.plugin("p", report=_report())
+    before = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    env.store.decide("p", SPAWN, "granted", source=PluginSource("market", "m-1"))
+    env.store.sync_source("p", PluginSource("market", "m-2"))
+    env.sources["p"] = PluginSource("market", "m-2")
+    # Rebuilt from the files after a restart: the old code's refusal.
+    env.index.observe(_system_use("p", SPAWN, verdict="would_deny", reason="undecided", ts=before))
+    assert permission_panel.pending(index=env.index)["first_use"] == []
+
+    later = (datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat()
+    env.index.observe(_system_use("p", SPAWN, verdict="would_deny", reason="undecided", ts=later))
+    assert [row["permission"] for row in permission_panel.pending(index=env.index)["first_use"]] == [SPAWN]
+
+
+def test_a_withdrawn_whole_plugin_denial_keeps_earlier_refusals_answered(env):
+    env.plugin("p", manifest=None, report=_report())
+    before = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    env.store.decide("p", MEMORY, "granted")
+    env.store.clear("p", MEMORY)
+    env.store.apply_legacy_decision("p", "denied")
+    env.store.apply_legacy_decision("p", None)  # revoked: undecided again
+    env.index.observe(_decision("p", MEMORY, verdict="would_deny", reason="self_not_approved", ts=before))
+    assert permission_panel.pending(index=env.index)["first_use"] == []
+
+
+def test_a_legacy_decision_time_does_not_answer_other_permissions(env):
+    env.plugin("p", manifest=None, report=_report())
+    before = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    env.store.apply_legacy_decision("p", "approved", ["memory.read"])
+    env.index.observe(_system_use("p", SPAWN, verdict="would_deny", reason="undecided", ts=before))
+    assert [row["permission"] for row in permission_panel.pending(index=env.index)["first_use"]] == [SPAWN]
+
+
+def test_an_unsaved_reset_shows_no_moving_time(store):
+    store.decide("x", MEMORY, "granted", source=MARKET)
+    first = store.view("x", MANUAL)[GRANTS_RESET]
+    assert first == {"at": None, "reason": "source_changed"}
+    assert store.view("x", MANUAL)[GRANTS_RESET] == first
+    assert permission_panel._grants_reset(store.view("x", MANUAL)) == first
+
+
+def test_clearing_a_permission_a_whole_plugin_denial_does_not_cover_writes_nothing(store):
+    store.decide("x", MEMORY, "granted", source=MARKET)
+    store.sync_source("x", MANUAL)  # reset
+    store.apply_legacy_decision("x", "denied", source=MANUAL)
+    store.decide("x", CONNECT, "granted", source=MANUAL)
+    store.sync_source("x", MARKET)  # reset again
+    before = store.read("x")
+    assert GRANTS_RESET in before
+
+    store.clear("x", FS_READ, source=MARKET)  # no legacy name: undecided already
+
+    assert store.read("x") == before
+
+
+def test_forgetting_a_refusal_does_not_read_the_audit_files(tmp_path):
+    index = _index(tmp_path)
+    index.forget_refused("a", MEMORY)
+    assert index._seeded is False

@@ -343,8 +343,8 @@ class UsageIndex:
 
     def forget_refused(self, plugin_id: str, permission: str) -> None:
         """The user decided ``permission`` for ``plugin_id``: earlier refusals
-        no longer ask for a decision."""
-        self.ensure_seeded()
+        no longer ask for a decision. Does not read the audit files: refusals
+        seeded later are filtered by the stored decision time."""
         with self._lock:
             self._refused.pop((plugin_id, permission), None)
 

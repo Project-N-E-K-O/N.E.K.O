@@ -17,6 +17,7 @@ Document shape (``schema_version`` 1)::
           "legacy_denied": true,       # optional, see LEGACY_DENIED
           "legacy_approved": true,     # optional, see LEGACY_APPROVED
           "grants_reset": {"at": "<iso>", "reason": "source_changed"},  # optional, see GRANTS_RESET
+          "legacy_decided_at": "<iso>",  # optional, see LEGACY_DECIDED_AT
           "permissions": {
             "<permission id>": {
               "state": "granted" | "denied" | "undecided",
@@ -100,6 +101,9 @@ KEPT_ON_SOURCE_CHANGE: frozenset[str] = frozenset({LEGACY_DENIED})
 # permission panel can tell the user why they are asked again. Cleared by the
 # next decision for that plugin.
 GRANTS_RESET = "grants_reset"
+# When the consent dialog last decided for the whole plugin (approve, deny or
+# revoke): the time the user answered for the permissions it covers.
+LEGACY_DECIDED_AT = "legacy_decided_at"
 RESET_SOURCE_CHANGED = "source_changed"
 
 
@@ -495,7 +499,11 @@ class PluginPermissionStore:
             record["source_mismatch"] = (
                 known is not None and current is not None and known != current
             )
+            had_reset = GRANTS_RESET in record
             self._apply_source(record, current)
+            if GRANTS_RESET in record and not had_reset:
+                # Not saved yet: no time to show (it would move on every read).
+                record[GRANTS_RESET] = {**record[GRANTS_RESET], "at": None}
         return record
 
     def sync_source(self, plugin_id: str, current: PluginSource | None) -> dict:
@@ -684,7 +692,9 @@ class PluginPermissionStore:
                 entry = (record.get("permissions") or {}).get(known_id)
                 if isinstance(entry, dict) and entry.get("state") == STATE_UNDECIDED:
                     return copy.deepcopy(record)
-                if entry is None and not record.get(LEGACY_DENIED):
+                if entry is None and not (record.get(LEGACY_DENIED) and known_id in LEGACY_IDS):
+                    # Undecided already (a whole-plugin denial covers only
+                    # the permissions with a legacy name).
                     return copy.deepcopy(record)
             document = copy.deepcopy(self._document)
             record = document["plugins"][plugin_id]
@@ -805,6 +815,7 @@ class PluginPermissionStore:
             if record == self._document["plugins"].get(plugin_id):
                 return copy.deepcopy(record)
             record["updated_at"] = now
+            record[LEGACY_DECIDED_AT] = now
             self._commit(manager, document)
             return copy.deepcopy(record)
 

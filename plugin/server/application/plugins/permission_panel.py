@@ -57,6 +57,8 @@ from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.plugin_permissions import (
     CONDITION_ANYTIME,
     GRANTS_RESET,
+    LEGACY_DECIDED_AT,
+    LEGACY_IDS,
     LEGACY_APPROVED,
     LEGACY_DENIED,
 )
@@ -386,10 +388,13 @@ def _source(record: dict) -> dict:
 
 
 def _grants_reset(record: dict) -> dict | None:
+    """``at`` is None while the reset is seen but not saved yet (the plugin
+    has not started from its new source)."""
     value = record.get(GRANTS_RESET)
-    if not isinstance(value, dict) or not isinstance(value.get("at"), str):
+    if not isinstance(value, dict):
         return None
-    return {"at": value["at"], "reason": value.get("reason")}
+    at = value.get("at")
+    return {"at": at if isinstance(at, str) else None, "reason": value.get("reason")}
 
 
 def plugin_panel(plugin_id: str, *, index: UsageIndex = usage_index) -> dict:
@@ -434,6 +439,19 @@ def _all_rows(index: UsageIndex) -> list[tuple[_PluginInputs, list[dict]]]:
         inputs = _inputs(plugin_id, meta)
         out.append((inputs, _rows(inputs, index, checks_off, now)))
     return out
+
+
+_NEVER = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _answered_at(record: dict, permission: str, entry: dict) -> datetime:
+    """The last time the user answered for ``permission`` or the plugin's
+    code changed source: refusals up to then ask nothing. Stored times only,
+    so the answer is the same after the index is rebuilt from the files."""
+    times = [_parse_time(entry.get("decided_at")), _parse_time(record.get("source_changed_at"))]
+    if permission in LEGACY_IDS:
+        times.append(_parse_time(record.get(LEGACY_DECIDED_AT)))
+    return max((time for time in times if time is not None), default=_NEVER)
 
 
 def _has_decision(record: dict) -> bool:
@@ -493,9 +511,8 @@ def _pending(plugins: list[tuple[_PluginInputs, list[dict]]], index: UsageIndex)
             if seen is None or states[permission].status != "undecided":
                 continue
             entry = stored.get(permission) if isinstance(stored.get(permission), dict) else {}
-            decided = _parse_time(entry.get("decided_at"))
-            if decided is not None and seen[0] <= decided:
-                continue  # refused before the user last set it
+            if seen[0] <= _answered_at(inputs.record, permission, entry):
+                continue  # refused before the user last answered, or by the code before an update
             first_use.append(
                 {
                     "plugin_id": inputs.plugin_id,
@@ -658,7 +675,8 @@ def check_condition_allowed(plugin_id: str, permission: str, state_value: str, c
     """Raise unless ``condition`` may be chosen when granting ``permission``.
 
     "Any time" needs the plugin to declare background use of it, or to have
-    no declaration at all (the item is then inferred from the scan).
+    no usable declaration (none, or an invalid ``[permissions]`` table, as in
+    the pending list): the item is then inferred from the scan.
     """
     if state_value != "granted" or condition != CONDITION_ANYTIME:
         return
