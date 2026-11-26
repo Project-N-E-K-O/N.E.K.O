@@ -2575,6 +2575,85 @@ async def test_stopping_a_commission_stops_its_child_task_agents(hosts, tmp_path
     assert (await host.ledger.get(sub.id)).status == "cancelled"
 
 
+async def test_a_task_agent_a_stop_could_not_close_is_closed_when_it_is_stopped_again(hosts, tmp_path, monkeypatch):
+    release, wait = _gate()
+    parent = ScriptedLLM(
+        [
+            [call("subagent", {"description": "part one", "prompt": "Do part one."}), finish("tool_calls")],
+            [call("wait_agent", {"timeout_ms": 600_000}, "c2"), finish("tool_calls")],
+            _report("ready", "done"),
+        ]
+    )
+    child = ScriptedLLM([[wait, say("part one done"), finish()]])
+    host = _host(hosts, tmp_path, lambda spec: parent if spec.top_level else child)
+    receipt = await _dispatch(host, "do the work in two parts")
+    await wait_until(lambda: _child_working(host, receipt.commission_id), what="the child task agent working")
+    (sub,) = await host.ledger.select(parent_id=receipt.commission_id)
+    close = host.task_agents._close_session
+    failing = {sub.id}
+
+    async def close_session(session: Any) -> None:
+        if session.commission_id in failing:
+            failing.discard(session.commission_id)
+            raise RuntimeError("the runtime did not answer")
+        await close(session)
+
+    monkeypatch.setattr(host.task_agents, "_close_session", close_session)
+
+    # The child's session could not be closed, and the stop says so; both are stopped all the same.
+    with pytest.raises(RuntimeError, match="the runtime did not answer"):
+        await host.abort(receipt.commission_id)
+    assert [(await host.ledger.get(one)).status for one in (receipt.commission_id, sub.id)] == ["cancelled"] * 2
+    assert sub.id in host.task_agents.running
+
+    # Stopped again: what is still open of it, the child it started included, is closed.
+    again = await host.abort(receipt.commission_id)
+
+    assert (again.status, again.status_reason) == ("cancelled", "stopped")
+    await wait_until(lambda: host.task_agents.running == [], what="both sessions being closed")
+    release.set()
+    await host.brain.settle()
+    assert (await host.ledger.get(sub.id)).status_reason == "its parent was stopped"
+
+
+async def test_stopping_again_reaches_the_task_agents_it_started_that_were_stopped_and_no_others(hosts, tmp_path, monkeypatch):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    parent = await _filed(host, "do the work")
+    await host.ledger.transition(parent.id, "working", reason="test")
+    children: dict[str, str] = {}
+    for status, path in (
+        ("working", ["working"]),
+        ("blocked", ["working", "blocked"]),
+        ("cancelled", ["cancelled"]),
+        ("done", ["working", "done"]),
+        ("failed", ["working", "failed"]),
+    ):
+        child = await _filed(host, f"part {status}", parent_id=parent.id)
+        for step in path:
+            await host.ledger.transition(child.id, step, reason="test")
+        children[child.id] = status
+    await host.ledger.transition(parent.id, "cancelled", reason="test")
+    stopped: list[str] = []
+    abort = host.task_agents.abort
+
+    async def recorded(commission_id: str) -> None:
+        stopped.append(commission_id)
+        await abort(commission_id)
+
+    monkeypatch.setattr(host.task_agents, "abort", recorded)
+
+    await host.task_agents.abort(parent.id)
+
+    # Those under way are stopped with it, and those stopped already are looked at again (one
+    # whose closing failed is closed so); those that ended otherwise are left as they are.
+    assert sorted(children[one] for one in stopped[1:]) == ["blocked", "cancelled", "working"]
+    after = {children[one.id]: one for one in await host.ledger.select(parent_id=parent.id)}
+    assert {status: one.status for status, one in after.items()} == {
+        "working": "cancelled", "blocked": "cancelled", "cancelled": "cancelled", "done": "done", "failed": "failed",
+    }
+    assert after["cancelled"].status_reason == "test"
+
+
 async def test_parent_is_not_done_while_a_task_agent_it_started_still_works(hosts, tmp_path):
     release, wait = _gate()
     parent = ScriptedLLM(

@@ -159,6 +159,10 @@ _STOPPED_MEANWHILE_REASON = "stopped while it was being taken up again"
 _WOKEN_REASON = "it rested; what it waited for takes it up again"
 _ASK_NOT_HANDED_OVER_REASON = "the question could not be handed to the copy that was to answer it"
 _ASK_NOT_ASKED_REASON = "not asked after all"
+# The task agents a stopped commission started that ``abort`` stops with it:
+# those under way, and those stopped already, whose closing may have failed.
+# Not those that ended otherwise: their sessions are theirs to keep.
+_STOPPABLE_CHILD_STATUSES = ACTIVE_STATUSES | {"cancelled"}
 # Tools a task agent that another task agent started is not offered: it
 # starts none itself, writes to its own team only (and asks other sessions
 # nothing), and hands its result back when its part is done instead of
@@ -6590,9 +6594,14 @@ class TaskAgentManager(TreeWork):
     async def abort(self, commission_id: str) -> None:
         """Stop a commission's task agent, and the task agents it started.
 
-        The caller has set the commission ``cancelled`` already.
+        The caller has set the commission ``cancelled`` already. Calling
+        this again for it does nothing more than closing what is still open
+        of it: one whose closing failed at the stop is closed then. So are
+        the task agents it started that were stopped already (with it, or
+        before it): one whose own closing failed is closed this way too.
         """
-        for child in await self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES):
+        for child in await self._ledger.select(parent_id=commission_id, statuses=_STOPPABLE_CHILD_STATUSES):
+            # (Refused, writing nothing, for one that was stopped already.)
             await self._ledger.transition(child.id, "cancelled", reason="its parent was stopped")
             await self.abort(child.id)
         if commission_id in self._queue:

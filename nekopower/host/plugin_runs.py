@@ -597,7 +597,9 @@ class PluginRunner:
 
         Never raises for a failed call; the outcome says what happened. When
         the caller is cancelled while waiting, the run is cancelled on the
-        plugin server as well.
+        plugin server as well, and so is a run the wait for which timed out
+        or whose polling failed: such a run stays among the commission's
+        runs until the plugin server takes the cancel.
 
         ``housekeeping`` is for a call the host makes on its own account and
         no model chose (handing a deferred task's id to the plugin's
@@ -749,6 +751,9 @@ class PluginRunner:
 
         self._active.setdefault(commission_id, set()).add(run_id)
         lost = False
+        # Why the wait for it was given up on, when it was: what the
+        # cancel sent then gives as its reason.
+        given_up = ""
         try:
             if on_run_created is not None:
                 try:
@@ -766,7 +771,8 @@ class PluginRunner:
             except Exception as exc:  # noqa: BLE001 - reported, never raised
                 logger.warning("waiting for run %s failed: %s", run_id, type(exc).__name__)
                 completion = {"status": "unknown", "success": False, "data": None, "error": str(exc)}
-            lost = bool(completion.pop("lost", False))
+            given_up = str(completion.pop("lost", "") or "")
+            lost = bool(given_up)
         except asyncio.CancelledError:
             # Whoever waited for this run is gone, at whichever point after
             # the run came to exist; the run must not go on. Until the plugin
@@ -781,11 +787,12 @@ class PluginRunner:
             if not lost:
                 self._untrack(commission_id, run_id)
         if lost:
-            # Nobody follows the run any more, and it may still be going: it
-            # is cancelled, and stays known to the commission until the plugin
+            # Nobody follows the run any more (its polling failed, or the
+            # wait for it timed out), and it may still be going: it is
+            # cancelled, and stays known to the commission until the plugin
             # server accepts that, so stopping the commission asks again.
             self._lost[run_id] = commission_id
-            self._cancel_in_background(run_id, "polling failed")
+            self._cancel_in_background(run_id, given_up)
 
         success = bool(completion.get("success"))
         return RunOutcome(
@@ -882,11 +889,15 @@ class PluginRunner:
                 _reraise_swallowed_cancellation()
                 remaining = None if deadline is None else deadline - loop.time()
                 if remaining is not None and remaining <= 0:
+                    # Given up on, though the run may still be going on the
+                    # plugin server: it is cancelled, as a run whose polling
+                    # failed is.
                     return {
                         "status": "timeout",
                         "success": False,
                         "data": None,
                         "error": f"Timed out waiting for run {run_id} ({timeout}s)",
+                        "lost": "timed out",
                     }
                 try:
                     response = await client.get(f"{base}/runs/{run_id}")
@@ -908,7 +919,7 @@ class PluginRunner:
                                     f"Run {run_id} polling failed "
                                     f"({consecutive_errors} consecutive HTTP {response.status_code})"
                                 ),
-                                "lost": True,
+                                "lost": "polling failed",
                             }
                     else:
                         parsed = response.json()
@@ -949,7 +960,7 @@ class PluginRunner:
                                 f"Run {run_id} polling failed "
                                 f"({consecutive_errors} consecutive transport errors)"
                             ),
-                            "lost": True,
+                            "lost": "polling failed",
                         }
                 pause = self._poll_interval if remaining is None else min(self._poll_interval, remaining)
                 await asyncio.sleep(pause)
