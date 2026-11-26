@@ -110,8 +110,8 @@ from utils.http.url import same_endpoint
 _warned_invalid_workspace_fields: set[str] = set()
 
 
-def _warn_invalid_workspace_id_once(field: str) -> None:
-    """Warn once per field about an invalid stored workspace ID (the config is re-read on every lookup)."""
+def _warn_invalid_workspace_host_once(field: str) -> None:
+    """Warn once per field about an invalid stored workspace host (the config is re-read on every lookup)."""
     if field in _warned_invalid_workspace_fields:
         return
     _warned_invalid_workspace_fields.add(field)
@@ -154,8 +154,22 @@ class CoreConfigMixin:
         aget_core_config): resolution is then pure dict work and needs no thread hop.
         """
         if core_config is not None:
-            return self.get_model_api_config(model_type, _core_config=core_config)
-        return await asyncio.to_thread(self.get_model_api_config, model_type)
+            result = self.get_model_api_config(model_type, _core_config=core_config)
+        else:
+            result = await asyncio.to_thread(self.get_model_api_config, model_type)
+        if model_type == 'decision' and isinstance(result, dict):
+            # Whether an OpenRouter model is a decision model was just decided from the
+            # catalog; keep it current for later lookups. Scheduled here, on the event loop
+            # (resolution ran in a thread), because callers such as memory recall only call
+            # the decision client once the slot already resolved to a native protocol.
+            from utils.decision_client.openrouter_catalog import (
+                is_openrouter_url,
+                schedule_refresh_if_stale,
+            )
+
+            if is_openrouter_url(result.get('decision_url') or result.get('base_url')):
+                schedule_refresh_if_stale()
+        return result
 
     def _read_core_config_file(self):
         """Parsed ``core_config.json`` (runtime copy, else the bundled one).
@@ -1116,8 +1130,8 @@ class CoreConfigMixin:
             'ASSIST_API_KEY_DOUBAO_TTS': '',
             'ASSIST_API_KEY_QWEN_TOKEN_PLAN': '',
             'ASSIST_API_KEY_QWEN_INTL': '',
-            'ASSIST_WORKSPACE_ID_QWEN': '',
-            'ASSIST_WORKSPACE_ID_QWEN_INTL': '',
+            'ASSIST_WORKSPACE_HOST_QWEN': '',
+            'ASSIST_WORKSPACE_HOST_QWEN_INTL': '',
             'ASSIST_API_KEY_MINIMAX': '',
             'ASSIST_API_KEY_MINIMAX_INTL': '',
             'ASSIST_API_KEY_MIMO': '',
@@ -1242,19 +1256,19 @@ class CoreConfigMixin:
         config['ASSIST_API_KEY_REQUESTY'] = core_cfg.get('assistApiKeyRequesty', '')
         config['ASSIST_API_KEY_OPPER'] = core_cfg.get('assistApiKeyOpper', '')
         config['ASSIST_API_KEY_ATLASCLOUD'] = core_cfg.get('assistApiKeyAtlascloud', '')
-        # Bailian workspace IDs end up inside a hostname: a hand-edited invalid
-        # value is ignored (treated as unset) instead of being trusted here.
-        from config.api_profiles import ASSIST_WORKSPACE_ID_FIELDS
-        from utils.decision_client.workspace import (
-            InvalidWorkspaceIdError,
-            normalize_workspace_id,
-        )
-        for _ws_file_field, _ws_config_key in ASSIST_WORKSPACE_ID_FIELDS.values():
-            try:
-                config[_ws_config_key] = normalize_workspace_id(core_cfg.get(_ws_file_field, ''))
-            except InvalidWorkspaceIdError:
-                config[_ws_config_key] = ''
-                _warn_invalid_workspace_id_once(_ws_file_field)
+        # Bailian workspace hosts end up inside a hostname: a hand-edited invalid
+        # value is ignored (treated as unset) instead of being trusted here. A
+        # file saved before hosts were stored still has the ID-only field.
+        from config.api_profiles import ASSIST_WORKSPACE_HOST_FIELDS
+        from utils.decision_client.workspace import stored_workspace_host
+        for _ws_file_field, _ws_legacy_field, _ws_config_key in ASSIST_WORKSPACE_HOST_FIELDS.values():
+            config[_ws_config_key] = stored_workspace_host(core_cfg, _ws_file_field, _ws_legacy_field)
+            if not config[_ws_config_key]:
+                for _ws_field in (_ws_file_field, _ws_legacy_field):
+                    _ws_raw = core_cfg.get(_ws_field)
+                    if isinstance(_ws_raw, str) and _ws_raw.strip():
+                        _warn_invalid_workspace_host_once(_ws_field)
+                        break
 
         if core_cfg.get('mcpToken'):
             config['MCP_ROUTER_API_KEY'] = core_cfg['mcpToken']
@@ -2376,11 +2390,12 @@ class CoreConfigMixin:
                 profile_model=profile_model,
             )
             # Workspace-only native endpoints (Bailian decision-model-preview): the
-            # profile carries a host template that needs the user's workspace ID.
-            # It applies only while the slot still targets the profile's primary
-            # service; a hand-entered URL (custom provider or gateway) wins, and a
-            # different regional host (e.g. DashScope US) has no documented
-            # decision endpoint and would reject that region's key anyway.
+            # profile carries a host template filled with the user's saved
+            # workspace API Host. It applies only while the slot still targets the
+            # profile's own service; a hand-entered URL (custom provider or
+            # gateway) wins. A saved bare workspace ID takes its region from the
+            # chat endpoint the key resolved to, and a region without a documented
+            # decision endpoint (e.g. DashScope US) decides with chat instead.
             native_unavailable_reason = ''
             decision_url_template = str(profile.get('DECISION_URL_TEMPLATE') or '').strip()
             if (
@@ -2389,19 +2404,16 @@ class CoreConfigMixin:
                 and base_url_matches_profile
                 and not profile_decision_url
             ):
-                primary_url = str(profile.get('OPENROUTER_URL') or '').strip()
-                workspace_url = ''
-                if not base_url or not primary_url or same_endpoint(base_url, primary_url):
-                    from config.api_profiles import ASSIST_WORKSPACE_ID_FIELDS
-                    from utils.decision_client.workspace import build_workspace_decision_url
+                from config.api_profiles import ASSIST_WORKSPACE_HOST_FIELDS
+                from utils.decision_client.workspace import resolve_workspace_decision_url
 
-                    workspace_fields = ASSIST_WORKSPACE_ID_FIELDS.get(effective_provider)
-                    workspace_id = core_config.get(workspace_fields[1], '') if workspace_fields else ''
-                    workspace_url = build_workspace_decision_url(decision_url_template, workspace_id)
-                    native_unavailable_reason = '' if workspace_url else 'workspace_missing'
-                else:
-                    native_unavailable_reason = 'region_unsupported'
-                profile_decision_url = workspace_url
+                workspace_fields = ASSIST_WORKSPACE_HOST_FIELDS.get(effective_provider)
+                stored_workspace = core_config.get(workspace_fields[2], '') if workspace_fields else ''
+                profile_decision_url, native_unavailable_reason = resolve_workspace_decision_url(
+                    decision_url_template,
+                    stored_workspace,
+                    base_url or str(profile.get('OPENROUTER_URL') or '').strip(),
+                )
 
             decision_url = resolve_decision_endpoint(
                 decision_protocol,

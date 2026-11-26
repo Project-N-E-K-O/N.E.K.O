@@ -23,18 +23,18 @@ the caller's responsibility.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
-from typing import Any, Protocol
+from collections.abc import Callable
 
 import httpx
 
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
 from ..delivery import begin_transport_write, complete_transport_write, interval_delivery_spans, retire_interval_deliveries
+from ._http_transcription import HttpClient, post_wav_transcription
 from ._shared import (
     MAX_SEGMENT_PCM_BYTES,
     PCM16_SAMPLE_WIDTH_BYTES,
+    AsrRequestFailure,
     encode_pcm16_wav,
-    is_auth_rejection,
 )
 
 
@@ -46,23 +46,32 @@ _HTTP_TIMEOUT_SECONDS = 35.0
 _UtteranceKey = tuple[int, int, int]
 
 
-class _HttpResponse(Protocol):
-    status_code: int
-
-    def raise_for_status(self) -> None: ...
-
-    def json(self) -> Any: ...
+# Kept under the worker's historical names; the request itself is shared with
+# the offline layer through ``post_wav_transcription``.
+_HttpClient = HttpClient
+_GlmRequestFailure = AsrRequestFailure
 
 
-class _HttpClient(Protocol):
-    async def post(self, url: str, **kwargs: Any) -> _HttpResponse: ...
+async def request_glm_transcript(
+    client: HttpClient,
+    api_key: str,
+    wav_audio: bytes,
+    *,
+    model: str = GLM_ASR_MODEL,
+    on_sent: Callable[[], None] | None = None,
+) -> str:
+    """Submit one WAV file to GLM ASR and return its transcript."""
 
-
-class _GlmRequestFailure(Exception):
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
+    return await post_wav_transcription(
+        client,
+        url=GLM_ASR_URL,
+        api_key=api_key,
+        wav_audio=wav_audio,
+        form_fields={"model": model},
+        code_prefix="ASR_GLM",
+        provider_label="GLM",
+        on_sent=on_sent,
+    )
 
 
 async def _transcribe(
@@ -78,57 +87,26 @@ async def _transcribe(
     try:
         wav_audio = encode_pcm16_wav(pcm16)
         evidence = begin_transport_write(request_queue, delivery_spans=delivery_spans)
-        response = await client.post(
-            GLM_ASR_URL,
-            headers={"Authorization": f"Bearer {api_key}"},
-            data={"model": GLM_ASR_MODEL},
-            files={"file": ("audio.wav", wav_audio, "audio/wav")},
+        text = await request_glm_transcript(
+            client,
+            api_key,
+            wav_audio,
+            on_sent=lambda: complete_transport_write(
+                evidence, len(pcm16), generation=generation,
+                buffer_epoch=buffer_epoch, provider="glm",
+                delivery_spans=delivery_spans, takes_ownership=True,
+            ),
         )
-        complete_transport_write(
-            evidence, len(pcm16), generation=generation,
-            buffer_epoch=buffer_epoch, provider="glm",
-            delivery_spans=delivery_spans, takes_ownership=True,
-        )
-        response.raise_for_status()
-    except asyncio.CancelledError:
+    except (asyncio.CancelledError, AsrRequestFailure):
         raise
-    except httpx.HTTPStatusError as exc:
-        if is_auth_rejection(exc):
-            raise _GlmRequestFailure(
-                "ASR_CREDENTIALS_REJECTED",
-                "GLM credentials were rejected",
-            ) from exc
-        raise _GlmRequestFailure(
-            "ASR_GLM_ERROR",
-            "GLM transcription request was rejected",
-        ) from exc
-    except httpx.TimeoutException as exc:
-        raise _GlmRequestFailure(
-            "ASR_GLM_TIMEOUT",
-            "GLM transcription request timed out",
-        ) from exc
     except Exception as exc:
         raise _GlmRequestFailure(
             "ASR_GLM_WORKER_FAILED",
             "GLM transcription request failed",
         ) from exc
-
     finally:
         retire_interval_deliveries(request_queue, only_spans=delivery_spans)
 
-    try:
-        payload = response.json()
-    except Exception as exc:
-        raise _GlmRequestFailure(
-            "ASR_GLM_PROTOCOL_ERROR",
-            "GLM returned an invalid response",
-        ) from exc
-    if not isinstance(payload, Mapping) or not isinstance(payload.get("text"), str):
-        raise _GlmRequestFailure(
-            "ASR_GLM_PROTOCOL_ERROR",
-            "GLM returned an invalid transcript response",
-        )
-    text = payload["text"].strip()
     return _AsrWorkerEvent(
         kind="final",
         generation=generation,

@@ -99,7 +99,9 @@ from nekopower.host.paths import DEFAULT_PROJECT, DSH_SESSION_NAME, TRANSCRIPT_N
 from nekopower.host.permissions import (
     CHOICES,
     DENIED_BY_SETTINGS,
+    DENIED_BY_USER,
     GrantScope,
+    OPEN_BESIDE,
     OPEN_SESSION,
     SPACE_COMMAND,
     USAGE_LIMIT,
@@ -318,6 +320,23 @@ class _SessionAction:
         if not self.active():
             self.record.status = "denied"
             raise RuntimeError(DENIED_BY_SETTINGS)
+
+
+@dataclass(slots=True)
+class _Beside:
+    """A queued commission the user is asked about: whether another member is to do it beside the busy one it waits for (``_beside``)."""
+
+    # The session it waits for.
+    main: str
+    # What the user says: resolved by the answer (``answer``), or by taking back what was
+    # asked (``_withdraw_beside``). Nobody waits for it where nobody is asked.
+    answer: "asyncio.Future[dict[str, Any]]"
+    # Why what was asked was taken back, when it was: ``free`` (the session came free: it starts
+    # there as it would have), ``stopped`` (the commission was), ``closed`` (the host shuts down).
+    withdrawn: str = ""
+    # Nothing starts in the session until this is seen to (``_handing_back_to``): it came free
+    # meanwhile.
+    held: bool = False
 
 
 @dataclass(slots=True)
@@ -1308,6 +1327,9 @@ class TaskAgentManager(TreeWork):
         # was asked of, what it was asked about and what it said: asked once
         # for the same words (``_is_side_question``).
         self._side_question_judge: Callable[[str, str, str], Awaitable[bool | None]] | None = None
+        # What tells whether work told apart from what a busy member is at goes on with it
+        # all the same (``set_beside_judge``).
+        self._beside_judge: Callable[[str, str, str, list[str]], Awaitable[bool | None]] | None = None
         # Where her commissions go, and the members and leaders of projects.
         from nekopower.host.families import Families
 
@@ -1352,6 +1374,15 @@ class TaskAgentManager(TreeWork):
         # moment, or that a commission is being put on record with a copy
         # of, each with how many: nothing else starts in them meanwhile.
         self._handing_back_to: dict[str, int] = {}
+        # Commissions of hers that went to the member that works in a project without a
+        # leader for being that member's project's, and say something plainly apart from
+        # what it works on (``Verdict.apart``), each with that member: from where it is
+        # queued (``submit``) to where it is looked at, once (``_try_beside``).
+        self._apart: dict[str, str] = {}
+        # The queued commissions the user is asked about, or that another member is being
+        # made for: whether another member is to do them beside the busy one they wait
+        # for (``_beside``). They keep their places in the queue meanwhile.
+        self._asking_beside: dict[str, _Beside] = {}
         self._starting: set[asyncio.Task[Any]] = set()
         self._control_settlements: set[asyncio.Task[None]] = set()
         self._read_corrections: dict[str, tuple[call_audit.Call, str, str | None]] = {}
@@ -1660,6 +1691,17 @@ class TaskAgentManager(TreeWork):
         """
         self.families.set_judge(judge)
 
+    def set_beside_judge(self, judge: Callable[[str, str, str, list[str]], Awaitable[bool | None]] | None) -> None:
+        """Set what tells whether a commission goes on with what a busy member is at (``LexicalDecisionModel.goes_on_with``).
+
+        It is given what was dispatched, the user's words (with what they said
+        to it since), the member's name and what it has under way. Asked once,
+        before the user is asked whether another member is to do it, or one is
+        opened for it with nobody asked (``_beside``). Without one, the words
+        alone tell it (``orchestrator.apart_from``).
+        """
+        self._beside_judge = judge
+
     def set_side_question_judge(self, judge: Callable[[str, str, str], Awaitable[bool | None]] | None) -> None:
         """Set what tells whether a commission is a side question (``LexicalDecisionModel.side_question``).
 
@@ -1793,12 +1835,17 @@ class TaskAgentManager(TreeWork):
         stops = self._idle_stops
         if commission.route != "task_agent":
             await self._ledger.update(commission.id, route="task_agent")
+        # Whether it was told apart from what the member it went to works on (``_give_session``):
+        # kept here, and on record only once it is queued behind that member (``_try_beside``).
+        apart: str | None = None
         if not self._closed:
             try:
                 commission = await self._out_of_copy(commission)
                 commission = await self._give_session(commission)
+                apart = self._apart.pop(commission.id, None)
             except asyncio.CancelledError:
                 self._excerpts.pop(commission.id, None)
+                self._apart.pop(commission.id, None)
                 raise
             except Exception as exc:  # noqa: BLE001 - the commission fails with the reason
                 logger.warning("giving commission %s a session failed: %s", commission.id, exc)
@@ -1879,8 +1926,13 @@ class TaskAgentManager(TreeWork):
                 # be started from there later.
                 logger.warning("noting that commission %s is queued failed", commission.id, exc_info=True)
             # Queued behind another commission of its session: it may be
-            # carried on in a copy of the session meanwhile.
-            self._try_carry_on(commission)
+            # carried on in a copy of the session meanwhile. Where it is not
+            # looked at for that, or is not carried on after all, another
+            # member may do it beside that session's (``_try_beside``).
+            if apart is not None:
+                self._apart[commission.id] = apart
+            if not self._try_carry_on(commission):
+                self._try_beside(commission.id)
             return True
         # Started as a task of its own: whoever handed the commission over may
         # be cancelled (the host shutting down), and a session half set up
@@ -1924,6 +1976,11 @@ class TaskAgentManager(TreeWork):
     def _session_free_for(self, commission_id: str) -> bool:
         """Whether a commission's session is held by no other commission."""
         session_id = self._session_of.get(commission_id, "")
+        if commission_id in self._asking_beside:
+            # The user is asked whether another member is to do it, or one is being made for
+            # it: it starts nowhere until that is settled (``_beside``), whoever looks, and
+            # however free its session is by then.
+            return False
         if self._handing_back_to.get(session_id):
             # A commission a copy handed back is being put back in its place
             # among those that wait for the session (``_handed_back``).
@@ -2031,6 +2088,9 @@ class TaskAgentManager(TreeWork):
             verdict = await self.families.decide(commission)
             commission, session = await self.families.place(commission, verdict)
             self._session_of[commission.id] = session.id
+            if verdict.apart and verdict.agent:
+                # Should it wait for that member, the user may be asked whether another is to do it (``_try_beside``).
+                self._apart[commission.id] = verdict.agent
             guessed: set[str] = set()
             if verdict.members and commission.project:
                 # Those that became the project's members count as ones that change files from
@@ -3455,6 +3515,11 @@ class TaskAgentManager(TreeWork):
             if commission is None or commission.status not in ("queued", "blocked", "failed", "waiting_user"):
                 self._discard(commission_id)
                 return False
+            if not commission.session_id:
+                # On record with no session: the user was asked whether another member is to do it,
+                # and it could not be put back among the queued with its session (``_ask_beside``).
+                # It is the session's it starts in.
+                commission = await self._ledger.update(commission_id, session_id=session.session_id) or commission
             kept = await self._ledger.get_session(session.session_id)
             if kept is None:
                 raise RuntimeError("the session of the commission is not on record")
@@ -4577,6 +4642,13 @@ class TaskAgentManager(TreeWork):
         """Give free places to queued commissions, in the order they were queued."""
         # Those found, on a second look, to have to wait for another that changes files in their project.
         waits: set[str] = set()
+        # A session a commission waits for while the user is asked about it may have come free:
+        # what is asked is taken back, and nothing starts in that session until that is seen
+        # to. Before places are looked at: taken back though none is free for it to start at.
+        # (Whoever lets a session go has places given out anew, so this comes by; one let go
+        # while this waits below is seen by that, and the commission itself takes no place
+        # meanwhile, ``_session_free_for``.)
+        self._beside_came_free()
         while not self._closed and len(self._sessions) < self.limit:
             # One whose old session is still on its way out keeps its turn;
             # it is started when that session has gone. So does one whose
@@ -4634,6 +4706,8 @@ class TaskAgentManager(TreeWork):
         if commission is None or commission.route != "task_agent":
             return False
         await self._give_session(commission)
+        # (Taken up again, it is not looked at for another member: ``_try_beside`` is for what is handed over.)
+        self._apart.pop(commission_id, None)
         return commission_id in self._session_of
 
     # -- events -----------------------------------------------------------
@@ -4906,6 +4980,9 @@ class TaskAgentManager(TreeWork):
                 commission_id,
                 "waiting_user",
                 reason="the task agent needs an answer",
+                # (A report of a run on its way out, whose commission was queued again meanwhile, is
+                # refused, as it was before a queued commission could wait for the user at all.)
+                only_from=("working",),
                 pending_question=json.dumps(question, ensure_ascii=False),
             )
             if moved.applied and moved.commission is not None:
@@ -6485,6 +6562,8 @@ class TaskAgentManager(TreeWork):
             await self.abort(child.id)
         if commission_id in self._queue:
             self._queue.remove(commission_id)
+        # Asked whether another member is to do it: nobody answers that any more.
+        self._withdraw_beside(commission_id, "stopped")
         if commission_id in self._settling_for_queue:
             # On its way into the queue: it is not put there.
             self._stopped_while_settling.add(commission_id)
@@ -6539,6 +6618,15 @@ class TaskAgentManager(TreeWork):
             return True
         if session is not None and self._runtime_of(session) is not None and session.awaiting_prompt:
             return await self.answer(commission_id, text)
+        if commission_id in self._asking_beside and commission.status == "waiting_user":
+            # Not started yet, the user being asked whether another member is to do it: this
+            # is no answer to that (which is a choice), and goes along with the work when it
+            # is given, as what is said to any commission that is queued. (Only while it
+            # waits so: one stopped a moment ago, whose question is still being taken back,
+            # is over, and takes nothing.)
+            self._notes.setdefault(commission_id, []).append(text)
+            await self._ledger.append_event(commission_id, "told", {"text": text, "queued": True})
+            return True
         if session is None and commission.status == "waiting_user":
             # Its session was closed while it waited (an idle runtime exits).
             return await self.answer(commission_id, text)
@@ -7051,7 +7139,11 @@ class TaskAgentManager(TreeWork):
         """
         try:
             moved = await self._ledger.transition(
-                commission_id, "waiting_user", reason="its session closed before it took the answer"
+                commission_id,
+                "waiting_user",
+                reason="its session closed before it took the answer",
+                # (From where the answer moved it to: a queued one is asked about by ``_ask_beside`` alone.)
+                only_from=("working",),
             )
             if (
                 moved.applied
@@ -7089,6 +7181,10 @@ class TaskAgentManager(TreeWork):
                 commission_id,
                 "waiting_user",
                 reason="waiting for the user",
+                # Only one at work asks so: a queued one is asked about by ``_ask_beside`` alone
+                # (a session on its way out, whose commission was queued again meanwhile, is
+                # refused as it was before a queued commission could wait for the user at all).
+                only_from=("working",),
                 pending_question=json.dumps(question, ensure_ascii=False),
             )
             if not moved.applied or moved.commission is None:
@@ -7143,6 +7239,8 @@ class TaskAgentManager(TreeWork):
     async def ask_permission(self, commission_id: str, ask: PermissionAsk) -> str:
         """Ask the user to approve something; the ``Asker`` of the permission gate."""
         direct = None
+        if commission_id in self._asking_beside:
+            return await self._ask_beside(commission_id, ask)
         if commission_id not in self._sessions:
             commission = await self._ledger.get(commission_id)
             if commission is None or commission.route != "plugin" or commission.status != "working":
@@ -8447,6 +8545,10 @@ class TaskAgentManager(TreeWork):
             commission = await self._ledger.get(waiting) if waiting is not None else None
             if commission is None or commission.status in ENDED_STATUSES:
                 commission = await self._ledger.resting_in(session_id)
+            elif self._session_of.get(waiting) != session_id:
+                # Gone to another member while it was read (``_beside``): what is for this session
+                # is not its to take along. Looked for again in a moment.
+                return Handover("held", _CLOSING_RETRY_SECONDS)
         if commission is not None:
             return await self._hand_to(commission, target, wakes, still_wanted)
         return await self._file_for_notes(target, wakes, still_wanted)
@@ -8523,6 +8625,9 @@ class TaskAgentManager(TreeWork):
         if stopped() or in_the_way():
             return Handover("held", _CLOSING_RETRY_SECONDS)
         chosen = way()
+        # The session it waits for: another member may be made for it while this is awaited
+        # (``_beside``), and what was for this session is then not its to take along.
+        waits_in = self._session_of.get(commission_id)
         session = self._sessions.get(commission_id)
         # Whether the switch and the quota were asked about a turn this starts.
         counted = False
@@ -8560,7 +8665,13 @@ class TaskAgentManager(TreeWork):
                 return Handover("dropped")
             # Looked at after everything that was awaited; nothing is
             # awaited from here to where it is handed on.
-            if stopped() or in_the_way() or way() != chosen or self._sessions.get(commission_id) is not session:
+            if (
+                stopped()
+                or in_the_way()
+                or way() != chosen
+                or self._sessions.get(commission_id) is not session
+                or self._session_of.get(commission_id) != waits_in
+            ):
                 await self._put_back(fired, kick=False)
                 return Handover("held", _CLOSING_RETRY_SECONDS)
             if counted and not self._is_switched_on():
@@ -9954,7 +10065,7 @@ class TaskAgentManager(TreeWork):
             and holder != commission_id
         )
 
-    def _try_carry_on(self, commission: Commission) -> None:
+    def _try_carry_on(self, commission: Commission) -> bool:
         """Have a commission that was queued behind another one of its session carried on in a copy, if it may be.
 
         Looked at once, as it is queued, with nothing awaited: whether it
@@ -9963,17 +10074,19 @@ class TaskAgentManager(TreeWork):
         in copies of it already (``TASK_AGENT_FORK_CONTINUE_MAX_PER_SESSION``).
         The rest is looked at by ``_carry_on_in_copy``, which runs by itself:
         the commission stays queued meanwhile, and is started in its
-        session as ever should that be free first.
+        session as ever should that be free first. Returns whether that
+        look was begun: once it is through, and the commission still
+        waits, another member may do it instead (``_try_beside``).
         """
         from config import nekopower_settings as settings
 
         if not settings.TASK_AGENT_FORK_CONTINUE_ENABLED or self._closed or not _carried_on(commission):
-            return
+            return False
         main = self._session_of.get(commission.id)
         if main is None or not self._waits_for(commission.id, main):
-            return
+            return False
         if self._carrying_on(main) >= settings.TASK_AGENT_FORK_CONTINUE_MAX_PER_SESSION:
-            return
+            return False
         waiting = self._copying_for.setdefault(main, set())
         waiting.add(commission.id)
 
@@ -9981,8 +10094,11 @@ class TaskAgentManager(TreeWork):
             waiting.discard(commission.id)
             if not waiting and self._copying_for.get(main) is waiting:
                 del self._copying_for[main]
+            # Not carried on in a copy: looked at for another member, with what was told of it meanwhile.
+            self._try_beside(commission.id)
 
         self._spawn(self._carry_on_in_copy(commission.id, main)).add_done_callback(over)
+        return True
 
     async def _carry_on_in_copy(self, commission_id: str, main: str) -> None:
         """Carry a queued commission on in a copy of the session it waits for, if that is worth it.
@@ -10520,6 +10636,420 @@ class TaskAgentManager(TreeWork):
                 at = index
                 break
         self._queue.insert(at, commission_id)
+
+    # -- another member beside a busy one ---------------------------------
+
+    def _try_beside(self, commission_id: str) -> None:
+        """Have a commission that waits for a busy member looked at for another member to do it beside that one.
+
+        Looked at once, as it is queued (after the look for a copy to
+        carry it on in, where there is one: ``_try_carry_on``), with
+        nothing awaited: only one of hers that went to the member that
+        works in its project for nothing its words said, and says
+        something plainly apart from that member's work
+        (``Verdict.apart``, kept by ``_give_session``). The rest is
+        looked at by ``_beside``, which runs by itself: whether it waits
+        for that member at all, to begin with.
+        """
+        main = self._apart.pop(commission_id, None)
+        if main is None or self._closed:
+            return
+        self._spawn(self._beside(commission_id, main))
+
+    async def _beside(self, commission_id: str, main: str) -> None:
+        """Have another member do a commission that waits for a busy one, in a git worktree of its own, where the user wants that.
+
+        In a project without a leader everything goes to the member that
+        works, and waits while that one is at something. Work that is
+        plainly about something else (``_try_beside``) need not: what the
+        user set says what becomes of it (``landing_settings.py``,
+        ``beside``). ``queue``: it waits, as it did before. ``ask``: the
+        user is asked, as for any task agent that can change files opened
+        beside the ones a project has (``OPEN_BESIDE``, by whose setting
+        none is opened where that is forbidden, and none is asked about
+        where it is allowed). ``open``: another is opened with nobody
+        asked, unless that setting forbids it.
+
+        Only while all of this holds: the commission is still queued
+        behind that member, whose project has no leader; the member
+        changes files, and so would the new one; it is held by a
+        commission at work or waiting for the user; a worktree can be
+        made for the project (``tree_possible``); the project has fewer
+        members that take work than it may (``PROJECT_MEMBERS_MAX``); the
+        commission was not told to be a side question (by what was told
+        already: nobody is asked for this); NekoPower is switched on and
+        nothing is being stopped. No model is asked.
+
+        Asked, the commission keeps its place in the queue, is on record
+        as waiting for the user (with no session: it is at none) and
+        starts nowhere (``_session_free_for``). No member is made until
+        the user allows it, and then with no other made in between
+        (``Families.placing``): what
+        is asked says which it would be (``detail``: ``member``,
+        ``preset``, ``project``, ``beside``). Allowed, a member is made
+        (``seat`` ``tree``) and the commission is its: started at once
+        where a place is free, else next in the queue. Refused, that is
+        put on record (``beside_declined``) and it waits for the busy
+        member where it stood; it is not asked about again, being looked
+        at once (``_try_beside``). Should that member come free first,
+        what was asked is taken back and the commission starts there in
+        its turn (``_beside_came_free``); stopped, it is taken back as
+        well (``abort``).
+        """
+        from config import nekopower_settings as settings
+        from nekopower.host.landing_settings import BESIDE_ASK, BESIDE_OPEN
+        from nekopower.host.orchestrator import WORKING_PRESET
+        from nekopower.host.templates import model_name
+
+        def waits() -> bool:
+            return (
+                self._waits_for(commission_id, main)
+                and not self._closed
+                and self._is_switched_on()
+                and not getattr(self._waker, "stopping", False)
+            )
+
+        async def room(commission: Commission, kept: Session) -> bool:
+            # Whether another member can be had now: fewer than the project may have, and a worktree for it.
+            taking = [
+                member
+                for member in await self._ledger.members(commission.lanlan_name, str(kept.project))
+                if await self._ledger.session_alive(member)
+            ]
+            if len(taking) >= settings.PROJECT_MEMBERS_MAX:
+                return False
+            return await self.tree_possible(kept.project, kept.workdir or commission.workdir)
+
+        try:
+            choice = (await self.landing.get()).get("beside")
+            if choice not in (BESIDE_ASK, BESIDE_OPEN):
+                return
+            commission = await self._ledger.get(commission_id)
+            kept = await self._ledger.get_session(main)
+            if commission is None or kept is None:
+                return
+            if await self._ledger.lead_session(commission.lanlan_name, kept.project) is not None:
+                # Its leader says who does what.
+                return
+            holder = self._held_by.get(main)
+            stands = await self._ledger.get(holder) if holder is not None else None
+            if stands is None or stands.status not in ("working", "waiting_user") or stands.resting:
+                # (One that rests lets the session go: asked now, it would be taken back in a moment.)
+                return
+            told = self._side_said.get(commission_id)
+            if told is not None and told[2]:
+                # Answered by looking, with nothing changed: no member is opened for that.
+                return
+            # What the busy one can change goes by the tools its run was opened with, as where it is
+            # noted to change files (``_note_writer``): its preset may say otherwise by now.
+            live = self._sessions.get(holder)
+            opened = live.changes_files if live is not None and live.session_id == main else None
+            if not (opened if opened is not None else (await self._template_of(kept)).changes_files):
+                return
+            if not (await asyncio.to_thread(self.templates.resolve, WORKING_PRESET, kept.project)).changes_files:
+                return
+            if await self._permissions.forbidden(OPEN_BESIDE) or not await room(commission, kept):
+                return
+            name = await self._ledger.member_name(
+                commission.lanlan_name, str(kept.project), f"{kept.project}/{model_name(WORKING_PRESET)}"
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - it waits for the member as it would have
+            logger.warning("looking at commission %s for another member to do it failed", commission_id, exc_info=True)
+            return
+        if not waits():
+            # (The member came free while that was read, say: nobody is asked about what need not wait.)
+            return
+        goes_on = await self._goes_on_with(commission, kept)
+        if goes_on:
+            # It goes on with what the busy one is at, as the small model says (the words alone
+            # did not tell): it waits for that one, as it would have.
+            return
+        if not waits():
+            return
+        # What the user says is waited for here (``_ask_beside``), and taken back by
+        # resolving it (``_withdraw_beside``).
+        asking = self._asking_beside[commission_id] = _Beside(main, asyncio.get_running_loop().create_future())
+        moved: Session | None = None
+        started = False
+        handed: list[_Handed] = []
+        try:
+            asked = False
+            if choice == BESIDE_ASK:
+                decision = await self._permissions.check(
+                    commission_id,
+                    OPEN_BESIDE,
+                    detail={
+                        "tool": "beside",
+                        "title": commission.title,
+                        "preset": WORKING_PRESET,
+                        # It changes files in a copy of its own, merged back when it is done.
+                        "tree": True,
+                        # The member that would be made, for a page to show before there is one.
+                        "member": name,
+                        "project": kept.project,
+                        # The busy one it would work beside, and what that one is at.
+                        "beside": kept.name,
+                        "beside_session": kept.id,
+                        "at_hand": stands.title,
+                    },
+                )
+                if asking.withdrawn:
+                    return
+                if not decision.allow:
+                    if decision.reason == DENIED_BY_USER:
+                        # Not asked about again: it waits for the member where it stood.
+                        await self._ledger.append_event(commission_id, "beside_declined", {"beside": main})
+                    return
+                asked = decision.asked
+            if goes_on is None and not asked:
+                # Not told whether it goes on with what the busy one is at, and nobody answered
+                # (``open``, or allowed for good): it waits for that one, as it would have.
+                return
+            # Looked at once more and made with no other member made, and no leader, in
+            # between (as where a commission is placed, ``Families.place``): the user may
+            # have taken a while, and two of these may get here together with room for one.
+            async with self.families.placing:
+                if await self._ledger.lead_session(commission.lanlan_name, kept.project) is not None:
+                    return
+                if (await self.landing.get()).get("beside") != choice:
+                    # Set otherwise since it was read (to queue, say): it waits for the member.
+                    return
+                holding = self._held_by.get(main)
+                still = await self._ledger.get(holding) if holding is not None else None
+                if still is None or still.status not in ("working", "waiting_user") or still.resting:
+                    # What the busy one was at is over, or rests, by now (the user took a while): it
+                    # lets the session go in a moment, and the commission starts there in its turn.
+                    return
+                if not await room(commission, kept):
+                    return
+                name = await self._ledger.member_name(
+                    commission.lanlan_name, str(kept.project), f"{kept.project}/{model_name(WORKING_PRESET)}"
+                )
+                # Looked at last, with nothing but the making itself awaited after: forbidden since it
+                # was looked at (where nobody is asked: a ``deny`` set while the user is asked is seen
+                # to by the gate), or no longer waiting (a session that came free meanwhile takes it,
+                # as it would have).
+                if await self._permissions.forbidden(OPEN_BESIDE) or not waits():
+                    return
+                if not asked and self._said_meanwhile(commission_id):
+                    # More was said to it since it was told apart, which goes with it and may say
+                    # otherwise ("go on with what is there"): with nobody asked, it waits for the
+                    # member as it would have. (Asked, the user answered knowing what they said.)
+                    return
+                member = await self._ledger.create_session(
+                    name=name,
+                    lanlan_name=commission.lanlan_name,
+                    kind="line",
+                    project=kept.project,
+                    # Where the commission would have been worked on had it waited (``_start``): the
+                    # busy member's directory, which is its project's but for a member that was a
+                    # session of its own before it became the project's, and kept the one it had.
+                    # Another member changes who does it and when, not where what it changes lands.
+                    workdir=kept.workdir or commission.workdir,
+                    preset=WORKING_PRESET,
+                    duty=commission.title,
+                    # A git worktree is made for each of its commissions: it does not wait for
+                    # the one that works in the project's directory.
+                    seat="tree",
+                )
+            # The model it is sent to, by its preset.
+            await self.settle_model(member)
+            if commission_id not in self._queue:
+                # Stopped while its member was made: it is over, and is not put on record with
+                # the member (which stays, with nothing to do).
+                return
+            await self._ledger.update(commission_id, session_id=member.id)
+            # The member's on record from here on, whatever of the rest can be written.
+            moved = member
+            try:
+                await self._ledger.append_event(
+                    commission_id, "beside_opened", {"session": member.id, "beside": main, "asked": asked}
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - the note is for the record; the commission is the member's
+                logger.warning("noting that commission %s got a member of its own failed", commission_id, exc_info=True)
+            try:
+                await self._note_writer(member.id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - it is the member's all the same, and is looked at again as it starts
+                logger.warning("noting where the member made for commission %s works failed", commission_id, exc_info=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - it waits for the member as it would have
+            logger.warning("having another member do commission %s failed; it waits", commission_id, exc_info=True)
+        finally:
+            self._asking_beside.pop(commission_id, None)
+            if moved is not None and commission_id in self._queue:
+                # What was written to the busy member and handed to this commission to take along,
+                # as what that member was at (``hand_over``: what it was at is over, its session not
+                # yet let go of), is the busy member's: given back below, for whatever that one is
+                # at next. What the user said to the commission goes with it.
+                # Loops, not comprehensions: Nuitka 4.2.2 cannot compile one in a finally whose
+                # try leaves more than one way (tests/unit/test_no_comprehension_in_multi_exit_finally.py).
+                rest: list[str] = []
+                for note in self._notes.get(commission_id, []):
+                    if isinstance(note, _Handed):
+                        handed.append(note)
+                    else:
+                        rest.append(note)
+                if handed:
+                    if rest:
+                        self._notes[commission_id] = rest
+                    else:
+                        self._notes.pop(commission_id, None)
+                # The member's here as well, with nothing awaited between this and its place
+                # being taken: started at once where a place is free, else next in the
+                # queue, for the member. (Stopped meanwhile, it is in no queue any more.)
+                self._session_of[commission_id] = moved.id
+                if self._take_place(commission_id):
+                    self._queue.remove(commission_id)
+                    started = True
+            if asking.held:
+                left = self._handing_back_to.get(main, 1) - 1
+                if left > 0:
+                    self._handing_back_to[main] = left
+                else:
+                    self._handing_back_to.pop(main, None)
+            if self._queue and len(self._sessions) < self.limit and not self._closed:
+                self._spawn(self._start_next())
+            if handed:
+                # Pending again (whatever this is cancelled by: the ledger has them as handed over).
+                wakes: list[int] = []
+                for note in handed:
+                    wakes.extend(note.wakes)
+                await asyncio.shield(self._put_back(wakes))
+        if started:
+            await self._launch(commission_id)
+
+    async def _goes_on_with(self, commission: Commission, kept: Session) -> bool | None:
+        """Whether a commission goes on with what the busy member ``kept`` is at, as the judge says (``set_beside_judge``).
+
+        None when that is not told: no judge, what the member is at could not
+        be read, or the request failed.
+        """
+        from nekopower.host.ledger import UNDER_WAY_STATUSES
+
+        judge = self._beside_judge
+        if judge is None:
+            return None
+        try:
+            at_hand = [
+                " - ".join(dict.fromkeys(words for words in (item.title, item.dispatch_text) if words))
+                for item in await self._ledger.select(session_id=kept.id, statuses=UNDER_WAY_STATUSES)
+                if item.id != commission.id and item.parent_id is None
+            ]
+            said = "\n".join([commission.user_text, *self._said_meanwhile(commission.id)]).strip()
+            return await judge(commission.dispatch_text, said, kept.name, at_hand)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - not told
+            logger.warning("telling whether commission %s goes on with what its member is at failed", commission.id, exc_info=True)
+            return None
+
+    async def _ask_beside(self, commission_id: str, ask: PermissionAsk) -> str:
+        """Put to the user whether another member is to do a queued commission, and wait; the ``Asker`` for ``_beside``.
+
+        As ``_ask`` does for a commission at work, for one that has not
+        started: it is ``waiting_user`` meanwhile and ``queued`` again
+        afterwards, never ``working`` (which would put it on record as
+        started). While it waits it is on record with no session: it is
+        at none, and the busy member it waits for is not the one that
+        asks. Taken back (``_withdraw_beside``), before it is put or
+        after, the answer is a refusal, which whoever asked tells from
+        the user's by ``_Beside.withdrawn``. What the user chose is put
+        on record for the timeline as an answer to any request for
+        approval is (``tool_answered``); nothing is of what was taken back.
+        """
+        asking = self._asking_beside[commission_id]
+        direct = _Session(commission_id)
+        question = {**ask.to_json(), "id": uuid.uuid4().hex}
+        direct.question, direct.at_answer, direct.question_id = asking.answer, ask.at_answer, question["id"]
+        self._direct_questions[commission_id] = direct
+        try:
+            moved = await self._ledger.transition(
+                commission_id,
+                "waiting_user",
+                reason="waiting for the user",
+                pending_question=json.dumps(question, ensure_ascii=False),
+                session_id=None,
+            )
+            if not moved.applied or moved.commission is None:
+                raise RuntimeError(f"the commission cannot wait for the user ({moved.refusal})")
+            try:
+                if not asking.answer.done():
+                    # (Not put to the user where it was taken back before it got here.)
+                    await self._reporter.question(moved.commission, question)
+                answer = await asking.answer
+            finally:
+                # Back among the queued only from waiting: one stopped, or failed (by
+                # shutting down, say) meanwhile, stays as it is. With the session it waits
+                # for: whoever asked writes the member's, should one be made. Asked again a
+                # few times where the ledger cannot be written this moment; given up on, what
+                # the user answered stands all the same (it is in), the commission is still
+                # queued here, and is put on record as it starts (``_start``).
+                try:
+                    await asyncio.shield(
+                        self._looked(
+                            lambda: self._ledger.transition(
+                                commission_id,
+                                "queued",
+                                reason="what was asked was taken back" if asking.withdrawn else "the user answered",
+                                only_from=("waiting_user",),
+                                session_id=asking.main,
+                            ),
+                            what="to put a commission the user was asked about back among the queued",
+                        )
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - the answer stands; its record is put right as it starts
+                    logger.warning(
+                        "putting commission %s back among the queued failed; it is on record as waiting", commission_id,
+                        exc_info=True,
+                    )
+            if not asking.withdrawn:
+                # What the user chose, for the timeline, as of any request for approval
+                # (``_ask``). Noted once the commission is back among the queued: the answer
+                # puts nobody to work, starting does. Of what was taken back, nothing: the
+                # user answered nothing.
+                await self._note_tool_answer(commission_id, question, answer)
+        finally:
+            self._direct_questions.pop(commission_id, None)
+        choice = answer.get("choice")
+        return choice if choice in CHOICES else "deny"
+
+    def _withdraw_beside(self, commission_id: str, why: str) -> None:
+        """Take back what the user is asked about a queued commission (``_beside``), if anything still is.
+
+        Nothing is awaited: whoever asked finds it taken back (``why``)
+        once it gets to go on, and sees to the rest. Not once the user's
+        answer is in: that stands.
+        """
+        asking = self._asking_beside.get(commission_id)
+        if asking is not None and not asking.answer.done():
+            asking.withdrawn = why
+            asking.answer.set_result({"text": "", "choice": None})
+
+    def _beside_came_free(self) -> None:
+        """Take back what the user is asked about commissions whose session came free meanwhile (``_beside``).
+
+        Such a commission starts in the session it waited for, in its
+        turn, as it would have: nothing is on record of the question but
+        that it was put and taken back. Until that is seen to, nothing
+        starts in the session (``_handing_back_to``): not the commission,
+        of which something is still asked, nor what waits behind it,
+        which would go first. Nothing is awaited here.
+        """
+        for commission_id, asking in self._asking_beside.items():
+            if asking.held or self._held_by.get(asking.main) is not None:
+                continue
+            asking.held = True
+            self._handing_back_to[asking.main] = self._handing_back_to.get(asking.main, 0) + 1
+            self._withdraw_beside(commission_id, "free")
 
     # -- copying a session ------------------------------------------------
 
@@ -11409,6 +11939,9 @@ class TaskAgentManager(TreeWork):
         self._closed = True
         for session_id in list(self._idle_timers):
             self._drop_idle_timer(session_id)
+        for commission_id in list(self._asking_beside):
+            # Nobody answers what was asked of a queued commission any more: it ends with the others that are queued.
+            self._withdraw_beside(commission_id, "closed")
         # What is being landed, checked or watched for git worktrees: stopped (a landing cut off
         # puts back what it began to write). The worktrees stay, for the next process to go through.
         await self._stop_tree_work()

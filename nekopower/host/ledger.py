@@ -96,7 +96,9 @@ ENDED_STATUSES: frozenset[str] = frozenset({"done", "failed", "cancelled", "bloc
 _ENDED_MARKS = ", ".join("?" for _ in ENDED_STATUSES)
 
 ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
-    "queued": frozenset({"working", "failed", "cancelled"}),
+    # Waiting for the user before it ever started: asked whether another
+    # member is to do it beside the busy one it waits for (``TaskAgentManager._beside``).
+    "queued": frozenset({"working", "waiting_user", "failed", "cancelled"}),
     # Queued again when its idle session was closed while its own task agents
     # worked, and one of their results is to take it up again.
     "working": frozenset({"waiting_user", "queued", "done", "blocked", "failed", "cancelled"}),

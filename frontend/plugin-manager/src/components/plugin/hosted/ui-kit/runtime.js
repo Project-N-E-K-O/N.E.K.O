@@ -2008,6 +2008,7 @@ function requestHost(method, payload, options) {
       if (!__pendingRequests.has(requestId)) return;
       __pendingRequests.delete(requestId);
       cleanup();
+      parent.postMessage({ type: 'neko-hosted-surface-cancel', requestId }, hostedTargetOrigin());
       const error = new Error(method === 'parseDocument' ? 'Document parsing timed out' : 'Hosted surface request timed out');
       if (method === 'parseDocument') error.code = 'document_parse_timeout';
       reject(error);

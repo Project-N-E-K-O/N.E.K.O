@@ -24,7 +24,7 @@ What it does:
   2) Feeds some metrics in-process via utils/instrument + utils/event_logger
   3) Calls TokenTracker._report_to_server directly to deliver to the server (gzip included)
   4) Also builds a "simulated frontend WS forward" client payload and POSTs it
-  5) Queries SQLite + the dashboard HTML, asserting the key data all arrived
+  5) Queries SQLite + /api/v1/admin/stats using Bearer auth, asserting the key data all arrived
 """
 from __future__ import annotations
 
@@ -397,7 +397,7 @@ def main():
         assert len(session_dur_rows) >= 1, (
             "P2 regression: session_duration_sec histogram missing"
         )
-        # Reenable the URL for [5/5] dashboard testing below.
+        # Reenable the URL for [5/5] admin stats testing below.
         tt_mod._TELEMETRY_SERVER_URL = SERVER_URL
         print("  ✓ session_end counter + duration histogram both reached server")
 
@@ -916,29 +916,17 @@ def main():
         print("  ✓ inconsistent histogram skipped, consistent one in same batch stored")
 
         # --------------------------------------------------------------
-        # [5/5] Dashboard responds and includes instrument tables.
+        # [5/5] Admin stats endpoint enforces Authorization: Bearer auth.
         # --------------------------------------------------------------
-        print("\n[5/5] Fetching dashboard HTML...")
+        print("\n[5/5] Verifying /api/v1/admin/stats Bearer auth...")
+        status_query, _ = _http("GET", "/api/v1/admin/stats?days=30&token=smoke-test-admin")
+        assert status_query == 401, f"expected 401 for query token, got {status_query}"
         status, body = _http(
-            "GET", "/api/v1/admin/dashboard?days=30&token=smoke-test-admin"
+            "GET",
+            "/api/v1/admin/stats?days=30",
+            headers={"Authorization": "Bearer smoke-test-admin"},
         )
-        assert status == 200, f"dashboard HTTP {status}"
-        text = body.decode("utf-8", errors="replace")
-        # Key markers.
-        for marker in (
-            "N.E.K.O Telemetry Dashboard",
-            "DAU (Today)",
-            "Top Counters",
-            "Histograms",
-            "live2d_touched",  # Stored counter keys must appear in HTML.
-            "client_render_ms",  # histogram key
-        ):
-            assert marker in text, f"dashboard missing marker: {marker!r}"
-        print(f"  ✓ dashboard returned {len(text)} bytes with all expected markers")
-
-        # Test health/global stats.
-        status, body = _http("GET", "/api/v1/admin/stats?days=30&token=smoke-test-admin")
-        assert status == 200
+        assert status == 200, f"admin stats HTTP {status}"
         stats = json.loads(body)
         print(f"  global stats: total_devices={stats['total_devices']} "
               f"total_events={stats['total_events']}")

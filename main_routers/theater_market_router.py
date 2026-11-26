@@ -79,9 +79,15 @@ async def create_launch(request: Request):
 
         # Pairing is issued by the running Plugin Server, never its re-imported module.
         from config.network import resolve_user_plugin_base
+        from utils.internal_http_client import internal_service_event_hooks
         import httpx
         plugin_base = resolve_user_plugin_base()
-        async with httpx.AsyncClient(timeout=8.0, proxy=None, trust_env=False) as client:
+        async with httpx.AsyncClient(
+            timeout=8.0,
+            proxy=None,
+            trust_env=False,
+            event_hooks=internal_service_event_hooks(),
+        ) as client:
             pair = await client.post(
                 f"{plugin_base}/market/pair-code",
                 headers={"Origin": plugin_base},

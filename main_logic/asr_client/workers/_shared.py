@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import io
 import wave
+from typing import Literal
 
 # Segmented workers buffer one 16 kHz mono PCM16 utterance and cap it at 28
 # seconds before submitting a single WAV request.
@@ -53,6 +54,53 @@ def normalize_zh_en_language(language: str, *, provider_name: str) -> str | None
     raise ValueError(
         f"ASR_LANGUAGE_NOT_SUPPORTED: {provider_name} language is unsupported"
     )
+
+
+AsrRequestFailureKind = Literal[
+    "auth",
+    "rejected",
+    "rate_limited",
+    "timeout",
+    "invalid_response",
+    "failed",
+]
+
+
+# Statuses that mean "try again shortly" rather than "this request is wrong":
+# throttling and a provider's temporary overload (Gemini answers 503
+# UNAVAILABLE under high demand).
+RETRY_LATER_STATUSES = frozenset({429, 503})
+
+
+class AsrRequestFailure(Exception):
+    """One failed provider request with a machine code and a coarse kind.
+
+    ``code`` keeps each provider's own machine code (realtime sessions surface
+    it unchanged); ``kind`` is the provider-neutral category the offline layer
+    maps onto its own error codes, so no caller has to parse message text.
+    """
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        kind: AsrRequestFailureKind = "failed",
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.kind: AsrRequestFailureKind = kind
+
+
+def provider_status_code(exc: BaseException) -> int | None:
+    """Return the HTTP-like status carried by a provider exception, if any."""
+
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if status_code is None:
+        status_code = getattr(exc, "status_code", None)
+    return status_code if isinstance(status_code, int) else None
 
 
 def is_auth_rejection(exc: BaseException) -> bool:

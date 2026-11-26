@@ -33,21 +33,25 @@
       type="button"
       class="cat"
       :class="[`cat--${member.look}`, { 'cat--waits': WAITS.has(member.look), 'cat--lead': member.leader, 'cat--grabbed': held === member.id }]"
-      :style="{ left: `${at(member.id).x * 100}%`, top: `${at(member.id).y * 100}%` }"
+      :style="{ left: `${at(member.id).x * 100}%`, top: `${at(member.id).y * 100}%`, ...(member.look === 'unborn' ? UNBORN : {}) }"
       :data-cat="member.id"
       :data-look="member.look"
-      :aria-label="t('power.colony.catLabel', { name: member.name, state: stateWord(member.look) })"
-      @pointerdown="grab(member.id, $event)"
+      :aria-label="member.look === 'unborn' ? t('power.colony.unbornLabel', { name: member.name }) : t('power.colony.catLabel', { name: member.name, state: stateWord(member.look) })"
+      :title="member.look === 'unborn' ? t('power.colony.besideTip') : undefined"
+      @pointerdown="member.look === 'unborn' || grab(member.id, $event)"
       @pointermove="drag($event)"
       @pointerup="drop($event)"
       @pointercancel="cancel($event)"
-      @keydown="nudge(member.id, $event)"
+      @keydown="member.look === 'unborn' || nudge(member.id, $event)"
       @click="clicked(member.id, $event)"
     >
       <span v-if="bubble(member)" class="bubble" :class="{ 'bubble--loud': member.look === 'waiting_user' }">{{ bubble(member) }}</span>
-      <!-- Merging what it changed is drawn as work. -->
-      <ColonyFigure :avatar="member.avatar" :look="MERGING.has(member.look) ? 'working' : member.look" :leader="member.leader" />
-      <span class="tag">{{ member.name }}</span>
+      <!-- Merging what it changed is drawn as work; one not there yet, faded. -->
+      <ColonyFigure
+        :avatar="member.avatar" :look="MERGING.has(member.look) ? 'working' : member.look" :leader="member.leader"
+        :style="member.look === 'unborn' ? UNBORN_FIGURE : undefined"
+      />
+      <span class="tag" :style="member.look === 'unborn' ? UNBORN_TAG : undefined">{{ member.name }}</span>
     </button>
   </section>
 </template>
@@ -114,8 +118,26 @@ const shown = computed(() => props.territory.members.filter(member => !member.hi
 const size = computed(() => territorySize(props.territory.members.length))
 const standing = computed(() => defaultSpots(props.territory.members))
 
+const byId = computed(() => new Map(props.territory.members.map(member => [member.id, member])))
+
 function home(id: string): Spot {
-  return placed[id] ?? standing.value[id] ?? { x: 0.5, y: 0.5 }
+  const own = placed[id]
+  if (own) return own
+  const spot = standing.value[id] ?? { x: 0.5, y: 0.5 }
+  // The one that would be opened beside a busy one stands by it where the user put that one: it is
+  // told apart from the others only by where it stands. (Not put anywhere by the user itself.)
+  const member = byId.value.get(id)
+  const by = member?.look === 'unborn' && member.parent ? placed[member.parent] : undefined
+  const was = member?.parent ? standing.value[member.parent] : undefined
+  if (!by || !was) return spot
+  const { x, y } = { x: spot.x - was.x, y: spot.y - was.y }
+  // Where that would be outside, as far on another side of it: brought back to the edge, it would
+  // stand on the busy one put there, and cover it. The other way first, then across.
+  for (const [dx, dy] of [[x, y], [-x, -y], [y, -x], [-y, x]] as const) {
+    const there = { x: by.x + dx, y: by.y + dy }
+    if (inTerritory(there)) return there
+  }
+  return intoTerritory({ x: by.x + x, y: by.y + y })
 }
 function at(id: string): Spot {
   const base = home(id)
@@ -136,8 +158,14 @@ const TEAM_NAME = {
   color: 'var(--el-color-primary)', background: 'var(--el-bg-color)', borderRadius: '8px', whiteSpace: 'nowrap',
 } as const
 // The looks of one that waits for the user, drawn alike; and of one whose changes are being merged.
-const WAITS = new Set<CatLook>(['waiting_user', 'held', 'unlanded'])
+const WAITS = new Set<CatLook>(['waiting_user', 'held', 'unlanded', 'unborn'])
 const MERGING = new Set<CatLook>(['landing', 'resolving'])
+// One that would be opened, should the user say so: not picked up nor moved with the keys (it stands by
+// the busy one) but pressed, faded, its name framed in dashes. What it asks is said when it is pointed at, not above it: it stands close below the one it
+// would work beside, whose name a bubble would cover. Styled here and not in the stylesheet, as the teams are.
+const UNBORN = { cursor: 'pointer' } as const
+const UNBORN_FIGURE = { opacity: 0.45, filter: 'grayscale(1)' } as const
+const UNBORN_TAG = { borderStyle: 'dashed' } as const
 /** The teams of two or more that are there now, each with the box that holds those in it. */
 const teams = computed(() => {
   const by = new Map<string, Spot[]>()

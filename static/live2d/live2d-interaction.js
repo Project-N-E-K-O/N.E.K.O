@@ -171,6 +171,13 @@ const LIVE2D_PEEK_SIDE_ROTATION_MIN_DEGREES = 28;
 const LIVE2D_PEEK_SIDE_ROTATION_RATIO_START = 0.20;
 const LIVE2D_PEEK_SIDE_ROTATION_RATIO_END = 0.80;
 const LIVE2D_PEEK_CORNER_ROTATION_DEGREES = 45;
+// 脚碰到底边时，头也要落进工作区最下面这一段才算下角，否则按侧边探身处理。
+// 侧边探身的头高比例本来就覆盖到 RATIO_END，两段在这里接上。
+const LIVE2D_PEEK_BOTTOM_CORNER_HEAD_RATIO = LIVE2D_PEEK_SIDE_ROTATION_RATIO_END;
+// 这一段的高度还不能超过模型身高的这个比例。只按工作区算的话，模型越小，
+// 底部那一段相对它就越大，脚刚碰底边头就已经在里面，小模型几乎一贴底就进下角。
+// 0.26 约等于身子一半出了底边（头在身高 24% 处），大模型仍由工作区的那一段决定。
+const LIVE2D_PEEK_BOTTOM_CORNER_HEAD_MODEL_RATIO = 0.26;
 // live2d-core.js performs its final cross-display renderer resize after 120ms.
 // Restore the semantic edge anchor only after that pass can no longer clear it.
 const LIVE2D_PEEK_DISPLAY_RESIZE_SETTLE_MS = 160;
@@ -525,6 +532,31 @@ function getLive2DPeekDragEdgeIntent(options, workArea) {
     };
 }
 
+function isLive2DPeekHeadInBottomCornerZone(manager, geometry, workArea) {
+    if (!geometry || !workArea || !(workArea.height > 0)) return true;
+    const head = getLive2DPeekReliableHeadAnchor(manager) || getLive2DPeekHeadAnchor(manager);
+    const headY = head
+        ? head.y
+        : geometry.top + geometry.height * LIVE2D_PEEK_HEAD_Y_RATIO;
+    if (!Number.isFinite(headY)) return true;
+    const workAreaZone = workArea.height * (1 - LIVE2D_PEEK_BOTTOM_CORNER_HEAD_RATIO);
+    const modelZone = geometry.height > 0
+        ? geometry.height * LIVE2D_PEEK_BOTTOM_CORNER_HEAD_MODEL_RATIO
+        : workAreaZone;
+    return workArea.bottom - headY <= Math.min(workAreaZone, modelZone);
+}
+
+// 让身体留在底边外的侧边探身，只有在落位后头仍看得见时才安全。
+// 拿不到可靠头部时，侧边落位按腰部兜底，只保住腰的高度再整体转身；
+// 腰已经越过底边的话，头会被带到底边附近甚至出屏，这时退回下角。
+function isLive2DPeekSideOverflowSafe(manager, workArea) {
+    if (getLive2DPeekReliableHeadAnchor(manager)) return true;
+    const body = getLive2DPeekBodyRect(manager);
+    // 拿不到腰部时落位不走腰部兜底，会把头夹回工作区内。
+    if (!body || !workArea) return true;
+    return body.bottom <= workArea.bottom;
+}
+
 function getLive2DPeekEdgeContact(manager, model, viewport = null, options = null) {
     const geometry = getLive2DModelGeometryBounds(manager, model);
     const fullViewport = getLive2DPeekViewport(geometry, manager);
@@ -555,6 +587,7 @@ function getLive2DPeekEdgeContact(manager, model, viewport = null, options = nul
     const nearTop = geometry.bottom >= workArea.top && geometry.top <= workArea.top + tolerance;
     const nearBottom = geometry.top <= workArea.bottom && geometry.bottom >= workArea.bottom - tolerance;
     let verticalEdge = '';
+    let allowBottomOverflow = false;
     if (nearTop && nearBottom) {
         const exactlyTop = Math.abs(geometry.top - workArea.top) <= tolerance;
         const exactlyBottom = Math.abs(geometry.bottom - workArea.bottom) <= tolerance;
@@ -566,12 +599,20 @@ function getLive2DPeekEdgeContact(manager, model, viewport = null, options = nul
     } else if (nearTop) {
         verticalEdge = 'top';
     } else if (nearBottom) {
-        verticalEdge = 'bottom';
+        // 模型比头高得多：只看外框的话，头还在屏幕中下部时脚就已经碰到底边，
+        // 侧边探身会被误判成下角。头在中下部时保留侧边，并让身体留在底边外。
+        if (isLive2DPeekHeadInBottomCornerZone(manager, geometry, workArea)
+                || !isLive2DPeekSideOverflowSafe(manager, workArea)) {
+            verticalEdge = 'bottom';
+        } else {
+            allowBottomOverflow = true;
+        }
     }
     return {
         edge: verticalEdge ? `${verticalEdge}-${side}` : side,
         side,
         verticalEdge,
+        allowBottomOverflow,
         geometry,
         workArea,
         displayRevision: live2DPeekDisplayContext ? live2DPeekDisplayContext.revision : 0,
@@ -626,7 +667,7 @@ function settleLive2DBaseAtEdgeContact(model, contact) {
     } else if (geometry.height <= workArea.height) {
         if (geometry.top < workArea.top) {
             dy = workArea.top - geometry.top;
-        } else if (geometry.bottom > workArea.bottom) {
+        } else if (geometry.bottom > workArea.bottom && !contact.allowBottomOverflow) {
             dy = workArea.bottom - geometry.bottom;
         }
     }
@@ -721,6 +762,8 @@ function getLive2DPeekBodyRect(manager) {
     try {
         const info = manager.getBodyScreenRectInfo();
         const rect = info && info.rect;
+        // Number(null) 是 0，缺 rect 时不能让它变成一个 (0, 0) 的假腰部。
+        if (!rect) return null;
         const centerX = Number(rect && (Number.isFinite(rect.centerX)
             ? rect.centerX
             : Number(rect.left) + Number(rect.width) * 0.5));
