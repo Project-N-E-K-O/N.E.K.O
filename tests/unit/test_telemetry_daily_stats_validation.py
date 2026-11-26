@@ -121,15 +121,48 @@ def test_model_accepts_boundary_stat_dates():
 
 @pytest.mark.parametrize(
     "bad_key",
-    ["_total", "", "   ", "a" * 129, "bad\x00key", "bad\nkey", "bad\x7fkey"],
+    ["_total", "", "   ", " " * 129, "bad\x00key", "bad\nkey", "bad\x7fkey", "a" * 129 + "\n"],
 )
 def test_model_rejects_invalid_bucket_keys(bad_key):
-    """Reserved _total, empty, overlong, and control-character keys must fail validation."""
+    """Reserved _total, empty, whitespace-only, and control-character keys (including overlong ones) must fail validation."""
     today = date.today().isoformat()
     for field in ("by_model", "by_call_type"):
         day = _valid_day(**{field: {bad_key: _valid_bucket()}})
         with pytest.raises(Exception):
             model_from_json(TelemetryEvent, json.dumps(_base_event_dict({today: day})))
+
+
+def test_model_drops_overlong_bucket_keys_while_keeping_valid_buckets_and_totals():
+    """Overlong (>128 chars) printable model/call_type bucket keys must be dropped instead of failing the batch."""
+    today = date.today().isoformat()
+    max_model = "m" * 128
+    max_call_type = "c" * 128
+    overlong_model = "a" * 129
+    overlong_call_type = "b" * 129
+    ev = model_from_json(
+        TelemetryEvent,
+        json.dumps(
+            _base_event_dict({
+                today: _valid_day(
+                    total_tokens=99,
+                    call_count=5,
+                    by_model={
+                        max_model: _valid_bucket(total_tokens=20),
+                        overlong_model: _valid_bucket(total_tokens=79),
+                    },
+                    by_call_type={
+                        max_call_type: _valid_bucket(total_tokens=30),
+                        overlong_call_type: _valid_bucket(total_tokens=69),
+                    },
+                ),
+            })
+        ),
+    )
+    day_stats = ev.daily_stats[today]
+    assert day_stats.total_tokens == 99
+    assert day_stats.call_count == 5
+    assert set(day_stats.by_model.keys()) == {max_model}
+    assert set(day_stats.by_call_type.keys()) == {max_call_type}
 
 
 @pytest.mark.parametrize(
@@ -446,3 +479,48 @@ def test_http_submit_accepts_over_100_day_offline_batch_after_stripping_expired_
     assert today in stored_days
     assert expired_91 not in stored_days
     assert expired_100 not in stored_days
+
+
+def test_http_submit_drops_overlong_model_bucket_and_acknowledges_batch(tmp_path, monkeypatch):
+    """HTTP /api/v1/telemetry must drop >128-char model buckets, keep valid totals/buckets, and return 200."""
+    from fastapi.testclient import TestClient
+    from security import compute_signature
+    import server as telemetry_server
+
+    test_store = TelemetryStorage(tmp_path / "http_overlong_model.db")
+    monkeypatch.setattr(telemetry_server, "storage", test_store)
+    monkeypatch.setattr(telemetry_server.rate_limiter, "is_allowed", lambda _dev: True)
+    client = TestClient(telemetry_server.app)
+
+    today = date.today().isoformat()
+    overlong_model = "a" * 129
+    payload = _base_event_dict({
+        today: _valid_day(
+            total_tokens=70,
+            call_count=2,
+            by_model={
+                overlong_model: _valid_bucket(total_tokens=50),
+                "short-model": _valid_bucket(total_tokens=20),
+            },
+            by_call_type={"chat": _valid_bucket(total_tokens=70)},
+        ),
+    })
+    ts = time.time()
+    payload_str = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    sig = compute_signature(payload_str, ts, telemetry_server.HMAC_SECRET)
+    resp = client.post(
+        "/api/v1/telemetry",
+        json={"timestamp": ts, "signature": sig, "batch_id": "batch-overlong-model-1", "payload": payload},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    assert test_store.is_duplicate_batch("batch-overlong-model-1") is True
+
+    rows = test_store._get_conn().execute(
+        "SELECT stat_date, model, call_type, total_tokens FROM daily_aggregates ORDER BY stat_date, model, call_type"
+    ).fetchall()
+    assert [(r["stat_date"], r["model"], r["call_type"], r["total_tokens"]) for r in rows] == [
+        (today, "_total", "_total", 70),
+        (today, "_total", "chat", 70),
+        (today, "short-model", "_total", 20),
+    ]

@@ -52,12 +52,23 @@ def _reject_bool_int(v):
 def _validate_bucket_map(buckets: dict) -> dict:
     if len(buckets) > MAX_DAILY_BUCKETS:
         raise ValueError(f"too many buckets (max {MAX_DAILY_BUCKETS})")
-    for key in buckets:
-        if not isinstance(key, str) or not (1 <= len(key) <= MAX_BUCKET_KEY_LEN):
-            raise ValueError("bucket key must be a string between 1 and 128 characters")
-        if key == "_total" or not key.strip() or _CONTROL_CHAR_RE.search(key):
+    filtered = {}
+    for key, bucket in buckets.items():
+        if (
+            not isinstance(key, str)
+            or not key
+            or not key.strip()
+            or key == "_total"
+            or _CONTROL_CHAR_RE.search(key)
+        ):
             raise ValueError(f"invalid bucket key: {key!r}")
-    return buckets
+        if len(key) > MAX_BUCKET_KEY_LEN:
+            # Drop overlong model/call_type keys instead of failing the batch:
+            # clients record upstream OpenAI-compatible model IDs verbatim and
+            # retry failed numbered batches unchanged until HTTP 200.
+            continue
+        filtered[key] = bucket
+    return filtered
 
 
 def _validate_daily_stats_map(daily_stats: dict) -> dict:
