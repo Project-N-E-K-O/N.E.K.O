@@ -1164,6 +1164,7 @@ async def test_an_answer_not_in_latin_letters_is_a_word_of_its_own_as_well():
         ("1", "1\ufe0f\u20e3", True),
         ("1", "1\u20e3", True),
         ("Dogs", "Dogs\ufe0f for the post", True),
+        ("Dogs", "Dogs\u180b for the post", True),
         ("क", "कि", False),
         ("no", "no way", True),
         ("Dogs", "文章配图选Dogs", True),
