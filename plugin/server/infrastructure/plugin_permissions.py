@@ -32,9 +32,10 @@ Document shape (``schema_version`` 1)::
       }
     }
 
-A permission missing from ``permissions`` is undecided, except on a record
-with ``legacy_denied`` (see LEGACY_DENIED), where an explicit ``undecided``
-entry is stored instead.
+A permission missing from ``permissions`` is undecided, except a permission
+with a legacy name (``LEGACY_IDS``) on a record with ``legacy_denied`` (see
+LEGACY_DENIED): that one reads denied, so an explicit ``undecided`` entry is
+stored for it instead.
 
 When a plugin's source changes, its grants are discarded; only the
 plugin-level markers in ``KEPT_ON_SOURCE_CHANGE`` stay (a denial does, an
@@ -81,9 +82,10 @@ CONDITIONS = frozenset({CONDITION_ANYTIME, CONDITION_IN_USE})
 
 SCOPE_ALL = "all"
 
-# Set on a plugin record imported from a legacy whole-plugin denial: every
-# implicitly declared permission of that plugin counts as denied unless the
-# record holds an explicit entry for it (including an explicit "undecided").
+# Set on a plugin record by a whole-plugin denial from the consent flow
+# (imported or decided there): every permission with a legacy name
+# (LEGACY_IDS) counts as denied unless the record holds an explicit entry for
+# it (including an explicit "undecided"); other permissions are not covered.
 LEGACY_DENIED = "legacy_denied"
 # Set on a plugin record whose whole-plugin approval came from the consent
 # flow (imported or decided there). It only records that the plugin was
@@ -101,8 +103,9 @@ KEPT_ON_SOURCE_CHANGE: frozenset[str] = frozenset({LEGACY_DENIED})
 # permission panel can tell the user why they are asked again. Cleared by the
 # next decision for that plugin.
 GRANTS_RESET = "grants_reset"
-# When the consent dialog last decided for the whole plugin (approve, deny or
-# revoke): the time the user answered for the permissions it covers.
+# When the consent dialog last denied or revoked the whole plugin: the time the
+# user answered for the permissions it covers. An approval answers only what
+# it granted (their own decided_at), so it does not set this.
 LEGACY_DECIDED_AT = "legacy_decided_at"
 RESET_SOURCE_CHANGED = "source_changed"
 
@@ -675,10 +678,12 @@ class PluginPermissionStore:
         An explicit ``undecided`` entry with the time is stored, so readers
         can tell what happened before the user's last choice; it counts as
         no decision everywhere (and on a ``legacy_denied`` record it keeps a
-        missing entry from meaning denied). A permission that is undecided
-        already (no entry, or an ``undecided`` one; on a ``legacy_denied``
-        record only the latter) is left as it is, without a write. ``source``
-        is applied like in :meth:`decide`. An id outside the vocabulary is accepted only when the
+        missing entry of a permission with a legacy name from meaning
+        denied). Under an unchanged source, a permission that is undecided
+        already (an ``undecided`` entry, or no entry unless it has a legacy
+        name on a ``legacy_denied`` record) is left as it is, without a
+        write. A changed ``source`` is applied and saved first, like in
+        :meth:`decide`. An id outside the vocabulary is accepted only when the
         record already holds it (e.g. an id the vocabulary has since
         dropped), and its entry is removed.
         """
