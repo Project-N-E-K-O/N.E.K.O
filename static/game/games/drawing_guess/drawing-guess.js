@@ -2646,7 +2646,7 @@
     ellipse: { cx: 'cx', cy: 'cy', rx: 'rx', ry: 'ry' }
   };
 
-  var AI_SVG_NUMBER_PATTERN = '[-+]?(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:[eE][-+]?\\d+)?';
+  var AI_SVG_NUMBER_PATTERN = '[-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][-+]?\\d+)?';
   var AI_SVG_ARG_SEP_PATTERN = '(?:\\s+(?:,\\s*)?|,\\s*)';
   var AI_SVG_TRANSFORM_ITEM_PATTERN =
     '(?:translate|scale|rotate|skewX|skewY|matrix)\\(\\s*' +

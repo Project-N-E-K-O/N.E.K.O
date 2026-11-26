@@ -53,6 +53,10 @@ type MountedFrame = {
   dispatchRequest: (data: Record<string, unknown>) => void
   postMessage: ReturnType<typeof vi.fn>
   iframe: () => HTMLIFrameElement | null
+  parseDocumentDialog: () => HTMLElement | null
+  confirmParseDocument: () => Promise<void>
+  cancelParseDocument: () => Promise<void>
+  closeParseDocumentDialog: () => Promise<void>
   setActive: (active: boolean) => Promise<void>
   setActivationRevision: (revision: number) => Promise<void>
   setSurface: (surface: PluginUiSurface) => Promise<void>
@@ -169,6 +173,37 @@ async function mountFrame(initialSurface = makeSurface(), options: { requireIfra
       return () => h('button', null, slots.default?.())
     },
   }))
+  app.component('el-dialog', defineComponent({
+    props: {
+      modelValue: { type: Boolean, default: false },
+      title: { type: String, default: '' },
+      beforeClose: { type: Function, default: undefined },
+    },
+    emits: ['update:modelValue', 'close'],
+    setup(props, { slots, emit }) {
+      return () => (props.modelValue
+        ? h('div', { role: 'dialog', 'aria-label': props.title }, [
+            h('button', {
+              type: 'button',
+              'data-testid': 'el-dialog-header-close',
+              onClick: () => {
+                if (typeof props.beforeClose === 'function') {
+                  props.beforeClose(() => {
+                    emit('close')
+                    emit('update:modelValue', false)
+                  })
+                  return
+                }
+                emit('close')
+                emit('update:modelValue', false)
+              },
+            }, 'close'),
+            slots.default?.(),
+            slots.footer?.(),
+          ])
+        : null)
+    },
+  }))
   app.mount(container)
   await nextTick()
   await flushPromises()
@@ -207,6 +242,25 @@ async function mountFrame(initialSurface = makeSurface(), options: { requireIfra
     },
     postMessage,
     iframe: () => container.querySelector('iframe') as HTMLIFrameElement | null,
+    parseDocumentDialog: () => container.querySelector<HTMLElement>('[data-testid="parse-document-confirm-dialog"]'),
+    async confirmParseDocument() {
+      const btn = container.querySelector<HTMLButtonElement>('[data-testid="parse-document-confirm-ok"]')
+      if (!btn) throw new Error('Expected parseDocument confirm button')
+      btn.click()
+      await flushPromises()
+    },
+    async cancelParseDocument() {
+      const btn = container.querySelector<HTMLButtonElement>('[data-testid="parse-document-confirm-cancel"]')
+      if (!btn) throw new Error('Expected parseDocument cancel button')
+      btn.click()
+      await flushPromises()
+    },
+    async closeParseDocumentDialog() {
+      const btn = container.querySelector<HTMLButtonElement>('[data-testid="el-dialog-header-close"]')
+      if (!btn) throw new Error('Expected el-dialog header close button')
+      btn.click()
+      await flushPromises()
+    },
     async setActive(active) {
       state.active = active
       await nextTick()
@@ -657,6 +711,7 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
       { userInitiated: true, timeoutMs: 5000 },
     ))
     await flushPromises()
+    await frame.confirmParseDocument()
 
     expect(apiMocks.parseHostedDocument).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'notes.pdf' }),
@@ -679,6 +734,7 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
       { userInitiated: true },
     ))
     await flushPromises()
+    await frame.confirmParseDocument()
 
     expect(apiMocks.parseHostedDocument).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'notes.docx' }),
@@ -763,6 +819,7 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
       { userInitiated: true },
     ))
     await flushPromises()
+    await frame.confirmParseDocument()
 
     expect(frame.postMessage).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -787,6 +844,7 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
       { userInitiated: true, timeoutMs: 100 },
     ))
     await flushPromises()
+    await frame.confirmParseDocument()
     await vi.advanceTimersByTimeAsync(100)
     await flushPromises()
 
@@ -797,7 +855,6 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
   })
 
   it('rejects forged parseDocument requests when host confirmation is cancelled', async () => {
-    elementPlusMocks.ElMessageBox.confirm.mockRejectedValueOnce('cancel')
     const frame = await mountFrame()
     await frame.setSurface(makeDocumentSurface())
 
@@ -806,8 +863,11 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
       { requestId: 'forged-1', userInitiated: true },
     ))
     await flushPromises()
+    expect(frame.parseDocumentDialog()).not.toBeNull()
 
-    expect(elementPlusMocks.ElMessageBox.confirm).toHaveBeenCalledTimes(1)
+    await frame.cancelParseDocument()
+
+    expect(frame.parseDocumentDialog()).toBeNull()
     expect(apiMocks.parseHostedDocument).not.toHaveBeenCalled()
     expect(frame.postMessage).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -817,11 +877,29 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
       }),
       '*',
     )
+
+    frame.dispatchRequest(parseDocumentRequest(
+      new File(['pdf'], 'secret2.pdf', { type: 'application/pdf' }),
+      { requestId: 'forged-2', userInitiated: true },
+    ))
+    await flushPromises()
+    expect(frame.parseDocumentDialog()).not.toBeNull()
+
+    await frame.closeParseDocumentDialog()
+
+    expect(frame.parseDocumentDialog()).toBeNull()
+    expect(apiMocks.parseHostedDocument).not.toHaveBeenCalled()
+    expect(frame.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: 'forged-2',
+        ok: false,
+        code: 'document_parse_permission_denied',
+      }),
+      '*',
+    )
   })
 
   it('prevents stacked confirm dialogs on concurrent parseDocument floods', async () => {
-    const pendingConfirm = deferred<string>()
-    elementPlusMocks.ElMessageBox.confirm.mockReturnValueOnce(pendingConfirm.promise as any)
     apiMocks.parseHostedDocument.mockResolvedValue({
       ok: true,
       document: { name: 'first.pdf', sourceType: 'pdf', content: 'ok' },
@@ -839,7 +917,7 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
     ))
     await flushPromises()
 
-    expect(elementPlusMocks.ElMessageBox.confirm).toHaveBeenCalledTimes(1)
+    expect(frame.container.querySelectorAll('[data-testid="parse-document-confirm-dialog"]')).toHaveLength(1)
     expect(frame.postMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         requestId: 'parse-2',
@@ -849,8 +927,8 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
       '*',
     )
 
-    pendingConfirm.resolve('confirm')
-    await flushPromises()
+    await frame.confirmParseDocument()
+    expect(frame.parseDocumentDialog()).toBeNull()
     expect(apiMocks.parseHostedDocument).toHaveBeenCalledTimes(1)
     expect(frame.postMessage).toHaveBeenCalledWith(
       expect.objectContaining({ requestId: 'parse-1', ok: true }),
@@ -859,8 +937,6 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
   })
 
   it('closes confirm dialog and does not upload if surface changes, unmounts, or request cancels during host confirmation', async () => {
-    const firstConfirm = deferred<string>()
-    elementPlusMocks.ElMessageBox.confirm.mockReturnValueOnce(firstConfirm.promise as any)
     const frame = await mountFrame()
     await frame.setSurface(makeDocumentSurface())
 
@@ -869,47 +945,44 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
       { requestId: 'parse-surface-change', userInitiated: true },
     ))
     await flushPromises()
+    expect(frame.parseDocumentDialog()).not.toBeNull()
     await frame.setSurface({ ...makeDocumentSurface(), id: 'secondary' })
-    expect(elementPlusMocks.ElMessageBox.close).toHaveBeenCalledTimes(1)
-    firstConfirm.reject('close')
     await flushPromises()
 
+    expect(frame.parseDocumentDialog()).toBeNull()
+    expect(elementPlusMocks.ElMessageBox.close).not.toHaveBeenCalled()
     expect(apiMocks.parseHostedDocument).not.toHaveBeenCalled()
     expect(frame.postMessage).not.toHaveBeenCalled()
 
-    const secondConfirm = deferred<string>()
-    elementPlusMocks.ElMessageBox.confirm.mockReturnValueOnce(secondConfirm.promise as any)
     frame.dispatchRequest(parseDocumentRequest(
       new File(['pdf'], 'notes2.pdf', { type: 'application/pdf' }),
       { requestId: 'parse-cancel-during-confirm', userInitiated: true },
     ))
     await flushPromises()
+    expect(frame.parseDocumentDialog()).not.toBeNull()
     frame.dispatchRequest({ type: 'neko-hosted-surface-cancel', requestId: 'parse-cancel-during-confirm' })
-    expect(elementPlusMocks.ElMessageBox.close).toHaveBeenCalledTimes(2)
-    secondConfirm.resolve('confirm')
     await flushPromises()
 
+    expect(frame.parseDocumentDialog()).toBeNull()
+    expect(elementPlusMocks.ElMessageBox.close).not.toHaveBeenCalled()
     expect(apiMocks.parseHostedDocument).not.toHaveBeenCalled()
     expect(frame.postMessage).not.toHaveBeenCalled()
 
-    const thirdConfirm = deferred<string>()
-    elementPlusMocks.ElMessageBox.confirm.mockReturnValueOnce(thirdConfirm.promise as any)
     frame.dispatchRequest(parseDocumentRequest(
       new File(['pdf'], 'notes3.pdf', { type: 'application/pdf' }),
       { requestId: 'parse-unmount-during-confirm', userInitiated: true },
     ))
     await flushPromises()
+    expect(frame.parseDocumentDialog()).not.toBeNull()
     frame.unmount()
-    expect(elementPlusMocks.ElMessageBox.close).toHaveBeenCalledTimes(3)
-    thirdConfirm.resolve('confirm')
     await flushPromises()
 
+    expect(frame.parseDocumentDialog()).toBeNull()
+    expect(elementPlusMocks.ElMessageBox.close).not.toHaveBeenCalled()
     expect(apiMocks.parseHostedDocument).not.toHaveBeenCalled()
   })
 
   it('rejects with timeout and skips upload when confirmation settles after deadline expires', async () => {
-    const pendingConfirm = deferred<string>()
-    elementPlusMocks.ElMessageBox.confirm.mockReturnValueOnce(pendingConfirm.promise as any)
     const frame = await mountFrame()
     await frame.setSurface(makeDocumentSurface())
 
@@ -919,8 +992,7 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
     ))
     await flushPromises()
     await vi.advanceTimersByTimeAsync(30000)
-    pendingConfirm.resolve('confirm')
-    await flushPromises()
+    await frame.confirmParseDocument()
 
     expect(apiMocks.parseHostedDocument).not.toHaveBeenCalled()
     expect(frame.postMessage).toHaveBeenCalledWith(
@@ -934,8 +1006,6 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
   })
 
   it('carries remaining deadline across host confirmation into parseHostedDocument', async () => {
-    const pendingConfirm = deferred<string>()
-    elementPlusMocks.ElMessageBox.confirm.mockReturnValueOnce(pendingConfirm.promise as any)
     apiMocks.parseHostedDocument.mockResolvedValue({
       ok: true,
       document: { name: 'notes.pdf', sourceType: 'pdf', content: 'ok' },
@@ -949,8 +1019,7 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
     ))
     await flushPromises()
     await vi.advanceTimersByTimeAsync(10000)
-    pendingConfirm.resolve('confirm')
-    await flushPromises()
+    await frame.confirmParseDocument()
 
     expect(apiMocks.parseHostedDocument).toHaveBeenCalledWith(
       expect.any(File),
@@ -962,24 +1031,23 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
     )
   })
 
-  it('releases the parseDocument confirmation gate when cancelled while ElMessageBox.confirm never settles', async () => {
+  it('releases the parseDocument confirmation gate when cancelled while confirm dialog is open', async () => {
     const frame = await mountFrame()
     await frame.setSurface(makeDocumentSurface())
-    elementPlusMocks.ElMessageBox.confirm.mockImplementationOnce(() => new Promise<never>(() => {}))
 
     frame.dispatchRequest(parseDocumentRequest(
       new File(['first'], 'first.pdf', { type: 'application/pdf' }),
-      { requestId: 'parse-never-settles', userInitiated: true },
+      { requestId: 'parse-cancelled-gate', userInitiated: true },
     ))
     await flushPromises()
-    expect(elementPlusMocks.ElMessageBox.confirm).toHaveBeenCalledTimes(1)
+    expect(frame.parseDocumentDialog()).not.toBeNull()
 
-    frame.dispatchRequest({ type: 'neko-hosted-surface-cancel', requestId: 'parse-never-settles' })
+    frame.dispatchRequest({ type: 'neko-hosted-surface-cancel', requestId: 'parse-cancelled-gate' })
     await flushPromises()
-    expect(elementPlusMocks.ElMessageBox.close).toHaveBeenCalledTimes(1)
+    expect(frame.parseDocumentDialog()).toBeNull()
+    expect(elementPlusMocks.ElMessageBox.close).not.toHaveBeenCalled()
     expect(apiMocks.parseHostedDocument).not.toHaveBeenCalled()
 
-    elementPlusMocks.ElMessageBox.confirm.mockResolvedValueOnce('confirm')
     apiMocks.parseHostedDocument.mockResolvedValueOnce({
       ok: true,
       document: { name: 'second.pdf', sourceType: 'pdf', content: 'ok' },
@@ -990,16 +1058,56 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
       { requestId: 'parse-after-cancel', userInitiated: true },
     ))
     await flushPromises()
+    expect(frame.parseDocumentDialog()).not.toBeNull()
+    await frame.confirmParseDocument()
 
-    expect(elementPlusMocks.ElMessageBox.confirm).toHaveBeenCalledTimes(2)
+    expect(frame.parseDocumentDialog()).toBeNull()
     expect(apiMocks.parseHostedDocument).toHaveBeenCalledTimes(1)
     expect(frame.postMessage).toHaveBeenCalledWith(
       expect.objectContaining({ requestId: 'parse-after-cancel', ok: true }),
       '*',
     )
     expect(frame.postMessage).not.toHaveBeenCalledWith(
-      expect.objectContaining({ requestId: 'parse-never-settles' }),
+      expect.objectContaining({ requestId: 'parse-cancelled-gate' }),
       '*',
+    )
+  })
+
+  it('cancelling parseDocument confirmation closes only its own dialog without closing applyDocumentLocale ElMessageBox', async () => {
+    apiMocks.getPluginHostedSurfaceSource.mockResolvedValue(hostedSource)
+    apiMocks.getPluginHostedSurfaceContext.mockResolvedValue({ state: { label: 'ready' } })
+    const frame = await mountFrame({ ...makeHostedSurface(), permissions: ['document:parse'] })
+    await flushPromises()
+
+    localeRef.value = 'en-US'
+    await flushPromises()
+
+    const localeConfirm = deferred<string>()
+    elementPlusMocks.ElMessageBox.confirm.mockReturnValueOnce(localeConfirm.promise as any)
+    const applyButton = frame.container.querySelector<HTMLButtonElement>('[data-testid="surface-apply-locale"]')
+    expect(applyButton).not.toBeNull()
+    applyButton!.click()
+    await flushPromises()
+    expect(elementPlusMocks.ElMessageBox.confirm).toHaveBeenCalledTimes(1)
+
+    frame.dispatchRequest(parseDocumentRequest(
+      new File(['pdf'], 'notes.pdf', { type: 'application/pdf' }),
+      { requestId: 'parse-while-locale-open', userInitiated: true },
+    ))
+    await flushPromises()
+    expect(frame.parseDocumentDialog()).not.toBeNull()
+
+    frame.dispatchRequest({ type: 'neko-hosted-surface-cancel', requestId: 'parse-while-locale-open' })
+    await flushPromises()
+    expect(frame.parseDocumentDialog()).toBeNull()
+    expect(elementPlusMocks.ElMessageBox.close).not.toHaveBeenCalled()
+
+    localeConfirm.resolve('confirm')
+    await flushPromises()
+    expect(apiMocks.getPluginHostedSurfaceSource).toHaveBeenLastCalledWith(
+      'study_companion',
+      expect.objectContaining({ locale: 'en-US' }),
+      expect.anything(),
     )
   })
 
@@ -1017,6 +1125,7 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
       { userInitiated: true },
     ))
     await flushPromises()
+    await frame.confirmParseDocument()
     await frame.setSurface({ ...makeDocumentSurface(), id: 'secondary' })
     await flushPromises()
 
@@ -1038,11 +1147,13 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
       { requestId: 'parse-first', userInitiated: true },
     ))
     await flushPromises()
+    await frame.confirmParseDocument()
     frame.dispatchRequest(parseDocumentRequest(
       new File(['second'], 'second.pdf', { type: 'application/pdf' }),
       { requestId: 'parse-second', userInitiated: true },
     ))
     await flushPromises()
+    await frame.confirmParseDocument()
     frame.dispatchRequest({ type: 'neko-hosted-surface-cancel', requestId: 'parse-first' })
     await flushPromises()
 

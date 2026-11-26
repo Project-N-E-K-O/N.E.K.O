@@ -72,11 +72,35 @@
         </el-tag>
       </div>
     </div>
+
+    <template v-for="dialog in activeParseDocumentConfirmDialogs" :key="dialog.token">
+      <el-dialog
+        :model-value="true"
+        :title="t('common.confirm')"
+        append-to-body
+        :close-on-click-modal="false"
+        width="min(440px, calc(100vw - 32px))"
+        data-testid="parse-document-confirm-dialog"
+        :before-close="dialog.cancel"
+        @update:model-value="(open: boolean) => { if (!open) dialog.cancel() }"
+        @close="dialog.cancel"
+      >
+        <p class="hosted-surface-frame__confirm-message">{{ dialog.message }}</p>
+        <template #footer>
+          <el-button data-testid="parse-document-confirm-cancel" @click="dialog.cancel">
+            {{ t('common.cancel') }}
+          </el-button>
+          <el-button type="primary" data-testid="parse-document-confirm-ok" @click="dialog.accept">
+            {{ t('common.confirm') }}
+          </el-button>
+        </template>
+      </el-dialog>
+    </template>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Document, Loading, WarningFilled } from '@element-plus/icons-vue'
 import { callPluginHostedSurfaceAction, getPluginHostedSurfaceContext, getPluginHostedSurfaceSource, parseHostedDocument } from '@/api/plugins'
@@ -149,39 +173,42 @@ let currentLoadId = 0
 let sourceController: AbortController | null = null
 let hostedRequestGeneration = 0
 let componentMounted = false
-let parseDocumentConfirmPending = false
+type ParseDocumentConfirmOutcome = 'confirm' | 'user_cancel' | 'host_cancel'
+type PendingParseDocumentConfirm = {
+  requestId: string
+  token: number
+  message: string
+  accept: () => void
+  cancel: () => void
+  resolve: (outcome: ParseDocumentConfirmOutcome) => void
+}
 let parseDocumentConfirmToken = 0
-let pendingParseDocumentConfirmRequestId: string | null = null
-let cancelPendingParseDocumentConfirmWaiter: (() => void) | null = null
-const cancelledParseDocumentConfirmRequestIds = new Set<string>()
+const pendingParseDocumentConfirm = shallowRef<PendingParseDocumentConfirm | null>(null)
+const activeParseDocumentConfirmDialogs = computed(() => (
+  pendingParseDocumentConfirm.value ? [pendingParseDocumentConfirm.value] : []
+))
 const hostedDocumentControllers = new Map<string, AbortController>()
 const hostedActionControllers = new Map<string, AbortController>()
 const contextControllers = new Set<AbortController>()
 let contextQueue: Promise<unknown> = Promise.resolve()
 
-function closePendingParseDocumentConfirm() {
-  try {
-    if (typeof ElMessageBox.close === 'function') ElMessageBox.close()
-  } catch {
-    // Ignore close errors when no active message box instance exists.
-  }
+function settlePendingParseDocumentConfirm(
+  outcome: ParseDocumentConfirmOutcome,
+  filter?: { token?: number; requestId?: string },
+) {
+  const current = pendingParseDocumentConfirm.value
+  if (!current) return
+  if (filter?.token !== undefined && current.token !== filter.token) return
+  if (filter?.requestId !== undefined && current.requestId !== filter.requestId) return
+  pendingParseDocumentConfirm.value = null
+  current.resolve(outcome)
 }
 
 function releasePendingParseDocumentConfirm(requestIdToCancel?: string) {
-  const hadPendingConfirm = parseDocumentConfirmPending
-  const targetRequestId = requestIdToCancel ?? pendingParseDocumentConfirmRequestId
-  const cancelWaiter = cancelPendingParseDocumentConfirmWaiter
-  if (targetRequestId) {
-    cancelledParseDocumentConfirmRequestIds.add(targetRequestId)
-  }
-  parseDocumentConfirmToken += 1
-  parseDocumentConfirmPending = false
-  pendingParseDocumentConfirmRequestId = null
-  cancelPendingParseDocumentConfirmWaiter = null
-  if (hadPendingConfirm) {
-    closePendingParseDocumentConfirm()
-  }
-  cancelWaiter?.()
+  settlePendingParseDocumentConfirm(
+    'host_cancel',
+    requestIdToCancel !== undefined ? { requestId: requestIdToCancel } : undefined,
+  )
 }
 
 function readContextInOrder() {
@@ -569,7 +596,7 @@ function handleMessage(event: MessageEvent) {
   }
   if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-cancel') {
     const requestId = typeof data.requestId === 'string' ? data.requestId : ''
-    if (requestId && requestId === pendingParseDocumentConfirmRequestId) {
+    if (requestId) {
       releasePendingParseDocumentConfirm(requestId)
     }
     hostedDocumentControllers.get(requestId)?.abort('client-cancelled')
@@ -695,7 +722,7 @@ async function handleHostedRequest(data: any) {
         respond({ ok: false, error: 'Only PDF and DOCX documents are supported.', code: 'unsupported_document' })
         return
       }
-      if (parseDocumentConfirmPending) {
+      if (pendingParseDocumentConfirm.value) {
         respond({
           ok: false,
           error: 'Document parsing confirmation is already pending.',
@@ -708,47 +735,26 @@ async function handleHostedRequest(data: any) {
       const requestDeadline = Date.now() + timeoutMs
       const safeFileName = String(file.name || '').replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 255)
       const confirmToken = ++parseDocumentConfirmToken
-      parseDocumentConfirmPending = true
-      pendingParseDocumentConfirmRequestId = requestId
-      cancelledParseDocumentConfirmRequestIds.delete(requestId)
-      let confirmCancelledByHost = false
-      const confirmCancelPromise = new Promise<never>((_, reject) => {
-        cancelPendingParseDocumentConfirmWaiter = () => {
-          confirmCancelledByHost = true
-          reject(new Error('parse_document_confirm_cancelled'))
+      const confirmMessage = t('plugins.ui.parseDocumentConfirm', { plugin: props.pluginId, file: safeFileName })
+      const confirmOutcome = await new Promise<ParseDocumentConfirmOutcome>((resolve) => {
+        pendingParseDocumentConfirm.value = {
+          requestId,
+          token: confirmToken,
+          message: confirmMessage,
+          accept: () => settlePendingParseDocumentConfirm('confirm', { token: confirmToken }),
+          cancel: () => settlePendingParseDocumentConfirm('user_cancel', { token: confirmToken }),
+          resolve,
         }
       })
-      confirmCancelPromise.catch(() => {})
-      try {
-        const confirmPromise = Promise.resolve(
-          ElMessageBox.confirm(
-            t('plugins.ui.parseDocumentConfirm', { plugin: props.pluginId, file: safeFileName }),
-            t('common.confirm'),
-            { type: 'warning' },
-          ),
-        )
-        confirmPromise.catch(() => {})
-        await Promise.race([confirmPromise, confirmCancelPromise])
-      } catch {
-        const wasCancelled = cancelledParseDocumentConfirmRequestIds.delete(requestId)
-        if (confirmCancelledByHost || !isCurrentRequest() || wasCancelled) {
-          return
-        }
+      if (!isCurrentRequest() || confirmOutcome === 'host_cancel') {
+        return
+      }
+      if (confirmOutcome === 'user_cancel') {
         respond({
           ok: false,
           error: 'Document parsing was cancelled by the user.',
           code: 'document_parse_permission_denied',
         })
-        return
-      } finally {
-        if (parseDocumentConfirmToken === confirmToken) {
-          parseDocumentConfirmPending = false
-          pendingParseDocumentConfirmRequestId = null
-          cancelPendingParseDocumentConfirmWaiter = null
-        }
-      }
-      const wasCancelled = cancelledParseDocumentConfirmRequestIds.delete(requestId)
-      if (!isCurrentRequest() || wasCancelled) {
         return
       }
       const remainingTimeoutMs = requestDeadline - Date.now()
@@ -996,5 +1002,12 @@ defineExpose({
   flex-wrap: wrap;
   justify-content: center;
   gap: 8px;
+}
+
+.hosted-surface-frame__confirm-message {
+  margin: 0;
+  line-height: 1.6;
+  color: var(--el-text-color-primary);
+  word-break: break-word;
 }
 </style>

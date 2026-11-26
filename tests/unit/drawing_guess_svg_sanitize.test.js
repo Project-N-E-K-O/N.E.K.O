@@ -272,6 +272,7 @@ test('F04B-003: transform sanitizer preserves valid transform lists and rejects 
     '<g transform="translate(10 20),scale(2)">',
     '<rect x="5" y="5" width="20" height="20" transform="scale(1e-2) rotate(45 .5 -.25)"/>',
     '<polygon points="0,0 1e1,5 20,1.5e1" transform="matrix(1, 0, 0, 1, 10, -20)"/>',
+    '<circle cx="10" cy="10" r="5" transform="translate(10.) scale(2.) rotate(45. 10. 20.) scale(10.e-2)"/>',
     '</g>',
     '</svg>',
   ].join('');
@@ -280,6 +281,7 @@ test('F04B-003: transform sanitizer preserves valid transform lists and rejects 
   assert.ok(sanitizedValid.includes('transform="scale(1e-2) rotate(45 .5 -.25)"'));
   assert.ok(sanitizedValid.includes('points="0,0 1e1,5 20,1.5e1"'));
   assert.ok(sanitizedValid.includes('transform="matrix(1, 0, 0, 1, 10, -20)"'));
+  assert.ok(sanitizedValid.includes('transform="translate(10.) scale(2.) rotate(45. 10. 20.) scale(10.e-2)"'));
 
   const invalidTransformSvg = [
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">',
@@ -287,6 +289,7 @@ test('F04B-003: transform sanitizer preserves valid transform lists and rejects 
     '<rect x="0" y="0" width="10" height="10" transform="scale(eee)"/>',
     '<circle cx="10" cy="10" r="5" transform="expression(alert(1))"/>',
     '<path d="M0 0 L10 10" transform="translate(10,,20)"/>',
+    '<ellipse cx="5" cy="5" rx="2" ry="2" transform="translate(.)"/>',
     '</g>',
     '</svg>',
   ].join('');
