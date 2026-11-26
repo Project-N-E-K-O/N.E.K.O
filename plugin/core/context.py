@@ -736,6 +736,7 @@ class PluginContext:
         self._effective_config = config_copy
         self._effective_config_uncertain = uncertain
         self._effective_config_fallback_notify = None
+        self._in_flight_write_baseline = None
         self._effective_config_publish_seq = (
             int(getattr(self, "_effective_config_publish_seq", 0) or 0) + 1
         )
@@ -897,9 +898,24 @@ class PluginContext:
         register_pending_change: bool = False,
     ) -> tuple[bool, bool, Dict[str, Any], Dict[str, Any], int, Dict[str, Any]]:
         with self._get_config_state_lock():
-            had_cached = isinstance(self._effective_config, dict)
-            had_uncertain = bool(getattr(self, "_effective_config_uncertain", False))
-            old_config = copy.deepcopy(self._effective_config) if had_cached else {}
+            current_uncertain = bool(getattr(self, "_effective_config_uncertain", False))
+            current_publish_seq = int(getattr(self, "_effective_config_publish_seq", 0) or 0)
+            baseline = getattr(self, "_in_flight_write_baseline", None)
+            if (
+                bool(getattr(self, "_config_write_in_progress", False))
+                and isinstance(baseline, tuple)
+                and len(baseline) == 4
+                and baseline[0] == current_publish_seq
+                and baseline[1]
+                and isinstance(baseline[2], dict)
+            ):
+                had_cached = True
+                had_uncertain = bool(baseline[3] or current_uncertain)
+                old_config = copy.deepcopy(baseline[2])
+            else:
+                had_cached = isinstance(self._effective_config, dict)
+                had_uncertain = current_uncertain
+                old_config = copy.deepcopy(self._effective_config) if had_cached else {}
             last_runtime = getattr(self, "_last_runtime_config_snapshot", None)
             rollback_runtime_snapshot = (
                 copy.deepcopy(old_config)
@@ -2742,6 +2758,7 @@ class PluginContext:
             self._bump_effective_config_gen()
             self._effective_config_uncertain = True
             if owns_current_draft:
+                self._in_flight_write_baseline = None
                 rb_match_token = (
                     base_host_owner_token
                     if base_host_owner_token is not None
@@ -2912,8 +2929,15 @@ class PluginContext:
                 if has_known_baseline:
                     optimistic_to_install = copy.deepcopy(optimistic_config)
                     self._record_effective_config_locked(optimistic_to_install, uncertain=False)
+                    self._in_flight_write_baseline = (
+                        int(getattr(self, "_effective_config_publish_seq", 0) or 0),
+                        True,
+                        copy.deepcopy(old_effective_config),
+                        old_effective_config_uncertain,
+                    )
                     should_flush_optimistic = True
                 else:
+                    self._in_flight_write_baseline = None
                     self._rejected_host_rollback = None
                     self._allocate_owner_token_locked()
                 self._config_write_in_progress = True
@@ -3094,6 +3118,7 @@ class PluginContext:
                 with self._get_config_state_lock():
                     self._config_write_in_progress = False
                     self._in_flight_write_base_owner_token = None
+                    self._in_flight_write_baseline = None
                     self._rejected_host_rollback = None
         finally:
             write_lock.release()
@@ -3131,8 +3156,15 @@ class PluginContext:
                 if has_known_baseline:
                     optimistic_to_install = copy.deepcopy(optimistic_config)
                     self._record_effective_config_locked(optimistic_to_install, uncertain=False)
+                    self._in_flight_write_baseline = (
+                        int(getattr(self, "_effective_config_publish_seq", 0) or 0),
+                        True,
+                        copy.deepcopy(old_effective_config),
+                        old_effective_config_uncertain,
+                    )
                     should_flush_optimistic = True
                 else:
+                    self._in_flight_write_baseline = None
                     self._rejected_host_rollback = None
                     self._allocate_owner_token_locked()
                 self._config_write_in_progress = True
@@ -3189,6 +3221,7 @@ class PluginContext:
                 with self._get_config_state_lock():
                     self._config_write_in_progress = False
                     self._in_flight_write_base_owner_token = None
+                    self._in_flight_write_baseline = None
                     self._rejected_host_rollback = None
         finally:
             write_lock.release()
