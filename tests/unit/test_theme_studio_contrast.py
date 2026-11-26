@@ -1,11 +1,14 @@
-"""内置主题的可读性门槛（WCAG 对比度）。
+"""Readability floors (WCAG contrast) for the built-in theme presets.
 
-主题不会报错、不会掉帧，配色没配好的唯一表现是「用户默默换回默认」。
-`theme_studio/contrast.py` 定义了 17 组真实配对（文字压在它真正所处的底色上），
-这里把「102 套 × 亮/暗 × 17 组」变成每次改动都要过的回归项。
+A badly tuned palette never raises an error or drops a frame; the only symptom
+is a user quietly switching back to the default theme. ``theme_studio/contrast.py``
+defines 17 text/surface pairs, each composited the way the chat window paints
+it, and this module turns "every preset x light/dark x 17 pairs" into a
+regression check that every change has to pass.
 
-发现不达标时，先看是哪一对：多数情况是文字色没跟底色一起调，
-改 `theme_studio/presets/<id>.json` 的文字键即可（可参考 `docs/theme_studio_builtin.md` §88）。
+When a pair fails, the usual cause is a text colour that was not adjusted
+together with its background: fix the text key in
+``theme_studio/presets/<id>.json`` (and its ``<id>-material.json`` twin).
 """
 
 from __future__ import annotations
@@ -22,24 +25,24 @@ PRESETS = pathlib.Path(__file__).resolve().parents[2] / "theme_studio" / "preset
 
 
 def test_presets_dir_exists():
-    assert PRESETS.is_dir(), f"找不到预设目录：{PRESETS}"
+    assert PRESETS.is_dir(), f"preset directory not found: {PRESETS}"
     assert len(list(PRESETS.glob("*.json"))) >= 100
 
 
 def test_all_presets_meet_contrast_floors():
-    """每一套主题、亮/暗两套、17 组配对都要达标。"""
+    """Every preset, in both light and dark mode, passes all 17 pairs."""
     themes, fails, pair_checks = contrast.audit_dir(str(PRESETS))
-    assert pair_checks > 3000, f"检查对数偏少（{pair_checks}），预设可能没读全"
+    assert pair_checks > 3000, f"too few pair checks ({pair_checks}); presets may not have loaded"
     if fails:
         details = "\n".join(
             f"  {theme_id} [{mode}] {row['pair']}: {row['ratio']:.2f} < {row['floor']:.1f} ({row['fg']} / {row['bg']})"
             for theme_id, mode, row in sorted(fails, key=lambda it: it[2]["ratio"])[:20]
         )
-        pytest.fail(f"{len(fails)} 处不达标 / 共 {pair_checks} 对：\n{details}")
+        pytest.fail(f"{len(fails)} failing pairs out of {pair_checks}:\n{details}")
 
 
 def test_audit_can_actually_fail():
-    """门槛必须有牙：把一套主题的链接色改成接近底色，审计必须报出来。"""
+    """The floor has teeth: a link colour close to its surface must be reported."""
     file_path = PRESETS / "arctic-glass-material.json"
     doc = json.loads(file_path.read_text(encoding="utf-8-sig"))
     broken = copy.deepcopy(doc)
@@ -47,13 +50,34 @@ def test_audit_can_actually_fail():
 
     fails, pair_checks = contrast.failing([("broken", broken)])
     assert pair_checks > 0
-    link_fails = [row for _, _, row in fails if row["pair"] == "链接"]
-    assert link_fails, "链接色贴近底色却没被审计发现"
+    link_fails = [row for _, _, row in fails if row["pair"] == "link"]
+    assert link_fails, "a link colour close to its surface was not reported"
     assert link_fails[0]["ratio"] < 1.5
 
-    # 原文件必须仍然是达标的（别把「能报错」变成「本来就坏」）
+    # The original file must still pass, so the check is not just "already broken".
     ok_fails, _ = contrast.failing([("original", doc)])
-    assert not [row for _, _, row in ok_fails if row["pair"] == "链接"]
+    assert not [row for _, _, row in ok_fails if row["pair"] == "link"]
+
+
+def test_bubble_gradient_paints_above_bubble_colour():
+    """An opaque bubble gradient decides the surface, not the bubble colour below it."""
+    vars_map = {
+        "--nts-chat-bg": "#ffffff",
+        "--nts-user-bubble-bg": "#000000",
+        "--nts-user-bubble-gradient": "linear-gradient(135deg, #ffffff 0%, #ffffff 100%)",
+    }
+    assert contrast.resolve_surface(vars_map, contrast.USER_BUBBLE, "--nts-user-bubble-bg")[:3] == (255, 255, 255)
+
+
+def test_glass_tint_replaces_bubble_colour():
+    """``--nts-bubble-glass-tint`` replaces the bubble colour instead of stacking on it."""
+    vars_map = {
+        "--nts-chat-bg": "#000000",
+        "--nts-ai-bubble-bg": "#ffffff",
+        "--nts-bubble-glass-tint": "rgba(255, 255, 255, 0.2)",
+    }
+    surface = contrast.resolve_surface(vars_map, contrast.AI_BUBBLE, "--nts-ai-bubble-bg")
+    assert surface[:3] == (51, 51, 51)
 
 
 def test_contrast_extremes():
@@ -67,4 +91,4 @@ def test_parse_color_formats():
     assert contrast.parse_color("#abc") == (170, 187, 204, 1.0)
     assert contrast.parse_color("rgba(64, 137, 179, 0.5)") == (64, 137, 179, 0.5)
     assert contrast.parse_color("none") is None
-    assert contrast.parse_color("不是颜色") is None
+    assert contrast.parse_color("not a colour") is None

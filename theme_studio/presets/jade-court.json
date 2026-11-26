@@ -121,7 +121,7 @@
     "--nts-send-bg": "#b6ec90",
     "--nts-send-text": "#0f0a0d",
     "--nts-user-bubble-bg": "#5c803f",
-    "--nts-user-bubble-text": "#ffffff",
+    "--nts-user-bubble-text": "#192211",
     "--nts-user-bubble-border": "rgba(100, 130, 66, 0.55)",
     "--nts-user-bubble-gradient": "linear-gradient(135deg, #78a852 0%, #607c3f 100%)",
     "--nts-ai-bubble-bg": "rgba(19, 21, 16, 0.96)",

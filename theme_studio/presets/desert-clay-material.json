@@ -162,7 +162,7 @@
     "--nts-rec-text": "#F0E3D4",
     "--nts-rec-border": "rgba(201, 123, 74, 0.3)",
     "--nts-accent": "#C97B4A",
-    "--nts-link": "#C97B4A",
+    "--nts-link": "#CD8457",
     "--nts-highlight": "rgba(201, 123, 74, 0.26)",
     "--nts-scrollbar-thumb": "rgba(201, 123, 74, 0.45)",
     "--nts-scrollbar-track": "rgba(0, 0, 0, 0.05)",

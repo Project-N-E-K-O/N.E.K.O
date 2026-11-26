@@ -1193,6 +1193,31 @@
   background-color: var(--nts-chat-panel-bg) !important;
 }
 
+/* --- B Chat window: compact /chat outer wrappers stay transparent ---
+ * Mirrors the host rule in static/css/index.css (same wrapper list and scope).
+ * Layered !important beats the host's unlayered !important, so without this
+ * mirror the chat-bg / panel-bg / shadow rules above (and in C) would paint the
+ * outer wrappers behind the compact capsule. Not gated on data-nts-* on
+ * purpose: it restates the host rule, so it has zero effect of its own; the
+ * material layer's equivalent (neko-theme-studio.js) only applies while
+ * data-nts-mt is set. Two ids outrank every palette rule here; the capsule
+ * itself (.compact-chat-surface-frame) is not in the list and stays themed. */
+:root:root:root:root:root:root body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized) #react-chat-window-root,
+:root:root:root:root:root:root body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized) #react-chat-window-root .app-shell,
+:root:root:root:root:root:root body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized) #react-chat-window-root .chat-window,
+:root:root:root:root:root:root body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized) #react-chat-window-root .composer-panel,
+:root:root:root:root:root:root body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized) #react-chat-window-root .composer,
+:root:root:root:root:root:root body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized) #react-chat-window-root .compact-chat-surface-shell {
+  background-color: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  border: 0 !important;
+  outline: 0 !important;
+  filter: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
 /* ===================== C Input area===================== */
 
 /* --- C Input area: light (26 rule(s)) --- */
@@ -2304,12 +2329,12 @@
 :root[data-theme="dark"][data-nts-d-chat-bg-image]:root:root:root:root:root body .chat-body { background-image: var(--nts-chat-bg-image) !important; background-size: cover !important; background-position: center center !important; background-repeat: no-repeat !important; background-attachment: scroll !important; }
 
 /* ===== chat background image brightness ===== */
-:root:not([data-theme="dark"])[data-nts-l-chat-bg-image][data-nts-l-chat-bg-image-brightness]:root:root:root:root:root body .compact-export-history-scroll { background-image: linear-gradient(rgba(0,0,0,calc(1 - var(--nts-chat-bg-image-brightness))),rgba(0,0,0,calc(1 - var(--nts-chat-bg-image-brightness)))), var(--nts-chat-bg-image) !important; background-size: cover !important; background-position: center center !important; background-repeat: no-repeat !important; background-attachment: scroll !important; }
-:root:not([data-theme="dark"])[data-nts-l-chat-bg-image][data-nts-l-chat-bg-image-brightness]:root:root:root:root:root body .message-list { background-image: linear-gradient(rgba(0,0,0,calc(1 - var(--nts-chat-bg-image-brightness))),rgba(0,0,0,calc(1 - var(--nts-chat-bg-image-brightness)))), var(--nts-chat-bg-image) !important; background-size: cover !important; background-position: center center !important; background-repeat: no-repeat !important; background-attachment: scroll !important; }
-:root:not([data-theme="dark"])[data-nts-l-chat-bg-image][data-nts-l-chat-bg-image-brightness]:root:root:root:root:root body .chat-body { background-image: linear-gradient(rgba(0,0,0,calc(1 - var(--nts-chat-bg-image-brightness))),rgba(0,0,0,calc(1 - var(--nts-chat-bg-image-brightness)))), var(--nts-chat-bg-image) !important; background-size: cover !important; background-position: center center !important; background-repeat: no-repeat !important; background-attachment: scroll !important; }
-:root[data-theme="dark"][data-nts-d-chat-bg-image][data-nts-d-chat-bg-image-brightness]:root:root:root:root:root body .compact-export-history-scroll { background-image: linear-gradient(rgba(0,0,0,calc(1 - var(--nts-chat-bg-image-brightness))),rgba(0,0,0,calc(1 - var(--nts-chat-bg-image-brightness)))), var(--nts-chat-bg-image) !important; background-size: cover !important; background-position: center center !important; background-repeat: no-repeat !important; background-attachment: scroll !important; }
-:root[data-theme="dark"][data-nts-d-chat-bg-image][data-nts-d-chat-bg-image-brightness]:root:root:root:root:root body .message-list { background-image: linear-gradient(rgba(0,0,0,calc(1 - var(--nts-chat-bg-image-brightness))),rgba(0,0,0,calc(1 - var(--nts-chat-bg-image-brightness)))), var(--nts-chat-bg-image) !important; background-size: cover !important; background-position: center center !important; background-repeat: no-repeat !important; background-attachment: scroll !important; }
-:root[data-theme="dark"][data-nts-d-chat-bg-image][data-nts-d-chat-bg-image-brightness]:root:root:root:root:root body .chat-body { background-image: linear-gradient(rgba(0,0,0,calc(1 - var(--nts-chat-bg-image-brightness))),rgba(0,0,0,calc(1 - var(--nts-chat-bg-image-brightness)))), var(--nts-chat-bg-image) !important; background-size: cover !important; background-position: center center !important; background-repeat: no-repeat !important; background-attachment: scroll !important; }
+:root:not([data-theme="dark"])[data-nts-l-chat-bg-image][data-nts-l-chat-bg-image-brightness]:root:root:root:root:root body .compact-export-history-scroll { background-image: linear-gradient(rgba(0,0,0,calc(1 - var(--nts-chat-bg-image-brightness))),rgba(0,0,0,calc(1 - var(--nts-chat-bg-image-brightness)))), var(--nts-chat-bg-image) !important; }
+:root:not([data-theme="dark"])[data-nts-l-chat-bg-image][data-nts-l-chat-bg-image-brightness]:root:root:root:root:root body .message-list { background-image: linear-gradient(rgba(0,0,0,calc(1 - var(--nts-chat-bg-image-brightness))),rgba(0,0,0,calc(1 - var(--nts-chat-bg-image-brightness)))), var(--nts-chat-bg-image) !important; }
+:root:not([data-theme="dark"])[data-nts-l-chat-bg-image][data-nts-l-chat-bg-image-brightness]:root:root:root:root:root body .chat-body { background-image: linear-gradient(rgba(0,0,0,calc(1 - var(--nts-chat-bg-image-brightness))),rgba(0,0,0,calc(1 - var(--nts-chat-bg-image-brightness)))), var(--nts-chat-bg-image) !important; }
+:root[data-theme="dark"][data-nts-d-chat-bg-image][data-nts-d-chat-bg-image-brightness]:root:root:root:root:root body .compact-export-history-scroll { background-image: linear-gradient(rgba(0,0,0,calc(1 - var(--nts-chat-bg-image-brightness))),rgba(0,0,0,calc(1 - var(--nts-chat-bg-image-brightness)))), var(--nts-chat-bg-image) !important; }
+:root[data-theme="dark"][data-nts-d-chat-bg-image][data-nts-d-chat-bg-image-brightness]:root:root:root:root:root body .message-list { background-image: linear-gradient(rgba(0,0,0,calc(1 - var(--nts-chat-bg-image-brightness))),rgba(0,0,0,calc(1 - var(--nts-chat-bg-image-brightness)))), var(--nts-chat-bg-image) !important; }
+:root[data-theme="dark"][data-nts-d-chat-bg-image][data-nts-d-chat-bg-image-brightness]:root:root:root:root:root body .chat-body { background-image: linear-gradient(rgba(0,0,0,calc(1 - var(--nts-chat-bg-image-brightness))),rgba(0,0,0,calc(1 - var(--nts-chat-bg-image-brightness)))), var(--nts-chat-bg-image) !important; }
 
 /* ===== chat background image fit ===== */
 :root:not([data-theme="dark"])[data-nts-l-chat-bg-fit]:root:root:root:root:root body .compact-export-history-scroll { background-size: var(--nts-chat-bg-fit) !important; }

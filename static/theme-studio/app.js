@@ -7660,6 +7660,10 @@ function bootstrap() {
   loadCatalogCollapsed();
   // Collapse state of the current-palette JSON card (v0.4.21): remember it and skip rebuilds while collapsed.
   dumpState.collapsed = loadDumpCollapsed();
+  // These two controls only get translated text from script, so set it once at
+  // startup instead of showing the template's Chinese until the first change.
+  applyDumpCollapsed();
+  updateScheduleDirtyHint();
   buildEditor();
   wireEvents();
   initRestartHint();
@@ -7724,6 +7728,8 @@ function refreshGeneratedTexts() {
     refreshLibrary();
     refreshSchedule();
     refreshHealth({});
+    applyDumpCollapsed();
+    updateScheduleDirtyHint();
   } catch (error) {
     // A partial refresh must never break the panel; the next reopen is fully translated.
   }

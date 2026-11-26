@@ -291,6 +291,45 @@ def test_shared_theme_with_materials_off_turns_recipient_materials_off(studio):
 
 
 @pytest.mark.unit
+def test_copied_theme_json_with_materials_off_turns_recipient_materials_off(studio):
+    copied = theme_studio.run_entry_sync("theme_json", {"id": "amber-dusk"})
+    assert copied.ok, copied.error
+    assert json.loads(copied.value["payload"])["materials"] == {"enabled": False}
+
+    on = theme_studio.run_entry_sync("apply_saved_theme", {"id": "amber-dusk-material"})
+    assert on.ok and on.value["material_enabled"] is True
+    tuned = theme_studio.run_entry_sync("get_theme", {}).value["materials"]
+
+    imported = theme_studio.run_entry_sync("import_theme", {"payload": copied.value["payload"]})
+    assert imported.ok, imported.error
+    after = theme_studio.run_entry_sync("get_theme", {}).value["materials"]
+    assert after["enabled"] is False
+    # Only the switch is applied; the recipient's tuned material settings stay.
+    assert after.get("preset") == tuned.get("preset")
+
+
+@pytest.mark.unit
+def test_builtin_material_badges_follow_each_request_language(studio):
+    def badge(locale):
+        token = set_request_locale(locale)
+        try:
+            listed = theme_studio.run_entry_sync("list_themes", {})
+            assert listed.ok, listed.error
+            item = next(t for t in listed.value["themes"] if t["id"] == "amber-dusk-material")
+            quality = item["material"]["quality"]
+            expected = msg(f"materials.quality.{quality}")
+        finally:
+            reset_request_locale(token)
+        return item["material"]["quality_label"], expected
+
+    # The second call is served from the preset cache filled by the first one.
+    for locale in ("zh-CN", "en", "ja"):
+        label, expected = badge(locale)
+        assert label == expected, locale
+    assert badge("zh-CN")[0] != badge("en")[0]
+
+
+@pytest.mark.unit
 def test_daily_schedule_applies_again_on_the_next_day(tmp_path):
     import json
     from datetime import datetime

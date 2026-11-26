@@ -1,4 +1,36 @@
-"""Theme palette contrast checks for built-in presets."""
+"""Offline WCAG contrast audit for the built-in theme presets.
+
+Each entry in ``PAIRS`` names a text colour and the surface it is actually
+painted on. The surface is rebuilt by compositing (CSS source-over) the same
+layers, in the same order, that ``static/theme-studio/loader/neko-theme-studio.css``
+paints them:
+
+* Window surfaces (top bar, input, buttons, panels, code): the element's own
+  background colour over ``--nts-chat-bg`` (``.chat-window`` /
+  ``#react-chat-window-root``).
+* Message list (``.chat-body`` / ``.message-list``): ``--nts-chat-panel-bg`` as
+  background-color over the window, then ``--nts-chat-gradient`` as
+  background-image above it (the "J Gradient" rules).
+* Chat bubbles (``.message-bubble-user`` / ``.message-bubble-assistant``),
+  stacked over the message list:
+
+  1. background-color: ``--nts-bubble-glass-tint`` when set (the "J Liquid
+     glass" rules outrank the plain bubble rules), otherwise
+     ``--nts-user-bubble-bg`` / ``--nts-ai-bubble-bg``;
+  2. background-image: ``--nts-user-bubble-gradient`` /
+     ``--nts-ai-bubble-gradient`` painted above that colour. The
+     "background-image kill" rules for a set bubble bg or glass tint only
+     clear the chat window's built-in default gradient; their selectors are
+     less specific than the gradient rules, so a theme gradient still paints.
+
+* Tool bubbles: ``--nts-tool-bubble-bg`` over the message list.
+
+Gradients are reduced to the mean of their colour stops, because text runs
+across the whole gradient. This is an approximation: background images, the
+bubble veil, backdrop filters and the material (liquid glass) layers are not
+modelled, and a translucent ``--nts-chat-bg`` is treated as if nothing were
+behind it.
+"""
 
 from __future__ import annotations
 
@@ -10,30 +42,41 @@ import re
 COLOR_RE = re.compile(r"#[0-9a-fA-F]{3,8}|rgba?\([^)]*\)")
 NUM_RE = re.compile(r"-?\d*\.?\d+")
 
-# (标签, 文字键, 底色键, 附加底层, 门槛)
+WHITE = (255, 255, 255, 1.0)
+
+# Surface kinds used in PAIRS; see the module docstring for the layer stacks.
+WINDOW = "window"
+MESSAGE_LIST = "message-list"
+USER_BUBBLE = "user-bubble"
+AI_BUBBLE = "ai-bubble"
+
+# (label, text key, background key, surface kind, minimum contrast ratio)
 PAIRS: list[tuple[str, str, str, str, float]] = [
-    ("顶栏", "--nts-topbar-text", "--nts-topbar-bg", "chat", 4.5),
-    ("输入框", "--nts-input-text", "--nts-input-bg", "chat", 4.5),
-    ("输入占位", "--nts-input-placeholder", "--nts-input-bg", "chat", 3.0),
-    ("按钮", "--nts-button-text", "--nts-button-bg", "chat", 4.5),
-    ("发送键", "--nts-send-text", "--nts-send-bg", "chat", 4.5),
-    ("用户气泡", "--nts-user-bubble-text", "--nts-user-bubble-bg", "chat+usergrad", 4.5),
-    ("助手气泡", "--nts-ai-bubble-text", "--nts-ai-bubble-bg", "chat+aigrad", 4.5),
-    ("面板正文", "--nts-panel-text", "--nts-panel-bg", "chat", 4.5),
-    ("面板次要", "--nts-panel-text-sub", "--nts-panel-bg", "chat", 3.0),
-    ("链接", "--nts-link", "--nts-ai-bubble-bg", "chat+aigrad", 4.5),
-    ("弹窗文字", "--nts-modal-text", "--nts-panel-bg", "chat", 4.5),
-    ("浮层文字", "--nts-popover-text", "--nts-panel-bg", "chat", 4.5),
-    ("推荐文字", "--nts-rec-text", "--nts-panel-bg", "chat", 4.5),
-    ("胶囊文字", "--nts-chip-text", "--nts-panel-bg", "chat", 4.5),
-    ("状态文字", "--nts-status-text", "--nts-panel-bg", "chat", 3.0),
-    ("工具气泡", "--nts-tool-bubble-text", "--nts-tool-bubble-bg", "chat", 4.5),
-    ("代码文字", "--nts-code-text", "--nts-code-bg", "chat", 4.5),
+    ("topbar", "--nts-topbar-text", "--nts-topbar-bg", WINDOW, 4.5),
+    ("input", "--nts-input-text", "--nts-input-bg", WINDOW, 4.5),
+    ("input-placeholder", "--nts-input-placeholder", "--nts-input-bg", WINDOW, 3.0),
+    ("button", "--nts-button-text", "--nts-button-bg", WINDOW, 4.5),
+    ("send-button", "--nts-send-text", "--nts-send-bg", WINDOW, 4.5),
+    ("user-bubble", "--nts-user-bubble-text", "--nts-user-bubble-bg", USER_BUBBLE, 4.5),
+    ("ai-bubble", "--nts-ai-bubble-text", "--nts-ai-bubble-bg", AI_BUBBLE, 4.5),
+    ("panel-text", "--nts-panel-text", "--nts-panel-bg", WINDOW, 4.5),
+    ("panel-subtext", "--nts-panel-text-sub", "--nts-panel-bg", WINDOW, 3.0),
+    ("link", "--nts-link", "--nts-ai-bubble-bg", AI_BUBBLE, 4.5),
+    ("modal-text", "--nts-modal-text", "--nts-panel-bg", WINDOW, 4.5),
+    ("popover-text", "--nts-popover-text", "--nts-panel-bg", WINDOW, 4.5),
+    ("recommendation-text", "--nts-rec-text", "--nts-panel-bg", WINDOW, 4.5),
+    ("chip-text", "--nts-chip-text", "--nts-panel-bg", WINDOW, 4.5),
+    ("status-text", "--nts-status-text", "--nts-panel-bg", WINDOW, 3.0),
+    ("tool-bubble", "--nts-tool-bubble-text", "--nts-tool-bubble-bg", MESSAGE_LIST, 4.5),
+    ("code-text", "--nts-code-text", "--nts-code-bg", WINDOW, 4.5),
 ]
 
 
 def parse_color(value):
-    """'#rrggbb' / 'rgba(...)' → (r, g, b, a)；无法解析返回 None。"""
+    """Parse ``#rgb[a]`` / ``#rrggbb[aa]`` / ``rgb[a](...)`` into ``(r, g, b, a)``.
+
+    Returns None for anything that is not a concrete colour.
+    """
     if not value or not isinstance(value, str):
         return None
     text = value.strip().lower()
@@ -72,7 +115,7 @@ def parse_color(value):
 
 
 def average_color(value):
-    """渐变取所有色标平均（文字会跨过整段渐变，平均是最稳的代理）；单色直接返回。"""
+    """Return a single colour, or the mean of all colour stops of a gradient."""
     if not value or not isinstance(value, str):
         return None
     parsed = [p for p in (parse_color(tok) for tok in COLOR_RE.findall(value)) if p]
@@ -88,7 +131,7 @@ def average_color(value):
 
 
 def over(top, bottom):
-    """src-over：top 压 bottom。"""
+    """Composite ``top`` over ``bottom`` (CSS source-over)."""
     if bottom is None:
         return top
     ta = top[3]
@@ -107,6 +150,8 @@ def over(top, bottom):
 
 
 def lum(color):
+    """WCAG relative luminance of an sRGB colour."""
+
     def channel(v):
         v = v / 255.0
         return v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
@@ -115,6 +160,7 @@ def lum(color):
 
 
 def contrast(fg, bg):
+    """WCAG contrast ratio between two colours (1.0 to 21.0)."""
     l1, l2 = lum(fg), lum(bg)
     if l1 < l2:
         l1, l2 = l2, l1
@@ -122,30 +168,53 @@ def contrast(fg, bg):
 
 
 def mode_vars(doc, mode):
+    """Variables in effect for ``mode``: dark mode overlays non-empty ``dark_vars``."""
     merged = dict(doc.get("vars") or {})
     if mode == "dark":
         merged.update({k: v for k, v in (doc.get("dark_vars") or {}).items() if v})
     return merged
 
 
-def resolve_base(vars_map, kind):
-    chat = average_color(vars_map.get("--nts-chat-bg", "#ffffff")) or (255, 255, 255, 1.0)
-    if kind == "chat":
-        return chat
-    key = "--nts-user-bubble-gradient" if kind == "chat+usergrad" else "--nts-ai-bubble-gradient"
-    grad = average_color(vars_map.get(key, ""))
-    return over(grad, chat) if grad else chat
+def _layer(vars_map, key, base):
+    """Paint the colour (or averaged gradient) under ``key`` over ``base``, if set."""
+    color = average_color(vars_map.get(key))
+    return over(color, base) if color else base
+
+
+def window_base(vars_map):
+    """The chat window background, ``--nts-chat-bg`` (white when unset)."""
+    return average_color(vars_map.get("--nts-chat-bg", "#ffffff")) or WHITE
+
+
+def message_list_base(vars_map):
+    """The message list: chat panel colour, then the chat gradient, over the window."""
+    base = _layer(vars_map, "--nts-chat-panel-bg", window_base(vars_map))
+    return _layer(vars_map, "--nts-chat-gradient", base)
+
+
+def resolve_surface(vars_map, kind, bg_key):
+    """Composite the full layer stack the text of a pair is painted on."""
+    if kind == WINDOW:
+        return _layer(vars_map, bg_key, window_base(vars_map))
+    if kind == MESSAGE_LIST:
+        return _layer(vars_map, bg_key, message_list_base(vars_map))
+    role = "user" if kind == USER_BUBBLE else "ai"
+    base = message_list_base(vars_map)
+    tint = average_color(vars_map.get("--nts-bubble-glass-tint"))
+    base = over(tint, base) if tint else _layer(vars_map, f"--nts-{role}-bubble-bg", base)
+    return _layer(vars_map, f"--nts-{role}-bubble-gradient", base)
 
 
 def audit_vars(vars_map):
+    """Check every pair in ``PAIRS`` against one resolved variable map."""
     rows = []
-    for label, fg_key, bg_key, extra, floor in PAIRS:
+    for label, fg_key, bg_key, kind, floor in PAIRS:
         fg = average_color(vars_map.get(fg_key))
         bg = average_color(vars_map.get(bg_key))
         if fg is None or bg is None:
             rows.append({"pair": label, "skip": True})
             continue
-        ratio = contrast(fg, over(bg, resolve_base(vars_map, extra)))
+        ratio = contrast(fg, resolve_surface(vars_map, kind, bg_key))
         rows.append(
             {
                 "pair": label,
@@ -160,6 +229,7 @@ def audit_vars(vars_map):
 
 
 def themes_from_dir(path, limit=None):
+    """Load ``(theme_id, document)`` for every preset JSON in ``path``."""
     files = sorted(glob.glob(os.path.join(path, "*.json")))
     if limit:
         files = files[: int(limit)]
@@ -172,7 +242,7 @@ def themes_from_dir(path, limit=None):
 
 
 def failing(themes):
-    """返回 (失败列表, 检查对数)；失败项是 (theme_id, mode, row)。"""
+    """Return ``(fails, pair_checks)``; each failure is ``(theme_id, mode, row)``."""
     fails = []
     pair_checks = 0
     for theme_id, doc in themes:
@@ -187,6 +257,7 @@ def failing(themes):
 
 
 def audit_dir(path, limit=None):
+    """Audit every preset in ``path``; returns ``(themes, fails, pair_checks)``."""
     themes = themes_from_dir(path, limit)
     fails, pair_checks = failing(themes)
     return themes, fails, pair_checks

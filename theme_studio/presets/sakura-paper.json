@@ -72,7 +72,7 @@
     "--nts-status-bg": "rgba(210, 103, 127, 0.16)",
     "--nts-status-text": "#3a2629",
     "--nts-tool-bubble-bg": "rgba(255, 253, 252, 0.55)",
-    "--nts-tool-bubble-text": "#8a6a70",
+    "--nts-tool-bubble-text": "#89696F",
     "--nts-code-bg": "rgba(255, 253, 252, 0.55)",
     "--nts-code-text": "#8e4a58",
     "--nts-scrollbar-track": "rgba(255, 253, 252, 0.3)",

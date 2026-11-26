@@ -104,7 +104,7 @@
     "--nts-user-bubble-bg": "#9d6525",
     "--nts-user-bubble-border": "rgba(193, 120, 37, 0.55)",
     "--nts-user-bubble-gradient": "linear-gradient(135deg, #d79446 0%, #ab6b21 100%)",
-    "--nts-user-bubble-text": "#ffffff"
+    "--nts-user-bubble-text": "#34230E"
   },
   "dark_vars": {
     "--nts-accent": "#dfa768",

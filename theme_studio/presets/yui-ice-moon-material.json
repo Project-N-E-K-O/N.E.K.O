@@ -55,7 +55,7 @@
     "--nts-ai-bubble-text": "#1b2d47",
     "--nts-ai-bubble-border": "rgba(153, 190, 232, 0.38)",
     "--nts-user-bubble-bg": "#245a9b",
-    "--nts-user-bubble-text": "#ffffff",
+    "--nts-user-bubble-text": "#1b2d47",
     "--nts-user-bubble-border": "rgba(190, 220, 255, 0.72)",
     "--nts-bubble-glass-tint": "rgba(255, 255, 255, 0.18)",
     "--nts-bubble-glass-filter": "blur(14px) saturate(160%)",

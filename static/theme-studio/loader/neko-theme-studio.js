@@ -179,7 +179,11 @@
   //          legacy), not only the first match.
   //   1.6.51 Material rules skip the chat shell while it is minimized,
   //          collapsing or expanding, so the host's yarn ball and transitions apply.
-  var SCRIPT_VERSION = '1.6.51';
+  //   1.6.52 The upgrade reload also yields while a voice message is being
+  //          recorded or previewed. (Static CSS: wallpaper brightness no longer
+  //          overrides the fit / position / repeat controls, and compact /chat
+  //          outer wrappers stay transparent with materials off.)
+  var SCRIPT_VERSION = '1.6.52';
 
   // Allowed colour value shapes. Deliberately conservative: only plain colours, so
   // arbitrary CSS can never be injected into a variable.
@@ -2439,6 +2443,14 @@
         }
         if (document.querySelector('.message-block-status, [data-streaming="true"]')) {
           log('self-upgrade deferred: a reply is in flight');
+          return;
+        }
+        // A voice message being recorded, previewed or sent lives only in React
+        // refs (no textarea value), so the draft check above cannot see it. The
+        // React chat marks it with data-audio-message-active="true" on the
+        // audio composer and on the compact surface frame.
+        if (document.querySelector('[data-audio-message-active="true"]')) {
+          log('self-upgrade deferred: a voice message is being recorded or previewed');
           return;
         }
       } catch (e8) { /* ignore */ }

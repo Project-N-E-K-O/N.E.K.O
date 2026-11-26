@@ -2676,15 +2676,20 @@ class ThemeStudioService(NekoPluginBase):
                 "vars": clean_vars,
                 "dark_vars": clean_dark,
             }
-            # The materials subtree is shared with the text only when enabled: when disabled it is all defaults,
-            # and including it would just multiply the pasted content several times without taking effect on import.
+            # The full materials subtree is shared only when enabled. An entry whose
+            # materials are explicitly off is shared as the patch {"enabled": false}
+            # (as share bundles do), so importing it turns the recipient's materials
+            # off just like applying the entry would; an entry with no materials at
+            # all still omits the field, meaning "keep the recipient's materials".
             record_materials = record.get("materials")
-            if isinstance(record_materials, dict):
+            if isinstance(record_materials, dict) and record_materials:
                 clean_materials, _material_warnings = _materials.normalize_materials(
                     record_materials
                 )
                 if clean_materials.get("enabled"):
                     payload["materials"] = clean_materials
+                else:
+                    payload["materials"] = {"enabled": False}
             text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
         except SdkError as exc:
             return Err(exc)
@@ -2796,11 +2801,29 @@ class ThemeStudioService(NekoPluginBase):
 
                 # Materials: import is a wholesale replace. Old themes without this section keep the user's current
                 # materials instead of clearing them to defaults -- switching color schemes should not reset materials.
-                if isinstance(parsed.get("materials"), dict):
+                incoming = parsed.get("materials")
+                if (
+                    isinstance(incoming, dict)
+                    and incoming
+                    and set(incoming) <= {"enabled", "lock", "version"}
+                ):
+                    # A switch-only patch (see theme_json) toggles materials
+                    # but keeps the user's tuned sections and custom presets, the
+                    # same way applying a library entry treats it.
+                    current_materials = _materials.normalize_materials(
+                        palette.get("materials")
+                    )[0]
+                    (
+                        palette["materials"],
+                        material_warnings,
+                    ) = _materials.apply_materials(current_materials, incoming)
+                    for message in material_warnings:
+                        self._log("warning", f"导入的材质设置被修正 —— {message}")
+                elif isinstance(incoming, dict):
                     (
                         imported_materials,
                         material_warnings,
-                    ) = _materials.normalize_materials(parsed["materials"])
+                    ) = _materials.normalize_materials(incoming)
                     # Custom presets are the user's asset library: merge by name as in apply_saved_theme;
                     # local-only presets must be kept, or importing one palette would wipe them all.
                     stored_materials = _materials.normalize_materials(
@@ -3503,6 +3526,16 @@ class ThemeStudioService(NekoPluginBase):
         copy["tags"] = list(tags) if isinstance(tags, (list, tuple)) else []
         preview = item.get("preview")
         copy["preview"] = dict(preview) if isinstance(preview, dict) else {}
+        material = item.get("material")
+        if isinstance(material, dict):
+            # The cache is shared across requests in different languages, so
+            # the display labels are rebuilt for the caller's locale every time.
+            material = dict(material)
+            material["label"] = _materials.preset_label(str(material.get("preset") or "custom"))
+            material["quality_label"] = _materials.quality_label(
+                str(material.get("quality") or "balanced")
+            )
+            copy["material"] = material
         return copy
 
     def _presets_signature(self, directory: Path):

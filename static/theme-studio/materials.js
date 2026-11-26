@@ -763,12 +763,16 @@
       toast(T('materials.toast.presetDeleted', '已删除自定义预设「{{name}}」。', { name: name }), 'ok');
       return;
     }
+    // Drop the entry from the draft before the request: an Apply clicked while the
+    // delete is in flight must not send the preset again (the backend merges
+    // submitted presets into the stored ones, which would bring it back).
+    // Only this entry is removed; other unapplied new / edited presets stay.
+    var removedParams = CURRENT.custom_presets ? CURRENT.custom_presets[name] : undefined;
+    var wasSelected = CURRENT.preset === name;
+    if (CURRENT.custom_presets) delete CURRENT.custom_presets[name];
+    if (wasSelected) CURRENT.preset = 'custom';
     callEntry('delete_material_preset', { name: name }).then(function (data) {
       var materials = (data && data.materials) || null;
-      // Remove only this entry from the draft: other unapplied new / edited presets must stay as they are
-      // and must not be replaced wholesale by the server's saved preset library.
-      if (CURRENT.custom_presets) delete CURRENT.custom_presets[name];
-      if (CURRENT.preset === name) CURRENT.preset = 'custom';
       // The saved baseline follows the server (the delete is persisted), so remaining unapplied edits still show as pending.
       if (BASELINE) {
         if (materials) {
@@ -784,6 +788,16 @@
       renderHeadState();
       toast(T('materials.toast.presetDeleted', '已删除自定义预设「{{name}}」。', { name: name }), 'ok');
     }).catch(function (error) {
+      // The delete did not happen: put the entry back unless it was re-created meanwhile.
+      if (removedParams !== undefined) {
+        if (!CURRENT.custom_presets) CURRENT.custom_presets = {};
+        if (!Object.prototype.hasOwnProperty.call(CURRENT.custom_presets, name)) {
+          CURRENT.custom_presets[name] = removedParams;
+          if (wasSelected && CURRENT.preset === 'custom') CURRENT.preset = name;
+        }
+        renderPane();
+        renderHeadState();
+      }
       toast(T('materials.toast.presetDeleteFailed', '删除预设失败：{{error}}', {
         error: error && error.message ? error.message : error
       }), 'warn');
