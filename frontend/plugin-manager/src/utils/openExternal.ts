@@ -297,8 +297,10 @@ function localPathToFileUrl(value: string): string {
     if (!host) return value
     return `file://${host}/${encodeFilePathParts(parts)}`
   }
-  normalized = normalized.replace(/\\/g, '/')
-  if (/^[a-zA-Z]:\//.test(normalized)) normalized = `/${normalized}`
+  // Only drive-letter paths use `\` as a separator. In POSIX paths it is a
+  // literal file-name character and must stay encoded (%5C), otherwise the
+  // URL could name a different path than the one scope-checked.
+  if (/^[a-zA-Z]:[\\/]/.test(normalized)) normalized = `/${normalized.replace(/\\/g, '/')}`
   return `file://${encodeFilePathParts(normalized.split('/'))}`
 }
 

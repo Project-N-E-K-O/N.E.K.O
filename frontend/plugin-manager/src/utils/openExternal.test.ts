@@ -22,6 +22,20 @@ describe('openLocalPath file URL conversion', () => {
     expect(openExternal).toHaveBeenCalledWith('file:///C:/tmp/neko%20package/model.json')
   })
 
+  it('keeps literal POSIX backslashes encoded in the file URL fallback', () => {
+    const openExternal = vi.fn()
+    Object.defineProperty(window, 'electronShell', {
+      value: { openExternal },
+      configurable: true,
+    })
+    const checked = resolvePathWithinRoots('/tmp/plugin/x\\..\\..\\..\\etc/passwd', ['/tmp/plugin'])
+    expect(checked).toBe('/tmp/plugin/x\\..\\..\\..\\etc/passwd')
+
+    openLocalPath(checked!)
+
+    expect(openExternal).toHaveBeenCalledWith('file:///tmp/plugin/x%5C..%5C..%5C..%5Cetc/passwd')
+  })
+
   it('preserves UNC host and share for file URL fallback', () => {
     const openExternal = vi.fn()
     Object.defineProperty(window, 'electronShell', {
