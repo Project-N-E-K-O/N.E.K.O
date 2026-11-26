@@ -1441,15 +1441,19 @@ def test_a_manifest_the_host_cannot_use_is_unusable(tmp_path, monkeypatch, shape
     elif shape == "not_utf8":
         path.write_bytes(b"\xff\xfe[plugin]")
     else:
-        monkeypatch.setattr(permission_panel, "_MAX_MANIFEST_BYTES", 16)
-        path.write_text("[plugin]\nid='x'\n" + ("#" * 40 if shape == "oversized" else ""), encoding="utf-8")
+        # Bytes, not text: the limit is in bytes and text mode would turn
+        # each newline into two on Windows.
+        content = b"[plugin]\nid='x'\n"
+        monkeypatch.setattr(permission_panel, "_MAX_MANIFEST_BYTES", len(content))
+        path.write_bytes(content + (b"#" * 40 if shape == "oversized" else b""))
         if shape == "grown_after_stat":
+            assert path.stat().st_size == len(content)  # within the limit at the stat
             real_open = Path.open
 
             def growing_open(self, *args, **kwargs):
                 if self.name == "plugin.toml":
-                    with real_open(self, "a", encoding="utf-8") as stream:
-                        stream.write("#" * 40)
+                    with real_open(self, "ab") as stream:
+                        stream.write(b"#" * 40)
                 return real_open(self, *args, **kwargs)
 
             monkeypatch.setattr(Path, "open", growing_open)
@@ -1457,9 +1461,9 @@ def test_a_manifest_the_host_cannot_use_is_unusable(tmp_path, monkeypatch, shape
 
 
 def test_a_manifest_exactly_at_the_limit_is_read(tmp_path, monkeypatch):
-    content = "[plugin]\nid='x'\n"
+    content = b"[plugin]\nid='x'\n"
     monkeypatch.setattr(permission_panel, "_MAX_MANIFEST_BYTES", len(content))
-    (tmp_path / "plugin.toml").write_text(content, encoding="utf-8")
+    (tmp_path / "plugin.toml").write_bytes(content)
     assert permission_panel._load_manifest(tmp_path) == ({"plugin": {"id": "x"}}, "read")
 
 
