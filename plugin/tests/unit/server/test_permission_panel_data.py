@@ -653,8 +653,9 @@ async def test_put_and_delete_decide_one_permission(env):
 async def test_anytime_needs_a_declared_background(env):
     _weather(env)
 
+    # An asked permission without ``background = true``.
     refused = await _call(
-        "PUT", f"/plugin-permissions/plugins/weather/permissions/{CONNECT}", {"state": "granted", "condition": "anytime"}
+        "PUT", f"/plugin-permissions/plugins/weather/permissions/{PUSH}", {"state": "granted", "condition": "anytime"}
     )
     assert refused.status_code == 422
     assert refused.headers["X-Error-Code"] == "PERMISSION_BACKGROUND_NOT_DECLARED"
@@ -663,6 +664,12 @@ async def test_anytime_needs_a_declared_background(env):
         "PUT", f"/plugin-permissions/plugins/weather/permissions/{MEMORY}", {"state": "granted", "condition": "anytime"}
     )
     assert allowed.status_code == 200
+    # A required permission covers background use; it has no ``background`` key.
+    required = await _call(
+        "PUT", f"/plugin-permissions/plugins/weather/permissions/{CONNECT}", {"state": "granted", "condition": "anytime"}
+    )
+    assert required.status_code == 200, required.text
+    assert env.store.read("weather")["permissions"][CONNECT]["condition"] == "anytime"
 
 
 @pytest.mark.asyncio
@@ -1375,7 +1382,7 @@ async def test_a_decision_reads_the_manifest_under_its_own_lock(env, short_wait)
     _weather(env)
     # Needs the declaration, read inside the decision's operation: busy
     # (409) if the held lock were not reused there.
-    refused = await _call("PUT", f"/plugin-permissions/plugins/weather/permissions/{CONNECT}",
+    refused = await _call("PUT", f"/plugin-permissions/plugins/weather/permissions/{PUSH}",
                           {"state": "granted", "condition": "anytime"})
     assert refused.status_code == 422, refused.text
     granted = await _call("PUT", f"/plugin-permissions/plugins/weather/permissions/{MEMORY}",
@@ -1656,3 +1663,15 @@ def test_refusal_batches_stay_bounded_and_keep_the_total(tmp_path, monkeypatch):
     assert index.refused_uses() == {("a", MEMORY): (NOW - timedelta(minutes=10), 5)}
     cutoff = NOW - timedelta(minutes=25)
     assert index.refused_uses(after=lambda _p, _q: cutoff) == {("a", MEMORY): (NOW - timedelta(minutes=10), 2)}
+
+
+def test_a_cutoff_inside_a_merged_batch_leaves_the_older_refusals_out(tmp_path, monkeypatch):
+    from plugin.server.application.plugins import permission_usage
+
+    monkeypatch.setattr(permission_usage, "REFUSED_BATCHES", 3)
+    index = _index(tmp_path)
+    # Rebuilt in time order; 50 and 40 merge into one batch spanning them.
+    for minutes in (50, 40, 30, 20):
+        index.observe(_decision("a", MEMORY, verdict="would_deny", reason="undecided", ts=_ts(timedelta(minutes=minutes))))
+    answered = NOW - timedelta(minutes=45)  # inside the merged batch
+    assert index.refused_uses(after=lambda _p, _q: answered) == {("a", MEMORY): (NOW - timedelta(minutes=20), 2)}

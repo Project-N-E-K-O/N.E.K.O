@@ -863,7 +863,8 @@ def check_refusable(permission: str, state_value: str) -> None:
 def check_condition_allowed(plugin_id: str, permission: str, state_value: str, condition: str) -> None:
     """Raise unless ``condition`` may be chosen when granting ``permission``.
 
-    "Any time" needs the plugin to declare background use of it, or to have
+    "Any time" needs the plugin to require it, to declare background use of
+    it when it only asks for it, or to have
     no declaration (no manifest file, no or an invalid ``[permissions]``
     table, as in the pending list): the item is then inferred from the scan.
     A manifest that could not be read now (503) or is not usable (422) is
@@ -897,7 +898,9 @@ def check_condition_allowed(plugin_id: str, permission: str, state_value: str, c
     if declarations.status != "declared":
         return
     item = declarations.items.get(permission)
-    if item is None or not item.background:
+    # A required permission covers background use (it has no ``background``
+    # key); an asked one only with ``background = true``.
+    if item is None or not (item.level == "require" or item.background):
         raise ServerDomainError(
             "PERMISSION_BACKGROUND_NOT_DECLARED",
             "The plugin does not declare background use of this permission",

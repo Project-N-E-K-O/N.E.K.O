@@ -39,9 +39,11 @@ OUTCOME_BLOCKED = "blocked"
 NETWORK_CONNECT = "system.network:connect"
 RECENT_LIMIT = 50
 DAYS_KEPT = 31
-# Refusals kept per plugin and permission, as (time, count) batches; past
-# this the two oldest are merged (under the later time), so counts after a
-# cut-off stay exact unless the cut-off falls inside a merged batch.
+# Refusals kept per plugin and permission, as (last time, count, first time)
+# batches; past this the two oldest are merged. A count after a cut-off takes
+# only batches that start after it, so it is exact unless the cut-off falls
+# inside a merged batch, which leaves that batch out: the newer batches,
+# more than REFUSED_BATCHES - 2 of them, all count.
 REFUSED_BATCHES = 32
 _ORIGINS_KEPT = 1024
 _FILE_NAME = "call_audit.jsonl"
@@ -135,8 +137,8 @@ class UsageIndex:
         self._daily: dict[tuple[str, str], dict[date, int]] = {}
         # Uses judged not allowed, keyed by the plugin that lacked the
         # permission (for a call chain, each blocking member).
-        # (plugin, permission) -> [(time, count)] in time order
-        self._refused: dict[tuple[str, str], list[tuple[datetime, int]]] = {}
+        # (plugin, permission) -> [(last time, count, first time)] in time order
+        self._refused: dict[tuple[str, str], list[tuple[datetime, int, datetime]]] = {}
         self._recent: dict[str, list[Use]] = {}
         self._origins: OrderedDict[str, str] = OrderedDict()
 
@@ -238,10 +240,10 @@ class UsageIndex:
         for blocked in use.blocked_by:
             refused_key = (blocked, use.permission)
             batches = self._refused.setdefault(refused_key, [])
-            bisect.insort(batches, (use.at, use.count))
+            bisect.insort(batches, (use.at, use.count, use.at))
             if len(batches) > REFUSED_BATCHES:
-                (_first, first_count), (second, second_count) = batches[0], batches[1]
-                batches[:2] = [(second, first_count + second_count)]
+                (_end, first_count, start), (end, second_count, _start) = batches[0], batches[1]
+                batches[:2] = [(end, first_count + second_count, start)]
         recent = self._recent.setdefault(use.permission, [])
         recent.append(use)
         if len(recent) > RECENT_LIMIT * 2:
@@ -364,7 +366,7 @@ class UsageIndex:
         out = {}
         for key, batches in refused.items():
             cutoff = after(*key) if after is not None else None
-            kept = [(at, count) for at, count in batches if cutoff is None or at > cutoff]
+            kept = [(at, count) for at, count, start in batches if cutoff is None or start > cutoff]
             if kept:
                 out[key] = (kept[-1][0], sum(count for _at, count in kept))
         return out
