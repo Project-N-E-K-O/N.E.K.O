@@ -61,8 +61,8 @@ def _validate_bucket_map(buckets: dict) -> dict:
 
 
 def _validate_daily_stats_map(daily_stats: dict) -> dict:
-    if len(daily_stats) > MAX_DAILY_STATS_DAYS:
-        raise ValueError(f"too many daily_stats days (max {MAX_DAILY_STATS_DAYS})")
+    if not isinstance(daily_stats, dict):
+        return daily_stats
     today = date.today()
     min_date = today - timedelta(days=DAILY_STATS_PAST_DAYS)
     max_date = today + timedelta(days=DAILY_STATS_FUTURE_DAYS)
@@ -82,6 +82,8 @@ def _validate_daily_stats_map(daily_stats: dict) -> dict:
             # after HTTP 200, so rejecting >90d rows would block newer reports.
             continue
         filtered[stat_date] = day_stats
+    if len(filtered) > MAX_DAILY_STATS_DAYS:
+        raise ValueError(f"too many daily_stats days (max {MAX_DAILY_STATS_DAYS})")
     return filtered
 
 
@@ -225,7 +227,7 @@ class TelemetryEvent(BaseModel):
     # clients send only nonempty windows; older clients omit this field entirely.
     instruments: Optional[InstrumentSnapshot] = None
 
-    _check_daily_stats = _make_validator("daily_stats", fn=_validate_daily_stats_map)
+    _check_daily_stats = _make_validator("daily_stats", fn=_validate_daily_stats_map, pre=True)
 
 
 class TelemetrySubmission(BaseModel):

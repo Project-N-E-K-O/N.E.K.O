@@ -121,6 +121,23 @@ def _correction_queue_identity(item: dict) -> tuple[str, ...] | None:
     ))
 
 
+def _correction_replay_token(
+    item: dict,
+    ambiguous_identities: set[tuple[str, ...]],
+) -> str:
+    """Return a stable replay marker for a correction row, including unambiguous legacy rows."""
+    cid = str(item.get('correction_id') or '').strip()
+    if cid:
+        return cid
+    identity = _correction_queue_identity(item)
+    if identity is None or identity in ambiguous_identities:
+        return ''
+    digest = hashlib.sha256(
+        '\x1f'.join(identity).encode('utf-8')
+    ).hexdigest()[:24]
+    return f'legacy_cid_{digest}'
+
+
 def _correction_prompt_trust_band(item: dict, side: str) -> str:
     """Return exactly the provenance band exposed to the summary (memory) model."""
     from memory.speaker_trust import trust_band
@@ -740,6 +757,19 @@ class CorrectionsMixin:
                     ambiguous_fresh_identities.add(identity)
                     continue
                 fresh_by_identity[identity] = fresh_item
+        seen_batch_identities: set[tuple[str, ...]] = set()
+        ambiguous_batch_identities: set[tuple[str, ...]] = set()
+        for batch_item in corrections:
+            batch_identity = _correction_queue_identity(batch_item)
+            if batch_identity is None:
+                continue
+            if batch_identity in seen_batch_identities:
+                ambiguous_batch_identities.add(batch_identity)
+            else:
+                seen_batch_identities.add(batch_identity)
+        ambiguous_replay_identities = (
+            ambiguous_fresh_identities | ambiguous_batch_identities
+        )
         for result in results:
             if not isinstance(result, dict):
                 continue
@@ -1078,7 +1108,9 @@ class CorrectionsMixin:
                         snapshot['speaker_trust'] = trust
                 return snapshot
 
-            item_cid = str(item.get('correction_id') or '').strip()
+            item_cid = _correction_replay_token(
+                item, ambiguous_replay_identities,
+            )
             already_applied = bool(
                 item_cid
                 and any(

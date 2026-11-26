@@ -148,21 +148,34 @@ def test_model_rejects_negative_bool_and_overflow_counters(bad_val):
         model_from_json(TelemetryEvent, json.dumps(_base_event_dict({today: bucket_bad})))
 
 
-def test_model_enforces_cardinality_caps():
-    """Excessive daily_stats days or bucket maps must fail validation."""
-    base_date = date.today() - timedelta(days=95)
-    too_many_days = {
-        (base_date + timedelta(days=i)).isoformat(): _valid_day()
+def test_model_enforces_cardinality_caps(monkeypatch):
+    """Expired days are stripped before enforcing daily_stats cardinality cap, and oversized buckets still fail."""
+    import models as telemetry_models
+
+    today_date = date.today()
+    offline_101d = {
+        (today_date - timedelta(days=i)).isoformat(): _valid_day()
         for i in range(MAX_DAILY_STATS_DAYS + 1)
     }
-    assert len(too_many_days) == MAX_DAILY_STATS_DAYS + 1
+    assert len(offline_101d) == MAX_DAILY_STATS_DAYS + 1
+    ev = model_from_json(TelemetryEvent, json.dumps(_base_event_dict(offline_101d)))
+    assert today_date.isoformat() in ev.daily_stats
+    assert (today_date - timedelta(days=91)).isoformat() not in ev.daily_stats
+    assert (today_date - timedelta(days=100)).isoformat() not in ev.daily_stats
+    assert len(ev.daily_stats) == 91
+
+    monkeypatch.setattr(telemetry_models, "MAX_DAILY_STATS_DAYS", 5)
+    too_many_in_window = {
+        (today_date - timedelta(days=i)).isoformat(): _valid_day()
+        for i in range(6)
+    }
     with pytest.raises(Exception, match="too many daily_stats days"):
         model_from_json(
             TelemetryEvent,
-            json.dumps(_base_event_dict(too_many_days)),
+            json.dumps(_base_event_dict(too_many_in_window)),
         )
 
-    today = date.today().isoformat()
+    today = today_date.isoformat()
     too_many_models = {f"m{i}": _valid_bucket() for i in range(MAX_DAILY_BUCKETS + 1)}
     with pytest.raises(Exception, match="too many buckets"):
         model_from_json(
@@ -386,3 +399,50 @@ def test_http_submit_drops_expired_days_and_acknowledges_batch(tmp_path, monkeyp
     resp_dup = _signed_post(expired_only, batch_id="batch-expired-only-1")
     assert resp_dup.status_code == 200
     assert resp_dup.json()["message"] == "duplicate, skipped"
+
+
+def test_http_submit_accepts_over_100_day_offline_batch_after_stripping_expired_days(tmp_path, monkeypatch):
+    """Offline windows >100 days containing >90d expired entries must return 200 after stripping expired days."""
+    from fastapi.testclient import TestClient
+    from security import compute_signature
+    import server as telemetry_server
+
+    test_store = TelemetryStorage(tmp_path / "http_offline_101d.db")
+    monkeypatch.setattr(telemetry_server, "storage", test_store)
+    monkeypatch.setattr(telemetry_server.rate_limiter, "is_allowed", lambda _dev: True)
+    client = TestClient(telemetry_server.app)
+
+    today_date = date.today()
+    today = today_date.isoformat()
+    expired_91 = (today_date - timedelta(days=91)).isoformat()
+    expired_100 = (today_date - timedelta(days=100)).isoformat()
+    offline_101d = {
+        (today_date - timedelta(days=i)).isoformat(): _valid_day(
+            total_tokens=1 if i > 0 else 42,
+            by_model={"qwen-max": _valid_bucket(total_tokens=1 if i > 0 else 42)},
+            by_call_type={"chat": _valid_bucket(total_tokens=1 if i > 0 else 42)},
+        )
+        for i in range(MAX_DAILY_STATS_DAYS + 1)
+    }
+    assert len(offline_101d) == MAX_DAILY_STATS_DAYS + 1
+
+    payload = _base_event_dict(offline_101d)
+    ts = time.time()
+    payload_str = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    sig = compute_signature(payload_str, ts, telemetry_server.HMAC_SECRET)
+    resp = client.post(
+        "/api/v1/telemetry",
+        json={"timestamp": ts, "signature": sig, "batch_id": "batch-offline-101d", "payload": payload},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    assert test_store.is_duplicate_batch("batch-offline-101d") is True
+
+    stored_days = {
+        r["stat_date"]
+        for r in test_store._get_conn().execute("SELECT DISTINCT stat_date FROM daily_aggregates").fetchall()
+    }
+    assert len(stored_days) == 91
+    assert today in stored_days
+    assert expired_91 not in stored_days
+    assert expired_100 not in stored_days

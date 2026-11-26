@@ -1031,12 +1031,13 @@ async def test_keep_new_then_keep_old_with_retired_duplicate_stays_idempotent_on
             await pm.resolve_corrections("小天")
 
     monkeypatch.setattr(corrections_mod, "atomic_write_json_async", real_write)
+    pm_retry, _ = _install(str(tmp_path))
     with patch("utils.llm_client.create_chat_llm", return_value=_make_llm_mock(payload)):
-        resolved = await pm.resolve_corrections("小天")
+        resolved = await pm_retry.resolve_corrections("小天")
 
     assert resolved == 2
-    assert await pm.aload_pending_corrections("小天") == []
-    facts = pm._get_section_facts(await pm.aensure_persona("小天"), "master")
+    assert await pm_retry.aload_pending_corrections("小天") == []
+    facts = pm_retry._get_section_facts(await pm_retry.aensure_persona("小天"), "master")
     live = [e for e in facts if not e.get(PERMANENT_SUPPRESSION_KEY)]
     retired = [e for e in facts if e.get(PERMANENT_SUPPRESSION_KEY)]
     assert [e["text"] for e in live] == ["喜欢喝咖啡"]
@@ -1083,12 +1084,13 @@ async def test_chained_keep_new_redirects_replaced_entry_for_subsequent_keep_old
             await pm.resolve_corrections("小天")
 
     monkeypatch.setattr(corrections_mod, "atomic_write_json_async", real_write)
+    pm_retry, _ = _install(str(tmp_path))
     with patch("utils.llm_client.create_chat_llm", return_value=_make_llm_mock(payload)):
-        resolved = await pm.resolve_corrections("小天")
+        resolved = await pm_retry.resolve_corrections("小天")
 
     assert resolved == 3
-    assert await pm.aload_pending_corrections("小天") == []
-    facts = pm._get_section_facts(await pm.aensure_persona("小天"), "master")
+    assert await pm_retry.aload_pending_corrections("小天") == []
+    facts = pm_retry._get_section_facts(await pm_retry.aensure_persona("小天"), "master")
     live = [e for e in facts if not e.get(PERMANENT_SUPPRESSION_KEY)]
     retired = [e for e in facts if e.get(PERMANENT_SUPPRESSION_KEY)]
     assert [e["text"] for e in live] == ["D"]
@@ -1096,6 +1098,68 @@ async def test_chained_keep_new_redirects_replaced_entry_for_subsequent_keep_old
     assert cid1 in cids and cid2 in cids and cid3 in cids
     assert [e["id"] for e in retired] == ["retired_a"]
     assert "applied_correction_id" not in retired[0]
+
+
+@pytest.mark.asyncio
+async def test_legacy_keep_old_without_correction_id_stays_idempotent_on_queue_write_retry(tmp_path, monkeypatch):
+    """Unambiguous legacy keep_old rows without correction_id must persist a deterministic replay token across retries."""
+    from memory.introspection import PERMANENT_SUPPRESSION_KEY, build_permanent_suppression
+    from memory.persona import corrections as corrections_mod
+    from memory.persona.corrections import _correction_queue_identity, _correction_replay_token
+
+    pm, _ = _install(str(tmp_path))
+    await _seed_master_fact(pm, "小天", "A", id="live_a")
+    await _seed_master_fact(
+        pm, "小天", "A",
+        id="retired_a",
+        **{PERMANENT_SUPPRESSION_KEY: build_permanent_suppression("redundant", "2026-11-01T00:00:00", issue="redundant")},
+    )
+    await pm._aqueue_correction("小天", "A", "B", "master")
+    await pm._aqueue_correction("小天", "A", "D", "master")
+    queued = await pm.aload_pending_corrections("小天")
+    cid1 = queued[0]["correction_id"]
+    queued[1].pop("correction_id", None)
+    await corrections_mod.atomic_write_json_async(
+        pm._corrections_path("小天"), queued, indent=2, ensure_ascii=False,
+    )
+
+    real_write = corrections_mod.atomic_write_json_async
+
+    async def _fail_corrections_write(path, *args, **kwargs):
+        if str(path).endswith("persona_corrections.json"):
+            raise OSError("disk failure after persona save")
+        return await real_write(path, *args, **kwargs)
+
+    payload = [
+        {"index": 0, "action": "keep_new"},
+        {"index": 1, "action": "keep_old"},
+    ]
+    monkeypatch.setattr(corrections_mod, "atomic_write_json_async", _fail_corrections_write)
+    with patch("utils.llm_client.create_chat_llm", return_value=_make_llm_mock(payload)):
+        with pytest.raises(OSError, match="disk failure"):
+            await pm.resolve_corrections("小天")
+
+    monkeypatch.setattr(corrections_mod, "atomic_write_json_async", real_write)
+    pm_retry, _ = _install(str(tmp_path))
+    with patch("utils.llm_client.create_chat_llm", return_value=_make_llm_mock(payload)):
+        resolved = await pm_retry.resolve_corrections("小天")
+
+    assert resolved == 2
+    assert await pm_retry.aload_pending_corrections("小天") == []
+    facts = pm_retry._get_section_facts(await pm_retry.aensure_persona("小天"), "master")
+    live = [e for e in facts if not e.get(PERMANENT_SUPPRESSION_KEY)]
+    retired = [e for e in facts if e.get(PERMANENT_SUPPRESSION_KEY)]
+    assert [e["text"] for e in live] == ["B"]
+    cids = live[0].get("applied_correction_ids") or []
+    assert cid1 in cids
+    assert any(tok.startswith("legacy_cid_") for tok in cids)
+    assert [e["id"] for e in retired] == ["retired_a"]
+    assert "applied_correction_id" not in retired[0]
+
+    # Ambiguous duplicate legacy rows must not share or emit a replay token.
+    legacy_ident = _correction_queue_identity(queued[1])
+    assert legacy_ident is not None
+    assert _correction_replay_token(queued[1], {legacy_ident}) == ""
 
 
 @pytest.mark.asyncio
