@@ -2745,3 +2745,23 @@ def test_getattr_on_a_method_parameter_is_not_the_module(tmp_path, init, spawn):
     report = _scan(tmp_path, source)
     assert report["permissions"]["system.process:spawn"]["basis"] == spawn
     assert report["capabilities"] == []
+
+
+@pytest.mark.parametrize(
+    "use,basis",
+    [
+        # The getattr receiver is bound twice: like net.socket(AF_UNIX).
+        ("getattr(net, 'socket')(AF_UNIX).listen()", "resolved_call"),
+        ("net.socket(AF_UNIX).listen()", "resolved_call"),
+    ],
+)
+def test_reflected_constructor_on_an_untrusted_root_is_not_local(tmp_path, use, basis):
+    source = "import thirdparty as net\nif use_stdlib:\n    import socket as net\nfrom socket import AF_UNIX\n" + use + "\n"
+    report = _scan(tmp_path, source)
+    assert {row["basis"] for row in report["permissions"][LISTEN]["findings"]} == {basis}
+    assert report["permissions"][CONNECT]["basis"] == basis
+
+
+def test_reflected_constructor_on_a_trusted_import_is_local(tmp_path):
+    source = "import socket\ngetattr(socket, 'socket')(socket.AF_UNIX).listen()\n"
+    assert _bases(_scan(tmp_path, source)) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}

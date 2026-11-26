@@ -396,7 +396,8 @@ def _unix_family(call: ast.Call, index: int | None, bindings, walker=None) -> bo
 def _local_construction(node: ast.Call, called: str, external, bound, bindings) -> bool:
     """socket.socket(AF_UNIX) or create_datagram_endpoint(family=AF_UNIX)
     itself (family is keyword-only on create_datagram_endpoint)."""
-    if not (external and bound) or _untrusted(_root_name(_dotted_name(node.func)), bindings):
+    # The constructor's root as written (getattr(net, "socket") is rooted in net).
+    if not (external and bound) or _untrusted(_plain_root(node.func), bindings):
         return False
     if called == "socket.socket":
         return _unix_family(node, 0, bindings)
@@ -561,7 +562,7 @@ def _resolve_chain_root(raw_node: ast.AST, bindings, walker) -> tuple[str, bool,
                         called = None
                 else:
                     called = None
-                if called == "socket.socket":
+                if called == "socket.socket" and not _untrusted(_plain_root(func), bindings):
                     root = _extend(called, "()")
                     root = (
                         _Reflected(_UNIX_SOCKET, root.legacy) if isinstance(root, _Reflected) else _UNIX_SOCKET,
