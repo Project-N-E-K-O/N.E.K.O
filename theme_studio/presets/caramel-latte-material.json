@@ -98,7 +98,7 @@
     "--nts-status-text": "#392d1d",
     "--nts-text-gradient": "linear-gradient(120deg, #883520 0%, #75471f 50%, #866a27 100%)",
     "--nts-tool-bubble-bg": "rgba(253, 253, 252, 0.55)",
-    "--nts-tool-bubble-text": "#807260",
+    "--nts-tool-bubble-text": "#7D6F5E",
     "--nts-topbar-bg": "rgba(253, 253, 252, 0.92)",
     "--nts-topbar-text": "#392d1d",
     "--nts-user-bubble-bg": "#9b6746",

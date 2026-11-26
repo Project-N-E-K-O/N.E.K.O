@@ -130,7 +130,7 @@
     "--nts-send-bg": "#bbaaff",
     "--nts-send-text": "#101418",
     "--nts-user-bubble-bg": "rgba(138, 114, 232, 0.5)",
-    "--nts-user-bubble-text": "#ffffff",
+    "--nts-user-bubble-text": "#000000",
     "--nts-user-bubble-border": "rgba(190, 215, 255, 0.46)",
     "--nts-user-bubble-gradient": "linear-gradient(135deg, rgba(138, 114, 232, 0.5) 0%, rgba(132, 109, 223, 0.5) 100%)",
     "--nts-ai-bubble-bg": "rgba(18, 20, 31, 0.44)",

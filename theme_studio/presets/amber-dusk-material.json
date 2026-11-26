@@ -15,7 +15,7 @@
     "--nts-accent": "#c96a32",
     "--nts-accent-bg": "rgba(201, 106, 50, 0.14)",
     "--nts-highlight": "rgba(201, 106, 50, 0.3)",
-    "--nts-link": "#ba622f",
+    "--nts-link": "#AE5C2C",
     "--nts-image-bg": "rgba(255, 251, 245, 0.55)",
     "--nts-radius": "14px",
     "--nts-shadow": "0 14px 34px rgba(107, 62, 32, 0.16)",

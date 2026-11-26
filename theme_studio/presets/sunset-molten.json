@@ -55,7 +55,7 @@
     "--nts-input-border": "rgba(214, 133, 41, 0.34)",
     "--nts-input-placeholder": "#806f60",
     "--nts-input-text": "#392a1d",
-    "--nts-link": "#ab6b21",
+    "--nts-link": "#A2661F",
     "--nts-modal-bg": "rgba(254, 254, 253, 0.97)",
     "--nts-modal-radius": "18px",
     "--nts-modal-text": "#392a1d",

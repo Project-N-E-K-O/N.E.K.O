@@ -22,7 +22,7 @@
     "--nts-code-text": "#405473",
     "--nts-image-bg": "transparent",
     "--nts-tool-bubble-bg": "rgba(240, 246, 255, 0.7)",
-    "--nts-tool-bubble-text": "#5f7ea4",
+    "--nts-tool-bubble-text": "#536F92",
     "--nts-status-bg": "rgba(208, 226, 255, 0.5)",
     "--nts-status-text": "#405473",
     "--nts-chat-bg": "#eaf2fd",
