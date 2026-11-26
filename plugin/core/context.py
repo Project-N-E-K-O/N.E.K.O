@@ -771,8 +771,13 @@ class PluginContext:
         with self._get_config_state_lock():
             self._bump_effective_config_gen()
             self._effective_config_uncertain = True
-            self._rejected_host_rollback = None
-            self._allocate_owner_token_locked()
+            current_owner = int(getattr(self, "_effective_config_owner_token", 0) or 0)
+            if (
+                int(getattr(self, "_host_config_change_unscoped_pending", 0) or 0) <= 0
+                and self._resolve_pending_host_change_root_locked(current_owner) is None
+            ):
+                self._rejected_host_rollback = None
+                self._allocate_owner_token_locked()
 
     def _invalidate_effective_config_for_profile_refresh(self) -> tuple[int, int]:
         with self._get_config_state_lock():
@@ -2647,8 +2652,6 @@ class PluginContext:
             else:
                 self._bump_effective_config_gen()
                 self._effective_config_uncertain = True
-                self._rejected_host_rollback = None
-                self._allocate_owner_token_locked()
         if should_flush:
             self._flush_instance_runtime_config()
 

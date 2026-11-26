@@ -3131,3 +3131,154 @@ def test_config_update_command_coordinates_with_in_flight_writes_and_profile_swi
         assert not getattr(ctx_no_cb, "_pending_host_config_owner_tokens", {})
 
     asyncio.run(_case_host_publish_registers_read_guard_before_flush())
+
+    # 17. Profile request timing out inside config_change must preserve host read
+    #     protection and rollback ownership until the callback exits.
+    async def _case_profile_write_timeout_inside_config_change_preserves_host_guard(
+        *,
+        raises_in_cb: bool,
+    ) -> None:
+        ctx = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / f"demo_profile_timeout_guard_{raises_in_cb}" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance = _RecordingInstance()
+        ctx._instance = instance
+        ctx._set_effective_config_cache({"base": 1})
+
+        async def _disk_local_payload(**_kwargs: object) -> dict[str, object]:
+            return {"plugin_id": "demo", "config": {"base": 1}}
+
+        async def _profile_timeout_rpc(**_kwargs: object) -> dict[str, object]:
+            raise TimeoutError("profile upsert timed out")
+
+        ctx._get_local_config_payload = _disk_local_payload  # type: ignore[method-assign]
+        ctx._send_request_and_wait_async = _profile_timeout_rpc  # type: ignore[method-assign]
+
+        async def _config_change(**_kwargs: object) -> None:
+            with pytest.raises(TimeoutError):
+                await ctx.upsert_own_profile_config("inactive", {"k": 1})
+            loaded = await ctx.get_own_effective_config(None)
+            assert loaded["config"] == {"base": 1}
+            assert ctx._effective_config == {"base": 1, "extra": 3}
+            assert instance.refreshed[-1] == {"base": 1, "extra": 3}
+            assert ctx._effective_config_uncertain is True
+            if raises_in_cb:
+                raise RuntimeError("reject after profile timeout")
+
+        sender = _FakeResponseSender()
+        await host_module._handle_config_update_command(
+            msg={
+                "req_id": f"req-profile-to-guard-{raises_in_cb}",
+                "config": {"extra": 3},
+                "mode": "temporary",
+                "replace": False,
+            },
+            ctx=ctx,
+            events_by_type={"lifecycle": {"config_change": _config_change}},
+            plugin_id="demo",
+            res_sender=sender,
+            logger=_FakeLogger(),
+        )
+        assert sender.payloads[-1]["success"] is (not raises_in_cb)
+        expected_cfg = {"base": 1} if raises_in_cb else {"base": 1, "extra": 3}
+        assert ctx._effective_config == expected_cfg
+        assert instance.refreshed[-1] == expected_cfg
+        assert ctx._effective_config_uncertain is True
+        assert ctx._host_config_change_pending == 0
+        assert not getattr(ctx, "_pending_host_config_owner_tokens", {})
+        assert not getattr(ctx, "_owner_token_host_change_root", {})
+
+        post_loaded = await ctx.get_own_effective_config(None)
+        assert post_loaded["config"] == {"base": 1}
+        assert ctx._effective_config == {"base": 1}
+        assert ctx._effective_config_uncertain is False
+        assert instance.refreshed[-1] == {"base": 1}
+
+    asyncio.run(_case_profile_write_timeout_inside_config_change_preserves_host_guard(raises_in_cb=False))
+    asyncio.run(_case_profile_write_timeout_inside_config_change_preserves_host_guard(raises_in_cb=True))
+
+    # 18. Superseded committed write whose gen mismatches host replace snapshot
+    #     must preserve host read guard and rollback ownership inside config_change.
+    async def _case_superseded_commit_inside_host_replace_preserves_host_guard(
+        *,
+        raises_in_cb: bool,
+    ) -> None:
+        ctx = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / f"demo_superseded_commit_{raises_in_cb}" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance = _RecordingInstance()
+        ctx._instance = instance
+        ctx._set_effective_config_cache({"base": 1})
+
+        rpc_started = asyncio.Event()
+        release_rpc = asyncio.Event()
+
+        async def _disk_local_payload(**_kwargs: object) -> dict[str, object]:
+            return {"plugin_id": "demo", "config": {"base": 1, "draft": 1}}
+
+        async def _slow_commit_rpc(**_kwargs: object) -> dict[str, object]:
+            rpc_started.set()
+            await release_rpc.wait()
+            return {"success": True, "persisted": True, "config": {"base": 1, "draft": 1}}
+
+        ctx._get_local_config_payload = _disk_local_payload  # type: ignore[method-assign]
+        ctx._send_request_and_wait_async = _slow_commit_rpc  # type: ignore[method-assign]
+
+        write_task = asyncio.create_task(ctx.update_own_config({"draft": 1}))
+        try:
+            await _wait_for_checkpoint_or_task_failure(rpc_started, write_task)
+
+            async def _config_change(**_kwargs: object) -> None:
+                release_rpc.set()
+                res = await write_task
+                assert res["persisted"] is True
+                loaded = await ctx.get_own_effective_config(None)
+                assert loaded["config"] == {"base": 1, "draft": 1}
+                assert ctx._effective_config == {"host": 9}
+                assert instance.refreshed[-1] == {"host": 9}
+                assert ctx._effective_config_uncertain is True
+                if raises_in_cb:
+                    raise RuntimeError("reject after superseded commit")
+
+            sender = _FakeResponseSender()
+            await host_module._handle_config_update_command(
+                msg={
+                    "req_id": f"req-sup-commit-{raises_in_cb}",
+                    "config": {"host": 9},
+                    "mode": "temporary",
+                    "replace": True,
+                },
+                ctx=ctx,
+                events_by_type={"lifecycle": {"config_change": _config_change}},
+                plugin_id="demo",
+                res_sender=sender,
+                logger=_FakeLogger(),
+            )
+            assert sender.payloads[-1]["success"] is (not raises_in_cb)
+            expected_cfg = {"base": 1, "draft": 1} if raises_in_cb else {"host": 9}
+            assert ctx._effective_config == expected_cfg
+            assert instance.refreshed[-1] == expected_cfg
+            assert ctx._effective_config_uncertain is True
+            assert ctx._host_config_change_pending == 0
+            assert not getattr(ctx, "_pending_host_config_owner_tokens", {})
+            assert not getattr(ctx, "_owner_token_host_change_root", {})
+
+            post_loaded = await ctx.get_own_effective_config(None)
+            assert post_loaded["config"] == {"base": 1, "draft": 1}
+            assert ctx._effective_config == {"base": 1, "draft": 1}
+            assert ctx._effective_config_uncertain is False
+            assert instance.refreshed[-1] == {"base": 1, "draft": 1}
+        finally:
+            release_rpc.set()
+            if not write_task.done():
+                write_task.cancel()
+            await asyncio.gather(write_task, return_exceptions=True)
+
+    asyncio.run(_case_superseded_commit_inside_host_replace_preserves_host_guard(raises_in_cb=False))
+    asyncio.run(_case_superseded_commit_inside_host_replace_preserves_host_guard(raises_in_cb=True))
