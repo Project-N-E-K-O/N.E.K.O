@@ -2300,6 +2300,9 @@ def test_datagram_endpoints_listen_only_with_a_local_address(tmp_path, call, bas
         "import extlib\nP = getattr(extlib, 'Plugin')\nP().push_message('x')\n",
         "import extlib\ngetattr(getattr(extlib, 'get_ctx')(), 'push_message')('x')\n",
         "import importlib\nim = getattr(importlib, 'import_module')\nim('x').push_message()\n",
+        # An alias chain that receives the getattr path last.
+        "import extlib\nfrom extlib import get_ctx as a, get_ctx as b, get_ctx as c\nc = b\nb = a\n"
+        "a = getattr(extlib, 'get_ctx')\nc().push_message()\n",
     ],
 )
 def test_followed_getattr_keeps_the_legacy_reading(tmp_path, source):
@@ -2316,7 +2319,10 @@ def test_followed_getattr_keeps_the_legacy_reading(tmp_path, source):
         # on every round); the result stays as on main.
         ("import os\nos = getattr(os, 'path')\nos.join('a')\n", {}),
         ("import subprocess\nsubprocess = getattr(subprocess, 'x')\nsubprocess.run([])\n", {"system.process:spawn": "import_only"}),
-        ("import socket\nsocket = socket.socket(socket.AF_UNIX)\nsocket.listen()\n", {CONNECT: "resolved_name"}),
+        # socket is reassigned here, so socket.AF_UNIX is not trusted either.
+        ("import socket\nsocket = socket.socket(socket.AF_UNIX)\nsocket.listen()\n", {CONNECT: "resolved_call"}),
+        # An indirect cycle keeps the reading it had on main.
+        ("import pathlib as a\nb = getattr(a, 'Path')\na = getattr(b, 'cwd')\n", {}),
     ],
 )
 def test_self_referencing_assignments_are_not_followed(tmp_path, source, bases):
@@ -2403,3 +2409,46 @@ def test_nested_getattr_and_socket_chains_stay_within_budget(tmp_path, monkeypat
     # Each part of a chain is resolved once: well under a small budget.
     monkeypatch.setattr(capability_analysis, "MAX_NODES", 200_000)
     assert _scan(tmp_path, source)["status"] == "completed"
+
+
+def test_untrusted_family_names_keep_their_legacy_binding(tmp_path):
+    # As on main: item is an import, so item.push_message() is external.
+    report = _scan(tmp_path, "from socket import AF_UNIX as item\nfor item in clients:\n    item.push_message()\n")
+    assert report["capabilities"] == []
+    assert "plugin_sdk.main_agent.messages:push" not in report["permissions"]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # The module name of the family is rebound.
+        "import socket as families\nfrom socket import socket as make\nfor families in sources:\n"
+        "    s = make(families.AF_UNIX)\n    s.listen()\n",
+        "from socket import socket as make\nimport socket\nfor socket in families:\n    make(socket.AF_UNIX).listen()\n",
+        # A method parameter spelled like the module constant.
+        "import socket\nfrom socket import AF_UNIX\nclass S:\n    def __init__(self, AF_UNIX):\n"
+        "        self.s = socket.socket(AF_UNIX)\n    def go(self):\n        self.s.listen()\n",
+    ],
+)
+def test_rebound_family_roots_and_parameters_are_not_local(tmp_path, source):
+    assert _scan(tmp_path, source)["permissions"][LISTEN]["basis"] == "resolved_call"
+
+
+def test_unix_socket_from_a_literal_import_is_local(tmp_path):
+    source = "import importlib, socket\ns = importlib.import_module('socket').socket(socket.AF_UNIX)\ns.listen()\n"
+    assert _bases(_scan(tmp_path, source)) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}
+
+
+@pytest.mark.parametrize(
+    "call,basis",
+    [
+        ("loop.create_datagram_endpoint(object, *addresses)", "resolved_name"),
+        ("loop.create_datagram_endpoint(*addresses, remote_addr=('a', 1))", "resolved_name"),
+        ("loop.create_datagram_endpoint(object, *addresses, local_addr=('', 1))", "resolved_call"),
+        ("getattr(loop, 'create_datagram_endpoint')(object, local_addr=('', 1))", "resolved_call"),
+        ("getattr(loop, 'create_datagram_endpoint')(object, local_addr='/p', family=socket.AF_UNIX)", "resolved_name"),
+    ],
+)
+def test_datagram_endpoints_with_unpacked_or_reflected_calls(tmp_path, call, basis):
+    source = f"import asyncio, socket\nasync def f(addresses):\n    loop = asyncio.get_running_loop()\n    await {call}\n"
+    assert _scan(tmp_path, source)["permissions"][LISTEN]["basis"] == basis

@@ -343,8 +343,19 @@ def _dotted_name(node: ast.AST | None, walker=None) -> str:
     return ".".join(reversed(parts))
 
 
+# Bindings key marking a name whose value is not certain for the AF_UNIX
+# check (rebound, assigned more than once ...). "[" never starts a name, so
+# it cannot collide with a real binding; other lookups never see it.
+_UNTRUSTED = "[untrusted]"
+
+
+def _untrusted(name: str, bindings) -> bool:
+    return _UNTRUSTED + name in bindings
+
+
 def _unix_family(call: ast.Call, index: int | None, bindings, walker=None) -> bool:
-    """The family argument statically resolves to socket.AF_UNIX."""
+    """The family argument statically resolves to socket.AF_UNIX, through
+    names that are not rebound (for socket in ...: socket.AF_UNIX is not)."""
     argument = _call_argument(call, index, "family")
     # Cheap test first: this runs at every call level of every chain.
     # A bare name may be an alias (family = socket.AF_UNIX); a dotted one
@@ -352,10 +363,20 @@ def _unix_family(call: ast.Call, index: int | None, bindings, walker=None) -> bo
     if not (isinstance(argument, ast.Name) or (isinstance(argument, ast.Attribute) and argument.attr == "AF_UNIX")):
         return False
     raw = _dotted_name(argument, walker)
-    if not raw:
+    if not raw or _untrusted(_root_name(raw), bindings):
         return False
     resolved, external, bound = _resolve_with_origin(raw, bindings)
     return bool(external and bound) and resolved in _UNIX_FAMILIES
+
+
+def _local_construction(node: ast.Call, called: str, external, bound, bindings) -> bool:
+    """socket.socket(AF_UNIX) or create_datagram_endpoint(family=AF_UNIX)
+    itself (family is keyword-only on create_datagram_endpoint)."""
+    if not (external and bound):
+        return False
+    if called == "socket.socket":
+        return _unix_family(node, 0, bindings)
+    return called in _DATAGRAM_ENDPOINTS and _unix_family(node, None, bindings)
 
 
 def _unmark_local_socket(resolved: str) -> tuple[str, bool]:
@@ -498,10 +519,15 @@ def _resolve_chain_root(raw_node: ast.AST, bindings, walker) -> tuple[str, bool,
                         # The rest of the chain is that getattr: unresolved.
                         return None
                 elif isinstance(func, (ast.Name, ast.Attribute)):
-                    # Only a plain dotted name (socket.socket, sock, self.make);
-                    # a longer chain is left to the next steps of this walk.
+                    # Only a plain dotted name (socket.socket, sock, self.make),
+                    # or an attribute of a literal import; a longer chain is
+                    # left to the next steps of this walk.
                     dotted = _dotted_name(func, walker)
                     called, external, bound = _resolve_with_origin(dotted, bindings) if dotted else (None, False, False)
+                    if not dotted and isinstance(func, ast.Attribute):
+                        imported = _literal_import(func.value, bindings)
+                        if imported is not None:
+                            called, external, bound = f"{imported[1]}.{func.attr}", True, True
                     if not (external and bound):
                         called = None
                 else:
@@ -874,16 +900,29 @@ def _propagate_assignments(assignments, bindings, walker, uncertain_names=frozen
     # A family name already bound (imported or inherited) and also assigned
     # here (from socket import AF_UNIX; AF_UNIX = 2).
     uncertain.update(key for key in counts if bindings.get(key, (None,))[0] in _UNIX_FAMILIES)
-    # Settled before any socket is resolved through them.
+    # Settled before any socket is resolved through them. Kept apart from
+    # the bindings, which resolve as before (the legacy scan reads them).
     for key in uncertain:
-        if bindings.get(key, (None,))[0] in _UNIX_FAMILIES:
-            bindings[key] = (None, False)
+        if "." not in key:
+            bindings[_UNTRUSTED + key] = (None, False)
+    # Assignments whose getattr / socket root leads back to themselves
+    # (b = getattr(a, "x"); a = getattr(b, "y")) would grow on every round;
+    # they keep the reading they had before getattr was followed.
+    roots = {key: _root_name(_plain_name(node)) for key, node in assignments if "." not in key}
+    cyclic = set()
+    for key in roots:
+        seen, name = set(), roots[key]
+        while name in roots and name not in seen:
+            walker.check()
+            if name == key:
+                cyclic.add(key)
+                break
+            seen.add(name)
+            name = roots[name]
 
     def bind(key, resolved, external):
         if key in uncertain:
             resolved = _unmark_local_socket(resolved)[0]
-            if resolved in _UNIX_FAMILIES:
-                resolved, external = None, False
         binding = resolved, external
         resolved_bindings[key] = binding
         bindings[key] = binding
@@ -898,7 +937,8 @@ def _propagate_assignments(assignments, bindings, walker, uncertain_names=frozen
             # name it is assigned to is not followed (it would grow forever);
             # the binding stays what it was before getattr was followed.
             if literal is not None and (
-                literal[3] == _ROOT_IMPORT or not _references_binding(_plain_name(node), key)
+                literal[3] == _ROOT_IMPORT
+                or (key not in cyclic and not _references_binding(_plain_name(node), key))
             ):
                 bind(key, literal[0], literal[1])
                 continue
@@ -908,24 +948,42 @@ def _propagate_assignments(assignments, bindings, walker, uncertain_names=frozen
             resolved, external = _resolve(value, bindings)
             if external or not _references_binding(resolved, key):
                 bind(key, resolved, external)
-        if resolved_bindings == previous or not resolved_bindings:
+        # A _Reflected path equals its plain text; compare the legacy
+        # spelling too, or an alias chain could stop one round early.
+        state = {key: (value, getattr(value[0], "legacy", None)) for key, value in resolved_bindings.items()}
+        if state == previous or not resolved_bindings:
             return
-        previous = resolved_bindings
+        previous = state
 
 
 def _propagate_self_attributes(node, bindings, walker, shared=frozenset()):
     """Collect self assignments from methods without inheriting method locals."""
     assignments = []
+    # Method parameters are not shadowed here (as before), so a parameter
+    # spelled like a family name is only kept out of the AF_UNIX check.
+    parameters: set[str] = set()
     for method in node.body:
         walker.check()
         if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            args = method.args
+            parameters.update(
+                arg.arg
+                for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg)
+                if arg is not None
+            )
             nodes = walker.scope_nodes(method.body)
             _, method_assignments = _collect_declarations(nodes, (), walker)
             assignments.extend(
                 (key, value) for key, value in method_assignments if key.startswith("self.")
             )
     class_bindings = dict(bindings)
+    for name in parameters:
+        class_bindings[_UNTRUSTED + name] = (None, False)
     _propagate_assignments(assignments, class_bindings, walker, shared)
+    for name in parameters:
+        # Methods see their own parameters; do not distrust module names there.
+        if not _untrusted(name, bindings):
+            del class_bindings[_UNTRUSTED + name]
     return class_bindings
 
 
@@ -966,9 +1024,10 @@ def _emit_references(nodes, bindings, scope, walker, function="", shared=frozens
                 method, local_socket = _unmark_local_socket(_extend(resolved, "." + attribute))
                 # getattr(x, "f") only retrieves f; getattr(x, "f")() calls it.
                 is_call = isinstance(node, ast.Call) and isinstance(node.func, ast.Call)
-                if not local_socket and is_call and external and bound and method == "socket.socket":
-                    # getattr(socket, "socket")(socket.AF_UNIX)
-                    local_socket = _unix_family(node, 0, bindings)
+                if not local_socket and is_call:
+                    # getattr(socket, "socket")(socket.AF_UNIX), and the same
+                    # for a datagram endpoint (as the attribute call below).
+                    local_socket = _local_construction(node, method, external, bound, bindings)
                 yield _Reference(
                     node, method, external, bound, function, is_call,
                     raw_root=_root_name(_plain_name(receiver)) if inner and inner[3] != _ROOT_IMPORT else _root_name(raw),
@@ -992,16 +1051,8 @@ def _emit_references(nodes, bindings, scope, walker, function="", shared=frozens
                         and _is_data_read_result(_resolve(raw_root, bindings)[0])
                     )
                 resolved, local_socket = _unmark_local_socket(resolved)
-                if (
-                    not local_socket
-                    and isinstance(node, ast.Call)
-                    and external
-                    and bound
-                    and (resolved == "socket.socket" or resolved in _DATAGRAM_ENDPOINTS)
-                ):
-                    # The construction itself (family is keyword-only on
-                    # create_datagram_endpoint).
-                    local_socket = _unix_family(node, 0 if resolved == "socket.socket" else None, bindings)
+                if not local_socket and isinstance(node, ast.Call):
+                    local_socket = _local_construction(node, resolved, external, bound, bindings)
                 yield _Reference(
                     node, resolved, external, bound, function,
                     isinstance(node, ast.Call),
@@ -1497,6 +1548,11 @@ def _datagram_listen(node: ast.AST, direct: str, named: str) -> tuple[str, ...]:
     address others can send to; with only remote_addr= (or sock=) it does not."""
     if not isinstance(node, ast.Call):
         return ()
+    if not any(item.arg == "local_addr" for item in node.keywords) and any(
+        isinstance(item, ast.Starred) for item in node.args[:2]
+    ):
+        # *args may fill, shift or leave out the local address.
+        return (named,)
     local = _call_argument(node, 1, "local_addr")
     if local is None:
         unpacked = any(item.arg is None for item in node.keywords) or any(
