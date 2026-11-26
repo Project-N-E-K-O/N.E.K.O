@@ -22,7 +22,12 @@ from typing import Any
 import httpx
 import pytest
 
-from nekopower.host.plugin_runs import MAX_CONSECUTIVE_POLL_ERRORS, PluginCatalog, PluginRunner
+from nekopower.host.plugin_runs import (
+    MAX_CONSECUTIVE_POLL_ERRORS,
+    PluginCatalog,
+    PluginRunner,
+    _reraise_swallowed_cancellation,
+)
 from tests.unit.nekopower.host_fakes import wait_until
 from tests.unit.nekopower.plugin_server_fake import PLUGIN_SERVER_URL, FakePluginServer, entry, finish, plugin
 
@@ -50,6 +55,9 @@ class Faults:
         self.answer_may_return: asyncio.Event | None = None
         # Called just before the answer to POST /runs is handed back.
         self.on_runs_answer: Any = None
+        # The next GET of this kind ("poll" or "export") cancels the task it
+        # runs in, and comes up as a transport error instead.
+        self.cancel_wrapped_in: str | None = None
 
 
 def _runner(server: FakePluginServer, faults: Faults) -> PluginRunner:
@@ -79,7 +87,11 @@ def _runner(server: FakePluginServer, faults: Faults) -> PluginRunner:
             return response
 
         async def get(self, url: str, **kwargs: Any) -> Any:
-            if "/runs/" in url and not url.endswith("/export"):
+            kind = "export" if url.endswith("/export") else "poll" if "/runs/" in url else None
+            if kind is not None and faults.cancel_wrapped_in == kind:
+                faults.cancel_wrapped_in = None
+                await _cancelled_and_wrapped(httpx.ReadError)
+            if kind == "poll":
                 faults.polls += 1
                 if faults.unreadable_polls:
                     return httpx.Response(200, content=b"<html>proxy error</html>")
@@ -95,6 +107,15 @@ def _runner(server: FakePluginServer, faults: Faults) -> PluginRunner:
         default_entry_timeout=lambda: None,
         poll_interval=0.01,
     )
+
+
+async def _cancelled_and_wrapped(error: type[Exception]) -> None:
+    """Cancel the task this runs in, and come up with ``error`` instead, as a request layer can."""
+    asyncio.current_task().cancel()
+    try:
+        await asyncio.sleep(0)
+    except asyncio.CancelledError:
+        raise error("the request layer wrapped the cancellation") from None
 
 
 def _slow_weather(server: FakePluginServer) -> asyncio.Event:
@@ -264,43 +285,75 @@ async def test_a_run_whose_wait_failed_unexpectedly_is_cancelled_and_stays_known
     assert runner.active_runs("c1") == []
 
 
-@pytest.mark.parametrize("where", ["waiting", "the listener for new runs"])
+@pytest.mark.parametrize("where", ["waiting", "the listener for new runs", "polling", "reading what it gave back"])
 async def test_a_cancellation_of_the_caller_that_comes_up_as_an_error_is_one(server, monkeypatch, caplog, where):
-    started = _slow_weather(server)
     faults = Faults()
     runner = _runner(server, faults)
-
-    async def wrapped(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        await asyncio.wait_for(started.wait(), 5)
-        asyncio.current_task().cancel()
-        try:
-            await asyncio.sleep(0)
-        except asyncio.CancelledError:
-            raise RuntimeError("the request layer wrapped the cancellation") from None
-        return {}
-
     listener = None
-    if where == "waiting":
-        monkeypatch.setattr(runner, "_await_completion", wrapped)
+    if where == "reading what it gave back":
+        # One that ends at once, so what it gave back is read.
+        async def sunny(_args: dict[str, Any]) -> dict[str, Any]:
+            return finish({"reply": "sunny"})
+
+        server.add_plugin(plugin("weather", "Weather lookups", [entry("today", "Today's weather")]), today=sunny)
+        faults.cancel_wrapped_in = "export"
     else:
-        listener = wrapped
+        started = _slow_weather(server)
+
+        async def wrapped(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            await asyncio.wait_for(started.wait(), 5)
+            await _cancelled_and_wrapped(RuntimeError)
+            return {}
+
+        if where == "waiting":
+            monkeypatch.setattr(runner, "_await_completion", wrapped)
+        elif where == "the listener for new runs":
+            listener = wrapped
+        else:
+            faults.cancel_wrapped_in = "poll"
     calling = asyncio.ensure_future(
         runner.run_entry(commission_id="c1", plugin_id="weather", entry_id="today", args={}, on_run_created=listener)
     )
 
-    await asyncio.wait([calling], timeout=5)
-    with pytest.raises(asyncio.CancelledError) as raised:
-        calling.result()
-    await wait_until(lambda: faults.cancel_requests == 1, what="the cancel request")
-    await runner.aclose()
+    try:
+        await asyncio.wait([calling], timeout=5)
+        # One that did not come up leaves it waiting, not failing with something else.
+        assert calling.done(), "the cancellation did not come up"
+        with pytest.raises(asyncio.CancelledError) as raised:
+            calling.result()
+        await wait_until(lambda: faults.cancel_requests == 1, what="the cancel request")
+    finally:
+        calling.cancel()
+        await runner.aclose()
 
     # The caller was cancelled, and the run with it: not a wait that failed, which would go on as if nothing happened.
     assert faults.cancel_reasons == ["caller cancelled"]
     assert runner.active_runs("c1") == []
-    # The error it came up as is kept as its cause; nothing on record says a listener or the wait failed.
-    assert isinstance(raised.value.__cause__, RuntimeError)
+    # The error it came up as is kept as its cause; nothing on record says a listener, the wait or the polling failed.
+    came_up_as = httpx.ReadError if where in ("polling", "reading what it gave back") else RuntimeError
+    assert isinstance(raised.value.__cause__, came_up_as)
     assert "the listener for new runs failed" not in caplog.text
     assert "waiting for run" not in caplog.text
+    assert "polling run" not in caplog.text
+
+
+async def test_a_cancellation_found_with_no_cause_given_still_shows_the_error_it_happened_during():
+    async def handling() -> None:
+        try:
+            raise httpx.ReadError("the request layer wrapped the cancellation")
+        except httpx.ReadError:
+            asyncio.current_task().cancel()
+            _reraise_swallowed_cancellation()
+
+    task = asyncio.ensure_future(handling())
+    await asyncio.wait([task], timeout=5)
+    assert task.done()
+    with pytest.raises(asyncio.CancelledError) as raised:
+        task.result()
+    # Nothing is given as its cause, and the error being handled is not hidden (as ``from None`` would hide it).
+    assert raised.value.__cause__ is None
+    assert isinstance(raised.value.__context__, httpx.ReadError)
+    assert raised.value.__suppress_context__ is False
 
 
 async def test_a_run_whose_cancel_was_taken_before_its_wait_timed_out_is_let_go(server, monkeypatch):
