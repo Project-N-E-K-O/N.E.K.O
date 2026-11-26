@@ -151,6 +151,14 @@ export default function NekoPowerAskBlock({ block, message, interactive, onActio
   const draftKey = `${block.taskId}:${block.questionId}`;
   const [reply, setReply] = useState(() => drafts.get(draftKey)?.reply ?? '');
   const [picked, setPicked] = useState<Record<string, string[]>>(() => drafts.get(draftKey)?.picked ?? {});
+  // Drawn anew when the page is put in another language (or its words have come): the line is
+  // then said in that one (`askView`), and the words of the buttons with it.
+  const [, setRedrawn] = useState(0);
+  useEffect(() => {
+    const redraw = () => setRedrawn(count => count + 1);
+    window.addEventListener('localechange', redraw);
+    return () => window.removeEventListener('localechange', redraw);
+  }, []);
   useEffect(() => {
     // Kept until the question is answered or over, also while an answer is on its way. (Above the
     // composer a card is taken away without being drawn as answered: the chat lets go of what is
