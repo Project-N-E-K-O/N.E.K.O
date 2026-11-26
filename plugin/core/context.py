@@ -1020,6 +1020,17 @@ class PluginContext:
             self._flush_instance_runtime_config()
         return True
 
+    def _begin_host_config_change(self) -> None:
+        with self._get_config_state_lock():
+            self._host_config_change_pending = (
+                int(getattr(self, "_host_config_change_pending", 0) or 0) + 1
+            )
+
+    def _end_host_config_change(self) -> None:
+        with self._get_config_state_lock():
+            current = int(getattr(self, "_host_config_change_pending", 0) or 0)
+            self._host_config_change_pending = max(0, current - 1)
+
     def _cache_effective_config_from_read(
         self,
         config_obj: object,
@@ -1033,6 +1044,8 @@ class PluginContext:
             if self._current_effective_config_gen() != gen_before:
                 return False
             if bool(getattr(self, "_config_write_in_progress", False)):
+                return False
+            if int(getattr(self, "_host_config_change_pending", 0) or 0) > 0:
                 return False
             if read_id <= int(getattr(self, "_last_installed_read_id", 0) or 0):
                 return False

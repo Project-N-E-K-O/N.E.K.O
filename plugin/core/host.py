@@ -884,7 +884,15 @@ async def _handle_config_update_command(
                 ) = replace_for_host(new_config)
                 logger.debug("[Plugin Process] Config cache replaced")
             else:
-                merge_deadline = time.monotonic() + 8.0
+                merge_budget = 8.0
+                raw_timeout = msg.get("timeout")
+                if (
+                    isinstance(raw_timeout, (int, float))
+                    and not isinstance(raw_timeout, bool)
+                    and math.isfinite(raw_timeout)
+                ):
+                    merge_budget = min(8.0, float(raw_timeout))
+                merge_deadline = time.monotonic() + merge_budget
                 applied_ok = False
                 for _ in range(8):
                     if time.monotonic() >= merge_deadline:
@@ -1067,15 +1075,23 @@ async def _handle_config_update_command(
         
         if config_change_handler:
             logger.debug("[Plugin Process] Triggering config_change lifecycle event")
+            begin_host_change = getattr(ctx, "_begin_host_config_change", None)
+            end_host_change = getattr(ctx, "_end_host_config_change", None)
             try:
-                with ctx._handler_scope("lifecycle.config_change"):
-                    result = config_change_handler(
-                        old_config=copy.deepcopy(old_config),
-                        new_config=copy.deepcopy(applied_config),
-                        mode=mode,
-                    )
-                    if inspect.isawaitable(result):
-                        await result
+                if callable(begin_host_change):
+                    begin_host_change()
+                try:
+                    with ctx._handler_scope("lifecycle.config_change"):
+                        result = config_change_handler(
+                            old_config=copy.deepcopy(old_config),
+                            new_config=copy.deepcopy(applied_config),
+                            mode=mode,
+                        )
+                        if inspect.isawaitable(result):
+                            await result
+                finally:
+                    if callable(end_host_change):
+                        end_host_change()
                 logger.info("[Plugin Process] config_change handler executed successfully")
             except Exception as e:
                 logger.exception("[Plugin Process] config_change handler failed")
@@ -2878,7 +2894,7 @@ class PluginHost:
             }
         """
         req_id = str(uuid.uuid4())
-        cmd = {
+        cmd: Dict[str, Any] = {
             "type": "CONFIG_UPDATE",
             "req_id": req_id,
             "config": config,
@@ -2886,6 +2902,12 @@ class PluginHost:
             "profile": profile,
             "replace": bool(replace),
         }
+        if (
+            isinstance(timeout, (int, float))
+            and not isinstance(timeout, bool)
+            and math.isfinite(timeout)
+        ):
+            cmd["timeout"] = float(timeout)
         return await self.comm_manager._send_command_and_wait(req_id, cmd, timeout, "CONFIG_UPDATE")
 
     async def get_ui_context(self, context_id: str = "main", timeout: float = 5.0) -> Any:

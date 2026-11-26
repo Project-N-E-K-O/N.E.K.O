@@ -2255,3 +2255,144 @@ def test_config_update_command_coordinates_with_in_flight_writes_and_profile_swi
         assert instance.refreshed[-1] == {"live": 2}
 
     asyncio.run(_case_failed_hydration_aborts_temporary_patch_instead_of_overwriting_with_empty_base())
+
+    # 10. Effective disk read inside failing config_change handler must not steal rollback ownership.
+    async def _case_effective_read_inside_failing_config_change_preserves_rollback_ownership() -> None:
+        ctx = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "demo_effective_read_in_cb" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance = _RecordingInstance()
+        ctx._instance = instance
+        ctx._set_effective_config_cache({"base": 1, "keep": 2})
+
+        async def _local_payload(**_kwargs: object) -> dict[str, object]:
+            return {"plugin_id": "demo", "config": {"base": 1}}
+
+        ctx._get_local_config_payload = _local_payload  # type: ignore[method-assign]
+        observed_reads: list[dict[str, object]] = []
+
+        async def _read_then_reject(**_kwargs: object) -> None:
+            loaded = await ctx.get_own_effective_config(None)
+            observed_reads.append(dict(loaded["config"]))
+            raise RuntimeError("reject extra after disk read")
+
+        sender = _FakeResponseSender()
+        await host_module._handle_config_update_command(
+            msg={
+                "req_id": "req-read-in-cb",
+                "config": {"extra": 3},
+                "mode": "temporary",
+                "replace": False,
+            },
+            ctx=ctx,
+            events_by_type={"lifecycle": {"config_change": _read_then_reject}},
+            plugin_id="demo",
+            res_sender=sender,
+            logger=_FakeLogger(),
+        )
+        assert observed_reads == [{"base": 1}]
+        assert sender.payloads[-1]["success"] is False
+        assert ctx._effective_config == {"base": 1, "keep": 2}
+        assert instance.refreshed[-1] == {"base": 1, "keep": 2}
+        assert ctx._host_config_change_pending == 0
+
+    asyncio.run(_case_effective_read_inside_failing_config_change_preserves_rollback_ownership())
+
+    # 11. CONFIG_UPDATE respects shorter caller timeout and PluginProcessHost.send_config_update forwards it.
+    async def _case_host_merge_respects_shorter_caller_timeout_from_command_msg() -> None:
+        ctx = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "demo_short_caller_timeout" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance = _RecordingInstance()
+        ctx._instance = instance
+        received_timeouts: list[float] = []
+
+        async def _recording_get_own_config(*, timeout: float = 5.0) -> dict[str, object]:
+            received_timeouts.append(timeout)
+            return {"config": {"base": 1}}
+
+        ctx.get_own_config = _recording_get_own_config  # type: ignore[method-assign]
+        sender = _FakeResponseSender()
+        await host_module._handle_config_update_command(
+            msg={
+                "req_id": "req-short-timeout",
+                "config": {"host": 2},
+                "mode": "temporary",
+                "replace": False,
+                "timeout": 1.25,
+            },
+            ctx=ctx,
+            events_by_type={},
+            plugin_id="demo",
+            res_sender=sender,
+            logger=_FakeLogger(),
+        )
+        assert len(received_timeouts) == 1
+        assert 0.0 < received_timeouts[0] <= 1.25
+        assert sender.payloads[-1]["success"] is True
+        assert ctx._effective_config == {"base": 1, "host": 2}
+
+        # Expired caller timeout (0.0s) must abort immediately without hydrating or applying patch.
+        ctx_zero = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "demo_zero_caller_timeout" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        zero_calls = 0
+
+        async def _unexpected_get_own_config(*, timeout: float = 5.0) -> dict[str, object]:
+            nonlocal zero_calls
+            del timeout
+            zero_calls += 1
+            return {"config": {"base": 1}}
+
+        ctx_zero.get_own_config = _unexpected_get_own_config  # type: ignore[method-assign]
+        sender_zero = _FakeResponseSender()
+        await host_module._handle_config_update_command(
+            msg={
+                "req_id": "req-zero-timeout",
+                "config": {"host": 9},
+                "mode": "temporary",
+                "replace": False,
+                "timeout": 0.0,
+            },
+            ctx=ctx_zero,
+            events_by_type={},
+            plugin_id="demo",
+            res_sender=sender_zero,
+            logger=_FakeLogger(),
+        )
+        assert sender_zero.payloads[-1]["success"] is False
+        assert "Timed out" in str(sender_zero.payloads[-1]["error"])
+        assert zero_calls == 0
+        assert ctx_zero._effective_config is None
+
+        # Verify PluginProcessHost.send_config_update includes caller timeout in IPC cmd.
+        sent_cmds: list[dict[str, object]] = []
+
+        class _FakeComm:
+            async def _send_command_and_wait(
+                self,
+                req_id: str,
+                cmd: dict[str, object],
+                timeout: float,
+                command_type: str,
+            ) -> dict[str, object]:
+                del req_id, timeout, command_type
+                sent_cmds.append(dict(cmd))
+                return {"success": True, "config_applied": True, "handler_called": False}
+
+        fake_host = host_module.PluginProcessHost.__new__(host_module.PluginProcessHost)
+        fake_host.comm_manager = _FakeComm()  # type: ignore[assignment]
+        await fake_host.send_config_update({"x": 1}, timeout=1.5)
+        assert len(sent_cmds) == 1
+        assert sent_cmds[0]["timeout"] == 1.5
+
+    asyncio.run(_case_host_merge_respects_shorter_caller_timeout_from_command_msg())
