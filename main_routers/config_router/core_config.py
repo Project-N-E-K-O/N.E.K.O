@@ -1007,8 +1007,17 @@ async def update_core_config(request: Request):
         try:
             import httpx
             from config import TOOL_SERVER_PORT
-            async with httpx.AsyncClient(timeout=5, proxy=None, trust_env=False) as client:
-                await client.post(f"http://127.0.0.1:{TOOL_SERVER_PORT}/notify_config_changed")
+            from utils.internal_http_client import internal_service_event_hooks
+
+            async with httpx.AsyncClient(
+                timeout=5,
+                proxy=None,
+                trust_env=False,
+                event_hooks=internal_service_event_hooks(),
+            ) as client:
+                notify_resp = await client.post(f"http://127.0.0.1:{TOOL_SERVER_PORT}/notify_config_changed")
+                if notify_resp is not None and not notify_resp.is_success:
+                    raise RuntimeError(f"HTTP {notify_resp.status_code}")
             logger.info("已通知 agent_server 刷新 CUA 适配器")
         except Exception as notify_err:
             logger.warning(f"通知 agent_server 刷新 CUA 失败 (非致命): {notify_err}")

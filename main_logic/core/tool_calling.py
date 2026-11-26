@@ -414,10 +414,9 @@ class ToolCallingMixin:
 
         from config import TOOL_SERVER_PORT
         from config.nekopower_settings import TASK_TOOL_TIMEOUT_SECONDS
+        from utils.internal_http_client import InternalServiceSigningError, get_internal_http_client
 
         try:
-            from utils.internal_http_client import get_internal_http_client
-
             client = get_internal_http_client()
             resp = await asyncio.wait_for(
                 client.post(
@@ -427,7 +426,12 @@ class ToolCallingMixin:
                 ),
                 TASK_TOOL_TIMEOUT_SECONDS,
             )
-        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
+        except (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.PoolTimeout,
+            InternalServiceSigningError,
+        ) as exc:
             logger.warning("[task tools] %s not delivered (%s)", path, type(exc).__name__)
             return None, False
         except Exception as exc:

@@ -339,11 +339,14 @@ async def _resolve_user_plugin_base() -> str:
 def _get_http_client() -> httpx.AsyncClient:
     global _HTTP_CLIENT
     if _HTTP_CLIENT is None:
+        from utils.internal_http_client import internal_service_event_hooks
+
         _HTTP_CLIENT = httpx.AsyncClient(
             timeout=httpx.Timeout(2.5, connect=0.5),
             limits=httpx.Limits(max_connections=64, max_keepalive_connections=16),
             proxy=None,
             trust_env=False,
+            event_hooks=internal_service_event_hooks(),
         )
     return _HTTP_CLIENT
 
@@ -503,11 +506,13 @@ async def post_agent_command(request: Request):
             if key in {"computer_use_enabled", "browser_use_enabled", "user_plugin_enabled"}:
                 write({key: bool(data.get("value"))})
 
+        from utils.internal_http_client import InternalServiceSigningError
+
         t_proxy = time.perf_counter()
         client = _get_http_client()
         try:
             r = await client.post(f"{TOOL_SERVER_BASE}/agent/command", json=data, timeout=8.0)
-        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, InternalServiceSigningError):
             # It was never sent: the session's switches go back to what they were.
             # (After a timeout of the answer it is not known whether it was taken; they are left.)
             take_back()

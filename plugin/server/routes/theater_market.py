@@ -34,7 +34,14 @@ async def theater_market(request_id: str, request: Request, action: str = ""):
     headers = main_write_headers(_main_server_port())
     headers["Content-Type"] = request.headers.get("content-type", "application/json")
     try:
-        async with httpx.AsyncClient(timeout=25.0, proxy=None, trust_env=False) as client:
+        from utils.internal_http_client import internal_service_event_hooks
+
+        async with httpx.AsyncClient(
+            timeout=25.0,
+            proxy=None,
+            trust_env=False,
+            event_hooks=internal_service_event_hooks(),
+        ) as client:
             response = await client.request(
                 request.method, f"http://127.0.0.1:{_main_server_port()}{path}",
                 params=dict(request.query_params), headers=headers,

@@ -1374,10 +1374,13 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             return cached[1]
 
         try:
+            from utils.internal_http_client import internal_service_event_hooks
+
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(5.0, connect=2.0),
                 proxy=None,
                 trust_env=False,
+                event_hooks=internal_service_event_hooks(),
             ) as client:
                 resp = await client.get(f"http://127.0.0.1:{int(MAIN_SERVER_PORT)}/api/tools")
             body = resp.json() if resp.status_code == 200 else None
@@ -1451,10 +1454,13 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         loop = asyncio.get_running_loop()
         deadline = loop.time() + _REMOTE_CONFIRM_TIMEOUT_S
         try:
+            from utils.internal_http_client import internal_service_event_hooks
+
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(2.0, connect=1.0),
                 proxy=None,
                 trust_env=False,
+                event_hooks=internal_service_event_hooks(),
             ) as client:
                 while pending_names and loop.time() < deadline:
                     try:
@@ -1588,10 +1594,13 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         from config import MAIN_SERVER_PORT
 
         try:
+            from utils.internal_http_client import internal_service_event_hooks
+
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(5.0, connect=2.0),
                 proxy=None,
                 trust_env=False,
+                event_hooks=internal_service_event_hooks(),
             ) as client:
                 resp = await client.post(
                     f"http://127.0.0.1:{int(MAIN_SERVER_PORT)}/api/tools/unregister",
@@ -1765,10 +1774,13 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         run_id: Optional[str] = None
 
         try:
+            from utils.internal_http_client import internal_service_event_hooks
+
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(10.0, connect=2.0),
                 proxy=None,
                 trust_env=False,
+                event_hooks=internal_service_event_hooks(),
             ) as client:
                 try:
                     # Hard deadline: even with httpx phase timeouts capped at remaining budget, a server's
@@ -1882,10 +1894,13 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         if not run_id:
             return
         try:
+            from utils.internal_http_client import internal_service_event_hooks
+
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(5.0, connect=2.0),
                 proxy=None,
                 trust_env=False,
+                event_hooks=internal_service_event_hooks(),
             ) as client:
                 await client.post(
                     f"{base}/runs/{run_id}/cancel",
