@@ -414,18 +414,19 @@ def test_compact_screen_header_with_long_translation_keeps_close_reachable(page:
 
 
 @pytest.mark.frontend
-def test_adaptive_option_keeps_niri_virtual_coordinate_ownership(page: Page):
+@pytest.mark.parametrize("source,expected_left", [("niri:test", 1252), ("power-save:test", 728)])
+def test_adaptive_option_uses_crop_source_for_placement(page: Page, source, expected_left):
     page.set_viewport_size({"width": 400, "height": 400})
     page.set_content('''
         <div id="live2d-popup-mic" data-opens-left="true"
           style="position:fixed;left:20px;top:20px;width:220px;height:300px"></div>
         <div id="panel" style="position:fixed;width:280px;height:120px"></div>
     ''')
-    page.evaluate("""()=>{
+    page.evaluate("""source=>{
         window.__nekoNiriPetPhysicalCrop={isActive:()=>true,
-            getState:()=>({virtualBounds:{width:1920,height:1080}}),
+            getState:()=>({source,virtualBounds:{width:1920,height:1080}}),
             toVirtualRect:r=>({...r,x:r.x+1000,y:r.y+100})};
-    }""")
+    }""", source)
     page.add_script_tag(path=str(ROOT / "static/avatar/avatar-popup-common.js"))
     result = page.evaluate("""()=>{
         const popup=document.getElementById('live2d-popup-mic'),panel=document.getElementById('panel');
@@ -434,7 +435,7 @@ def test_adaptive_option_keeps_niri_virtual_coordinate_ownership(page: Page):
         return {left:parseFloat(panel.style.left),top:parseFloat(panel.style.top),
             crop:panel.dataset.niriPhysicalCropPositioned,down:panel.dataset.goDown};
     }""")
-    assert result == {"left": 1252, "top": 120, "crop": "true", "down": "false"}
+    assert result == {"left": expected_left, "top": 120, "crop": "true", "down": "false"}
 
 
 @pytest.mark.frontend
