@@ -908,6 +908,21 @@ class PluginContext:
                 if isinstance(committed_config, dict):
                     entry["committed_config"] = copy.deepcopy(committed_config)
 
+    def _settle_rejected_overtaken_write_locked(self, *, write_gen: int) -> None:
+        self._update_overtaken_host_rollbacks_locked(
+            write_gen=write_gen,
+            status="rejected",
+        )
+        settled_rb = getattr(self, "_settled_overtaken_host_rollback", None)
+        if (
+            isinstance(settled_rb, tuple)
+            and len(settled_rb) == 3
+            and settled_rb[0] == write_gen
+            and settled_rb[1] == self._current_effective_config_gen()
+        ):
+            self._settled_overtaken_host_rollback = None
+            self._effective_config_uncertain = bool(settled_rb[2])
+
     def _replace_effective_config_cache_for_host(
         self,
         new_config: Mapping[str, Any],
@@ -921,21 +936,37 @@ class PluginContext:
             had_uncertain = current_uncertain
             old_config = copy.deepcopy(self._effective_config) if had_cached else {}
             overtaken_write_baseline: Dict[str, Any] | None = None
-            baseline = getattr(self, "_in_flight_write_baseline", None)
-            if (
-                bool(getattr(self, "_config_write_in_progress", False))
-                and isinstance(baseline, tuple)
-                and len(baseline) == 5
-                and baseline[0] == current_publish_seq
-            ):
-                overtaken_write_baseline = {
-                    "write_gen": int(baseline[1]),
-                    "status": "pending",
-                    "baseline_had_cached": bool(baseline[2]),
-                    "baseline_config": baseline[3],
-                    "baseline_uncertain": bool(baseline[4] or current_uncertain),
-                    "committed_config": None,
-                }
+            if bool(getattr(self, "_config_write_in_progress", False)):
+                baseline = getattr(self, "_in_flight_write_baseline", None)
+                settled_rb = getattr(self, "_settled_overtaken_host_rollback", None)
+                if (
+                    isinstance(baseline, tuple)
+                    and len(baseline) == 5
+                    and baseline[0] == current_publish_seq
+                ):
+                    overtaken_write_baseline = {
+                        "write_gen": int(baseline[1]),
+                        "status": "pending",
+                        "baseline_had_cached": bool(baseline[2]),
+                        "baseline_config": baseline[3],
+                        "baseline_uncertain": bool(baseline[4] or current_uncertain),
+                        "committed_config": None,
+                    }
+                elif (
+                    isinstance(settled_rb, tuple)
+                    and len(settled_rb) == 3
+                    and settled_rb[1] == self._current_effective_config_gen()
+                ):
+                    overtaken_write_baseline = {
+                        "write_gen": int(settled_rb[0]),
+                        "status": "pending",
+                        "baseline_had_cached": had_cached,
+                        "baseline_config": (
+                            copy.deepcopy(self._effective_config) if had_cached else None
+                        ),
+                        "baseline_uncertain": bool(settled_rb[2]),
+                        "committed_config": None,
+                    }
             last_runtime = getattr(self, "_last_runtime_config_snapshot", None)
             rollback_runtime_snapshot = (
                 copy.deepcopy(old_config)
@@ -2920,19 +2951,7 @@ class PluginContext:
         should_flush = False
         with self._get_config_state_lock():
             if self._current_effective_config_gen() != write_gen:
-                self._update_overtaken_host_rollbacks_locked(
-                    write_gen=write_gen,
-                    status="rejected",
-                )
-                settled_rb = getattr(self, "_settled_overtaken_host_rollback", None)
-                if (
-                    isinstance(settled_rb, tuple)
-                    and len(settled_rb) == 3
-                    and settled_rb[0] == write_gen
-                    and settled_rb[1] == self._current_effective_config_gen()
-                ):
-                    self._settled_overtaken_host_rollback = None
-                    self._effective_config_uncertain = bool(settled_rb[2])
+                self._settle_rejected_overtaken_write_locked(write_gen=write_gen)
                 return
             rb_match_token = (
                 base_host_owner_token if base_host_owner_token is not None else old_owner_token
@@ -3141,23 +3160,7 @@ class PluginContext:
                                         )
                                         should_flush_in_memory = True
                                 else:
-                                    self._update_overtaken_host_rollbacks_locked(
-                                        write_gen=write_gen,
-                                        status="rejected",
-                                    )
-                                    settled_rb = getattr(
-                                        self,
-                                        "_settled_overtaken_host_rollback",
-                                        None,
-                                    )
-                                    if (
-                                        isinstance(settled_rb, tuple)
-                                        and len(settled_rb) == 3
-                                        and settled_rb[0] == write_gen
-                                        and settled_rb[1] == self._current_effective_config_gen()
-                                    ):
-                                        self._settled_overtaken_host_rollback = None
-                                        self._effective_config_uncertain = bool(settled_rb[2])
+                                    self._settle_rejected_overtaken_write_locked(write_gen=write_gen)
                                     if isinstance(self._effective_config, dict):
                                         current_effective = copy.deepcopy(self._effective_config)
                             if should_flush_in_memory:
@@ -3193,6 +3196,8 @@ class PluginContext:
                                         None,
                                         uncertain=old_effective_config_uncertain,
                                     )
+                                else:
+                                    self._settle_rejected_overtaken_write_locked(write_gen=write_gen)
                             payload = dict(payload)
                             payload["success"] = False
                             payload["persisted"] = False
