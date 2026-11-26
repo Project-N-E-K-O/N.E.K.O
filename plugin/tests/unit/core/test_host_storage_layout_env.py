@@ -3312,6 +3312,7 @@ def test_config_update_command_coordinates_with_in_flight_writes_and_profile_swi
                 "base": 1,
                 "keep": {"a": 1, "b": 2},
                 "drop_me": "keep",
+                "scalar_sec": 1,
             }
             ctx._set_effective_config_cache(initial_cfg)
 
@@ -3347,7 +3348,13 @@ def test_config_update_command_coordinates_with_in_flight_writes_and_profile_swi
                 **_kwargs: object,
             ) -> None:
                 res1 = await _ctx.update_own_config(
-                    {"timer": 3, "keep": {"c": 3}, "drop_me": "__DELETE__"}
+                    {
+                        "timer": 3,
+                        "keep": {"c": 3},
+                        "drop_me": "__DELETE__",
+                        "temp_section": {"obsolete": "__DELETE__", "enabled": True},
+                        "scalar_sec": {"obsolete": "__DELETE__", "ok": True},
+                    }
                 )
                 assert res1["persisted"] is False
                 res2 = await _ctx.update_own_config({"timer2": 4, "keep": {"b": 20}})
@@ -3360,7 +3367,11 @@ def test_config_update_command_coordinates_with_in_flight_writes_and_profile_swi
             await host_module._handle_config_update_command(
                 msg={
                     "req_id": f"req-mem-rb-{replace}",
-                    "config": {"host": 9, "keep": {"a": 99, "host_nested": True}},
+                    "config": {
+                        "host": 9,
+                        "keep": {"a": 99, "host_nested": True},
+                        "temp_section": {"obsolete": 1},
+                    },
                     "mode": "temporary",
                     "replace": replace,
                 },
@@ -3378,6 +3389,8 @@ def test_config_update_command_coordinates_with_in_flight_writes_and_profile_swi
             expected_rebased = {
                 "base": 1,
                 "keep": {"a": 1, "b": 20, "c": 3},
+                "temp_section": {"enabled": True},
+                "scalar_sec": {"ok": True},
                 "timer": 3,
                 "timer2": 4,
             }
@@ -3867,5 +3880,83 @@ def test_config_update_command_coordinates_with_in_flight_writes_and_profile_swi
         assert ctx_commit._effective_config_uncertain is False
         assert instance_commit.refreshed[-1] == {"base": 1, "saved": 9}
         assert getattr(ctx_commit, "_non_persisted_host_lineage", None) is None
+
+        # 19f. Caller mutating updates/config dict while queued behind _config_write_lock must not
+        #      cause RPC payload to diverge from optimistic and rebased snapshots.
+        ctx_snap = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "demo_snapshot_isolation" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance_snap = _RecordingInstance()
+        ctx_snap._instance = instance_snap
+        ctx_snap._set_effective_config_cache({"base": 1})
+
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        seen_rpcs: list[tuple[str, dict[str, object]]] = []
+
+        async def _snap_rpc(
+            *,
+            request_type: str,
+            request_data: dict[str, object],
+            **_kwargs: object,
+        ) -> dict[str, object]:
+            if request_type == "PLUGIN_CONFIG_UPDATE":
+                updates_arg = request_data["updates"]
+                assert isinstance(updates_arg, dict)
+                seen_rpcs.append((request_type, dict(updates_arg)))
+                if "first" in updates_arg:
+                    first_started.set()
+                    await release_first.wait()
+                    return {"success": True, "persisted": True, "config": {"base": 1, "first": 1}}
+                return {"success": True, "persisted": False, "config": {}}
+            if request_type == "PLUGIN_CONFIG_REPLACE":
+                cfg_arg = request_data["config"]
+                assert isinstance(cfg_arg, dict)
+                seen_rpcs.append((request_type, dict(cfg_arg)))
+                return {"success": True, "persisted": True, "config": dict(cfg_arg)}
+            raise AssertionError(f"Unexpected RPC: {request_type}")
+
+        ctx_snap._get_local_config_payload = _base_local_payload  # type: ignore[method-assign]
+        ctx_snap._send_request_and_wait_async = _snap_rpc  # type: ignore[method-assign]
+
+        first_task = asyncio.create_task(ctx_snap.update_own_config({"first": 1}))
+        queued_update: asyncio.Task[dict[str, object]] | None = None
+        queued_replace: asyncio.Task[dict[str, object]] | None = None
+        try:
+            await _wait_for_checkpoint_or_task_failure(first_started, first_task)
+            mutable_updates: dict[str, object] = {"timer": 3}
+            queued_update = asyncio.create_task(ctx_snap.update_own_config(mutable_updates))
+            mutable_cfg: dict[str, object] = {"base": 1, "mode": "orig"}
+            queued_replace = asyncio.create_task(ctx_snap.replace_own_config(mutable_cfg))
+            await asyncio.sleep(0)
+            mutable_updates["timer"] = 99
+            mutable_cfg["mode"] = "mutated"
+
+            release_first.set()
+            await first_task
+            res_upd = await queued_update
+            assert res_upd["persisted"] is False
+            assert res_upd["config"] == {"base": 1, "first": 1, "timer": 3}
+            res_rep = await queued_replace
+            assert res_rep["config"] == {"base": 1, "mode": "orig"}
+            assert seen_rpcs == [
+                ("PLUGIN_CONFIG_UPDATE", {"first": 1}),
+                ("PLUGIN_CONFIG_UPDATE", {"timer": 3}),
+                ("PLUGIN_CONFIG_REPLACE", {"base": 1, "mode": "orig"}),
+            ]
+            assert ctx_snap._effective_config == {"base": 1, "mode": "orig"}
+            assert instance_snap.refreshed[-1] == {"base": 1, "mode": "orig"}
+        finally:
+            release_first.set()
+            for pending in (first_task, queued_update, queued_replace):
+                if pending is not None and not pending.done():
+                    pending.cancel()
+            await asyncio.gather(
+                *(t for t in (first_task, queued_update, queued_replace) if t is not None),
+                return_exceptions=True,
+            )
 
     asyncio.run(_case_non_persisted_writes_rebase_on_host_rollback())

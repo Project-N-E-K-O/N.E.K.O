@@ -1245,19 +1245,20 @@ class PluginContext:
                     }
                     continue
                 current = merged.get(key)
-                if isinstance(current, Mapping):
-                    current_mapping = {
+                current_mapping = (
+                    {
                         nested_key: nested_value
                         for nested_key, nested_value in current.items()
                         if isinstance(nested_key, str)
                     }
-                    merged[key] = (
-                        PluginContext._merge_config_copy(current_mapping, value_mapping)
-                        if value_mapping
-                        else {}
-                    )
-                else:
-                    merged[key] = copy.deepcopy(value_mapping)
+                    if isinstance(current, Mapping)
+                    else {}
+                )
+                merged[key] = (
+                    PluginContext._merge_config_copy(current_mapping, value_mapping)
+                    if value_mapping
+                    else {}
+                )
             else:
                 merged[key] = copy.deepcopy(value)
         return merged
@@ -2924,7 +2925,7 @@ class PluginContext:
                     request_type="PLUGIN_CONFIG_UPDATE",
                     request_data={
                         "plugin_id": self.plugin_id,
-                        "updates": updates,
+                        "updates": copy.deepcopy(updates_copy),
                         "_request_deadline_monotonic": request_deadline,
                     },
                     timeout=remaining_timeout,
@@ -3100,6 +3101,7 @@ class PluginContext:
     async def replace_own_config(self, config: Dict[str, Any], timeout: float = 10.0) -> Dict[str, Any]:
         if not isinstance(config, dict):
             raise TypeError("config must be a dict")
+        config_copy = copy.deepcopy(config)
         request_timeout = self._normalize_config_timeout(timeout)
         request_deadline = time.monotonic() + request_timeout
         write_lock = self._get_config_write_lock()
@@ -3123,7 +3125,7 @@ class PluginContext:
                     old_lineage if old_lineage is not None else (old_owner_token, [])
                 )
                 has_known_baseline = isinstance(old_effective_config, dict)
-                optimistic_config = copy.deepcopy(config)
+                optimistic_config = copy.deepcopy(config_copy)
                 write_gen = self._bump_effective_config_gen()
                 self._in_flight_write_base_owner_token = in_flight_root_token
                 if has_known_baseline:
@@ -3142,7 +3144,7 @@ class PluginContext:
                     request_type="PLUGIN_CONFIG_REPLACE",
                     request_data={
                         "plugin_id": self.plugin_id,
-                        "config": config,
+                        "config": copy.deepcopy(config_copy),
                         "_request_deadline_monotonic": request_deadline,
                     },
                     timeout=remaining_timeout,
