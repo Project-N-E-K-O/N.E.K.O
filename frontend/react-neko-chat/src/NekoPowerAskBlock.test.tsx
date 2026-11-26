@@ -366,6 +366,11 @@ describe('the question above the composer of the compact chat', () => {
     expect(fireEvent.keyDown(input, { key: 'Enter' })).toBe(true);
     fireEvent.submit(input.closest('form') as HTMLFormElement);
     expect(shown.given.length).toBe(1);
+    // Nor is it kept from sending for good where the end of a word is never told: the line was left.
+    fireEvent.compositionStart(input);
+    fireEvent.blur(input);
+    fireEvent.submit(input.closest('form') as HTMLFormElement);
+    expect(shown.given.length).toBe(2);
   });
 
   it('says which folder a command is to be run in, where it names one', () => {

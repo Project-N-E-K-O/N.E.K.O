@@ -628,8 +628,10 @@
             if (!inChat(api, card.message.id)) api.appendMessage(card.message);
             return;
         }
-        // Another question of the same task: the last one is over.
-        if (card) close(taskId);
+        // Another question of the same task: the last one is over. That one alone: closing all
+        // that the task asked would take along the very one that is shown here, where its answer
+        // is on its way.
+        if (card) close(taskId, card.questionId);
         var sent = flying.get(taskId + ':' + shown.id);
         if (sent) {
             open.set(taskId, sent);
@@ -819,8 +821,11 @@
                 // what is not known once it is shown again, and is looked into from then.
                 var there = host();
                 if (there && inChat(there, card.message.id)) {
-                    // The chat could not take it out, and closed it where it stood: it stays so.
+                    // The chat could not take it out, and closed it where it stood: it stays so,
+                    // says what is not known of its answer, and is not shown anew beside itself.
                     flying.delete(flight);
+                    setOver(card.questionId);
+                    patch(card, { notice: word('goneUnsure') });
                     return;
                 }
                 card.looking = true;

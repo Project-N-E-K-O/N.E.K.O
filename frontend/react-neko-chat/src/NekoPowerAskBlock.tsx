@@ -141,8 +141,11 @@ export default function NekoPowerAskBlock({ block, message, interactive, onActio
     }
     if (drafts.size > 50) drafts.delete(drafts.keys().next().value as string);
   }, [draftKey, block.state, reply, picked]);
-  // Whether a word is being composed in the line (an input method is at work).
+  // Whether a word is being composed in the line (an input method is at work). Not for good where
+  // its end is never told (the line was disabled or left meanwhile): Enter and "send" would do
+  // nothing from then on.
   const composing = useRef(false);
+  useEffect(() => { composing.current = false; }, [block.state]);
   const [wholeOpen, setWholeOpen] = useState(false);
   const [settling, setSettling] = useState(settle);
   useEffect(() => {
@@ -277,6 +280,7 @@ export default function NekoPowerAskBlock({ block, message, interactive, onActio
             onChange={event => setReply(event.target.value)}
             onCompositionStart={() => { composing.current = true; }}
             onCompositionEnd={() => { composing.current = false; }}
+            onBlur={() => { composing.current = false; }}
             // Words alone are no answer to a request for approval (they would read as a refusal):
             // there the line only goes along with a button. And the Enter that picks a word being
             // composed (Chinese, Japanese) is no Enter of the form: it would send what is half typed.
