@@ -126,6 +126,41 @@ def test_every_prompt_language_has_its_own_sentence(table):
     assert len({table[key] for key in PROMPT_KEYS}) == len(PROMPT_KEYS)
 
 
+# What each language calls the task tools, as SESSION_INIT_PROMPT_AGENT does.
+TASK_TOOLS = {
+    "zh": "任务工具", "zh-TW": "任務工具", "en": "task tool", "ja": "タスクツール",
+    "ko": "작업 도구", "ru": "инструмент", "es": "herramientas de tareas", "pt": "ferramentas de tarefas",
+}
+# The clause that ends the rule once task tools appear (NekoPower switched on mid-session).
+ONCE_THEY_APPEAR = {
+    "zh": "之后有了任务工具", "zh-TW": "之後有了任務工具", "en": "If task tools appear later",
+    "ja": "あとでタスクツールが使えるようになったら", "ko": "나중에 작업 도구가 생기면",
+    "ru": "Если инструменты задач появятся позже", "es": "Si más adelante aparecen herramientas de tareas",
+    "pt": "Se mais tarde aparecerem ferramentas de tarefas",
+}
+# Web search, as the first wording named it: Gemini Live searches on its own whatever NekoPower is.
+WEB_SEARCH = {
+    "zh": "上网查", "zh-TW": "上網查", "en": "online", "ja": "ネットで調べ",
+    "ko": "인터넷 검색", "ru": "поискать в интернете", "es": "buscar en internet", "pt": "pesquisar na internet",
+}
+
+
+@pytest.mark.parametrize("table", (SESSION_INIT_NO_NEKOPOWER, SESSION_INIT_NEKOPOWER_NO_CAPABILITY))
+@pytest.mark.parametrize("key", PROMPT_KEYS)
+def test_the_rule_holds_while_she_has_no_task_tools_and_ends_once_she_has(table, key):
+    # Switching NekoPower on mid-session brings the task tools but leaves this opening as it
+    # was: the sentence says "without task tools ..." and "once there are task tools, use them".
+    assert TASK_TOOLS[key] in table[key], key
+    assert TASK_TOOLS[key] in SESSION_INIT_PROMPT_AGENT[key], key
+    assert ONCE_THEY_APPEAR[key] in table[key], key
+
+
+@pytest.mark.parametrize("table", (SESSION_INIT_NO_NEKOPOWER, SESSION_INIT_NEKOPOWER_NO_CAPABILITY))
+@pytest.mark.parametrize("key", PROMPT_KEYS)
+def test_web_search_is_not_ruled_out(table, key):
+    assert WEB_SEARCH[key] not in table[key], key
+
+
 @pytest.mark.parametrize("key", PROMPT_KEYS)
 def test_the_sentences_name_the_switches_as_the_panel_does(key):
     toggles = json.loads((LOCALES_DIR / f"{LOCALE_FILES[key]}.json").read_text(encoding="utf-8"))["settings"]["toggles"]
