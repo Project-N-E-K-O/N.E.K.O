@@ -4781,7 +4781,8 @@
             "failed": "Not delivered. Please try again.",
             "unsure": "Not sure yet whether it was delivered. Check again in a moment.",
             "goneUnsure": "This question is over; whether this answer was the one that counted is not known.",
-            "wideBlocked": "Not all of it can be shown here: give a wider approval in the NekoPower window"
+            "wideBlocked": "Not all of it can be shown here: give a wider approval in the NekoPower window",
+            "cwd": "In folder"
         },
         "taskHud": {
             "tasksTab": "Tasks",

@@ -11133,6 +11133,7 @@ body.avatar-tool-editor-page .avatar-tool-workspace-settings {
 .nekopower-ask-head span { opacity: .7; overflow-wrap: anywhere; }
 .nekopower-ask-answered .nekopower-ask-head strong, .nekopower-ask-closed .nekopower-ask-head strong { color: inherit; opacity: .7; }
 .nekopower-ask-line { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.nekopower-ask-cwd { margin: 0; font-size: .85em; opacity: .85; overflow-wrap: anywhere; }
 .nekopower-ask-bubble .nekopower-ask-line { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; }
 .nekopower-ask-bubble .nekopower-ask-line.nekopower-ask-line-whole { display: block; -webkit-line-clamp: unset; overflow: visible; }
 .nekopower-ask-question { display: grid; gap: 6px; }

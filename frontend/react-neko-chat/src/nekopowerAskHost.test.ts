@@ -277,6 +277,17 @@ describe('the question inside a card of the task HUD', () => {
     expect((draw(bare).querySelector('.task-ask-line') as HTMLElement).style.overflow).toBe('');
   });
 
+  it('says which folder a command is to be run in, where it names one', () => {
+    const elsewhere = { ...permission, id: 'q6', detail: { command: 'rm -rf dist', cwd: 'D:/another/project' }, line: 'run the command rm -rf dist' };
+    const where = draw(elsewhere).querySelector('.task-ask-cwd') as HTMLElement;
+    expect(where.textContent).toBe('在目录 D:/another/project');
+    // All of it, however long: it is part of what is approved.
+    expect(where.style.overflow).toBe('');
+    // None where the command names none, nor for what is no approval.
+    expect(draw(permission).querySelector('.task-ask-cwd')).toBeNull();
+    expect(draw({ ...confirmation, detail: { cwd: 'D:/x' } }).querySelector('.task-ask-cwd')).toBeNull();
+  });
+
   it('has no line for a sentence where a plugin does the work, and holds back after taking another question\'s place', () => {
     vi.useFakeTimers();
     const box = draw(permission, { noNote: true, settle: true });

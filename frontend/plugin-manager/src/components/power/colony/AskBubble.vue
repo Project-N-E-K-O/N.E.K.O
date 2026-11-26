@@ -5,6 +5,8 @@
     @pointerdown.stop @pointerup.stop @keydown.stop
   >
     <p class="line" :title="whole" data-testid="bubble-asked">{{ line }}</p>
+    <!-- The folder a command is to be run in, where it names one: part of what is approved, and never cut short. -->
+    <p v-if="cwd" class="cwd" data-testid="bubble-cwd">{{ t('power.ask.facts.cwd') }} {{ cwd }}</p>
     <div class="picks">
       <!-- A request for approval: once, or not. The wider approvals are given where all of what it would do is shown. -->
       <template v-if="shape === 'permission'">
@@ -75,6 +77,7 @@ const quickQuestion = computed(() => {
 })
 const line = computed(() => askSummary(props.ask, t, te, 72))
 const whole = computed(() => askWhole(props.ask)?.text ?? askLines(props.ask, t, te).join('\n'))
+const cwd = computed(() => (shape.value === 'permission' && typeof props.ask.detail?.cwd === 'string' ? props.ask.detail.cwd.trim() : ''))
 
 // Another question took this one's place a moment ago: its buttons wait, so that a press on
 // its way to the last one does not answer it.
@@ -118,6 +121,7 @@ onBeforeUnmount(() => { if (settled) clearTimeout(settled) })
 .ask-bubble.below { bottom: auto; top: 0; }
 .ask-bubble.below::after { bottom: auto; top: -6px; border: 0; border-left: 1.5px solid var(--el-color-warning); border-top: 1.5px solid var(--el-color-warning); }
 .line { margin: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+.cwd { margin: 0; font-size: 11px; opacity: 0.85; overflow-wrap: anywhere; }
 .picks { display: flex; flex-wrap: wrap; gap: 4px; }
 .pick { max-width: 100%; padding: 2px 8px; font: inherit; font-size: 11px; line-height: 1.6; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--el-color-primary); border: 1px solid var(--el-color-primary); border-radius: 6px; background: var(--el-bg-color); }
 .pick:hover:not(:disabled) { background: var(--el-color-primary-light-9); }

@@ -350,6 +350,20 @@ describe('the question above the composer of the compact chat', () => {
     expect(input().value).toBe('on its way');
   });
 
+  it('says which folder a command is to be run in, where it names one', () => {
+    const elsewhere = { ...permission, detail: { command: 'rm -rf dist', cwd: 'D:/another/project' } };
+    for (const presentation of ['card', 'bubble'] as const) {
+      const shown = show(ask(elsewhere), presentation);
+      expect(shown.at('[data-ask-cwd]').textContent).toContain('D:/another/project');
+      shown.unmount();
+    }
+    // None where the command names none, nor for what is no approval.
+    const plain = show(ask(permission));
+    expect(plain.at('[data-ask-cwd]')).toBeNull();
+    plain.unmount();
+    expect(show(ask({ ...confirmation, detail: { cwd: 'D:/x' } })).at('[data-ask-cwd]')).toBeNull();
+  });
+
   it('draws what an approval is asked for whole above the composer where nothing there opens all of it', () => {
     const line = (question: Record<string, unknown>) => {
       const shown = show(ask(question), 'bubble');

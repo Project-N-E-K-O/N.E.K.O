@@ -337,6 +337,19 @@ describe('the card above the head of a familiar that waits', () => {
   })
 })
 
+describe('the folder a command is to be run in', () => {
+  it('is said on the card above a head, where the command names one', async () => {
+    const elsewhere = permission({ detail: { command: 'rm -rf dist', cwd: 'D:/another/project' } })
+    const { container } = await mount(AskBubble, { ask: elsewhere, name: 'Tabby', busy: '', error: '' })
+    expect(container.querySelector('[data-testid="bubble-cwd"]')?.textContent).toContain('D:/another/project')
+    // None where it names none, nor for what is no approval.
+    const plain = await mount(AskBubble, { ask: permission(), name: 'Tabby', busy: '', error: '' })
+    expect(plain.container.querySelector('[data-testid="bubble-cwd"]')).toBeNull()
+    const other = await mount(AskBubble, { ask: { ...confirmation, detail: { cwd: 'D:/x' } }, name: 'Tabby', busy: '', error: '' })
+    expect(other.container.querySelector('[data-testid="bubble-cwd"]')).toBeNull()
+  })
+})
+
 describe('where the cards are shown', () => {
   const member = (over: Partial<ColonyMember>): ColonyMember => ({
     id: 's1', name: 'Tabby', avatar: 'worker', leader: false, parent: null, look: 'waiting_user', said: '', hidden: false, ...over,

@@ -97,6 +97,9 @@ export function askView(question: Record<string, unknown>) {
     shape,
     line,
     whole,
+    // The folder a command is to be run in, where it names one: the same command does something
+    // else in another project, so it is said beside what is approved.
+    cwd: shape === 'permission' ? text(detail.cwd) : '',
     // The line that says it leaves part of the command or path out.
     lineCut: shape === 'permission' && lineCut,
     // Whether all of what it would do has to be opened before a wider approval is offered.
@@ -215,8 +218,11 @@ export default function NekoPowerAskBlock({ block, message, interactive, onActio
           ) : null}
         </div>
       )) : (
-        // What an approval is asked for is drawn whole where nothing here opens all of it.
-        <p className={`nekopower-ask-line${view.shape === 'permission' && !(needsWhole && view.whole) ? ' nekopower-ask-line-whole' : ''}`}>{view.line}</p>
+        <>
+          {/* What an approval is asked for is drawn whole where nothing here opens all of it. */}
+          <p className={`nekopower-ask-line${view.shape === 'permission' && !(needsWhole && view.whole) ? ' nekopower-ask-line-whole' : ''}`}>{view.line}</p>
+          {view.cwd ? <p className="nekopower-ask-cwd" data-ask-cwd="true">{i18n('agent.ask.cwd', 'In folder')} {view.cwd}</p> : null}
+        </>
       )}
 
       {open && view.shape === 'permission' ? (

@@ -65,7 +65,8 @@
         failed: ['agent.ask.failed', '没送到，再试一次吧。'],
         unsure: ['agent.ask.unsure', '还不确定送到没有，过一会儿再看。'],
         goneUnsure: ['agent.ask.goneUnsure', '这个问题已经结束了；这次的回答有没有算上，不确定。'],
-        wideBlocked: ['agent.ask.wideBlocked', '这里看不到完整内容，「始终允许」这类选项请到喵能力界面里选']
+        wideBlocked: ['agent.ask.wideBlocked', '这里看不到完整内容，「始终允许」这类选项请到喵能力界面里选'],
+        cwd: ['agent.ask.cwd', '在目录']
     };
     function word(name, vars) { return tr(WORDS[name][0], WORDS[name][1], vars); }
 
@@ -112,6 +113,9 @@
             shape: shape,
             line: line,
             whole: whole,
+            // The folder a command is to be run in, where it names one: the same command does
+            // something else in another project, so it is said beside what is approved.
+            cwd: shape === 'permission' ? text(detail.cwd) : '',
             // Whether all of what it would do has to be opened before a wider approval is offered.
             needsWhole: shape === 'permission'
                 && (cut || (Boolean(whole) && (whole.length > GLANCE_CHARS || whole.indexOf('\n') !== -1))),
@@ -382,6 +386,12 @@
             }, shown.line);
             line.className = 'task-ask-line';
             box.appendChild(line);
+            if (shown.cwd) {
+                // Never cut short: it is part of what is approved.
+                var where = el('div', { fontSize: '11px', opacity: '0.85', overflowWrap: 'anywhere' }, word('cwd') + ' ' + shown.cwd);
+                where.className = 'task-ask-cwd';
+                box.appendChild(where);
+            }
         }
 
         if (shown.shape === 'permission') {
