@@ -1100,6 +1100,28 @@ def test_normalized_animation_outputs_count_each_channel_allocation(tmp_path, bu
             validate_vrm_bundle(path, format_limits=FormatLimits(vrm_accessor_bytes=budget))
 
 
+@pytest.mark.parametrize("component,stride,required", [(5121, 12, 112), (5123, 12, 64)])
+def test_normalized_interleaved_animation_counts_the_backing_array(tmp_path, component, stride, required):
+    def graph(data):
+        blob = base64.b64encode(bytes(stride)).decode()
+        data["buffers"] = [{"byteLength": stride, "uri": "data:application/octet-stream;base64," + blob}]
+        data["bufferViews"] = [{"buffer": 0, "byteLength": stride, "byteStride": stride}]
+        data["accessors"] = [
+            {"componentType": 5126, "count": 1, "type": "SCALAR"},
+            {"bufferView": 0, "componentType": component, "normalized": True, "count": 1, "type": "VEC4"},
+        ]
+        data["nodes"].append({})
+        data["animations"] = [{
+            "samplers": [{"input": 0, "output": 1}],
+            "channels": [{"sampler": 0, "target": {"node": node, "path": "rotation"}} for node in range(2)],
+        }]
+
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(change=graph)})
+    validate_vrm_bundle(path, format_limits=FormatLimits(vrm_accessor_bytes=required))
+    with pytest.raises(ModelFormatError, match="^model_accessor_budget_exceeded$"):
+        validate_vrm_bundle(path, format_limits=FormatLimits(vrm_accessor_bytes=required - 1))
+
+
 @pytest.mark.parametrize("targets", [[{"POSITION": 999}], [], ["invalid"]])
 def test_morph_dependencies_are_checked_without_weight_animations(tmp_path, targets):
     """Mesh loading resolves morph accessors even when the model has no animation."""
@@ -1441,7 +1463,8 @@ def test_padded_interleaved_matrix_attributes_share_the_conversion_clone(tmp_pat
 
 
 def mmd_runtime_bytes(kind, *, vertices=3, morph_kinds=(), iterations=(), links=1,
-                      parents=None, link=2, morph_records=None, owners=None, materials=0, grants=None, append_flag=256):
+                      parents=None, link=2, morph_records=None, owners=None, materials=0, grants=None, append_flag=256,
+                      effector=1):
     """Small complete layouts with controllable loader work, no external resources."""
     parents = list(parents) if parents is not None else [-1] * max(3, len(iterations))
     grants = grants or {}
@@ -1454,7 +1477,7 @@ def mmd_runtime_bytes(kind, *, vertices=3, morph_kinds=(), iterations=(), links=
                                            5 if index in grants else 0, 100) + bytes(12)
         raw += struct.pack('<H', len(iterations))
         for owner, count in zip(owners if owners is not None else [0] * len(iterations), iterations):
-            raw += struct.pack('<HHBHf', owner, 1, links, count, 1.0) + struct.pack('<H', link) * links
+            raw += struct.pack('<HHBHf', owner, effector, links, count, 1.0) + struct.pack('<H', link) * links
         raw += struct.pack('<H', len(morph_kinds) + 1)
         raw += bytes(25) + (bytes(20) + struct.pack('<IB', 0, 1)) * len(morph_kinds)
         return raw + struct.pack('<2BI', 0, 0, 0)
@@ -1475,7 +1498,7 @@ def mmd_runtime_bytes(kind, *, vertices=3, morph_kinds=(), iterations=(), links=
         if index in grants:
             raw += struct.pack('<' + bone_code + 'f', grants[index], 1.0)
         if has_ik:
-            raw += struct.pack('<' + bone_code + 'ifi', 1, iterations[index], 1.0, links)
+            raw += struct.pack('<' + bone_code + 'ifi', effector, iterations[index], 1.0, links)
             raw += (struct.pack('<' + bone_code + 'B', link, 1) + bytes(24)) * links
     records = [(kind, ()) for kind in morph_kinds] if morph_records is None else morph_records
     raw += struct.pack('<i', len(records))
@@ -1527,6 +1550,27 @@ def test_mmd_ik_iteration_and_aggregate_work_limits(tmp_path, kind, iterations, 
         assert validate_model_bundle(path).model_format == 'mmd'
     else:
         with pytest.raises(ModelFormatError, match='model_accessor_budget_exceeded'): validate_model_bundle(path)
+
+
+@pytest.mark.parametrize("kind,effector,iterations,owners,accepted", [
+    ("pmx", 1, [1], None, False),
+    ("pmx", -1, [1], None, False),
+    ("pmx", 0, [1], None, True),
+    ("pmd", 1, [1], None, False),
+    ("pmd", 0, [1], None, True),
+    ("pmd", 1, [1, 1], [0, 0], True),
+    ("pmd", 2, [1, 1], [0, 0], False),
+    ("pmd", 1, [1], [1], True),
+])
+def test_mmd_ik_effectors_match_the_loader_bone_slots(tmp_path, kind, effector, iterations, owners, accepted):
+    raw = mmd_runtime_bytes(kind, parents=[-1], iterations=iterations, link=0, owners=owners, effector=effector)
+    entry = f"Avatar.{kind}"
+    path = make_native_bundle(tmp_path, kind="mmd", entry=entry, files={entry: raw})
+    if accepted:
+        assert validate_model_bundle(path).model_format == "mmd"
+    else:
+        with pytest.raises(ModelFormatError, match="^invalid_model_structure$"):
+            validate_model_bundle(path)
 
 
 @pytest.mark.parametrize('iterations', [-1, 2147483647])

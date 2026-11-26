@@ -629,13 +629,14 @@ def _vrm(resources: _Resources) -> None:
     light_extension = extensions.get("KHR_lights_punctual", {})
     _require(isinstance(light_extension, dict) and isinstance(light_extension.get("lights", []), list), entry)
     lights = light_extension.get("lights", [])
+    component_sizes = {5120: 1, 5121: 1, 5122: 2, 5123: 2, 5125: 4, 5126: 4}
     accessor_clones = []
     for accessor in accessors:
         _require(isinstance(accessor, dict), entry)
         count = _uint(accessor.get("count"), entry)
         _require(count > 0, entry)
         component_type = _uint(accessor.get("componentType"), entry)
-        component = {5120: 1, 5121: 1, 5122: 2, 5123: 2, 5125: 4, 5126: 4}.get(component_type)
+        component = component_sizes.get(component_type)
         shape = accessor.get("type")
         _require(component is not None and shape in ("SCALAR", "VEC2", "VEC3", "VEC4", "MAT2", "MAT3", "MAT4"), entry)
         if shape.startswith("MAT"):
@@ -824,9 +825,10 @@ def _vrm(resources: _Resources) -> None:
                           and output.get("normalized") is True)
             _require(floating or normalized, entry)
             if normalized and "node" in target:
-                # GLTFLoader._getArrayFromAccessor creates a new Float32Array
-                # per channel, even when its output accessor is shared.
-                allocated += output["count"] * (4 if path == "rotation" else 1) * 4
+                # GLTFLoader converts the whole backing array per channel,
+                # including any interleaved padding, even for shared outputs.
+                backing_bytes, _ = accessor_clones[sample["output"]]
+                allocated += (backing_bytes // component_sizes[output["componentType"]]) * 4
                 _require(allocated <= resources.limits.vrm_accessor_bytes, entry, "model_accessor_budget_exceeded")
             cubic = sample.get("interpolation", "LINEAR") == "CUBICSPLINE"
             _require(not cubic or sample_input["count"] >= 2, entry)
@@ -1100,7 +1102,8 @@ def _pmx(resources: _Resources, reader: _MmdReader) -> None:
         if flags & 8192:
             reader.skip(4)
         if flags & 32:
-            reader.skip(bone)
+            effector = reader.index(bone)
+            _require(0 <= effector < bones, path)
             iterations = reader.scalar("i")
             reader.skip(4)
             links = reader.count(minimum=bone + 1)
@@ -1243,10 +1246,12 @@ def _pmd(resources: _Resources, reader: _MmdReader) -> None:
             grants[index] = tail
         reader.skip(14)
     ik_work = 0
+    max_ik_target = -1
     for _ in range(reader.count("H", 11)):
         owner = reader.scalar("H")
-        reader.skip(2)
+        target = reader.scalar("H")
         if owner < bones:
+            max_ik_target = max(max_ik_target, target)
             ik_owners[owner] = ik_owners.get(owner, 0) + 1
         links = reader.scalar("B")
         iterations = reader.scalar("H")
@@ -1267,6 +1272,7 @@ def _pmd(resources: _Resources, reader: _MmdReader) -> None:
             if owner in grants:
                 grants[len(parents)] = grants[owner]
             parents.append(owner)
+    _require(max_ik_target < len(parents), path)
     _require(all(0 <= parent < len(parents) for parent in grants.values()), path)
     _mmd_ik_budget(resources, parents, ik_weights, strict_parents=True)
     _mmd_grant_depth(resources, grants)
