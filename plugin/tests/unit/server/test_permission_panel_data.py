@@ -359,6 +359,7 @@ def test_a_failing_observer_does_not_break_recording(monkeypatch):
 MANIFEST = """
 [plugin]
 id = "{pid}"
+version = "1.0"
 
 [permissions.require]
 "system.network:connect" = {{ reason = "download", hosts = ["api.example.com"] }}
@@ -1312,8 +1313,13 @@ def test_a_short_operation_is_waited_for(env, monkeypatch, view):
 
 
 def test_one_busy_read_ends_the_wait_for_the_rest_of_the_request(env, monkeypatch):
-    budget = permission_panel._LockBudget(0.0)
-    assert budget.wait() == permission_panel._MIN_LOCK_WAIT  # a spent budget still waits briefly
+    budget = permission_panel._LockBudget(0.01)
+    assert budget.wait() == permission_panel._MIN_LOCK_WAIT  # a short rest still waits briefly
+    budget.spend(0.2)
+    assert budget.wait() == 0.0  # spent: no new wait
+    budget = permission_panel._LockBudget(1.0)
+    budget.spend(0.4)
+    assert budget.wait() == pytest.approx(0.6)
     monkeypatch.setattr(permission_panel, "MANIFEST_LOCK_WAIT", 0.05)
     monkeypatch.setattr(permission_panel, "_MIN_LOCK_WAIT", 0.05)
     for pid in ("a", "b", "c"):
@@ -1379,11 +1385,111 @@ async def test_a_decision_reads_the_manifest_under_its_own_lock(env, short_wait)
 
 
 def test_anytime_is_not_allowed_on_an_unread_declaration(env, short_wait):
-    from plugin.server.application.plugins.operation_lock import PluginOperationBusy
+    from plugin.server.domain.errors import ServerDomainError
 
     _weather(env)
-    with _operation_running_elsewhere(), pytest.raises(PluginOperationBusy):
+    with _operation_running_elsewhere(), pytest.raises(ServerDomainError) as caught:
         permission_panel.check_condition_allowed("weather", CONNECT, "granted", "anytime")
+    assert caught.value.code == "PLUGIN_MANIFEST_UNAVAILABLE" and caught.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_anytime_is_refused_before_saving_when_the_manifest_cannot_be_opened(env, monkeypatch):
+    env.plugin("open", manifest="[plugin]\nid='open'\nversion='1.0'\n", report=_report())
+    real_open = Path.open
+
+    def failing_open(self, *args, **kwargs):
+        if self.name == "plugin.toml":
+            raise PermissionError("in use")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", failing_open)
+    response = await _call("PUT", f"/plugin-permissions/plugins/open/permissions/{SPAWN}",
+                           {"state": "granted", "condition": "anytime"})
+    assert response.status_code == 503, response.text
+    assert response.json()["detail"]["code"] == "PLUGIN_MANIFEST_UNAVAILABLE"
+    assert env.store.read("open") == {}
+    # The views say so instead of reading "declares nothing".
+    assert permission_panel.pending(index=env.index)["incomplete"] == ["open"]
+
+
+@pytest.mark.parametrize("shape", ["missing", "directory"])
+def test_no_manifest_file_is_an_empty_declaration(tmp_path, shape):
+    if shape == "directory":
+        (tmp_path / "plugin.toml").mkdir()
+    assert permission_panel._load_manifest(tmp_path) == {}
+
+
+@pytest.mark.parametrize("step", ["stat", "open"])
+def test_a_manifest_that_cannot_be_read_now_is_not_an_empty_one(tmp_path, monkeypatch, step):
+    (tmp_path / "plugin.toml").write_text("[plugin]\nid='x'\n", encoding="utf-8")
+    real = getattr(Path, step)
+
+    def failing(self, *args, **kwargs):
+        if self.name == "plugin.toml":
+            raise PermissionError("in use")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, step, failing)
+    assert permission_panel._load_manifest(tmp_path) is None
+
+
+@pytest.mark.parametrize("content", [b"[plugin\nid=", b"\xff\xfe[plugin]"])
+def test_a_damaged_manifest_is_not_an_empty_one(tmp_path, content):
+    (tmp_path / "plugin.toml").write_bytes(content)
+    assert permission_panel._load_manifest(tmp_path) is None
+
+
+def test_an_oversized_manifest_is_not_an_empty_one(tmp_path, monkeypatch):
+    monkeypatch.setattr(permission_panel, "_MAX_MANIFEST_BYTES", 4)
+    (tmp_path / "plugin.toml").write_text("[plugin]\nid='x'\n", encoding="utf-8")
+    assert permission_panel._load_manifest(tmp_path) is None
+
+
+def test_time_waited_for_the_lock_is_taken_from_the_budget(env, monkeypatch):
+    monkeypatch.setattr(permission_panel, "MANIFEST_LOCK_WAIT", 5.0)
+    _weather(env)
+    budget = permission_panel._LockBudget(5.0)
+    with _operation_ending_soon(0.2):
+        _manifest, status = permission_panel._read_manifest(
+            Path(env.metas["weather"]["config_path"]).parent, "1.0", budget
+        )
+    assert status == "read" and budget.wait() < 4.9
+
+
+def test_views_answer_when_the_lock_file_cannot_be_opened(env, monkeypatch):
+    _weather(env)
+    assert permission_panel.pending(index=env.index)["to_confirm"]  # read once
+    blocker = env.tmp_path / "not-a-directory"
+    blocker.write_text("", encoding="utf-8")
+    monkeypatch.setenv("NEKO_PLUGIN_OPERATION_LOCK_PATH", str(blocker / ".plugin-operation.lock"))
+    env.plugin("fresh", report=_report())
+    result = permission_panel.pending(index=env.index)
+    assert [row["plugin_id"] for row in result["to_confirm"]] == ["weather"]  # its copy read last
+    assert result["incomplete"] == ["fresh"]
+
+
+def test_the_copy_is_kept_under_the_version_the_file_states(env, short_wait):
+    _weather(env)
+    env.metas["weather"]["version"] = "0.9"  # the registry has not caught up with an update yet
+    permission_panel.pending(index=env.index)
+    with _operation_running_elsewhere():
+        assert permission_panel.pending(index=env.index)["incomplete"] == ["weather"]
+    env.metas["weather"]["version"] = "1.0"
+    with _operation_running_elsewhere():
+        assert permission_panel.pending(index=env.index)["incomplete"] == []
+
+
+def test_a_changed_response_does_not_change_the_copy(env, short_wait):
+    _weather(env)
+    permission_panel.plugin_panel("weather", index=env.index)["developer"]["manifest_permissions"].clear()
+    with _operation_running_elsewhere():
+        panel = permission_panel.plugin_panel("weather", index=env.index)
+    assert panel["manifest"] == "cached"
+    assert panel["developer"]["manifest_permissions"]["require"]
+    panel["developer"]["manifest_permissions"].clear()
+    with _operation_running_elsewhere():
+        assert permission_panel.plugin_panel("weather", index=env.index)["developer"]["manifest_permissions"]
 
 
 def test_usage_tracked_is_in_the_privacy_group_items(env):
@@ -1393,8 +1499,10 @@ def test_usage_tracked_is_in_the_privacy_group_items(env):
     detail = permission_panel.privacy_group("memory", index=env.index)
     items = {row["plugin_id"]: row["items"][0] for row in detail["plugins"]}
     assert items["weather"]["usage_tracked"] is True and items["gone"]["usage_tracked"] is True
-    assert {row["usage_tracked"] for row in permission_panel.privacy_group("models", index=env.index)["plugins"]
-            for row in row["items"]} <= {False}
+    env.plugin("writer", manifest='[plugin]\nid="writer"\n[permissions.ask]\n"plugin_sdk.models:invoke" = {{ reason = "x" }}\n',
+               report=_report())
+    models = {row["plugin_id"]: row for row in permission_panel.privacy_group("models", index=env.index)["plugins"]}
+    assert [(item["permission"], item["usage_tracked"]) for item in models["writer"]["items"]] == [(MODELS, False)]
 
 
 @pytest.mark.asyncio

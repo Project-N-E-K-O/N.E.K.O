@@ -13,6 +13,8 @@ translations. Declared reasons are passed on as written by the plugin.
 
 from __future__ import annotations
 
+import copy
+import stat
 import threading
 import time
 import tomllib
@@ -74,7 +76,8 @@ from plugin.server.infrastructure.plugin_permissions import (
 # ``incomplete`` in the all-plugin views).
 MANIFEST_READ = "read"
 MANIFEST_CACHED = "cached"  # an operation held the lock: the copy read last
-MANIFEST_UNAVAILABLE = "unavailable"  # an operation held the lock, no usable copy
+MANIFEST_UNAVAILABLE = "unavailable"  # busy without a usable copy, or unreadable
+MANIFEST_UNAVAILABLE_CODE = "PLUGIN_MANIFEST_UNAVAILABLE"
 # Reconciliation of the declaration with the scan, one per permission row.
 RECONCILE_MATCHED = "matched"  # declared and found
 RECONCILE_UNDECLARED = "undeclared"  # found, not declared
@@ -172,22 +175,33 @@ def _plugin_metas() -> dict[str, dict]:
 
 
 class _LockBudget:
-    """How long one request still waits for running plugin operations.
+    """How long one request still waits for running plugin operations: the
+    time spent waiting for the lock adds up to at most ``seconds`` plus one
+    ``_MIN_LOCK_WAIT``.
 
-    Every read may wait at least ``_MIN_LOCK_WAIT``, so a read that finds
-    another view's short read holding the lock is not marked unavailable;
-    once a read found an operation holding it past its wait, the rest of the
-    request does not wait at all.
+    While the budget lasts, every read may wait at least ``_MIN_LOCK_WAIT``,
+    so a read that finds another view's short read holding the lock is not
+    marked unavailable. Once a read found an operation holding it past its
+    wait, the rest of the request does not wait at all.
     """
 
     def __init__(self, seconds: float) -> None:
-        self._deadline = time.monotonic() + seconds
+        self._left = seconds
         self.blocked = False
 
     def wait(self) -> float:
-        if self.blocked:
+        if self.blocked or self._left <= 0:
             return 0.0
-        return max(_MIN_LOCK_WAIT, self._deadline - time.monotonic())
+        return max(_MIN_LOCK_WAIT, self._left)
+
+    def spend(self, seconds: float) -> None:
+        self._left -= seconds
+
+
+def _manifest_version(manifest: dict) -> str:
+    """The version the plugin registry takes from this manifest."""
+    plugin = manifest.get("plugin")
+    return str((plugin if isinstance(plugin, dict) else {}).get("version", "0.1.0") or "")
 
 
 def _read_manifest(root: Path | None, version: str, budget: _LockBudget | None = None) -> tuple[dict, str]:
@@ -197,42 +211,70 @@ def _read_manifest(root: Path | None, version: str, budget: _LockBudget | None =
     plugin directory, which fails on Windows while a file in it is open.
     Inside the owning operation the held lock is reused. Otherwise the lock
     is waited for as ``budget`` allows (none: no wait).
-    While an operation keeps it, the copy read last for the same plugin
-    version is served without touching the file, else the manifest is
+    While an operation keeps it, or the lock file cannot be opened, the copy
+    read last for plugin ``version`` is served without touching the file.
+    Otherwise, and when the file exists but cannot be read, the manifest is
     unavailable (``{}``, which callers must not read as "declares nothing").
+    The caller gets its own copy.
     """
     if root is None:
         return {}, MANIFEST_READ
     key = str(root)
     wait = 0.0 if budget is None else budget.wait()
+    started = time.monotonic()
     try:
         with hold_plugin_operation_file_lock(None, timeout=wait):
+            if budget is not None:
+                budget.spend(time.monotonic() - started)
             manifest = _load_manifest(root)
-    except PluginOperationBusy:
+            if manifest is None:
+                return {}, MANIFEST_UNAVAILABLE
+            # Published while the lock is held, so reads publish in the order
+            # they read; under the version the read file states (an update
+            # installs into the same directory).
+            with _manifest_cache_lock:
+                _manifest_cache.pop(key, None)
+                _manifest_cache[key] = (_manifest_version(manifest), copy.deepcopy(manifest))
+                while len(_manifest_cache) > _MANIFEST_CACHE_SIZE:
+                    _manifest_cache.pop(next(iter(_manifest_cache)))
+            return manifest, MANIFEST_READ
+    except (PluginOperationBusy, OSError):
+        # OSError: the lock file itself could not be opened.
         if budget is not None:
+            budget.spend(time.monotonic() - started)
             budget.blocked = True
         with _manifest_cache_lock:
             cached = _manifest_cache.get(key)
         if cached is not None and cached[0] == version:
-            return cached[1], MANIFEST_CACHED
+            return copy.deepcopy(cached[1]), MANIFEST_CACHED
         return {}, MANIFEST_UNAVAILABLE
-    with _manifest_cache_lock:
-        _manifest_cache.pop(key, None)
-        _manifest_cache[key] = (version, manifest)
-        while len(_manifest_cache) > _MANIFEST_CACHE_SIZE:
-            _manifest_cache.pop(next(iter(_manifest_cache)))
-    return manifest, MANIFEST_READ
 
 
-def _load_manifest(root: Path) -> dict:
+def _load_manifest(root: Path) -> dict | None:
+    """``{}`` when there is no manifest file, ``None`` when there is one but
+    it cannot be read or parsed now (a registered plugin's manifest parsed
+    when it was loaded: one that does not is mid-write or damaged, and is
+    not taken as declaring nothing)."""
     path = root / "plugin.toml"
     try:
-        if not path.is_file() or path.stat().st_size > _MAX_MANIFEST_BYTES:
-            return {}
+        info = path.stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return {}
+    except OSError:
+        return None
+    if not stat.S_ISREG(info.st_mode):
+        return {}
+    if info.st_size > _MAX_MANIFEST_BYTES:
+        return None
+    try:
         with path.open("rb") as stream:
             return tomllib.load(stream)
-    except (OSError, tomllib.TOMLDecodeError, UnicodeError):
+    except (FileNotFoundError, NotADirectoryError):
         return {}
+    except OSError:
+        return None
+    except (tomllib.TOMLDecodeError, UnicodeError):
+        return None
 
 
 def _inputs(plugin_id: str, meta: dict, *, verify: bool = False, budget: _LockBudget | None = None) -> _PluginInputs:
@@ -794,8 +836,13 @@ def check_condition_allowed(plugin_id: str, permission: str, state_value: str, c
         Path(config_path).parent if config_path else None, str(meta.get("version") or "")
     )
     if status == MANIFEST_UNAVAILABLE:
-        # Only outside the decision's own operation, which holds the lock.
-        raise PluginOperationBusy()
+        # Never taken as "no declaration": that would allow "any time".
+        raise ServerDomainError(
+            MANIFEST_UNAVAILABLE_CODE,
+            "The plugin's permission declaration could not be read",
+            503,
+            details={"plugin_id": plugin_id, "retryable": True},
+        )
     declarations, _issues = parse_permission_declarations(manifest)
     if declarations.status != "declared":
         return
