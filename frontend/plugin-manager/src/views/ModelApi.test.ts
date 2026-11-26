@@ -138,6 +138,29 @@ describe('Plugin API page', () => {
     expect(api.getModelUsage.mock.calls.length).toBe(before + 1)
     expect(api.getModelUsage.mock.calls.at(-1)?.[0]).toMatchObject({ plugin_id: '示例' })
   })
+  it.each([
+    ['openai_chat', 'https://api.openai.com/v1'],
+    ['anthropic_messages', 'https://api.anthropic.com'],
+  ] as const)('shows the usual address of a %s endpoint where none is typed', async (protocol, address) => {
+    api.listModelSlots.mockResolvedValue({ schema_version: 1, slots: [{ ...structuredClone(saved), protocol, base_url: '' }] })
+    await mount(); await clickText('Edit')
+    expect(input('slot-endpoint').value).toBe('')
+    expect(input('slot-endpoint').placeholder).toBe(address)
+  })
+  it('shows the usual address of the other kind of endpoint once the protocol is changed in the editor', async () => {
+    await mount(); await clickText('Edit')
+    expect(input('slot-endpoint').placeholder).toBe('https://api.openai.com/v1')
+    // The protocol is the select that offers the two of them.
+    const protocol = [...document.querySelectorAll<HTMLElement>('.el-dialog .el-select')].find(select => select.textContent?.includes('OpenAI Chat Completions'))
+    expect(protocol, 'the protocol select').toBeTruthy()
+    protocol!.querySelector<HTMLElement>('.el-select__wrapper')!.click()
+    await flush()
+    const other = [...document.querySelectorAll<HTMLElement>('.el-select-dropdown__item')].find(item => item.textContent?.trim() === 'Anthropic Messages')
+    expect(other, 'the Anthropic option').toBeTruthy()
+    other!.click()
+    await flush()
+    expect(input('slot-endpoint').placeholder).toBe('https://api.anthropic.com')
+  })
   it('renames the same slot while preserving the saved key and bindings', async () => {
     await mount(); await clickText('Edit')
     expect(input('slot-key').value).toBe('sk-abc......wxyz')

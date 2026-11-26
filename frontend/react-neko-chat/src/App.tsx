@@ -14,7 +14,7 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { useReplyTailPresentation } from './useReplyTailPresentation';
-import { CompactAskOrRecommendationPrompt } from './CompactNekoPowerAskPrompt';
+import { CompactAskOrRecommendationPrompt, NekoPowerAskWaitingReport } from './CompactNekoPowerAskPrompt';
 import { useNekoPowerAskDrafts } from './NekoPowerAskBlock';
 import ScreenObservationExposure from './ScreenObservationExposure';
 import MiniGameInvitePrompt from './MiniGameInvitePrompt';
@@ -926,6 +926,9 @@ export default function ChatWindowRoot(props: ChatWindowProps) {
       {props.chatSurfaceMode === 'full'
         ? <FullChatSurface {...surfaceProps} />
         : <CompactChatApp {...surfaceProps} />}
+      {/* Here too, whichever surface is drawn: the ball the chat folds into is the host's. */}
+      <NekoPowerAskWaitingReport messages={props.messages || defaultMessages}
+        onChange={props.onNekoPowerAskWaitingChange} />
       <NekoTooltipLayer />
     </ChatScreenVisibilityProvider>
   );

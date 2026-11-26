@@ -121,6 +121,39 @@ def test_a_command_too_long_for_the_line_is_said_to_be_cut():
     assert card["detail"]["command"] == long
 
 
+def test_the_line_is_said_in_each_language_of_the_interface_too():
+    from config.prompts._locale import NEKO_CORE_LOCALES
+
+    question = {"kind": "permission", "id": "q1", "category": "run_command", "detail": {"command": "npm run build"},
+                "options": ["always", "session", "once", "deny"]}
+
+    card = page_question(question, "zh-CN")
+
+    # By the code a page names its language with: one whose language is not the commission's
+    # shows the line in the words of its buttons.
+    assert list(card["lines"]) == list(NEKO_CORE_LOCALES)
+    assert card["lines"]["en"] == {"line": "run the command npm run build", "line_cut": False}
+    assert card["lines"]["ja"] == {"line": "コマンド npm run build の実行", "line_cut": False}
+    assert card["lines"]["zh-TW"]["line"] == "執行命令 npm run build"
+    # And in the commission's language as before, for a page that has none of these.
+    assert card["line"] == card["lines"]["zh-CN"]["line"] == "运行命令 npm run build"
+    assert "lines" not in question
+
+
+def test_each_line_cut_short_says_so_with_the_mark_of_its_own_language():
+    from config.prompts._locale import normalize_prompt_locale
+    from config.prompts.prompts_nekopower_brain import PERMISSION_DETAIL_CUT_MARK
+
+    long = "echo " + " ".join(f"part-{number}" for number in range(4000))
+
+    card = page_question({"kind": "permission", "category": "run_command", "detail": {"command": long}, "options": ["once", "deny"]}, "en")
+
+    for code, said in card["lines"].items():
+        mark = PERMISSION_DETAIL_CUT_MARK[normalize_prompt_locale(code)].strip()
+        assert said["line_cut"] is True and mark in said["line"], code
+        assert len(said["line"]) < len(long)
+
+
 @pytest.mark.parametrize(
     "question",
     [

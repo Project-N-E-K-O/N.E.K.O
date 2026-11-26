@@ -94,6 +94,25 @@ describe('server download preferences', () => {
     ])
   })
 
+  it('replaces a retired mirror in the browser setting with the default one', async () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      mode: 'specified',
+      specifiedSourceId: 'hk-gh-proxy-org',
+    }))
+    vi.mocked(fetchBridge)
+      .mockResolvedValueOnce(reply({ ...preferences, configured: false }))
+      .mockResolvedValueOnce(reply({ ...preferences, mode: 'specified' }))
+    const mirror = await loadComposable()
+
+    expect(mirror.specifiedSourceId.value).toBe('gh-proxy-com')
+    expect(mirror.sources.some((source) => source.id === ('hk-gh-proxy-org' as string))).toBe(false)
+    await mirror.ensureDownloadPreferences()
+
+    expect(putBodies()).toEqual([
+      { mode: 'specified', specified_source_id: 'gh-proxy-com', initialize_only: true },
+    ])
+  })
+
   it('waits for a save made while an earlier one was pending', async () => {
     let releaseFirst!: () => void
     vi.mocked(fetchBridge)

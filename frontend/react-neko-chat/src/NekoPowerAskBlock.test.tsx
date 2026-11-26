@@ -37,9 +37,29 @@ function show(message: ChatMessage, presentation: 'card' | 'bubble' = 'card') {
   return { ...view, given, at: (selector: string) => view.container.querySelector(selector) as HTMLElement };
 }
 
-afterEach(() => { vi.useRealTimers(); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe('what a NekoPower commission asks, as a card of the chat', () => {
+  it('says what is to be allowed in the language of the page, and asks it opened first where that very line is cut', () => {
+    // Asked in Chinese, of a page in English: and here the English line is the one cut.
+    const handed = { kind: 'permission', id: 'q8', category: 'open_session', options: ['always', 'session', 'once', 'deny'],
+      detail: { tool: 'hand_over', title: 'a long title' }, line: '交给另一只使魔：a long title', line_cut: false,
+      lines: { 'zh-CN': { line: '交给另一只使魔：a long title', line_cut: false }, en: { line: 'start another familiar: a long … title', line_cut: true } } };
+    const seen = (language?: string) => {
+      vi.stubGlobal('i18next', language === undefined ? undefined : { language });
+      const { line, lineCut, needsWhole } = askView(handed);
+      return [line, lineCut, needsWhole];
+    };
+    expect(seen('en')).toEqual(['start another familiar: a long … title', true, true]);
+    expect(seen('en-US')).toEqual(['start another familiar: a long … title', true, true]);
+    expect(seen('zh-CN')).toEqual(['交给另一只使魔：a long title', false, false]);
+    // A language it has no line in, or none that can be read: the commission's.
+    expect(seen('fr')).toEqual(['交给另一只使魔：a long title', false, false]);
+    expect(seen()).toEqual(['交给另一只使魔：a long title', false, false]);
+    vi.stubGlobal('i18next', { language: 'en' });
+    expect(askView({ ...handed, lines: { en: { line: '', line_cut: true } } }).line).toBe('交给另一只使魔：a long title');
+  });
+
   it('reads the kinds of question, and when all of what it would do has to be opened first', () => {
     expect([permission, confirmation, oneQuestion, inWords].map(question => askView(question).shape))
       .toEqual(['permission', 'confirmation', 'questions', 'words']);

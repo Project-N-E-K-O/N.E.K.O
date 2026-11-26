@@ -355,6 +355,133 @@ describe('hosted ui runtime', () => {
     })
   })
 
+  describe('host-rendered action confirmation', () => {
+    type HostMessage = Record<string, unknown>
+    function installHost(answer: (message: HostMessage) => HostMessage | null) {
+      const messages: HostMessage[] = []
+      Object.defineProperty(window, 'parent', {
+        value: {
+          postMessage(message: HostMessage) {
+            messages.push(message)
+            if (message?.type !== 'neko-hosted-surface-request') return
+            const reply = message.method === 'confirm' ? answer(message) : { ok: true, result: {} }
+            if (!reply) return
+            window.dispatchEvent(new MessageEvent('message', {
+              data: { type: 'neko-hosted-surface-response', requestId: message.requestId, ...reply },
+            }))
+          },
+        },
+        configurable: true,
+      })
+      return messages
+    }
+    const requests = (messages: HostMessage[], method: string) => messages.filter(
+      (message) => message.type === 'neko-hosted-surface-request' && message.method === method,
+    )
+
+    it('asks the host instead of window.confirm and runs the action once confirmed', async () => {
+      // Mirrors a sandbox without allow-modals: the native dialog always says no.
+      const nativeConfirm = vi.fn(() => false)
+      Object.defineProperty(window, 'confirm', { value: nativeConfirm, configurable: true, writable: true })
+      const messages = installHost(() => ({ ok: true, result: { confirmed: true } }))
+      ui.render(ui.h(ui.ActionButton, { actionId: 'save', confirm: true, refresh: false }), root)
+      fireEvent.click(root.querySelector('button')!)
+      await flushMicrotasks()
+      await flushMicrotasks()
+
+      expect(nativeConfirm).not.toHaveBeenCalled()
+      expect(requests(messages, 'confirm')).toEqual([expect.objectContaining({
+        payload: {},
+        userInitiated: true,
+        timeoutMs: 125000,
+      })])
+      expect(requests(messages, 'call')).toEqual([expect.objectContaining({
+        payload: { actionId: 'save', args: {} },
+        userInitiated: true,
+      })])
+    })
+
+    it('sends the plugin confirm text verbatim and skips the action when cancelled', async () => {
+      const messages = installHost(() => ({ ok: true, result: { confirmed: false } }))
+      ui.render(ui.h(ui.ActionButton, { actionId: 'wipe', confirm: '<b>Delete</b> everything?' }), root)
+      fireEvent.click(root.querySelector('button')!)
+      await flushMicrotasks()
+      await flushMicrotasks()
+
+      expect(requests(messages, 'confirm')[0]!.payload).toEqual({ message: '<b>Delete</b> everything?' })
+      expect(requests(messages, 'call')).toEqual([])
+      expect(root.querySelector('[role="alert"]')).toBeNull()
+    })
+
+    it('disables the button while the host dialog is open', async () => {
+      let answer!: () => void
+      const messages = installHost((message) => {
+        answer = () => window.dispatchEvent(new MessageEvent('message', {
+          data: { type: 'neko-hosted-surface-response', requestId: message.requestId, ok: true, result: { confirmed: false } },
+        }))
+        return null
+      })
+      ui.render(ui.h(ui.ActionButton, { actionId: 'save', confirm: true }), root)
+      fireEvent.click(root.querySelector('button')!)
+      await flushMicrotasks()
+      expect(root.querySelector('button')!.disabled).toBe(true)
+      fireEvent.click(root.querySelector('button')!)
+      expect(requests(messages, 'confirm')).toHaveLength(1)
+      answer()
+      await flushMicrotasks()
+      await flushMicrotasks()
+      expect(root.querySelector('button')!.disabled).toBe(false)
+    })
+
+    it('does not run and shows an error when the host never answers', async () => {
+      vi.useFakeTimers()
+      try {
+        const messages = installHost(() => null)
+        ui.render(ui.h(ui.ActionButton, { actionId: 'save', confirm: 'Sure?' }), root)
+        fireEvent.click(root.querySelector('button')!)
+        await vi.advanceTimersByTimeAsync(125000)
+        await flushMicrotasks()
+
+        expect(requests(messages, 'call')).toEqual([])
+        expect(messages).toContainEqual(expect.objectContaining({ type: 'neko-hosted-surface-cancel' }))
+        expect(root.querySelector('[role="alert"]')?.textContent).toContain('not run')
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('shows the host timeout answer and does not run', async () => {
+      const messages = installHost(() => ({ ok: false, error: 'Timed out (localized)', code: 'action_confirm_timeout' }))
+      ui.render(ui.h(ui.ActionButton, { actionId: 'save', confirm: true }), root)
+      fireEvent.click(root.querySelector('button')!)
+      await flushMicrotasks()
+      await flushMicrotasks()
+
+      expect(requests(messages, 'call')).toEqual([])
+      expect(root.querySelector('[role="alert"]')?.textContent).toBe('Timed out (localized)')
+    })
+
+    it('confirms ActionForm submissions through the host and keeps user attribution', async () => {
+      // Mirrors a sandbox without allow-modals: the native dialog always says no.
+      const nativeConfirm = vi.fn(() => false)
+      Object.defineProperty(window, 'confirm', { value: nativeConfirm, configurable: true, writable: true })
+      const messages = installHost(() => ({ ok: true, result: { confirmed: true } }))
+      ui.render(ui.h(ui.ActionForm, {
+        action: { id: 'save', confirm: 'Save now?', refresh_context: false, input_schema: { type: 'object', properties: {} } },
+      }), root)
+      fireEvent.submit(root.querySelector('form')!)
+      await flushMicrotasks()
+      await flushMicrotasks()
+
+      expect(nativeConfirm).not.toHaveBeenCalled()
+      expect(requests(messages, 'confirm')).toEqual([expect.objectContaining({
+        payload: { message: 'Save now?' },
+        userInitiated: true,
+      })])
+      expect(requests(messages, 'call')).toEqual([expect.objectContaining({ userInitiated: true })])
+    })
+  })
+
   it('runs hooks inside function components', async () => {
     function Counter() {
       const [count, setCount] = ui.useState(0)
