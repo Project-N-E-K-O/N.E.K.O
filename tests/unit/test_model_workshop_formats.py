@@ -1720,3 +1720,64 @@ def test_vrm_morph_texture_is_not_charged_again_for_shared_mesh_nodes(tmp_path):
         data['scenes'][0]['nodes'] = list(range(20))
     path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
     assert validate_model_bundle(path, format_limits=FormatLimits(vrm_morph_bytes=96)).model_format == 'vrm'
+
+
+@pytest.mark.parametrize('table', ['light', 'mesh', 'node', 'camera', 'scene'])
+@pytest.mark.parametrize('name,valid', [(5, False), (True, False), ([], False), ({}, False),
+    ('Avatar', True), ('', True), (None, True), (False, True), (0, True)])
+def test_gltf_names_preserve_loader_defaults_and_reject_crashing_types(tmp_path, table, name, valid):
+    def graph(data):
+        if table == 'light':
+            data['extensionsUsed'].append('KHR_lights_punctual')
+            data['extensions']['KHR_lights_punctual'] = {'lights': [{'type': 'point', 'name': name}]}
+            data['nodes'][0]['extensions'] = {'KHR_lights_punctual': {'light': 0}}
+        elif table == 'mesh':
+            data['meshes'] = [{'name': name, 'primitives': [{'attributes': {'POSITION': 0}}]}]
+            data['accessors'] = [{'componentType': 5126, 'type': 'VEC3', 'count': 3}]
+            data['nodes'][0]['mesh'] = 0
+        elif table == 'camera':
+            data['cameras'] = [{'name': name, 'type': 'perspective', 'perspective': {'yfov': 1, 'znear': 0.1}}]
+            data['nodes'][0]['camera'] = 0
+        else:
+            data[{'node': 'nodes', 'scene': 'scenes'}[table]][0]['name'] = name
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
+    if valid: assert validate_model_bundle(path).model_format == 'vrm'
+    else:
+        with pytest.raises(ModelFormatError): validate_model_bundle(path)
+
+
+@pytest.mark.parametrize('parents,valid', [([1, 0, -1], False), ([2, -1, 0], False),
+    ([0, -1, -1], True), ([2, -1, 1], True)])
+def test_pmx_parent_graph_is_checked_without_ik(tmp_path, parents, valid):
+    raw = mmd_runtime_bytes('pmx', parents=parents)
+    path = make_native_bundle(tmp_path, kind='mmd', entry='Avatar.pmx', files={'Avatar.pmx': raw})
+    if valid: assert validate_model_bundle(path).model_format == 'mmd'
+    else:
+        with pytest.raises(ModelFormatError): validate_model_bundle(path)
+
+
+@pytest.mark.parametrize('mode', [4, 5, 6])
+@pytest.mark.parametrize('semantic', ['POSITION', 'NORMAL', 'COLOR_0'])
+@pytest.mark.parametrize('count,valid', [(2, False), (3, True), (4, False)])
+def test_morph_attribute_count_matches_base_positions(tmp_path, mode, semantic, count, valid):
+    def graph(data):
+        data['accessors'] = [{'componentType': 5126, 'type': 'VEC3', 'count': 3},
+                             {'componentType': 5126, 'type': 'VEC3', 'count': count}]
+        data['meshes'] = [{'primitives': [{'attributes': {'POSITION': 0, 'NORMAL': 0, 'COLOR_0': 0},
+                                         'targets': [{semantic: 1}, {}], 'mode': mode}]}]
+        data['nodes'][0]['mesh'] = 0
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
+    if valid: assert validate_model_bundle(path).model_format == 'vrm'
+    else:
+        with pytest.raises(ModelFormatError): validate_model_bundle(path)
+
+
+def test_morph_texture_copy_cannot_hide_billion_iterations_in_mismatched_accessor(tmp_path):
+    def graph(data):
+        data['accessors'] = [{'componentType': 5126, 'type': 'VEC3', 'count': 3},
+                             {'componentType': 5126, 'type': 'VEC3', 'count': 1000000}]
+        data['meshes'] = [{'primitives': [{'attributes': {'POSITION': 0}, 'targets': [{'POSITION': 1}] * 1000}]}]
+        data['nodes'][0]['mesh'] = 0
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
+    assert path.stat().st_size < 20000
+    with pytest.raises(ModelFormatError): validate_model_bundle(path)

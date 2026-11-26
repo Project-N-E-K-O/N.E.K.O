@@ -622,6 +622,7 @@ def _vrm(resources: _Resources) -> None:
     for camera in cameras:
         _require(isinstance(camera, dict) and camera.get("type") in ("perspective", "orthographic"), entry)
         _require(isinstance(camera.get(camera["type"]), dict), entry)
+        _require(isinstance(camera.get("name"), str) or camera.get("name") in (None, False, ""), entry)
     light_extension = extensions.get("KHR_lights_punctual", {})
     _require(isinstance(light_extension, dict) and isinstance(light_extension.get("lights", []), list), entry)
     lights = light_extension.get("lights", [])
@@ -718,6 +719,7 @@ def _vrm(resources: _Resources) -> None:
     morph_allocated = 0
     for mesh in meshes:
         _require(isinstance(mesh, dict) and isinstance(mesh.get("primitives"), list), entry)
+        _require(isinstance(mesh.get("name"), str) or mesh.get("name") in (None, False, ""), entry)
         counts = []
         draw_count = 0
         for primitive in mesh["primitives"]:
@@ -752,6 +754,10 @@ def _vrm(resources: _Resources) -> None:
             if slots:
                 _require("POSITION" in primitive["attributes"], entry)
                 position = accessors[primitive["attributes"]["POSITION"]]
+                for morph in morphs:
+                    for semantic in ("POSITION", "NORMAL", "COLOR_0"):
+                        if semantic in morph:
+                            _require(accessors[morph[semantic]]["count"] == position["count"], entry)
                 morph_allocated += position["count"] * slots * 32 * len(morphs)
                 _require(morph_allocated <= resources.limits.vrm_morph_bytes, entry, "model_accessor_budget_exceeded")
             if mode in (5, 6):
@@ -831,6 +837,7 @@ def _vrm(resources: _Resources) -> None:
     instanced_vertices = 0
     for node in nodes:
         _require(isinstance(node, dict) and isinstance(node.get("children", []), list), entry)
+        _require(isinstance(node.get("name"), str) or node.get("name") in (None, False, ""), entry)
         for child in node.get("children", []):
             _index(child, nodes, entry)
         for field, table in (("mesh", meshes), ("skin", skins), ("camera", cameras)):
@@ -842,6 +849,7 @@ def _vrm(resources: _Resources) -> None:
             if "light" in light:
                 definition = lights[_index(light["light"], lights, entry)]
                 _require(isinstance(definition, dict) and definition.get("type") in ("directional", "point", "spot"), entry)
+                _require(isinstance(definition.get("name"), str) or definition.get("name") in (None, False, ""), entry)
                 if "color" in definition:
                     color = definition["color"]
                     _require(isinstance(color, list) and len(color) == 3 and all(_number(v) for v in color), entry)
@@ -890,6 +898,7 @@ def _vrm(resources: _Resources) -> None:
                      and matrices["count"] >= len(skin["joints"]), entry)
     for scene in scenes:
         _require(isinstance(scene, dict) and isinstance(scene.get("nodes", []), list), entry)
+        _require(isinstance(scene.get("name"), str) or scene.get("name") in (None, False, ""), entry)
         for node in scene.get("nodes", []):
             _index(node, nodes, entry)
     if "scene" in data:
@@ -963,8 +972,6 @@ def _mmd_texture(resources: _Resources, value: str) -> None:
 
 def _mmd_ik_budget(resources: _Resources, parents: list[int], weights: dict[int, int], *, strict_parents=False) -> None:
     """Count recursive matrix updates without recursively walking the bone graph."""
-    if not weights and not strict_parents:
-        return
     sizes, children = [1] * len(parents), [0] * len(parents)
     for index, parent in enumerate(parents):
         # buildBones leaves missing parents at the root; Object3D ignores self-add.
