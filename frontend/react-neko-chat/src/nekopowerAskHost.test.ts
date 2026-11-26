@@ -648,6 +648,23 @@ describe('the cards of the chat window', () => {
     expect(messages.map(message => message.id)).toEqual(['nekopower-ask-c1-q2']);
   });
 
+  it('keeps the question a task asks now where a late word that an earlier one is over follows it', async () => {
+    let release = () => {};
+    hold = new Promise(resolve => { release = resolve; });
+    // What the read will say is older than both: c1 asks q2.
+    reply = () => ({ status: 200, body: { questions: [{ task_id: 'c1', title: 't', route: 'task_agent', lanlan_name: 'Lan', question: confirmation }] } });
+    const reading = asks.sync();
+    // By the connection: it asks q3 now; and then, late, that q1 is over.
+    asks.receive(frame({ ...permission, id: 'q3' }));
+    asks.receive(frame(null, { question_id: 'q1' }));
+    hold = null;
+    release();
+    await reading;
+    await flush();
+    // What it asks now stays, and is not given up for what the older read says.
+    expect(messages.map(message => [message.id, message.blocks[0].state])).toEqual([['nekopower-ask-c1-q3', 'pending']]);
+  });
+
   it('does not go on saying it will look again once a card that was being looked into is closed', async () => {
     vi.useFakeTimers();
     asks.receive(frame(permission));

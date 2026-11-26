@@ -597,7 +597,14 @@
     function receive(frame) {
         if (!frame || !frame.task_id) return;
         var closing = !frame.question || typeof frame.question !== 'object';
-        told.set(String(frame.task_id), { at: ++tellings, closed: closing ? text(frame.question_id) : '' });
+        // `at`: when the task was last told of at all. `whole`: when it was last told what it
+        // asks now, or that whatever it asked is over. That one named question of it is over
+        // says nothing of the others, and is kept apart (`closed`): it does not undo `whole`.
+        var said = told.get(String(frame.task_id)) || { at: 0, whole: 0, closed: '' };
+        said.at = ++tellings;
+        if (closing && text(frame.question_id)) said.closed = text(frame.question_id);
+        else said.whole = said.at;
+        told.set(String(frame.task_id), said);
         if (closing) {
             close(String(frame.task_id), text(frame.question_id));
             return;
@@ -642,7 +649,8 @@
                 // says nothing of this one.
                 var newerThan = function (taskId, questionId) {
                     var said = told.get(taskId);
-                    return fresh(taskId) && !(said.closed && said.closed !== questionId);
+                    if (!said || said.at <= since) return false;
+                    return said.whole > since || said.closed === questionId;
                 };
                 Array.from(open.keys()).forEach(function (taskId) {
                     var row = asked.get(taskId);
