@@ -192,8 +192,14 @@ const LIVE2D_PEEK_RESTORE_ANIMATION_MS = 260;
 // window.__nekoLive2DPeekHostStage 声明能力后，进探身分两段：先把模型直接摆到屏外的隐藏位，
 // 屏内没有模型的这段时间交给宿主挪窗口；宿主回话或超时后再照常探出或保持隐藏。
 // 超时后照常继续，宿主不回话时模型也不会一直留在屏外。
+// 对宿主的两点要求：
+// - 不管 prepare 收到的 reveal 是真是假，都按 visibleBounds 加 revealOvershootPx 留好窗口：
+//   reveal 只是来问那一刻的打算，等待期间互动状态变了，回话后可能改成探出；之后的探出、缩回
+//   也都落在这个范围里。
+// - 改窗口大小时页面视口（innerWidth/innerHeight，或裁剪契约给的虚拟视口）要保持不变：
+//   live2d-core 的 doResize 发现视口尺寸变了会清掉探身。
 const LIVE2D_PEEK_HOST_STAGE_TIMEOUT_MS = 600;
-// 探出动画（easeOutSoftBack）最多冲过终点约 3.04%，宿主留窗口时要算上这一段。
+// 探出动画（easeOutSoftBack，overshoot 0.9）最多冲过终点约 2.99%，宿主留窗口时要算上这一段。
 const LIVE2D_PEEK_REVEAL_OVERSHOOT_RATIO = 0.031;
 let live2DPeekDisplayContext = null;
 let live2DPeekDisplayReconcileId = 0;
@@ -1527,6 +1533,8 @@ function getLive2DPeekHostStageApi() {
 // visibleBounds 是探出后模型露在屏内的范围（页面坐标）。探出、缩回动画只沿水平方向滑动，
 // 全程落在这个范围往屏内方向再加 revealOvershootPx 之内，宿主按它留窗口即可。
 // staged 表示这次落点由宿主接过分段；pending 表示还在等宿主回话（模型在屏外）。
+// 注意 prepare 收到的那一份是进入分段之前取的：staged、pending 都是 false，phase 还不是 hidden；
+// 宿主接下之后再调这个方法才是分段中的值。
 Live2DManager.prototype.getLive2DPeekHostStageInfo = function () {
     const state = this._live2DPeekState;
     const visibleBounds = state && state.visibleBounds;
