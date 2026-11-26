@@ -2996,6 +2996,10 @@ def test_config_update_command_coordinates_with_in_flight_writes_and_profile_swi
                 logger=_FakeLogger(),
             )
             assert sender.payloads[-1]["success"] is (not raises_in_cb)
+            if raises_in_cb:
+                assert "host update rejected after stale timeout" in str(
+                    sender.payloads[-1].get("error", "")
+                )
             expected_cfg = {"base": 1, "draft": 1} if raises_in_cb else {"host": 9}
             assert ctx._effective_config == expected_cfg
             assert instance.refreshed[-1] == expected_cfg
@@ -3183,6 +3187,10 @@ def test_config_update_command_coordinates_with_in_flight_writes_and_profile_swi
             logger=_FakeLogger(),
         )
         assert sender.payloads[-1]["success"] is (not raises_in_cb)
+        if raises_in_cb:
+            assert "reject after profile timeout" in str(
+                sender.payloads[-1].get("error", "")
+            )
         expected_cfg = {"base": 1} if raises_in_cb else {"base": 1, "extra": 3}
         assert ctx._effective_config == expected_cfg
         assert instance.refreshed[-1] == expected_cfg
@@ -3261,6 +3269,10 @@ def test_config_update_command_coordinates_with_in_flight_writes_and_profile_swi
                 logger=_FakeLogger(),
             )
             assert sender.payloads[-1]["success"] is (not raises_in_cb)
+            if raises_in_cb:
+                assert "reject after superseded commit" in str(
+                    sender.payloads[-1].get("error", "")
+                )
             expected_cfg = {"base": 1, "draft": 1} if raises_in_cb else {"host": 9}
             assert ctx._effective_config == expected_cfg
             assert instance.refreshed[-1] == expected_cfg
