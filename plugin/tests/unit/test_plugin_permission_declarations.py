@@ -2553,3 +2553,40 @@ def test_alias_cycles_that_settle_resolve_as_before(tmp_path):
     report = _scan(tmp_path, "class P:\n    def go(self):\n        a = b\n        b = a\n        a.push_message()\n")
     assert report["capabilities"] == ["messages.push"]
     assert [row["method"] for row in report["evidence"]] == ["b.push_message"]
+
+
+
+@pytest.mark.parametrize(
+    "source,basis",
+    [
+        # An alias of a family name that is assigned twice.
+        (
+            "import socket\nfamily = socket.AF_INET\nfamily = socket.AF_UNIX\nalias = family\n"
+            "s = socket.socket(alias)\ns.listen()\n",
+            "resolved_call",
+        ),
+        ("import socket\nfamily = socket.AF_UNIX\nalias = family\ns = socket.socket(alias)\ns.listen()\n", "resolved_name"),
+        # A method local shadowing the module constant.
+        (
+            "import socket\nfrom socket import AF_UNIX\nclass C:\n    def __init__(self):\n"
+            "        AF_UNIX = socket.AF_INET\n        self.s = socket.socket(AF_UNIX)\n"
+            "    def go(self):\n        self.s.listen()\n",
+            "resolved_call",
+        ),
+        # A function's own import is judged on its own.
+        (
+            "import socket\nfor socket in xs:\n    pass\ndef f():\n    import socket\n"
+            "    s = socket.socket(socket.AF_UNIX)\n    s.listen()\n",
+            "resolved_name",
+        ),
+    ],
+)
+def test_family_trust_follows_aliases_locals_and_own_imports(tmp_path, source, basis):
+    assert _scan(tmp_path, source)["permissions"][LISTEN]["basis"] == basis
+
+
+def test_long_alias_chains_stay_within_budget(tmp_path, monkeypatch):
+    # Cycle detection walks each name once.
+    monkeypatch.setattr(capability_analysis, "MAX_NODES", 400_000)
+    source = "import os\nx0 = os\n" + "".join(f"x{i} = x{i - 1}\n" for i in range(1, 4000))
+    assert _scan(tmp_path, source)["status"] == "completed"

@@ -872,7 +872,12 @@ def _build_bindings(declared, inherited, nodes, walker):
     )
     for key, value in inherited.items():
         walker.check()
-        if key.partition(".")[0] not in declared:
+        if key.startswith(_UNTRUSTED):
+            # A name this scope binds itself is judged here, not by the
+            # enclosing scope's rebinding of the same spelling.
+            if key[len(_UNTRUSTED):] not in declared:
+                bindings[key] = value
+        elif key.partition(".")[0] not in declared:
             bindings[key] = value
     for node in nodes:
         walker.check()
@@ -928,6 +933,24 @@ def _propagate_assignments(assignments, bindings, walker, uncertain_names=frozen
         for key in counts
         if "." in key and key in bindings and not (bindings[key][0] or "").startswith(_UNIX_SOCKET)
     )
+    # Root name each plain-name assignment reads from (alias = family).
+    roots: dict[str, str] = {}
+    readers: dict[str, list[str]] = {}
+    for key, node in assignments:
+        walker.check()
+        if "." not in key:
+            root = _root_name(_plain_name(node))
+            if root:
+                readers.setdefault(root, []).append(key)
+                roots[key] = root
+    # Aliases of an uncertain name are uncertain too.
+    pending = list(uncertain)
+    while pending:
+        walker.check()
+        for reader in readers.get(pending.pop(), ()):
+            if reader not in uncertain:
+                uncertain.add(reader)
+                pending.append(reader)
     # Settled before any socket is resolved through them. Kept apart from
     # the bindings, which resolve as before (the legacy scan reads them).
     for key in uncertain:
@@ -935,18 +958,22 @@ def _propagate_assignments(assignments, bindings, walker, uncertain_names=frozen
             bindings[_UNTRUSTED + key] = (None, False)
     # Assignments whose getattr / socket root leads back to themselves
     # (b = getattr(a, "x"); a = getattr(b, "y")) would grow on every round;
-    # they keep the reading they had before getattr was followed.
-    roots = {key: _root_name(_plain_name(node)) for key, node in assignments if "." not in key}
-    cyclic = set()
-    for key in roots:
-        seen, name = set(), roots[key]
-        while name in roots and name not in seen:
+    # they keep the reading they had before getattr was followed. Each name
+    # is walked once (white / on the current path / done).
+    cyclic: set[str] = set()
+    done: set[str] = set()
+    for start in roots:
+        path: list[str] = []
+        on_path: set[str] = set()
+        name = start
+        while name in roots and name not in done and name not in on_path:
             walker.check()
-            if name == key:
-                cyclic.add(key)
-                break
-            seen.add(name)
+            path.append(name)
+            on_path.add(name)
             name = roots[name]
+        if name in on_path:
+            cyclic.update(path[path.index(name):])
+        done.update(path)
 
     def bind(key, resolved, external):
         if key in uncertain:
@@ -1003,7 +1030,7 @@ def _propagate_assignments(assignments, bindings, walker, uncertain_names=frozen
 def _propagate_self_attributes(node, bindings, walker, shared=frozenset()):
     """Collect self assignments from methods without inheriting method locals."""
     assignments = []
-    # Method parameters are not shadowed here (as before), so a parameter
+    # Method parameters and locals are not shadowed here (as before), so one
     # spelled like a family name is only kept out of the AF_UNIX check.
     parameters: set[str] = set()
     set_through: set[str] = set()
@@ -1022,6 +1049,8 @@ def _propagate_self_attributes(node, bindings, walker, shared=frozenset()):
             assignments.extend(
                 (key, value) for key, value in method_assignments if key.startswith("self.")
             )
+            # Method locals (AF_UNIX = socket.AF_INET) shadow module names too.
+            parameters.update(key for key, _value in method_assignments if "." not in key)
             _self_writes(method, writes, set_through, walker)
     # self.x written in a way the alias resolution does not follow (a tuple,
     # for / with / augmented target, a nested function, setattr): another
