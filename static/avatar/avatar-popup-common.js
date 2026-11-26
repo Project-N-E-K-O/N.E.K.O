@@ -1029,6 +1029,7 @@
                 || (currentViewport ? currentViewport.width : window.innerWidth) !== screenW
                 || (currentViewport ? currentViewport.height : window.innerHeight) !== screenH) {
                 positionSidePanel(_containerRef, anchor, options, false);
+                applySidePanelTransform(_containerRef, 'none');
                 return;
             }
             const z = getButtonZone(_ownerPrefix, placementApi);

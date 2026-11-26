@@ -200,7 +200,9 @@ def test_pending_settings_check_repositions_after_crop_mode_changes(page):
         return revision;
     }""")
     page.wait_for_timeout(350)
+    page.wait_for_function("document.getElementById('settings-panel').getAnimations().length === 0")
     result = _snapshot(page)
     assert page.evaluate("document.getElementById('settings-panel')._nekoPositionRevision") > revision
     assert result["panel"]["width"] >= 225
     assert result["panel"]["left"] >= 7.5 and result["panel"]["right"] <= 552.5
+    assert result["popup"]["top"] - result["panel"]["bottom"] == pytest.approx(12, abs=0.5)
