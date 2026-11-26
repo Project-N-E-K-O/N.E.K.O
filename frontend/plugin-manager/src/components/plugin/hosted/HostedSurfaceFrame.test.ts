@@ -36,7 +36,7 @@ const localeRef = ref('zh-CN')
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
     locale: localeRef,
-    t: (key: string) => key,
+    t: (key: string, params?: Record<string, unknown>) => (params ? `${key} ${JSON.stringify(params)}` : key),
   }),
 }))
 
@@ -54,6 +54,7 @@ type MountedFrame = {
   postMessage: ReturnType<typeof vi.fn>
   iframe: () => HTMLIFrameElement | null
   parseDocumentDialog: () => HTMLElement | null
+  parseDocumentFileNames: () => string[]
   confirmParseDocument: () => Promise<void>
   cancelParseDocument: () => Promise<void>
   closeParseDocumentDialog: () => Promise<void>
@@ -254,24 +255,18 @@ async function mountFrame(initialSurface = makeSurface(), options: { requireIfra
     },
     postMessage,
     iframe: () => container.querySelector('iframe') as HTMLIFrameElement | null,
-    parseDocumentDialog: () => document.querySelector<HTMLElement>('[data-testid="parse-document-confirm-dialog"]'),
+    parseDocumentDialog: () => singleParseDocumentDialog(),
+    parseDocumentFileNames: () => Array.from(
+      singleParseDocumentDialog()?.querySelectorAll<HTMLElement>('[data-testid="parse-document-confirm-files"] li') ?? [],
+    ).map((item) => item.textContent?.trim() ?? ''),
     async confirmParseDocument() {
-      const btn = document.querySelector<HTMLButtonElement>('[data-testid="parse-document-confirm-ok"]')
-      if (!btn) throw new Error('Expected parseDocument confirm button')
-      btn.click()
-      await flushPromises()
+      await clickParseDocumentDialogButton('parse-document-confirm-ok')
     },
     async cancelParseDocument() {
-      const btn = document.querySelector<HTMLButtonElement>('[data-testid="parse-document-confirm-cancel"]')
-      if (!btn) throw new Error('Expected parseDocument cancel button')
-      btn.click()
-      await flushPromises()
+      await clickParseDocumentDialogButton('parse-document-confirm-cancel')
     },
     async closeParseDocumentDialog() {
-      const btn = document.querySelector<HTMLButtonElement>('[data-testid="el-dialog-header-close"]')
-      if (!btn) throw new Error('Expected el-dialog header close button')
-      btn.click()
-      await flushPromises()
+      await clickParseDocumentDialogButton('el-dialog-header-close')
     },
     async setActive(active) {
       state.active = active
@@ -305,6 +300,23 @@ async function mountFrame(initialSurface = makeSurface(), options: { requireIfra
   }
   mountedFrames.push(mounted)
   return mounted
+}
+
+// The confirm dialog is teleported to <body>, so it cannot be scoped to one
+// frame's container. Refuse to guess when more than one dialog is open, so a
+// test that mounts several frames cannot silently click another frame's dialog.
+function singleParseDocumentDialog() {
+  const dialogs = document.querySelectorAll<HTMLElement>('[data-testid="parse-document-confirm-dialog"]')
+  if (dialogs.length > 1) throw new Error(`Expected at most one parseDocument confirm dialog, found ${dialogs.length}`)
+  return dialogs[0] ?? null
+}
+
+async function clickParseDocumentDialogButton(testId: string) {
+  const dialog = singleParseDocumentDialog()
+  const btn = dialog?.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`)
+  if (!btn) throw new Error(`Expected parseDocument dialog button ${testId}`)
+  btn.click()
+  await flushPromises()
 }
 
 function callRequest(options: { userInitiated?: boolean; requestId?: string; timeoutMs?: number } = {}) {
@@ -911,41 +923,198 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
     )
   })
 
-  it('prevents stacked confirm dialogs on concurrent parseDocument floods', async () => {
-    apiMocks.parseHostedDocument.mockResolvedValue({
+  function dispatchParseBatch(frame: MountedFrame, names: string[], options: { timeoutMs?: number } = {}) {
+    for (const [index, name] of names.entries()) {
+      frame.dispatchRequest(parseDocumentRequest(
+        new File([name], name, { type: 'application/pdf' }),
+        { requestId: `parse-${index + 1}`, userInitiated: true, timeoutMs: options.timeoutMs },
+      ))
+    }
+  }
+
+  function parseResponses(frame: MountedFrame, requestId: string) {
+    return frame.postMessage.mock.calls
+      .map(([message]) => message)
+      .filter((message) => message?.requestId === requestId)
+  }
+
+  it('merges concurrent parseDocument requests into one confirmation and parses all of them on accept', async () => {
+    apiMocks.parseHostedDocument.mockImplementation(async (file: File) => ({
       ok: true,
-      document: { name: 'first.pdf', sourceType: 'pdf', content: 'ok' },
-    })
+      document: { name: file.name, sourceType: 'pdf', content: 'ok' },
+    }))
+    const frame = await mountFrame()
+    await frame.setSurface(makeDocumentSurface())
+
+    dispatchParseBatch(frame, ['a.pdf', 'b.pdf', 'c.pdf'])
+    await flushPromises()
+
+    expect(document.querySelectorAll('[data-testid="parse-document-confirm-dialog"]')).toHaveLength(1)
+    expect(frame.parseDocumentFileNames()).toEqual(['a.pdf', 'b.pdf', 'c.pdf'])
+    expect(frame.parseDocumentDialog()?.textContent).toContain('3')
+    expect(frame.postMessage).not.toHaveBeenCalled()
+    expect(apiMocks.parseHostedDocument).not.toHaveBeenCalled()
+
+    await frame.confirmParseDocument()
+
+    expect(frame.parseDocumentDialog()).toBeNull()
+    expect(apiMocks.parseHostedDocument).toHaveBeenCalledTimes(3)
+    for (const [index, name] of ['a.pdf', 'b.pdf', 'c.pdf'].entries()) {
+      expect(parseResponses(frame, `parse-${index + 1}`)).toEqual([
+        expect.objectContaining({ ok: true, result: expect.objectContaining({ name }) }),
+      ])
+    }
+
+    // A request after the batch was answered asks again on its own.
+    frame.dispatchRequest(parseDocumentRequest(
+      new File(['d'], 'd.pdf', { type: 'application/pdf' }),
+      { requestId: 'parse-after-batch', userInitiated: true },
+    ))
+    await flushPromises()
+    expect(frame.parseDocumentDialog()).not.toBeNull()
+    expect(frame.parseDocumentFileNames()).toEqual([])
+    expect(frame.parseDocumentDialog()?.textContent).toContain('d.pdf')
+    expect(apiMocks.parseHostedDocument).toHaveBeenCalledTimes(3)
+  })
+
+  it('rejects every request of a merged confirmation as a user cancel', async () => {
+    const frame = await mountFrame()
+    await frame.setSurface(makeDocumentSurface())
+
+    dispatchParseBatch(frame, ['a.pdf', 'b.pdf', 'c.pdf'])
+    await flushPromises()
+    await frame.cancelParseDocument()
+
+    expect(frame.parseDocumentDialog()).toBeNull()
+    expect(apiMocks.parseHostedDocument).not.toHaveBeenCalled()
+    for (const requestId of ['parse-1', 'parse-2', 'parse-3']) {
+      expect(parseResponses(frame, requestId)).toEqual([
+        expect.objectContaining({
+          ok: false,
+          error: 'Document parsing was cancelled by the user.',
+          code: 'document_parse_permission_denied',
+        }),
+      ])
+    }
+  })
+
+  it('removes only the cancelled request from a merged confirmation', async () => {
+    apiMocks.parseHostedDocument.mockImplementation(async (file: File) => ({
+      ok: true,
+      document: { name: file.name, sourceType: 'pdf', content: 'ok' },
+    }))
+    const frame = await mountFrame()
+    await frame.setSurface(makeDocumentSurface())
+
+    dispatchParseBatch(frame, ['a.pdf', 'b.pdf', 'c.pdf'])
+    await flushPromises()
+    frame.dispatchRequest({ type: 'neko-hosted-surface-cancel', requestId: 'parse-2' })
+    await flushPromises()
+
+    expect(frame.parseDocumentDialog()).not.toBeNull()
+    expect(frame.parseDocumentFileNames()).toEqual(['a.pdf', 'c.pdf'])
+
+    await frame.confirmParseDocument()
+
+    expect(apiMocks.parseHostedDocument).toHaveBeenCalledTimes(2)
+    expect(apiMocks.parseHostedDocument.mock.calls.map(([file]) => (file as File).name)).toEqual(['a.pdf', 'c.pdf'])
+    expect(parseResponses(frame, 'parse-1')).toEqual([expect.objectContaining({ ok: true })])
+    expect(parseResponses(frame, 'parse-2')).toEqual([])
+    expect(parseResponses(frame, 'parse-3')).toEqual([expect.objectContaining({ ok: true })])
+  })
+
+  it('closes a merged confirmation once every request in it is cancelled', async () => {
+    const frame = await mountFrame()
+    await frame.setSurface(makeDocumentSurface())
+
+    dispatchParseBatch(frame, ['a.pdf', 'b.pdf'])
+    await flushPromises()
+    frame.dispatchRequest({ type: 'neko-hosted-surface-cancel', requestId: 'parse-1' })
+    await flushPromises()
+    expect(frame.parseDocumentDialog()).not.toBeNull()
+    expect(frame.parseDocumentDialog()?.textContent).toContain('b.pdf')
+
+    frame.dispatchRequest({ type: 'neko-hosted-surface-cancel', requestId: 'parse-2' })
+    await flushPromises()
+
+    expect(frame.parseDocumentDialog()).toBeNull()
+    expect(apiMocks.parseHostedDocument).not.toHaveBeenCalled()
+    expect(frame.postMessage).not.toHaveBeenCalled()
+  })
+
+  it('releases every request of a merged confirmation on unmount and surface change', async () => {
+    const frame = await mountFrame()
+    await frame.setSurface(makeDocumentSurface())
+
+    dispatchParseBatch(frame, ['a.pdf', 'b.pdf', 'c.pdf'])
+    await flushPromises()
+    await frame.setSurface({ ...makeDocumentSurface(), id: 'secondary' })
+    await flushPromises()
+    expect(frame.parseDocumentDialog()).toBeNull()
+
+    dispatchParseBatch(frame, ['d.pdf', 'e.pdf', 'f.pdf'])
+    await flushPromises()
+    expect(frame.parseDocumentFileNames()).toEqual(['d.pdf', 'e.pdf', 'f.pdf'])
+    frame.unmount()
+    await flushPromises()
+
+    expect(frame.parseDocumentDialog()).toBeNull()
+    expect(apiMocks.parseHostedDocument).not.toHaveBeenCalled()
+    expect(frame.postMessage).not.toHaveBeenCalled()
+  })
+
+  it('truncates the merged file list and reports a busy code beyond the batch limit', async () => {
+    const frame = await mountFrame()
+    await frame.setSurface(makeDocumentSurface())
+
+    const names = Array.from({ length: 21 }, (_, index) => `doc-${index + 1}.pdf`)
+    dispatchParseBatch(frame, names)
+    await flushPromises()
+
+    expect(frame.parseDocumentFileNames()).toEqual([
+      'doc-1.pdf', 'doc-2.pdf', 'doc-3.pdf', 'doc-4.pdf', 'doc-5.pdf',
+      expect.stringContaining('15'),
+    ])
+    expect(frame.postMessage).toHaveBeenCalledTimes(1)
+    expect(parseResponses(frame, 'parse-21')).toEqual([
+      expect.objectContaining({ ok: false, code: 'document_parse_busy' }),
+    ])
+
+    await frame.cancelParseDocument()
+    expect(parseResponses(frame, 'parse-20')).toEqual([
+      expect.objectContaining({ ok: false, code: 'document_parse_permission_denied' }),
+    ])
+  })
+
+  it('keeps each merged request on its own deadline', async () => {
+    apiMocks.parseHostedDocument.mockImplementation(async (file: File) => ({
+      ok: true,
+      document: { name: file.name, sourceType: 'pdf', content: 'ok' },
+    }))
     const frame = await mountFrame()
     await frame.setSurface(makeDocumentSurface())
 
     frame.dispatchRequest(parseDocumentRequest(
-      new File(['pdf'], 'first.pdf', { type: 'application/pdf' }),
-      { requestId: 'parse-1', userInitiated: true },
+      new File(['a'], 'a.pdf', { type: 'application/pdf' }),
+      { requestId: 'parse-short', userInitiated: true, timeoutMs: 5000 },
     ))
     frame.dispatchRequest(parseDocumentRequest(
-      new File(['pdf'], 'second.pdf', { type: 'application/pdf' }),
-      { requestId: 'parse-2', userInitiated: true },
+      new File(['b'], 'b.pdf', { type: 'application/pdf' }),
+      { requestId: 'parse-long', userInitiated: true, timeoutMs: 60000 },
     ))
     await flushPromises()
-
-    expect(document.querySelectorAll('[data-testid="parse-document-confirm-dialog"]')).toHaveLength(1)
-    expect(frame.postMessage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        requestId: 'parse-2',
-        ok: false,
-        code: 'document_parse_permission_denied',
-      }),
-      '*',
-    )
-
+    await vi.advanceTimersByTimeAsync(10000)
     await frame.confirmParseDocument()
-    expect(frame.parseDocumentDialog()).toBeNull()
+
+    expect(parseResponses(frame, 'parse-short')).toEqual([
+      expect.objectContaining({ ok: false, code: 'document_parse_timeout' }),
+    ])
     expect(apiMocks.parseHostedDocument).toHaveBeenCalledTimes(1)
-    expect(frame.postMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ requestId: 'parse-1', ok: true }),
-      '*',
+    expect(apiMocks.parseHostedDocument).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'b.pdf' }),
+      expect.objectContaining({ timeoutMs: 50000 }),
     )
+    expect(parseResponses(frame, 'parse-long')).toEqual([expect.objectContaining({ ok: true })])
   })
 
   it('closes confirm dialog and does not upload if surface changes, unmounts, or request cancels during host confirmation', async () => {

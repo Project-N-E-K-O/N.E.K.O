@@ -743,6 +743,8 @@ export default {
       controlError: 'Plugin UI control error',
       hostedRuntimePending: 'The Vue container recognized this surface. TSX, Markdown, and Auto renderers will be connected in a later phase.',
       parseDocumentConfirm: 'Allow plugin "{plugin}" to parse document "{file}"?',
+      parseDocumentConfirmBatch: 'Allow plugin "{plugin}" to parse the following {count} documents?',
+      parseDocumentConfirmMore: '…and {count} more',
       unsafeTargetBlocked: 'Blocked unsafe target URL'
     }
   },

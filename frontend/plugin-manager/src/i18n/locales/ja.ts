@@ -743,6 +743,8 @@ export default {
       controlError: 'プラグイン UI コントロールエラー',
       hostedRuntimePending: 'Vue コンテナはこの Surface を認識しています。TSX/Markdown/Auto レンダラーは後続フェーズで接続されます。',
       parseDocumentConfirm: 'プラグイン「{plugin}」にドキュメント「{file}」の解析を許可しますか？',
+      parseDocumentConfirmBatch: 'プラグイン「{plugin}」に次の {count} 件のドキュメントの解析を許可しますか？',
+      parseDocumentConfirmMore: '…ほか {count} 件',
       unsafeTargetBlocked: '安全でない遷移先のためブロックしました'
     }
   },

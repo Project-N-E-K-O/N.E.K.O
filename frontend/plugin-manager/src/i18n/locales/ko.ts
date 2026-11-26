@@ -743,6 +743,8 @@ export default {
       controlError: '플러그인 UI 컨트롤 오류',
       hostedRuntimePending: 'Vue 컨테이너가 이 Surface를 인식했습니다. TSX/Markdown/Auto 렌더러는 이후 단계에서 연결됩니다.',
       parseDocumentConfirm: '플러그인 "{plugin}"이(가) 문서 "{file}"을(를) 구문 분석하도록 허용하시겠습니까?',
+      parseDocumentConfirmBatch: '플러그인 "{plugin}"이(가) 다음 문서 {count}개를 구문 분석하도록 허용하시겠습니까?',
+      parseDocumentConfirmMore: '…외 {count}개',
       unsafeTargetBlocked: '안전하지 않은 대상 URL이 차단되었습니다'
     }
   },

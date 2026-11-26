@@ -378,6 +378,12 @@ type HostedApi = {
   ```
 
   Call it directly from a real user event handler, such as a file input's `onChange`, a click, or a drop. The Hosted UI runtime marks synchronous calls from those handlers as user initiated; a call made after unrelated asynchronous work is rejected.
+
+  Before uploading, the host asks the user to allow the plugin to parse the file. To handle several files, call `parseDocument()` once per file in the same handler: calls that arrive while the confirmation is open join it, so the user sees one dialog listing every file. Accepting starts all of them; cancelling rejects all of them with `document_parse_permission_denied`. Aborting one call through its `signal` removes only that file. At most 20 files can wait for one confirmation; any further call is rejected with `document_parse_busy`, so retry it after the current batch is answered.
+
+  The time the user spends on the confirmation counts toward the timeout (30 seconds by default, measured from the call). Pass a larger `timeoutMs` if users may need longer to decide or the documents are large.
+
+  Rejections carry `error.code`: `document_parse_permission_denied` (permission missing, not user initiated, or cancelled by the user), `document_parse_busy`, `document_parse_timeout`, `document_too_large` (over 16 MiB), `unsupported_document` (not a PDF or DOCX), or an error code from the parser.
 - `api.refresh()` fetches the latest context and re-renders the surface.
 - If an action has `refresh_context=false`, it will not refresh automatically.
 

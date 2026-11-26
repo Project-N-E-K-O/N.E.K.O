@@ -743,6 +743,8 @@ export default {
       controlError: 'Ошибка элемента управления UI плагина',
       hostedRuntimePending: 'Vue-контейнер распознал этот Surface. TSX, Markdown и Auto рендереры будут подключены позже.',
       parseDocumentConfirm: 'Разрешить плагину «{plugin}» разобрать документ «{file}»?',
+      parseDocumentConfirmBatch: 'Разрешить плагину «{plugin}» разобрать следующие документы ({count})?',
+      parseDocumentConfirmMore: '…и ещё {count}',
       unsafeTargetBlocked: 'Небезопасный целевой адрес заблокирован'
     }
   },

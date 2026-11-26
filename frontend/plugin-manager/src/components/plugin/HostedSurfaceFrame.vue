@@ -87,6 +87,16 @@
         @close="dialog.cancel"
       >
         <p class="hosted-surface-frame__confirm-message">{{ dialog.message }}</p>
+        <ul
+          v-if="dialog.fileNames.length"
+          class="hosted-surface-frame__confirm-files"
+          data-testid="parse-document-confirm-files"
+        >
+          <li v-for="(name, index) in dialog.fileNames" :key="index">{{ name }}</li>
+          <li v-if="dialog.hiddenCount > 0" class="hosted-surface-frame__confirm-more">
+            {{ t('plugins.ui.parseDocumentConfirmMore', { count: dialog.hiddenCount }) }}
+          </li>
+        </ul>
         <template #footer>
           <el-button data-testid="parse-document-confirm-cancel" @click="dialog.cancel">
             {{ t('common.cancel') }}
@@ -176,19 +186,50 @@ let sourceController: AbortController | null = null
 let hostedRequestGeneration = 0
 let componentMounted = false
 type ParseDocumentConfirmOutcome = 'confirm' | 'user_cancel' | 'host_cancel'
-type PendingParseDocumentConfirm = {
+type ParseDocumentConfirmEntry = {
   requestId: string
-  token: number
-  message: string
-  accept: () => void
-  cancel: () => void
+  fileName: string
   resolve: (outcome: ParseDocumentConfirmOutcome) => void
 }
+// parseDocument requests that arrive while a confirmation is open (for
+// example one call per file in a single drop handler) join that confirmation,
+// so the user answers once for the whole batch. The object is replaced on
+// every change so the shallowRef re-renders the dialog.
+type PendingParseDocumentConfirm = {
+  token: number
+  pluginId: string
+  entries: ParseDocumentConfirmEntry[]
+  accept: () => void
+  cancel: () => void
+}
+const MAX_PARSE_DOCUMENT_CONFIRM_BATCH = 20
+const MAX_PARSE_DOCUMENT_CONFIRM_LISTED_FILES = 5
 let parseDocumentConfirmToken = 0
 const pendingParseDocumentConfirm = shallowRef<PendingParseDocumentConfirm | null>(null)
-const activeParseDocumentConfirmDialogs = computed(() => (
-  pendingParseDocumentConfirm.value ? [pendingParseDocumentConfirm.value] : []
-))
+const activeParseDocumentConfirmDialogs = computed(() => {
+  const pending = pendingParseDocumentConfirm.value
+  if (!pending || !pending.entries.length) return []
+  const { entries } = pending
+  if (entries.length === 1) {
+    return [{
+      token: pending.token,
+      message: t('plugins.ui.parseDocumentConfirm', { plugin: pending.pluginId, file: entries[0].fileName }),
+      fileNames: [] as string[],
+      hiddenCount: 0,
+      accept: pending.accept,
+      cancel: pending.cancel,
+    }]
+  }
+  const fileNames = entries.slice(0, MAX_PARSE_DOCUMENT_CONFIRM_LISTED_FILES).map((entry) => entry.fileName)
+  return [{
+    token: pending.token,
+    message: t('plugins.ui.parseDocumentConfirmBatch', { plugin: pending.pluginId, count: entries.length }),
+    fileNames,
+    hiddenCount: entries.length - fileNames.length,
+    accept: pending.accept,
+    cancel: pending.cancel,
+  }]
+})
 const fullscreenRevision = ref(0)
 function handleFullscreenChange() {
   fullscreenRevision.value += 1
@@ -208,23 +249,45 @@ const hostedActionControllers = new Map<string, AbortController>()
 const contextControllers = new Set<AbortController>()
 let contextQueue: Promise<unknown> = Promise.resolve()
 
-function settlePendingParseDocumentConfirm(
-  outcome: ParseDocumentConfirmOutcome,
-  filter?: { token?: number; requestId?: string },
-) {
+function settlePendingParseDocumentConfirm(outcome: ParseDocumentConfirmOutcome, token?: number) {
   const current = pendingParseDocumentConfirm.value
   if (!current) return
-  if (filter?.token !== undefined && current.token !== filter.token) return
-  if (filter?.requestId !== undefined && current.requestId !== filter.requestId) return
+  if (token !== undefined && current.token !== token) return
   pendingParseDocumentConfirm.value = null
-  current.resolve(outcome)
+  for (const entry of current.entries) entry.resolve(outcome)
 }
 
 function releasePendingParseDocumentConfirm(requestIdToCancel?: string) {
-  settlePendingParseDocumentConfirm(
-    'host_cancel',
-    requestIdToCancel !== undefined ? { requestId: requestIdToCancel } : undefined,
-  )
+  if (requestIdToCancel === undefined) {
+    settlePendingParseDocumentConfirm('host_cancel')
+    return
+  }
+  const current = pendingParseDocumentConfirm.value
+  if (!current) return
+  const released = current.entries.filter((entry) => entry.requestId === requestIdToCancel)
+  if (!released.length) return
+  const remaining = current.entries.filter((entry) => entry.requestId !== requestIdToCancel)
+  pendingParseDocumentConfirm.value = remaining.length ? { ...current, entries: remaining } : null
+  for (const entry of released) entry.resolve('host_cancel')
+}
+
+function requestParseDocumentConfirm(requestId: string, fileName: string): Promise<ParseDocumentConfirmOutcome> {
+  return new Promise<ParseDocumentConfirmOutcome>((resolve) => {
+    const entry: ParseDocumentConfirmEntry = { requestId, fileName, resolve }
+    const current = pendingParseDocumentConfirm.value
+    if (current) {
+      pendingParseDocumentConfirm.value = { ...current, entries: [...current.entries, entry] }
+      return
+    }
+    const token = ++parseDocumentConfirmToken
+    pendingParseDocumentConfirm.value = {
+      token,
+      pluginId: props.pluginId,
+      entries: [entry],
+      accept: () => settlePendingParseDocumentConfirm('confirm', token),
+      cancel: () => settlePendingParseDocumentConfirm('user_cancel', token),
+    }
+  })
 }
 
 function readContextInOrder() {
@@ -738,11 +801,11 @@ async function handleHostedRequest(data: any) {
         respond({ ok: false, error: 'Only PDF and DOCX documents are supported.', code: 'unsupported_document' })
         return
       }
-      if (pendingParseDocumentConfirm.value) {
+      if ((pendingParseDocumentConfirm.value?.entries.length ?? 0) >= MAX_PARSE_DOCUMENT_CONFIRM_BATCH) {
         respond({
           ok: false,
-          error: 'Document parsing confirmation is already pending.',
-          code: 'document_parse_permission_denied',
+          error: `At most ${MAX_PARSE_DOCUMENT_CONFIRM_BATCH} documents can wait for one confirmation.`,
+          code: 'document_parse_busy',
         })
         return
       }
@@ -750,18 +813,7 @@ async function handleHostedRequest(data: any) {
       const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : 30000
       const requestDeadline = Date.now() + timeoutMs
       const safeFileName = String(file.name || '').replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 255)
-      const confirmToken = ++parseDocumentConfirmToken
-      const confirmMessage = t('plugins.ui.parseDocumentConfirm', { plugin: props.pluginId, file: safeFileName })
-      const confirmOutcome = await new Promise<ParseDocumentConfirmOutcome>((resolve) => {
-        pendingParseDocumentConfirm.value = {
-          requestId,
-          token: confirmToken,
-          message: confirmMessage,
-          accept: () => settlePendingParseDocumentConfirm('confirm', { token: confirmToken }),
-          cancel: () => settlePendingParseDocumentConfirm('user_cancel', { token: confirmToken }),
-          resolve,
-        }
-      })
+      const confirmOutcome = await requestParseDocumentConfirm(requestId, safeFileName)
       if (!isCurrentRequest() || confirmOutcome === 'host_cancel') {
         return
       }
@@ -1027,5 +1079,21 @@ defineExpose({
   line-height: 1.6;
   color: var(--el-text-color-primary);
   word-break: break-word;
+}
+
+.hosted-surface-frame__confirm-files {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  max-height: 160px;
+  overflow-y: auto;
+  line-height: 1.6;
+  color: var(--el-text-color-regular);
+  word-break: break-all;
+}
+
+.hosted-surface-frame__confirm-more {
+  list-style: none;
+  margin-left: -20px;
+  color: var(--el-text-color-secondary);
 }
 </style>
